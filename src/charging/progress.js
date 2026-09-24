@@ -22,9 +22,24 @@ export function updateChargingProgress(previous, charger, now, readEnergy = () =
   const key = JSON.stringify([charger.id, soc.source, soc.value, measuredAt,
     measuredAt === null && soc.timeBasis !== 'receipt-only' ? soc.readingId ?? null : null]);
   const same = previous?.reference?.key === key && previous.connected !== false;
+  const vehicle = charger.telemetry?.vehicle;
+  const vehicleScope = vehicle?.state === 'identified' && vehicle.id && vehicle.sessionId
+    ? `${vehicle.id}:${vehicle.sessionId}` : null;
+  // Losing a vehicle feed is not a new battery measurement. Keep this
+  // identified connection's last anchor and measured energy until a new
+  // reading or an explicit starting-charge edit replaces them. A remembered
+  // manual default may otherwise falsely report the battery already full.
+  const retainedVehicleReference = connected !== false && previous?.connected !== false
+    && soc.source === 'manual-fallback' && vehicleScope !== null
+    && previous?.reference?.vehicleScope === vehicleScope
+    && previous.reference.source !== 'manual-fallback' && previous.reference.source !== 'session-anchor'
+    && finite(charger.settings?.manualSoc) && previous.reference.fallbackSoc === charger.settings.manualSoc;
   const connectionAt = previous?.connected !== false ? previous?.connectionAt ?? now : now;
-  const reference = same || connected === null && previous?.reference ? { ...previous.reference } : { key, at: Math.max(connectionAt, Math.min(now,
-    automatic ? measuredAt ?? receivedAt ?? now : now)), soc: soc.value };
+  const reference = same || retainedVehicleReference || connected === null && previous?.reference ? { ...previous.reference }
+    : { key, at: Math.max(connectionAt, Math.min(now, automatic ? measuredAt ?? receivedAt ?? now : now)),
+      soc: soc.value, source: soc.source, measuredAt, receivedAt, vehicleScope, fallbackSoc: charger.settings?.manualSoc };
+  if (same && automatic) Object.assign(reference, { source: soc.source, measuredAt, receivedAt,
+    vehicleScope, fallbackSoc: charger.settings?.manualSoc });
   const state = { version: 2, reference, connected, connectionAt, creditKwh: reference.key === previous?.reference?.key ? previous.creditKwh ?? 0 : 0 };
   let energy = null;
   if (connected !== false) {
@@ -36,8 +51,10 @@ export function updateChargingProgress(previous, charger, now, readEnergy = () =
   const rawRequiredGridKwh = Math.max(0, charger.requiredGridKwh ?? 0);
   const remainingGridKwh = Math.max(0, capacity * (charger.values.minimumSoc.value - estimatedSoc) / 100 / efficiency);
   return { state, estimatedSoc, hasEnergyEstimate: state.creditKwh > .00001,
+    retainedVehicleReference, referenceSoc: { value: reference.soc, source: reference.source,
+      measuredAt: reference.measuredAt, receivedAt: reference.receivedAt },
     connectionAt,
-    estimatedSocSource: automatic ? 'vehicle' : 'starting-charge', anchorAt: reference.at,
+    estimatedSocSource: ['manual-fallback', 'session-anchor'].includes(reference.source ?? soc.source) ? 'starting-charge' : 'vehicle', anchorAt: reference.at,
     deliveredGridKwh: state.creditKwh, remainingGridKwh,
     basis: { source: state.creditKwh > 0 ? 'recorded-charger-energy' : 'soc',
       status: connected === false ? 'not-connected' : connected === null ? 'connection-unknown'

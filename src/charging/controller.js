@@ -324,7 +324,7 @@ export function createChargingController({ adapter, initialState = null, saveSta
         }
         state.pending = null;
       }
-      if (state.manual && (previous.version < 4 || !isTime(state.manual.cycleEndsAt))) {
+      if (state.manual && !isTime(state.manual.cycleEndsAt)) {
         const { reason: _reason, ...prior } = state.manual;
         const knownWindow = prior.kind === 'window' ? manualScheduleWindow(snapshot.schedule,
           isTime(prior.detectedAt) ? prior.detectedAt : now) : null;
@@ -333,7 +333,6 @@ export function createChargingController({ adapter, initialState = null, saveSta
             : 'An observed manual Easee instruction has temporary priority.', { ...prior,
               kind: prior.kind === 'window' && !knownWindow ? 'schedule' : prior.kind,
               windowEndAt: knownWindow?.windowEndAt ?? null, resumeAt: null });
-        previous.version = 4;
       }
       observeSession(now);
       if (state.owned && !ownsCurrent()) {

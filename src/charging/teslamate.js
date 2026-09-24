@@ -41,7 +41,8 @@ export function createChargingTeslaCapture({ settings = {}, clock = Date.now, in
     const value = field => fields[field]?.value, now = clock();
     const newest = [fields.state, fields.charging_state].filter(Boolean).sort((a, b) => b.sequence - a.sequence)[0];
     const health = fields.healthy;
-    const healthy = connected && health?.value === true && !health.retained && now >= health.receivedAt && now - health.receivedAt <= settings.maxAgeMs;
+    const healthy = connected && liveFields.has('healthy') && health?.value === true && !health.retained
+      && now >= health.receivedAt && now - health.receivedAt <= settings.maxAgeMs;
     return { connected, healthy, maxAgeMs: settings.maxAgeMs, association: signature, reception: reception(),
       atHome: connected && typeof value('geofence') === 'string' ? value('geofence') === settings.homeGeofence : undefined,
       pluggedIn: value('plugged_in'), charging: newest ? ['Charging', 'charging'].includes(newest.value) : undefined,
@@ -89,20 +90,23 @@ export function createChargingTeslaCapture({ settings = {}, clock = Date.now, in
   };
 }
 
-export function teslamateVehicleTelemetry(snapshot = {}, { now = Date.now() } = {}) {
+export function teslamateVehicleTelemetry(snapshot = {}, { now = Date.now(), charging = snapshot.charging } = {}) {
   const available = snapshot.connected === true && snapshot.healthy === true;
   const signal = (value, field) => {
     const metadata = snapshot.fields?.[field] ?? {};
-    const operational = !['battery_level', 'charge_limit_soc'].includes(field);
-    const fresh = !operational || !metadata.retained && Number.isFinite(metadata.receivedAt) && now >= metadata.receivedAt && now - metadata.receivedAt <= (snapshot.maxAgeMs ?? 180000);
+    // TeslaMate publishes these readings/settings only when their value changes.
+    // Its live healthy pulse admits the current projection, without changing any
+    // field's original receipt clock or promoting retained data to a live edge.
+    const fresh = metadata.receivedAt == null || Number.isSafeInteger(metadata.receivedAt) && metadata.receivedAt <= now;
     return { ...metadata, value: available && fresh && value != null ? value : null,
       lastKnownValue: value ?? null, source: 'teslamate', available: available && fresh && value != null,
       reason: !available ? 'vehicle-logger-unhealthy' : !fresh ? 'vehicle-evidence-stale' : null,
       measuredAt: null, receivedAt: metadata.receivedAt ?? null, timeBasis: 'receipt-only' };
   };
-  const ceiling = [snapshot.requestedCurrentA, snapshot.maxCurrentA].filter(Number.isFinite);
+  const ceiling = [[snapshot.requestedCurrentA, 'charge_current_request'], [snapshot.maxCurrentA, 'charge_current_request_max']]
+    .filter(([value]) => Number.isFinite(value)).sort(([a], [b]) => a - b)[0];
   return { soc: signal(snapshot.batteryLevel, 'battery_level'), minimumSoc: signal(snapshot.chargeLimitSoc, 'charge_limit_soc'),
     vehicleCeilingSoc: signal(snapshot.chargeLimitSoc, 'charge_limit_soc'),
-    vehicleCurrentA: signal(ceiling.length ? Math.min(...ceiling) : null, 'charge_current_request'),
-    vehicleNotBefore: signal(snapshot.scheduledStartAt > now ? snapshot.scheduledStartAt : null, 'scheduled_charging_start_time') };
+    vehicleCurrentA: signal(ceiling?.[0] ?? null, ceiling?.[1] ?? 'charge_current_request'),
+    vehicleNotBefore: signal(charging !== true && snapshot.scheduledStartAt > now ? snapshot.scheduledStartAt : null, 'scheduled_charging_start_time') };
 }

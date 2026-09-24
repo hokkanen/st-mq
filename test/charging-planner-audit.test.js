@@ -42,6 +42,57 @@ test('native start, current and vehicle ceiling constrain physical charger plans
   assert.match(constrained.plans.charger2.warnings.join(' '), /vehicle limit/);
 });
 
+test('a vehicle timer beyond ready-by releases that charger without disabling its peer plan', () => {
+  const blocked = job('charger1', 2.07), peer = job('charger2', 2.07);
+  blocked.values.vehicleNotBefore = v(now + 2 * HOUR);
+  const result = run([blocked, peer], { prices: prices([100,100,1,1]) });
+  assert.equal(result.feasible, false);
+  assert.equal(result.plans.charger1.reason, 'vehicle-start-after-deadline');
+  assert.equal(result.plans.charger1.state, 'release');
+  assert.equal(result.plans.charger1.provisional, true);
+  assert.equal(result.plans.charger1.feasible, false);
+  assert.equal(result.plans.charger2.feasible, true);
+  assert.ok(result.plans.charger2.startAt >= now + HOUR / 2);
+});
+
+test('a native start beyond published price coverage yields a provisional release without crashing', () => {
+  const charger = job('charger1', 2.07);
+  charger.values.vehicleNotBefore = v(now + HOUR / 2);
+  const result = run([charger], { prices: prices([10]) });
+  assert.equal(result.plans.charger1.state, 'release');
+  assert.equal(result.plans.charger1.provisional, true);
+  assert.equal(result.plans.charger1.feasible, false);
+  assert.equal(result.plans.charger1.reason, 'price-coverage-unavailable');
+});
+
+test('releasing a timer-blocked car reserves its later load without the removed charger hold', () => {
+  const blocked = job('charger1', 2.07, { deadlineAt: now + QUARTER });
+  blocked.values.vehicleNotBefore = v(now + HOUR / 2);
+  blocked.values.scheduledStartAt = v(now + HOUR);
+  const result = run([blocked, job('charger2', 5.52)], { prices: prices([10,10,1,1]) });
+  assert.equal(result.forecasts.charger1.startAt, now + HOUR / 2);
+  assert.equal(result.plans.charger2.feasible, true);
+  assert.ok(result.plans.charger2.finishAt <= now + HOUR / 2);
+});
+
+test('an uncontrolled peer vehicle timer reserves load only after its native start', () => {
+  const peer = job('charger1', 8, { settings: { enabled: false } });
+  peer.values.vehicleNotBefore = v(now + HOUR / 2);
+  const forecast = forecastCharger({ now, deadlineAt: now + HOUR, charger: peer });
+  assert.equal(forecast.startAt, now + HOUR / 2);
+  assert.equal(forecast.scheduled, true);
+  const result = run([peer, job('charger2', 5.52)], { prices: prices([10,10,1,1]) });
+  assert.equal(result.plans.charger2.feasible, true);
+  assert.ok(result.plans.charger2.finishAt <= now + HOUR / 2);
+  peer.control = { released: true };
+  const releasedForecast = forecastCharger({ now, deadlineAt: now + HOUR, charger: peer });
+  assert.equal(releasedForecast.startAt, now + HOUR / 2, 'charger permission does not override the car timer');
+  assert.equal(releasedForecast.charging, false);
+  peer.values.charging = v(true);
+  assert.equal(forecastCharger({ now, deadlineAt: now + HOUR, charger: peer }).startAt, now,
+    'observed charging proves the vehicle currently accepts power');
+});
+
 test('joint planning retains post-target load when the native vehicle ceiling is higher', () => {
   const first=job('charger1',1,{deadlineAt:now+QUARTER}), second=job('charger2',7);
   first.values.vehicleCeilingSoc=v(90);

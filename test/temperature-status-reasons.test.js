@@ -106,7 +106,7 @@ test('unknown diagnostic fields cannot expose provider text or private sensor id
   assert.equal(durationText(NaN), 'unknown');
 });
 
-test('Tesla vehicle feed separates live reception from expired logger and field evidence', async t => {
+test('Tesla vehicle feed separates live reception and logger health from unchanged field clocks', async t => {
   const capture = createChargingTeslaCapture({ clock: () => now, settings: { maxAgeMs: 3 * MINUTE } });
   capture.setConnected(true);
   const receive = (field, value, at) => capture.receive(`teslamate/cars/1/${field}`, value, {}, at);
@@ -140,8 +140,13 @@ test('Tesla vehicle feed separates live reception from expired logger and field 
   receive('healthy', 'true', now);
   evidence = teslamateVehicleTelemetry(capture.snapshot(), { now });
   assert.equal(evidence.soc.available, true, 'A healthy quiet vehicle retains its change-only SoC');
-  assert.equal(evidence.vehicleCurrentA.available, false, 'New health cannot refresh an expired operational field');
-  assert.equal(evidence.vehicleCurrentA.reason, 'vehicle-evidence-stale');
+  assert.equal(evidence.vehicleCurrentA.available, true, 'A healthy quiet vehicle retains its change-only current setting');
+  assert.equal(evidence.vehicleCurrentA.value, 8);
+  assert.equal(evidence.vehicleCurrentA.reason, null);
   assert.equal(evidence.vehicleCurrentA.receivedAt, now - 5 * MINUTE);
+  assert.equal(evidence.vehicleCurrentA.retained, false);
+  assert.equal(evidence.vehicleCurrentA.timeBasis, 'receipt-only');
   assert.equal(evidence.vehicleCurrentA.measuredAt, null, 'Receipt clocks do not become invented measurement clocks');
+  assert.equal(capture.snapshot().fields.charge_current_request.receivedAt, now - 5 * MINUTE,
+    'New live health does not rewrite the original setting observation');
 });

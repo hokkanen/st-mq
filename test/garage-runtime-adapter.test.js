@@ -115,6 +115,36 @@ test('exact external sensor expiry releases an active lease; native ON and healt
   assert.equal(f.commands.length, count);
 });
 
+test('missing HA door feedback preserves normal heating and a later outage still obeys independent probe protection', async t => {
+  const f = setup(t), signal = 'garage_door1_open';
+  f.runtime.config.connections = { equipment: { devices: [{ enabled: true, ownedSignals: [signal] }] } };
+  await f.tick();
+  assert.equal(f.runtime.read().doorFront, null);
+  assert.equal(f.runtime.read().available, true);
+  assert.equal(f.runtime.plan.reason, 'garage-door-state-unknown');
+  assert.equal(f.commands.length, 0, 'A replacement host missing HA status keeps normal heating available');
+
+  f.engine.latest[signal] = { signal, source: 'mqtt-equipment', device: 'invented-door', value: 0,
+    sourceTime: BASE, receivedAt: BASE, quality: [], raw: { availabilityConfirmed: true, confirmedAt: BASE } };
+  await f.tick();
+  assert.equal(f.commands.at(-1).action, 'start');
+  f.at(BASE + MINUTE); f.temperatures();
+  f.engine.latest[signal] = { ...f.engine.latest[signal], value: null, receivedAt: f.now(), quality: ['bridge-offline'],
+    raw: { availabilityConfirmed: false } };
+  f.accepted(); await f.tick();
+  assert.equal(f.runtime.read().doorFront, null);
+  assert.equal(f.commands.at(-1).action, 'renew', 'Door loss alone does not cancel an already protected pause');
+  assert.equal(f.runtime.episode.accounting.qualified, false, 'An outage cannot establish clean savings evidence');
+
+  f.at(BASE + MINUTE + 1000); f.temperatures();
+  f.engine.latest.garage_temperature_2 = { ...f.engine.latest.garage_temperature_2,
+    value: null, quality: ['mqtt-disconnected'] };
+  f.accepted(); await flush();
+  assert.equal(f.commands.at(-1).action, 'release');
+  assert.equal(f.runtime.protection.safeToPause, false);
+  assert.equal(f.adapter.status().restorePending, true);
+});
+
 test('runtime persistence failure requests release through the real consumer and retains the saved obligation', async t => {
   const f = setup(t); await f.tick(); f.at(BASE + MINUTE); f.temperatures(); f.accepted(); await f.tick();
   f.at(f.now() + 1000); f.temperatures(); f.accepted(); await flush();

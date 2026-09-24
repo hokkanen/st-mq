@@ -11,6 +11,35 @@ export function connectionEvidenceStart(connectedAt, lastDisconnectedAt) {
     time(lastDisconnectedAt) ? lastDisconnectedAt + 1 : 0) : null;
 }
 
+/** TeslaMate publishes power only when it changes. Match the independent live
+ * charging start as well as the ramp, so polling delay and a stable final power
+ * do not permanently lose identification. Retained starts never supply an edge. */
+export function matchTeslaSession(tesla, { physical, connectedAt, lastDisconnectedAt, chargingAt = [], now = Date.now() } = {}) {
+  const physicalPower = physical?.powerKw, power = tesla?.fields?.charger_power, plug = tesla?.fields?.plugged_in;
+  const evidenceStart = connectionEvidenceStart(connectedAt, lastDisconnectedAt);
+  if (!time(connectedAt) || connectedAt > now || tesla?.healthy !== true || tesla.pluggedIn !== true
+    || tesla.atHome !== true || tesla.charging !== true || physical?.charging?.value !== true
+    || physicalPower?.available !== true || !(physicalPower.value > .5)
+    || !Number.isFinite(tesla.actualPowerKw) || Math.abs(physicalPower.value - tesla.actualPowerKw) > .75
+    || power?.retained !== false || !time(power.receivedAt) || power.receivedAt < evidenceStart || power.receivedAt > now) return false;
+  const starts = (Array.isArray(chargingAt) ? chargingAt : [chargingAt])
+    .filter(at => time(at) && at >= evidenceStart && at <= now && now - at < 15 * MINUTE);
+  const physicalAt = physicalPower.measuredAt;
+  const freshPower = now - power.receivedAt <= 30_000;
+  const sameRamp = time(physicalAt) && physicalAt <= now && freshPower && Math.abs(physicalAt - power.receivedAt) <= 10_000
+    && starts.some(at => Math.abs(at - power.receivedAt) <= 15_000);
+  const samePlug = plug?.retained === false && time(plug.receivedAt) && plug.receivedAt >= evidenceStart
+    && plug.receivedAt <= now && Math.abs(plug.receivedAt - connectedAt) <= 30_000;
+  if (freshPower && (sameRamp || samePlug)) return true;
+  const liveStart = ['charging_state', 'state'].map(key => tesla.fields?.[key])
+    .filter(field => field?.retained === false && ['Charging', 'charging'].includes(field.value)
+      && time(field.receivedAt) && field.receivedAt >= evidenceStart && field.receivedAt <= now
+      && now - field.receivedAt < 15 * MINUTE);
+  return time(physicalAt) && physicalAt <= now && now - physicalAt <= 2 * MINUTE
+    && liveStart.some(start => power.receivedAt >= start.receivedAt - 30_000
+      && starts.some(at => Math.abs(at - start.receivedAt) <= 30_000));
+}
+
 /** Independent vehicle facts keep their source clocks and original MQTT delivery
  * provenance. Repeating a retained sample live cannot create a connection event. */
 export function acceptVehicleReading(previous, payload, { now = Date.now(), association = 'vehicle-mqtt', retained = false, provider } = {}) {

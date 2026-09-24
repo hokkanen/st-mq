@@ -236,6 +236,18 @@ test('delivered energy raises estimated charge while retaining the original vehi
   assert.equal(result.sources, 'Estimated from vehicle charge + delivered energy');
 });
 
+test('vehicle-feed outage shows the retained connection estimate instead of the saved starting-charge default', () => {
+  const item = active(), measuredAt = now - 3600_000;
+  const result = view({ ...item, values: { ...item.values, soc: reading(90, 'manual-fallback') },
+    progress: { deliveredGridKwh: 0, remainingGridKwh: 30, estimatedSoc: 40, hasEnergyEstimate: false,
+      retainedVehicleReference: true, referenceSoc: { value: 40, source: 'bmw-cardata', measuredAt } } });
+  assert.equal(result.soc, '≈40 %');
+  assert.equal(result.socSource, 'Estimated from last known vehicle charge');
+  assert.equal(Object.fromEntries(result.rows)['Last reported charge'], '40 % · BMW CarData · measured 15 Sept 2026, 20:00');
+  assert.equal(Object.fromEntries(result.rows)['Starting charge (manual)'], undefined);
+  assert.ok(result.notes.some(note => /Vehicle readings are unavailable.*Edit Starting charge/.test(note)));
+});
+
 test('last reported charge preserves the source and original time beside the current estimate', () => {
   const item = active(), measuredAt = now - 3600_000;
   for (const [id, label, source] of [['bmw', 'BMW', 'bmw-cardata'], ['tesla', 'Tesla', 'teslamate']]) {

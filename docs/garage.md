@@ -111,6 +111,18 @@ does not establish air exchange: wind, open duration and mixing are missing.
 There is no fitted door coefficient or invented heat-loss calculation. Affected
 intervals are excluded from clean cooling/reference/validation evidence.
 
+When HA or its door bridge is unavailable, normal heating remains available and
+new savings pauses wait for live door confirmation. An existing pause can continue
+with fresh independent probes and sufficient reserve. Losing either required
+probe revokes OFF permission; a working command connection requests restoration.
+If the host or MQTT broker fails, the commissioned Pill must restore ON at its
+local permission expiry, at most three minutes after the supporting temperature
+measurement. Restart or promotion never resumes the former host's OFF permission.
+External room-temperature control similarly stops renewal and falls back to the
+pump's internal sensor after its 90-second source deadline. These software
+fallbacks require a working, powered Pill and serial path; native ON alone is
+not proof of useful heat or physical frost protection.
+
 Protection retains `garage-thermal-reserve-v1`: each location has its own
 persisted water-filled copper-pipe reference, initially 21 mm outside diameter,
 1 mm assumed wall, 20 W/m²·K heat transfer and a fixed factor of two that speeds

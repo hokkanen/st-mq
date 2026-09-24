@@ -59,3 +59,36 @@ test('BMW delayed native starts remain identifiable on either physical EVSE hour
   assert.equal(f.view(id).request.sessionId,`${f.view(id).association}:${NOW}`);
  }
 });
+test('Tesla charging edges identify after normal ramp delay and unchanged power on either EVSE',t=>{
+  for(const id of ['charger1','charger2']) {
+    const f=fixture(t);
+    for(const [key,p]of Object.entries(f.physical))Object.assign(p,{connected:key===id,session:key===id?NOW:null});
+    f.tesla.fields.plugged_in.retained=true;
+    const start=NOW+60000;
+    f.setNow(start);Object.assign(f.physical[id],{charging:true,power:1,at:start});
+    f.view(id);
+    Object.assign(f.tesla,{charging:true,actualPowerKw:4.14});
+    f.tesla.fields.charging_state={value:'Charging',receivedAt:start+11000,retained:false};
+    f.tesla.fields.charger_power={value:4.14,receivedAt:start+34000,retained:false};
+    const observed=start+7*60000;
+    f.setNow(observed);Object.assign(f.physical[id],{power:4.14,at:observed});
+    const view=f.view(id);
+    assert.equal(view.vehicle.id,'tesla');
+    assert.equal(view.values.soc.value,40);
+  }
+});
+test('delayed Tesla matching rejects retained starts, stale EVSE power, unhealthy feeds and earlier connections',t=>{
+  for(const reason of ['retained-start','retained-power','stale-evse','unhealthy','older-connection','unmatched-start']) {
+    const f=fixture(t),start=NOW+60000;
+    f.tesla.fields.plugged_in.retained=true;
+    f.setNow(start);Object.assign(f.physical.charger1,{charging:true,power:1,at:start});f.view('charger1');
+    Object.assign(f.tesla,{charging:true,actualPowerKw:4.14});
+    f.tesla.fields.charging_state={value:'Charging',receivedAt:start+11000,retained:reason==='retained-start'};
+    f.tesla.fields.charger_power={value:4.14,receivedAt:start+34000,retained:reason==='retained-power'};
+    const now=start+7*60000;f.setNow(now);Object.assign(f.physical.charger1,{power:4.14,at:reason==='stale-evse'?start:now});
+    if(reason==='unhealthy')f.tesla.healthy=false;
+    if(reason==='older-connection')Object.assign(f.physical.charger1,{session:now,lastDisconnectedAt:now-1000});
+    if(reason==='unmatched-start')f.tesla.fields.charging_state.receivedAt=start+3*60000;
+    assert.equal(f.view('charger1').vehicle.id,null,reason);
+  }
+});

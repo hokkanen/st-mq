@@ -6,6 +6,13 @@ point. The automation supplies telemetry and never operates a vehicle or charger
 TeslaMate keeps its native vehicle topics; neither source is named after Charger 1
 or Charger 2.
 
+This bridge does not currently export the vehicle's charging profile or charging
+windows. BMW's [CarData catalogue](https://www.bmwgroup.com/content/dam/grpw/websites/bmwgroup_com/innovation/Innovation_Mobilitaet/CarData/3PP-CarData--Telematics_Data_Catalogue-en.pdf)
+documents profile/window data, but availability depends on the vehicle and the
+applicable catalogue. A selected-window flag alone gives no executable start/end
+interval. ST-MQ must not infer unrestricted BMW charging from this feed or treat
+predicted completion as a schedule. See [vehicle schedule limits](charging.md#schedules-inside-the-vehicle).
+
 Under **Data & settings → MQTT**, **BMW** has the subtitle **Vehicle · BMW CarData**.
 The configured identity remains visible before the first message. Broker and
 subscription health, live/retained reception and topics are shown separately from

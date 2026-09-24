@@ -49,6 +49,67 @@ test('new measured SoC rebases at its original clock; retained unchanged receipt
   assert.ok(updated.estimatedSoc > 55);
 });
 
+test('vehicle feed loss preserves the identified session anchor and credited energy across restart', () => {
+  const vehicle = { state: 'identified', id: 'bmw', sessionId: 'physical-connection' };
+  const current = charger({ soc: value(40, { source: 'bmw-cardata', measuredAt: now }) });
+  current.settings = { manualSoc: 90 }; current.telemetry = { vehicle };
+  const initial = updateChargingProgress(null, current, now);
+  const charged = updateChargingProgress(initial.state, current, now + HOUR, energy(10));
+  const offline = { ...current, values: { ...current.values, soc: value(90, { source: 'manual-fallback' }) } };
+  const retained = updateChargingProgress(restoreChargingProgress(charged.state), offline, now + 2 * HOUR);
+  assert.equal(retained.retainedVehicleReference, true);
+  assert.equal(retained.estimatedSoc, charged.estimatedSoc);
+  assert.equal(retained.remainingGridKwh, charged.remainingGridKwh);
+  assert.equal(retained.deliveredGridKwh, 10);
+  assert.equal(retained.estimatedSocSource, 'vehicle');
+  assert.deepEqual(retained.referenceSoc, { value: 40, source: 'bmw-cardata', measuredAt: now, receivedAt: null });
+  const restoredFeed = updateChargingProgress(retained.state, current, now + 2 * HOUR);
+  assert.equal(restoredFeed.deliveredGridKwh, 10);
+  assert.equal(restoredFeed.retainedVehicleReference, false);
+  const changedDefault = { ...current, settings: { manualSoc: 20 } };
+  const healthyEdit = updateChargingProgress(restoredFeed.state, changedDefault, now + 2 * HOUR);
+  const nextOutage = updateChargingProgress(healthyEdit.state, { ...changedDefault,
+    values: { ...changedDefault.values, soc: value(20, { source: 'manual-fallback' }) } }, now + 3 * HOUR);
+  assert.equal(nextOutage.estimatedSoc, charged.estimatedSoc, 'Editing a default while live vehicle data applies cannot later discard its latest anchor');
+});
+
+test('explicit starting-charge edits and changed vehicle connections replace an unavailable vehicle anchor', () => {
+  const current = charger({ soc: value(40, { source: 'teslamate', receivedAt: now }) });
+  current.settings = { manualSoc: 90 };
+  current.telemetry = { vehicle: { state: 'identified', id: 'tesla', sessionId: 'original-connection' } };
+  const initial = updateChargingProgress(null, current, now);
+  const charged = updateChargingProgress(initial.state, current, now + HOUR, energy(10));
+  const offline = { ...current, values: { ...current.values, soc: value(90, { source: 'manual-fallback' }) } };
+  const variants = [
+    { ...offline, settings: { manualSoc: 30 }, values: { ...offline.values, soc: value(30, { source: 'manual-fallback' }) } },
+    { ...offline, values: { ...offline.values, soc: value(30, { source: 'session-anchor', measuredAt: now + HOUR }) } },
+    { ...offline, telemetry: { vehicle: { ...current.telemetry.vehicle, sessionId: 'next-connection' } } },
+    { ...offline, telemetry: { vehicle: { state: 'unidentified' } } },
+  ];
+  for (const variant of variants) {
+    const changed = updateChargingProgress(charged.state, variant, now + HOUR);
+    assert.equal(changed.retainedVehicleReference, false);
+    assert.equal(changed.deliveredGridKwh, 0);
+    assert.equal(changed.estimatedSoc, variant.values.soc.value);
+    assert.equal(changed.estimatedSocSource, 'starting-charge');
+  }
+});
+
+test('a healthy unchanged observation supplies current vehicle context without rebasing earned energy', () => {
+  const current = charger({ soc: value(40, { source: 'bmw-cardata', measuredAt: now }) });
+  current.settings = { manualSoc: 90 };
+  const initial = updateChargingProgress(null, current, now);
+  const charged = updateChargingProgress(initial.state, current, now + HOUR, energy(10));
+  current.telemetry.vehicle = { state: 'identified', id: 'bmw', sessionId: 'current-connection' };
+  const identified = updateChargingProgress(charged.state, current, now + HOUR);
+  assert.equal(identified.anchorAt, charged.anchorAt);
+  assert.equal(identified.deliveredGridKwh, 10);
+  const offline = updateChargingProgress(identified.state, { ...current,
+    values: { ...current.values, soc: value(90, { source: 'manual-fallback' }) } }, now + 2 * HOUR);
+  assert.equal(offline.retainedVehicleReference, true);
+  assert.equal(offline.estimatedSoc, charged.estimatedSoc);
+});
+
 test('changing target or capacity preserves earned energy and cannot change the fixed loss; natural final charging can exceed target', () => {
   const initial = updateChargingProgress(null, charger(), now);
   const next = updateChargingProgress(initial.state, charger(), now + HOUR, energy(40));

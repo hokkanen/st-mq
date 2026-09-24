@@ -361,12 +361,14 @@ function vehicleConnection({ reception = {}, enabled = true, label, source, deta
       : connected === false ? { label: 'Disconnected', state: 'attention' }
         : failed ? { label: 'Subscription failed', state: 'attention' }
           : invalidReason ? { label: 'Invalid vehicle report', state: 'attention' }
+            : reception.available === false && subscribed ? { label: reception.reason === 'vehicle-feed-stale' ? 'Vehicle feed stale' : 'Awaiting live vehicle report', state: 'attention' }
             : connected === true && (subscribed || Number.isFinite(lastMessageAt)) ? { label: 'Connected', state: 'available' }
               : { label: 'Awaiting subscription', state: 'pending' },
     recent: Number.isFinite(lastMessageAt) ? `Received ${clock.format(lastMessageAt)}`
       : subscribed ? 'Waiting for the first vehicle report' : 'No vehicle report yet',
     connectionDetail: `Vehicle data for charging. Used automatically when this vehicle is identified at a charger. ${detail}${usedBy ? ` Used by: ${usedBy}.` : ''}`,
     packetDetail: [invalidReason ? 'The latest vehicle report could not be used; previous accepted readings keep their original timestamps.' : '',
+      reception.reason === 'vehicle-feed-stale' ? 'The MQTT broker is connected, but the vehicle publisher has stopped reporting. Automatic vehicle inputs await a valid live report.' : '',
       Number.isFinite(lastLiveAt) ? `Latest live report: ${clock.format(lastLiveAt)}.`
         : Number.isFinite(lastRetainedAt) ? `Saved broker reading received ${clock.format(lastRetainedAt)}; no live vehicle report received yet.`
           : 'Connection status follows the MQTT subscription; vehicle charge readings keep their own timestamps.'].filter(Boolean).join(' '),

@@ -26,3 +26,29 @@ test('old state and old assignment settings cannot authorize a new vehicle assoc
   assert.throws(()=>createChargingTeslaCapture({initialState:{signature:'old'}}),/Unsupported/);
   assert.throws(()=>createChargingTeslaCapture({settings:{chargerAssignment:'easee'}}),/Unsupported/);
 });
+test('unchanged retained Tesla settings follow live logger health without renewing their field clocks',()=>{
+  let now=NOW;
+  const capture=createChargingTeslaCapture({clock:()=>now});capture.setConnected(true);
+  const start=NOW+2*3600000;
+  for(const [key,value] of Object.entries({charge_current_request:'16',charge_current_request_max:'6',
+    scheduled_charging_start_time:new Date(start).toISOString()}))capture.receive(topic(key),value,{retain:true});
+  now+=20*60000;capture.receive(topic('healthy'),'true');
+  let telemetry=teslamateVehicleTelemetry(capture.snapshot(),{now});
+  assert.equal(telemetry.vehicleCurrentA.value,6);
+  assert.equal(telemetry.vehicleCurrentA.receivedAt,NOW);
+  assert.equal(telemetry.vehicleCurrentA.retained,true);
+  assert.equal(telemetry.vehicleNotBefore.value,start);
+  assert.equal(telemetry.vehicleNotBefore.receivedAt,NOW);
+  assert.equal(teslamateVehicleTelemetry(capture.snapshot(),{now,charging:true}).vehicleNotBefore.available,false,
+    'Observed charging takes precedence over a reported future timer');
+  capture.setConnected(false);capture.setConnected(true);
+  telemetry=teslamateVehicleTelemetry(capture.snapshot(),{now});
+  assert.equal(telemetry.vehicleCurrentA.available,false,'Reconnect needs a new live healthy pulse');
+  assert.equal(telemetry.vehicleNotBefore.available,false);
+  capture.receive(topic('healthy'),'true');
+  assert.equal(teslamateVehicleTelemetry(capture.snapshot(),{now}).vehicleNotBefore.value,start);
+  capture.receive(topic('scheduled_charging_start_time'),'');
+  assert.equal(teslamateVehicleTelemetry(capture.snapshot(),{now}).vehicleNotBefore.available,false);
+  capture.receive(topic('healthy'),'false');
+  assert.equal(teslamateVehicleTelemetry(capture.snapshot(),{now}).vehicleCurrentA.available,false);
+});

@@ -141,6 +141,11 @@ test('BMW vehicle MQTT displays source, real reception and feed problems indepen
   assert.equal(equipmentConnectionSummary(row(connected)).recent, 'Waiting for the first vehicle report');
   assert.equal(equipmentConnectionSummary(row({ ...connected, brokerConnected: false })).label, 'Disconnected');
   assert.equal(equipmentConnectionSummary(row({ ...connected, subscriptionStatus: 'failed', subscribed: false })).label, 'Subscription failed');
+  const stale = row({ ...connected, available: false, reason: 'vehicle-feed-stale', lastLiveAt: NOW - 660_000 });
+  assert.equal(equipmentConnectionSummary(stale).label, 'Vehicle feed stale');
+  assert.equal(equipmentConnectionSummary(stale).state, 'attention');
+  assert.match(stale.packetDetail, /broker is connected.*publisher has stopped reporting/);
+  assert.equal(equipmentConnectionSummary(row({ ...connected, available: false, reason: 'awaiting-report' })).label, 'Awaiting live vehicle report');
   const invalid = row({ ...connected, lastLiveAt: NOW, invalidReason: 'invalid-soc' });
   assert.equal(equipmentConnectionSummary(invalid).state, 'attention');
   assert.equal(equipmentConnectionSummary(invalid).label, 'Invalid vehicle report');

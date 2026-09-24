@@ -98,6 +98,11 @@ from a foreign owner, leases while disconnected, or claims in monitoring mode.
 A restarted host waits for the device's owner expiry/reconciliation; an old OFF
 lease is only an unresolved restoration obligation. The device enforces these
 same rules independently.
+A replacement host also remembers the expiry of a live device lease missing
+from its saved state. Removing that lease from later device reports does not
+erase the obligation. Fresh native ON measured after its expiry, with no device
+restoration pending, permits reconciliation and a new claim once ownership is
+free. Retained reports and an earlier ON measurement cannot clear it.
 These are tests of the host consumer; the injected receiver does not implement
 CN105 decoding or prove that a real device enforces a lease.
 

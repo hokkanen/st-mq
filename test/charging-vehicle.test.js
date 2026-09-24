@@ -170,7 +170,10 @@ test('visitor keeps manual defaults until positive BMW correlation, then each av
   f.setCharging(false); f.setNow(START + 2 * MINUTE); runtime.tick();
   assert.equal(view(runtime).vehicle.id, 'bmw');
   const restarted = f.create(); t.after(() => restarted.close());
-  assert.equal(view(restarted).vehicle.id, 'bmw'); assert.equal(view(restarted).values.soc.value, 60);
+  assert.equal(view(restarted).vehicle.id, 'bmw'); assert.equal(view(restarted).values.soc.value, 25);
+  assert.equal(view(restarted).progress.estimatedSoc, 60, 'The last same-session vehicle anchor survives while awaiting a live bridge report');
+  publish(restarted, facts(START, { usableCapacityKwh: 72 }));
+  assert.equal(view(restarted).values.soc.value, 60);
   f.setConnection(false); restarted.tick(); assert.equal(view(restarted).vehicle.state, 'disconnected');
   f.setNow(START + 3 * MINUTE); f.setConnection(true); restarted.tick();
   assert.equal(view(restarted).vehicle.state, 'unidentified'); assert.equal(view(restarted).values.soc.value, 25);
@@ -182,6 +185,56 @@ test('identity-only BMW can match without imposing absent battery fields', async
   publish(runtime, packet); pauseBmw(runtime, f);
   assert.equal(view(runtime).vehicle.id, 'bmw'); assert.equal(view(runtime).values.soc.source, 'manual-fallback');
   assert.equal(view(runtime).values.minimumSoc.source, 'manual-fallback');
+});
+
+test('BMW bridge silence expires automatic fields while preserving same-session progress and manual control inputs', async t => {
+  const f = fixture(), runtime = f.create(); t.after(() => runtime.close());
+  await runtime.setChargerSettings('charger1', { manualSoc: 90, minimumSoc: 85 });
+  publish(runtime, facts(START, { usableCapacityKwh: 74, chargeLimitSoc: 85 })); pauseBmw(runtime, f);
+  runtime.readEnergy = () => ({ gridKwh: 4, coveredMs: MINUTE }); runtime.tick();
+  const before = view(runtime);
+  assert.equal(before.vehicle.id, 'bmw'); assert.ok(before.progress.estimatedSoc < 85);
+  const original = structuredClone(runtime.vehicleFeeds.bmw.reading);
+  f.setNow(START + 12 * MINUTE); runtime.tick();
+  const silent = view(runtime);
+  assert.equal(silent.vehicleMqtt.brokerConnected, true);
+  assert.equal(silent.vehicleMqtt.available, false); assert.equal(silent.vehicleMqtt.reason, 'vehicle-feed-stale');
+  assert.equal(silent.automatic.soc.available, false); assert.equal(silent.automatic.minimumSoc.available, false);
+  assert.equal(silent.values.soc.value, 90, 'The saved fallback remains a separate editable value');
+  assert.equal(silent.progress.estimatedSoc, before.progress.estimatedSoc);
+  assert.equal(silent.progress.retainedVehicleReference, true);
+  assert.equal(silent.requiredGridKwh, before.requiredGridKwh, 'Feed loss cannot turn an incomplete battery into a completed target');
+  assert.deepEqual(runtime.vehicleFeeds.bmw.reading, original, 'Expiry does not alter the original report or clocks');
+  runtime.readEnergy = () => null;
+  const request = silent.request;
+  await runtime.setChargerSettings('charger1', { scope: 'session', association: silent.association,
+    sessionId: request.sessionId, revision: request.revision,
+    changes: { manualSoc: 35, minimumSoc: 80, capacityKwh: 70, readyBy: '07:00' } });
+  const manual = view(runtime);
+  assert.equal(manual.progress.estimatedSoc, 35); assert.equal(manual.progress.retainedVehicleReference, false);
+  assert.equal(manual.values.minimumSoc.value, 80); assert.equal(manual.values.capacityKwh.value, 70);
+  assert.equal(manual.settings.readyBy, '07:00'); assert.ok(manual.requiredGridKwh > 0);
+});
+
+test('only valid live BMW heartbeats restore source availability without refreshing battery measurement clocks', async t => {
+  const f = fixture(), runtime = f.create(); t.after(() => runtime.close());
+  const report = facts(START, { chargeLimitSoc: 85 });
+  publish(runtime, report); pauseBmw(runtime, f);
+  const original = structuredClone(runtime.vehicleFeeds.bmw.reading);
+  f.setNow(START + 12 * MINUTE);
+  for (const packet of [{ retain: true }, { dup: true }]) {
+    publish(runtime, report, packet);
+    assert.equal(view(runtime).vehicleMqtt.available, false);
+  }
+  runtime.receiveSoc(runtime.configuration.vehicles.bmw.mqttTopic, '{invalid');
+  assert.equal(view(runtime).vehicleMqtt.available, false);
+  publish(runtime, report);
+  assert.equal(view(runtime).vehicleMqtt.available, true); assert.equal(view(runtime).values.soc.source, 'bmw-cardata');
+  assert.deepEqual(runtime.vehicleFeeds.bmw.reading, original);
+  runtime.setMqttStatus({ connected: false, subscribed: false, reason: 'mqtt-disconnected' });
+  runtime.setMqttStatus({ connected: true, subscribed: true, reason: null });
+  assert.equal(view(runtime).vehicleMqtt.available, false, 'A broker reconnect awaits new bridge traffic');
+  publish(runtime, report); assert.equal(view(runtime).vehicleMqtt.available, true);
 });
 
 test('negative Tesla verdict is not BMW evidence; positive Tesla moves one session and stale verdict cannot match a new connection', async t => {
@@ -446,6 +499,8 @@ test('BMW target conflicts use the latest lower target without altering raw tele
   f.setNow(START + 6 * MINUTE); publishTarget(runtime, 100, START + 6 * MINUTE);
   assert.equal(view(runtime).values.minimumSoc.value, 90);
   const restarted = f.create(); t.after(() => restarted.close());
+  assert.equal(view(restarted).values.minimumSoc.value, 80, 'Automatic targets wait for a live bridge heartbeat after restart');
+  publishTarget(restarted, 100, START + 6 * MINUTE);
   assert.equal(view(restarted).values.minimumSoc.value, 90);
   assert.equal(view(restarted).targetSelection.raw.value, 100);
   f.setConnection(false); restarted.tick();
@@ -472,6 +527,7 @@ test('a full-charge planning choice is explicit, durable, and guarded by the dis
   const restarted = f.create(); t.after(() => restarted.close());
   assert.equal(view(restarted).targetSelection.mode, 'full');
   assert.equal(view(restarted).values.minimumSoc.value, 100);
+  publish(restarted, facts(START, { chargeLimitSoc: 85 }));
   await restarted.setTarget('charger1', { connectedAt: START, mode: 'automatic' });
   assert.equal(view(restarted).values.minimumSoc.value, 85);
   assert.equal(view(restarted).values.minimumSoc.source, 'bmw-cardata');

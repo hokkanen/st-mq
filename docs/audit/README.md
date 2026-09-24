@@ -17,6 +17,10 @@ The later [automatic OCPP setup and native-control record](OCPP-SETUP.md)
 supersedes the earlier Easee coexistence assumption and documents its bounded
 live evidence, exclusive control handover and remaining installation limits.
 
+The [connection-loss and takeover review](RESILIENCE-2026-09.md) records subsequent
+charging timer, vehicle-feed, identification and garage recovery fixes, together
+with the remaining provider and device-loss limits.
+
 | Scope | Implementation and evidence |
 | --- | --- |
 | A01 charging | [Physical Charger 2, identity, energy, scheduling and controls](A01.md); [acceptance tracker](A01-tracker.json) |

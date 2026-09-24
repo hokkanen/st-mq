@@ -129,9 +129,11 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
   const endKind = charger.scheduledEndKind ?? charger.telemetry?.scheduledEndKind ?? values.scheduledEndAt?.kind;
   const nativeStops = ['enforced', 'scheduled-stop'].includes(endKind);
   const progress = charger.progress ?? {};
+  const retainedVehicleReference = progress.retainedVehicleReference === true && finite(progress.referenceSoc?.value);
+  const referenceSoc = retainedVehicleReference ? { ...progress.referenceSoc, available: true } : soc;
   const creditedGridKwh = progress.deliveredGridKwh ?? progress.creditedGridKwh;
   const hasProgress = finite(creditedGridKwh) && creditedGridKwh > 0;
-  const estimatedSoc = finite(progress.estimatedSoc) && progress.hasEnergyEstimate === true;
+  const estimatedSoc = finite(progress.estimatedSoc) && (progress.hasEnergyEstimate === true || retainedVehicleReference);
   const requiredGridKwh = charger.progress?.remainingGridKwh ?? charger.requiredGridKwh ?? plan.requiredGridKwh ?? forecast.requiredGridKwh ?? forecast.gridEnergyKwh;
   const targetReached = finite(requiredGridKwh) && requiredGridKwh <= 0;
   const minimum = values.minimumSoc?.value, socKnown = finite(soc.value) && (soc.available || soc.source === 'manual-fallback');
@@ -204,8 +206,8 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
     : risk ? `${number(minimum, '%')} by ready-by is at risk`
       : currentForecast.feasible === true && currentFinish && !uncertain && !revisionPending
         ? 'Expected on time' : 'Readiness being checked';
-  const readingTime = showMetrics && automatic(soc) ? validTime(soc.measuredAt) ? `Charge measured ${chargingReadingTime(soc.measuredAt, timezone)}`
-    : validTime(soc.receivedAt) ? `Charge received ${chargingReadingTime(soc.receivedAt, timezone)} · measurement time unknown` : 'Charge measurement time unknown' : '';
+  const readingTime = showMetrics && automatic(referenceSoc) ? validTime(referenceSoc.measuredAt) ? `Charge measured ${chargingReadingTime(referenceSoc.measuredAt, timezone)}`
+    : validTime(referenceSoc.receivedAt) ? `Charge received ${chargingReadingTime(referenceSoc.receivedAt, timezone)} · measurement time unknown` : 'Charge measurement time unknown' : '';
   const rows = [];
   if (activeManual && validTime(manual.detectedAt)) rows.push(['Manual change noticed', chargingReadingTime(manual.detectedAt, timezone)]);
   if (charging && finite(values.actualCurrentA?.value)) rows.push(['Drawing now', number(values.actualCurrentA.value, 'A per phase')]);
@@ -224,8 +226,8 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
     rows.push(['Other scheduled charging', `${load.label ?? human(load.chargerId)} · ${Number(load.startAt) > now ? `starts ${time(load.startAt)} · ` : ''}${number(load.powerKw, 'kW')} until about ${time(load.endAt)}`]);
   }
   if (showMetrics && hasProgress) rows.push(['Delivered since starting charge', `${number(creditedGridKwh, 'kWh')} from the grid`]);
-  if (showMetrics && estimatedSoc && automatic(soc)) rows.push(['Last reported charge',
-    `${number(soc.value, '%')} · ${sourceLabel(soc, charger.vehicle)} · ${readingTime.replace(/^Charge /, '')}`,
+  if (showMetrics && estimatedSoc && automatic(referenceSoc)) rows.push(['Last reported charge',
+    `${number(referenceSoc.value, '%')} · ${sourceLabel(referenceSoc, charger.vehicle)} · ${readingTime.replace(/^Charge /, '')}`,
     'This is the last charge reported by the vehicle. The main charge estimate adds measured energy delivered after this reference, allowing for charging losses. The reference can be newer than plugging in; it is not necessarily the session’s starting charge.']);
   else if (showMetrics && estimatedSoc && finite(soc.value)) rows.push(['Starting charge (manual)', number(soc.value, '%'),
     'This saved starting charge is the reference for the main estimate. Measured energy delivered after this reference advances the estimate, allowing for charging losses. Update the starting value for another vehicle or after driving.']);
@@ -258,6 +260,7 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
   if (showMetrics && charger.mqtt?.reason && !['awaiting-mqtt', 'awaiting-subscription', 'awaiting-report', 'idle', 'asleep'].includes(charger.mqtt.reason))
     notes.push(`Vehicle feed: ${human(charger.mqtt.reason)}. The last valid reading remains visible with its original timestamp.`);
   if (showMetrics && progress.basis?.energyCoverageIncomplete) notes.push('Some charging energy was not measured. The charge estimate may be low until a new vehicle reading arrives.');
+  if (showMetrics && retainedVehicleReference) notes.push('Vehicle readings are unavailable. The estimate keeps the last vehicle charge and measured energy for this connection. Edit Starting charge to replace it.');
   const controlDetail = !supported ? 'This integration supports monitoring only.'
     : activeManual ? 'Resume automatic charging to end manual priority early. A later manual change takes priority again.'
       : provisional ? 'Charging is allowed for now. The forecast is being updated; economical periods can still be scheduled when it improves.'
@@ -306,7 +309,8 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
     })[assumptions.supply] ?? 'The night forecast combines the available supply with expected household use; the last reported allowance describes current conditions.';
     explanations.push(['Current allocation', `${provider === 'easee' ? 'Equalizer' : 'The external load balancer'} controls the current and protects the property supply. The reported allowance, charger limit and actual draw are separate: a limit does not promise that current is available now. ${supported ? `${basis} ` : ''}The charging limit caps the forecast. Automatic charging does not change the external limits.`]);
   } else explanations.push(['Charging current', `Selected current is the vehicle or charger’s requested current, capped by its reported maximum. Actual draw can be lower. Power is the measured charging rate; the target forecast uses available current and voltage.${charger.capabilities?.currentControl === true ? '' : ' This page does not change charging current.'}`]);
-  const socSource = estimatedSoc ? automatic(soc) ? 'Estimated from vehicle charge + delivered energy' : 'Estimated from starting charge + delivered energy'
+  const socSource = retainedVehicleReference ? `Estimated from last known vehicle charge${hasProgress ? ' + delivered energy' : ''}`
+    : estimatedSoc ? automatic(soc) ? 'Estimated from vehicle charge + delivered energy' : 'Estimated from starting charge + delivered energy'
     : automatic(soc) ? sourceLabel(soc, charger.vehicle) : 'Starting charge';
   const targetSource = values.minimumSoc?.source === 'session-target' ? 'Planning target for this connection'
     : values.minimumSoc?.source === 'bmw-target-filter' ? 'BMW target held after conflicting reports'

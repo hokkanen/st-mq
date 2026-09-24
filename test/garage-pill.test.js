@@ -114,6 +114,43 @@ test('retained, expired, foreign-owned, disconnected and inactive state cannot c
   }
 });
 
+test('replacement host remembers a foreign pause expiry until fresh restored ON allows a new claim', async () => {
+  const f = fixture(), expiry = BASE + 180_000;
+  f.state({ authority: { ownerSession: 'invented-previous-host', controlAllowed: true },
+    native: { power: { value: 'off', measuredAt: BASE } }, restorationPending: true,
+    lease: { episodeId: 'invented-previous-pause', expiresAt: expiry, endpointAt: BASE + 900_000 } });
+  assert.equal(f.adapter.status().restorePending, true);
+  assert.equal(f.adapter.status().episode, null, 'Observing another host does not adopt its OFF intention');
+  assert.equal(f.adapter.status().outstandingPermissionExpiresAt, expiry);
+  await f.adapter.safetyTick({ valid: false });
+  assert.equal(f.published.length, 0, 'The replacement must not command the previous owner');
+
+  f.at(expiry - 1000);
+  f.state({ authority: { ownerSession: null, controlAllowed: false } });
+  assert.equal(f.adapter.status().restorePending, true, 'Early ON does not prove queued OFF is cancelled');
+  assert.equal(f.adapter.status().outstandingPermissionExpiresAt, expiry);
+  const saved = f.adapter.snapshot();
+  assert.equal(saved.outstandingPermissionExpiresAt, expiry);
+  assert.equal(f.published.length, 0);
+
+  f.adapter.setConnected(false); f.adapter.setConnected(true); f.at(expiry + 1000);
+  f.state({ authority: { ownerSession: null, controlAllowed: false },
+    native: { power: { value: 'on', measuredAt: expiry - 1000 } } });
+  assert.equal(f.adapter.status().restorePending, true, 'The ON measurement must follow the permission expiry');
+  f.state({ authority: { ownerSession: null, controlAllowed: false } }, { retain: true });
+  assert.equal(f.adapter.status().restorePending, true, 'Retained state cannot establish restoration');
+  f.state({ authority: { ownerSession: null, controlAllowed: false } });
+  assert.equal(f.adapter.status().restorePending, false);
+  assert.equal(f.published.length, 1);
+  assert.equal(f.published[0].command.action, 'claim');
+
+  const restarted = fixture({ adapter: { persisted: saved } });
+  restarted.at(expiry + 2000);
+  restarted.state({ authority: { ownerSession: null, controlAllowed: false } });
+  assert.equal(restarted.adapter.status().restorePending, false, 'The observed obligation survives another host restart');
+  assert.equal(restarted.published[0].command.action, 'claim');
+});
+
 test('fixture payloads cannot authorize the production route and production payloads cannot authorize fixtures', async () => {
   const f = fixture();
   f.state({ schema: TEMPLATE.schema });

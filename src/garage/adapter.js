@@ -606,7 +606,15 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
         && state.externalTemperature?.phase === 'internal' && !state.externalTemperature.restorationPending
         && state.observedAt > (externalCommand.acknowledgedAt ?? externalCommand.requestedAt)) externalNeedsClear = false;
       processResult(value.result, now);
-      if (state.restorationPending) { restorePending = true; obligationAt ??= now; }
+      if (state.restorationPending || state.lease) {
+        restorePending = true; obligationAt ??= now;
+        // A replacement host can discover an OFF lease absent from its own
+        // saved episode. Keep that device-observed bound after the device drops
+        // the lease, so later fresh ON can prove expiry and permit a new claim.
+        // This records a restoration obligation, never the foreign OFF intent.
+        if (state.lease && state.lease.episodeId !== episode?.id)
+          persistedExpiry = Math.max(persistedExpiry ?? 0, state.lease.expiresAt);
+      }
       if (episode && !episode.invalidated && state.lease?.episodeId === episode.id) {
         const request = [...commands].reverse().find(row => row.episodeId === episode.id && ['start', 'renew'].includes(row.action));
         // Even a rejected bound is relevant to the worst remaining local OFF

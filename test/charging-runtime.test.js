@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ChargingRuntime } from '../src/charging/runtime.js';
 import { chargingSettings } from '../src/charging/settings.js';
-import { normalizeScheduleState, scheduleFingerprint, delayedScheduleFor } from '../src/charging/easee.js';
+import { normalizeScheduleState, scheduleFingerprint, delayedScheduleFor, easeeChargerTelemetry } from '../src/charging/easee.js';
 
 const HOUR = 3_600_000, initialNow = Date.parse('2026-01-15T00:00:00Z');
 function fixture(saved = {}, charging = {}) {
@@ -374,7 +374,8 @@ test('vehicle MQTT distinguishes transport reception, retained context and inval
   f.setNow(initialNow + 120_000);
   runtime.receiveSoc(topic, '{malformed');
   mqtt = runtime.status().vehicleFeeds.find(feed => feed.id === 'bmw').reception;
-  assert.equal(mqtt.subscribed, true); assert.equal(mqtt.reason, null); assert.equal(mqtt.invalidReason, 'malformed-json');
+  assert.equal(mqtt.subscribed, true); assert.equal(mqtt.reason, 'awaiting-report'); assert.equal(mqtt.invalidReason, 'malformed-json');
+  assert.equal(mqtt.available, false, 'Retained and DUP packets do not establish a live bridge heartbeat');
   assert.equal(mqtt.lastLiveAt, f.clock()); assert.equal(mqtt.lastValidAt, initialNow + 60_000);
   runtime.receiveSoc(topic, reading);
   assert.equal(runtime.status().vehicleFeeds.find(feed => feed.id === 'bmw').reception.invalidReason, null, 'A valid duplicate recovers payload health');
@@ -489,6 +490,29 @@ test('OFF revokes automatic intent and relinquishes only the owned schedule even
   assert.equal(chargerView(runtime).control.handoverConfirmed, true);
   assert.equal(runtime.status().error, 'charging-planning-unavailable');
   assert.equal(adapter.calls.filter(call => call.kind === 'clear').length, 1);
+});
+
+test('forecast failure cannot block confirmed release times or independent charger readback', async t => {
+  const f = fixture({ 'charging:mqtt': { settings: preferences } }), runtime = f.create(), adapter = fakeAdapter(f.clock);
+  t.after(() => runtime.close());
+  await runtime.setAdapter('charger1', adapter); await runtime.reconcile();
+  runtime.tick({ prices }); await runtime.reconcile();
+  const confirmed = chargerView(runtime).control.owned;
+  assert.ok(confirmed?.startAt > initialNow);
+  const beforeReads = adapter.calls.filter(call => call.kind === 'read').length;
+  runtime.updatePlan = () => { throw new Error('forecast unavailable'); };
+  runtime.allocationContext = () => { throw new Error('second-charger forecast unavailable'); };
+  f.setNow(confirmed.startAt);
+  runtime.tick({ force: true });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.ok(adapter.calls.filter(call => call.kind === 'read').length > beforeReads, 'Periodic reconciliation continues after a planning failure');
+  assert.equal(chargerView(runtime).control.phase, 'released');
+  assert.equal(chargerView(runtime).control.errorCode, null, 'A forecast error is not an EVSE read failure');
+  assert.equal(runtime.status().error, 'charging-planning-unavailable');
+  adapter.setObservation({ pluggedIn: false, mode: 1 });
+  runtime.tick({ force: true }); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(chargerView(runtime).control.phase, 'disconnected');
+  assert.equal(chargerView(runtime).control.owned, null);
 });
 
 test('a released connected session retains its actual plan through new SoC, deadline edits and temporary zero power', async t => {
@@ -908,6 +932,41 @@ test('a fully observed zero-power period replans remaining energy once at the ga
   assert.equal(revised.requiredGridKwh, original.requiredGridKwh, 'The observed lack of delivery leaves the full requirement to schedule');
   await runtime.reconcile();
   assert.equal(chargerView(runtime).plan.id, revised.id, 'Repeated gap polls do not keep replacing the same plan');
+});
+
+test('vehicle timer changes during a pause revise the remaining confirmed periods without waiting for new prices or energy', async t => {
+  const f = fixture({ 'charging:mqtt': { settings: preferences } }), runtime = f.create(), adapter = fakeAdapter(f.clock);
+  t.after(() => runtime.close());
+  const timer = { value: null, available: false };
+  adapter.normalize = snapshot => ({ ...easeeChargerTelemetry(snapshot, { now: f.clock() }), vehicleNotBefore: { ...timer } });
+  await runtime.setAdapter('charger1', adapter); await runtime.reconcile();
+  runtime.tick({ prices: priceOutlook([1, 50, 2, 50]) }); await runtime.reconcile();
+  const original = structuredClone(chargerView(runtime).control.execution);
+  assert.equal(original.periods.length, 2);
+  const runningPlan = structuredClone(chargerView(runtime).plan);
+  Object.assign(timer, { value: initialNow + 2.5 * HOUR, available: true });
+  runtime.updatePlan();
+  assert.deepEqual(chargerView(runtime).plan, runningPlan, 'A changed vehicle timer does not rewrite an already active period');
+  Object.assign(timer, { value: null, available: false });
+  f.setNow(initialNow + HOUR); adapter.setObservation({ mode: 2 });
+  runtime.readEnergy = () => ({ gridKwh: 11.04, coveredMs: HOUR,
+    continuousSince: initialNow, lastMeasuredAt: initialNow + HOUR });
+  await runtime.reconcile(); await runtime.reconcile();
+  const paused = structuredClone(chargerView(runtime).plan);
+  assert.equal(paused.startAt, initialNow + 2 * HOUR);
+  assert.equal(chargerView(runtime).control.phase, 'paused');
+  Object.assign(timer, { value: initialNow + 2.5 * HOUR, available: true });
+  runtime.updatePlan();
+  const revised = chargerView(runtime).plan;
+  assert.notEqual(revised.id, paused.id);
+  assert.ok(revised.startAt >= timer.value, 'The new car timer must constrain the remaining start even though price and energy inputs did not change');
+  await runtime.reconcile();
+  assert.equal(chargerView(runtime).control.owned.startAt, revised.startAt);
+  const confirmed = chargerView(runtime).control.execution;
+  assert.deepEqual(confirmed.periods[0], original.periods[0], 'The completed period remains in execution history');
+  Object.assign(timer, { available: false });
+  runtime.updatePlan();
+  assert.equal(chargerView(runtime).plan.startAt, initialNow + 2 * HOUR, 'Removing the timer allows the cheaper earlier remaining start again');
 });
 
 test('the next wakeup includes an earlier proposed start while its native update is pending', async t => {

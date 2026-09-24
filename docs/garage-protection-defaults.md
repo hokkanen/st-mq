@@ -28,10 +28,12 @@ coefficient and safety factor are engineering assumptions, not values learned
 from the garage or an installed safety certificate.
 
 The old air-temperature hard limit, fixed degree-minute allowance, recovery
-temperature, recovery dwell and constant refill rate are removed. Opening a
-configured door does not directly block or revoke a pause. Door disturbances
-still exclude affected intervals from ordinary thermal fitting, baseline
-qualification and clean validation evidence.
+temperature, recovery dwell and constant refill rate are removed. A new pause
+requires known configured door states and outside temperature; an open door
+blocks a new pause below 2°C. Door openings or outages during an existing pause
+trigger ordinary temperature/reserve reassessment rather than unconditional
+cancellation. Door disturbances also exclude affected intervals from ordinary
+thermal fitting, baseline qualification and clean validation evidence.
 
 ## Continuous thermal calculation
 

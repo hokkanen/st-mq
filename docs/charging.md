@@ -30,6 +30,52 @@ The **Save defaults** action updates persistent preferences. Default-derived fie
 
 A manual SoC is a one-time anchor. A newer applicable vehicle reading supersedes it using the provider's source clock, or explicitly labeled receipt time when no measurement clock exists. A pinned capacity outranks the provider capacity. An explicit requested minimum remains distinct from the vehicle's actual ceiling; requesting 95% while the vehicle reports an 80% ceiling is constrained rather than silently rewritten. Vehicle current limits and native not-before times constrain either charging point.
 
+### Schedules inside the vehicle
+
+[TeslaMate MQTT](https://docs.teslamate.org/docs/integrations/mqtt/) exposes
+`scheduled_charging_start_time`. ST-MQ uses that next start when selecting the
+cheapest feasible charging periods. Unchanged settings keep their original
+receipt/provenance while live TeslaMate health establishes feed availability.
+This is not a complete weekly schedule: the standard MQTT feed does not expose
+all recurrence rules and end times. An absent start does not prove that every
+vehicle-side restriction is disabled.
+
+BMW CarData offers charging-profile/window information subject to vehicle
+capabilities, but the current [BMW bridge](bmw-cardata.md) forwards battery and
+identity facts only. It does **not** currently supply BMW charging windows to
+the planner. A window-selection flag without actual times, timezone and mode
+cannot safely identify available charging periods. BMW schedule-aware readiness
+therefore remains unsupported until the applicable profile is mapped; do not
+interpret the forecast as confirmation that a BMW timer allows it.
+
+If a known vehicle start is after ready-by, ST-MQ reports the shortfall and
+releases its economic hold so the vehicle can start when it allows. The other
+charger keeps its own plan. If published prices do not cover any eligible time,
+the provisional fallback also permits charging. ST-MQ cannot override a vehicle
+timer, target or user stop. The final period always remains an open release.
+
+### Missing vehicle feeds and takeover
+
+Charging does not require vehicle identification: editable starting charge,
+target, usable capacity and ready-by remain available. Within the same identified
+physical connection, feed loss preserves the last charge anchor plus recorded
+energy, labeled as last known vehicle charge. An explicit starting-charge edit
+replaces it. A new or ambiguous connection cannot borrow that estimate.
+
+The BMW publisher sends a live report every five minutes. Ten minutes without
+a valid live report withdraws its automatic values even if the broker remains
+connected; source measurement clocks do not advance with these reports. Retained
+replay alone does not restore live-feed availability. TeslaMate uses its separate
+live logger-health reports. Physical charger metering remains independent.
+
+After a master-host failure, the promoted computer needs its own working broker,
+device connections and credentials; see [paired operation](pairing.md). Cached
+data is not fresh device evidence. Reachable chargers can continue with manual
+inputs, and missing prices or supply forecasts select provisional release.
+An unreachable charger cannot receive a release, and an unavailable OCPP
+authorization server can block new charging. Shelly EVSE controller-loss behavior
+remains unverified; software cannot promise an autonomous hardware fallback.
+
 The ready-by time becomes one concrete occurrence when the physical connection starts. Midnight, identification, progress updates, priority changes and restart do not roll it forward. A deliberate request/default edit may change it. Late identification replaces default-derived vehicle inputs without splitting the physical session or resetting its costs.
 
 ## Vehicle assignment
@@ -38,7 +84,7 @@ The observer evaluates both charging points together, including while automatic 
 
 Assignments carry the physical association and plug epoch. Genuine disconnect/reconnect events are retained even between planner ticks or MQTT subscription admission and invalidate the old scope. Pause/resume within a connected work state remains one session. Explicit conflicting evidence withdraws certainty. A remembered identity alone cannot authorize a new connection, and current vehicle fields are withdrawn when the upstream feed is unhealthy.
 
-TeslaMate has transport, subscription, live logger-health and per-field evidence checks. Sleeping while healthy is distinct from unhealthy. Retained or last-known values can be shown with provenance without granting current identity or control. BMW source timestamps, home scope and consumed plug/start events serve the same separation. Neither feed's remote voltage or power fills missing household electrical measurements.
+TeslaMate has transport, subscription, live logger-health and per-field evidence checks. Sleeping while healthy is distinct from unhealthy. A reconnect requires a new live healthy pulse. TeslaMate publishes most values only when they change; its current-limit and next-start settings remain available while the logger is healthy, preserving their original receipt times and retained provenance. Fresh physical charging takes precedence over a reported future timer. Retained or last-known values alone cannot identify a car. A live charging-state start within 30 seconds of a physical charging start can corroborate matching power after the normal ramp delay, for up to fifteen minutes, while physical power remains fresh. Retained starts and power cannot supply that evidence. BMW source timestamps, home scope and consumed plug/start events serve the same separation. Neither feed's remote voltage or power fills missing household electrical measurements.
 
 ## Planning and Equalizer
 
