@@ -67,7 +67,7 @@
       "measuredAt": 1800000058000,
       "ageMs": 2000,
       "supported": true,
-      "unit": null,
+      "unit": "boolean",
       "decodeVerified": true,
       "quality": "observed-unverified",
       "raw": 1,
@@ -79,7 +79,7 @@
       "measuredAt": 1800000060000,
       "ageMs": 0,
       "supported": true,
-      "unit": null,
+      "unit": "boolean",
       "decodeVerified": true,
       "quality": "observed-unverified",
       "raw": 2,
@@ -115,7 +115,7 @@
       "measuredAt": 1800000060000,
       "ageMs": 0,
       "supported": true,
-      "unit": null,
+      "unit": "boolean",
       "decodeVerified": false,
       "quality": "observed-unverified",
       "raw": 2,
@@ -127,7 +127,7 @@
       "measuredAt": 1800000060000,
       "ageMs": 0,
       "supported": true,
-      "unit": null,
+      "unit": "boolean",
       "decodeVerified": false,
       "quality": "observed-unverified",
       "raw": 2,
@@ -135,5 +135,5 @@
       "meterScope": "unverified"
     }
   },
-  "_provenance": "Host-only capture from production protocol.js + lease.js + runtime.js with a mock UART, 2026-09-21. Invented identity and UTC; no real pump evidence."
+  "_provenance": "Synthetic aggregate matching the current shelly-cn105 publisher contract in src/runtime.js cnPublishTelemetry and test/runtime.test.js (2026-09-24). Boolean values use unit boolean; a null boolean uses unit null. Invented identities, clocks and readings; not an installed-pump capture. Actual publisher streams one field per message."
 }

@@ -250,13 +250,28 @@ requested room temperature.
 ## Electrical accounting
 
 Native indoor temperature, compressor frequency and compressor activity have
-independent compact chart histories. Each retains the actual source clock,
-qualification and two-minute report deadline; an unknown or unverified decoder
-produces a gap. The production contract's boolean indications use `unit:null`
-on the wire and numeric 0/1 state in recorded history. Fresh provisional values
-can still be inspected in the live readings without becoming learning evidence.
-Frequency remains a reported native quantity; missing firmware reports cannot
-be reconstructed from ON or inferred electrical power.
+independent compact chart histories. The current Pill MQTT publisher sends
+actual boolean values with `unit:"boolean"`; `unit:null` accompanies an absent
+boolean value. The CN105 parser’s internal dimensionless unit is not the MQTT
+wire format. Compressor activity is recorded as numeric 1/0, with missing or
+invalid data represented by a gap rather than idle.
+
+A fresh supported value with reviewed decoding may be recorded and plotted as
+a diagnostic even when its quality is `observed-unverified`. Its original
+quality, source clock and accuracy qualification are retained, and it does not
+gain control or learning authority. Unknown values, unverified decoding, wrong
+units, stale/future/missing source clocks and retained reports cannot establish
+current compressor history. Unchanged fresh reports extend bounded coverage;
+republishing an old measurement does not. Disconnect, subscription failure,
+adapter reboot and shutdown end the current diagnostic coverage explicitly.
+Frequency remains a reported native quantity; it does not substitute for the
+direct activity indication or establish electrical power.
+
+The Mitsubishi summary always shows compressor state. The separate Heat-pump
+readings fold shows fields with meaningful reports, including legitimate zero
+and false values. Never-observed or unsupported placeholders are omitted; fields
+already observed in the open dashboard remain visible as unavailable during
+temporary data loss. Detailed source clocks and quality remain in value popovers.
 
 The external temperature chart begins at acknowledged activation and carries
 the original sensor timestamp separately. Its coverage expires at the earlier

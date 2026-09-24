@@ -271,8 +271,8 @@ test('a managed pause is restored before ordinary native settings can change', a
 
 test('all streamed optional values retain their own clocks and diagnostic qualification without electrical accounting', t => {
   const f = fixture(t);
-  const fields = { energyCounterRaw: [1234, 'count'], actualFan: [3, 'stage'], preheat: [false, null],
-    standby: [true, null], faultRaw: ['00000100', null] };
+  const fields = { energyCounterRaw: [1234, 'count'], actualFan: [3, 'stage'], preheat: [false, 'boolean'],
+    standby: [true, 'boolean'], faultRaw: ['00000100', null] };
   let sequence = 1;
   for (const [key, [value, unit]] of Object.entries(fields)) {
     f.adapter.receive(SETTINGS.telemetryTopic, JSON.stringify({ schema: SHELLY_CN105_CONTRACT,
@@ -305,7 +305,7 @@ test('public production status retains unavailable diagnostics without qualifyin
     deviceId: TEMPLATE.deviceId, bootId: TEMPLATE.bootId, sequence: 1, observedAt: BASE,
     fields: { indoorTemperature: field(12, 'degC'), power: field(0, 'W', 'unknown'),
       energy: field(null, 'kWh', 'unsupported', false), compressorFrequency: field(null, 'Hz', 'unknown'),
-      compressorActive: field(true, null, 'invalid'), defrost: field(false, null, 'unknown') } }));
+      compressorActive: field(true, 'boolean', 'invalid'), defrost: field(false, 'boolean', 'unknown') } }));
   let status = f.adapter.status();
   assert.equal(status.telemetry.indoorTemperature.value, 12);
   for (const [key, value, quality] of [['power', 0, 'unknown'], ['energy', null, 'unsupported'],

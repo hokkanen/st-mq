@@ -17,6 +17,8 @@ export function createGarageSimulationTransport(send) {
 }
 const CAPABILITIES = ['boundedPause', 'localExpiry', 'offlineStartupRestore', 'restorePersistence',
   'nativeConfirmation', 'challenge', 'preserveNativeBaseline'];
+const RECORDED_TELEMETRY = new Set(['garage_power', 'garage_native_energy', 'garage_native_indoor_temperature',
+  'garage_compressor_frequency', 'garage_compressor_active']);
 const RESULT_STATUSES = ['accepted', 'native-confirmed', 'rejected', 'uncertain', 'superseded', 'failed'];
 const identity = value => typeof value === 'string' && value.length > 0 && value.length <= 128;
 const cleanField = field => field && finiteTime(field.measuredAt) ? { value: field.value, measuredAt: field.measuredAt } : null;
@@ -537,6 +539,7 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
     const firstState = state === null;
     const bootChanged = Boolean(state && state.bootId !== value.bootId);
     const sessionChanged = Boolean(state && state.sessionId !== value.sessionId);
+    if (telemetryBoot !== null && telemetryBoot !== value.bootId) invalidateTelemetry('adapter-rebooted', now);
     const limits = value.leaseLimits;
     const validLimits = Number.isSafeInteger(limits?.maximumMs) && limits.maximumMs >= 1000 && limits.maximumMs <= 600_000
       && Number.isSafeInteger(limits?.renewAfterMs) && limits.renewAfterMs > 0 && limits.renewAfterMs < limits.maximumMs
@@ -576,6 +579,15 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
         && value.lease.expiresAt <= value.lease.endpointAt ? { episodeId: value.lease.episodeId,
           expiresAt: value.lease.expiresAt, endpointAt: value.lease.endpointAt } : null };
     reconciled = !packet.retain && value.timeBasis === 'source-measured' && now - value.observedAt < settings.maxAgeMs;
+    if (!packet.retain && now - value.observedAt < settings.maxAgeMs) {
+      for (const [key, reason] of [['device', 'device-offline'], ['driver', 'driver-not-progressing'], ['pump', 'pump-not-communicating']]) {
+        if (state.health[key]?.value === false && freshField(state.health[key], now, settings.maxAgeMs)) {
+          invalidateTelemetry(reason, now);
+          electrical.reset(reason);
+          break;
+        }
+      }
+    }
     if (firstState && state.limits) recoveryLockedUntil = Math.max(recoveryLockedUntil, now + state.limits.minimumOnMs);
     if (bootChanged || sessionChanged) {
       claimPending = null;
@@ -660,12 +672,40 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
     // the handshake. No renewals or OFF commands run from this callback.
     void claimAuthority(now);
   }
+  function recordTelemetry(decoded, now, retained = false) {
+    if (!RECORDED_TELEMETRY.has(decoded.signal)) return;
+    onObservation({ source: 'garage-adapter', device: 'garage-heat-pump', signal: decoded.signal,
+      value: !['garage_power', 'garage_native_energy'].includes(decoded.signal) && !decoded.diagnosticAvailable ? null
+        : typeof decoded.value === 'boolean' ? Number(decoded.value) : decoded.value,
+      unit: decoded.unit === 'boolean' ? 'state' : decoded.unit, sourceTime: decoded.sourceTime, receivedAt: now,
+      quality: decoded.quality, raw: { usableForControl: false, contractVersion,
+        reportIntervalMs: settings.maxAgeMs, reportGraceMs: 0,
+        diagnosticAvailable: decoded.diagnosticAvailable, supported: decoded.supported,
+        timeBasis: decoded.timeBasis, retained, accuracyVerified: decoded.accuracyVerified,
+        meterScope: decoded.meterScope, provisional: !production } });
+  }
+  function invalidateTelemetry(reason, now) {
+    for (const [signal, row] of Object.entries(latest)) {
+      const quality = [...new Set([...row.quality, 'unavailable', reason])];
+      latest[signal] = { ...row, quality, diagnosticAvailable: false, usable: false,
+        invalidatedAt: now,
+        invalidatedSourceTime: row.invalidatedSourceTime ?? (row.diagnosticAvailable ? row.sourceTime : null) };
+      // This is a host-observed availability event. A previous retained
+      // report must not make the recorder discard this genuine outage.
+      // The recorder compacts repeated outage events without losing a later
+      // outage of an unverified electrical diagnostic.
+      recordTelemetry({ ...latest[signal], value: null, sourceTime: null,
+        timeBasis: 'host-observed', quality: ['unavailable', reason] }, now);
+    }
+  }
   function receiveTelemetry(value, packet, now) {
     if (state && (value.deviceId !== state.deviceId || value.bootId !== state.bootId)) return;
     if (telemetryDevice !== null && value.deviceId !== telemetryDevice) return;
     if (telemetryBoot === value.bootId && value.sequence <= telemetrySequence) return;
     if (value.observedAt > now) { fault('future-telemetry-time'); return; }
-    if (telemetryBoot !== null && telemetryBoot !== value.bootId) { latest = {}; electrical.reset('adapter-rebooted'); }
+    if (telemetryBoot !== null && telemetryBoot !== value.bootId) {
+      invalidateTelemetry('adapter-rebooted', now); electrical.reset('adapter-rebooted');
+    }
     telemetryDevice = value.deviceId; telemetryBoot = value.bootId;
     for (const [key, definition] of Object.entries(GARAGE_FIELDS)) {
       if (!Object.hasOwn(value.fields ?? {}, key)) continue;
@@ -674,21 +714,21 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
       const previous = latest[definition.signal];
       // Republished cache must retain the original field clock. Invalidations
       // still replace old evidence, even when they have no measurement timestamp.
-      if (previous?.usable && previous.sourceTime <= now && decoded.sourceTime !== null
+      if (previous?.diagnosticAvailable && previous.sourceTime <= now && decoded.sourceTime !== null
         && decoded.sourceTime < previous.sourceTime) continue;
-      latest[definition.signal] = decoded;
-      if (['garage_power', 'garage_native_energy', 'garage_native_indoor_temperature',
-        'garage_compressor_frequency', 'garage_compressor_active'].includes(definition.signal)) {
-        onObservation({ source: 'garage-adapter', device: 'garage-heat-pump', signal: decoded.signal,
-          value: !['garage_power', 'garage_native_energy'].includes(definition.signal) && !decoded.usable ? null
-            : typeof decoded.value === 'boolean' ? Number(decoded.value) : decoded.value,
-          unit: definition.boolean ? 'state' : decoded.unit, sourceTime: decoded.sourceTime, receivedAt: now,
-          quality: decoded.quality, raw: { usableForControl: false, contractVersion,
-            reportIntervalMs: settings.maxAgeMs, reportGraceMs: 0,
-            supported: decoded.supported, timeBasis: decoded.timeBasis, retained: packet.retain === true,
-            accuracyVerified: decoded.accuracyVerified, meterScope: decoded.meterScope, provisional: !production } });
-        if (['garage_power', 'garage_native_energy'].includes(definition.signal)) electrical.receive(decoded);
+      if (previous?.invalidatedAt !== undefined && previous.bootId === decoded.bootId) {
+        const afterOutage = decoded.sourceTime !== null && decoded.sourceTime >= previous.invalidatedAt
+          && (previous.invalidatedSourceTime === null || decoded.sourceTime > previous.invalidatedSourceTime);
+        if (!decoded.diagnosticAvailable || !afterOutage) {
+          decoded.diagnosticAvailable = false; decoded.usable = false;
+          decoded.invalidatedAt = previous.invalidatedAt;
+          decoded.invalidatedSourceTime = previous.invalidatedSourceTime;
+          if (!afterOutage) decoded.quality.push('unavailable', 'out-of-order-source-time');
+        }
       }
+      latest[definition.signal] = decoded;
+      recordTelemetry(decoded, now, packet.retain === true);
+      if (['garage_power', 'garage_native_energy'].includes(definition.signal)) electrical.receive(decoded);
     }
     telemetrySequence = value.sequence;
     changed();
@@ -767,7 +807,7 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
       const stale = row.sourceTime === null || row.sourceTime > now || now - row.sourceTime >= settings.maxAgeMs || !connected;
       return [signal, { value: row.value, sourceTime: row.sourceTime, receivedAt: row.receivedAt,
         quality: [...new Set([...row.quality, ...(stale ? ['stale'] : [])])], supported: row.supported,
-        usable: row.usable && !stale, unit: row.unit, timeBasis: row.timeBasis, accuracyVerified: row.accuracyVerified }];
+        usable: row.usable && !stale, diagnosticAvailable: row.diagnosticAvailable && !stale, unit: row.unit, timeBasis: row.timeBasis, accuracyVerified: row.accuracyVerified }];
     }));
     for (const [key, definition] of Object.entries(GARAGE_FIELDS)) if (telemetry[definition.signal]) telemetry[key] = telemetry[definition.signal];
     return { contractVersion, contractStatus,
@@ -807,6 +847,7 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
       if (stopped || connected === Boolean(value)) return;
       connected = Boolean(value); reconciled = false; claimPending = null;
       if (!connected) {
+        invalidateTelemetry('mqtt-disconnected', clock());
         recordExternalTemperature(clock());
         invalidate('mqtt-disconnected', clock()); electrical.reset('mqtt-disconnected');
         if (nativeCommand && NATIVE_PENDING.includes(nativeCommand.status)) {
@@ -818,7 +859,10 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
       }
       changed();
     },
-    subscriptionFailed() { reconciled = false; fault('adapter-subscription-failed'); changed(); },
+    subscriptionFailed() {
+      reconciled = false; invalidateTelemetry('adapter-subscription-failed', clock());
+      fault('adapter-subscription-failed'); electrical.reset('adapter-subscription-failed'); changed();
+    },
     recordHeatResponse({ at, useful } = {}) {
       if (!useful || !finiteTime(at) || at > clock() || lastCommand?.action !== 'release'
         || lastCommand.usefulHeatAt != null || !finiteTime(lastCommand.nativeConfirmedAt) || at < lastCommand.nativeConfirmedAt) return false;
@@ -831,6 +875,7 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
         await setExternalTemperature({ temperatureC: null }, now);
       if (restore && canControl()) await release({ reason: 'application-shutdown', now });
       stopped = true; connected = false; reconciled = false;
+      invalidateTelemetry('host-stopped', now);
       if (episode) invalidate('host-stopped', now);
       if (nativeCommand && NATIVE_PENDING.includes(nativeCommand.status)) {
         nativeCommand.status = 'uncertain'; nativeCommand.reason = 'host-stopped';

@@ -190,6 +190,8 @@ See [docs/secret-handling.md](docs/secret-handling.md) for historical audit scop
 - Do not use the project name **ST-MQ** in user-facing labels, descriptions,
   popovers, status messages or errors. Use natural wording such as “the controller”
   or “this application”. Keep actual file paths and protocol identifiers accurate.
-- Keep Mitsubishi reading fields visible when their data becomes missing, stale,
-  invalid or unsupported. Show an explicit unavailable state and preserve source,
-  freshness and quality details; never interpret missing compressor activity as idle.
+- Show Mitsubishi fields that have real reported data, including valid zero/false
+  values. Omit never-observed or unsupported placeholders. Keep previously observed
+  fields visible during temporary data loss, with an explicit unavailable state
+  and source/quality details. Keep readings in their own fold and compressor state
+  in the summary; never interpret missing compressor activity as idle.

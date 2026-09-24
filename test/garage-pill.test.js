@@ -205,7 +205,7 @@ test('a lost publication remains uncertain and cannot silently retry the same OF
   assert.equal(f.published.length, 1);
 });
 
-test('captured production runtime monitoring messages interoperate without fixture schema substitution', () => {
+test('current publisher monitoring contract interoperation preserves diagnostic data without control authority', () => {
   const state = JSON.parse(readFileSync(new URL('./fixtures/garage-pill-state.json', import.meta.url)));
   const telemetry = JSON.parse(readFileSync(new URL('./fixtures/garage-pill-telemetry.json', import.meta.url)));
   const f = fixture(); f.at(state.observedAt + 1000);
@@ -217,13 +217,174 @@ test('captured production runtime monitoring messages interoperate without fixtu
   assert.equal(status.native.mode, 'heat');
   assert.equal(status.telemetry.indoorTemperature.value, 22.5);
   assert.equal(status.telemetry.outdoorTemperature.value, -5.5);
-  assert.equal(status.telemetry.compressorActive.value, true, 'Production boolean fields have no physical unit');
+  assert.equal(status.telemetry.compressorActive.value, true, 'The current publisher uses the boolean unit for true/false');
   assert.equal(status.telemetry.compressorFrequency.value, 35);
   assert.equal(status.telemetry.compressorActive.usable, false, 'Unverified observations remain diagnostic');
-  assert.equal(f.observations.find(row => row.signal === 'garage_compressor_active').value, null,
-    'Unqualified diagnostic values cannot create chart activity');
+  assert.equal(status.telemetry.compressorActive.diagnosticAvailable, true);
+  const activity = f.observations.find(row => row.signal === 'garage_compressor_active');
+  assert.equal(activity.value, 1, 'Reviewed diagnostic output can be charted with its unverified quality');
+  assert.equal(activity.unit, 'state');
+  assert.equal(activity.sourceTime, telemetry.fields.compressorActive.measuredAt);
+  assert.deepEqual(activity.quality, ['observed-unverified']);
+  assert.equal(activity.raw.diagnosticAvailable, true);
+  assert.equal(activity.raw.accuracyVerified, false);
+  assert.equal(activity.raw.usableForControl, false);
+  assert.equal(status.native.compressorActive, undefined, 'Diagnostics cannot become qualified native activity');
   assert.equal(status.telemetry.power.usable, false);
   assert.equal(status.health.pumpCommunicating, true);
   assert.equal(status.automaticControl, false);
   assert.equal(f.published.length, 0);
+});
+
+test('current publisher true and false are recorded distinctly; malformed or unavailable activity remains a gap', () => {
+  for (const scenario of [
+    { name: 'running', patch: { value: true }, expected: 1 },
+    { name: 'idle', patch: { value: false }, expected: 0 },
+    { name: 'wrong-unit-running', patch: { value: true, unit: null }, expected: null, flag: 'units-unverified' },
+    { name: 'wrong-unit-idle', patch: { value: false, unit: null }, expected: null, flag: 'units-unverified' },
+    { name: 'absent', patch: { value: null, unit: null, supported: false, decodeVerified: false, quality: 'unknown' }, expected: null, flag: 'unknown' },
+    { name: 'unsupported', patch: { supported: false }, expected: null, flag: 'unsupported' },
+    { name: 'invalid', patch: { quality: 'invalid' }, expected: null, flag: 'invalid' },
+    { name: 'unknown', patch: { quality: 'unknown' }, expected: null, flag: 'unknown' },
+    { name: 'numeric-boolean', patch: { value: 1 }, expected: null, flag: 'invalid-value' },
+    { name: 'unreviewed-decoder', patch: { decodeVerified: false }, expected: null, flag: 'decoding-unverified' },
+    { name: 'stale', patch: { measuredAt: BASE - 120_000 }, expected: null, flag: 'stale' },
+    { name: 'future', patch: { measuredAt: BASE + 1 }, expected: null, flag: 'future-source-time' },
+    { name: 'no-clock', patch: { measuredAt: null }, expected: null, flag: 'source-time-unknown' },
+    { name: 'retained', patch: {}, packet: { retain: true }, expected: null, flag: 'retained' },
+  ]) {
+    const f = fixture();
+    const field = { value: true, unit: 'boolean', supported: true, decodeVerified: true,
+      measuredAt: BASE, quality: 'observed-unverified', accuracyVerified: false, ...scenario.patch };
+    f.adapter.receive(SETTINGS.telemetryTopic, JSON.stringify({ schema: SHELLY_CN105_CONTRACT,
+      deviceId: 'invented-pill', bootId: 'invented-boot', sequence: 1, observedAt: BASE,
+      fields: { compressorActive: field } }), scenario.packet ?? {});
+    const reading = f.adapter.status().telemetry.compressorActive, observation = f.observations.at(-1);
+    assert.equal(observation.value, scenario.expected, scenario.name);
+    assert.equal(reading.diagnosticAvailable, scenario.expected !== null, scenario.name);
+    assert.equal(reading.usable, false, scenario.name);
+    assert.equal(observation.raw.usableForControl, false, scenario.name);
+    assert.equal(observation.raw.accuracyVerified, false, scenario.name);
+    if (scenario.flag) assert.ok(observation.quality.includes(scenario.flag), scenario.name);
+    if (scenario.name === 'absent') assert.equal(observation.quality.includes('units-unverified'), false);
+  }
+});
+
+test('diagnostic source clocks never move backwards and a cached report cannot repair an outage', () => {
+  for (const outage of ['disconnect', 'subscription']) {
+    const f = fixture(); let sequence = 0;
+    const report = (at, value = true) => f.adapter.receive(SETTINGS.telemetryTopic, JSON.stringify({
+      schema: SHELLY_CN105_CONTRACT, deviceId: 'invented-pill', bootId: 'invented-boot',
+      sequence: ++sequence, observedAt: BASE + sequence * 1000,
+      fields: { compressorActive: { value, unit: 'boolean', supported: true, decodeVerified: true,
+        measuredAt: at, quality: 'observed-unverified', accuracyVerified: false } } }));
+    f.at(BASE + 1000); report(BASE + 1000);
+    f.at(BASE + 2000); report(BASE, false);
+    assert.equal(f.observations.length, 1, 'Older diagnostic packets cannot replace newer source data');
+    assert.equal(f.adapter.status().telemetry.compressorActive.value, true);
+    f.at(BASE + 3000);
+    if (outage === 'disconnect') f.adapter.setConnected(false); else f.adapter.subscriptionFailed();
+    assert.equal(f.observations.at(-1).value, null, outage);
+    assert.equal(f.observations.at(-1).sourceTime, null, outage);
+    assert.equal(f.observations.at(-1).receivedAt, BASE + 3000, outage);
+    assert.ok(f.observations.at(-1).quality.includes('unavailable'), outage);
+    if (outage === 'disconnect') f.adapter.setConnected(true);
+    assert.equal(f.adapter.status().telemetry.compressorActive.diagnosticAvailable, false, outage);
+    f.at(BASE + 4000); report(BASE + 1000);
+    assert.equal(f.observations.at(-1).value, null, 'Republishing a pre-outage cache cannot restore chart activity');
+    assert.equal(f.adapter.status().telemetry.compressorActive.diagnosticAvailable, false, outage);
+    f.at(BASE + 5000); report(BASE + 5000, false);
+    assert.equal(f.observations.at(-1).value, 0, outage);
+    assert.equal(f.adapter.status().telemetry.compressorActive.diagnosticAvailable, true, outage);
+    assert.equal(f.adapter.status().telemetry.compressorActive.usable, false, outage);
+  }
+});
+
+
+test('fresh explicit health loss ends diagnostic availability while unrelated native setting loss does not', () => {
+  for (const [key, reason] of [['device', 'device-offline'], ['driver', 'driver-not-progressing'], ['pump', 'pump-not-communicating']]) {
+    const f = fixture(); f.state({ mode: 'monitoring' });
+    f.adapter.receive(SETTINGS.telemetryTopic, JSON.stringify({ ...TEMPLATE, schema: SHELLY_CN105_CONTRACT,
+      fields: { compressorActive: { value: true, unit: 'boolean', supported: true, decodeVerified: true,
+        measuredAt: BASE, quality: 'observed-unverified' } } }));
+    f.at(BASE + 1000);
+    f.state({ native: { power: { value: null, measuredAt: BASE + 1000 } } });
+    assert.equal(f.adapter.status().telemetry.compressorActive.diagnosticAvailable, true,
+      'Unavailable pump setting is not evidence of compressor activity loss');
+    f.at(BASE + 2000);
+    f.state({ health: { ...TEMPLATE.health, [key]: { value: false, measuredAt: BASE + 2000 } } });
+    assert.equal(f.adapter.status().telemetry.compressorActive.diagnosticAvailable, false, key);
+    assert.equal(f.observations.at(-1).value, null, key);
+    assert.deepEqual(f.observations.at(-1).quality, ['unavailable', reason]);
+  }
+});
+
+test('a known outage is a genuine availability event even after a retained telemetry packet', () => {
+  const f = fixture();
+  f.adapter.receive(SETTINGS.telemetryTopic, JSON.stringify({ ...TEMPLATE, schema: SHELLY_CN105_CONTRACT,
+    fields: { compressorActive: { value: true, unit: 'boolean', supported: true, decodeVerified: true,
+      measuredAt: BASE, quality: 'observed-unverified' } } }), { retain: true });
+  f.at(BASE + 1000); f.adapter.setConnected(false);
+  const gap = f.observations.at(-1);
+  assert.equal(gap.value, null);
+  assert.equal(gap.sourceTime, null);
+  assert.equal(gap.raw.retained, false);
+  assert.equal(gap.raw.timeBasis, 'host-observed');
+  assert.deepEqual(gap.quality, ['unavailable', 'mqtt-disconnected']);
+});
+
+test('invalid newer packets cannot clear an outage barrier or poison recovery with a valid measurement', () => {
+  for (const patch of [{ unit: null }, { quality: 'invalid' }, { decodeVerified: false }, { measuredAt: BASE + 1_000_000 }]) {
+    const f = fixture(); let sequence = 0;
+    const report = (receivedAt, measuredAt, extra = {}) => {
+      f.at(receivedAt);
+      f.adapter.receive(SETTINGS.telemetryTopic, JSON.stringify({
+        schema: SHELLY_CN105_CONTRACT, deviceId: 'invented-pill', bootId: 'invented-boot',
+        sequence: ++sequence, observedAt: receivedAt,
+        fields: { compressorActive: { value: true, unit: 'boolean', supported: true, decodeVerified: true,
+          measuredAt, quality: 'observed-unverified', accuracyVerified: false, ...extra } } }));
+    };
+    report(BASE, BASE);
+    f.at(BASE + 1000); f.adapter.setConnected(false); f.adapter.setConnected(true);
+    report(BASE + 2000, BASE + 2000, patch);
+    assert.equal(f.adapter.status().telemetry.compressorActive.diagnosticAvailable, false, JSON.stringify(patch));
+    report(BASE + 3000, BASE);
+    assert.equal(f.adapter.status().telemetry.compressorActive.diagnosticAvailable, false,
+      'A malformed newer packet cannot authorize a cached pre-outage report');
+    assert.equal(f.observations.at(-1).value, null);
+    report(BASE + 4000, BASE + 4000, { value: false });
+    assert.equal(f.adapter.status().telemetry.compressorActive.diagnosticAvailable, true,
+      'An invalid future source clock cannot fence out a genuine new observation');
+    assert.equal(f.observations.at(-1).value, 0);
+    assert.equal(f.adapter.status().telemetry.compressorActive.usable, false);
+  }
+});
+
+test('new unverified electrical readings cannot suppress a later disconnect gap', () => {
+  const f = fixture(); let sequence = 0;
+  const report = (at, measuredAt = at, decodeVerified = false) => {
+    f.at(at);
+    f.adapter.receive(SETTINGS.telemetryTopic, JSON.stringify({
+      schema: SHELLY_CN105_CONTRACT, deviceId: 'invented-pill', bootId: 'invented-boot',
+      sequence: ++sequence, observedAt: at,
+      fields: { power: { value: 400, unit: 'W', supported: true, decodeVerified,
+        measuredAt, quality: 'observed-unverified', accuracyVerified: false } } }));
+  };
+  report(BASE);
+  f.at(BASE + 1000); f.adapter.setConnected(false); f.adapter.setConnected(true);
+  report(BASE + 2000);
+  assert.equal(f.observations.at(-1).value, 400, 'Raw electrical diagnostic still records its reported value');
+  assert.equal(f.adapter.status().telemetry.power.usable, false);
+  f.at(BASE + 3000); f.adapter.setConnected(false);
+  assert.equal(f.observations.at(-1).value, null, 'The second disconnect ends the new diagnostic report');
+  assert.equal(f.observations.at(-1).receivedAt, BASE + 3000);
+  assert.deepEqual(f.observations.at(-1).quality, ['unavailable', 'mqtt-disconnected']);
+  f.adapter.setConnected(true);
+  report(BASE + 4000, BASE + 2000, true);
+  assert.equal(f.adapter.status().telemetry.power.diagnosticAvailable, false,
+    'The latest outage, not the first outage, fences recovery of cached measurements');
+  assert.ok(f.observations.at(-1).quality.includes('out-of-order-source-time'));
+  report(BASE + 5000, BASE + 5000, true);
+  assert.equal(f.adapter.status().telemetry.power.diagnosticAvailable, true);
+  assert.equal(f.adapter.status().telemetry.power.usable, false);
 });

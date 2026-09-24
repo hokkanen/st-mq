@@ -15,8 +15,8 @@ const telemetryMetadata = {
   power: ['Electrical input', 'Electricity', 'W', 'Native electrical input; accuracy remains unverified unless checked.'],
   energy: ['Cumulative energy', 'Electricity', 'kWh', 'Decoded native cumulative electricity reading.'],
   energyCounterRaw: ['Raw energy counter', 'Electricity', '', 'Raw counter; no energy unit or consumption is inferred.'],
-  compressorFrequency: ['Compressor frequency', 'Operation', 'Hz', 'Reported compressor frequency; not measured electrical power.'],
   compressorActive: ['Compressor state', 'Operation', '', 'Reported compressor activity; separate from the power setting.'],
+  compressorFrequency: ['Compressor frequency', 'Operation', 'Hz', 'Reported compressor frequency; not measured electrical power.'],
   defrost: ['Defrost', 'Operation', '', 'Native defrost indication.'],
   actualFan: ['Actual fan', 'Operation', '', 'Reported fan operation; separate from the selected fan setting.'],
   preheat: ['Preheat', 'Operation', '', 'Native preheat indication.'],
@@ -70,20 +70,21 @@ export const mitsubishiTemperatureControlHelp = 'Below 16 °C, Garage rear is th
 
 /** Present reported settings and diagnostic measurements without promoting
  * provisional telemetry to control evidence or interpreting raw units. */
-export function mitsubishiReadings(garage = {}, now = Date.now()) {
+function mitsubishiReadingCandidates(garage = {}, now = Date.now()) {
   const adapter = garage.adapter ?? {}, native = adapter.native ?? {}, readbacks = native.readbacks ?? {};
   const connected = adapter.connected === true && adapter.health?.deviceOnline !== false && adapter.health?.pumpCommunicating !== false;
   const rows = [];
   const add = (key, label, group, unit, description, reading, value, nativeSetting) => {
     const at = reading?.measuredAt ?? reading?.sourceTime ?? (key === 'power' && nativeSetting ? native.powerAt : null);
     const quality = Array.isArray(reading?.quality) ? reading.quality : reading?.quality ? [reading.quality] : [];
-    // Keep every reading visible when its value becomes unknown or unsupported.
-    // Quality controls whether it can be presented as current, not row visibility.
     const supported = reading?.supported !== false;
     const fresh = connected && Number.isFinite(at) && at <= now && now - at < 120_000
       && reading?.stale !== true && !quality.some(value => /stale|invalid|unavailable|unsupported|unknown|sentinel/i.test(value));
     const valid = scalar(value) && (key !== 'compressorActive' || typeof value === 'boolean');
-    const available = supported && valid && fresh && reading?.available !== false && (!nativeSetting || reading?.usable !== false);
+    const observed = supported && valid && Number.isFinite(at) && at <= now
+      && !quality.some(flag => /unknown|unsupported|invalid|sentinel|units-unverified/i.test(flag));
+    const available = observed && fresh && !quality.includes('retained')
+      && reading?.available !== false && (!nativeSetting || reading?.usable !== false);
     const last = mitsubishiValue(key, value, unit);
     const qualifier = !supported ? 'Unsupported' : !scalar(value) ? 'No reading' : !valid ? 'Invalid reading'
       : !fresh ? 'Stale or unavailable' : !available ? 'Unavailable' : nativeSetting ? 'Native readback'
@@ -97,7 +98,7 @@ export function mitsubishiReadings(garage = {}, now = Date.now()) {
       : 'Measurement accuracy has not been verified.' : '',
     reading?.usable === false ? 'Not qualified as control or metering evidence.' : ''].filter(Boolean).join('\n\n');
     rows.push({ key: `${nativeSetting ? 'native' : 'telemetry'}-${key}`, label, group, description,
-      value: available ? last : 'Unavailable', available, qualifier, detail });
+      value: available ? last : 'Unavailable', available, observed, qualifier, detail });
   };
   for (const key of new Set([...Object.keys(mitsubishiSettings), ...Object.keys(readbacks)])) {
     const meta = mitsubishiSettings[key] ?? { label: words(key), description: 'Additional setting reported by the heat pump.' };
@@ -120,23 +121,51 @@ export function mitsubishiReadings(garage = {}, now = Date.now()) {
   return rows.sort((a, b) => groups.indexOf(a.group) - groups.indexOf(b.group));
 }
 
+export function mitsubishiReadings(garage = {}, now = Date.now()) {
+  return mitsubishiReadingCandidates(garage, now).filter(row => row.observed);
+}
+
+/** Remember which fields this view has actually seen, not assumed capabilities.
+ * Old values are only used in explanations; they never become current readings. */
+export function createMitsubishiReadingView() {
+  const seen = new Map();
+  return (garage, now = Date.now()) => {
+    const candidates = mitsubishiReadingCandidates(garage, now);
+    const current = new Map(candidates.map(row => [row.key, row]));
+    for (const row of candidates) if (row.observed) seen.set(row.key, row);
+    const groups = ['Operation', 'Temperatures', 'Electricity', 'Pump settings', 'Other readings'];
+    return [...seen.values()].map(previous => {
+      const row = current.get(previous.key);
+      if (row?.observed) return row;
+      return { ...previous, ...row, value: 'Unavailable', available: false,
+        qualifier: row?.qualifier ?? 'No reading',
+        detail: `${row?.detail ?? 'No current report received.'}\n\nLast valid report:\n${previous.detail}` };
+    }).sort((a, b) => groups.indexOf(a.group) - groups.indexOf(b.group));
+  };
+}
+
 export function mitsubishiCompressor(garage = {}, now = Date.now()) {
-  const reading = mitsubishiReadings(garage, now).find(row => row.key === 'telemetry-compressorActive');
+  const reading = mitsubishiReadingCandidates(garage, now).find(row => row.key === 'telemetry-compressorActive');
   return { ...reading, value: reading.available ? reading.value : 'Unknown' };
 }
 
+const readingViews = new WeakMap();
 export function renderMitsubishiReadings(document, status) {
   const root = document.getElementById('garage-native-readings');
   if (!root) return;
-  const rows = mitsubishiReadings(status?.garage, status?.now), groups = [...new Set(rows.map(row => row.group))];
+  if (!readingViews.has(root)) readingViews.set(root, createMitsubishiReadingView());
+  const rows = readingViews.get(root)(status?.garage, status?.now), groups = [...new Set(rows.map(row => row.group))];
+  const fold = document.getElementById('garage-readings-details');
+  if (fold) fold.hidden = !rows.length;
   for (const table of [...root.children]) if (!groups.includes(table.dataset.group)) table.remove();
-  for (const group of groups) {
+  for (const [groupIndex, group] of groups.entries()) {
     let table = [...root.children].find(node => node.dataset.group === group);
     if (!table) {
       table = document.createElement('table'); table.className = 'h66-table mitsubishi-table'; table.dataset.group = group;
       const caption = document.createElement('caption'); caption.textContent = group;
       table.append(caption, document.createElement('tbody')); root.append(table);
     }
+    if (root.children[groupIndex] !== table) root.insertBefore(table, root.children[groupIndex] ?? null);
     const body = table.querySelector('tbody'), readings = rows.filter(row => row.group === group);
     for (const row of [...body.children]) if (!readings.some(reading => reading.key === row.dataset.reading)) row.remove();
     for (const [index, reading] of readings.entries()) {
@@ -186,7 +215,7 @@ export function createMitsubishiControls({ document, request, onStatus = () => {
   const $ = id => document.getElementById(id), form = $('garage-native-form'), setting = $('garage-native-setting');
   const select = $('garage-native-value'), input = $('garage-native-temperature'), submit = $('garage-native-submit');
   const message = $('garage-native-message');
-  let status = null, busy = false, closed = false, edited = false, optionSignature = null, settingSignature = null, requestError = null;
+  let status = null, busy = false, closed = false, edited = false, optionSignature = null, settingSignature = null, requestError = null, pointerSelection = false;
   const refreshControls = () => {
     if (!form) return;
     const control = mitsubishiControl(status, setting.value), locked = closed || busy || blocked();
@@ -250,7 +279,18 @@ export function createMitsubishiControls({ document, request, onStatus = () => {
       message.classList.toggle('form-error', ['rejected', 'uncertain', 'failed'].includes(status?.garage?.nativeControls?.result?.status)); }
     refreshControls();
   };
-  const change = () => { edited = false; requestError = null; render({ useReadback: true }); };
+  const pointerChoice = () => { pointerSelection = true; };
+  const keyboardChoice = () => { pointerSelection = false; };
+  const change = () => {
+    const focusEditor = pointerSelection; pointerSelection = false;
+    edited = false; requestError = null; render({ useReadback: true });
+    if (focusEditor) {
+      // Finish the native picker interaction before editing, including Samsung Internet on DeX.
+      const editor = setting.value === 'targetC' ? input : select;
+      if (!editor.disabled && !form.hidden) editor.focus({ preventScroll: true });
+      else setting.blur();
+    }
+  };
   const edit = () => { edited = true; requestError = null; };
   const send = async event => {
     event.preventDefault();
@@ -279,8 +319,12 @@ export function createMitsubishiControls({ document, request, onStatus = () => {
     await afterRequest();
   };
   form?.addEventListener('submit', send); setting?.addEventListener('change', change);
+  setting?.addEventListener('pointerdown', pointerChoice); setting?.addEventListener('keydown', keyboardChoice);
+  setting?.addEventListener('pointercancel', keyboardChoice);
   select?.addEventListener('change', edit); input?.addEventListener('input', edit); refreshControls();
   return { update(value) { status = value; render(); }, refreshControls,
     close() { closed = true; form?.removeEventListener('submit', send); setting?.removeEventListener('change', change);
+      setting?.removeEventListener('pointerdown', pointerChoice); setting?.removeEventListener('keydown', keyboardChoice);
+      setting?.removeEventListener('pointercancel', keyboardChoice);
       select?.removeEventListener('change', edit); input?.removeEventListener('input', edit); refreshControls(); } };
 }

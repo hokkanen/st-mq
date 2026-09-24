@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { mitsubishiReadings, mitsubishiCompressor, mitsubishiControl, mitsubishiResult, mitsubishiRoomTemperature, createMitsubishiControls } from '../chart/mitsubishi.js';
+import { mitsubishiReadings, createMitsubishiReadingView, mitsubishiCompressor, mitsubishiControl, mitsubishiResult, mitsubishiRoomTemperature, createMitsubishiControls } from '../chart/mitsubishi.js';
 
 const now = Date.parse('2026-09-21T12:00:00Z');
 function fixture() {
@@ -16,7 +16,7 @@ function fixture() {
       ...(field==='targetC'?{min:16,max:31,step:.5}:{values:values[field]}) }])) } } };
 }
 
-test('Mitsubishi settings and diagnostics preserve zero, false and provisional measurements alongside unavailable fields', () => {
+test('Mitsubishi shows real zero, false and provisional measurements while omitting unsupported placeholders', () => {
   const status=fixture();
   status.garage.adapter.telemetry={
     compressorFrequency:{value:0,unit:'Hz',sourceTime:now,supported:true,usable:true,quality:[]},
@@ -29,8 +29,7 @@ test('Mitsubishi settings and diagnostics preserve zero, false and provisional m
   assert.equal(rows['telemetry-compressorFrequency'].value,'0 Hz');assert.equal(rows['telemetry-defrost'].value,'No');
   assert.equal(rows['telemetry-power'].value,'300 W');assert.equal(rows['telemetry-power'].qualifier,'Provisional');
   assert.match(rows['telemetry-power'].detail,/Not qualified as control or metering evidence/);
-  assert.equal(rows['telemetry-energy'].value,'Unavailable');assert.equal(rows['telemetry-outdoorTemperature'].value,'Unavailable');
-  assert.match(rows['telemetry-energy'].detail,/Unsupported/);
+  assert.equal(rows['telemetry-energy'],undefined);assert.equal(rows['telemetry-outdoorTemperature'],undefined);
 });
 
 test('Mitsubishi readings merge telemetry aliases and expose last stale readings only in details', () => {
@@ -84,6 +83,7 @@ function panelFixture() {
     get options(){return this.children;} append(...nodes){this.children.push(...nodes);} replaceChildren(...nodes){this.children=[...nodes];}
     setAttribute(key,value){this.attributes.set(key,value);} removeAttribute(key){this.attributes.delete(key);}
     addEventListener(event,handler){this.listeners.set(event,handler);} removeEventListener(event){this.listeners.delete(event);}
+    focus(){document.activeElement=this;} blur(){if(document.activeElement===this)document.activeElement=null;}
   }
   const ids=['form','setting','value','temperature','submit','message','temperature-field','value-field','status','control-details','temperature-help'];
   const nodes=new Map(ids.map(id=>[`garage-native-${id}`,new Node()]));
@@ -94,10 +94,28 @@ function panelFixture() {
   const calls=[],busy=[],status=fixture();let reply=status;
   const panel=createMitsubishiControls({document,request:async(path,input)=>{calls.push([path,input]);return typeof reply==='function'?reply():reply;},onBusy:value=>busy.push(value)});
   panel.update(status);
-  return {panel,nodes,calls,busy,status,reply(value){reply=value;},
+  return {panel,nodes,calls,busy,status,document,reply(value){reply=value;},
     change(field){setting.value=field;setting.listeners.get('change')();},
     submit(){return nodes.get('garage-native-form').listeners.get('submit')({preventDefault(){}});}};
 }
+
+test('pointer selection finishes in the value editor while keyboard selection retains focus', () => {
+  const f=panelFixture(), setting=f.nodes.get('garage-native-setting');
+  const temperature=f.nodes.get('garage-native-temperature'), value=f.nodes.get('garage-native-value');
+  for(const field of ['targetC','fan','mode','power','vane','wideVane']) {
+    setting.focus();setting.listeners.get('pointerdown')();f.change(field);
+    assert.equal(f.document.activeElement,field==='targetC'?temperature:value);
+  }
+  setting.focus();setting.listeners.get('pointerdown')();setting.listeners.get('keydown')();f.change('targetC');
+  assert.equal(f.document.activeElement,setting);
+  temperature.focus();temperature.value='23.5';temperature.listeners.get('input')();f.panel.update(f.status);
+  assert.equal(f.document.activeElement,temperature);assert.equal(temperature.value,'23.5');
+  setting.focus();setting.listeners.get('pointerdown')();setting.listeners.get('pointercancel')();f.change('mode');
+  assert.equal(f.document.activeElement,setting);
+  f.panel.update({...f.status,readOnly:true});setting.listeners.get('pointerdown')();f.change('targetC');
+  assert.equal(f.document.activeElement,null);assert.equal(temperature.disabled,true);assert.equal(f.calls.length,0);
+  f.panel.close();assert.equal(setting.listeners.size,0);
+});
 
 test('parameter form sends one advertised typed setting, rejects double submit, and follows confirmation', async () => {
   const f=panelFixture();f.change('fan');f.nodes.get('garage-native-value').value='2';
@@ -122,29 +140,20 @@ test('parameter form rejects unsupported enums and invalid setpoint steps, then 
   assert.equal(f.nodes.get('garage-native-submit').disabled,true);
 });
 
-test('Mitsubishi keeps readings visible inside the card with separate settings and automatic policy', () => {
+test('Mitsubishi keeps readings in their own closed fold alongside settings and automatic policy', () => {
   const html=readFileSync(new URL('../chart/index.html',import.meta.url),'utf8');
-  for(const id of ['garage-native-control-details','garage-automatic-details']){
+  for(const id of ['garage-native-control-details','garage-readings-details','garage-automatic-details']){
     const tag=html.match(new RegExp(`<details[^>]+id="${id}"[^>]*>`))[0];
     assert.match(tag,/class="equipment-fold"/);assert.doesNotMatch(tag,/\sopen(?:\s|>|=)/);
   }
-  assert.match(html, /<section id="garage-readings-details"[^>]+aria-labelledby="garage-readings-title">/);
-  assert.doesNotMatch(html, /<details id="garage-readings-details"/);
   assert.match(html, /id="garage-native-form" class="h66-test-form mitsubishi-test-form"/);
   const form=html.slice(html.indexOf('id="garage-native-form"'),html.indexOf('id="garage-native-status"'));
   for(const field of ['power','mode','targetC','fan','vane','wideVane'])assert(form.includes(`value="${field}"`));
   assert(html.indexOf('id="garage-automatic-details"')<html.indexOf('id="garage-release"'));
 });
 
-test('all known Mitsubishi readings stay visible before telemetry arrives while unsupported controls stay disabled', () => {
-  const readings=mitsubishiReadings({},now);
-  assert.deepEqual(readings.map(row=>row.key).sort(), [
-    'native-power','native-mode','native-targetC','native-fan','native-vane','native-wideVane',
-    'telemetry-compressorActive','telemetry-compressorFrequency','telemetry-defrost','telemetry-actualFan',
-    'telemetry-preheat','telemetry-standby','telemetry-faultRaw','telemetry-indoorTemperature',
-    'telemetry-outdoorTemperature','telemetry-power','telemetry-energy','telemetry-energyCounterRaw',
-  ].sort());
-  assert(readings.every(row=>row.value==='Unavailable'&&!row.available));
+test('never-observed readings are absent and unsupported controls stay disabled', () => {
+  assert.deepEqual(mitsubishiReadings({},now),[]);
   const f=panelFixture(), controls=f.status.garage.nativeControls;
   const changed={...f.status,garage:{...f.status.garage,nativeControls:{...controls,settings:{...controls.settings,
     power:{...controls.settings.power,supported:false},mode:{...controls.settings.mode,value:null}}}}};
@@ -156,12 +165,11 @@ test('all known Mitsubishi readings stay visible before telemetry arrives while 
   assert.equal(f.nodes.get('garage-native-submit').disabled,true);
 });
 
-test('invalid diagnostic values remain visible as unavailable without being mistaken for current readings', () => {
+test('invalid diagnostics never create reading rows but previously valid stale readings remain visible', () => {
   const status=fixture();
   for(const quality of ['unknown','unsupported','invalid-value','sentinel']){
     status.garage.adapter.telemetry={energyCounterRaw:{value:0,sourceTime:now,supported:true,quality:[quality]}};
-    const row=mitsubishiReadings(status.garage,now).find(row=>row.key==='telemetry-energyCounterRaw');
-    assert.equal(row.value,'Unavailable');assert.equal(row.available,false);
+    assert.equal(mitsubishiReadings(status.garage,now).find(row=>row.key==='telemetry-energyCounterRaw'),undefined);
   }
   status.garage.adapter.telemetry={compressorFrequency:{value:0,sourceTime:now-120000,supported:true,quality:['stale']}};
   const stale=mitsubishiReadings(status.garage,now).find(row=>row.key==='telemetry-compressorFrequency');
@@ -189,19 +197,44 @@ test('compressor state distinguishes idle from power-on and stays unknown withou
   assert.equal(mitsubishiCompressor(status.garage,now).value,'Unknown','Frequency and selected power do not substitute for compressor state');
 });
 
-test('Mitsubishi field set survives lost, unsupported and invalid telemetry without changing row order', () => {
-  const status=fixture(), expected=mitsubishiReadings(status.garage,now).map(row=>row.key);
-  for(const field of ['compressorActive','compressorFrequency','defrost','actualFan','preheat','standby',
-    'faultRaw','indoorTemperature','outdoorTemperature','power','energy','energyCounterRaw']){
-    for(const reading of [{value:null,supported:false},{value:0,supported:true,quality:['unknown']},
-      {value:false,supported:true,quality:['invalid']}]){
-      status.garage.adapter.telemetry={[field]:{sourceTime:now,...reading}};
-      const rows=mitsubishiReadings(status.garage,now);
-      assert.deepEqual(rows.map(row=>row.key),expected);
-      assert.equal(rows.find(row=>row.key===`telemetry-${field}`).value,'Unavailable');
-    }
+test('reading view remembers real fields through data loss without inventing optional fields', () => {
+  const view=createMitsubishiReadingView(), status=fixture();
+  assert.deepEqual(view({},now),[]);
+  status.garage.adapter.telemetry={
+    compressorActive:{value:false,sourceTime:now,supported:true,quality:['observed-unverified']},
+    compressorFrequency:{value:0,sourceTime:now,supported:true,quality:[]},
+    energyCounterRaw:{value:0,sourceTime:now,supported:true,quality:['unknown']},
+  };
+  const first=view(status.garage,now), keys=first.map(row=>row.key);
+  assert.equal(first.find(row=>row.key==='telemetry-compressorActive').value,'Idle');
+  assert.equal(first.find(row=>row.key==='telemetry-compressorFrequency').value,'0 Hz');
+  assert(!keys.includes('telemetry-energyCounterRaw'));
+  assert(!keys.includes('telemetry-defrost'));
+  for(const telemetry of [{},{compressorActive:{value:null,sourceTime:now+1000,supported:false,quality:['unsupported']}},
+    {compressorActive:{value:true,sourceTime:now+1000,supported:true,quality:['invalid']}}]){
+    const rows=view({adapter:{connected:true,telemetry}},now+1000);
+    assert.deepEqual(rows.map(row=>row.key),keys);
+    assert(rows.every(row=>row.value==='Unavailable'&&!row.available));
+    assert.match(rows.find(row=>row.key==='telemetry-compressorActive').detail,/Last valid report:[\s\S]*Reported: Idle/);
   }
-  assert.deepEqual(mitsubishiReadings({},now).map(row=>row.key),expected);
+  status.garage.adapter.telemetry.compressorActive.value=true;
+  assert.equal(view(status.garage,now+1000).find(row=>row.key==='telemetry-compressorActive').value,'Running');
+  assert.deepEqual(createMitsubishiReadingView()({},now),[],'A new view does not inherit another installation’s readings');
+});
+
+test('late real telemetry appears even at zero and constant reports remain useful', () => {
+  const view=createMitsubishiReadingView(), status=fixture();
+  view(status.garage,now);
+  for(const [field,value] of Object.entries({indoorTemperature:0,outdoorTemperature:0,power:0,energy:0,
+    energyCounterRaw:0,compressorFrequency:0,compressorActive:false,defrost:false,actualFan:0,
+    preheat:false,standby:false,faultRaw:'00000000'})){
+    status.garage.adapter.telemetry[field]={value,sourceTime:now,supported:true,quality:['observed-unverified']};
+  }
+  const rows=view(status.garage,now);
+  assert.equal(rows.length,18,'Every actually reported setting and diagnostic remains available');
+  assert(rows.every(row=>row.available));
+  assert.deepEqual(view(status.garage,now+1000).map(row=>row.value),rows.map(row=>row.value));
+  assert(view(status.garage,now+120000).every(row=>row.value==='Unavailable'));
 });
 
 

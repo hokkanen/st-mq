@@ -65,9 +65,9 @@ export function decodeGarageField(field, definition, { receivedAt, retained = fa
   const supported = field?.supported === true;
   if (!supported) quality.push('unsupported');
   if (field?.decodeVerified !== true) quality.push('decoding-unverified');
-  // Production CN105 booleans are dimensionless (unit:null); the isolated
-  // fixture protocol describes its own boolean unit explicitly.
-  const expectedUnit = definition.boolean && schema === SHELLY_CN105_CONTRACT ? null : definition.unit;
+  // The current publisher uses 'boolean' for actual true/false reports and
+  // null only for absent boolean values. Missing data never implies false.
+  const expectedUnit = definition.boolean && schema === SHELLY_CN105_CONTRACT && field?.value === null ? null : definition.unit;
   if (field?.unit !== expectedUnit) quality.push('units-unverified');
   if (!finiteTime(field?.measuredAt)) quality.push('source-time-unknown');
   else if (field.measuredAt > receivedAt) quality.push('future-source-time');
@@ -77,12 +77,15 @@ export function decodeGarageField(field, definition, { receivedAt, retained = fa
     : definition.boolean ? typeof field?.value === 'boolean'
     : Number.isFinite(field?.value) && field.value >= definition.min && field.value <= definition.max;
   if (!validNumber) quality.push('invalid-value');
-  const usable = !['unknown', 'observed-unverified', 'unsupported', 'invalid', 'stale'].includes(field?.quality)
+  // Reviewed decoder output may be displayed and charted without claiming
+  // installed accuracy or promoting it to control/learning evidence.
+  const diagnosticAvailable = !['unknown', 'unsupported', 'invalid', 'stale'].includes(field?.quality)
     && supported && field?.decodeVerified === true && field?.unit === expectedUnit && validNumber
     && finiteTime(field.measuredAt) && field.measuredAt <= receivedAt && receivedAt - field.measuredAt < maxAgeMs && !retained;
   return { signal: definition.signal, value: validNumber && supported && field?.unit === expectedUnit ? field.value : null,
     unit: definition.unit, sourceTime: finiteTime(field?.measuredAt) ? field.measuredAt : null, receivedAt,
-    quality, supported, usable, bootId, timeBasis, accuracyVerified: field?.accuracyVerified === true,
+    quality, supported, diagnosticAvailable, usable: diagnosticAvailable && field?.quality !== 'observed-unverified',
+    bootId, timeBasis, accuracyVerified: field?.accuracyVerified === true,
     // Counter cadence must describe independent counter updates, not packet frequency.
     updateIntervalMs: Number.isSafeInteger(field?.updateIntervalMs) && field.updateIntervalMs > 0 ? field.updateIntervalMs : null,
     resolution: Number.isFinite(field?.resolution) && field.resolution > 0 ? field.resolution : null,

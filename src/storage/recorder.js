@@ -16,7 +16,7 @@ const stateKey = key => `recorder:signal:${key}`;
 const finiteTime = at => Number.isSafeInteger(at) && Math.abs(at) <= 8640000000000000;
 const numericalFloor = (a,b) => Math.max(1,Math.abs(a??0),Math.abs(b??0))*Number.EPSILON*32;
 const semanticQuality = raw => Object.fromEntries(['usableForControl','verified','retained','cached','installationVerified',
-  'verification','timeBasis','publicationMayUseGatewayCache','basis','reportIntervalMs','reportGraceMs','eventOnly','temperatureRouteSignature'].filter(key=>raw?.[key]!==undefined).map(key=>[key,raw[key]]));
+  'verification','diagnosticAvailable','accuracyVerified','contractVersion','supported','timeBasis','publicationMayUseGatewayCache','basis','reportIntervalMs','reportGraceMs','eventOnly','temperatureRouteSignature'].filter(key=>raw?.[key]!==undefined).map(key=>[key,raw[key]]));
 // Source validity is independent of the recording budget/maximum spacing.
 // Increasing storage compression must never make old measurements fresher.
 // Room and garage readings remain the last reported measurement until replaced.
@@ -549,6 +549,7 @@ function compactRaw(raw) {
   // information. Retain interpretation, quality and lineage used by consumers.
   const allowed = ['usableForControl','timeBasis','sensorMeasuredAt','installationVerified','verification','register',
     'verified','retained','cached','publicationMayUseGatewayCache','verificationEvidence',
+    'diagnosticAvailable','accuracyVerified','contractVersion','supported',
     'basis','energyBasis','source','issuedAt','fetchedAt','snapshotId','provenance','intervalStart','intervalEnd','durationMs',
     'modelVersion','controllerPhase','estimated','forecast','reportIntervalMs','reportGraceMs',
     'reportPolicyChangedAt','originalReportReceivedAt','originalReportSourceTime','originalReportTimeBasis','transportRecoveredAt','temperatureRouteSignature'];

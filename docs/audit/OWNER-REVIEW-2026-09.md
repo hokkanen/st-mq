@@ -4,6 +4,13 @@ The Easee local-access assumptions and commissioning limits in this historical
 record are superseded by [automatic OCPP setup and native control](OCPP-SETUP.md).
 The validation counts below describe this earlier review and remain unchanged.
 
+Correction from the subsequent Mitsubishi review (2026-09-24): the compressor
+change below used an outdated fixture assumption. The current Pill MQTT
+publisher sends actual booleans with `unit:"boolean"`, not `null`. Rejecting that
+format hid working activity reports. Current decoding now matches the publisher,
+and reviewed provisional diagnostic values can be recorded/charted without
+becoming control or learning evidence. See [garage adapter](../garage-adapter.md#electrical-accounting).
+
 Reviewed the observations from `f017684f70` against the audited `ee74801` baseline.
 All implementation and validation uses offline fixtures; no household device,
 private configuration, export or broker was opened or operated.

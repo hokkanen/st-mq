@@ -32,3 +32,29 @@ Completed 2026-09-24 — Mitsubishi information visibility and UI wording
   passed after preserving unavailable producer diagnostics. Dashboard build and
   synthetic Chromium checks passed for stable fields, compressor transitions,
   details, controls and 320/390/1440px layouts in both themes.
+
+Completed 2026-09-24 — Mitsubishi publisher contract and useful readings
+- Correct the earlier audit conclusion above: 9c3b4a4 introduced a boolean-unit
+  regression by assuming a captured fixture represented the current publisher.
+  The live publisher code uses boolean units for real on/off values. Correct
+  decoder, fixture provenance, assertions and documentation together.
+- Record reviewed provisional compressor diagnostics as 1/0 with original clocks
+  and quality, preserving strict control/learning qualification. Keep invalid and
+  missing data as gaps, including known disconnects/reboots and expired reports.
+- Show real reported Mitsubishi fields in their own Heat-pump readings fold.
+  Hide never-observed placeholders; preserve genuine zero/false and temporarily
+  unavailable previously observed fields. Compressor stays in the summary.
+- Finish mouse/touch setting selection by focusing its value editor, addressing
+  the selector reopening reported on Samsung Internet in Android DeX. Keyboard
+  selection retains focus; periodic updates preserve edits and editor focus.
+  Compared with f017684 (September 22): selector markup, option rebuilding and
+  selection handlers were unchanged today. New page-visibility refresh is only
+  an unverified possible trigger; the exact Samsung cause is not established.
+- No historical data backfill, obsolete decoder support or schema migration is
+  introduced. Validation uses the current publisher shape, actual ingest, temporary
+  disk SQLite/reopen and chart API/datasets. Focused checks passed: 122 backend,
+  39 chart/integration and 41 UI tests, plus 85 publisher tests in its own checkout.
+  Final outage-recovery corrections passed all 37 publisher-contract and SQLite/
+  chart integration checks, including malformed packets and repeated outages.
+  Fresh-build Chromium smoke passed for selection/focus, controls, data loss,
+  help and both themes at 320/390/1440px. Samsung/DeX hardware was not available. The full suite is intentionally not run during these UI changes.
