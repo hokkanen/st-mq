@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
+import { isDeepStrictEqual } from 'node:util';
 import { join } from 'node:path';
 import { lstat, open, rm } from 'node:fs/promises';
 import { acceptsLineage, compareAuthority, NODE_PATTERN, PairState, pairError, validClaim } from './state.js';
@@ -475,13 +476,19 @@ export class PairManager {
   async handover() {
     if (!this.canControl()) throw pairError('not_primary');
     const claim = this.state.claim(), token = randomUUID();
-    const remote = await this.peer.request('handover-prepare', { claim, token });
+    const ocpp = await this.hooks.handoverRequirements?.() ?? null;
+    const remote = await this.peer.request('handover-prepare', { claim, token, ocpp });
     if (remote.role !== 'replica') throw pairError('invalid_transition');
-    await this.state.update({ transition: { kind: 'handover', phase: 'stopping', token, peerNodeId: remote.nodeId } });
+    if (!Object.hasOwn(remote, 'ocpp') || !isDeepStrictEqual(remote.ocpp, ocpp)) throw pairError('ocpp_handover_not_ready');
+    if (!this.canControl() || this.state.value.epoch !== claim.epoch) throw pairError('authority_changed');
+    await this.state.update(value => {
+      if (!this.canControl() || value.epoch !== claim.epoch) throw pairError('authority_changed');
+      return { transition: { kind: 'handover', phase: 'stopping', token, peerNodeId: remote.nodeId } };
+    });
     try {
       // Graceful restoration is allowed until it is flushed. Authority-loss
       // demotion can still synchronously revoke the gate during this await.
-      await this.hooks.stopControl?.({ restore: true });
+      await this.hooks.stopControl?.({ restore: true, preserveOcpp: true });
       this.activeAllowed = false;
       await this.vip.release();
       if (this.state.value.role !== 'primary') throw pairError('authority_changed');
@@ -590,11 +597,18 @@ export class PairManager {
     if (operation === 'snapshot-chunk') return this.snapshots.chunk(body);
     if (operation === 'handover-prepare') {
       if (!validClaim(body.claim) || body.claim.role !== 'primary' || !NODE_PATTERN.test(body.token ?? '')) throw pairError('invalid_transition');
+      if (!Object.hasOwn(body, 'ocpp')) throw pairError('ocpp_handover_not_ready');
       await this.assertReplica(body.claim);
       if (this.busy) throw pairError('peer_busy');
-      await this.state.update({ transition: { kind: 'handover', phase: 'prepared', token: body.token,
-        peerNodeId: body.claim.nodeId, epoch: body.claim.epoch } });
-      return this.state.claim();
+      this.busy = true;
+      try {
+        if (body.ocpp !== null && (!this.hooks.prepareHandover || !this.hooks.verifyHandover)) throw pairError('ocpp_handover_not_ready');
+        await this.hooks.prepareHandover?.(body.ocpp);
+        await this.assertReplica(body.claim);
+        await this.state.update({ transition: { kind: 'handover', phase: 'prepared', token: body.token,
+          peerNodeId: body.claim.nodeId, epoch: body.claim.epoch, ocpp: body.ocpp } });
+        return { ...this.state.claim(), ocpp: body.ocpp };
+      } finally { this.busy = false; }
     }
     if (operation === 'handover-stage') {
       if (this.busy || this.state.value.transition?.token !== body.token || this.state.value.role !== 'replica') throw pairError('invalid_transition');
@@ -603,7 +617,8 @@ export class PairManager {
       this.busy = true;
       try {
         this.syncAbort?.abort(pairError('authority_changed')); await this.syncTask;
-        await this.installReplica(metadata, { signal: this.abort.signal });
+        const publication = await this.installReplica(metadata, { signal: this.abort.signal });
+        await this.hooks.verifyHandover?.({ dbPath: publication.dbPath, requirements: this.state.value.transition.ocpp });
         await this.state.update({ transition: { ...this.state.value.transition, phase: 'staged' } });
         return this.state.claim();
       } finally { this.busy = false; }
@@ -614,7 +629,13 @@ export class PairManager {
       const remote = await this.peer.request('status', { claim: this.state.claim() });
       if (remote.claim?.role !== 'protected' || remote.claim.transition?.phase !== 'released') throw pairError('invalid_transition');
       this.busy = true;
-      try { await this.promote({ handover: true }); return { ...this.state.claim(), accepted: this.state.value.accepted }; }
+      try {
+        const publication = await readReplicaPublication(this.config.replicaDirectory);
+        if (!publication || publication.generation !== this.state.value.accepted?.generation) throw pairError('verification_failed');
+        await this.hooks.verifyHandover?.({ dbPath: publication.dbPath, requirements: this.state.value.transition.ocpp });
+        await this.promote({ handover: true });
+        return { ...this.state.claim(), accepted: this.state.value.accepted };
+      }
       finally { this.busy = false; }
     }
     if (operation === 'release') {

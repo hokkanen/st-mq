@@ -108,6 +108,100 @@ test('graceful handover commits final snapshot, demotion survives restart and la
   assert.equal(db.prepare('SELECT value FROM observations').get().value, 20); db.close();
 });
 
+test('OCPP readiness refusal leaves the current primary and its VIP running', async t => {
+  const root = await fixture(t), requirements = { version: 1, fingerprint: 'a'.repeat(64) };
+  const source = await manager(t, root, 'source', { hooks: { handoverRequirements: () => requirements } });
+  const target = await manager(t, root, 'target', { role: 'replica', hooks: {
+    prepareHandover: async received => {
+      assert.deepEqual(received, requirements);
+      throw Object.assign(Error('private configuration diagnostic'), { code: 'ocpp_handover_not_ready' });
+    },
+    verifyHandover: async () => {},
+  } });
+  connect(source, target);
+  await assert.rejects(source.action('handover', command()), { code: 'ocpp_handover_not_ready' });
+  assert.equal(source.canControl(), true); assert.equal(source.vip.status().owned, true);
+  assert.equal(source.calls.some(call => call[0] === 'stop'), false);
+  assert.equal(source.state.value.transition, null); assert.equal(target.state.value.transition, null);
+  assert.equal(source.status().error, 'ocpp_handover_not_ready');
+  assert.doesNotMatch(JSON.stringify(source.status()), /private configuration/);
+});
+
+test('handover requires current OCPP readiness acknowledgement before stopping', async t => {
+  const root = await fixture(t), source = await manager(t, root, 'source');
+  const target = await manager(t, root, 'target', { role: 'replica' }); connect(source, target);
+  await assert.rejects(target.handlePeer('handover-prepare', { claim: source.state.claim(), token: randomUUID() }),
+    { code: 'ocpp_handover_not_ready' });
+  const request = source.peer.request.bind(source.peer);
+  source.peer.request = async (operation, ...args) => {
+    const response = await request(operation, ...args);
+    if (operation === 'handover-prepare') delete response.ocpp;
+    return response;
+  };
+  await assert.rejects(source.action('handover', command()), { code: 'ocpp_handover_not_ready' });
+  assert.equal(source.canControl(), true);
+  assert.equal(source.calls.some(call => call[0] === 'stop'), false);
+});
+
+test('final handover snapshot preserves OCPP transactions and setup after listener shutdown', async t => {
+  const root = await fixture(t), requirements = { version: 1, fingerprint: 'b'.repeat(64) };
+  let source, checked = 0;
+  const ledger = { version: 1, activeId: 17, nextId: 18, transactions: [{ id: 17, meterStart: 123 }] };
+  const setup = { version: 1, fingerprint: requirements.fingerprint, phase: 'configured' };
+  source = await manager(t, root, 'source', { hooks: {
+    handoverRequirements: () => requirements,
+    stopControl: async () => {
+      const store = new Store(source.config.databasePath);
+      try { store.setState('easee:ocpp', ledger); store.setState('easee:ocpp-setup', setup); }
+      finally { store.close(); }
+    },
+  } });
+  const target = await manager(t, root, 'target', { role: 'replica', hooks: {
+    prepareHandover: async received => assert.deepEqual(received, requirements),
+    verifyHandover: async ({ dbPath, requirements: received }) => {
+      assert.deepEqual(received, requirements);
+      const store = new Store(dbPath, { readOnly: true });
+      try { assert.deepEqual(store.getState('easee:ocpp'), ledger); assert.deepEqual(store.getState('easee:ocpp-setup'), setup); }
+      finally { store.close(); }
+      checked++;
+    },
+  } });
+  connect(source, target); await target.synchronize(source.state.claim());
+  await source.action('handover', command());
+  assert.equal(checked, 2); assert.equal(target.canControl(), true);
+  const store = new Store(target.state.value.activeDbPath, { readOnly: true });
+  try { assert.deepEqual(store.getState('easee:ocpp'), ledger); assert.deepEqual(store.getState('easee:ocpp-setup'), setup); }
+  finally { store.close(); }
+});
+
+test('final OCPP verification failure leaves both controllers fenced', async t => {
+  const root = await fixture(t), source = await manager(t, root, 'source');
+  const target = await manager(t, root, 'target', { role: 'replica', hooks: {
+    verifyHandover: async () => { throw Object.assign(Error(), { code: 'ocpp_handover_not_ready' }); },
+  } });
+  connect(source, target);
+  await assert.rejects(source.action('handover', command()), { code: 'ocpp_handover_not_ready' });
+  assert.equal(source.canControl(), false); assert.equal(target.canControl(), false);
+  assert.equal(source.state.value.role, 'protected'); assert.equal(target.state.value.role, 'replica');
+  assert.equal(source.vip.status().owned, false); assert.equal(target.vip.status().owned, false);
+});
+
+test('authority lost during readiness check cannot start a restoring shutdown', async t => {
+  const root = await fixture(t), source = await manager(t, root, 'source');
+  let prepared, proceed;
+  const entered = new Promise(resolve => { prepared = resolve; });
+  const paused = new Promise(resolve => { proceed = resolve; });
+  const target = await manager(t, root, 'target', { role: 'replica', hooks: {
+    prepareHandover: async () => { prepared(); await paused; },
+  } });
+  connect(source, target);
+  const transfer = source.action('handover', command()).catch(error => error);
+  await entered; await source.demote('synthetic'); proceed();
+  assert.equal((await transfer).code, 'authority_changed');
+  assert.equal(source.canControl(), false);
+  assert.equal(source.calls.some(call => call[0] === 'stop' && call[1] === true), false);
+});
+
 test('database rollback breaks lineage and protects a more complete replica', async t => {
   const root = await fixture(t), source = await manager(t, root, 'source');
   const replica = await manager(t, root, 'replica', { role: 'replica' }); connect(source, replica);

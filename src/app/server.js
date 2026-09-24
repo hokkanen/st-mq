@@ -140,7 +140,7 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
           if (controlAuthority && !controlAuthority.canControl())
             return json(409, { error: 'Another ST-MQ controller owns device control. This instance is protected.' });
           if (pairContext?.recovering() && ['/api/fireplace', '/api/fireplace/remove', '/api/sensor-changes',
-            '/api/sensor-changes/revert', '/api/sensor-changes/retry-rebuild', '/api/settings/reload'].includes(url.pathname))
+            '/api/sensor-changes/revert', '/api/sensor-changes/retry-rebuild', '/api/settings/reload', '/api/charging/ocpp-setup'].includes(url.pathname))
             return json(409, { error: 'Historical recovery is running. Wait before changing source corrections or configuration.' });
           return action(getEngine(), input);
         };
@@ -148,6 +148,22 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
         if (readContext && !readContext.store) return json(503, { error: 'Waiting for a verified primary snapshot.' });
         if (req.method === 'GET' && url.pathname === '/api/database-export')
           return await exportDatabase({ store: readerStore, response: res, authorized: stillAuthorized });
+        if (req.method === 'POST' && url.pathname === '/api/charging/ocpp-setup')
+          return await mutate(async (current, input) => {
+            if (!input || typeof input !== 'object' || Array.isArray(input)
+              || Object.keys(input).sort().join(',') !== 'action,revision'
+              || input.action !== 'adopt' || !/^[a-f0-9]{64}$/.test(input.revision))
+              return json(400, { error: 'Invalid local charger setup request.' });
+            if (!current.ocppSetup) return json(409, { error: 'Local charger setup is unavailable.' });
+            try { return json(200, { setup: await current.ocppSetup.adopt(input.revision) }); }
+            catch (error) {
+              const message = error.code === 'ocpp-setup-changed'
+                ? 'Charger setup changed. Review the current configuration before trying again.'
+                : error.code === 'authority-revoked' ? 'This instance no longer owns charger setup.'
+                  : 'Charger setup could not be confirmed. Review its status before trying again.';
+              return json(error.statusCode ?? 503, { error: message });
+            }
+          });
         if (req.method === 'GET' && url.pathname === '/api/fireplace') return json(200, engine.fireplaceStatus());
         if (req.method === 'GET' && url.pathname === '/api/sensor-changes') return json(200, sensorChangesStatus());
         if (req.method === 'POST' && url.pathname === '/api/sensor-changes')

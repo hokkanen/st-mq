@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { dashboardProviders, describeProvider, outdoorSourceLabel, providerName, providerSeries, temperatureReadingStatus } from '../chart/provider-status.js';
+import { dashboardProviders, describeProvider, easeeLocalConnectionDisplay, outdoorSourceLabel, providerName, providerSeries, temperatureReadingStatus } from '../chart/provider-status.js';
 import { H66_REGISTERS } from '../src/domain/telemetry.js';
 import { ELECTRICITY_FIELDS } from '../src/acquisition/devices.js';
 
@@ -725,5 +725,77 @@ test('Data and settings propagates the actual local/cloud source for each electr
   assert.equal(rows.get('property_active_power').source, 'Easee cloud');
   assert.equal(rows.get('ev1_energy_l1').source, 'Calculated from Easee local OCPP');
   assert.match(rows.get('ev1_voltage_l1').detail, /phase-to-neutral/);
-  assert.match(group.display.detail, /Native charging schedules and property readings use Easee cloud/);
+  assert.match(group.display.detail, /Native OCPP takes over charging authorization and schedules; property readings use Easee cloud/);
+});
+
+test('automatic charger setup remains visible independently of working cloud readings', () => {
+  const easee = { status: 'ok', currentReadings: easeeReadings(),
+    localOcpp: { configured: true, connected: false, available: false,
+      setup: { state: 'retrying', endpointSource: 'pairing-vip', nextAttemptAt: now + 60_000 } } };
+  const group = dashboardProviders({ providers: { easee } }, options).find(row => row.key === 'electricity');
+  assert.equal(group.display.state, 'Available', 'A cloud setup failure does not invalidate usable electricity readings');
+  assert.equal(group.localConnection.setup.tone, 'attention');
+  assert.equal(group.localConnection.setup.label, 'Retrying setup');
+  assert.match(group.localConnection.setup.detail, /retry automatically.*Next setup attempt 10:01/);
+  assert.equal(group.localConnection.endpoint, 'Paired virtual address');
+  assert.match(group.localConnection.detail, /other computer must be ready/);
+  assert.equal(group.localConnection.readings.label, 'Waiting for connection');
+  assert.match(group.localConnection.readings.detail, /cloud readings remain the backup/);
+  assert.match(group.display.detail, /Charger setup: Retrying setup/);
+});
+
+test('completed setup does not imply complete fresh local measurements', () => {
+  const localOcpp = { configured: true, connected: true, available: false,
+    setup: { state: 'ready', endpointSource: 'configured' }, pendingConfiguration: ['MeterValuesSampledData'] };
+  let display = easeeLocalConnectionDisplay({ localOcpp }, options);
+  assert.equal(display.setup.label, 'Setup complete');
+  assert.match(display.outage, /Normal service stop requests a return to cloud control.*paired handover keeps OCPP active/);
+  assert.match(display.outage, /crash or power loss.*waiting for approval.*Restart ST-MQ or disable Direct OCPP/);
+  assert.match(display.outage, /Expiring pauses do not restore cloud authorization/);
+  assert.equal(display.readings.label, 'Waiting for readings');
+  assert.match(display.readings.detail, /acknowledge measurement settings/);
+  assert.equal(display.endpoint, 'Configured standalone address');
+  localOcpp.available = true;
+  localOcpp.pendingConfiguration = [];
+  display = easeeLocalConnectionDisplay({ localOcpp }, options);
+  assert.equal(display.readings.label, 'Available');
+  assert.equal(display.readings.tone, 'available');
+  localOcpp.configurationFailures = ['MeterValuesAlignedData'];
+  display = easeeLocalConnectionDisplay({ localOcpp }, options);
+  assert.equal(display.setup.label, 'Setup complete');
+  assert.equal(display.readings.tone, 'attention');
+  assert.match(display.readings.detail, /did not accept all measurement settings/);
+});
+
+test('standalone endpoint requirement directs configuration without exposing private setup data', () => {
+  const setup = { state: 'needs-endpoint', endpointSource: null, reason: 'synthetic-private-reason',
+    endpoint: 'ws://synthetic-private-host:9001/ocpp', password: 'synthetic-private-password' };
+  const display = easeeLocalConnectionDisplay({ localOcpp: { configured: false, setup } }, options);
+  assert.equal(display.setup.label, 'Address needed');
+  assert.match(display.setup.detail, /standalone address that the charger can reach.*apply configuration/);
+  assert.match(display.setup.detail, /Paired installations use their shared virtual address automatically/);
+  assert.doesNotMatch(JSON.stringify(display), /synthetic-private/);
+  for (const state of ['constructor', '__proto__', 'synthetic-private-state']) {
+    setup.state = state;
+    const unknown = easeeLocalConnectionDisplay({ localOcpp: { setup } }, options);
+    assert.equal(unknown.setup.label, 'Checking setup');
+    assert.doesNotMatch(JSON.stringify(unknown), /constructor|__proto__|synthetic-private/);
+  }
+});
+
+test('native control readiness and exclusive cloud handover are pending rather than failed readings', () => {
+  for (const [reason, label, detail] of [
+    ['native-control-unavailable', 'Activation pending', /native scheduling and plug-in authorization.*current charging control is preserved/],
+    ['cloud-schedule-active', 'Waiting for cloud schedule', /cloud schedule owns charging.*preserving it/],
+    ['control-transition-pending', 'Control handover pending', /finishing the current charging instruction.*confirmed handover/],
+  ]) {
+    const group = dashboardProviders({ providers: { easee: { status: 'ok', currentReadings: easeeReadings(),
+      localOcpp: { configured: true, setup: { state: 'blocked', reason, endpointSource: 'pairing-vip' } } } } }, options)
+      .find(row => row.key === 'electricity');
+    assert.equal(group.display.state, 'Available');
+    assert.equal(group.localConnection.setup.label, label);
+    assert.equal(group.localConnection.setup.tone, 'pending');
+    assert.match(group.localConnection.setup.detail, detail);
+    assert.doesNotMatch(group.localConnection.detail, /cloud schedules.*unchanged|schedules.*still use.*cloud/);
+  }
 });

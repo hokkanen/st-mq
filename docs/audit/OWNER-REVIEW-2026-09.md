@@ -1,5 +1,9 @@
 # September owner review implementation tracker
 
+The Easee local-access assumptions and commissioning limits in this historical
+record are superseded by [automatic OCPP setup and native control](OCPP-SETUP.md).
+The validation counts below describe this earlier review and remain unchanged.
+
 Reviewed the observations from `f017684f70` against the audited `ee74801` baseline.
 All implementation and validation uses offline fixtures; no household device,
 private configuration, export or broker was opened or operated.

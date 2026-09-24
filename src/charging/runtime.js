@@ -108,7 +108,10 @@ export class ChargingRuntime {
     if (!record) throw new Error('Unknown charger');
     return record;
   }
-  ownershipKey(id) { return `${this.key}:${id}:${this.charger(id).association}:ownership`; }
+  ownershipKey(id) {
+    const item = this.charger(id);
+    return `${this.key}:${id}:${item.association}:ownership${item.adapter?.ownershipNamespace === 'ocpp' ? ':ocpp' : ''}`;
+  }
   savedOwnership(id) { return this.charger(id).ownershipAdmitted ? this.store.getState(this.ownershipKey(id)) ?? null : null; }
   persist() {
     const view = this.status();
@@ -168,6 +171,37 @@ export class ChargingRuntime {
       if (generation === item.adapterGeneration) item.adapterPending = false;
     });
     return item.adapterFlight;
+  }
+  async pauseForBackendChange(id) {
+    const item = this.charger(id);
+    if (this.closed) throw new Error('Charging backend transition is unavailable.');
+    if (item.backendTransition?.flight) return item.backendTransition.flight;
+    if (item.backendTransition?.ready) return;
+    const transition = item.backendTransition ??= { ready: false };
+    transition.flight = (async () => {
+      if (item.adapterPending) await item.adapterFlight;
+      const control = item.controller ? await item.controller.update({ enabled: false }) : this.savedOwnership(id);
+      // An empty controller can report failed readback when the charger is
+      // already in OCPP mode. Only our durable restrictions block this drain;
+      // setup separately verifies the remote backend before commissioning.
+      if (this.closed || control?.owned || control?.pending)
+        throw new Error('Charging backend transition is blocked until the current restriction is released.');
+      transition.ready = true; item.error = null;
+    })().catch(() => {
+      item.error = 'charging-backend-transition-blocked';
+      throw new Error('Charging backend transition is blocked until the current restriction is released.');
+    }).finally(() => { delete transition.flight; });
+    return transition.flight;
+  }
+  async finishBackendChange(id, adapter) {
+    const item = this.charger(id), transition = item.backendTransition;
+    if (this.closed || !transition?.ready) throw new Error('Charging backend transition has not been prepared.');
+    await this.setAdapter(id, adapter);
+    if (this.closed || item.backendTransition !== transition || item.adapter !== adapter || !item.controller
+      || item.error === 'charging-adapter-unavailable')
+      throw new Error('Charging backend transition could not activate its controller.');
+    item.backendTransition = null; item.lastReconcileAt = null;
+    this.tick({ force: true });
   }
   receiveEaseeObservation(observation) {
     if (this.closed || !this.canControl()) return false;
@@ -297,7 +331,8 @@ export class ChargingRuntime {
       }
       if (item.adapter?.capabilities) result[id].capabilities = { ...result[id].capabilities, ...item.adapter.capabilities };
       if (result[id].scheduledStartAt?.available && Number.isSafeInteger(control?.owned?.startAt)
-        && control.owned.activeFingerprint === effectiveScheduleFingerprint(snapshot.schedule))
+        && (snapshot.transport === 'ocpp' ? control.ownsInstruction === true
+          : control.owned.activeFingerprint === effectiveScheduleFingerprint(snapshot.schedule)))
         result[id].scheduledStartAt = { ...result[id].scheduledStartAt, value: control.owned.startAt };
       if (item.vehicleDisconnect?.source === 'easee-stream' && (control?.session?.connectedAt === item.vehicleDisconnect.endedConnectedAt || control?.vehicleDisconnect?.awaitingConnection))
         result[id].connected = { value: false, available: true, source: 'easee-stream', measuredAt: item.vehicleDisconnect.measuredAt };
@@ -324,7 +359,8 @@ export class ChargingRuntime {
         }
         const bmwPause = bmw?.mqtt.subscribed && matchBmwControlledPause(bmw.reading, { connectedAt, lastDisconnectedAt: session.lastDisconnectedAt,
           chargingAt: evidence.chargingTimes, stoppedAt: evidence.stoppedTimes, now, consumedChargingId: item.vehicleMatch?.id === 'bmw' ? null : bmw.consumedChargingId,
-          pause: { ownedCurrent: Boolean(control.owned && snapshot?.online && control.owned.activeFingerprint === effectiveScheduleFingerprint(snapshot.schedule)),
+          pause: { ownedCurrent: Boolean(control.owned && snapshot?.online && snapshot.transport !== 'ocpp'
+              && control.owned.activeFingerprint === effectiveScheduleFingerprint(snapshot.schedule)),
             confirmedAt: control.owned?.confirmedAt, requestedAt: control.owned?.requestedAt, startAt: control.owned?.startAt, manual: Boolean(control.manual),
             reason: snapshot?.reason, reasonAt: snapshot?.reasonAt, charging: result[id].charging?.value } });
         if (bmwPause) { candidates[id].push('bmw'); evidence.bmwReason = 'matched-controlled-pause'; }
@@ -407,6 +443,9 @@ export class ChargingRuntime {
   }
   controlStatus(id) {
     const item = this.charger(id), enabled = this.settings.chargers[id].enabled;
+    if (item.backendTransition) return { ...(item.controller?.status() ?? this.savedOwnership(id) ?? {}),
+      phase: 'unavailable', reason: 'Charging control is held while the charger backend is being changed.',
+      errorCode: item.backendTransition.ready ? 'charging-backend-transition' : 'charging-backend-transition-blocked' };
     if (item.controller) return item.controller.status();
     const outstanding = this.savedOwnership(id), handoverOutstanding = Boolean(outstanding?.owned || outstanding?.pending);
     return { phase: enabled ? 'unavailable' : 'off', handoverConfirmed: !enabled && !handoverOutstanding,
@@ -649,7 +688,7 @@ export class ChargingRuntime {
     if (Array.isArray(prices)) { this.prices = prices; this.pricesInitialized = true; }
     try {
       this.updatePlan(now);
-      for (const [id, item] of Object.entries(this.chargers)) if (item.controller && (force || item.lastReconcileAt === null || now - item.lastReconcileAt >= MINUTE))
+      for (const [id, item] of Object.entries(this.chargers)) if (item.controller && !item.backendTransition && (force || item.lastReconcileAt === null || now - item.lastReconcileAt >= MINUTE))
         void this.reconcile(id).catch(() => { item.error = 'charging-reconciliation-unavailable'; });
       this.error = null;
     } catch { this.error = 'charging-planning-unavailable'; }
@@ -667,8 +706,9 @@ export class ChargingRuntime {
   async reconcile(id, { resume = false } = {}) {
     if (id === undefined) { await Promise.all(Object.keys(this.chargers).map(key => this.reconcile(key))); return; }
     const item = this.charger(id);
+    if (item.backendTransition) return;
     if (item.adapterPending) await item.adapterFlight;
-    if (!item.controller || this.closed) return;
+    if (!item.controller || this.closed || item.backendTransition) return;
     if (!this.flushStreamEvidence()) { this.scheduleStreamReconcile(1000); return; }
     const controller = item.controller, settings = this.settings.chargers[id];
     item.lastReconcileAt = this.clock();

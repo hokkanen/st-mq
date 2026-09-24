@@ -3,6 +3,7 @@ import { PROVIDER_CURRENT_ATTENTION_MS, PROVIDER_TEMPERATURE_ATTENTION_MS } from
 import { join } from 'node:path';
 import { createHttp, providerFailureCode } from './http.js';
 import { fileTokenStore } from './token-store.js';
+import { ocppInstallation } from './easee-ocpp-setup.js';
 import { createDeviceProviders } from './devices.js';
 import { fetchMarket } from './market.js';
 import { resolveMarketIntervals } from '../domain/market-authority.js';
@@ -158,18 +159,43 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
   devices, market = fetchMarket, weather = fetchWeather, outdoor = fetchOutdoorTemperature,
   temperatureProvider, automatic = true, canControl = () => true, streamFactory } = {}) {
   const connections = config.connections ?? {};
-  http ??= createHttp({ allowChargerScheduling: true, canControl });
+  http ??= createHttp({ allowChargerScheduling: true, allowOcppSetup: true, canControl });
   const location = configuredLocation(connections);
   const ownsDevices = !devices;
+  let localInstallation;
+  if (ownsDevices) {
+    try { localInstallation = ocppInstallation(config, { createCredential: canControl() }); }
+    catch { localInstallation = { ...ocppInstallation(config), password: '' }; }
+  }
   // This poll supplies the FMI → Open-Meteo weather fallbacks. The engine
   // uses only these weather sources for outdoor temperature.
   devices ??= createDeviceProviders({ connections, http, clock, canControl, streamFactory,
     retryState: store.getState('providers:health')?.easee,
     ocppState: { get: () => store.getState('easee:ocpp'), set: value => store.setState('easee:ocpp', value) },
+    ocppSetupState: { get: () => store.getState('easee:ocpp-setup'), set: value => store.setState('easee:ocpp-setup', value) },
+    ocppInstallation: localInstallation,
+    onOcppControlTransition: async ({ phase, adapter }) => {
+      const charging = engine.charging;
+      if (!charging?.pauseForBackendChange || !charging?.finishBackendChange)
+        throw Object.assign(new Error('Native charging control is unavailable'), { code: 'native-control-unavailable' });
+      try {
+        if (phase === 'prepare') return await charging.pauseForBackendChange('charger1');
+        const item = charging.charger('charger1');
+        if (item.backendTransition) return await charging.finishBackendChange('charger1', adapter);
+        if (item.adapter !== adapter) {
+          await charging.setAdapter('charger1', adapter);
+          if (item.adapter !== adapter || item.error === 'charging-adapter-unavailable') throw new Error('Adapter unavailable');
+        }
+      } catch { throw Object.assign(new Error('Charging control transition remains pending'), { code: 'control-transition-pending' }); }
+    },
     fallbackIntervalMs: config.acquisition?.easeeIntervalMs ?? 15_000,
     onStreamDisconnect: ids => interruptElectricity(ids),
     onChargerObservation: observation => engine.charging?.receiveEaseeObservation(observation),
     tokenStore: fileTokenStore(join(config.dataDir, 'easee-tokens.json'), connections.easee ?? {}) });
+  engine.ocppSetup = {
+    status: () => devices.localOcppStatus?.() ?? null,
+    adopt: revision => devices.adoptOcpp?.(revision) ?? Promise.reject(Object.assign(new Error('Local charger setup is unavailable.'), { statusCode: 409 })),
+  };
   if (connections.easee?.charger_id && devices.chargerScheduleControl)
     engine.charging?.setAdapter('charger1', devices.chargerScheduleControl());
   // Vehicle identification is continuous passive runtime work. No Easee current probe.
@@ -444,6 +470,10 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
 
   function runDue() {
     if (closed || !canControl()) return Promise.resolve([]);
+    if (ownsDevices && !pending.has('ocpp-setup')) {
+      const flight = Promise.resolve(devices.reconcileOcpp?.()).catch(() => {}).finally(() => pending.delete('ocpp-setup'));
+      pending.set('ocpp-setup', flight);
+    }
     for (const [name, job] of Object.entries(definitions)) {
       const streamRecovered = name === 'easee' && health[name].error && devices.canSampleStream?.()
         && clock() - (health[name].lastAttemptAt ?? -Infinity) >= job.period;
@@ -462,11 +492,17 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
   }
   return {
     runDue,
+    async restoreOcpp() {
+      if (closed || !ownsDevices) return;
+      clearInterval(timer);
+      await devices.restoreOcpp?.();
+    },
     async close() {
       if (closed) return;
       if (ownsDevices && devices.streamStatus?.())
         interruptElectricity([easee.charger_id, easee.equalizer_id].filter(present));
       closed = true; clearInterval(timer);
+      engine.ocppSetup = null;
       cancellation.abort(); http.close?.();
       await Promise.allSettled([...pending.values(), ...(ownsDevices ? [devices.close?.()] : [])]);
     },

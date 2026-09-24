@@ -14,6 +14,8 @@ import { createHash } from 'node:crypto';
 import { CHARGING_OBSERVATION_IDS, createEaseeScheduleAdapter } from '../charging/easee.js';
 import { createEaseeStream } from './easee-stream.js';
 import { createEaseeOcpp } from './easee-ocpp.js';
+import { createOcppSetup, isOcppSetupState } from './easee-ocpp-setup.js';
+import { createOcppScheduleAdapter } from '../charging/ocpp.js';
 import { ProviderError, providerFailureCode } from './http.js';
 
 const CURRENT_DEVICES = [
@@ -230,7 +232,9 @@ function annotateElectricalCurrents(rows) {
  * configured devices. No provider is contacted until a returned method is invoked.
  */
 export function createDeviceProviders({ connections = {}, http, tokenStore, clock = Date.now, canControl = () => true,
-  streamFactory = createEaseeStream, ocppFactory = createEaseeOcpp, ocppState, onStreamDisconnect = () => {}, onChargerObservation = () => {}, retryState,
+  streamFactory = createEaseeStream, ocppFactory = createEaseeOcpp, ocppState, ocppSetupState, ocppInstallation,
+  onOcppControlTransition,
+  onStreamDisconnect = () => {}, onChargerObservation = () => {}, retryState,
   fallbackIntervalMs = 15_000 } = {}) {
   if (typeof http?.json !== 'function') throw new TypeError('An HTTP JSON transport is required');
   const easee = { ...connections.easee };
@@ -250,14 +254,64 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
         code: providerFailureCode({ code: retryState.error, status }), status });
   }
   const lifetime = new AbortController();
-  let closed = false, stream = null, streaming = false, electricityEpoch = 0;
+  let closed = false, stream = null, streaming = false, electricityEpoch = 0, nativeStopped = false, restoringOcpp = false;
   const streamedElectricity = new Set(), transports = new Map(), reconcileAt = new Map();
-  const local = ocppFactory({ config: easee.local_ocpp, chargerId: easee.charger_id, clock, canControl, state: ocppState,
+  let savedOcppSetup, invalidOcppSetup = false;
+  try {
+    savedOcppSetup = ocppSetupState?.get?.();
+    invalidOcppSetup = Boolean(ocppInstallation && !isOcppSetupState(savedOcppSetup, ocppInstallation.scope));
+  } catch { invalidOcppSetup = true; }
+  const restorationPending = !invalidOcppSetup && Boolean(savedOcppSetup?.ownedFingerprint || savedOcppSetup?.intent);
+  let controlBackend = invalidOcppSetup ? 'transition' : restorationPending ? 'native' : 'cloud';
+  const localConfig = ocppInstallation ? { ...easee.local_ocpp, password: ocppInstallation.password,
+    enabled: !invalidOcppSetup && (ocppInstallation.enabled || restorationPending) } : easee.local_ocpp;
+  const local = ocppFactory({ config: localConfig, chargerId: easee.charger_id, clock, virtualTag: ocppInstallation?.virtualTag,
+    canControl: () => !closed && !nativeStopped && !invalidOcppSetup && canControl(), state: ocppState,
     onDisconnect: () => {
       if (!closed && transports.get(easee.charger_id) === 'ocpp') {
         electricityEpoch++; onStreamDisconnect([easee.charger_id]);
       }
     } });
+  const setupBase = `/local-ocpp/v1/connection-details/${encodeURIComponent(easee.charger_id ?? '')}`;
+  const setup = ocppInstallation && ocppSetupState ? createOcppSetup({ installation: ocppInstallation,
+    state: ocppSetupState, listener: local, clock, canControl: () => !closed && canControl(),
+    beforeDisable: () => local.noteModeDisableRequested(),
+    prepareControl: async target => {
+      if (typeof onOcppControlTransition !== 'function') throw Object.assign(new Error('Native control is unavailable'), { code: 'native-control-unavailable' });
+      await onOcppControlTransition({ phase: 'prepare', target });
+      controlBackend = 'transition';
+      if (target === 'native') {
+        const current = await easeeAuthenticated(`${API}/api/chargers/${encodeURIComponent(easee.charger_id)}/schedules`, { method: 'GET' });
+        if (!['none', 'ocpp.direct'].includes(current?.enabled)) {
+          controlBackend = 'cloud';
+          await onOcppControlTransition({ phase: 'complete', target: 'cloud', adapter: scheduleControl });
+          throw Object.assign(new Error('Cloud schedule is active'), { code: 'cloud-schedule-active' });
+        }
+      }
+    },
+    commitControl: async target => {
+      if (typeof onOcppControlTransition !== 'function') throw Object.assign(new Error('Native control is unavailable'), { code: 'native-control-unavailable' });
+      controlBackend = target;
+      await onOcppControlTransition({ phase: 'complete', target, adapter: target === 'native' ? nativeScheduleControl : scheduleControl });
+      if (target === 'cloud' && (!ocppInstallation.enabled || restoringOcpp)) {
+        nativeStopped = true; local.refreshAuthority?.(); await local.close();
+      }
+    }, api: {
+      get: ({ signal }) => easeeAuthenticated(`${API}${setupBase}`, { method: 'GET', signal }),
+      observations: ({ signal }) => easeeRequest(easee.charger_id, [80, 141, 250], signal),
+      store: (body, { signal }) => easeeAuthenticated(`${API}${setupBase}`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal }),
+      apply: (body, { signal }) => easeeAuthenticated(`${API}/local-ocpp/v1/connections/chargers/${encodeURIComponent(easee.charger_id)}`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal }, true),
+    } }) : null;
+  let localStartFlight = null, nextLocalStartAt = 0;
+  async function ensureLocalListener() {
+    if (closed || nativeStopped || invalidOcppSetup || !canControl() || local.status().ready || nextLocalStartAt > clock()) return;
+    if (localStartFlight) return localStartFlight;
+    nextLocalStartAt = clock() + 30_000;
+    localStartFlight = Promise.resolve().then(() => local.start()).finally(() => { localStartFlight = null; });
+    await localStartFlight;
+  }
   const electricalDevices = [['charger_id', 'ev1'], ['equalizer_id', 'property']]
     .filter(([key]) => supplied(easee[key])).map(([key, prefix]) => {
       const voltageIds = easee.charger_voltage_ids;
@@ -293,7 +347,7 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
   }
 
   function startStreaming() {
-    if (!closed) void local.start();
+    if (!closed) void ensureLocalListener().then(() => setup?.runDue()).catch(() => {});
     if (closed || streaming || !electricalDevices.length || typeof streamFactory !== 'function') return;
     streaming = true;
     stream = streamFactory({ clock, getAccessToken: streamAccessToken, onDisconnect: disconnectStream,
@@ -323,7 +377,10 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
   async function easeeTransport(url, options, responseText = false) {
     // Text responses are opted-in control writes. Check every
     // dispatch, including a retry after asynchronous authentication or storage.
-    if (responseText && !canControl()) throw new Error('Controller authority was revoked');
+    if ((responseText || url.startsWith(`${API}/local-ocpp/`) && options.method === 'POST') && !canControl())
+      throw new Error('Controller authority was revoked');
+    if (responseText && url.includes('/schedules') && controlBackend !== 'cloud')
+      throw new Error('Cloud charging control is inactive while native OCPP owns charging');
     if (responseText && options.controlGuard && !options.controlGuard()) throw new Error('Charging schedule authority was revoked');
     if (options.signal?.aborted) throw new Error('Provider request was aborted');
     admitRequest();
@@ -481,7 +538,47 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
     return (await observationResult(device, ids, { requiredIds, ...options })).payload;
   }
   const scheduleControl = createEaseeScheduleAdapter({ request: easeeAuthenticated, readObservations,
-    chargerId: easee.charger_id, equalizerId: easee.equalizer_id, clock, canControl });
+    chargerId: easee.charger_id, equalizerId: easee.equalizer_id, clock, canControl: () => !invalidOcppSetup && canControl() });
+  let nativeCloudSnapshot = null, nativeCloudFlight = null, nextNativeCloudRead = 0;
+  function refreshNativeCloudTelemetry() {
+    if (closed || nativeCloudFlight || nextNativeCloudRead > clock()) return;
+    nextNativeCloudRead = clock() + 60_000;
+    nativeCloudFlight = scheduleControl.readTelemetry({ signal: lifetime.signal }).then(snapshot => {
+      nativeCloudSnapshot = snapshot;
+    }).catch(() => {}).finally(() => { nativeCloudFlight = null; });
+  }
+  const nativeScheduleControl = ocppInstallation ? createOcppScheduleAdapter({ scope: ocppInstallation.scope, clock,
+    canControl: () => !closed && canControl() && controlBackend === 'native',
+    request: (...args) => local.request(...args),
+    isCurrent: (snapshot, { requireTransaction = true } = {}) => {
+      const current = local.controlSnapshot?.();
+      return Boolean(current && current.connectionId === snapshot.connectionId && (!requireTransaction
+        || (current.transaction?.id ?? null) === snapshot.transactionId
+          && (snapshot.transactionId === null || current.transaction?.confirmed)));
+    },
+    readSnapshot: async () => {
+      refreshNativeCloudTelemetry();
+      const current = local.controlSnapshot?.(), now = clock();
+      const power = current?.readings.find(row => row.id === 120);
+      const cloud = nativeCloudSnapshot && now - nativeCloudSnapshot.readAt <= 300_000 ? nativeCloudSnapshot : null;
+      const vector = ids => {
+        const values = ids.map(id => current?.readings.find(row => row.id === id)?.value);
+        return values.every(Number.isFinite) ? values : null;
+      };
+      const pluggedIn = current ? current.connectorStatus === 'Available' ? false
+        : ['Preparing', 'Charging', 'SuspendedEV', 'SuspendedEVSE', 'Finishing'].includes(current.connectorStatus) ? true : null : null;
+      return { transport: 'ocpp', scope: ocppInstallation.scope, connectionId: current?.connectionId ?? null,
+        readAt: now, online: Boolean(current), connectorStatus: current?.connectorStatus ?? null,
+        statusAt: current?.timestamp ?? null, pluggedIn,
+        transactionId: current?.transaction?.id ?? null, transactionStartedAt: current?.transaction?.startedAt ?? null,
+        transactionConfirmed: current?.transaction?.confirmed === true,
+        powerKw: power?.value ?? null, powerAt: power ? sourceTime(power.timestamp) : null,
+        ...(cloud ? { limits: cloud.limits } : {}),
+        supply: { ...cloud?.supply, chargerCurrentA: vector([183, 184, 185]), voltageV: vector([194, 195, 196]),
+          observationTimes: { ...cloud?.supply?.observationTimes,
+            charger: [183, 184, 185].map(id => sourceTime(current?.readings.find(row => row.id === id)?.timestamp)),
+            voltage: [194, 195, 196].map(id => sourceTime(current?.readings.find(row => row.id === id)?.timestamp)) } } };
+    } }) : null;
 
   return {
     startStreaming,
@@ -491,7 +588,22 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
         stream.snapshot(device.id, device.ids, { requiredIds: device.requiredIds }) !== null));
     },
     streamStatus() { return stream?.status() ?? null; },
-    localOcppStatus() { return local.status(); },
+    localOcppStatus() { return { ...local.status(), controlTransport: controlBackend === 'native' ? 'ocpp' : controlBackend,
+      ...(setup ? { setup: setup.status() } : {}) }; },
+    async reconcileOcpp() {
+      local.refreshAuthority?.();
+      await ensureLocalListener();
+      if (!closed && canControl()) await setup?.runDue();
+    },
+    adoptOcpp(revision) {
+      if (!setup) throw Object.assign(new Error('Local charger setup is unavailable.'), { statusCode: 409 });
+      return setup.adopt(revision);
+    },
+    async restoreOcpp() {
+      if (!setup || closed) return;
+      restoringOcpp = true;
+      await setup.deactivate();
+    },
     deviceTransports() { return Object.fromEntries(electricalDevices.map(device =>
       [device.prefix === 'ev1' ? 'charger' : 'property', transports.get(device.id) ?? null])); },
     acquisitionTransport() {
@@ -504,10 +616,10 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
       disconnectStream();
       closed = true;
       lifetime.abort();
-      await stream?.close();
-      await local.close();
+      local.refreshAuthority?.();
+      await Promise.allSettled([setup?.close(), stream?.close(), local.close(), localStartFlight, nativeCloudFlight]);
     },
-    chargerScheduleControl() { return scheduleControl; },
+    chargerScheduleControl() { return controlBackend === 'native' ? nativeScheduleControl : scheduleControl; },
     async electricity({ now = Date.now(), signal } = {}) {
       validNow(now);
       const results = await Promise.allSettled(electricalDevices.map(async ({ id, prefix, fields, verified, ids, requiredIds }) => {

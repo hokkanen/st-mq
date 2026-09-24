@@ -7,6 +7,7 @@ const stamp = value => Number.isFinite(value) && value > 0 ? value : null;
 const count = value => Number.isSafeInteger(value) && value >= 0 ? value : null;
 const roleName = role => ({ primary: 'Master', replica: 'Read-only slave', protected: 'Protected recovery' })[role] ?? 'Checking role';
 const checkedPreview = view => view?.recovery?.state === 'ready' && validPreviewId(view.recovery.preview?.previewId);
+const ocppReadinessHelp = 'The other computer is not ready to accept the local charger connection. Check that both computers use the same charger endpoint, credentials and authorization tags, and that its OCPP port is available.';
 
 export function pairAllowsControl(status) {
   const pair = status?.pairing;
@@ -34,7 +35,7 @@ export function pairConfirmation(action, { discardUnrecovered = false, counts = 
   }
   return {
     promote: 'Promote this computer to master? Confirm that the previous master has failed or has been stopped or isolated from the home. If its host is still running, release its broker virtual IP or isolate the host first. An unreachable computer may still be controlling equipment. This uses the local history; data since its last snapshot may be missing.',
-    handover: 'Hand control to the other computer? The current master will finish its handover and transfer a verified final snapshot before the other computer takes over. Devices will reconnect to the moved MQTT address.',
+    handover: 'Hand control to the other computer? The current master will finish its handover and transfer a verified final snapshot before the other computer takes over. MQTT devices and a configured local charger will reconnect to the moved address.',
     recover: 'Recover the checked gaps from the other computer and rebuild the model? Existing master data wins all overlaps. Conflicting or unsupported donor entries are skipped. Home control continues while the model rebuilds.',
     rejoin: 'Resume mirroring to the other computer? Recovery must be complete. Its remaining divergent data will be replaced with an exact verified copy of the master database. Skipped donor entries will not be retained as a separate archive.',
   }[action] ?? null;
@@ -111,7 +112,8 @@ export function pairDisplay(view, { now = Date.now(), formatTime = at => new Dat
         : sync.state === 'error' ? 'Sync needs attention'
           : sourceAt > now ? 'Snapshot clock ahead'
             : sourceAt ? `Snapshot ${Math.max(0, Math.floor((now - sourceAt) / 60_000))} min old` : 'Waiting for first snapshot';
-  const attention = phase || (state === 'protected' && view.reason === 'activation_failed' ? 'Master could not start · open details to review local readiness.'
+  const attention = phase || (view.error === 'ocpp_handover_not_ready' ? ocppReadinessHelp
+    : state === 'protected' && view.reason === 'activation_failed' ? 'Master could not start · open details to review local readiness.'
     : state === 'protected' ? 'Local history is protected · resolve it from the master UI.'
       : recovery.state === 'ready' ? `Check ready${count(recovery.preview?.counts?.missing) !== null ? ` · ${recovery.preview.counts.missing} missing entries` : ''} · review before continuing.`
         : recovery.state === 'complete' ? 'Recovery complete · ready to resume mirroring.'
@@ -141,7 +143,8 @@ export function pairActionHelp(view) {
       : recovery === 'complete' ? 'Recovery finished. Confirm replacement to resume mirroring.'
         : recovery === 'resolved' ? 'Mirroring has resumed. No further action is needed.'
           : 'Complete a check first. Then recover the gaps, or explicitly choose to discard them.'),
-    handover: wait ?? (view?.actions?.handover === true ? 'Both computers are ready for a deliberate handover.'
+    handover: wait ?? (view?.error === 'ocpp_handover_not_ready' ? ocppReadinessHelp
+      : view?.actions?.handover === true ? 'Both computers are connected. Charger readiness is checked before this master stops.'
       : view?.peer?.reachable !== true ? 'The other computer must be connected for a graceful handover.'
         : 'The other computer must be a ready slave. Resolve protected history and resume mirroring first.'),
     promote: wait ?? (view?.actions?.promote === true ? 'Manual confirmation required. The previous master must be stopped or isolated.'

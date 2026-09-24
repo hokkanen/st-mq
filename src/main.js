@@ -72,7 +72,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
     console.error(JSON.stringify({ event: 'controller-error',
       reason: databaseBusy ? 'database-busy' : 'controller-tick-failed', eventStored: false }));
   }
-  function close({ restore = true } = {}) {
+  function close({ restore = true, preserveOcpp = false } = {}) {
     if (closePending) return closePending;
     closed = true;
     runtimeUsable = false;
@@ -89,7 +89,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
       const replicationStopped = attempt(() => replication?.stop());
       await reloadPending?.catch(() => {});
       await authorityStopping?.catch(() => {});
-      await attempt(() => stopRuntime({ restore }));
+      await attempt(() => stopRuntime({ restore, preserveOcpp }));
       await attempt(() => authority?.close());
       await replicationStopped;
       await attempt(() => chartService?.close());
@@ -100,7 +100,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
     })();
     return closePending;
   }
-  function stopRuntime({ restore = true } = {}) {
+  function stopRuntime({ restore = true, preserveOcpp = false } = {}) {
     restore = restore && canControl();
     clearTimeout(timer);
     clearInterval(garageSafetyTimer);
@@ -128,6 +128,11 @@ export async function start({ config = loadConfig(), readConfig = configurationR
     runtimeStopPending = (async () => {
       const errors = [];
       const attempt = async fn => { try { return await fn(); } catch (error) { errors.push(error); } };
+      // Normal exit relinquishes native OCPP while the charger controller,
+      // listener, authenticated cloud transport and write authority still exist.
+      // Paired handover carries that same native session to the next master.
+      if (restore && !preserveOcpp) for (const acquisition of acquisitions)
+        await attempt(() => acquisition.restoreOcpp?.());
       await attempt(() => engine?.charging?.close());
       await attempt(() => engine?.garage?.close({ restore }));
       if (engine) engine.onTemporaryChange = null;

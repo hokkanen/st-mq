@@ -22,6 +22,7 @@ import { setStatusDetail } from './status-details.js';
 import { priceStatuses, renderCurrentPrice } from './current-price.js';
 import { homeHeatingConfirmation, setHeatingStatusDetail } from './heating-status.js';
 import { homeHeatingWarning, garageHeatingWarning } from './heating-warning.js';
+import { createOcppSetupAction, ocppSetupRevision } from './ocpp-setup.js';
 import { createDashboardLayout } from './dashboard-layout.js';
 import { createPageFullscreen } from './page-fullscreen.js';
 import { heatingRequestResult, h66RequestResult, circulationStopPending } from './manual-control-status.js';
@@ -116,6 +117,18 @@ const mitsubishiControls = createMitsubishiControls({ document, request: api,
 const chargingPanel = createChargingPanel({ document, request: api,
   beforeRequest: () => { ++refreshSequence; }, onStatus: result => render(result),
   afterRequest: () => refresh() });
+const adoptOcppSetup = createOcppSetupAction({ document, request: api, getStatus: () => lastStatus,
+  blocked: () => temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy || equipmentBusy,
+  beforeRequest: () => { ++refreshSequence; }, afterRequest: () => refresh(),
+  onBusy: busy => {
+    equipmentBusy = busy; updateTemporaryButtons();
+    const button = document.querySelector('[data-provider=electricity] .provider-local-adopt');
+    if (button) { button.disabled = busy; button.setAttribute('aria-busy', String(busy)); }
+  },
+  onMessage: (text, error) => {
+    const message = document.querySelector('[data-provider=electricity] .provider-local-message');
+    if (message) { message.textContent = text; message.classList.toggle('form-error', error); }
+  } });
 function renderContract(s) {
   const current = activeRates(s);
   const period = current ?? s.configuredPrices;
@@ -164,6 +177,8 @@ function updateTemporaryButtons(updateEquipment = true) {
   $('dhwr-stop').disabled = busy || !lastStatus?.heatingTests?.available || !(lastStatus?.dhwr?.active || lastStatus?.dhwr?.restorationPending || lastStatus?.dhwr?.actualOn === true);
   $('h66-test-submit').disabled = busy || !h66Control(lastStatus?.h66, $('h66-test-register').value).available;
   $('settings-reload').disabled = busy || !settingsReloadScope(lastStatus).available;
+  const localSetup = document.querySelector('[data-provider=electricity] .provider-local-adopt');
+  if (localSetup) localSetup.disabled = busy || ocppSetupRevision(lastStatus) === null;
   if (updateEquipment) equipmentPanel.refreshControls();
   garageControls.refreshControls();
   mitsubishiControls.refreshControls();
@@ -322,12 +337,28 @@ function renderProviders(s) {
       const title = document.createElement('strong'); title.className = 'provider-category-title';
       const state = document.createElement('span'); state.className = 'provider-category-state';
       const meta = document.createElement('small'); meta.className = 'provider-category-meta';
-      heading.append(title, state, meta); summary.append(heading);
+      const localSummary = document.createElement('small'); localSummary.className = 'provider-local-summary';
+      heading.append(title, state, meta, localSummary); summary.append(heading);
       const body = document.createElement('div'); body.className = 'provider-body';
       const detail = document.createElement('p'); detail.className = 'muted provider-health';
       const context = document.createElement('p'); context.className = 'muted provider-category-context';
+      const local = document.createElement('section'); local.className = 'provider-local-connection';
+      const localTitle = document.createElement('h4'); localTitle.textContent = 'Charger 1 local connection';
+      const localRows = document.createElement('dl');
+      for (const [name, label] of [['setup', 'Charger setup'], ['readings', 'Local readings']]) {
+        const term = document.createElement('dt'), value = document.createElement('dd');
+        term.textContent = label; value.dataset.localConnection = name; localRows.append(term, value);
+      }
+      const endpoint = document.createElement('p'); endpoint.className = 'provider-local-endpoint';
+      const localHelp = document.createElement('p'); localHelp.className = 'provider-local-help';
+      const localOutage = document.createElement('p'); localOutage.className = 'provider-local-outage';
+      const adopt = document.createElement('button'); adopt.type = 'button'; adopt.className = 'secondary-button provider-local-adopt';
+      adopt.textContent = 'Set up local connection'; adopt.addEventListener('click', adoptOcppSetup);
+      const localMessage = document.createElement('p'); localMessage.className = 'provider-local-message';
+      localMessage.setAttribute('role', 'status'); localMessage.setAttribute('aria-live', 'polite');
+      local.append(localTitle, localRows, endpoint, localHelp, localOutage, adopt, localMessage);
       const readings = document.createElement('div'); readings.className = 'provider-series-content';
-      body.append(detail, context, readings); fold.append(summary, body); row.append(fold);
+      body.append(detail, context, local, readings); fold.append(summary, body); row.append(fold);
     }
     if (list.children[index] !== row) list.insertBefore(row, list.children[index] ?? null);
     row.dataset.state = display.attention ? 'attention' : backup ? 'backup'
@@ -349,6 +380,31 @@ function renderProviders(s) {
     context.hidden = !context.textContent;
     setStatusDetail(row.querySelector('.provider-health'), { key: `provider-health-${key}`,
       label: 'Source details', title: overviewTitle, detail: `${display.state}. ${display.detail}` });
+    const local = row.querySelector('.provider-local-connection'), localSummary = row.querySelector('.provider-local-summary');
+    local.hidden = localSummary.hidden = !entry.localConnection;
+    if (entry.localConnection) {
+      const connection = entry.localConnection;
+      localSummary.textContent = `Local connection · ${connection.setup.label}`;
+      localSummary.dataset.state = connection.setup.tone;
+      for (const name of ['setup', 'readings']) {
+        const value = local.querySelector(`[data-local-connection=${name}]`), status = connection[name];
+        value.dataset.state = status.tone;
+        setStatusDetail(value, { key: `easee-local-${name}`, label: status.label,
+          title: name === 'setup' ? 'Charger setup' : 'Local readings', detail: status.detail });
+      }
+      local.querySelector('.provider-local-endpoint').textContent = `${connection.endpoint}. ${connection.setup.detail}`;
+      local.querySelector('.provider-local-help').textContent = connection.detail;
+      const outage = local.querySelector('.provider-local-outage');
+      const outageTitle = document.createElement('strong'); outageTitle.textContent = 'If ST-MQ stops. ';
+      outage.replaceChildren(outageTitle, document.createTextNode(connection.outage));
+      if (s.providers?.easee?.localOcpp?.setup?.state === 'ready') {
+        const message = local.querySelector('.provider-local-message');
+        message.textContent = ''; message.classList.remove('form-error');
+      }
+      const adopt = local.querySelector('.provider-local-adopt');
+      adopt.hidden = ocppSetupRevision(s) === null;
+      adopt.disabled = adopt.hidden || temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy || equipmentBusy;
+    }
     renderProviderSeries(row.querySelector('.provider-series-content'), entry.datasets ?? entry.series, { datasets: true });
   }
   $('provider-overview-state').textContent = attentionCount ? `${attentionCount} ${attentionCount === 1 ? 'needs' : 'need'} attention`

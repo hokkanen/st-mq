@@ -17,7 +17,8 @@ configured transport and active mode, the controller can operate heating and
 supported H66 settings. Explicit manual MQTT and timed H66 tests are also available.
 Market, weather, MQTT temperature, TeslaMate and Easee acquisition plus dated contract
 setup are integrated. Charger 1 accepts any car, using manual battery values until
-BMW or Tesla is identified, and can use opt-in native Easee schedules. Charger 2
+BMW or Tesla is identified, and can use opt-in cloud Easee schedules or native
+OCPP pauses that expire on the charger. Charger 2
 is a physical Shelly EVSE with commissioning-gated MQTT control. Tesla and BMW are read-only vehicle feeds for either charger. Heating mode and charging permission are
 independent. See [charging controls and estimates](docs/charging.md).
 ENTSO-E has a direct Elering backup; FMI supplies temperature
@@ -25,7 +26,8 @@ and solar forecasts, with Open-Meteo as backup. Current outdoor temperature uses
 FMI station observations, with Open-Meteo estimates as backup. Offline
 regressions and a separate opt-in live suite verify the provider paths. See the
 [progress log](docs/PROGRESS.md) for actual live-check results and remaining limits.
-Physical equipment control has not been commissioned.
+Commissioning evidence is recorded per integration; see the
+[bounded native OCPP checks](docs/audit/OCPP-SETUP.md).
 
 An optional [read-only LAN replica](docs/replication.md) keeps a second computer's
 SQLite history synchronized over SSH. It serves charts through primary outages,
@@ -528,8 +530,9 @@ One Easee stream serves the configured Charger 1 and Equalizer. It subscribes to
 their current state and subsequent observations, using the same persisted tokens
 as REST. Missing required stream readings use batched REST backup at the normal
 acquisition cadence; healthy streaming keeps a 15-minute REST reconciliation.
-Schedules, configuration and commands still use REST. Multiple Easee chargers
-are not added by this transport change.
+Cloud schedules and charger commissioning use REST. With native OCPP active,
+authorization and economic pause commands use the local connection instead.
+Multiple Easee chargers are not added by this transport change.
 
 Easee readings retain original source ages. Reported active power is integrated
 between sampled snapshots and allocated to three estimated phase energies; raw currents and
@@ -541,8 +544,17 @@ fill missing intervals or make cached device values fresh. Provider diagnostics
 name the live stream and REST backup while retaining reading-quality warnings.
 Charger voltage terminal mapping requires explicit verification before voltage
 weights are used. Easee acquisition can refresh authentication tokens. Separately
-enabling **Automatic charging** on Charger 1 permits native scheduling writes,
+enabling **Automatic charging** on Charger 1 permits scheduling writes,
 including while heating is in monitoring or shadow mode; it is off by default.
+Cloud delayed starts and native OCPP control are exclusive. Native OCPP setup is
+managed by ST-MQ, with a stable shared address in paired mode. Opt-in
+`plug-and-charge` authorization supports RFID-free starts; economic pauses use
+only expiring 0 A transaction profiles and release to the existing charger and
+Equalizer limits. Cloud fallback supplies readings, not a second active
+scheduler. Normal Ctrl+C or service stop requests cloud handback; paired handover
+keeps OCPP active. **A crash or power loss can leave charging waiting for ST-MQ
+approval.** Restart ST-MQ or disable Direct OCPP through Easee configuration;
+autonomous pause expiry does not restore cloud authorization. See [local setup and verified limits](docs/charging-easee.md#direct-local-ocpp-telemetry-firmware-344-or-later).
 Charger 2 supports verified EVSE start/stop and current limits, with control disabled until commissioned. See [charging](docs/charging.md) and
 [recording configuration and limitations](docs/recording.md).
 

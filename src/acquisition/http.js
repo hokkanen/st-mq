@@ -28,7 +28,7 @@ function retryDelay(value) {
 /** Finite requests with sanitized errors: URLs, authorization and response bodies
  * are deliberately excluded because providers sometimes echo credentials. */
 export function createHttp({ fetchImpl = globalThis.fetch, timeoutMs = 10_000, maxBytes = 2 * 1024 * 1024,
-  allowChargerScheduling = false, canControl = () => true } = {}) {
+  allowChargerScheduling = false, allowOcppSetup = false, canControl = () => true } = {}) {
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60_000) throw new Error('Invalid provider timeout');
   if (!Number.isInteger(maxBytes) || maxBytes < 1 || maxBytes > 8 * 1024 * 1024) throw new Error('Invalid provider response limit');
   const pending = new Set();
@@ -53,7 +53,33 @@ export function createHttp({ fetchImpl = globalThis.fetch, timeoutMs = 10_000, m
           && typeof body.startTime === 'string' && /^(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d$/.test(body.startTime);
       }
     }
-    if (method !== 'GET' && !(method === 'POST' && (authentication || scheduling))) throw new ProviderError('device-writes-not-allowed');
+    let ocppSetup = false;
+    if (allowOcppSetup === true && method === 'POST' && url.hostname === 'api.easee.com' && !url.search && !url.hash) {
+      let body;
+      try { body = typeof options.body === 'string' && options.body.length <= 20000 ? JSON.parse(options.body) : null; } catch { body = null; }
+      if (body && typeof body === 'object' && !Array.isArray(body)) {
+        if (/^\/local-ocpp\/v1\/connections\/chargers\/[^/]+$/.test(url.pathname))
+          ocppSetup = Object.keys(body).join(',') === 'version' && typeof body.version === 'string'
+            && body.version.length > 0 && body.version.length <= 200 && !/[\u0000-\u001f]/.test(body.version);
+        else if (/^\/local-ocpp\/v1\/connection-details\/[^/]+$/.test(url.pathname)) {
+          const args = body.websocketConnectionArgs;
+          let endpoint; try { endpoint = new URL(args?.url); } catch {}
+          ocppSetup = Object.keys(body).sort().join(',') === 'basicAuthPassword,chargePointId,connectivityMode,websocketConnectionArgs'
+            && ['DualProtocol', 'OcppOff'].includes(body.connectivityMode) && typeof body.chargePointId === 'string'
+            && body.chargePointId.length > 0 && body.chargePointId.length <= 128 && !/[/:\s]/.test(body.chargePointId)
+            && typeof body.basicAuthPassword === 'string' && body.basicAuthPassword.length >= 16 && body.basicAuthPassword.length <= 20
+            && args && typeof args === 'object' && !Array.isArray(args)
+            && Object.keys(args).sort().join(',') === 'caCertificate,caCertificateDomain,url'
+            && typeof args.url === 'string' && args.url.length <= 2048 && ['ws:', 'wss:'].includes(endpoint?.protocol)
+            && !endpoint.username && !endpoint.password && !endpoint.search && !endpoint.hash && endpoint.pathname.endsWith('/ocpp')
+            && ['caCertificate', 'caCertificateDomain'].every(key => args[key] === null || typeof args[key] === 'string')
+            && (endpoint.protocol === 'ws:' ? args.caCertificate === null && args.caCertificateDomain === null
+              : typeof args.caCertificate === 'string' && args.caCertificate.includes('-----BEGIN CERTIFICATE-----')
+                && args.caCertificateDomain === endpoint.hostname);
+        }
+      }
+    }
+    if (method !== 'GET' && !(method === 'POST' && (authentication || scheduling || ocppSetup))) throw new ProviderError('device-writes-not-allowed');
     if (closed) throw new ProviderError('provider-client-closed');
     const controller = new AbortController();
     pending.add(controller);
@@ -61,7 +87,7 @@ export function createHttp({ fetchImpl = globalThis.fetch, timeoutMs = 10_000, m
     const signal = options.signal ? AbortSignal.any([controller.signal, options.signal]) : controller.signal;
     let reader, response;
     try {
-      if (scheduling && !canControl()) throw new ProviderError('controller-authority-revoked');
+      if ((scheduling || ocppSetup) && !canControl()) throw new ProviderError('controller-authority-revoked');
       if (signal.aborted) throw new ProviderError('provider-request-aborted');
       response = await fetchImpl(url.href, { ...options, method, redirect: 'error', signal });
       if (!response.ok) throw new ProviderError('provider-http-error', response.status,
@@ -69,7 +95,7 @@ export function createHttp({ fetchImpl = globalThis.fetch, timeoutMs = 10_000, m
       const declared = Number(response.headers.get('content-length'));
       if (Number.isFinite(declared) && declared > maxBytes) throw new ProviderError('provider-response-too-large');
       if (!response.body) {
-        if (scheduling) return '';
+        if (scheduling || ocppSetup) return '';
         throw new ProviderError('empty-provider-response');
       }
       reader = response.body.getReader();

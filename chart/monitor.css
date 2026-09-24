@@ -986,6 +986,16 @@ button.status-detail-close:hover { background: var(--surface-soft); color: var(-
 #provider-overview .provider-body { margin-top: 12px; padding: 12px 14px; background: var(--surface-soft); border-radius: 6px; }
 #provider-overview .provider-health { margin: 0 0 9px; font-size: 11px; }
 #provider-overview .provider-category-context { margin: 0 0 10px; color: var(--muted); font-size: 11px; line-height: 1.6; }
+#provider-overview .provider-local-summary { margin-left: 13px; color: var(--provider-tone, var(--muted)); font-size: 10px; line-height: 1.5; }
+#provider-overview .provider-local-connection { margin: 12px 0; padding: 12px 0; border-block: 1px solid var(--border); }
+#provider-overview .provider-local-connection h4 { margin: 0 0 8px; font-size: 12px; }
+#provider-overview .provider-local-connection dl { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: baseline; gap: 8px 12px; margin: 0; font-size: 11px; }
+#provider-overview .provider-local-connection dt { color: var(--muted); }
+#provider-overview .provider-local-connection dd { margin: 0; color: var(--provider-tone, var(--text)); overflow-wrap: anywhere; }
+#provider-overview .provider-local-connection p { margin: 9px 0 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
+#provider-overview .provider-local-adopt { margin-top: 12px; }
+#provider-overview .provider-local-message:empty { display: none; }
+#provider-overview .provider-local-message.form-error { color: var(--stale); }
 #provider-overview [data-state="available"] { --provider-tone: var(--chart-indoor); }
 #provider-overview [data-state="attention"], #provider-overview [data-state="backup"] { --provider-tone: var(--stale); }
 #provider-overview [data-state="pending"] { --provider-tone: var(--muted); }

@@ -107,6 +107,7 @@ function decorate(reading, signal, now) {
 export class Engine {
   providerStatus() {
     const providers = { ...(this.store.getState('providers:health') ?? {}) };
+    if (this.ocppSetup) providers.easee = { ...providers.easee, localOcpp: this.ocppSetup.status() };
     if (this.teslamate) providers.teslamate = { source: 'teslamate', enabled: true, ...this.teslamate.status(), reception: this.charging?.teslaCapture?.reception?.() ?? null };
     else if (['mqtt', 'providers'].includes(this.config.input)) {
       const enabled = this.config.connections?.teslamate?.enabled === true;

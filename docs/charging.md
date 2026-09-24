@@ -1,6 +1,22 @@
 # Charging
 
-ST-MQ models two physical charging points: **Charger 1 is Easee**, controlled through its native delayed-start schedule; **Charger 2 is the commissioned Top AC / Shelly XT1 EVSE**, controlled through MQTT RPC. TeslaMate and BMW CarData supply vehicle evidence for either charging point. They never supply another home electricity contribution or receive vehicle commands.
+ST-MQ models two physical charging points: **Charger 1 is Easee**, using either the cloud delayed-start scheduler or the native OCPP controller’s expiring zero-current pauses; **Charger 2 is the commissioned Top AC / Shelly XT1 EVSE**, controlled through MQTT RPC. TeslaMate and BMW CarData supply vehicle evidence for either charging point. They never supply another home electricity contribution or receive vehicle commands.
+
+Charger 1 uses one control backend at a time. Native OCPP activation releases
+ST-MQ's owned cloud instruction and waits when a foreign cloud schedule still
+owns charging. Cloud telemetry remains a data fallback without silently
+reactivating cloud scheduling. Native `plug-and-charge` authorization can start
+a connected vehicle without an RFID tap; RFID mode instead requires permitted
+tags. Native economic pauses expire on the charger and release to its existing
+charger/vehicle/Equalizer limits without positive-current commands. See
+[local setup and native control](charging-easee.md#direct-local-ocpp-telemetry-firmware-344-or-later).
+
+**Native OCPP needs ST-MQ for charging authorization.** Normal Ctrl+C or service
+stop requests a return to cloud control; paired handover keeps OCPP active. A
+failed cloud request leaves handback unconfirmed. A crash or power loss can leave
+new charging or Easee app Start waiting for approval. Restart ST-MQ or disable
+Direct OCPP through Easee configuration. Expiring economic pauses do not provide
+automatic cloud authorization after a crash.
 
 Charger 2 is disabled and unverified by default because the hardware has not arrived. Its production acquisition, planning, recording and command paths are implemented and tested with synthetic providers. Enabling MQTT acquisition is separate from commissioning control. See [provider capabilities and commissioning](charging-provider-capabilities.md).
 
@@ -32,7 +48,7 @@ The planner first respects device/vehicle limits, manual permission, native star
 
 The implementation is a bounded search over a declared slot/current model, **not a globally exact continuous-time optimizer**. Results expose the search kind, relaxed cost lower bound, feasible candidate cost and upper bound on the cost gap where available. Search pruning can miss a better joint candidate; reported feasibility is conditional on the recorded assumptions. Synthetic exhaustive small-horizon comparisons validate representative cases. There is no one-cent pause penalty or mandatory one-cent saving hurdle. Practical minimum economic runs/gaps remain 15 minutes; equal-cost choices prefer stability.
 
-Easee's Equalizer remains the only controller of Easee's current. ST-MQ never writes its current, circuit protection or fuse setting. Current already drawn by an automatic-OFF, manually running or post-target peer remains a load until physical evidence says otherwise. Forecast household load, gross configured capacity and current net allowance are distinct. A clipped zero Equalizer allowance does not establish an exact gross budget. Missing rates or capacity produce provisional decisions, not free electricity or invented assured readiness.
+Easee's Equalizer, charger and vehicle determine positive charging current. ST-MQ does not write a positive-current setpoint, circuit protection or fuse setting; native OCPP economic pauses impose only an expiring 0 A restriction. Current already drawn by an automatic-OFF, manually running or post-target peer remains a load until physical evidence says otherwise. Forecast household load, gross configured capacity and current net allowance are distinct. A clipped zero Equalizer allowance does not establish an exact gross budget. Missing rates or capacity produce provisional decisions, not free electricity or invented assured readiness.
 
 The final period is an open release. Reaching the planning minimum or ready-by deadline does not issue a final stop. Extra actual energy remains metered and priced. Unknown future post-target consumption cannot have a guaranteed optimized bill. Later economic pauses require ST-MQ and the provider to be available; the UI distinguishes the proposed plan, dispatched request, readback and observed physical response.
 

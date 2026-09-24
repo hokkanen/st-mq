@@ -186,7 +186,7 @@ export function chargingSnapshot(observations, scheduling, now, allocationA = nu
     return !row || entries.some(other => other.at === row.at && String(other.value) !== String(row.value)) ? { value: null, at: null } : row;
   };
   const bool = id => { const value = pick(id).value; return [true, 1, 'true', '1'].includes(value) ? true : [false, 0, 'false', '0'].includes(value) ? false : null; };
-  const scheduleState = normalizeScheduleState(scheduling), mode = numeric(pick(109).value), reason = numeric(pick(96).value);
+  const scheduleState = scheduling === null ? null : normalizeScheduleState(scheduling), mode = numeric(pick(109).value), reason = numeric(pick(96).value);
   const pilot = pick(100).value, online = bool(250), enabled = bool(31);
   const indications = [{ value: mode === 1 ? false : [2, 3, 4, 6, 7, 8].includes(mode) ? true : null, at: pick(109).at },
     { value: pilot === 'A' ? false : ['B', 'C', 'D'].includes(pilot) ? true : null, at: pick(100).at }]
@@ -196,7 +196,7 @@ export function chargingSnapshot(observations, scheduling, now, allocationA = nu
   // state cannot move its physical boundary to the HTTP receipt time.
   const disconnectTimes = [mode === 1 ? pick(109).at : null, pilot === 'A' ? pick(100).at : null]
     .filter(at => Number.isSafeInteger(at) && at >= 0 && at <= now);
-  const result = { schedule: scheduleState, fingerprint: scheduleFingerprint(scheduleState), readAt: now,
+  const result = { ...(scheduleState ? { schedule: scheduleState, fingerprint: scheduleFingerprint(scheduleState) } : {}), readAt: now,
     online, enabled, pluggedIn, mode, reason, powerKw: numeric(pick(120).value),
     disconnectedAt: pluggedIn === false && disconnectTimes.length ? Math.max(...disconnectTimes) : null,
     externalLoadBalancing, supply, outputPhase: numeric(pick(110).value),
@@ -274,13 +274,13 @@ export function createEaseeScheduleAdapter({ request, readObservations, chargerI
   let allocationA = null, allocationReadAt = -Infinity, allocationConfirmedAt = -Infinity;
   const adapter = {
     normalize(snapshot, options = {}) { return easeeChargerTelemetry(snapshot, { now: clock(), ...options }); },
-    async read({ signal, forceRest = false } = {}) {
+    async read({ signal, forceRest = false, telemetryOnly = false } = {}) {
       if (!chargerId) throw new Error('Charger 1 Easee connection is not configured');
       let now = clock();
       let scheduling, observations, property;
       try {
         [scheduling, observations, property] = await Promise.all([
-          request(base, { method: 'GET', signal }),
+          telemetryOnly ? null : request(base, { method: 'GET', signal }),
           readObservations(chargerId, CHARGING_OBSERVATION_IDS, { signal, forceRest }),
           equalizerId ? readObservations(equalizerId, [31, 32, 33, 34, 35, 36], { signal, forceRest }).catch(() => null) : null,
         ]);
@@ -327,6 +327,7 @@ export function createEaseeScheduleAdapter({ request, readObservations, chargerI
         return snapshot;
       } catch { throw failure('read-failed', 'Easee returned an unsupported charger or schedule state.'); }
     },
+    readTelemetry(options = {}) { return adapter.read({ ...options, telemetryOnly: true }); },
     async installDelayed({ startAt, timezone, maximumAmps, expectedFingerprint, expectedControlFingerprint, signal,
       canMutate = () => true, allowChargingPause = false, beforeWrite = () => {} } = {}) {
       // A stream snapshot may precede a competing instruction. Keep the final

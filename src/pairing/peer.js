@@ -51,7 +51,7 @@ const PUBLIC_ERRORS = new Set(['peer_unavailable', 'peer_authentication_failed',
   'invalid_action', 'snapshot_unavailable', 'snapshot_failed', 'verification_failed', 'integrity_failed',
   'lineage_mismatch', 'authority_changed', 'recovery_required', 'invalid_transition', 'transfer_incomplete',
   'invalid_pair_state', 'confirmation_required', 'invalid_request_id', 'recovery_unavailable', 'snapshot_expired',
-  'vip_failed', 'runtime_failed', 'stopped', 'timed_out']);
+  'vip_failed', 'runtime_failed', 'ocpp_handover_not_ready', 'stopped', 'timed_out']);
 export function publicPairError(error) { return PUBLIC_ERRORS.has(error?.code) ? error.code : 'peer_protocol_failed'; }
 
 /** The LAN transport never sends the pairing secret or household data in plaintext. */

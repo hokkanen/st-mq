@@ -13,6 +13,10 @@ The subsequent [September owner review](OWNER-REVIEW-2026-09.md) records the
 dashboard, acquisition, recording and control refinements against this audited
 baseline, including validation and installation requirements.
 
+The later [automatic OCPP setup and native-control record](OCPP-SETUP.md)
+supersedes the earlier Easee coexistence assumption and documents its bounded
+live evidence, exclusive control handover and remaining installation limits.
+
 | Scope | Implementation and evidence |
 | --- | --- |
 | A01 charging | [Physical Charger 2, identity, energy, scheduling and controls](A01.md); [acceptance tracker](A01-tracker.json) |

@@ -8,6 +8,7 @@ import { createSourceSnapshot } from '../replication/transport.js';
 import { durableJson, ownedDirectory, publishSnapshot } from '../replication/publication.js';
 import { requireLocalBroker } from './config.js';
 import { PairManager } from './manager.js';
+import { ocppHandoverHooks } from './ocpp.js';
 
 const ACTIONS = new Set(['check-recovery', 'recover', 'handover', 'promote', 'rejoin']);
 const requestError = message => Object.assign(new Error(message), { statusCode: 409 });
@@ -90,11 +91,13 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
   };
   const hooks = {
     dbPath: () => runtime?.store?.path ?? primaryPath,
+    ...ocppHandoverHooks({ configuration: () => context.canControl() && runtime?.engine?.config?.connections
+      ? runtime.engine.config : config, store: () => runtime?.store }),
     revokeControl() {
       if (controllerToken) controllerToken.revoked = true;
       runtime?.revokeControl?.();
     },
-    async stopControl({ restore = false } = {}) {
+    async stopControl({ restore = false, preserveOcpp = false } = {}) {
       if (!restore) hooks.revokeControl();
       const previous = runtime; runtime = null;
       const token = controllerToken;
@@ -102,7 +105,7 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
       replicaAbort?.abort();
       historyAbort?.abort();
       await historyPending?.catch(() => {});
-      try { await previous?.close({ restore }); }
+      try { await previous?.close({ restore, preserveOcpp }); }
       finally { if (token) token.revoked = true; }
       await runtimeStarting?.catch(() => {});
     },

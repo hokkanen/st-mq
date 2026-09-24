@@ -1,5 +1,10 @@
 # Charger 1 native Easee control
 
+The cloud scheduling path below applies when native OCPP is inactive. Activating
+native OCPP transfers charging authorization and scheduling to the local server;
+it cannot be treated as a telemetry-only change. See the local connection section
+below for setup and activation requirements.
+
 The controller installs native one-off starts. For a split plan, it installs the
 next delayed start at each intermediate period's end, pausing until that start.
 No final stop is installed at the target or deadline. New prices may replace an
@@ -231,45 +236,188 @@ acquisition. **Data and settings** identifies **Easee local OCPP** or **Easee
 cloud** for the affected fields. This is a direct OCPP 1.6J central-system endpoint,
 not the cloud-emulated OCPP service and not an HTTP API on the charger.
 
-Native cloud schedules and their ownership/readback/restoration behavior remain
-the charging control path. OCPP charging profiles cannot be substituted for those
-schedules without defining how existing cloud/manual instructions are discovered,
-owned and restored. This implementation therefore does not silently replace the
-scheduler or claim that charging control works without the Easee cloud. Local
-OCPP currently supplies charger power, phase currents and explicitly identified
-phase-neutral voltages. Property/Equalizer readings, finalized cloud session checks,
-and native schedule state remain cloud data; connector 0 is never guessed to mean
-an Equalizer meter.
+Native OCPP activation transfers control as well as telemetry. An
+[Easee maintainer confirmed on 22 September 2026](https://github.com/easee/connect/discussions/2)
+that the connected native OCPP server takes over charging authorization, RFID
+handling and charge schedules. The cloud scheduler described above cannot be
+assumed to remain effective after activation. ST-MQ selects one charging control
+backend at a time. It finishes and verifies release of its current cloud-owned
+instruction before activating native OCPP. An active foreign cloud schedule
+blocks that transition; ST-MQ preserves it. Missing native control readiness or
+an unfinished handover stays visibly pending. Falling back to cloud readings
+does not switch the charging controller back to cloud schedules.
 
-Commissioning is installation work; the implementation and its tests do not alter
-an installed charger. In the existing private `easee` configuration, set
-`local_ocpp.password` (at least 16 characters) and `local_ocpp.authorization_tags`
-to the explicitly permitted OCPP tags used by the installation. Set
-`local_ocpp.charge_point_id` only if commissioning uses a different identity from
-`easee.charger_id`. The shared defaults prefer local data, listen on `0.0.0.0:9001`
-when configured, and contain no credentials or authorized tags. The listener does
-not start until its installation credentials and authorization are configured.
-Unknown tags are rejected; commissioning must verify the intended vehicle/tag
-can start, finish and reconnect before relying on this endpoint.
+**Stopping ST-MQ does not guarantee automatic cloud fallback.** A normal Ctrl+C
+or service stop requests `OcppOff` through Easee cloud before closing charging
+control. That request needs working cloud access; failures retain the restoration
+obligation and report a shutdown error. Paired handover deliberately keeps OCPP
+active so the charger reconnects to the shared address on the next controller.
+Startup can re-enable the installation's matching, previously disabled setup.
 
-Follow Easee's [user commissioning procedure](https://developer.easee.com/docs/ocpp-commissioning-easee-users)
-with Wi-Fi connected and Easee selected as the site operator. Save then apply a
-`DualProtocol` configuration whose base URL is
-`ws://<ST-MQ-LAN-host>:9001/ocpp` and whose `basicAuthPassword` matches the private
-setting. The charger appends its charge-point identity to that URL and authenticates
-with that identity as its Basic-auth username. For `wss`, use a TLS proxy and the
-certificate/domain configuration documented by Easee. Restrict this authenticated
-listener to the installation network; expose the chosen port when container
-networking requires it. Cloud credentials remain configured for fallback.
+A crash, forced termination, suspension or power loss cannot send that handback
+after the process is gone. The charger can remain in native OCPP mode, and a new
+charge or Easee app Start can wait for ST-MQ approval. Restart ST-MQ, or disable
+Direct OCPP through Easee configuration to return authority to cloud control.
+There is no seamless cloud-control backup. An existing pause expiring on the
+charger only removes that restriction; it does not restore cloud authorization
+for a new charging session.
+
+The local receiver supports charger power, phase currents and explicitly
+identified phase-neutral voltages. Property/Equalizer readings and finalized
+cloud session checks remain cloud data; connector 0 is never guessed to mean
+an Equalizer meter. A working local socket or complete electrical readings do
+not prove that charging authorization or scheduling is functioning.
+
+When activation prerequisites are met, ST-MQ performs charger-side setup through
+the existing authenticated Easee cloud connection. On startup and after **Apply
+configuration**, it checks the stored charger connection, saves the required
+`DualProtocol` settings when needed, applies the returned version and waits for
+the charger to connect. The owner does not need a separate commissioning script
+to make these API calls. Setup retries are bounded; a cloud setup request
+succeeding does not establish that the local socket or its measurements are ready.
+
+The charger must have firmware 344 or later, working Wi-Fi and Easee selected as
+the site operator. `easee.local_ocpp.authorization_mode` selects authorization:
+
+- `rfid` is the default. Configure explicitly permitted tags in
+  `authorization_tags`; unlisted tags are rejected. An empty list keeps this
+  mode pending.
+- `plug-and-charge` authorizes a connected vehicle without an RFID tap. ST-MQ
+  derives a private virtual tag from the installation credentials and uses it
+  for `RemoteStartTransaction`. No physical tag list is required in this mode.
+  A remote-start acknowledgement alone does not prove charging: the native
+  transaction and physical state must follow. This opt-in grants start
+  permission; the separate Automatic charging switch governs economic pauses.
+
+Without an explicit password, standalone ST-MQ creates a private
+`easee-ocpp-credentials.json` file in its data directory; paired computers derive
+the same purpose-specific password from their shared pairing token and charger
+identity. Generated passwords have 20 characters. An explicit
+`local_ocpp.password` must have 16–20 characters; the live setup API rejects
+longer values. `local_ocpp.charge_point_id` is needed only for a custom identity.
+Cloud credentials remain configured for setup, fallback readings and cloud
+control while native OCPP is inactive.
+
+### Native charging pauses
+
+The native controller installs an absolute, transaction-scoped `TxProfile` with
+only a **0 A restriction**. The profile identifies the current confirmed native
+transaction and expires at the planned release time using both `validTo` and
+schedule duration. ST-MQ verifies the effective zero-current interval with
+`GetCompositeSchedule`; an accepted write alone is not confirmation of the
+pause. Only its own profile ID is cleared for an earlier release. Cleanup still
+requires the current authorized connection, but can remove that exact profile
+when the old transaction is no longer confirmed. A missing profile ID is rejected;
+ST-MQ never turns an incomplete cleanup instruction into a clear-all request.
+
+At expiry, the restriction disappears on the charger without a new resume
+command. Charging then follows the charger, vehicle and Equalizer's existing
+limits. ST-MQ does not repeatedly command a positive current, invent a 6 A
+release level or use a returned composite limit as the actual available current.
+Intermediate pauses still require a running controller to install the next
+restriction. A process or network outage can therefore miss a future pause and
+increase cost, while an already installed restriction retains its own expiry.
+This expiry does not authorize a new transaction or return the charger to cloud
+control after an abrupt controller loss.
+
+A bounded live experiment verified a private virtual-tag start, physical
+charging, a transaction-scoped zero-current pause, and resumed charging after
+the pause expired with the test controller suspended. Positive-current profile
+behavior was not sufficiently clear to support rate-setting control; the
+implementation uses only the verified zero-current restriction. This does not
+establish behavior for every firmware, vehicle, phase arrangement or paired
+hardware takeover. A separate user-assisted test suspended the server for about
+four minutes: after unplug/replug, Easee app Start waited for approval and did
+not charge while OCPP still owned authorization. Resuming the server allowed a
+remote-start request to be accepted again. See the
+[setup validation record](audit/OCPP-SETUP.md).
+
+While ST-MQ was connected, the owner also used Easee app Pause and Resume;
+native status changed between `Charging` and `SuspendedEVSE`. App controls are
+therefore not assumed to be universally blocked in native mode. The separate
+offline experiment establishes a fresh-session authorization failure, not the
+behavior of every app action. ST-MQ does not automatically restart an existing
+session merely because it reports `SuspendedEVSE`.
+
+The owner declined a separate Equalizer load test. The app reported Equalizer
+available, so continued local balancing is assumed for this installation; that
+availability report does not verify behavior under competing household loads.
+
+### Endpoint and pairing
+
+In standalone operation, set `easee.local_ocpp.server_url` to a base WebSocket
+address that the charger can reach on the installation network, for example
+`ws://192.0.2.10:9001/ocpp` (an invented documentation address). ST-MQ cannot infer
+that address from a listener bound to `0.0.0.0` or from a browser URL. The default listener port is
+9001 and the base path is `/ocpp`; the charger appends its charge-point identity.
+For standalone `wss`, configure a TLS proxy plus `ca_certificate` and
+`ca_certificate_domain`; the native listener accepts ordinary WebSocket traffic.
+For paired operation, ST-MQ derives the base address from the configured pairing
+virtual IP and local OCPP port, so the charger reconnects to the same address
+after handover. A paired `server_url` must be empty or exactly that shared
+`ws://` address; a node-specific address or separate TLS proxy cannot replace it.
+Both computers need a working listener and matching charger configuration.
+Pairing copies the compact setup ownership and transaction state with the
+database. Passwords remain outside history; each computer’s cloud credentials
+and network configuration remain local. See [paired operation](pairing.md) for
+readiness checks and handover limits.
+An outstanding OCPP restoration obligation still requires compatible peer
+settings and listener readiness even when local OCPP is configured as disabled.
+
+Open **Data and settings → Electricity consumption** to see **Charger 1 local
+connection**. **Charger setup** reports missing prerequisites, cloud setup
+progress or retry, native control readiness and an existing cloud schedule
+waiting to hand over; **Local readings** separately reports the socket and fresh
+measurement readiness. Working cloud readings retain their own availability.
+Correct missing configuration and use **Apply configuration** to reconnect.
+Addresses, authentication secrets and authorization tags are not shown in this
+public status.
+
+An existing connection owned by another OCPP server is preserved. **Set up local
+connection** appears only when ST-MQ has inspected that configuration and this
+computer has authority to change it. The confirmation explains that the existing
+OCPP server connection will be replaced and that native OCPP takes over charging
+authorization and schedules. The server rereads the inspected revision before replacement. A newer
+external edit requires another review and confirmation; it does not grant
+permission for recurring automatic overwrites.
+
+To turn off a local connection managed by this installation, set
+`easee.local_ocpp.enabled` to `false` and use **Apply configuration**. ST-MQ checks
+that the charger still has its owned configuration, stores `OcppOff` while
+preserving the existing address, authentication and certificate settings, then
+applies that version. A failed cloud operation remains pending and retries;
+changing the setting alone does not confirm charger-side shutdown. A different
+server's connection is preserved and cannot be adopted while local OCPP is
+disabled. After local OCPP is disabled, verify that the charger has resumed its
+intended cloud control before relying on scheduled charging.
+In the bounded live test, follow-up about one minute after applying `OcppOff`
+reported no active cloud schedule and external authorization disabled. This
+control readback does not establish immediate physical handback or a charging start.
+
+Easee's [commissioning guide](https://developer.easee.com/docs/ocpp-commissioning-easee-users)
+describes the prerequisites and Save/Apply protocol that ST-MQ performs. The
+[GET connection reference](https://developer.easee.com/reference/getuserchargerconnectiondetailsendpoint)
+contains the current versioned response example: `version`, `connectivityMode`,
+`websocketConnectionArgs` and `basicAuth` containing username/password. Its example
+matches the `ConnectionDetailsDto` used by the operator API, while its schema
+reference incorrectly points to the version-only POST response. The POST request
+uses `chargePointId` and `basicAuthPassword`; these request names are not accepted
+as alternative GET response fields. The live API accepts a store request with
+HTTP 201 and returns the version to apply. Its GET URL includes the appended
+charge-point identity, while POST uses the base URL; ST-MQ verifies and separates
+that exact identity rather than appending it twice. Unknown response shapes stop
+setup safely.
 
 On boot ST-MQ requests periodic and clock-aligned measurements, including power,
 current and voltage. Both the socket and the measured fields must remain current;
 heartbeats do not renew an old power/current sample. Missing or unsupported phases
 stay missing, and a local/cloud transition breaks energy integration rather than
-joining unrelated sample heads. Reconnection, malformed values, units, timestamps,
+joining unrelated sample heads. Native Easee measurements marked `Inlet` are
+accepted alongside `Outlet` for charger connector 1; they remain charger readings,
+not property or Equalizer measurements. Reconnection, malformed values, units, timestamps,
 authority revocation and authentication are exercised with a synthetic charger.
-No firmware/installation-specific local telemetry or cloud-control coexistence has
-been verified on the household charger.
+These synthetic checks complement the bounded native-control experiment above;
+they do not establish all installed charger or paired-hardware behavior.
 
 References checked for this implementation: Easee's
 [native OCPP overview](https://developer.easee.com/docs/ocpp-intro),
@@ -277,18 +425,50 @@ References checked for this implementation: Easee's
 and [firmware 344 configuration keys](https://developer.easee.com/docs/supported-config-keys).
 
 Transaction acknowledgements are committed to the current SQLite state before
-authorization is returned. The compact ledger binds to the configured charger
-and charge-point identity, stores hashes instead of plaintext tags, and keeps
-up to 128 transaction records plus a start-time watermark. Retries after a socket
+authorization is returned. The compact current ledger uses strict version 4,
+binds to the configured charger and charge-point identity, stores hashes instead
+of plaintext tags, and keeps up to 128 transaction records plus a start-time
+watermark. Retries after a socket
 reconnect, message-cache eviction or process restart receive the original
 transaction ID. Conflicting starts/stops, unknown stops and starts older than the
 retained watermark are rejected. A changed charger association or malformed
-ledger blocks the endpoint before mutation; inspect the installation and use
-a deliberate fresh setup rather than allowing another charger to inherit it.
+ledger blocks the endpoint before mutation. Earlier development ledgers are not
+migrated or decoded as version 4; inspect the installation and use a deliberate
+fresh setup rather than allowing another charger to inherit it.
 Storage failure blocks new Authorize and StartTransaction replies. This compact
 ledger is protocol identity state, not a duplicate session-energy series. A reset
 meter counter can still end its known transaction; the raw nonnegative start and
 stop values are retained without treating their difference as energy.
+
+Each transaction retains its latest transaction-specific evidence time. A fresh,
+explicitly timestamped `Available` or `Finishing` status from the
+current authenticated connector can establish that no transaction is ongoing,
+provided it is strictly newer than that evidence. Up to one second of future
+source-clock skew waits until the timestamp is current; a known newer buffered
+transaction reading prevents an older status from clearing the active slot.
+ST-MQ records this separately as `endedByStatus` with source and receipt times.
+The old transaction row remains unresolved: no `StopTransaction`, stop timestamp
+or `meterStop` is fabricated, and no session energy is inferred. A later real stop
+can complete that row without ending a newer active transaction. A cloud apply
+acknowledgement or socket closure alone never ends a transaction.
+`Preparing` never establishes an end: the tested Easee firmware reported it one
+second after an accepted `StartTransaction` while that transaction was active.
+`SuspendedEVSE` likewise does not end a transaction or authorize a restart.
+
+Before applying an owned `OcppOff` request, ST-MQ durably records a
+`modeDisableIntent` on the active row with the request time and authenticated
+connection identity. This records intent, not physical completion. Following a
+later authenticated connection, fresh explicit `Preparing` newer than the request,
+with no current transaction-bearing meter evidence, can permit one recovery
+remote start in plug-and-charge mode. The attempt is saved before it is sent;
+retries and restarts do not replenish it. A new boot message on the same socket
+or ordinary paired handover does not create this recovery permission.
+
+The old row stays active until a distinct, authorized `StartTransaction` on that
+later connection is newer than both its last transaction evidence and the disable
+request. Only then is it superseded with separate `endedByNewStart` provenance.
+Its missing stop timestamp and meter counter remain missing. A later real stop
+updates only the old row, even if its reported time follows the new start.
 
 The local OCPP status includes pending configuration keys and rejected/unsupported
 configuration replies. Check these during commissioning, especially

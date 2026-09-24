@@ -289,6 +289,14 @@ function buildConfiguration(options, env, cwd, configuration, source, { bootstra
       preheatRoomBoostC: options.controller?.preheat_room_boost_c ?? 5, mode: replica ? 'monitoring' : env.STMQ_MODE ?? options.controller?.mode ?? 'shadow',
       comfort: { targetC: null, maxRiseC: options.controller?.max_rise_c ?? 1.5, maxDropC: env.STMQ_MAX_DROP_C == null ? options.controller?.max_drop_c ?? 1.5 : Number(env.STMQ_MAX_DROP_C) } }) };
   config.pairing = pairingConfiguration(options.pairing, env, config);
+  if (config.pairing.enabled && config.connections.easee?.local_ocpp?.enabled) {
+    const ocpp = config.connections.easee.local_ocpp;
+    const expected = `ws://${config.pairing.vip.address}:${ocpp.port}/ocpp`;
+    if (ocpp.server_url && ocpp.server_url !== expected || !['0.0.0.0', config.pairing.vip.address].includes(ocpp.host))
+      throw new Error('Paired OCPP must use the shared virtual IP; leave server_url empty and bind to 0.0.0.0 or the virtual address.');
+    if ([config.port, config.ingressPort, config.pairing.port].includes(ocpp.port))
+      throw new Error('The local OCPP port must differ from the web and pairing ports.');
+  }
   configurationSources.set(config, source);
   configurationReaders.set(config, () => loadConfig(env, cwd));
   return config;

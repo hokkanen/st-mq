@@ -79,6 +79,17 @@ test('pair display distinguishes protected history, peer outages, broker readine
   assert.match(pairDisplay(primary({ transition: { kind: 'handover', phase: 'quiescing' } })).phase, /Finishing control/);
 });
 
+test('OCPP handover refusal explains local readiness without displaying diagnostics', () => {
+  const view = primary({ error: 'ocpp_handover_not_ready',
+    uiOperation: { state: 'error', error: 'private charger password' } });
+  const display = pairDisplay(view, { now });
+  assert.match(display.attention, /same charger endpoint, credentials and authorization tags/);
+  assert.match(display.attention, /OCPP port is available/);
+  assert.match(display.summary, /This computer is the master/);
+  assert.match(pairActionHelp(view).handover, /not ready to accept the local charger connection/);
+  assert.doesNotMatch(JSON.stringify(display), /private charger password/);
+});
+
 test('management capability flags are restricted by role, transition, operation and checked donor identity', () => {
   assert.equal(pairActionAllowed(primary(), 'handover'), true);
   assert.equal(pairActionAllowed(standby(), 'promote'), true);

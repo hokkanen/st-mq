@@ -4,10 +4,23 @@
 | --- | --- | --- | --- |
 | Physical home energy | Easee phase intervals | Shelly native meter deltas | Never |
 | Connection lifecycle | Timestamped Easee state | Commissioned physical work-state mapping | Corroborating vehicle edges |
-| Economic control | Native one-off delayed starts | EVSE start/stop over MQTT RPC | No vehicle writes |
-| Current changes by ST-MQ | Never; Equalizer controls current | Verified common current | Read native limits only |
+| Economic control | Exclusive cloud delayed starts or native OCPP expiring 0 A transaction pauses | EVSE start/stop over MQTT RPC | No vehicle writes |
+| Current changes by ST-MQ | Native OCPP may impose an expiring 0 A pause; no positive-current setpoint | Verified common current | Read native limits only |
 | SoC/capacity/target | Assigned vehicle or explicit fallback | Assigned vehicle or explicit fallback | Applicable vehicle evidence |
 | Supply voltage | Physical installation evidence | Physical installation evidence | Never used for home supply |
+
+Charger 1's native OCPP mode takes over authorization and scheduling from the
+cloud. `authorization_mode: "plug-and-charge"` uses a private derived virtual tag
+for RFID-free startup; the default `rfid` mode requires configured tags.
+Native pause expiry releases the restriction and leaves positive charging
+current to the charger, vehicle and Equalizer. Cloud readings can back up local
+telemetry; control does not switch back merely because telemetry does. The
+[Easee setup record](audit/OCPP-SETUP.md) separates bounded live observations from
+synthetic protocol validation and untested installation conditions.
+Normal service stop requests cloud handback; paired handover keeps OCPP active.
+After a crash or power loss, new charging or Easee app Start can remain blocked
+waiting for approval. Restart ST-MQ or disable Direct OCPP through Easee
+configuration; an expired pause does not restore cloud authorization.
 
 The Charger 2 profile targets the [Top AC Portable EV Charger](https://shelly-api-docs.shelly.cloud/gen2/Devices/ShellyX/XT1/TopACPortableEVCharger/) on Shelly XT1. The integration uses the documented EVSE roles for state, current, start permission and electrical data. This is not a generic Shelly relay adapter. [XT1](https://shelly-api-docs.shelly.cloud/gen2/Devices/ShellyX/XT1/) documents role addressing, service state and access permissions; [Number](https://shelly-api-docs.shelly.cloud/gen2/DynamicComponents/Virtual/Number/) documents numeric limits and `meta.ui.step`.
 

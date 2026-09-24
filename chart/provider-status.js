@@ -211,6 +211,7 @@ function electricityDisplay(entries, options) {
     : available ? 'Partly available' : active.some(display => display.state === 'Updating') ? 'Updating'
       : active.length ? 'Waiting for readings' : displays.every(display => display.state === 'Not enabled') ? 'Not enabled' : 'Not configured';
   return { key: 'electricity', overviewTitle: 'Electricity consumption', source: 'Easee, Shelly EVSE', backup: false,
+    localConnection: easeeLocalConnectionDisplay(entries.find(([job]) => job === 'easee')?.[1], options),
     sourceStates: electricityJobs.map((key, index) => sourceStatus(providerName(key), displays[index])),
     display: { title: 'Electricity consumption · Easee, Shelly EVSE', state, attention,
       detail: displays.map(display => `${display.title}: ${display.state}. ${display.detail}`).join(' ') },
@@ -379,6 +380,81 @@ const currentFlags = flags => Array.isArray(flags) ? [...new Set(flags.filter(fl
 
 const scopedCurrentFlags = flags => currentFlags(flags).filter(flag => flag !== 'stale');
 
+const localSetupStates = Object.freeze({
+  disabled: ['Not enabled', 'Local connection setup is disabled.'],
+  'needs-endpoint': ['Address needed', 'Set a standalone address that the charger can reach, then apply configuration. Paired installations use their shared virtual address automatically.'],
+  'waiting-listener': ['Preparing connection', 'Waiting for this computer’s local charger listener before updating the charger.'],
+  checking: ['Checking charger', 'ST-MQ is checking the charger’s local connection settings through Easee cloud.'],
+  'waiting-charger': ['Waiting for charger', 'Waiting for the charger to become available for setup.'],
+  applying: ['Applying setup', 'ST-MQ is saving and applying the local connection settings through Easee cloud.'],
+  connecting: ['Waiting for connection', 'The charger settings are applied. Waiting for its local connection.'],
+  ready: ['Setup complete', 'The charger’s local connection setup is confirmed. Fresh measurements are checked separately.'],
+  blocked: ['Setup needs attention', 'Automatic setup cannot continue. Check the saved charger configuration, then apply configuration.'],
+  retrying: ['Retrying setup', 'The cloud setup request did not complete. ST-MQ will retry automatically.'],
+});
+const localSetupReasons = Object.freeze({
+  'endpoint-required': 'Set a standalone address that the charger can reach, then apply configuration. Paired installations use their shared virtual address automatically.',
+  'authorization-tags-required': 'RFID mode needs permitted authorization tags. Configure them, or select plug-and-charge for RFID-free starts, then apply configuration.',
+  'native-control-unavailable': 'Waiting for native scheduling and plug-in authorization to be ready before activating local OCPP. The current charging control is preserved.',
+  'cloud-schedule-active': 'An existing Easee cloud schedule owns charging. ST-MQ is preserving it and waiting before activating local OCPP.',
+  'control-transition-pending': 'ST-MQ is finishing the current charging instruction before handing control to the other connection. Wait for confirmed handover.',
+  'credentials-unavailable': 'The local connection credentials are unavailable. Check the saved configuration, then apply configuration.',
+  'listener-unavailable': 'This computer cannot accept the local charger connection. Check the configured listener and network port, then apply configuration.',
+  'incompatible-setup-state': 'Saved local setup does not match this charger configuration. Check the installation before continuing.',
+  'firmware-required': 'The charger needs firmware 344 or later for a native local connection.',
+  'wifi-required': 'Connect the charger to Wi-Fi before ST-MQ applies local connection settings.',
+  'charger-offline': 'The charger is offline. Setup will continue when it is available.',
+  'foreign-configuration': 'The charger already has a different OCPP server connection. Review it before replacing it with this ST-MQ installation.',
+  'cloud-authentication': 'Easee cloud access was denied. Check the saved Easee credentials, then apply configuration.',
+  'cloud-rate-limit': 'Easee cloud has limited setup requests. ST-MQ will retry automatically after the waiting period.',
+  'cloud-unavailable': 'Easee cloud setup is unavailable. ST-MQ will retry automatically.',
+  'invalid-cloud-response': 'Easee returned an unsupported setup response. The existing charger connection has not been confirmed.',
+  'storage-unavailable': 'The local setup could not be saved. Restore database storage before retrying setup.',
+  'authority-revoked': 'This computer no longer has authority to change the charger’s connection.',
+  'waiting-connection': 'The charger settings are applied. Waiting for its local connection.',
+});
+const localPendingReasons = Object.freeze({
+  'native-control-unavailable': 'Activation pending',
+  'cloud-schedule-active': 'Waiting for cloud schedule',
+  'control-transition-pending': 'Control handover pending',
+});
+
+/** Setup and measurements have independent readiness. Public text never includes
+ * endpoint addresses, credentials, charger identifiers or raw provider errors. */
+export function easeeLocalConnectionDisplay(health, { now, formatTime } = {}) {
+  const local = health?.localOcpp;
+  if (!local || typeof local !== 'object') return null;
+  const setup = local.setup ?? {}, known = Object.hasOwn(localSetupStates, setup.state);
+  const [stateLabel, stateExplanation] = known ? localSetupStates[setup.state]
+    : ['Checking setup', 'Waiting for automatic local connection setup status.'];
+  const controlPending = Object.hasOwn(localPendingReasons, setup.reason);
+  const label = controlPending ? localPendingReasons[setup.reason] : stateLabel;
+  const explanation = Object.hasOwn(localSetupReasons, setup.reason) ? localSetupReasons[setup.reason] : stateExplanation;
+  const setupAttention = !controlPending && ['needs-endpoint', 'blocked', 'retrying'].includes(setup.state);
+  const endpoint = setup.endpointSource === 'pairing-vip' ? 'Paired virtual address'
+    : setup.endpointSource === 'configured' ? 'Configured standalone address' : 'Address not configured';
+  const timing = typeof formatTime === 'function' && Number.isFinite(now)
+    && Number.isSafeInteger(setup.nextAttemptAt) && setup.nextAttemptAt > now
+    ? ` Next setup attempt ${formatTime(setup.nextAttemptAt)}.` : '';
+  const readings = setup.state === 'disabled' ? ['Not enabled', 'Local charger readings are disabled. Cloud readings remain available.', 'pending']
+    : local.error ? ['Needs attention', 'The local listener needs attention. Available cloud readings remain the backup.', 'attention']
+    : local.available === true ? ['Available', 'Fresh charger electricity readings are available through local OCPP.', 'available']
+      : local.connected === true ? ['Waiting for readings', 'The charger is connected. Complete fresh electricity readings are still required.', 'pending']
+        : ['Waiting for connection', 'The charger has not established a local connection. Available cloud readings remain the backup.', 'pending'];
+  const configuration = local.configurationFailures?.length
+    ? ' The charger did not accept all measurement settings; local data may be incomplete.'
+    : local.pendingConfiguration?.length ? ' Waiting for the charger to acknowledge measurement settings.' : '';
+  return { title: 'Charger 1 local connection',
+    setup: { label, tone: setupAttention ? 'attention' : setup.state === 'ready' ? 'available' : 'pending', detail: explanation + timing },
+    readings: { label: readings[0], detail: readings[1] + configuration,
+      tone: local.configurationFailures?.length ? 'attention' : readings[2] },
+    endpoint,
+    outage: 'Normal service stop requests a return to cloud control; paired handover keeps OCPP active. If cloud handback fails, it remains unconfirmed. A crash or power loss can leave charging or Easee app Start waiting for approval. Restart ST-MQ or disable Direct OCPP through Easee configuration. Expiring pauses do not restore cloud authorization.',
+    detail: setup.endpointSource === 'pairing-vip'
+      ? 'The charger follows the shared address during handover. The other computer must be ready to serve the same local connection. Native OCPP takes over charging authorization and schedules; property readings use Easee cloud.'
+      : 'ST-MQ manages charger setup automatically. Native OCPP takes over charging authorization and schedules; property readings use Easee cloud.' };
+}
+
 function easeeStreamDetail(health) {
   const connection = {
     idle: 'Live stream has not started.', connecting: 'Connecting to the live stream.',
@@ -387,12 +463,12 @@ function easeeStreamDetail(health) {
   };
   const state = health.stream?.state;
   const local = health.localOcpp;
-  const localDetail = !local ? null : !local.configured ? 'Local OCPP awaits commissioning; cloud data is used.'
-    : local.error ? 'Local OCPP needs attention; cloud data is the backup.'
+  const localDetail = !local ? null : !local.configured ? 'Local OCPP is not configured; cloud readings are used.'
+    : local.error ? 'Local OCPP needs attention; cloud readings are the backup.'
       : local.available ? 'Charger electricity is available through local OCPP.'
         : local.connected ? 'Local OCPP is connected but is waiting for complete fresh electricity readings.'
-          : 'Waiting for the charger to connect to local OCPP; cloud data is the backup.';
-  const configured = local?.configurationFailures?.length ? 'The charger did not accept all local telemetry settings; check OCPP commissioning.'
+          : 'Waiting for the charger to connect to local OCPP; cloud readings are the backup.';
+  const configured = local?.configurationFailures?.length ? 'The charger did not accept all local telemetry settings; check local connection setup.'
     : local?.pendingConfiguration?.length ? 'Waiting for the charger to acknowledge local telemetry settings.' : null;
   const acquisition = health.transport === 'stream' ? 'Last acquisition used the live stream.'
     : health.transport === 'rest' ? 'Last acquisition used REST backup.'
@@ -400,8 +476,10 @@ function easeeStreamDetail(health) {
         : health.transport === 'mixed' ? health.deviceTransports?.charger === 'ocpp'
           ? 'Last acquisition combined local charger readings and cloud property readings.'
           : 'Last acquisition combined live stream readings and REST backup.' : null;
+  const setup = easeeLocalConnectionDisplay(health);
   return [Object.hasOwn(connection, state) ? connection[state] : null, acquisition, localDetail, configured,
-    local ? 'Native charging schedules and property readings use Easee cloud.' : null].filter(Boolean).join(' ') || null;
+    setup ? `Charger setup: ${setup.setup.label}. ${setup.setup.detail}` : null,
+    local ? 'Native OCPP takes over charging authorization and schedules; property readings use Easee cloud.' : null].filter(Boolean).join(' ') || null;
 }
 
 function describeEasee(health, { now, formatTime }) {

@@ -27,6 +27,28 @@ test('provider errors preserve status but never URL, credentials or provider-ech
   await assert.rejects(failed.json('https://api.easee.com'), /provider-network-error/);
 });
 
+test('native OCPP setup permits only bounded connection settings and version apply under authority', async () => {
+  const calls = []; let authority = true;
+  const http = createHttp({ allowOcppSetup: true, canControl: () => authority,
+    fetchImpl: async (url, options) => { calls.push({ url, body: JSON.parse(options.body) }); return new Response(null, { status: 204 }); } });
+  const store = 'https://api.easee.com/local-ocpp/v1/connection-details/fixture-charger';
+  const apply = 'https://api.easee.com/local-ocpp/v1/connections/chargers/fixture-charger';
+  const body = { connectivityMode: 'DualProtocol', chargePointId: 'fixture-charger', basicAuthPassword: 'fixture-setup-pass',
+    websocketConnectionArgs: { url: 'ws://192.0.2.10:9001/ocpp', caCertificate: null, caCertificateDomain: null } };
+  const post = value => ({ method: 'POST', body: JSON.stringify(value) });
+  await http.text(store, post(body)); await http.text(apply, post({ version: 'fixture-config-version' }));
+  await http.text(store, post({ ...body, connectivityMode: 'OcppOff' }));
+  for (const [url, value] of [[store, { ...body, connectivityMode: 'OcppOnly' }], [store, { ...body, extra: true }],
+    [store, { ...body, basicAuthPassword: 'short' }], [apply, { version: 'fixture-version', body }],
+    [store+'?unexpected=true', body], ['https://api.easee.com/api/chargers/fixture-charger/commands/start_charging', {}]])
+    await assert.rejects(http.text(url, post(value)), /device-writes-not-allowed/);
+  authority = false;
+  await assert.rejects(http.text(apply, post({ version: 'fixture-config-version' })), /controller-authority-revoked/);
+  assert.equal(calls.length, 3);
+  const readOnly = createHttp({ fetchImpl: async () => { throw new Error('must not dispatch'); } });
+  await assert.rejects(readOnly.text(store, post(body)), /device-writes-not-allowed/);
+});
+
 test('body and lifetime bounds apply without Content-Length; pending requests stop on close', async () => {
   const oversized = createHttp({ maxBytes: 5, fetchImpl: async () => new Response('abcdef') });
   await assert.rejects(oversized.text('https://api.easee.com'), /too-large/);

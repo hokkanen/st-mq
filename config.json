@@ -228,9 +228,13 @@
         "enabled": true,
         "host": "0.0.0.0",
         "port": 9001,
+        "server_url": "",
+        "ca_certificate": "",
+        "ca_certificate_domain": "",
         "password": "",
         "charge_point_id": "",
-        "authorization_tags": []
+        "authorization_tags": [],
+        "authorization_mode": "rfid"
       }
     },
 
@@ -696,9 +700,13 @@
         "enabled": "bool",
         "host": "str",
         "port": "int(1,65535)",
+        "server_url": "str?",
+        "ca_certificate": "str?",
+        "ca_certificate_domain": "str?",
         "password": "password?",
         "charge_point_id": "str?",
-        "authorization_tags": ["str"]
+        "authorization_tags": ["str"],
+        "authorization_mode": "list(rfid|plug-and-charge)"
       }
     },
 

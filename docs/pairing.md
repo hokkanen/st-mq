@@ -220,6 +220,65 @@ response is lost, **Recheck the same request** uses its original identifier;
 it does not create another promotion or handover. A browser reload retains
 that pending identifier. It never retries a promotion automatically.
 
+### Local Easee charger continuity
+
+For ST-MQ's local Easee OCPP connection, both computers must use the same
+charger identity, charge-point identity, authorization mode, authorization tags
+and stable server URL. With a blank `easee.local_ocpp.server_url`, paired setup uses
+`ws://<pairing VIP>:<OCPP port>/ocpp`; use the same OCPP port on both computers.
+An explicit server URL must equal that same VIP URL. Paired OCPP currently
+requires a direct connection to the VIP; fixed management addresses and
+reverse-proxy endpoints are rejected. Bind the listener to `0.0.0.0` or to
+the VIP itself on both computers.
+
+With no explicit `easee.local_ocpp.password`, paired setup derives a separate
+OCPP credential from the existing shared pairing token and charger identity.
+Both computers can obtain the same credential without transferring it in the
+database. If an explicit OCPP password is configured, provide the same value
+in both private configurations. Do not use an independently generated
+standalone credential on each paired computer. The ordinary requirements for
+each computer's own Easee cloud credentials still apply. See
+[Easee setup](charging-easee.md) for commissioning and endpoint requirements.
+
+Before stopping the current master, handover checks that the slave can accept
+the same endpoint, charger identity, credentials, authorization mode and tags. It
+briefly binds and closes the future local OCPP port to catch a conflicting
+listener; it does not start an OCPP service or contact the charger. If the
+listener is configured to bind the VIP, the check uses the wildcard address
+because the slave does not own the VIP yet. A mismatch refuses the handover
+while the current master continues operating. Readiness cannot guarantee
+future port availability, network routing or charger reconnect timing.
+Matching empty authorization-tag lists do not block a general paired handover.
+In `plug-and-charge` mode, both computers derive the same private virtual tag
+for automatic local authorization; an explicit tag list is optional. In `rfid`
+mode, an empty list keeps charger setup blocked until tags are configured.
+Check the separate Easee setup and connection status to confirm that a charger
+has actually been commissioned.
+
+The current master closes its device connections before creating the final
+snapshot. That snapshot includes the OCPP transaction ledger, setup journal
+and native charging ownership, preserving transaction IDs, pending profile
+commands and commissioning state. A paused transaction retains its finite
+profile expiry even while the computers transfer control. The slave validates the
+final setup state before activation. Only the authoritative primary owns the
+live listener and provisions the charger. The moved VIP gives the charger the
+same endpoint and credentials, so a role handover keeps OCPP active and does
+not reconfigure the charger through Easee cloud. An ordinary application stop
+instead attempts to release its profiles and apply `OcppOff` before closing
+its connections. A crash or power loss cannot perform that cloud handback.
+Existing finite pauses can expire autonomously, but a new plug-in may wait for
+OCPP authorization and the Easee app cannot be assumed to bypass that wait.
+The promoted computer must restore the local listener and fresh authorization
+for new transactions. The new connection also needs fresh telemetry; an open
+socket or recent electrical readings are not transferred.
+
+If validation fails after the original master has stopped, neither computer
+automatically resumes control. The original history remains protected; review
+the reported readiness problem and current roles before explicitly promoting
+a computer. Forced promotion still uses the last verified snapshot, so it can
+lose transactions written after that snapshot, just as it can lose other
+recent history.
+
 ## Force promotion
 
 Use **Force promote this computer** on a slave or protected computer only
