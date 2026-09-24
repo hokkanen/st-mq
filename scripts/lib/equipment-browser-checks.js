@@ -1,5 +1,88 @@
 import assert from 'node:assert/strict';
-import { writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
+
+/** Commissioning navigation and downloads remain read-only, using the same fixture. */
+async function checkFloorPreheatingBrowser({ evaluate, command, context, refresh, settle }) {
+  await evaluate(`(() => {const f=window.equipmentUiFixture;f.savedFloorUi={
+    present:Object.hasOwn(f.status,'preheatValves'),status:f.status.preheatValves,
+    theme:document.documentElement.dataset.theme,hash:location.hash,focus:document.activeElement,
+    folds:[...document.querySelectorAll('.controller-panels details')].map(node=>[node,node.open])};
+    f.status.preheatValves=null;return true;})()`);
+  const calls = await evaluate('window.equipmentUiFixture.calls.length');
+  try {
+    await refresh();
+    assert.equal(await evaluate("document.getElementById('floor-preheat-details').parentElement.id"), 'connections-details', 'Floor commissioning has its own place beside MQTT and configuration');
+    assert.equal(await evaluate("document.getElementById('floor-commissioning-details').closest('#floor-preheat-details') !== null"), true);
+    assert.equal(await evaluate("document.querySelector('#home-manual-controls #floor-commissioning-details')"), null, 'Hardware setup is outside everyday heating controls');
+    assert.match(await evaluate("document.getElementById('floor-preheat-state').textContent"), /unavailable|waiting|unknown/i, 'Missing status cannot report disabled or commissioned hardware');
+    await evaluate(`(() => {const f=window.equipmentUiFixture;f.status.preheatValves={enabled:false,commissioned:false,
+      connected:false,available:false,active:false,restorationPending:false,renewSeconds:300,leaseSeconds:900,devices:[]};return true;})()`);
+    await refresh();
+    assert.match(await evaluate("document.getElementById('floor-preheat-state').textContent"), /not enabled|disabled/i);
+    assert.match(await evaluate("document.getElementById('floor-preheat-commissioning-status').textContent"), /not|needed|required/i);
+    await evaluate("window.equipmentUiFixture.status.preheatValves.restorationPending=true;true");
+    await refresh();
+    assert.match(await evaluate("document.getElementById('floor-preheat-state').textContent"), /release pending/i, 'Disabling control does not hide an outstanding release');
+    assert.equal(await evaluate("[...document.querySelectorAll('#equipment-connections [data-device-id^=\"floor-override:\"] .equipment-device-status')].every(node=>/release pending/i.test(node.textContent))"), true);
+    await evaluate(`(() => {const f=window.equipmentUiFixture;f.status.preheatValves={enabled:true,commissioned:true,
+      connected:true,available:true,active:false,restorationPending:false,renewSeconds:240,leaseSeconds:600,
+      devices:['living','storage'].map(group=>({group,available:true,at:f.now,channels:[0,1].map(id=>({id,output:false}))}))};return true;})()`);
+    await refresh();
+    assert.match(await evaluate("document.getElementById('floor-preheat-renewal').textContent"), /4.*10|240.*600/, 'Renewal information uses configured timing');
+    const floorCards = '#home-equipment-readings [data-device-id^="floor-override:"]';
+    assert.equal(await evaluate(`document.querySelectorAll('${floorCards}').length`), 2);
+    assert.deepEqual(await evaluate(`[...document.querySelectorAll('${floorCards} .status-detail-label')].map(node=>node.textContent)`), ['Override off','Override off','Override off','Override off']);
+    assert.equal(await evaluate(`document.querySelectorAll('${floorCards} [data-open-floor-setup]').length`), 2);
+    assert.equal(await evaluate("document.querySelectorAll('#equipment-connections [data-device-id^=\"floor-override:\"] [data-open-floor-setup]').length"), 2);
+    await evaluate(`document.getElementById('home-equipment-details').open=true;document.querySelectorAll('${floorCards}').forEach(node=>node.open=true);true`);
+    assert.equal(await evaluate(`Array.from(document.querySelectorAll('${floorCards} .equipment-switch-buttons button')).every(node=>node.disabled&&!node.checkVisibility())`), true, 'Floor contacts have no manual lease-bypass controls');
+    for (const source of ['#home-equipment-readings','#equipment-connections']) {
+      await evaluate(`(() => {document.getElementById('connections-details').open=${source === '#equipment-connections'};
+        document.getElementById('mqtt-devices-details').open=true;document.getElementById('floor-preheat-details').open=false;
+        const link=document.querySelector('${source} [data-device-id="floor-override:living"] [data-open-floor-setup]');
+        link.closest('details').open=true;link.click();return true;})()`);
+      await settle();
+      assert.equal(await evaluate("document.getElementById('connections-details').open&&document.getElementById('floor-preheat-details').open"), true, 'A floor-device link opens the setup ancestors');
+      assert.equal(await evaluate("document.activeElement===document.querySelector('#floor-preheat-details > summary')"), true, 'Setup navigation puts keyboard focus on its destination');
+      assert.equal(await evaluate("document.querySelector('#floor-preheat-details > summary').checkVisibility()"), true);
+    }
+    await evaluate("document.getElementById('floor-commissioning-details').open=true;document.querySelector('#floor-commissioning-details > summary').focus();true");
+    await refresh();
+    assert.equal(await evaluate("document.getElementById('floor-commissioning-details').open"), true, 'Polling preserves the commissioning checklist');
+    assert.equal(await evaluate("document.activeElement===document.querySelector('#floor-commissioning-details > summary')"), true, 'Polling preserves checklist keyboard focus');
+    await evaluate("window.equipmentUiFixture.status.preheatValves.devices.forEach(device=>{device.available=false;device.channels.forEach(channel=>channel.output=null);});window.equipmentUiFixture.status.preheatValves.available=false;true");
+    await refresh();
+    assert.match(await evaluate("document.getElementById('floor-preheat-state').textContent"), /waiting|unavailable|readback/i);
+    assert.doesNotMatch(await evaluate("document.getElementById('floor-preheat-commissioning-status').textContent"), /not recorded|needs commissioning|not commissioned/i, 'Losing readback does not erase the commissioning record');
+    for (const [id, source] of [['floor-preheat-guide','../../docs/floor-preheat.md'],['floor-preheat-script','../../scripts/shelly/floor-lease.js']]) {
+      const download = await evaluate(`(async()=>{const link=document.getElementById('${id}'),response=await window.equipmentUiFixture.fetch(link.href);return {
+        offered:link.hasAttribute('download'),ok:response.ok,type:response.headers.get('content-type'),body:await response.text()};})()`);
+      assert.equal(download.offered, true, 'Setup resources are offered as downloads');
+      assert.equal(download.ok, true, 'The built application serves each setup resource');
+      assert.doesNotMatch(download.type ?? '', /text\/html/i, 'A setup download cannot silently return the dashboard');
+      assert.equal(download.body, readFileSync(new URL(source, import.meta.url), 'utf8'), 'The download matches the maintained source');
+    }
+    for (const theme of ['dark','light']) {
+      await evaluate(`document.documentElement.dataset.theme='${theme}';true`);
+      for (const width of [1440,320]) {
+        await command('browsingContext.setViewport',{context,viewport:{width,height:1100},devicePixelRatio:1}); await settle();
+        await evaluate("document.getElementById('floor-preheat-details').scrollIntoView({block:'start'});true"); await settle();
+        assert.equal(await evaluate('document.documentElement.scrollWidth<=innerWidth'), true, `Floor commissioning fits at ${width}px in ${theme} theme`);
+        assert.equal(await evaluate("(() => {const panel=document.getElementById('floor-preheat-details').getBoundingClientRect();return [...document.querySelectorAll('#floor-preheat-details a, #floor-preheat-details table')].filter(node=>node.checkVisibility()).every(node=>[...node.getClientRects()].every(box=>box.left>=panel.left-1&&box.right<=panel.right+1));})()"), true, 'Commissioning links and settings stay inside the panel');
+        const screenshot=await command('browsingContext.captureScreenshot',{context,origin:'viewport'});
+        writeFileSync(`var/floor-preheating-${theme}-${width}.png`,Buffer.from(screenshot.data,'base64'));
+      }
+    }
+    assert.equal(await evaluate('window.equipmentUiFixture.calls.length'), calls, 'Reviewing setup never sends equipment commands');
+  } finally {
+    await evaluate(`(() => {const f=window.equipmentUiFixture,s=f.savedFloorUi;
+      if(s.present)f.status.preheatValves=s.status;else delete f.status.preheatValves;
+      document.documentElement.dataset.theme=s.theme;history.replaceState(null,'',location.pathname+location.search+s.hash);
+      for(const [node,open]of s.folds)node.open=open;s.focus?.focus({preventScroll:true});delete f.savedFloorUi;return true;})()`);
+    await refresh();
+    await command('browsingContext.setViewport',{context,viewport:{width:1440,height:1100},devicePixelRatio:1});
+  }
+}
 
 /** All device actions below terminate in a browser fixture, never at hardware. */
 export async function checkEquipmentBrowser({ evaluate, command, context, until }) {
@@ -72,6 +155,7 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until 
   })()`);
   try {
     await refresh();
+    await checkFloorPreheatingBrowser({ evaluate, command, context, refresh, settle });
     assert.deepEqual(await evaluate("[...document.querySelectorAll('#providers > li')].map(row=>row.dataset.provider)"), ['electricity','market','vehicle-telemetry','main-temperatures']);
     assert.equal(await evaluate("document.querySelectorAll('.provider-local-summary').length"), 0);
     assert.deepEqual(await evaluate("[...document.querySelectorAll('[data-provider=\"main-temperatures\"] .provider-source-title')].map(node=>node.textContent)"), ['Main temperatures','Weather forecast']);

@@ -1055,6 +1055,27 @@ button.status-detail-close:hover { background: var(--surface-soft); color: var(-
   #provider-overview .provider-body { padding-inline: 10px; }
   #mqtt-devices-details .equipment-connection-summary { gap: 8px; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 10px; }
 }
+
+.floor-preheat-panel { scroll-margin-top: 20px; }
+.floor-preheat-panel > summary { flex-wrap: wrap; }
+@media (max-width: 480px) {
+  .floor-preheat-panel .floor-preheat-facts > div { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+}
+.floor-preheat-panel .section-fold-body { font-size: 12px; line-height: 1.65; overflow-wrap: anywhere; }
+.floor-preheat-panel p { margin: 0 0 12px; }
+.floor-preheat-facts { margin: 14px 0; }
+.floor-preheat-facts > div { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr); gap: 12px; padding: 6px 0; border-bottom: 1px solid var(--border); }
+.floor-preheat-facts dt { color: var(--muted); }
+.floor-preheat-facts dd { margin: 0; }
+.floor-preheat-limit { padding-left: 12px; border-left: 2px solid var(--border); }
+.floor-preheat-downloads { display: flex; flex-wrap: wrap; gap: 8px 20px; margin: 16px 0; }
+.floor-preheat-panel a, .floor-setup-link a { color: var(--accent); text-underline-offset: 3px; }
+.floor-setup-link { margin: 12px 0; font-size: 11px; line-height: 1.6; }
+.floor-commissioning-steps { margin: 16px 0 0; padding-left: 22px; }
+.floor-commissioning-steps > li { padding-left: 4px; margin: 0 0 20px; }
+.floor-commissioning-steps h4 { margin: 0 0 6px; font-size: 12px; font-weight: 600; }
+.floor-commissioning-steps p { color: var(--muted); }
+
 #connection-setup-details { margin: 18px 0 0 24px; }
 #connection-setup-details > .equipment-fold { margin: 12px 0 12px 12px; }
 #connection-setup-details > .equipment-fold > summary { min-height: 36px; padding: 9px 0; font-size: 11px; }

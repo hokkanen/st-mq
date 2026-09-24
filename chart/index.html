@@ -119,15 +119,6 @@
                     <p id="override-scope" class="muted">Changes are recorded without sending equipment commands.</p>
                   </form>
                 </details>
-                <details id="floor-commissioning-details" class="equipment-fold">
-                  <summary><span>Floor preheating setup</span><small>Shelly commissioning</small></summary>
-                  <div class="home-preferences-body">
-                    <p>Living and Storage each override two thermostats; all four outputs preheat together. OFF must restore ordinary thermostat control. Relay readback confirms the contact only, not valve movement or water flow.</p>
-                    <p>Each Shelly requires the floor-lease script with startup execution enabled. Configure outputs 0 and 1 with power-on OFF, detached inputs, automatic ON disabled and automatic OFF after 900 seconds. The script checks these settings before accepting a lease.</p>
-                    <p>The controller renews an admitted override every 5 minutes. The local script and native switch timer end it at the planned deadline or within 15 minutes without renewal. Local expiry does not restore the heat-pump ROOM setting.</p>
-                    <p>Before enabling control, follow <strong>docs/floor-preheat.md → Commissioning</strong>: initialize the persistent boot counter once, verify mapping and clock, and test actual thermostat restoration after host, network, script and power failures. Keep control disabled until commissioning is complete.</p>
-                  </div>
-                </details>
                 <details id="home-preferences-details" class="equipment-fold home-preferences">
                   <summary><span>Comfort &amp; preferences</span><small id="home-comfort-limits">Configured limits</small></summary>
                   <div class="home-preferences-body">
@@ -356,6 +347,44 @@
                           <p class="muted">Enable status and RPC notifications (<code>status_ntf</code> and <code>rpc_ntf</code>), plus RPC over MQTT (<code>enable_rpc</code>) when available.</p>
                         </details>
                         <p class="muted"><a href="#controls-details" data-open-configuration>Open Configuration and Apply configuration →</a></p>
+                      </details>
+                    </div>
+                  </details>
+                  <details id="floor-preheat-details" class="section-fold controller-fold floor-preheat-panel">
+                    <summary><span>Floor preheating</span><small id="floor-preheat-state" class="equipment-device-status" data-state="pending">Status unavailable</small></summary>
+                    <div class="section-fold-body">
+                      <p id="floor-preheat-status" role="status">Waiting for floor control status.</p>
+                      <dl class="floor-preheat-facts">
+                        <div><dt>Commissioning</dt><dd id="floor-preheat-commissioning-status">Status unavailable</dd></div>
+                        <div><dt>Devices</dt><dd>Living and Storage · two outputs each</dd></div>
+                      </dl>
+                      <details id="floor-operation-details" class="equipment-fold">
+                        <summary>How preheating works</summary>
+                        <p class="muted">All four thermostat overrides preheat together. Override off releases the contact so the original thermostat can control heating. Device reports confirm the contacts only; valve movement, water flow and thermostat restoration need physical verification.</p>
+                        <p id="floor-preheat-renewal" class="muted">Renewal timing unavailable.</p>
+                        <p class="floor-preheat-limit">Local expiry releases the floor overrides. Restoring the heat-pump ROOM setting requires the controller and its heat-pump connection.</p>
+                      </details>
+                      <details id="floor-commissioning-details" class="equipment-fold">
+                        <summary><span>Install &amp; commission</span><small>Before enabling control</small></summary>
+                        <p class="muted">Keep floor control disabled until every physical check passes. Recording commissioning in configuration does not perform these checks.</p>
+                        <div class="floor-preheat-downloads">
+                          <a id="floor-preheat-guide" download="floor-preheat.md">Download full guide (.md)</a>
+                          <a id="floor-preheat-script" download="floor-lease.js">Download Shelly script (.js)</a>
+                        </div>
+                        <ol class="floor-commissioning-steps">
+                          <li><h4>Verify wiring and mapping</h4><p>Follow Commissioning in the full guide. Check Living and Storage outputs 0 and 1, including every connected loop. Each OFF state must restore ordinary thermostat control independently of the host, network and device power.</p></li>
+                          <li><h4>Prepare both Shellys</h4><p>Verify model and firmware support for the supplied script. Set both outputs on each device as follows; the script checks these settings before accepting an override.</p>
+                            <dl class="floor-preheat-facts floor-native-settings">
+                              <div><dt>Power-on state</dt><dd>OFF</dd></div>
+                              <div><dt>Inputs</dt><dd>Detached</dd></div>
+                              <div><dt>Automatic ON</dt><dd>Disabled</dd></div>
+                              <div><dt>Automatic OFF</dt><dd>Enabled · 900 seconds</dd></div>
+                            </dl>
+                            <p>Initialize the persistent boot counter once, as described in the guide. Install the floor-lease script and enable startup execution. Never reset the counter on a commissioned device. Disable other schedules and relay command writers.</p>
+                          </li>
+                          <li><h4>Prove expiry and thermostat restoration</h4><p>Verify clocks, MQTT mapping, both output reports and renewals. Test a short planned deadline and the 15-minute ceiling, then host, network, script and power failures. Follow the guide for clock faults, stale commands and partial failures. Observe actual thermostat operation after release; test native auto-off with the script stopped separately.</p></li>
+                          <li><h4>Record the checks, then enable</h4><p>Save the results and hydraulic configuration privately. Only after all checks pass, record commissioning and enable floor control in configuration, then Apply configuration. Supervise a short preheat and its full recovery, checking floor and room temperatures.</p><a href="#controls-details" data-open-configuration>Open Configuration →</a></li>
+                        </ol>
                       </details>
                     </div>
                   </details>

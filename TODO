@@ -2,6 +2,28 @@
 -Implement support for local mqtt-based temperature receives (eg, from shelly or HASS through Meteorologisk Institute); just store last received temp values and time stamps (maybe in storage class, see below) when received (and accept if received within 1h)
 -Chart dataset control buttons don't work when datasets are manually hidden/unhidden from legend, how to fix?
 
+Completed 2026-09-24 — Floor preheating setup architecture
+- Move floor setup out of everyday Home heating controls into Data & settings →
+  Connections & configuration → Floor preheating. Show current status and the
+  recorded commissioning flag separately, with distinct operation and installation
+  disclosures. Both floor equipment and MQTT cards link to that shared section.
+- Replace the paragraph wall with an ordered commissioning sequence, native
+  settings table and downloadable maintained guide/device script. Bundle the
+  source files in production and preserve exact script bytes in development.
+  Keyboard links open the destination and focus its summary; polling preserves
+  open instructions and focus. Stack setup facts on narrow screens.
+- Relay OFF means Override off, not verified thermostat restoration. Preserve
+  unknown status, configured renewal timing, independent ROOM restoration and
+  pending release visibility after disablement. No manual relay bypass added.
+- Reviewed floor status producers, UI consumers, configuration, tests and docs.
+  Removed the old setup placement and misleading OFF label; no compatibility
+  paths, persisted schema changes or control/commissioning mutations introduced.
+- Validation: 112 focused floor, equipment, heating and development-server tests
+  passed. Isolated production build and synthetic Chromium equipment smoke passed,
+  including source-exact downloads, focus, release/unknown states and 320/1440px
+  floor layouts in both themes. Screenshots reviewed; checks used synthetic
+  fixtures and did not operate household equipment.
+
 Completed 2026-09-24 — Shared charger priority editor
 - Remove the standalone selector from the Garage overview. Either charger's
   existing Details & settings opens one shared priority dialog; both entries

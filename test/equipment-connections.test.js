@@ -170,7 +170,11 @@ test('both floor Shellys are visible before device IDs are supplied and have no 
   assert.deepEqual(floor.map(device => device.id), ['floor-override:living', 'floor-override:storage']);
   assert(floor.every(device => device.area === 'home' && equipmentSource(device) === 'Shelly'));
   assert(floor.every(device => device.enabled === false && device.controls.switch === false && device.topics.length === 0));
-  assert(floor.every(device => equipmentConnectionSummary(device).label === 'Not enabled'));
+  assert(floor.every(device => equipmentConnectionSummary(device).label === 'Status unavailable'));
+  assert(floor.every(device => equipmentConnectionSummary(device).recent === 'Device mapping unavailable'));
+  const disabled = equipmentConnections({ preheatValves: { enabled: false, commissioned: false, devices: [] } })
+    .filter(device => device.kind === 'floor_override');
+  assert(disabled.every(device => equipmentConnectionSummary(device).label === 'Not enabled'));
   assert.equal(floor[0].connectionDetail, 'Output 0: unknown; Output 1: unknown.');
   assert.doesNotMatch(floor[0].connectionDetail, /minutes|commissioning|water flow/);
 });
@@ -185,6 +189,11 @@ test('floor MQTT cards distinguish commissioning, confirmed preheating, missing 
   assert.match(active[0].connectionDetail, /Output 0: override on; Output 1: override on/);
   assert.equal(equipmentConnectionSummary(active[1]).label, 'Awaiting local-script readback');
   assert.equal(equipmentConnectionSummary(view({ restorationPending: true })[0]).label, 'Release pending');
+  assert.equal(equipmentConnectionSummary(view({ enabled: false, restorationPending: true })[0]).label, 'Release pending', 'Disabling new overrides does not hide the release obligation');
+  const released = view({ devices: [{ group: 'living', available: true, at: NOW,
+    channels: [{ id: 0, output: false }, { id: 1, output: false }] }] })[0];
+  assert.equal(released.connectionDetail, 'Output 0: override off; Output 1: override off.');
+  assert.match(equipmentConnectionIntroduction(released), /Contact readback does not verify.*thermostat restoration/);
 });
 
 test('configured vehicle feeds retain independent names before reports and follow a vehicle between chargers', () => {

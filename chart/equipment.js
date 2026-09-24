@@ -6,7 +6,7 @@ import { createCaravanContents, dehumidifierControlAllowed, dehumidifierValueAll
 
 const clock = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', month: 'short', day: 'numeric',
   hour: '2-digit', minute: '2-digit', timeZoneName: 'shortOffset' });
-const labels = { temperature: 'Temperatures', door: 'Door', switch: 'Switch', power: 'Power meter', metered_switch: 'Energy meter', dehumidifier: 'Dehumidifier', heat_pump: 'Heat pump', vehicle: 'Vehicle', charger: 'Charger', floor_override: 'Switch' };
+const labels = { temperature: 'Temperatures', door: 'Door', switch: 'Switch', power: 'Power meter', metered_switch: 'Energy meter', dehumidifier: 'Dehumidifier', heat_pump: 'Heat pump', vehicle: 'Vehicle', charger: 'Charger', floor_override: 'Floor override' };
 const pretty = text => String(text ?? '').replaceAll(/[_-]/g, ' ');
 const RESULT_NOTICE_MS = 60_000;
 const recentResult = (at, now) => !Number.isFinite(now)
@@ -30,7 +30,7 @@ export function equipmentDevices(status = {}) {
     if (!device?.id) continue;
     devices.set(device.id, { ...device, area: device.area });
   }
-  const floor = status.preheatValves ?? { enabled: false, commissioned: false, devices: [] };
+  const floor = status.preheatValves ?? {};
   for (const group of ['living', 'storage']) {
     const reported = floor.devices?.find(device => device.group === group);
     const enabled = floor.enabled === true, commissioned = floor.commissioned === true;
@@ -40,15 +40,19 @@ export function equipmentDevices(status = {}) {
       group, area: 'home', kind: 'floor_override', source: 'Shelly', model: 'Shelly Pro 2 v0',
       enabled, commissioned, available, topics: [], controls: { switch: false, tariff: false },
       lastReportAt: reported?.at,
-      connectionState: !enabled ? { label: 'Not enabled', state: 'pending' }
-        : !commissioned ? { label: 'Needs commissioning', state: 'pending' }
-          : floor.restorationPending ? { label: 'Release pending', state: 'attention' }
-            : !available ? { label: 'Awaiting local-script readback', state: 'attention' }
-              : { label: floor.active ? 'Preheating' : 'Ready', state: 'available' },
-      recent: !reported ? 'Device mapping not configured' : 'Waiting for a live script report',
+      connectionState: floor.restorationPending ? { label: 'Release pending', state: 'attention' }
+        : floor.brokerMismatch ? { label: 'Broker changed', state: 'attention' }
+          : typeof floor.enabled !== 'boolean' ? { label: 'Status unavailable', state: 'pending' }
+            : !enabled ? { label: 'Not enabled', state: 'pending' }
+              : typeof floor.commissioned !== 'boolean' ? { label: 'Commissioning status unavailable', state: 'pending' }
+                : !commissioned ? { label: 'Needs commissioning', state: 'pending' }
+                  : !available ? { label: 'Awaiting local-script readback', state: 'attention' }
+                    : { label: floor.active ? 'Preheating' : 'Ready', state: 'available' },
+      recent: !Array.isArray(floor.devices) ? 'Device mapping unavailable'
+        : !reported ? 'Device mapping not configured' : 'Waiting for a live script report',
       connectionDetail: [0, 1].map(id => {
           const output = available ? reported?.channels?.find(channel => channel.id === id)?.output : null;
-          return `Output ${id}: ${output === true ? 'override on' : output === false ? 'thermostat control' : 'unknown'}`;
+          return `Output ${id}: ${output === true ? 'override on' : output === false ? 'override off' : 'unknown'}`;
         }).join('; ') + '.',
       readings: Object.fromEntries([0, 1].map(id => {
         const output = reported?.channels?.find(channel => channel.id === id)?.output;
@@ -120,7 +124,7 @@ function valueText(signal, reading, device) {
       ? reading.stateLabels[reading.value] : null;
     return typeof label === 'string' && label.length > 0 && label.length <= 80 ? label : 'Unknown';
   }
-  if (isState(signal, reading) && device.kind === 'floor_override') return value === 1 ? 'Override on' : value === 0 ? 'Thermostat control' : 'Unknown';
+  if (isState(signal, reading) && device.kind === 'floor_override') return value === 1 ? 'Override on' : value === 0 ? 'Override off' : 'Unknown';
   if (isState(signal, reading)) return value === 1 ? device.kind === 'door' || signal.endsWith('_open') ? 'Open' : 'On'
     : value === 0 ? device.kind === 'door' || signal.endsWith('_open') ? 'Closed' : 'Off' : 'Unknown';
   if (Number.isFinite(reading.value)) {
@@ -378,7 +382,7 @@ function vehicleConnection({ reception = {}, enabled = true, label, source, deta
 
 /** Device purpose stays separate from changing connection-check results. */
 export function equipmentConnectionIntroduction(device) {
-  if (device.kind === 'floor_override') return 'Floor-heating valves report their override state through Shelly MQTT. Local scripts return them to thermostat control after preheating.';
+  if (device.kind === 'floor_override') return 'Floor-heating valves report their override contacts through Shelly MQTT. Living and Storage preheat together. Contact readback does not verify valve movement, water flow or thermostat restoration.';
   if (device.connectionDetail) return device.connectionDetail;
   if (device.controls?.tariff || device.controlsHeat || device.role === 'heat_savings')
     return 'Heating requests and relay readback use MQTT. Reported relay state confirms whether the requested mode was applied.';
@@ -567,6 +571,31 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
   const button = (text, action) => {
     const node = make('button', text, 'secondary-button'); node.type = 'button'; node.addEventListener('click', action); return node;
   };
+  const floorSetupLink = () => {
+    const paragraph = make('p', '', 'floor-setup-link');
+    const link = make('a', 'Floor preheating status & setup →');
+    link.href = '#floor-preheat-details'; link.setAttribute('data-open-floor-setup', '');
+    link.addEventListener('click', event => {
+      if (event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      event.preventDefault();
+      if (document.defaultView?.location?.hash !== '#floor-preheat-details')
+        document.defaultView?.history?.pushState(null, '', '#floor-preheat-details');
+      openFloorSetup();
+    });
+    paragraph.append(link);
+    return paragraph;
+  };
+  function openFloorSetup() {
+    const target = $('floor-preheat-details');
+    if (!target) return;
+    for (let fold = target; fold; fold = fold.parentElement?.closest('details')) fold.open = true;
+    target.querySelector('summary')?.focus({ preventScroll: true });
+    target.scrollIntoView({ block: 'start' });
+  }
+  document.defaultView?.addEventListener('hashchange', () => {
+    if (document.defaultView.location?.hash === '#floor-preheat-details') openFloorSetup();
+  });
+  if (document.defaultView?.location?.hash === '#floor-preheat-details') openFloorSetup();
   const actions = createEquipmentActions({ request, onStatus, beforeRequest, onChange(snapshot) {
     current = snapshot; onBusy(snapshot.busy); render(snapshot);
   } });
@@ -620,6 +649,7 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
           summary.append(heading, preview, health);
           if (caravan) body.append(caravan.air, energyTitle);
           body.append(list, empty, controls, coverControls);
+          if (device.kind === 'floor_override') body.append(floorSetupLink());
           if (caravan) body.append(caravan.dehumidifier);
           section.append(summary, body);
         }
@@ -666,7 +696,9 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
           description.append(value, qualifier); cells = { term, description, value, qualifier }; node.rows.set(row.signal, cells);
         }
         cells.term.textContent = row.label; cells.value.className = row.stale ? 'stale' : '';
-        const relayNote = device.kind === 'heat_pump' && /_active$/.test(row.signal)
+        const relayNote = device.kind === 'floor_override'
+          ? ' Contact readback only; valve movement, water flow and thermostat restoration require physical verification.'
+          : device.kind === 'heat_pump' && /_active$/.test(row.signal)
           ? ' Power enabled describes the relay, not compressor activity.' : '';
         setStatusDetail(cells.value, { label: row.value, title: `${device.label ?? 'Device'} · ${row.label}`,
           detail: row.detail + relayNote, key: `equipment:${device.id}:${row.signal}` });
@@ -804,7 +836,9 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
         const topics = make('div', '', 'equipment-topic-groups'), diagnostics = make('details', '', 'equipment-packet-details');
         const packets = make('p', '', 'muted equipment-packet-status');
         diagnostics.append(make('summary', 'Packet diagnostics'), packets);
-        check.append(detail, checked); body.append(intro, check, topics, diagnostics); row.append(summary, body);
+        check.append(detail, checked); body.append(intro, check);
+        if (device.kind === 'floor_override') body.append(floorSetupLink());
+        body.append(topics, diagnostics); row.append(summary, body);
         node = { row, name, metadata, state, recent, intro, check, checked, detail, topics, diagnostics, packets }; connectionNodes.set(device.id, node);
       }
       if (group.list.children[index] !== node.row) group.list.insertBefore(node.row, group.list.children[index] ?? null);

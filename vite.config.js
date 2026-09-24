@@ -20,6 +20,18 @@ export default defineConfig({
       });
     },
   }, {
+    name: 'floor-script-download',
+    configureServer(server) {
+      const path = resolve(__dirname, 'scripts/shelly/floor-lease.js');
+      server.middlewares.use((req, res, next) => {
+        // A downloaded device script must not gain Vite's JavaScript transforms
+        // or source map. Leave the ?url module import to Vite's asset handler.
+        if (req.url !== `/@fs${path}`) return next();
+        res.writeHead(200, { 'content-type': 'text/javascript', 'cache-control': 'no-cache' });
+        res.end(fs.readFileSync(path));
+      });
+    },
+  }, {
     name: 'early-theme-bootstrap',
     // A classic external script runs before CSS and obeys the server's strict
     // CSP. Emit it unchanged instead of deferring it with the dashboard module.
@@ -57,7 +69,8 @@ export default defineConfig({
     } },
     fs: {
       allow: [resolve(__dirname,'chart'),resolve(__dirname,'icon.png'),
-        resolve(__dirname,'src/domain'),resolve(__dirname,'src/garage/settings.js')],
+        resolve(__dirname,'src/domain'),resolve(__dirname,'src/garage/settings.js'),
+        resolve(__dirname,'docs/floor-preheat.md'),resolve(__dirname,'scripts/shelly/floor-lease.js')],
     },
   },
   preview: {

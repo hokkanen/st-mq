@@ -104,8 +104,17 @@ A release obligation without a broker scope also blocks activation: matching top
 
 ## Commissioning
 
-The dashboard keeps these instructions under **Home → Heating control → Floor
-preheating setup**. Connection/MQTT entries describe device state and topics only.
+The dashboard has one shared section at **Data & settings → Connections &
+configuration → Floor preheating**. It separates current floor-control status,
+commissioning recorded in configuration, normal override behaviour and an ordered
+**Install & commission** checklist. Both floor equipment and MQTT entries link
+there. The checklist includes downloads of this full guide and the exact device
+script shipped with the application; they also work in the production UI.
+
+Relay OFF is displayed as **Override off**. Fresh contact feedback does not prove
+physical thermostat restoration, and a commissioning flag records the operator's
+checks rather than running them. Pending release remains visible even when floor
+control is disabled.
 This is not an ordinary Shelly ON/OFF integration: the local floor-lease script
 must be installed and run at startup on both devices before commissioning can
 succeed. The native 900-second auto-off is an independent backup to the script;

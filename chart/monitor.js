@@ -18,6 +18,9 @@ import { applicationUrl, usesHomeAssistantLogin, authenticationMessage, createPo
 import { isReadOnlyReplica, renderReplicaStatus, replicaSnapshotKey, renderInstanceRole, pairPanelView } from './replica-status.js';
 import { createPairPanel, isPairManagementRequest } from './pair-status.js';
 import { createEquipmentPanel, dhwrReadingSummary } from './equipment.js';
+import { renderFloorPreheat } from './floor-preheat.js';
+import floorGuideUrl from '../docs/floor-preheat.md?url';
+import floorScriptUrl from '../scripts/shelly/floor-lease.js?url';
 import { setStatusDetail } from './status-details.js';
 import { priceStatuses, renderCurrentPrice } from './current-price.js';
 import { homeHeatingConfirmation, setHeatingStatusDetail } from './heating-status.js';
@@ -28,6 +31,8 @@ import { createPageFullscreen } from './page-fullscreen.js';
 import { heatingRequestResult, h66RequestResult, circulationStopPending } from './manual-control-status.js';
 
 const $ = id => document.getElementById(id);
+$('floor-preheat-guide').href = floorGuideUrl;
+$('floor-preheat-script').href = floorScriptUrl;
 createDashboardReset({ document, button: $('dashboard-reset') });
 createPageFullscreen({ document, button: $('fullscreen-toggle') });
 createDashboardLayout(document.querySelector('.controller-panels'));
@@ -660,7 +665,7 @@ function render(s) {
     confirmation: homeHeatingConfirmation(s),
     detail: [controlMode, decisionTitle, decisionReasons, recoveryDetail].filter(Boolean).join('\n\n') });
   renderCurrentPrice(document, s);
-  renderContract(s); renderProviders(s); renderH66(s); equipmentPanel.update(s); renderGarage(document, s);
+  renderContract(s); renderProviders(s); renderH66(s); equipmentPanel.update(s); renderFloorPreheat(document, s); renderGarage(document, s);
   if ($('recording-details')?.open) renderRecording(s,$('recording-content'));
   const temporary = temporaryValues(s);
   $('control-price').textContent = temporary.pauseUntilLocal ? 'Paused' : temporary.awayUntilLocal ? 'Away' : 'Active';
