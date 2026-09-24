@@ -148,11 +148,12 @@ export function createOcppSetup({ installation, state, api, listener, clock = Da
     : Boolean(saved.ownedFingerprint || saved.intent));
   const active = () => !closed && canControl();
   function check() { if (!active()) throw fail('authority-revoked'); }
-  function publish(next, reason = null) {
-    status = { ...status, state: next, reason, nextAttemptAt: saved.nextAttemptAt, lastSuccessAt: saved.lastSuccessAt,
+  function describeStatus(next, reason = null) {
+    return { ...status, state: next, reason, nextAttemptAt: saved.nextAttemptAt, lastSuccessAt: saved.lastSuccessAt,
       canAdopt: desiredEnabled && active() && next === 'blocked' && reason === 'foreign-configuration',
       revision: next === 'blocked' && reason === 'foreign-configuration' ? digest([foreign, wanted]) : null };
   }
+  function publish(next, reason = null) { status = describeStatus(next, reason); }
   function persist(changes) {
     check();
     const next = { ...saved, ...changes };
@@ -195,7 +196,13 @@ export function createOcppSetup({ installation, state, api, listener, clock = Da
     if (!installation.password) return ['blocked', 'credentials-unavailable'];
     if (installation.authorization_mode === 'rfid' && !installation.authorization_tags.length) return ['blocked', 'authorization-tags-required'];
     if (installation.authorization_mode === 'plug-and-charge' && !installation.virtualTag) return ['blocked', 'credentials-unavailable'];
-    if (!listener.status().ready) return ['waiting-listener', 'listener-unavailable'];
+    const local = listener.status();
+    if (!local.ready) {
+      const reason = ['listener-unavailable', 'transaction-state-unavailable', 'incompatible-transaction-state',
+        'authorization-unavailable'].includes(local.error) ? local.error
+        : local.listening === false ? 'listener-unavailable' : 'listener-not-ready';
+      return ['waiting-listener', reason];
+    }
     return null;
   }
   async function disableOwned() {
@@ -242,7 +249,7 @@ export function createOcppSetup({ installation, state, api, listener, clock = Da
   async function reconcile() {
     check();
     const blocked = prerequisiteReason();
-    if (blocked) { publish(...blocked); return; }
+    if (blocked) return;
     if (!desiredEnabled) return disableOwned();
     publish('checking');
     let current = await remote(), fingerprint = connectionFingerprint(current);
@@ -308,10 +315,12 @@ export function createOcppSetup({ installation, state, api, listener, clock = Da
   return {
     status() {
       const blocked = prerequisiteReason();
-      if (blocked) publish(...blocked);
-      else if (saved.appliedFingerprint === wanted && saved.intent === null && status.state === 'connecting' && listener.status().available)
-        publish('ready');
-      return { ...status, canAdopt: status.canAdopt && active(), busy: flight !== null };
+      // Live prerequisites must not overwrite the reconciliation result: a
+      // temporary listener outage can recover before the next cloud check.
+      if (!blocked && saved.appliedFingerprint === wanted && saved.intent === null
+        && status.state === 'connecting' && listener.status().available) publish('ready');
+      const current = blocked ? describeStatus(...blocked) : status;
+      return { ...current, canAdopt: current.canAdopt && active(), busy: flight !== null };
     },
     runDue() {
       if (!active() || flight || !changedConfiguration && saved.nextAttemptAt > clock()) return flight ?? Promise.resolve();

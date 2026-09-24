@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ocppInstallation, ocppConnectionDetails, createOcppSetup, ocppHandoverRequirements,
   assertOcppHandoverReady } from '../src/acquisition/easee-ocpp-setup.js';
+import { easeeLocalConnectionDisplay } from '../chart/provider-status.js';
 
 const AT = Date.parse('2026-09-24T12:00:00Z');
 function config(overrides = {}) {
@@ -15,7 +16,7 @@ function config(overrides = {}) {
 function fixture(overrides = {}) {
   const installation = overrides.installation ?? ocppInstallation(config());
   let saved = overrides.saved ?? null, current = overrides.current ?? null, now = AT, active = true;
-  const calls = [], listener = { ready: true, available: false };
+  const calls = [], listener = { listening: true, ready: true, available: false, error: null };
   let count = 0;
   const state = { get: () => structuredClone(saved), set: value => { saved = structuredClone(value); } };
   const api = {
@@ -60,9 +61,95 @@ test('missing endpoint, authorization, credentials, listener or authority cannot
     const f = fixture({ installation: { ...ocppInstallation(config()), ...change } }); await f.setup.runDue();
     assert.equal(f.setup.status().reason, reason); assert.deepEqual(f.calls, []);
   }
-  const f = fixture(); f.listener.ready = false; await f.setup.runDue();
+  const f = fixture(); f.listener.ready = false; f.listener.listening = false; await f.setup.runDue();
   assert.equal(f.setup.status().reason, 'listener-unavailable'); assert.deepEqual(f.calls, []);
   f.listener.ready = true; f.revoke(); await f.setup.runDue(); assert.deepEqual(f.calls, []);
+});
+
+test('listener recovery clears setup warnings before the healthy cloud deadline', async () => {
+  const f = fixture(); await f.setup.runDue();
+  f.listener.available = true;
+  f.advance(30001); await f.setup.runDue();
+  assert.equal(f.setup.status().state, 'ready');
+  const saved = structuredClone(f.saved), calls = [...f.calls];
+  Object.assign(f.listener, { ready: false, listening: false, available: false });
+  assert.equal(f.setup.status().reason, 'listener-unavailable');
+  await f.setup.runDue();
+  Object.assign(f.listener, { ready: true, listening: true, available: true });
+  await f.setup.runDue();
+  const status = f.setup.status();
+  assert.equal(status.state, 'ready');
+  assert.equal(status.reason, null);
+  const display = easeeLocalConnectionDisplay({ localOcpp: { ...f.listener, setup: status } },
+    { now: AT + 30001, formatTime: value => new Date(value).toISOString() });
+  assert.equal(display.setup.label, 'Setup complete');
+  assert.equal(display.readings.label, 'Available');
+  assert.match(display.setup.detail, /Next connection check/);
+  assert.doesNotMatch(display.setup.detail, /cannot accept|Next setup attempt/);
+  assert.deepEqual(f.saved, saved, 'Status recovery does not rewrite setup state or deadlines');
+  assert.deepEqual(f.calls, calls, 'Recovery does not request or reapply cloud configuration');
+});
+
+test('startup listener checks do not persist a warning or bypass pending cloud verification', async () => {
+  const f = fixture(); await f.setup.runDue();
+  f.listener.available = true; f.advance(30001); await f.setup.runDue();
+  const setup = f.make(), calls = [...f.calls];
+  f.listener.ready = false;
+  assert.equal(setup.status().state, 'waiting-listener');
+  f.listener.ready = true;
+  await setup.runDue();
+  assert.equal(setup.status().state, 'checking');
+  assert.equal(setup.status().reason, null);
+  assert.deepEqual(f.calls, calls);
+  f.advance(3600001); await setup.runDue();
+  assert.equal(setup.status().state, 'ready');
+});
+
+test('listener recovery with applied setup still waits for fresh local readings', async () => {
+  const f = fixture(); await f.setup.runDue();
+  f.listener.ready = false;
+  assert.equal(f.setup.status().state, 'waiting-listener');
+  f.listener.ready = true;
+  assert.equal(f.setup.status().state, 'connecting');
+  assert.equal(f.setup.status().reason, 'waiting-connection');
+  f.listener.available = true;
+  assert.equal(f.setup.status().state, 'ready');
+});
+
+test('listener readiness reports specific storage and authorization failures without inventing port failures', async () => {
+  for (const [listening, error, reason] of [
+    [false, null, 'listener-unavailable'],
+    [true, 'listener-unavailable', 'listener-unavailable'],
+    [false, 'transaction-state-unavailable', 'transaction-state-unavailable'],
+    [false, 'incompatible-transaction-state', 'incompatible-transaction-state'],
+    [true, 'authorization-unavailable', 'authorization-unavailable'],
+    [true, null, 'listener-not-ready'],
+    [true, 'fixture-private-error', 'listener-not-ready'],
+  ]) {
+    const f = fixture(); Object.assign(f.listener, { ready: false, listening, error });
+    await f.setup.runDue();
+    assert.equal(f.setup.status().reason, reason);
+    assert.deepEqual(f.calls, []);
+    assert.equal(f.saved, null);
+  }
+});
+
+test('listener recovery preserves unresolved apply failures, retry backoff and foreign configuration', async () => {
+  for (const foreignConnection of [false, true]) {
+    const f = fixture(foreignConnection ? { current: foreign() } : {});
+    if (!foreignConnection) f.api.apply = async () => {
+      throw Object.assign(new Error('fixture-rate-limit'), { status: 429, retryAfterMs: 120000 });
+    };
+    await f.setup.runDue();
+    const before = f.setup.status(), saved = structuredClone(f.saved), calls = [...f.calls];
+    f.listener.ready = false;
+    assert.equal(f.setup.status().state, 'waiting-listener');
+    f.listener.ready = true; f.listener.available = true;
+    await f.setup.runDue();
+    assert.deepEqual(f.setup.status(), before, 'Fresh readings do not confirm failed or foreign setup');
+    assert.deepEqual(f.saved, saved);
+    assert.deepEqual(f.calls, calls);
+  }
 });
 
 test('foreign connection requires reviewed adoption and changed readback invalidates that authorization', async () => {

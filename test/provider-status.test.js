@@ -959,6 +959,21 @@ test('completed charger setup schedules a connection check without implying anot
   assert.doesNotMatch(JSON.stringify(display), /Next setup attempt|property readings|ST-MQ/);
 });
 
+test('local setup readiness diagnostics distinguish storage and authorization from network failures', () => {
+  for (const [reason, detail] of [
+    ['listener-not-ready', /Waiting for local readiness checks/],
+    ['transaction-state-unavailable', /transaction storage is unavailable/],
+    ['incompatible-transaction-state', /transaction state does not match/],
+    ['authorization-unavailable', /charging authorization is not ready/],
+  ]) {
+    const display = easeeLocalConnectionDisplay({ localOcpp: {
+      setup: { state: 'waiting-listener', reason },
+    } }, options);
+    assert.match(display.setup.detail, detail);
+    assert.doesNotMatch(display.setup.detail, /network port|cannot accept/);
+  }
+});
+
 test('standalone endpoint requirement directs configuration without exposing private setup data', () => {
   const setup = { state: 'needs-endpoint', endpointSource: null, reason: 'synthetic-private-reason',
     endpoint: 'ws://synthetic-private-host:9001/ocpp', password: 'synthetic-private-password' };

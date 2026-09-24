@@ -2,6 +2,20 @@
 -Implement support for local mqtt-based temperature receives (eg, from shelly or HASS through Meteorologisk Institute); just store last received temp values and time stamps (maybe in storage class, see below) when received (and accept if received within 1h)
 -Chart dataset control buttons don't work when datasets are manually hidden/unhidden from legend, how to fix?
 
+Completed 2026-09-24 — Clear stale local charger setup warnings
+- Temporary listener prerequisites no longer overwrite the last setup result.
+  Recovery clears the warning immediately while preserving cloud verification,
+  retry deadlines, foreign-configuration review and incomplete apply intent.
+- Report transaction storage and authorization readiness separately from actual
+  listener/network failure. Fresh local readings retain independent availability.
+- Reviewed setup/listener producers, runtime and UI consumers, configuration,
+  state, tests and documentation. Removed the stale status overwrite; no retired
+  contracts, compatibility paths, persisted formats or migrations were introduced.
+- Validation: 185 focused setup, provider UI, OCPP protocol/control, API, disable,
+  lifecycle and pairing tests passed using explicit test-file lists. Dashboard
+  build passed with the runner config loader and output under /tmp. Tests used
+  synthetic fixtures only; the running installation was not changed.
+
 Completed 2026-09-24 — Mitsubishi information visibility and UI wording
 - Audited all five commits from today. Mitsubishi disappearance filters originate
   in 09618e5 (September 21), not today. Today reorganized source sections, moved

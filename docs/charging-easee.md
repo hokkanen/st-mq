@@ -369,6 +369,10 @@ connection**. **Charger setup** reports missing prerequisites, cloud setup
 progress or retry, native control readiness and an existing cloud schedule
 waiting to hand over; **Local readings** separately reports the socket and fresh
 measurement readiness. Working cloud readings retain their own availability.
+Temporary listener readiness warnings clear when the listener recovers, without
+waiting for the next cloud check or reapplying charger configuration. Outstanding
+cloud failures and retry deadlines remain in effect. Storage and authorization
+readiness failures are reported separately from listener network failures.
 Correct missing configuration and use **Apply configuration** to reconnect.
 Addresses, authentication secrets and authorization tags are not shown in this
 public status.
