@@ -1385,11 +1385,8 @@ button.status-detail-close:hover { background: var(--surface-soft); color: var(-
   .zone-summary .equipment-value > strong, .zone-summary .equipment-value > strong.muted { font-size: 15px; }
 }
 
-/* Keep compressor activity alongside the selected power, mode and room setting. */
-.garage-native-overview { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-@container (max-width: 420px) {
-  .garage-native-overview { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
+/* Keep the three Mitsubishi summary readings on one row. */
+.garage-native-overview { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 
 /* Mitsubishi uses the ground-source pump form and table layout. */
 .mitsubishi-table td > strong { display: block; font-weight: 500; }

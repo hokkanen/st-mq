@@ -456,7 +456,7 @@ try {
       `${id} closes from the same full-row click target`);
   }
   for (const [id, metrics] of [['home-pump-device', ['home-pump-state', 'home-pump-dhw', 'home-pump-room']],
-    ['garage-controller-details', ['garage-native-power', 'garage-native-mode', 'garage-native-target']]]) {
+    ['garage-controller-details', ['garage-native-power', 'garage-native-compressor', 'garage-native-target']]]) {
     assert.equal(await evaluate(`(() => {
       const device = document.getElementById('${id}'), summary = device.querySelector(':scope > summary');
       return !device.open && ${JSON.stringify(metrics)}.every(id => {

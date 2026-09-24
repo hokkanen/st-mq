@@ -172,10 +172,10 @@ try {
   assert.equal(await evaluate("document.getElementById('garage-native-target').textContent"), '17 °C');
   assert.equal(await evaluate("document.getElementById('garage-native-temperature').min"), '5');
   await evaluate("document.getElementById('garage-native-temperature').value='5'; document.getElementById('garage-native-temperature').dispatchEvent(new Event('input')); document.getElementById('garage-native-form').requestSubmit()");
-  await until("document.getElementById('garage-native-target-basis').textContent === 'External sensor · preparing'");
+  await until("document.getElementById('garage-native-target-basis').textContent === 'External sensor · Preparing'");
   assert.deepEqual(await evaluate('globalThis.garageSmokeCalls'), [{ setting: 'targetC', value: 5 }]);
   await evaluate("globalThis.garageSmokePhase='active'; globalThis.refreshGarageSmoke()");
-  await until("document.getElementById('garage-native-target-basis').textContent === 'Garage rear · active'");
+  await until("document.getElementById('garage-native-target-basis').textContent === 'Garage rear · Active'");
   assert.equal(await evaluate("document.getElementById('garage-native-target').textContent"), '5 °C');
   assert.equal(await evaluate("document.getElementById('garage-native-temperature').value"), '5');
   assert.match(await evaluate("document.querySelector('#garage-native-readings [data-reading=native-targetC]').textContent"), /17 °C/);
@@ -184,7 +184,7 @@ try {
   assert.match(await evaluate("document.getElementById('status-detail-popover').textContent"), /adds 12 °C/);
   await evaluate("document.querySelector('.status-detail-close').click()");
   await evaluate("globalThis.garageSmokePhase='waiting'; globalThis.refreshGarageSmoke()");
-  await until("document.getElementById('garage-native-target-basis').textContent === 'External sensor · fallback'");
+  await until("document.getElementById('garage-native-target-basis').textContent === 'External sensor · Fallback'");
   assert.equal(await evaluate("document.getElementById('garage-native-target').textContent"), '5 °C');
   assert.equal(await evaluate("document.getElementById('garage-room-temperature-status').textContent"), 'Room setting 5 °C. External temperature control is unavailable.');
   await evaluate("document.querySelector('#garage-native-temperature-details .status-detail-trigger').click()");

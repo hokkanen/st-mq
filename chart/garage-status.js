@@ -1,7 +1,7 @@
 import { garageLearningCalculation } from './garage-learning-math.js';
 import { confirmAction } from './confirmation.js';
 import { isReadOnlyReplica } from './replica-status.js';
-import { mitsubishiReadings, mitsubishiRoomTemperature, mitsubishiCompressor, renderMitsubishiReadings } from './mitsubishi.js';
+import { mitsubishiReadings, mitsubishiRoomTemperature, mitsubishiCompressor, mitsubishiValue, renderMitsubishiReadings } from './mitsubishi.js';
 import { outdoorSourceLabel } from './provider-status.js';
 import { equipmentReadingRows } from './equipment.js';
 import { setStatusDetail } from './status-details.js';
@@ -349,8 +349,8 @@ export function renderGarage(document, status) {
     return { value, fresh, detail: `${title}: ${last === 'Unknown' ? 'No usable native reading received.'
       : `Last reported ${last} · ${finite(at) ? clock(at) : 'freshness unknown'}${fresh ? '' : ' · current reading unavailable'}`}` };
   };
-  const power = nativeReading('power', 'Mitsubishi power', text);
-  const mode = nativeReading('mode', 'Mitsubishi mode', text);
+  const power = nativeReading('power', 'Mitsubishi power', value => mitsubishiValue('power', value));
+  const mode = nativeReading('mode', 'Mitsubishi mode', value => mitsubishiValue('mode', value));
   const target = nativeReading('targetC', 'Native Mitsubishi target', value => number(value, '°C'));
   const compressor = mitsubishiCompressor(garage, now);
   set('garage-native-compressor', compressor.value);

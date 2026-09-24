@@ -6,6 +6,7 @@ import { createShellyCn105Transport } from '../src/garage/shelly-cn105.js';
 import { SHELLY_CN105_CONTRACT } from '../src/garage/contract.js';
 import { GarageRuntime } from '../src/garage/runtime.js';
 import { Store } from '../src/storage/store.js';
+import { mitsubishiControl } from '../chart/mitsubishi.js';
 
 const TEMPLATE = JSON.parse(readFileSync(new URL('./fixtures/garage-pill-state.json', import.meta.url)));
 const BASE = TEMPLATE.observedAt;
@@ -30,9 +31,9 @@ function fixture(t) {
       published.push({ topic, command: JSON.parse(payload), options });
     } }) });
   runtime.setAdapter(adapter); adapter.setConnected(true);
-  function state({ nativeAt = now, nativeTimes = {} } = {}) {
+  function state({ nativeAt = now, nativeTimes = {}, ownerSession = published.length ? 'invented-room-owner' : null } = {}) {
     const value = { ...structuredClone(TEMPLATE), sequence: ++sequence, observedAt: now, mode: 'monitoring',
-      authority: { ownerSession: published.length ? 'invented-room-owner' : null, controlAllowed: false,
+      authority: { ownerSession, controlAllowed: false,
         manualControlAllowed: external.phase === 'internal' && !manualPending },
       challenge: { value: `invented-room-challenge-${sequence}`, expiresAt: now + 30_000 },
       native: Object.fromEntries(Object.entries(native).map(([key, value]) => [key, { value, measuredAt: nativeTimes[key] ?? nativeAt, ageMs: now - (nativeTimes[key] ?? nativeAt) }])),
@@ -108,6 +109,28 @@ function fixture(t) {
   return { runtime, adapter, engine, store, native, published, observations, state, report, measure, settle, advanceReport, start,
     now: () => now, advance(ms = 1000) { now += ms; } };
 }
+
+test('foreign ownership disables every setting including a saved low room target', async t => {
+  const f = fixture(t); await f.start();
+  await f.runtime.setNativeSettings({ setting: 'targetC', value: 7 }); await f.settle();
+  f.advance(); f.state({ ownerSession: 'invented-previous-controller' }); await f.settle();
+  const status = { garage: f.runtime.status() }, count = f.published.length;
+  assert.equal(status.garage.roomTemperature.targetC, 7, 'Saved preference survives loss of device authority');
+  assert.equal(status.garage.roomTemperature.phase, 'clearing');
+  assert.equal(status.garage.nativeControls.available, false);
+  for (const setting of ['power', 'mode', 'targetC', 'fan', 'vane', 'wideVane']) {
+    assert.equal(status.garage.nativeControls.settings[setting].available, false, setting);
+    assert.equal(mitsubishiControl(status, setting).available, false, setting);
+    assert.equal(mitsubishiControl(status, setting).reason, 'Another controller owns the heat pump.');
+  }
+  // Without external-control permission, low targets are outside the advertised
+  // native range; ordinary targets and mode changes fail the ownership gate.
+  await assert.rejects(f.runtime.setNativeSettings({ setting: 'targetC', value: 8 }), /outside its supported values/);
+  for (const request of [{ setting: 'targetC', value: 18 }, { setting: 'mode', value: 'cool' }])
+    await assert.rejects(f.runtime.setNativeSettings(request), /Another controller owns/);
+  assert.equal(f.published.length, count, 'No command bypasses the foreign owner');
+  assert.equal(f.store.getState(f.runtime.keys.roomTemperature).targetC, 7);
+});
 
 test('external temperature history begins only after device acknowledgement and ends at its actual deadline', async t => {
   const f = fixture(t); await f.start();

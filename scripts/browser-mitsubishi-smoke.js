@@ -80,7 +80,7 @@ try {
   `});
   const address=ui.httpServer.address();
   await send('Page.navigate',{url:`http://127.0.0.1:${address.port}/`});
-  await until("document.getElementById('garage-native-power')?.textContent==='on'");
+  await until("document.getElementById('garage-native-power')?.textContent==='On'");
   await until("typeof globalThis.refreshPumpSmoke==='function'");
   assert.equal(await evaluate("document.getElementById('garage-readings-details').tagName"),'DETAILS');
   assert.equal(await evaluate("document.getElementById('garage-readings-details').open"),false,'heat pump readings are in their own fold');
@@ -183,7 +183,7 @@ try {
   await evaluate("document.querySelector('.status-detail-close').click()");
   assert.equal(await evaluate("document.activeElement.closest('#garage-native-temperature-details')?.id"),'garage-native-temperature-details');
   await evaluate(`globalThis.pumpSmokeRoom={targetC:10,nativeTargetC:17,offsetC:7,sourceC:10,suppliedC:17,measuredAt:${now},phase:'active',acknowledged:true};globalThis.pumpSmokeValues={...globalThis.pumpSmokeValues,power:'on',mode:'heat',targetC:17};globalThis.pumpSmokeResult={setting:'targetC',value:10,status:'acknowledged'};globalThis.refreshPumpSmoke()`);
-  await until("document.getElementById('garage-native-target-basis').textContent==='Garage rear · active'");
+  await until("document.getElementById('garage-native-target-basis').textContent==='Garage rear · Active'");
   assert.equal(await evaluate("document.getElementById('garage-native-target').textContent"),'10 °C');
   assert.equal(await evaluate("document.getElementById('garage-native-reported').textContent"),'17 °C');
   await evaluate("document.getElementById('garage-native-setting').dispatchEvent(new Event('change'))");
@@ -226,13 +226,13 @@ try {
   // Previously absent fields become visible only after meaningful supported data arrives.
   await evaluate(`globalThis.pumpSmokeExtraReadings={outdoorTemperature:{value:0,sourceTime:${now},supported:true,usable:true,quality:[],unit:'degC'},power:{value:0,sourceTime:${now},supported:true,usable:true,quality:[],unit:'W'},futureUnknown:{value:'unknown',sourceTime:${now},supported:true,quality:['unknown'],unit:'raw'},futureUnsupported:{value:8,sourceTime:${now},supported:false,quality:['unsupported'],unit:'raw'}};globalThis.refreshPumpSmoke()`);
   await until("document.querySelector('[data-reading=telemetry-outdoorTemperature] td strong')?.textContent==='0 °C'&&document.querySelector('[data-reading=telemetry-power] td strong')?.textContent==='0 W'");
-  assert.deepEqual(await readingGroups(),['Operation','Temperatures','Electricity','Pump settings']);
+  assert.deepEqual(await readingGroups(),['Operation','Temperatures','Pump settings','Electricity']);
   await absentRows([...absentKeys.filter(key=>!['telemetry-outdoorTemperature','telemetry-power'].includes(key)),'telemetry-futureUnknown','telemetry-futureUnsupported']);
   await evaluate("globalThis.pumpSmokeReadingRows=[...document.querySelectorAll('#garage-native-readings [data-reading]')];globalThis.pumpSmokeExtraReadings={};globalThis.refreshPumpSmoke()");
   await until("document.querySelector('[data-reading=telemetry-outdoorTemperature] td strong').textContent==='Unavailable'&&document.querySelector('[data-reading=telemetry-power] td strong').textContent==='Unavailable'");
   await stableRows();
   await absentRows(['telemetry-energy','telemetry-energyCounterRaw','telemetry-futureUnknown','telemetry-futureUnsupported']);
-  assert.deepEqual(await readingGroups(),['Operation','Temperatures','Electricity','Pump settings']);
+  assert.deepEqual(await readingGroups(),['Operation','Temperatures','Pump settings','Electricity']);
   await evaluate('globalThis.pumpSmokeOffline=true;globalThis.refreshPumpSmoke()');
   await until("document.getElementById('garage-controller-state').textContent==='Not connected'");
   assert.equal(await evaluate("document.getElementById('garage-native-submit').disabled"),true);

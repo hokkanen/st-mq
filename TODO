@@ -58,3 +58,22 @@ Completed 2026-09-24 — Mitsubishi publisher contract and useful readings
   chart integration checks, including malformed packets and repeated outages.
   Fresh-build Chromium smoke passed for selection/focus, controls, data loss,
   help and both themes at 320/390/1440px. Samsung/DeX hardware was not available. The full suite is intentionally not run during these UI changes.
+
+Completed 2026-09-24 — Mitsubishi capitalization and room-target ownership check
+- Use the existing Mitsubishi value formatter for summary On/Off and mode
+  reading details; capitalize Active/Preparing/Clearing/Fallback status labels.
+  Keep only Power, Compressor and Room setting in the three-column summary;
+  operating mode remains available in readings and settings.
+- Give readings a fixed order: Operation, Temperatures, Pump settings, Electricity,
+  Diagnostics. Compressor state/frequency lead; raw counter/fault data goes last.
+  First-arrival and packet ordering cannot reshuffle rows; additional diagnostics
+  sort by key and known rows remain in place through missing reports.
+- Traced adapter ownership through runtime capability composition and UI disabling.
+  Synthetic previous-owner state blocks all six editors, rejects low/native target
+  requests and mode changes, publishes nothing and retains the saved 7°C target.
+  The summary intentionally keeps saved room intent visible; the numeric editor
+  has no explicit disabled dimming style, so appearance alone is not authority.
+- Current producers, consumers and persisted room intent stay unchanged; no
+  compatibility paths or migrations added. Updated existing browser expectations.
+- Validation: 61 focused runtime/integration and UI tests passed, plus a fresh-build
+  synthetic Mitsubishi Chromium smoke check. No full suite or live-device probes.

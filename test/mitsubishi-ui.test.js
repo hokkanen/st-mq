@@ -117,6 +117,26 @@ test('pointer selection finishes in the value editor while keyboard selection re
   f.panel.close();assert.equal(setting.listeners.size,0);
 });
 
+test('ownership loss disables the room editor and apply button without hiding the saved target', async () => {
+  const f=panelFixture(), status=structuredClone(f.status);
+  status.garage.roomTemperature={targetC:7,phase:'clearing',acknowledged:false};
+  const controls=status.garage.nativeControls;
+  controls.available=false;controls.reason='Another controller owns the heat pump.';
+  for(const setting of Object.values(controls.settings)) {setting.available=false;setting.reason=controls.reason;}
+  controls.settings.targetC.value=7;
+  f.panel.update(status);
+  for(const key of ['targetC','mode','power','fan','vane','wideVane']) {
+    f.change(key);
+    assert.equal(f.nodes.get('garage-native-temperature').disabled,true,key);
+    assert.equal(f.nodes.get('garage-native-value').disabled,true,key);
+    assert.equal(f.nodes.get('garage-native-submit').disabled,true,key);
+    assert.equal(f.nodes.get('garage-native-status').textContent,controls.reason);
+    if(key==='targetC') assert.equal(f.nodes.get('garage-native-temperature').value,'7');
+    await f.submit();
+  }
+  assert.equal(f.calls.length,0);
+});
+
 test('parameter form sends one advertised typed setting, rejects double submit, and follows confirmation', async () => {
   const f=panelFixture();f.change('fan');f.nodes.get('garage-native-value').value='2';
   let done;f.reply(()=>new Promise(resolve=>{done=resolve;}));
@@ -222,6 +242,25 @@ test('reading view remembers real fields through data loss without inventing opt
   assert.deepEqual(createMitsubishiReadingView()({},now),[],'A new view does not inherit another installation’s readings');
 });
 
+test('reading order is independent of packet ordering and first arrival and survives data loss', () => {
+  const fields={compressorActive:false,compressorFrequency:0,defrost:false,indoorTemperature:7,power:0,zExtra:2,aExtra:1};
+  const expected=['telemetry-compressorActive','telemetry-compressorFrequency','telemetry-defrost',
+    'telemetry-indoorTemperature','telemetry-power','telemetry-aExtra','telemetry-zExtra'];
+  for(const order of [Object.keys(fields),Object.keys(fields).reverse()]) {
+    const view=createMitsubishiReadingView();
+    const garage={adapter:{connected:true,telemetry:{}}};
+    for(const key of order) {
+      garage.adapter.telemetry={[key]:{value:fields[key],sourceTime:now,supported:true,quality:[]}};
+      view(garage,now);
+    }
+    assert.deepEqual(view(garage,now).map(row=>row.key),expected);
+    assert.deepEqual(view({},now+1000).map(row=>row.key),expected);
+    garage.adapter.telemetry=Object.fromEntries(order.map(key=>[key,{value:fields[key],sourceTime:now,supported:true,quality:[]} ]));
+    assert.deepEqual(mitsubishiReadings(garage,now).map(row=>row.key),expected);
+    assert.deepEqual(view(garage,now).map(row=>row.key),expected);
+  }
+});
+
 test('late real telemetry appears even at zero and constant reports remain useful', () => {
   const view=createMitsubishiReadingView(), status=fixture();
   view(status.garage,now);
@@ -270,7 +309,7 @@ test('room control status distinguishes acknowledgement, preparation and fallbac
   garage.roomTemperature = { targetC: 5, phase: 'active', sourceC: 5.25, measuredAt: now,
     offsetC: 12, suppliedC: 17.25, nativeTargetC: 17, acknowledged: true };
   const before = structuredClone(garage), room = mitsubishiRoomTemperature(garage);
-  assert.equal(room.value, '5 °C'); assert.equal(room.basis, 'Garage rear · active');
+  assert.equal(room.value, '5 °C'); assert.equal(room.basis, 'Garage rear · Active');
   assert.match(room.detail, /native pump target of 17 °C/);
   assert.match(room.detail, /adds 12 °C/); assert.match(room.detail, /Garage rear: 5.25 °C/);
   assert.match(room.detail, /Supplied temperature: 17.25 °C/);
@@ -279,7 +318,7 @@ test('room control status distinguishes acknowledgement, preparation and fallbac
   assert.match(room.detail, /If that check fails, renewals stop and the current permission expires/);
   assert.match(room.detail, /Internal temperature control then uses the pump's current settings/);
   assert.deepEqual(garage, before);
-  for (const [phase, basis] of [['preparing', 'preparing'], ['clearing', 'clearing'], ['waiting', 'fallback'], ['blocked', 'fallback']]) {
+  for (const [phase, basis] of [['preparing', 'Preparing'], ['clearing', 'Clearing'], ['waiting', 'Fallback'], ['blocked', 'Fallback']]) {
     garage.roomTemperature.phase = phase;
     garage.roomTemperature.reason = 'rear-temperature-unavailable';
     const pending = mitsubishiRoomTemperature(garage);
@@ -287,7 +326,7 @@ test('room control status distinguishes acknowledgement, preparation and fallbac
     assert.match(pending.detail, /Rear temperature unavailable/);
   }
   garage.roomTemperature.phase = 'active'; garage.roomTemperature.acknowledged = false;
-  assert.equal(mitsubishiRoomTemperature(garage).basis, 'External sensor · preparing');
+  assert.equal(mitsubishiRoomTemperature(garage).basis, 'External sensor · Preparing');
   garage.roomTemperature.targetC = null; assert.equal(mitsubishiRoomTemperature(garage), null);
   assert.equal(mitsubishiRoomTemperature({}), null);
   assert.match(mitsubishiResult({ setting: 'targetC', value: 5, status: 'acknowledged' }), /acknowledged by the driver/);

@@ -14,15 +14,23 @@ const telemetryMetadata = {
   outdoorTemperature: ['Pump outdoor temperature', 'Temperatures', '°C', 'Temperature reported by the outdoor unit.'],
   power: ['Electrical input', 'Electricity', 'W', 'Native electrical input; accuracy remains unverified unless checked.'],
   energy: ['Cumulative energy', 'Electricity', 'kWh', 'Decoded native cumulative electricity reading.'],
-  energyCounterRaw: ['Raw energy counter', 'Electricity', '', 'Raw counter; no energy unit or consumption is inferred.'],
+  energyCounterRaw: ['Raw energy counter', 'Diagnostics', '', 'Raw counter; no energy unit or consumption is inferred.'],
   compressorActive: ['Compressor state', 'Operation', '', 'Reported compressor activity; separate from the power setting.'],
   compressorFrequency: ['Compressor frequency', 'Operation', 'Hz', 'Reported compressor frequency; not measured electrical power.'],
-  defrost: ['Defrost', 'Operation', '', 'Native defrost indication.'],
   actualFan: ['Actual fan', 'Operation', '', 'Reported fan operation; separate from the selected fan setting.'],
+  defrost: ['Defrost', 'Operation', '', 'Native defrost indication.'],
   preheat: ['Preheat', 'Operation', '', 'Native preheat indication.'],
   standby: ['Standby', 'Operation', '', 'Native standby indication.'],
-  faultRaw: ['Raw fault bytes', 'Operation', '', 'Uninterpreted native diagnostic bytes; this is not a fault diagnosis.'],
+  faultRaw: ['Raw fault bytes', 'Diagnostics', '', 'Uninterpreted native diagnostic bytes; this is not a fault diagnosis.'],
 };
+const readingGroups = ['Operation', 'Temperatures', 'Pump settings', 'Electricity', 'Diagnostics'];
+const readingOrder = new Map([
+  ...Object.keys(telemetryMetadata).map(key => `telemetry-${key}`),
+  ...Object.keys(mitsubishiSettings).map(key => `native-${key}`),
+].map((key, index) => [key, index]));
+const compareReadings = (a, b) => readingGroups.indexOf(a.group) - readingGroups.indexOf(b.group)
+  || (readingOrder.get(a.key) ?? readingOrder.size) - (readingOrder.get(b.key) ?? readingOrder.size)
+  || a.key.localeCompare(b.key, 'en');
 const aliases = {
   garage_native_indoor_temperature: 'indoorTemperature', garage_native_outdoor_temperature: 'outdoorTemperature',
   garage_power: 'power', garage_native_energy: 'energy', garage_compressor_frequency: 'compressorFrequency',
@@ -47,9 +55,9 @@ export function mitsubishiRoomTemperature(garage = {}) {
   const control = garage.roomTemperature;
   if (!Number.isFinite(control?.targetC)) return null;
   const active = control.phase === 'active' && control.acknowledged === true;
-  const basis = active ? 'Garage rear · active'
-    : control.phase === 'preparing' || control.phase === 'active' ? 'External sensor · preparing'
-      : control.phase === 'clearing' ? 'External sensor · clearing' : 'External sensor · fallback';
+  const basis = active ? 'Garage rear · Active'
+    : control.phase === 'preparing' || control.phase === 'active' ? 'External sensor · Preparing'
+      : control.phase === 'clearing' ? 'External sensor · Clearing' : 'External sensor · Fallback';
   const nativeTarget = mitsubishiValue('targetC', control.nativeTargetC ?? 17);
   const progress = active ? 'Garage rear control is active.'
     : control.phase === 'preparing' || control.phase === 'active' ? 'Waiting for the pump to confirm Garage rear control.'
@@ -113,12 +121,11 @@ function mitsubishiReadingCandidates(garage = {}, now = Date.now()) {
   }
   for (const key of new Set([...Object.keys(telemetryMetadata), ...fields.keys()])) {
     const reading = fields.get(key);
-    const [label, group, unit, description, explanation] = telemetryMetadata[key] ?? [words(key), 'Other readings', reading?.unit ?? '', 'Additional diagnostic reported by the heat pump.'];
+    const [label, group, unit, description, explanation] = telemetryMetadata[key] ?? [words(key), 'Diagnostics', reading?.unit ?? '', 'Additional diagnostic reported by the heat pump.'];
     add(key, label, group, unit, description, reading ? { ...reading, supported: reading.supported === true } : undefined, reading?.value, false);
     if (explanation) rows.at(-1).detail = `${explanation}\n\n${rows.at(-1).detail}`;
   }
-  const groups = ['Operation', 'Temperatures', 'Electricity', 'Pump settings', 'Other readings'];
-  return rows.sort((a, b) => groups.indexOf(a.group) - groups.indexOf(b.group));
+  return rows.sort(compareReadings);
 }
 
 export function mitsubishiReadings(garage = {}, now = Date.now()) {
@@ -133,14 +140,13 @@ export function createMitsubishiReadingView() {
     const candidates = mitsubishiReadingCandidates(garage, now);
     const current = new Map(candidates.map(row => [row.key, row]));
     for (const row of candidates) if (row.observed) seen.set(row.key, row);
-    const groups = ['Operation', 'Temperatures', 'Electricity', 'Pump settings', 'Other readings'];
     return [...seen.values()].map(previous => {
       const row = current.get(previous.key);
       if (row?.observed) return row;
       return { ...previous, ...row, value: 'Unavailable', available: false,
         qualifier: row?.qualifier ?? 'No reading',
         detail: `${row?.detail ?? 'No current report received.'}\n\nLast valid report:\n${previous.detail}` };
-    }).sort((a, b) => groups.indexOf(a.group) - groups.indexOf(b.group));
+    }).sort(compareReadings);
   };
 }
 

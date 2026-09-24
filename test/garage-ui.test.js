@@ -104,7 +104,7 @@ test('heat-pump metric rows stay visible once in their summaries while controls 
   const html = readFileSync(new URL('../chart/index.html', import.meta.url), 'utf8');
   for (const [id, metrics, info] of [
     ['home-pump-device', ['home-pump-state', 'home-pump-dhw', 'home-pump-room'], 'home-pump-reading-info'],
-    ['garage-controller-details', ['garage-native-power', 'garage-native-mode', 'garage-native-target'], 'garage-pump-reading-info'],
+    ['garage-controller-details', ['garage-native-power', 'garage-native-target'], 'garage-pump-reading-info'],
   ]) {
     const equipment = html.slice(html.indexOf(`<details id="${id}"`)), summary = equipment.slice(0, equipment.indexOf('</summary>'));
     assert.match(summary, /class="[^"]*pump-native-overview/);
@@ -121,6 +121,7 @@ test('heat-pump metric rows stay visible once in their summaries while controls 
   const mitsubishi=html.slice(html.indexOf('<details id="garage-controller-details"'));
   assert.match(mitsubishi.slice(0,mitsubishi.indexOf('</summary>')), /id="garage-native-compressor" class="muted">Unknown<\/strong>/);
   assert.equal(html.split('id="garage-native-compressor"').length-1,1);
+  assert(!html.includes('id="garage-native-mode"'), 'Mode is available in details rather than the compact summary');
 });
 
 test('Mitsubishi summary preserves compressor state through running, idle and lost telemetry', () => {
@@ -164,7 +165,7 @@ test('permanent Mitsubishi summary values remain plain text and stop claiming st
   const garage = { settings: { maxSensorAgeMs: 120_000 }, adapter: { connected: true, health: { deviceOnline: true, pumpCommunicating: true },
     native: { power: 'on', mode: 'heat', targetC: 10, readbacks: Object.fromEntries(['power', 'mode', 'targetC'].map(field => [field, { measuredAt: now }])) } } };
   renderGarage(document, { garage, now });
-  assert.deepEqual([...nodes.values()].map(node => node.textContent), ['on', 'heat', '10 °C']);
+  assert.deepEqual([...nodes.values()].map(node => node.textContent), ['On', 'Heat', '10 °C']);
   assert([...nodes.values()].every(node => !node.stale));
   renderGarage(document, { garage, now: now + 120_000 });
   assert([...nodes.values()].every(node => node.textContent === '—' && node.stale && node.muted));
@@ -363,7 +364,7 @@ test('Garage separates validation, sources and planning with honest missing and 
   assert(display.evidenceDetails.some(row => row.key === 'rear-cooling-error'));
   assert(!display.outcomeDetails.some(row => row.key === 'rear-cooling-error'));
   assert(display.planningDetails.some(row => row.key === 'daily-pause-limit' && row.value === '1'));
-  assert.match(Object.fromEntries(display.rows)['Normal heating setting basis'], /5 °C saved · Garage rear · active/);
+  assert.match(Object.fromEntries(display.rows)['Normal heating setting basis'], /5 °C saved · Garage rear · Active/);
   for (const rows of [display.outcomeDetails, display.evidenceDetails, display.inputDetails, display.coefficientDetails, display.planningDetails]) {
     assert.equal(new Set(rows.map(row => row.key)).size, rows.length);
     assert(rows.every(row => row.title && row.value && row.provenance && row.detail));
@@ -423,7 +424,7 @@ test('saved external room setting identifies active and fallback control while n
   const document = { getElementById: id => nodes.get(id) };
   renderGarage(document, { now, garage });
   assert.equal(nodes.get('garage-native-target').textContent, '5 °C');
-  assert.equal(nodes.get('garage-native-target-basis').textContent, 'Garage rear · active');
+  assert.equal(nodes.get('garage-native-target-basis').textContent, 'Garage rear · Active');
   assert.equal(nodes.get('garage-native-target-basis').hidden, false);
   assert.equal(garage.adapter.native.targetC, 17);
   const rows = Object.fromEntries(garageDisplay(garage).rows);
@@ -432,7 +433,7 @@ test('saved external room setting identifies active and fallback control while n
   garage.roomTemperature.phase = 'waiting'; garage.roomTemperature.acknowledged = false;
   renderGarage(document, { now, garage: { roomTemperature: garage.roomTemperature } });
   assert.equal(nodes.get('garage-native-target').textContent, '5 °C', 'The saved target stays visible while waiting for an input');
-  assert.equal(nodes.get('garage-native-target-basis').textContent, 'External sensor · fallback');
+  assert.equal(nodes.get('garage-native-target-basis').textContent, 'External sensor · Fallback');
   garage.roomTemperature = { targetC: null, phase: 'disabled' };
   renderGarage(document, { now, garage });
   assert.equal(nodes.get('garage-native-target').textContent, '17 °C');
