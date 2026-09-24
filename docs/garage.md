@@ -129,7 +129,7 @@ inputs and restart retain restoration obligations; restart never resumes OFF.
 
 ## Learning, recovery and reporting
 
-`committed-garage-v5-protection-limited` learns only two effective cooling coefficients,
+`committed-garage-v6-source-clocks` learns only two effective cooling coefficients,
 from clean OFF intervals. Charger heat is **7.5% of qualifying charger energy**
 (or power), shown separately. It never schedules charging for warmth or credits
 future charging when judging safe OFF time. Current charging suppresses a new
@@ -156,12 +156,12 @@ pause can start during its recovery. Both actual external temperatures, sustaine
 normal availability and both pipe reserves determine recovery; no hidden building
 core is estimated. A missing-accounting recovery closes without claiming savings.
 
-The first v5 journal entry saves its own seed. Live learning, reconstruction and
+The current journal saves its own seed. Live learning, reconstruction and
 coefficient charts share the ordered update function and recorded configuration.
-Previous algorithms are archival; their frozen forecasts and costs are never
-reinterpreted as v5. Existing protection and measured restoration obligations
-survive the version boundary. Sensor corrections remain source events and never
-rewrite original observations. See [reconstruction contract](reconstruction-and-versioning.md).
+Previous development algorithms and exposure shapes require an explicit fresh
+database; they are not migrated or continued as archived episodes. Current-format
+restart preserves actual protection and restoration obligations. Source corrections
+never rewrite original observations. See [reconstruction contract](reconstruction-and-versioning.md).
 
 Garage completed model savings are provisional comparisons against a frozen
 normal-heating reference. Metered recovery is counted directly; unmetered recovery

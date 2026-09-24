@@ -19,8 +19,8 @@ export function historyLearningLabel(key, point = {}) {
   if (point.garageModelInput) return point.inputQualified === true
     ? 'qualified recorded input; fitting depends on the interval and episode'
     : point.inputQualified === false ? 'input unavailable or unqualified' : 'input qualification unavailable';
-  return point.learningUsable === true ? 'eligible for learning'
-    : point.learningUsable === false ? 'excluded from learning' : 'learning eligibility unavailable';
+  return point.learningUsable === true ? 'recorded input quality usable; thermal fitting needs observed heat, sunshine and fresh endpoints'
+    : point.learningUsable === false ? 'recorded input quality excluded' : 'recorded input quality unavailable';
 }
 
 function timeContext(item) {

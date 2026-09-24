@@ -4,6 +4,16 @@ const HOUR = 3_600_000;
 const KEY = 'shelly:caravan-energy:v2';
 const hour = at => Math.floor(at / HOUR) * HOUR;
 const day = at => moment.tz(at, 'Europe/Helsinki').format('YYYY-MM-DD');
+function validateState(state, version) {
+  if (!state) return;
+  const finite = value => typeof value === 'number' && Number.isFinite(value) && value >= 0;
+  const time = value => Number.isSafeInteger(value) && value >= 0;
+  if (state.version !== version || typeof state.device !== 'string' || !state.device
+    || !finite(state.dailyKwh) || !finite(state.dailyCoveredMs) || typeof state.reset !== 'boolean'
+    || state.previous !== null && (!time(state.previous?.at) || !finite(state.previous?.counterKwh))
+    || state.pending != null && (!time(state.pending.start) || !finite(state.pending.kwh) || !finite(state.pending.coveredMs)))
+    throw new Error('Unsupported equipment meter checkpoint. Start a fresh development database.');
+}
 
 /** Measured counter increments use the shared adaptive recorder. Daily display
  * totals update at acquisition cadence, independently of archive spacing. */
@@ -13,8 +23,9 @@ export function createCaravanEnergy({ store, recorder, device, maxGapMs, signal 
   if (signal !== 'caravan_energy') return createHourlyMeterEnergy({ store, device, maxGapMs, signal, recordDevice, stateKey, source });
   recorder ??= new Recorder(store);
   let state = store.getState(stateKey);
-  if (state?.version !== 2 || state.device !== device) state = null;
-  state ??= { version: 2, device, previous: null, day: null, dailyKwh: 0, dailyCoveredMs: 0, reset: false, gap: false };
+  validateState(state, 3);
+  if (state && state.device !== device) state = { ...state, device, previous: null, gap: true };
+  state ??= { version: 3, device, previous: null, day: null, dailyKwh: 0, dailyCoveredMs: 0, reset: false, gap: false };
   const save = () => store.setState(stateKey, state);
   const transaction = update => {
     const before = structuredClone(state);
@@ -32,6 +43,8 @@ export function createCaravanEnergy({ store, recorder, device, maxGapMs, signal 
     state.gap = true;
   }
   return {
+    checkpoint() { return structuredClone(state); },
+    restore(checkpoint) { state = structuredClone(checkpoint); },
     receive(counterKwh, at) {
       if (!Number.isFinite(counterKwh) || counterKwh < 0 || !Number.isSafeInteger(at) || at < 0) return;
       if (state.previous && at <= state.previous.at) return;
@@ -85,8 +98,9 @@ export function createCaravanEnergy({ store, recorder, device, maxGapMs, signal 
 function createHourlyMeterEnergy({ store, device, maxGapMs, signal = 'caravan_energy',
   recordDevice = 'caravan', stateKey = KEY, source = 'shelly-mqtt' }) {
   let state = store.getState(stateKey);
-  if (state?.device !== device) state = null;
-  state ??= { device, previous: null, pending: null, day: null, dailyKwh: 0, dailyCoveredMs: 0, reset: false };
+  validateState(state, 1);
+  if (state && state.device !== device) state = { ...state, device, previous: null };
+  state ??= { version: 1, device, previous: null, pending: null, day: null, dailyKwh: 0, dailyCoveredMs: 0, reset: false };
   const save = () => store.setState(stateKey, state);
   const transaction = update => {
     // SQLite rollback must also rewind this bounded accumulator. Otherwise an
@@ -112,6 +126,8 @@ function createHourlyMeterEnergy({ store, device, maxGapMs, signal = 'caravan_en
     }
   }
   return {
+    checkpoint() { return structuredClone(state); },
+    restore(checkpoint) { state = structuredClone(checkpoint); },
     receive(counterKwh, at) {
       if (!Number.isFinite(counterKwh) || counterKwh < 0 || !Number.isSafeInteger(at)) return;
       if (state.previous && at <= state.previous.at) return;

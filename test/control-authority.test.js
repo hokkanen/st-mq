@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
 import { start } from '../src/main.js';
+import { equipmentConfiguration } from '../src/acquisition/equipment-config.js';
 import { loadConfig } from '../src/app/config.js';
 import { CONTROL_SCOPE } from '../src/control/authority.js';
 import { idleIdentityClient, identityConnection } from './helpers/identity-mqtt.js';
@@ -56,8 +57,8 @@ test('authority loss invalidates a delayed settings reload without recreating ac
   const entered = new Promise(resolve => { enteredRead = resolve; });
   const clients = [];
   const config = { ...loadConfig({ XDG_CONFIG_HOME: directory, STMQ_DATA_DIR: directory, STMQ_PORT: '0' }, directory),
-    input: 'mqtt', connections: { mqtt: { address: 'mqtt://invented.invalid',
-      temperatureTopics: { indoor_temperature: 'invented/temperature' } } } };
+    input: 'mqtt', connections: { mqtt: { address: 'mqtt://invented.invalid' },
+      equipment: equipmentConfiguration({devices:[{id:'indoor',kind:'temperature',connection:'mqtt:invented/temperature'}]}) } };
   const app = await start({ config, installSignalHandlers: false, providerOptions: { automatic: false },
     readConfig: async () => { enteredRead(); await waiting; return config; },
     mqttOptions: { connect: (_address, options) => {

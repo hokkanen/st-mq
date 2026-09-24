@@ -5,7 +5,8 @@ import { Engine } from '../src/app/engine.js';
 import { lastIndoorReading } from '../src/app/indoor-readings.js';
 import { addSensorChange } from '../src/app/sensor-changes.js';
 import { DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS, DEFAULT_TEMPERATURE_REPORT_GRACE_MS } from '../src/domain/temperature-reports.js';
-import { recordLearningContext, committedLearningSample, appendLearningRecord, replayLearningJournal } from '../src/app/committed-learning.js';
+import { recordLearningContext, committedLearningSample, replayLearningJournal} from '../src/app/committed-learning.js';
+import { appendLearningRecord } from './helpers/home-learning-fixture.js';
 
 const MINUTE = 60_000, START = Date.parse('2026-09-13T00:00:00Z'), signal = 'indoor_temperature';
 const POLICY = { reportIntervalMs: 70 * MINUTE, reportGraceMs: 5 * MINUTE };

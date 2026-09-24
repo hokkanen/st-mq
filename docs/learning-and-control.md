@@ -237,8 +237,8 @@ recovery, separately from actual valve mode after the override closes.
 The selected slab exists in both valve modes. Its modeled temperature persists
 when relays turn off, and heat allocation changes without inventing new heat or
 capacity. Initial selected capacity is carved out of the effective reserve budget.
-Ground exchange uses a separate configured slow boundary and avoids duplicating
-the baseline ground loss already present in the envelope prior when configured.
+Ground exchange uses a separate configured slow boundary and a passive
+slab-to-ground path. The envelope coefficient then describes above-ground loss; no baseline ground loss is subtracted.
 Material kWh/K describes sensible capacity at uniform temperature, not how much
 can be charged during a short period or how much electricity a cycle saves.
 Room-only observations cannot identify all these fixed quantities at once. Public

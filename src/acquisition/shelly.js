@@ -1,17 +1,17 @@
+import { createMqttAdmission } from './mqtt-admission.js';
+import { createMqttReception } from './mqtt-reception.js';
 import { randomUUID, createHash } from 'node:crypto';
 import { createCaravanEnergy } from './shelly-energy.js';
-import { equipmentSignature } from './equipment-config.js';
+import { equipmentSignature, equipmentMeterIdentity } from './equipment-config.js';
 import { GARAGE_TEMPERATURE_POLL_MS, GARAGE_TEMPERATURE_MAX_AGE_MS } from '../garage/permission.js';
 
-const LABELS = { garage: 'Garage Shelly relay', heat_savings: 'Heat savings Shelly', caravan: 'Caravan Shelly Plug' };
 const scalar = value => typeof value === 'number' && Number.isFinite(value);
 const valid = (value, min, max) => scalar(value) && value >= min && value <= max;
 const error = message => new Error(`Shelly ${message}`);
-const stateName = device => device.stateSignal ?? (device.kind === 'temperature' ? null : device.role === 'caravan' ? 'caravan_active'
-  : device.role === 'garage' ? 'garage_relay_active' : `${device.role}_active`);
-const hasTemperature = device => device.hasTemperature ?? device.role === 'garage';
-const metered = device => device.metered ?? device.role === 'caravan';
-const tempName = device => device.temperatureSignal ?? (device.role === 'garage' ? 'garage_temperature' : `${device.role}_temperature`);
+const stateName = device => device.stateSignal;
+const hasTemperature = device => device.hasTemperature === true;
+const metered = device => device.metered === true;
+const tempName = device => device.temperatureSignal;
 const definitions = device => [
   ...(stateName(device) ? [{ signal: stateName(device), unit: 'state', label: device.kind === 'door' ? 'Door' : 'Switch', required: true }] : []),
   ...(hasTemperature(device) ? [{ signal: tempName(device), unit: 'degC', label: device.role === 'garage' ? 'Garage rear' : 'Temperature', required: true }] : []),
@@ -26,13 +26,24 @@ const protectsGarage = device => definitions(device).some(row => ['garage_temper
  * Modern command readbacks retain the exact command identity through both RPCs. */
 export function createShellyCapture({ engine, store, settings, publish, canControl = () => true, readbackTimeoutMs = 10_000, brokerIdentity = null, topicGroups = [] }) {
   const devices = settings.devices.filter(config => config.enabled !== false).map(config => ({ ...config,
-    id: config.id ?? config.role, role: config.role ?? config.id, customReadings: config.readings ?? [], connected: false,
-    available: false, lastAt: null, lastPollAt: -Infinity, readings: {}, state: null, identity: null, identityPending: null, waiters: new Set(), checks: new Set(), check: null }));
+    customReadings: config.readings, connected: false,
+    available: false, lastAt: null, lastPollAt: -Infinity, readings: {}, state: null, identity: null, identityPending: null,
+    observationOrder: 0, writeOrder: 0, waiters: new Set(), checks: new Set(), check: null }));
+  const admission = createMqttAdmission();
   const source = `stmq-shelly-${randomUUID()}`, replyTopic = `${source}/rpc`, requests = new Map();
   let sequence = 0, commandSequence = 0, connected = false, closed = false, heatingBusy = false;
-  const energies = new Map(devices.filter(metered).map(device => [device.id, createCaravanEnergy({ store, recorder: engine.recorder,
-    device: device.prefix, maxGapMs: device.maxAgeMs ?? settings.maxAgeMs, signal: `${device.role}_energy`, recordDevice: device.role,
-    ...(device.role === 'caravan' ? {} : { stateKey: `shelly:equipment-energy:v1:${device.id}` }) })]));
+  const energies = new Map();
+  const reception = createMqttReception({ store, engine, admission, devices, meters: energies, requests });
+  const energyFor = device => {
+    if (!metered(device) || device.generation > 1 && !device.identity) return null;
+    const lineage = equipmentMeterIdentity({ ...device, readings: device.customReadings }, { brokerIdentity, nativeIdentity: device.identity });
+    const saved = energies.get(device.id);
+    if (saved?.lineage === lineage) return saved;
+    const meter = createCaravanEnergy({ store, recorder: engine.recorder, device: lineage,
+      maxGapMs: device.maxAgeMs ?? settings.maxAgeMs, signal: `${device.role}_energy`, recordDevice: device.role,
+      ...(device.role === 'caravan' ? {} : { stateKey: `shelly:equipment-energy:v1:${device.id}` }) });
+    meter.lineage = lineage; energies.set(device.id, meter); return meter;
+  };
   const pollInterval = device => protectsGarage(device) ? GARAGE_TEMPERATURE_POLL_MS : settings.pollIntervalMs;
   const maxAge = device => {
     const configured = device.maxAgeMs ?? settings.maxAgeMs;
@@ -73,8 +84,8 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
     energies.get(device.id)?.unavailable?.(engine.clock(), reason);
     const previous = device.available;
     device.available = false; device.state = null;
-    for (const waiter of [...device.waiters]) waiter.reject(error('relay readback unavailable'));
-    for (const check of [...device.checks]) check.finish('unavailable');
+    for (const waiter of [...device.waiters]) reception.afterCommit(() => waiter.reject(error('relay readback unavailable')));
+    for (const check of [...device.checks]) reception.afterCommit(() => check.finish('unavailable'));
     if (!previous && Object.values(device.readings).every(row => row.value === null)) return;
     for (const definition of definitions(device)) if (definition.required || device.readings[definition.signal])
       emit(device, definition.signal, null, definition.unit, null, [reason], { usableForControl: false });
@@ -82,8 +93,9 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
   const send = async (device, method, params = {}, { purpose = 'status', commandId = null, complete = null } = {}) => {
     if (!connected || closed || !canControl()) throw error('MQTT unavailable');
     const id = ++sequence;
+    if (purpose === 'write') device.writeOrder = id;
     requests.set(id, { device, method, at: engine.clock(), purpose, commandId, complete });
-    try { await publish(`${device.prefix}/rpc`, JSON.stringify({ id, src: source, method, params }), { qos: 1, retain: false }); }
+    try { await publish(`${device.prefix}/rpc`, JSON.stringify({ id, src: source, method, params }), { qos: 1, retain: false, ...(purpose === 'write' ? { noReplay: true } : {}) }); }
     catch { requests.delete(id); throw error('publication failed'); }
     return id;
   };
@@ -91,7 +103,7 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
     ? publish(`${device.prefix}/command`, 'update', { qos: 0, retain: false }) : send(device, 'Shelly.GetStatus');
   const clearIdentity = device => {
     device.identity = null;
-    for (const [id, request] of requests) if (request.device === device) { requests.delete(id); request.complete?.('unavailable'); }
+    for (const [id, request] of requests) if (request.device === device) { requests.delete(id); reception.afterCommit(() => request.complete?.('unavailable')); }
     device.identityPending = null;
   };
   const needsIdentity = device => device.protocol === 'shelly' && device.generation > 1;
@@ -113,22 +125,26 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
       if (full) emit(device, signal, null, 'state', at, ['missing']);
       return;
     }
+    if (device.generation > 1 && status.id !== device.switchId) return;
+    if (scalar(device.readings[signal]?.observedAt) && at < device.readings[signal].observedAt) return;
     if (Array.isArray(status.errors) && status.errors.length) { unavailable(device, 'device-error'); return; }
     const output = device.kind === 'door' ? status.state : status.output ?? status.ison;
     if (typeof output === 'boolean') {
       device.state = output; emit(device, signal, Number(output), 'state', at);
       if (readback) for (const waiter of [...device.waiters])
-        if (waiter.at <= at && waiter.output === output && (device.generation === 1 || waiter.commandId === commandId)) waiter.resolve();
+        if (waiter.at <= at && waiter.output === output && (device.generation === 1 || waiter.commandId === commandId)) reception.afterCommit(() => waiter.resolve());
     } else if (full) { device.state = null; emit(device, signal, null, 'state', at, ['missing']); }
     if (!metered(device)) return;
     if (Object.hasOwn(status, 'apower') || full) emit(device, `${device.role}_power`, valid(status.apower, 0, 25000) ? status.apower / 1000 : null,
       'kW', at, valid(status.apower, 0, 25000) ? [] : ['missing']);
     if (Object.hasOwn(status, 'current') || full) emit(device, `${device.role}_current`, valid(status.current, 0, 100) ? status.current : null,
       'A', at, valid(status.current, 0, 100) ? [] : ['missing']);
-    if (!device.customReadings.some(mapping => mapping.key === 'energy_counter') && valid(status.aenergy?.total, 0, 1e12)) energies.get(device.id)?.receive(status.aenergy.total / 1000, at);
+    if (!device.customReadings.some(mapping => mapping.key === 'energy_counter') && valid(status.aenergy?.total, 0, 1e12)) energyFor(device)?.receive(status.aenergy.total / 1000, at);
   }
   function temperatureStatus(device, status, at, full) {
     if (!hasTemperature(device) || !status && !full) return;
+    if (status && device.generation > 1 && status.id !== device.temperatureId) return;
+    if (!full && status && !Object.hasOwn(status, 'tC') && !status.errors?.length) return;
     const good = valid(status?.tC, -60, 100) && !status.errors?.length;
     emit(device, tempName(device), good ? status.tC : null, 'degC', at, good ? [] : ['invalid-temperature']);
   }
@@ -141,11 +157,13 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
       const defaultPath = mapping.component?.startsWith('temperature:') ? 'tC' : mapping.component?.startsWith('input:') ? 'state'
         : mapping.component?.startsWith('switch:') ? 'output' : mapping.component?.startsWith('humidity:') ? 'rh' : 'value';
       let value = property(component, mapping.path ?? defaultPath);
+      if (component && device.generation > 1 && component.id !== Number(mapping.component.split(':')[1])) continue;
+      if (!full && value === undefined && !component?.errors?.length) continue;
       if (typeof value === 'boolean') value = Number(value);
       if (scalar(value)) value = value * (mapping.scale ?? 1) + (mapping.offset ?? 0);
       const good = scalar(value) && !component?.errors?.length && (!['degC', '°C'].includes(mapping.unit) || valid(value, -60, 150));
       emit(device, mapping.signal, good ? value : null, mapping.unit, at, good ? [] : ['missing']); found ||= Boolean(component);
-      if (mapping.key === 'energy_counter' && good && value >= 0) energies.get(device.id)?.receive(value / (mapping.unit === 'Wh' ? 1000 : 1), at);
+      if (mapping.key === 'energy_counter' && good && value >= 0) energyFor(device)?.receive(value / (mapping.unit === 'Wh' ? 1000 : 1), at);
     }
     return found;
   }
@@ -174,7 +192,7 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
     }
     if (metered(device) && suffix === `${switchPath}/energy`) {
       const wattMinutes = payload.trim() ? Number(payload) : NaN;
-      if (valid(wattMinutes, 0, 1e15)) energies.get(device.id)?.receive(wattMinutes / 60000, at);
+      if (valid(wattMinutes, 0, 1e15)) energyFor(device)?.receive(wattMinutes / 60000, at);
       return true;
     }
     return false;
@@ -195,7 +213,7 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
       const timer = setTimeout(() => finish(error('relay readback timed out; delivery unconfirmed')), readbackTimeoutMs);
       device.waiters.add(waiter);
       const action = device.generation === 1
-        ? publish(`${device.prefix}/relay/${device.switchId}/command`, output ? 'on' : 'off', { qos: 1, retain: false }).then(() => requestStatus(device))
+        ? publish(`${device.prefix}/relay/${device.switchId}/command`, output ? 'on' : 'off', { qos: 1, retain: false, noReplay: true }).then(() => requestStatus(device))
         : send(device, 'Switch.Set', { id: device.switchId, on: output }, { purpose: 'write', commandId: waiter.commandId });
       action.catch(() => finish(error('relay command failed; delivery unconfirmed')));
     });
@@ -217,20 +235,26 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
     receive(topic, payload, packet = {}, receivedAt = engine.clock()) {
       const device = devices.find(row => topic.startsWith(`${row.prefix}/`));
       if (!device && topic !== replyTopic) return false;
-      if (!connected || closed || packet.dup) return true;
+      if (!connected || closed) return true;
       const body = Buffer.isBuffer(payload) ? payload.toString('utf8') : String(payload ?? '');
       if (body.length > 65536) return true;
+      let delivery; try { delivery = JSON.parse(body); } catch { delivery = null; }
+      const sourceAt = delivery?.params?.ts * 1000;
+      if (!admission.admit(topic, body, packet, receivedAt, {
+        timestamped: Number.isFinite(sourceAt) && sourceAt >= 0 && sourceAt <= receivedAt,
+        correlated: topic === replyTopic && requests.has(delivery?.id),
+      })) return true;
       const suffix = device ? topic.slice(device.prefix.length + 1) : '';
       if (suffix === 'online') {
         if (body === 'false') { device.connected = false; clearIdentity(device); unavailable(device, 'device-offline'); }
-        else if (body === 'true' && !packet.retain) { device.connected = true; clearIdentity(device); identify(device); requestStatus(device).catch(() => {}); }
+        else if (body === 'true' && !packet.retain) { device.connected = true; clearIdentity(device); reception.afterCommit(() => { identify(device); requestStatus(device).catch(() => {}); }); }
         return true;
       }
       if (packet.retain) return true;
       if (device?.generation === 1) {
         if (gen1(device, suffix, body, receivedAt)) {
           device.lastAt = receivedAt; device.connected = device.available = true;
-          for (const check of [...device.checks]) if (available(device, receivedAt)) check.finish('received');
+          for (const check of [...device.checks]) if (available(device, receivedAt)) reception.afterCommit(() => check.finish('received'));
         }
         return true;
       }
@@ -240,29 +264,34 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
         const request = requests.get(frame.id);
         if (!request || receivedAt - request.at > readbackTimeoutMs || frame.dst !== source) return true;
         requests.delete(frame.id);
-        if (frame.error) { unavailable(request.device, 'device-rpc-error'); request.complete?.('error'); return true; }
-        if (request.method !== 'Shelly.GetDeviceInfo' && needsIdentity(request.device) && request.device.identity
-          && typeof frame.src === 'string' && frame.src !== request.device.identity) {
-          request.device.identity = null; unavailable(request.device, 'device-identity-changed'); request.complete?.('invalid'); return true;
+        if (frame.error) { unavailable(request.device, 'device-rpc-error'); reception.afterCommit(() => request.complete?.('error')); return true; }
+        if (request.method !== 'Shelly.GetDeviceInfo' && (!request.device.identity || frame.src !== request.device.identity)) {
+          reception.afterCommit(() => request.complete?.('invalid')); return true;
         }
         const result = frame.result;
-        if (!result || typeof result !== 'object') { request.complete?.('invalid'); return true; }
+        if (!result || typeof result !== 'object') { reception.afterCommit(() => request.complete?.('invalid')); return true; }
         if (request.method === 'Shelly.GetDeviceInfo') {
           const validIdentity = typeof result.id === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9_-]{2,119}$/.test(result.id)
             && (result.gen === undefined || [2, 3, 4].includes(result.gen))
-            && (frame.src === undefined || frame.src === result.id);
-          request.device.identity = validIdentity ? result.id : null; request.complete?.(validIdentity ? 'received' : 'invalid'); return true;
+            && frame.src === result.id;
+          request.device.identity = validIdentity ? result.id : null; reception.afterCommit(() => request.complete?.(validIdentity ? 'received' : 'invalid')); return true;
+        }
+        if (['Shelly.GetStatus', 'Switch.GetStatus'].includes(request.method)) {
+          if (frame.id < Math.max(request.device.writeOrder, request.device.observationOrder)) { reception.afterCommit(() => request.complete?.('superseded')); return true; }
+          if (request.method === 'Switch.GetStatus' && result.id !== request.device.switchId) { reception.afterCommit(() => request.complete?.('invalid')); return true; }
+          request.device.observationOrder = frame.id;
         }
         request.device.lastAt = receivedAt; request.device.connected = request.device.available = true;
-        if (request.method === 'Shelly.GetStatus') fullStatus(request.device, result, receivedAt);
-        else if (request.method === 'Switch.GetStatus') switchStatus(request.device, result, receivedAt,
+        if (request.method === 'Shelly.GetStatus') fullStatus(request.device, result, request.at);
+        else if (request.method === 'Switch.GetStatus') switchStatus(request.device, result, request.at,
           { full: true, readback: request.purpose === 'readback', commandId: request.commandId });
-        else if (request.method === 'Switch.Set') send(request.device, 'Switch.GetStatus', { id: request.device.switchId },
-          { purpose: 'readback', commandId: request.commandId }).catch(() => {});
-        request.complete?.('received'); return true;
+        else if (request.method === 'Switch.Set') reception.afterCommit(() => { send(request.device, 'Switch.GetStatus', { id: request.device.switchId },
+          { purpose: 'readback', commandId: request.commandId }).catch(() => {}); });
+        reception.afterCommit(() => request.complete?.('received')); return true;
       }
       let at = receivedAt;
       if (['NotifyStatus', 'NotifyFullStatus'].includes(frame.method)) {
+        if (!device.identity || frame.src !== device.identity) return true;
         const params = frame.params;
         if (!params || typeof params !== 'object') return true;
         if (params.ts != null) {
@@ -279,6 +308,7 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
       else if (hasTemperature(device) && suffix === `status/temperature:${device.temperatureId}`) temperatureStatus(device, frame, at, true);
       else if (device.customReadings.some(mapping => suffix === `status/${mapping.component}`)) customStatus(device, { [suffix.slice(7)]: frame }, at, false);
       else return true;
+      device.observationOrder = ++sequence;
       device.lastAt = receivedAt; device.connected = device.available = true; return true;
     },
     tick(now = engine.clock()) {
@@ -329,7 +359,7 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
       return { configured: devices.length > 0, connected, checking: devices.some(device => device.check?.checking),
         topicGroups,
         lastCheckedAt: Math.max(0, ...devices.map(device => device.check?.checkedAt ?? 0)) || null,
-        devices: devices.map(device => ({ id: device.id, role: device.role, label: device.label ?? LABELS[device.role] ?? device.role,
+        devices: devices.map(device => ({ id: device.id, role: device.role, label: device.label,
           area: device.area ?? (device.role === 'heat_savings' ? 'home' : 'garage'), kind: device.kind ?? (metered(device) ? 'metered_switch' : 'switch'),
           source: 'Shelly', connection: `shelly:${device.prefix}`, controlsHeat: Boolean(device.controlsHeat),
           topics: topicDetails(device), recheck: { method: 'native', requestSupported: true,
@@ -341,5 +371,8 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
     },
     close() { api.setConnected(false); closed = true; requests.clear(); },
   };
+  const receive = api.receive;
+  api.receive = (topic, ...args) => topic !== replyTopic && !devices.some(device => topic.startsWith(`${device.prefix}/`))
+    ? false : reception.run(() => receive(topic, ...args));
   return api;
 }

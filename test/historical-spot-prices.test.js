@@ -11,8 +11,8 @@ function put(store, at, value, extra = {}) {
     unit: 'c/kWh_ex_vat', sourceTime: at, receivedAt: at, value, ...extra });
 }
 function imported(store, status = 'complete', kind = 'stmq') {
-  return Number(store.db.prepare(`INSERT INTO imports (kind,sha256,path,status,started_at)
-    VALUES (?,lower(hex(randomblob(32))),'synthetic.csv',?,?)`).run(kind, status, from).lastInsertRowid);
+  return Number(store.db.prepare(`INSERT INTO imports (kind,sha256,path,status,started_at,completed_at)
+    VALUES (?,lower(hex(randomblob(32))),'synthetic.csv',?,?,?)`).run(kind, status, from, status === 'complete' ? from : null).lastInsertRowid);
 }
 
 test('recorded quarter-hour prices cover exact Finnish days despite logging jitter, including DST', () => {

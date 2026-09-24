@@ -76,6 +76,34 @@ test('cached temperatures stay last-known and forecast quality cannot hide inval
   assert.equal(f.runtime.read().outdoorC, null);
 });
 
+test('Garage EV2 confounders use physical charger evidence independently of vehicle association', t => {
+  const f = setup(t);
+  f.config.connections = { teslamate: { enabled: true } };
+  f.engine.teslamate = { identificationSnapshot: () => ({ connected: true, home: true, healthy: true,
+    healthyAt: START, currentA: 16, currentAt: START }) };
+  assert.equal(f.runtime.read().evEvidenceRequired.ev2, false);
+  assert.equal(f.runtime.read().ev2Active, null, 'a vehicle feed does not identify physical charger activity');
+  let healthy = true, charging = false;
+  f.engine.charging = { configuration: { chargers: { charger2: { enabled: true } } }, chargers: {
+    charger2: { adapter: { snapshot: () => ({}),
+      normalize: () => ({ providerConnected: healthy, charging: { value: charging, available: healthy, receivedAt: START } }),
+      liveCurrents: () => ({ healthy, currents: [0, 7, 0], times: [START, START, START] }) } } } };
+  let row = f.runtime.read();
+  assert.equal(row.evEvidenceRequired.ev2, true);
+  assert.equal(row.ev2Active, true);
+  assert.equal(row.ev2Kw, null, 'activity must not invent interval energy');
+  assert.equal(row.provenance.ev2.source, 'shelly-evse-current-activity');
+  f.engine.charging.chargers.charger2.adapter.liveCurrents = () => ({ healthy: false });
+  row = f.runtime.read();
+  assert.equal(row.ev2Active, false, 'fresh physical idle state is useful without current telemetry');
+  charging = true;
+  assert.equal(f.runtime.read().ev2Active, true);
+  healthy = false;
+  assert.equal(f.runtime.read().ev2Active, null, 'unavailable charger evidence stays unknown');
+  healthy = true; f.at(START + 3 * MINUTE);
+  assert.equal(f.runtime.read().ev2Active, null, 'expired physical evidence cannot prove idle');
+});
+
 test('thermal reserve survives restart and missing time consumes each location independently', async t => {
   const f = setup(t, { settings: { protection: { approved: true } } });
   f.runtime.exposure = knownGarageReserve(f.runtime.settings, { at: START, rearC: 5, frontC: 3 });

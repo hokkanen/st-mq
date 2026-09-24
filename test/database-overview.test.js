@@ -26,7 +26,7 @@ test('empty overview explains all physical tables without inventing historical p
     assert.equal(overview.database.fileBytes, null);
     assert(overview.database.allocatedBytes > 0);
     const actual = store.db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all();
-    assert.equal(actual.length, 19);
+    assert.equal(actual.length, 18);
     assert.deepEqual(overview.accounting.tables.map(table => table.name), actual.map(table => table.name));
     for (const table of overview.accounting.tables) assert.equal(table.rows,
       store.db.prepare(`SELECT COUNT(*) count FROM ${table.name}`).get().count, table.name);
@@ -67,7 +67,6 @@ test('overview distinguishes saved/null values, imports, shared forecasts, journ
     store.event('heat-pump-power-config', { input: privateMarker, version: 1, heatPumpCompressorKw: 2, circulationKw: 0.1, auxRatedKw: 6 }, at);
     store.event('decision', { personal: privateMarker }, at);
     store.event(privateMarker, { personal: privateMarker }, at);
-    store.learningSample('fixture-input', { timestamp: at, note: privateMarker });
     for (const kind of ['sample', 'episode', 'context']) store.appendLearningJournal('fixture-input', {
       kind, at, algorithmVersion: 'fixture-algorithm', configVersion: { private: privateMarker },
       forecastVersion: { private: privateMarker }, key: kind, payload: { private: privateMarker },

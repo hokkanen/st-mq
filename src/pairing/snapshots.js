@@ -59,6 +59,7 @@ export class SnapshotRepository {
     this.snapshot = snapshot;
     this.active = null;
     this.cache = new Map();
+    this.mutations = Promise.resolve();
   }
 
   async init() {
@@ -72,12 +73,24 @@ export class SnapshotRepository {
     await this.prune(null);
   }
 
-  async create({ dbPath, claim, sequence, signal, force = false, assertSource = () => {} }) {
+  serializeMutation(action) {
+    const pending = this.mutations.then(action);
+    this.mutations = pending.catch(() => {});
+    return pending;
+  }
+
+  async create({ dbPath, claim, sequence, signal, force = false, pin = false, assertSource = () => {} }) {
     if (this.active) throw pairError('peer_busy');
-    await assertSource();
-    if (!force && this.current && this.current.claim.epoch === claim.epoch && this.current.claim.role === claim.role &&
-        this.clock() - this.current.sourceAt < 30000) return this.current;
-    const pending = (async () => {
+    // Reserve admission before even source validation can yield. Retention
+    // changes share this queue so a successful pin always retains its export.
+    this.active = true;
+    try { return await this.serializeMutation(async () => {
+      await assertSource();
+      if (!force && this.current && this.current.claim.epoch === claim.epoch && this.current.claim.role === claim.role &&
+          this.clock() - this.current.sourceAt < 30000) {
+        if (pin) await this.pinExport(this.current.generation);
+        return this.current;
+      }
       const generation = randomUUID(), path = join(this.directory, `export-${generation}.sqlite`);
       try {
         const result = await this.snapshot({ dbPath, destination: path, signal });
@@ -87,16 +100,19 @@ export class SnapshotRepository {
         delete metadata.ok;
         await durableJson(join(this.directory, `export-${generation}.json`), { ...metadata, hashes });
         this.cache.set(generation, { ...metadata, hashes });
+        // Rejoin needs this exact generation after a lost acknowledgement or
+        // restart. Pin before returning it, with no create-to-pin pruning gap.
+        if (pin) await this.pinExport(generation);
+        await this.pruneExports(generation);
         this.current = metadata;
-        await this.prune(generation);
         return metadata;
       } catch (error) {
+        this.cache.delete(generation);
         for (const suffix of ['', '-wal', '-shm', '-journal']) await rm(`${path}${suffix}`, { force: true });
+        for (const suffix of ['json', 'pin']) await rm(join(this.directory, `export-${generation}.${suffix}`), { force: true });
         throw error;
       }
-    })();
-    this.active = pending;
-    try { return await pending; } finally { this.active = null; }
+    }); } finally { this.active = null; }
   }
 
   async load(generation) {
@@ -133,17 +149,44 @@ export class SnapshotRepository {
     } finally { await file.close(); }
   }
 
-  async prune(current) {
-    const entries = [];
-    for (const name of await readdir(this.directory)) {
+  pin(generation) {
+    return this.serializeMutation(() => this.pinExport(generation));
+  }
+
+  async pinExport(generation) {
+    await this.load(generation);
+    await privateFile(join(this.directory, `export-${generation}.sqlite`));
+    const file = await open(join(this.directory,`export-${generation}.pin`),'a',0o600);
+    try { await file.sync(); } finally { await file.close(); }
+    await syncDirectory(this.directory);
+  }
+
+  unpin(generation) {
+    return this.serializeMutation(() => this.unpinExport(generation));
+  }
+
+  async unpinExport(generation) {
+    if (!NODE_PATTERN.test(generation)) throw pairError('invalid_transition');
+    await rm(join(this.directory,`export-${generation}.pin`),{force:true});
+    await syncDirectory(this.directory);
+  }
+
+  prune(current) {
+    return this.serializeMutation(() => this.pruneExports(current));
+  }
+
+  async pruneExports(current) {
+    const entries = [], names = await readdir(this.directory);
+    for (const name of names) {
       const match = /^export-([a-f0-9-]+)\.json$/.exec(name);
       if (!match || !NODE_PATTERN.test(match[1])) continue;
       try { entries.push(await this.load(match[1])); } catch { /* Do not guess at unclassified files. */ }
     }
     entries.sort((a, b) => b.sourceAt - a.sourceAt);
     for (const metadata of entries.slice(2)) {
-      if (metadata.generation === current) continue;
+      if (metadata.generation === current || names.includes(`export-${metadata.generation}.pin`)) continue;
       this.cache.delete(metadata.generation);
+      if (this.current?.generation === metadata.generation) this.current = null;
       for (const suffix of ['sqlite', 'json']) await rm(join(this.directory, `export-${metadata.generation}.${suffix}`), { force: true });
     }
   }

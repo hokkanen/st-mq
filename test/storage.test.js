@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { execFileSync } from 'node:child_process';
 import { Store, SCHEMA_VERSION } from '../src/storage/store.js';
-import { importCsv, exportCsv, seedHandoffObservations, parseCsvLine } from '../src/storage/history.js';
+import { importCsv, exportCsv, parseCsvLine } from '../src/storage/history.js';
 
 function fixture(t) {
   const dir = mkdtempSync(join(tmpdir(), 'stmq-storage-'));
@@ -16,18 +16,7 @@ function fixture(t) {
 }
 const stHeader = 'unix_time,price,heat_on,temp_in,temp_ga,temp_out\n';
 const evHeader = 'unix_time,ch_curr1,ch_curr2,ch_curr3,eq_curr1,eq_curr2,eq_curr3\n';
-function legacyJournal(db) {
-  db.exec(`CREATE TABLE journal_v10 (id INTEGER PRIMARY KEY,input TEXT NOT NULL,key TEXT NOT NULL,
-    kind TEXT NOT NULL,at INTEGER NOT NULL,algorithm_version TEXT NOT NULL,config_version TEXT,
-    forecast_version TEXT,payload TEXT NOT NULL,UNIQUE(input,key));
-    INSERT INTO journal_v10 SELECT * FROM learning_journal;
-    DROP VIEW learning_journal; DROP VIEW learning_journal_all; DROP TABLE learning_journal_entries; DROP TABLE learning_epochs;
-    DROP TABLE recovery_runs; DROP TABLE recovery_provenance;
-    DROP INDEX observations_recovery_energy;
-    ALTER TABLE journal_v10 RENAME TO learning_journal;`);
-}
-
-test('schema migrates once, checkpoints survive restart, future schema is rejected', t => {
+test('current schema bootstraps once, checkpoints survive restart, future schema is rejected', t => {
   const { store, path } = fixture(t);
   assert.equal(store.summary().schemaVersion, SCHEMA_VERSION);
   assert.equal(store.getState('missing'), null);
@@ -37,99 +26,15 @@ test('schema migrates once, checkpoints survive restart, future schema is reject
   assert.deepEqual(reopened.getState('learning'), { version: 1, cursor: 23, parameters: [1, 2] });
   reopened.close();
   const raw = new DatabaseSync(path); raw.exec('PRAGMA user_version = 999'); raw.close();
-  assert.throws(() => new Store(path), /newer/);
+  assert.throws(() => new Store(path), /Unsupported database schema/);
 });
 
-test('opening development history removes obsolete charger counters while keeping property checks and session references', async t => {
-  const { store, path, dir } = fixture(t);
-  const insert = store.db.prepare(`INSERT INTO energy_audits(source,device,signal,source_time,received_at,value,quality)
-    VALUES('easee','invented-device',?,1000,1000,10,'[]')`);
-  for (const signal of ['ev1_lifetime_energy_counter', 'ev1_session_energy_counter', 'property_import_energy_counter']) insert.run(signal);
-  store.event('charging-session-check', { source: 'easee', referenceKwh: 2, estimatedKwh: 2.1 }, 2000);
-  const csvPath = join(dir, 'invented-easee.csv');
-  writeFileSync(csvPath, evHeader + '1701842401,1,2,3,4,5,6\n');
-  const imported = await importCsv(store, csvPath, { kind: 'easee' });
-  const observations = store.observations(), importedRow = store.importRow(imported.importId, 1), sessions = store.events();
-  store.close();
-  const reopened = new Store(path);
-  try {
-    assert.deepEqual(reopened.db.prepare('SELECT signal FROM energy_audits').all().map(row => row.signal), ['property_import_energy_counter']);
-    assert.deepEqual(reopened.observations(), observations);
-    assert.deepEqual(reopened.importRow(imported.importId, 1), importedRow);
-    assert.deepEqual(reopened.events(), sessions);
-  } finally { reopened.close(); }
-});
-
-test('schema-v2 migration preserves observations and indexes complete Easee acquisitions', t => {
-  const { store, path } = fixture(t);
-  const receivedAt = 4_000_000;
-  for (const phase of [1, 2, 3]) store.observation({
-    source: 'easee', device: 'example-equalizer', signal: `property_current_l${phase}`,
-    value: phase, unit: 'A', sourceTime: phase * 1_000_000, receivedAt,
-  });
-  store.observation({ source: 'mqtt', device: 'example-equalizer', signal: 'property_current_l1',
-    value: 7, unit: 'A', sourceTime: receivedAt, receivedAt });
-  store.setState('checkpoint', { cursor: 42 });
-  const before = store.observations();
-  store.close();
-
-  const prior = new DatabaseSync(path);
-  legacyJournal(prior);
-  prior.exec(`DROP INDEX observations_easee_acquisition; DROP TABLE learning_samples; DROP TABLE learning_cycles;
-    DROP VIEW provider_snapshots;
-    DROP INDEX snapshots_content_fetch;
-    ALTER TABLE provider_snapshot_fetches DROP COLUMN content_id;
-    ALTER TABLE provider_snapshot_fetches DROP COLUMN fetch_metadata;
-    ALTER TABLE provider_snapshot_fetches RENAME TO provider_snapshots;
-    DROP TABLE provider_snapshot_contents; DROP TABLE recorder_coverage; DROP TABLE recorder_metrics;
-    DROP TABLE energy_audits; DROP TABLE learning_journal; DROP TABLE fireplace_events; PRAGMA user_version = 2`);
-  prior.close();
-  const migrated = new Store(path);
-  try {
-    assert.equal(migrated.summary().schemaVersion, SCHEMA_VERSION);
-    assert.deepEqual(migrated.observations(), before);
-    assert.deepEqual(migrated.getState('checkpoint'), { cursor: 42 });
-    const sql = `SELECT signal,source_time FROM observations
-      WHERE source='easee' AND import_id IS NULL AND device=? AND received_at=? ORDER BY id`;
-    const params = ['example-equalizer', receivedAt];
-    assert.equal(migrated.db.prepare(sql).all(...params).length, 3);
-    assert(migrated.db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...params)
-      .some(row => /SEARCH observations USING INDEX observations_easee_acquisition/.test(row.detail)),
-    'Acquisition lookup must use the migrated index instead of scanning observation history');
-  } finally { migrated.close(); }
-});
-
-test('chart cache removal retains original history, checkpoints and lookup indexes', t => {
-  const { store, path } = fixture(t);
-  const cacheTables = db => db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name IN ('chart_rollups','chart_rollup_meta')").all();
-  assert.deepEqual(cacheTables(store.db), [], 'new databases contain no stored chart summaries');
-  store.observation({ source: 'synthetic', device: 'fixture', signal: 'indoor_temperature',
-    value: 21, unit: 'degC', sourceTime: 1000, receivedAt: 1000 });
-  store.setState('checkpoint', { cursor: 1 });
-  const before = store.observations();
-  assert.throws(() => store.transaction(() => {
-    store.observation({ source: 'synthetic', device: 'fixture', signal: 'garage_temperature',
-      value: 10, unit: 'degC', sourceTime: 2000, receivedAt: 2000 });
-    throw new Error('synthetic abort');
-  }), /synthetic abort/);
-  assert.deepEqual(store.observations(), before);
-  store.close();
-  const previous = new DatabaseSync(path);
-  legacyJournal(previous);
-  previous.exec(`CREATE TABLE chart_rollups (bucket INTEGER, payload TEXT);
-    CREATE INDEX chart_rollups_time ON chart_rollups(bucket);
-    INSERT INTO chart_rollups VALUES(0,'{"synthetic":true}');
-    CREATE TABLE chart_rollup_meta (id INTEGER PRIMARY KEY, legacy_through INTEGER);
-    INSERT INTO chart_rollup_meta VALUES(1,1); DROP TABLE fireplace_events; PRAGMA user_version=7;`);
-  previous.close();
-  const reopened = new Store(path);
-  try {
-    assert.deepEqual(cacheTables(reopened.db), []);
-    assert.deepEqual(reopened.observations(), before);
-    assert.deepEqual(reopened.getState('checkpoint'), { cursor: 1 });
-    assert.equal(reopened.db.prepare("SELECT COUNT(*) n FROM sqlite_schema WHERE type='index' AND name='observations_signal_time'").get().n, 1);
-    assert.equal(reopened.summary().schemaVersion, SCHEMA_VERSION);
-  } finally { reopened.close(); }
+test('current schema contains the acquisition lookup index and no historical tables', t => {
+  const { store } = fixture(t);
+  const names = store.db.prepare("SELECT name FROM sqlite_schema WHERE type='table'").all().map(r=>r.name);
+  for (const old of ['learning_samples','chart_rollups','chart_rollup_meta']) assert(!names.includes(old));
+  assert(store.db.prepare("EXPLAIN QUERY PLAN SELECT signal FROM observations WHERE source='easee' AND import_id IS NULL AND device=? AND received_at=? ORDER BY id")
+    .all('synthetic',1000).some(r=>r.detail.includes('observations_easee_acquisition')));
 });
 
 test('events return a chronological tail and a cursor follows new events', t => {
@@ -196,22 +101,15 @@ test('current snapshots retain anomaly flags without inventing power or energy',
   assert(rows[6].quality.includes('gap_before')); assert.equal(rows[6].value, null);
 });
 
-test('handoff counters and approximate absence are idempotent and not converted to precise telemetry', async t => {
-  const { store, dir } = fixture(t);
-  seedHandoffObservations(store); seedHandoffObservations(store);
-  assert.equal(store.counters().length, 84);
-  const last = store.counters({ signal: 'dhw_runtime' }).at(-1);
-  assert.equal(last.value, 12216); assert.equal(last.observedDate, '2026-09-06'); assert.equal(last.sourceTime, null);
-  const annotations = store.annotations(); assert.equal(annotations.length, 1);
-  assert.equal(annotations[0].boundaryConfidence, 'approximate'); assert.equal(annotations[0].excludeTraining, true);
-  const file = join(dir, 'absence.csv');
-  writeFileSync(file, stHeader + `${Date.parse('2026-02-28T21:00:00Z') / 1000},2,60,21.3,NaN,-5.3\n${Date.parse('2026-04-02T21:00:00Z') / 1000},2,0,12,NaN,1\n`);
-  await importCsv(store, file, { kind: 'stmq' });
-  const rows = store.trainingRows();
-  assert.equal(rows[0].regime, 'occupied'); assert.equal(rows[0].action, 'normal');
-  assert.equal(rows[1].regime, 'absence_uncertain'); assert.equal(rows[1].action, 'reduction');
+test('CSV absence quality and requested modes keep their documented historical meaning', async t => {
+  const { store, dir } = fixture(t), file = join(dir, 'st-mq.csv');
+  writeFileSync(file, stHeader + `${Date.parse('2026-02-28T21:00:00Z')/1000},2,60,21.3,NaN,-5.3\n${Date.parse('2026-04-02T21:00:00Z')/1000},2,0,12,NaN,1\n`);
+  await importCsv(store,file,{kind:'stmq'});
+  const rows=store.trainingRows();
+  assert.equal(rows[0].regime,'occupied'); assert.equal(rows[0].action,'normal');
+  assert.equal(rows[1].regime,'absence_uncertain'); assert.equal(rows[1].action,'reduction');
   assert(rows[1].quality.includes('excluded_occupied_training'));
-  assert.equal(store.trainingRows({ afterId: rows[0].id, limit: 1 })[0].id, rows[1].id);
+  assert.equal(store.counters().length,0,'imports do not seed personal counter observations');
 });
 
 test('manual counters and annotations validate facts and preserve conflicting provenance', t => {

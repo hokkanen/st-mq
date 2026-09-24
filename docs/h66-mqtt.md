@@ -97,3 +97,15 @@ application and gateway connection; H66 has no documented device-side expiry.
 Resolve failed readback or pending restoration before enabling automatic control.
 The supported controls and their roles are documented in
 [learning and control](learning-and-control.md#h66-readbacks-and-commands).
+
+Restoration rechecks the same register obligation immediately before each SET and
+after its readback. An external panel change during another register's awaited
+readback cancels that register's pending restoration. A no-op automatic request
+owns no write, but its value is watched so a subsequent manual change invalidates
+the plan. Only a fresh authorized write may acquire a new baseline. MQTT cannot
+provide an atomic compare-and-set after a command has already left the host.
+
+In-process holds also use elapsed deadlines. Backward wall-clock corrections do
+not renew a one-minute setting or an owner-selected pause; forward corrections
+may end one early. Restart never reuses a monotonic clock origin: persisted
+current obligations are restored conservatively with fresh readback.

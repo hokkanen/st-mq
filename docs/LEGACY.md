@@ -1,7 +1,8 @@
 # Legacy v0.7.5 history reference
 
-Version 0.7.5 continues running on its existing machine until the owner starts the
-production migration. Keep that installation and its source CSV files intact.
+Keep any existing installation and source CSV files intact. The only supported
+pre-v1.0.0 historical compatibility is read-only import of the two CSV formats
+below; this document does not provide an old runtime or database reader.
 The current development entry point is `npm start`; setup is documented in
 [the current guide](../DOCS.md).
 
@@ -37,18 +38,19 @@ charts estimate power using nominal 230 V and unity power factor.
 ## Import and provenance
 
 Use `node scripts/history.js import --db <database> --file <csv> --kind stmq`
-or `--kind easee`. See [recording and migration](recording.md) for the current
+or `--kind easee`. See [recording and import](recording.md) for the current
 storage and learning interpretation. Imports require the matching header and
 preserve raw source rows, row numbers, source timestamps, quality flags and the
 file digest. Missing or invalid fields do not become zero measurements. Gaps,
 non-increasing timestamps and suspicious measurements remain explicit.
 
 Reimporting the same completed file digest is skipped. An interrupted import
-resumes without duplicating its already recorded rows. Distinct source rows and
+retries its unpublished staging from stable source bytes and publishes once,
+without duplicating committed rows. Distinct source rows and
 their provenance remain available even when they have the same timestamp; chart
 and learning queries retain their deterministic duplicate handling. Imported
-model learning continues to use the historical Upstairs measurement and its
-matching algorithm, as required by the [reconstruction contract](reconstruction-and-versioning.md).
+model learning continues to use the historical Upstairs measurement normalized into the
+current learning contract, as required by the [reconstruction contract](reconstruction-and-versioning.md).
 
 ## Retired relay protocol
 

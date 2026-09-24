@@ -19,7 +19,7 @@ function fixture(t, input) {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-local-temperatures-'));
   const path = join(directory, 'fixture.json');
   writeFileSync(path, JSON.stringify({
-    geoloc: { country_code: '' }, teslamate: { enabled: false, charger_identification: false },
+    geoloc: { country_code: '' }, teslamate: { enabled: false },
     controller: { input, h66_device: 'invented-h66' },
     equipment: { devices: [
       { id: 'upstairs', kind: 'temperature', signal: 'indoor_temperature', connection: 'mqtt:invented/smoke/1' },
@@ -27,9 +27,7 @@ function fixture(t, input) {
       { id: 'downstairs', kind: 'temperature', signal: 'downstairs_temperature', connection: 'mqtt:invented/smoke/3' },
       { id: 'garage', kind: 'temperature', signal: 'garage_temperature', connection: 'mqtt:invented/garage' },
     ] },
-    mqtt: { address: 'mqtt://invented.invalid',
-      indoor_temperature_topic: 'invented/smoke/1', bedroom_temperature_topic: 'invented/smoke/2',
-      downstairs_temperature_topic: 'invented/smoke/3', garage_temperature_topic: 'invented/garage' },
+    mqtt: { address: 'mqtt://invented.invalid' },
   }), { mode: 0o600 });
   const config = loadConfig({ STMQ_CONFIG: path, STMQ_DATA_DIR: directory }, directory);
   const store = new Store(config.dbPath);

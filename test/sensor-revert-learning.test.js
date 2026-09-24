@@ -5,8 +5,9 @@ import { restoreAdaptiveCheckpoint } from '../src/control/adaptive-learning.js';
 import { addSensorChange, revertSensorChange, sensorChangesView } from '../src/app/sensor-changes.js';
 import { sensorBoundaries, sensorLearningContext } from '../src/app/sensor-inputs.js';
 import { originalSensorSample } from '../src/app/sensor-samples.js';
-import { appendLearningRecord, applyLearningRecord, committedLearningSample, recordLearningContext,
-  replayLearningJournal, LEARNING_ALGORITHM } from '../src/app/committed-learning.js';
+import { applyLearningRecord, committedLearningSample, recordLearningContext,
+  replayLearningJournal, LEARNING_ALGORITHM} from '../src/app/committed-learning.js';
+import { appendLearningRecord } from './helpers/home-learning-fixture.js';
 
 const start = Date.parse('2026-09-13T00:00:00Z'), M = 60_000, W = 15 * M;
 const config = { indoorSensorWeights: { indoor_temperature: 1, bedroom_temperature: 1 } };
@@ -137,5 +138,5 @@ test('correction retries are idempotent, source-scoped and cannot reinterpret an
   const view = sensorChangesView(store, 'mqtt', { now: start + 10 * W, config });
   assert.equal(view.events.find(row => row.id === reset.id).revertedAt, first.revertedAt);
   assert.equal(view.events.find(row => row.id === archived).canRevert, false);
-  assert.equal(LEARNING_ALGORITHM, 'committed-house-v11-preheat-recovery');
+  assert.equal(LEARNING_ALGORITHM, 'committed-house-v12-passive-thermal');
 });

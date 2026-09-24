@@ -1,105 +1,26 @@
 import { DatabaseSync, backup as sqliteBackup } from 'node:sqlite';
-import { mkdirSync, existsSync, openSync, closeSync } from 'node:fs';
+import { mkdirSync, existsSync, openSync, closeSync, linkSync, rmSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
-export const SCHEMA_VERSION = 12;
+import { CURRENT_SCHEMA, SCHEMA_VERSION } from './schema.js';
+export { SCHEMA_VERSION } from './schema.js';
 const MAX_LIMIT = 5000;
-const schema = `
-CREATE TABLE state (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL);
-CREATE TABLE events (id INTEGER PRIMARY KEY, type TEXT NOT NULL, payload TEXT NOT NULL, at INTEGER NOT NULL);
-CREATE TABLE imports (
-  id INTEGER PRIMARY KEY, kind TEXT NOT NULL, sha256 TEXT NOT NULL, path TEXT NOT NULL,
-  status TEXT NOT NULL, started_at INTEGER NOT NULL, completed_at INTEGER,
-  row_count INTEGER NOT NULL DEFAULT 0, rejected_count INTEGER NOT NULL DEFAULT 0,
-  UNIQUE(kind, sha256)
-);
-CREATE TABLE import_rows (
-  import_id INTEGER NOT NULL REFERENCES imports(id), row_number INTEGER NOT NULL,
-  source_time INTEGER, raw TEXT NOT NULL, quality TEXT NOT NULL,
-  PRIMARY KEY(import_id, row_number)
-) WITHOUT ROWID;
-CREATE TABLE observations (
-  id INTEGER PRIMARY KEY, source TEXT NOT NULL, device TEXT NOT NULL, signal TEXT NOT NULL,
-  value REAL, unit TEXT NOT NULL, source_time INTEGER, received_at INTEGER NOT NULL,
-  quality TEXT NOT NULL, raw TEXT, import_id INTEGER REFERENCES imports(id), row_number INTEGER
-);
-CREATE INDEX observations_signal_time ON observations(signal, source_time, id);
-CREATE INDEX observations_time ON observations(source_time, id);
-CREATE INDEX observations_signal_id ON observations(signal, id);
-CREATE TABLE annotations (
-  id INTEGER PRIMARY KEY, kind TEXT NOT NULL, start_at INTEGER NOT NULL, end_at INTEGER,
-  note TEXT NOT NULL, boundary_confidence TEXT NOT NULL, exclude_training INTEGER NOT NULL,
-  provenance TEXT NOT NULL, created_at INTEGER NOT NULL, unique_key TEXT UNIQUE
-);
-CREATE INDEX annotations_time ON annotations(start_at, end_at);
-CREATE TABLE counters (
-  id INTEGER PRIMARY KEY, device TEXT NOT NULL, signal TEXT NOT NULL, value REAL NOT NULL,
-  unit TEXT NOT NULL, observed_date TEXT NOT NULL, source_time INTEGER,
-  note TEXT NOT NULL, provenance TEXT NOT NULL, created_at INTEGER NOT NULL,
-  UNIQUE(device, signal, observed_date, provenance)
-);`;
 
-const snapshotsSchema = `
-CREATE TABLE provider_snapshots (
-  id INTEGER PRIMARY KEY, kind TEXT NOT NULL, source TEXT NOT NULL,
-  issued_at INTEGER, fetched_at INTEGER NOT NULL, payload TEXT NOT NULL, digest TEXT NOT NULL,
-  UNIQUE(kind, source, fetched_at, digest)
-);
-CREATE INDEX snapshots_kind_time ON provider_snapshots(kind, fetched_at, id);`;
-
-// Phase event timestamps can differ within one complete Easee API response.
-// Chart queries recover the other phases without rescanning unrelated history.
-const easeeAcquisitionIndex = `
-CREATE INDEX observations_easee_acquisition ON observations(device, received_at, id)
-WHERE source='easee' AND import_id IS NULL;`;
-
-const learningSchema = `
-CREATE TABLE learning_samples (
- id INTEGER PRIMARY KEY, input TEXT NOT NULL, at INTEGER NOT NULL, payload TEXT NOT NULL,
- UNIQUE(input, at));
-CREATE INDEX learning_samples_input_at ON learning_samples(input, at);
-CREATE TABLE learning_cycles (
- id TEXT PRIMARY KEY, input TEXT NOT NULL, started_at INTEGER NOT NULL, ended_at INTEGER,
- status TEXT NOT NULL, payload TEXT NOT NULL);
-CREATE INDEX learning_cycles_input_at ON learning_cycles(input, started_at);`;
-
-// Existing payloads remain byte-for-byte intact. New fetches reference immutable
-// content; the compatibility view keeps historical SQL readers working.
-const recorderSchema = `
-ALTER TABLE provider_snapshots RENAME TO provider_snapshot_fetches;
-ALTER TABLE provider_snapshot_fetches ADD COLUMN content_id INTEGER REFERENCES provider_snapshot_contents(id);
-ALTER TABLE provider_snapshot_fetches ADD COLUMN fetch_metadata TEXT;
-CREATE INDEX snapshots_content_fetch ON provider_snapshot_fetches(content_id,kind,source,fetched_at);
-CREATE TABLE provider_snapshot_contents (
- id INTEGER PRIMARY KEY, digest TEXT NOT NULL UNIQUE, payload TEXT NOT NULL);
-CREATE VIEW provider_snapshots AS SELECT f.id,f.kind,f.source,f.issued_at,f.fetched_at,
- COALESCE(c.payload,f.payload) AS payload,f.digest
- FROM provider_snapshot_fetches f LEFT JOIN provider_snapshot_contents c ON c.id=f.content_id;
-CREATE TABLE recorder_coverage (
- id INTEGER PRIMARY KEY, source TEXT NOT NULL, device TEXT NOT NULL, signal TEXT NOT NULL,
- status TEXT NOT NULL, start_at INTEGER NOT NULL, end_at INTEGER NOT NULL,
- source_time INTEGER, observation_id INTEGER REFERENCES observations(id), samples INTEGER NOT NULL);
-CREATE INDEX recorder_coverage_signal_time ON recorder_coverage(signal,end_at,id);
-CREATE INDEX recorder_coverage_stream ON recorder_coverage(source,device,signal,id);
-CREATE INDEX recorder_coverage_outages ON recorder_coverage(start_at,id) WHERE status<>'fresh';
-CREATE TABLE recorder_metrics (
- key TEXT NOT NULL,bucket INTEGER NOT NULL,polls INTEGER NOT NULL,records INTEGER NOT NULL,
- bytes INTEGER NOT NULL,error_squared_time REAL NOT NULL,error_time REAL NOT NULL,
- stale INTEGER NOT NULL,failed INTEGER NOT NULL,unavailable INTEGER NOT NULL,
- PRIMARY KEY(key,bucket)) WITHOUT ROWID;
-CREATE INDEX recorder_metrics_bucket ON recorder_metrics(bucket);
-CREATE TABLE energy_audits (
- id INTEGER PRIMARY KEY, source TEXT NOT NULL, device TEXT NOT NULL, signal TEXT NOT NULL,
- source_time INTEGER NOT NULL, received_at INTEGER NOT NULL, value REAL NOT NULL,
- quality TEXT NOT NULL, comparison TEXT,
- UNIQUE(source,device,signal,source_time,value));
-CREATE INDEX energy_audits_device_time ON energy_audits(device,source_time,id);
-CREATE TABLE learning_journal (
- id INTEGER PRIMARY KEY, input TEXT NOT NULL, key TEXT NOT NULL, kind TEXT NOT NULL,
- at INTEGER NOT NULL, algorithm_version TEXT NOT NULL, config_version TEXT,
- forecast_version TEXT, payload TEXT NOT NULL, UNIQUE(input,key));
-CREATE INDEX learning_journal_input_id ON learning_journal(input,id);`;
+// Validate the complete structural contract before any writable pragma or DDL.
+// The reference is made from the same single bootstrap definition, not migrations.
+const schemaObjects = db => db.prepare("SELECT type,name,sql FROM sqlite_schema WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' ORDER BY type,name")
+  .all().map(({type,name,sql}) => [type,name,sql.replace(/\s+/g,' ').trim()]);
+const reference = new DatabaseSync(':memory:');
+reference.exec(CURRENT_SCHEMA);
+const expectedStructure = JSON.stringify(schemaObjects(reference));
+reference.close();
+export function validateCurrentDatabase(db) {
+  const version = db.prepare('PRAGMA user_version').get().user_version;
+  if (version !== SCHEMA_VERSION) throw new Error(`Unsupported database schema ${version}; this application requires schema ${SCHEMA_VERSION}. Use a new empty database and explicitly import v0.7.5 CSV files. The existing database was not changed.`);
+  if (JSON.stringify(schemaObjects(db)) !== expectedStructure) throw new Error('Malformed current database schema; use an intact same-version backup or a new empty database. The existing database was not changed.');
+  if (db.prepare('PRAGMA foreign_key_check').get()) throw new Error('Database contains dangling references; restore an intact same-version backup.');
+}
 
 // Fetch timestamps describe acquisition, not forecast content. Keep them in a
 // small path map so mixed-source forecasts retain each source's original age.
@@ -108,7 +29,7 @@ function snapshotContent(value, metadata, path = []) {
   if (!value || typeof value !== 'object') return value;
   const result = {};
   for (const key of Object.keys(value).sort()) {
-    if (key === 'fetchedAt' || key === 'snapshotId' || key === 'acquisition') metadata.push([[...path, key], value[key]]);
+    if (key === 'fetchedAt' || key === 'requestStartedAt' || key === 'snapshotId' || key === 'acquisition') metadata.push([[...path, key], value[key]]);
     else result[key] = snapshotContent(value[key], metadata, [...path, key]);
   }
   return result;
@@ -161,76 +82,14 @@ export class Store {
     try {
       this.db.exec('PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
       const version = this.db.prepare('PRAGMA user_version').get().user_version;
-      if (readOnly) {
-        if (version !== SCHEMA_VERSION) throw new Error('Replica database schema does not match this application version');
-        this.db.exec('PRAGMA query_only = ON;');
-        return;
-      }
-      if (version > SCHEMA_VERSION) throw new Error(`Database schema ${version} is newer than supported version ${SCHEMA_VERSION}`);
-      if (version < SCHEMA_VERSION) this.transaction(() => {
-        if (version === 0) this.db.exec(schema);
-        if (version < 2) this.db.exec(snapshotsSchema);
-        if (version < 3) this.db.exec(easeeAcquisitionIndex);
-        if (version < 4) this.db.exec(learningSchema);
-        if (version < 5) this.db.exec(recorderSchema);
-        if (version < 7) this.db.exec('CREATE INDEX IF NOT EXISTS events_type_time ON events(type,at,id)');
-        // Chart results are reconstructed from original history. Discard the
-        // obsolete display caches; their pages become available for reuse.
-        if (version < 8) this.db.exec('DROP TABLE IF EXISTS chart_rollups; DROP TABLE IF EXISTS chart_rollup_meta;');
-        if (version < 9) this.db.exec(`CREATE INDEX IF NOT EXISTS learning_journal_context_time ON learning_journal(input,kind,at,id);
-          CREATE INDEX IF NOT EXISTS learning_journal_algorithm ON learning_journal(input,algorithm_version,id);`);
-        if (version < 10) this.db.exec(`CREATE TABLE fireplace_events (
-          id INTEGER PRIMARY KEY, input TEXT NOT NULL, request_id TEXT NOT NULL,
-          at INTEGER NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('load','remove')),
-          kg INTEGER, target_id INTEGER REFERENCES fireplace_events(id),
-          UNIQUE(input,request_id),
-          CHECK((kind='load' AND kg BETWEEN 2 AND 10 AND target_id IS NULL)
-            OR (kind='remove' AND kg IS NULL AND target_id IS NOT NULL)));
-          CREATE INDEX fireplace_events_input_time ON fireplace_events(input,at,id);`);
-        if (version < 11) this.db.exec(`
-          CREATE TABLE learning_epochs (input TEXT PRIMARY KEY, epoch TEXT NOT NULL);
-          CREATE TABLE learning_journal_entries (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, epoch TEXT NOT NULL,
-            input TEXT NOT NULL, key TEXT NOT NULL, kind TEXT NOT NULL, at INTEGER NOT NULL,
-            algorithm_version TEXT NOT NULL, config_version TEXT, forecast_version TEXT,
-            payload TEXT, source_entry_id INTEGER REFERENCES learning_journal_entries(id),
-            CHECK(payload IS NOT NULL OR source_entry_id IS NOT NULL), UNIQUE(epoch,input,key));
-          INSERT INTO learning_journal_entries(id,epoch,input,key,kind,at,algorithm_version,config_version,forecast_version,payload)
-            SELECT id,'original',input,key,kind,at,
-            algorithm_version,config_version,forecast_version,payload FROM learning_journal;
-          DROP TABLE learning_journal;
-          CREATE INDEX learning_entries_epoch_input ON learning_journal_entries(epoch,input,id);
-          CREATE INDEX learning_entries_time ON learning_journal_entries(epoch,input,kind,at,id);
-          CREATE VIEW learning_journal_all AS SELECT e.id,e.epoch,e.input,e.key,e.kind,e.at,e.algorithm_version,
-            COALESCE(e.config_version,s.config_version) AS config_version,
-            COALESCE(e.forecast_version,s.forecast_version) AS forecast_version,
-            COALESCE(e.payload,s.payload) AS payload,e.source_entry_id
-            FROM learning_journal_entries e LEFT JOIN learning_journal_entries s ON s.id=e.source_entry_id;
-          CREATE VIEW learning_journal AS SELECT id,input,key,kind,at,algorithm_version,
-            config_version,forecast_version,payload FROM learning_journal_all e
-            WHERE epoch=COALESCE((SELECT epoch FROM learning_epochs WHERE input=e.input),'original');
-          CREATE TABLE recovery_runs (id TEXT PRIMARY KEY, input TEXT NOT NULL, donor_digest TEXT NOT NULL,
-            previous_epoch TEXT NOT NULL, epoch TEXT NOT NULL, status TEXT NOT NULL,
-            started_at INTEGER NOT NULL, completed_at INTEGER, report TEXT,
-            previous_fireplace_revision INTEGER, source_head INTEGER, fireplace_revision INTEGER);
-          CREATE TABLE recovery_provenance (donor_digest TEXT NOT NULL, table_name TEXT NOT NULL,
-            donor_id TEXT NOT NULL, target_id TEXT, disposition TEXT NOT NULL,
-            PRIMARY KEY(donor_digest,table_name,donor_id)) WITHOUT ROWID;
-          CREATE INDEX recovery_provenance_target ON recovery_provenance(table_name,target_id);
-          CREATE INDEX observations_recovery_energy ON observations(device,signal,
-            CASE WHEN json_valid(raw) THEN json_extract(raw,'$.intervalEnd') END);
-        `);
-        // A new learning algorithm starts after archived journal entries. Its
-        // first/current-page lookups must not rescan that archive while a
-        // history batch holds SQLite's single writer lock.
-        if (version < 12) this.db.exec(`CREATE INDEX learning_entries_algorithm
-          ON learning_journal_entries(epoch,input,algorithm_version,id)`);
+      const empty = version === 0 && this.db.prepare("SELECT COUNT(*) AS n FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'").get().n === 0;
+      if (!readOnly && empty) this.transaction(() => {
+        this.db.exec(CURRENT_SCHEMA);
         this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
       });
+      else validateCurrentDatabase(this.db);
+      if (readOnly) { this.db.exec('PRAGMA query_only = ON;'); return; }
       this.db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;');
-      // Experimental charger counter history is superseded by one finalized
-      // session reference. Keep property checks, source observations and imports.
-      this.db.exec("DELETE FROM energy_audits WHERE signal IN ('ev1_lifetime_energy_counter','ev1_session_energy_counter')");
       this.insertObservation = this.db.prepare(`INSERT INTO observations
         (source, device, signal, value, unit, source_time, received_at, quality, raw, import_id, row_number)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
@@ -250,7 +109,10 @@ export class Store {
         const result = fn();
         if (result && typeof result.then === 'function') throw new TypeError('SQLite transaction callback must be synchronous');
         this.db.exec(`RELEASE ${savepoint}`); return result;
-      } catch (error) { this.db.exec(`ROLLBACK TO ${savepoint}; RELEASE ${savepoint}`); throw error; }
+      } catch (error) {
+        try { this.db.exec(`ROLLBACK TO ${savepoint}; RELEASE ${savepoint}`); } catch (cleanupError) { if (error && typeof error === 'object') error.cleanupError = cleanupError; }
+        throw error;
+      }
     }
     this.db.exec('BEGIN IMMEDIATE');
     this.transactionDepth = 1; this.savepointSequence ??= 0;
@@ -259,7 +121,10 @@ export class Store {
       if (result && typeof result.then === 'function') throw new TypeError('SQLite transaction callback must be synchronous');
       this.db.exec('COMMIT');
       return result;
-    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+    } catch (error) {
+      try { this.db.exec('ROLLBACK'); } catch (cleanupError) { if (error && typeof error === 'object') error.cleanupError = cleanupError; }
+      throw error;
+    }
     finally { this.transactionDepth = 0; }
   }
 
@@ -272,18 +137,6 @@ export class Store {
     this.db.prepare(`INSERT INTO state (key, value, updated_at) VALUES (?, ?, ?)
       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at WHERE state.value <> excluded.value`)
       .run(label(key, 'key'), json(value), Date.now());
-  }
-
-  learningSample(input, sample) {
-    label(input, 'input'); instant(sample.timestamp, 'sample timestamp');
-    return this.db.prepare('INSERT INTO learning_samples(input,at,payload) VALUES(?,?,?) ON CONFLICT(input,at) DO NOTHING')
-      .run(input, sample.timestamp, json(sample)).changes > 0;
-  }
-
-  learningSamples({ input, after = 0, limit = 256 } = {}) {
-    return this.db.prepare('SELECT id,payload FROM learning_samples WHERE input=? AND id>? ORDER BY id LIMIT ?')
-      .all(label(input, 'input'), integer(after, 'after'), limitValue(limit))
-      .map(row => ({ id: row.id, ...JSON.parse(row.payload) }));
   }
 
   appendLearningJournal(input, { kind, at, algorithmVersion, configVersion = null, forecastVersion = null, payload, key }) {
@@ -433,9 +286,9 @@ export class Store {
     return this.transaction(() => {
       this.db.prepare('INSERT INTO provider_snapshot_contents(digest,payload) VALUES(?,?) ON CONFLICT(digest) DO NOTHING').run(contentDigest,encoded);
       const contentId = this.db.prepare('SELECT id FROM provider_snapshot_contents WHERE digest=?').get(contentDigest).id;
-      this.db.prepare(`INSERT INTO provider_snapshot_fetches (kind,source,issued_at,fetched_at,payload,digest,content_id,fetch_metadata)
-        VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(kind,source,fetched_at,digest) DO NOTHING`)
-        .run(kind,source,issuedAt,fetchedAt,'',digest,contentId,fetchMetadata);
+      this.db.prepare(`INSERT INTO provider_snapshot_fetches (kind,source,issued_at,fetched_at,digest,content_id,fetch_metadata)
+        VALUES (?,?,?,?,?,?,?) ON CONFLICT(kind,source,fetched_at,digest) DO NOTHING`)
+        .run(kind,source,issuedAt,fetchedAt,digest,contentId,fetchMetadata);
       return this.db.prepare('SELECT id FROM provider_snapshot_fetches WHERE kind=? AND source=? AND fetched_at=? AND digest=?').get(kind,source,fetchedAt,digest).id;
     });
   }
@@ -455,7 +308,7 @@ export class Store {
     const row = this.db.prepare(`SELECT v.*,f.fetch_metadata,f.content_id FROM provider_snapshots v
       JOIN provider_snapshot_fetches f ON f.id=v.id WHERE v.id=?`).get(integer(id,'snapshot id'));
     if (!row) return null;
-    const first = row.content_id === null ? row.fetched_at : this.db.prepare(`SELECT MIN(fetched_at) AS at
+    const first = this.db.prepare(`SELECT MIN(fetched_at) AS at
       FROM provider_snapshot_fetches WHERE content_id=? AND kind=? AND source=?`).get(row.content_id,row.kind,row.source).at;
     return {id:row.id,kind:row.kind,source:row.source,issuedAt:row.issued_at,fetchedAt:row.fetched_at,
       contentId:row.content_id,contentFirstFetchedAt:first,digest:row.digest,payload:restoreSnapshot(row.payload,row.fetch_metadata)};
@@ -516,25 +369,25 @@ export class Store {
 
   /** Original historical episodes in ingestion order; callers reject non-increasing time. */
   trainingRows({ afterId = 0, limit = 256 } = {}) {
-    return this.db.prepare(`SELECT o.id, o.source_time, o.value, o.quality, r.raw,
+    return this.db.prepare(`SELECT o.id, o.source_time, o.value, o.quality, r.canonical,
       EXISTS(SELECT 1 FROM annotations a WHERE a.exclude_training = 1 AND a.start_at <= o.source_time
         AND (a.end_at IS NULL OR a.end_at > o.source_time)) AS annotated
       FROM observations o JOIN imports i ON i.id = o.import_id
       JOIN import_rows r ON r.import_id = o.import_id AND r.row_number = o.row_number
       WHERE o.id > ? AND o.signal = 'indoor_temperature' AND i.kind = 'stmq' AND i.status = 'complete'
       ORDER BY o.id LIMIT ?`).all(integer(afterId, 'afterId'), limitValue(limit)).map(row => {
-      // Imports validate numeric-only source columns, including optionally quoted scalars.
-      const cells = row.raw.split(',').map(cell => cell.replace(/^"|"$/g, '').trim());
-      const numeric = cell => cell !== '' && Number.isFinite(Number(cell)) ? Number(cell) : null;
-      const heat = numeric(cells[2]); const outdoorC = numeric(cells[5]);
-      const quality = JSON.parse(row.quality);
+      const canonical = JSON.parse(row.canonical);
+      const heatInput = canonical.find(o => o.signal === 'requested_heat_mode');
+      const outdoorInput = canonical.find(o => o.signal === 'outdoor_temperature');
+      if (!heatInput || !outdoorInput) throw new Error('Malformed canonical CSV input');
+      const heat = heatInput.value, outdoorC = outdoorInput.value;
+      const quality = [...JSON.parse(row.quality), ...heatInput.quality, ...outdoorInput.quality];
       if (![0, 15, 60].includes(heat)) quality.push('unknown_legacy_command');
       if (outdoorC === null) quality.push('missing_outdoor');
-      if (outdoorC !== null && (outdoorC < -60 || outdoorC > 70)) quality.push('implausible_temperature');
       const absent = row.annotated || quality.includes('absence_heating_off_approximate');
       if (row.annotated) quality.push('excluded_occupied_training');
       return { id: row.id, at: row.source_time, indoorC: row.value, outdoorC,
-        action: heat === 0 ? 'reduction' : 'normal', quality: [...new Set(quality)],
+        action: heat === 0 ? 'reduction' : [15, 60].includes(heat) ? 'normal' : null, quality: [...new Set(quality)],
         regime: absent ? 'absence_uncertain' : 'occupied' };
     });
   }
@@ -621,12 +474,18 @@ export class Store {
     const check = new DatabaseSync(resolve(source), { readOnly: true });
     try {
       if (check.prepare('PRAGMA quick_check').get().quick_check !== 'ok') throw new Error('Backup database failed integrity check');
-      const version = check.prepare('PRAGMA user_version').get().user_version;
-      if (version < 1 || version > SCHEMA_VERSION) throw new Error('Unsupported backup schema');
-      check.prepare('SELECT key, value FROM state LIMIT 1').all();
+      validateCurrentDatabase(check);
       mkdirSync(dirname(path), { recursive: true });
-      closeSync(openSync(path, 'wx', 0o600));
-      await sqliteBackup(check, path);
+      const staging = `${path}.restore-${randomUUID()}`;
+      try {
+        closeSync(openSync(staging, 'wx', 0o600));
+        await sqliteBackup(check, staging);
+        const copied = new DatabaseSync(staging, { readOnly: true });
+        try { validateCurrentDatabase(copied); }
+        finally { copied.close(); }
+        // Atomic no-overwrite publication. A failed copy never becomes the destination.
+        linkSync(staging, path);
+      } finally { rmSync(staging, { force: true }); }
     } finally { check.close(); }
     return path;
   }

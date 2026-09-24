@@ -1,4 +1,4 @@
-import { mergeChargingSettings, migrateChargingSettings, resolveChargingDeadline } from './settings.js';
+import { mergeChargingSettings, chargingSettings, resolveChargingDeadline } from './settings.js';
 import { acceptVehicleReading, connectionEvidenceStart, matchBmwSession, matchBmwControlledPause, pendingBmwControlledPause, pendingBmwSession, bmwDisconnectEvent, bmwReconnectEvent } from './vehicle.js';
 import { chargingConfiguration } from './config.js';
 import { TIME_ZONE } from '../domain/prices.js';
@@ -6,7 +6,7 @@ import { CHARGER_DEFINITIONS, buildCharger } from './model.js';
 import { planChargers, forecastFixedPlan } from './planner.js';
 import { createChargingController } from './controller.js';
 import { easeeChargerTelemetry, effectiveScheduleFingerprint } from './easee.js';
-import { teslamateChargerTelemetry } from './teslamate.js';
+import { teslamateVehicleTelemetry } from './teslamate.js';
 import { forecastHousehold, householdReferenceSummary } from './history.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { createHouseholdForecastService } from './history-service.js';
@@ -16,9 +16,11 @@ import { restoreChargingProgress, updateChargingProgress } from './progress.js';
 import { updateSessionCost } from './session-cost.js';
 import { updateTargetState, targetSelection, selectTargetMode } from './target.js';
 import { acceptEaseeTransition } from './stream-evidence.js';
+import { shellyAssociation } from './shelly-evse.js';
 
 const MINUTE = 60_000;
-const MIN_PRICE_PAUSE_MS = 15 * MINUTE, MIN_PRICE_SAVINGS_CENTS = 1;
+const MIN_PRICE_PAUSE_MS = 15 * MINUTE, MIN_PRICE_SAVINGS_CENTS = 0;
+const copyRequest = value => structuredClone(value);
 const object = input => input && typeof input === 'object' && !Array.isArray(input);
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const priceSnapshot = prices => prices.map(row => [row.start, row.end,
@@ -58,29 +60,32 @@ export class ChargingRuntime {
     Object.assign(this, { engine, store, config, clock, canControl, definitions });
     this.key = `charging:${config.input}`;
     const saved = store.getState(this.key) ?? {};
-    this.settings = migrateChargingSettings(saved.settings ?? {});
-    this.teslaDisconnectedFromEaseeAt = saved.teslaDisconnectedFromEaseeAt ?? null;
+    if (Object.keys(saved).length && saved.version !== 5) throw new Error('Unsupported charging state; start a fresh development database');
+    this.settings = chargingSettings(saved.settings ?? {});
+    this.revision = saved.revision ?? 0;
     this.configuration = chargingConfiguration(config.charging);
     this.streamAssociation = digest(config.connections?.easee?.charger_id ?? null);
     this.streamPending = new Set(); this.streamPersistencePending = false;
     this.vehicleFeeds = Object.fromEntries(Object.entries(this.configuration.vehicles).map(([id, definition]) => {
       const previous = saved.vehicleFeeds?.[id];
-      const reading = previous?.reading?.association === definition.mqttTopic ? previous.reading : null;
-      return [id, { ...definition, id, mqtt: initialMqtt(),
+      const association = digest([definition.provider, definition.mqttTopic, config.connections?.mqtt?.address, config.connections?.mqtt?.user]);
+      const reading = previous?.reading?.association === association ? previous.reading : null;
+      return [id, { ...definition, id, association, mqtt: initialMqtt(),
         reading, consumedPlugId: reading ? previous?.consumedPlugId ?? null : null,
         consumedChargingId: reading ? previous?.consumedChargingId ?? null : null }];
     }));
-    if (this.configuration.chargers.charger2.mqttTopic) this.vehicleFeeds['legacy-charger2'] = {
-      id: 'legacy-charger2', label: 'Additional vehicle', provider: null,
-      mqttTopic: this.configuration.chargers.charger2.mqttTopic, mqtt: initialMqtt(), reading: null };
     this.chargers = Object.fromEntries(definitions.map(definition => {
-      const previous = saved.chargers?.[definition.id] ?? (definition.id === 'charger1' ? saved : {});
+      const association = definition.id === 'charger1' ? digest(['easee', config.connections?.easee?.charger_id, config.connections?.easee?.equalizer_id])
+        : shellyAssociation(this.configuration.chargers.charger2, config.connections?.mqtt);
+      const previous = saved.chargers?.[definition.id]?.association === association ? saved.chargers[definition.id] : {};
       const streamMatches = previous.streamAssociation === this.streamAssociation;
-      return [definition.id, { definition, plan: previous.plan ?? null,
+      return [definition.id, { definition, association, ownershipAdmitted: saved.chargers?.[definition.id]?.association === association,
+        request: previous.request ?? null, plan: previous.plan ?? null,
         sessionCost: previous.sessionCost ?? null,
         vehicleMatch: previous.vehicleMatch?.id === 'bmw' && !this.vehicleFeeds.bmw.reading
           ? null : previous.vehicleMatch ?? null,
         vehicleEvidence: previous.vehicleEvidence ?? null,
+        vehicleConflict: previous.vehicleConflict ?? null,
         targetState: this.vehicleFeeds.bmw.reading ? previous.targetState ?? null : null,
         vehicleDisconnect: previous.vehicleDisconnect?.source === 'easee-stream'
           ? streamMatches ? previous.vehicleDisconnect : null
@@ -91,7 +96,8 @@ export class ChargingRuntime {
         lastReconcileAt: null }];
     }));
     this.weather = [];
-    this.readEnergy = query => recordedChargingEnergy(this.store, query);
+    this.readEnergy = query => recordedChargingEnergy(this.store, { ...query, device: query.id === 'charger1'
+      ? this.config.connections?.easee?.charger_id ?? null : this.chargers.charger2?.adapter?.association ?? null });
     this.prices = []; this.pricesInitialized = false;
     this.historyService = store.path && store.path !== ':memory:' ? createHouseholdForecastService({ store }) : null;
     this.historyGeneration = 0; this.historyReady = false; this.historyFlights = new Set();
@@ -102,20 +108,17 @@ export class ChargingRuntime {
     if (!record) throw new Error('Unknown charger');
     return record;
   }
-  ownershipKey(id) { return `${this.key}:${id}:ownership`; }
-  savedOwnership(id) {
-    return this.store.getState(this.ownershipKey(id))
-      ?? (id === 'charger1' ? this.store.getState(`${this.key}:ownership`) : null);
-  }
+  ownershipKey(id) { return `${this.key}:${id}:${this.charger(id).association}:ownership`; }
+  savedOwnership(id) { return this.charger(id).ownershipAdmitted ? this.store.getState(this.ownershipKey(id)) ?? null : null; }
   persist() {
     const view = this.status();
     const chargers = Object.fromEntries(Object.entries(this.chargers).map(([id, item]) => [id,
-      { plan: item.plan, progress: item.progress, supplyEstimate: item.supplyEstimate,
-        sessionCost: item.sessionCost, vehicleMatch: item.vehicleMatch, vehicleEvidence: item.vehicleEvidence, targetState: item.targetState, vehicleDisconnect: item.vehicleDisconnect,
+      { association: item.association, request: item.request, plan: item.plan, progress: item.progress, supplyEstimate: item.supplyEstimate,
+        sessionCost: item.sessionCost, vehicleMatch: item.vehicleMatch, vehicleEvidence: item.vehicleEvidence, vehicleConflict: item.vehicleConflict, targetState: item.targetState, vehicleDisconnect: item.vehicleDisconnect,
         streamAssociation: this.streamAssociation, streamEvidence: item.streamEvidence }]));
     const vehicleFeeds = Object.fromEntries(Object.entries(this.vehicleFeeds).map(([id, item]) => [id,
       { reading: item.reading, consumedPlugId: item.consumedPlugId, consumedChargingId: item.consumedChargingId }]));
-    this.store.setState(this.key, { version: 4, settings: this.settings, chargers, vehicleFeeds, teslaDisconnectedFromEaseeAt: this.teslaDisconnectedFromEaseeAt, view });
+    this.store.setState(this.key, { version: 5, revision: this.revision, settings: this.settings, chargers, vehicleFeeds, view });
   }
   mqttRoutes() {
     return Object.values(this.vehicleFeeds).filter(item => item.mqttTopic)
@@ -125,12 +128,13 @@ export class ChargingRuntime {
     return Object.entries(this.chargers).some(([id, item]) => this.settings.chargers[id].enabled
       || item.controller?.status()?.owned || this.savedOwnership(id)?.owned || this.savedOwnership(id)?.pending);
   }
-  canIdentifyVehicle() {
-    const control = this.chargers.charger1?.controller?.status();
-    return Boolean(control?.snapshot?.online && control.snapshot.schedule?.enabled === 'none'
-      && !control.manual && !control.owned && !control.execution && !control.pending
-      && this.settings.chargers.charger1.enabled && control.phase === 'identifying'
-      && Number.isSafeInteger(control.session?.connectedAt) && this.clock() - control.session.connectedAt < 180_000);
+  receiveVehicleBoundary(id, event) {
+    for (const item of Object.values(this.chargers)) if (item.vehicleMatch?.id === id
+      && event.at >= item.vehicleMatch.matchedAt && (event.field === 'plugged_in' && event.value === false
+        || event.field === 'geofence')) {
+      item.vehicleMatch = null; item.vehicleEvidence = null;
+    }
+    this.revision++; this.persist(); this.tick({ force: true });
   }
   setAdapter(id, adapter) {
     const item = this.charger(id);
@@ -144,7 +148,7 @@ export class ChargingRuntime {
       item.adapter = adapter;
       const createController = adapter?.createController ?? createChargingController;
       item.controller = createController({ adapter, initialState: this.savedOwnership(id),
-        saveState: state => this.store.setState(this.ownershipKey(id), state), clock: this.clock,
+        saveState: state => { this.store.setState(this.ownershipKey(id), state); item.ownershipAdmitted = true; }, clock: this.clock,
         canControl: () => {
           const control = item.controller?.status(), boundary = item.vehicleDisconnect;
           return !this.closed && !this.streamPersistencePending && this.canControl()
@@ -155,25 +159,6 @@ export class ChargingRuntime {
         getMaximumAmps: scheduleCeiling,
         getPlan: snapshot => {
           this.updatePlan();
-          const identification = this.engine.chargerIdentification?.status();
-          const vehicle = this.teslaCapture?.snapshot();
-          const control = item.controller?.status();
-          const connectedAt = control?.session?.connectedAt;
-          // Let the existing bounded comparison observe the initial charging
-          // burst. Do not open an existing restriction or prolong manual control.
-          const bmw = this.vehicleFeeds.bmw;
-          const bmwCandidate = bmw?.mqttTopic && bmw.reading?.atHome === true
-            && bmw.reading?.provider === 'bmw-cardata' && bmw.mqtt.subscribed
-            && Number.isSafeInteger(bmw.reading.fields?.atHome?.measuredAt)
-            && this.clock() - bmw.reading.fields.atHome.measuredAt <= 24 * 60 * MINUTE;
-          const teslaCandidate = identification?.enabled && !identification.verdict
-            && identification.phase !== 'inconclusive' && vehicle?.assignment === 'auto'
-            && vehicle.connected && vehicle.atHome && vehicle.pluggedIn;
-          if (id === 'charger1' && !item.vehicleMatch && (teslaCandidate || bmwCandidate)
-            && snapshot?.pluggedIn === true && snapshot.schedule?.enabled === 'none'
-            && !control?.manual && !control?.pending && !control?.owned && !control?.execution
-            && Number.isSafeInteger(connectedAt) && this.clock() - connectedAt < 180_000)
-            return { state: 'identifying', startAt: null };
           return this.pricesInitialized ? item.plan : null;
         } });
       item.lastReconcileAt = null;
@@ -200,7 +185,6 @@ export class ChargingRuntime {
     const boundary = accepted.evidence.boundary;
     if (boundary && (!item.vehicleDisconnect || boundary.measuredAt >= item.vehicleDisconnect.measuredAt)) {
       if (item.vehicleDisconnect?.readingId !== boundary.readingId) {
-        if (item.vehicleMatch?.id === 'tesla') this.teslaDisconnectedFromEaseeAt = boundary.receivedAt;
         item.vehicleMatch = null; item.vehicleEvidence = null; item.targetState = null;
         item.plan = null; item.progress = null; item.sessionCost = null; item.wasPluggedIn = false;
       }
@@ -238,7 +222,7 @@ export class ChargingRuntime {
     this.streamTimer.unref?.();
   }
   setMqttStatus(status, id) {
-    for (const item of id ? [this.vehicleFeeds[id] ?? this.vehicleFeeds[id === 'charger1' ? 'bmw' : 'legacy-charger2']].filter(Boolean) : Object.values(this.vehicleFeeds)) {
+    for (const item of id ? [this.vehicleFeeds[id]].filter(Boolean) : Object.values(this.vehicleFeeds)) {
       const brokerConnected = status.brokerConnected ?? status.connected ?? item.mqtt.brokerConnected;
       const subscribed = brokerConnected && (status.subscribed ?? item.mqtt.subscribed);
       item.mqtt = { ...item.mqtt, ...status, connected: brokerConnected, brokerConnected, subscribed,
@@ -251,18 +235,19 @@ export class ChargingRuntime {
     const route = this.mqttRoutes().find(item => item.topic === topic);
     if (!route) return false;
     const item = this.vehicleFeeds[route.id];
+    const previousMqtt = { ...item.mqtt }, previousRevision = this.revision;
     item.mqtt.lastMessageAt = now;
     if (packet.retain) item.mqtt.lastRetainedAt = now; else item.mqtt.lastLiveAt = now;
     if (Buffer.byteLength(payload) > 4096) { item.mqtt.invalidReason = 'invalid-payload'; return true; }
-    const result = acceptVehicleReading(item.reading, payload, { now, association: route.topic,
+    const result = acceptVehicleReading(item.reading, payload, { now, association: item.association,
       retained: packet.retain === true, provider: item.provider });
     const valid = result.accepted || ['duplicate-reading', 'older-reading', 'unordered-reading'].includes(result.reason);
     item.mqtt.invalidReason = valid ? null : result.reason;
     if (valid) item.mqtt.lastValidAt = now;
     if (result.accepted) {
-      const previous = item.reading, previousTeslaDisconnect = this.teslaDisconnectedFromEaseeAt;
+      const previous = item.reading;
       const matches = Object.fromEntries(Object.entries(this.chargers).map(([id, charger]) => [id,
-        structuredClone({ vehicleMatch: charger.vehicleMatch, vehicleEvidence: charger.vehicleEvidence, targetState: charger.targetState, vehicleDisconnect: charger.vehicleDisconnect })]));
+        structuredClone({ vehicleMatch: charger.vehicleMatch, vehicleEvidence: charger.vehicleEvidence, vehicleConflict: charger.vehicleConflict, targetState: charger.targetState, vehicleDisconnect: charger.vehicleDisconnect })]));
       const consumed = Object.fromEntries(Object.entries(this.vehicleFeeds).map(([id, feed]) => [id, { consumedPlugId: feed.consumedPlugId, consumedChargingId: feed.consumedChargingId }]));
       const easee = this.chargers.charger1;
       const boundary = route.id === 'bmw' ? bmwDisconnectEvent(previous, result.reading, {
@@ -278,14 +263,16 @@ export class ChargingRuntime {
           easee.vehicleDisconnect = boundary;
           easee.plan = null; easee.progress = null; easee.sessionCost = null; easee.wasPluggedIn = false;
         }
-        const charger = this.chargers.charger1, session = charger?.controller?.status()?.session;
-        if (route.id === 'bmw' && telemetry.charger1?.connected?.value !== false
-          && Number.isSafeInteger(session?.connectedAt)) charger.targetState = updateTargetState(charger.targetState, {
-          connectedAt: session.connectedAt, evidenceStart: connectionEvidenceStart(session.connectedAt, session.lastDisconnectedAt),
-          reading: result.reading, now, live: packet.retain !== true });
+        for (const [id, charger] of Object.entries(this.chargers)) {
+          const session = charger.controller?.status()?.session;
+          if (route.id === 'bmw' && telemetry[id]?.connected?.value !== false && Number.isSafeInteger(session?.connectedAt))
+            charger.targetState = updateTargetState(charger.targetState, {
+              connectedAt: session.connectedAt, evidenceStart: connectionEvidenceStart(session.connectedAt, session.lastDisconnectedAt),
+              reading: result.reading, now, live: packet.retain !== true });
+        }
         this.persist();
       } catch (error) {
-        item.reading = previous; this.teslaDisconnectedFromEaseeAt = previousTeslaDisconnect;
+        this.revision = previousRevision; item.mqtt = previousMqtt; item.reading = previous;
         for (const [id, state] of Object.entries(matches)) Object.assign(this.chargers[id], state);
         if (episode) Object.assign(easee, episode);
         for (const [id, value] of Object.entries(consumed)) Object.assign(this.vehicleFeeds[id], value);
@@ -299,7 +286,7 @@ export class ChargingRuntime {
     return true;
   }
   telemetry(now) {
-    const result = {};
+    const result = {}, candidates = {}, tesla = this.teslaCapture?.snapshot() ?? {}, bmw = this.vehicleFeeds.bmw;
     for (const [id, item] of Object.entries(this.chargers)) {
       const control = item.controller?.status(), snapshot = control?.snapshot;
       const normalize = item.adapter?.normalize ?? (item.definition.provider === 'easee' ? easeeChargerTelemetry : null);
@@ -310,127 +297,112 @@ export class ChargingRuntime {
       }
       if (item.adapter?.capabilities) result[id].capabilities = { ...result[id].capabilities, ...item.adapter.capabilities };
       if (result[id].scheduledStartAt?.available && Number.isSafeInteger(control?.owned?.startAt)
-        && (control.owned.activeFingerprint && snapshot?.schedule
-          ? control.owned.activeFingerprint === effectiveScheduleFingerprint(snapshot.schedule)
-          : control.owned.fingerprint === snapshot?.fingerprint)) {
-        // A native local clock cannot roll our confirmed one-off occurrence to
-        // tomorrow just because the release time has passed.
+        && control.owned.activeFingerprint === effectiveScheduleFingerprint(snapshot.schedule))
         result[id].scheduledStartAt = { ...result[id].scheduledStartAt, value: control.owned.startAt };
-      }
-    }
-    const tesla = this.teslaCapture?.snapshot() ?? {};
-    const easee = this.chargers.charger1, control = easee?.controller?.status();
-    // Until the controller consumes a saved unplug, its latest snapshot may
-    // still describe the old car. Never attach vehicle values to that episode.
-    const pendingStreamBoundary = easee?.vehicleDisconnect?.source === 'easee-stream'
-      && (control?.session?.connectedAt === easee.vehicleDisconnect.endedConnectedAt
-        || control?.vehicleDisconnect?.awaitingConnection);
-    if (pendingStreamBoundary && result.charger1) result.charger1.connected = {
-      value: false, available: true, source: 'easee-stream', measuredAt: easee.vehicleDisconnect.measuredAt };
-    const connected = result.charger1?.connected?.value;
-    const connectedAt = control?.session?.connectedAt;
-    const bmw = this.vehicleFeeds.bmw;
-    const identification = this.engine.chargerIdentification?.status();
-    if (easee) {
-      if (connected === false) {
-        if (easee.vehicleMatch?.id === 'tesla') this.teslaDisconnectedFromEaseeAt = now;
-        easee.vehicleMatch = null; easee.vehicleEvidence = null;
-      }
-      else if (connected === true && Number.isSafeInteger(connectedAt)) {
-        if (easee.vehicleMatch?.connectedAt !== connectedAt) easee.vehicleMatch = null;
-        if (easee.vehicleEvidence?.connectedAt !== connectedAt) easee.vehicleEvidence = { connectedAt, chargingTimes: [], stoppedTimes: [] };
-        const evidenceStart = connectionEvidenceStart(connectedAt, control.session.lastDisconnectedAt);
-        for (const key of ['chargingTimes', 'stoppedTimes']) easee.vehicleEvidence[key] = [...new Set([
-          ...(easee.vehicleEvidence[key] ?? []), ...(easee.streamEvidence?.[key] ?? []),
-        ])].filter(at => Number.isSafeInteger(at) && at >= evidenceStart && at <= now
-          && now - at <= 15 * MINUTE).sort((a, b) => a - b).slice(-32);
-        const sourceAt = result.charger1.charging?.measuredAt ?? control?.snapshot?.readAt;
-        if (result.charger1.charging?.value === true && Number.isSafeInteger(sourceAt) && sourceAt >= evidenceStart
-          && sourceAt <= now && now - sourceAt <= 5 * MINUTE) easee.vehicleEvidence.chargingTimes = [...new Set([
-            ...(easee.vehicleEvidence.chargingTimes ?? []).filter(at => now - at <= 15 * MINUTE), sourceAt])].slice(-32);
-        if (result.charger1.charging?.value === false && easee.vehicleEvidence.chargingTimes.length
-          && Number.isSafeInteger(sourceAt) && sourceAt >= evidenceStart && sourceAt <= now && now - sourceAt <= 5 * MINUTE)
-          easee.vehicleEvidence.stoppedTimes = [...new Set([...(easee.vehicleEvidence.stoppedTimes ?? []).filter(at => now - at <= 15 * MINUTE), sourceAt])].slice(-32);
-        const teslaPositive = tesla.connected && tesla.pluggedIn && tesla.atHome
-          && (tesla.assignment === 'easee' || tesla.assignment === 'auto' && identification?.verdict === 'easee'
-            && Number.isSafeInteger(identification.identifiedAt) && identification.identifiedAt >= connectedAt
-            && identification.identifiedAt > (easee.vehicleEvidence.teslaRejectedAt ?? -Infinity));
-        const bmwPlugMatch = matchBmwSession(bmw?.reading, { connectedAt, lastDisconnectedAt: control.session.lastDisconnectedAt,
-          chargingAt: easee.vehicleEvidence.chargingTimes, stoppedAt: easee.vehicleEvidence.stoppedTimes, now, consumedPlugId: bmw?.consumedPlugId });
-        const owned = control.owned, snapshot = control.snapshot;
-        const bmwPauseMatch = matchBmwControlledPause(bmw?.reading, {
-          connectedAt, lastDisconnectedAt: control.session.lastDisconnectedAt,
-          chargingAt: easee.vehicleEvidence.chargingTimes, stoppedAt: easee.vehicleEvidence.stoppedTimes,
-          now, consumedChargingId: bmw?.consumedChargingId,
-          pause: { ownedCurrent: Boolean(owned && snapshot?.online === true && result.charger1.providerConnected !== false
-            && (owned.activeFingerprint ? owned.activeFingerprint === effectiveScheduleFingerprint(snapshot.schedule)
-              : owned.fingerprint === snapshot.fingerprint)),
-            confirmedAt: owned?.confirmedAt, requestedAt: owned?.requestedAt, startAt: owned?.startAt, manual: Boolean(control.manual),
-            reason: snapshot?.reason, reasonAt: snapshot?.reasonAt, charging: result.charger1.charging?.value } });
-        const bmwPositive = bmwPlugMatch || Boolean(bmwPauseMatch);
-        // Opposing vehicle evidence leaves this generic charger unidentified.
-        if ((teslaPositive || easee.vehicleMatch?.id === 'tesla')
-          && (bmwPositive || easee.vehicleMatch?.id === 'bmw')) { easee.vehicleMatch = null; easee.vehicleEvidence.ambiguous = true; }
-        else if (!easee.vehicleMatch && !easee.vehicleEvidence.ambiguous && (teslaPositive || bmwPositive)) {
-          easee.vehicleMatch = { id: teslaPositive ? 'tesla' : 'bmw', connectedAt, matchedAt: now,
-            ...(bmwPauseMatch && !bmwPlugMatch ? { reason: 'matched-controlled-pause' } : {}) };
-          if (bmwPlugMatch) bmw.consumedPlugId = bmw.reading.fields.pluggedIn.event.readingId;
-          if (bmwPauseMatch) bmw.consumedChargingId = bmwPauseMatch.chargingReadingId;
+      if (item.vehicleDisconnect?.source === 'easee-stream' && (control?.session?.connectedAt === item.vehicleDisconnect.endedConnectedAt || control?.vehicleDisconnect?.awaitingConnection))
+        result[id].connected = { value: false, available: true, source: 'easee-stream', measuredAt: item.vehicleDisconnect.measuredAt };
+      const connected = result[id].connected?.value, session = control?.session;
+      const connectedAt = session?.connectedAt, scope = Number.isSafeInteger(connectedAt) ? `${item.association}:${connectedAt}` : null;
+      if (connected === false || item.vehicleMatch?.scope !== scope) item.vehicleMatch = null;
+      if (connected === false || item.vehicleConflict?.scope !== scope) item.vehicleConflict = null;
+      if (item.vehicleMatch?.id === 'tesla' && (tesla.pluggedIn === false || tesla.atHome === false
+        || (tesla.boundaries ?? []).some(edge => edge.at > item.vehicleMatch.matchedAt
+          && (edge.field === 'plugged_in' && edge.value === false || edge.field === 'geofence')))) item.vehicleMatch = null;
+      if (item.vehicleMatch?.id === 'bmw' && (bmw.reading?.pluggedIn === false || bmw.reading?.atHome === false)) item.vehicleMatch = null;
+      if (item.request?.scope !== scope) item.request = scope ? { scope, sessionId: scope, revision: 1,
+        deadlineAt: resolveChargingDeadline(connectedAt, this.settings.chargers[id].readyBy, TIME_ZONE), overrides: {} } : null;
+      candidates[id] = [];
+      if (connected === true && scope) {
+        if (item.vehicleEvidence?.scope !== scope) item.vehicleEvidence = { scope, chargingTimes: [], stoppedTimes: [] };
+        const evidence = item.vehicleEvidence;
+        for (const key of ['chargingTimes', 'stoppedTimes']) evidence[key] = [...new Set([...evidence[key], ...(item.streamEvidence?.[key] ?? [])])]
+          .filter(at => at >= connectionEvidenceStart(connectedAt, session.lastDisconnectedAt) && at <= now && now - at < 15 * MINUTE).slice(-32);
+        const at = result[id].charging?.measuredAt;
+        if (Number.isSafeInteger(at) && at <= now && now - at < 5 * MINUTE && at >= connectionEvidenceStart(connectedAt, session.lastDisconnectedAt)) {
+          const key = result[id].charging.value ? 'chargingTimes' : 'stoppedTimes';
+          evidence[key] = [...new Set([...evidence[key], at])].filter(time => now - time < 15 * MINUTE).slice(-32);
         }
+        const bmwPause = bmw?.mqtt.subscribed && matchBmwControlledPause(bmw.reading, { connectedAt, lastDisconnectedAt: session.lastDisconnectedAt,
+          chargingAt: evidence.chargingTimes, stoppedAt: evidence.stoppedTimes, now, consumedChargingId: item.vehicleMatch?.id === 'bmw' ? null : bmw.consumedChargingId,
+          pause: { ownedCurrent: Boolean(control.owned && snapshot?.online && control.owned.activeFingerprint === effectiveScheduleFingerprint(snapshot.schedule)),
+            confirmedAt: control.owned?.confirmedAt, requestedAt: control.owned?.requestedAt, startAt: control.owned?.startAt, manual: Boolean(control.manual),
+            reason: snapshot?.reason, reasonAt: snapshot?.reasonAt, charging: result[id].charging?.value } });
+        if (bmwPause) { candidates[id].push('bmw'); evidence.bmwReason = 'matched-controlled-pause'; }
+        if (bmw?.mqtt.subscribed && matchBmwSession(bmw.reading, { connectedAt, lastDisconnectedAt: session.lastDisconnectedAt,
+          chargingAt: evidence.chargingTimes, stoppedAt: evidence.stoppedTimes, now, consumedPlugId: item.vehicleMatch?.id === 'bmw' ? null : bmw.consumedPlugId })) {
+          candidates[id].push('bmw'); evidence.bmwReason = 'matched-physical-session';
+        }
+        const physicalPower = result[id].powerKw, power = tesla.fields?.charger_power;
+        const plug = tesla.fields?.plugged_in;
+        const freshPower = power && !power.retained && power.receivedAt <= now && now - power.receivedAt <= 30000;
+        const physicalAt = physicalPower?.measuredAt;
+        const sameRamp = Number.isSafeInteger(physicalAt) && freshPower && Math.abs(physicalAt - power.receivedAt) <= 10000
+          && evidence.chargingTimes.some(time => Math.abs(time - power.receivedAt) <= 15000);
+        const samePlug = plug && !plug.retained && Math.abs(plug.receivedAt - connectedAt) <= 30000;
+        if (tesla.healthy && tesla.pluggedIn && tesla.atHome && tesla.charging && result[id].charging?.value === true
+          && physicalPower?.available && physicalPower.value > .5 && freshPower
+          && Math.abs(physicalPower.value - tesla.actualPowerKw) <= .75 && (sameRamp || samePlug)) candidates[id].push('tesla');
+        if (item.vehicleMatch?.id === 'tesla' && (tesla.boundaries ?? []).some(edge => edge.at > item.vehicleMatch.matchedAt
+          && (edge.field === 'plugged_in' && edge.value === false || edge.field === 'geofence'))) item.vehicleMatch = null;
+        if (item.vehicleMatch?.id === 'bmw' && (bmw.reading?.pluggedIn === false || bmw.reading?.atHome === false)) item.vehicleMatch = null;
+        if (item.vehicleMatch) candidates[id].push(item.vehicleMatch.id);
+        candidates[id] = [...new Set(candidates[id])];
       }
-      // A gap in charger telemetry preserves identity, but direct vehicle
-      // departure/unplug evidence still ends that association during the gap.
-      if (easee.vehicleMatch?.id === 'tesla' && [
-        [tesla.pluggedIn, tesla.fields?.plugged_in], [tesla.atHome, tesla.fields?.geofence],
-      ].some(([value, field]) => value === false && field?.retained === false && field.receivedAt >= easee.vehicleMatch.matchedAt)) {
-        easee.vehicleMatch = null;
-        if (easee.vehicleEvidence) easee.vehicleEvidence.teslaRejectedAt = now;
-      }
-      if (easee.vehicleMatch?.id === 'bmw' && ['pluggedIn', 'atHome'].some(key => bmw?.reading?.[key] === false))
-        easee.vehicleMatch = null;
-      const match = connected !== false && easee.vehicleMatch?.connectedAt === connectedAt ? easee.vehicleMatch : null;
-      const source = match?.id === 'bmw' ? 'bmw-cardata' : match?.id === 'tesla' ? 'teslamate' : null;
-      const pendingBmw = connected === true && !match && !easee.vehicleEvidence?.ambiguous
-        && (pendingBmwSession(bmw?.reading, { connectedAt, lastDisconnectedAt: control?.session?.lastDisconnectedAt,
-          chargingAt: easee.vehicleEvidence?.chargingTimes, stoppedAt: easee.vehicleEvidence?.stoppedTimes,
-          now, consumedPlugId: bmw?.consumedPlugId })
-          || !control?.manual && pendingBmwControlledPause(bmw?.reading, {
-            connectedAt, lastDisconnectedAt: control?.session?.lastDisconnectedAt,
-            chargingAt: easee.vehicleEvidence?.chargingTimes, now, consumedChargingId: bmw?.consumedChargingId }));
-      const identifying = !easee.vehicleEvidence?.ambiguous && (control?.phase === 'identifying' || pendingBmw);
-      if (connected === false || bmw?.reading?.pluggedIn === false || bmw?.reading?.atHome === false
-        || match?.id === 'tesla' || easee.vehicleEvidence?.ambiguous) easee.targetState = null;
-      else if (Number.isSafeInteger(connectedAt)) easee.targetState = updateTargetState(easee.targetState, {
-        connectedAt, evidenceStart: connectionEvidenceStart(connectedAt, control?.session?.lastDisconnectedAt),
-        reading: bmw?.reading, now, live: false });
-      result.charger1.vehicle = match
-        ? { state: 'identified', id: match.id, label: match.id === 'bmw' ? bmw.label : 'Tesla', source, reason: match.reason ?? 'matched-charging-session', chargerId: 'charger1' }
-        : { state: connected === false ? 'disconnected' : identifying ? 'identifying' : 'unidentified',
-          id: null, label: null, source: null, reason: easee.vehicleEvidence?.ambiguous ? 'conflicting-vehicle-evidence'
-            : pendingBmw ? 'awaiting-stop-confirmation' : 'vehicle-not-identified' };
-      if (match?.id === 'tesla') {
-        const vehicle = teslamateChargerTelemetry(tesla, { now });
-        for (const key of ['capacityKwh', 'soc', 'minimumSoc']) if (vehicle[key]?.available) result.charger1[key] = vehicle[key];
-        result.charger1.assignedVehicleSource = 'teslamate';
-        result.charger1.vehicleCapacityFallbackKwh = this.settings.chargers.charger2.capacityKwh;
-      }
-      const plugReport = tesla.fields?.plugged_in;
-      if (tesla.pluggedIn === false || tesla.atHome === false || plugReport?.retained === false
-        && plugReport.receivedAt > this.teslaDisconnectedFromEaseeAt) this.teslaDisconnectedFromEaseeAt = null;
-      const oldEaseeConnection = Number.isSafeInteger(this.teslaDisconnectedFromEaseeAt) && tesla.pluggedIn === true;
-      if (this.chargers.charger2 && !this.chargers.charger2.adapter?.normalize) {
-        if (match?.id === 'tesla') result.charger2 = { connected: { value: false, available: true, source: 'vehicle-assignment' },
-          vehicle: { state: 'elsewhere', id: 'tesla', label: 'Tesla', source: 'teslamate', reason: 'vehicle-on-another-charger', chargerId: 'charger1' } };
-        else if (oldEaseeConnection) result.charger2 = { connected: { value: false, available: true, source: 'vehicle-assignment' },
-          vehicle: { state: 'disconnected', id: 'tesla', label: 'Tesla', source: 'teslamate', reason: 'awaiting-new-vehicle-connection' } };
-        else result.charger2 = { ...teslamateChargerTelemetry(tesla, { now }),
-          vehicle: { state: tesla.pluggedIn === false || tesla.atHome === false ? 'disconnected' : 'identified',
-            id: 'tesla', label: 'Tesla', source: 'teslamate', reason: 'tesla-charging-observation', chargerId: 'charger2' } };
+      if (connected == null && item.vehicleMatch) candidates[id].push(item.vehicleMatch.id);
+      if (item.vehicleConflict) {
+        item.vehicleConflict.ids = item.vehicleConflict.ids.filter(vehicle => vehicle === 'tesla'
+          ? tesla.pluggedIn !== false && tesla.atHome !== false : bmw.reading?.pluggedIn !== false && bmw.reading?.atHome !== false);
+        candidates[id] = [...new Set([...candidates[id], ...item.vehicleConflict.ids])];
       }
     }
-    const propertyVoltage = Object.values(result).find(item => item.voltageV?.available)?.voltageV;
-    if (propertyVoltage) for (const item of Object.values(result)) if (!item.voltageV?.available)
-      item.voltageV = { ...propertyVoltage, source: 'property-supply' };
+    // Both chargers and all consumers use one simultaneous, revisioned assignment.
+    for (const [id, item] of Object.entries(this.chargers)) {
+      const options = candidates[id], connected = result[id].connected?.value;
+      const conflict = options.length > 1 || options.some(vehicle => Object.entries(candidates).some(([other, choices]) => other !== id && choices.includes(vehicle)));
+      if (conflict) item.vehicleConflict = { scope: item.request?.scope, ids: options, at: now };
+      else item.vehicleConflict = null;
+      const vehicleId = !conflict && options.length === 1 ? options[0] : null;
+      if (vehicleId && item.vehicleMatch?.id !== vehicleId) {
+        item.vehicleMatch = { id: vehicleId, scope: item.request.scope, association: item.association,
+          connectedAt: item.controller.status().session.connectedAt, matchedAt: now, revision: ++this.revision };
+        if (vehicleId === 'bmw') {
+          if (item.vehicleEvidence?.bmwReason === 'matched-controlled-pause') bmw.consumedChargingId = bmw.reading.fields?.charging?.positiveEvent?.readingId ?? null;
+          else bmw.consumedPlugId = bmw.reading.fields?.pluggedIn?.positiveEvent?.readingId ?? null;
+        }
+      } else if (!vehicleId) item.vehicleMatch = null;
+      const pendingIdentification = connected === true && !vehicleId && !conflict && pendingBmwSession(bmw?.reading, { connectedAt: item.controller?.status()?.session?.connectedAt,
+        lastDisconnectedAt: item.controller?.status()?.session?.lastDisconnectedAt, chargingAt: item.vehicleEvidence?.chargingTimes, stoppedAt: item.vehicleEvidence?.stoppedTimes, now });
+      result[id].vehicle = { state: connected === false ? 'disconnected' : conflict ? 'conflict' : vehicleId ? 'identified' : pendingIdentification ? 'identifying' : 'unidentified',
+        id: vehicleId, label: vehicleId === 'tesla' ? 'Tesla' : vehicleId === 'bmw' ? bmw.label : null,
+        source: vehicleId === 'tesla' ? 'teslamate' : vehicleId === 'bmw' ? 'bmw-cardata' : null,
+        reason: conflict ? 'conflicting-vehicle-evidence' : vehicleId ? vehicleId === 'bmw' ? item.vehicleEvidence?.bmwReason ?? 'matched-physical-session' : 'matched-physical-session'
+          : pendingIdentification ? 'awaiting-stop-confirmation' : 'assignment-unresolved',
+        chargerId: id, association: item.association, sessionId: item.request?.sessionId, revision: item.vehicleMatch?.revision ?? this.revision };
+      if (vehicleId === 'tesla') {
+        Object.assign(result[id], teslamateVehicleTelemetry(tesla, { now }));
+        result[id].assignedVehicleSource = 'teslamate';
+      }
+      if (vehicleId === 'bmw') {
+        const reading = bmw.reading;
+        const field = (key, value) => {
+          const metadata = reading?.fields?.[key] ?? reading ?? {};
+          const applicable = bmw.mqtt.subscribed && bmw.mqtt.connected && Number.isFinite(value)
+            && (!Number.isFinite(metadata.measuredAt) || metadata.measuredAt <= now);
+          return { ...metadata, value: applicable ? value : null, lastKnownValue: value ?? null,
+            available: Boolean(applicable), source: 'bmw-cardata', reason: applicable ? null : 'vehicle-feed-unavailable' };
+        };
+        Object.assign(result[id], { soc: field('soc', reading?.soc), capacityKwh: field('usableCapacityKwh', reading?.usableCapacityKwh),
+          minimumSoc: field('chargeLimitSoc', reading?.chargeLimitSoc), vehicleCeilingSoc: field('chargeLimitSoc', reading?.chargeLimitSoc),
+          assignedVehicleSource: 'bmw-cardata' });
+        item.targetState = updateTargetState(item.targetState, {
+          connectedAt: item.controller.status().session.connectedAt, reading, now, live: false });
+      } else item.targetState = null;
+      if (vehicleId) result[id].vehicleCapacityFallbackKwh = this.settings.vehicles[vehicleId].capacityKwh;
+    }
+    // Only local physical EVSE voltage may fill a local supply gap.
+    const voltage = Object.values(result).find(item => item.voltageV?.available && item.providerConnected !== false)?.voltageV;
+    if (voltage) for (const item of Object.values(result)) if (!item.voltageV?.available)
+      item.voltageV = { ...voltage, source: 'local-evse-supply' };
     return result;
   }
   controlStatus(id) {
@@ -446,30 +418,37 @@ export class ChargingRuntime {
     const telemetry = this.telemetry(now);
     return Object.entries(this.chargers).map(([id, item]) => {
       const savedSettings = this.settings.chargers[id], control = this.controlStatus(id);
-      const settings = telemetry[id]?.assignedVehicleSource === 'teslamate'
-        ? { ...savedSettings, capacityKwh: this.settings.chargers.charger2.capacityKwh } : savedSettings;
+      const settings = { ...savedSettings, ...item.request?.overrides };
+      const assignedVehicle = telemetry[id]?.vehicle?.id;
+      if (assignedVehicle && !Object.hasOwn(item.request?.overrides ?? {}, 'capacityKwh')) settings.capacityKwh = this.settings.vehicles[assignedVehicle].capacityKwh;
       const definition = { ...item.definition, capabilities: { ...item.definition.capabilities, ...item.adapter?.capabilities } };
       const selectedTarget = telemetry[id]?.vehicle?.id === 'bmw' && telemetry[id].vehicle.state === 'identified'
+        && this.vehicleFeeds.bmw.mqtt.subscribed && this.vehicleFeeds.bmw.mqtt.connected
         ? targetSelection(item.targetState, { reading: this.vehicleFeeds.bmw.reading }) : null;
-      const charger = buildCharger({ definition, settings, telemetry: telemetry[id], timezone: TIME_ZONE,
+      const scopedTelemetry = { ...telemetry[id] };
+      if (Object.hasOwn(item.request?.overrides ?? {}, 'capacityKwh')) { scopedTelemetry.capacityKwh = { value: settings.capacityKwh, available: true, source: 'session-request' }; scopedTelemetry.vehicleCapacityFallbackKwh = settings.capacityKwh; }
+      if (Object.hasOwn(item.request?.overrides ?? {}, 'manualSoc')) {
+        const field = scopedTelemetry.soc;
+        const evidenceAt = Number.isFinite(field?.measuredAt) ? field.measuredAt : field?.receivedAt;
+        if (field?.available && evidenceAt > item.request.anchorAt) { delete item.request.overrides.manualSoc; item.request.revision++; this.revision++; }
+        else scopedTelemetry.soc = { value: settings.manualSoc, available: true, source: 'session-anchor', measuredAt: item.request.anchorAt };
+      }
+      const charger = buildCharger({ definition, settings, telemetry: scopedTelemetry, timezone: TIME_ZONE,
         targetSelection: selectedTarget,
-        automaticSoc: telemetry[id]?.vehicle?.id === 'bmw' && telemetry[id].vehicle.state === 'identified'
-          ? { ...this.vehicleFeeds.bmw.reading, source: 'bmw-cardata' } : null,
         configuration: this.configuration.chargers[id], now, control,
-        deadlineAt: item.plan?.replanReadyBy && !activePeriod(control, now)
-          ? resolveChargingDeadline(now, settings.readyBy, TIME_ZONE)
-          : item.plan?.deadlineAt ?? resolveChargingDeadline(now, settings.readyBy, TIME_ZONE) });
+        deadlineAt: item.request?.deadlineAt ?? item.plan?.deadlineAt ?? resolveChargingDeadline(now, settings.readyBy, TIME_ZONE) });
+      if (Object.hasOwn(item.request?.overrides ?? {}, 'minimumSoc')) { charger.values.minimumSoc = { value: settings.minimumSoc, source: 'session-request', available: true };
+        charger.requiredGridKwh = charger.values.capacityKwh.value * Math.max(0, settings.minimumSoc - charger.values.soc.value) / 100 / charger.configuration.efficiency; }
       const progress = updateChargingProgress(item.progress, charger, now, this.readEnergy);
-      const feed = this.vehicleFeeds[id === 'charger1' ? 'bmw' : 'legacy-charger2'];
+      const feed = this.vehicleFeeds[telemetry[id]?.vehicle?.id];
       const vehicleReception = feed ? { ...feed.mqtt, provider: feed.provider } : null;
-      return { ...charger, vehicle: telemetry[id]?.vehicle ?? null,
+      return { ...charger, association: item.association, request: item.request, vehicle: telemetry[id]?.vehicle ?? null,
         referenceGridKwh: charger.requiredGridKwh, requiredGridKwh: progress.remainingGridKwh,
         progress: { ...progress, state: undefined, creditedGridKwh: progress.state.creditKwh },
         automaticSoc: telemetry[id]?.vehicle?.id === 'bmw' && telemetry[id].vehicle.state === 'identified' ? feed?.reading : null, plan: item.plan,
         sessionCost: item.sessionCost ? { ...item.sessionCost, prices: undefined } : null,
         forecast: item.forecast ?? null, vehicleMqtt: vehicleReception,
-        mqtt: item.definition.provider === 'teslamate'
-          ? this.teslaCapture?.reception?.() ?? null : vehicleReception, error: item.error ?? null };
+        mqtt: vehicleReception, error: item.error ?? null };
     });
   }
   updatePlan(now = this.clock()) {
@@ -491,7 +470,12 @@ export class ChargingRuntime {
     views = this.views(now);
     const deadlineAt = Math.max(...views.map(view => view.deadlineAt));
     const external = views.find(view => view.capabilities.externalLoadBalancing);
-    const supply = external?.telemetry.providerConnected === false ? null : external?.telemetry.supply;
+    const reportedSupply = external?.telemetry.providerConnected === false ? null : external?.telemetry.supply;
+    const installation = this.configuration.chargers.charger2;
+    const configuredBudgetCurrentA = installation.enabled && installation.verified
+      ? installation.mainFuseA.map((amps, phase) => Math.max(0, amps - installation.marginA[phase])) : null;
+    const supply = reportedSupply || configuredBudgetCurrentA ? { ...reportedSupply,
+      ...(configuredBudgetCurrentA ? { configuredBudgetCurrentA } : {}) } : null;
     const historyOptions = { now, deadlineAt, input: this.config.input, voltageV: supply?.voltageV, timezone: TIME_ZONE,
       weather: this.weather, outdoorC: this.engine.latest?.outdoor_temperature?.value };
     const historyKey = digest({ deadlineAt, weather: this.weather, voltage: supply?.voltageV?.map?.(Math.round) ?? null });
@@ -528,9 +512,9 @@ export class ChargingRuntime {
     }).map(view => view.id));
     const planningViews = views.map(view => priceReplans.has(view.id)
       ? { ...view, control: { ...view.control, released: false, phase: null } } : view);
-    const result = planChargers({ now, chargers: planningViews, prices: this.prices, household: this.household, supply });
+    const result = planChargers({ now, chargers: planningViews, prices: this.prices, household: this.household, supply, priority: this.settings.priority });
     this.coordination = { allocations: result.allocations, currentLimits: result.currentLimits,
-      currentLimitsAreProposals: true, warnings: result.warnings, assumptions: { ...result.assumptions,
+      currentLimitsAreProposals: false, priority: this.settings.priority, warnings: result.warnings, assumptions: { ...result.assumptions,
         householdReference: { ...householdReferenceSummary(this.household),
           noHistory: this.historyReady && householdReferenceSummary(this.household).noHistory,
           loading: this.historyFlights.size > 0, unavailable: Boolean(this.historyError) } } };
@@ -670,6 +654,16 @@ export class ChargingRuntime {
       this.error = null;
     } catch { this.error = 'charging-planning-unavailable'; }
   }
+  allocationContext() {
+    const first = this.chargers.charger1?.controller?.status()?.snapshot, supply = first?.supply;
+    const view = this.views().find(row => row.id === 'charger2');
+    const now = this.clock(), active = this.coordination?.allocations?.find(row => row.start <= now && row.end > now);
+    return { property: { healthy: first?.online === true, currents: supply?.propertyCurrentA, times: supply?.observationTimes?.property },
+      easee: { healthy: first?.online === true, currents: supply?.chargerCurrentA, times: supply?.observationTimes?.charger },
+      vehicleCurrentA: view?.values.vehicleCurrentA?.value, notBefore: view?.values.vehicleNotBefore?.value,
+      allocationA: active?.chargers?.charger2?.currentLimitA ?? null,
+      reservationA: this.settings.priority === 'charger2' ? 0 : active?.chargers?.charger1?.currentA ?? 0 };
+  }
   async reconcile(id, { resume = false } = {}) {
     if (id === undefined) { await Promise.all(Object.keys(this.chargers).map(key => this.reconcile(key))); return; }
     const item = this.charger(id);
@@ -682,7 +676,7 @@ export class ChargingRuntime {
     // it is never a command to change Equalizer's live allowance.
     const maximumAmps = scheduleCeiling(controller.status()?.snapshot);
     await controller.update({ enabled: settings.enabled, plan: this.pricesInitialized ? item.plan : null,
-      timezone: TIME_ZONE, readyBy: settings.readyBy, maximumAmps, resume,
+      timezone: TIME_ZONE, readyBy: settings.readyBy, maximumAmps, resume, allocation: this.allocationContext(),
       vehicleDisconnect: item.vehicleDisconnect ? { ...item.vehicleDisconnect,
         reconnected: item.vehicleDisconnect.source === 'easee-stream' ? item.vehicleDisconnect.reconnected
           : bmwReconnectEvent(item.vehicleDisconnect, this.vehicleFeeds.bmw.reading, { now: this.clock() }) } : null });
@@ -691,35 +685,30 @@ export class ChargingRuntime {
     try { this.updatePlan(); this.error = null; } catch { this.error = 'charging-planning-unavailable'; }
   }
   async setSettings(input) {
-    const previous = this.settings, next = mergeChargingSettings(previous, input);
+    const previous = this.settings, previousRevision = this.revision, next = mergeChargingSettings(previous, input);
     const views = this.views();
-    if (Object.hasOwn(input?.chargers?.charger1 ?? {}, 'capacityKwh')
-      && views.find(view => view.id === 'charger1')?.vehicle?.id === 'tesla') {
-      if (Object.hasOwn(input?.chargers?.charger2 ?? {}, 'capacityKwh')
-        && input.chargers.charger1.capacityKwh !== input.chargers.charger2.capacityKwh)
-        throw new Error('Tesla capacity must be the same at both charging views');
-      next.chargers.charger2.capacityKwh = next.chargers.charger1.capacityKwh;
-      next.chargers.charger1.capacityKwh = previous.chargers.charger1.capacityKwh;
-    }
     for (const view of views) if (next.chargers[view.id].enabled && !view.capabilities.scheduling)
       throw new Error(`${view.label} does not support automatic scheduling`);
     const oldRecords = Object.fromEntries(Object.entries(this.chargers).map(([id, item]) => [id,
-      { plan: item.plan, progress: item.progress, supplyEstimate: item.supplyEstimate }]));
-    this.settings = next;
+      { association: item.association, request: structuredClone(item.request), plan: item.plan, progress: item.progress, supplyEstimate: item.supplyEstimate }]));
+    this.settings = next; this.revision++;
+    if (next.priority !== previous.priority) for (const item of Object.values(this.chargers)) item.plan = null;
     for (const [id, item] of Object.entries(this.chargers)) {
       const before = previous.chargers[id], after = next.chargers[id];
       const control = item.controller?.status();
+      if (before.readyBy !== after.readyBy && item.request && !Object.hasOwn(item.request.overrides, 'readyBy')) item.request.deadlineAt = resolveChargingDeadline(this.clock(), after.readyBy, TIME_ZONE);
       if (before.readyBy !== after.readyBy && !control?.released) {
         if (item.plan && activePeriod(control, this.clock())) item.plan = { ...item.plan, replanReadyBy: after.readyBy };
         else item.plan = null;
       }
     }
     try { this.persist(); } catch (error) {
-      this.settings = previous;
+      this.settings = previous; this.revision = previousRevision;
       for (const [id, saved] of Object.entries(oldRecords)) Object.assign(this.chargers[id], saved);
       throw error;
     }
     this.historyAt = null;
+    for (const item of Object.values(this.chargers)) item.controller?.invalidate?.();
     // Revoke OFF before optional history/forecast work can fail.
     for (const id of Object.keys(this.chargers)) if (!next.chargers[id].enabled) await this.reconcile(id);
     try { this.updatePlan(); } catch { this.error = 'charging-planning-unavailable'; }
@@ -728,15 +717,35 @@ export class ChargingRuntime {
   async setChargerSettings(id, input) {
     this.charger(id);
     if (!object(input)) throw new Error('Charger settings must be an object');
+    if (input.scope === 'session') return this.setSessionRequest(id, input);
     const { capacityProfile, ...settings } = input;
     if (Object.hasOwn(input, 'capacityProfile')) {
       if (!Object.hasOwn(input, 'capacityKwh')) throw new Error('Capacity profile requires a capacity setting');
       const vehicle = this.views().find(view => view.id === id)?.vehicle;
-      const currentProfile = id === 'charger2' || vehicle?.state === 'identified' && vehicle.id === 'tesla'
-        ? 'tesla' : `generic:${id}`;
+      const currentProfile = vehicle?.state === 'identified' ? vehicle.id : `generic:${id}`;
       if (capacityProfile !== currentProfile) throw new Error('Vehicle changed; review its capacity before saving');
     }
-    await this.setSettings({ chargers: { [id]: settings } });
+    if (capacityProfile && !capacityProfile.startsWith('generic:')) {
+      const { capacityKwh, ...other } = settings;
+      await this.setSettings({ vehicles: { [capacityProfile]: { capacityKwh } }, chargers: { [id]: other } });
+    } else await this.setSettings({ chargers: { [id]: settings } });
+  }
+  async setSessionRequest(id, input) {
+    const item = this.charger(id);
+    if (Object.keys(input).some(key => !['scope', 'association', 'sessionId', 'revision', 'changes'].includes(key))
+      || !object(input.changes)) throw new Error('Invalid session request');
+    this.views();
+    if (!item.request || input.association !== item.association || input.sessionId !== item.request.sessionId
+      || input.revision !== item.request.revision) throw new Error('Charging connection changed; refresh before editing');
+    if (Object.keys(input.changes).some(key => !['manualSoc', 'capacityKwh', 'minimumSoc', 'readyBy'].includes(key))) throw new Error('Invalid session field');
+    const checked = mergeChargingSettings(this.settings, { chargers: { [id]: input.changes } }).chargers[id];
+    const previous = copyRequest(item.request), previousRevision = this.revision, previousPlan = item.plan;
+    for (const key of Object.keys(input.changes)) item.request.overrides[key] = checked[key];
+    if (Object.hasOwn(input.changes, 'manualSoc')) item.request.anchorAt = this.clock();
+    if (Object.hasOwn(input.changes, 'readyBy')) item.request.deadlineAt = resolveChargingDeadline(this.clock(), checked.readyBy, TIME_ZONE);
+    item.request.revision++; this.revision++; item.plan = null;
+    try { this.persist(); } catch (error) { item.request = previous; item.plan = previousPlan; this.revision = previousRevision; throw error; }
+    item.controller?.invalidate?.(); this.updatePlan(); await this.reconcile(id);
   }
   async setTarget(id, input) {
     const item = this.charger(id);
@@ -770,7 +779,7 @@ export class ChargingRuntime {
       reception: { ...feed.mqtt, provider: feed.provider }, usedByChargerId: usedBy(feed.id) }));
     if (this.teslaCapture) vehicleFeeds.push({ id: 'tesla', label: 'Tesla', provider: 'teslamate', topic: this.teslaCapture.topic ?? null,
       reception: this.teslaCapture.reception?.() ?? null, usedByChargerId: usedBy('tesla') });
-    return { timezone: TIME_ZONE, settings: this.settings, chargers, vehicleFeeds, coordination: this.coordination, error: this.error ?? null };
+    return { revision: this.revision, timezone: TIME_ZONE, settings: this.settings, chargers, vehicleFeeds, coordination: this.coordination, error: this.error ?? null };
   }
   async close() {
     this.closed = true; clearInterval(this.timer); clearTimeout(this.boundaryTimer); clearTimeout(this.streamTimer);

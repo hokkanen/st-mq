@@ -35,6 +35,19 @@ function finish(tracker, changes = {}) {
   return result;
 }
 
+test('cycle accounts at every current quote start/end without changing its frozen forecast',t=>{
+  for(const [before,after] of [[10,100],[100,10],[-10,-100],[10,-100]]){
+    const {tracker,plan}=fixture(t,{intervals:[{start,end:start+HOUR,price:before,outdoorC:0,solarRadiationWm2:0}]});
+    tracker.start(plan,sample(start),start);
+    const original=structuredClone(tracker.active().plan);
+    tracker.record(sample(start+HOUR/4,{priceIntervals:[{start:start+7*60000,end:start+20*60000,price:after}]}),start+HOUR/4);
+    const active=tracker.active();
+    assert(Math.abs(active.actual.costCents-2*(7*before+8*after)/60)<1e-10);
+    assert.equal(active.actual.coveredHours,0.25);assert.equal(active.observations.length,2);
+    assert.deepEqual(active.plan,original);
+  }
+});
+
 test('recovery accounting stops once the room and reserve regain comparable normal operation', () => {
   const short = evaluateCycle(common({ schedule, intervals: intervals(4) }));
   const long = evaluateCycle(common({ schedule, intervals: intervals(48) }));

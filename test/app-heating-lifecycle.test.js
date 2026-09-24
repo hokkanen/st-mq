@@ -67,7 +67,7 @@ test('live test transport stays idle until a POST and shutdown records an unconf
   const relayCommands = [];
   app.engine.executor.commandTransport.setHeatingRelay(async commands => {
     relayCommands.push(commands); return { sent: true, confirmed: true };
-  });
+  }, 'invented-tariff-route');
   const success = await post('reduction');
   assert.equal(success.status, 200);
   assert.equal((await success.json()).sent, true);
@@ -81,12 +81,12 @@ test('live test transport stays idle until a POST and shutdown records an unconf
   assert.equal(pending.topic, 'stmq/home/dhwr/command/switch');
   assert.equal(pending.command, 'ON');
   assert.deepEqual(pending.publishOptions, { qos: 1, retain: false });
-  assert.equal(app.store.getState('executor:providers').dhwrOutstanding, true, 'Unacknowledged ON already has a durable OFF obligation');
+  assert.equal(app.store.getState('executor:home').dhwrOutstanding, true, 'Unacknowledged ON already has a durable OFF obligation');
   let stateAtClose, executorAtClose;
   const closeStore = app.store.close.bind(app.store);
   app.store.close = () => {
     stateAtClose = app.store.getState('heating-test:providers');
-    executorAtClose = app.store.getState('executor:providers');
+    executorAtClose = app.store.getState('executor:home');
     closeStore();
   };
   const [failure] = await Promise.all([pendingResponse, app.close()]);
@@ -109,7 +109,7 @@ test('live test transport stays idle until a POST and shutdown records an unconf
   const reopened = new Store(config.dbPath);
   try {
     assert.deepEqual(reopened.getState('heating-test:providers'), stateAtClose);
-    assert.deepEqual(reopened.getState('executor:providers'), executorAtClose);
+    assert.deepEqual(reopened.getState('executor:home'), executorAtClose);
     const events = reopened.events().filter(event => event.type.startsWith('heating-test'));
     assert.deepEqual(events.map(event => event.type), [
       'heating-test-requested', 'heating-test-sent', 'heating-test-requested', 'heating-test-failed',

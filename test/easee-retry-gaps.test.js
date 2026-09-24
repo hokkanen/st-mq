@@ -1,3 +1,4 @@
+import {Engine} from '../src/app/engine.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Store } from '../src/storage/store.js';
@@ -16,7 +17,7 @@ function fixture(t, failureAt) {
   const config = { dataDir: '/tmp', connections: { easee: {
     charger_id: 'invented-charger', equalizer_id: 'invented-equalizer',
   } } };
-  const engine = { recorder, latest: {}, outdoorCandidates: {}, ingest() {}, providerObservations() { return []; },
+  const engine = { ingestionCheckpoint:Engine.prototype.ingestionCheckpoint, restoreIngestionCheckpoint:Engine.prototype.restoreIngestionCheckpoint, recorder, latest: {}, outdoorCandidates: {}, ingest() {}, providerObservations() { return []; },
     ingestEnergy(interval) { recorder.recordEnergy(interval); } };
   const options = { engine, store, config, automatic: false, clock: () => now,
     http: { close() {} }, devices: { async electricity() {

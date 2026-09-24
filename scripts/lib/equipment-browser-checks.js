@@ -32,8 +32,8 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until 
       state:reading('Switch',0,'state'),power:reading('Live power',0,'W')}};
     fixture.response = base => { if(fixture.dhwr.feedback.basis==='power') { const feedback=fixture.dhwr.feedback,power=feedback.power; feedback.state=power?{...power,value:power.value>0?1:0,unit:'state'}:null; fixture.dhwr.actualOn=feedback.available&&power&&!power.stale?power.value>0:null; } return ({...base,...fixture.status,now:fixture.now,equipment:{configured:true,connected:true,devices:fixture.devices,topicGroups:[
       {id:'temperatures',label:'Temperature feeds',topics:[{role:'Upstairs',topic:'invented/home/upstairs/temperature',direction:'subscribe'}]},
-      {id:'teslamate',label:'TeslaMate',topics:[{role:'Vehicle subscription',topic:'invented/teslamate/cars/1/#',direction:'subscribe'}]}
-    ]},providers:{...base.providers,teslamate:{enabled:true,reception:{brokerConnected:true,subscriptionStatus:'subscribed',lastLiveAt:at,lastMessageAt:at,chargerId:'charger2'}}},dhwr:fixture.dhwr,
+      {id:'vehicle:tesla',vehicleFeedId:'tesla',label:'TeslaMate',topics:[{role:'Vehicle subscription',topic:'invented/teslamate/cars/1/#',direction:'subscribe'}]}
+    ]},charging:{...base.charging,vehicleFeeds:[{id:'tesla',label:'Tesla',provider:'teslamate',topic:'invented/teslamate/cars/1/#',enabled:true,reception:{brokerConnected:true,subscriptionStatus:'subscribed',lastLiveAt:at,lastMessageAt:at}}]},dhwr:fixture.dhwr,
       heatingTests:{available:true,lastResult:fixture.heatingResult},equipmentControls:{available:true,busy:false,lastResult:fixture.lastResult},equipmentTests:{available:true,busy:false}}); };
     window.fetch = async (...args) => {
       const path = new URL(args[0],location.href).pathname;
@@ -108,9 +108,9 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until 
     assert.equal(await evaluate("document.querySelector('#equipment-connections [data-device-id=caravan] .equipment-connection-name').textContent"), 'Caravan');
     assert.equal(await evaluate("document.querySelector('#equipment-connections [data-device-id=caravan] .equipment-device-status').textContent"), 'Available');
     assert.match(await evaluate("document.querySelector('#equipment-connections [data-device-id=caravan] .equipment-connection-recent').textContent"), /^Reported /);
-    assert.equal(await evaluate("document.querySelector('#equipment-connections [data-device-id=\"connection:teslamate:other\"] .equipment-connection-name').textContent"), 'Tesla');
-    assert.equal(await evaluate("document.querySelector('#equipment-connections [data-device-id=\"connection:teslamate:other\"]').closest('[data-connection-area]').dataset.connectionArea"), 'other');
-    assert.match(await evaluate("document.querySelector('#equipment-connections [data-device-id=\"connection:teslamate:other\"] .equipment-connection-meta').textContent"), /TeslaMate/);
+    assert.equal(await evaluate("document.querySelector('#equipment-connections [data-device-id=\"connection:vehicle:tesla:other\"] .equipment-connection-name').textContent"), 'Tesla');
+    assert.equal(await evaluate("document.querySelector('#equipment-connections [data-device-id=\"connection:vehicle:tesla:other\"]').closest('[data-connection-area]').dataset.connectionArea"), 'other');
+    assert.match(await evaluate("document.querySelector('#equipment-connections [data-device-id=\"connection:vehicle:tesla:other\"] .equipment-connection-meta').textContent"), /TeslaMate/);
     await evaluate("document.querySelectorAll('#equipment-connections .equipment-connection-fold, #equipment-connections .equipment-packet-details').forEach(d=>d.open=true);true");
     assert.equal(await evaluate("[...document.querySelectorAll('#equipment-connections code')].some(n=>n.textContent==='invented/garage/long-device-prefix/door1/contact/state')"), true);
     assert.match(await evaluate("document.getElementById('equipment-connections').textContent"), /no status-request topic/);

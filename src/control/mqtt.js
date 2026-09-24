@@ -1,4 +1,6 @@
 import mqtt from 'mqtt';
+import { createHash } from 'node:crypto';
+import { gateMqttPublications } from './mqtt-publication-gate.js';
 
 export const HEATING_COMMANDS = Object.freeze(['reduction', 'normal', 'circulation']);
 const MESSAGES = {
@@ -17,6 +19,9 @@ const MESSAGES = {
   MQTT_BUSY: 'An MQTT test is already in progress. Wait for its result before trying again.',
   MQTT_AUTHORITY_LOST: 'This instance no longer owns device control.',
   MQTT_DHWR_TOPIC_INVALID: 'DHWR requires an exact MQTT switch command topic.',
+  EXECUTOR_TARGET_CHANGED: 'The original heating target is unavailable or changed. Its restoration remains pending until the original target is available.',
+  EXECUTOR_EXPIRED: 'The heating action expired before dispatch. Its temporary settings are being restored.',
+  EXECUTOR_RESTORATION_PENDING: 'Wait for the previous heating settings to be restored.',
 };
 function failure(code) {
   return Object.assign(new Error(MESSAGES[code]), { code });
@@ -48,14 +53,21 @@ export function createHeatingTransport({ connection, connect = mqtt.connect, tim
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error('MQTT timeout must be positive');
   let active = null;
   let closed = false;
-  let heatingRelay = null;
+  let heatingRelay = null, heatingIdentity = null;
+  const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
   const dhwrTopic = connection?.dhwr_topic || 'stmq/home/dhwr/command/switch';
   if (typeof dhwrTopic !== 'string' || !dhwrTopic.trim() || dhwrTopic.length > 500 || /[+#\u0000]/.test(dhwrTopic))
     throw failure('MQTT_DHWR_TOPIC_INVALID');
 
   const transport = {
-    setHeatingRelay(handler) { heatingRelay = handler; },
-    async publish(commands) {
+    get targetIdentity() {
+      const route = typeof heatingIdentity === 'function' ? heatingIdentity() : heatingIdentity;
+      return { tariff: route ? digest({ protocol: 'mqtt-tariff', route }) : null,
+        dhwr: digest({ protocol: 'mqtt-switch', address: connection?.address ?? null,
+          account: connection?.user ?? null, topic: dhwrTopic }) };
+    },
+    setHeatingRelay(handler, identity) { heatingRelay = handler; heatingIdentity = identity; },
+    async publish(commands, { validUntil = Infinity, clock = Date.now, expectedTarget = null } = {}) {
       const batch = Array.isArray(commands) ? [...commands] : [];
       // Timed circulation belongs to Executor: publishing a button intent here
       // would bypass the durable OFF obligation.
@@ -69,6 +81,8 @@ export function createHeatingTransport({ connection, connect = mqtt.connect, tim
         const completion = Promise.resolve().then(() => {
           if (closed) throw failure('MQTT_CLOSED');
           if (!canControl()) throw failure('MQTT_AUTHORITY_LOST');
+          if (clock() >= validUntil || expectedTarget && transport.targetIdentity.tariff !== expectedTarget)
+            throw Object.assign(new Error('Heating action expired or its target changed before dispatch.'), { code: 'EXECUTOR_EXPIRED' });
           return heatingRelay(batch);
         });
         active = { completion, cancel() {} };
@@ -96,7 +110,7 @@ export function createHeatingTransport({ connection, connect = mqtt.connect, tim
       if (active) throw failure('MQTT_BUSY');
       if (!connection || typeof connection.address !== 'string' || !connection.address.trim()) throw failure('MQTT_CONNECTION_FAILED');
 
-      let client;
+      let client, publicationGate;
       let finished = false;
       let started = false;
       let publishAttempted = false;
@@ -125,6 +139,7 @@ export function createHeatingTransport({ connection, connect = mqtt.connect, tim
       const finish = error => {
         if (finished) return;
         finished = true;
+        publicationGate?.revoke();
         clearTimeout(timer);
         // Keep the error handler through disposal to absorb late socket errors.
         client?.removeListener?.('connect', connected);
@@ -165,6 +180,7 @@ export function createHeatingTransport({ connection, connect = mqtt.connect, tim
           reconnectPeriod: 0, queueQoSZero: false, clean: true,
           connectTimeout: timeoutMs,
         });
+        publicationGate = gateMqttPublications(client, { canControl: () => !closed && !finished && canControl(), timeoutMs });
         client.on('error', disconnected);
         client.on('close', disconnected);
         client.on('offline', disconnected);

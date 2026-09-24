@@ -19,8 +19,10 @@ test('DHWR chart respects longer configured runs and recorded early OFF without 
     put(1, start, { expiresAt: start + 20 * MINUTE });
     put(0, start + 15 * MINUTE, {});
     put(1, start + 30 * MINUTE, { expiresAt: start + 50 * MINUTE });
-    store.observation({ source: 'st-mq-csv', device: 'legacy', signal: 'requested_heat_mode', value: 60,
-      unit: 'legacy_command', sourceTime: start + 60 * MINUTE, receivedAt: start + 60 * MINUTE });
+    const importId=Number(store.db.prepare("INSERT INTO imports(kind,sha256,path,status,started_at,completed_at) VALUES('stmq','synthetic','synthetic.csv','complete',?,?)").run(start,start).lastInsertRowid);
+    store.observation({ source: 'csv:stmq', device: 'legacy_stmq', signal: 'requested_heat_mode', value: 60,
+      unit: 'legacy_command', sourceTime: start + 60 * MINUTE, receivedAt: start + 60 * MINUTE,
+      provenance:{importId,rowNumber:1} });
     const result = getChartData({ store, input: 'offline', now: start + 90 * MINUTE,
       startDate: '2026-09-10', endDate: '2026-09-10', detailSignals: ['dhwr_request'] });
     assert.deepEqual(result.shading.dhwr, [
@@ -31,7 +33,7 @@ test('DHWR chart respects longer configured runs and recorded early OFF without 
   } finally { store.close(); }
 });
 
-test('DHWR chart uses measured ON/OFF, leaves unknown gaps, and keeps pre-feedback CSV interpretation', () => {
+test('DHWR history ignores retired physical-feedback rows and keeps current requests explicitly labelled', () => {
   const store = new Store(':memory:');
   try {
     const put = (signal, value, at, raw) => store.observation({ source: signal === 'dhwr_active' ? 'mqtt-equipment' : 'controller',
@@ -45,12 +47,8 @@ test('DHWR chart uses measured ON/OFF, leaves unknown gaps, and keeps pre-feedba
     put('dhwr_active', 1, start + 40 * MINUTE, { verified: true, maxAgeMs: 2 * MINUTE });
     const result = getChartData({ store, input: 'offline', now: start + 60 * MINUTE,
       startDate: '2026-09-10', endDate: '2026-09-10' });
-    assert.deepEqual(result.shading.dhwr, [
-      { start, end: start + 5 * MINUTE },
-      { start: start + 10 * MINUTE, end: start + 20 * MINUTE },
-      { start: start + 30 * MINUTE, end: start + 35 * MINUTE },
-      { start: start + 40 * MINUTE, end: start + 42 * MINUTE },
-    ]);
-    assert.match(result.meta.dhwrBasis, /Actual circulation/);
+    assert.deepEqual(result.shading.dhwr, [{ start,end:start+60*MINUTE }]);
+    assert.match(result.meta.dhwrBasis, /Requested circulation/);
+    assert.match(result.meta.dhwrBasis, /live-only/);
   } finally { store.close(); }
 });

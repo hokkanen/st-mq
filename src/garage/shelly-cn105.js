@@ -2,7 +2,7 @@ import { SHELLY_CN105_CONTRACT, garageAdapterSettings } from './contract.js';
 
 const transports = new WeakSet();
 export const SHELLY_CN105_COMMISSIONING = Object.freeze([
-  'selectivePowerVerified', 'lowHeatVerified', 'expiryVerified', 'restartVerified',
+  'selectivePowerVerified', 'lowHeatVerified', 'expiryVerified', 'restartVerified', 'releaseOrderingVerified',
 ]);
 
 /** The production transport is selected explicitly, independently of host

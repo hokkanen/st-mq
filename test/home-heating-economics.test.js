@@ -126,8 +126,9 @@ test('short weather coverage cannot certify a slab whose delayed hot peak has no
   assert.equal(covered.hotSafe, true);
   const truncated = trialEnvelope({ ...args, intervals: args.intervals.slice(0, 8) });
   assert.equal(truncated.hotSafe, false);
-  assert.equal(truncated.hotStressReason, 'delayed-preheat-peak-not-covered');
-  assert.equal(truncated.coldSafe, covered.coldSafe, 'The original no-heat reduction stress remains unchanged');
+  assert.equal(truncated.reason, 'forecast-coverage-lost');
+  assert.equal(truncated.available, false);
+  assert.equal(truncated.coldSafe, false, 'Missing cycle weather prevents either stress from certifying safety');
 });
 
 test('continuation still follows an already charged slab after the override has ended', () => {

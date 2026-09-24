@@ -27,7 +27,7 @@ COPY --from=build /st-mq/dist ./dist
 COPY src/ ./src/
 COPY scripts/ ./scripts/
 COPY test/live/ ./test/live/
-COPY scheduler.js config.json ./
+COPY config.json ./
 RUN install -m 0755 /st-mq/scripts/pair-vip-addon /usr/local/bin/st-mq-vip
 EXPOSE 1234 8099 1244
 CMD ["node", "src/main.js"]

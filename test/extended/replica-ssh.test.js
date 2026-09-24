@@ -159,8 +159,8 @@ test('real SSH transport verifies SQLite snapshots and catches up after receiver
   }
   source = new Store(sourcePath);
   await chmod(sourcePath, 0o600);
-  source.db.exec('CREATE TABLE synthetic_replication_rows (id INTEGER PRIMARY KEY, label TEXT, payload BLOB)');
-  const insert = source.db.prepare('INSERT INTO synthetic_replication_rows VALUES(?,?,?)');
+  const statement = source.db.prepare('INSERT INTO events(id,type,payload,at) VALUES(?,?,?,0)');
+  const insert = { run:(id,label,payload)=>statement.run(id,label,JSON.stringify({data:payload.toString('hex')})) };
   source.transaction(() => { for (let id = 1; id <= 64; id++) insert.run(id, `synthetic-${id}`, Buffer.alloc(4096, id)); });
   source.setState('replica-test', { revision: 1 });
 
@@ -177,7 +177,7 @@ test('real SSH transport verifies SQLite snapshots and catches up after receiver
     try {
       assert.deepEqual(replica.getState('replica-test'), source.getState('replica-test'));
       const rowDigest = store => createHash('sha256').update(JSON.stringify(store.db.prepare(
-        'SELECT id,label,hex(payload) payload FROM synthetic_replication_rows ORDER BY id').all())).digest('hex');
+        'SELECT id,type,payload FROM events ORDER BY id').all())).digest('hex');
       assert.equal(rowDigest(replica), rowDigest(source), 'All logical rows match without printing database contents');
     } finally { replica.close(); }
     return publication;
@@ -185,8 +185,8 @@ test('real SSH transport verifies SQLite snapshots and catches up after receiver
 
   const first = await assertPublished(await synchronize());
   source.transaction(() => {
-    source.db.prepare('UPDATE synthetic_replication_rows SET label=?,payload=? WHERE id=2').run('changed', Buffer.alloc(8000, 7));
-    source.db.exec('DELETE FROM synthetic_replication_rows WHERE id=3');
+    source.db.prepare('UPDATE events SET type=?,payload=? WHERE id=2').run('changed', JSON.stringify({data:'7'.repeat(16000)}));
+    source.db.exec('DELETE FROM events WHERE id=3');
     source.setState('replica-test', { revision: 2 });
   });
   const second = await assertPublished(await synchronize());
@@ -194,7 +194,7 @@ test('real SSH transport verifies SQLite snapshots and catches up after receiver
 
   await stopDaemon();
   source.transaction(() => {
-    source.db.exec('DELETE FROM synthetic_replication_rows WHERE id BETWEEN 10 AND 20');
+    source.db.exec('DELETE FROM events WHERE id BETWEEN 10 AND 20');
     for (let id = 65; id <= 90; id++) insert.run(id, `after-outage-${id}`, Buffer.alloc(512, id));
     source.setState('replica-test', { revision: 3, outageCollected: true });
   });

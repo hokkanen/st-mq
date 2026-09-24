@@ -249,7 +249,7 @@ test('failed persistence prevents publication and concurrent requests cannot sha
 test('pending native settings cannot be followed by an automatic lease even with all economic proofs', async t => {
   const f = fixture(t);
   f.state({ mode: 'armed', authority: { ownerSession: 'invented-owner', controlAllowed: true, manualControlAllowed: true },
-    commissioning: { selectivePowerVerified: true, lowHeatVerified: true, expiryVerified: true, restartVerified: true },
+    commissioning: { selectivePowerVerified: true, lowHeatVerified: true, expiryVerified: true, restartVerified: true, releaseOrderingVerified: true },
     baseline: { verified: true, profile: 'existing-low-heat', targetC: 10, fan: 'auto', vanes: 'fixed', measuredAt: BASE },
     capabilities: { preserveNativeBaseline: true } });
   await f.adapter.setNativeSetting({ setting: 'power', value: 'off' });
@@ -332,4 +332,26 @@ test('ordinary Mitsubishi HTTP route uses shared write authorization and returns
   assert.equal(response.status, 200);
   assert.equal((await response.json()).garage.nativeControls.result.status, 'published');
   assert.equal(f.published.length, 1);
+});
+
+test('explicit Normal heating from unmanaged OFF publishes ordinary ON with correlated readback', async t => {
+  const f = fixture(t); f.runtime.settings.enabled = true; f.engine.settings.mode = 'active';
+  f.state({ native: { power: { value: 'off', measuredAt: BASE } } });
+  assert.equal(f.adapter.status().restorePending, false);
+  await f.runtime.setHeating({ mode: 'normal' });
+  const command = f.published.at(-1).command;
+  assert.equal(command.action, 'manual'); assert.deepEqual(command.settings, { power: 'on' });
+  assert.equal(f.runtime.heatingControls().requestedMode, 'normal');
+  assert.equal(f.runtime.heatingControls().confirmed, false);
+  f.at(BASE + 1000); f.result('native-confirmed');
+  assert.equal(f.runtime.heatingControls().confirmed, true);
+  assert.equal(f.adapter.status().restorePending, false);
+});
+
+test('unmanaged OFF Normal rejects missing power capability before persisting manual intent', async t => {
+  const f = fixture(t); f.runtime.settings.enabled = true; f.engine.settings.mode = 'active';
+  f.state({ native: { power: { value: 'off', measuredAt: BASE } }, capabilities: { manualControls: { power: false } } });
+  assert.equal(f.runtime.heatingControls().normalAvailable, false);
+  await assert.rejects(f.runtime.setHeating({ mode: 'normal' }), /not supported/);
+  assert.equal(f.runtime.manual, null); assert.equal(f.published.length, 0);
 });

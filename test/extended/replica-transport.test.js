@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
+import { Store } from '../../src/storage/store.js';
 import { readdirSync } from 'node:fs';
 import { mkdtemp, rm, writeFile, mkdir, readFile, readdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
@@ -17,17 +18,14 @@ async function fixture(t) {
   const directory = await mkdtemp(join(tmpdir(), 'stmq-transport-test-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const source = join(directory, 'source.sqlite');
-  const db = new DatabaseSync(source);
-  db.exec(`PRAGMA journal_mode=WAL;
-    CREATE TABLE records(id INTEGER PRIMARY KEY, text_value TEXT, blob_value BLOB, int_value INTEGER);
-    CREATE INDEX text_index ON records(text_value);
-    CREATE TABLE pairs(key TEXT PRIMARY KEY, value TEXT) WITHOUT ROWID;
-    INSERT INTO pairs VALUES ('synthetic key','synthetic value'); PRAGMA user_version=10;`);
-  t.after(() => db.close());
-  const insert = db.prepare('INSERT INTO records VALUES(?, ?, ?, ?)');
-  db.exec('BEGIN');
-  for (let id = 1; id <= 2000; id++) insert.run(id, `synthetic row ${id}`, Buffer.alloc(1024, id % 255), BigInt(id) * 100000000000n);
-  db.exec('COMMIT');
+  const store = new Store(source), db = store.db;
+  t.after(() => store.close());
+  const insert = db.prepare('INSERT INTO events(id,type,payload,at) VALUES(?,?,?,?)');
+  store.transaction(() => {
+    for (let id = 1; id <= 2000; id++) insert.run(id,'synthetic-transport',JSON.stringify({
+      label:`synthetic row ${id}`, pad:'x'.repeat(1024), counter:String(BigInt(id)*100000000000n) }),id);
+    store.setState('synthetic-pair',{value:'synthetic value'});
+  });
   const bin = join(directory, 'bin'); await mkdir(bin, { mode: 0o700 });
   // This harness emulates SSH process plumbing only. The production wrapper's
   // host authentication options are separately asserted; the real rsync protocol
@@ -41,7 +39,7 @@ async function fixture(t) {
   return { directory, source, db, config };
 }
 
-test('real sqlite3_rsync protocol catches up inserts, deletes, schema changes and freelists identically', { skip: skipRsync, timeout: 60_000 }, async t => {
+test('real sqlite3_rsync protocol catches up current-schema inserts, deletes, freelists and page-size changes identically', { skip: skipRsync, timeout: 60_000 }, async t => {
   assert.ok(available, 'STMQ_REQUIRE_RSYNC_TESTS requires a working sqlite3_rsync on PATH or STMQ_TEST_RSYNC');
   const { directory, source, db, config } = await fixture(t);
   const commands = [];
@@ -63,9 +61,8 @@ test('real sqlite3_rsync protocol catches up inserts, deletes, schema changes an
     assert.deepEqual(readdirSync(config.sourceDirectory).filter(name => name.startsWith('source-')), []);
   };
   // Represents a long standby outage; no transfer history is kept or replayed.
-  db.exec(`BEGIN; DELETE FROM records WHERE id % 3 <> 0; UPDATE records SET text_value='corrected synthetic history';
-    DROP INDEX text_index; CREATE INDEX int_index ON records(int_value); CREATE TABLE extra(value TEXT);
-    INSERT INTO extra VALUES ('new schema'); DELETE FROM pairs; COMMIT`);
+  db.exec(`BEGIN; DELETE FROM events WHERE id % 3 <> 0;
+    UPDATE events SET type='corrected-synthetic-history'; DELETE FROM state; COMMIT`);
   assert.ok(db.prepare('PRAGMA freelist_count').get().freelist_count > 0);
   const second = await synchronizeReplica({ signal: t.signal, dbPath: source, config, spawnProcess, onPhase: observeSnapshot });
   assert.equal(inspectedWorkDirectory, true);
@@ -74,12 +71,18 @@ test('real sqlite3_rsync protocol catches up inserts, deletes, schema changes an
   assert.notEqual(second.digest, first.digest);
   const replica = new DatabaseSync(publication.dbPath, { readOnly: true });
   try {
-    const sourceRows = db.prepare('SELECT id,text_value,hex(blob_value) blob_value,CAST(int_value AS TEXT) int_value FROM records ORDER BY id').all();
-    assert.deepEqual(replica.prepare('SELECT id,text_value,hex(blob_value) blob_value,CAST(int_value AS TEXT) int_value FROM records ORDER BY id').all(), sourceRows);
+    const sourceRows = db.prepare('SELECT id,type,payload,at FROM events ORDER BY id').all();
+    assert.deepEqual(replica.prepare('SELECT id,type,payload,at FROM events ORDER BY id').all(), sourceRows);
     assert.deepEqual(replica.prepare('SELECT * FROM sqlite_schema ORDER BY name').all(), db.prepare('SELECT * FROM sqlite_schema ORDER BY name').all());
-    assert.equal(replica.prepare('SELECT COUNT(*) n FROM pairs').get().n, 0);
+    assert.equal(replica.prepare('SELECT COUNT(*) n FROM state').get().n, 0);
   } finally { replica.close(); }
   assert.deepEqual(await readFile(join(config.remoteDirectory, `snapshot-${first.generation}.sqlite`)), immutable);
+  // Native compatibility stops at the exact current schema, even on the real
+  // transport. An unsupported source cannot replace the last valid publication.
+  db.exec('CREATE TABLE unsupported_development_table(value TEXT)');
+  await assert.rejects(synchronizeReplica({ signal:t.signal,dbPath:source,config }), /snapshot_failed/);
+  assert.equal((await readReplicaPublication(config.remoteDirectory)).generation,second.generation);
+  db.exec('DROP TABLE unsupported_development_table');
   db.exec('VACUUM');
   const third = await synchronizeReplica({ signal: t.signal, dbPath: source, config });
   assert.equal((await verifyReplicaPublication(config.remoteDirectory)).digest, third.digest);

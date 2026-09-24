@@ -140,7 +140,7 @@ function observedPlant() {
     const from = now - 15 * MINUTE, interval = context(from), count = minute === 0 ? 1 : 15;
     const inputs = { ...interval, outdoorC: outdoor / count, solarRadiationWm2: 0,
       targetC: 21, roomBoostC: 0, compressorDuty: duty / count, auxKw: auxiliary / count };
-    samples.push({ ...row(minute / 15), ...inputs, indoorC: reading.indoor.value, windowStart: from, intervalInputs: inputs });
+    samples.push({ ...row(minute / 15), ...inputs, indoorC: reading.indoor.value, windowStart: from, inputSegments: [{ ...inputs, start: from, end: now, thermalCompressorDuty: inputs.compressorDuty, thermalAuxKw: inputs.auxKw, regime: 'occupied', quality: [] }] });
     duty = 0; auxiliary = 0; outdoor = 0;
   }
   for (let day = 0; day < 14; day++) {
@@ -295,4 +295,29 @@ test('a cycle straddling an equipment epoch cannot recalibrate the replacement p
     predictedRecoveryEnergyKwh: 4, predictedRecoveryAuxKwh: 1 });
   assert.deepEqual(next.model.energy, before);
   assert.equal(next.model.forecastValidation, undefined);
+});
+
+test('a failing current holdout revokes readiness while retaining coefficients, then good evidence recovers', () => {
+  const { samples, episodeArchive } = observedPlant();
+  const first = fitAdaptiveModel({ samples, model: initialAdaptiveModel(), baselineC: 21, episodeArchive });
+  assert.equal(first.accepted, true);
+  const changed = samples.map((sample, i) => ({ ...sample, indoorC: sample.indoorC
+    + (i >= samples.length - 240 ? Math.min(2, (i - (samples.length - 240)) * 0.05) : 0) }));
+  let checkpoint = restoreAdaptiveCheckpoint(null);
+  Object.assign(checkpoint, { model: first.model, baselineC: 21, samples: changed.slice(0, -1), episodeArchive,
+    cursor: changed.at(-2).timestamp, sinceFit: 11 });
+  const retained = updateAdaptiveLearning(checkpoint, changed.at(-1), { now: changed.at(-1).timestamp });
+  assert.deepEqual(retained.model.parameters, first.model.parameters);
+  assert.equal(retained.model.validation.accepted, false);
+  assert(retained.model.validation.maxErrorC > 0.75);
+  assert.equal(thermalEvidenceReady(retained.model), false);
+  assert.equal(actionEvidenceReady(retained.model, 'reduction'), false);
+  assert.equal(retained.model.lastAcceptedValidation.accepted, true);
+  assert.deepEqual(updateAdaptiveLearning(restoreAdaptiveCheckpoint(JSON.stringify(checkpoint)), changed.at(-1),
+    { now: changed.at(-1).timestamp }), retained, 'Current restart reproduces the evidence revocation exactly');
+  const recovered = fitAdaptiveModel({ ...retained, samples, episodeArchive });
+  assert.equal(recovered.accepted, true);
+  assert.equal(thermalEvidenceReady(recovered.model), true);
+  const insufficient = fitAdaptiveModel({ ...retained, samples: samples.slice(0, 12), episodeArchive: [] });
+  assert.equal(insufficient.incumbent, undefined, 'Insufficient observations do not claim demonstrated failure');
 });

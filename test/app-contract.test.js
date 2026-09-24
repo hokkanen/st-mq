@@ -29,7 +29,7 @@ test('cached outlook never substitutes spot for all-in price or revives stale fo
   assert.equal(unknown.prices.length, 0);
   assert.equal(unknown.spot[0].spotCtPerKwh, -5);
   const priced = assembleOutlook(market, weather, contractWithPeriod(null, rates), now);
-  assert.ok(Math.abs(priced.prices[0].allInCentsPerKWh - 0.215) < 0.000001);
+  assert.ok(Math.abs(priced.prices[0].allInCentsPerKWh - (-5 + .5 + 2 + 2.66) * 1.25) < 0.000001);
   assert.equal(priced.forecast[0].issuedAt, null);
   const stale = assembleOutlook(market, weather, contractWithPeriod(null, rates), now + 37 * 3600000);
   assert.deepEqual(stale.prices, []);
@@ -87,7 +87,8 @@ test('configuration defaults use exact ex-VAT day and night rates', () => {
 
 test('configured rate changes snapshot transfers and VAT without repricing saved historical periods', () => {
   const now = Date.parse('2026-09-07T12:00:00Z');
-  const original = contractWithPeriod(null, rates); // Legacy transfer charge already includes VAT.
+  const original = contractWithPeriod(null, { ...rates,
+    transferRates: { vatIncluded: true, dayCtPerKwh: 3.34, nightCtPerKwh: 1.96, winterDayCtPerKwh: 4.17, otherCtPerKwh: 2.07 } });
   const before = allInPrice(now - 1000, 10, original);
   const configured = reconcileConfiguredContract(original, configuredPriceSettings(), now);
   assert.equal(configured.periods.length, 2);

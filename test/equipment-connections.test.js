@@ -93,11 +93,11 @@ test('garage adapter requires the connection and all device health evidence befo
 
 test('TeslaMate connection follows its vehicle subscription rather than idle charging or recorder health', () => {
   const connection = reception => equipmentConnections({ now: NOW,
-    providers: { teslamate: { enabled: true, status: 'idle', healthy: false, recording: false, reception } },
-    equipment: { topicGroups: [{ id: 'teslamate', topics: [topic('Vehicle subscription', 'teslamate/cars/7/#')] }] } })[0];
+    charging: { vehicleFeeds: [{ id: 'tesla', label: 'Tesla', provider: 'teslamate', topic: 'teslamate/cars/7/#', enabled: true, reception }] },
+    equipment: { topicGroups: [{ id: 'vehicle:tesla', vehicleFeedId: 'tesla', topics: [topic('Vehicle subscription', 'teslamate/cars/7/#')] }] } })[0];
   const live = connection({ brokerConnected: true, subscriptionStatus: 'subscribed', lastLiveAt: NOW - 86_400_000, lastMessageAt: NOW - 86_400_000 });
   assert.equal(live.area, 'other');
-  assert.equal(live.id, 'connection:teslamate:other');
+  assert.equal(live.id, 'connection:vehicle:tesla:other');
   assert.equal(live.label, 'Tesla');
   assert.equal(live.source, 'TeslaMate');
   assert.equal(equipmentConnectionSummary(live).label, 'Connected');
@@ -118,8 +118,9 @@ test('TeslaMate connection follows its vehicle subscription rather than idle cha
 
 test('BMW vehicle MQTT displays source, real reception and feed problems independently of consumption', () => {
   const status = mqtt => ({ now: NOW, input: 'mqtt',
-    charging: { chargers: [{ id: 'charger1', label: 'Charger 1', mqtt }] },
-    equipment: { topicGroups: [{ id: 'charger1-vehicle', label: 'Charger 1 vehicle',
+    charging: { chargers: [{ id: 'charger1', label: 'Charger 1' }], vehicleFeeds: [{ id: 'bmw', label: mqtt.provider === 'bmw-cardata' ? 'BMW' : 'Vehicle',
+      provider: mqtt.provider, topic: 'fixture/bmw/vehicle', reception: mqtt }] },
+    equipment: { topicGroups: [{ id: 'vehicle:bmw', vehicleFeedId: 'bmw', label: 'BMW vehicle',
       topics: [topic('Timestamped vehicle readings', 'fixture/bmw/vehicle')] }] },
     providers: { easee: { status: 'ok' }, teslamate: { enabled: true, status: 'idle' } },
   });
@@ -144,15 +145,14 @@ test('BMW vehicle MQTT displays source, real reception and feed problems indepen
   assert.equal(equipmentConnectionSummary(invalid).state, 'attention');
   assert.equal(equipmentConnectionSummary(invalid).label, 'Invalid vehicle report');
   assert.match(invalid.packetDetail, /previous accepted readings keep their original timestamps/);
-  assert.equal(equipmentSource(row({ ...connected, provider: null })), 'MQTT', 'a charger topic alone does not identify BMW');
+  assert.equal(equipmentSource(row({ ...connected, provider: null })), 'MQTT', 'a topic alone does not identify BMW');
   const electricity = dashboardProviders(status(connected), { now: NOW }).find(item => item.key === 'electricity');
-  assert.equal(electricity.source, 'Easee, Teslamate');
+  assert.equal(electricity.source, 'Easee, Shelly EVSE');
   assert.doesNotMatch(JSON.stringify(electricity), /BMW|CarData|bmw-cardata/);
   const other = status(connected);
-  other.charging.chargers[0] = { id: 'charger2', label: 'Charger 2',
-    mqtt: { connected: true, subscriptionStatus: 'subscribed' },
-    vehicleMqtt: { provider: 'bmw-cardata', brokerConnected: false, subscriptionStatus: 'disconnected' } };
-  other.equipment.topicGroups[0].id = 'charger2-vehicle';
+  other.charging.chargers[0] = { id: 'charger2', label: 'Charger 2' };
+  other.charging.vehicleFeeds[0].usedByChargerId = 'charger2';
+  other.charging.vehicleFeeds[0].reception = { provider: 'bmw-cardata', brokerConnected: false, subscriptionStatus: 'disconnected' };
   const separate = equipmentConnections(other)[0];
   assert.equal(equipmentSource(separate), 'BMW CarData');
   assert.equal(equipmentConnectionSummary(separate).label, 'Disconnected', 'a separate Tesla subscription cannot confirm the BMW feed');

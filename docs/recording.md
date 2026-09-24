@@ -17,7 +17,8 @@ units, quality flags and import provenance remain supported.
 | --- | --- | --- |
 | H66 | Continuous MQTT publications, plus GETALL every 60 seconds | GETALL republishes the gateway's known values; receipt time is not proof of a new sensor measurement. |
 | Easee charger and Equalizer | SignalR observations, sampled as complete cached snapshots every 15 seconds; REST backup and 15-minute reconciliation | Each field retains its last-reported source time. Sampling faster does not force new measurements. |
-| TeslaMate | MQTT on the existing broker; integration checked every five seconds | Changed fields arrive separately. Live health and increasing session energy can confirm unchanged retained charging power. |
+| Shelly EVSE (Charger 2) | MQTT notifications and five-second role/status reads | Source-clocked native accumulated-kWh deltas; requires the configured physical association. |
+| TeslaMate / BMW | Read-only vehicle MQTT | Identity, SoC and vehicle constraints only; never another home-energy contribution. |
 | Indoor/garage sensors | Configured local MQTT topics | The publisher determines its measurement frequency; retained messages are marked explicitly. |
 | FMI outdoor observations, Open-Meteo backup | Every five minutes | A successful fetch can contain the same older station or model timestamp. |
 | FMI/Open-Meteo forecast | Every 30 minutes | Actual forecasts update on provider/model schedules; unchanged content is referenced rather than copied. |
@@ -69,8 +70,8 @@ contact providers or use private credentials.
 
 The electrical dataset contains `ev1_energy_l1` through `ev1_energy_l3` for the
 Easee charger, and `property_energy_l1` through `property_energy_l3` for property import.
-TeslaMate adds one scalar `ev2_energy` for the portable charger; its phase
-distribution is unknown and is never inferred from a phase-count field.
+Shelly EVSE adds scalar `ev2_energy` from its native accumulated meter. The total
+is not copied into invented phase-energy series.
 Each value is an **estimated kWh increment over an explicit interval**, not an
 instantaneous power reading or a cumulative phase meter.
 
@@ -212,99 +213,35 @@ and provenance for replay. They are documented as learning records in the
 database overview; they are not a second adaptive power series. Removing the
 standalone chart series does not change the house learner's input selection.
 
-### TeslaMate portable-charger capture
+### Charger 2 physical capture and vehicle feeds
 
-Enable the connection in the add-on options (or standalone options), using the
-same broker credentials already configured under `mqtt`:
+Charger 2 records only the configured Shelly EVSE's source-timestamped native
+meter deltas. Its association includes the device, MQTT broker/root, commissioned
+model/firmware and phase mapping. Duplicate or older source timestamps do not
+advance energy. A counter reset, implausible jump or excessive gap establishes a
+new baseline and keeps missing coverage visible. Pause/resume does not split a
+physical plug connection. No counter from a vehicle supplies home electricity.
 
-```json
-{
-  "teslamate": {
-    "enabled": true,
-    "car_id": "1",
-    "home_geofence": "Home",
-    "namespace": "",
-    "charger_assignment": "auto",
-    "charger_identification": false,
-    "max_age_seconds": 180
-  }
-}
-```
+TeslaMate and BMW remain read-only vehicle evidence for either physical charger.
+Their feed health, timestamps, plug events and home scope control applicability
+of identity and planning fields. Disabling economic charging never enables a
+second electrical recorder. A Tesla away from home cannot provide local voltage,
+power or C2 history. Equal-power independent physical chargers both count; a
+physical charger plus its vehicle feed counts once.
 
-Restart st-mq after changing permanent options. TeslaMate's own database remains
-its responsibility: st-mq subscribes to MQTT only and never queries PostgreSQL.
-The topic prefix is `teslamate/cars/<car_id>/`, or
-`teslamate/<namespace>/cars/<car_id>/` when a namespace is configured.
-
-Capture requires an exact `Home` geofence match, healthy live charging evidence
-and usable total `charger_power` in kW. Missing or different geofences prevent
-portable-charger recording. Coordinates are not copied or archived. TeslaMate
-publishes separate fields when they change; MQTT receipt time is not an atomic
-vehicle snapshot or a source measurement timestamp. Retained power alone cannot
-start recording. Live health plus increasing `charge_energy_added` can confirm
-steady power after startup; that first partial session is excluded from averages.
-
-The previous accepted total power is integrated up to each message receipt and
-maintenance tick. New power is never applied backwards. Only compact scalar kWh
-intervals and bounded acquisition/session state are retained, with explicit
-estimate, receipt-time and held-value quality. No raw power/current MQTT archive
-is created. The power chart derives **Charger 2** kW from those intervals.
-There is no separate total-interval-energy selector or phase-current series for
-Charger 2. The existing Charger 1 timing comparison retains its original scope.
-**Data & settings → Electricity consumption · Easee, Teslamate** opens these
-total power and energy series alongside the Charger 2 session check. The provider
-row shows the combined electricity group and its source details,
-while diagnostics identify Easee property/Charger 1 readings separately from
-TeslaMate Charger 2 capture. Charger 2's session reference is battery energy
-added, not an input electricity meter. Grouping these sources changes neither
-capture, integration, recording nor model-learning semantics.
-Power fills stack auxiliary heating, Charger 1 and Charger 2 in that order.
-Charger 1 uses the total-property-power color, and Charger 2 uses violet in both
-themes. Hiding a load removes it from the stack; unavailable lower readings leave
-gaps rather than invented zero power. Each tooltip shows the load's own kW.
-
-The installation currently has no solar or battery. Fresh, comparable property
-import bounds Tesla power and the combined separately counted chargers, allowing
-1 kW for rounded Tesla power. New source measurements need five seconds after a
-Tesla power change to settle. Unchanged power is also comparable when the same
-device has confirmed telemetry within 17 minutes and the latest successful poll
-is within 60 seconds; this preserves the original power timestamp. Such held
-power requires a successful poll at least 20 seconds after the Tesla power change
-before comparison. A recent HTTP receipt alone cannot make old power usable.
-An impossible overlap immediately suppresses new Tesla energy and
-records an uncertain gap. A later increase in household power cannot on its own
-revive the suppressed Tesla reading. Stale, disconnected and missing-stop periods
-remain incomplete; restart does not integrate across downtime.
-
-The configured TeslaMate feed belongs to Charger 2 in the common charger model.
-Legacy `charger_assignment: "auto"` uses that mapping for both vehicle readings
-and energy recording, without active identification or temporarily reducing
-Charger 1's current. `charger_identification` does not enable probes in the
-current engine. Charger 2 need not overlap Charger 1 before its SoC, target or
-charging energy can be used.
-
-Set `charger_assignment` to `easee` when the configured TeslaMate vehicle uses
-Charger 1. Its vehicle readings then supplement that charger, and the Easee
-recorder remains the electricity source; no second Charger 2 consumption or
-session comparison is created. `bmw` remains an explicit Charger 2 assignment.
-The physical property-power checks above still reject impossible or uncertain
-energy intervals. A future solar/battery installation requires revisiting that
-import-power bound.
-
-The charging card derives percentage progress from these existing grid-energy
-intervals and the recorder's pending tail. It applies the fixed 7.5%
-charging loss once and preserves the original vehicle reading and timestamp separately.
-Missing energy coverage stays visible instead of being filled by another power
-integrator. See [charge progress](charging.md#charge-progress) for reference,
-restart and disconnection behavior.
+**Electricity consumption · Easee, Shelly EVSE** separates C1/property acquisition
+from physical C2 acquisition. Vehicle logger health is a separate diagnostic.
+The native Shelly role/profile and the hardware checks still required are in
+[provider capabilities](charging-provider-capabilities.md). Old Tesla-as-C2
+configuration/state has no translation path; only the two supported v0.7.5 CSV
+import formats retain backwards compatibility.
 
 ### Diagnostic meter and session checks
 
 Equalizer accumulated import energy (`45`) is the only cumulative counter stored
 in `energy_audits`. Charger lifetime energy (`124`) and running session counters
-(`121`) are neither requested nor recorded. Obsolete experimental charger counter
-rows are removed when the development database opens; completed-session records,
-property counters and original CSV imports remain separate. Duplicate property
+(`121`) are neither requested nor recorded. Incompatible native development databases are rejected; completed-session
+records, property counters and supported CSV imports have separate provenance. Duplicate property
 timestamp/value pairs are not copied. Source timestamps, resets, out-of-order
 counters and availability are retained.
 
@@ -321,7 +258,7 @@ one **Charger 1** and one **Charger 2** entry. Each charger selection plots the
 final reference kWh of its recorded sessions as separate points at the session
 end, directly from the existing session records. No duplicate time-series rows
 are saved. Hollow points identify references excluded from comparison averages;
-tooltips distinguish metered electricity from energy added and show the session
+tooltips identify the physical electricity meter and show the session
 period. No continuous power or lifetime-counter meaning is implied between points.
 
 For Charger 1, Easee observation `129` supplies authoritative finalized session boundaries and
@@ -330,17 +267,13 @@ session flushes pending energy once and compares all three original Easee energy
 series over the same period. Duplicate polls cannot create duplicate sessions or
 force repeated flushes. Conflicting finalized readings do not rewrite a check.
 
-Charger 2 retains one final `charge_energy_added` reference per observed charging
-period, alongside integrated energy and coverage. Its charging-period boundaries
-can differ from an Easee session that includes pauses. Missed starts/stops, counter
-resets, location changes and ambiguous attribution exclude the comparison.
-Terminal messages have a 45-second settling window. A comparable final reference
-must arrive near the end or afterward; an older last-known counter is not treated
-as a confirmed final reading.
-Tesla's reference describes energy added to the battery, not a lifetime electricity
-meter. Its difference includes charging losses and is labelled an **energy
-difference**, not meter accuracy. Neither source's summary implies a measured
-accuracy percentage for incomplete coverage.
+Charger 2 diagnostic checks belong to the physical Shelly association and plug
+epoch. They compare native accumulated-meter deltas with a power-based estimate
+over that exact connection. Missing start/end samples, counter resets or gaps
+exclude the comparison. The native session-energy role is retained as diagnostic
+telemetry until actual reset semantics are commissioned. Tesla battery-added
+energy is never labeled as a C2 electricity-meter reference. Incomplete coverage
+does not imply a measured accuracy percentage.
 
 Recording diagnostics compare a valid counter increment with the sum of committed
 phase-energy estimates over the same source-time period. Missing coverage prevents
@@ -387,12 +320,15 @@ The ten-GB value is a soft rolling annual growth target, not a quota that expire
 in December. It never causes historical deletion or an end-of-year squeeze.
 
 The recorder learns each continuous signal's scale from its observed variation
-and uses a shared normalized error tolerance. That tolerance changes gradually
+and uses a shared normalized change threshold. That tolerance changes gradually
 in response to measured SQLite growth, using smoothed daily and weekly estimates.
 Signals are compared with their last saved value. There are no hand-assigned
 accuracy targets or model-importance weights for those approximated signals.
 Periodic indoor temperatures use exact change recording so coverage always
-refers to the actual reported value.
+refers to the actual reported value. The displayed normalized pre-update change
+compares incoming values with the previous saved value, weighted by elapsed time.
+It includes real signal changes, even when every transition is saved exactly; it
+is not a reconstruction-loss measurement or a continuous-time accuracy bound.
 
 Exact states, settings, alarms, runtime counters and availability transitions have
 semantic recording rules. They are not blurred into fractional states to meet a
@@ -422,15 +358,45 @@ and day boundaries. Partial selection edges and missing periods retain their
 original meaning. Imported CSV history keeps its original timestamps, units,
 quality and provenance.
 
+Historical eligibility requires both the observation's source time and receipt
+time to be at or before the selected as-of time. CSV observations also require a
+completed current-format import whose publication time is at or before that
+cutoff. Eligibility is applied before choosing a price winner, seeding a held
+value, or selecting the first recorded-energy interval. Original imported rows
+remain stored; charts consume the canonical representation produced at import.
+Old development import records with absent publication metadata are unsupported.
+
+Prices retain their publication identity and revision across fetches. Within one
+source document, a later fetch of a lower revision cannot replace a higher one.
+ENTSO-E is primary; Elering fills uncovered periods. Equally authoritative
+conflicting prices leave the overlap unavailable. Omission from a partial
+publication does not establish withdrawal of earlier periods.
+
+Energy is grouped by logical property, Charger 1, or Charger 2 scope. Original
+records with overlapping interval geometries or source identities cannot both
+contribute to one scope: an unresolved overlap is unavailable, and the original
+rows remain for diagnosis. Exact-edge source changes retain additive energy.
+Combined charging timing sums the two physical scopes and measures coverage in
+charger-time; one hour of simultaneous charging is two charger-hours. The separate
+charger breakdowns retain ordinary elapsed-time coverage. Missing Charger 2 data,
+including the absent Charger 2 history in v0.7.5 CSVs, stays unknown.
+
 Database indexes locate the required signals and periods. Phase-energy streams
 are merged in chronological order, avoiding a large intermediate SQL sort.
 Chart point reduction happens in memory: endpoints, extrema and gap markers
-keep the response bounded without determining energy or costs. The worker's
-bounded response cache also lives only in memory. Learning and meter-audit
-calculations continue to use their own committed source inputs.
+keep the response bounded without determining energy or costs. The point target
+sets display buckets, not an exact count of returned marks. A bucket retains up
+to eight gap markers; if that bound is exceeded, its affected interior is marked
+unavailable instead of connecting finite values across a missing period. Power
+selection includes extrema of every subset of auxiliary power and both chargers.
+Interval kWh series use separate marks, with their original interval metadata.
+The worker's bounded response cache also lives only in memory. Meter-audit and
+finalized-session revisions invalidate it, as do newly eligible receipts and
+import publications when the as-of clock changes. Unrelated operational events
+do not invalidate history. Learning and meter-audit calculations continue to use
+their own committed source inputs.
 
-Schema 8 removes the obsolete chart-cache tables. Freed SQLite pages are
-available for reuse; the database file is not automatically vacuumed. Actual
+The current schema has no persisted chart-cache tables. Actual
 annual size and year-query latency must be measured on the deployment; no
 Raspberry Pi 5 timing guarantee follows from desktop tests.
 
@@ -619,19 +585,19 @@ explicit initial seed when adopting an existing model; original discarded source
 polls are not required to reproduce subsequent learning. Older imported history is
 resampled causally with bounded holds, retaining unknown heating/solar information.
 
-The current algorithm is `committed-house-v11-preheat-recovery`. Saved configuration retains
+The current algorithm is `committed-house-v12-passive-thermal`. Saved configuration retains
 source-output assumptions, selected-slab priors, the relative ROOM increase and the
 bounded recovery policy. Changed equipment assumptions invalidate affected
 equipment/cost calibration. Checkpoint digests and journal-prefix identity detect
 accidental corruption and trigger replay. They are integrity checks, not authentication.
-Older algorithm entries remain archival rather than being silently relabeled.
+Only this current native algorithm and segmented sensor-input payload are supported. Older development algorithms and checkpoints are rejected; they are neither archived for execution nor translated.
 
 Restart replays durable entries not yet applied to the checkpoint. The internal
 `replayLearningJournal(store, input, checkpoint, {rebuild: true})` path can rebuild
 from the journal; there is no separate public rebuild CLI. Reproduction requires
-the supported recorded algorithm version. A future algorithm upgrade must keep
-that version interpretable or explicitly migrate it, rather than pretending new
-code reproduces an old model exactly. Later edits to forecast or coverage data do
+the supported recorded algorithm version. Before v1.0.0, incompatible algorithm
+changes require a deliberate fresh development database and optional read-only
+v0.7.5 CSV re-import. There is no older algorithm interpreter or migration. Later edits to forecast or coverage data do
 not change already resolved journal inputs.
 
 The fireplace source is a compact immutable load/removal log. Its selected revision
@@ -658,8 +624,8 @@ line per device:
 See [MQTT equipment](mqtt-equipment.md) for setup, the second garage probe, door
 states, and the device list schema. The connection line selects the handler;
 there is no protocol detection or source fallback. Broker credentials stay in the
-private configuration and topics need not be duplicated there. The old individual
-`mqtt.*_temperature_topic` fields remain accepted during configuration migration.
+private configuration and topics need not be duplicated there. Retired individual
+`mqtt.*_temperature_topic` fields are rejected; use current equipment entries.
 
 All indoor locations are recorded separately; an individual sensor failure does
 not replace the other readings. Existing signals, CSV meanings, reporting metadata
@@ -685,9 +651,9 @@ See [the timing and installation instructions](smartthings-temperature-rule.md#m
 Installing the driver does not add a recorded input or forwarding Rule; configure
 each intended source and its model membership separately.
 
-Standalone options also accept `mqtt.temperature_topics` mapping the signal names
-`indoor_temperature`, `downstairs_temperature`, `bedroom_temperature` and
-`garage_temperature` (rear) and `garage_temperature_2` (front) to topics. The payload can be a JSON
+Current `equipment.devices` entries select a `mqtt:` connection and the canonical
+signal: `indoor_temperature`, `downstairs_temperature`, `bedroom_temperature`,
+`garage_temperature` (rear) or `garage_temperature_2` (front). The payload can be a JSON
 number in Celsius, or an object such as
 `{"value":12.5,"unit":"C","timestamp":"2026-01-01T12:00:00Z"}`. Units `C`, `degC`,
 `°C` and `F` are accepted; a supplied timestamp must include its time zone or be

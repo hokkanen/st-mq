@@ -279,21 +279,41 @@ including native Shelly status, RPC request and temporary reply topics. Generic
 MQTT also exposes last live/retained packet receipt and subscription status, so a
 quiet publisher can be distinguished from a missing broker route. Command payloads,
 broker credentials and native hardware identities are not exposed in diagnostics.
-Additional connection groups list configured H66, legacy temperature, independent
+Additional connection groups list configured H66, independent
 BMW/Tesla vehicle feeds and heating command topics. Vehicle names and providers
 come from configuration, not a charger number or the first arriving packet. The
 BMW feed uses `stmq/vehicles/bmw`; TeslaMate retains its native vehicle subscription.
 Connection health is separate from any current charger association. A reading owned by the equipment catalogue appears
-under its equipment entry instead of being repeated as a legacy temperature feed.
+under its single equipment entry.
 
 Manual controls show current feedback alongside their actions. Ordinary switch
 controls require a fresh state and confirm the new output through live readback;
 they do not schedule a reversal. DHWR circulation retains its configured run length
-and automatic OFF through ST-MQ's durable executor and the MQTT switch integration. Legacy timed tests keep their saved original
+and automatic OFF through ST-MQ's durable executor and the MQTT switch integration. Timed tests keep their saved original
 state and route until restoration completes; configuration cannot discard an
 unresolved restoration. Explicit manual controls can operate equipment in shadow
 mode; automatic control stays subject to the application's mode and controller
 authority.
+
+Switch confirmation requires a newly accepted main-state report after dispatch,
+confirmed subscriptions and the configured availability/heartbeat/required
+readings. An auxiliary update or a conflicting equal-time source report cannot
+confirm a cached switch value. Restoration can still be attempted when the
+starting state is unknown; its result stays unconfirmed until this evidence arrives.
+
+Every actuator publication is bound to its current runtime and broker connection.
+Disconnect, timeout or synchronous authority revocation removes pending commands
+and prevents outgoing-store replay, including QoS 1 packets. The final byte-write
+boundary checks authority again. This cannot retract a command already delivered;
+durable restoration obligations remain until trustworthy physical readback.
+Configured command topics must be distinct from all read/query/availability
+routes and other command owners. Native prefixes reserve their request and write
+endpoints as well. Deliberate shared availability topics remain supported.
+
+Temporary switch tests rearm an early timer callback after a backward wall-clock
+correction. Their persisted wall-clock deadline is a requested duration; repeated
+clock corrections or loss of the controller/broker/device can delay restoration.
+It is not a hardware-enforced maximum relay lifetime.
 
 The **Caravan** fold groups air, energy and dehumidifier controls. **Caravan air**
 records the [Shelly BLU H&T](shelly-blu-ht.md) temperature and relative humidity;
@@ -308,6 +328,13 @@ are checkpointed atomically and survive restart. Daily totals update at acquisit
 cadence in Europe/Helsinki, including daylight-saving boundaries. Outages,
 counter resets and implausible jumps split coverage rather than inventing energy.
 
+Meter checkpoints bind the broker/account route, native hardware identity where
+available, component/counter mapping, units and calibration. A physical meter or
+route change starts a new counter baseline; the first report cannot produce a
+cross-meter increment. Valid earlier daily totals remain visible across current
+segments with partial coverage. Incompatible development checkpoints are rejected,
+and no historical consumption is reconstructed from an unknown association.
+
 The chart includes the home/garage protection probes through **All home
 temperatures**, door states and Caravan interval energy. The separate **Caravan**
 group adds its air temperature, humidity and combined dehumidifier running state
@@ -316,15 +343,18 @@ measurements are excluded from house and garage learning. Tariff status already 
 from heating control; duplicate relay-state datasets are not recorded. The
 [garage adapter](garage-adapter.md) keeps optional native temperatures live-only,
 records qualified dedicated electrical intervals, and retains used learning inputs
-in its own versioned journal. Retired
-development datasets and their recorder caches are removed at startup; immutable
-learning records and imported history are preserved.
+in its current journal. Incompatible development databases require a deliberate
+fresh start; startup never deletes or repairs their data.
 
-## Moving from the earlier configuration
+## Current configuration
 
-The earlier fixed `shelly.garage`, `shelly.heat_savings`, `shelly.caravan` settings and
-individual `mqtt.*_temperature_topic` settings are legacy configuration. Move their
-connections to `equipment.devices` and remove the redundant private topic entries.
-Never leave two acquisition paths configured for the same physical reading.
-Credentials and unrelated private settings do not need to move. The public defaults
-use the direct Shelly route for garage temperatures, tariff control and Caravan.
+Use `equipment.devices` for every equipment route. Retired fixed Shelly roles
+and individual MQTT temperature-topic settings are rejected. The public defaults
+use direct Shelly routes for Garage temperatures, tariff control and Caravan.
+
+Canonical temperature primary readings honor their configured `path`, `scale` and
+`offset`. Convert publisher Fahrenheit to Celsius before applying the affine
+calibration; the configured canonical output unit remains `degC`. A missing
+selected property is invalid even if a different `value` property exists. A
+configured `timestamp_path` is mandatory, and explicit null clocks never become
+receipt time. Cached republications preserve source age for both Garage probes.

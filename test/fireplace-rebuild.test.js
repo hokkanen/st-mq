@@ -9,7 +9,8 @@ import { addFireplace, removeFireplace, FireplaceRebuildManager } from '../src/a
 import { fireplaceLearningContext } from '../src/app/fireplace-inputs.js';
 import { addSensorChange, revertSensorChange } from '../src/app/sensor-changes.js';
 import { sensorLearningContext } from '../src/app/sensor-inputs.js';
-import { appendLearningRecord, applyLearningRecord, replayLearningJournal, LEARNING_ALGORITHM, validLearningCheckpoint } from '../src/app/committed-learning.js';
+import { applyLearningRecord, replayLearningJournal, LEARNING_ALGORITHM, validLearningCheckpoint} from '../src/app/committed-learning.js';
+import { appendLearningRecord } from './helpers/home-learning-fixture.js';
 
 const at = Date.parse('2026-01-01T00:00:00Z');
 const pause = () => new Promise(resolve => setTimeout(resolve, 10));

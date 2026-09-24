@@ -244,10 +244,10 @@ test('phase kWh produces average real power without 230 V and explicitly equival
     near(result.series.charger_power.find(row => row.y !== null).y, 7.2);
     near(result.series.ev1_current_l1.find(row => row.y !== null).y, 1.2 / 0.23);
     assert(result.series.ev1_current_l1.find(row => row.y !== null).equivalentCurrent);
-    near(result.timing.charger.energyKwh, 0.6);
-    assert.equal(result.timing.charger.evidence.energyBasis, 'recorded-intervals');
-    assert.equal(result.timing.charger.evidence.timeBasis, 'recorded-interval-time');
-    const evidence = result.timing.charger.evidence.sources[0];
+    near(result.timing.charger1.energyKwh, 0.6);
+    assert.equal(result.timing.charger1.evidence.energyBasis, 'recorded-intervals');
+    assert.equal(result.timing.charger1.evidence.timeBasis, 'recorded-interval-time');
+    const evidence = result.timing.charger1.evidence.sources[0];
     assert.equal(evidence.key, 'recorded');
     assert.equal(evidence.durationMs, 5 * MINUTE);
     assert.equal(evidence.share, 1);
@@ -267,7 +267,7 @@ test('recorded standby and threshold power stay visible on charts but only charg
     const boundary = start + 3 * MINUTE;
     const result = project(store, range, range.to, [{ start: day.from, end: boundary, totalCtPerKwh: 10 },
       { start: boundary, end: day.to, totalCtPerKwh: 50 }]);
-    const charging = result.timing.charger;
+    const charging = result.timing.charger1;
     near(charging.energyKwh, (0.1001 + 6) / 60);
     near(charging.actualCostEuro, 0.1001 / 60 * 0.1 + 6 / 60 * 0.5);
     assert.equal(charging.coverage, 2 / 5);
@@ -296,11 +296,11 @@ test('exactly 100 W stays idle when uneven recorded durations round the reconstr
     interval(store, start, end, [kwh / 3, kwh / 3, kwh / 3]);
     const result = project(store, { from: start, to: end }, end);
     near(result.series.charger_power[0].y, 0.1);
-    assert.equal(result.timing.charger.value, null);
-    assert.equal(result.timing.charger.coverageDetails.idleMs, 7000);
-    assert.equal(result.timing.charger.coverageDetails.chargingMs, 0);
-    assert.equal(result.timing.charger.coverageDetails.missingPowerMs, 0);
-    assert.equal(result.timing.charger.provisional, false);
+    assert.equal(result.timing.charger1.value, null);
+    assert.equal(result.timing.charger1.coverageDetails.idleMs, 7000);
+    assert.equal(result.timing.charger1.coverageDetails.chargingMs, 0);
+    assert.equal(result.timing.charger1.coverageDetails.missingPowerMs, 0);
+    assert.equal(result.timing.charger1.provisional, false);
   } finally { store.close(); }
 });
 
@@ -313,8 +313,8 @@ test('an interval crossing both selected boundaries is clipped for display and e
     const result = project(store, range);
     assert.equal(result.series.charger_power[0]?.x, range.from);
     near(result.series.charger_power[0]?.y, 6);
-    near(result.timing.charger.energyKwh, 0.2);
-    near(result.timing.charger.coverage, 1);
+    near(result.timing.charger1.energyKwh, 0.2);
+    near(result.timing.charger1.coverage, 1);
   } finally { store.close(); }
 });
 
@@ -324,7 +324,7 @@ test('recorded intervals crossing Finnish midnight contribute to each selected d
     interval(store, day.to - 2 * MINUTE, day.to + 3 * MINUTE, [0.1, 0.2, 0.2]);
     const market = { fetchedAt: day.from, intervals: [{ start: day.from, end: day.to, spotCtPerKwh: 20, unit: 'c/kWh', vatIncluded: false }] };
     const result = getChartData({ store, now: day.to + HOUR, input: 'providers', startDate: '2026-09-08', endDate: '2026-09-08', left: 'power', contract: rates, market });
-    near(result.timingBenefit.charger.energyKwh, 0.2);
+    near(result.timingBenefit.charger1.energyKwh, 0.2);
     near(result.series.charger_power.find(row => row.y !== null)?.y, 6);
   } finally { store.close(); }
 });
@@ -339,7 +339,7 @@ test('gaps, invalid units and incomplete phases contribute no invented total ene
     interval(store, start + 3 * MINUTE, start + 4 * MINUTE, [0.1, 0]);
     interval(store, start + 5 * MINUTE, start + 6 * MINUTE, [0.1, 0, 0]);
     const result = project(store, day);
-    near(result.timing.charger.energyKwh, 0.2);
+    near(result.timing.charger1.energyKwh, 0.2);
     assert(result.series.charger_power.some(row => row.x === start + MINUTE && row.y === null));
     assert(result.series.charger_power.some(row => row.x >= start + 4 * MINUTE && row.x < start + 5 * MINUTE && row.y === null));
   } finally { store.close(); }
@@ -352,12 +352,12 @@ test('price boundary accounting uses all recorded intervals independently of dis
     interval(store, boundary - MINUTE, boundary + MINUTE, [0.1, 0.1, 0]);
     const result = project(store, day, day.to, [{ start: day.from, end: boundary, totalCtPerKwh: 10 },
       { start: boundary, end: day.to, totalCtPerKwh: 50 }]);
-    near(result.timing.charger.energyKwh, 0.2);
-    near(result.timing.charger.actualCostEuro, 0.06);
+    near(result.timing.charger1.energyKwh, 0.2);
+    near(result.timing.charger1.actualCostEuro, 0.06);
   } finally { store.close(); }
 });
 
-test('legacy power stops at recorded energy handover and audit counters cannot change chart totals', () => {
+test('retired native scalar power is unavailable and audit counters cannot change current interval totals', () => {
   const store = new Store(':memory:');
   try {
     const start = day.from + HOUR;
@@ -367,11 +367,11 @@ test('legacy power stops at recorded energy handover and audit counters cannot c
     const market = { fetchedAt: day.from, intervals: [{ start: day.from, end: day.to, spotCtPerKwh: 20, unit: 'c/kWh', vatIncluded: false }] };
     const options = { store, now: day.to, input: 'providers', startDate: '2026-09-08', endDate: '2026-09-08', left: 'power', contract: rates, market };
     const before = getChartData(options);
-    near(before.timingBenefit.charger.energyKwh, 1);
-    assert.equal(before.timingBenefit.charger.evidence.energyBasis, 'recorded-and-legacy');
-    assert.equal(before.timingBenefit.charger.evidence.timeBasis, 'mixed-recorded-time');
-    assert.deepEqual(before.timingBenefit.charger.evidence.sources.map(source => [source.key, source.share]),
-      [['unknown', 0.5], ['recorded', 0.5]]);
+    near(before.timingBenefit.charger1.energyKwh, 0.5);
+    assert.equal(before.timingBenefit.charger1.evidence.energyBasis, 'recorded-intervals');
+    assert.equal(before.timingBenefit.charger1.evidence.timeBasis, 'recorded-interval-time');
+    assert.deepEqual(before.timingBenefit.charger1.evidence.sources.map(source => [source.key, source.share]),
+      [['recorded', 1]]);
     store.energyAudit({ source: 'easee', device: 'invented-property', signal: 'property_import_energy_counter', sourceTime: start, receivedAt: start, value: 900 });
     store.energyAudit({ source: 'easee', device: 'invented-property', signal: 'property_import_energy_counter', sourceTime: start + 5 * MINUTE, receivedAt: start + 5 * MINUTE, value: 1900 });
     const after = getChartData(options);
@@ -387,7 +387,7 @@ test('long recorded intervals retain original bounds, exact coverage and assumed
     interval(store, start, end, [0.9, 0, 0]);
     const range = { from: start + MINUTE, to: end - MINUTE };
     const prices = [{ start: day.from, end: day.to, totalCtPerKwh: 20, assumedPrice: true }];
-    const result = project(store, range, day.to, prices).timing.charger;
+    const result = project(store, range, day.to, prices).timing.charger1;
     near(result.energyKwh, 0.88);
     assert.equal(result.coverageDetails.includedMs, 88 * MINUTE);
     assert.equal(result.coverageDetails.powerMs, 88 * MINUTE);
@@ -399,7 +399,7 @@ test('long recorded intervals retain original bounds, exact coverage and assumed
     assert.equal(result.priceAssumptions.firstAt, range.from);
     assert.equal(result.priceAssumptions.lastAt, range.to);
     assert.equal(result.priceAssumptions.share, 1);
-    const missingPrices = project(store, range, day.to, []).timing.charger;
+    const missingPrices = project(store, range, day.to, []).timing.charger1;
     assert.equal(missingPrices.value, null);
     assert.equal(missingPrices.coverageDetails.incompletePriceMs, 88 * MINUTE);
     assert.equal(missingPrices.coverageDetails.missingPowerMs, 0);
@@ -418,8 +418,8 @@ test('long ranges preserve original power peaks, interval provenance and gaps wi
     }
     const raw = project(store, day), long = project(store, { from: day.from, to: day.to + 8 * 24 * HOUR });
     assert.deepEqual(long.meta, { rows: 87, intervals: 29 });
-    near(long.timing.charger.energyKwh, raw.timing.charger.energyKwh);
-    near(long.timing.charger.actualCostEuro, raw.timing.charger.actualCostEuro);
+    near(long.timing.charger1.energyKwh, raw.timing.charger1.energyKwh);
+    near(long.timing.charger1.actualCostEuro, raw.timing.charger1.actualCostEuro);
     near(Math.max(...long.series.charger_power.map(row => row.y ?? -Infinity)), 9);
     assert(long.series.charger_power.filter(row => row.fromEnergy).every(row => row.intervalEnd - row.intervalStart === MINUTE));
     assert(long.series.charger_power.every(row => !Object.hasOwn(row, 'aggregated')));
@@ -438,9 +438,9 @@ test('arbitrary tariff boundaries use original intervals for the same exact cost
     const prices = [{ start: day.from, end: boundary, totalCtPerKwh: 10 }, { start: boundary, end: day.to, totalCtPerKwh: 50 }];
     const raw = project(store, day, day.to, prices), long = project(store, { from: day.from, to: day.to + 8 * 24 * HOUR }, day.to, prices);
     assert.deepEqual(long.meta, { rows: 90, intervals: 30 });
-    near(long.timing.charger.actualCostEuro, raw.timing.charger.actualCostEuro);
-    near(long.timing.charger.energyKwh, raw.timing.charger.energyKwh);
-    near(long.timing.charger.actualCostEuro, 7 / 60 * 0.1 + (8 * 9 / 60 + 15 * 3 / 60) * 0.5);
+    near(long.timing.charger1.actualCostEuro, raw.timing.charger1.actualCostEuro);
+    near(long.timing.charger1.energyKwh, raw.timing.charger1.energyKwh);
+    near(long.timing.charger1.actualCostEuro, 7 / 60 * 0.1 + (8 * 9 / 60 + 15 * 3 / 60) * 0.5);
   } finally { store.close(); }
 });
 
@@ -451,7 +451,7 @@ test('mixed recording durations retain each original interval without double cou
     interval(store, start, start + 15 * MINUTE, [0.1, 0.2, 0.2]);
     for (let minute = 15; minute < 30; minute++) interval(store, start + minute * MINUTE, start + (minute + 1) * MINUTE, [0.01, 0.02, 0.02]);
     const result = project(store, { from: day.from, to: day.to + 8 * 24 * HOUR });
-    near(result.timing.charger.energyKwh, 0.5 + 15 * 0.05);
+    near(result.timing.charger1.energyKwh, 0.5 + 15 * 0.05);
     assert.deepEqual(result.meta, { rows: 48, intervals: 16 });
     assert(result.series.charger_power.some(row => row.intervalStart === start && row.intervalEnd === start + 15 * MINUTE));
     assert(result.series.charger_power.some(row => row.intervalStart === start + 15 * MINUTE && row.intervalEnd === start + 16 * MINUTE));
@@ -465,14 +465,14 @@ test('partial selected edges clip drawing and cost while retaining the original 
     for (let minute = 0; minute < 30; minute++) interval(store, start + minute * MINUTE, start + (minute + 1) * MINUTE, [0.1, 0, 0]);
     const result = project(store, { from: start + 90_000, to: day.to + 8 * 24 * HOUR });
     assert.deepEqual(result.meta, { rows: 87, intervals: 29 });
-    near(result.timing.charger.energyKwh, 2.85);
+    near(result.timing.charger1.energyKwh, 2.85);
     assert.equal(result.series.charger_power[0].x, start + 90_000);
     assert.equal(result.series.charger_power[0].intervalStart, start + MINUTE);
     assert.equal(result.series.charger_power[0].intervalEnd, start + 2 * MINUTE);
   } finally { store.close(); }
 });
 
-test('energy index scans merge chronologically without a full-range SQL sort or mixing incomplete device cohorts', () => {
+test('energy geometry index streams cohorts without a full-range SQL sort or mixing incomplete devices', () => {
   const store = new Store(':memory:');
   try {
     const start = day.from + HOUR, now = start + 5 * MINUTE;
@@ -492,20 +492,20 @@ test('energy index scans merge chronologically without a full-range SQL sort or 
     const plans = [];
     const facade = { db: { prepare(sql) {
       const statement = store.db.prepare(sql);
-      if (!sql.includes('source_time>=?')) return statement;
+      if (!sql.includes('INDEXED BY observations_energy_geometry')) return statement;
       return { iterate(...parameters) {
         plans.push(store.db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...parameters));
         return statement.iterate(...parameters);
       } };
     } } };
     const result = project(facade, day, now);
-    near(result.timing.charger.energyKwh, 0.45);
-    near(result.timing.charger.actualCostEuro, 0.09);
+    near(result.timing.charger1.energyKwh, 0.45);
+    near(result.timing.charger1.actualCostEuro, 0.09);
     assert.equal(result.meta.rows, 21, 'Simulation and future receipt rows stay outside the physical query');
     assert(result.series.charger_power.some(row => row.x === start + 3 * MINUTE && row.y === null));
     assert(result.series.property_power.some(row => Math.abs(row.y - 36) < 1e-10));
-    assert.equal(plans.length, ENERGY_SIGNALS.length, 'Each phase or total-only energy series, including caravan, uses an index scan');
-    assert(plans.every(plan => plan.some(row => /SEARCH observations USING INDEX observations_signal_time/.test(row.detail))));
+    assert.equal(plans.length, 1, 'A bounded geometry index orders all original energy cohorts');
+    assert(plans.every(plan => plan.some(row => /SEARCH observations USING INDEX observations_energy_geometry/.test(row.detail))));
     assert(plans.every(plan => plan.every(row => !/TEMP B-TREE/.test(row.detail))), 'The default original-energy path must not sort all selected rows');
   } finally { store.close(); }
 });

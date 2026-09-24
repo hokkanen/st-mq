@@ -2,9 +2,9 @@
 export function seedChartFixture(store, now) {
   const minute = 60_000;
   const start = Math.floor((now - 40 * 60 * minute) / (5 * minute)) * 5 * minute;
-  const add = (signal, value, unit, at, source = 'simulation', device = 'visual-test-house') => store.observation({
+  const add = (signal, value, unit, at, source = 'simulation', device = 'visual-test-house', raw = {}) => store.observation({
     source, device, signal, value, unit, sourceTime: at, receivedAt: at,
-    quality: ['simulated'], raw: { verified: 'Synthetic visual test fixture', usableForControl: true },
+    quality: ['simulated'], raw: { verified: 'Synthetic visual test fixture', usableForControl: true, ...raw },
   });
   store.transaction(() => {
     for (let at = start, i = 0; at <= now; at += 5 * minute, i++) {
@@ -26,7 +26,10 @@ export function seedChartFixture(store, now) {
       add('dhw_routing', cycle >= 34 ? 1 : 0, 'state', at);
       add('operating_mode', cycle >= 18 && cycle < 27 ? 4 : 1, 'state', at);
       add('solar_radiation', Math.max(0, 300 * Math.sin(i / 15)), 'W/m²', at);
-      add('requested_heat_mode', cycle >= 18 && cycle < 27 ? 0 : i % 12 === 0 ? 60 : 15, 'legacy_command', at);
+      add('controller_phase', cycle >= 18 && cycle < 27 ? 2 : 0, 'state', at,
+        'controller', 'simulated', { expiresAt: at + 5 * minute });
+      if (i % 12 === 0) add('dhwr_request', 1, 'state', at,
+        'controller', 'simulated', { expiresAt: at + 10 * minute });
       add('spot_price', -2 + Math.round((1 + Math.sin(i / 15)) * 30) / 2, 'c/kWh_ex_vat', at);
       if (i % 12 === 0) for (const [signal, value, unit] of [['learning_profit', Math.sin(i / 60), 'EUR/cycle'],
         ['learning_aux_profit', Math.sin(i / 60) - 0.3, 'EUR/cycle'], ['learning_recovery_error', 1 / (1 + i / 48), 'EUR/cycle'], ['learning_indoor_temperature', 21.1, 'degC']])

@@ -10,13 +10,13 @@ const day = chartRange({ startDate: '2026-01-15', now: Date.parse('2026-01-16T00
 
 /** Keep real SQLite statements/iterators underneath the injected failures so
  * this proves that error unwinding closes active database cursors. */
-function trackedDatabase(db, accepts, failure, originalError, cleanupFailure = true) {
+function trackedDatabase(db, accepts, failure, originalError, cleanupFailure = true, failureAt = 3) {
   let prepared = 0, opened = 0, closed = 0;
   const pending = new Set();
   const facade = { prepare(sql) {
     if (!accepts(sql)) return db.prepare(sql);
     const ordinal = ++prepared;
-    if (failure === 'prepare' && ordinal === 3) throw originalError;
+    if (failure === 'prepare' && ordinal === failureAt) throw originalError;
     const statement = db.prepare(sql);
     return new Proxy(statement, { get(target, key) {
       if (key !== 'iterate') return typeof target[key] === 'function' ? target[key].bind(target) : target[key];
@@ -27,7 +27,7 @@ function trackedDatabase(db, accepts, failure, originalError, cleanupFailure = t
         const iterator = {
           [Symbol.iterator]() { return this; },
           next() {
-            if (!primed && failure === 'prime' && ordinal === 3) throw originalError;
+            if (!primed && failure === 'prime' && ordinal === failureAt) throw originalError;
             primed = true;
             const item = actual.next();
             if (item.done) pending.delete(iterator);
@@ -53,18 +53,17 @@ for (const failure of ['prepare', 'prime', 'projection']) test(`energy cursors c
     store.observation({ source: 'easee', device: `invented-${prefix}`, signal: `${prefix}_energy_l${phase}`,
       value: 0.1, unit: 'kWh', sourceTime: day.from + minute * MINUTE, receivedAt: day.from + minute * MINUTE,
       quality: ['estimated'], raw: { intervalStart: day.from + (minute - 1) * MINUTE, intervalEnd: day.from + minute * MINUTE } });
-  for (const [source, signal] of [['teslamate', 'ev2_energy'], ['mqtt-equipment', 'caravan_energy']])
+  for (const [source, signal] of [['shelly-evse', 'ev2_energy'], ['mqtt-equipment', 'caravan_energy']])
     for (const minute of [1, 2]) store.observation({ source, device: `invented-${signal}`, signal,
     value: 0.1, unit: 'kWh', sourceTime: day.from + minute * MINUTE, receivedAt: day.from + minute * MINUTE,
     quality: ['estimated'], raw: { intervalStart: day.from + (minute - 1) * MINUTE, intervalEnd: day.from + minute * MINUTE } });
   const originalError = new Error(`Synthetic energy ${failure} failure`);
-  const tracker = trackedDatabase(store.db, sql => sql.includes('FROM observations INDEXED BY observations_signal_time')
-    && sql.includes('source_time>=?'), failure, originalError);
+  const tracker = trackedDatabase(store.db, sql => sql.includes('FROM observations INDEXED BY observations_energy_geometry'), failure, originalError, true, 1);
   assert.throws(() => addRecordedEnergy({ store: { db: tracker.facade }, range: day, now: day.to,
     input: 'providers', envelopes: { charger_power: { add() { throw originalError; } } }, timing: { addEnergy() {} } }),
   error => error === originalError);
   assert.equal(tracker.pending.size, 0);
-  assert.equal(tracker.counts().opened, failure === 'prepare' ? 2 : failure === 'prime' ? 3 : ENERGY_SIGNALS.length);
+  assert.equal(tracker.counts().opened, failure === 'prepare' ? 0 : 1);
   assert.equal(tracker.counts().closed, tracker.counts().opened);
 });
 
@@ -77,10 +76,10 @@ for (const failure of ['prepare', 'prime', 'processing']) test(`scalar cursors c
       value: 20, unit: 'degC', sourceTime: day.from, receivedAt: day.from, quality: [] });
   // Keep the surrounding merge cursors active while a native scalar fails.
   // The imported row and coverage transition follow the first native reading.
-  const importId = Number(store.db.prepare(`INSERT INTO imports(kind,sha256,path,status,started_at)
-    VALUES('stmq','cursor-cleanup-fixture','/invented/chart.csv','complete',?)`).run(day.from).lastInsertRowid);
+  const importId = Number(store.db.prepare(`INSERT INTO imports(kind,sha256,path,status,started_at,completed_at)
+    VALUES('stmq','cursor-cleanup-fixture','/invented/chart.csv','complete',?,?)`).run(day.from,day.from).lastInsertRowid);
   const importedAt = day.from + MINUTE;
-  store.db.prepare('INSERT INTO import_rows(import_id,row_number,source_time,raw,quality) VALUES(?,1,?,?,?)')
+  store.db.prepare("INSERT INTO import_rows(import_id,row_number,source_time,raw,quality,canonical) VALUES(?,1,?,?,?,'[]')")
     .run(importId, importedAt, `${importedAt / 1000},8,60,21,12,0`, '[]');
   store.db.prepare(`INSERT INTO recorder_coverage(source,device,signal,status,start_at,end_at,samples)
     VALUES('fixture-temperature','invented-house','indoor_temperature','failed',?,?,1)`)
@@ -88,7 +87,7 @@ for (const failure of ['prepare', 'prime', 'processing']) test(`scalar cursors c
   const originalError = new Error(`Synthetic scalar ${failure} failure`);
   const tracker = trackedDatabase(store.db, sql => sql.includes('FROM observations o INDEXED BY observations_signal_time')
     && sql.includes('WHERE o.signal=? AND o.source_time>=?'), failure, originalError);
-  const imports = trackedDatabase(tracker.facade, sql => sql.includes('SELECT r.raw,r.source_time,r.row_number,i.id,i.kind,i.started_at')
+  const imports = trackedDatabase(tracker.facade, sql => sql.includes('SELECT r.canonical,r.source_time,r.row_number,i.id,i.kind,i.started_at')
     && sql.includes('FROM import_rows r JOIN imports'), 'observe', originalError, false);
   const coverage = trackedDatabase(imports.facade, sql => sql.includes('FROM transitions t LEFT JOIN observations'), 'observe', originalError, false);
   assert.throws(() => getChartData({ store: { db: coverage.facade }, input: 'offline',

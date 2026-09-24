@@ -10,7 +10,8 @@ import { renderRecording, renderEnergyAudits, recordingOverviewRefresh } from '.
 import { learningOverview, garageLearningOverview, settingsReloadScope } from './dashboard-status.js';
 import { createFireplacePanel } from './fireplace.js';
 import { createSensorChangePanel } from './sensor-changes.js';
-import { applicationUrl, usesHomeAssistantLogin, authenticationMessage, createPollingRequest } from './network.js';
+import { applicationUrl, usesHomeAssistantLogin, authenticationMessage, createPollingRequest,
+  fetchJsonResponse, createEventStream, createCommunicationWatch } from './network.js';
 import { isReadOnlyReplica, renderReplicaStatus, replicaSnapshotKey, renderInstanceRole, pairPanelView } from './replica-status.js';
 import { createPairPanel, isPairManagementRequest } from './pair-status.js';
 import { createEquipmentPanel, dhwrReadingSummary } from './equipment.js';
@@ -36,7 +37,6 @@ for (const summary of document.querySelectorAll('.zone-summary')) {
 const ingress = usesHomeAssistantLogin();
 let token = ingress ? '' : sessionStorage.getItem('stmq-token') ?? '';
 let lastStatus;
-let lastEvent = 0;
 let historyChart;
 let temporaryBusy = false;
 let heatingTestBusy = false;
@@ -79,9 +79,8 @@ async function api(path, data, options = {}) {
     const error = new Error(lastStatus ? 'This replica is read-only. Make changes on the primary computer.' : 'Wait for the installation status before making changes.');
     error.status = 403; throw error;
   }
-  const response = await fetch(applicationUrl(path), { signal: options.signal, method: data === undefined ? 'GET' : 'POST', headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(data === undefined ? {} : { 'Content-Type': 'application/json' }) }, ...(data === undefined ? {} : { body: JSON.stringify(data) }) });
+  const { response,result } = await fetchJsonResponse(applicationUrl(path), { signal:options.signal, method: data === undefined ? 'GET' : 'POST', headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(data === undefined ? {} : { 'Content-Type': 'application/json' }) }, ...(data === undefined ? {} : { body: JSON.stringify(data) }) });
   if (response.status === 401) { $('auth').hidden = ingress; const error = new Error(authenticationMessage(ingress)); error.status = response.status; throw error; }
-  const result = await response.json();
   if (!response.ok) { const error = new Error(result.error ?? 'Request failed'); error.status = response.status; throw error; }
   $('auth').hidden = true;
   return result;
@@ -625,10 +624,9 @@ function render(s) {
   fireplacePanel.update(s.fireplace, s.now);
   $('updated').textContent = `Updated ${time(s.now)}`;
 }
-async function events() {
-  const rows = await api(`/api/events?after=${lastEvent}&limit=50`);
+const eventStream = createEventStream({ request: (after,options) => api(`/api/events?after=${after}&limit=50`,undefined,options),
+  reset: () => $('events').replaceChildren(), append: rows => {
   for (const event of rows) {
-    lastEvent = Math.max(lastEvent, event.id);
     const li = document.createElement('li');
     const timestamp = document.createElement('time');
     timestamp.textContent = time(event.at);
@@ -636,8 +634,15 @@ async function events() {
     $('events').prepend(li);
   }
   while ($('events').children.length > 100) $('events').lastChild.remove();
+} });
+const events = () => eventStream.poll();
+const communication = createCommunicationWatch();
+const requestStatus = createPollingRequest(options => api('/api/status',undefined,options));
+function checkCommunication() {
+  const state = communication.status();
+  $('connection').title = `Last successful status response: ${state.available ? `${Math.floor(state.ageMs/1000)} seconds ago` : 'not yet received'}.`;
+  if (state.stale) $('connection').textContent = 'Monitoring is stale. Waiting for an installation status response.';
 }
-const requestStatus = createPollingRequest(() => api('/api/status'));
 async function refresh({ forceChart = false, background = false } = {}) {
   if (temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy || equipmentBusy) return;
   const request = requestStatus({ background });
@@ -646,15 +651,16 @@ async function refresh({ forceChart = false, background = false } = {}) {
   try {
     const s = await request;
     if (sequence !== refreshSequence) return;
+    communication.received();
     const replica = render(s);
-    if (replica && !replica.available) return;
-    const snapshot = replicaSnapshotKey(s);
-    const replaced = replica && snapshot !== lastReplicaSnapshot;
+    const snapshot = replica ? replicaSnapshotKey(s) ?? 'replica-unavailable' : 'primary';
+    const replaced = snapshot !== lastReplicaSnapshot;
     if (replaced) {
-      lastEvent = 0; $('events').replaceChildren(); auditFetchedAt = 0;
+      eventStream.reset(snapshot); auditFetchedAt = 0;
       void refreshRecordingOverview({ force: true });
     }
     lastReplicaSnapshot = snapshot;
+    if (replica && !replica.available) return;
     await Promise.all([historyChart.refresh(s, { force: forceChart || replaced }), events()]);
   } catch (error) { if (sequence === refreshSequence) { pairPanel.unavailable(); showError(error); } }
 }
@@ -833,6 +839,9 @@ $('energy-audit-details').addEventListener('toggle',refreshAudits);
 setInterval(refreshAudits,60_000);
 historyChart = createHistoryChart({ api: (path, options) => api(path, undefined, options) });
 document.addEventListener('themechange', event => historyChart.updateTheme(event.detail.theme));
-await refresh();
 setInterval(() => refresh({ background: true }), 15_000);
 setInterval(refreshPairing, 3_000);
+setInterval(checkCommunication, 1000);
+window.addEventListener('online', () => void refresh());
+document.addEventListener('visibilitychange', () => { checkCommunication(); if (!document.hidden) void refresh(); });
+void refresh();

@@ -1,13 +1,14 @@
+import { weatherAcquisitionIdentity } from './weather-identity.js';
 import { PROVIDER_CURRENT_ATTENTION_MS, PROVIDER_TEMPERATURE_ATTENTION_MS } from '../domain/reading-freshness.js';
 import { join } from 'node:path';
 import { createHttp, providerFailureCode } from './http.js';
 import { fileTokenStore } from './token-store.js';
 import { createDeviceProviders } from './devices.js';
 import { fetchMarket } from './market.js';
+import { resolveMarketIntervals } from '../domain/market-authority.js';
 import { fetchWeather, fetchOutdoorTemperature } from './weather.js';
 import { ElectricityAccumulator } from '../domain/electricity.js';
 import { recordEaseeSessionChecks } from './easee-session-checks.js';
-import { createChargerIdentification } from './charger-identification.js';
 
 const MINUTE = 60_000;
 const present = value => typeof value === 'string' && value.trim().length > 0;
@@ -54,11 +55,10 @@ function observationQuality(name, rows, now) {
 }
 const savedError = error => ['incomplete-market-coverage', 'missing-or-invalid-observations', 'provider-request-failed'].includes(error)
   ? error : error ? safeFailure(error) : null;
-const safeFailure = value => typeof value === 'string' && /^HTTP[-_][1-5]\d{2}$/i.test(value)
-  ? value.toUpperCase().replace('_', '-') : providerFailureCode({ code: value });
+const safeFailure = value => typeof value === 'string' && /^HTTP-[1-5]\d{2}$/.test(value)
+  ? value : providerFailureCode({ code: value });
 const currentError = value => value === 'missing-or-invalid-observations' ? value : value ? safeFailure(value) : null;
 const currentIssues = (group, flags) => [...new Set((Array.isArray(flags) ? flags : [])
-  .map(flag => flag === 'stale' ? `${group}_stale` : flag)
   .filter(flag => CURRENT_ISSUES.has(flag)
     && (flag !== 'charger_stale' || group === 'charger')
     && (!['property_stale', 'all_zero_property_current'].includes(flag) || group === 'property')))];
@@ -71,21 +71,14 @@ function observationFailure(rows) {
 }
 function savedCurrentReadings(previous, configured) {
   const candidate = previous?.currentReadings;
-  const saved = Object.keys(CURRENT_GROUPS).some(group => candidate?.[group]
-    && typeof candidate[group] === 'object' && !Array.isArray(candidate[group])) ? candidate : null;
-  const issues = qualityIssues(previous?.qualityIssues);
-  // Older caches cannot identify which device had a generic quality/download
-  // failure. Leave those descriptions unscoped until the next successful poll.
-  if (!saved && (previous?.error || issues.some(flag => !['charger_stale', 'property_stale', 'all_zero_property_current'].includes(flag)))) return undefined;
+  if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return undefined;
   const groups = Object.keys(CURRENT_GROUPS).filter(group => configured.includes(group)
-    || saved?.[group] && typeof saved[group] === 'object' && !Array.isArray(saved[group])
-    || issues.includes(`${group}_stale`) || group === 'property' && issues.includes('all_zero_property_current'));
+    && candidate[group] && typeof candidate[group] === 'object' && !Array.isArray(candidate[group]));
+  if (!groups.length) return undefined;
   return Object.fromEntries(groups.map(group => {
-    const row = saved?.[group];
-    return [group, { qualityIssues: currentIssues(group, row?.qualityIssues ?? issues),
-      error: currentError(row?.error),
-      lastSuccessAt: validSourceTime(row?.lastSuccessAt) ? row.lastSuccessAt
-        : !row && !previous?.error && validSourceTime(previous?.lastSuccessAt) ? previous.lastSuccessAt : null }];
+    const row = candidate[group];
+    return [group, { qualityIssues: currentIssues(group, row.qualityIssues),
+      error: currentError(row.error), lastSuccessAt: validSourceTime(row.lastSuccessAt) ? row.lastSuccessAt : null }];
   }));
 }
 function currentReadings(rows, configured, previous, now) {
@@ -165,9 +158,7 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
   devices, market = fetchMarket, weather = fetchWeather, outdoor = fetchOutdoorTemperature,
   temperatureProvider, automatic = true, canControl = () => true, streamFactory } = {}) {
   const connections = config.connections ?? {};
-  const identifyCharger = connections.teslamate?.enabled === true
-    && connections.teslamate?.chargerIdentification === true && connections.teslamate?.chargerAssignment === 'auto';
-  http ??= createHttp({ allowChargerIdentification: identifyCharger, allowChargerScheduling: true, canControl });
+  http ??= createHttp({ allowChargerScheduling: true, canControl });
   const location = configuredLocation(connections);
   const ownsDevices = !devices;
   // This poll supplies the FMI → Open-Meteo weather fallbacks. The engine
@@ -180,32 +171,7 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
     tokenStore: fileTokenStore(join(config.dataDir, 'easee-tokens.json'), connections.easee ?? {}) });
   if (connections.easee?.charger_id && devices.chargerScheduleControl)
     engine.charging?.setAdapter('charger1', devices.chargerScheduleControl());
-  const identificationControl = identifyCharger && engine.teslamate && devices.chargerIdentificationControl
-    ? devices.chargerIdentificationControl() : null;
-  const identification = identificationControl ? createChargerIdentification({ clock, control: {
-    read: args => identificationControl.read(args),
-    limit: args => {
-      if (!canControl() || args.signal?.aborted) throw new Error('Controller authority was revoked');
-      if (engine.charging && !engine.charging.canIdentifyVehicle?.()) throw new Error('Charging schedule has priority over vehicle identification');
-      return identificationControl.limit({ ...args, requireUnscheduled: Boolean(engine.charging),
-        canMutate: () => !engine.charging || engine.charging.canIdentifyVehicle?.() === true });
-    },
-  } }) : null;
-  if (identification) engine.chargerIdentification = identification;
-  let identificationTimer;
-  const runIdentification = async () => {
-    if (!identification) return;
-    if (!canControl()) { identification.stop(); return; }
-    // A diagnostic current restriction must not become a second controller for
-    // a native charging schedule or defeat a manual app override.
-    if (engine.charging && !engine.charging.canIdentifyVehicle?.() && !identification.status().active) return;
-    try {
-      await identification.tick({ tesla: engine.teslamate?.identificationSnapshot(),
-        charger: engine.electricitySnapshot?.charger }, clock());
-      engine.teslamate?.tick(clock());
-      engine.charging?.tick({ force: Boolean(identification.status().verdict) });
-    } catch { /* Only transient status, never a database experiment/error log. */ }
-  };
+  // Vehicle identification is continuous passive runtime work. No Easee current probe.
   const easee = connections.easee ?? {}, cadence = config.acquisition ?? {};
   const readTemperatures = typeof temperatureProvider === 'function' ? temperatureProvider
     : typeof devices.temperatures === 'function' ? args => devices.temperatures(args) : null;
@@ -229,13 +195,17 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
   };
   const health = {}, pending = new Map(), cancellation = new AbortController();
   const saved = store.getState('providers:health') ?? {};
+  const weatherIdentity = weatherAcquisitionIdentity(connections);
   const now = clock();
   for (const [name, job] of Object.entries(definitions)) {
-    const previous = saved[name];
+    const weatherJob = ['weather', 'outdoor'].includes(name);
+    const savedJob = saved[name];
+    const previous = weatherJob && savedJob?.acquisitionIdentity !== weatherIdentity
+      ? { sourceBackoff: Object.fromEntries(Object.entries(savedJob?.sourceBackoff ?? {}).filter(([, value]) => value.shared === true)) } : savedJob;
     // Honor bounded retry/cadence state on ordinary restarts, never stale running state.
     const due = Number.isFinite(previous?.nextAttemptAt) && previous.nextAttemptAt <= now + 24 * 60 * MINUTE
       ? Math.max(now, previous.nextAttemptAt) : now;
-    health[name] = { status: job.enabled ? (COMPLETED_STATES.has(previous?.status) ? previous.status : 'waiting') : 'not-configured',
+    health[name] = { ...(weatherJob ? { acquisitionIdentity: weatherIdentity } : {}), status: job.enabled ? (COMPLETED_STATES.has(previous?.status) ? previous.status : 'waiting') : 'not-configured',
       lastAttemptAt: previous?.lastAttemptAt ?? null, lastSuccessAt: previous?.lastSuccessAt ?? null,
       nextAttemptAt: job.enabled ? due : null, failures: Math.min(10, Math.max(0, previous?.failures ?? 0)),
       error: job.enabled ? savedError(previous?.error) : null,
@@ -250,21 +220,13 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
           shared: state.shared === true || /HTTP-(401|403|429)/.test(safeFailure(state.error)) }])) };
     if (name === 'easee' && job.enabled) {
       const state = health[name];
-      if (configuredCurrents.length === 1 && state.qualityIssues.includes('stale')) {
-        const flag = `${configuredCurrents[0]}_stale`;
-        state.qualityIssues = [...new Set(state.qualityIssues.map(issue => issue === 'stale' ? flag : issue))];
-        if (state.staleSourceTimes.stale) {
-          state.staleSourceTimes[flag] = Math.min(state.staleSourceTimes[flag] ?? Infinity, state.staleSourceTimes.stale);
-          delete state.staleSourceTimes.stale;
-        }
-      }
-      const readings = savedCurrentReadings({ ...previous, qualityIssues: state.qualityIssues }, configuredCurrents);
+      const readings = savedCurrentReadings(previous, configuredCurrents);
       if (readings) {
         state.currentReadings = readings;
-        if (previous?.currentReadings) state.qualityIssues = qualityIssues(Object.values(readings).flatMap(row => row.qualityIssues));
+        state.qualityIssues = qualityIssues(Object.values(readings).flatMap(row => row.qualityIssues));
       }
       // Idle charger age and phase reporting times never require attention,
-      // including while waiting for a scheduled poll after an upgrade/restart.
+      // including while waiting for a scheduled poll after restart.
       if (health[name].status === 'degraded' && !health[name].error
         && !health[name].qualityIssues.some(flag => flag !== 'charger_stale')
         && !Object.values(readings ?? {}).some(row => row.error || row.qualityIssues.some(flag => flag !== 'charger_stale')))
@@ -339,15 +301,16 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
       }
       const skipSources = Object.entries(state.sourceBackoff).filter(([, value]) => value.nextAttemptAt > at).map(([source]) => source);
       const epoch = name === 'easee' ? devices.electricityEpoch?.() : undefined;
-      const result = await job.run({ now: at, signal: cancellation.signal, skipSources });
+      const result = await job.run({ now: at, clock, signal: cancellation.signal, skipSources });
       if (closed || !canControl()) return;
       if (name === 'easee' && epoch !== devices.electricityEpoch?.())
         throw Object.assign(new Error('Electrical acquisition was interrupted'), { code: 'provider-request-aborted' });
+      if (name === 'weather') result.acquisitionIdentity = weatherIdentity;
+      if (name === 'outdoor') for (const row of result) row.raw = { ...row.raw, acquisitionIdentity: weatherIdentity };
       noteAcquisition(state, result?.acquisition, clock());
       state.source = result?.acquisition?.selected ?? result?.source ?? (Array.isArray(result) ? result.find(row => row.value !== null)?.source : null) ?? state.source;
       // SQLite rollback must also restore the in-memory view used by decisions.
-      const latestBefore = Object.assign(Object.create(Object.getPrototypeOf(engine.latest)), engine.latest);
-      const outdoorBefore = Object.assign(Object.create(null), engine.outdoorCandidates);
+      const ingestionBefore = engine.ingestionCheckpoint();
       const electricityBefore = electricity.checkpoint();
       try { store.transaction(() => {
         if (job.snapshot) {
@@ -361,9 +324,14 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
             && priorSnapshot.issuedAt === nextSnapshot.issuedAt;
           // Successful re-download is availability evidence, not a new forecast
           // issue. An unchanged forecast keeps its original unknown-issue age.
+          const marketRows = name === 'market' ? resolveMarketIntervals([
+            ...(previous?.authorityIntervals ?? []), ...(result.intervals ?? []).map(row => ({ ...row,fetchedAt:result.fetchedAt }))].filter(row => row.fetchedAt <= clock()),
+          { from: clock() - 24 * 60 * MINUTE, to: clock() + 7 * 24 * 60 * MINUTE }) : null;
           store.setState(`provider:${name}`, unchanged
             ? { ...previous, snapshotId, acquisition: result.acquisition, lastCheckedAt: result.fetchedAt }
-            : name === 'weather' ? cacheWeather(previous, result, snapshotId, clock()) : { ...result, snapshotId });
+            : name === 'weather' ? cacheWeather(previous, result, snapshotId, clock())
+              : { ...result, snapshotId, authorityIntervals: marketRows, intervals: marketRows.filter(row => !row.authorityConflict),
+                authorityConflict: marketRows.some(row => row.authorityConflict) });
           if (name === 'market' && result.coverage && (!result.coverage.completeToday || result.coverage.gaps)) failure = 'incomplete-market-coverage';
           if (name === 'market' && Array.isArray(result.intervals)) {
             missingTomorrow = Math.max(0, ...result.intervals.map(row => row.end)) < at + 24 * 60 * MINUTE;
@@ -398,7 +366,7 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
           }
         }
       }); } catch (error) {
-        engine.latest = latestBefore; engine.outdoorCandidates = outdoorBefore;
+        engine.restoreIngestionCheckpoint(ingestionBefore);
         electricity = new ElectricityAccumulator({ ...integrationOptions, checkpoint: electricityBefore });
         engine.recorder?.reload?.();
         throw error;
@@ -467,9 +435,7 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
     if (name === 'easee') streamHealth();
     store.setState('providers:health', health);
     if (electricityCommitted) {
-      try { engine.teslamate?.tick(clock()); }
-      catch { store.event('teslamate-acquisition-error', { reason: 'property-check-failed' }, clock()); }
-      void runIdentification();
+      engine.charging?.tick({now:clock(),force:true});
     }
   }
 
@@ -485,26 +451,19 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
     return Promise.allSettled([...pending.values()]);
   }
   if (automatic) {
-    // Ordinary acquisition stays read-only. The separately enabled, RAM-only
-    // identification coordinator owns the bounded charger control capability.
+    // Acquisition publishes durable readings before the passive charging observer runs.
     void runDue();
     timer = setInterval(() => { void runDue(); }, Math.min(1000, ...Object.values(definitions).filter(job => job.enabled).map(job => job.period)));
     timer.unref();
-    if (identification) {
-      identificationTimer = setInterval(() => { void runIdentification(); }, 5000);
-      identificationTimer.unref();
-    }
+
   }
   return {
     runDue,
-    runIdentification,
     async close() {
       if (closed) return;
       if (ownsDevices && devices.streamStatus?.())
         interruptElectricity([easee.charger_id, easee.equalizer_id].filter(present));
-      closed = true; clearInterval(timer); clearInterval(identificationTimer);
-      identification?.stop();
-      if (engine.chargerIdentification === identification) engine.chargerIdentification = null;
+      closed = true; clearInterval(timer);
       cancellation.abort(); http.close?.();
       await Promise.allSettled([...pending.values(), ...(ownsDevices ? [devices.close?.()] : [])]);
     },

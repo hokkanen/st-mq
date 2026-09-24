@@ -1,11 +1,13 @@
 import { parentPort, workerData } from 'node:worker_threads';
 import { DatabaseSync } from 'node:sqlite';
 import { snapshotDigest } from '../replication/publication.js';
+import { validateCurrentDatabase } from '../storage/store.js';
 
 try {
   const db = new DatabaseSync(workerData.path, { readOnly: true });
   try {
     db.exec('PRAGMA query_only=ON');
+    validateCurrentDatabase(db);
     const rows = db.prepare('PRAGMA integrity_check').all();
     if (rows.length !== 1 || rows[0].integrity_check !== 'ok') throw Error();
   } finally { db.close(); }

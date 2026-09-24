@@ -7,15 +7,14 @@ export function originalSensorSample(sample) {
   const { measurementInputs: saved, ...original } = sample;
   return { ...original, indoorC: saved.indoorC, indoorSensors: saved.indoorSensors,
     outdoorC: saved.outdoorC, quality: saved.quality,
-    inputSegments: original.inputSegments.map((segment, index) => ({ ...segment, ...saved.outdoorSegments[index] })),
-    intervalInputs: { ...original.intervalInputs, outdoorC: saved.outdoorC } };
+    inputSegments: original.inputSegments.map((segment, index) => ({ ...segment, ...saved.outdoorSegments[index] })) };
 }
 
 /** Eligibility is derived from the selected event revision. Keep the original
  * temperature inputs even during settling so correction replay needs no device
  * polls, mutable coverage queries or copies of complete sample histories. */
 export function withSensorMeasurements(sample, checkpoint = {}, configuration = {}) {
-  if (sample.sensorInputVersion !== 1) return sample;
+  if (sample.sensorInputVersion !== 1) throw new TypeError('Unsupported Home sensor input version');
   checkpoint ??= {};
   const original = originalSensorSample(sample), from = original.windowStart;
   const epochs = checkpoint.sensorEpochs ?? {};
@@ -59,7 +58,6 @@ export function withSensorMeasurements(sample, checkpoint = {}, configuration = 
     || JSON.stringify(quality) !== JSON.stringify(original.quality)
     || inputSegments.some((segment, index) => segment.outdoorC !== original.inputSegments[index].outdoorC);
   return { ...original, indoorC, indoorSensors, outdoorC, quality, inputSegments, measurementEpochAt: epoch || null,
-    intervalInputs: { ...original.intervalInputs, outdoorC },
     ...(changed ? { measurementInputs: { indoorC: original.indoorC, indoorSensors: original.indoorSensors,
       outdoorC: original.outdoorC, quality: original.quality,
       outdoorSegments: original.inputSegments.map(({ outdoorC, quality }) => ({ outdoorC, quality })) } } : {}) };

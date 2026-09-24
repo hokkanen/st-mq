@@ -81,13 +81,10 @@ larger sections without adding another configuration format.
 | `equipment` | The current MQTT/Shelly equipment inventory and device mappings. |
 | `acquisition`, `recording` | Provider polling/freshness and recording/storage settings. |
 | `pairing`, `replication` | Instance pairing, failover and database replication. |
-| `shelly` | Compatibility settings for the older role-based Shelly configuration. Use `equipment.devices` for new equipment. |
 
-The older `mqtt.*temperature_topic` fields also remain supported for existing
-installations; new device mappings belong in `equipment.devices`. Enabled legacy
-Shelly devices and enabled equipment entries cannot be used together. The Garage
-heat-pump adapter belongs to `garage.adapter`; it is separate from the legacy
-`shelly` section.
+Equipment mappings use `equipment.devices`. Retired role-based Shelly and
+individual MQTT temperature-topic fields are rejected. The heat-pump adapter
+belongs to `garage.adapter`; physical Charger 2 belongs to `charging.chargers.charger2`.
 
 ## Adding a feature or changing a default
 
@@ -95,7 +92,7 @@ Add a field beside related fields in the owning section and in the matching
 schema position. Give a new top-level section a clear owner and place it beside
 related sections. Update this map when adding a section. Do not append unrelated
 settings at the end of a file or duplicate defaults into private examples.
-Preserve existing field paths unless an actual behavior change needs a migration.
+Before v1.0.0, update field paths and all current callers together when the design changes. Reject retired paths; do not add development configuration migrations.
 
 Feature tests should configure the synthetic devices and integrations their
 scenario needs. Tests specifically about public defaults should read the public

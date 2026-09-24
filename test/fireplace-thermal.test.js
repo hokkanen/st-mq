@@ -43,7 +43,8 @@ test('fireplace warms the room independently of hydronic heat and zero fire pres
   assert.deepEqual(predictThermalStep(model, state, { ...input, fireplaceKgPerHour: 0 }, 0.25), plain);
   const warm = predictThermalStep(model, state, { ...input, fireplaceKgPerHour: 1 }, 0.25);
   assert.ok(warm.indoorC > plain.indoorC);
-  assert.equal(warm.reserveC, plain.reserveC, 'Released masonry heat must not be counted as hydronic input');
+  assert.equal(warm.hydronicKwh, plain.hydronicKwh, 'Released masonry heat must not be counted as hydronic input');
+  assert.ok(warm.reserveC >= plain.reserveC, 'Room warming can exchange energy with the reserve within the second solver stage');
   assert.equal(warm.usefulHeatCPerHour, plain.usefulHeatCPerHour);
   assert.ok(warm.uncertaintyC > plain.uncertaintyC);
   const older = initialAdaptiveModel(); delete older.parameters.fireplaceCPerKg;
@@ -135,7 +136,7 @@ function burnFixture({ confounded = false, repeated = false, daily = false, unkn
       solarRadiationWm2: confounded ? rate * 1000 : 0 };
     if (i) state = predictThermalStep(trueModel, state, inputs, 1);
     samples.push({ timestamp: at, indoorC: state.indoorC, ...inputs, phase: 'normal', regime: 'occupied', quality: [],
-      windowStart: from, intervalInputs: inputs, fireplaceActive: fireplaceActive(events, at),
+      windowStart: from, inputSegments: [{ ...inputs, start: from, end: at, thermalCompressorDuty: inputs.compressorDuty, thermalAuxKw: inputs.auxKw, regime: 'occupied', quality: [] }], fireplaceActive: fireplaceActive(events, at),
       fireplaceIgnitions: events.filter(event => event.litAt >= from && event.litAt < at) });
   }
   return { model, samples, baselineC: 21, episodeArchive: [] };

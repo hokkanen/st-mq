@@ -25,7 +25,7 @@ export function interruptGarageValidation(model, reason) {
  * The held-out state and coefficients are frozen once; subsequent temperatures
  * never correct that forecast. Weather is the preceding observed ambient input,
  * so these validate plant response, not archived weather-forecast accuracy. */
-export function advanceGarageValidation(model, { state, prior, current, hours, frontKnown, disturbed, metered, predict }) {
+export function advanceGarageValidation(model, { state, prior, current, hours, frontHours = hours, frontSegments = null, frontKnown, disturbed, metered, predict }) {
   const validation = model.validation;
   if (!validation.active && prior.available === false && validation.previousAvailable !== false) {
     const id = validation.nextId++;
@@ -58,7 +58,16 @@ export function advanceGarageValidation(model, { state, prior, current, hours, f
   }
   const forecast = predict(episode.forecast, episode.state,
     { outdoorC: prior.outdoorC, available: prior.available, restart, ev1Kw: 0, ev2Kw: 0 }, hours);
-  episode.state = forecast.state;
+  let frontForecast = null;
+  if (frontKnown) {
+    let frontState = episode.state;
+    for (const segment of frontSegments ?? [{ ...prior, hours: frontHours }]) {
+      frontForecast = predict(episode.forecast, frontState,
+        { outdoorC: segment.outdoorC, available: segment.available, ev1Kw: 0, ev2Kw: 0 }, segment.hours);
+      frontState = frontForecast.state;
+    }
+  }
+  episode.state = { ...forecast.state, frontC: frontForecast?.frontC ?? forecast.frontC };
   episode.predictedKwh += forecast.electricityKwh;
   if (prior.available === false) episode.recoveryAllowanceKwh += episode.forecast.native.values[0] * hours * GARAGE_MODEL_ASSUMPTIONS.recoveryEnergyFactor;
   else {
@@ -67,12 +76,12 @@ export function advanceGarageValidation(model, { state, prior, current, hours, f
     episode.predictedKwh += repayment; episode.recoveryAccountedKwh += repayment;
   }
   if (metered) episode.observedKwh += prior.powerKw * hours;
-  else if (prior.available === true) episode.metered = false;
+  else episode.metered = false;
   add(episode.rear, current.rearC - forecast.rearC, hours);
-  if (frontKnown) add(episode.front, current.frontC - forecast.frontC, hours);
+  if (frontKnown) add(episode.front, current.frontC - frontForecast.frontC, frontHours);
   if (prior.available === false) {
     add(episode.offRear, current.rearC - forecast.rearC, hours);
-    if (frontKnown) add(episode.offFront, current.frontC - forecast.frontC, hours);
+    if (frontKnown) add(episode.offFront, current.frontC - frontForecast.frontC, frontHours);
   }
   episode.minimumRearC = Math.min(episode.minimumRearC, current.rearC);
   if (frontKnown) episode.minimumFrontC = Math.min(episode.minimumFrontC, current.frontC);
@@ -110,7 +119,7 @@ export function advanceGarageValidation(model, { state, prior, current, hours, f
     validation.episodes = validation.episodes.slice(-24);
     validation.active = null;
   }
-  return { role, regime, forecast };
+  return { role, regime, forecast, frontForecast };
 }
 export function summarizeGarageValidation(model) {
   const completed = model.validation.episodes.filter(e => e.complete && e.clean);

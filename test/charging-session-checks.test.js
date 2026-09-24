@@ -23,8 +23,8 @@ test('empty summaries have no invented sessions or percentages and ignore cumula
   store.energyAudit({ source: 'easee', device: 'invented-property', signal: 'property_import_energy_counter',
     sourceTime: 2000, receivedAt: 2000, value: 11 });
   const rows = chargingSessionCheckSummaries(store);
-  assert.deepEqual(rows.map(row => row.source), ['easee', 'teslamate']);
-  assert.deepEqual(rows.map(row => row.summary.basis), ['electricity-meter', 'energy-added']);
+  assert.deepEqual(rows.map(row => row.source), ['easee', 'shelly-evse']);
+  assert.deepEqual(rows.map(row => row.summary.basis), ['electricity-meter', 'electricity-meter']);
   for (const { summary } of rows) {
     assert.equal(summary.recordedSessions, 0);
     assert.equal(summary.comparedSessions, 0);
@@ -46,7 +46,7 @@ test('all-session comparison is energy weighted and excludes incomplete, zero-re
   recordChargingSessionCheck(store, session({ sessionKey: 'invented-zero', referenceKwh: 0 }));
   recordChargingSessionCheck(store, session({ sessionKey: 'invented-stale', quality: ['stale'] }));
   recordChargingSessionCheck(store, session({ sessionKey: 'invented-no-estimate', estimatedKwh: null }));
-  recordChargingSessionCheck(store, session({ source: 'teslamate', estimatedKwh: 9, referenceKwh: 8 }));
+  recordChargingSessionCheck(store, session({ source: 'shelly-evse', estimatedKwh: 9, referenceKwh: 8 }));
   const before = { events: store.events().length, states: store.db.prepare('SELECT count(*) AS n FROM state').get().n };
   const [easee, tesla] = chargingSessionCheckSummaries(store);
   const { differencePercent, ...easeeTotals } = easee.summary;
@@ -64,9 +64,9 @@ test('all-session comparison is energy weighted and excludes incomplete, zero-re
 test('exclusion reasons count affected sessions without implying their existing references are missing', t => {
   const { store } = fixture(t);
   recordChargingSessionCheck(store, session({ complete: false, estimatedKwh: null, quality: ['estimated', 'incomplete-coverage'] }));
-  recordChargingSessionCheck(store, session({ source: 'teslamate', sessionKey: 'invented-interrupted', complete: false,
+  recordChargingSessionCheck(store, session({ source: 'shelly-evse', sessionKey: 'invented-interrupted', complete: false,
     quality: ['missing-start', 'stale', 'disconnected', 'stale'] }));
-  recordChargingSessionCheck(store, session({ source: 'teslamate', sessionKey: 'invented-uncertain', complete: false,
+  recordChargingSessionCheck(store, session({ source: 'shelly-evse', sessionKey: 'invented-uncertain', complete: false,
     quality: ['estimated-boundary', 'duplicate-suspected', 'missing-end', 'stale', 'disconnected'] }));
   const [easee, tesla] = chargingSessionCheckSummaries(store);
   assert.deepEqual(easee.summary.exclusionReasons, { 'incomplete-coverage': 1 });
@@ -102,7 +102,7 @@ test('finalized checks are durable, source-scoped, idempotent and reject conflic
     assert.equal(recordChargingSessionCheck(reopened, input), eventId);
     assert.throws(() => recordChargingSessionCheck(reopened, { ...input, referenceKwh: 2 }), /Conflicting finalized/);
     assert.equal(reopened.events().length, 1);
-    assert.notEqual(recordChargingSessionCheck(reopened, { ...input, source: 'teslamate' }), eventId);
+    assert.notEqual(recordChargingSessionCheck(reopened, { ...input, source: 'shelly-evse' }), eventId);
     assert.deepEqual(chargingSessionCheckSummaries(reopened).map(row => row.summary.recordedSessions), [1, 1]);
   } finally { reopened.close(); }
 });

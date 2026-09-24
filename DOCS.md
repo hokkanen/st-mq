@@ -27,10 +27,12 @@ for the algorithm, native-setting restoration and equipment testing limits.
    application image.
 6. Choose `controller.input: offline` to view imported history without device
    connections. Choose `providers` or `mqtt` for live temperatures and prices.
-   Both support active legacy MQTT relay control. Set `controller.mode: active`
-   to operate heating; `shadow` calculates plans and `monitoring` observes.
-   Retain the existing MQTT connection fields. The controller uses the existing
-   `from_stmq/heat/action` relay integration; it does not replace that automation.
+   Start in `shadow` to calculate plans or `monitoring` to observe. Configure the
+   current direct equipment relay route in [equipment setup](docs/mqtt-equipment.md)
+   and verify its device identity, command acceptance and fresh state readback, or
+   commission H66 native control as described below. Only then enable `active`.
+   Disable the former heat/action automation; the current application does not
+   publish heating commands through that protocol.
    Configure local indoor temperature subscriptions under `mqtt`: smoke channel 1
    supplies Upstairs, channel 2 Bedroom and channel 3 Downstairs. See
    [temperature configuration](docs/recording.md#local-mqtt-temperature-sensors-and-interface)
@@ -303,11 +305,11 @@ uses its repository identifier. The old `/root/share` spelling was a terminal
 convenience; `/share` is the shared mount. Add-on metadata keeps the `st-mq` slug so
 upgrades keep the installation identity.
 
-On upgrade, an existing selected database in `/data/st-mq/` is copied consistently
-with SQLite's backup API to the new public folder. The old database is retained.
-An already existing public database always wins; it is never replaced with the
-old copy. A failed copy cannot become an empty authoritative database. The
-migration occurs for each database when its input mode is first started.
+ST-MQ opens only the explicitly selected current database path. It does not
+discover or relocate development databases. An incompatible or malformed
+database is rejected unchanged. For a clean development start, select a fresh
+path and re-import the supported v0.7.5 CSV files if needed. Current-schema
+backup/restore remains available; restoration never overwrites an existing file.
 
 Use Home Assistant's add-on backup for ordinary recovery. The manifest requests
 **cold backup**, so Supervisor stops ST-MQ while capturing its database and starts
@@ -350,7 +352,7 @@ scripts/test-addon-container.sh st-mq:development
 ```
 
 The check uses temporary `/data`, `/config` and `/share` mounts, synthetic options,
-the actual image startup command, authentication, database migration, restart and
+the actual image startup command, authentication, current-schema persistence, restart and
 backup/restore. A separate container verifies direct database access from the
 public folder. Networking is disabled. CI builds and runs this for AMD64 and
 ARM64 under QEMU; local x86 results alone do not prove installation on a physical

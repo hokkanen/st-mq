@@ -175,7 +175,9 @@ export class PairManager {
     const recovery = this.state.value.recovery;
     if (!recovery) return { state: 'idle', preview: null, report: null, error: null };
     return { state: recovery.state, preview: recovery.preview ?? null, report: recovery.report ?? null,
-      error: recovery.error ?? null };
+      error: recovery.error ?? null,
+      pendingRelease: recovery.releaseOperation ? { requestId: recovery.releaseOperation.requestId,
+        discardUnrecovered: recovery.releaseOperation.skipRecovery, previewId: recovery.preview?.previewId } : null };
   }
 
   status() {
@@ -204,8 +206,10 @@ export class PairManager {
   }
 
   async poll() {
+    const observation = this.observationGeneration();
     try {
       const result = await this.peer.request('status', { claim: this.state.claim() }, { signal: this.abort.signal });
+      if (observation !== this.observationGeneration() || this.closed || this.stopping) return;
       if (!validClaim(result.claim)) throw pairError('invalid_claim');
       this.peerState = { reachable: true, lastSeenAt: this.clock(), ...result.claim };
       await this.observeClaim(result.claim);
@@ -219,9 +223,26 @@ export class PairManager {
     }
   }
 
-  async observeClaim(claim) {
+  observationGeneration() {
+    const local = this.state.value;
+    return JSON.stringify([local.role,local.epoch,local.transition?.token,local.transition?.phase,this.activeAllowed]);
+  }
+
+  async observeClaim(claim, { confirmed = false } = {}) {
     if (!validClaim(claim)) throw pairError('invalid_claim');
     if (this.closed || claim.role !== 'primary' || this.state.value.role !== 'primary') return;
+    const superseded = this.state.value.supersededPeer;
+    if (!confirmed && superseded?.nodeId === claim.nodeId && superseded.epoch === claim.epoch) {
+      // A valid, delayed announcement may describe the owner that handed over.
+      // Challenge it afresh; silence is neither a conflict nor evidence of fencing.
+      const observation = this.observationGeneration();
+      try {
+        const current = await this.peer.request('status', {}, { signal: this.abort.signal });
+        if (observation !== this.observationGeneration()) return;
+        if (!validClaim(current.claim)) throw pairError('invalid_claim');
+        return this.observeClaim(current.claim, { confirmed: true });
+      } catch { return; }
+    }
     if (claim.nodeId === this.state.value.nodeId) {
       this.activeAllowed = false;
       return this.demote('duplicate_node_identity');
@@ -238,6 +259,7 @@ export class PairManager {
     if (this.demoting) return this.demoting;
     const task = (async () => {
       this.activeAllowed = false;
+      this.hooks.revokeControl?.();
       let persistenceError;
       try {
         await this.serialized(async () => {
@@ -301,13 +323,13 @@ export class PairManager {
       }) });
   }
 
-  async exportSnapshot({ force = false } = {}) {
+  async exportSnapshot({ force = false, pin = false } = {}) {
     let local = this.state.value;
     if (local.role === 'replica' || local.role === 'protected' && (!local.everWritten || !local.activeDbPath)) {
       const publication = await readReplicaPublication(this.config.replicaDirectory);
       if (!publication) throw pairError('snapshot_unavailable');
       return this.snapshots.create({ dbPath: publication.dbPath, claim: this.state.claim(), sequence: local.sequence,
-        signal: this.abort.signal, force });
+        signal: this.abort.signal, force, pin });
     }
     if (local.role === 'primary') {
       await this.prepareExportStamp();
@@ -315,7 +337,7 @@ export class PairManager {
     }
     const epoch = local.epoch;
     return this.snapshots.create({ dbPath: local.activeDbPath ?? this.hooks.dbPath?.(), claim: this.state.claim(),
-      sequence: this.state.value.sequence, signal: this.abort.signal, force,
+      sequence: this.state.value.sequence, signal: this.abort.signal, force, pin,
       assertSource: () => { if (this.closed || this.state.value.epoch !== epoch) throw pairError('authority_changed'); } });
   }
 
@@ -375,7 +397,9 @@ export class PairManager {
     const previous = this.state.value.actions.find(item => item.requestId === body.requestId);
     if (previous) {
       if (previous.name !== name) throw pairError('invalid_request_id');
-      return { ok: previous.state === 'complete', duplicate: true, status: this.status() };
+      const retryRelease = name === 'rejoin' && previous.state === 'error'
+        && this.state.value.recovery?.releaseOperation?.requestId === body.requestId;
+      if (!retryRelease) return { ok: previous.state === 'complete', duplicate: true, status: this.status() };
     }
     if (name !== 'check-recovery' && body.confirmed !== true) throw pairError('confirmation_required');
     if (this.busy || this.demoting) throw pairError('peer_busy');
@@ -383,7 +407,7 @@ export class PairManager {
     this.phase = name;
     this.error = null;
     try {
-      await this.state.update(value => ({ actions: [...value.actions.slice(-31),
+      await this.state.update(value => ({ actions: [...value.actions.filter(item => item.requestId !== body.requestId).slice(-31),
         { requestId: body.requestId, name, state: 'running', startedAt: this.clock() }] }));
       this.syncAbort?.abort(pairError('authority_changed'));
       await this.syncTask;
@@ -442,7 +466,8 @@ export class PairManager {
       { epoch: this.state.value.accepted.epoch, sequence: this.state.value.accepted.sequence }];
     await this.serialized(() => this.state.update({ role: 'primary', epoch, sequence: 0,
       ancestors, activeDbPath: destination, everWritten: true, reason: null, transition: null, release: null,
-      recovery: null, dbStamp: null, pendingStamp: null }));
+      recovery: null, dbStamp: null, pendingStamp: null,
+      supersededPeer: handover ? { nodeId: this.state.value.accepted.nodeId, epoch: this.state.value.accepted.epoch } : null }));
     await this.startPrimary();
     if (!handover) this.nextSyncAt = 0;
   }
@@ -531,13 +556,23 @@ export class PairManager {
       if (recovery?.state !== 'ready') throw pairError('recovery_required');
       if (body.previewId !== recovery.preview.previewId) throw pairError('invalid_transition');
     } else if (recovery?.state !== 'complete') throw pairError('recovery_required');
-    const metadata = await this.exportSnapshot({ force: true });
-    const result = await this.peer.request('release', { donor: recovery.metadata, metadata }, { timeoutMs: this.config.timeoutMs });
-    if (result.role !== 'replica' || result.accepted?.digest !== metadata.digest) throw pairError('verification_failed');
+    let operation = recovery.releaseOperation;
+    if (operation && (operation.requestId !== body.requestId || operation.skipRecovery !== skipRecovery)) throw pairError('invalid_transition');
+    if (!operation) {
+      const metadata = await this.exportSnapshot({ force: true, pin: true });
+      operation = { requestId: body.requestId, donor: recovery.metadata, metadata, skipRecovery };
+      await this.state.update({ recovery: { ...recovery, releaseOperation: operation } });
+    }
+    const metadata = operation.metadata;
+    const result = await this.peer.request('release', operation, { timeoutMs: this.config.timeoutMs });
+    if (result.role !== 'replica' || result.releaseReceipt?.digest !== metadata.digest
+      || result.releaseReceipt?.generation !== metadata.generation || result.releaseReceipt?.requestId !== operation.requestId)
+      throw pairError('verification_failed');
     const report = skipRecovery ? { ...recovery.preview, status: 'skipped', recoverySkipped: true,
       imported: 0, model: { status: 'unchanged' } } : recovery.report;
     await this.state.update({ recovery: { state: 'resolved', report } });
-    await rm(recovery.donorPath, { force: true });
+    await this.snapshots.unpin(metadata.generation).catch(() => {});
+    await rm(recovery.donorPath, { force: true }).catch(() => {});
     this.peerState = { ...this.peerState, ...result, reachable: true, lastSeenAt: this.clock() };
   }
 
@@ -550,7 +585,7 @@ export class PairManager {
       }
       return { claim: this.state.claim() };
     }
-    if (operation === 'snapshot') return this.exportSnapshot(body);
+    if (operation === 'snapshot') return this.exportSnapshot({ force: body.force === true });
     if (operation === 'snapshot-hashes') return this.snapshots.hashes(body);
     if (operation === 'snapshot-chunk') return this.snapshots.chunk(body);
     if (operation === 'handover-prepare') {
@@ -583,8 +618,23 @@ export class PairManager {
       finally { this.busy = false; }
     }
     if (operation === 'release') {
-      if (this.busy || !['protected', 'replica'].includes(this.state.value.role)) throw pairError('protected_history');
       const donor = validateSnapshot(body.donor), metadata = validateSnapshot(body.metadata);
+      if (!NODE_PATTERN.test(body.requestId ?? '')) throw pairError('invalid_request_id');
+      const identity = { requestId: body.requestId, donorEpoch: donor.claim.epoch, donorDigest: donor.digest,
+        donorBytes: donor.bytes, generation: metadata.generation, digest: metadata.digest,
+        bytes: metadata.bytes, targetEpoch: metadata.claim.epoch, targetNodeId: metadata.claim.nodeId };
+      const receipt = this.state.value.releaseReceipt;
+      if (receipt?.requestId === body.requestId) {
+        if (JSON.stringify(receipt.identity) !== JSON.stringify(identity) || this.state.value.role !== 'replica'
+          || this.state.value.epoch !== donor.claim.epoch || this.state.value.everWritten
+          || this.state.value.accepted?.epoch !== metadata.claim.epoch || this.state.value.accepted?.sequence < metadata.sequence)
+          throw pairError('invalid_transition');
+        const publication = await readReplicaPublication(this.config.replicaDirectory);
+        if (publication?.generation !== this.state.value.accepted?.generation || publication.digest !== this.state.value.accepted?.digest) throw pairError('verification_failed');
+        await verifySnapshot(publication.dbPath,publication,this.abort.signal);
+        return { ...this.state.claim(), accepted: this.state.value.accepted, releaseReceipt: identity };
+      }
+      if (this.busy || !['protected', 'replica'].includes(this.state.value.role)) throw pairError('protected_history');
       if (donor.claim.epoch !== this.state.value.epoch || donor.claim.nodeId !== this.state.value.nodeId ||
           metadata.claim.role !== 'primary') throw pairError('authority_changed');
       // A donor that wrote again after the checked snapshot is never erased by
@@ -594,17 +644,17 @@ export class PairManager {
         this.syncAbort?.abort(pairError('authority_changed')); await this.syncTask;
         const currentDonor = await this.exportSnapshot({ force: true });
         if (currentDonor.digest !== donor.digest || currentDonor.bytes !== donor.bytes) throw pairError('recovery_required');
-        await this.state.update({ role: 'protected', release: { epoch: metadata.claim.epoch, digest: metadata.digest }, reason: 'rejoining' });
+        await this.state.update({ role: 'protected', release: { epoch: metadata.claim.epoch, digest: metadata.digest, identity }, reason: 'rejoining' });
         const result = await this.installReplica(metadata, { signal: this.abort.signal, allowRelease: true });
         await this.hooks.closeReplica?.();
         const oldPath = this.state.value.activeDbPath;
         await this.state.update({ role: 'replica', reason: null, release: null, transition: null, everWritten: false,
-          activeDbPath: null, recovery: null });
+          activeDbPath: null, recovery: null, releaseReceipt: { requestId: body.requestId, identity } });
         await this.startReplica(result);
         // Only our dedicated former primary files are owned for deletion. The
         // initially configured path may be user-owned and is never reopened.
         if (oldPath?.startsWith(join(this.config.directory, 'primary-'))) await rm(oldPath, { force: true });
-        return { ...this.state.claim(), accepted: this.state.value.accepted };
+        return { ...this.state.claim(), accepted: this.state.value.accepted, releaseReceipt: identity };
       } finally { this.busy = false; }
     }
     throw pairError('invalid_action');

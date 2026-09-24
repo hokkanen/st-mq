@@ -71,9 +71,7 @@ export async function runReceiver({ directory, input = process.stdin, output = p
           if (/^incoming-[a-f0-9-]+\.sqlite(?:-wal|-shm|-journal)?$/.test(name)) await rm(join(directory, name));
         }
         incoming = join(directory, `incoming-${generation}.sqlite`);
-        let previous;
-        try { previous = await readReplicaPublication(directory); }
-        catch (error) { if (error.code !== 'invalid_publication') throw error; }
+        const previous = await readReplicaPublication(directory);
         // A crash between snapshot rename and manifest replacement may leave a
         // full orphan copy. Free it BEFORE allocating the next incoming copy so
         // a disk sized for current+previous+incoming can recover automatically.

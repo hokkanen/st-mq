@@ -15,6 +15,17 @@ dashboard current, and stale/offline readings or a mismatching output need
 attention. The API actions are `normal` and `reduction`; no legacy button topic
 is used. See [Shelly Switch documentation](https://shelly-api-docs.shelly.cloud/gen2/ComponentsAndServices/Switch/).
 
+RPC replies must match the discovered device source, request destination/ID and
+selected component ID. A whole-device snapshot's component key and embedded ID
+must agree. A late poll that began before a newer command/readback cannot replace
+that evidence. Poll observations retain their request-start boundary separately
+from receipt time; receipt alone cannot establish a later physical restoration.
+Reconnect clears request/identity correlation and requires a new identity check.
+
+Incremental notifications update only fields they actually contain. An omitted
+field retains its original timestamp and expires independently; explicit null,
+component errors and fields missing from a full snapshot invalidate that field.
+
 H66 register 0233 configures the reduction offset for EVU external control. It
 does not report whether that input is active; equality with the ROOM setting or
 measured room temperature cannot verify tariff operation. See the

@@ -344,13 +344,14 @@ largest sampled main-loop delay. Reopening that range is faster from cache, but
 the cold full-archive result does not meet the v0.7.5 timing target. The common
 day, two-day and month selections do.
 
-Reproduce the chart browser and read-only history comparisons with
-`scripts/browser-chart-smoke.js`, `scripts/benchmark-chart.js` and
-`scripts/benchmark-legacy-chart.js`. The browser smoke script expects an isolated
-Firefox BiDi listener on port 39124 and creates its own temporary simulation.
-The legacy comparison starts a separate Firefox instance and requires the
-supplied `CODEX` CSVs and their already-imported `var/st-mq.sqlite` database.
-Use `--full-only` for its separate full-archive comparison.
+These are historical development measurements, not current performance claims.
+The old CSV application and its comparison harness were retired under the
+pre-v1.0.0 policy. Current checks use `scripts/browser-chart-smoke.js` and
+`scripts/benchmark-chart.js`; the browser script expects an isolated Firefox
+BiDi listener on port 39124 and creates its own temporary simulation. The
+benchmark accepts only a current-schema database. See the [audit evidence](audit/A07-A09.md)
+for current synthetic measurements; an old development database is not a
+supported benchmark input.
 
 ## Direct provider fallbacks and live verification — v0.8.2, 7 September 2026
 

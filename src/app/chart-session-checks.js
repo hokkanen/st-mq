@@ -17,7 +17,7 @@ export function addChargingSessionChecks({ store, range, now, envelopes }) {
     envelopes[signal].add(check.end, referenceKwh, { auditOnly: true, sessionCheck: true,
       sessionStart: check.start, sessionEnd: check.end, referenceKwh,
       estimatedKwh: Number.isFinite(check.estimatedKwh) && check.estimatedKwh >= 0 ? check.estimatedKwh : null,
-      referenceBasis: check.source === 'easee' ? 'electricity-meter' : 'energy-added',
+      referenceBasis: 'electricity-meter',
       comparisonEligible: comparableChargingSession(check), quality: check.quality });
     records++;
   }

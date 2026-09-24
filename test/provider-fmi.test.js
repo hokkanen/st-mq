@@ -80,8 +80,8 @@ test('FMI fetches bounded hourly forecast and recent observations using the docu
     assert.equal(parsed.origin, 'https://opendata.fmi.fi'); assert.equal(opts.method, 'GET');
     return parsed.searchParams.get('parameters') === 'Temperature,RadiationGlobal' ? forecastXml : observationXml;
   } };
-  assert.equal((await fetchFmiForecast({ connections, now: at, http })).source, 'fmi');
-  assert.equal((await fetchFmiObservation({ connections, now: at, http }))[0].source, 'fmi');
+  assert.equal((await fetchFmiForecast({ connections, now: at, clock: () => at, http })).source, 'fmi');
+  assert.equal((await fetchFmiObservation({ connections, now: at, clock: () => at, http }))[0].source, 'fmi');
   assert.equal(requests[0].searchParams.get('starttime'), '2026-09-07T06:00:00.000Z');
   assert.equal(requests[0].searchParams.get('latlon'), '60.39,25.66');
   assert.equal(requests[0].searchParams.has('bbox'), false);
@@ -109,7 +109,7 @@ test('complete FMI primary never calls the keyless Open-Meteo backup', async () 
   const http = { text: async url => new URL(url).searchParams.get('parameters') === 'Temperature,RadiationGlobal' ? solarFixture().replaceAll('<wml2:value>NaN', '<wml2:value>0') : observationXml,
     json: async () => assert.fail('Backup must remain idle when FMI succeeds') };
   for (const fetcher of [fetchWeather, fetchOutdoorTemperature]) {
-    const result = await fetcher({ connections, now: at, http });
+    const result = await fetcher({ connections, now: at, clock: () => at, http });
     assert.deepEqual(result.acquisition, { primary: 'fmi', selected: 'fmi', fallbackUsed: false,
       attempts: [{ source: 'fmi', status: 'ok', error: null }], ...(fetcher === fetchWeather ? { solarSource: 'fmi' } : {}) });
   }

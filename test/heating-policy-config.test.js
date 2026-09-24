@@ -143,7 +143,6 @@ test('live floor mappings cannot share another control role or omit their MQTT b
   assert.equal(read(base).floorPreheat.devices.length, 2);
   for (const extra of [
     { equipment: { devices: [{ id: 'fixture', kind: 'switch', connection: 'shelly:invented-floor-storage', switch_control: true }] } },
-    { shelly: { heat_savings: { enabled: true, topic_prefix: 'invented-floor-storage' } } },
     { equipment: { devices: [{ id: 'fixture', kind: 'switch', connection: 'mqtt:invented/other-state', switch_control: true,
       mqtt: { command_topic: 'invented-floor-storage/command/switch:0', on_payload: 'ON', off_payload: 'OFF' } }] } },
     { mqtt: { address: 'mqtt://invented.invalid', dhwr_topic: 'invented-floor-storage/command/switch:0' } },

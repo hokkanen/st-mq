@@ -17,7 +17,7 @@ function setup(t, { delayed = false, mode = 'active', startAt = Date.parse('2026
   let now = startAt, indoorC = 21.2;
   const config = { input: 'mqtt', settings: validateSettings({ mode, comfort: { targetC: 21, maxDropC: 2, maxRiseC: 2 } }),
     control: { ...CONTROL_DEFAULTS, learningTrials: false } };
-  const transport = { publish(batch) {
+  const transport = { targetIdentity: { tariff: 'a'.repeat(64), dhwr: 'b'.repeat(64) }, publish(batch) {
     commands.push({ at: now, batch: [...batch] });
     return delayed ? new Promise(resolve => pending.push(resolve)) : Promise.resolve({ status: 'mqtt', sent: true, actual: null });
   }, publishDhwr:async on=>{circulation.push({at:now,on});return {status:'mqtt',sent:true};} };
@@ -60,7 +60,7 @@ function setup(t, { delayed = false, mode = 'active', startAt = Date.parse('2026
         parameterEvidence: { lossPerHour: { status: 'identified' }, hydronicCPerKwh: { status: 'identified' } } };
       model.equipmentResponse = { phases: { reduction: { ratio: 0.1, trainingEpisodes: 3, treatmentKey: 'reduction-only-v1' } },
         validation: { phases: { reduction: { accepted: true, episodes: 3, maeDuty: 0.05, maxDurationHours: 0.5, treatmentKey: 'reduction-only-v1' } } } };
-      model.uncertainty = { points: [{ hours: 24, errorC: 0.1 }], extrapolationCPerHour: 0.05 };
+      model.uncertainty = { points: [{ hours: 0.25, errorC: 0.1 }, { hours: 24, errorC: 0.1 }], extrapolationCPerHour: 0.05 };
       model.forecastValidation = { accepted: true, episodes: 3, maxReductionHours: 0.5 };
       engine.checkpoint = restoreAdaptiveCheckpoint(null, config.control);
       engine.checkpoint.model = model;
@@ -251,4 +251,29 @@ test('old algorithm history is refused both at startup and when a background see
   assert.equal(r.engine.checkpoint.model.validation, null);
   assert.equal(r.store.learningJournal({ input: 'mqtt', algorithmVersion: LEARNING_ALGORITHM })
     .some(entry => entry.payload.value.historySeed), false);
+});
+
+for (const trial of [false, true]) for (const missing of ['treatment', 'recovery']) test(`actual Engine ends ${trial ? 'trial' : 'validated'} continuation when ${missing} coverage disappears`, async t => {
+  const r = setup(t); if (trial) r.native(); r.plan();
+  if (trial) {
+    r.engine.control.learningTrials = true;
+    r.engine.checkpoint.samples = Array.from({ length: 4 }, (_, i) => ({ timestamp: new Date(r.now - (4 - i) * 15 * MINUTE).toISOString(),
+      indoorC: 21.2, outdoorC: 10, phase: 'normal', regime: 'occupied', quality: [] }));
+    r.engine.checkpoint.cursor = r.engine.checkpoint.samples.at(-1).timestamp;
+    r.engine.checkpoint.health.usableSamples = 4;
+    r.engine.pendingPlan.trial = true;
+  }
+  const admitted = r.engine.tick(); await r.settle();
+  assert.equal(admitted.decision.phase, 'reduction', JSON.stringify(admitted.decision.reasons));
+  const cycle = r.engine.cycles.active(); assert(cycle, 'The real Engine has admitted and activated a cycle');
+  assert.equal(cycle.plan.trial, trial);
+  const weather = r.store.getState('provider:weather');
+  weather.forecast[0].end = missing === 'treatment' ? r.now + 5 * MINUTE : cycle.plan.schedule.reductionEnd + 30 * MINUTE;
+  r.store.setState('provider:weather', weather);
+  r.advance(MINUTE);
+  const continued = r.engine.tick(); await r.settle();
+  assert.equal(continued.decision.phase, 'recovery');
+  assert(continued.decision.reasons.includes('control-or-forecast-coverage-lost'));
+  assert.equal(r.commands.at(-1).batch.at(-1), 'normal');
+  assert.equal(r.engine.executor.status().legacyOutstanding, false);
 });

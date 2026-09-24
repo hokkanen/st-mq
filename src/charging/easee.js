@@ -188,14 +188,17 @@ export function chargingSnapshot(observations, scheduling, now, allocationA = nu
   const bool = id => { const value = pick(id).value; return [true, 1, 'true', '1'].includes(value) ? true : [false, 0, 'false', '0'].includes(value) ? false : null; };
   const scheduleState = normalizeScheduleState(scheduling), mode = numeric(pick(109).value), reason = numeric(pick(96).value);
   const pilot = pick(100).value, online = bool(250), enabled = bool(31);
-  const pluggedIn = mode === 1 || pilot === 'A' ? false : [2, 3, 4, 6, 7, 8].includes(mode) || ['B', 'C', 'D'].includes(pilot) ? true : null;
+  const indications = [{ value: mode === 1 ? false : [2, 3, 4, 6, 7, 8].includes(mode) ? true : null, at: pick(109).at },
+    { value: pilot === 'A' ? false : ['B', 'C', 'D'].includes(pilot) ? true : null, at: pick(100).at }]
+    .filter(item => item.value !== null && Number.isFinite(item.at)).sort((a, b) => b.at - a.at);
+  const pluggedIn = indications.length && !indications.some(item => item.at === indications[0].at && item.value !== indications[0].value) ? indications[0].value : null;
   // These are change-reported source events. Re-reading an old disconnected
   // state cannot move its physical boundary to the HTTP receipt time.
   const disconnectTimes = [mode === 1 ? pick(109).at : null, pilot === 'A' ? pick(100).at : null]
     .filter(at => Number.isSafeInteger(at) && at >= 0 && at <= now);
   const result = { schedule: scheduleState, fingerprint: scheduleFingerprint(scheduleState), readAt: now,
     online, enabled, pluggedIn, mode, reason, powerKw: numeric(pick(120).value),
-    disconnectedAt: disconnectTimes.length ? Math.max(...disconnectTimes) : null,
+    disconnectedAt: pluggedIn === false && disconnectTimes.length ? Math.max(...disconnectTimes) : null,
     externalLoadBalancing, supply, outputPhase: numeric(pick(110).value),
     observations: Object.fromEntries(CHARGING_OBSERVATION_IDS.map(id => [id, pick(id)])),
     modeAt: pick(109).at, reasonAt: pick(96).at, powerAt: pick(120).at,
@@ -336,13 +339,18 @@ export function createEaseeScheduleAdapter({ request, readObservations, chargerI
       if (!before.controlKnown || before.manualStop || before.authorizationBlocked || before.faulted)
         throw failure('access-denied', 'The charger is not available for an automatic schedule.');
       const delayed = delayedScheduleFor({ startAt, timezone, maximumAmps }, clock());
+      const temporalGuard = () => {
+        if (!canMutate() || !canControl() || startAt - clock() < 15 * 60000) return false;
+        try { delayedScheduleFor({ startAt, timezone, maximumAmps }, clock()); return true; } catch { return false; }
+      };
       // Let the controller durably record this guarded observation before the
       // request. A failed save must leave the native charger untouched.
       await beforeWrite(before);
+      if (!temporalGuard()) throw failure('start-passed', 'The delayed start expired before dispatch.');
       if (!canControl() || !canMutate()) throw failure('control-revoked', 'Charging control authority changed.');
       try {
         await request(`${base}/delayed`, { method: 'POST', headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ enabled: true, ...delayed }), signal, controlGuard: canMutate }, true);
+          body: JSON.stringify({ enabled: true, ...delayed }), signal, controlGuard: temporalGuard }, true);
       } catch (error) {
         if (!canControl() || !canMutate()) throw failure('control-revoked', 'Charging control authority changed.');
         if ([401, 403].includes(error?.status ?? error?.response?.status)) throw failure('access-denied', 'Easee rejected charging authorization.');

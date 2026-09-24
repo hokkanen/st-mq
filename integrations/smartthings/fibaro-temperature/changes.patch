@@ -423,32 +423,30 @@
 +      [WakeUpV2.INTERVAL_CAPABILITIES_REPORT] = wakeup_capabilities_report_handler
 --- a/drivers/SmartThings/zwave-smoke-alarm/src/init.lua
 +++ b/drivers/SmartThings/zwave-smoke-alarm/src/init.lua
-@@ -14,0 +15,21 @@
+@@ -14,0 +15,19 @@
 +local log = require "log"
 +local LOCAL_PREFERENCES_REVISION = 1
 +local LOCAL_PREFERENCES_ATTEMPTED = "stmq_local_preferences_attempted_revision"
 +
 +local function preference_counts(device, parameters)
-+  local mapped_count, local_count, legacy_count = 0, 0, 0
++  local mapped_count, local_count = 0, 0
 +  for id in pairs(parameters or {}) do
 +    mapped_count = mapped_count + 1
-+    local local_id = id:match("^certifiedpreferences%.(.+)$")
-+    if local_id and device.preferences[local_id] ~= nil then local_count = local_count + 1 end
-+    if local_id and device.preferences[id] ~= nil then legacy_count = legacy_count + 1 end
++    if device.preferences[id] ~= nil then local_count = local_count + 1 end
 +  end
-+  return mapped_count, local_count, legacy_count
++  return mapped_count, local_count
 +end
 +
 +local function log_preference_state(device, parameters, phase)
-+  local mapped_count, local_count, legacy_count = preference_counts(device, parameters)
-+  log.info(string.format("Preference application %s: mapped=%d local=%d legacy=%d attempted=%s",
-+    phase, mapped_count, local_count, legacy_count,
++  local mapped_count, local_count = preference_counts(device, parameters)
++  log.info(string.format("Preference application %s: mapped=%d local=%d attempted=%s",
++    phase, mapped_count, local_count,
 +    tostring(device:get_field(LOCAL_PREFERENCES_ATTEMPTED) ~= nil)))
 +end
-@@ -20 +41 @@
+@@ -20 +39 @@
 -local function update_preferences(self, device, args)
 +local function update_preferences(self, device, args, is_awake)
-@@ -22,4 +43,22 @@
+@@ -22,4 +41,19 @@
 -  for id, value in pairs(device.preferences) do
 -    if not (args and args.old_st_store and args.old_st_store.preferences) or (args.old_st_store.preferences[id] ~= value and preferences and preferences[id]) then
 -      local new_parameter_value = preferencesMap.to_numeric_value(device.preferences[id])
@@ -465,24 +463,42 @@
 +  end
 +  local apply_local_selection = is_awake and local_count == 9 and pending_local_selection
 +  -- Iterate mapped parameters so the separate wake-up preference is never sent
-+  -- as a Configuration parameter. Embedded values supersede the legacy IDs.
++  -- as a Configuration parameter. IDs match the currently bundled profiles.
 +  for id, parameter in pairs(preferences or {}) do
-+    local local_id = id:match("^certifiedpreferences%.(.+)$") or id
-+    local value = device.preferences[local_id]
-+    if value == nil then value = device.preferences[id] end
-+    local old_value = old_preferences and old_preferences[local_id]
-+    if old_value == nil and old_preferences then old_value = old_preferences[id] end
++    local value = device.preferences[id]
++    local old_value = old_preferences and old_preferences[id]
 +    if value ~= nil and (apply_local_selection or not old_preferences or old_value ~= value) then
 +      local new_parameter_value = preferencesMap.to_numeric_value(value)
 +      device:send(Configuration:Set({parameter_number = parameter.parameter_number, size = parameter.size, configuration_value = new_parameter_value}))
-@@ -26,0 +66,4 @@
-+  end
+@@ -27,0 +62,4 @@
 +  if apply_local_selection then
 +    -- Records a write attempt while awake, not detector acknowledgement.
 +    device:set_field(LOCAL_PREFERENCES_ATTEMPTED, LOCAL_PREFERENCES_REVISION, {persist = true})
-@@ -35 +78,4 @@
++  end
+@@ -35 +73,4 @@
 -  device:set_update_preferences_fn(update_preferences)
 +  device:set_update_preferences_fn(function(driver, awake_device, args)
 +    update_preferences(driver, awake_device, args, true)
 +  end)
 +  log_preference_state(device, preferencesMap.get_device_parameters(device), "initialized")
+--- a/drivers/SmartThings/zwave-smoke-alarm/src/preferences.lua
++++ b/drivers/SmartThings/zwave-smoke-alarm/src/preferences.lua
+@@ -13,9 +13,9 @@
+-            ["certifiedpreferences.smokeSensorSensitivity"] = {parameter_number = 1, size = 1},
+-            ["certifiedpreferences.zwaveNotificationStatus"] = {parameter_number = 2, size = 1},
+-            ["certifiedpreferences.indicatorNotification"] = {parameter_number = 3},
+-            ["certifiedpreferences.soundNotificationStatus"] = {parameter_number = 4, size = 1},
+-            ["certifiedpreferences.tempReportInterval"] = {parameter_number = 20, size = 2},
+-            ["certifiedpreferences.tempReportHysteresis"] = {parameter_number = 21, size = 2},
+-            ["certifiedpreferences.temperatureThreshold"] = {parameter_number = 30, size = 2},
+-            ["certifiedpreferences.overheatInterval"] = {parameter_number = 31, size = 2},
+-            ["certifiedpreferences.outOfRange"] = {parameter_number = 32, size = 2}
++            ["smokeSensorSensitivity"] = {parameter_number = 1, size = 1},
++            ["zwaveNotificationStatus"] = {parameter_number = 2, size = 1},
++            ["indicatorNotification"] = {parameter_number = 3},
++            ["soundNotificationStatus"] = {parameter_number = 4, size = 1},
++            ["tempReportInterval"] = {parameter_number = 20, size = 2},
++            ["tempReportHysteresis"] = {parameter_number = 21, size = 2},
++            ["temperatureThreshold"] = {parameter_number = 30, size = 2},
++            ["overheatInterval"] = {parameter_number = 31, size = 2},
++            ["outOfRange"] = {parameter_number = 32, size = 2}

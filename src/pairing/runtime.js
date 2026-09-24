@@ -27,6 +27,10 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
   let runtime = null, manager, closed = false, recoveryRunning = false, latestOperation = null;
   let primaryPath = config.dbPath;
   let closing = null;
+  const startupAbort = new AbortController();
+  let finishStartup;
+  const startupSettled = new Promise(resolve => { finishStartup = resolve; });
+  const requireOpen = () => { if (closing) throw requestError('The instance is shutting down.'); };
   let runtimeStarting = null, controllerToken = null;
   let replicaAbort = null;
   let historyAbort = null, historyPending = null;
@@ -54,7 +58,7 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
       if (input.action !== 'check-recovery' && input.confirmed !== true)
         throw requestError('Confirm this paired action before continuing.');
       const previous = operations.get(input.requestId);
-      if (previous) {
+      if (previous && !(previous.action === 'rejoin' && input.action === 'rejoin' && previous.state === 'error')) {
         if (previous.action !== input.action) throw requestError('This request ID belongs to another action.');
         latestOperation = previous;
         return context.status();
@@ -86,7 +90,12 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
   };
   const hooks = {
     dbPath: () => runtime?.store?.path ?? primaryPath,
+    revokeControl() {
+      if (controllerToken) controllerToken.revoked = true;
+      runtime?.revokeControl?.();
+    },
     async stopControl({ restore = false } = {}) {
+      if (!restore) hooks.revokeControl();
       const previous = runtime; runtime = null;
       const token = controllerToken;
       if (token && (!previous || !restore)) token.revoked = true;
@@ -110,7 +119,8 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
       if (!context.canControl()) throw requestError('Controller authority changed before startup.');
       const token = controllerToken = { revoked: false };
       runtimeStarting = startRuntime({ config: runtimeConfiguration(config), readConfig, clock, providerOptions, mqttOptions,
-        pairContext: { ...context, canControl: () => !token.revoked && context.canControl() }, installSignalHandlers: false })
+        pairContext: { ...context, canControl: () => !token.revoked && context.canControl() }, installSignalHandlers: false,
+        shutdownSignal: startupAbort.signal })
         .then(async started => {
           if (closed || closing || token.revoked) { await started.close({ restore: false }); throw requestError('The instance is shutting down.'); }
           runtime = started;
@@ -178,29 +188,37 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
     },
   };
   manager = managerFactory({ config: config.pairing, hooks, clock, ...managerOptions });
-  async function close() {
-    if (closed) return;
+  function close() {
     if (closing) return closing;
     // Manager chooses the appropriate restoring/nonrestoring shutdown while its
     // authority is still available; outer closure follows its gate revocation.
+    manager.prepareShutdown?.();
+    startupAbort.abort();
+    for (const [signal, handler] of handlers) process.removeListener(signal, handler);
     closing = (async () => {
-      manager.prepareShutdown?.();
-      for (const [signal, handler] of handlers) process.removeListener(signal, handler);
-      try { await hooks.stopControl({ restore: manager.canControl() }); }
-      finally { await manager.close(); closed = true; }
+      await startupSettled;
+      const errors = [];
+      try { await hooks.stopControl({ restore: manager.canControl() }); } catch (error) { errors.push(error); }
+      try { await manager.close(); } catch (error) { errors.push(error); }
+      closed = true;
+      if (errors.length) throw new AggregateError(errors, 'Paired cleanup completed with errors.');
     })();
     return closing;
   }
+  if (installSignalHandlers) for (const signal of ['SIGTERM', 'SIGINT']) {
+    const handler = () => { void close().catch(() => { process.exitCode = 1; }); };
+    process.once(signal, handler); handlers.set(signal, handler);
+  }
   try {
     await prepareVipPolicy(config);
+    requireOpen();
     await manager.init();
+    requireOpen();
     await manager.start();
-    if (installSignalHandlers) for (const signal of ['SIGTERM', 'SIGINT']) {
-      const handler = () => { void close().catch(() => { process.exitCode = 1; }); };
-      process.once(signal, handler); handlers.set(signal, handler);
-    }
+    requireOpen();
+    finishStartup();
     return { pairing: manager, get store() { return runtime?.store; }, get engine() { return runtime?.engine; },
       get server() { return runtime?.server; }, get webAccess() { return runtime?.webAccess; }, close,
       status: context.status, requestAction: context.requestAction };
-  } catch (error) { await close(); throw error; }
+  } catch (error) { finishStartup(); try { await close(); } catch (cleanupError) { error.cleanupError = cleanupError; } throw error; }
 }

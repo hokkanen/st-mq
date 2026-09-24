@@ -11,9 +11,8 @@ import { assembleOutlook } from './contract.js';
 import { historicalSolar } from './chart-weather.js';
 import { createHistoricalPricing } from './chart-prices.js';
 import { historicalSpotIntervals } from './historical-spot-prices.js';
-import { decodeHistoryRow } from '../storage/history.js';
+import { resolveMarketIntervals } from '../domain/market-authority.js';
 import { auxiliaryPowerFromOutput } from '../domain/telemetry.js';
-import { timingPowerEvidence } from './timing-evidence.js';
 import { HISTORY_AXIS_BY_KEY, CARAVAN_RUNNING_STATES, GARAGE_INPUT_INFO, GARAGE_COEFFICIENT_INFO, ENERGY_SIGNALS, AUDIT_SIGNALS, SESSION_CHECK_INFO, MODEL_INPUT_INFO, MODEL_COEFFICIENT_INFO } from '../domain/history-series.js';
 import { addChargingSessionChecks } from './chart-session-checks.js';
 import { addModelInputs } from './chart-model-inputs.js';
@@ -26,7 +25,8 @@ import { mergeCoverageRows } from './chart-coverage.js';
 import { addHistoricalHeatPump } from './chart-heat-pump.js';
 import { getHeatingBenefit } from './chart-heating-benefit.js';
 import { RelatedStepSampler, alignRelatedSamples } from './chart-related-series.js';
-import { addDhwrFeedback } from './chart-dhwr.js';
+import { alignEaseePowerSnapshots } from './chart-phase-snapshots.js';
+import { powerExtremaTimes } from './chart-power-extrema.js';
 
 export const CHART_TIME_ZONE = 'Europe/Helsinki';
 const HOUR = 3_600_000, DAY = 24 * HOUR;
@@ -68,9 +68,9 @@ export function chartRequestRange({ viewFrom, viewTo, ...args } = {}) {
   return { selection, range: { ...selection, from: viewFrom, to: viewTo }, detail: true };
 }
 
-/** A pixel envelope, not a row limit: every source row contributes. First/last,
- * extrema and both sides of the first missing-data run survive each bucket.
- * Samples occupying separate pixels retain their original timestamps. */
+/** A bounded pixel envelope. If a bucket exceeds eight missing markers, its interior
+ * missing span is conservatively unavailable instead of inventing connectivity.
+ * First/last and finite extrema outside that span retain their source times. */
 export class Envelope {
   constructor(from, to, points) {
     this.from = from; this.to = to; this.width = (to - from) / points;
@@ -82,11 +82,18 @@ export class Envelope {
     const index = Math.min(Math.ceil((this.to - this.from) / this.width) - 1, Math.floor((x - this.from) / this.width));
     let bucket = this.buckets.get(index);
     if (!bucket) { bucket = { first: point, last: point, min: null, max: null, missing: null, beforeMissing: null, afterMissing: null }; this.buckets.set(index, bucket); }
-    if (point.y === null && !bucket.missing) { bucket.missing = point; bucket.beforeMissing = bucket.last; }
+    if (point.y === null) {
+      bucket.gaps ??= new Map();
+      if (bucket.gaps.size < 8 || bucket.gaps.has(x)) bucket.gaps.set(x,point);
+      else bucket.gapOverflow = true;
+      if (!bucket.missing || x < bucket.missing.x) { bucket.missing = point; bucket.beforeMissing = bucket.last; }
+      if (!bucket.lastMissing || x >= bucket.lastMissing.x) { bucket.lastMissing = point; bucket.afterMissing = null; }
+    }
     if (point.y !== null) {
       if (!bucket.min || point.y < bucket.min.y) bucket.min = point;
       if (!bucket.max || point.y > bucket.max.y) bucket.max = point;
-      if (bucket.missing && !bucket.afterMissing) bucket.afterMissing = point;
+      if (bucket.lastMissing && x > bucket.lastMissing.x
+        && (!bucket.afterMissing || x < bucket.afterMissing.x)) bucket.afterMissing = point;
     }
     if (point.x < bucket.first.x) bucket.first = point;
     if (point.x >= bucket.last.x) bucket.last = point;
@@ -95,8 +102,11 @@ export class Envelope {
   values() {
     const result = [];
     for (const [, bucket] of [...this.buckets].sort((a, b) => a[0] - b[0])) {
-      const points = [bucket.first, bucket.min, bucket.max, bucket.beforeMissing, bucket.missing, bucket.afterMissing, bucket.last]
-        .filter(Boolean).sort((a, b) => a.x - b.x);
+      const points = [bucket.first, bucket.min, bucket.max, bucket.beforeMissing, bucket.missing, bucket.lastMissing, bucket.afterMissing, bucket.last,
+        ...bucket.gaps?.values() ?? []]
+        .filter(Boolean).map(point => bucket.gapOverflow && bucket.missing && bucket.lastMissing && point.x >= bucket.missing.x
+          && point.x <= bucket.lastMissing.x && point.y !== null
+          ? { ...point, y: null, displayCoverage: 'partial' } : point).sort((a, b) => a.x - b.x);
       for (const point of points) {
         const previous = result.at(-1);
         if (previous?.x === point.x) {
@@ -173,37 +183,6 @@ function valueOf(row, flags) {
   return row.value;
 }
 
-/** Easee reports the latest state of each phase, with independent event clocks.
- * Combine one device/poll, retaining the newest phase's source time for display.
- * Indexed lookups include unchanged phases outside the selected history window;
- * emitting at the last source row preserves stream order with bounded memory. */
-function* alignEaseePowerSnapshots(rows, db, now) {
-  const snapshot = db.prepare(`SELECT id,source,device,signal,value,unit,source_time,received_at,quality,import_id,row_number
-    FROM observations WHERE source='easee' AND import_id IS NULL AND device=? AND received_at=?
-    AND signal IN (?,?,?) ORDER BY id`);
-  const cache = new Map();
-  for (const row of rows) {
-    if (row.source !== 'easee' || row.import_id !== null || !PHASES.includes(row.signal)) {
-      yield row; continue;
-    }
-    const prefix = row.signal.startsWith('property_') ? 'property' : 'ev1';
-    const key = JSON.stringify([prefix, row.device, row.received_at]);
-    let group = cache.get(key);
-    if (!group) {
-      const phases = new Map(snapshot.all(row.device, row.received_at,
-        ...[1, 2, 3].map(phase => `${prefix}_current_l${phase}`)).map(phase => [phase.signal, phase]));
-      const values = [...phases.values()];
-      const anchor = values.filter(phase => Number.isFinite(phase.source_time) && phase.source_time <= now)
-        .sort((a, b) => b.source_time - a.source_time || b.id - a.id)[0];
-      group = { rows: values, anchor };
-      if (cache.size >= 128) cache.delete(cache.keys().next().value);
-      cache.set(key, group);
-    }
-    if (row.id !== group.anchor?.id) continue;
-    for (const phase of group.rows) yield { ...phase, source_time: group.anchor.source_time,
-      value: Number.isFinite(phase.source_time) && phase.source_time <= now ? phase.value : null, alignedPowerSnapshot: true };
-  }
-}
 
 class ShadeEnvelope {
   constructor(range, points) { this.range = range; this.points = points; this.rows = []; this.fractions = null; this.lastEnd = -Infinity; }
@@ -242,10 +221,10 @@ class ShadeEnvelope {
   }
 }
 
-function knownIntervals(market, store, range, now) {
+export function knownIntervals(market, store, range, now) {
   // Stored market snapshots preserve historical intervals after the rolling
-  // provider cache has moved on. Last fetched revision wins for each boundary.
-  const rows = new Map();
+  // provider cache has moved on. Receipt eligibility precedes publication authority.
+  const rows = [];
   const accept = (snapshot, fetchedAt) => {
     if (!Number.isFinite(fetchedAt) || fetchedAt > now || !Array.isArray(snapshot?.intervals)) return;
     for (const interval of snapshot.intervals) {
@@ -253,10 +232,7 @@ function knownIntervals(market, store, range, now) {
         || interval.end - interval.start > 25 * HOUR
         || interval.end <= range.from || interval.start >= range.to || !Number.isFinite(interval.spotCtPerKwh)
         || interval.unit !== 'c/kWh' || interval.vatIncluded !== false) continue;
-      const key = `${interval.start}:${interval.end}`;
-      if ((rows.get(key)?.fetchedAt ?? -Infinity) <= fetchedAt) rows.set(key, {
-        start: interval.start, end: interval.end, spotCtPerKwh: interval.spotCtPerKwh,
-        unit: 'c/kWh', vatIncluded: false, source: interval.source, fetchedAt });
+      rows.push({ ...interval, fetchedAt });
     }
   };
   // Acquisition currently requests 48 hours; seven days also covers the adapter's
@@ -267,26 +243,7 @@ function knownIntervals(market, store, range, now) {
     try { accept(JSON.parse(row.payload), row.fetched_at); } catch { /* Reject corrupt snapshots independently. */ }
   }
   if (market && now >= market.fetchedAt && now - market.fetchedAt <= 36 * HOUR) accept(market, market.fetchedAt);
-  // Resolve differently partitioned revisions (hourly versus quarter-hourly)
-  // using boundary segments, avoiding overlapping chart prices.
-  const candidates = [...rows.values()].sort((a, b) => a.start - b.start || b.fetchedAt - a.fetchedAt);
-  const events = new Map();
-  candidates.forEach((row, id) => {
-    for (const [at, direction] of [[Math.max(range.from, row.start), 1], [Math.min(range.to, row.end), -1]]) {
-      if (!events.has(at)) events.set(at, []);
-      events.get(at).push({ id, direction });
-    }
-  });
-  const active = new Set(), result = []; let previous = null;
-  for (const [at, changes] of [...events].sort((a, b) => a[0] - b[0])) {
-    if (previous !== null && at > previous && active.size) {
-      let newest;
-      for (const id of active) if (!newest || candidates[id].fetchedAt >= newest.fetchedAt) newest = candidates[id];
-      result.push({ ...newest, start: previous, end: at });
-    }
-    for (const change of changes) change.direction > 0 ? active.add(change.id) : active.delete(change.id);
-    previous = at;
-  }
+  const result = resolveMarketIntervals(rows, range);
   // Historical scalar slots fill only gaps in explicit provider intervals.
   // Merge sorted intervals in linear time instead of expanding years of CSV
   // slots into the provider-revision event map above.
@@ -304,7 +261,7 @@ function knownIntervals(market, store, range, now) {
     if (cursor < slot.end) combined.push({ ...slot, start: cursor });
   }
   while (index < result.length) combined.push(result[index++]);
-  return combined;
+  return combined.filter(row => !row.authorityConflict);
 }
 
 const WEATHER_SOURCES = new Set(['fmi', 'openmeteo', 'husdata-h66', 'mqtt-temperature', 'simulation']);
@@ -341,16 +298,15 @@ function intervalPoints(intervals, key, envelope) {
 }
 
 
-function* mergedHistoryRows(store, nativeRows, from, to, requested) {
-  // Imports retain the exact original row. Reading it once is considerably
-  // cheaper than materializing five/six expanded SQLite records across the JS
-  // boundary. Reuse the importer decoder so missing values and quality agree.
+function* mergedHistoryRows(store, nativeRows, from, to, requested, now) {
+  // Read the canonical import once instead of expanding five/six observations
+  // across the JS boundary. The importer owns parsing and quality semantics.
   function* imported() {
-    const query = store.db.prepare(`SELECT r.raw,r.source_time,r.row_number,i.id,i.kind,i.started_at
+    const query = store.db.prepare(`SELECT r.canonical,r.source_time,r.row_number,i.id,i.kind,i.started_at
       FROM import_rows r JOIN imports i ON i.id=r.import_id
-      WHERE i.status='complete' AND i.kind IN (${requested.has('property_current_l1') ? "'stmq','easee'" : "'stmq'"}) AND r.source_time>=? AND r.source_time<?
+      WHERE i.status='complete' AND i.completed_at<=? AND i.kind IN (${requested.has('property_current_l1') ? "'stmq','easee'" : "'stmq'"}) AND r.source_time>=? AND r.source_time<?
       ORDER BY r.source_time,i.id,r.row_number`);
-    for (const original of query.iterate(from, to)) {
+    for (const original of query.iterate(now, from, to)) {
       yield { ...original, imported: true };
     }
   }
@@ -367,26 +323,23 @@ function* mergedHistoryRows(store, nativeRows, from, to, requested) {
 }
 
 function addHistoricalChargerTiming(store, timing, range, now, input, cutoff = Infinity) {
-  const scope = input === 'simulated' ? "(o.source='simulation' OR o.source='controller-estimate' AND o.device='simulated')"
-    : "(o.source<>'simulation' AND NOT(o.source='controller-estimate' AND o.device='simulated'))";
-  const firstPower = store.db.prepare(`SELECT min(o.source_time) AS at FROM observations o
-    WHERE o.signal='charger_power' AND o.source_time>=? AND o.source_time<=? AND ${scope}`)
-    .get(range.from - 30 * 60_000, Math.min(now, range.to)).at;
-  const until = Math.min(cutoff, firstPower ?? Math.min(now + 1, range.to));
+  const until = Math.min(cutoff, now + 1, range.to);
   if (until <= range.from - 30 * 60_000) return;
   const compact = input !== 'simulated' && range.to - range.from > 7 * DAY;
   const native = store.db.prepare(`SELECT o.* FROM observations o INDEXED BY observations_time
     LEFT JOIN imports i ON i.id=o.import_id WHERE o.source_time>=? AND o.source_time<?
-    AND o.signal IN ('ev1_current_l1','ev1_current_l2','ev1_current_l3') AND ${scope}
-    ${compact ? 'AND o.import_id IS NULL' : ''} AND (o.import_id IS NULL OR i.status='complete')
-    ORDER BY o.source_time,o.id`).iterate(range.from - 30 * 60_000, until);
-  const rows = compact ? mergedHistoryRows(store, native, range.from - 30 * 60_000, until, new Set(PHASES)) : native;
+    AND o.signal IN ('ev1_current_l1','ev1_current_l2','ev1_current_l3')
+    AND o.received_at<=? AND (o.import_id IS NULL OR i.status='complete' AND i.completed_at<=?)
+    AND ${input === 'simulated' ? "o.source='simulation'" : "o.source<>'simulation'"}
+    ${compact ? 'AND o.import_id IS NULL' : ''}
+    ORDER BY o.source_time,o.id`).iterate(range.from - 30 * 60_000, until, now, now);
+  const rows = compact ? mergedHistoryRows(store, native, range.from - 30 * 60_000, until, new Set(PHASES), now) : native;
   const flagsOf = qualityReader(); let at = null, groups = new Map();
   const flush = () => {
     const candidates = [...groups.values()].sort((a, b) => b.priority - a.priority || b.id - a.id);
     if (candidates.length) {
       const values = candidates[0].values;
-      timing.add('charger', at, values.every(Number.isFinite) ? values.reduce((sum, value) => sum + value, 0) * 0.23 : null,
+      timing.add('charger1', at, values.every(Number.isFinite) ? values.reduce((sum, value) => sum + value, 0) * 0.23 : null,
         { key: input === 'simulated' ? 'simulated' : 'currents' });
     }
     groups = new Map();
@@ -396,7 +349,7 @@ function addHistoricalChargerTiming(store, timing, range, now, input, cutoff = I
     at = row.source_time;
     if (row.imported) {
       if (row.kind !== 'easee') continue;
-      const values = decodeHistoryRow(row.kind, row.raw).observations.slice(0, 3).map(observation =>
+      const values = JSON.parse(row.canonical).slice(0, 3).map(observation =>
         observation.quality.includes('ev_exceeds_property_current') ? null : valueOf(observation, observation.quality));
       groups.set(`csv:${row.id}:${row.row_number}`, { values, priority: 0, id: row.id * 1_000_000_000 + row.row_number * 10 });
     } else {
@@ -409,9 +362,9 @@ function addHistoricalChargerTiming(store, timing, range, now, input, cutoff = I
     }
   }
   if (at !== null) flush();
-  // Finish the historical path at the exact handover; a scalar power observation
-  // then supersedes it without double counting or dependence on chart decimation.
-  timing.add('charger', Math.min(until, now, range.to), null);
+  // Finish snapshots at the exact recorded-energy handover, without double
+  // counting or dependence on chart decimation.
+  timing.add('charger1', Math.min(until, now, range.to), null);
 }
 
 /** Combined chart query. This deliberately never calls providers, reads options,
@@ -439,8 +392,6 @@ export function getChartData({ store, input = 'offline', contract = null, market
   // narrower than their source cadence. Context never crosses selected dates.
   const queryTo = Math.min(detail ? Math.min(selection.to, range.to + 3 * HOUR) : range.to, now + 1);
   const shading = Object.fromEntries(['heatOff', 'compressorSpace', 'compressorDhw', 'dhwr', 'fireplace'].map(key => [key, new ShadeEnvelope(range, points)])), warnings = [];
-  const dhwrFeedback = [];
-  const dhwrFeedbackStart = addDhwrFeedback({ store, shading: { add: (start, end) => dhwrFeedback.push({ start, end }) }, range, now, input });
   // Daily outcomes retain their selected calendar-day meaning at every zoom.
   // Only their selected series needs this calculation on detail requests.
   const firewoodRange = detail && FIREWOOD_OUTCOME_NAMES.includes(left) ? { ...range,
@@ -456,7 +407,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
     : new DailyTimingBenchmark(range, now, priced, { heatPump: 'reconstructed-equipment' });
   const heatPumpEnergy = !drawingOnly || envelopes.heat_pump_power
     ? addHistoricalHeatPump({ store, range, now, input, envelope: envelopes.heat_pump_power, timing }) : null;
-  const energyStarts = Object.fromEntries(['property','ev1'].map(prefix=>[prefix,recordedEnergyStart(store,prefix,input)]));
+  const energyStarts = Object.fromEntries(['property','ev1'].map(prefix=>[prefix,recordedEnergyStart(store,prefix,input,now)]));
   if (!drawingOnly) addHistoricalChargerTiming(store, timing, range, now, input, energyStarts.ev1);
   const modeEnvelopes = Object.fromEntries([0, 1, 2, 3, 4].map(mode => [mode, new ShadeEnvelope(range, points)]));
   let telemetry = new Map(), previousTelemetryAt = null;
@@ -483,10 +434,10 @@ export function getChartData({ store, input = 'offline', contract = null, market
           FROM observations o INDEXED BY observations_signal_time LEFT JOIN imports i ON i.id=o.import_id
           WHERE o.signal=? AND o.source_time>=? AND o.source_time<?
           ${compactImports ? 'AND o.import_id IS NULL' : ''}
-          AND ${sourceScope} AND (o.import_id IS NULL OR i.status='complete')
+          AND ${sourceScope} AND o.received_at<=? AND (o.import_id IS NULL OR i.status='complete' AND i.completed_at<=?)
           AND COALESCE(json_extract(o.raw,'$.recorder.status'),'fresh')='fresh'
           ORDER BY o.source_time,o.id`);
-        const iterator=query.iterate(signal,range.from-3*HOUR,queryTo);
+        const iterator=query.iterate(signal,range.from-3*HOUR,queryTo,now,now);
         pending.add(iterator);
         const item=iterator.next();
         if(item.done)pending.delete(iterator);else heads.push({iterator,value:item.value});
@@ -509,7 +460,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
   const flushPulse = () => {
     if (!pendingPulse) return;
     const { start, end } = pendingPulse, until = Math.min(end, now, range.to);
-    shading.dhwr.add(start, Math.min(until, dhwrFeedbackStart));
+    shading.dhwr.add(start, until);
     if (envelopes.dhwr_request && until > Math.max(start, range.from)) {
       envelopes.dhwr_request.add(Math.max(start, range.from), 1);
       envelopes.dhwr_request.add(until - 1, 1);
@@ -554,7 +505,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
     if (previous) {
       const until = Math.min(row.source_time, previous.at + gap);
       if (kind === 'heat' && previous.value === 0) shading.heatOff.add(previous.at, until);
-      if (kind === 'heat' && previous.value === 60) shading.dhwr.add(previous.at, Math.min(row.source_time, previous.at + 600_000, dhwrFeedbackStart));
+      if (kind === 'heat' && previous.value === 60) shading.dhwr.add(previous.at, Math.min(row.source_time, previous.at + 600_000));
     }
     previousHeat = { at: row.source_time, value };
   };
@@ -564,23 +515,24 @@ export function getChartData({ store, input = 'offline', contract = null, market
       const signal = row.signal;
       if (signal === 'charger_power' && time >= energyStarts.ev1) continue;
       if (PHASES.includes(signal) && time >= energyStarts[signal.startsWith('ev1')?'ev1':'property']) continue;
-      if (signal === 'requested_heat_mode') addState(row, value, 'heat');
+      if (signal === 'requested_heat_mode' && row.import_id != null) addState(row, value, 'heat');
       else if (signal === 'dhwr_request' && row.source === 'controller' && row.device === input && value === 0) {
         if (pendingPulse) { pendingPulse.end = Math.min(pendingPulse.end, time); flushPulse(); }
       }
       else if (signal === 'dhwr_request' && row.source === 'controller' && row.device === input && value === 1) {
-        let end = time + 10 * 60_000;
-        try { const raw = JSON.parse(row.raw); if (Number.isFinite(raw?.expiresAt)) end = Math.min(time + 60 * 60_000, raw.expiresAt); } catch { /* Ten-minute legacy pulse default. */ }
+        let end = null;
+        try { const raw = JSON.parse(row.raw); if (Number.isFinite(raw?.expiresAt)) end = Math.min(time + 60 * 60_000, raw.expiresAt); } catch { /* Unsupported native request. */ }
         if (end > time) {
           if (pendingPulse && time > pendingPulse.end) flushPulse();
           pendingPulse = pendingPulse ? { start: pendingPulse.start, end: Math.max(end, pendingPulse.end) } : { start: time, end };
         }
       }
       else if (signal === 'controller_phase' && row.source === 'controller' && row.device === input) {
-        lines[signal]?.add(time, value);
-        let until = time + 30 * 60_000;
-        try { const raw = JSON.parse(row.raw); if (Number.isFinite(raw?.expiresAt) && raw.expiresAt > time) until = raw.expiresAt; } catch { /* Older requests retain a bounded lifetime. */ }
-        telemetry.set(signal, { at: time, value, until });
+        let until = time;
+        try { const raw = JSON.parse(row.raw); if (Number.isFinite(raw?.expiresAt) && raw.expiresAt > time) until = raw.expiresAt; } catch { /* Unsupported native request. */ }
+        const current = until > time ? value : null;
+        lines[signal]?.add(time, current);
+        telemetry.set(signal, { at: time, value: current, until });
       }
       else if (['compressor_active', 'dhw_routing', 'operating_mode'].includes(signal)) {
         lines[signal]?.add(time, value);
@@ -589,7 +541,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
         lines[signal]?.add(time, value);
         if (!atRows.has('auxiliary_power') && lines.auxiliary_power) {
           let kw = null;
-          try { const raw = JSON.parse(row.raw), capacity = raw?.ratedPowerKw ?? raw?.ratedKw ?? raw?.maxPowerKw;
+          try { const raw = JSON.parse(row.raw), capacity = raw?.ratedPowerKw;
             if (verified(row) && Number.isFinite(capacity) && capacity > 0) kw = auxiliaryPowerFromOutput(value, capacity)?.kw ?? null;
           } catch { /* Never assume installed heater capacity. */ }
           lines.auxiliary_power.add(time, kw);
@@ -605,13 +557,12 @@ export function getChartData({ store, input = 'offline', contract = null, market
         if (signal === 'outdoor_temperature') metadata = weatherPointMetadata(row);
         if (signal === 'solar_radiation') {
           let raw;
-          try { raw = JSON.parse(row.raw); } catch { /* Older archived forecasts may lack metadata. */ }
+          try { raw = JSON.parse(row.raw); } catch { /* Missing current provenance remains unavailable. */ }
           metadata = weatherPointMetadata({ source: row.source, solar: raw && typeof raw === 'object' ? raw : {} }, true);
         }
         if (row.periodicCoverage) metadata = { ...metadata, source: row.source, periodicCoverage:true,displayBoundary:true,
           observedAt:row.observedAt,reportExpiresAt:row.reportExpiresAt,coverageId:row.coverageId };
         if (signal !== 'charger_power') lines[signal]?.add(time, value, metadata);
-        if (signal === 'charger_power' && !drawingOnly) timing.add('charger', time, row.unit === 'kW' ? value : null, timingPowerEvidence(row));
         if (LEARNING.includes(signal)) {
           try { const raw = JSON.parse(row.raw); learningMetadata[signal] = { at: time, count: raw?.count ?? null, basis: raw?.basis ?? null, modelVersion: raw?.modelVersion ?? null }; } catch { /* Optional metadata. */ }
         }
@@ -643,7 +594,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
     atRows = new Map(); phases = new Map();
   };
   const nativeRows = nativeHistoryRows();
-  const historyRows = compactImports ? mergedHistoryRows(store, nativeRows, range.from - 3 * HOUR, queryTo, requested) : nativeRows;
+  const historyRows = compactImports ? mergedHistoryRows(store, nativeRows, range.from - 3 * HOUR, queryTo, requested, now) : nativeRows;
   function* rowsWithPreviousReadings() {
     const earlier = [];
     // Door contacts report changes rather than a sampling cadence. An indexed
@@ -652,20 +603,20 @@ export function getChartData({ store, input = 'offline', contract = null, market
     for (const signal of leftNames.filter(name => DOOR_SIGNALS.includes(name))) {
       const seed = store.db.prepare(`SELECT ${columns} FROM observations o LEFT JOIN imports i ON i.id=o.import_id
         WHERE o.signal=? AND o.source_time<? AND ${sourceScope}
-        AND (o.import_id IS NULL OR i.status='complete') ORDER BY o.source_time DESC,o.id DESC LIMIT 1`)
-        .get(signal, range.from - 3 * HOUR);
+        AND o.received_at<=? AND (o.import_id IS NULL OR i.status='complete' AND i.completed_at<=?) ORDER BY o.source_time DESC,o.id DESC LIMIT 1`)
+        .get(signal, range.from - 3 * HOUR, now, now);
       if (seed) earlier.push(seed);
     }
     // Learned estimates remain in effect until superseded, including past-day
     // views. A seed retains its original timestamp and never backdates learning.
     if (LEARNING.includes(left)) {
       const seed = store.db.prepare(`SELECT ${columns} FROM observations o WHERE o.signal=? AND o.source_time<?
-        AND o.source='controller-learning' AND o.device=? ORDER BY o.source_time DESC,o.id DESC LIMIT 1`).get(left, range.from - 3 * HOUR, input);
+        AND o.source='controller-learning' AND o.device=? AND o.received_at<=? ORDER BY o.source_time DESC,o.id DESC LIMIT 1`).get(left, range.from - 3 * HOUR, input, now);
       if (seed) earlier.push(seed);
     }
     const phaseSeed = store.db.prepare(`SELECT ${columns} FROM observations o WHERE o.signal='controller_phase'
-      AND o.source='controller' AND o.device=? AND o.source_time<? ORDER BY o.source_time DESC,o.id DESC LIMIT 1`)
-      .get(input, range.from - 3 * HOUR);
+      AND o.source='controller' AND o.device=? AND o.source_time<? AND o.received_at<=? ORDER BY o.source_time DESC,o.id DESC LIMIT 1`)
+      .get(input, range.from - 3 * HOUR, now);
     if (phaseSeed) earlier.push(phaseSeed);
     if (range.from <= now && now < range.to) {
       // A sensor can stay unchanged for days. Seed live plots with its latest
@@ -674,15 +625,15 @@ export function getChartData({ store, input = 'offline', contract = null, market
       const signals = [...TEMPERATURES, ...(left === 'integral' ? ['heating_integral'] : PHASES)];
       const latest = store.db.prepare(`SELECT o.source_time FROM observations o INDEXED BY observations_signal_time
         LEFT JOIN imports i ON i.id=o.import_id WHERE o.signal=? AND o.source_time<?
-        AND ${sourceScope} AND (o.import_id IS NULL OR i.status='complete')
+        AND ${sourceScope} AND o.received_at<=? AND (o.import_id IS NULL OR i.status='complete' AND i.completed_at<=?)
         ORDER BY o.source_time DESC,o.id DESC LIMIT 1`);
-      const times = new Set(signals.map(signal => latest.get(signal, range.from - 3 * HOUR)?.source_time).filter(Number.isFinite));
+      const times = new Set(signals.map(signal => latest.get(signal, range.from - 3 * HOUR, now, now)?.source_time).filter(Number.isFinite));
       const seeds = store.db.prepare(`SELECT ${columns} FROM observations o INDEXED BY observations_time
         LEFT JOIN imports i ON i.id=o.import_id WHERE o.source_time=?
         AND o.signal IN (${signals.map(() => '?').join(',')}) AND ${sourceScope}
-        AND (o.import_id IS NULL OR i.status='complete') ORDER BY o.id`);
+        AND o.received_at<=? AND (o.import_id IS NULL OR i.status='complete' AND i.completed_at<=?) ORDER BY o.id`);
       // Keep complete acquisition cohorts and normal duplicate/source precedence.
-      for (const at of times) earlier.push(...seeds.iterate(at, ...signals));
+      for (const at of times) earlier.push(...seeds.iterate(at, ...signals, now, now));
     }
     yield* earlier.sort((a, b) => a.source_time - b.source_time || a.id - b.id);
     yield* historyRows;
@@ -696,7 +647,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
     if (row.imported) {
       if (time !== null && time !== row.source_time) flushTime();
       time = row.source_time;
-      const decoded = decodeHistoryRow(row.kind, row.raw);
+      const decoded = { observations: JSON.parse(row.canonical) };
       if (row.kind === 'easee' && left === 'power') {
         // The original row is already the exact six-phase acquisition cohort.
         // Aggregate it without manufacturing six intermediate SQLite-shaped rows.
@@ -740,7 +691,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
   }
   if (time !== null) flushTime();
   flushPulse();
-  if (Number.isFinite(energyStarts.ev1)) timing.add('charger',energyStarts.ev1,null);
+  if (Number.isFinite(energyStarts.ev1)) timing.add('charger1',energyStarts.ev1,null);
   const recordedEnergy = !drawingOnly || names.some(name => ENERGY_SIGNALS.includes(name) || PHASES.includes(name)
     || ['property_power', 'charger_power', 'charger2_power'].includes(name))
     ? addRecordedEnergy({store,range,now,input,envelopes,timing}) : { rows: 0, intervals: 0 };
@@ -801,7 +752,6 @@ export function getChartData({ store, input = 'offline', contract = null, market
 
   // A last command is only a bounded request; it is not indefinite confirmation.
   if (previousHeat) addState({ source_time: Math.min(now, range.to) }, null, 'heat');
-  for (const { start, end } of dhwrFeedback) shading.dhwr.add(start, end);
   flushTelemetry(Math.min(now, range.to));
   for (const name of LEARNING) if (lines[name]?.previous) {
     const previous = lines[name].previous, end = Math.min(now, range.to);
@@ -849,7 +799,9 @@ export function getChartData({ store, input = 'offline', contract = null, market
   let relatedSampling;
   const relatedGroups = [...(['power', 'phases'].includes(left) ? [leftNames] : []), ['all_in_price', 'spot_price']];
   for (const group of relatedGroups) if (group.some(name => envelopes[name].count > series[name].length)) {
-    const times = [...new Set(group.flatMap(name => series[name].map(point => point.x)))].sort((a, b) => a - b);
+    const compositeTimes = left === 'power' && group === leftNames ? powerExtremaTimes({ store,range,now,input,
+      points,readValue:valueOf }) : [];
+    const times = [...new Set([...group.flatMap(name => series[name].map(point => point.x)),...compositeTimes])].sort((a, b) => a - b);
     const priceGroup = group[0] === 'all_in_price';
     const projected = getChartData({ store, input, contract, now, startDate, endDate, left, points, viewFrom, viewTo,
       _relatedTimes: times, ...(priceGroup ? { _priceProjection: { marketIntervals, priced } } : {}) });
@@ -880,12 +832,10 @@ export function getChartData({ store, input = 'offline', contract = null, market
     meta: { ...(detail ? { detail: true } : {}), ...(relatedSampling ? { relatedSampling } : {}), warnings, priceAssumptions, rawRows, invalidRows, lastReadings, learning: learningMetadata, modelInputs, modelCoefficients, garageHistory, fireplaceInputs, firewoodOutcomes, recordedEnergy, chargingSessions, heatPumpEnergy, historyBasis: 'original-recorded-history',
     returnedPoints: Object.values(series).reduce((sum, rows) => sum + rows.length, 0),
     elapsedMs: Math.round((performance.now() - started) * 100) / 100,
-    powerEstimate: left === 'power' ? 'Recorded phase or total energy divided by its interval duration; older current-only history uses 230 V. Phase allocation and energy integration are estimates.' : null,
+    powerEstimate: left === 'power' ? 'Recorded phase or total energy divided by its interval duration; coherent current snapshots, including v0.7.5 CSV imports, use 230 V. Phase allocation and energy integration are estimates.' : null,
     heatOffBasis: 'Historical requested reduction, not compressor activity.',
     auxHeatBasis: 'Estimated kW from H66 auxiliary output and configured capacity; cumulative counters do not identify episodes.',
-    dhwrBasis: Number.isFinite(dhwrFeedbackStart)
-      ? 'Actual circulation from measured power: positive is on, zero is off. Missing feedback leaves gaps. Earlier history uses recorded requests.'
-      : 'Requested circulation with its recorded duration; legacy CSV requests last ten minutes. MQTT acknowledgement is not physical pump feedback.',
+    dhwrBasis: 'Requested circulation with its recorded duration; v0.7.5 CSV requests last ten minutes. MQTT acknowledgement is not physical pump feedback. Independent electrical feedback is live-only.',
     fireplaceBasis: 'Corrected manual additions over the model burn timescale; heat release continues afterward.',
     decimation: 'Original recorded history, reduced in memory for display: first, last, minimum, maximum and missing-data breaks per time bucket. Costs use original energy intervals independently of drawing points.' } };
 }

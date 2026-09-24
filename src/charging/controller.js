@@ -30,13 +30,11 @@ const DIAGNOSTICS = {
 /** Durable native instruction ownership and observed manual priority. */
 export function createChargingController({ adapter, initialState = null, saveState = () => {}, clock = Date.now,
   canControl = () => false, getPlan, getMaximumAmps } = {}) {
-  // Retain confirmed ownership across upgrades so an installed restriction can
-  // still be relinquished. Version 1 manual flags lack an observed baseline.
-  const previous = [1, 2, 3, 4].includes(initialState?.version) ? copy(initialState) : {};
+  if (initialState && initialState.version !== 5) throw new Error('Unsupported charging ownership; start a fresh development database');
+  const previous = initialState ? copy(initialState) : {};
   let state = { phase: 'off', owned: null, pending: null, manual: null, released: false,
     disconnected: false, execution: null, handoverConfirmed: true, reason: 'Automatic charging is off.',
-    ...previous, version: 4, session: previous.version >= 2 ? previous.session ?? null : null,
-    manual: previous.version >= 2 ? previous.manual ?? null : null, errorCode: null };
+    ...previous, version: 5, session: previous.session ?? null, errorCode: null };
   let desired = { enabled: false, plan: null, readyBy: '06:00', timezone: TIME_ZONE }, snapshot = null, closed = false, generation = 0, queue = Promise.resolve();
   const permitted = () => !closed && canControl() === true;
   const status = () => ({ ...copy(state), enabled: desired.enabled === true, snapshot: snapshot ? copy(snapshot) : null });
@@ -62,6 +60,7 @@ export function createChargingController({ adapter, initialState = null, saveSta
     return { planId: pending.planId, startAt: pending.startAt, fingerprint: snapshot.fingerprint,
       activeFingerprint: currentFingerprint(), schedule: copy(snapshot.schedule), confirmedAt: now,
       ...(isTime(pending.pauseRequestedAt) && pending.pauseRequestedAt <= now ? { requestedAt: pending.pauseRequestedAt } : {}),
+      scheduleRequestedAt: pending.installRequestedAt,
       ...(pending.periods ? { periods: copy(pending.periods), finalStartAt: pending.finalStartAt } : {}) };
   }
   function normalExpiry(now) {
@@ -264,7 +263,9 @@ export function createChargingController({ adapter, initialState = null, saveSta
     } else if (!plannedPause) {
       await phase('waiting', state.execution?.periods.length > 1 ? 'The first charging start is confirmed in Easee. Later pauses require the connection to remain available.'
         : 'The delayed start is confirmed in Easee. Charging stays enabled after release.');
-    } else if (snapshot.reason === 54) {
+    } else if (snapshot.reason === 54 && isTime(state.owned?.scheduleRequestedAt)
+      && snapshot.reasonAt >= state.owned.scheduleRequestedAt && snapshot.reasonAt <= clock()
+      && snapshot.modeAt >= state.owned.scheduleRequestedAt && snapshot.modeAt <= clock()) {
       if (state.execution && state.owned) state.execution.pauseConfirmedThrough = Math.max(
         state.execution.pauseConfirmedThrough ?? 0, state.owned.startAt);
       await phase('paused', 'The next start is confirmed in Easee and charging is paused between planned periods.');
@@ -496,14 +497,14 @@ export function createChargingController({ adapter, initialState = null, saveSta
           // Refresh before writing, including while Equalizer limits output.
           if (priceExecution && plan.startAt - clock() < MIN_PRICE_PAUSE_MS)
             throw Object.assign(new Error('The proposed price pause is now too short'), { code: 'state-changed' });
-          if (before.mode !== 3) return;
-          // The guarded read still saw charging. Persist the request-intent
-          // boundary before POST, so a fast stop and lost readback can retain
-          // their provenance. This is not the exact network send time.
-          const prior = state.pending, witnessed = { ...pending, pauseRequestedAt: clock() };
+          // Persist the schedule boundary for causal confirmation. Only an
+          // actually charging guarded read supplies a vehicle pause witness.
+          const prior = state.pending, witnessed = { ...pending, installRequestedAt: clock(),
+            ...(before.mode === 3 ? { pauseRequestedAt: clock() } : {}) };
           state.pending = witnessed;
           try { await persist(); } catch (error) { state.pending = prior; throw error; }
-          pending.pauseRequestedAt = witnessed.pauseRequestedAt;
+          pending.installRequestedAt = witnessed.installRequestedAt;
+          if (witnessed.pauseRequestedAt !== undefined) pending.pauseRequestedAt = witnessed.pauseRequestedAt;
         } });
       state.lastReadAt = snapshot.readAt;
       if (currentFingerprint() !== expectedActiveFingerprint) throw Object.assign(new Error('Schedule readback mismatch'), { code: 'readback-mismatch' });
@@ -545,6 +546,7 @@ export function createChargingController({ adapter, initialState = null, saveSta
       queue = queue.catch(() => {}).then(() => reconcile(expectedGeneration));
       return queue.then(result => expectedGeneration === generation || closed ? result : queue);
     },
+    invalidate() { generation++; },
     close() { closed = true; generation++; return queue.catch(() => {}); },
   };
 }

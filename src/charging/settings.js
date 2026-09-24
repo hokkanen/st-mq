@@ -7,7 +7,7 @@ const chargerDefaults = capacityKwh => Object.freeze({
 
 /** Durable user preferences only. Connections and conversion assumptions belong
  * to application configuration; electrical limits are provider observations. */
-export const DEFAULT_CHARGING_SETTINGS = Object.freeze({ chargers: Object.freeze({
+export const DEFAULT_CHARGING_SETTINGS = Object.freeze({ priority: 'balanced', vehicles: Object.freeze({ tesla: Object.freeze({ capacityKwh: 57 }), bmw: Object.freeze({ capacityKwh: 74 }) }), chargers: Object.freeze({
   charger1: chargerDefaults(74), charger2: chargerDefaults(57),
 }) });
 
@@ -26,7 +26,14 @@ export function chargingSettings(input = {}) {
   object(input, 'Charging settings'); knownKeys(input, DEFAULT_CHARGING_SETTINGS, 'charging setting');
   if (input.chargers !== undefined) object(input.chargers, 'Charging chargers');
   knownKeys(input.chargers ?? {}, DEFAULT_CHARGING_SETTINGS.chargers, 'charger');
-  const result = { chargers: {} };
+  if (!['balanced', 'charger1', 'charger2'].includes(input.priority ?? 'balanced')) throw new Error('Invalid charging priority');
+  object(input.vehicles ?? {}, 'Vehicle profiles'); knownKeys(input.vehicles ?? {}, DEFAULT_CHARGING_SETTINGS.vehicles, 'vehicle');
+  const vehicles = {};
+  for (const [id, defaults] of Object.entries(DEFAULT_CHARGING_SETTINGS.vehicles)) {
+    const supplied = input.vehicles?.[id] ?? {}; object(supplied, 'Vehicle profile'); knownKeys(supplied, defaults, 'vehicle profile setting');
+    vehicles[id] = { ...defaults, ...supplied }; range(vehicles[id].capacityKwh, `${id} capacityKwh`, 1, 300);
+  }
+  const result = { priority: input.priority ?? 'balanced', vehicles, chargers: {} };
   for (const [id, defaults] of Object.entries(DEFAULT_CHARGING_SETTINGS.chargers)) {
     const supplied = input.chargers?.[id] ?? {};
     object(supplied, `Charging ${id}`); knownKeys(supplied, defaults, `charging ${id} setting`);
@@ -48,20 +55,9 @@ export function mergeChargingSettings(previous, patch) {
   for (const [id, item] of Object.entries(patch.chargers ?? {})) {
     object(item, `Charging ${id}`); chargers[id] = { ...chargers[id], ...item };
   }
-  return chargingSettings({ ...previous, ...patch, chargers });
-}
-
-/** Retain user choices while discarding the removed installation/connection
- * controls. Saved overrides never retain priority over automatic readings. */
-export function migrateChargingSettings(saved = {}) {
-  object(saved, 'Charging settings');
-  const chargers = {};
-  for (const [id, defaults] of Object.entries(DEFAULT_CHARGING_SETTINGS.chargers)) {
-    const before = saved.chargers?.[id] ?? (id === 'charger1' ? { ...saved, capacityKwh: saved.capacity1Kwh }
-      : { capacityKwh: saved.capacity2Kwh });
-    chargers[id] = Object.fromEntries(Object.keys(defaults).filter(key => before[key] !== undefined).map(key => [key, before[key]]));
-  }
-  return chargingSettings({ chargers });
+  const vehicles = Object.fromEntries(Object.entries(previous.vehicles).map(([id, value]) => [id, { ...value, ...patch.vehicles?.[id] }]));
+  for (const id of Object.keys(patch.vehicles ?? {})) if (!Object.hasOwn(vehicles, id)) throw new Error('Unknown vehicle profile');
+  return chargingSettings({ ...previous, ...patch, vehicles, chargers });
 }
 
 /** Concrete next ready-by occurrence in ST-MQ's local timezone. Pure callers

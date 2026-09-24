@@ -15,7 +15,10 @@ export function heatingScopeDisplay(payload, scope = 'home', mode = 'model') {
   const result = selected ?? (scope === 'home' ? mode === 'model' ? payload?.heatingBenefit : payload?.timingBenefit?.heatPump : {}) ?? {};
   // Preserve the existing Home figures and copy; scope switching is display-only.
   const display = mode === 'model' ? heatingDisplay(result.status === 'partial' ? { ...result, status: 'estimated' } : result, payload)
-    : timingDisplay('heatPump', result, payload);
+    : timingDisplay(scope === 'home' ? 'heatPump' : scope === 'garage' ? 'garageHeatPump' : 'totalHeatPump', result, payload);
+  // Scope selects the evidence contract, while all scopes reuse the same
+  // mounted Heating card and its persistent disclosures and controls.
+  display.key = 'heatPump';
   display.scope = scope;
   display.explanations = scope === 'home' ? heatingExplanations : scope === 'garage' ? garageHeatingExplanations
     : [heatingExplanations[0], ...garageHeatingExplanations, 'Total adds compatible Home and Garage completed-cycle amounts for the same reporting period. A partial total names any missing component.'];

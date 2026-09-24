@@ -10,7 +10,7 @@ import { sensorBoundaries, affectsThermalLearning, sensorLearningContext } from 
 import { withSensorMeasurements } from './sensor-samples.js';
 import { estimateHeatPumpPerformance } from '../domain/heat-pump-performance.js';
 
-export const LEARNING_ALGORITHM = 'committed-house-v11-preheat-recovery';
+export const LEARNING_ALGORITHM = 'committed-house-v12-passive-thermal';
 export const LEARNING_WINDOW_MS = 15 * 60_000;
 const HOUR = 3_600_000;
 const PHASES = ['normal', 'preheat', 'reduction', 'recovery'];
@@ -338,12 +338,6 @@ export function committedLearningSample({ store, input, at, config = {}, windowM
       compressorDuty: thermalCompressorDuty, route: Number.isFinite(thermalCompressorDuty) ? 'space-heating' : 'unknown', quality: [] },
     provenance: { basis: 'committed-history', intervalContract: 1, from, to: at, lineage, forecastVersion: radiation.version,
       electricalUse: 'whole-property and charger energy are context only; never heat-pump metering' } };
-  // Compatibility summary only. Segments are authoritative when phase, target,
-  // destination or configuration changes within the completed interval.
-  sample.intervalInputs = { outdoorC: sample.outdoorC, solarRadiationWm2: sample.solarRadiationWm2,
-    supplyC: sample.supplyC, brineC: sample.brineC, floorOverrideMode: sample.floorOverrideMode, treatmentKey: sample.treatmentKey,
-    phase, roomBoostC: sample.roomBoostC, targetC: sample.targetC,
-    compressorDuty: thermalCompressorDuty, auxKw: thermalAuxKw };
   return withSensorMeasurements(sample, { sensorEpochs: boundariesBySensor, measurementEpochAt }, config);
 }
 
@@ -360,13 +354,17 @@ export function historicalLearningWindows(rows, inputState = null) {
       const prior = state.previous ?? source;
       const available = source && at - source.at <= 3 * HOUR;
       const phase = prior?.action === 'reduction' ? 'reduction' : 'normal';
-      samples.push({ timestamp: at, windowStart: at - LEARNING_WINDOW_MS, windowEnd: at,
+      samples.push({ sensorInputVersion: 1, indoorSensors: { indoor_temperature: {
+        value: available ? source.indoorC : null, weight: 1, observedAt: source?.at ?? null } },
+        timestamp: at, windowStart: at - LEARNING_WINDOW_MS, windowEnd: at,
         indoorC: available ? source.indoorC : null, outdoorC: available ? prior?.outdoorC ?? null : null,
         phase, roomBoostC: 0, solarRadiationWm2: null, regime: source?.regime === 'occupied' ? 'occupied' : 'away',
         quality: available ? source.quality : ['missing'], actualModeKnown: false,
         energyBasis: 'unknown', powerKw: null, compressorDuty: null, heating: null,
-        intervalInputs: { outdoorC: available ? prior?.outdoorC ?? null : null, solarRadiationWm2: null,
-          phase, roomBoostC: 0, compressorDuty: null, auxKw: null },
+        inputSegments: [{ start: at - LEARNING_WINDOW_MS, end: at, durationHours: LEARNING_WINDOW_MS / HOUR,
+          outdoorC: available ? prior?.outdoorC ?? null : null, solarRadiationWm2: null,
+          phase, regime: source?.regime === 'occupied' ? 'occupied' : 'away', roomBoostC: 0,
+          thermalCompressorDuty: null, thermalAuxKw: null, quality: available ? source.quality : ['missing'] }],
         provenance: { basis: 'committed-import-history', sourceObservationId: source?.id ?? null,
           sourceTime: source?.at ?? null, forecastVersion: null, modeBasis: 'recorded-request-only' } });
       state.nextAt += LEARNING_WINDOW_MS;
@@ -378,7 +376,16 @@ export function historicalLearningWindows(rows, inputState = null) {
   return { state, samples };
 }
 
+export function assertCurrentLearningSample(sample) {
+  if (!sample || sample.sensorInputVersion !== 1 || !Array.isArray(sample.inputSegments)
+    || !sample.indoorSensors || Object.hasOwn(sample, 'intervalInputs') || Object.hasOwn(sample, 'thermal'))
+    throw new TypeError('Unsupported Home sample payload; only the current segmented sensor-input contract is supported.');
+}
+
 export function appendLearningRecord(store, input, kind, value, { config = {}, seed = null } = {}) {
+  if (kind === 'sample') assertCurrentLearningSample(value);
+  if (seed && (seed.model?.version !== 4 || seed.algorithmVersion && seed.algorithmVersion !== LEARNING_ALGORITHM))
+    throw new TypeError('Unsupported Home seed; start with fresh current learning state.');
   // Old CSV temp_in is the historical upstairs sensor, never a fabricated average.
   if (input === 'history') config = { ...config, indoorSensorWeights: { indoor_temperature: 1 } };
   const configuration = learningConfiguration(config);
@@ -392,9 +399,9 @@ export function appendLearningRecord(store, input, kind, value, { config = {}, s
     forecastVersion: value.provenance?.forecastVersion ?? null,
     payload: { value, configuration, ...(prior && Object.hasOwn(prior, 'seed') ? { seed: prior.seed,
       ...(prior.epoch ? { epoch: prior.epoch } : {}) }
-      : first ? { seed: seed?.model?.version === 3 && (!seed.algorithmVersion || seed.algorithmVersion === LEARNING_ALGORITHM)
+      : first ? { seed: seed?.model?.version === 4 && (!seed.algorithmVersion || seed.algorithmVersion === LEARNING_ALGORITHM)
         ? structuredClone(seed) : null, epoch: { algorithm: LEARNING_ALGORITHM,
-          initialization: 'explicit v3 seed or fresh hydronic priors; no v9 thermal reinterpretation' } } : {}) } });
+          initialization: 'explicit current v4 seed or fresh passive thermal priors' } } : {}) } });
 }
 
 function resetMeasurement(checkpoint, configuration, at) {
@@ -410,6 +417,7 @@ function resetMeasurement(checkpoint, configuration, at) {
 
 export function applyLearningRecord(checkpoint, entry, fireplaceContext = {}) {
   if (entry.algorithmVersion !== LEARNING_ALGORITHM) throw new Error('Unsupported learning journal algorithm');
+  if (entry.kind === 'sample') assertCurrentLearningSample(entry.payload?.value);
   if (entry.configVersion !== learningVersion(entry.payload.configuration)) throw new Error('Learning journal configuration version mismatch');
   if ((checkpoint?.journalCursor ?? 0) >= entry.id) return checkpoint;
   const configuration = entry.payload.configuration;
@@ -465,10 +473,6 @@ export function applyLearningRecord(checkpoint, entry, fireplaceContext = {}) {
     initial.model.forecastValidation = null;
   }
   let value = entry.kind === 'sample' ? withFireplaceInputs(withSensorMeasurements(entry.payload.value, initial, configuration), fireplaceContext) : entry.payload.value;
-  const sampleStart = value.windowStart ?? value.timestamp;
-  if (entry.kind === 'sample' && value.sensorInputVersion !== 1 && Number.isFinite(initial?.measurementEpochAt)
-    && (typeof sampleStart === 'number' ? sampleStart : Date.parse(sampleStart)) < initial.measurementEpochAt + SENSOR_SETTLING_MS)
-    value = { ...value, indoorC: null, valid: false, quality: ['sensor-change-settling'] };
   const oldMeasurementEpisode = entry.kind === 'episode' && Number.isFinite(initial?.measurementEpochAt)
     && (typeof value.startedAt === 'number' ? value.startedAt : Date.parse(value.startedAt)) < initial.measurementEpochAt;
   const next = entry.kind === 'sample'
@@ -500,7 +504,9 @@ export function replayLearningJournal(store, input, checkpoint = null, { rebuild
     fireplaceRevision = checkpoint.fireplaceRevision ?? 0; sensorRevision = checkpoint.sensorRevision ?? 0;
   }
   const fireplaceContext = { ...fireplaceLearningContext(store, input, fireplaceRevision), ...sensorLearningContext(store, input, sensorRevision) };
-  let next = rebuild || checkpoint?.algorithmVersion && checkpoint.algorithmVersion !== LEARNING_ALGORITHM ? null : checkpoint;
+  if (checkpoint?.algorithmVersion && checkpoint.algorithmVersion !== LEARNING_ALGORITHM)
+    throw new Error('Unsupported Home checkpoint algorithm; start fresh.');
+  let next = rebuild ? null : checkpoint;
   if (next && ((next.fireplaceRevision ?? 0) !== fireplaceContext.fireplaceRevision
     || (next.sensorRevision ?? 0) !== fireplaceContext.sensorRevision)) next = null;
   if (next?.journalCursor) {

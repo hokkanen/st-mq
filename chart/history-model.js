@@ -87,13 +87,13 @@ const seriesInfo = {
   property_power: ['Property', 'kW · interval average from recorded energy; older history uses 230 V × current', 'property'],
   charger_power: ['Charger 1', 'kW · interval average from recorded energy; older history uses 230 V × current', 'ev', 'fill'],
   charger2_power: ['Charger 2', 'kW · interval average from recorded total energy; phase distribution unknown', 'ev2', 'fill'],
-  caravan_energy: ['Caravan energy', 'kWh · measured meter energy over the recorded interval', 'garage'],
+  caravan_energy: ['Caravan energy', 'kWh · measured meter energy over the recorded interval', 'garage', 'interval-energy'],
   caravan_temperature: ['Caravan air', '°C', 'garage'],
   caravan_humidity: ['Caravan relative humidity', '%', 'outdoor'],
   caravan_dehumidifier_running_state: ['Caravan dehumidifier', 'state · reported running state', 'garage'],
-  ev2_energy: ['Charger 2 total energy', 'kWh · estimated from TeslaMate charging power over the recorded interval', 'ev2'],
+  ev2_energy: ['Charger 2 total energy', 'kWh · physical Shelly EVSE meter difference over the recorded interval', 'ev2', 'interval-energy'],
   ev1_session_energy_check: ['Charger 1', 'kWh · finalized session electricity reading', 'ev', 'session'],
-  tesla_session_energy_check: ['Charger 2', 'kWh · finalized session energy added to the battery', 'ev2', 'session'],
+  shelly_session_energy_check: ['Charger 2', 'kWh · finalized physical charging session electricity', 'ev2', 'session'],
   auxiliary_power: ['Auxiliary heat', 'kW · estimated from H66 output and configured capacity', 'auxiliary', 'fill'],
   property_current_l1: ['Property L1', 'A', 'phase1'],
   property_current_l2: ['Property L2', 'A', 'phase2'],
@@ -122,7 +122,8 @@ const seriesInfo = {
 };
 for (const [signal, info] of Object.entries(SIGNAL_INFO)) {
   seriesInfo[signal] ??= [info.label, `${info.unit} · ${info.detail ?? info.kind.toLowerCase()}`,
-    PHASE_ENERGY_SIGNALS.includes(signal) ? `phase${signal.at(-1)}` : signal.startsWith('ev1') ? 'ev' : signal.startsWith('property') ? 'property' : info.group === 'Ground loop' ? 'outdoor' : 'integral'];
+    PHASE_ENERGY_SIGNALS.includes(signal) ? `phase${signal.at(-1)}` : signal.startsWith('ev1') ? 'ev' : signal.startsWith('property') ? 'property' : info.group === 'Ground loop' ? 'outdoor' : 'integral',
+    PHASE_ENERGY_SIGNALS.includes(signal) ? 'interval-energy' : 'line'];
 }
 Object.assign(seriesInfo, {
   heat_pump_power: ['Heat pump', 'kW · reconstructed estimated electrical input', 'auxiliary'],
@@ -177,8 +178,7 @@ export function coefficientStatusLabel(status) {
 
 export function sessionPointDetail(point = {}) {
   if (!point.sessionCheck) return '';
-  const basis = point.referenceBasis === 'energy-added' ? 'energy added to battery; differs from electrical input'
-    : 'session electricity meter';
+  const basis = 'session electricity meter';
   return `${basis} · ${point.comparisonEligible ? 'included in session averages' : 'excluded from session averages: incomplete comparison'}`;
 }
 
@@ -258,7 +258,7 @@ export function historyDatasets(series = {}, left = 'power', preferences = {}, p
       key, visibilityKey, unit, kind, label,
       data,
       ...(powerKeys.includes(key) ? { powerStacked: Boolean(stackBase), powerStackBase: stackBase ?? null } : {}),
-      showLine: !['event', 'daily', 'session'].includes(kind),
+      showLine: !['event', 'daily', 'session', 'interval-energy'].includes(kind),
       yAxisID: isLeft ? 'left' : 'right',
       borderColor: palette[colorKey], backgroundColor: palette[colorKey],
       borderWidth: kind === 'fill' ? 0 : isPrice ? 1 : 1.8,
@@ -269,9 +269,9 @@ export function historyDatasets(series = {}, left = 'power', preferences = {}, p
         : kind === 'session' ? data.map(point => point.comparisonEligible ? palette[colorKey] : 'transparent') : palette[colorKey], pointBorderColor: palette[colorKey],
       pointStyle: kind === 'event' ? 'triangle' : kind === 'daily' ? 'rectRot' : 'circle',
       // A finite reading surrounded by gaps has no line segment to draw.
-      pointRadius: kind === 'event' ? 5 : ['daily', 'session'].includes(kind) ? 4 : isPrice ? 1 : data.map((point, index) => Number.isFinite(point.y)
+      pointRadius: kind === 'event' ? 5 : ['daily', 'session', 'interval-energy'].includes(kind) ? 4 : isPrice ? 1 : data.map((point, index) => Number.isFinite(point.y)
         && !Number.isFinite(data[index - 1]?.y) && !Number.isFinite(data[index + 1]?.y) ? 2 : 0),
-      pointHoverRadius: kind === 'event' ? 7 : ['daily', 'session'].includes(kind) ? 6 : 3, pointHitRadius: 8,
+      pointHoverRadius: kind === 'event' ? 7 : ['daily', 'session', 'interval-energy'].includes(kind) ? 6 : 3, pointHitRadius: 8,
       // Duplicate interval-edge points from the API retain exact price/forecast steps.
       stepped: temperature ? false : isPrice ? 'before' : kind === 'forecast' || isLeft && left !== 'integral' && !PHASE_ENERGY_SIGNALS.includes(key),
       // Chart.js' monotone cubic Hermite interpolation is O(n), preserves local

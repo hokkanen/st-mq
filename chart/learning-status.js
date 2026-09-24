@@ -84,7 +84,7 @@ const evidenceReason = reason => evidenceReasons[reason] ?? words(reason);
 function coefficientState(model, key, info) {
   if (!finite(model.parameters?.[key])) return 'unavailable';
   if (info.fixed) return 'fixed';
-  if (model.validation?.accepted !== true) return 'initial';
+  if (model.validation?.accepted !== true) return model.trainedAt ? 'unvalidated' : 'initial';
   if (model.validation.fittedParameters?.includes(key)) return 'fitted';
   return retainedValidatedCoefficient(model.validation, key) ? 'retained' : 'unvalidated';
 }
@@ -132,7 +132,7 @@ export function modelCoefficientDescriptions(learning = {}) {
       ['capacityKwhPerC', 'Selected slab capacity', 'kWh/K', 2, 'Material sensible heat capacity at uniform temperature. Effective charge, useful tariff-period heat and electricity saved can all be smaller. By default, selected capacity is taken from the seeded reserve capacity rather than added twice.'],
       ['nativeCapacityKwhPerC', 'Remaining building reserve capacity', 'kWh/K', 2, 'Fixed effective reserve capacity after allocating the selected slab. This latent state is not a measured temperature or independently identified heat capacity.'],
       ['exchangeKwPerC', 'Slab heat exchange', 'kW/K', 3, 'Fixed transfer between the selected slab and room; the model keeps slab temperature through relay transitions. It is not currently learned from room-only readings.'],
-      ['groundLossKwPerC', 'Slab ground exchange', 'kW/K', 3, `Fixed exchange with the configured slow ground boundary. ${floor.groundLossIncludedInEnvelope ? 'The corresponding baseline is removed from the envelope loss allowance to avoid counting it twice.' : 'Ground loss is additional to the configured envelope-loss term.'}`],
+      ['groundLossKwPerC', 'Slab ground exchange', 'kW/K', 3, 'Fixed passive exchange with the configured slow ground boundary, separate from the current above-ground envelope coefficient.'],
       ['groundC', 'Ground boundary temperature', '°C', 1, 'Configured slow ground temperature, separate from the outdoor-air temperature. This is a physical prior, not a ground sensor reading.'],
       ['openAllocationFraction', 'Heat allocation with override', 'fraction', 2, 'Fraction of already supplied hydronic heat entering the selected slab with all override outputs confirmed. The remaining heat enters the building reserve; no extra heat is invented.'],
       ['closedAllocationFraction', 'Heat allocation in normal mode', 'fraction', 2, 'Background fraction entering the selected slab with normal thermostat authority. Other permanently open circuits remain available and are not credited as newly enabled storage.'],
@@ -166,6 +166,7 @@ export function learningDisplay(learning = {}, context = {}) {
   if (health.phaseSamples) record('Control-phase coverage', 'Retained fitting window', `Retained intervals by control phase: ${Object.entries(health.phaseSamples).map(([phase, count]) => `${words(phase)} ${count}`).join(', ')}. These counts do not establish independent completed-cycle evidence.`);
   const horizon = finite(validation?.horizonHours) ? `${number(validation.horizonHours, 1)}${finite(validation.maximumHorizonHours) && validation.maximumHorizonHours !== validation.horizonHours ? `–${number(validation.maximumHorizonHours, 1)}` : ''} hours` : 'the saved forecast horizon';
   if (validation?.accepted && finite(validation.maeC)) record('Temperature prediction', `${number(validation.maeC)} °C mean error`, `Conditional temperature validation: ${number(validation.maeC)} °C mean absolute trajectory error over ${validation.samples ?? 0} later blocks of ${horizon}${finite(validation.maxErrorC) ? `; maximum ${number(validation.maxErrorC)} °C` : ''}${finite(validation.persistenceMaeC) ? `. Holding the initial temperature gives ${number(validation.persistenceMaeC)} °C` : ''}. Errors are weighted by duration. Each trajectory starts once and runs forward with observed heat input supplied; this does not validate full-cycle cost or future compressor duty.`);
+  if (validation?.accepted === false && finite(validation.maxErrorC)) record('Current temperature check', 'Not currently validated', `Retained coefficients fail the current holdout: maximum ${number(validation.maxErrorC)} °C error; mean ${number(validation.maeC)} °C. Earlier accepted evidence does not authorize present predictions.`);
   if (health.reason) record('Latest model update', words(health.reason), `Latest update: ${words(health.reason)}.`);
   if (finite(p.fireplaceCPerKg)) {
     const fire = validation?.fireplace;
@@ -319,7 +320,8 @@ export function learningDisplay(learning = {}, context = {}) {
   return { title, message: learning.message ?? learning.reason ?? (readiness?.thermalValidated === true
     ? 'Temperature prediction has passed later checks with observed heat input. Action prediction and economic readiness are assessed separately.'
     : validation?.accepted ? 'An accepted parameter update is in use. Identified heat loss and heating response are both required for temperature readiness; action evidence is checked separately.'
-      : 'Initial estimates remain in use while independent evidence is collected.'),
+      : model.trainedAt ? 'Coefficients are retained as an unvalidated fallback after contradictory current evidence.'
+        : 'Initial estimates remain in use while independent evidence is collected.'),
     process, metrics, evidence, evidenceRows: visibleEvidenceRows, coefficientEvidenceRows: visibleCoefficientRows, policyRows, inputs: modelInputDescriptions(), coefficients: modelCoefficientDescriptions(learning), coefficientEvidence,
     coefficientHistory: 'These are current values from the latest retained model. Select Model coefficients on the chart to see the four coefficients eligible for fitting, reconstructed from the learning journal and applicable firewood and sensor-change history. The chart preserves initial, fitted and retained estimates; today’s values are not applied to earlier intervals. Corrections can change retrospective reconstruction. Fixed building and source assumptions are shown here only. Reconstruction stays in memory and creates no additional stored history.',
     history: 'The chart stores these values when they are assessed. Earlier history keeps the estimate known at that time; later model updates do not rewrite it.' };

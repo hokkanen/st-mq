@@ -1,3 +1,4 @@
+import { weatherAcquisitionIdentity } from '../src/acquisition/weather-identity.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -55,7 +56,7 @@ function fixture(t) {
 }
 test('unchanged forecast downloads share content and preserve unknown-issuance age',async t=>{
   const f=fixture(t);f.config.acquisition.weatherIntervalMs=30*MINUTE;
-  f.options.weather=async({now})=>({source:'openmeteo',fetchedAt:now,issuedAt:null,
+  f.options.weather=async({now})=>({source:'openmeteo',fetchedAt:now,requestStartedAt:now-1000,issuedAt:null,
     forecast:[{start:initial,end:initial+24*60*MINUTE,outdoorC:5,solarRadiationWm2:120,
       source:'openmeteo',issuedAt:null,fetchedAt:now,issuedAtBasis:'fetched-snapshot'}]});
   const providers=startProviders(f.options);
@@ -252,6 +253,7 @@ test('a failed observation-cache transaction restores both SQLite history and in
   f.options.config.connections = {};
   f.engine.ingest(f.temperature()[0]);
   const before = structuredClone(f.engine.latest);
+  const ingestionBefore = f.engine.ingestionCheckpoint();
   const originalSetState = f.store.setState.bind(f.store);
   f.store.setState = (key, value) => {
     if (key === 'provider:observations') throw new Error('Synthetic disk write failure');
@@ -263,6 +265,7 @@ test('a failed observation-cache transaction restores both SQLite history and in
   try {
     await providers.runDue();
     assert.deepEqual(structuredClone(f.engine.latest), before);
+    assert.deepEqual(f.engine.ingestionCheckpoint(), ingestionBefore);
     assert.equal(f.store.observations().length, 1);
     assert.equal(f.store.getState('provider:observations'), null);
     assert.equal(f.store.getState('providers:health').temperatures.status, 'error');
@@ -600,10 +603,11 @@ test('Easee scopes partial errors and quality notes to the affected current read
 test('charger age and asynchronous snapshots never restore an attention state, even with old failure counters', async t => {
   const f = fixture(t);
   f.config.connections = { easee: { charger_id: 'fixture-ev' } };
-  for (const flags of [['charger_stale', 'asynchronous_snapshot'], ['asynchronous_snapshot'], ['stale']]) {
+  for (const flags of [['charger_stale', 'asynchronous_snapshot'], ['asynchronous_snapshot'], []]) {
     f.store.setState('providers:health', { easee: { status: 'degraded', failures: 2, error: null,
       lastSuccessAt: initial - MINUTE, nextAttemptAt: initial + 20 * MINUTE,
-      qualityIssues: flags, staleSourceTimes: { charger_stale: initial - 60 * MINUTE } } });
+      qualityIssues: flags, staleSourceTimes: { charger_stale: initial - 60 * MINUTE },
+      currentReadings: { charger: { qualityIssues: flags, error: null, lastSuccessAt: initial - MINUTE } } } });
     const providers = startProviders(f.options);
     try {
       const health = f.engine.status().providers.easee;
@@ -623,9 +627,9 @@ test('Easee restores sanitized device health without hiding real errors or prope
   f.store.setState('providers:health', { easee: { status: 'degraded', error: null,
     nextAttemptAt: initial + 20 * MINUTE, qualityIssues: ['asynchronous_snapshot', 'charger_stale'],
     currentReadings: {
-      charger: { qualityIssues: ['stale', 'asynchronous_snapshot', 'synthetic-private-response'], error: null,
+      charger: { qualityIssues: ['charger_stale', 'asynchronous_snapshot', 'synthetic-private-response'], error: null,
         lastSuccessAt: initial, raw: 'synthetic-private-response' },
-      property: { qualityIssues: ['stale', 'invalid_unit', 'missing'], error: 'HTTP_503',
+      property: { qualityIssues: ['property_stale', 'invalid_unit', 'missing'], error: 'HTTP-503',
         lastSuccessAt: 'synthetic-private-response' },
       'synthetic-private-response': { error: 'synthetic-private-response' },
     } } });
@@ -679,7 +683,7 @@ test('Easee invalid downloads and thrown errors retain separately dated successe
   } finally { await providers.close(); }
 });
 
-test('invalid persisted Easee scopes cannot suppress a legacy current quality problem', async t => {
+test('malformed persisted Easee scopes cannot suppress a current quality problem', async t => {
   const f = fixture(t);
   f.config.connections = { easee: { charger_id: 'fixture-ev', equalizer_id: 'fixture-property' } };
   for (const currentReadings of [{}, [], 'synthetic-private-response', { charger: [] }]) {
@@ -780,10 +784,11 @@ test('restart preserves visible failures and fallback details during a scheduled
       nextAttemptAt: initial + 4 * MINUTE, failures: 0 },
     easee: { status: 'degraded', lastAttemptAt: initial - MINUTE, lastSuccessAt: null,
       nextAttemptAt: initial + 29 * MINUTE, failures: 3, error: 'HTTP-401',
-      qualityIssues: ['stale', 'synthetic-private-response'],
-      staleSourceTimes: { stale: initial - 60 * MINUTE, charger_stale: 'synthetic-private-response',
+      qualityIssues: ['charger_stale', 'synthetic-private-response'],
+      currentReadings: { charger: { qualityIssues: ['charger_stale'], error: 'HTTP-401', lastSuccessAt: null } },
+      staleSourceTimes: { charger_stale: initial - 60 * MINUTE,
         property_stale: -1, 'synthetic-private-response': initial - 120 * MINUTE } },
-    weather: { status: 'fallback', nextAttemptAt: initial + 30 * MINUTE,
+    weather: { status: 'fallback', acquisitionIdentity: weatherAcquisitionIdentity(f.config.connections), nextAttemptAt: initial + 30 * MINUTE,
       source: 'openmeteo', acquisition: { primary: 'fmi', selected: 'openmeteo', fallbackUsed: true,
         privateBody: 'synthetic-private-response', attempts: [{ source: 'fmi', status: 'error', error: 'HTTP-429' },
           { source: 'openmeteo', status: 'ok' }] },
@@ -799,7 +804,7 @@ test('restart preserves visible failures and fallback details during a scheduled
     assert.equal(health.easee.nextAttemptAt, initial + 29 * MINUTE);
     assert.deepEqual(health.easee.qualityIssues, ['charger_stale']);
     assert.deepEqual(health.easee.staleSourceTimes, { charger_stale: initial - 60 * MINUTE });
-    assert.equal(health.easee.currentReadings, undefined, 'legacy generic errors must not acquire invented device scope');
+    assert.deepEqual(health.easee.currentReadings, { charger: { qualityIssues: ['charger_stale'], error: 'HTTP-401', lastSuccessAt: null } });
     assert.equal(health.weather.status, 'fallback');
     assert.equal(health.weather.acquisition.attempts[0].error, 'HTTP-429');
     assert.equal(health.weather.sourceBackoff.fmi.failures, 1, 'restoration must not count a new failure');
@@ -931,5 +936,55 @@ test('rate limits are shared between forecast and observation routes after resta
     assert.equal(state.source, 'openmeteo');
     assert.equal(state.status, 'fallback');
     assert.equal(state.sourceBackoff.fmi.nextAttemptAt, initial + 120 * MINUTE);
+  } finally { await providers.close(); }
+});
+
+test('cold starts bind weather and job cadence to normalized location identity while retaining history and host limits', async t => {
+  const f = fixture(t);
+  f.options.weather = async ({ now }) => ({ source: 'openmeteo', fetchedAt: now, issuedAt: null,
+    forecast: [{ start: now, end: now + 24 * 60 * MINUTE, outdoorC: 5, issuedAt: null, fetchedAt: now, issuedAtBasis: 'fetched-snapshot' }] });
+  let providers = startProviders(f.options);
+  await providers.runDue(); await providers.close();
+  const first = f.store.getState('provider:weather');
+  assert.equal(first.acquisitionIdentity, weatherAcquisitionIdentity(f.config.connections));
+  const same = { ...f.config, connections: { ...f.config.connections, geoloc: { latitude: '60.0', longitude: '25.000' } } };
+  const identical = new Engine({ store: f.store, config: same, clock: () => initial + MINUTE }); f.engines.push(identical);
+  assert.equal(identical.outdoorObservation(initial + MINUTE).stale, false);
+  assert.equal(f.store.getState('provider:weather').snapshotId, first.snapshotId);
+  const health = f.store.getState('providers:health');
+  health.weather.sourceBackoff = { fmi: { error: 'HTTP-429', shared: true, failures: 1, nextAttemptAt: initial + 60 * MINUTE } };
+  f.store.setState('providers:health', health);
+  const moved = { ...same, connections: { ...same.connections, geoloc: { latitude: 67, longitude: 26 } } };
+  const engine = new Engine({ store: f.store, config: moved, clock: () => initial + MINUTE }); f.engines.push(engine);
+  assert.equal(engine.latest.outdoor_temperature, undefined);
+  assert.equal(f.store.getState('provider:weather'), null);
+  assert.ok(f.store.snapshotById(first.snapshotId), 'Past snapshots are retained as historical evidence');
+  let weatherCalls = 0;
+  providers = startProviders({ ...f.options, config: moved, engine, clock: () => initial + MINUTE,
+    weather: async args => { weatherCalls++; assert.ok(args.skipSources.includes('fmi')); return f.options.weather(args); } });
+  try { await providers.runDue(); assert.equal(weatherCalls, 1); }
+  finally { await providers.close(); }
+  const removed = new Engine({ store: f.store, config: { ...moved, connections: {} }, clock: () => initial + 2 * MINUTE }); f.engines.push(removed);
+  assert.equal(removed.latest.outdoor_temperature, undefined); assert.equal(f.store.getState('provider:weather'), null);
+});
+
+test('failed alternative temperature batches restore held values and attempts with no previous reading', async t => {
+  const f = fixture(t); f.options.config.connections = {};
+  const before = f.engine.ingestionCheckpoint(), original = f.store.setState.bind(f.store);
+  f.store.setState = (key, value) => { if (key === 'provider:observations') throw new Error('Synthetic failure after ingestion'); return original(key, value); };
+  f.options.devices.temperatures = async () => [
+    { ...f.temperature()[0], value: 21 },
+    { ...f.temperature()[0], device: 'garage_temperature_2', signal: 'garage_temperature_2', value: 8 },
+  ];
+  const providers = startProviders(f.options);
+  try {
+    await providers.runDue();
+    assert.deepEqual(f.engine.ingestionCheckpoint(), before);
+    assert.equal(f.store.observations().length, 0);
+    assert.equal(f.store.getState('providers:health').temperatures.status, 'error');
+    f.store.setState = original; f.setTime(initial + 5 * MINUTE); await providers.runDue();
+    assert.equal(f.engine.lastKnownTemperatures.indoor_temperature.value, 21);
+    assert.equal(f.engine.lastKnownTemperatures.garage_temperature_2.value, 8);
+    assert.equal(f.store.observations().length, 2);
   } finally { await providers.close(); }
 });

@@ -34,6 +34,9 @@ parentPort.on('message', ({ id, args, operation }) => {
     // availability spans, forecast fetches and completed imports do.
     const currentVersion = JSON.stringify(db.prepare(`SELECT
       (SELECT MAX(id) FROM observations) observations,
+      (SELECT MIN(received_at) FROM observations WHERE received_at>?) nextReceipt,
+      (SELECT MIN(completed_at) FROM imports WHERE status='complete' AND completed_at>?) nextImportPublication,
+      (SELECT MIN(fetched_at) FROM provider_snapshot_fetches WHERE fetched_at>?) nextProviderReceipt,
       (SELECT MAX(id) FROM provider_snapshot_fetches) snapshots,
       (SELECT MAX(id) FROM recorder_coverage) coverage,
       (SELECT group_concat(json_extract(value,'$.lastSourceTime')||':'||json_extract(value,'$.coverageId'))
@@ -43,7 +46,9 @@ parentPort.on('message', ({ id, args, operation }) => {
       (SELECT group_concat(CASE WHEN json_valid(value) THEN json_extract(value,'$.checkpointDigest') ELSE 'invalid' END) FROM state WHERE key IN ('adaptive:mqtt','adaptive:providers','adaptive:simulated')) adaptiveModels,
       (SELECT group_concat(value) FROM state WHERE key IN ('fireplace:rebuild:mqtt','fireplace:rebuild:providers','fireplace:rebuild:simulated')) fireplaceRebuilds,
       (SELECT MAX(id) FROM events WHERE type='heat-pump-power-config') heatPowerConfig,
-      (SELECT COUNT(*) FROM imports WHERE status='complete') imports`).get());
+      (SELECT MAX(id) FROM energy_audits) energyAudits,
+      (SELECT MAX(id) FROM events WHERE type='charging-session-check') chargingSessionChecks,
+      (SELECT COUNT(*) FROM imports WHERE status='complete') imports`).get(args.now,args.now,args.now));
     if (currentVersion !== version) { cache.clear(); cacheBytes = 0; version = currentVersion; }
     // Historical views survive second-by-second clock movement. Current/future
     // views renew within fifteen seconds, preserving acquisition timestamps.

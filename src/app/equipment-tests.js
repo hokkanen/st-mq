@@ -91,7 +91,7 @@ export function createEquipmentTests({ store, clock = Date.now, getEquipment, ca
     clearTimeout(timer); timer = null;
     if (closed || !state.active) return;
     const due = startupRestore || state.active.status === 'restoration-pending' ? Math.max(clock(), retryAt) : state.active.until;
-    timer = setTimeout(() => { void api.tick(); }, Math.max(1000, due - clock()));
+    timer = setTimeout(() => { timer = null; void api.tick(); }, Math.max(1000, due - clock()));
     timer.unref?.();
   }
   async function exclusive(operation) {
@@ -234,7 +234,7 @@ export function createEquipmentTests({ store, clock = Date.now, getEquipment, ca
         if (clock() < retryAt) { arm(); return api.status(); }
         if (!authority()) { retryAt = clock() + RETRY_MS; arm(); return api.status(); }
         try { await api.restore({ reason: startupRestore ? 'startup' : 'expiry' }); } catch { /* Saved pending state reports the failure. */ }
-      }
+      } else arm(); // A backward wall-clock step must not consume the only wake-up.
       return api.status();
     },
     async close({ restore = true } = {}) {

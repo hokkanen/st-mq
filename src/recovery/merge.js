@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { setImmediate as yieldTurn } from 'node:timers/promises';
-import { LEARNING_ALGORITHM, LEARNING_WINDOW_MS, learningVersion } from '../app/committed-learning.js';
+import { LEARNING_ALGORITHM, LEARNING_WINDOW_MS, learningVersion, assertCurrentLearningSample } from '../app/committed-learning.js';
 import { originalSensorSample } from '../app/sensor-samples.js';
 
 export const RECOVERY_POLICY = 'master-wins-gaps-only-v1';
@@ -201,13 +201,14 @@ export class HistoryMerge {
     await this.rows('provider_snapshot_fetches', row => {
       this.require(['market', 'weather'].includes(row.kind) && text(row.source) && instant(row.fetched_at)
         && (row.issued_at === null || instant(row.issued_at)) && /^[a-f0-9]{64}$/.test(row.digest));
-      const mapped = row.content_id === null ? null : this.known('provider_snapshot_contents', row.content_id);
-      this.require(row.content_id === null ? object(decode(row.payload)) : mapped?.id != null);
-      if (row.fetch_metadata !== null) this.require(Array.isArray(decode(row.fetch_metadata)));
+      const mapped = this.known('provider_snapshot_contents', row.content_id);
+      this.require(mapped?.id != null && Array.isArray(decode(row.fetch_metadata)));
+      const content = this.donor.db.prepare('SELECT digest FROM provider_snapshot_contents WHERE id=?').get(row.content_id);
+      this.require(content && createHash('sha256').update(json([content.digest,row.issued_at,row.fetch_metadata])).digest('hex') === row.digest);
       const old = this.target.db.prepare('SELECT * FROM provider_snapshot_fetches WHERE kind=? AND source=? AND fetched_at=? ORDER BY id DESC LIMIT 1')
         .get(row.kind, row.source, row.fetched_at);
       if (old) return { id: old.id, disposition: old.digest === row.digest ? 'duplicates' : 'conflicts' };
-      return { id: this.insert('provider_snapshot_fetches', { ...without(row, ['id']), content_id: mapped?.id ?? null }),
+      return { id: this.insert('provider_snapshot_fetches', { ...without(row, ['id']), content_id: mapped.id }),
         disposition: 'missing', at: row.fetched_at };
     });
   }
@@ -332,13 +333,7 @@ export class HistoryMerge {
       if (old) return { id: old.id, disposition: old.value === row.value ? 'duplicates' : 'conflicts' };
       return { id: this.insert('energy_audits', { ...without(row, ['id']), comparison: null }), disposition: 'missing', at: row.source_time };
     });
-    await this.rows('learning_samples', row => {
-      const payload = decode(row.payload);
-      this.require(text(row.input) && instant(row.at) && object(payload));
-      const old = this.target.db.prepare('SELECT * FROM learning_samples WHERE input=? AND at=?').get(row.input, row.at);
-      if (old) return { id: old.id, disposition: same(decode(old.payload), payload) ? 'duplicates' : 'conflicts' };
-      return { id: this.insert('learning_samples', { ...without(row, ['id']), payload: json(this.remap(payload)) }), disposition: 'missing', at: row.at };
-    });
+
   }
   async scanJournal() {
     // Context identity uses timestamp + type, never the machine-local row ID.
@@ -368,26 +363,28 @@ export class HistoryMerge {
           this.maps.learning_journal.set(row.id, { id: old.id, disposition: 'duplicates' }); disposition = 'duplicates';
         } else {
           if (row.kind === 'sample') {
-            const start = value.windowStart ?? row.at - LEARNING_WINDOW_MS, end = value.windowEnd ?? row.at;
-            const measured = value.sensorInputVersion === 1 ? originalSensorSample(value) : value;
+            assertCurrentLearningSample(value);
+            const start = value.windowStart, end = value.windowEnd;
+            const measured = originalSensorSample(value);
             this.require(instant(start) && instant(end) && end > start && end - start <= LEARNING_WINDOW_MS && end === row.at);
             this.require(finite(measured.indoorC) && finite(measured.outdoorC) && flags(measured.quality ?? [])
               && !(measured.quality ?? []).some(flag => /missing|invalid|stale|unavailable|failed/.test(flag)));
             const overlap = this.target.db.prepare(`SELECT 1 FROM learning_journal WHERE input=? AND kind='sample'
-              AND json_valid(payload) AND json_type(payload,CASE
-                WHEN json_extract(payload,'$.value.sensorInputVersion')=1 AND json_type(payload,'$.value.measurementInputs')='object'
+              AND json_valid(payload) AND json_extract(payload,'$.value.sensorInputVersion')=1
+              AND json_type(payload,'$.value.inputSegments')='array' AND json_type(payload,CASE
+                WHEN json_type(payload,'$.value.measurementInputs')='object'
                 THEN '$.value.measurementInputs.indoorC' ELSE '$.value.indoorC' END) IN ('integer','real')
               AND json_type(payload,CASE
-                WHEN json_extract(payload,'$.value.sensorInputVersion')=1 AND json_type(payload,'$.value.measurementInputs')='object'
+                WHEN json_type(payload,'$.value.measurementInputs')='object'
                 THEN '$.value.measurementInputs.outdoorC' ELSE '$.value.outdoorC' END) IN ('integer','real')
               AND NOT EXISTS (SELECT 1 FROM json_each(learning_journal.payload,CASE
-                WHEN json_extract(payload,'$.value.sensorInputVersion')=1 AND json_type(payload,'$.value.measurementInputs')='object'
+                WHEN json_type(payload,'$.value.measurementInputs')='object'
                 THEN '$.value.measurementInputs.quality' ELSE '$.value.quality' END) q
                 WHERE q.value LIKE '%missing%' OR q.value LIKE '%invalid%' OR q.value LIKE '%stale%'
                   OR q.value LIKE '%unavailable%' OR q.value LIKE '%failed%')
-              AND COALESCE(json_extract(payload,'$.value.windowStart'),at-?)<?
-              AND COALESCE(json_extract(payload,'$.value.windowEnd'),at)>? LIMIT 1`)
-              .get(this.input, LEARNING_WINDOW_MS, end, start);
+              AND json_extract(payload,'$.value.windowStart')<?
+              AND json_extract(payload,'$.value.windowEnd')>? LIMIT 1`)
+              .get(this.input, end, start);
             if (overlap) { disposition = 'conflicts'; this.maps.learning_journal.set(row.id, { id: old?.id ?? null, disposition }); }
             else {
               // Master conflicts in resolved provenance cannot sneak in through

@@ -30,7 +30,7 @@ Document the basis for each installation value privately. Floor area and thickne
 can support a material-capacity estimate; they do not measure hydraulic allocation,
 release time, ground temperature or charging efficiency. The permanently open loops
 remain in the native building reserve. The model conserves supplied heat across both
-paths and accounts for the envelope's baseline ground loss without adding it twice.
+paths. With an explicit slab, the fitted envelope coefficient describes above-ground loss; slab-to-ground exchange is a separate passive path. The current model starts with fresh priors rather than converting old total-loss fits.
 DHW-routed compressor heat is excluded from space heating as a deliberate simplifying
 assumption.
 

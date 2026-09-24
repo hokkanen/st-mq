@@ -1,6 +1,6 @@
 # Garage simple OFF simulation audit
 
-The current audit tests `committed-garage-v5-protection-limited` against an independent
+The current audit tests `committed-garage-v6-source-clocks` against an independent
 simulated garage. It checks short cooling forecasts, deterministic learning,
 conservative opportunity selection and separation of thermal evidence from
 measured electricity. These are software experiments, not installed garage

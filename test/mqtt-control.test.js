@@ -239,3 +239,26 @@ test('direct heating routing preserves DHWR transport and prevents queued dispat
   assert.equal(calls, 1);
   await transport.close();
 });
+
+test('control identities bind exact broker, account and topic but do not retain passwords', async () => {
+  const base = { address: 'mqtt://fixture-one.invalid', user: 'fixture-account', pw: 'synthetic-secret', dhwr_topic: 'fixture/dhwr/set' };
+  const identity = connection => createHeatingTransport({ connection }).targetIdentity.dhwr;
+  const first = identity(base);
+  assert.match(first, /^[a-f0-9]{64}$/);
+  for (const changed of [{ address: 'mqtt://fixture-two.invalid' }, { user: 'different-account' }, { dhwr_topic: 'fixture/other/set' }])
+    assert.notEqual(identity({ ...base, ...changed }), first);
+  assert.equal(identity({ ...base, pw: 'synthetic-rotated-secret' }), first);
+  assert.doesNotMatch(JSON.stringify(first), /fixture|secret|account/);
+});
+
+test('tariff validity is rechecked at the deferred transport boundary', async () => {
+  let now = 10, sent = 0;
+  const transport = createHeatingTransport({ connection: { address: 'mqtt://fixture.invalid' } });
+  transport.setHeatingRelay(async () => { sent++; return { sent: true }; }, 'invented-route');
+  const pending = transport.publish(['reduction'], { validUntil: 11, clock: () => now,
+    expectedTarget: transport.targetIdentity.tariff });
+  now = 11;
+  await assert.rejects(pending, { code: 'EXECUTOR_EXPIRED' });
+  assert.equal(sent, 0);
+  await transport.close();
+});

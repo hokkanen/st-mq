@@ -1,78 +1,40 @@
 # Charging provider capabilities
 
-Checked against the public provider contracts on 2026-09-15. The two charger
-objects have the same fields. An unidentified car on the generic Easee uses
-manual values. Once its vehicle is identified, an unavailable automatic field uses its
-saved manual fallback; a missing charger connection or current allowance does
-not gain a manual switch.
+| Capability | Charger 1: Easee | Charger 2: Shelly EVSE | TeslaMate / BMW |
+| --- | --- | --- | --- |
+| Physical home energy | Easee phase intervals | Shelly native meter deltas | Never |
+| Connection lifecycle | Timestamped Easee state | Commissioned physical work-state mapping | Corroborating vehicle edges |
+| Economic control | Native one-off delayed starts | EVSE start/stop over MQTT RPC | No vehicle writes |
+| Current changes by ST-MQ | Never; Equalizer controls current | Verified common current | Read native limits only |
+| SoC/capacity/target | Assigned vehicle or explicit fallback | Assigned vehicle or explicit fallback | Applicable vehicle evidence |
+| Supply voltage | Physical installation evidence | Physical installation evidence | Never used for home supply |
 
-| Information | Easee charger | TeslaMate vehicle |
-| --- | --- | --- |
-| Usable battery capacity, kWh | Unavailable | Unavailable |
-| Vehicle SoC | Unavailable | `battery_level` |
-| Vehicle charge target | Unavailable | `charge_limit_soc` |
-| Connected vehicle | Pilot and operating mode | `plugged_in`, gated by household location |
-| Charging current estimate | Charger ceiling and separately identified Equalizer allowance | Requested current capped by vehicle maximum |
-| AC voltage | Equalizer phase-to-neutral property voltage | `charger_voltage`, or the shared property voltage |
-| Charging phases | Three-phase installation assumption | Three-phase installation assumption |
-| Measured charging power | Total power | `charger_power` |
-| Native start | Delayed, daily or weekly schedule | `scheduled_charging_start_time` |
-| Native stop | Daily or weekly stop | Unavailable |
-| Automatic schedule control | Native one-off starts, chained for split periods | Unavailable |
+The Charger 2 profile targets the [Top AC Portable EV Charger](https://shelly-api-docs.shelly.cloud/gen2/Devices/ShellyX/XT1/TopACPortableEVCharger/) on Shelly XT1. The integration uses the documented EVSE roles for state, current, start permission and electrical data. This is not a generic Shelly relay adapter. [XT1](https://shelly-api-docs.shelly.cloud/gen2/Devices/ShellyX/XT1/) documents role addressing, service state and access permissions; [Number](https://shelly-api-docs.shelly.cloud/gen2/DynamicComponents/Virtual/Number/) documents numeric limits and `meta.ui.step`.
 
-Easee's observations contain electrical limits and charger state; they do not
-provide vehicle battery capacity, percentage or charge target. A timestamped
-vehicle MQTT source can supplement those fields after its vehicle is matched to
-the current plug-in session. Equalizer current
-remains under external control. See the [observation contract](https://developer.easee.com/docs/charger-observation-ids)
-and [operating-mode and phase definitions](https://developer.easee.com/docs/enumerations).
+## Commissioning contract
 
-TeslaMate's MQTT topics provide individual values without measurement timestamps.
-ST-MQ preserves each packet's receipt time and retained-message status. Neither
-`usable_battery_level` (a percentage) nor charging-session energy is usable battery
-capacity. `time_to_full_charge` is an estimate, not a configured stop time. See
-the [TeslaMate MQTT contract](https://docs.teslamate.org/docs/integrations/mqtt/).
+Charger 2 defaults `enabled:false, verified:false`. Configure a concrete `deviceId` and `topicPrefix` to acquire it. To admit commands, explicitly commission the observed model and firmware, service 0, distinct connected/disconnected/charging work-state strings, current range/step and physical phase mapping. The initial supported allocation profile requires a 6 A minimum and a 1 A step; other minima/steps are rejected until the allocator and hardware contract explicitly support them. The adapter discovers each role's component ID, checks unique mapping and service ownership, and requires write access for the current/start roles. Observed model/firmware and current capabilities must exactly match the configured profile. Any mismatch or unreadable capability withdraws control.
 
-The configured TeslaMate subscription represents the Tesla independently of the
-charger. It supplies Charger 2 unless Tesla is positively identified at Easee,
-when its battery inputs are used by Charger 1 and the second session is hidden.
-Explicit `easee` assignment remains supported. Tesla's energy is not counted
-again as Charger 2 when assigned to Easee.
-MQTT subscription/reception health is separate from whether the vehicle is
-awake, charging, or producing sufficient evidence for energy recording.
+Every refresh reads native service config, status and [schedules](https://shelly-api-docs.shelly.cloud/gen2/ComponentsAndServices/Schedule/). Active errors/flags or a nonrunning service block commands. External `auto_balance` must be disabled for this distinct ST-MQ/Equalizer allocation arrangement; ST-MQ never changes it. Global charge/time caps and automatic-start settings are inspected and preserved. Enabled native schedules own start/stop conservatively; schedule semantics are not reconstructed from guessed windows.
 
-The [BMW CarData feed](bmw-cardata.md) supplies measured SoC, vehicle target,
-usable capacity, plug status, charging status and a source-timestamped home-location
-result. It does not supply an electricity-consumption stream. Its battery values
-are used only after timestamped plug/charging evidence matches the current Easee
-connection. The installed BMW need not expose charging power or a plug-event ID.
-The last-session AC current/voltage descriptors are not used as live charging power.
-The Tesla probe's negative result means only that Tesla charges elsewhere; it
-never identifies a BMW or replaces visitor inputs.
+The source contract requires positive native `last_update_ts` values in seconds. Zero/unknown timestamps are unavailable. Physical current uses its source age; a correlated read can renew receipt evidence for an unchanged setting without inventing a new measurement. Unknown work-state strings never mean disconnected or charging. `phase_info` is validated as W, V, A and accumulated kWh. Model-, firmware- and installation-specific state/counter behavior still needs physical verification.
 
-Native schedule stops and estimated completion times remain distinct. Easee's
-delayed schedule has only a start. ST-MQ's owned occurrence takes precedence over
-a newly interpreted local clock time. Reading a complex native recurrence for
-display alone does not establish a manual action. The first observation is a
-baseline; later observed changes follow the readiness-cycle handover rules even
-when disconnected. Native delayed schedules are installed one at a time: later
-planned pauses require a working application/cloud connection, and the final
-release has no stop. Accepted schedule state and confirmed physical pause are
-reported separately. See [Easee scheduling state](https://developer.easee.com/reference/getchargersschedules)
-and [delayed schedule](https://developer.easee.com/reference/postchargersschedulesdelayed).
+## MQTT and commands
 
-Neither integration supplies a guaranteed overnight available-power forecast.
-Equalizer remains Charger 1's external limiter; its live allowance is distinct
-from the configured charger ceiling and actual draw. Three phases are assumed,
-with automatic voltage required. Coherent allowance/property readings establish
-an effective supply budget. Household history then forecasts future consumption;
-an instantaneous low allowance is not held unchanged across the night. See
-[planning and assumptions](charging.md#planning-and-equalizer).
+The [MQTT channel](https://shelly-api-docs.shelly.cloud/gen2/ComponentsAndServices/Mqtt/) and [RPC envelope](https://shelly-api-docs.shelly.cloud/gen2/General/RPCProtocol/) are used on the configured broker. Subscription admission precedes bounded ordered replay. Requests use random correlated IDs and a per-instance reply route. Replies must come from the configured device; retained replies cannot confirm a command. Timestamped first-seen DUP notifications can establish a real source event, whereas replay cannot create another plug epoch. Oversized payloads, unknown roles and buffer overflow cannot grant control.
 
-Charge progress uses the existing recorder's grid-energy intervals, including
-its pending tail, rather than a separate power integrator. Delivered energy,
-fixed 92.5% efficiency and usable capacity produce a separate estimated SoC and remaining
-grid energy. Missing intervals receive no invented credit. TeslaMate's scalar
-power remains receipt-timed telemetry; a charging-session counter does not
-become a battery-capacity measurement. The original vehicle SoC, target and
-timestamps remain distinct from derived estimates.
+Only `Number.Set` for `current_limit` and `Boolean.Set` for `start_charging` are mutation methods. Neither relay writes, service configuration writes, vehicle writes nor native-schedule edits are permitted. Commands use QoS 0, `retain:false`, no offline queue and no automatic application retry. Durable intent records association, session, revision and absolute expiry; authority and scope are rechecked after awaits immediately before publication.
+
+Status distinguishes proposed, dispatched, accepted, read-back and physical-effect stages. A successful RPC response alone proves no current reduction. A possible dispatch followed by timeout/restart remains uncertain until a compatible fresh native reading reconciles it. Manual changes survive priority changes and current-format restart within their connection scope.
+
+## Hardware verification still required
+
+All current tests use invented device identities and synthetic traffic. Before setting `verified:true` on the arrived hardware, confirm:
+
+- Actual model, firmware, role IDs/permissions, min/max/step, native work-state meanings and source-clock behavior.
+- Plug detection versus full/paused/faulted states; current changes during charging; Boolean pause/resume and native schedule interaction.
+- Phase order, additive model, fuse values/margins and Equalizer response with asymmetric household loads.
+- Meter units, resets and cadence across stop/resume/reboot; source-time completeness at session boundaries.
+- Manual app changes, reconnect, lost replies and process/broker/device outages, including retained last setpoint and any actual autonomous fallback mechanism.
+
+No autonomous 12 A controller-loss mechanism has been verified. The implemented 12 A telemetry-loss policy requires ST-MQ and a reachable controllable charger. It is explicitly not a hardware protection guarantee. The current implementation remains useful for disabled commissioning and synthetic validation without claiming that those hardware checks have happened.

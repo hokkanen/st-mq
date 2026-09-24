@@ -1,8 +1,10 @@
 import { createHash } from 'node:crypto';
 import { createReadStream, constants } from 'node:fs';
-import { chmod, copyFile, lstat, mkdir, open, readFile, readdir, rename, rm } from 'node:fs/promises';
+import { chmod, copyFile, lstat, mkdir, open, readFile, readdir, rename, rm, link } from 'node:fs/promises';
+import { isDeepStrictEqual } from 'node:util';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { validateCurrentDatabase } from '../storage/store.js';
 
 export const PUBLICATION_FORMAT = 1;
 export const DIGEST_ALGORITHM = 'sha256-sqlite-pages-v1';
@@ -106,6 +108,7 @@ export async function snapshotDigest(path) {
 export function normalizeSnapshot(path) {
   const db = new DatabaseSync(path);
   try {
+    validateCurrentDatabase(db);
     db.exec('PRAGMA busy_timeout=5000');
     const checkpoint = db.prepare('PRAGMA wal_checkpoint(TRUNCATE)').get();
     if (checkpoint?.busy) throw replicationError('snapshot_busy');
@@ -122,6 +125,7 @@ export async function verifyReplicaPublication(directory) {
   const db = new DatabaseSync(publication.dbPath, { readOnly: true });
   try {
     db.exec('PRAGMA query_only=ON');
+    validateCurrentDatabase(db);
     const result = db.prepare('PRAGMA integrity_check').all();
     if (result.length !== 1 || result[0].integrity_check !== 'ok') throw replicationError('integrity_failed');
   } finally { db.close(); }
@@ -140,16 +144,34 @@ export async function pruneReplicaSnapshots(directory, publication) {
 }
 
 export async function publishSnapshot(directory, incoming, metadata) {
-  let previous;
-  try { previous = await readReplicaPublication(directory); }
-  catch (error) { if (error.code !== 'invalid_publication') throw error; }
+  const previous = await readReplicaPublication(directory);
   const target = join(directory, `snapshot-${metadata.generation}.sqlite`);
   if (!isAbsolute(directory) || !GENERATION_PATTERN.test(metadata.generation) ||
       incoming !== join(directory, `incoming-${metadata.generation}.sqlite`)) throw replicationError('invalid_publication');
   await privateFile(incoming);
+  const candidate = new DatabaseSync(incoming, { readOnly: true });
+  try { validateCurrentDatabase(candidate); } finally { candidate.close(); }
+  const actual = await snapshotDigest(incoming);
+  if (actual.digest !== metadata.digest || actual.bytes !== metadata.bytes) throw replicationError('verification_failed');
+  if (previous?.generation === metadata.generation) {
+    for (const key of Object.keys(metadata)) {
+      if (key !== 'verifiedAt' && !isDeepStrictEqual(previous[key], metadata[key])) throw replicationError('verification_failed');
+    }
+    const existing = await snapshotDigest(target);
+    if (existing.digest !== metadata.digest || existing.bytes !== metadata.bytes) throw replicationError('verification_failed');
+    await rm(incoming);
+    return previous;
+  }
   const file = await open(incoming, 'r');
   try { await file.sync(); } finally { await file.close(); }
-  await rename(incoming, target);
+  // An immutable generation is never replaced, even after a publication crash.
+  try { await link(incoming, target); }
+  catch (error) {
+    if (error.code !== 'EEXIST') throw error;
+    const existing = await snapshotDigest(target);
+    if (existing.digest !== metadata.digest || existing.bytes !== metadata.bytes) throw replicationError('verification_failed');
+  }
+  await rm(incoming);
   await syncDirectory(directory);
   const publication = { format: PUBLICATION_FORMAT, ...metadata, digestAlgorithm: DIGEST_ALGORITHM,
     previousGeneration: previous?.generation ?? null };

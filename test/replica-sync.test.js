@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
+import { Store, SCHEMA_VERSION } from '../src/storage/store.js';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm, readFile, writeFile, readdir, stat, chmod, mkdir, copyFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
@@ -16,8 +17,8 @@ async function fixture(t) {
   const directory = await mkdtemp(join(tmpdir(), 'stmq-replica-test-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const source = join(directory, 'source.sqlite'), replica = join(directory, 'replica');
-  const db = new DatabaseSync(source);
-  db.exec("PRAGMA journal_mode=WAL; CREATE TABLE samples(id INTEGER PRIMARY KEY, value TEXT); INSERT INTO samples VALUES(1, 'invented observation'); PRAGMA user_version=10");
+  const db = new Store(source).db;
+  db.exec("INSERT INTO events(id,type,payload,at) VALUES(1,'fixture',json_object('value','invented observation'),0)");
   t.after(() => db.close());
   return { directory, source, replica, db };
 }
@@ -50,7 +51,7 @@ async function transferFixture(source, replica, scratch) {
 
 test('source backup pins a consistent live WAL snapshot while the writer keeps recording', async t => {
   const { directory, source, db } = await fixture(t);
-  const insert = db.prepare('INSERT INTO samples(value) VALUES (?)');
+  const insert = db.prepare("INSERT INTO events(type,payload,at) VALUES ('fixture',json_object('value',?),0)");
   db.exec('BEGIN');
   for (let i = 0; i < 16000; i++) insert.run('synthetic snapshot fixture '.repeat(40));
   db.exec('COMMIT');
@@ -64,10 +65,10 @@ test('source backup pins a consistent live WAL snapshot while the writer keeps r
   const snapshot = new DatabaseSync(destination, { readOnly: true });
   try {
     assert.ok(writes > 0, 'background snapshot must leave the main event loop free');
-    assert.ok(snapshot.prepare('SELECT COUNT(*) n FROM samples').get().n < db.prepare('SELECT COUNT(*) n FROM samples').get().n);
+    assert.ok(snapshot.prepare('SELECT COUNT(*) n FROM events').get().n < db.prepare('SELECT COUNT(*) n FROM events').get().n);
     assert.equal(snapshot.prepare('PRAGMA integrity_check').get().integrity_check, 'ok');
     assert.equal(snapshot.prepare('PRAGMA journal_mode').get().journal_mode, 'delete');
-    assert.equal(snapshot.prepare('PRAGMA user_version').get().user_version, 10);
+    assert.equal(snapshot.prepare('PRAGMA user_version').get().user_version, SCHEMA_VERSION);
     assert.ok(metadata.sourceStartedAt <= metadata.sourceAt && metadata.sourceAt <= Date.now());
     assert.deepEqual(await snapshotDigest(destination), { digest: metadata.digest, bytes: metadata.bytes, digestAlgorithm: metadata.digestAlgorithm });
   } finally { snapshot.close(); }
@@ -91,7 +92,7 @@ test('snapshot and verification workers accept process-only flags and inline mod
     const [code] = await once(child, 'close');
     assert.equal(code, 0, stderr);
     const snapshot = new DatabaseSync(destination, { readOnly: true });
-    try { assert.equal(snapshot.prepare('SELECT COUNT(*) n FROM samples').get().n, 1); }
+    try { assert.equal(snapshot.prepare('SELECT COUNT(*) n FROM events').get().n, 1); }
     finally { snapshot.close(); }
   }
 });
@@ -104,19 +105,19 @@ test('receiver publishes only matching snapshots, preserves old readers, and bou
   const receiver = session(replica);
   await receiver.prepare();
   const bad = new DatabaseSync(receiver.incoming);
-  bad.exec("UPDATE samples SET value='unexpected replica edit'"); bad.close();
+  bad.exec("UPDATE events SET payload=json_object('value','unexpected replica edit')"); bad.close();
   await assert.rejects(receiver.publish({ digest: first.digest, bytes: first.bytes,
     sourceStartedAt: first.sourceStartedAt, sourceAt: first.sourceAt }), /verification_failed/);
   assert.equal((await readReplicaPublication(replica)).generation, first.generation);
-  assert.equal(oldReader.prepare('SELECT value FROM samples').get().value, 'invented observation');
+  assert.equal(oldReader.prepare("SELECT json_extract(payload,'$.value') AS value FROM events").get().value, 'invented observation');
   for (let i = 2; i <= 4; i++) {
-    db.prepare('INSERT INTO samples VALUES (?, ?)').run(i, `synthetic ${i}`);
+    db.prepare("INSERT INTO events(id,type,payload,at) VALUES (?,'fixture',json_object('value',?),0)").run(i, `synthetic ${i}`);
     await transferFixture(source, replica, directory);
   }
   const names = await readdir(replica);
   assert.equal(names.filter(name => name.startsWith('snapshot-')).length, 2);
   assert.equal(names.filter(name => name.startsWith('incoming-')).length, 0);
-  assert.equal(oldReader.prepare('SELECT COUNT(*) n FROM samples').get().n, 1);
+  assert.equal(oldReader.prepare('SELECT COUNT(*) n FROM events').get().n, 1);
   for (const name of names) assert.equal((await stat(join(replica, name))).mode & 0o777, 0o600);
   assert.equal((await stat(replica)).mode & 0o777, 0o700);
   const current = await verifyReplicaPublication(replica);
@@ -140,7 +141,7 @@ test('interrupted transfer and a busy receiver leave the last verified publicati
 test('restart collects orphan final snapshots before allocating the next incoming copy', async t => {
   const { directory, source, replica, db } = await fixture(t);
   const first = await transferFixture(source, replica, directory);
-  db.exec("INSERT INTO samples VALUES(2,'synthetic second generation')");
+  db.exec("INSERT INTO events(id,type,payload,at) VALUES(2,'fixture',json_object('value','synthetic second generation'),0)");
   const current = await transferFixture(source, replica, directory);
   assert.equal(current.previousGeneration, first.generation);
   const openCurrent = new DatabaseSync(current.dbPath, { readOnly: true });
@@ -162,8 +163,8 @@ test('restart collects orphan final snapshots before allocating the next incomin
   assert.deepEqual(names.filter(name => name.startsWith('incoming-')), [receiver.incoming.split('/').at(-1)]);
   assert.equal(names.includes('publication.json.tmp'), false);
   assert.equal((await readReplicaPublication(replica)).generation, current.generation);
-  assert.equal(openCurrent.prepare('SELECT COUNT(*) n FROM samples').get().n, 2);
-  assert.equal(openPrevious.prepare('SELECT COUNT(*) n FROM samples').get().n, 1);
+  assert.equal(openCurrent.prepare('SELECT COUNT(*) n FROM events').get().n, 2);
+  assert.equal(openPrevious.prepare('SELECT COUNT(*) n FROM events').get().n, 1);
   receiver.input.end(); await assert.rejects(receiver.result, /transfer_interrupted/);
   const recovered = await transferFixture(source, replica, directory);
   assert.equal(recovered.previousGeneration, current.generation);
@@ -191,7 +192,7 @@ test('verification is read-only and catches changed data, while damaged replica 
   assert.deepEqual(await readFile(first.dbPath), original);
   assert.deepEqual(await readFile(join(replica, 'publication.json')), manifest);
   const corrupted = new DatabaseSync(first.dbPath);
-  corrupted.exec("UPDATE samples SET value='unexpected replica data'"); corrupted.close();
+  corrupted.exec("UPDATE events SET payload=json_object('value','unexpected replica data')"); corrupted.close();
   await assert.rejects(verifyReplicaPublication(replica), /verification_failed/);
   const receiver = session(replica);
   await receiver.prepare();
@@ -200,8 +201,10 @@ test('verification is read-only and catches changed data, while damaged replica 
   await transferFixture(source, replica, directory);
   await verifyReplicaPublication(replica);
   await writeFile(join(replica, 'publication.json'), '{interrupted synthetic metadata');
-  await transferFixture(source, replica, directory);
-  await verifyReplicaPublication(replica);
+  const names = await readdir(replica);
+  await assert.rejects(transferFixture(source, replica, directory), /invalid_publication/);
+  assert.equal(await readFile(join(replica, 'publication.json'), 'utf8'), '{interrupted synthetic metadata');
+  assert.deepEqual(await readdir(replica), names, 'invalid metadata cannot authorize deleting retained snapshots');
 });
 
 test('owned directory checks refuse unrelated nonempty folders without changing permissions', async t => {
@@ -210,6 +213,21 @@ test('owned directory checks refuse unrelated nonempty folders without changing 
   await writeFile(join(unrelated, 'existing.txt'), 'synthetic');
   await assert.rejects(ownedDirectory(unrelated, '.st-mq-replica'), /directory_not_empty/);
   assert.equal((await stat(unrelated)).mode & 0o777, 0o755);
+});
+
+test('obsolete database versions are rejected at export and receipt without changing the last publication', async t => {
+  const { directory, source, replica } = await fixture(t);
+  const first = await transferFixture(source, replica, directory);
+  const path = join(directory, 'obsolete.sqlite'), db = new DatabaseSync(path);
+  db.exec('CREATE TABLE old_data(id INTEGER); PRAGMA user_version=7'); db.close();
+  const before = await readFile(path);
+  await assert.rejects(createSourceSnapshot({ dbPath: path, destination: join(directory,'obsolete-copy.sqlite') }), /snapshot_failed/);
+  assert.deepEqual(await readFile(path), before);
+  const receiver = session(replica); await receiver.prepare();
+  await copyFile(path, receiver.incoming);
+  const metadata = await snapshotDigest(path);
+  await assert.rejects(receiver.publish({ ...metadata, sourceStartedAt: Date.now(), sourceAt: Date.now() }), /Unsupported database schema/);
+  assert.equal((await verifyReplicaPublication(replica)).generation, first.generation);
 });
 
 test('page digest excludes only documented volatile SQLite header fields', async t => {

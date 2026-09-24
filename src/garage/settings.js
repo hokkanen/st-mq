@@ -12,29 +12,17 @@ export const DEFAULT_GARAGE_SETTINGS = Object.freeze({
     marginC: 1, pipeOutsideDiameterMm: 21, pipeWallMm: 1, heatTransferWPerM2K: 20 }),
 });
 const finite = Number.isFinite;
-const legacyPolicyKeys = ['floorC', 'hardMinimumC', 'budgetDegreeMinutes',
-  'recoveryAboveC', 'recoveryDegreeMinutesPerMinute', 'recoveryDwellMinutes'];
 function number(input, key, min, max) {
   if (!finite(input[key]) || input[key] < min || input[key] > max) throw new Error(`Garage ${key} must be between ${min} and ${max}`);
 }
 export function garageSettings(input = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Garage settings must be an object');
-  // Read saved owner settings without retaining retired controls.
-  const { maxPauseHours: _retiredPause, maxHorizonHours: _retiredHorizon,
-    assumeISave10C: _retiredISave, ...current } = input;
-  input = current;
   for (const key of Object.keys(input)) if (!Object.hasOwn(DEFAULT_GARAGE_SETTINGS, key)) throw new Error(`Unknown garage setting: ${key}`);
   if (input.protection != null && (typeof input.protection !== 'object' || Array.isArray(input.protection))) throw new Error('Garage protection must be an object');
   const supplied = input.protection ?? {};
-  const legacy = ['garage-exposure-v1', 'garage-exposure-v2'].includes(supplied.version)
-    || supplied.version == null && legacyPolicyKeys.some(key => Object.hasOwn(supplied, key));
-  for (const key of Object.keys(supplied)) if (!Object.hasOwn(DEFAULT_GARAGE_SETTINGS.protection, key)
-    && !(legacy && legacyPolicyKeys.includes(key))) throw new Error(`Unknown garage protection setting: ${key}`);
-  // Old configuration remains readable by the unchanged Garage learner. Its
-  // degree-minute approval never authorizes the new thermal reserve policy.
-  const protection = { ...DEFAULT_GARAGE_SETTINGS.protection };
-  for (const key of Object.keys(protection)) if (Object.hasOwn(supplied, key)) protection[key] = supplied[key];
-  if (legacy) { protection.version = GARAGE_POLICY_VERSION; protection.approved = false; }
+  for (const key of Object.keys(supplied)) if (!Object.hasOwn(DEFAULT_GARAGE_SETTINGS.protection, key))
+    throw new Error(`Unknown garage protection setting: ${key}`);
+  const protection = { ...DEFAULT_GARAGE_SETTINGS.protection, ...supplied };
   const output = { ...DEFAULT_GARAGE_SETTINGS, ...input, protection };
   for (const key of ['enabled', 'frontRequired']) if (typeof output[key] !== 'boolean') throw new Error(`Garage ${key} must be boolean`);
   number(output, 'aggressiveness', 0, 100); number(output, 'baselineC', 8, 16);

@@ -86,8 +86,8 @@ affected rooms and their actual observation times. New saved-average chart
 tooltips preserve the same warnings and identify windows excluded from learning.
 Holding a reading does not change its source timestamp or create new evidence of
 measurement. Periodic report coverage is recorded separately for learning and
-replay. The archived v7 learner used known readings indefinitely; v8 and v9 do so only
-for sources without an enabled periodic report contract.
+replay. Only sources without an enabled periodic report contract can hold a
+known value without periodic source-report renewal.
 A sensor that has never supplied a usable reading still makes its
 configured average unavailable; sensor-change boundaries also require a genuine
 reading from the new measurement period.
@@ -135,9 +135,8 @@ separately from sensor age. Historical model tooltips evaluate age at the saved
 window, not the current time.
 
 These diagnostic changes preserve the current committed learning inputs,
-algorithm, seed and replay interpretation, including v9 sensor-change reversals.
-They do not reinterpret archived model versions or change the meaning of imported
-CSV temperatures.
+algorithm, seed and replay interpretation. Incompatible development algorithms
+are rejected; permitted v0.7.5 CSV imports retain their timestamp/quality meaning.
 
 The committed journal saves each contributing endpoint and weight, observation
 lineage, the resolved average and its configuration. This remains one thermal
@@ -203,9 +202,8 @@ confirmed after a connection failure, **Retry saving** reuses the original reque
 and cannot duplicate the entry or reversal, including after a page reload. If the
 background work fails, **Retry relearning** restarts it while the previous model
 remains active. Garage and nonparticipating indoor entries use **Revert change**
-because they did not reset house learning. Entries from an archived learning
-version remain visible with an explanation that reversal is unavailable; they
-are not silently reinterpreted by a newer learner.
+because they did not reset house learning. Reversal applies only to the current
+algorithm and source-event contract; unsupported development payloads are rejected.
 
 No offset is inferred from the jump at a change. Comparing replacement sensors
 side by side can establish relative agreement, but matching their readings does
@@ -228,3 +226,27 @@ Each room uses the same rules for its own reference, allowing the bedroom to
 settle at a different normal temperature from Downstairs. This observes the
 temperature achieved with the household controls; it cannot independently tell
 whether every persistent lower plateau reflects a preference or reduced heating.
+
+### Current acquisition boundary
+
+Configured `timestamp_path` is mandatory. Missing, null, malformed or future
+clocks make the reading unavailable; they never fall back to receipt time.
+Deliberately untimestamped numeric publishers remain supported as receipt-time
+sources, explicitly identified by `raw.timeBasis = mqtt-received`. A DUP-only
+untimestamped delivery cannot establish a new sample. A first-seen timestamped
+MQTT DUP is evaluated once using receiver-local bounded delivery memory. Subsequent
+retransmissions and cached timestamps cannot extend source-report coverage.
+
+Canonical equipment temperature mappings honor the selected primary JSON path.
+Fahrenheit converts to Celsius first, then `scale` and `offset` apply; recorded,
+held and source-health values share that normalization. Both Garage probes carry
+the same two-minute expiry metadata. Garage's independent protection age gate
+continues to apply.
+
+Weather current/forecast caches and job cadence bind to a digest of normalized
+coordinates and current query definitions on both hot reload and cold restart.
+Different/missing identities cannot supply current inputs, and a changed location
+is reacquired while provider-host rate limits remain in force. Historical snapshots
+retain their provenance. `requestStartedAt` describes request planning;
+`fetchedAt`/`receivedAt` describe response completion. Provider source/issue clocks
+remain separate, including each source in supplemented solar forecasts.

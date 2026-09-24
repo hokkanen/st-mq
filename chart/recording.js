@@ -93,10 +93,10 @@ export function renderRecording(status, root) {
   const description=document.createElement('p');description.className='muted';
   description.textContent='Devices can be polled or streamed more often than values are recorded. Each new reading is compared with the last saved value. A shared learned tolerance adjusts the change thresholds toward the rolling storage target; most fresh readings are recorded by the maximum interval even when unchanged. Periodic indoor temperatures save value changes and compact report coverage instead of repeated values. Equipment-state and quality changes are recorded immediately. Failed requests and old source timestamps are distinguished from fresh, unchanged readings.';
   const note=document.createElement('p');note.className='muted';
-  note.textContent='These are achieved average saving intervals, not source expiry limits or fixed schedules. Status details show source expiry separately. Included measurements receive the same normalized accuracy treatment. Recording a parameter does not imply that it is used to fit the house model.';
+  note.textContent='These are achieved average saving intervals, not source expiry limits or fixed schedules. Status details show source expiry separately. The change metric compares each input with the previous saved value; it describes signal variation, not recording loss or an accuracy bound. Recording a parameter does not imply that it is used to fit the house model.';
   const table=document.createElement('table');table.className='recording-table';
   const head=document.createElement('thead'),headers=document.createElement('tr');
-  for(const name of ['Parameter / source','Average · 1 h / 24 h / 7 d','Change threshold','Normalized error · 24 h','Status']) {
+  for(const name of ['Parameter / source','Average · 1 h / 24 h / 7 d','Change threshold','Normalized pre-update change · 24 h','Status']) {
     const cell=document.createElement('th');cell.scope='col';cell.textContent=name;headers.append(cell);
   }
   head.append(headers);table.append(head);
@@ -109,7 +109,7 @@ export function renderRecording(status, root) {
     for(const text of [
       [row.hour,row.day,row.week].map(period=>durationLabel(period?.averageIntervalMs)).join(' / '),
       Number.isFinite(row.threshold)?row.threshold<1e-9?'Any measurable change':`${number(row.threshold)} ${row.thresholdUnit ?? row.unit ?? ''}${row.grouped?' (phase group)':''}`:'Event / collecting',
-      Number.isFinite(row.day?.normalizedRmsError)?`${number(row.day.normalizedRmsError*100)}%`:'—',
+      Number.isFinite(row.day?.normalizedRmsChange)?`${number(row.day.normalizedRmsChange*100)}%`:'—',
       availability.label,
     ]) {const cell=document.createElement('td');cell.textContent=text;tr.append(cell);}
     const detail=document.createElement('small');
@@ -260,7 +260,7 @@ export function energyAuditRow(item) {
   const date = value => Number.isFinite(value) ? new Intl.DateTimeFormat('en-GB',{
     timeZone:'Europe/Helsinki',dateStyle:'short',timeStyle:'short'}).format(value) : '—';
   if (item.kind==='charging-session-summary') {
-    const s=item.summary ?? {}, tesla=item.source==='teslamate', count=s.comparedSessions ?? 0;
+    const s=item.summary ?? {}, second=item.source==='shelly-evse', count=s.comparedSessions ?? 0;
     const reasonLabels={
       'incomplete-coverage':'recorded energy does not cover the whole session',
       'missing-start':'charging start was not fully recorded',
@@ -271,25 +271,25 @@ export function energyAuditRow(item) {
       'assignment-uncertain':'charger assignment could not be confirmed',
       'counter-reset':'session energy counter reset',
       'out-of-order':'session order or boundaries conflict',
-      'missing-final-reference':'final energy-added reading was not confirmed',
+      'missing-final-reference':'final physical meter reading was not confirmed',
       'missing-estimate':'recorded energy total is unavailable',
-      'missing-reference':`${tesla?'energy-added':'session-meter'} reference is unavailable`,
-      'zero-reference':`${tesla?'energy-added':'session-meter'} reference is zero`,
+      'missing-reference':'Session-meter reference is unavailable',
+      'zero-reference':'Session-meter reference is zero',
       'comparison-incomplete':'complete recording or final reference could not be confirmed',
     };
     const reasons=Object.entries(reasonLabels).filter(([key])=>Number.isSafeInteger(s.exclusionReasons?.[key])&&s.exclusionReasons[key]>0)
       .map(([key,label])=>`${s.exclusionReasons[key]} × ${label}`);
-    return { title:tesla?'Charger 2':'Charger 1', subtitle:'Completed-session averages',
+    return { title:second?'Charger 2':'Charger 1', subtitle:'Completed-session averages',
       when:Number.isFinite(s.lastSessionEnd)?`Last session: ${date(s.lastSessionEnd)}`:'No completed sessions recorded yet',
       value:count>0?`${number(s.differencePercent)}% energy-weighted difference · ${number(s.differenceKwh/count)} kWh average difference`
         :s.excludedSessions>0?'No sessions qualify for comparison yet.'
           :'Session comparison pending: waiting for a completed session with full recording and a final reference.',
-      details:[...(count>0?[`${number(s.estimatedKwh/count)} kWh recorded / ${number(s.referenceKwh/count)} kWh ${tesla?'added by car':'metered'} per session`]:[]),
+      details:[...(count>0?[`${number(s.estimatedKwh/count)} kWh recorded / ${number(s.referenceKwh/count)} kWh metered per session`]:[]),
         `${count} compared · ${s.excludedSessions ?? 0} excluded · ${s.recordedSessions ?? 0} recorded sessions`,
         ...(reasons.length?[`Excluded because: ${reasons.join('; ')}.`,
           'A session can have several reasons. Excluded sessions stay recorded and do not affect the averages.']:[]),
         ...(count>0?[`Compared sessions: ${date(s.start)} – ${date(s.end)}`]:[]),
-        tesla?'Recorded input minus energy added. Includes charging losses; not a meter-accuracy percentage.':'Recorded estimate minus Charger 1 session meter.'] };
+        `Recorded power estimate minus Charger ${second?'2':'1'} electricity meter; excluded coverage is never extrapolated.`] };
   }
   const c=item.comparison;
   return {title:'Property',subtitle:'Cumulative import meter',when:`Meter reading: ${date(item.sourceTime)}`,

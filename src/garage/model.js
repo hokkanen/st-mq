@@ -8,7 +8,7 @@ export { GARAGE_MODEL_ASSUMPTIONS, garageRecoveryHours } from './model-assumptio
 const HOUR = 3_600_000, finite = Number.isFinite;
 const clamp = (x, lo, hi) => Math.min(hi, Math.max(lo, x));
 const clone = value => structuredClone(value);
-export const GARAGE_ALGORITHM_VERSION = 'committed-garage-v5-protection-limited';
+export const GARAGE_ALGORITHM_VERSION = 'committed-garage-v6-source-clocks';
 const REAR = [['coolingPerHour', .03, .001, .3, '1/h']];
 const FRONT = [['coolingPerHour', .04, .001, .4, '1/h']];
 const errorState = () => ({ n: 0, hours: 0, absolute: 0, square: 0, signed: 0 });
@@ -52,7 +52,7 @@ export function createGarageModel({ seedAt = 0, baselineC = 10 } = {}) {
     evidence: { offIntervals: 0, powerIntervals: 0, activityIntervals: 0, rearOnlyIntervals: 0,
       offHours: 0, powerHours: 0, activityHours: 0,
       ev: [{ powerIntervals: 0, activityIntervals: 0, independentIntervals: 0 }, { powerIntervals: 0, activityIntervals: 0, independentIntervals: 0 }] },
-    lastError: null, sourceEpoch: null, intervalDisturbed: false, intervalAvailability: null, intervalTransitions: 0 };
+    lastError: null, sourceEpoch: null, support: [], intervalDisturbed: false, intervalAvailability: null, intervalTransitions: 0 };
 }
 export function normalGarageTemperature(model) { return model.normalReference.interceptC; }
 export function predictGarageNative(model, state, input = {}) {
@@ -107,28 +107,47 @@ function learnReference(model, current, prior, hours, allowFit) {
   reference.outdoorC = current.outdoorC; reference.samples++; reference.qualifiedHours += hours;
   reference.initialized = reference.qualifiedHours >= 2;
 }
+// Piecewise observed ambient/native context is joined to each sensor's own
+// interval. The retained prefix is bounded by the oldest pending source report.
+function sourceInterval(support, from, to) {
+  const first = support.findLast(row => row.at <= from);
+  if (!first || !(to > from)) return null;
+  const points = [{ ...first, at: from }, ...support.filter(row => row.at > from && row.at < to)];
+  return points.map((row, i) => ({ ...row, hours: ((points[i + 1]?.at ?? to) - row.at) / HOUR }));
+}
 /** The same ordered function drives live learning and saved-journal replay. */
 export function updateGarageModel(previous, observation, settings = {}) {
   const config = garageSettings(settings);
   const model = clone(previous ?? createGarageModel({ seedAt: observation?.at, baselineC: config.baselineC }));
-  if (model.algorithm !== GARAGE_ALGORITHM_VERSION) throw new Error('Unsupported garage model algorithm; preserve archive and start an explicit seed');
+  if (model.algorithm !== GARAGE_ALGORITHM_VERSION) throw new Error('Unsupported garage model algorithm; start a fresh development database');
   if (!finite(observation?.at)) throw new Error('Garage learning requires numeric UTC time');
   if (finite(model.at) && observation.at <= model.at) return model;
   const current = clone(observation);
   model.at = current.at; model.updates++;
   if (current.sourceEpoch != null && model.sourceEpoch !== null && current.sourceEpoch !== model.sourceEpoch) {
-    model.previous = null; model.normalReference.availableSince = null;
+    model.previous = null; model.support = []; model.normalReference.availableSince = null;
     interruptGarageValidation(model, 'source-epoch-boundary');
   }
   model.sourceEpoch = current.sourceEpoch ?? model.sourceEpoch;
-  const rearAt = current.rearAt ?? current.at, frontAt = current.frontAt ?? current.at;
+  const rearAt = current.rearAt === undefined ? current.at : current.rearAt;
+  const frontAt = current.frontAt === undefined ? current.at : current.frontAt;
   const rearFresh = validC(current.rearC) && current.rearUsable !== false && current.rearRetained !== true
     && finite(rearAt) && rearAt <= current.at && current.at - rearAt <= config.maxSensorAgeMs;
   const frontFresh = validC(current.frontC) && current.frontUsable !== false && current.frontRetained !== true
-    && finite(frontAt) && frontAt <= current.at && current.at - frontAt <= config.maxSensorAgeMs;
+    && finite(frontAt) && (!model.previous || frontAt >= model.previous.frontAt) && frontAt <= current.at && current.at - frontAt <= config.maxSensorAgeMs;
   if (!rearFresh) { model.previous = null; model.normalReference.availableSince = null; interruptGarageValidation(model, 'rear-input-unavailable'); model.lastError = 'rear-input-unavailable'; return model; }
   if (!frontFresh) current.frontC = null;
   const prior = model.previous, hours = prior ? (rearAt - (prior.rearAt ?? prior.at)) / HOUR : 0;
+  const supportAt = model.support.length ? current.at : Math.min(rearAt, frontFresh ? frontAt : rearAt);
+  model.support.push({ at: supportAt, outdoorC: current.outdoorC, available: current.available,
+    disturbed: current.inputDisturbed === true || current.doorFront === true || current.doorRear === true
+      || garageDoorIntervalUnknown(current, prior ?? current) || !garageChargingClean(current)
+      || current.rearGap === true || current.frontGap === true });
+  const supportFrom = prior ? Math.min(prior.rearAt, finite(prior.frontAt) ? prior.frontAt : prior.rearAt) : supportAt;
+  const supportIndex = model.support.findLastIndex(row => row.at <= supportFrom);
+  if (supportIndex > 0) model.support.splice(0, supportIndex);
+  if (model.support.length > 512) model.support.splice(0, model.support.length - 512);
+
   if (prior) {
     // A single normal OFF/ON edge between asynchronous temperature reports
     // belongs to the episode. Multiple edges hide a mixed interval even when
@@ -138,10 +157,14 @@ export function updateGarageModel(previous, observation, settings = {}) {
     model.intervalAvailability = current.available;
     model.intervalDisturbed ||= model.intervalTransitions > 1 || typeof current.available !== 'boolean';
   }
-  if (prior && rearAt <= (prior.rearAt ?? prior.at)) {
+  // Join independent source reports only after both locations advance. A held
+  // but still fresh front report is neither new training nor a disturbance.
+  const waitingFront = prior && frontFresh && validC(prior.frontC) && frontAt === prior.frontAt;
+  if (prior && (rearAt <= (prior.rearAt ?? prior.at) || waitingFront)) {
     model.intervalDisturbed ||= current.inputDisturbed === true || current.doorFront === true || current.doorRear === true
       || garageDoorIntervalUnknown(current, prior) || !garageChargingClean(current) || current.rearGap === true || current.frontGap === true;
     if (model.intervalDisturbed) { model.normalReference.availableSince = null; interruptGarageValidation(model, 'disturbance-between-temperature-reports'); }
+    model.state.rearC = current.rearC;
     if (frontFresh) { model.state.frontC = current.frontC; model.state.differenceC = current.frontC - current.rearC; }
     model.lastError = 'no-new-rear-observation'; return model;
   }
@@ -149,19 +172,23 @@ export function updateGarageModel(previous, observation, settings = {}) {
     && current.rearGap !== true && prior.rearGap !== true;
   if (supported) {
     const state = { rearC: prior.rearC, frontC: prior.frontC, differenceC: validC(prior.frontC) ? prior.frontC - prior.rearC : null };
-    const frontKnown = validC(prior.frontC) && frontFresh && frontAt > (prior.frontAt ?? prior.at)
+    const frontHours = (frontAt - prior.frontAt) / HOUR;
+    const frontSegments = sourceInterval(model.support, prior.frontAt, frontAt);
+    const frontKnown = Boolean(frontSegments?.length) && frontSegments.every(row => validC(row.outdoorC) && typeof row.available === 'boolean' && !row.disturbed)
+      && validC(prior.frontC) && frontFresh && frontHours >= 1 / 120 && frontHours <= 2
       && current.frontGap !== true && prior.frontGap !== true && Math.abs(frontAt - rearAt) <= 5 * 60_000
       && Math.abs((prior.frontAt ?? prior.at) - (prior.rearAt ?? prior.at)) <= 5 * 60_000;
     const disturbed = current.inputDisturbed === true || model.intervalDisturbed || garageDoorIntervalUnknown(current, prior) || [current, prior].some(row => row.doorFront === true
       || row.doorRear === true || !garageChargingClean(row)) || Math.abs(current.rearC - prior.rearC) > 2;
     const metered = qualifiedGaragePower(prior), active = activity(prior);
-    const episode = advanceGarageValidation(model, { state, prior, current, hours, frontKnown, disturbed, metered, predict: predictGarageStep });
+    const episode = advanceGarageValidation(model, { state, prior, current, hours, frontHours, frontSegments, frontKnown, disturbed, metered, predict: predictGarageStep });
     const heldOut = episode.role ? episode.role === 'validation' : ((prior.at - model.seedAt) / HOUR % 24 + 24) % 24 >= 18;
     const off = prior.available === false && current.available === false;
     if (!disturbed && heldOut && off) {
       const forecast = episode.forecast ?? predictGarageStep(model, state, prior, hours);
+      const frontForecast = episode.frontForecast ?? (frontKnown ? predictGarageStep(model, state, prior, frontHours) : null);
       for (const key of ['rear', 'advanceRear', 'offRear']) recordError(model.heldOut[key], current.rearC - forecast.rearC, hours);
-      if (frontKnown) for (const key of ['front', 'advanceFront', 'offFront']) recordError(model.heldOut[key], current.frontC - forecast.frontC, hours);
+      if (frontKnown) for (const key of ['front', 'advanceFront', 'offFront']) recordError(model.heldOut[key], current.frontC - frontForecast.frontC, frontHours);
     }
     if (!disturbed && !heldOut && off) {
       model.trainedIntervals++; model.evidence.offIntervals++; model.evidence.offHours += hours;
@@ -169,7 +196,11 @@ export function updateGarageModel(previous, observation, settings = {}) {
       // duration weighting makes the result independent of sensor poll count.
       const ambient = (prior.outdoorC + current.outdoorC) / 2;
       fitGarageRegression(model.rear, REAR, [ambient - (prior.rearC + current.rearC) / 2], (current.rearC - prior.rearC) / hours, hours);
-      if (frontKnown) fitGarageRegression(model.front, FRONT, [ambient - (prior.frontC + current.frontC) / 2], (current.frontC - prior.frontC) / hours, hours);
+      if (frontKnown && frontSegments.every(row => row.available === false)) {
+        const frontAmbient = frontSegments.reduce((sum, row) => sum + row.outdoorC * row.hours, 0) / frontHours;
+        fitGarageRegression(model.front, FRONT, [frontAmbient - (prior.frontC + current.frontC) / 2],
+          (current.frontC - prior.frontC) / frontHours, frontHours);
+      }
     }
     if (metered) { model.evidence.powerIntervals++; model.evidence.powerHours += hours; }
     else if (active !== null) { model.evidence.activityIntervals++; model.evidence.activityHours += hours; }

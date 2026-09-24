@@ -5,47 +5,11 @@ import { homedir } from 'node:os';
 import { dirname, isAbsolute, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
-import { garageSettings } from '../garage/settings.js';
 
 const bundledDefaults = fileURLToPath(new URL('../../config.json', import.meta.url));
 const forbiddenKeys = new Set(['__proto__', 'prototype', 'constructor']);
 const MAX_CONFIGURATION_BYTES = 1024 * 1024;
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
-
-// Normalize the retired protection policy at the configuration boundary,
-// before merging defaults supplies the new version. Never rewrite the source
-// file or carry its approval into a different physical model.
-function currentGarageOptions(options) {
-  if (!object(options?.garage?.protection)) return options;
-  const protection = options.garage.protection;
-  const legacy = ['garage-exposure-v1', 'garage-exposure-v2'].includes(protection.version)
-    || protection.version == null && ['floorC', 'hardMinimumC', 'budgetDegreeMinutes',
-      'recoveryAboveC', 'recoveryDegreeMinutesPerMinute', 'recoveryDwellMinutes'].some(key => Object.hasOwn(protection, key));
-  if (!legacy) return options;
-  return { ...options, garage: { ...options.garage, protection: garageSettings({ protection }).protection } };
-}
-
-// The charging loss is fixed. Retired numeric overrides may still be present
-// in private/add-on options, but must not be saved back as editable settings.
-function currentConfigurationOptions(options) {
-  options = currentGarageOptions(options);
-  if (!object(options?.charging?.chargers)) return options;
-  const chargers = { ...options.charging.chargers };
-  for (const id of ['charger1', 'charger2']) {
-    if (!object(chargers[id]) || !Object.hasOwn(chargers[id], 'efficiency')) continue;
-    const { efficiency, ...charger } = chargers[id];
-    if (!Number.isFinite(efficiency) || efficiency < .5 || efficiency > 1)
-      throw new Error(`Invalid configuration field: charging.chargers.${id}.efficiency.`);
-    chargers[id] = charger;
-  }
-  const charging = { ...options.charging, chargers };
-  // Resolve explicit source aliases before public vehicle defaults are merged;
-  // otherwise the default BMW topic would hide a configured publisher topic.
-  if (object(chargers.charger1) && Object.hasOwn(chargers.charger1, 'mqttTopic')
-    && (charging.vehicles === undefined || object(charging.vehicles)) && charging.vehicles?.bmw === undefined)
-    charging.vehicles = { ...charging.vehicles, bmw: { mqttTopic: chargers.charger1.mqttTopic } };
-  return { ...options, charging };
-}
 
 export function mergeOptions(defaults, overrides) {
   if (!object(defaults) || !object(overrides)) throw new Error('Configuration must be a JSON object.');
@@ -69,7 +33,6 @@ export function parseOptions(text, { allowWrapper = false } = {}) {
 
 export function validateOptionFields(options, schema, path = '') {
   if (!object(options) || !object(schema)) throw new Error(`Invalid configuration section${path ? `: ${path}` : ''}.`);
-  if (path === '') options = currentConfigurationOptions(options);
   for (const [key, value] of Object.entries(options)) {
     const field = path ? `${path}.${key}` : key;
     if (!Object.hasOwn(schema, key) || forbiddenKeys.has(key)) throw new Error(`Unknown configuration field: ${field}.`);
@@ -123,7 +86,7 @@ function privateOptions(path, required) {
     if (required) throw new Error('STMQ_CONFIG must name an existing configuration file.');
     return {};
   }
-  return currentConfigurationOptions(parseOptions(readFileSync(path, 'utf8'), { allowWrapper: true }));
+  return parseOptions(readFileSync(path, 'utf8'), { allowWrapper: true });
 }
 
 export function readConfigurationOptions(env, cwd, paths = configurationPaths(env, cwd)) {
@@ -144,7 +107,7 @@ function snapshot(path) {
     if (!stat.isFile() || stat.size > MAX_CONFIGURATION_BYTES) throw new Error('invalid-file');
     const bytes = readFileSync(descriptor);
     if (bytes.length > MAX_CONFIGURATION_BYTES) throw new Error('invalid-file');
-    return { options: currentConfigurationOptions(parseOptions(bytes.toString('utf8'))), digest: createHash('sha256').update(bytes).digest('hex'),
+    return { options: parseOptions(bytes.toString('utf8')), digest: createHash('sha256').update(bytes).digest('hex'),
       device: stat.dev, inode: stat.ino, size: stat.size, modified: stat.mtimeMs };
   } catch (error) {
     if (error.code === 'ENOENT') return null;
@@ -182,12 +145,6 @@ function writeReceipt(path, receipt) {
     try { unlinkSync(temporary); } catch { /* No credentials are stored here. */ }
     throw new Error('The private configuration import receipt could not be saved.');
   }
-}
-
-function withoutRetiredEaseeTokens(options) {
-  const result = mergeOptions({}, options);
-  if (object(result.easee)) { delete result.easee.access_token; delete result.easee.refresh_token; }
-  return result;
 }
 
 function optionsDigest(options) {
@@ -246,7 +203,7 @@ export function createConfigurationSource({ env, cwd, buildConfig, paths = confi
     const info = await supervisor('GET', 'info');
     if (!object(info?.options)) throw new Error('Supervisor did not return this add-on’s settings.');
     if (typeof info.slug === 'string' && /^[a-zA-Z0-9_-]+$/.test(info.slug)) slug = info.slug;
-    return currentConfigurationOptions(withoutRetiredEaseeTokens(info.options));
+    return mergeOptions({}, info.options);
   }
   const source = {
     publicInfo,
@@ -264,7 +221,7 @@ export function createConfigurationSource({ env, cwd, buildConfig, paths = confi
       try { current = await currentOptions(); }
       catch (error) {
         if (!startup || file) throw error;
-        current = withoutRetiredEaseeTokens(privateOptions(paths.privatePath, Boolean(environment.STMQ_CONFIG)));
+        current = privateOptions(paths.privatePath, Boolean(environment.STMQ_CONFIG));
       }
       const receipt = file ? readReceipt(paths.receiptPath) : null;
       const sameReceipt = sameFile(file, receipt);
@@ -280,7 +237,7 @@ export function createConfigurationSource({ env, cwd, buildConfig, paths = confi
       const options = mergeOptions(defaults.options, file && !saved ? mergeOptions(current, file.options) : current);
       let resolvedCurrent = current;
       if (containsReferences(current)) {
-        resolvedCurrent = currentConfigurationOptions(withoutRetiredEaseeTokens(await supervisor('GET', 'options/config')));
+        resolvedCurrent = await supervisor('GET', 'options/config');
         validateHomeAssistantValues(resolvedCurrent);
       }
       const runtimeOptions = mergeOptions(defaults.options, file && !saved ? mergeOptions(resolvedCurrent, file.options) : resolvedCurrent);

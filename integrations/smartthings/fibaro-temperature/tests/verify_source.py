@@ -54,7 +54,7 @@ for name in ("smoke-battery-temperature-tamperalert", "smoke-battery-temperature
     }
 print("Verified both profiles' nine requested defaults, threshold definition, and wake-up choices")
 
-lua = next((p for name in ("lua", "lua5.4", "lua5.3", "texlua") if (p := shutil.which(name))), None)
+lua = next((p for name in ("lua", "lua5.4", "lua5.3", "texlua", "luatex") if (p := shutil.which(name))), None)
 if lua is None:
     raise SystemExit("Install Lua 5.3/5.4 or texlua to run the behavior checks")
-subprocess.run([lua, str(base / "tests/temperature_reports.lua")], check=True)
+subprocess.run([lua, *(["--luaonly"] if Path(lua).name == "luatex" else []), str(base / "tests/temperature_reports.lua")], check=True)

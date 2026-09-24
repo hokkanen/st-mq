@@ -85,7 +85,7 @@ export function contractWithPeriod(existing, input) {
   if (previous && (previous.to === null || previous.to > from)) previous.to = from;
   const next = { from, marginCtPerKwh: input.marginCtPerKwh, taxCtPerKwh: input.taxCtPerKwh,
     vatRate: input.vatRate, tariff: input.tariff,
-    ...(input.transferRates ? { transferRates: { ...input.transferRates } } : {}),
+    transferRates: { ...(input.transferRates ?? DEFAULT_TRANSFER_RATES_EX_VAT) },
     provenance: 'Household entered rates; effective at Finnish local midnight' };
   if (!['day-night', 'seasonal'].includes(next.tariff)) throw new Error('Select a transfer tariff');
   if (next.marginCtPerKwh < -20 || next.marginCtPerKwh > 100 || next.taxCtPerKwh > 100) throw new Error('Check charge units: enter c/kWh excluding VAT');

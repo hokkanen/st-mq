@@ -5,7 +5,8 @@ import { Engine } from '../src/app/engine.js';
 import { validateSettings } from '../src/app/config.js';
 import { addSensorChange, sensorChangesView } from '../src/app/sensor-changes.js';
 import { sensorChangeEvents, sensorBoundaries, affectsThermalLearning } from '../src/app/sensor-inputs.js';
-import { appendLearningRecord, LEARNING_ALGORITHM } from '../src/app/committed-learning.js';
+import { LEARNING_ALGORITHM} from '../src/app/committed-learning.js';
+import { appendLearningRecord } from './helpers/home-learning-fixture.js';
 import { restoreAdaptiveCheckpoint } from '../src/control/adaptive-learning.js';
 import { SENSOR_SETTLING_MS } from '../src/domain/indoor-sensors.js';
 

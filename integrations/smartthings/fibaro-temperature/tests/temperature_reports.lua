@@ -247,7 +247,7 @@ events, sends = {}, {}
 template.lifecycle_handlers.init(controller, device)
 check(type(update_preferences) == "function" and #sends == 0,
   "initialization registers natural-wake preference callback without radio writes")
-check(logs[#logs] == "Preference application initialized: mapped=9 local=0 legacy=0 attempted=false",
+check(logs[#logs] == "Preference application initialized: mapped=9 local=0 attempted=false",
   "initialization diagnostics contain only counts and an attempted-state boolean")
 template.lifecycle_handlers.infoChanged(controller, device, {}, {old_st_store = {preferences = {}}})
 check(#sends == 0, "sleeping infoChanged defers settings until wake")
@@ -259,7 +259,7 @@ local settings = {
   temperatureThreshold = {30, 2, 10}, overheatInterval = {31, 2, 180}, outOfRange = {32, 2, 360},
 }
 device.preferences = {wakeUpIntervalSeconds = "4200", unknownPreference = 3}
-for name, expected in pairs(settings) do device.preferences[prefix .. name] = expected[3] end
+for name, expected in pairs(settings) do device.preferences[name] = expected[3] end
 update_preferences(controller, device)
 check(#sends == 9, "initial configure sends nine mapped preferences and skips wake selector/unknown fields")
 local sent = {}
@@ -267,7 +267,7 @@ for _, item in ipairs(sends) do sent[item.args.parameter_number] = item.args end
 for name, expected in pairs(settings) do
   local item = sent[expected[1]]
   check(item and item.size == expected[2] and item.configuration_value == expected[3],
-    "legacy mapping, size, and raw default retained: " .. name)
+    "current mapping, size, and raw default retained: " .. name)
 end
 sends = {}
 local old = {}
@@ -277,29 +277,28 @@ check(#sends == 0, "unchanged saved configuration is not resent")
 device.preferences.wakeUpIntervalSeconds = "7200"
 update_preferences(controller, device, {old_st_store = {preferences = old}})
 check(#sends == 0, "wake-only change is never interpreted as a Configuration parameter")
-device.preferences[prefix .. "tempReportInterval"] = "30"
+device.preferences.tempReportInterval = "30"
 update_preferences(controller, device, {old_st_store = {preferences = old}})
 check(#sends == 1 and sends[1].args.parameter_number == 20
   and sends[1].args.configuration_value == 30, "ordinary preference edits retain existing numeric conversion")
--- During profile migration an old namespaced value is usable only if its new
--- local setting is absent. An explicit local choice (including zero) wins.
+-- Obsolete ST-MQ profile IDs are not a fallback for absent current settings.
 sends = {}
-device.preferences = {
-  wakeUpIntervalSeconds = "4200", tempReportInterval = "90",
-  [prefix .. "tempReportInterval"] = "30", indicatorNotification = 0,
-  [prefix .. "indicatorNotification"] = 7,
-}
+device.preferences = { [prefix .. "tempReportInterval"] = "30" }
 update_preferences(controller, device)
-check(#sends == 2, "local and legacy IDs never cause duplicate Configuration writes")
+check(#sends == 0, "obsolete namespaced preference IDs are not translated")
+device.preferences.tempReportInterval = "90"
+device.preferences.indicatorNotification = 0
+update_preferences(controller, device)
+check(#sends == 2, "current visible preference IDs produce one write each")
 sent = {}
 for _, item in ipairs(sends) do sent[item.args.parameter_number] = item.args end
 check(sent[20].configuration_value == 90 and sent[3].configuration_value == 0,
-  "local visible selections take priority over retained legacy values, including zero")
+  "current values retain numeric conversion and explicit zero")
 sends = {}
 update_preferences(controller, device, {old_st_store = {preferences = {
-  [prefix .. "tempReportInterval"] = "90", [prefix .. "indicatorNotification"] = 0,
+  tempReportInterval = "90", indicatorNotification = 0,
 }}})
-check(#sends == 0, "same-value ID migration does not resend unchanged parameters")
+check(#sends == 0, "unchanged current values do not resend parameters")
 -- Newly materialized profile defaults may be identical to the SDK's init
 -- snapshot. They still need one real-wake write attempt, including after restart.
 local attempt_field = "stmq_local_preferences_attempted_revision"
@@ -319,7 +318,7 @@ sends = {}
 update_preferences(controller, device, {old_st_store = {preferences = old}})
 check(#sends == 9 and fields[attempt_field] == 1 and persisted[attempt_field] == true,
   "first real wake attempts all local selections despite unchanged SDK snapshot and restart")
-check(logs[#logs] == "Preference application first pending wake: mapped=9 local=9 legacy=0 attempted=false",
+check(logs[#logs] == "Preference application first pending wake: mapped=9 local=9 attempted=false",
   "first pending wake diagnostics expose no preference values or device identity")
 sent = {}
 for _, item in ipairs(sends) do sent[item.args.parameter_number] = item.args end

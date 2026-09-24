@@ -15,7 +15,7 @@ function fixture(t, charging) {
   const store = new Store(join(directory, 'test.sqlite'));
   let now = Date.parse('2026-09-15T18:00:00Z');
   const config = { ...loadConfig({ XDG_CONFIG_HOME: directory, STMQ_DATA_DIR: directory }, directory), input: 'mqtt', deviceId: null, ...(charging ? { charging } : {}),
-    connections: { mqtt: { address: 'mqtt://example.invalid' }, teslamate: { enabled: true, carId: '7', chargerAssignment: 'bmw' } } };
+    connections: { mqtt: { address: 'mqtt://example.invalid' }, teslamate: { enabled: true, carId: '7' } } };
   const engine = new Engine({ store, config, clock: () => now }), cleanup = [];
   t.after(async () => { for (const close of cleanup) await close(); await engine.charging.close(); store.close(); rmSync(directory, { recursive: true, force: true }); });
   return { store, engine, config, cleanup, advance(ms) { now += ms; } };
@@ -44,7 +44,7 @@ test('charging API persists preferences across engines and obeys authentication 
   assert.equal((await post('settings', { installation: { mainFuseA: 25 } })).status, 400);
   assert.equal((await post('chargers/charger1/settings', { capacityKwh: -1 })).status, 400);
   assert.equal((await post('settings', { unknown: true })).status, 400);
-  assert.equal((await post('chargers/charger2/settings', { enabled: true })).status, 400);
+  assert.equal((await post('chargers/charger2/settings', { enabled: true })).status, 200);
   assert.equal((await post('chargers/missing/settings', { manualSoc: 50 })).status, 400);
   assert.equal((await post('chargers/charger2/settings', { manualSoc: 56 })).status, 200);
   primary = false;
@@ -64,7 +64,7 @@ test('charging API persists preferences across engines and obeys authentication 
 });
 
 test('independent MQTT vehicle routes keep source timestamps without overriding unassigned charger defaults', async t => {
-  const { store, engine, config, cleanup, advance } = fixture(t, { chargers: { charger2: { mqttTopic: 'stmq/garage/charger2/vehicle' } } }), client = new EventEmitter(), subscriptions = [];
+  const { store, engine, config, cleanup, advance } = fixture(t, { vehicles: { bmw: { mqttTopic: 'stmq/test/bmw' } } }), client = new EventEmitter(), subscriptions = [];
   client.subscribe = (topic, options, done) => { subscriptions.push({ topic, qos: options.qos }); done(null, [{ topic, qos: options.qos }]); };
   client.unsubscribe = (_topic, done) => done();
   client.end = (_force, _options, done) => done();
@@ -85,7 +85,7 @@ test('independent MQTT vehicle routes keep source timestamps without overriding 
   assert.equal(chargerView(engine.charging).values.soc.value, 44, 'Unknown vehicle retains the editable fallback');
   assert.equal(engine.charging.settings.chargers.charger1.manualSoc, 44, 'Fallback remains saved');
   await assert.rejects(engine.charging.setChargerSettings('charger1', { mqtt: { topic: 'new/topic' } }), /Unknown/);
-  assert(subscriptions.some(row => row.topic === 'stmq/garage/charger2/vehicle' && row.qos === 1));
+  assert(subscriptions.some(row => row.topic === 'stmq/test/bmw' && row.qos === 1));
   sendSoc({ readingId: 'second-car', measuredAt: engine.clock(), soc: 48 }, 'stmq/garage/charger2/vehicle');
   assert.equal(chargerView(engine.charging, 'charger2').values.soc.value, 20, 'A generic extra feed cannot identify the Tesla');
   assert.equal(chargerView(engine.charging).values.soc.value, 44, 'Vehicle topics cannot attach themselves to a charger');
@@ -95,13 +95,14 @@ test('independent MQTT vehicle routes keep source timestamps without overriding 
     charge_current_request_max: 16, charger_phases: 3, charger_voltage: 230, plugged_in: true, geofence: 'Home',
     charger_power: 0, scheduled_charging_start_time: new Date(engine.clock() + 3_600_000).toISOString() })) send(field, value);
   engine.charging.tick();
-  assert.equal(chargerView(engine.charging, 'charger2').values.currentA.value, 13);
-  assert(chargerView(engine.charging, 'charger2').forecast.startAt > engine.clock());
+  assert.equal(chargerView(engine.charging, 'charger2').values.currentA.available, false, 'Vehicle constraints cannot manufacture physical Charger 2 telemetry');
+  assert.equal(chargerView(engine.charging, 'charger2').vehicle.id, null);
 });
 
 test('session target API authenticates, enforces controller authority and rejects a replaced connection', async t => {
   const { store, engine, advance } = fixture(t);
   const runtime = engine.charging, connectedAt = engine.clock();
+  runtime.setMqttStatus({connected:true,subscribed:true},'bmw');
   let primary = true, charging = true, sessionAt = connectedAt;
   const token = 'synthetic-target-api-authorization';
   const item = runtime.chargers.charger1;
@@ -138,4 +139,22 @@ test('session target API authenticates, enforces controller authority and reject
   advance(60_000); sessionAt = engine.clock();
   assert.equal((await post({ connectedAt, mode: 'full' })).status, 400);
   assert.equal(chargerView(runtime).targetSelection, null);
+});
+test('physical C2 alone starts MQTT acquisition when all vehicle feeds and other MQTT inputs are absent',async t=>{
+ const {start}=await import('../src/main.js');
+ const dir=mkdtempSync(join(tmpdir(),'stmq-physical-only-'));t.after(()=>rmSync(dir,{recursive:true,force:true}));
+ const base=loadConfig({XDG_CONFIG_HOME:dir,STMQ_DATA_DIR:dir,STMQ_PORT:'0'},dir);
+ const config={...base,input:'mqtt',deviceId:null,h66:{...base.h66,deviceId:null},
+  charging:{chargers:{charger2:{enabled:true,deviceId:'synthetic-evse',topicPrefix:'synthetic/evse'}},vehicles:{bmw:{mqttTopic:null}}},
+  connections:{mqtt:{address:'mqtt://synthetic.invalid'},teslamate:{enabled:false}}};
+ const subscriptions=[];let clients=0;
+ const connect=()=>{clients++;const client=new EventEmitter();client.subscribe=(topics,_options,done)=>{
+  const list=Array.isArray(topics)?topics:[topics];subscriptions.push(...list);done?.(null,list.map(topic=>({topic,qos:0})));};
+  client.publish=(_topic,_body,_options,done)=>done?.();client.end=(_force,_options,done)=>done?.();
+  queueMicrotask(()=>client.emit('connect'));return client;
+ };
+ const app=await start({config,mqttOptions:{connect},installSignalHandlers:false});t.after(()=>app.close());
+ assert.ok(clients>0);assert.ok(app.engine.charging.chargers.charger2.adapter);
+ assert.ok(subscriptions.includes('synthetic/evse/events/rpc'));assert.equal(app.engine.charging.mqttRoutes().length,0);
+ assert.equal(app.engine.providerStatus()['shelly-evse'].enabled,true);
 });

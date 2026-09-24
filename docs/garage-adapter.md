@@ -8,7 +8,7 @@ The default `fixture` driver remains an isolated, read-only consumer of the
 
 Automatic pause control requires fresh device evidence: armed mode, matching native
 profile, essential capabilities and installed selective-power, local-expiry and
-restart-restoration results. Low-heat and baseline verification remain required.
+restart-restoration and release-ordering results. Low-heat and baseline verification remain required.
 Permanent external temperature control is a separate ordinary control feature;
 it does not replace commissioning evidence or authorize economic pauses.
 
@@ -287,3 +287,30 @@ The local return-to-ON is **Pill software**: host/network loss can be covered by
 healthy adapter, but a dead or unpowered Pill or failed serial path cannot transmit
 ON. The host retains unresolved recovery when that path fails. Native ON remains
 separate from evidence of useful heat near the two external reference probes.
+
+## Restoration evidence and explicit Normal heating
+
+A fresh ON observation establishes current power, but does not prove that a
+previous OFF command was cancelled. ST-MQ retains its maximum possible OFF expiry
+through disconnect and host restart until fresh native ON, no active lease and no
+pending device restoration are accompanied by one of:
+
+- A correlated release `native-confirmed` result from the same boot/session, after
+  all possibly effective OFF commands in that episode.
+- Native ON measured after the maximum outstanding permission expiry.
+- A new device boot that invalidates commands addressed to the old boot.
+- A `manual-on` or `watchdog-recovery` event carrying matching `ownerSession`,
+  `episodeId`, `throughSequence` covering all host commands, and `at` no later than
+  the confirming native measurement.
+
+Production automatic OFF additionally requires commissioning
+`releaseOrderingVerified: true`. This asserts that release/cancellation fences
+queued and serial-in-flight OFF writes before reporting completion; late stale
+commands must be rejected. Firmware bench qualification is required before setting
+this result. Host fixtures prove host behavior, not actual serial ordering.
+
+Explicit **Normal heating** uses ordinary native power ON when the pump is
+unmanaged OFF, requiring its advertised manual capability and fresh readback.
+An external room-temperature override clears before ON. Missing capability rejects
+the request before saving a false success. Background release remains scoped to
+an existing managed pause and respects owner-selected native OFF.

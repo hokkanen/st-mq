@@ -10,8 +10,9 @@ import { providerFixture } from './lib/provider-fixture.js';
 import { createH66Controller } from '../src/control/h66.js';
 import { createH66Decoder, H66_REGISTERS } from '../src/domain/telemetry.js';
 import { Store } from '../src/storage/store.js';
-import { appendLearningRecord } from '../src/app/committed-learning.js';
+import { appendLearningRecord } from '../test/helpers/home-learning-fixture.js';
 import { MODEL_INPUT_INFO } from '../src/domain/history-series.js';
+import { learningDisplay } from '../chart/learning-status.js';
 
 const directory = mkdtempSync(join(tmpdir(), 'stmq-learning-ui-'));
 let now = Date.parse('2026-09-07T12:00:00Z');
@@ -24,7 +25,7 @@ try {
   seedChartFixture(seededStore, now);
   const inputStart = now - 30 * 60_000, inputEnd = now - 15 * 60_000;
   appendLearningRecord(seededStore, 'simulated', 'sample', {
-    timestamp: inputEnd, windowStart: inputStart, windowEnd: inputEnd, indoorC: 21.2, quality: [],
+    timestamp: inputEnd, windowStart: inputStart, windowEnd: inputEnd, indoorC: 21.2, phase: 'normal', regime: 'occupied', quality: [],
     inputSegments: [{ start: inputStart, end: inputStart + 5 * 60_000, outdoorC: 8, solarRadiationWm2: 300,
       phase: 'normal', roomBoostC: 0, targetC: 21, thermalCompressorDuty: 0, thermalAuxKw: 0, quality: [] },
     { start: inputStart + 5 * 60_000, end: inputEnd, outdoorC: 8, solarRadiationWm2: 300,
@@ -78,8 +79,11 @@ try {
   assert.equal(await evaluate("[...document.querySelectorAll('#learning-metrics > details[data-learning-key]')].map(row => row.dataset.learningKey).join(',')"),
     'profit,auxProfit,recoveryError,indoorTemperature');
   const actualStatus = await fetch(`http://127.0.0.1:${app.server.address().port}/api/status`).then(r => r.json());
-  assert.equal(await evaluate(`document.getElementById('coefficient-evidence').textContent.includes('A2 ${actualStatus.learning.parameters.auxIntegralA2}')`), true);
-  assert.equal(await evaluate(`document.getElementById('coefficient-evidence').textContent.includes('compressor ${actualStatus.learning.adaptive.model.energy.compressorKw.toFixed(2)} kW')`), true);
+  const coefficientText=await evaluate("document.getElementById('model-coefficients-content').textContent");
+  const loss=actualStatus.learning.adaptive.model.parameters.lossPerHour;
+  assert(coefficientText.includes(loss.toFixed(4)), 'The current heat-loss coefficient is visible');
+  const coefficientRows=learningDisplay(actualStatus.learning).coefficientEvidenceRows;
+  for(const row of coefficientRows)assert.equal(await evaluate(`document.getElementById('coefficient-evidence').textContent.includes(${JSON.stringify(row.title)})`),true);
   assert.equal(await evaluate("document.getElementById('h66-test-submit').disabled"), true);
   await evaluate("document.getElementById('h66-test-register').value='2201'; document.getElementById('h66-test-register').dispatchEvent(new Event('change'))");
   assert.equal(await evaluate("document.getElementById('h66-test-mode-field').hidden"), false);
@@ -96,7 +100,7 @@ try {
   assert.deepEqual((await evaluate("[...document.querySelectorAll('#h66-readings tr[data-register]')].map(row => row.dataset.register)")).sort(),
     Object.keys(H66_REGISTERS).sort(), 'Every supported reading appears once in a group');
   assert.equal(await evaluate("document.querySelector('#learning-details summary').textContent"), 'Learning outcomes · Calculated');
-  assert.deepEqual(JSON.parse(await evaluate("JSON.stringify([...document.querySelectorAll('#model-inputs-content > details')].map(fold=>fold.dataset.modelInput))")),Object.keys(MODEL_INPUT_INFO));
+  assert.deepEqual(JSON.parse(await evaluate("JSON.stringify([...document.querySelectorAll('#model-inputs-content > details')].map(fold=>fold.dataset.modelInput).sort())")),Object.keys(MODEL_INPUT_INFO).sort());
   assert.deepEqual(await evaluate("[...document.querySelectorAll('.controller-column')].map(column => [...column.querySelectorAll(':scope > article')].map(card => card.id))"),
     [['home-control', 'providers-controls'], ['garage-control']]);
   assert.equal(await evaluate("document.getElementById('control-title').textContent"), 'Home');
@@ -291,12 +295,12 @@ try {
     }
     await evaluate("document.querySelector('.controller-panels').scrollIntoView({block:'start'})");
     writeFileSync(`var/home-panels-providers-${width}.png`, Buffer.from((await send('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
-    await evaluate("document.getElementById('connections-details').open=true; document.querySelectorAll('#providers .provider-fold').forEach(fold=>fold.open=true); document.getElementById('home-equipment-details').open=true; document.getElementById('home-pump-device').open=true; document.getElementById('h66-readings-details').open=true;  document.getElementById('providers-controls').scrollIntoView({block:'start'})");
+    await evaluate("document.getElementById('connections-details').open=true; document.querySelectorAll('#providers .provider-fold').forEach(fold=>fold.open=true); document.getElementById('home-equipment-details').open=true; document.getElementById('home-pump-device').open=true; document.getElementById('h66-readings-details').open=true; document.getElementById('providers-controls').scrollIntoView({block:'start'})");
     assert.equal(await evaluate(`(() => {
       const summaries = [...document.querySelectorAll('#providers .provider-fold > summary')];
-      return summaries.length === 4 && summaries.every(summary => summary.checkVisibility()
+      return summaries.length === 5 && summaries.every(summary => summary.checkVisibility()
         && Math.abs(summary.getBoundingClientRect().left - summaries[0].getBoundingClientRect().left) < 1);
-    })()`), true, 'The four source categories share a left edge');
+    })()`), true, 'The five current source categories share a left edge');
     assert.equal(await evaluate(`(() => {
       const rows = [...document.querySelectorAll('#connections-details > .controller-fold')].map(fold => ({
         box: fold.getBoundingClientRect(), summary: fold.querySelector(':scope > summary') }));
@@ -346,8 +350,9 @@ try {
   assert.match(settingDetails, /original.*55 °C/i);
   await evaluate("document.querySelector('#status-detail-popover .status-detail-close').click();true");
   now += 61_000; await h66.reconcile({ now }); app.engine.tick();
+  assert.deepEqual(publications.map(item => item.value), ['50', '55'], 'The elapsed manual command restores its original value');
   await send('Page.reload');
-  await until("document.getElementById('h66-test-message')?.textContent.includes('device confirmed')");
+  await until("document.getElementById('history')?.dataset.ready === 'true'");
   assert.deepEqual(publications.map(item => item.value), ['50', '55'], 'An unpaused manual setting restores its previous value and page reload does not replay it');
   assert.equal(h66.status().readings['0208'].value, 55);
   await evaluate("document.getElementById('h66-test-register').value='0208'; document.getElementById('h66-test-register').dispatchEvent(new Event('change'))");

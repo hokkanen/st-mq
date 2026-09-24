@@ -344,30 +344,35 @@ test('temperature groups show all probes directly without a duplicate Mitsubishi
 
 test('vehicle connections identify TeslaMate and update a generic route to the reported BMW feed', () => {
   const document = equipmentDocument(), panel = createEquipmentPanel({ document, request: async () => {} });
-  const initial = status({ equipment: { devices: [], topicGroups: [
-    { id: 'teslamate', topics: [{ role: 'Vehicle subscription', topic: 'fixture/vehicle/teslamate', direction: 'subscribe' }] },
-    { id: 'charger1-vehicle', label: 'Charger 1 vehicle', source: 'MQTT',
-      topics: [{ role: 'Timestamped vehicle readings', topic: 'fixture/charger1/vehicle', direction: 'subscribe' }] },
+  const initial = status({ charging: { vehicleFeeds: [
+    { id: 'tesla', label: 'Tesla', provider: 'teslamate', topic: 'fixture/vehicle/teslamate', reception: {} },
+    { id: 'bmw', label: 'Vehicle', provider: null, topic: 'fixture/vehicles/bmw', reception: {} },
+  ] }, equipment: { devices: [], topicGroups: [
+    { id: 'vehicle:tesla', vehicleFeedId: 'tesla', topics: [{ role: 'Vehicle subscription', topic: 'fixture/vehicle/teslamate', direction: 'subscribe' }] },
+    { id: 'vehicle:bmw', vehicleFeedId: 'bmw', label: 'BMW vehicle', source: 'MQTT',
+      topics: [{ role: 'Timestamped vehicle readings', topic: 'fixture/vehicles/bmw', direction: 'subscribe' }] },
   ] } });
   panel.update(initial);
   const connections = descendants(document.getElementById('equipment-connections'));
-  const tesla = connections.find(node => node.dataset.deviceId === 'connection:teslamate:other');
+  const tesla = connections.find(node => node.dataset.deviceId === 'connection:vehicle:tesla:other');
   assert.equal(tesla.querySelector('.equipment-connection-name').textContent, 'Tesla');
   assert.equal(tesla.querySelector('.equipment-connection-meta').textContent, 'Vehicle · TeslaMate');
-  const generic = connections.find(node => node.dataset.deviceId === 'connection:charger1-vehicle:other');
+  const generic = connections.find(node => node.dataset.deviceId === 'connection:vehicle:bmw:other');
   assert.equal(generic.querySelector('.equipment-connection-name').textContent, 'Vehicle');
   assert.equal(generic.querySelector('.equipment-connection-meta').textContent, 'Vehicle · MQTT');
   assert.equal(generic.tagName, 'DETAILS', 'Connection folds still reveal their configured MQTT topics');
-  panel.update({ ...initial, charging: { chargers: [{ id: 'charger1', label: 'Charger 1', vehicleMqtt: {
-    provider: 'bmw-cardata', brokerConnected: true, subscriptionStatus: 'subscribed', lastMessageAt: now, lastLiveAt: now,
-  } }] } });
+  panel.update({ ...initial, charging: { vehicleFeeds: [initial.charging.vehicleFeeds[0], {
+    ...initial.charging.vehicleFeeds[1], label: 'BMW', provider: 'bmw-cardata', reception: {
+      brokerConnected: true, subscriptionStatus: 'subscribed', lastMessageAt: now, lastLiveAt: now,
+    },
+  }] } });
   assert.equal(generic.querySelector('.equipment-connection-meta').textContent, 'Vehicle · BMW CarData');
   assert.equal(generic.querySelector('.equipment-connection-name').textContent, 'BMW');
   assert.equal(generic.querySelector('.equipment-device-status').textContent, 'Connected');
   assert.match(generic.querySelector('.equipment-connection-recent').textContent, /^Reported /);
-  assert.match(generic.textContent, /fixture\/charger1\/vehicle/);
+  assert.match(generic.textContent, /fixture\/vehicles\/bmw/);
   assert.equal(descendants(document.getElementById('equipment-connections'))
-    .filter(node => node.dataset.deviceId === 'connection:charger1-vehicle:other').length, 1);
+    .filter(node => node.dataset.deviceId === 'connection:vehicle:bmw:other').length, 1);
 });
 
 const caravanAir = () => ({ id: 'blu_ht', label: 'Caravan air', area: 'garage', kind: 'temperature', available: true,

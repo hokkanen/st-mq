@@ -1,3 +1,4 @@
+import {Engine} from '../src/app/engine.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Store } from '../src/storage/store.js';
@@ -164,13 +165,13 @@ test('a rolled-back session finalization leaves no event or deduplication marker
   assert.equal(f.store.transaction(() => recordEaseeSessionChecks({ store: f.store, rows, now: end })), 1);
 });
 
-test('provider commits session checks and fresh electrical snapshots before invoking the Tesla property check', async t => {
+test('provider commits session checks and electrical snapshots before notifying the charging runtime', async t => {
   const f = fixture(t);
   let now = start, ticks = 0;
   const sessionRows = await normalized();
-  const engine = { latest: {}, outdoorCandidates: {}, recorder: f.recorder,
+  const engine = { ingestionCheckpoint:Engine.prototype.ingestionCheckpoint, restoreIngestionCheckpoint:Engine.prototype.restoreIngestionCheckpoint, latest: {}, outdoorCandidates: {}, recorder: f.recorder,
     ingest() {}, ingestEnergy(interval) { f.recorder.recordEnergy(interval); }, providerObservations() { return []; },
-    teslamate: { tick() {
+    charging: { tick() {
       ticks++;
       assert.equal(f.store.db.isTransaction, false);
       assert.equal(engine.electricitySnapshot.charger.sourceTime, now);
@@ -196,7 +197,7 @@ test('provider commits session checks and fresh electrical snapshots before invo
     assert.equal(checks(f.store)[0].payload.complete, true);
     near(checks(f.store)[0].payload.estimatedKwh, 0.1);
     await providers.runDue();
-    assert.equal(ticks, 6, 'A missing property batch clears the snapshot and still runs the Tesla availability check');
+    assert.equal(ticks, 6, 'A missing property batch clears the snapshot and still notifies passive charger observation');
     assert.equal(events(f.store, 'teslamate-acquisition-error').length, 0);
   } finally { await providers.close(); }
 });

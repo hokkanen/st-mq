@@ -32,7 +32,7 @@ function experiment({ cadenceMinutes = 5, days = 8, offHours = .5, activityOnly 
 }
 
 test('simple OFF learning has an explicit epoch and refuse previous learning semantics', () => {
-  assert.equal(GARAGE_ALGORITHM_VERSION, 'committed-garage-v5-protection-limited');
+  assert.equal(GARAGE_ALGORITHM_VERSION, 'committed-garage-v6-source-clocks');
   assert.throws(() => updateGarageModel({ ...createGarageModel(), algorithm: 'committed-garage-v4-simple-off' }, row(1)), /Unsupported/);
   assert.throws(() => updateGarageModel({ ...createGarageModel(), algorithm: 'committed-garage-v3-event-doors' }, row(1)), /Unsupported/);
   assert.throws(() => updateGarageModel({ ...createGarageModel(), algorithm: 'committed-garage-v1-coupled' }, row(1)), /Unsupported/);

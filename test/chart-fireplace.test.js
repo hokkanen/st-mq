@@ -5,7 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../src/storage/store.js';
 import { Envelope, getChartData } from '../src/app/chart-data.js';
-import { appendLearningRecord } from '../src/app/committed-learning.js';
+
+import { appendLearningRecord } from './helpers/home-learning-fixture.js';
 import { createChartService } from '../src/app/chart-service.js';
 import { addFireplace, removeFireplace } from '../src/app/fireplace.js';
 import { addFireplaceInputs, addFirewoodOutcomes, FIREPLACE_INPUT_NAMES, FIREWOOD_OUTCOME_NAMES } from '../src/app/chart-fireplace.js';
@@ -162,7 +163,7 @@ test('chart API uses all-in price history and agrees between the card and daily 
   const now = start + 8 * HOUR;
   const args = { store, input: 'providers', now, startDate: '2026-09-08',
     contract: { periods: [{ from: start - HOUR, marginCtPerKwh: 0.4,
-      taxCtPerKwh: 2.2, vatRate: 0.255, tariff: 'day-night' }] },
+      taxCtPerKwh: 2.2, transferRates: { vatIncluded: true, dayCtPerKwh: 3.34, nightCtPerKwh: 1.96, winterDayCtPerKwh: 4.17, otherCtPerKwh: 2.07 }, vatRate: 0.255, tariff: 'day-night' }] },
     market: { fetchedAt: start, intervals: [{ start, end: now,
       spotCtPerKwh: 10, unit: 'c/kWh', vatIncluded: false, source: 'synthetic' }] } };
   const euro = getChartData({ ...args, left: 'firewood_savings' });

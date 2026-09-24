@@ -82,7 +82,7 @@ test('recording diagnostics distinguish H66 expiry, held temperatures, and compl
   const indoor=recorder.status(1001+2*HOUR).parameters.find(row=>row.signal==='indoor_temperature').freshness;
   assert.equal(indoor.status,'held-attention');assert.equal(indoor.maxAgeMs,null);
   assert.equal(indoor.attentionAfterMs,2*HOUR);
-  recorder.recordEnergy({source:'teslamate',device:'invented-car',prefix:'ev2',start:1000,end:2000,energies:[0.01],powers:[36]});
+  recorder.recordEnergy({source:'shelly-evse',device:'invented-car',prefix:'ev2',start:1000,end:2000,energies:[0.01],powers:[36]});
   const energy=recorder.status(72*HOUR).parameters.find(row=>row.signal==='ev2_energy').freshness;
   assert.equal(energy.status,'recorded-interval');assert.equal(energy.maxAgeMs,null);
 });

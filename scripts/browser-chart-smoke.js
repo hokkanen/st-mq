@@ -33,7 +33,7 @@ function seedChargingFixture(store, energySource='simulation') {
   store.transaction(() => {
     for (let slot=0;slot<12;slot++) {
       const start=now-(120-slot*5)*60_000,end=start+5*60_000,power=slot<6?6:4;
-      store.observation({source:energySource,device:'synthetic-browser-tesla',signal:'ev2_energy',
+      store.observation({source:energySource,device:'synthetic-browser-shelly',signal:'ev2_energy',
         sourceTime:end,receivedAt:end,value:power/12,unit:'kWh',quality:['estimated',...(energySource==='simulation'?['simulated']:[])],
         raw:{intervalStart:start,intervalEnd:end,durationMs:end-start,basis:'synthetic-browser-fixture'}});
     }
@@ -41,7 +41,7 @@ function seedChargingFixture(store, energySource='simulation') {
       sourceTime:now,receivedAt:now,value:100});
     for (const [source,key,estimatedKwh,referenceKwh,complete,offset] of [
       ['easee','synthetic-first',12,10,true,4],['easee','synthetic-second',81,90,true,2],
-      ['teslamate','synthetic-first',12,10,true,4],['teslamate','synthetic-partial',2,1,false,2],
+      ['shelly-evse','synthetic-first',12,10,true,4],['shelly-evse','synthetic-partial',2,1,false,2],
     ]) recordChargingSessionCheck(store,{source,sessionKey:key,start:now-offset*3600_000,
       end:now-(offset-1)*3600_000,estimatedKwh,referenceKwh,complete,
       quality:complete?[]:['incomplete-coverage']});
@@ -62,7 +62,10 @@ try {
       { config: { ...config.control, thermalPriors: { lossPerHour: 0.0187 } } });
     const model = initialAdaptiveModel({ ...config.control,
       thermalPriors: Object.fromEntries(Object.values(coefficientValues).map(row => [row.parameter, row.value])) });
-    model.validation = { accepted: true, fittedParameters: Object.values(coefficientValues).map(row => row.parameter) };
+    model.validation = { accepted: true, kind: 'conditional-thermal', chronological: true,
+      fittedParameters: Object.values(coefficientValues).map(row => row.parameter),
+      parameterEvidence: Object.fromEntries(Object.values(coefficientValues).map(row => [row.parameter,
+        { status: 'identified', fitStatus: 'fitted', relativeSpread: .1 }])) };
     model.trainedAt = new Date(now - 4 * 3600000).toISOString();
     appendLearningRecord(fixtureStore, 'simulated', 'context', { timestamp: now - 4 * 3600000,
       historySeed: { model, source: { basis: 'synthetic-browser-model' } } }, { config: config.control });
@@ -178,7 +181,7 @@ try {
   const meterChoices=JSON.parse(await evaluate(`JSON.stringify([...document.querySelectorAll('#left-axis optgroup')].find(group=>group.label.startsWith('Meter checks'))?.children
     ? [...[...document.querySelectorAll('#left-axis optgroup')].find(group=>group.label.startsWith('Meter checks')).children].map(option=>({key:option.value,label:option.textContent})) : [])`));
   assert.deepEqual(meterChoices.filter(row=>row.key!=='property_import_energy_counter'),[
-    {key:'ev1_session_energy_check',label:'Charger 1'},{key:'tesla_session_energy_check',label:'Charger 2'}]);
+    {key:'ev1_session_energy_check',label:'Charger 1'},{key:'shelly_session_energy_check',label:'Charger 2'}]);
   for(const key of ['ev1_lifetime_energy_counter','ev1_session_energy_counter','ev2_energy'])
     assert.equal(await evaluate(`Boolean(document.querySelector('#left-axis option[value="${key}"]'))`),false,`${key} has no separate drawer entry`);
   for(const key of ['brine_pump_speed','phase_energy','alarm_code', ...coefficientKeys])assert.equal(await evaluate(`Boolean(document.querySelector('#left-axis option[value="${key}"]'))`),true);
@@ -477,15 +480,15 @@ try {
     ['heat_pump_power','heat_pump_power','property_power'],
     ...['learning_profit', 'learning_aux_profit', 'learning_recovery_error', 'learning_indoor_temperature'].map(name => [name, name, 'property_power']),
     ...coefficientKeys.map(name => [name, name, 'property_power']),
-    ...['ev1_session_energy_check','tesla_session_energy_check'].map(name=>[name,name,'property_power']),
+    ...['ev1_session_energy_check','shelly_session_energy_check'].map(name=>[name,name,'property_power']),
     ['solar_radiation', 'solar_radiation', 'property_power'], ['power', 'property_power', 'heating_integral']]) {
     const began = performance.now();
     await evaluate(`document.getElementById('left-axis').value=${JSON.stringify(left)}; document.getElementById('left-axis').dispatchEvent(new Event('change')); true`);
     await until(`document.getElementById('history').dataset.ready === 'true' && document.getElementById('history').dataset.left === ${JSON.stringify(left)} && !!document.querySelector('[data-chart-key="${expected}"]') && !document.querySelector('[data-chart-key="${absent}"]')`);
     assert.equal(await legendState('spot'), 'false', 'Explicitly hidden shared legend preference survives axis changes');
     assert.equal(await legendState('indoor'), 'true');
-    if(left==='phases')assert.equal(await evaluate("Boolean(document.querySelector('[data-chart-key=charger2_power], [data-chart-key^=ev2_]'))"),false,'Tesla total power never invents phase readings');
-    if(['ev1_session_energy_check','tesla_session_energy_check'].includes(left)) {
+    if(left==='phases')assert.equal(await evaluate("Boolean(document.querySelector('[data-chart-key=charger2_power], [data-chart-key^=ev2_]'))"),false,'Physical C2 total power never invents phase readings');
+    if(['ev1_session_energy_check','shelly_session_energy_check'].includes(left)) {
       assert.equal(await evaluate(`document.querySelector('[data-chart-key="${left}"]').textContent.includes(${JSON.stringify(left==='ev1_session_energy_check'?'Charger 1':'Charger 2')})`),true);
       assert.match(await evaluate("document.getElementById('chart-notes').textContent"),/one finalized session reference.*Hollow points.*excluded/);
       const sessionPlot=await fetch(`${base}/api/chart?start=2026-09-07&end=2026-09-07&left=${left}`).then(response=>response.json());
@@ -728,17 +731,18 @@ try {
     clock: () => now, providerOptions: fixture.providerOptions, mqttOptions: { connect: connectTestBroker } });
   // Supply capture health independently of the manual-command broker fixture.
   // No MQTT connection, household identifiers or raw TeslaMate fields are used.
-  let charger2Status = { source: 'teslamate', enabled: true, status: 'ok', reason: 'recording',
+  let charger2Status = { source: 'shelly-evse', enabled: true, status: 'ok', reason: 'physical-meter',
     connected: true, charging: true, home: true, suppressed: null, recording: true,
     sessionOpen: true, healthy: true, lastMessageAt: now };
-  app.engine.teslamate = { status: () => ({ ...charger2Status }), tick() {} };
-  seedChargingFixture(app.store,'teslamate');
+  const realProviderStatus = app.engine.providerStatus.bind(app.engine);
+  app.engine.providerStatus = () => ({ ...realProviderStatus(), 'shelly-evse': { ...charger2Status } });
+  seedChargingFixture(app.store,'shelly-evse');
   for(const [prefix,power] of [['property',6.9],['ev1',2.07]]) {
     app.engine.ingestEnergy({source:'easee',device:`synthetic-${prefix}`,prefix,start:now-5*60_000,end:now,
       energies:[power/36,power/36,power/36],powers:[power/3,power/3,power/3],quality:['estimated'],receivedAt:now});
   }
-  // Artificial legacy readings predate the only known contract period. Charger
-  // phase currents and quarter-hour spot prices suffice; no HP power is invented.
+  // Invented recorded energy predates the only known contract period. Original
+  // quarter-hour energy and spot prices suffice; no HP power is invented.
   const historicalStart = Date.parse('2026-09-06T00:00:00+03:00');
   app.store.transaction(() => {
     for (let slot = 0; slot <= 96; slot++) {
@@ -747,7 +751,9 @@ try {
         device: 'synthetic-historical-charger', signal, value, unit,
         sourceTime: at, receivedAt: at, quality: [], raw: { fixture: true } });
       if (slot < 96) add('spot_price', slot < 4 ? 0 : 20, 'c/kWh_ex_vat');
-      for (let phase = 1; phase <= 3; phase++) add(`ev1_current_l${phase}`, slot < 4 ? 10 : 0, 'A');
+      if(slot<96)for(let phase=1;phase<=3;phase++)app.store.observation({source:'easee',device:'synthetic-historical-charger',
+        signal:`ev1_energy_l${phase}`,value:slot<4?6.9/12:0,unit:'kWh',sourceTime:at+15*60_000,receivedAt:at+15*60_000,
+        quality:['estimated'],raw:{intervalStart:at,intervalEnd:at+15*60_000}});
     }
   });
   seedTimingBrowserFixture(app.store);
@@ -764,7 +770,7 @@ try {
     assert.ok(providerChart.series[key].some(point => Number.isFinite(point.y) && Math.abs(point.y - expected) < 1e-9),
       `${key} contains the expected total from all three provider phase currents`);
   }
-  assert(providerChart.series.charger2_power.some(point=>point.y===6),'Tesla scalar intervals project to total charger power');
+  assert(providerChart.series.charger2_power.some(point=>point.y===6),'Physical Shelly scalar intervals project to total charger power');
   await checkPowerDrawn();
   await checkTimingBrowser({ command, evaluate, until, capture, context });
   for (const left of ['phases', 'integral', 'power']) {
@@ -810,19 +816,19 @@ try {
       }));
       return {names, bullets};
     })())`));
-    const [easee, teslamate] = result.names;
+    const [easee, shelly] = result.names;
     assert.equal(easee.state, 'available');
-    assert.equal(teslamate.state, needsAttention ? 'attention' : 'available');
-    assert.equal(easee.color === teslamate.color, !needsAttention, 'Provider names follow their individual availability');
+    assert.equal(shelly.state, needsAttention ? 'attention' : 'available');
+    assert.equal(easee.color === shelly.color, !needsAttention, 'Provider names follow their individual availability');
     for (const bullet of result.bullets) {
-      const provider = bullet.label.startsWith('Charger 2') ? teslamate : easee;
+      const provider = bullet.label.startsWith('Charger 2') ? shelly : easee;
       assert.equal(bullet.color, provider.color, `${bullet.label}: bullet and provider use the same status color`);
       assert.equal(bullet.state, provider.state);
       assert(bullet.accessible, 'Status is available without relying on color');
     }
   };
   assert.deepEqual(JSON.parse(await electricityOverview()), { title: 'Electricity consumption',
-    source: 'Easee, Teslamate', state: 'Available', attention: false });
+    source: 'Easee, Shelly EVSE', state: 'Available', attention: false });
   assert.equal(await evaluate("document.getElementById('providers').parentElement.id"), 'provider-overview');
   await evaluate(`document.getElementById('connections-details').open = false;
     document.querySelector('[data-provider=electricity] summary').focus(); true`);
@@ -837,15 +843,15 @@ try {
   await evaluate("document.getElementById('auth').dispatchEvent(new Event('submit', { cancelable: true })); true");
   await until("document.querySelector('[data-provider=electricity] .provider-category-state').textContent === 'Needs attention'");
   assert.deepEqual(JSON.parse(await electricityOverview()), { title: 'Electricity consumption',
-    source: 'Easee, Teslamate', state: 'Needs attention', attention: true }, 'Charger 2 errors reach the closed source overview');
+    source: 'Easee, Shelly EVSE', state: 'Needs attention', attention: true }, 'Charger 2 errors reach the closed source overview');
   await checkProviderColors(true);
   await evaluate("document.querySelector('[data-provider=electricity] .provider-health .status-detail-trigger').click();true");
   assert.match(await evaluate("document.querySelector('#status-detail-popover .status-detail-body').textContent"),
-    /Charger 2.*MQTT connection is unavailable/i, 'The connection failure identifies Charger 2');
+    /physical Charger 2 MQTT telemetry/i, 'The connection failure identifies Charger 2');
   await evaluate("document.querySelector('#status-detail-popover .status-detail-close').click();true");
   assert.equal(await evaluate("document.querySelector('[data-provider=electricity] details').open"), true,
     'Updating capture health preserves the expanded connection');
-  charger2Status = { ...charger2Status, status: 'ok', reason: 'recording',
+  charger2Status = { ...charger2Status, status: 'ok', reason: 'physical-meter',
     connected: true, recording: true, healthy: true };
   await evaluate("document.getElementById('auth').dispatchEvent(new Event('submit', { cancelable: true })); true");
   await until("document.querySelector('[data-provider=electricity] .provider-category-state').textContent === 'Available'");

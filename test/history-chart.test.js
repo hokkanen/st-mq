@@ -206,7 +206,7 @@ test('three power fills stack auxiliary, Charger 1 and Charger 2 while visibilit
 
 test('session check axes show single reference points, including hollow excluded comparisons, without extending readings', () => {
   for(const [key,label,basis] of [['ev1_session_energy_check','Charger 1','electricity-meter'],
-    ['tesla_session_energy_check','Charger 2','energy-added']]) {
+    ['shelly_session_energy_check','Charger 2','electricity-meter']]) {
     const points=[{x:2,y:10,sessionCheck:true,referenceBasis:basis,comparisonEligible:true},
       {x:4,y:3,sessionCheck:true,referenceBasis:basis,comparisonEligible:false}];
     const dataset=historyDatasets({[key]:points},key).find(row=>row.key===key);
@@ -218,7 +218,7 @@ test('session check axes show single reference points, including hollow excluded
     assert.equal(historySeriesAt({now:8,range:{from:0,to:10},series:{[key]:points}})[key],points);
     assert.match(sessionPointDetail(points[0]),/included in session averages/);
     assert.match(sessionPointDetail(points[1]),/excluded from session averages/);
-    if(basis==='energy-added')assert.match(sessionPointDetail(points[0]),/differs from electrical input/);
+    assert.match(sessionPointDetail(points[0]),/session electricity meter/);
   }
 });
 

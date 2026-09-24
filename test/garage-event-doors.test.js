@@ -153,21 +153,12 @@ test('a door gap with recovered endpoints preserves cost observations but ends t
   assert.equal(recovered.actualKwh, .02);
 });
 
-test('the previous event-age algorithm remains an archive and receives a new explicit learning seed', t => {
-  const store = new Store(':memory:'); t.after(() => store.close());
-  const settings = garageSettings(), algorithmVersion = 'committed-garage-v2-sparse';
-  const model = { ...createGarageModel({ seedAt: START }), algorithm: algorithmVersion };
-  const id = store.appendLearningJournal(garageInput('mqtt'), { kind: 'context', at: START,
-    key: 'archived-v2', algorithmVersion, configVersion: 'invented-old-config', payload: { seed: model } });
-  const before = structuredClone(store.learningJournal({ input: garageInput('mqtt'), algorithmVersion }));
-  store.setState('garage:checkpoint:mqtt', { algorithmVersion, model, cursor: id });
-  const engine = new Engine({ store, config: { input: 'mqtt', garage: settings, connections: {} }, clock: () => START + MINUTE });
-  t.after(() => engine.garage.close({ restore: false }));
-  const entries = store.learningJournal({ input: garageInput('mqtt'), algorithmVersion: GARAGE_ALGORITHM_VERSION });
-  assert.equal(entries.length, 1);
-  assert.equal(entries[0].payload.value.archivedAlgorithm, algorithmVersion);
-  assert.equal(entries[0].payload.seed.algorithm, GARAGE_ALGORITHM_VERSION);
-  assert.equal(entries[0].payload.seed.seedAt, START + MINUTE);
-  assert.deepEqual(store.learningJournal({ input: garageInput('mqtt'), algorithmVersion }), before);
-  assert.throws(() => updateGarageModel(model, sample(10)), /Unsupported/);
+test('previous event-age algorithms are rejected without creating an archive continuation', () => {
+  const store = new Store(':memory:');
+  try {
+    store.setState('garage:checkpoint:mqtt', { algorithmVersion: 'committed-garage-v2-sparse' });
+    const config = { input: 'mqtt', connections: {}, settings: { mode: 'shadow' } };
+    assert.throws(() => new Engine({ store, config, clock: () => START }), /Unsupported Garage saved algorithm/);
+    assert.equal(store.getState('garage:checkpoint:mqtt').algorithmVersion, 'committed-garage-v2-sparse');
+  } finally { store.close(); }
 });

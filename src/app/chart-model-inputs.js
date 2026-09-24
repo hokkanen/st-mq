@@ -2,7 +2,7 @@ import { MODEL_INPUT_INFO } from '../domain/history-series.js';
 import { FIREPLACE_INPUT_NAMES } from './chart-fireplace.js';
 import { goodQuality } from '../control/learning.js';
 import { INDOOR_SIGNALS } from '../domain/indoor-sensors.js';
-import { LEARNING_ALGORITHM } from './committed-learning.js';
+import { LEARNING_ALGORITHM, assertCurrentLearningSample } from './committed-learning.js';
 
 const WINDOW = 15 * 60_000;
 const PHASES = ['normal', 'preheat', 'reduction', 'recovery'];
@@ -67,7 +67,8 @@ export function addModelInputs({ store, range, now, input, envelopes, indoorLine
   const accept = row => {
     let sample;
     try { sample = JSON.parse(row.payload)?.value; } catch { return; }
-    if (!sample) return;
+    if (row.algorithm_version !== LEARNING_ALGORITHM) { stats.rejectedIntervals++; return; }
+    try { assertCurrentLearningSample(sample); } catch { stats.rejectedIntervals++; return; }
     const end = finite(sample.windowEnd) ? sample.windowEnd : row.at;
     const start = finite(sample.windowStart) ? sample.windowStart : end - WINDOW;
     if (!finite(start) || end <= start || end - start > WINDOW || end > now) return;
@@ -76,22 +77,10 @@ export function addModelInputs({ store, range, now, input, envelopes, indoorLine
     const common = { modelInput: true, journalId: row.id, algorithmVersion: row.algorithm_version,
       inputSource: sources[row.input], learningUsable: usable, intervalStart: start, intervalEnd: end };
     if (selected.includes('model_indoor_temperature')) {
-      // These algorithms record indoor availability independently of the other
-      // learning inputs. A missing outdoor segment must not erase a known
-      // indoor average. Older algorithms retain their original chart gates.
-      const currentIndoor = row.algorithm_version === LEARNING_ALGORITHM
-        || ['committed-house-v7-held-indoor','committed-house-v8-report-coverage','committed-house-v9-reversible-sensors','committed-house-v10-hydronic-floor'].includes(row.algorithm_version);
-      project('model_indoor_temperature', start, end, (currentIndoor || usable) && finite(sample.indoorC) ? sample.indoorC : null,
-        currentIndoor ? { ...common, ...indoorEndpointMetadata(sample, usable) } : common, true);
+      project('model_indoor_temperature', start, end, finite(sample.indoorC) ? sample.indoorC : null,
+        { ...common, ...indoorEndpointMetadata(sample, usable) }, true);
     }
-    // Older entries retain their saved interval interpretation. They are never
-    // filled from current sensor readings, model predictions, or contract state.
-    const legacy = sample.intervalInputs;
-    const segments = Array.isArray(sample.inputSegments) ? sample.inputSegments : [{
-      start, end, ...(legacy ?? {}),
-      thermalCompressorDuty: legacy?.compressorDuty,
-      thermalAuxKw: legacy?.auxKw,
-    }];
+    const segments = sample.inputSegments;
     for (const segment of segments) {
       const a = segment.start, b = segment.end;
       if (!finite(a) || !finite(b) || a < start || b > end || b <= a) continue;

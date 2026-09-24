@@ -15,7 +15,7 @@ function fixture(t) {
   let now = start;
   t.after(async () => { for (const capture of acquisitions.reverse()) await capture.close(); store.close(); });
   const defaults = loadConfig({ HOME: '/missing-synthetic-home' }, '/missing-synthetic-repository');
-  async function connect({ legacy = false, row = home, rows = [row], broker = 'mqtt://synthetic.invalid', user = 'synthetic',
+  async function connect({ row = home, rows = [row], broker = 'mqtt://synthetic.invalid', user = 'synthetic',
     interval = 70 * MINUTE, grace = 5 * MINUTE, reject = null, deferred = false } = {}) {
     const client = new EventEmitter(), subscriptions = [], pending = [], publications = [];
     let connectOptions;
@@ -24,9 +24,8 @@ function fixture(t) {
     client.end = (force, options, done) => done();
     const config = { ...defaults, input: 'mqtt', deviceId: null,
       control: { ...defaults.control, indoorSensorWeights: { indoor_temperature: 1 } }, connections: {
-        mqtt: { address: broker, user, temperatureReportIntervalMs: interval, temperatureReportGraceMs: grace,
-          ...(legacy ? { temperatureTopics: { indoor_temperature: row.connection.slice(5) } } : {}) },
-        ...(!legacy ? { equipment: equipmentConfiguration({ devices: rows }) } : {}),
+        mqtt: { address: broker, user, temperatureReportIntervalMs: interval, temperatureReportGraceMs: grace },
+        equipment: equipmentConfiguration({ devices: rows }),
       } };
     const engine = new Engine({ store, config, clock: () => now });
     const capture = await startMqtt({ engine, store, config, connect: (_address, options) => { connectOptions = options; return client; } }); acquisitions.push(capture);
@@ -39,27 +38,27 @@ function fixture(t) {
   return { store, connect, at: value => { now = value; } };
 }
 
-for (const legacy of [false, true]) test(`${legacy ? 'legacy topic' : 'equipment'} reconnect restores signed room reports without changing report clocks or earlier outages`, async t => {
-  const f = fixture(t), first = await f.connect({ legacy }); first.ready();
+test('equipment reconnect restores signed room reports without changing report clocks or earlier outages', async t => {
+  const f = fixture(t), first = await f.connect(); first.ready();
   first.publish('synthetic/upstairs', 20); f.at(start + MINUTE); first.publish('synthetic/upstairs', 20);
   const saved = f.store.observations({ signal: 'indoor_temperature' }).find(row => row.value === 20);
   assert.match(saved.raw.temperatureRouteSignature, /^[a-f0-9]{64}$/);
-  f.at(start + 2 * MINUTE); if (legacy) first.client.emit('offline'); await first.capture.close();
+  f.at(start + 2 * MINUTE); await first.capture.close();
   const gap = f.store.db.prepare("SELECT id,start_at,end_at,status FROM recorder_coverage WHERE signal='indoor_temperature' AND status<>'fresh' ORDER BY id DESC LIMIT 1").get();
-  f.at(start + 3 * MINUTE); const resumed = await f.connect({ legacy });
+  f.at(start + 3 * MINUTE); const resumed = await f.connect();
   assert.equal(resumed.room().value, null); resumed.ready();
   assert.equal(resumed.room().value, 20); assert.equal(resumed.room().stale, false);
   assert.deepEqual(f.store.db.prepare('SELECT id,start_at,end_at,status FROM recorder_coverage WHERE id=?').get(gap.id), gap);
   const recovered = f.store.observations({ signal: 'indoor_temperature' }).findLast(row => row.raw?.transportRecoveredAt);
   assert.equal(recovered.raw.originalReportSourceTime, start + MINUTE);
   assert.equal(recovered.raw.originalReportReceivedAt, start + MINUTE);
-  if (!legacy) {
+  {
     const reading = resumed.equipment().readings.indoor_temperature;
     assert.equal(reading.observedAt, start + MINUTE); assert.equal(reading.receivedAt, start + MINUTE); assert.equal(reading.stale, false);
   }
   f.at(start + 76 * MINUTE - 1); assert.equal(resumed.room().stale, false);
   f.at(start + 76 * MINUTE); assert.equal(resumed.room().value, null);
-  if (!legacy) assert.equal(resumed.equipment().available, false);
+  assert.equal(resumed.equipment().available, false);
 });
 
 test('policy-change restart recovers only after subscription with the same signed route', async t => {

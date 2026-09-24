@@ -1,3 +1,4 @@
+import { weatherAcquisitionIdentity } from './weather-identity.js';
 import { XMLParser, XMLValidator } from 'fast-xml-parser';
 import { instantMs } from '../domain/prices.js';
 
@@ -221,14 +222,24 @@ export function weatherError(error, message) {
   return clean;
 }
 
-export async function fetchFmiForecast({ connections, now, http, signal } = {}) {
+export async function fetchFmiForecast({ connections, now, http, signal, clock = Date.now } = {}) {
   const { url, coordinates } = requestUrl(connections, now, true);
-  try { return decodeFmiForecast(await http.text(url, { method: 'GET', signal }), { fetchedAt: now, coordinates }); }
+  try {
+    const body = await http.text(url, { method: 'GET', signal });
+    const result = decodeFmiForecast(body, { fetchedAt: clock(), coordinates });
+    const acquisitionIdentity = weatherAcquisitionIdentity(connections);
+    return { ...result, requestStartedAt: now, acquisitionIdentity };
+  }
   catch (error) { throw weatherError(error, 'FMI forecast acquisition failed'); }
 }
 
-export async function fetchFmiObservation({ connections, now, http, signal } = {}) {
+export async function fetchFmiObservation({ connections, now, http, signal, clock = Date.now } = {}) {
   const { url, coordinates } = requestUrl(connections, now, false);
-  try { return decodeFmiObservation(await http.text(url, { method: 'GET', signal }), { fetchedAt: now, coordinates }); }
+  try {
+    const body = await http.text(url, { method: 'GET', signal });
+    const result = decodeFmiObservation(body, { fetchedAt: clock(), coordinates });
+    const acquisitionIdentity = weatherAcquisitionIdentity(connections);
+    return result.map(row => ({ ...row, raw: { ...row.raw, requestStartedAt: now, acquisitionIdentity } }));
+  }
   catch (error) { throw weatherError(error, 'FMI observation acquisition failed'); }
 }

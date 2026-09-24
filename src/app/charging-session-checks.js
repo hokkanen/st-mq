@@ -4,7 +4,7 @@ const EVENT_TYPE = 'charging-session-check';
 const VERSION = 1;
 const SOURCES = Object.freeze({
   easee: { signal: 'ev1_session_energy_check', basis: 'electricity-meter' },
-  teslamate: { signal: 'tesla_session_energy_check', basis: 'energy-added' },
+  'shelly-evse': { signal: 'shelly_session_energy_check', basis: 'electricity-meter' },
 });
 const QUALITY = new Set(['estimated', 'estimated-boundary', 'incomplete-coverage', 'missing-start', 'missing-end',
   'counter-reset', 'out-of-order', 'stale', 'disconnected', 'assignment-uncertain', 'duplicate-suspected', 'missing-final-reference']);

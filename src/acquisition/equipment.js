@@ -1,7 +1,9 @@
+import { createMqttAdmission } from './mqtt-admission.js';
+import { createMqttReception } from './mqtt-reception.js';
 import { createHash } from 'node:crypto';
 import { createShellyCapture } from './shelly.js';
 import { createCaravanEnergy } from './shelly-energy.js';
-import { equipmentSignature } from './equipment-config.js';
+import { equipmentSignature, equipmentMeterIdentity } from './equipment-config.js';
 import { decodeMqttTemperature, temperatureRouteSignature } from './mqtt-temperature.js';
 import { INDOOR_SIGNALS } from '../domain/indoor-sensors.js';
 import { DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS, DEFAULT_TEMPERATURE_REPORT_GRACE_MS } from '../domain/temperature-reports.js';
@@ -43,6 +45,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     online: null, bridgeOnline: null, liveSinceConnect: false, lastAt: null, heartbeatAt: null, waiters: new Set(), checks: new Set(), check: null, invalid: false,
     subscriptionStatus: 'unconfirmed', subscriptionRefresh: null, lastReceivedAt: null, lastLiveAt: null, lastRetainedAt: null,
     coverOperation: null, dehumidifierState: dehumidifierState(null), dehumidifierReport: null, dehumidifierOperation: null }));
+  const admission = createMqttAdmission();
   const brokerDigest = createHash('sha256').update(JSON.stringify(brokerIdentity)).digest('hex');
   const temperatures = devices.filter(canonicalTemperature);
   for (const device of temperatures) {
@@ -52,8 +55,10 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
         reportGraceMs: garage ? Math.max(0, device.maxAgeMs - settings.pollIntervalMs) : temperatureReportGraceMs });
   }
   const energy = new Map(devices.filter(row => row.metered).map(device => [device.id, createCaravanEnergy({ store, recorder: engine.recorder,
-    device: device.connection, maxGapMs: device.maxAgeMs || settings.maxAgeMs, source: 'mqtt-equipment',
+    device: equipmentMeterIdentity({ ...device, readings: device.mappings }, { brokerIdentity }),
+    maxGapMs: device.maxAgeMs || settings.maxAgeMs, source: 'mqtt-equipment',
     signal: `${device.id}_energy`, recordDevice: device.id, stateKey: `mqtt:equipment-energy:v1:${device.id}` })]));
+  const reception = createMqttReception({ store, engine, admission, devices, meters: energy });
   const definitions = device => [
     { signal: device.powerSignal ?? device.stateSignal ?? device.temperatureSignal,
       unit: device.kind === 'power' ? 'W' : device.kind === 'temperature' ? 'degC' : 'state',
@@ -80,6 +85,8 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
   function record(device, definition, value, at, receivedAt, quality = [], raw = {}) {
     const previous = device.readings[definition.signal];
     if (scalar(at) && scalar(previous?.observedAt) && at < previous.observedAt) return false;
+    const repeatedSource = scalar(at) && at === previous?.observedAt && previous.value !== null && raw.timeBasis === 'source-measured';
+    if (repeatedSource && value !== null && value !== previous.value) return false;
     const observation = { ...identity(device), signal: definition.signal, value, unit: definition.unit, sourceTime: at, receivedAt, quality,
       raw: { timeBasis: value === null ? 'availability-transition' : 'mqtt-live-status',
         ...(device.kind === 'dehumidifier' ? dehumidifierMetadata(device, value) : {}),
@@ -94,10 +101,11 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
         engine.rememberObservation?.(observation, receivedAt);
       else {
         const result = engine.ingest(observation);
-        if (device.roomRouteSignature && (result?.rejectedSourceTime || result?.reason === 'out-of-order-receipt')) return false;
+        if (canonicalTemperature(device) && (result?.rejectedSourceTime || result?.reason === 'out-of-order-receipt')) return false;
       }
     }
     device.readings[definition.signal] = { value, unit: definition.unit, label: definition.label, observedAt: at, receivedAt, quality,
+      revision: repeatedSource ? previous.revision : ++sequence,
       ...(observation.raw.eventOnly ? { eventOnly: true } : {}),
       ...(device.kind === 'dehumidifier' ? { stateLabels: runningStateLabels } : {}), ...raw };
     // The pump's measured load is its operational ON/OFF feedback. Keep this
@@ -124,8 +132,8 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       device.dehumidifierOperation.status = 'unconfirmed';
       device.dehumidifierOperation.error = 'Dehumidifier feedback became unavailable. Check its live state.';
     }
-    for (const waiter of [...device.waiters]) waiter.finish(fail('state confirmation unavailable'));
-    for (const check of [...device.checks]) check.finish('unavailable');
+    for (const waiter of [...device.waiters]) reception.afterCommit(() => waiter.finish(fail('state confirmation unavailable')));
+    for (const check of [...device.checks]) reception.afterCommit(() => check.finish('unavailable'));
     for (const definition of definitions(device)) if (definition.required || device.readings[definition.signal]) {
       const previous = device.readings[definition.signal];
       record(device, definition, null, null, receivedAt, [reason]);
@@ -205,7 +213,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
         // Bridge birth restores connectivity context, never the child reading.
         // Ask the explicit endpoint once subscriptions are ready to recover it.
         if (!packet.retain && needsReadback && device.subscriptionStatus === 'subscribed' && mapping.requestTopic && !device.checks.size)
-          void api.recheck({ deviceId: device.id }).catch(() => {});
+          reception.afterCommit(() => { void api.recheck({ deviceId: device.id }).catch(() => {}); });
         completeChecks(device, receivedAt);
       }
       return;
@@ -236,7 +244,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       }
       return;
     }
-    if (invalidTime && !canonicalTemperature(device)) { unavailable(device, 'invalid-source-time', receivedAt); return; }
+    if (invalidTime) { unavailable(device, 'invalid-source-time', receivedAt); return; }
     let updated = false, invalid = false; const reported = new Set();
     if (device.kind === 'dehumidifier') {
       if (device.dehumidifierReport && at < device.dehumidifierReport.observedAt) return;
@@ -255,19 +263,27 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
         reported.add(definition.signal);
       }
       invalid = stale || value === null;
-    } else if (canonicalTemperature(device) && topic === device.topic) {
-      const selected = mapping.statePath || mapping.timestampPath ? { value: mapping.statePath ? property(input, mapping.statePath) : input?.value,
-        ...(explicitTimestamp === undefined ? {} : { timestamp: explicitTimestamp }), ...(input?.unit ? { unit: input.unit } : {}) } : input;
-      const periodic = INDOOR_SIGNALS.includes(device.temperatureSignal);
-      const observation = decodeMqttTemperature({ signal: device.temperatureSignal, payload: mapping.statePath || mapping.timestampPath ? JSON.stringify(selected) : body, receivedAt, retained: packet.retain,
-        reportIntervalMs: periodic ? temperatureReportIntervalMs : device.temperatureSignal === 'garage_temperature' ? settings.pollIntervalMs : null,
-        reportGraceMs: periodic ? temperatureReportGraceMs : device.temperatureSignal === 'garage_temperature' ? Math.max(0, device.maxAgeMs - settings.pollIntervalMs) : 0 });
-      if (!observation) { unavailable(device, 'invalid-temperature-message', receivedAt); return; }
+    } else if (canonicalTemperature(device) && topic === (definitions(device)[0].topic ?? device.topic)) {
       const definition = definitions(device)[0];
+      const selectedPath = definition.path ?? mapping.statePath;
+      const selected = { value: selectedPath ? property(input, selectedPath)
+        : input && typeof input === 'object' ? input.value : input,
+        ...(explicitTimestamp === undefined ? {} : { timestamp: explicitTimestamp }),
+        unit: input?.unit ?? definition.unit };
+      const periodic = INDOOR_SIGNALS.includes(device.temperatureSignal);
+      const garage = ['garage_temperature', 'garage_temperature_2'].includes(device.temperatureSignal);
+      const observation = decodeMqttTemperature({ signal: device.temperatureSignal, payload: JSON.stringify(selected),
+        receivedAt, retained: packet.retain, timestampRequired: Boolean(mapping.timestampPath),
+        scale: definition.scale ?? 1, offset: definition.offset ?? 0,
+        reportIntervalMs: periodic ? temperatureReportIntervalMs : garage ? settings.pollIntervalMs : null,
+        reportGraceMs: periodic ? temperatureReportGraceMs : garage ? Math.max(0, device.maxAgeMs - settings.pollIntervalMs) : 0 });
+      if (!observation) { unavailable(device, 'invalid-temperature-message', receivedAt); return; }
       updated = record(device, definition, observation.value, observation.sourceTime, receivedAt, observation.quality, observation.raw);
       if (updated && !packet.retain) reported.add(definition.signal);
-      invalid = observation.value === null || observation.quality.some(flag => /invalid|missing|future|stale/.test(flag));
-    } else for (const definition of applicable) {
+      invalid = observation.value === null || observation.quality.some(flag => /invalid|missing|future|stale|source_time_unknown/.test(flag));
+    }
+    if (device.kind !== 'dehumidifier') for (const definition of applicable.filter(row =>
+      !(canonicalTemperature(device) && row.signal === device.temperatureSignal))) {
       const selectedPath = definition.path ?? (definition.signal === device.powerSignal || definition.signal === device.stateSignal || definition.signal === device.temperatureSignal ? mapping.statePath : null);
       let value = selectedPath ? property(input, selectedPath) : input && typeof input === 'object' ? input.value : input;
       value = definition.unit === 'state' ? stateValue(value) : scalar(value) ? value : null;
@@ -279,7 +295,8 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       const coverState = device.kind === 'door' && definition.signal === device.stateSignal
         ? property(input, mapping.coverStatePath) : null;
       const accepted = record(device, definition, value, at, receivedAt, value === null ? ['invalid-value'] : [],
-        device.kind === 'door' ? { coverState: ['open', 'closed', 'opening', 'closing'].includes(coverState) ? coverState : null } : {});
+        { timeBasis: value === null ? 'availability-transition' : explicitTimestamp === undefined ? 'mqtt-received' : 'source-measured',
+          ...(device.kind === 'door' ? { coverState: ['open', 'closed', 'opening', 'closing'].includes(coverState) ? coverState : null } : {}) });
       if (accepted) reported.add(definition.signal);
       updated = accepted || updated;
       invalid ||= definition.required && value === null;
@@ -293,20 +310,21 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
         energy.get(device.id)?.receive(reading.value / (counter.unit === 'Wh' ? 1000 : 1), reading.observedAt);
     } else if (device.metered && !counter && healthy(device, receivedAt) && topic === device.topic && scalar(input?.energy) && input.energy >= 0)
       energy.get(device.id)?.receive(input.energy, at);
-    const main = device.readings[device.stateSignal];
-    if (fresh(device, main, receivedAt)) for (const waiter of [...device.waiters])
-      if (receivedAt >= waiter.at && main.observedAt >= waiter.at && main.value === Number(waiter.on)) {
-        waiter.observed = true; if (waiter.published) waiter.finish();
-      }
     for (const check of device.checks) if (receivedAt >= check.at) for (const signal of reported) check.reported.add(signal);
     completeChecks(device, receivedAt);
   }
   function completeChecks(device, now) {
     confirmDoor(device, now);
     if (device.kind === 'dehumidifier') confirmDehumidifier(device, now);
+    const main = device.readings[device.stateSignal];
+    if (device.subscriptionStatus === 'subscribed' && healthy(device, now) && fresh(device, main, now)) for (const waiter of [...device.waiters])
+      if (waiter.dispatched && main.revision > waiter.revision && main.receivedAt >= waiter.at
+        && main.observedAt >= waiter.at && main.value === Number(waiter.on)) {
+        reception.afterCommit(() => { waiter.observed = true; if (waiter.published) waiter.finish(); });
+      }
     for (const check of [...device.checks]) if (check.ready && definitions(device).filter(row => row.required).every(row => check.reported.has(row.signal))) {
-      if (healthy(device, now)) check.finish('available');
-      else if (device.invalid) check.finish('needs-attention');
+      if (healthy(device, now)) reception.afterCommit(() => check.finish('available'));
+      else if (device.invalid) reception.afterCommit(() => check.finish('needs-attention'));
     }
   }
   async function switchDevice(device, on) {
@@ -315,7 +333,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     if (device.waiters.size) throw fail('switch operation already in progress');
     await new Promise((resolve, reject) => {
       let completed = false;
-      const waiter = { id: ++sequence, at: engine.clock(), on, observed: false, published: false, finish: reason => {
+      const waiter = { id: ++sequence, at: engine.clock(), on, observed: false, published: false, dispatched: false, revision: sequence, finish: reason => {
         if (completed) return;
         if (!reason && (!canControl() || !connected || closed)) reason = fail('control authority unavailable');
         completed = true; clearTimeout(timer); device.waiters.delete(waiter); reason ? reject(reason) : resolve();
@@ -324,7 +342,8 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       device.waiters.add(waiter);
       Promise.resolve().then(() => {
         if (!canControl() || !connected || closed) throw fail('control authority unavailable');
-        return publish(device.mqtt.commandTopic, on ? device.mqtt.onPayload : device.mqtt.offPayload, { qos: 1, retain: false });
+        waiter.dispatched = true; waiter.at = engine.clock(); waiter.revision = sequence;
+        return publish(device.mqtt.commandTopic, on ? device.mqtt.onPayload : device.mqtt.offPayload, { qos: 1, retain: false, noReplay: true });
       }).then(() => { waiter.published = true; if (waiter.observed) waiter.finish(); }, () => waiter.finish(fail('switch publication failed; delivery unconfirmed')));
     });
     return { confirmed: true, status: 'confirmed', deviceId: device.id, on, sent: true, acknowledgement: 'mqtt-live-state' };
@@ -347,7 +366,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       for (const device of devices) if (readTopics(device).every(topic => confirmed.has(topic))) {
         if (device.subscriptionStatus !== 'subscribed' && device.mqtt.requestTopic) requests.push(device.id);
         device.subscriptionStatus = 'subscribed';
-        if (device.kind === 'dehumidifier') completeChecks(device, engine.clock());
+        completeChecks(device, engine.clock());
       }
       for (const device of devices.filter(row => row.roomRouteSignature && !row.controlsSwitch && !row.controlsHeat)) {
         if (device.bridgeOnline === false) continue;
@@ -384,11 +403,18 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       if (native?.receive(topic, payload, packet, receivedAt)) return true;
       const selected = devices.filter(device => readTopics(device).includes(topic));
       if (!selected.length) return false;
-      if (!connected || closed || packet.dup) return true;
+      if (!connected || closed) return true;
       const body = Buffer.isBuffer(payload) ? payload.toString('utf8') : String(payload ?? '');
       if (body.length > 65536) return true;
-      for (const device of selected) receiveDevice(device, topic, body, packet, receivedAt);
-      return true;
+      return reception.run(() => {
+        const input = parse(body);
+        for (const device of selected) {
+          const at = sourceTime(device.mqtt.timestampPath ? property(input, device.mqtt.timestampPath) : input?.timestamp);
+          if (admission.admit(`${device.id}:${topic}`, body, packet, receivedAt,
+            { timestamped: scalar(at) && at >= 0 && at <= receivedAt })) receiveDevice(device, topic, body, packet, receivedAt);
+        }
+        return true;
+      });
     },
     tick(now = engine.clock()) {
       if (closed) return;

@@ -6,16 +6,17 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { start } from '../src/main.js';
 import { loadConfig } from '../src/app/config.js';
+import { weatherAcquisitionIdentity } from '../src/acquisition/weather-identity.js';
 import { isolatedGarageAdapter } from './helpers/garage-mqtt.js';
 
 async function setup(t, options = {}, overrides = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-settings-reload-'));
   const path = join(directory, 'options.json');
-  // Keep legacy topic/H66 reload fixtures independent of the public equipment
+  // Keep current equipment/H66 reload fixtures independent of the public equipment
   // catalogue and garage adapter; those routes have their own integration tests.
   const write = value => writeFileSync(path, JSON.stringify({ equipment: { devices: [] },
     garage: { adapter: isolatedGarageAdapter() },
-    teslamate: { enabled: false, charger_identification: false }, ...value }));
+    teslamate: { enabled: false }, ...value }));
   write(options);
   const config = loadConfig({ STMQ_CONFIG: path, STMQ_DATA_DIR: directory, STMQ_PORT: '0' }, directory);
   // MQTT fixtures exercise reload and subscriptions without polling public providers.
@@ -103,14 +104,14 @@ function fakeMqtt() {
 
 test('reload reconnects subscriptions and command transport, ignores late old publications and retains pending restoration', async t => {
   const mqtt = fakeMqtt();
-  const options = { controller: { input: 'mqtt' }, mqtt: { address: 'mqtt://first.invalid', indoor_temperature_topic: 'invented/first' } };
+  const options = { controller: { input: 'mqtt' }, mqtt: { address: 'mqtt://first.invalid' }, equipment: { devices: [{ id: 'indoor', kind: 'temperature', connection: 'mqtt:' + 'invented/first' }] } };
   const { app, write, post } = await setup(t, options, { mqttOptions: { connect: mqtt.connect } });
   const old = mqtt.clients[0];
-  old.emit('message', 'invented/first', Buffer.from('21'), { retain: false });
+  old.emit('message', 'invented/first', Buffer.from(JSON.stringify({value:21,timestamp:Date.now()})), { retain: false });
   const oldEngine = app.engine;
   const restore = oldEngine.executor.restore;
   oldEngine.executor.restore = async () => ({ restorationPending: true });
-  write({ controller: { input: 'mqtt', max_drop_c: 0.5 }, mqtt: { address: 'mqtt://second.invalid', indoor_temperature_topic: 'invented/second' },
+  write({ controller: { input: 'mqtt', max_drop_c: 0.5 }, mqtt: { address: 'mqtt://second.invalid' }, equipment: { devices: [{ id: 'indoor', kind: 'temperature', connection: 'mqtt:' + 'invented/second' }] },
     acquisition: { easee_poll_seconds: 20 } });
   const blocked = await post();
   assert.equal(blocked.status, 400);
@@ -126,9 +127,9 @@ test('reload reconnects subscriptions and command transport, ignores late old pu
   assert.equal(replacement.address, 'mqtt://second.invalid');
   assert.deepEqual(replacement.subscriptions, ['stmq/vehicles/bmw', 'invented/second']);
   assert.equal(app.engine.config.acquisition.easeeIntervalMs, 20_000);
-  old.emit('message', 'invented/first', Buffer.from('29'), { retain: false });
+  old.emit('message', 'invented/first', Buffer.from(JSON.stringify({value:29,timestamp:Date.now()})), { retain: false });
   assert.equal(app.engine.latest.indoor_temperature, undefined);
-  replacement.emit('message', 'invented/second', Buffer.from('22'), { retain: false });
+  replacement.emit('message', 'invented/second', Buffer.from(JSON.stringify({value:22,timestamp:Date.now()})), { retain: false });
   assert.equal(app.engine.latest.indoor_temperature.value, 22);
   await app.engine.testHeating({ command: 'circulation' });
   assert.equal(mqtt.packets.at(-1).address, 'mqtt://second.invalid');
@@ -144,7 +145,7 @@ test('a failed reconnect restores the previous configuration and rate history wi
     if (++attempts === 2) throw new Error('synthetic-private-transport-failure');
     return mqtt.connect(...args);
   };
-  const options = { controller: { input: 'mqtt' }, mqtt: { address: 'mqtt://first.invalid', indoor_temperature_topic: 'invented/first' } };
+  const options = { controller: { input: 'mqtt' }, mqtt: { address: 'mqtt://first.invalid' }, equipment: { devices: [{ id: 'indoor', kind: 'temperature', connection: 'mqtt:' + 'invented/first' }] } };
   const { app, write, post } = await setup(t, options, { mqttOptions: { connect } });
   const originalContract = app.engine.contract();
   write({ ...options, controller: { input: 'mqtt', max_drop_c: 0.5 }, electricity: { margin_ct_per_kwh_ex_vat: 0.9 } });
@@ -188,11 +189,12 @@ test('controller-only reload retains provider snapshots and rate-limit backoff',
   const options = { controller: { input: 'providers' }, geoloc: { country_code: 'fi', latitude: '60', longitude: '25' } };
   const { app, write, post } = await setup(t, options, { clock: () => now, providerOptions: { automatic: false } });
   const market = { source: 'elering', fetchedAt: now, intervals: [] };
-  const weather = { source: 'openmeteo', fetchedAt: now, forecast: [] };
+  const weather = { source: 'openmeteo', fetchedAt: now, forecast: [], acquisitionIdentity: weatherAcquisitionIdentity(app.engine.config.connections) };
   const backoff = { failures: 1, nextAttemptAt: now + 3600_000, error: 'HTTP-429', shared: true };
   app.store.setState('provider:market', market);
   app.store.setState('provider:weather', weather);
   const health = app.store.getState('providers:health');
+  health.weather.acquisitionIdentity = weather.acquisitionIdentity;
   health.weather.sourceBackoff = { fmi: backoff };
   health.weather.nextAttemptAt = now + 300_000;
   app.store.setState('providers:health', health);
@@ -225,7 +227,7 @@ test('reload serializes against API mutations and source-less injected configura
   release();
   assert.equal((await pending).status, 200);
   const injectedPath = join(config.dataDir, 'injected.sqlite');
-  const second = await start({ config: { ...config, port: 0, dbPath: injectedPath, legacyDbPath: injectedPath } });
+  const second = await start({ config: { ...config, port: 0, dbPath: injectedPath } });
   try {
     const endpoint = `http://127.0.0.1:${second.server.address().port}`;
     const status = await (await fetch(`${endpoint}/api/status`)).json();

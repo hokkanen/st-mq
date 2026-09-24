@@ -24,9 +24,9 @@ export function activeRates(status) {
     && (period.to == null || Number(period.to) > status.now)) ?? null;
 }
 
-/** Legacy snapshots include transfer VAT; new configured snapshots exclude it. */
+/** Every current contract supplies an explicit tax basis, including historical rates. */
 export function rateRows(period) {
-  if (!period) return [];
+  if (!period || typeof period.transferRates?.vatIncluded !== 'boolean') return [];
   const multiplier = 1 + period.vatRate;
   const rows = [['Retailer margin', period.marginCtPerKwh], ['Electricity tax', period.taxCtPerKwh]]
     .map(([name, excludingVat]) => ({ name, excludingVat, includingVat: excludingVat * multiplier }));

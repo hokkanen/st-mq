@@ -30,13 +30,22 @@ function fixture(t, rows, options = {}) {
     brokerIdentity: { address: 'mqtt://example.invalid', username: 'invented' },
     publish: async (topic, payload, options) => { publications.push({ topic, payload, options }); }, readbackTimeoutMs: 50, ...options });
   t.after(async () => { for (const cleanup of cleanups) await cleanup(); capture.close(); store.close(); rmSync(directory, { recursive: true, force: true }); });
+  const identities = new Map();
   const reply = (publication, result) => {
-    const request = JSON.parse(publication.payload);
-    capture.receive(`${request.src}/rpc`, JSON.stringify({ id: request.id, dst: request.src, result }), {}, now);
+    const request = JSON.parse(publication.payload), prefix = publication.topic.slice(0, -4);
+    if (request.method === 'Shelly.GetDeviceInfo') identities.set(prefix, result.id);
+    const current = structuredClone(result);
+    for (const [key, value] of Object.entries(current)) if (/^[a-z]+:\d+$/.test(key) && value && typeof value === 'object') value.id ??= Number(key.split(':')[1]);
+    if (request.method === 'Switch.GetStatus') current.id ??= request.params.id;
+    capture.receive(`${request.src}/rpc`, JSON.stringify({ id: request.id, dst: request.src, src: identities.get(prefix), result: current }), {}, now);
+  };
+  const status = (prefix, result) => {
+    if (!identities.has(prefix)) reply(publications.findLast(row => row.topic === `${prefix}/rpc` && JSON.parse(row.payload).method === 'Shelly.GetDeviceInfo'), { id: `fixture-${prefix.replaceAll('/', '-')}`, gen: 2 });
+    reply(publications.findLast(row => row.topic === `${prefix}/rpc` && JSON.parse(row.payload).method === 'Shelly.GetStatus'), result);
   };
   return { store, engine, settings, capture, observations, publications, reportPolicies, reply, cleanups,
     now: value => { now = value; }, authority: value => { authority = value; },
-    status: (prefix, result) => reply(publications.findLast(row => row.topic === `${prefix}/rpc` && JSON.parse(row.payload).method === 'Shelly.GetStatus'), result) };
+    status };
 }
 
 test('equipment configuration requires explicit protocols and unambiguous subscriptions/control mappings', () => {
@@ -63,7 +72,7 @@ test('optional garage probe appears with its configured name and independent fre
   f.status('invented/garage', { 'switch:0': { output: false }, 'temperature:100': { tC: 10 } });
   let device = f.capture.status().devices[0]; assert.equal(device.available, true);
   assert.equal(device.readings.garage_temperature_2, undefined);
-  f.capture.receive('invented/garage/status/temperature:101', '{"tC":11.5}');
+  f.capture.receive('invented/garage/status/temperature:101', '{"id":101,"tC":11.5}');
   device = f.capture.status().devices[0]; assert.equal(device.readings.garage_temperature_2.label, 'Garage rear probe');
   assert.equal(device.readings.garage_temperature_2.value, 11.5);
   f.now(initial + 30_000); f.capture.tick();
@@ -283,12 +292,12 @@ test('native switch confirmation requires correlated RPC readback and read-only 
 });
 
 test('generic switch requires explicit publication plus fresh state, rejects retained confirmation and authority loss', async t => {
-  const f = fixture(t, [genericSwitch]); f.capture.setConnected(true); f.capture.receive('invented/state', 'off');
+  const f = fixture(t, [genericSwitch]); f.capture.setConnected(true); f.capture.confirmSubscriptions(f.capture.topics); f.capture.receive('invented/state', 'off');
   const pending = f.capture.setSwitch('relay', true); await Promise.resolve(); await Promise.resolve();
   let settled = false; pending.then(() => { settled = true; });
   f.capture.receive('invented/state', 'on', { retain: true }); await Promise.resolve(); assert.equal(settled, false);
   f.now(initial + 1); f.capture.receive('invented/state', 'on'); assert.equal((await pending).confirmed, true);
-  assert.deepEqual(f.publications, [{ topic: 'invented/command', payload: 'ON', options: { qos: 1, retain: false } }]);
+  assert.deepEqual(f.publications, [{ topic: 'invented/command', payload: 'ON', options: { qos: 1, retain: false, noReplay: true } }]);
   f.authority(false); await assert.rejects(f.capture.setSwitch('relay', false), /authority/);
 });
 
@@ -321,7 +330,7 @@ test('startMqtt subscribes equipment home topics once, preserves home recorder i
   client.subscribe = (topic, options, done) => { topics.push(topic); done(); };
   client.publish = (topic, payload, options, done) => done(); client.end = (force, options, done) => done();
   const acquisition = await startMqtt({ engine: f.engine, store: f.store, config: { connections: { equipment: f.settings,
-    mqtt: { address: 'mqtt://example.invalid', temperatureTopics: { indoor_temperature: 'invented/upstairs' } } } }, connect: () => client });
+    mqtt: { address: 'mqtt://example.invalid' } } }, connect: () => client });
   f.cleanups.push(() => acquisition.close()); client.emit('connect');
   assert.deepEqual(topics.sort(), ['invented/door', 'invented/upstairs']);
   client.emit('message', 'invented/upstairs', Buffer.from('21.5'));
@@ -347,7 +356,7 @@ test('native identity gates signatures and reannouncement cannot reuse the old p
 test('a full native status missing the required relay cannot reuse an old live relay reading', t => {
   const f = fixture(t, [garage]); f.capture.setConnected(true);
   f.status('invented/garage', { 'switch:0': { output: true }, 'temperature:100': { tC: 10 } });
-  f.capture.receive('invented/garage/events/rpc', JSON.stringify({ method: 'NotifyFullStatus', params: { 'temperature:100': { tC: 11 } } }));
+  f.capture.receive('invented/garage/events/rpc', JSON.stringify({ src: 'fixture-invented-garage', method: 'NotifyFullStatus', params: { 'temperature:100': { id: 100, tC: 11 } } }));
   const device = f.capture.status().devices[0]; assert.equal(device.available, false);
   assert.equal(device.readings.garage_relay_active.value, null); assert.equal(device.readings.garage_temperature.value, 11);
   assert.equal(device.readings.garage_temperature.stale, false);
@@ -666,17 +675,18 @@ test('disconnect during MQTT recheck cancels subscription waiting and prevents a
   assert.equal(acquisition.equipment.status().devices[0].mqttStatus.subscriptionStatus, 'disconnected');
 });
 
-test('additional topic groups expose configured H66 and legacy temperature routes without repeating equipment-owned feeds', async t => {
-  const f = fixture(t, [home, { ...genericSwitch, tariff_control: true }]), client = new EventEmitter();
+test('additional topic groups expose H66 alongside independently owned equipment feeds', async t => {
+  const f = fixture(t, [home, { ...home, id: 'bedroom', signal: 'bedroom_temperature', connection: 'mqtt:invented/bedroom' }, { ...genericSwitch, tariff_control: true }]), client = new EventEmitter();
   client.subscribe = (topic, options, done) => done();
   client.publish = (topic, payload, options, done) => done(); client.end = (force, options, done) => done();
   const acquisition = await startMqtt({ engine: f.engine, store: f.store, config: {
     h66: { deviceId: 'invented-h66', writeEnabled: true }, connections: { equipment: f.settings,
-      mqtt: { address: 'mqtt://example.invalid', temperatureTopics: { indoor_temperature: 'invented/upstairs', bedroom_temperature: 'invented/bedroom' } },
+      mqtt: { address: 'mqtt://example.invalid' },
     } }, connect: () => client });
   f.cleanups.push(() => acquisition.close()); client.emit('connect');
   const groups = acquisition.equipment.status().topicGroups;
-  assert.deepEqual(groups.find(group => group.id === 'temperatures').topics.map(row => row.topic), ['invented/bedroom']);
+  assert.equal(groups.find(group => group.id === 'temperatures'), undefined);
+  assert.equal(acquisition.equipment.status().devices.filter(row => row.id === 'bedroom').length, 1);
   assert.deepEqual(groups.find(group => group.id === 'h66').topics.map(row => row.topic), [
     'invented-h66/HP/#', 'invented-h66/HP/CMD', 'invented-h66/HP/SET/0203',
     'invented-h66/HP/SET/0212', 'invented-h66/HP/SET/0208', 'invented-h66/HP/SET/2201',

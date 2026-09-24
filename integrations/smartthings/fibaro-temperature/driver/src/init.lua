@@ -17,20 +17,18 @@ local LOCAL_PREFERENCES_REVISION = 1
 local LOCAL_PREFERENCES_ATTEMPTED = "stmq_local_preferences_attempted_revision"
 
 local function preference_counts(device, parameters)
-  local mapped_count, local_count, legacy_count = 0, 0, 0
+  local mapped_count, local_count = 0, 0
   for id in pairs(parameters or {}) do
     mapped_count = mapped_count + 1
-    local local_id = id:match("^certifiedpreferences%.(.+)$")
-    if local_id and device.preferences[local_id] ~= nil then local_count = local_count + 1 end
-    if local_id and device.preferences[id] ~= nil then legacy_count = legacy_count + 1 end
+    if device.preferences[id] ~= nil then local_count = local_count + 1 end
   end
-  return mapped_count, local_count, legacy_count
+  return mapped_count, local_count
 end
 
 local function log_preference_state(device, parameters, phase)
-  local mapped_count, local_count, legacy_count = preference_counts(device, parameters)
-  log.info(string.format("Preference application %s: mapped=%d local=%d legacy=%d attempted=%s",
-    phase, mapped_count, local_count, legacy_count,
+  local mapped_count, local_count = preference_counts(device, parameters)
+  log.info(string.format("Preference application %s: mapped=%d local=%d attempted=%s",
+    phase, mapped_count, local_count,
     tostring(device:get_field(LOCAL_PREFERENCES_ATTEMPTED) ~= nil)))
 end
 
@@ -52,13 +50,10 @@ local function update_preferences(self, device, args, is_awake)
   end
   local apply_local_selection = is_awake and local_count == 9 and pending_local_selection
   -- Iterate mapped parameters so the separate wake-up preference is never sent
-  -- as a Configuration parameter. Embedded values supersede the legacy IDs.
+  -- as a Configuration parameter. IDs match the currently bundled profiles.
   for id, parameter in pairs(preferences or {}) do
-    local local_id = id:match("^certifiedpreferences%.(.+)$") or id
-    local value = device.preferences[local_id]
-    if value == nil then value = device.preferences[id] end
-    local old_value = old_preferences and old_preferences[local_id]
-    if old_value == nil and old_preferences then old_value = old_preferences[id] end
+    local value = device.preferences[id]
+    local old_value = old_preferences and old_preferences[id]
     if value ~= nil and (apply_local_selection or not old_preferences or old_value ~= value) then
       local new_parameter_value = preferencesMap.to_numeric_value(value)
       device:send(Configuration:Set({parameter_number = parameter.parameter_number, size = parameter.size, configuration_value = new_parameter_value}))

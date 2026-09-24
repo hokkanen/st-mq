@@ -42,14 +42,27 @@ test('Home remains default and preserves existing model/timing values without mu
 test('Garage and Total presentation keeps provisional missing coverage and counterfactual boundaries explicit', () => {
   const heatingSavings = buildHeatingSavings({ range, now,
     homeModel: { status: 'estimated', valueEuro: 2, counts: { assessed: 1 } }, garageModel: { status: 'unavailable', valueEuro: null },
-    homeTiming: { value: -0.1 }, garageTiming: { value: null } });
+    homeTiming: { value: -0.1,coverageDetails:{elapsedMs:86400000,includedMs:3600000,powerMs:3600000},
+      evidence:{energyBasis:'reconstructed-equipment',sources:[{key:'observed',durationMs:3600000,share:1}]} }, garageTiming: { value: null } });
   const payload = { heatingSavings, range, now };
   const total = heatingScopeDisplay(payload, 'total');
   assert.equal(total.amount, '€2.00'); assert.match(total.qualification, /Partial total · Garage unavailable/);
   assert.match(total.breakdown.join(' '), /Home: €2.00.*Garage: unavailable/);
   assert.match(total.explanations.join(' '), /frozen normal-heating reference.*recovery.*provisional.*never added/);
   const timing = heatingScopeDisplay(payload, 'total', 'timing');
+  assert.equal(timing.key,'heatPump','Changing scope must keep the mounted Heating card identity');
   assert.equal(timing.amount, '-€0.10'); assert.match(timing.coverageExplanation, /missing evidence is never zero/);
+});
+
+test('current qualified Garage intervals remain available while the Home renderer rejects that different evidence scope',()=>{
+  const result={value:.5,sourceQuality:'verified-electrical',coverageDetails:{elapsedMs:86400000,includedMs:3600000},
+    evidence:{energyBasis:'recorded-intervals',timeBasis:'recorded-interval-time',sources:[{key:'measured',durationMs:3600000,share:1}]}};
+  const payload={range,now,heatingSavings:{garage:{timing:result}}};
+  const garage=heatingScopeDisplay(payload,'garage','timing');
+  assert.equal(garage.key,'heatPump');
+  assert.equal(garage.available,true);assert.equal(garage.amount,'€0.50');assert.equal(garage.basis,'Verified electrical intervals');
+  assert.match(garage.sources[0].explanation,/Dedicated garage electrical intervals/);
+  assert.equal(timingDisplay('heatPump',result,payload).available,false);
 });
 
 test('Garage automatic details show independent budgets, health and unresolved recovery without duplicate native readings', () => {

@@ -140,7 +140,7 @@ function bmwSessionEvidence(reading, { connectedAt, lastDisconnectedAt, charging
   const evidenceStart = connectionEvidenceStart(connectedAt, lastDisconnectedAt);
   const event = observed => observed?.retained === false
     && time(observed.measuredAt) && time(observed.receivedAt)
-    && observed.measuredAt >= evidenceStart && observed.measuredAt <= connectedAt + 10 * MINUTE
+    && observed.measuredAt >= evidenceStart
     && observed.receivedAt >= evidenceStart && observed.receivedAt <= now
     && observed.measuredAt <= now && now - observed.measuredAt <= 15 * MINUTE;
   const chargingTimes = Array.isArray(chargingAt) ? chargingAt : [chargingAt];
@@ -148,7 +148,10 @@ function bmwSessionEvidence(reading, { connectedAt, lastDisconnectedAt, charging
   if (!time(connectedAt) || reading?.provider !== 'bmw-cardata' || typeof reading.charging !== 'boolean') return null;
   const home = field('atHome');
   if (reading.atHome !== true || reading.pluggedIn !== true || !time(home?.measuredAt) || home.measuredAt > now
-    || now - home.measuredAt > 24 * 60 * MINUTE || !event(plug) || !event(start)
+    || now - home.measuredAt > 24 * 60 * MINUTE
+    || plug?.retained !== false || !time(plug.measuredAt) || !time(plug.receivedAt)
+    || plug.measuredAt < evidenceStart || plug.measuredAt > connectedAt + 10 * MINUTE
+    || plug.measuredAt > now || plug.receivedAt < evidenceStart || plug.receivedAt > now || !event(start)
     || plug.readingId === consumedPlugId) return null;
   const starts = chargingTimes.filter(at => time(at) && at >= evidenceStart && at <= now
     && Math.abs(start.measuredAt - at) <= 2 * MINUTE);
@@ -173,7 +176,7 @@ export function matchBmwSession(reading, options = {}) {
 export function pendingBmwSession(reading, options = {}) {
   const evidence = bmwSessionEvidence(reading, options);
   return Boolean(evidence && evidence.now >= evidence.connectedAt
-    && evidence.now < evidence.connectedAt + 10 * MINUTE && !matchingBmwStop(evidence));
+    && evidence.now < evidence.start.measuredAt + 10 * MINUTE && !matchingBmwStop(evidence));
 }
 
 const CONTROLLED_EDGE_TOLERANCE = 30_000;
@@ -184,7 +187,7 @@ function controlledBmwStart(reading, { connectedAt, lastDisconnectedAt, charging
   now = Date.now(), consumedChargingId } = {}) {
   const evidenceStart = connectionEvidenceStart(connectedAt, lastDisconnectedAt);
   const sourceTime = at => time(at) && at >= evidenceStart && at <= now
-    && at <= connectedAt + 10 * MINUTE && now - at <= 15 * MINUTE;
+    && now - at <= 15 * MINUTE;
   const event = observed => observed?.retained === false && eventId(observed.readingId)
     && sourceTime(observed.measuredAt) && time(observed.receivedAt)
     && observed.receivedAt >= evidenceStart && observed.receivedAt <= now
@@ -236,6 +239,6 @@ export function matchBmwControlledPause(reading, options = {}) {
  * pending. The ten-minute display bound grants no identity or control rights. */
 export function pendingBmwControlledPause(reading, options = {}) {
   const evidence = controlledBmwStart(reading, options);
-  return Boolean(evidence && evidence.now < evidence.connectedAt + 10 * MINUTE
+  return Boolean(evidence && evidence.now < evidence.start.measuredAt + 10 * MINUTE
     && !controlledPauseMatch(reading, evidence, options.pause));
 }

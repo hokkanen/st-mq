@@ -13,6 +13,22 @@ const estimate = { status: 'provisional', valueEuro: 1.25, electricityAvoidedKwh
   coverage: { elapsedMs: 12 * HOUR, includedMs: 6 * HOUR, missingMs: 6 * HOUR, firstAt: from + HOUR, lastAt: from + 8 * HOUR },
   estimateRange: { lowerEuro: -0.25, upperEuro: 2.5 }, assumptions: ['Synthetic scenario assumption.'] };
 
+// Current API evidence for the UI-only money/focus fixtures. One included hour
+// per physical scope; aggregate comparisons sum the included and elapsed times.
+function timing(value, scope = 'home') {
+  const systems = scope === 'total' || scope === 'charger' ? 2 : 1;
+  const energyBasis = scope === 'home' ? 'reconstructed-equipment'
+    : scope === 'total' ? 'separate-system-intervals' : 'recorded-intervals';
+  return { value, energyKwh: systems, actualCostEuro: 5 * systems, uniformCostEuro: 5 * systems + value,
+    provisional: true, coverage: 1 / 12,
+    coverageDetails: { from, to: payload.now, elapsedMs: 12 * HOUR * systems,
+      includedMs: HOUR * systems, powerMs: HOUR * systems, missingPowerMs: 11 * HOUR * systems,
+      incompletePriceMs: 0, coverageBasis: scope === 'charger' ? 'charger-time' : 'elapsed-time' },
+    evidence: { energyBasis, timeBasis: 'recorded-interval-time', sources: scope === 'total' ? [] : [{
+      key: scope === 'home' ? 'observed' : scope === 'garage' ? 'measured' : 'recorded',
+      durationMs: HOUR * systems, energyKwh: systems, share: 1, firstAt: from + HOUR, lastAt: from + 2 * HOUR }] } };
+}
+
 test('firewood presentation keeps the reported money, electricity, coverage and provisional status separate', () => {
   const display = firewoodDisplay(estimate, payload);
   assert.equal(display.amount, '€1.25'); assert.equal(display.electricity, '4.5 kWh electricity avoided');
@@ -136,7 +152,7 @@ function findByLabel(node, label) {
 test('three cost cards retain their folds and focus across updates and keep the saved timing baseline scoped', () => {
   const { root, document, disconnected } = dom(new Map([['stmq.heatingSavingMode', 'timing']]));
   const panel = createTimingBenefit(root);
-  const data = { ...payload, firewoodBenefit: estimate, timingBenefit: { heatPump: { value: 1 }, charger: { value: 2 } } };
+  const data = { ...payload, firewoodBenefit: estimate, timingBenefit: { heatPump: timing(1), charger: timing(2,'charger') } };
   panel.render(data);
   const devices = root.children[1];
   assert.deepEqual(devices.children.map(card => card.dataset.device), ['heatPump', 'charger', 'firewood']);
@@ -159,7 +175,7 @@ test('heating choice changes its amount and details while preserving focus, fold
   const storage = new Map(), { root, document } = dom(storage);
   const panel = createTimingBenefit(root);
   const data = { ...payload, heatingBenefit: { status: 'estimated', valueEuro: 3.5, counts: { assessed: 2, completed: 2 } },
-    firewoodBenefit: estimate, timingBenefit: { heatPump: { value: 1 }, charger: { value: 2 } } };
+    firewoodBenefit: estimate, timingBenefit: { heatPump: timing(1), charger: timing(2,'charger') } };
   panel.render(data);
   const [heating, charger, fireplace] = root.children[1].children;
   const overview = heating.children[0].children[0];
@@ -215,10 +231,10 @@ test('heating defaults to the model estimate with missing, blocked or invalid br
 test('Home/Garage/Total changes only heating scope and keeps both comparison controls and folds stable', () => {
   const { root, document } = dom(), panel = createTimingBenefit(root);
   const data = { ...payload, heatingSavings: {
-    home: { model: { status: 'estimated', valueEuro: 3 }, timing: { value: 1 } },
-    garage: { model: { status: 'estimated', valueEuro: -1, provisional: true }, timing: { value: -0.5, provisional: true } },
-    total: { model: { status: 'estimated', valueEuro: 2, provisional: true }, timing: { value: 0.5, provisional: true } },
-  }, firewoodBenefit: estimate, timingBenefit: { charger: { value: 2 } } };
+    home: { model: { status: 'estimated', valueEuro: 3 }, timing: timing(1) },
+    garage: { model: { status: 'estimated', valueEuro: -1, provisional: true }, timing: timing(-0.5,'garage') },
+    total: { model: { status: 'estimated', valueEuro: 2, provisional: true }, timing: timing(0.5,'total') },
+  }, firewoodBenefit: estimate, timingBenefit: { charger: timing(2,'charger') } };
   panel.render(data);
   const [heating, charger, fireplace] = root.children[1].children, overview = heating.children[0].children[0];
   const scopes = findByLabel(overview, 'Heating savings scope');

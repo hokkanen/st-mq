@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Store } from '../src/storage/store.js';
 import { addFireplace, removeFireplace, fireplaceEvents, fireplaceView } from '../src/app/fireplace.js';
-import { appendLearningRecord } from '../src/app/committed-learning.js';
+
+import { appendLearningRecord } from './helpers/home-learning-fixture.js';
 
 const at = Date.parse('2026-01-01T00:00:00Z');
 const storeFor = t => { const store = new Store(':memory:'); t.after(() => store.close()); return store; };

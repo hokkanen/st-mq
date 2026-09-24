@@ -23,14 +23,12 @@ const temperatureKeys = { indoor_temperature: 'upstairs', downstairs_temperature
   garage_temperature: 'garage', garage_temperature_2: 'garageFront', outdoor_temperature: 'outdoor' };
 const temperatureIds = { upstairs: 'indoor_temperature', indoor: 'indoor_temperature', downstairs: 'downstairs_temperature',
   bedroom: 'bedroom_temperature', garage: 'garage_temperature', garage_front: 'garage_temperature_2' };
-/** Legacy Shelly captures are separate only when the equipment adapter is absent.
- * Keep actual device identities separate from the read-only inventory below. */
+/** Keep actual device identities separate from the read-only inventory below. */
 export function equipmentDevices(status = {}) {
   const devices = new Map();
-  for (const device of [...(status.shelly?.devices ?? []), ...(status.equipment?.devices ?? [])]) {
+  for (const device of status.equipment?.devices ?? []) {
     if (!device?.id) continue;
-    devices.set(device.id, { ...device, area: device.area ?? (device.controls?.tariff || device.controlsHeat
-      || device.role === 'heat_savings' ? 'home' : 'garage') });
+    devices.set(device.id, { ...device, area: device.area });
   }
   const floor = status.preheatValves ?? { enabled: false, commissioned: false, devices: [] };
   for (const group of ['living', 'storage']) {
@@ -392,14 +390,13 @@ export function equipmentConnections(status = {}, devices = equipmentDevices(sta
     : device.connection ? [{ role: 'Connection', topic: device.connection, direction: 'subscribe' }] : [] }));
   const owner = new Map(rows.flatMap(row => row.topics.map(topic => [topicKey(topic), row])));
   const groups = new Map();
-  for (const group of [...(status.shelly?.topicGroups ?? []), ...(status.equipment?.topicGroups ?? [])]) {
+  for (const group of status.equipment?.topicGroups ?? []) {
     const prior = groups.get(group.id);
     groups.set(group.id, { ...group, topics: [...(prior?.topics ?? []), ...(group.topics ?? [])] });
   }
   const vehicleFeeds = status.charging?.vehicleFeeds ?? [];
   const vehicleFeedFor = group => vehicleFeeds.find(feed => feed.id === group.vehicleFeedId || group.id === `vehicle:${feed.id}`
-    || feed.topic && group.topics.some(topic => topic.topic === feed.topic)
-    || group.id === 'teslamate' && feed.provider === 'teslamate');
+    || feed.topic && group.topics.some(topic => topic.topic === feed.topic));
   for (const feed of vehicleFeeds) if (feed.topic && ![...groups.values()].some(group => vehicleFeedFor(group) === feed)) {
     groups.set(`vehicle:${feed.id}`, { id: `vehicle:${feed.id}`, vehicleFeedId: feed.id,
       topics: [{ role: feed.provider === 'teslamate' ? 'Vehicle subscription' : 'Timestamped vehicle readings', topic: feed.topic, direction: 'subscribe' }] });
@@ -442,23 +439,7 @@ export function equipmentConnections(status = {}, devices = equipmentDevices(sta
         const usedBy = status.charging?.chargers?.find(charger => charger.id === feed.usedByChargerId)?.label;
         Object.assign(row, vehicleConnection({ label: feed.label, source, enabled: feed.enabled, reception: feed.reception, usedBy,
           detail: feed.provider === 'teslamate' ? 'A sleeping or idle vehicle can remain quiet while MQTT stays connected.'
-            : 'Vehicle readings keep their original measurement timestamps. A quiet vehicle does not mean the MQTT connection is lost.' }));
-      } else if (group.id === 'teslamate') {
-        const provider = status.providers?.teslamate ?? {};
-        const reception = provider.reception ?? status.charging?.chargers?.find(charger => charger.id === 'charger2')?.mqtt ?? {};
-        Object.assign(row, vehicleConnection({ enabled: provider.enabled, source: 'TeslaMate', label: 'Tesla',
-          reception: { ...reception, connected: reception.connected ?? provider.connected,
-            lastMessageAt: reception.lastMessageAt ?? provider.lastMessageAt },
-          detail: 'A sleeping or idle vehicle can remain quiet while MQTT stays connected.' }));
-      } else if (typeof group.id === 'string' && group.id.endsWith('-vehicle')) {
-        const id = group.id.slice(0, -'-vehicle'.length);
-        const charger = status.charging?.chargers?.find(charger => charger.id === id);
-        const reception = charger?.vehicleMqtt ?? charger?.mqtt ?? {};
-        const bmw = reception.provider === 'bmw-cardata';
-        Object.assign(row, vehicleConnection({ reception, label: bmw ? 'BMW' : 'Vehicle',
-          source: bmw ? 'BMW CarData' : 'MQTT',
-          detail: bmw ? 'BMW CarData supplies charge, charge target and usable battery capacity. MQTT reception is separate from each measurement’s original timestamp.'
-            : 'Vehicle readings received over MQTT keep their original measurement timestamps. A quiet vehicle does not mean the MQTT connection is lost.' }));
+            : `${feed.provider === 'bmw-cardata' ? 'BMW CarData supplies charge, charge target and usable battery capacity. ' : ''}Vehicle readings keep their original measurement timestamps. A quiet vehicle does not mean the MQTT connection is lost.` }));
       } else if (group.id === 'dhwr' || group.id === 'heating') {
         row.kind = 'control'; row.connectionState = { label: 'Commands configured', state: 'pending' };
         row.recent = 'Delivery is confirmed separately';

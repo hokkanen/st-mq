@@ -10,8 +10,9 @@ import { createChartService } from '../src/app/chart-service.js';
 import { addModelCoefficients } from '../src/app/chart-model-coefficients.js';
 import { addSensorChange, revertSensorChange } from '../src/app/sensor-changes.js';
 import { MODEL_COEFFICIENT_INFO } from '../src/domain/history-series.js';
-import { appendLearningRecord, applyLearningRecord, learningConfiguration, learningVersion,
-  LEARNING_ALGORITHM } from '../src/app/committed-learning.js';
+import { applyLearningRecord, learningConfiguration, learningVersion,
+  LEARNING_ALGORITHM} from '../src/app/committed-learning.js';
+import { appendLearningRecord } from './helpers/home-learning-fixture.js';
 import { initialAdaptiveModel, predictThermalStep, restoreAdaptiveCheckpoint } from '../src/control/adaptive-learning.js';
 
 const MINUTE = 60_000, start = Date.parse('2026-09-08T08:00:00Z');

@@ -26,10 +26,9 @@ function candidate(values, { outdoorC = 8, priorOnly = false, settings: preferen
 }
 const duration = plan => (plan.plannedPauseUntil - plan.pauseFrom) / HOUR;
 
-test('temperature-safe opportunities can exceed two, twenty-four and forty-eight hours regardless of old configuration ceilings', () => {
+test('temperature-safe opportunities can exceed two, twenty-four and forty-eight hours', () => {
   for (const hours of [6, 30, 60]) {
-    const args = candidate([...repeated(hours, 200), ...repeated(hours * 1.25 + 4, 5)],
-      { settings: { maxPauseHours: 2, maxHorizonHours: 48 } });
+    const args = candidate([...repeated(hours, 200), ...repeated(hours * 1.25 + 4, 5)]);
     const plan = planGarage(args);
     assert.equal(plan.nextAction, 'pause');
     assert.equal(duration(plan), hours);

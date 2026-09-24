@@ -2,6 +2,8 @@ import moment from 'moment-timezone';
 import { timingEvidenceSource } from './timing-evidence.js';
 const CHART_TIME_ZONE = 'Europe/Helsinki';
 const HOUR = 3_600_000, CHARGING_MIN_POWER_KW = 0.1;
+const DEVICES = ['heatPump', 'charger1', 'charger2'];
+const charging = name => name === 'charger1' || name === 'charger2';
 
 /** Integrate original power observations, never the chart's extrema envelope.
  * Missing intervals stay missing. Each day's observed energy is compared with
@@ -9,7 +11,7 @@ const HOUR = 3_600_000, CHARGING_MIN_POWER_KW = 0.1;
 export class DailyTimingBenchmark {
   constructor(range, now, prices = [], energyBases = {}) {
     this.range = range; this.now = Math.min(now, range.to); this.previous = new Map();
-    this.details = Object.fromEntries(['heatPump', 'charger'].map(name => [name, {
+    this.details = Object.fromEntries(DEVICES.map(name => [name, {
       powerMs: 0, chargingMs: 0, idleMs: 0, firstPowerAt: null, lastPowerAt: null, sources: new Map(),
       energyBases: new Set(energyBases[name] ? [energyBases[name]] : []), timeBases: new Set(),
       auxiliaryAssumedMs: 0, auxiliaryUnknownMs: 0,
@@ -30,11 +32,12 @@ export class DailyTimingBenchmark {
         if (duration > 0 && price.assumedPrice) assumedPrices = true;
       }
       this.days.push({ start, end, average: covered === end - start ? weighted / covered : null, assumedPrices,
-        observedDuration: Math.max(0, Math.min(end, this.now) - Math.max(start, range.from)), heatPump: { energy: 0, cost: 0, covered: 0 }, charger: { energy: 0, cost: 0, covered: 0 } });
+        observedDuration: Math.max(0, Math.min(end, this.now) - Math.max(start, range.from)),
+        ...Object.fromEntries(DEVICES.map(name => [name, { energy: 0, cost: 0, covered: 0 }])) });
     }
   }
   add(name, at, kw, evidence = {}) {
-    if (!['heatPump', 'charger'].includes(name) || !Number.isFinite(at)) return;
+    if (!DEVICES.includes(name) || !Number.isFinite(at)) return;
     const previous = this.previous.get(name);
     if (previous && at >= previous.at && Number.isFinite(previous.kw) && previous.kw >= 0) {
       let start = Math.max(previous.at, this.range.from), end = Math.min(at, previous.at + 30 * 60_000, this.now);
@@ -44,10 +47,10 @@ export class DailyTimingBenchmark {
       // Standby readings establish known history, but only actual charging
       // contributes to charger timing costs and included time.
       // Reconstructing kW from phase energy can round an exact 100 W upward.
-      const includedPower = name !== 'charger' || previous.kw > CHARGING_MIN_POWER_KW + Number.EPSILON;
+      const includedPower = !charging(name) || previous.kw > CHARGING_MIN_POWER_KW + Number.EPSILON;
       if (end > start) {
         details.powerMs += end - start;
-        if (name === 'charger') details[includedPower ? 'chargingMs' : 'idleMs'] += end - start;
+        if (charging(name)) details[includedPower ? 'chargingMs' : 'idleMs'] += end - start;
         if (includedPower) {
           details.firstPowerAt = Math.min(details.firstPowerAt ?? firstAt, firstAt);
           details.lastPowerAt = Math.max(details.lastPowerAt ?? lastAt, lastAt);
@@ -102,8 +105,8 @@ export class DailyTimingBenchmark {
     if (previous) this.previous.set(name,previous); else this.previous.delete(name);
   }
   result() {
-    for (const name of ['heatPump', 'charger']) this.add(name, this.now, null);
-    return Object.fromEntries(['heatPump', 'charger'].map(name => {
+    for (const name of DEVICES) this.add(name, this.now, null);
+    const result = Object.fromEntries(DEVICES.map(name => {
       const duration = this.days.reduce((sum, day) => sum + day.observedDuration, 0);
       const covered = this.days.reduce((sum, day) => sum + day[name].covered, 0);
       const energyKwh = this.days.reduce((sum, day) => sum + day[name].energy, 0);
@@ -111,7 +114,7 @@ export class DailyTimingBenchmark {
       const uniformCostEuro = this.days.reduce((sum, day) => sum + day[name].energy * (day.average ?? 0) / 100, 0);
       const details = this.details[name], share = ms => covered ? ms / covered : 0;
       const missingPowerMs = Math.max(0, duration - details.powerMs);
-      const incompletePriceMs = Math.max(0, (name === 'charger' ? details.chargingMs : details.powerMs) - covered);
+      const incompletePriceMs = Math.max(0, (charging(name) ? details.chargingMs : details.powerMs) - covered);
       const energyBasis = details.energyBases.size > 1 ? 'recorded-and-legacy'
         : [...details.energyBases][0] ?? 'power-snapshots';
       const timeBasis = details.timeBases.size > 1 ? 'mixed-recorded-time'
@@ -120,11 +123,11 @@ export class DailyTimingBenchmark {
         actualCostEuro: covered ? actualCostEuro : null, uniformCostEuro: covered ? uniformCostEuro : null,
         assumedPrices: this.days.some(day => day[name].covered > 0 && day.assumedPrices),
         coverage: duration ? Math.min(1, covered / duration) : 0,
-        provisional: this.now < this.range.to || (name === 'charger'
+        provisional: this.now < this.range.to || (charging(name)
           ? missingPowerMs > 0 || incompletePriceMs > 0 : covered < duration),
         coverageDetails: { elapsedMs: duration, includedMs: covered, coverageBasis: 'elapsed-time', powerMs: details.powerMs,
           missingPowerMs, incompletePriceMs,
-          ...(name === 'charger' ? { chargingMs: details.chargingMs, idleMs: details.idleMs,
+          ...(charging(name) ? { chargingMs: details.chargingMs, idleMs: details.idleMs,
             minimumPowerKw: CHARGING_MIN_POWER_KW } : {}),
           from: this.range.from, to: Math.max(this.range.from, this.now),
           firstPowerAt: details.firstPowerAt, lastPowerAt: details.lastPowerAt },
@@ -133,8 +136,40 @@ export class DailyTimingBenchmark {
           auxiliaryAssumedMs: details.auxiliaryAssumedMs, auxiliaryAssumedShare: share(details.auxiliaryAssumedMs),
           auxiliaryUnknownMs: details.auxiliaryUnknownMs, auxiliaryUnknownShare: share(details.auxiliaryUnknownMs) },
         priceAssumptions: { ...details.priceAssumptions, share: share(details.priceAssumptions.durationMs) },
-        basis: name === 'charger' ? 'Estimated phase-energy intervals; older history uses phase-current snapshots' : 'Reconstructed compressor and auxiliary electricity using recorded equipment states and dated nominal powers; no whole-property subtraction',
+        scope: name,
+        basis: charging(name) ? 'Estimated physical charger electricity; permitted v0.7.5 Charger 1 imports use phase-current snapshots' : 'Reconstructed compressor and auxiliary electricity using recorded equipment states and dated nominal powers; no whole-property subtraction',
         explanation: 'Recorded energy at its actual times versus the same energy at each whole Finnish day’s average all-in price. Timing comparison, not proven controller savings.' }];
     }));
+    const parts = [result.charger1,result.charger2], sum = path => parts.reduce((total, part) => total + (path(part) ?? 0),0);
+    const includedMs = sum(part => part.coverageDetails.includedMs), elapsedMs = sum(part => part.coverageDetails.elapsedMs);
+    const sourceTotals = new Map();
+    for (const part of parts) for (const source of part.evidence.sources) {
+      const prior = sourceTotals.get(source.key);
+      sourceTotals.set(source.key, prior ? { ...source, durationMs: prior.durationMs + source.durationMs,
+        energyKwh: prior.energyKwh + source.energyKwh, firstAt: Math.min(prior.firstAt,source.firstAt), lastAt: Math.max(prior.lastAt,source.lastAt) } : { ...source });
+    }
+    const minAt = values => values.filter(Number.isFinite).length ? Math.min(...values.filter(Number.isFinite)) : null;
+    const maxAt = values => values.filter(Number.isFinite).length ? Math.max(...values.filter(Number.isFinite)) : null;
+    const includedParts = parts.filter(part => part.coverageDetails.includedMs > 0);
+    const energyBases = new Set(includedParts.map(part => part.evidence.energyBasis));
+    const timeBases = new Set(includedParts.map(part => part.evidence.timeBasis));
+    result.charger = { ...result.charger1, scope: 'charger1+charger2',
+      ...Object.fromEntries(['value','energyKwh','actualCostEuro','uniformCostEuro'].map(key => [key,includedMs ? sum(part => part[key]) : null])),
+      assumedPrices: parts.some(part => part.assumedPrices), provisional: parts.some(part => part.provisional),
+      coverage: elapsedMs ? includedMs / elapsedMs : 0,
+      coverageDetails: { ...result.charger1.coverageDetails, coverageBasis: 'charger-time',
+        ...Object.fromEntries(['elapsedMs','includedMs','powerMs','missingPowerMs','incompletePriceMs','chargingMs','idleMs']
+          .map(key => [key,sum(part => part.coverageDetails[key])])),
+        firstPowerAt: minAt(parts.map(part => part.coverageDetails.firstPowerAt)),
+        lastPowerAt: maxAt(parts.map(part => part.coverageDetails.lastPowerAt)) },
+      evidence: { ...result.charger1.evidence, energyBasis: energyBases.size > 1 ? 'recorded-and-legacy' : [...energyBases][0] ?? 'recorded-intervals',
+        timeBasis: timeBases.size > 1 ? 'mixed-recorded-time' : [...timeBases][0] ?? 'recorded-interval-time',
+        sources: [...sourceTotals.values()].map(source => ({ ...source, share: includedMs ? source.durationMs / includedMs : 0 })) },
+      priceAssumptions: { durationMs: sum(part => part.priceAssumptions.durationMs), timeBasis: 'included-charger-time',
+        firstAt: minAt(parts.map(part => part.priceAssumptions.firstAt)), lastAt: maxAt(parts.map(part => part.priceAssumptions.lastAt)),
+        share: includedMs ? sum(part => part.priceAssumptions.durationMs) / includedMs : 0 },
+      basis: 'Combined timing for two distinct physical chargers. Coverage uses charger-time: one hour on both is two charger-hours.',
+    };
+    return result;
   }
 }

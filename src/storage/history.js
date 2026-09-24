@@ -1,7 +1,7 @@
 import { createReadStream, createWriteStream } from 'node:fs';
 import { once } from 'node:events';
 import { finished } from 'node:stream/promises';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { createInterface } from 'node:readline';
 import { resolve } from 'node:path';
 
@@ -85,31 +85,35 @@ export function decodeHistoryRow(kind, line, previousTime = null) {
   };
 }
 
-/** Two streaming passes (digest, import); at most batchSize source rows in memory. */
+/** Stage bounded canonical rows, then publish observation IDs atomically after both byte hashes agree. */
 export async function importCsv(store, file, { kind, batchSize = 500, onProgress } = {}) {
   if (!Object.hasOwn(HEADERS, kind)) throw new TypeError('Import kind must be stmq or easee');
   if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > 5000) throw new TypeError('batchSize must be 1..5000');
-  const path = resolve(file); const sha256 = await fileHash(path);
+  const path = resolve(file), sha256 = await fileHash(path), attempt = randomUUID(), now = Date.now();
   const previous = store.db.prepare('SELECT * FROM imports WHERE kind = ? AND sha256 = ?').get(kind, sha256);
   if (previous?.status === 'complete') return { importId: previous.id, rows: previous.row_count, rejected: previous.rejected_count, skipped: true, sha256 };
-  const now = Date.now();
-  const importId = previous?.id ?? Number(store.db.prepare(`INSERT INTO imports (kind, sha256, path, status, started_at) VALUES (?, ?, ?, 'importing', ?)`).run(kind, sha256, path, now).lastInsertRowid);
-  store.db.prepare("UPDATE imports SET status = 'importing' WHERE id = ?").run(importId);
-  const insertRow = store.db.prepare('INSERT OR IGNORE INTO import_rows (import_id, row_number, source_time, raw, quality) VALUES (?, ?, ?, ?, ?)');
-  let rowNumber = 0; let previousTime = null; let batch = []; let rejected = 0; let headerSeen = false;
-  const secondHash = createHash('sha256');
-  const input = createReadStream(path);
+  const importId = store.transaction(() => {
+    const id = previous?.id ?? Number(store.db.prepare(`INSERT INTO imports (kind,sha256,path,status,attempt,started_at)
+      VALUES (?,?,?,'importing',?,?)`).run(kind,sha256,path,attempt,now).lastInsertRowid);
+    // Incomplete staging is disposable. Never reuse unverified bytes from another attempt.
+    store.db.prepare('DELETE FROM import_rows WHERE import_id=?').run(id);
+    store.db.prepare("UPDATE imports SET status='importing',attempt=?,path=?,started_at=?,completed_at=NULL,row_count=0,rejected_count=0 WHERE id=?")
+      .run(attempt,path,now,id);
+    return id;
+  });
+  const assertAttempt = () => {
+    if (!store.db.prepare("SELECT 1 FROM imports WHERE id=? AND attempt=? AND status='importing'").get(importId,attempt))
+      throw new Error('CSV import attempt was superseded');
+  };
+  const insertRow = store.db.prepare('INSERT INTO import_rows (import_id,row_number,source_time,raw,quality,canonical) VALUES (?,?,?,?,?,?)');
+  let rowNumber = 0, previousTime = null, batch = [], rejected = 0, headerSeen = false;
+  const secondHash = createHash('sha256'), input = createReadStream(path);
   input.on('data', chunk => secondHash.update(chunk));
   const lines = createInterface({ input, crlfDelay: Infinity });
   const flush = () => {
     store.transaction(() => {
-      for (const row of batch) {
-        if (!insertRow.run(importId, row.rowNumber, row.sourceTime, row.raw, JSON.stringify(row.quality)).changes) continue;
-        for (const observation of row.observations) store.observation({ ...observation,
-          source: `csv:${kind}`, device: kind === 'easee' ? (observation.signal.startsWith('ev1_') ? 'easee_ev1' : 'easee_equalizer') : 'legacy_stmq',
-          sourceTime: row.sourceTime, receivedAt: now, provenance: { importId, rowNumber: row.rowNumber },
-        });
-      }
+      assertAttempt();
+      for (const row of batch) insertRow.run(importId,row.rowNumber,row.sourceTime,row.raw,JSON.stringify(row.quality),JSON.stringify(row.observations));
     });
     batch = [];
     onProgress?.({ importId, rows: rowNumber, rejected });
@@ -121,7 +125,7 @@ export async function importCsv(store, file, { kind, batchSize = 500, onProgress
         headerSeen = true; continue;
       }
       rowNumber++;
-      const decoded = decodeHistoryRow(kind, line, previousTime);
+      const decoded = decodeHistoryRow(kind,line,previousTime);
       if (decoded.sourceTime !== null) previousTime = decoded.sourceTime;
       else rejected++;
       batch.push({ ...decoded, raw: line, rowNumber });
@@ -129,43 +133,27 @@ export async function importCsv(store, file, { kind, batchSize = 500, onProgress
     }
     if (!headerSeen) throw new Error('CSV is empty');
     if (batch.length) flush();
-    if (secondHash.digest('hex') !== sha256) throw new Error('CSV changed while importing; import is excluded until retried from a stable file');
-    store.db.prepare("UPDATE imports SET status = 'complete', completed_at = ?, row_count = ?, rejected_count = ? WHERE id = ?").run(Date.now(), rowNumber, rejected, importId);
-    store.event('history.imported', { importId, kind, sha256, rows: rowNumber, rejected });
-    return { importId, rows: rowNumber, rejected, skipped: false, sha256 };
+    if (secondHash.digest('hex') !== sha256) throw new Error('CSV changed while importing; retry from a stable file');
+    store.transaction(() => {
+      assertAttempt();
+      // IDs are allocated at publication, never during staging. Existing incremental
+      // readers therefore see every later completion beyond their committed cursor.
+      store.db.prepare(`INSERT INTO observations(source,device,signal,value,unit,source_time,received_at,quality,raw,import_id,row_number)
+        SELECT ?,CASE WHEN ?='easee' THEN CASE WHEN json_extract(j.value,'$.signal') LIKE 'ev1_%' THEN 'easee_ev1' ELSE 'easee_equalizer' END ELSE 'legacy_stmq' END,
+          json_extract(j.value,'$.signal'),json_extract(j.value,'$.value'),json_extract(j.value,'$.unit'),
+          r.source_time,?,json_extract(j.value,'$.quality'),NULL,r.import_id,r.row_number
+        FROM import_rows r,json_each(r.canonical) j WHERE r.import_id=? ORDER BY r.row_number,CAST(j.key AS INTEGER)`)
+        .run(`csv:${kind}`,kind,now,importId);
+      store.db.prepare("UPDATE imports SET status='complete',completed_at=?,row_count=?,rejected_count=? WHERE id=?")
+        .run(Date.now(),rowNumber,rejected,importId);
+      store.event('history.imported',{ importId,kind,sha256,rows:rowNumber,rejected });
+    });
+    return { importId, rows:rowNumber, rejected, skipped:false, sha256 };
   } catch (error) {
-    store.db.prepare("UPDATE imports SET status = 'failed', row_count = ?, rejected_count = ? WHERE id = ?").run(rowNumber, rejected, importId);
+    try { store.db.prepare("UPDATE imports SET status='failed',row_count=?,rejected_count=? WHERE id=? AND attempt=? AND status='importing'").run(rowNumber,rejected,importId,attempt); }
+    catch (cleanupError) { if (error && typeof error === 'object') error.cleanupError = cleanupError; }
     throw error;
   } finally { lines.close(); input.destroy(); }
-}
-
-const MANUAL_COUNTERS = [
-  ['2016-01-08', 11535, 83, 123, 3153], ['2016-12-27', 13615, 83, 145, 3870],
-  ['2017-02-01', 14029, 83, 147, 3944], ['2017-09-15', 15454, 83, 156, 4489],
-  ['2018-03-08', 17227, 86, 163, 4901], ['2019-01-22', 19344, 95, 199, 5671],
-  ['2019-08-12', 20720, 95, 209, 6080], ['2019-12-14', 21466, 95, 215, 6318],
-  ['2020-01-14', 21803, 95, 216, 6385], ['2020-03-24', 22500, 95, 220, 6529],
-  ['2020-07-01', 23078, 95, 223, 6814], ['2020-09-24', 23354, 95, 226, 6956],
-  ['2020-11-20', 23673, 95, 228, 7078], ['2021-02-01', 24395, 95, 235, 7241],
-  ['2021-08-09', 25605, 95, 249, 7619], ['2022-03-22', 27672, 95, 260, 8089],
-  ['2022-10-07', 28673, 95, 271, 8483], ['2023-09-14', 31305, 96, 290, 10004],
-  ['2025-06-02', 35968, 120, 355, 11224], ['2026-05-27', 38129, 195, 437, 12048],
-  ['2026-09-06', 38300, 195, 447, 12216],
-];
-
-export function seedHandoffObservations(store) {
-  const provenance = 'CODEX/ST-MQ-Codex-handoff.md@2026-09-06';
-  return store.transaction(() => {
-    for (const [observedDate, ...values] of MANUAL_COUNTERS) {
-      ['compressor_runtime', 'auxiliary_3kw_runtime', 'auxiliary_6kw_runtime', 'dhw_runtime'].forEach((signal, index) => store.counter({
-        signal, observedDate, value: values[index], provenance,
-        note: signal === 'dhw_runtime' ? 'DHW hours overlap compressor operation; do not add as independent electrical load. Observation time within date is unknown.' : 'Dated owner observation; time within date is unknown. Stage powers require verification before use with live output.',
-      }));
-    }
-    return store.annotation({ kind: 'absence_heating_off', startAt: ABSENCE_START, endAt: ABSENCE_END,
-      note: 'Heating deliberately off during absence in March–May 2026. Calendar-month boundaries are conservative placeholders, not verified change times. Exclude from occupied training and savings; not a clean no-heat experiment.',
-      boundaryConfidence: 'approximate', excludeTraining: true, provenance, uniqueKey: 'handoff:absence:2026-03-05' });
-  });
 }
 
 function csvCell(value) {

@@ -463,6 +463,8 @@ export function createGarageControls({ document, request, onStatus = () => {}, o
     if ($('garage-heating-help')) $('garage-heating-help').textContent = controls.available
       ? 'If price control is not paused, manual changes revert on the next update, normally within 1 minute. During Pause, they stay until it ends. Freeze protection can restore heating sooner.'
       : controls.reason ?? 'Waiting for the garage heating connection.';
+    const normal = $('garage-mode-normal');
+    if (normal) normal.title = controls.normalAvailable ? '' : controls.normalReason ?? controls.reason ?? 'Normal heating is unavailable.';
     const off = $('garage-mode-off');
     if (off) off.title = controls.offAvailable ? '' : controls.offReason ?? controls.reason ?? 'Heating off is unavailable.';
     const warning = garageHeatingWarning(status, clock), node = $('garage-hold-warning');

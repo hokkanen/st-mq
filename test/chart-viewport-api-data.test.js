@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Store } from '../src/storage/store.js';
 import { chartRange, chartRequestRange, getChartData } from '../src/app/chart-data.js';
-import { appendLearningRecord } from '../src/app/committed-learning.js';
+
+import { appendLearningRecord } from './helpers/home-learning-fixture.js';
 import { addFireplace } from '../src/app/fireplace.js';
 
 const MINUTE = 60_000, HOUR = 60 * MINUTE;
@@ -87,9 +88,8 @@ test('viewport edges retain exact energy intervals, price coverage, request expi
 test('a viewport within one learning interval keeps its committed boundaries and value', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   const start = from + HOUR, end = start + 15 * MINUTE;
-  store.appendLearningJournal('providers', { kind: 'sample', at: end, algorithmVersion: 'synthetic-v1',
-    payload: { value: { timestamp: end, windowStart: start, windowEnd: end, quality: [],
-      inputSegments: [{ start, end, outdoorC: 8, quality: [] }] } } });
+  appendLearningRecord(store, 'providers', 'sample', { timestamp: end, windowStart: start, windowEnd: end,
+    indoorC: 20, outdoorC: 8, phase: 'normal', regime: 'home', quality: [] });
   const viewFrom = start + 5 * MINUTE, viewTo = start + 10 * MINUTE;
   const result = getChartData({ store, ...args, left: 'model_outdoor_temperature', viewFrom, viewTo });
   assert.deepEqual(result.series.model_outdoor_temperature.map(point => [point.x, point.y]),
@@ -199,7 +199,7 @@ test('zooming into daily firewood outcomes preserves the selected whole-day tota
       thermalCompressorDuty: 0.5, thermalAuxKw: 0, quality: [] });
   }
   const pricing = { contract: { periods: [{ from, marginCtPerKwh: 0.4,
-    taxCtPerKwh: 2.2, vatRate: 0.255, tariff: 'day-night' }] },
+    taxCtPerKwh: 2.2, transferRates: { vatIncluded: true, dayCtPerKwh: 3.34, nightCtPerKwh: 1.96, winterDayCtPerKwh: 4.17, otherCtPerKwh: 2.07 }, vatRate: 0.255, tariff: 'day-night' }] },
     market: { fetchedAt: start, intervals: [{ start, end: start + 8 * HOUR,
       spotCtPerKwh: 10, unit: 'c/kWh', vatIncluded: false, source: 'synthetic-market' }] } };
   const overview = getChartData({ store, ...args, ...pricing, left: 'firewood_savings' });

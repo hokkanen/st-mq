@@ -377,7 +377,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     if (payload.meta?.historyBasis === 'original-recorded-history') notes.push('Charts read the original saved history. Point reduction for display and cached chart responses stay in memory; they create no additional database history. Energy and cost calculations use the original recorded intervals.');
     if (plot.left.endsWith('_energy_counter')) notes.push('Meter counters are diagnostic references only. They do not correct recorded energy or train the model.');
     if (replicaSnapshotKey(status) !== null) notes.push('Read-only replica: the vertical time marker is the primary snapshot time. Measurements are not extended beyond that snapshot; forecasts are those saved by the primary.');
-    if (['ev1_session_energy_check', 'tesla_session_energy_check'].includes(plot.left)) notes.push('Each point is one finalized session reference. Hollow points lack a complete comparison and are excluded from the session averages. These checks do not correct recorded energy or train the model.');
+    if (['ev1_session_energy_check', 'shelly_session_energy_check'].includes(plot.left)) notes.push('Each point is one finalized session reference. Hollow points lack a complete comparison and are excluded from the session averages. These checks do not correct recorded energy or train the model.');
     if (plot.left === 'power') {
       notes.push('Auxiliary fill uses verified heater output and configured electrical capacity.');
       notes.push('Power fills stack in order: Auxiliary heat, Charger 1, Charger 2. Tooltips show each load’s own kW. Hidden loads are removed from the stack; missing lower readings leave gaps in upper fills.');

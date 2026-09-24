@@ -169,7 +169,7 @@ test('adaptive history pages are bounded, chronological, and retain a thermal pr
   assert.deepEqual(updateAdaptiveLearningBatch(cp, [sample(0)], { now: start + 144 * HOUR }), cp);
 });
 
-test('history worker reconstructs adaptive and legacy checkpoints independently and resumes without duplicate fitting', async t => {
+test('history worker reconstructs the current journal/checkpoint and resumes without duplicate fitting', async t => {
   const dir = mkdtempSync(join(tmpdir(), 'stmq-adaptive-history-'));
   const dbPath = join(dir, 'history.sqlite'), file = join(dir, 'synthetic.csv');
   const store = new Store(dbPath);
@@ -188,7 +188,7 @@ test('history worker reconstructs adaptive and legacy checkpoints independently 
   assert.equal(adaptive?.model.validation, null);
   assert.equal(adaptive.samples.length, 573, 'Hourly imports become causal UTC quarter-hour windows');
   assert.ok(adaptive.samples.every(row => row.solarRadiationWm2 === null && row.actualModeKnown === false));
-  assert.ok(store.getState('learning:history')?.checkpoint);
+  assert.equal(store.getState('learning:history'), null, 'No retired coarse learner checkpoint is produced');
   assert.equal(store.getState('learned:mqtt'), null, 'History must not overwrite the active live checkpoint');
   await run();
   assert.equal(store.getState('adaptive:history').health.acceptedFits, adaptive.health.acceptedFits);

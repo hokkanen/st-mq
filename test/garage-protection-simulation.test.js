@@ -78,17 +78,11 @@ test('public defaults and schema agree with the unapproved thermal reserve model
   assert.doesNotThrow(() => validateOptionFields({ garage: defaults }, document.schema));
 });
 
-test('retired private policies remain readable but cannot approve different thermal semantics', () => {
+test('retired private policies are rejected without carrying old approval', () => {
   const document = JSON.parse(readFileSync(new URL('../config.json', import.meta.url), 'utf8'));
   for (const version of ['garage-exposure-v1', 'garage-exposure-v2']) {
-    const legacy = { enabled: true, protection: { version, approved: true,
-      floorC: 3, hardMinimumC: 0, budgetDegreeMinutes: 105, recoveryAboveC: 5,
-      recoveryDegreeMinutesPerMinute: .7, recoveryDwellMinutes: 25 } };
-    const before = structuredClone(legacy);
-    assert.doesNotThrow(() => validateOptionFields({ garage: legacy }, document.schema));
-    const resolved = garageSettings(legacy);
-    assert.deepEqual(resolved.protection, garageSettings().protection);
-    assert.equal(resolved.enabled, true); assert.deepEqual(legacy, before);
+    const retired = { enabled: true, protection: { version, approved: true, floorC: 3 } };
+    assert.throws(() => validateOptionFields({ garage: retired }, document.schema), /Unknown|Invalid/);
+    assert.throws(() => garageSettings(retired), /Unknown|Unsupported/);
   }
-  assert.throws(() => garageSettings({ protection: { version: 'garage-exposure-v99' } }), /Unsupported/);
 });

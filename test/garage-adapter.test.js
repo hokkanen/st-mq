@@ -182,7 +182,7 @@ test('restart keeps restoration obligation, uses a new host session and cannot r
 test('manual ON and reboot invalidate the episode and honor native recovery locks', async () => {
   for (const event of ['manual-on', 'watchdog-recovery', 'reboot']) {
     const f = fixture(); await f.start(); f.at(BASE + 1000); f.accepted();
-    f.at(BASE + 2000); f.state({ ...event === 'reboot' ? { bootId: 'fixture-boot-2' } : { event: { type: event, at: f.now() } },
+    f.at(BASE + 2000); f.state({ ...event === 'reboot' ? { bootId: 'fixture-boot-2' } : { event: { type: event, at: f.now(), ownerSession: 'fixture-host', episodeId: f.sent[0].episodeId, throughSequence: f.sent[0].sequence } },
       leaseLimits: { ...TEMPLATE.leaseLimits, minimumOnMs: 180_000 }, native: { power: { value: 'on', measuredAt: f.now() } } });
     assert.equal(f.adapter.status().restorePending, false, event);
     assert.equal(f.adapter.status().phase, 'recovery');
@@ -369,4 +369,41 @@ test('completed OFF commands cannot inflate the reserve of a later shorter episo
   await f.start({ ...f.plan, id: 'fixture-next-episode', permissionExpiresAt: BASE + 93_000 });
   assert.equal(f.sent.at(-1).action, 'start');
   assert.equal(f.adapter.status().outstandingPermissionExpiresAt, BASE + 93_000);
+});
+
+test('fresh unrelated ON before and after release retains every possible pending OFF', async () => {
+  const f = fixture(); await f.start();
+  const expiry = f.adapter.status().outstandingPermissionExpiresAt;
+  f.at(BASE + 1000); f.state();
+  assert.equal(f.adapter.status().restorePending, true);
+  await f.adapter.release();
+  const release = f.sent.at(-1);
+  f.at(BASE + 1200); f.state();
+  assert.equal(f.adapter.status().restorePending, true);
+  assert.equal(f.adapter.status().outstandingPermissionExpiresAt, expiry);
+  assert.notEqual(f.adapter.status().lastCommand.status, 'native-confirmed');
+  const saved = f.adapter.snapshot();
+  const restarted = fixture({ persisted: saved });
+  restarted.at(BASE + 2000); restarted.state();
+  assert.equal(restarted.adapter.status().restorePending, true);
+  assert.equal(restarted.adapter.status().outstandingPermissionExpiresAt, expiry);
+  f.at(BASE + 2000); f.accepted(release);
+  assert.equal(f.adapter.status().restorePending, false);
+});
+
+test('local expiry with fresh ON can complete restoration without a release acknowledgement', async () => {
+  const f = fixture(); await f.start();
+  const expiry = f.adapter.status().outstandingPermissionExpiresAt;
+  f.at(expiry - 1); f.state();
+  assert.equal(f.adapter.status().restorePending, true);
+  f.at(expiry + 1); f.state();
+  assert.equal(f.adapter.status().restorePending, false);
+});
+
+test('unfenced manual/watchdog events do not cancel a possible queued OFF', async () => {
+  for (const type of ['manual-on', 'watchdog-recovery']) {
+    const f = fixture(); await f.start(); f.at(BASE + 1000);
+    f.state({ event: { type, at: f.now() } });
+    assert.equal(f.adapter.status().restorePending, true);
+  }
 });

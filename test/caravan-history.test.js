@@ -6,7 +6,7 @@ import { equipmentConfiguration } from '../src/acquisition/equipment-config.js';
 import { createEquipmentCapture } from '../src/acquisition/equipment.js';
 import { getChartData } from '../src/app/chart-data.js';
 import { getDatabaseOverview } from '../src/app/database-overview.js';
-import { isRecordedDataset, pruneRetiredDatasets } from '../src/storage/recorded-datasets.js';
+import { isRecordedDataset } from '../src/storage/recorded-datasets.js';
 import { CARAVAN_RUNNING_STATES, HISTORY_AXES } from '../src/domain/history-series.js';
 import { INDOOR_SIGNALS, GARAGE_TEMPERATURE_SIGNALS, indoorWeights } from '../src/domain/indoor-sensors.js';
 import { historyDatasets, historySeriesAt, historyValueLabel } from '../chart/history-model.js';
@@ -55,7 +55,6 @@ test('only caravan air, interval energy and running state record; battery and li
   assert.deepEqual(new Set(recorder.status(start).parameters.map(row => row.signal)), new Set([...signals, 'caravan_energy']));
   const adaptive = getDatabaseOverview({ store, now: start }).groups.flatMap(group => group.items).find(row => row.id === 'adaptive-observations');
   assert.equal(adaptive.count, 4, 'The database inventory includes all caravan recorded channels');
-  pruneRetiredDatasets(store);
   assert.equal(store.db.prepare('SELECT COUNT(*) n FROM observations').get().n, 4);
 });
 

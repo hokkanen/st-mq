@@ -48,7 +48,7 @@ export class PairState {
     catch { this.lock.close(); this.lock = null; throw pairError('pair_already_running'); }
     try {
       const raw = JSON.parse(await readFile(this.path, 'utf8'));
-      if (raw.version !== 1 || raw.pairId !== this.options.pairId || !validClaim(raw) ||
+      if (raw.version !== 2 || raw.pairId !== this.options.pairId || !validClaim(raw) ||
           !Number.isSafeInteger(raw.sequence) || !Array.isArray(raw.ancestors) ||
           !Array.isArray(raw.actions) || typeof raw.everWritten !== 'boolean') throw pairError('invalid_pair_state');
       this.value = raw;
@@ -60,7 +60,7 @@ export class PairState {
       try { existing = (await lstat(this.options.databasePath)).size > 0; }
       catch (error) { if (error.code !== 'ENOENT') throw error; }
       const protectedExisting = this.options.initialRole !== 'primary' && existing;
-      this.value = { version: 1, pairId: this.options.pairId, nodeId: randomUUID(),
+      this.value = { version: 2, pairId: this.options.pairId, nodeId: randomUUID(),
         platform: this.options.platform, role: protectedExisting ? 'protected' : this.options.initialRole,
         epoch: randomUUID(), sequence: 0, ancestors: [], everWritten: this.options.initialRole === 'primary' || existing,
         bootstrapPending: this.options.initialRole === 'primary' && !existing,

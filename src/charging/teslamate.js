@@ -1,12 +1,9 @@
 import { createHash } from 'node:crypto';
 import { teslamateConfiguration } from '../app/config.js';
-
-// TeslaMate's change-only scalar topics do not contain measurement timestamps.
-// Keep each receipt separate; never let a schedule packet refresh battery/current.
-// Contract: https://docs.teslamate.org/docs/integrations/mqtt
 const NUMERIC = { battery_level: 100, charge_limit_soc: 100, charge_current_request: 100,
-  charge_current_request_max: 100, charger_actual_current: 100, charger_phases: 3, charger_voltage: 500, charger_power: 350 };
-const FIELDS = new Set([...Object.keys(NUMERIC), 'scheduled_charging_start_time', 'plugged_in', 'geofence', 'charging_state', 'state']);
+  charge_current_request_max: 100, charger_actual_current: 100, charger_phases: 3, charger_voltage: 500,
+  charger_power: 350, charge_energy_added: 1000 };
+const FIELDS = new Set([...Object.keys(NUMERIC), 'healthy', 'scheduled_charging_start_time', 'plugged_in', 'geofence', 'charging_state', 'state']);
 export function decodeChargingTeslaField(field, payload) {
   if (!FIELDS.has(field)) return undefined;
   const text = String(payload ?? '').trim();
@@ -16,7 +13,7 @@ export function decodeChargingTeslaField(field, payload) {
     const value = Number(text);
     return value <= NUMERIC[field] && (field !== 'charger_phases' || Number.isInteger(value)) ? value : null;
   }
-  if (field === 'plugged_in') return text === 'true' ? true : text === 'false' ? false : null;
+  if (['plugged_in', 'healthy'].includes(field)) return text === 'true' ? true : text === 'false' ? false : null;
   if (field === 'scheduled_charging_start_time') {
     const at = /(?:Z|[+-]\d\d:\d\d)$/.test(text) ? Date.parse(text) : NaN;
     return Number.isSafeInteger(at) && at >= 0 ? at : null;
@@ -26,104 +23,86 @@ export function decodeChargingTeslaField(field, payload) {
   return text;
 }
 
-export function createChargingTeslaCapture({ settings = {}, clock = Date.now, initialState, saveState = () => {} } = {}) {
+/** One durable vehicle projection. Vehicle data never produces EVSE electricity. */
+export function createChargingTeslaCapture({ settings = {}, clock = Date.now, initialState, saveState = () => {}, brokerIdentity = null, onBoundary = () => {} } = {}) {
   settings = teslamateConfiguration(settings);
-  const root = `teslamate/${settings.namespace ? `${settings.namespace}/` : ''}cars/${settings.carId ?? '1'}/`;
-  const signature = createHash('sha256').update(JSON.stringify([root, settings.homeGeofence])).digest('hex');
+  const root = `teslamate/${settings.namespace ? `${settings.namespace}/` : ''}cars/${settings.carId}/`;
+  const signature = createHash('sha256').update(JSON.stringify([brokerIdentity, root, settings.homeGeofence])).digest('hex');
+  if (initialState && initialState.version !== 1) throw new Error('Unsupported Tesla vehicle state; start a fresh development database');
   const restored = initialState?.signature === signature ? initialState : {};
   let connected = false, brokerConnected = false, subscriptionStatus = 'pending';
   const liveFields = new Set();
-  let fields = restored.fields ?? {}, sequence = restored.sequence ?? 0;
+  let fields = restored.fields ?? {}, sequence = restored.sequence ?? 0, boundaries = restored.boundaries ?? [];
   let lastMessageAt = restored.lastMessageAt ?? null, lastLiveAt = null, lastRetainedAt = null;
   const reception = () => ({ brokerConnected, connected, subscribed: connected, subscriptionStatus,
-    chargerId: settings.chargerAssignment === 'easee' ? 'charger1' : 'charger2',
-    lastMessageAt, lastLiveAt, lastRetainedAt,
+    vehicleId: 'tesla', lastMessageAt, lastLiveAt, lastRetainedAt,
     reason: !brokerConnected ? 'mqtt-disconnected' : !connected ? 'awaiting-subscription' : null });
-  return {
-    topic: `${root}#`,
-    setConnected(value, reason) { if (!value) liveFields.clear(); connected = value; brokerConnected = ['subscription-failed', 'awaiting-subscription'].includes(reason) || value;
+  const snapshot = () => {
+    const value = field => fields[field]?.value, now = clock();
+    const newest = [fields.state, fields.charging_state].filter(Boolean).sort((a, b) => b.sequence - a.sequence)[0];
+    const health = fields.healthy;
+    const healthy = connected && health?.value === true && !health.retained && now >= health.receivedAt && now - health.receivedAt <= settings.maxAgeMs;
+    return { connected, healthy, maxAgeMs: settings.maxAgeMs, association: signature, reception: reception(),
+      atHome: connected && typeof value('geofence') === 'string' ? value('geofence') === settings.homeGeofence : undefined,
+      pluggedIn: value('plugged_in'), charging: newest ? ['Charging', 'charging'].includes(newest.value) : undefined,
+      batteryLevel: value('battery_level'), chargeLimitSoc: value('charge_limit_soc'), requestedCurrentA: value('charge_current_request'),
+      maxCurrentA: value('charge_current_request_max'), actualCurrentA: value('charger_actual_current'),
+      scheduledStartAt: value('scheduled_charging_start_time'), phases: value('charger_phases'), voltageV: value('charger_voltage'),
+      actualPowerKw: value('charger_power'), fields: structuredClone(fields), boundaries: structuredClone(boundaries) };
+  };
+  return { topic: `${root}#`, snapshot, reception,
+    setConnected(value, reason) { if (!value) liveFields.clear(); connected = value;
+      brokerConnected = ['subscription-failed', 'awaiting-subscription'].includes(reason) || value;
       subscriptionStatus = value ? 'subscribed' : reason === 'subscription-failed' ? 'failed' : 'pending'; },
-    reception,
     receive(topic, payload, packet = {}, now = clock()) {
       if (!connected || !topic.startsWith(root)) return false;
       const field = topic.slice(root.length), value = decodeChargingTeslaField(field, payload);
-      if (packet.dup && (value === undefined || fields[field]?.value === value)) return value !== undefined;
-      lastMessageAt = now;
-      if (packet.retain) lastRetainedAt = now; else lastLiveAt = now;
       if (value === undefined) return false;
-      if (packet.retain && liveFields.has(field)) return true;
-      if (!packet.retain) liveFields.add(field);
-      if (fields[field]?.value === value && (packet.retain || ['battery_level', 'charge_limit_soc'].includes(field))) return true;
-      const previousField = fields[field], previousSequence = sequence;
-      fields[field] = { value, receivedAt: now, measuredAt: null, retained: packet.retain === true,
-        timeBasis: 'receipt-only', sequence: ++sequence };
-      try { saveState({ signature, fields: structuredClone(fields), sequence, lastMessageAt }); }
-      catch (error) {
-        if (previousField) fields[field] = previousField; else delete fields[field];
-        sequence = previousSequence; throw error;
+      if (packet.dup || packet.retain && liveFields.has(field)) return true;
+      if (fields[field]?.receivedAt > now || !Number.isSafeInteger(now) || now < 0) return false;
+      const before = { fields: structuredClone(fields), sequence, boundaries: structuredClone(boundaries), lastMessageAt, lastLiveAt, lastRetainedAt, live: new Set(liveFields) };
+      let boundary;
+      try {
+        lastMessageAt = now;
+        if (packet.retain) lastRetainedAt = now; else { lastLiveAt = now; liveFields.add(field); }
+        const previous = fields[field];
+        // Change-only values keep their original clock; a healthy pulse renews health only.
+        if (previous?.value === value && (packet.retain || ['battery_level', 'charge_limit_soc'].includes(field))) return true;
+        fields[field] = { value, receivedAt: now, measuredAt: null, retained: packet.retain === true,
+          timeBasis: 'receipt-only', sequence: ++sequence };
+        if (!packet.retain && (field === 'plugged_in' && value !== previous?.value || field === 'geofence' && value !== previous?.value)) {
+          boundary = { field, value, at: now, sequence, association: signature };
+          boundaries = [...boundaries, boundary].slice(-64);
+        }
+        saveState({ version: 1, signature, fields: structuredClone(fields), sequence, boundaries, lastMessageAt });
+      } catch (error) {
+        ({ fields, sequence, boundaries, lastMessageAt, lastLiveAt, lastRetainedAt } = before);
+        liveFields.clear(); for (const key of before.live) liveFields.add(key); throw error;
       }
+      if (boundary) onBoundary(boundary);
       return true;
     },
-    snapshot() {
-      const value = field => fields[field]?.value;
-      const newest = [fields.state, fields.charging_state].filter(Boolean).sort((a, b) => b.sequence - a.sequence)[0];
-      const assignment = settings.chargerAssignment;
-      return { connected, reception: reception(), atHome: connected && typeof value('geofence') === 'string' ? value('geofence') === (settings.homeGeofence ?? 'Home') : undefined,
-        assignment, assignedToCharger1: assignment === 'easee',
-        pluggedIn: value('plugged_in'), charging: newest ? ['Charging', 'charging'].includes(newest.value) : undefined,
-        batteryLevel: value('battery_level'), chargeLimitSoc: value('charge_limit_soc'),
-        requestedCurrentA: value('charge_current_request'), maxCurrentA: value('charge_current_request_max'),
-        actualCurrentA: value('charger_actual_current'),
-        scheduledStartAt: value('scheduled_charging_start_time'), phases: value('charger_phases'), voltageV: value('charger_voltage'),
-        actualPowerKw: value('charger_power'), fields: structuredClone(fields) };
-    },
+    status() { const s = snapshot(); return { status: !connected ? 'waiting' : s.healthy ? 'ok' : 'degraded',
+      reason: !connected ? 'mqtt-disconnected' : s.healthy ? 'vehicle-observation' : 'vehicle-logger-unhealthy',
+      connected, healthy: s.healthy, charging: s.charging, home: s.atHome, recording: false }; },
+    close() { connected = false; liveFields.clear(); },
   };
 }
 
-/** A confirmed connection probe takes precedence over the default charger. */
-export function teslamateChargerAssignment(snapshot = {}, { identified } = {}) {
-  return { chargerId: snapshot.assignment === 'easee' || snapshot.assignment === 'auto' && identified === 'easee' ? 'charger1' : 'charger2',
-    uncertain: false, reservationChargerId: null };
-}
-
-/** TeslaMate is a read-only vehicle source, not a charger command adapter.
- * Scalar MQTT packets have receipt clocks only: keep that limitation visible
- * instead of refreshing every signal whenever an unrelated topic arrives. */
-export function teslamateChargerTelemetry(snapshot = {}, { now = Date.now() } = {}) {
-  const transportAvailable = snapshot.connected === true;
-  const signal = (value, field, extra = {}) => {
-    const usable = transportAvailable || ['battery_level', 'charge_limit_soc'].includes(field);
+export function teslamateVehicleTelemetry(snapshot = {}, { now = Date.now() } = {}) {
+  const available = snapshot.connected === true && snapshot.healthy === true;
+  const signal = (value, field) => {
     const metadata = snapshot.fields?.[field] ?? {};
-    return { ...metadata, value: usable && value !== undefined ? value : null,
-      source: 'teslamate', field: field ?? null,
-      available: usable && value !== undefined && value !== null,
-      measuredAt: metadata.measuredAt ?? null, receivedAt: metadata.receivedAt ?? null,
-      timeBasis: 'receipt-only', ...extra };
+    const operational = !['battery_level', 'charge_limit_soc'].includes(field);
+    const fresh = !operational || !metadata.retained && Number.isFinite(metadata.receivedAt) && now >= metadata.receivedAt && now - metadata.receivedAt <= (snapshot.maxAgeMs ?? 180000);
+    return { ...metadata, value: available && fresh && value != null ? value : null,
+      lastKnownValue: value ?? null, source: 'teslamate', available: available && fresh && value != null,
+      reason: !available ? 'vehicle-logger-unhealthy' : !fresh ? 'vehicle-evidence-stale' : null,
+      measuredAt: null, receivedAt: metadata.receivedAt ?? null, timeBasis: 'receipt-only' };
   };
-  const currentKnown = Number.isFinite(snapshot.requestedCurrentA) && snapshot.requestedCurrentA >= 0;
-  const maximumKnown = Number.isFinite(snapshot.maxCurrentA) && snapshot.maxCurrentA >= 0;
-  const currentA = currentKnown ? Math.min(snapshot.requestedCurrentA, maximumKnown ? snapshot.maxCurrentA : Infinity) : null;
-  const connected = snapshot.pluggedIn === false || snapshot.atHome === false ? false
-    : snapshot.pluggedIn === true && snapshot.atHome === true ? true : null;
-  const charging = connected === false ? false : connected === true ? snapshot.charging : null;
-  const scheduledStartAt = Number.isSafeInteger(snapshot.scheduledStartAt) && snapshot.scheduledStartAt >= now
-    ? snapshot.scheduledStartAt : null;
-  const chargingField = [snapshot.fields?.state, snapshot.fields?.charging_state].filter(Boolean)
-    .sort((a, b) => b.sequence - a.sequence)[0] === snapshot.fields?.state ? 'state' : 'charging_state';
-  return { ...snapshot, provider: 'teslamate', providerConnected: transportAvailable,
-    capabilities: { scheduling: false, currentControl: false, externalLoadBalancing: false,
-      automatic: { capacityKwh: false, soc: true, minimumSoc: true, connected: true, currentA: true, schedule: true } },
-    capacityKwh: signal(null), soc: signal(snapshot.batteryLevel, 'battery_level'),
-    minimumSoc: signal(snapshot.chargeLimitSoc, 'charge_limit_soc'),
-    connected: signal(connected, 'plugged_in', { locationSource: 'teslamate-geofence',
-      locationReceivedAt: snapshot.fields?.geofence?.receivedAt ?? null }),
-    currentA: signal(currentA, 'charge_current_request', { maximumReceivedAt: snapshot.fields?.charge_current_request_max?.receivedAt ?? null }),
-    maxCurrentA: signal(snapshot.maxCurrentA, 'charge_current_request_max'),
-    actualCurrentA: signal(connected === true ? snapshot.actualCurrentA : null, 'charger_actual_current'),
-    phases: signal(snapshot.phases, 'charger_phases'), voltageV: signal(snapshot.voltageV, 'charger_voltage'),
-    powerKw: signal(connected === true ? snapshot.actualPowerKw : null, 'charger_power'), charging: signal(charging, chargingField),
-    scheduledStartAt: signal(scheduledStartAt, 'scheduled_charging_start_time'),
-    // time_to_full_charge is a duration estimate. It is not a vehicle stop time
-    // and must never become an enforced native schedule end.
-    scheduledEndAt: signal(null), scheduledEndKind: null };
+  const ceiling = [snapshot.requestedCurrentA, snapshot.maxCurrentA].filter(Number.isFinite);
+  return { soc: signal(snapshot.batteryLevel, 'battery_level'), minimumSoc: signal(snapshot.chargeLimitSoc, 'charge_limit_soc'),
+    vehicleCeilingSoc: signal(snapshot.chargeLimitSoc, 'charge_limit_soc'),
+    vehicleCurrentA: signal(ceiling.length ? Math.min(...ceiling) : null, 'charge_current_request'),
+    vehicleNotBefore: signal(snapshot.scheduledStartAt > now ? snapshot.scheduledStartAt : null, 'scheduled_charging_start_time') };
 }

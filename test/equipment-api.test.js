@@ -239,7 +239,7 @@ async function runtimeFixture(t, devices = [native()]) {
   const path = join(directory, 'settings.json');
   let now = INITIAL;
   const options = { controller: { input: 'mqtt', mode: 'shadow', web_token: TOKEN },
-    mqtt: { address: 'mqtt://synthetic-equipment.invalid' }, teslamate: { enabled: false, charger_identification: false },
+    mqtt: { address: 'mqtt://synthetic-equipment.invalid' }, teslamate: { enabled: false },
     equipment: { devices: [] } };
   const write = (selected = devices, patch = {}) => writeFileSync(path, JSON.stringify({ ...options, ...patch,
     equipment: { devices: selected } }), { mode: 0o600 });
@@ -250,8 +250,13 @@ async function runtimeFixture(t, devices = [native()]) {
   const launch = () => start({ config: load(), clock: () => now, installSignalHandlers: false,
     providerOptions: { automatic: false }, mqttOptions: { connect: mqtt.connect } });
   let app = await launch();
+  let expectedCleanupFailure = false;
   t.after(async () => {
-    try { mqtt.failOff(false); await app.close(); }
+    try {
+      mqtt.failOff(false);
+      if (expectedCleanupFailure) await assert.rejects(app.close(), /cleanup completed with errors/);
+      else await app.close();
+    }
     finally { rmSync(directory, { recursive: true, force: true }); }
   });
   await flush();
@@ -261,6 +266,7 @@ async function runtimeFixture(t, devices = [native()]) {
     return { status: response.status, body: await response.json() };
   };
   return { get app() { return app; }, mqtt, write, post,
+    expectCleanupFailure() { expectedCleanupFailure = true; },
     async restart() { await app.close({ restore: false }); now++; app = await launch(); await flush(); },
     advance(ms) { now += ms; } };
 }
@@ -466,16 +472,17 @@ test('shutdown still closes the runtime when restoration and its diagnostic writ
   const f = await runtimeFixture(t);
   assert.equal((await f.post('/api/equipment/test', TEST)).status, 200);
   f.mqtt.failOff(true);
-  const writeEvent = f.app.store.event.bind(f.app.store);
+  const setState = f.app.store.setState.bind(f.app.store);
   let failedDiagnostic = false;
-  f.app.store.event = (type, ...args) => {
-    if (type === 'equipment-test-restoration-pending') {
+  f.app.store.setState = (key, value, ...args) => {
+    if (key === KEY && value.active?.status === 'restoration-pending') {
       failedDiagnostic = true;
-      throw new Error('synthetic diagnostic write failure');
+      throw new Error('synthetic pending-state write failure');
     }
-    return writeEvent(type, ...args);
+    return setState(key, value, ...args);
   };
-  await f.app.close();
+  f.expectCleanupFailure();
+  await assert.rejects(f.app.close(), /cleanup completed with errors/);
   assert.equal(failedDiagnostic, true);
   assert.equal(f.mqtt.clients[0].closed, true);
   assert.equal(f.app.server.listening, false);

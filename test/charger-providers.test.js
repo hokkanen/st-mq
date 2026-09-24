@@ -2,8 +2,6 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { chargingSnapshot, createEaseeScheduleAdapter, easeeChargerTelemetry, manualScheduleWindow, nextScheduleOccurrence,
   normalizeScheduleState } from '../src/charging/easee.js';
-import { createChargingTeslaCapture, decodeChargingTeslaField, teslamateChargerTelemetry,
-  teslamateChargerAssignment } from '../src/charging/teslamate.js';
 import { updateSupplyEstimate } from '../src/charging/supply.js';
 
 const now = Date.parse('2026-09-15T18:00:00Z');
@@ -13,31 +11,6 @@ const easeeRows = (values = {}) => Object.entries({ 22: 32, 23: 32, 24: 32, 31: 
   47: 32, 48: 32, 96: 0, 100: 'B', 104: 20, 109: 2, 110: 30, 111: 32, 112: 32,
   113: 32, 120: 0, 230: 16, 231: 13, 232: 15, 250: true, ...values })
   .map(([id, value]) => ({ id: Number(id), value, timestamp: new Date(now - 1000).toISOString() }));
-const capture = () => {
-  const result = createChargingTeslaCapture({ settings: { carId: '1', homeGeofence: 'Home', chargerAssignment: 'bmw' } });
-  result.setConnected(true);
-  return result;
-};
-const send = (capture, field, value, receivedAt = now - 1000, packet = {}) =>
-  capture.receive(`teslamate/cars/1/${field}`, String(value), packet, receivedAt);
-
-test('provider adapters expose the same canonical signals with distinct control capabilities', () => {
-  const easee = easeeChargerTelemetry(chargingSnapshot(easeeRows(), schedule, now), { now });
-  const tesla = teslamateChargerTelemetry(capture().snapshot(), { now });
-  for (const key of ['capacityKwh', 'soc', 'minimumSoc', 'connected', 'currentA', 'actualCurrentA',
-    'phases', 'voltageV', 'powerKw', 'charging', 'scheduledStartAt', 'scheduledEndAt']) {
-    assert.equal(typeof easee[key], 'object', key);
-    assert.equal(typeof tesla[key], 'object', key);
-    assert.ok(Object.hasOwn(easee[key], 'available'), key);
-    assert.ok(Object.hasOwn(tesla[key], 'available'), key);
-  }
-  assert.equal(easee.capabilities.scheduling, true);
-  assert.equal(tesla.capabilities.scheduling, false);
-  assert.equal(easee.capabilities.externalLoadBalancing, true);
-  assert.equal(easee.capabilities.currentControl, false, 'The current schedule adapter never writes dynamic current');
-  assert.equal(tesla.capabilities.currentControl, false);
-});
-
 test('Easee current estimate uses the smallest charger, cable and Equalizer allowance', () => {
   let telemetry = easeeChargerTelemetry(chargingSnapshot(easeeRows(), schedule, now), { now });
   assert.equal(telemetry.currentA.value, 13);
@@ -160,83 +133,6 @@ test('stale household currents cannot inflate headroom but unchanged charger eve
   assert.equal(snapshot.supply.propertyCurrentA, null, 'Conflicting same-time meter values cannot become a planning budget');
 });
 
-test('TeslaMate keeps requested and measured current separate, with individual receipt times', () => {
-  const vehicle = capture();
-  send(vehicle, 'geofence', 'Home'); send(vehicle, 'plugged_in', true);
-  send(vehicle, 'battery_level', 42, now - 4000, { retain: true });
-  send(vehicle, 'charge_limit_soc', 85, now - 3500);
-  send(vehicle, 'charge_current_request', 16, now - 3000);
-  send(vehicle, 'charge_current_request_max', 13, now - 2000);
-  send(vehicle, 'charger_actual_current', 0, now - 1000);
-  send(vehicle, 'charger_power', 0, now - 500);
-  send(vehicle, 'scheduled_charging_start_time', new Date(now + hour).toISOString(), now);
-  const telemetry = teslamateChargerTelemetry(vehicle.snapshot(), { now });
-  assert.equal(telemetry.soc.value, 42);
-  assert.equal(telemetry.soc.receivedAt, now - 4000);
-  assert.equal(telemetry.soc.measuredAt, null);
-  assert.equal(telemetry.soc.retained, true);
-  assert.equal(telemetry.minimumSoc.value, 85);
-  assert.equal(telemetry.currentA.value, 13);
-  assert.equal(telemetry.currentA.receivedAt, now - 3000);
-  assert.equal(telemetry.actualCurrentA.value, 0);
-  assert.equal(telemetry.powerKw.value, 0);
-  assert.equal(telemetry.scheduledStartAt.value, now + hour);
-  send(vehicle, 'charge_current_request', 'invalid');
-  assert.equal(teslamateChargerTelemetry(vehicle.snapshot(), { now }).currentA.available, false);
-});
-
-test('a vehicle plugged in away from home is not connected to the household charger', () => {
-  const vehicle = capture();
-  send(vehicle, 'plugged_in', true);
-  assert.equal(teslamateChargerTelemetry(vehicle.snapshot(), { now }).connected.value, null);
-  send(vehicle, 'geofence', 'Elsewhere');
-  assert.equal(teslamateChargerTelemetry(vehicle.snapshot(), { now }).connected.value, false);
-  send(vehicle, 'geofence', 'Home');
-  assert.equal(teslamateChargerTelemetry(vehicle.snapshot(), { now }).connected.value, true);
-  vehicle.setConnected(false);
-  assert.equal(teslamateChargerTelemetry(vehicle.snapshot(), { now }).connected.available, false);
-});
-
-test('vehicle charging power belongs to the household charger only after home connection is confirmed', () => {
-  const vehicle = capture();
-  send(vehicle, 'plugged_in', true); send(vehicle, 'charging_state', 'Charging');
-  send(vehicle, 'charger_power', 11); send(vehicle, 'charger_actual_current', 16);
-  let telemetry = teslamateChargerTelemetry(vehicle.snapshot(), { now });
-  assert.equal(telemetry.charging.available, false);
-  assert.equal(telemetry.powerKw.available, false);
-  assert.equal(telemetry.actualCurrentA.available, false);
-  send(vehicle, 'geofence', 'Elsewhere');
-  telemetry = teslamateChargerTelemetry(vehicle.snapshot(), { now });
-  assert.equal(telemetry.charging.value, false);
-  assert.equal(telemetry.powerKw.available, false);
-  assert.equal(telemetry.actualCurrentA.available, false);
-  send(vehicle, 'geofence', 'Home');
-  telemetry = teslamateChargerTelemetry(vehicle.snapshot(), { now });
-  assert.equal(telemetry.charging.value, true);
-  assert.equal(telemetry.powerKw.value, 11);
-  assert.equal(telemetry.actualCurrentA.value, 16);
-  send(vehicle, 'plugged_in', false);
-  telemetry = teslamateChargerTelemetry(vehicle.snapshot(), { now });
-  assert.equal(telemetry.charging.value, false);
-  assert.equal(telemetry.powerKw.available, false);
-});
-
-test('unsupported capacity, target and schedule end are never fabricated from other telemetry', () => {
-  const vehicle = capture();
-  send(vehicle, 'battery_level', 50);
-  assert.equal(decodeChargingTeslaField('usable_battery_capacity', 75), undefined);
-  assert.equal(decodeChargingTeslaField('time_to_full_charge', 2), undefined);
-  const telemetry = teslamateChargerTelemetry({ ...vehicle.snapshot(), timeToFullCharge: 2,
-    usableCapacityKwh: 75, scheduledEndAt: now + 2 * hour }, { now });
-  assert.equal(telemetry.capacityKwh.available, false);
-  assert.equal(telemetry.scheduledEndAt.available, false);
-  assert.equal(telemetry.scheduledEndKind, null);
-  const easee = easeeChargerTelemetry(chargingSnapshot(easeeRows(), schedule, now), { now });
-  assert.equal(easee.soc.available, false);
-  assert.equal(easee.minimumSoc.available, false);
-  assert.equal(easee.capacityKwh.available, false);
-});
-
 test('native schedule display distinguishes a real stop from a delayed start with no stop', () => {
   const delayed = normalizeScheduleState({ enabled: 'delayed', delayed: {
     timezone: 'UTC', startTime: '19:00', maximumAmps: 16,
@@ -254,14 +150,6 @@ test('native schedule display distinguishes a real stop from a delayed start wit
   assert.equal(manualScheduleWindow(daily, now), null, 'Multiple periods require explicit resumption');
 });
 
-test('past Tesla schedules do not roll forward into a new charging event', () => {
-  const vehicle = capture();
-  send(vehicle, 'scheduled_charging_start_time', new Date(now - hour).toISOString());
-  const telemetry = teslamateChargerTelemetry(vehicle.snapshot(), { now });
-  assert.equal(telemetry.scheduledStartAt.available, false);
-  assert.equal(telemetry.scheduledStartAt.value, null);
-});
-
 test('a continuously open recurrence has no fabricated daily stop boundary', () => {
   const daily = normalizeScheduleState({ enabled: 'daily', daily: { timezone: 'UTC', periods: [
     { startTime: '00:00', stopTime: '12:00', maximumAmps: 16 },
@@ -271,18 +159,6 @@ test('a continuously open recurrence has no fabricated daily stop boundary', () 
     startAt: null, endAt: null, endKind: null, kind: 'daily', continuous: true,
   });
 });
-
-test('TeslaMate is the configured Charger 2 vehicle feed unless explicitly assigned to Easee', () => {
-  assert.deepEqual(teslamateChargerAssignment({ assignment: 'auto' }), {
-    chargerId: 'charger2', uncertain: false, reservationChargerId: null,
-  });
-  assert.equal(teslamateChargerAssignment({ assignment: 'auto' }, { identified: 'easee' }).chargerId, 'charger1');
-  assert.equal(teslamateChargerAssignment({ assignment: 'auto' }, { identified: 'bmw' }).chargerId, 'charger2');
-  assert.equal(teslamateChargerAssignment({ assignment: 'easee' }, { identified: 'bmw' }).chargerId, 'charger1');
-  assert.equal(teslamateChargerAssignment({ assignment: 'bmw' }, { identified: 'easee' }).chargerId, 'charger2',
-    'An explicit assignment is the owner decision, not a hint for automatic attribution');
-});
-
 
 test('the reported Equalizer allowance stays distinct from a zero dynamic charging limit', () => {
   const telemetry = easeeChargerTelemetry(chargingSnapshot(easeeRows({ 47: 16, 48: 0, 230: 16, 231: 16, 232: 16 }), schedule, now), { now });

@@ -17,7 +17,7 @@ const prefix = '/api/hassio_ingress/synthetic-browser-session/';
 const uploadPath = '/addon_configs/synthetic_repository_st-mq/secrets.json';
 const now = Date.parse('2026-09-07T12:00:00Z');
 const requests = [], pending = new Map(), errors = [];
-let app, proxy, socket, id = 0, rejectStatus = false, cleanupPending = false, metadataAvailable = true;
+let app, proxy, socket, id = 0, rejectStatus = false, cleanupPending = false, metadataAvailable = true, stallReads = null;
 
 try {
   writeFileSync(privatePath, '{}', { mode: 0o600 });
@@ -32,6 +32,10 @@ try {
       requests.push({ method: request.method, path: request.url, authorization: Boolean(request.headers.authorization) });
       if (!request.url.startsWith(prefix)) { response.writeHead(404); response.end(); return; }
       const path = `/${request.url.slice(prefix.length)}`;
+      if (stallReads === 'chart-events' && (path.startsWith('/api/chart?') || path.startsWith('/api/events?'))) return;
+      if (stallReads === 'status-body' && path === '/api/status') {
+        response.writeHead(200, { 'Content-Type': 'application/json' }); response.write('{'); return;
+      }
       if (rejectStatus && path === '/api/status') {
         response.writeHead(401, { 'Content-Type': 'application/json' }); response.end('{"error":"Synthetic expired HA session"}'); return;
       }
@@ -87,8 +91,8 @@ try {
     if (result.exceptionDetails) throw new Error(JSON.stringify(result.exceptionDetails));
     return result.result.value;
   };
-  const until = async expression => {
-    for (let attempt = 0; attempt < 200; attempt++) {
+  const until = async (expression, attempts = 200) => {
+    for (let attempt = 0; attempt < attempts; attempt++) {
       if (await evaluate(expression)) return;
       await new Promise(resolve => setTimeout(resolve, 30));
     }
@@ -148,6 +152,25 @@ try {
   assert.equal(await evaluate("document.getElementById('settings-location-message').textContent"),
     'Restart ST-MQ to load configuration paths, then refresh this page');
   assert.equal(await evaluate("document.getElementById('settings-location').children.length"), 0, 'Missing backend metadata never invents a folder');
+  // Real browser timers and network: stalled initial auxiliary reads cannot
+  // prevent status polling; a body that never completes cannot hold its latch.
+  stallReads = 'chart-events'; requests.length = 0;
+  await send('Page.reload');
+  for (let attempt = 0; attempt < 400 && requests.filter(row => row.path === `${prefix}api/status`).length < 2; attempt++)
+    await new Promise(resolve => setTimeout(resolve, 50));
+  assert.ok(requests.filter(row => row.path === `${prefix}api/status`).length >= 2,
+    'Status polling continues while the first chart/event reads are stalled');
+  stallReads = null;
+  await until("document.getElementById('history')?.dataset.ready === 'true'", 1400);
+  stallReads = 'status-body'; requests.length = 0;
+  await send('Page.reload');
+  await until("document.getElementById('connection')?.textContent.includes('Monitoring is stale')", 1800);
+  assert.ok(requests.filter(row => row.path === `${prefix}api/status`).length >= 2,
+    'A stalled JSON body expires and later status polling retries');
+  stallReads = null;
+  await evaluate("window.dispatchEvent(new Event('online'))");
+  await until("document.getElementById('history')?.dataset.ready === 'true'", 400);
+  assert.equal(await evaluate("document.getElementById('connection').textContent.includes('Monitoring is stale')"), false);
   rejectStatus = true;
   await send('Page.reload');
   await until("document.getElementById('error')?.textContent.includes('Reopen ST-MQ from the host dashboard')");
@@ -156,7 +179,8 @@ try {
   console.log(JSON.stringify({ result: 'ingress-browser-smoke-passed', checks: ['built theme, CSS and module assets under ingress prefix',
     'chart, events, recording, audits and configuration API requests under ingress prefix', 'actual upload path in instructions',
     'Home Assistant login without token prompt', 'Apply configuration updates visible state', 'persistent import cleanup warning', 'explicit restart guidance when backend path metadata is missing',
-    'configuration paths fit mobile width', 'expired HA session directs user back to Home Assistant'] }));
+    'configuration paths fit mobile width', 'stalled initial chart/events do not block status polling',
+    'whole-body read timeout retries and monitoring staleness recovers online', 'expired HA session directs user back to Home Assistant'] }));
   await send('Page.close');
 } finally {
   socket?.close(); for (const task of pending.values()) clearTimeout(task.timer);

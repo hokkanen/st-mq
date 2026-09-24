@@ -13,12 +13,7 @@ import { Store } from '../src/storage/store.js';
 import { providerFixture } from '../scripts/lib/provider-fixture.js';
 import { identityConnection, idleIdentityClient } from './helpers/identity-mqtt.js';
 
-test('retired legacy publisher exits before loading credentials or connecting', () => {
-  const result = spawnSync(process.execPath, ['scripts/mqtt-control.js'], { encoding: 'utf8', env: { ...process.env, STMQ_LEGACY_LIVE: '' }, timeout: 3000 });
-  assert.equal(result.status, 1);
-  assert.match(result.stderr, /legacy heating controller is retired/);
-  assert.doesNotMatch(result.stdout, /MQTT client connected|MQTT published/);
-});
+
 
 test('standalone entry starts offline promptly, serves built UI, survives restart and closes workers', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-startup-'));

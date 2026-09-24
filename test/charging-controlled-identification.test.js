@@ -138,13 +138,14 @@ test('disconnect and consumed-start boundaries survive persisted replay without 
   assert.equal(matchBmwControlledPause(saved.reading, saved.options), null);
 });
 
-test('the ten-minute source window stays distinct from delayed live delivery freshness', () => {
+test('late stops remain attributable while their current-session source evidence is fresh', () => {
   const { reading, options } = fixture();
   assert.ok(matchBmwControlledPause(reading, { ...options, now: START + 11 * MINUTE }));
   const lateStop = START + 10 * MINUTE + 1;
   reading.fields.charging.negativeEvent = event('late-stop', lateStop);
-  assert.equal(matchBmwControlledPause(reading, { ...options, stoppedAt: lateStop, now: START + 11 * MINUTE,
-    pause: { ...options.pause, reasonAt: lateStop } }), null);
+  assert.ok(matchBmwControlledPause(reading, { ...options, stoppedAt: lateStop, now: START + 11 * MINUTE,
+    pause: { ...options.pause, reasonAt: lateStop } }));
+  assert.equal(matchBmwControlledPause(reading, { ...options, now: START + 17 * MINUTE }), null);
 });
 
 test('a fresh tightly matched start with unchanged inlet context remains pending without assigning identity', () => {
@@ -165,15 +166,15 @@ test('pending remains until both vehicle stop and confirmed owned pause evidence
   assert.equal(pendingBmwControlledPause(missingStop, options), true);
 });
 
-test('controlled-pause pending expires at ten minutes and cannot cross a disconnect or consumed start', () => {
+test('controlled-pause pending expires ten minutes after the charging start and cannot cross a disconnect or consumed start', () => {
   const { reading, options } = fixture();
   const candidate = { ...options, pause: null };
-  assert.equal(pendingBmwControlledPause(reading, { ...candidate, now: START + 10 * MINUTE - 1 }), true);
-  for (const override of [{ now: START + 10 * MINUTE }, { now: START - 1 },
+  assert.equal(pendingBmwControlledPause(reading, { ...candidate, now: reading.fields.charging.positiveEvent.measuredAt + 10 * MINUTE - 1 }), true);
+  for (const override of [{ now: reading.fields.charging.positiveEvent.measuredAt + 10 * MINUTE }, { now: START - 1 },
     { connectedAt: START + 2 * MINUTE }, { lastDisconnectedAt: options.chargingAt }, { consumedChargingId: 'bmw-start' }])
     assert.equal(pendingBmwControlledPause(reading, { ...candidate, ...override }), false);
   const saved = JSON.parse(JSON.stringify({ reading, options: candidate }));
-  assert.equal(pendingBmwControlledPause(saved.reading, { ...saved.options, now: START + 10 * MINUTE }), false);
+  assert.equal(pendingBmwControlledPause(saved.reading, { ...saved.options, now: reading.fields.charging.positiveEvent.measuredAt + 10 * MINUTE }), false);
 });
 
 test('pending context must remain valid and does not bypass a missing or retained charging start', () => {

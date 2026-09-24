@@ -248,12 +248,12 @@ try {
   assert.equal(await evaluate("document.getElementById('charger1-setting-manualSoc').value"), '20');
   assert.equal(await evaluate("document.getElementById('charger1-enabled').getAttribute('aria-checked')"), 'false');
   assert.equal(await evaluate("document.getElementById('charger1-setting-readyBy').disabled"), false);
-  assert.equal(await evaluate("document.getElementById('charger2-setting-readyBy').disabled"), true);
-  assert.equal(await evaluate("document.getElementById('charger2-enabled').disabled"), true);
-  assert.equal(await evaluate("getComputedStyle(document.getElementById('charger2-setting-readyBy').closest('.charging-field')).display"), 'none',
-    'Observed chargers omit the unsupported ready-by setting');
-  assert.equal(await evaluate("getComputedStyle(document.getElementById('charger2-enabled').parentElement).display"), 'none',
-    'Observed chargers omit the unsupported automatic-control switch');
+  assert.equal(await evaluate("document.getElementById('charger2-setting-readyBy').disabled"), false);
+  assert.equal(await evaluate("document.getElementById('charger2-enabled').disabled"), false);
+  assert.notEqual(await evaluate("getComputedStyle(document.getElementById('charger2-setting-readyBy').closest('.charging-field')).display"), 'none',
+    'Physical Charger 2 offers a ready-by setting');
+  assert.notEqual(await evaluate("getComputedStyle(document.getElementById('charger2-enabled').parentElement).display"), 'none',
+    'Physical Charger 2 offers automatic control independently of commissioning');
   assert.equal(await evaluate("[...document.querySelectorAll('#charging-devices > details')].some(fold=>fold.open)"), false);
   assert.equal(await evaluate("document.getElementById('charging-installation-details')"), null);
   assert.equal(await evaluate("document.querySelector('.charging-secondary, .charging-soc-form')"), null);
@@ -282,9 +282,9 @@ try {
   await evaluate("globalThis.chargingSmokeValues='scheduled'; globalThis.refreshLearningSmokeStatus()");
   await until("document.getElementById('charger2-soc').textContent==='62 %'");
   assert.equal(await evaluate("document.getElementById('charger2-setting-minimumSoc').value"), '85');
-  assert.equal(await evaluate("document.getElementById('charger2-setting-minimumSoc').disabled"), true);
+  assert.equal(await evaluate("document.getElementById('charger2-setting-minimumSoc').disabled"), false);
   assert.equal(await evaluate("document.getElementById('charger2-setting-manualSoc').value"), '62');
-  assert.equal(await evaluate("document.getElementById('charger2-setting-manualSoc').disabled"), true);
+  assert.equal(await evaluate("document.getElementById('charger2-setting-manualSoc').disabled"), false);
   assert.equal(await evaluate("document.getElementById('charger2-state').textContent"), 'Observed');
   assert.equal(await evaluate("document.getElementById('charger2-summary')"), null,
     'The Garage overview does not duplicate the visible charger card');
@@ -390,7 +390,7 @@ try {
   await pause(60);
   await keyPress('Enter');
   assert.equal(await evaluate("assertChargingSmokeTrigger.getAttribute('aria-expanded')"), 'true');
-  assert.match(await evaluate("document.querySelector('#status-detail-popover .status-detail-body').textContent"), /vehicle finishes|until the vehicle/);
+  assert.match(await evaluate("document.querySelector('#status-detail-popover .status-detail-body').textContent"), /Reaching the target or ready-by time does not stop charging/);
   await evaluate('globalThis.refreshLearningSmokeStatus()');
   assert.equal(await evaluate("document.querySelector('#status-detail-popover').hidden"), false,
     'The charging schedule explanation stays open during status refresh');

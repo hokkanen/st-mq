@@ -5,10 +5,9 @@ const dateTime = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki',
 const date = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Helsinki', year: 'numeric', month: '2-digit', day: '2-digit' });
 
 export const timingSources = {
-  measured: { label: 'Meter-based', short: 'metered', explanation: 'Uses this device’s dedicated power readings, integrated between samples to estimate energy.' },
+  measured: { label: 'Meter-based', short: 'metered', explanation: 'Uses qualified dedicated electrical intervals with their recorded measurement basis.' },
   observed: { label: 'Operation estimate', short: 'operation estimate', explanation: 'Uses reported compressor activity and configured component powers. Energy is estimated, not separately metered.' },
   recorded: { label: 'Recorded energy estimate', short: 'recorded energy', explanation: 'Uses reported active power or recorded voltage and current, integrated over each saved interval. Phase allocation and energy remain estimates; cumulative meter checks do not revise this history.' },
-  modelled: { label: 'Model-based', short: 'modelled', explanation: 'Uses the thermal model’s predicted running fraction from indoor and outdoor conditions. This does not confirm that the heat pump ran or used this energy.' },
   currents: { label: 'Current estimate', short: 'current estimate', explanation: 'Uses phase-current readings at 230 V to estimate power. This is not a direct active-power or energy measurement.' },
   unknown: { label: 'Basis unrecorded', short: 'basis unrecorded', explanation: 'The stored power value does not say how it was measured or estimated. Its basis cannot be classified now.' },
   simulated: { label: 'Simulated', short: 'simulated', explanation: 'Uses simulated input, not measured household consumption.' },
@@ -21,7 +20,7 @@ export const timingExplanations = {
     'Positive means cheaper timing; negative means dearer timing. The amount is not scaled up for gaps and does not prove savings caused by the controller.',
   ],
   coverage: [
-    '“Time included” is the share of elapsed time in the selection used for each comparison. Heating includes valid zero-use periods; charging excludes idle periods. Missing readings are unknown, not idle.',
+    '“Time included” uses elapsed time for heating and each charger. Combined charging uses charger-time: an hour on each charger counts twice. Heating includes valid zero-use periods; charging excludes idle periods. Missing readings are unknown, not idle.',
     'Today runs from Finnish midnight to the calculation time. Future hours do not reduce the percentage, but the price average still needs the full day’s prices. Unavailable means there is no supported total, not zero energy use.',
   ],
   evidence: [
@@ -46,33 +45,33 @@ function span(from, to, prefix) {
 }
 
 function sourcesFor(result) {
-  const order = ['measured', 'observed', 'recorded', 'modelled', 'currents', 'unknown', 'simulated'];
-  const sources = (result.evidence?.sources ?? []).filter(source => source.durationMs > 0 && source.share > 0)
-    .map(source => ({ ...source, key: timingSources[source.key] ? source.key : 'unknown' }))
+  const order = ['measured', 'observed', 'recorded', 'currents', 'unknown', 'simulated'];
+  return (result.evidence?.sources ?? []).filter(source => source.durationMs > 0 && source.share > 0 && timingSources[source.key])
     .sort((a, b) => order.indexOf(a.key) - order.indexOf(b.key));
-  // Old API responses have no per-sample provenance. Never infer it from today's sensors.
-  return sources.length ? sources : finite(result.value) ? [{ key: 'unknown', share: 1, durationMs: result.coverageDetails?.includedMs }] : [];
 }
 
 /** Copy is driven only by metadata for the selected calculation, never live device state. */
 export function timingDisplay(key, result = {}, payload = {}) {
   result ??= {};
-  const charger = key === 'charger';
-  const name = charger ? 'Charging' : 'Heating';
-  const includedTimeLabel = 'included time';
-  const available = finite(result.value);
+  const charger = ['charger','charger1','charger2'].includes(key);
+  const name = key === 'charger1' ? 'Charger 1' : key === 'charger2' ? 'Charger 2' : charger ? 'Charging' : 'Heating';
+  const combined = result.coverageDetails?.coverageBasis === 'charger-time';
+  const includedTimeLabel = combined ? 'included charger-time' : 'included time';
   const coverage = result.coverageDetails ?? {};
-  const sources = sourcesFor(result);
   const energyBasis = result.evidence?.energyBasis;
-  const reconstructed = key === 'heatPump' && energyBasis === 'reconstructed-equipment';
+  const reconstructed = key === 'heatPump';
   const recorded = energyBasis === 'recorded-intervals' || energyBasis === 'recorded-and-legacy';
+  const combinedHeating = key === 'totalHeatPump' && energyBasis === 'separate-system-intervals';
+  const currentBasis = reconstructed ? energyBasis === 'reconstructed-equipment' : combinedHeating || recorded || energyBasis === 'power-snapshots';
+  const sources = currentBasis ? sourcesFor(result) : [];
+  const available = finite(result.value) && currentBasis && coverage.includedMs > 0 && (sources.length > 0 || combinedHeating);
   const mixedTime = result.evidence?.timeBasis === 'mixed-recorded-time';
   const intervalTime = result.evidence?.timeBasis === 'recorded-interval-time' || reconstructed || recorded;
   const dateBasis = mixedTime ? 'Contributing intervals and samples' : intervalTime ? 'Contributing intervals' : 'Contributing samples';
   const included = coverage.includedMs, elapsed = coverage.elapsedMs;
   const ratio = finite(included) && finite(elapsed)
     ? elapsed > 0 ? included / elapsed : 0
-    : result.coverage ?? 0;
+    : 0;
   const now = payload.now, range = payload.range ?? {};
   const inProgress = finite(now) && finite(range.to) && now < range.to && (elapsed > 0 || now > range.from);
   const today = inProgress && range.startDate === date.format(now) && range.endDate === range.startDate;
@@ -87,15 +86,13 @@ export function timingDisplay(key, result = {}, payload = {}) {
     : null;
 
   const energyExplanation = available
-    ? key === 'heatPump' ? reconstructed
+    ? reconstructed
       ? 'Energy for space heating and domestic hot water is reconstructed from recorded equipment operation and dated nominal powers. Model predictions and requested modes cannot fill missing equipment evidence. Whole-house power is not used.'
-      : 'Energy uses dedicated heat-pump power where available, then reported compressor activity with configured powers, then the thermal model’s predicted running fraction. Auxiliary heating is assessed separately; whole-house power is not used.'
       : recorded
         ? `Energy is estimated from the original recorded electrical intervals${energyBasis === 'recorded-and-legacy' ? ' and older phase-current samples' : ''}. Cumulative meter checks do not revise this history.`
         : 'Uses the recorded sources below; estimates are not direct energy measurements.'
-    : key === 'heatPump' ? reconstructed
+    : reconstructed
       ? 'Needs recorded compressor activity, verified auxiliary output and dated nominal powers. Model predictions and requested modes cannot fill missing equipment evidence. Whole-house power is not used.'
-      : 'Needs dedicated heat-pump power readings or saved heat-pump estimates. Whole-house power is not used.'
       : recorded
         ? `Needs recorded electrical intervals${energyBasis === 'recorded-and-legacy' ? ' or older phase-current samples' : ''} showing charging.`
         : 'Needs usable charger power readings or estimates showing charging.';
@@ -118,7 +115,7 @@ export function timingDisplay(key, result = {}, payload = {}) {
     ? 'Includes periods with valid, fresh equipment observations, dated nominal powers and complete daily prices. Missing, stale or unverified equipment states are excluded.'
     : recorded
       ? `${chargingRule}Includes ${charger ? 'charging periods' : 'usable recorded energy'} with complete daily prices. Saved energy intervals are used without extending into gaps.${energyBasis === 'recorded-and-legacy' ? ' Older power samples are held for at most 30 minutes.' : ''}`
-      : `${chargingRule}Includes ${charger ? 'charging periods' : 'usable recorded power'} with complete daily prices.${charger ? '' : ' Recorded estimates and modelled values count.'} Power samples are held for at most 30 minutes.`;
+      : `${chargingRule}Includes charging periods with complete daily prices. Coherent current snapshots are held for at most 30 minutes.`;
   const missingHistory = coverage.missingPowerMs > 0;
   const missingPrices = coverage.incompletePriceMs > 0;
   const coverageSummary = missingHistory && missingPrices
@@ -153,9 +150,14 @@ export function timingDisplay(key, result = {}, payload = {}) {
     ? 'The selection is still in progress. The comparison stops at the calculation time; later hours may change the total.'
     : 'The total covers only included periods. Missing history is not extrapolated.'
     : null;
+  const breakdown = combined ? ['Two physical chargers; one simultaneous hour is two charger-hours. Missing Charger 2 history remains unknown, including v0.7.5 imports.',
+    ...['charger1','charger2'].map(id => {
+      const display = timingDisplay(id, payload.timingBenefit?.[id], payload);
+      return `${display.name}: ${display.amount ?? 'Unavailable'}; ${display.coverageLabel}.`;
+    })] : [];
   return { key, name, available, noChargingDetected, amount, outcome: 'timing difference', basis, sources: sourceDetails,
-    coverageLabel: `${timingPercent(ratio)} of time included`,
-    includedTimeLabel, coverageHeading: 'Time included', assumedRates,
+    coverageLabel: `${timingPercent(ratio)} of ${combined ? 'charger-time' : 'time'} included`,
+    includedTimeLabel, coverageHeading: combined ? 'Charger-time included' : 'Time included', assumedRates, breakdown,
     periodLabel, unavailableReason, calculationPeriod, energyExplanation, coverageExplanation, coverageSummary,
     periodExplanation, smallDifferenceExplanation, availablePowerPeriod, auxiliaryNotes, evidenceExplanation,
     rateSummary, ratePeriod };

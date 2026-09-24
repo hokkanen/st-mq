@@ -13,14 +13,14 @@ const near=(actual,expected)=>assert(Math.abs(actual-expected)<1e-9,`${actual} !
 test('scalar charger energy coalesces, survives recorder restart and never creates phase observations',t=>{
   const store=new Store(':memory:');t.after(()=>store.close());
   let recorder=new Recorder(store),last;
-  const put=(from,to,power)=>recorder.recordEnergy(last={source:'teslamate',device:'invented-car',prefix:'ev2',
+  const put=(from,to,power)=>recorder.recordEnergy(last={source:'shelly-evse',device:'invented-car',prefix:'ev2',
     start:from,end:to,energies:[power*(to-from)/HOUR],powers:[power],quality:['estimated','mqtt-received']});
   for(let i=0;i<12;i++) {
     if(i===6)recorder=new Recorder(store);
     put(start+i*MINUTE/2,start+(i+1)*MINUTE/2,7.2);
   }
   assert.equal(recorder.recordEnergy(last).reason,'duplicate-interval');
-  recorder.energyGap({source:'teslamate',device:'invented-car',prefix:'ev2',start:start+6*MINUTE,end:start+7*MINUTE,quality:['mqtt-disconnected']});
+  recorder.energyGap({source:'shelly-evse',device:'invented-car',prefix:'ev2',start:start+6*MINUTE,end:start+7*MINUTE,quality:['mqtt-disconnected']});
   put(start+7*MINUTE,start+8*MINUTE,3.6);
   recorder.flush(start+8*MINUTE,{force:true});
   const rows=store.observations({limit:100});
@@ -28,17 +28,17 @@ test('scalar charger energy coalesces, survives recorder restart and never creat
   assert(rows.every(row=>row.signal==='ev2_energy'));
   near(rows.filter(row=>Number.isFinite(row.value)).reduce((sum,row)=>sum+row.value,0),0.78);
   assert(rows.some(row=>row.value===null && row.raw.intervalStart===start+6*MINUTE));
-  assert(rows.filter(row=>row.value!==null).every(row=>row.raw.basis==='integrated-total-power'));
+  assert(rows.filter(row=>row.value!==null).every(row=>row.raw.basis==='native-meter-counter-delta'));
   assert.equal(recorder.status(start+8*MINUTE).parameters[0].thresholdUnit,'kW');
 });
 
 test('charger 2 power is reconstructed only from its scalar energy, with gaps and no phase-current fiction',t=>{
   const store=new Store(':memory:');t.after(()=>store.close());
   const recorder=new Recorder(store);
-  const interval=(a,b,kwh)=>recorder.recordEnergy({source:'teslamate',device:'invented-car',prefix:'ev2',start:a,end:b,
+  const interval=(a,b,kwh)=>recorder.recordEnergy({source:'shelly-evse',device:'invented-car',prefix:'ev2',start:a,end:b,
     energies:[kwh],powers:[kwh*HOUR/(b-a)],quality:['estimated']});
   interval(start,start+10*MINUTE,1.2);
-  recorder.energyGap({source:'teslamate',device:'invented-car',prefix:'ev2',start:start+10*MINUTE,end:start+12*MINUTE});
+  recorder.energyGap({source:'shelly-evse',device:'invented-car',prefix:'ev2',start:start+10*MINUTE,end:start+12*MINUTE});
   interval(start+12*MINUTE,start+22*MINUTE,0.6);
   const options={store,input:'providers',startDate:'2026-08-19',endDate:'2026-08-19',now:start+HOUR};
   const power=getChartData({...options,left:'power'}),phases=getChartData({...options,left:'phases'});
@@ -51,24 +51,24 @@ test('charger 2 power is reconstructed only from its scalar energy, with gaps an
   assert(!store.observations().some(row=>row.signal==='charger2_power'));
 });
 
-test('same meter panel presents per-session means without turning Tesla added-energy differences into meter accuracy',()=>{
+test('same meter panel presents per-session means using physical meter references for both chargers',()=>{
   const summary={recordedSessions:4,comparedSessions:2,excludedSessions:2,estimatedKwh:22,referenceKwh:20,
     differenceKwh:2,differencePercent:10,start,end:start+HOUR,lastSessionEnd:start+2*HOUR};
   const charger=energyAuditRow({kind:'charging-session-summary',source:'easee',summary});
-  const tesla=energyAuditRow({kind:'charging-session-summary',source:'teslamate',summary});
+  const tesla=energyAuditRow({kind:'charging-session-summary',source:'shelly-evse',summary});
   assert.equal(charger.title,'Charger 1');assert.equal(tesla.title,'Charger 2');
   assert.equal(charger.subtitle,tesla.subtitle);
   assert.match(charger.value,/10% energy-weighted difference.*1 kWh average difference/);
   assert.match(charger.details.join(' '),/11 kWh recorded \/ 10 kWh metered per session/);
-  assert.match(tesla.details.join(' '),/not a meter-accuracy percentage/);
+  assert.match(tesla.details.join(' '),/Charger 2 electricity meter/);
   assert.match(tesla.details.join(' '),/2 compared · 2 excluded · 4 recorded sessions/);
-  const empty=energyAuditRow({kind:'charging-session-summary',source:'teslamate',summary:{recordedSessions:0,comparedSessions:0,excludedSessions:0}});
+  const empty=energyAuditRow({kind:'charging-session-summary',source:'shelly-evse',summary:{recordedSessions:0,comparedSessions:0,excludedSessions:0}});
   assert.match(empty.value,/pending/);assert(!empty.value.includes('0%'));
   assert.equal(energyAuditRow({signal:'property_import_energy_counter',sourceTime:start}).subtitle,'Cumulative import meter');
 });
 
 test('excluded charger sessions explain known reasons instead of asking for references already recorded',()=>{
-  const display=energyAuditRow({kind:'charging-session-summary',source:'teslamate',summary:{
+  const display=energyAuditRow({kind:'charging-session-summary',source:'shelly-evse',summary:{
     recordedSessions:2,comparedSessions:0,excludedSessions:2,
     exclusionReasons:{disconnected:2,stale:2,'missing-start':1,'missing-end':1,'duplicate-suspected':1,
       'invented-private-payload':1},

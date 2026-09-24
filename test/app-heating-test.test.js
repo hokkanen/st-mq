@@ -10,6 +10,7 @@ function setup(t, { input = 'providers', commandTransport, mode = 'shadow' } = {
   const store = new Store(':memory:');
   t.after(() => store.close());
   const config = { input, settings: validateSettings({ mode }) };
+  if (commandTransport) commandTransport.targetIdentity = { tariff: 'a'.repeat(64), dhwr: 'b'.repeat(64) };
   const engine = new Engine({ store, config, commandTransport, clock: () => Date.parse('2026-09-07T12:00Z') });
   t.after(() => { clearTimeout(engine.executor.timer); engine.executor.closed = true; });
   return { engine, store, config };
@@ -117,7 +118,7 @@ test('pending tests cannot overlap and failed tests are recorded without exposin
 test('physical writes require active mode while shadow and monitoring remain observational', async t => {
   const { store } = setup(t);
   const commands = [];
-  const executor = new Executor({ input: 'mqtt', store, clock: () => 0, commandTransport: { publish: async batch => {
+  const executor = new Executor({ input: 'mqtt', store, clock: () => 0, commandTransport: { targetIdentity: { tariff: 'a'.repeat(64), dhwr: 'b'.repeat(64) }, publish: async batch => {
     commands.push(batch); return { status: 'mqtt', sent: true, actual: null };
   } } });
   t.after(() => { clearTimeout(executor.timer); executor.closed = true; });
@@ -163,13 +164,13 @@ for (const mode of ['shadow', 'monitoring']) test(`restart in ${mode} restores a
     async publishDhwr(on) { switches.push(on); return { status: 'mqtt', sent: true, actual: null }; } };
   const { engine, store, config } = setup(t, { commandTransport, mode });
   await engine.testHeating({ command: 'circulation' });
-  assert.equal(store.getState('executor:providers').dhwrOutstanding, true);
+  assert.equal(store.getState('executor:home').dhwrOutstanding, true);
   clearTimeout(engine.executor.timer); engine.executor.closed = true;
   const restarted = new Engine({ store, config, commandTransport, clock: engine.clock });
   t.after(() => { clearTimeout(restarted.executor.timer); restarted.executor.closed = true; });
   restarted.tick(); await restarted.dispatchPending;
   assert.deepEqual(switches, [true, false]);
-  assert.equal(store.getState('executor:providers').dhwrOutstanding, false);
+  assert.equal(store.getState('executor:home').dhwrOutstanding, false);
   restarted.tick(); await restarted.dispatchPending;
   assert.deepEqual(switches, [true, false]);
 });
@@ -183,6 +184,6 @@ test('leaving active mode stops an outstanding DHWR switch run', async t => {
   engine.updateSettings({ ...engine.settings, mode: 'shadow' });
   await engine.dispatchPending;
   assert.deepEqual(switches, [true, false]);
-  assert.equal(store.getState('executor:providers').dhwrOutstanding, false);
+  assert.equal(store.getState('executor:home').dhwrOutstanding, false);
   assert.equal(engine.settings.mode, 'shadow');
 });

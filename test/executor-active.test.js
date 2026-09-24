@@ -5,7 +5,7 @@ import { createH66Controller } from '../src/control/h66.js';
 import { createH66Decoder } from '../src/domain/telemetry.js';
 
 function rig(t, { native = true, saved = new Map(), publishLegacy, publishDhwr, floorOverride = null, config = {} } = {}) {
-  let now = Date.parse('2026-09-07T12:00Z');
+  let now = Date.parse('2026-09-07T12:00Z'), elapsed = 0;
   const log = [], observations = [], values = { '0203': 19, '0212': 47, '0208': 62, '2201': 1 };
   const store = { getState: key => structuredClone(saved.get(key) ?? null),
     setState: (key, value) => saved.set(key, structuredClone(value)), event() {}, observation: row => observations.push(row) };
@@ -19,21 +19,22 @@ function rig(t, { native = true, saved = new Map(), publishLegacy, publishDhwr, 
       queueMicrotask(() => receive(index, values[index]));
     } }) : null;
   if (h66) { h66.setConnected(true); for (const [index, value] of Object.entries(values)) receive(index, value); }
-  const transport = { publish: async commands => {
+  const transport = { targetIdentity: { tariff: 'a'.repeat(64), dhwr: 'b'.repeat(64) }, publish: async commands => {
     log.push({ commands: [...commands], now });
     assert(!commands.includes('circulation'), 'DHWR button intents must never enter the heating transport');
     return publishLegacy ? publishLegacy(commands) : { status: 'mqtt', sent: true, actual: null };
   }, publishDhwr: async on => {
     log.push({ dhwr: on, now });
     if (on) {
-      assert.equal(saved.get('executor:mqtt').dhwrOutstanding, true, 'Save the OFF obligation before ON can reach the broker');
-      assert.equal(saved.get('executor:mqtt').pulseUntil, now + (config.dhwrPulseMinutes ?? 10) * 60_000 + 10_000);
+      assert.equal(saved.get('executor:home').dhwrOutstanding, true, 'Save the OFF obligation before ON can reach the broker');
+      assert.equal(saved.get('executor:home').pulseUntil, now + (config.dhwrPulseMinutes ?? 10) * 60_000 + 10_000);
     }
     return publishDhwr ? publishDhwr(on) : { status: 'mqtt', sent: true, actual: null };
   }, async close() {} };
-  const executor = new Executor({ input: 'mqtt', store, h66, floorOverride, config, commandTransport: transport, clock: () => now });
+  const executor = new Executor({ input: 'mqtt', store, h66, floorOverride, config, commandTransport: transport, clock: () => now, monotonicClock: () => elapsed });
   t.after(async () => { clearTimeout(executor.timer); executor.closed = true; await h66?.close(); });
   return { executor, h66, log, observations, values, saved, store, transport, get now() { return now; },
+    elapse(ms) { elapsed += ms; },
     advance(ms) { now += ms; if (h66) for (const [index, value] of Object.entries(values)) receive(index, value); },
     run(phase, duration = 1_800_000, extra = {}) { return executor.execute({ phase, action: phase === 'reduction' ? 'reduction' : 'normal',
       commands: phase === 'reduction' ? ['reduction'] : ['normal'], roomBoostC: 5, expiresAt: now + duration, ...extra }, { mode: 'active', now }); } };
@@ -211,7 +212,7 @@ test('a lost ON acknowledgement requires an acknowledged OFF before reduction af
     return { status: 'mqtt', sent: true, actual: null };
   } });
   await assert.rejects(r.executor.execute({ commands: ['circulation'] }, { mode: 'shadow', manualTest: true, now: r.now }), { code: 'MQTT_TIMEOUT' });
-  assert.equal(r.saved.get('executor:mqtt').dhwrOutstanding, true);
+  assert.equal(r.saved.get('executor:home').dhwrOutstanding, true);
   fail = false;
   const restarted = new Executor({ input: 'mqtt', store: r.store, commandTransport: r.transport, clock: () => r.now });
   t.after(() => { clearTimeout(restarted.timer); restarted.closed = true; });
@@ -306,7 +307,7 @@ test('manual DHWR expiry sends OFF and retries an unconfirmed OFF without a new 
   r.advance(60_000); t.mock.timers.tick(60_000);
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(stops, 1);
-  assert.equal(r.saved.get('executor:mqtt').dhwrOutstanding, true);
+  assert.equal(r.saved.get('executor:home').dhwrOutstanding, true);
   assert.equal(r.executor.status().restorationPending, true);
   r.advance(1000); t.mock.timers.tick(1000);
   await new Promise(resolve => setImmediate(resolve));
@@ -331,11 +332,11 @@ test('failed DHWR OFF cannot prevent independent native and tariff restoration',
   assert.equal(pending.dhwrError, 'MQTT_TIMEOUT');
   assert.deepEqual(r.log.slice(before).map(row => row.commands ?? row.native ?? row.dhwr), [false, '0203', ['normal']]);
   assert.equal(r.values['0203'], 19);
-  assert.equal(r.saved.get('executor:mqtt').legacyOutstanding, false);
-  assert.equal(r.saved.get('executor:mqtt').dhwrOutstanding, true);
+  assert.equal(r.saved.get('executor:home').legacyOutstanding, false);
+  assert.equal(r.saved.get('executor:home').dhwrOutstanding, true);
   failStop = false;
   assert.equal((await r.executor.restore()).restorationPending, false);
-  assert.equal(r.saved.get('executor:mqtt').dhwrOutstanding, false);
+  assert.equal(r.saved.get('executor:home').dhwrOutstanding, false);
 });
 
 test('shutdown stops an uncertain ON and demotion preserves its obligation without a write', async t => {
@@ -346,13 +347,13 @@ test('shutdown stops an uncertain ON and demotion preserves its obligation witho
   await assert.rejects(shutdown.executor.execute({ commands: ['circulation'] }, { mode: 'shadow', manualTest: true, now: shutdown.now }), { code: 'MQTT_TIMEOUT' });
   await shutdown.executor.close();
   assert.deepEqual(shutdown.log.map(row => row.dhwr), [true, false]);
-  assert.equal(shutdown.saved.get('executor:mqtt').dhwrOutstanding, false);
+  assert.equal(shutdown.saved.get('executor:home').dhwrOutstanding, false);
 
   const demoted = rig(t, { native: false });
   await demoted.executor.execute({ commands: ['circulation'] }, { mode: 'shadow', manualTest: true, now: demoted.now });
   await demoted.executor.close({ restore: false });
   assert.deepEqual(demoted.log.map(row => row.dhwr), [true]);
-  assert.equal(demoted.saved.get('executor:mqtt').dhwrOutstanding, true);
+  assert.equal(demoted.saved.get('executor:home').dhwrOutstanding, true);
   const successor = new Executor({ input: 'mqtt', store: demoted.store, commandTransport: demoted.transport, clock: () => demoted.now });
   t.after(() => { clearTimeout(successor.timer); successor.closed = true; });
   assert.equal(successor.status().restorationPending, true);
@@ -364,12 +365,12 @@ test('a manual DHWR request cannot erase an outstanding tariff reduction', async
   const r = rig(t, { native: false });
   await r.executor.execute({ commands: ['reduction'] }, { mode: 'shadow', manualTest: true, now: r.now });
   await r.executor.execute({ commands: ['circulation'] }, { mode: 'shadow', manualTest: true, now: r.now });
-  assert(r.saved.get('executor:mqtt').legacyOutstanding || r.log.some(row => row.commands?.includes('normal')),
+  assert(r.saved.get('executor:home').legacyOutstanding || r.log.some(row => row.commands?.includes('normal')),
     'Starting a separate circulation switch cannot forget restoring the heat reduction relay');
   await r.executor.close();
   assert(r.log.some(row => row.commands?.includes('normal')));
-  assert.equal(r.saved.get('executor:mqtt').legacyOutstanding, false);
-  assert.equal(r.saved.get('executor:mqtt').dhwrOutstanding, false);
+  assert.equal(r.saved.get('executor:home').legacyOutstanding, false);
+  assert.equal(r.saved.get('executor:home').dhwrOutstanding, false);
 });
 
 test('failed early DHWR stop retries without waiting for the original run deadline', async t => {
@@ -439,4 +440,67 @@ test('an unconfirmed floor lease cannot leave a raised ROOM request active', asy
   assert.equal(r.values['0203'], 19);
   assert.equal(r.log.some(row => row.native === '0203' && row.value > 19), false);
   assert(releases > 0);
+});
+
+test('expired reduction after native readback restores instead of dispatching late tariff', async t => {
+  const r = rig(t, { native: false });
+  r.executor.h66 = { status: () => ({ controlsReady: true, writesEnabled: true }),
+    async setPhase() { r.advance(2000); return { changed: ['2201'] }; },
+    async restore() { return { changed: ['2201'], restorationPending: false }; } };
+  const result = await r.run('reduction', 1000);
+  assert.equal(r.log.some(row => row.commands?.includes('reduction')), false);
+  assert.equal(result.restorationPending, false);
+  assert.equal(r.executor.status().legacyOutstanding, false);
+});
+
+test('current DHWR obligation stays on its original target across restart and input-mode changes', async t => {
+  const r = rig(t, { native: false });
+  await r.executor.execute({ commands: ['circulation'] }, { mode: 'active', manualTest: true, now: r.now });
+  await r.executor.close({ restore: false });
+  const count = r.log.length;
+  r.transport.targetIdentity.dhwr = 'c'.repeat(64);
+  const successor = new Executor({ input: 'providers', store: r.store, commandTransport: r.transport, clock: () => r.now });
+  t.after(() => successor.close({ restore: false }));
+  const blocked = await successor.restore();
+  assert.equal(blocked.restorationPending, true);
+  assert.equal(successor.status().dhwrOutstanding, true);
+  assert.equal(r.log.length, count, 'No OFF is sent to the unrelated replacement');
+  r.transport.targetIdentity.dhwr = 'b'.repeat(64);
+  assert.equal((await successor.restore()).restorationPending, false);
+  assert.equal(r.log.at(-1).dhwr, false);
+});
+
+test('an unsupported unscoped Executor state rejects before mutation or command', () => {
+  const saved = { version: 1, dhwrOutstanding: true, pulseUntil: 1000 };
+  let mutations = 0;
+  assert.throws(() => new Executor({ input: 'mqtt', store: { getState: () => saved, setState() { mutations++; } } }),
+    { code: 'EXECUTOR_STATE_UNSUPPORTED' });
+  assert.equal(mutations, 0);
+});
+
+test('a one-minute circulation run ends after elapsed time despite repeated wall-clock rollback', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const r = rig(t, { native: false, config: { dhwrPulseMinutes: 1 } });
+  await r.executor.execute({ commands: ['circulation'] }, { mode: 'active', manualTest: true, now: r.now });
+  r.advance(-3_600_000); r.elapse(30_000); t.mock.timers.tick(30_000);
+  r.advance(-3_600_000); r.elapse(30_000); t.mock.timers.tick(30_000);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(r.log.at(-1).dhwr, false);
+  assert.equal(r.executor.status().dhwrOutstanding, false);
+});
+
+test('elapsed expiry with unavailable OFF delivery retains the original stop obligation', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const r = rig(t, { native: false, config: { dhwrPulseMinutes: 1 }, publishDhwr: on => {
+    if (!on) throw Object.assign(new Error('synthetic unavailable'), { code: 'MQTT_UNAVAILABLE' });
+    return { sent: true };
+  } });
+  await r.executor.execute({ commands: ['circulation'] }, { mode: 'active', manualTest: true, now: r.now });
+  const binding = r.executor.status().targetBindings.dhwr;
+  r.advance(-3_600_000); r.elapse(60_000); t.mock.timers.tick(60_000);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(r.log.at(-1).dhwr, false);
+  assert.equal(r.executor.status().dhwrOutstanding, true);
+  assert.deepEqual(r.executor.status().targetBindings.dhwr, binding);
+  assert.equal(r.executor.status().restorationPending, true);
 });

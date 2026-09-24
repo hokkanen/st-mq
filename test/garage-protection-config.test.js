@@ -43,44 +43,18 @@ test('sparse owner approval inherits public adapter settings and can be withdraw
   assert.deepEqual(defaults.garage.adapter, config.garage.adapter);
 });
 
-test('legacy private protection is normalized before new defaults are merged, without editing its source', t => {
+test('retired private protection is rejected without editing its source', t => {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-protection-options-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const paths = { defaultsPath: new URL('../config.json', import.meta.url).pathname, privatePath: join(directory, 'fixture.json') };
   for (const versioned of [true, false]) {
     const protection = structuredClone(oldPolicy);
     if (!versioned) delete protection.version;
-    const original = JSON.stringify({ garage: { enabled: true, aggressiveness: 75, protection } });
+    const original = JSON.stringify({ garage: { protection } });
     writeFileSync(paths.privatePath, original);
-    const { options } = readConfigurationOptions({}, directory, paths);
-    assert.equal(options.garage.enabled, true);
-    assert.equal(options.garage.aggressiveness, 75);
-    assert.equal(options.garage.protection.version, GARAGE_POLICY_VERSION);
-    assert.equal(options.garage.protection.approved, false);
-    assert.equal(options.garage.protection.marginC, 1);
-    assert.equal('budgetDegreeMinutes' in options.garage.protection, false);
+    assert.throws(() => readConfigurationOptions({}, directory, paths), /Unknown|Unsupported|Invalid/);
     assert.equal(readFileSync(paths.privatePath, 'utf8'), original);
-    assert.doesNotThrow(() => validateOptionFields(options, document.schema));
   }
-});
-
-test('old committed settings retain their original digest and produce the same learned state', () => {
-  const current = garageSettings(), old = { ...current, protection: oldPolicy };
-  const seed = createGarageModel({ seedAt: 1_800_000_000_000 });
-  let legacyCheckpoint = null, currentCheckpoint = null;
-  const oldBefore = structuredClone(old);
-  for (let i = 0; i < 80; i++) {
-    const at = seed.seedAt + i * 60_000;
-    const value = { at, rearAt: at, frontAt: at, rearC: 7 - i / 100, frontC: 6.5 - i / 100,
-      outdoorC: -5, available: false };
-    const entry = settings => ({ id: i + 1, at, kind: 'sample', algorithmVersion: seed.algorithm,
-      configVersion: garageDigest(settings), payload: { settings, value, ...(i === 0 ? { seed } : {}) } });
-    legacyCheckpoint = applyGarageEntry(legacyCheckpoint, entry(old));
-    currentCheckpoint = applyGarageEntry(currentCheckpoint, entry(current));
-  }
-  assert.deepEqual(legacyCheckpoint.model, currentCheckpoint.model);
-  assert.equal(legacyCheckpoint.configVersion, garageDigest(oldBefore));
-  assert.deepEqual(old, oldBefore);
 });
 
 test('new protection rejects retired knobs and invalid geometry', () => {

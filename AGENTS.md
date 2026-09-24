@@ -1,29 +1,98 @@
 # Repository instructions
 
-## Development data and eventual production migration
+## Pre-v1.0.0 compatibility guard
 
-- The first production version will start with a fresh SQLite database. Current
-  development databases are disposable and need no compatibility migration or
-  data-preservation work. Documentation should describe production behavior,
-  without explaining superseded development implementations.
-- Version 0.7.5 continues running on another machine until the actual migration.
-  Leave that installation and its source data intact.
-- When historical Easee or st-mq CSV files are explicitly imported, preserve
-  their formats, timestamp/unit interpretation, duplicate handling and provenance.
-- Update this section when production migration begins. The secret-handling rules
-  below apply to development data and CSV imports throughout.
+This is the owner's governing policy for every task in this package and every
+ST-MQ change before the first production release, **v1.0.0**.
+
+## One historical exception
+
+Retain **read-only import of version 0.7.5 `easee.csv` and `st-mq.csv`**. Preserve
+source bytes/files, timestamp and unit meanings, missing/invalid-value quality,
+row/file provenance, duplicate/idempotency handling and supported interruption
+recovery. Normalize accepted rows at this import boundary into the **one current
+internal schema and model-input contract**. This exception does not authorize a
+0.7.5 runtime, native database reader, old configuration/API, old model engine,
+CSV-based live recording or a second historical chart application. Neither
+filename spelling variants nor unverified CSV dialects become additional support
+promises. Tests use synthetic files with the supported headers; real owner files
+remain outside the repository and must never be silently rewritten.
+
+## Actively remove internal backwards compatibility
+
+Development databases and checkpoints are disposable. Do not add or retain
+schema-upgrade ladders, development-data backfills/repair passes, old-path
+migration, old payload decoders, old algorithm interpreters, settings translators,
+renamed-field aliases, mixed-ST-MQ-version bridges, legacy runtime entrypoints or
+historical development-data presentation solely to support earlier ST-MQ designs.
+Update current callers, schemas, configuration examples, UI and tests together.
+Tests that require retaining an obsolete design are not constraints to preserve;
+replace them with current-contract and unsupported-input rejection tests.
+
+A fresh database is initialized directly with the final current schema, not by
+walking historical migrations. An existing incompatible or malformed database
+must be rejected **before mutation**, with actionable fresh-start guidance. Do
+not automatically delete, truncate, recreate, migrate or overwrite it. A
+nonempty unversioned database is not a blank database. The owner's intentional
+reset of a known disposable development database is an operational action, not a
+new compatibility/reset-on-startup subsystem. Re-import permitted CSV sources
+into the fresh schema rather than importing an old development database.
+
+Use one current persisted/configuration/API contract. Unknown or retired fields
+and payload versions must fail closed at their relevant boundary, not silently
+be translated, ignored or granted authority. Genuinely missing optional current
+fields and genuinely absent new state may use documented current defaults; that
+is different from recognizing an old shape. No old charger slot, device
+association, ownership or permission may authorize a newly configured actuator.
+
+## Preserve current correctness and safety
+
+Do not confuse backwards compatibility with current functionality. Preserve
+same-schema backup/restore, current-version restart and deterministic journal
+reconstruction, transactional publication, current-format correction/recovery,
+replica fencing, current supported external protocols and hardware behavior,
+secret handling, provenance, quality/unknown states and fail-closed validation.
+An earlier event in a current-version session is not an earlier software format.
+The actively written `legacyOutstanding` restoration obligation and the current
+standalone SSH replication feature are not removable merely because comments
+call them legacy. Remove obsolete representation support, not current physical
+safety or restoration duties. Use controlled offline fixtures for implementation;
+do not operate, probe or erase a household installation as part of these audits.
+
+Semantic changes may change the current schema/algorithm identifier and require
+a deliberate clean development start. They do not require maintaining old
+interpreters, migrating old checkpoints, seeding from old fitted coefficients or
+archiving every prior development interpretation. Current source corrections
+within the supported contract still need provenance and atomic current replay.
+
+## Agent/review gate
+
+Before and after each relevant change, inspect producers, consumers, state,
+configuration, UI, tests and documentation for obsolete compatibility paths.
+Delete them as part of the affected implementation instead of adding wrappers.
+Document removal, retained current capabilities and tests in the issue tracker.
+Do not resolve a failing legacy-preservation test by restoring prohibited code.
+Do not overstate unrun tests or treat current guard tests as proof of completeness.
+
+This rule ends only with an explicitly approved production support policy at the
+first actual v1.0.0 release. A package-version edit, future-dated release plan or
+agent assumption does not authorize pre-release migrations. Production support
+requirements will be decided explicitly; do not build speculative machinery now.
 
 ## Model reconstruction and versioning contract
 
-- Respect [docs/reconstruction-and-versioning.md](docs/reconstruction-and-versioning.md)
-  unless the owner explicitly agrees to change that contract.
+- Apply [docs/reconstruction-and-versioning.md](docs/reconstruction-and-versioning.md)
+  to the current supported journal/algorithm contract. The pre-v1.0.0 guard above
+  takes precedence over any wording that would retain obsolete development formats.
 - Preserve deterministic model replay from the committed journal, saved seed and
   configuration, selected manual-event revision and matching algorithm. Use the
   same ordered update function for live learning and rebuilding.
 - Keep manual loads and corrections as compact source events; never silently
   rewrite telemetry or reinterpret an old learning algorithm as a new one.
-- Version changes to learning semantics explicitly. Preserve an honest archival
-  boundary and a documented seed/epoch; old runtime code need not run in parallel.
+- Version changes to learning semantics explicitly. Before v1.0.0, start fresh
+  when a format/algorithm becomes incompatible; do not retain an old interpreter,
+  checkpoint translator or obsolete development-history archive. Preserve current
+  journal provenance and documented current seeds/epochs for supported replay.
 - Background correction rebuilds must keep control available, reject stale results
   and atomically publish a complete, caught-up checkpoint. Keep original observed
   behavior and frozen forecasts distinct from corrected model assessments.
@@ -108,7 +177,7 @@ See [docs/secret-handling.md](docs/secret-handling.md) for historical audit scop
 - Put new settings in their owning section beside related settings, and keep
   `options` and `schema` in the same section and field order. Use the section map
   in [docs/configuration.md](docs/configuration.md); update it for new sections.
-  Preserve existing field paths unless a behavior change needs a migration.
+  Change field paths when the current design needs it, updating all current callers, examples and tests together. Reject retired paths; do not add aliases or migrations for development configurations.
 - Public Garage enablement and protection approval default to false. Test the
   explicit private opt-in independently; owner approval is installation state,
   not evidence of adapter readiness.

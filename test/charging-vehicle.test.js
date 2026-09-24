@@ -126,19 +126,20 @@ function fixture() {
   const tesla = { connected: true, pluggedIn: true, atHome: true, assignment: 'auto', batteryLevel: 75, chargeLimitSoc: 90 };
   const values = new Map(), store = { getState: key => structuredClone(values.get(key)),
     setState: (key, value) => { if (store.fail) throw new Error('database unavailable'); values.set(key, structuredClone(value)); } };
-  const engine = { chargerIdentification: { status: () => ({ verdict, identifiedAt }) } };
+  const engine = {};
   const config = { input: 'mqtt' };
   const create = () => {
     const runtime = new ChargingRuntime({ engine, store, config, clock: () => now });
+    runtime.setMqttStatus({connected:true,subscribed:true},'bmw');
     const item = runtime.chargers.charger1;
     item.adapter = { normalize: () => ({ connected: { value: connected, available: true },
-      charging: { value: charging, available: true, measuredAt: now } }) };
+      charging: { value: charging, available: true, measuredAt: now }, powerKw:{value:charging?7:0,available:true,measuredAt:now} }) };
     item.controller = { status: () => ({ session: { connectedAt: sessionAt }, snapshot: { readAt: now }, phase: 'off' }), async update() {}, close() {} };
     runtime.teslaCapture = { topic: 'teslamate/cars/1/#', snapshot: () => tesla, reception: () => ({ connected: true }) };
     return runtime;
   };
   return { create, store, config, tesla, setNow: value => { now = value; }, setConnection: (value, at = now) => { connected = value; sessionAt = at; },
-    setCharging: value => { charging = value; }, setVerdict: (value, at = now) => { verdict = value; identifiedAt = at; } };
+    setCharging: value => { charging = value; }, setTeslaEvidence: (value, at = now) => { tesla.healthy=value==='easee'; tesla.charging=charging; tesla.actualPowerKw=7; tesla.fields={charger_power:{receivedAt:at,retained:false},plugged_in:{receivedAt:sessionAt,retained:false}}; } };
 }
 const view = runtime => runtime.status().chargers[0];
 const publish = (runtime, value, packet) => runtime.receiveSoc(runtime.configuration.vehicles.bmw.mqttTopic, JSON.stringify(value), packet);
@@ -185,24 +186,24 @@ test('identity-only BMW can match without imposing absent battery fields', async
 
 test('negative Tesla verdict is not BMW evidence; positive Tesla moves one session and stale verdict cannot match a new connection', async t => {
   const f = fixture(), runtime = f.create(); t.after(() => runtime.close());
-  f.setVerdict('other'); runtime.tick(); assert.equal(view(runtime).vehicle.state, 'unidentified');
-  f.setVerdict('easee'); runtime.tick();
+  f.setTeslaEvidence('other'); runtime.tick(); assert.equal(view(runtime).vehicle.state, 'unidentified');
+  f.setTeslaEvidence('easee'); runtime.tick();
   assert.equal(view(runtime).vehicle.id, 'tesla'); assert.equal(view(runtime).values.soc.value, 75);
   const second = runtime.status().chargers[1];
-  assert.equal(second.vehicle.state, 'elsewhere'); assert.equal(second.vehicle.chargerId, 'charger1');
-  assert.equal(second.values.connected.value, false); assert.equal(second.automatic.soc.available, false);
-  f.setVerdict(null); f.setCharging(false); runtime.tick(); assert.equal(view(runtime).vehicle.id, 'tesla');
+  assert.equal(second.vehicle.id, null);
+  assert.equal(second.values.connected.value, null); assert.equal(second.automatic.soc.available, false);
+  f.setTeslaEvidence(null); f.setCharging(false); runtime.tick(); assert.equal(view(runtime).vehicle.id, 'tesla');
   f.setConnection(false); runtime.tick(); f.setNow(START + MINUTE); f.setConnection(true);
-  f.setVerdict('easee', START); runtime.tick(); assert.equal(view(runtime).vehicle.state, 'unidentified');
+  f.setTeslaEvidence('easee', START); runtime.tick(); assert.equal(view(runtime).vehicle.state, 'unidentified');
 });
 
 test('competing positive evidence remains unidentified for the connection', async t => {
   const f = fixture(), runtime = f.create(); t.after(() => runtime.close());
-  f.setVerdict('easee'); publish(runtime, facts()); pauseBmw(runtime, f);
-  assert.equal(view(runtime).vehicle.state, 'unidentified');
+  f.setTeslaEvidence('easee'); publish(runtime, facts()); pauseBmw(runtime, f);
+  assert.equal(view(runtime).vehicle.state, 'conflict');
   assert.equal(view(runtime).vehicle.reason, 'conflicting-vehicle-evidence');
   assert.equal(view(runtime).values.soc.source, 'manual-fallback');
-  f.setVerdict(null); runtime.tick(); assert.equal(view(runtime).vehicle.state, 'unidentified');
+  f.setTeslaEvidence(null); runtime.tick(); assert.equal(view(runtime).vehicle.state, 'conflict');
 });
 
 test('new timestamps on unchanged plugged/charging states cannot turn a parked BMW into a new connection event', () => {
@@ -219,8 +220,8 @@ test('new timestamps on unchanged plugged/charging states cannot turn a parked B
 test('later competing evidence revokes an earlier association without selecting a different car', async t => {
   const f = fixture(), runtime = f.create(); t.after(() => runtime.close());
   publish(runtime, facts()); pauseBmw(runtime, f); assert.equal(view(runtime).vehicle.id, 'bmw');
-  f.setNow(START + MINUTE); f.setVerdict('easee'); runtime.tick();
-  assert.equal(view(runtime).vehicle.state, 'unidentified');
+  f.setNow(START + 2 * MINUTE); f.setCharging(true); f.setTeslaEvidence('easee'); runtime.tick();
+  assert.equal(view(runtime).vehicle.state, 'conflict');
   assert.equal(view(runtime).vehicle.reason, 'conflicting-vehicle-evidence');
 });
 
@@ -295,12 +296,12 @@ test('BMW target can change independently from 100 to 95 without rebasing its 85
 test('editing Tesla capacity at Charger 1 edits its vehicle fallback and preserves visitor capacity', async t => {
   const f = fixture(), runtime = f.create(); t.after(() => runtime.close());
   await runtime.setChargerSettings('charger1', { capacityKwh: 50 });
-  await runtime.setChargerSettings('charger2', { capacityKwh: 60 });
-  f.setVerdict('easee'); runtime.tick();
+  await runtime.setSettings({vehicles:{tesla:{capacityKwh:60}}});
+  f.setTeslaEvidence('easee'); runtime.tick();
   assert.equal(view(runtime).settings.capacityKwh, 60); assert.equal(view(runtime).values.capacityKwh.value, 60);
-  await runtime.setChargerSettings('charger1', { capacityKwh: 58 });
+  await runtime.setChargerSettings('charger1', { capacityKwh: 58, capacityProfile:'tesla' });
   assert.equal(view(runtime).settings.capacityKwh, 58); assert.equal(view(runtime).values.capacityKwh.value, 58);
-  assert.equal(runtime.settings.chargers.charger1.capacityKwh, 50); assert.equal(runtime.settings.chargers.charger2.capacityKwh, 58);
+  assert.equal(runtime.settings.chargers.charger1.capacityKwh, 50); assert.equal(runtime.settings.vehicles.tesla.capacityKwh, 58);
   assert.equal(view(runtime).referenceGridKwh, 58 * .15 / .925);
   f.setConnection(false); runtime.tick(); assert.equal(view(runtime).settings.capacityKwh, 50);
   assert.equal(view(runtime).values.capacityKwh.value, 50);
@@ -308,25 +309,25 @@ test('editing Tesla capacity at Charger 1 edits its vehicle fallback and preserv
 
 test('old Tesla plug state cannot rebound from unplugged Easee into a duplicate Charger 2 session, including restart', async t => {
   const f = fixture(), runtime = f.create(); t.after(() => runtime.close());
-  f.setVerdict('easee'); runtime.tick(); f.setNow(START + MINUTE); f.setConnection(false); runtime.tick();
-  assert.equal(runtime.status().chargers[1].values.connected.value, false);
+  f.setTeslaEvidence('easee'); runtime.tick(); f.setNow(START + MINUTE); f.setConnection(false); runtime.tick();
+  assert.equal(runtime.status().chargers[1].values.connected.value, null);
   const restarted = f.create(); t.after(() => restarted.close());
-  assert.equal(restarted.status().chargers[1].values.connected.value, false);
+  assert.equal(restarted.status().chargers[1].values.connected.value, null);
   f.setNow(START + 2 * MINUTE); f.tesla.fields = { plugged_in: { receivedAt: START + 2 * MINUTE, retained: true } };
-  restarted.tick(); assert.equal(restarted.status().chargers[1].values.connected.value, false);
+  restarted.tick(); assert.equal(restarted.status().chargers[1].values.connected.value, null);
   f.tesla.fields.plugged_in.retained = false; restarted.tick();
-  assert.equal(restarted.status().chargers[1].values.connected.value, true);
+  assert.equal(restarted.status().chargers[1].values.connected.value, null);
 });
 
 test('fresh Tesla unplug evidence revokes a match and stale probe verdict cannot restore it', async t => {
   const f = fixture(), runtime = f.create(); t.after(() => runtime.close());
-  f.setVerdict('easee'); runtime.tick();
+  f.setTeslaEvidence('easee'); runtime.tick();
   f.setNow(START + MINUTE); f.tesla.pluggedIn = false;
   f.tesla.fields = { plugged_in: { receivedAt: START + MINUTE, retained: false } };
   runtime.tick(); assert.equal(view(runtime).vehicle.state, 'unidentified');
   f.setNow(START + 2 * MINUTE); f.tesla.pluggedIn = true; f.tesla.fields.plugged_in.receivedAt = START + 2 * MINUTE;
   runtime.tick(); assert.equal(view(runtime).vehicle.state, 'unidentified');
-  f.setVerdict('easee'); runtime.tick(); assert.equal(view(runtime).vehicle.id, 'tesla');
+  f.setTeslaEvidence('easee'); runtime.tick(); assert.equal(view(runtime).vehicle.id, 'tesla');
 });
 
 test('a failed identity persistence cannot consume an event or leave a phantom match', async t => {
@@ -378,7 +379,7 @@ test('vehicle unplug evidence revokes identification even while charger connecti
   for (const vehicle of ['bmw', 'tesla']) await t.test(vehicle, async t => {
     const f = fixture(), runtime = f.create(); t.after(() => runtime.close());
     if (vehicle === 'bmw') { publish(runtime, facts()); pauseBmw(runtime, f); }
-    else { f.setVerdict('easee'); runtime.tick(); }
+    else { f.setTeslaEvidence('easee'); runtime.tick(); }
     assert.equal(view(runtime).vehicle.id, vehicle);
     f.setConnection(null, START); f.setNow(START + 2 * MINUTE);
     if (vehicle === 'bmw') publish(runtime, facts(START + 2 * MINUTE, { pluggedIn: false }));
@@ -397,18 +398,18 @@ test('vehicle unplug evidence revokes identification even while charger connecti
 test('capacity edits reject a changed vehicle profile and always use Tesla capacity on its observation card', async t => {
   const f = fixture(), runtime = f.create(); t.after(() => runtime.close());
   await runtime.setChargerSettings('charger1', { capacityKwh: 50, capacityProfile: 'generic:charger1' });
-  f.setVerdict('easee'); runtime.tick();
+  f.setTeslaEvidence('easee'); runtime.tick();
   const before = structuredClone(runtime.settings);
   await assert.rejects(runtime.setChargerSettings('charger1', { capacityKwh: 70, capacityProfile: 'generic:charger1' }), /Vehicle changed/);
   assert.deepEqual(runtime.settings, before);
   await runtime.setChargerSettings('charger1', { capacityKwh: 58, capacityProfile: 'tesla' });
-  await runtime.setChargerSettings('charger2', { capacityKwh: 59, capacityProfile: 'tesla' });
-  assert.equal(runtime.settings.chargers.charger2.capacityKwh, 59);
+  await assert.rejects(runtime.setChargerSettings('charger2', { capacityKwh: 59, capacityProfile: 'tesla' }), /Vehicle changed/);
+  assert.equal(runtime.settings.vehicles.tesla.capacityKwh, 58);
   assert.equal(runtime.settings.chargers.charger1.capacityKwh, 50);
   f.setConnection(false); runtime.tick();
   await assert.rejects(runtime.setChargerSettings('charger1', { capacityKwh: 60, capacityProfile: 'tesla' }), /Vehicle changed/);
-  await runtime.setChargerSettings('charger2', { capacityKwh: 61, capacityProfile: 'tesla' });
-  assert.equal(runtime.settings.chargers.charger2.capacityKwh, 61);
+  await runtime.setSettings({vehicles:{tesla:{capacityKwh:61}}});
+  assert.equal(runtime.settings.vehicles.tesla.capacityKwh, 61);
   await assert.rejects(runtime.setChargerSettings('charger1', { capacityProfile: 'generic:charger1' }), /requires a capacity setting/);
 });
 
@@ -451,7 +452,7 @@ test('BMW target conflicts use the latest lower target without altering raw tele
   assert.equal(restarted.chargers.charger1.targetState, null);
   f.setNow(START + 7 * MINUTE); f.setConnection(true); restarted.tick();
   assert.equal(view(restarted).targetSelection, null, 'The next unknown car cannot inherit BMW selection');
-  assert.equal(restarted.chargers.charger1.targetState.conflict, false);
+  assert.equal(restarted.chargers.charger1.targetState, null);
 });
 
 test('a full-charge planning choice is explicit, durable, and guarded by the displayed BMW connection', async t => {
@@ -478,7 +479,7 @@ test('a full-charge planning choice is explicit, durable, and guarded by the dis
   f.setConnection(false); restarted.tick();
   await assert.rejects(restarted.setTarget('charger1', { connectedAt: START, mode: 'automatic' }), /connection changed/);
   f.setNow(START + 3 * MINUTE); f.setConnection(true); restarted.tick();
-  assert.equal(restarted.chargers.charger1.targetState.override, null);
+  assert.equal(restarted.chargers.charger1.targetState, null);
 });
 
 test('failed target persistence rolls back evidence and explicit session choices', async t => {
@@ -517,7 +518,7 @@ test('pending BMW stop confirmation remains identifying with manual values, then
   assert.equal(view(runtime).values.soc.source, 'manual-fallback');
   f.setNow(START + 10 * MINUTE); runtime.tick();
   assert.equal(view(runtime).vehicle.state, 'unidentified');
-  assert.equal(view(runtime).vehicle.reason, 'vehicle-not-identified');
+  assert.equal(view(runtime).vehicle.reason, 'assignment-unresolved');
 });
 
 test('confirmed target holds and choices survive a telemetry gap but clear on direct BMW unplug evidence', async t => {
@@ -558,4 +559,17 @@ test('a failed BMW unplug save cannot queue a phantom charger disconnect', async
   assert.equal(view(runtime).vehicle.id, null);
   const restarted = f.create(); t.after(() => restarted.close());
   assert.deepEqual(restarted.chargers.charger1.vehicleDisconnect, runtime.chargers.charger1.vehicleDisconnect);
+});
+test('BMW native ceiling and SoC stay independent of pinned capacity and one-time charge edits',async t=>{
+ const f=fixture(),runtime=f.create();t.after(()=>runtime.close());
+ publish(runtime,facts(START,{chargeLimitSoc:80,usableCapacityKwh:72}));pauseBmw(runtime,f);
+ const initial=view(runtime);assert.equal(initial.vehicle.id,'bmw');assert.equal(initial.values.vehicleCeilingSoc.value,80);
+ await runtime.setChargerSettings('charger1',{scope:'session',association:initial.association,sessionId:initial.request.sessionId,revision:initial.request.revision,
+  changes:{capacityKwh:65,manualSoc:30,minimumSoc:95}});
+ let current=view(runtime);assert.equal(current.values.capacityKwh.value,65);assert.equal(current.values.soc.value,30);
+ assert.equal(current.values.minimumSoc.value,95);assert.equal(current.values.vehicleCeilingSoc.value,80);
+ f.setNow(START+2*MINUTE);publish(runtime,facts(START+2*MINUTE,{soc:62,charging:false,chargeLimitSoc:80,usableCapacityKwh:72}));
+ current=view(runtime);assert.equal(current.values.soc.value,62);assert.equal(current.values.capacityKwh.value,65);
+ assert.equal(current.values.minimumSoc.value,95);assert.equal(current.values.vehicleCeilingSoc.value,80);
+ assert.equal(current.request.overrides.manualSoc,undefined);
 });

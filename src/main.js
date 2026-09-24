@@ -1,8 +1,8 @@
+import { weatherAcquisitionIdentity } from './acquisition/weather-identity.js';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { resolve, dirname } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { Store } from './storage/store.js';
-import { pruneRetiredDatasets } from './storage/recorded-datasets.js';
 import { loadConfig, configurationReader, configurationSource } from './app/config.js';
 import { Engine } from './app/engine.js';
 import { createEquipmentTests } from './app/equipment-tests.js';
@@ -12,10 +12,11 @@ import { createChartService } from './app/chart-service.js';
 import { prepareStorage } from './app/storage-paths.js';
 import { createHeatingTransport } from './control/mqtt.js';
 import { standaloneAuthority, stoppedControllerViewer } from './control/authority.js';
+import { createRuntimeTiming } from './app/runtime-timing.js';
 
 export async function start({ config = loadConfig(), readConfig = configurationReader(config),
   clock = Date.now, providerOptions = {}, mqttOptions = {}, pairContext = null, pairingOptions = {},
-  installSignalHandlers = true } = {}) {
+  installSignalHandlers = true, shutdownSignal = null } = {}) {
   const started = performance.now();
   const source = pairContext?.configurationSource ?? (readConfig === configurationReader(config) ? configurationSource(config) : null);
   let startupImport = null;
@@ -44,9 +45,9 @@ export async function start({ config = loadConfig(), readConfig = configurationR
     }
     return app;
   }
-  const migrated = await prepareStorage(config);
+  await prepareStorage(config);
   const store = new Store(config.dbPath);
-  if (migrated) store.event('database-migrated', migrated, clock());
+  const runtimeTiming = createRuntimeTiming();
   let engine, webAccess, learning, chartService, commandTransport, replication, authority, timer, garageSafetyTimer, closed = false, reloadPending = null;
   let runtimeUsable = true, starting = true, configurationResult = null;
   let authorityStopping = null, controlRevoked = false;
@@ -57,6 +58,9 @@ export async function start({ config = loadConfig(), readConfig = configurationR
     if (!canControl()) throw new Error('Controller authority was revoked. This instance is read-only.');
   };
   const signalHandlers = new Map();
+  let finishStartup, closePending = null, runtimeStopPending = null;
+  const startupSettled = new Promise(resolve => { finishStartup = resolve; });
+  const abortStartup = () => { void close().catch(() => { process.exitCode = 1; }); };
   function reportControllerError(error) {
     const databaseBusy = error?.code === 'ERR_SQLITE_ERROR' && [5, 6].includes(error.errcode & 0xff);
     if (!databaseBusy) {
@@ -68,80 +72,107 @@ export async function start({ config = loadConfig(), readConfig = configurationR
     console.error(JSON.stringify({ event: 'controller-error',
       reason: databaseBusy ? 'database-busy' : 'controller-tick-failed', eventStored: false }));
   }
-  async function close({ restore = true } = {}) {
-    if (closed) return;
+  function close({ restore = true } = {}) {
+    if (closePending) return closePending;
     closed = true;
+    runtimeUsable = false;
+    if (engine) engine.suspended = true;
     clearTimeout(timer);
+    clearInterval(garageSafetyTimer);
     for (const [signal, handler] of signalHandlers) process.removeListener(signal, handler);
-    const replicationStopped = replication?.stop();
-    await reloadPending?.catch(() => {});
-    await authorityStopping?.catch(() => {});
-    // Cancel a large copy immediately, but restore equipment before waiting for
-    // its worker/process cleanup. Replication must not delay control shutdown.
-    await stopRuntime({ restore });
-    await authority?.close();
-    await replicationStopped;
-    await chartService?.close();
-    await webAccess?.close();
-    store.close();
+    shutdownSignal?.removeEventListener('abort', abortStartup);
+    closePending = (async () => {
+      const errors = [];
+      const attempt = async fn => { try { return await fn(); } catch (error) { errors.push(error); } };
+      // Startup continuations see closed before using any newly acquired resource.
+      await startupSettled;
+      const replicationStopped = attempt(() => replication?.stop());
+      await reloadPending?.catch(() => {});
+      await authorityStopping?.catch(() => {});
+      await attempt(() => stopRuntime({ restore }));
+      await attempt(() => authority?.close());
+      await replicationStopped;
+      await attempt(() => chartService?.close());
+      await attempt(() => webAccess?.close());
+      await attempt(() => store.close());
+      runtimeTiming.close();
+      if (errors.length) throw new AggregateError(errors, 'Application cleanup completed with errors; required restoration may remain pending.');
+    })();
+    return closePending;
   }
-  async function stopRuntime({ restore = true } = {}) {
+  function stopRuntime({ restore = true } = {}) {
     restore = restore && canControl();
     clearTimeout(timer);
     clearInterval(garageSafetyTimer);
-    await engine?.charging?.close();
-    await engine?.garage?.close({ restore });
-    if (engine) engine.onTemporaryChange = null;
-    // Restore timed device tests while their original acquisition route still
-    // exists. A failed shutdown keeps the durable obligation for the next start.
-    if (restore) {
-      try { await engine?.equipmentTests?.close({ restore: true }); }
-      catch {
-        try { store.event('equipment-test-restoration-pending', { reason: 'application-shutdown' }, clock()); }
-        catch { /* A failed diagnostic must not keep device transports alive. */ }
-        finally { await engine?.equipmentTests?.close({ restore: false }); }
+    // Revocation starts before any slow feature cleanup. MQTT queues cannot wait
+    // for a charging HTTP response before learning that this controller lost authority.
+    const revoked = [];
+    if (!restore) {
+      const cancel = fn => { try { revoked.push(Promise.resolve(fn()).then(()=>null,error=>error)); } catch(error) { revoked.push(Promise.resolve(error)); } };
+      cancel(() => commandTransport?.close());
+      for (const acquisition of acquisitions.splice(0)) {
+        cancel(() => acquisition.revoke?.());
+        cancel(() => acquisition.close({ restore: false }));
       }
     }
-    // Revoke transports before awaiting any pending device readback on demotion.
-    // Ordinary shutdown still performs the existing restoration protocol.
-    let revokedAcquisitions;
-    if (!restore) {
-      const transportStopped = commandTransport?.close();
-      revokedAcquisitions = Promise.all(acquisitions.splice(0).map(acquisition => acquisition.close({ restore: false })));
-      await engine?.equipmentTests?.close({ restore: false });
-      await transportStopped;
+    if (runtimeStopPending) {
+      if (!revoked.length) return runtimeStopPending;
+      const previous = runtimeStopPending;
+      runtimeStopPending = (async () => {
+        const results = await Promise.allSettled([previous, ...revoked]);
+        const errors = results.flatMap(result => result.status === 'rejected' ? [result.reason] : result.value instanceof Error ? [result.value] : []);
+        if (errors.length) throw new AggregateError(errors, 'Runtime revocation completed with errors.');
+      })();
+      return runtimeStopPending;
     }
-    if (engine?.heatingTestBusy) await commandTransport?.close();
-    await engine?.dispatchPending?.catch(() => {});
-    await engine?.closeFireplace();
-    try { await engine?.executor?.close?.({ restore }); }
-    catch {
-      try { store.event('restoration-pending', { reason: 'application-shutdown' }, clock()); }
-      catch { /* Continue releasing transports when the event store is unavailable. */ }
-    }
-    await commandTransport?.close();
-    await (revokedAcquisitions ?? Promise.all(acquisitions.splice(0).map(acquisition => acquisition.close({ restore }))));
-    await learning?.close(); learning = null;
-    engine?.recorder.flush(clock());
-    commandTransport = null;
+    runtimeStopPending = (async () => {
+      const errors = [];
+      const attempt = async fn => { try { return await fn(); } catch (error) { errors.push(error); } };
+      await attempt(() => engine?.charging?.close());
+      await attempt(() => engine?.garage?.close({ restore }));
+      if (engine) engine.onTemporaryChange = null;
+      await attempt(() => engine?.equipmentTests?.close({ restore }));
+      // Always release manager timers even if its physical restoration failed.
+      await attempt(() => engine?.equipmentTests?.close({ restore: false }));
+      if (engine?.heatingTestBusy) await attempt(() => commandTransport?.close());
+      await engine?.dispatchPending?.catch(() => {});
+      await attempt(() => engine?.closeFireplace());
+      await attempt(() => engine?.executor?.close?.({ restore }));
+      await attempt(() => commandTransport?.close());
+      for (const acquisition of acquisitions.splice(0)) await attempt(() => acquisition.close({ restore }));
+      for (const error of await Promise.all(revoked)) if (error) errors.push(error);
+      await attempt(() => learning?.close()); learning = null;
+      await attempt(() => engine?.recorder.flush(clock()));
+      commandTransport = null;
+      if (errors.length) throw new AggregateError(errors, 'Runtime cleanup completed with errors; required restoration may remain pending.');
+    })();
+    return runtimeStopPending;
+  }
+  function revokeControl() {
+    controlRevoked = true;
+    runtimeUsable = false;
+    if (engine) engine.suspended = true;
+    authorityStopping ??= stopRuntime({ restore: false });
+    authorityStopping.catch(() => {});
+    return authorityStopping;
   }
   async function createRuntime() {
     requireRunning();
+    runtimeStopPending = null;
     await authority?.reconfigure(config.connections.mqtt);
     requireRunning();
-    pruneRetiredDatasets(store);
     if (['mqtt', 'providers'].includes(config.input) && config.connections.mqtt?.address) {
       commandTransport = createHeatingTransport({ connection: config.connections.mqtt, connect: mqttOptions.connect,
         canControl });
     }
     engine = new Engine({ store, config, clock, commandTransport, canControl });
+    engine.runtimeTiming = runtimeTiming.status;
     // Load durable native-setting obligations before the first active dispatch.
     // MQTT connection and device publications remain asynchronous.
     const hasMqttObservations = Boolean(engine.charging?.mqttRoutes().length) || config.h66?.deviceId || config.deviceId
-      || Object.keys(config.connections.mqtt?.temperatureTopics ?? {}).length > 0
       || config.connections.teslamate?.enabled === true
+      || engine.charging?.configuration?.chargers?.charger2?.enabled === true
       || Boolean(config.garage?.adapter?.stateTopic || config.garage?.adapter?.telemetryTopic)
-      || config.connections.shelly?.devices?.length > 0
       || config.connections.equipment?.devices?.length > 0;
     if (['mqtt','providers'].includes(config.input) && hasMqttObservations && config.connections.mqtt?.address) {
       const { startMqtt } = await import('./acquisition/mqtt.js');
@@ -154,8 +185,11 @@ export async function start({ config = loadConfig(), readConfig = configurationR
       }
       acquisitions.push(acquisition);
       engine.equipment = acquisition.equipment ?? null;
-      if (acquisition.equipment?.hasHeating) commandTransport.setHeatingRelay(acquisition.equipment.publishHeating);
-      else if (acquisition.shelly?.hasHeating) commandTransport.setHeatingRelay(acquisition.shelly.publishHeating);
+      if (acquisition.equipment?.hasHeating) commandTransport.setHeatingRelay(acquisition.equipment.publishHeating, () => {
+        const ids = acquisition.equipment.status(clock()).devices.filter(device => device.controls?.tariff).map(device => device.id).sort();
+        const identities = ids.map(id => acquisition.equipment.signature(id));
+        return ids.length && identities.every(Boolean) ? identities : null;
+      });
       if (acquisition.h66) engine.setH66(acquisition);
     }
     engine.equipmentTests = createEquipmentTests({ store, clock, getEquipment: () => engine.equipment,
@@ -198,13 +232,14 @@ export async function start({ config = loadConfig(), readConfig = configurationR
     }
   }
   const settingsReloadStatus = () => ({
-    available: typeof readConfig === 'function' && runtimeUsable && canControl(),
+    available: !closed && typeof readConfig === 'function' && runtimeUsable && canControl(),
+    stopping: closed,
     busy: Boolean(reloadPending) || starting,
-    unavailable: !runtimeUsable && !reloadPending && canControl(),
+    unavailable: closed || !runtimeUsable && !reloadPending && canControl(),
     configuration: config.configuration ?? { environment: config.addon ? 'home-assistant' : 'ubuntu' },
     access: webAccess?.status(),
     result: configurationResult,
-    reason: !runtimeUsable && !reloadPending
+    reason: closed ? 'The application is shutting down.' : !runtimeUsable && !reloadPending
       ? 'Settings recovery failed. Restart the application after checking configuration.'
       : typeof readConfig === 'function'
         ? 'Applies configuration and reconnects providers. Input, listening addresses, ports and storage changes require restart.'
@@ -230,7 +265,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
         throw new Error(`Configuration could not be read or validated. ${source ? error.message : 'Check the configuration file.'}`);
       }
       requireRunning();
-      const startupKeys = ['role', 'input', 'host', 'port', 'ingressHost', 'ingressPort', 'dataDir', 'databaseDir', 'dbPath', 'legacyDbPath', 'addon'];
+      const startupKeys = ['role', 'input', 'host', 'port', 'ingressHost', 'ingressPort', 'dataDir', 'databaseDir', 'dbPath', 'addon'];
       if (startupKeys.some(key => next[key] !== config[key]) || !isDeepStrictEqual(next.replication, config.replication)
         || !isDeepStrictEqual(next.pairing, config.pairing))
         throw new Error('Input, role, replication, network access or storage settings changed. Restart to apply these changes; no settings were updated.');
@@ -279,12 +314,18 @@ export async function start({ config = loadConfig(), readConfig = configurationR
         // Keep unaffected providers' retry state, including shared rate limits.
         store.transaction(() => {
           const changed = key => !isDeepStrictEqual(next.connections?.[key], previous.connections?.[key]);
-          const weatherChanged = changed('geoloc');
-          const marketChanged = weatherChanged || changed('entsoe') || changed('elering');
+          const weatherChanged = weatherAcquisitionIdentity(previous.connections) !== weatherAcquisitionIdentity(next.connections);
+          const marketChanged = changed('geoloc') || changed('entsoe') || changed('elering');
           const electricityChanged = changed('easee');
           const health = store.getState('providers:health') ?? {};
           for (const [name, reset] of [['weather', weatherChanged], ['outdoor', weatherChanged],
-            ['market', marketChanged], ['easee', electricityChanged]]) if (reset) delete health[name];
+            ['market', marketChanged], ['easee', electricityChanged]]) if (reset) {
+            if (['weather', 'outdoor'].includes(name)) health[name] = {
+              acquisitionIdentity: weatherAcquisitionIdentity(next.connections),
+              sourceBackoff: Object.fromEntries(Object.entries(health[name]?.sourceBackoff ?? {}).filter(([, value]) => value.shared === true)),
+            };
+            else delete health[name];
+          }
           for (const [name, setting] of [['easee', 'easeeIntervalMs'], ['market', 'marketIntervalMs'],
             ['weather', 'weatherIntervalMs'], ['outdoor', 'outdoorIntervalMs']]) {
             const interval = next.acquisition?.[setting], state = health[name];
@@ -354,7 +395,14 @@ export async function start({ config = loadConfig(), readConfig = configurationR
     try { await reloadPending; }
     finally { reloadPending = null; schedule(); }
   }
+  if (shutdownSignal?.aborted) abortStartup();
+  else shutdownSignal?.addEventListener('abort', abortStartup, { once: true });
+  if (installSignalHandlers && !closed) for (const signal of ['SIGTERM', 'SIGINT']) {
+    const handler = () => { close().catch(() => { console.error(JSON.stringify({ event: 'shutdown-error', reason: 'cleanup-failed' })); process.exitCode = 1; }); };
+    signalHandlers.set(signal,handler); process.once(signal,handler);
+  }
   try {
+    requireRunning();
     if (!pairContext && ['mqtt', 'providers'].includes(config.input) && config.connections.mqtt?.address) {
       authority = await standaloneAuthority({ config, clock, connect: mqttOptions.connect,
         onLoss: async () => {
@@ -365,8 +413,12 @@ export async function start({ config = loadConfig(), readConfig = configurationR
           authorityStopping = Promise.all([stopRuntime({ restore: false }), reloadPending?.catch(() => {})]);
           await authorityStopping;
         } });
+      if (closed) throw new Error('The application is shutting down.');
       if (!authority.canControl()) {
+        finishStartup();
+        for (const [signal, handler] of signalHandlers) process.removeListener(signal,handler);
         store.close();
+        runtimeTiming.close();
         return await stoppedControllerViewer({ config, authority, clock, installSignalHandlers });
       }
     }
@@ -381,13 +433,18 @@ export async function start({ config = loadConfig(), readConfig = configurationR
       reloadSettings: typeof readConfig === 'function' ? reloadSettings : null, settingsReloadStatus,
       staticDir: resolve(dirname(fileURLToPath(import.meta.url)), '../dist') });
     await webAccess.start();
+    requireRunning();
     await createRuntime();
+    requireRunning();
     if (canControl()) { engine.tick(); startGarageSafety(); }
+    requireRunning();
     if (canControl()) await startProviderRuntime();
+    requireRunning();
     // Background work follows the initial control tick and provider startup.
     learning = canControl() && config.input !== 'simulated' ? startHistoryLearning({ store, config: engine.control }) : null;
     if (config.replication?.enabled) {
       const { ReplicationService } = await import('./replication/service.js');
+      requireRunning();
       replication = new ReplicationService({ dbPath: store.path, config: config.replication });
       replication.start();
     }
@@ -395,18 +452,20 @@ export async function start({ config = loadConfig(), readConfig = configurationR
       try { configurationResult = await startupImport.complete(); }
       catch { configurationResult = { cleanupPending: true }; }
     }
+    requireRunning();
     starting = false;
     authority?.start();
     engine.onTemporaryChange = schedule;
     schedule();
     console.log(JSON.stringify({ event: 'ready', input: config.input, mode: engine.settings.mode, liveWrites: engine.status().liveWrites, manualHeatingTests: engine.heatingTests().available,
       address: webAccess.server.address(), startupMs: Math.round(performance.now() - started) }));
-    if (installSignalHandlers) for (const signal of ['SIGTERM', 'SIGINT']) {
-      const handler = () => close().catch(error => { console.error(error.message); process.exitCode = 1; });
-      signalHandlers.set(signal, handler); process.once(signal, handler);
-    }
-    return { store, get engine() { return engine; }, get server() { return webAccess.server; }, webAccess, replication, close, reloadSettings };
-  } catch (error) { await close(); throw error; }
+    finishStartup();
+    return { store, get engine() { return engine; }, get server() { return webAccess.server; }, webAccess, replication, close, reloadSettings, revokeControl };
+  } catch (error) {
+    finishStartup();
+    try { await close(); } catch (cleanupError) { error.cleanupError = cleanupError; }
+    throw error;
+  }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

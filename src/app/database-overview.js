@@ -160,7 +160,6 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
         ['Network transfer', 'Tariff selection and dated day/night/seasonal transfer rates.']) })]);
 
   const journal = grouped('learning_journal', "CASE WHEN kind IN ('sample','episode','context') THEN kind ELSE 'other' END", 'at');
-  const samples = aggregate('learning_samples', 'at');
   const cycles = aggregate('learning_cycles', 'started_at', 'COALESCE(ended_at,started_at)');
   const cycleFacts = db.prepare(`SELECT SUM(status='completed') completed,SUM(status='incomplete') incomplete,
     SUM(json_type(CASE WHEN json_valid(payload) THEN payload ELSE '{}' END,'$.assessment')='object') assessed FROM learning_cycles`).get();
@@ -174,8 +173,6 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
       ['Learning configuration', 'Saved control/thermal assumptions associated with this context.'],
       ['Replay versions', 'Algorithm and configuration versions, forecast reference when present, and initial model seed when required.']) }));
   if (journal.get('other')?.count) learningItems.push(item('journal-other', 'Additional journal records', 'Other stored learning journal kinds.', journal.get('other'), { fields: learningFields }));
-  learningItems.push(item('learning-samples', 'Reserved learning sample storage', 'The older sample-storage table is retained in the schema, but the current learning pipeline writes its samples to the immutable journal instead. Any rows here are separate stored copies, not extra independent observations.', samples, {
-    writeBehavior: 'No active writer in the current learning pipeline.', fields: learningFields }));
   learningItems.push(item('learning-cycles', 'Cycle plans, execution and assessments', 'Each cycle contains its original plan and forecast, observations, adjustments, calculated costs and completed assessment when available.', cycles, {
     countLabel: 'cycles', retention: 'mixed', retentionDescription: 'A cycle record is updated while active and retained after completion or interruption.',
     dateBasis: 'cycle start / end', writeBehavior: 'On planning and as a cycle progresses or completes.',
@@ -209,7 +206,7 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
     ['contract', "key LIKE 'contract:%'", 'Contract documents', 'Dated electricity rates; their periods are described above.'],
     ['heat-power', "key LIKE 'heat-pump-power-config:%'", 'Heat-pump power assumptions', 'Current nominal compressor, circulation and auxiliary power assumptions; historical changes are retained in configuration events.'],
     ['recorder', "key LIKE 'recorder:%'", 'Adaptive recorder checkpoints', 'Shared storage feedback, learned per-signal scales, last saved values, coverage cursors and pending phase or total energy intervals.'],
-    ['acquisition', "key LIKE 'provider:%' OR key='providers:health' OR key='electricity:acquisition' OR key LIKE 'teslamate:acquisition:%'", 'Provider and electricity acquisition state', 'Latest provider responses, source health/backoff and unfinished electrical integration and charging sessions needed to resume acquisition.'],
+    ['acquisition', "key LIKE 'provider:%' OR key='providers:health' OR key='electricity:acquisition'", 'Provider and electricity acquisition state', 'Latest provider responses, source health/backoff and unfinished electrical integration and charging sessions needed to resume acquisition.'],
     ['session-checks', "key LIKE 'charging-session-check:%' OR key LIKE 'easee:session-check:%' OR key LIKE 'easee:session-check-head:%'", 'Charging comparison identities', 'Hashed session identities prevent duplicate finalized comparisons; raw provider identifiers are not copied into checks.'],
     ['learning', "key LIKE 'learning:%' OR key LIKE 'adaptive:%' OR key LIKE 'learned:%'", 'Learning checkpoints and progress', 'Current fitted model, replay cursor, baseline, metrics and history rebuild progress.'],
     ['fireplace', "key LIKE 'fireplace:%'", 'Fireplace reconstruction progress', 'Current correction revision, background reconstruction status and progress. A replacement model is activated after reconstruction completes.'],
@@ -273,10 +270,10 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
       countLabel: 'spans', dateBasis: 'span start / end', retention: 'mixed', retentionDescription: 'New spans are retained; the current unchanged span is extended in place.',
       writeBehavior: 'Updated by acquisition; new span on a status or associated saved-reading change, or after a source-freshness gap.',
       fields: fields(['Status and time span', 'Availability classification, receipt coverage and latest source timestamp.'], ['References', 'Saved observation reference and number of acquisition samples represented.']) }),
-    item('recorder-statistics', 'Recording statistics', 'Hourly counts and time-weighted reconstruction-error statistics used by the recording display and storage optimizer.', metrics, {
+    item('recorder-statistics', 'Recording statistics', 'Hourly counts and time-weighted pre-update change statistics used by the recording display and storage optimizer.', metrics, {
       countLabel: 'hourly buckets', dateBasis: 'bucket time', retention: 'rolling', retentionDescription: 'Hourly buckets updated in place; buckets older than seven days are pruned by the recorder.',
       writeBehavior: 'Each acquisition updates its current hourly bucket.',
-      fields: fields(['Counts', 'Polls, saved records and stale/failed/unavailable acquisitions.'], ['Compression statistics', 'Approximate serialized observation bytes and accumulated normalized error/time; not per-table disk usage.']) }),
+      fields: fields(['Counts', 'Polls, saved records and stale/failed/unavailable acquisitions.'], ['Compression statistics', 'Approximate serialized observation bytes and accumulated normalized pre-update change/time; not per-table disk usage.']) }),
     item('snapshot-content', 'Shared provider snapshot content', 'Immutable deduplicated content shared by timestamped weather and market fetch references listed above.', contentCount ? { count: contentCount } : empty(), {
       countLabel: 'versions', writeBehavior: 'Once per new content digest.', fields: fields(['Content', 'Provider forecast/price intervals.'], ['Digest', 'Content identity used to reuse unchanged data.']) }),
     item('meter-audits', 'Property cumulative meter readings', 'Property import counters and diagnostic metadata. Charger 1 and Charger 2 use finalized session references instead of cumulative charger counters.', audits, {
@@ -303,7 +300,7 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
     provider_snapshot_fetches: sum([...snapshots.values()]).count, provider_snapshot_contents: contentCount,
     recorder_coverage: coverage.count, recorder_metrics: metrics.count, energy_audits: audits.count,
     learning_journal_entries: journalEntries.count, learning_epochs: epochs.count, recovery_runs: recoveryRuns.count,
-    recovery_provenance: recoverySources.count, learning_samples: samples.count, learning_cycles: cycles.count,
+    recovery_provenance: recoverySources.count, learning_cycles: cycles.count,
     fireplace_events: sum([...fireplace.values()]).count,
   };
   const actualTables = db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all();
@@ -318,7 +315,7 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
     database: { allocatedBytes, reusableBytes, fileBytes, walBytes, totalFileBytes: fileBytes === null ? null : fileBytes + walBytes,
       description: 'SQLite allocated pages include recorded data, indexes that speed lookups and reusable pages. Chart responses and display-point reduction use memory, not additional database tables. Main-file plus WAL bytes are physical files and include temporary journal overhead; dataset sizes are not estimated.' },
     groups, accounting: { tables, totalRows: tables.reduce((total, table) => total + table.rows, 0),
-      views: [{ name: 'provider_snapshots', description: 'Compatibility view joining fetch references with shared content; it stores no additional rows.' },
+      views: [{ name: 'provider_snapshots', description: 'Current read-only view joining fetch references with shared content; it stores no additional rows.' },
         { name: 'learning_journal', description: 'Selected complete learning epoch for each input; source entries and archived epochs are counted in learning_journal_entries.' },
         { name: 'learning_journal_all', description: 'Resolves compact epoch references to their original saved input; it stores no duplicated payload rows.' }],
       description: 'Each physical table is counted once here. Dataset counts above overlap where documents contain periods or fetches reference shared content; do not add those dataset counts together.' } };

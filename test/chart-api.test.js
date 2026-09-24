@@ -25,7 +25,7 @@ async function fixture(t, overrides = {}) {
     await new Promise(resolve => server.close(resolve));
     store.close(); rmSync(directory, { recursive: true, force: true });
   });
-  return { store, engine, now, base: `http://127.0.0.1:${server.address().port}`, headers: { Authorization: `Bearer ${token}` } };
+  return { store, engine, service, now, base: `http://127.0.0.1:${server.address().port}`, headers: { Authorization: `Bearer ${token}` } };
 }
 
 test('chart API requires authentication and rejects malformed date/axis/point selections', async t => {
@@ -37,6 +37,34 @@ test('chart API requires authentication and rejects malformed date/axis/point se
   }
   const response = await fetch(`${base}/api/chart`, { headers: { ...headers, Origin: 'https://untrusted.example' } });
   assert.equal(response.status, 403);
+});
+
+test('real worker historical cache follows meter audits and finalized sessions but retains unrelated event hits',async t=>{
+  const {base,headers,store,now}=await fixture(t);
+  const read=left=>fetch(`${base}/api/chart?start=2026-09-06&end=2026-09-06&left=${left}`,{headers}).then(r=>r.json());
+  const meter='property_import_energy_counter',session='ev1_session_energy_check';
+  await read(meter);assert.equal((await read(meter)).meta.cacheHit,true);
+  store.event('synthetic-operational',{ok:true},now);assert.equal((await read(meter)).meta.cacheHit,true);
+  store.energyAudit({source:'easee',device:'synthetic-property',signal:meter,sourceTime:now-24*3600000,receivedAt:now,value:123});
+  const updated=await read(meter);assert.notEqual(updated.meta.cacheHit,true);assert(updated.series[meter].some(point=>point.y===123));
+  await read(session);assert.equal((await read(session)).meta.cacheHit,true);
+  recordChargingSessionCheck(store,{source:'easee',sessionKey:'synthetic-cache-session',start:now-25*3600000,end:now-24*3600000,
+    estimatedKwh:7,referenceKwh:7,complete:true,quality:[]});
+  const final=await read(session);assert.notEqual(final.meta.cacheHit,true);assert(final.series[session].some(point=>point.y===7));
+});
+test('historical worker cache reevaluates receipt eligibility when only the as-of clock advances or rolls back',async t=>{
+  const {store,service,now}=await fixture(t),sourceTime=now-24*3600000;
+  for(const [value,receivedAt] of [[20,now],[21,now+1000]])store.observation({source:'mqtt-temperature',device:'synthetic-asof',
+    signal:'indoor_temperature',unit:'degC',sourceTime,receivedAt,value});
+  const args={input:'providers',startDate:'2026-09-06',endDate:'2026-09-06',left:'indoor_temperature',points:100,now};
+  const first=await service.query(args);assert(first.series.indoor_temperature.some(point=>point.y===20));
+  assert(!(first.series.indoor_temperature.some(point=>point.y===21)));
+  assert.equal((await service.query(args)).meta.cacheHit,true);
+  const advanced=await service.query({...args,now:now+1000});assert.notEqual(advanced.meta.cacheHit,true);
+  assert(advanced.series.indoor_temperature.some(point=>point.y===21));
+  const rolledBack=await service.query(args);assert.notEqual(rolledBack.meta.cacheHit,true);
+  assert(rolledBack.series.indoor_temperature.some(point=>point.y===20));
+  assert(!(rolledBack.series.indoor_temperature.some(point=>point.y===21)));
 });
 
 test('worker cache renews an unchanged periodic report within the same fifteen-second cache bucket',async t=>{
@@ -58,7 +86,7 @@ test('meter diagnostics preserve latest property check and show real charger ses
   assert.equal((await fetch(`${base}/api/energy-audits`)).status,401);
   const read=()=>fetch(`${base}/api/energy-audits`,{headers}).then(response=>response.json());
   const empty = await read();
-  assert.deepEqual(empty.map(row => row.source), ['easee', 'teslamate']);
+  assert.deepEqual(empty.map(row => row.source), ['easee', 'shelly-evse']);
   assert(empty.every(row => row.summary.recordedSessions === 0 && row.summary.differencePercent === null));
   for(const [at,value] of [[now-60000,10],[now,10.03]])store.energyAudit({source:'easee',device:'invented-property',
     signal:'property_import_energy_counter',sourceTime:at,receivedAt:at,value});
@@ -70,12 +98,12 @@ test('meter diagnostics preserve latest property check and show real charger ses
   assert(withoutSessions.slice(1).every(row => row.summary.recordedSessions === 0));
   recordChargingSessionCheck(store, { source:'easee',sessionKey:'invented-session',start:now-60000,end:now,
     estimatedKwh:1.1,referenceKwh:1,complete:true,quality:[] });
-  recordChargingSessionCheck(store, { source:'teslamate',sessionKey:'invented-tesla-session',start:now-60000,end:now,
+  recordChargingSessionCheck(store, { source:'shelly-evse',sessionKey:'invented-tesla-session',start:now-60000,end:now,
     estimatedKwh:1.2,referenceKwh:1,complete:false,quality:['incomplete-coverage'] });
   const auditCount=store.energyAudits().length;
   const response=await fetch(`${base}/api/energy-audits`,{headers});assert.equal(response.status,200);
   const rows=await response.json();
-  assert.deepEqual(rows.map(row=>row.signal),['property_import_energy_counter','ev1_session_energy_check','tesla_session_energy_check']);
+  assert.deepEqual(rows.map(row=>row.signal),['property_import_energy_counter','ev1_session_energy_check','shelly_session_energy_check']);
   assert.equal(rows[0].sourceTime,now);
   assert.equal(rows[0].comparison.start,now-60000);
   assert.equal(rows[0].comparison.end,now);
@@ -93,7 +121,7 @@ test('meter diagnostics preserve latest property check and show real charger ses
 test('every catalogue axis works, including historical meter references without learning use',async t=>{
   const {base,headers,store,now}=await fixture(t);
   store.energyAudit({source:'easee',device:'invented-property',signal:'property_import_energy_counter',sourceTime:now-60000,receivedAt:now,value:123,quality:[]});
-  for(const source of ['easee','teslamate'])recordChargingSessionCheck(store,{source,sessionKey:'invented-finalized-session',
+  for(const source of ['easee','shelly-evse'])recordChargingSessionCheck(store,{source,sessionKey:'invented-finalized-session',
     start:now-3600000,end:now-60000,estimatedKwh:6,referenceKwh:5,complete:true,quality:[]});
   const {HISTORY_AXES}=await import('../src/domain/history-series.js');
   for(const axis of HISTORY_AXES) {
@@ -102,7 +130,7 @@ test('every catalogue axis works, including historical meter references without 
     const chart=await response.json();
     for(const signal of axis.signals)assert(Array.isArray(chart.series[signal]),signal);
     if(axis.key==='property_import_energy_counter')assert(chart.series[axis.key].some(row=>row.y===123&&row.auditOnly));
-    if(['ev1_session_energy_check','tesla_session_energy_check'].includes(axis.key))
+    if(['ev1_session_energy_check','shelly_session_energy_check'].includes(axis.key))
       assert(chart.series[axis.key].some(row=>row.y===5&&row.auditOnly&&row.sessionCheck));
   }
 });
@@ -158,7 +186,7 @@ test('dated contract edits invalidate chart pricing without filling uncovered hi
   assert.equal((await read()).series.all_in_price.some(p => Number.isFinite(p.y)), false);
   engine.addContractPeriod({ effectiveDate: '2026-09-07', marginCtPerKwh: 0.5, taxCtPerKwh: 2, vatRate: 0.25, tariff: 'day-night' });
   const priced = await read();
-  assert.ok(priced.series.all_in_price.some(p => Math.abs(p.y - 0.215) < 0.000001));
+  assert.ok(priced.series.all_in_price.some(p => Math.abs(p.y - (-5 + .5 + 2 + 2.66) * 1.25) < 0.000001));
   assert.ok(priced.series.spot_price.some(p => p.y === -5));
   assert.equal((await fetch(`${base}/api/status`, { headers }).then(r => r.json())).liveWrites, false);
 });

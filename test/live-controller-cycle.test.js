@@ -1,3 +1,4 @@
+import { appendLearningRecord } from './helpers/home-learning-fixture.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Store } from '../src/storage/store.js';
@@ -13,7 +14,7 @@ const HOUR = 3_600_000;
 function setup(t, { mode = 'active', delayed = false, store = new Store(':memory:') } = {}) {
   let now = Date.parse('2026-09-07T21:00Z'), acknowledge;
   const commands = [], config = { input:'mqtt', settings:validateSettings({mode,comfort:{targetC:21,maxDropC:2,maxRiseC:2}}), control:{...CONTROL_DEFAULTS,learningTrials:false} };
-  const transport = { publish: batch => {
+  const transport = { targetIdentity: { tariff: 'a'.repeat(64), dhwr: 'b'.repeat(64) }, publish: batch => {
     commands.push([...batch]);
     if (delayed) return new Promise(resolve => { acknowledge = () => resolve({status:'mqtt',sent:true,actual:null}); });
     return Promise.resolve({status:'mqtt',sent:true,actual:null});
@@ -35,7 +36,7 @@ function setup(t, { mode = 'active', delayed = false, store = new Store(':memory
         parameterEvidence:{lossPerHour:{status:'identified'},hydronicCPerKwh:{status:'identified'}}};
       model.equipmentResponse={phases:{reduction:{ratio:.1,trainingEpisodes:3,treatmentKey:'reduction-only-v1'}},
         validation:{phases:{reduction:{accepted:true,episodes:3,maeDuty:.05,maxDurationHours:.5,treatmentKey:'reduction-only-v1'}}}};
-      model.uncertainty={points:[{hours:24,errorC:.1}],extrapolationCPerHour:.05};
+      model.uncertainty={points:[{hours:.25,errorC:.1},{hours:24,errorC:.1}],extrapolationCPerHour:.05};
       model.forecastValidation={accepted:true,episodes:3,maxReductionHours:.5};
       engine.checkpoint=restoreAdaptiveCheckpoint(null);engine.checkpoint.model=model;
       const args={intervals,model,initialState:{indoorC:21.2,reserveC:21.2},targetC:21,config:CONTROL_DEFAULTS};
@@ -113,12 +114,12 @@ test('history baseline arriving after startup is adopted without replacing live 
 
 test('corrupt checkpoint replays persisted samples and corrupt background JSON cannot break live status',async t=>{
   const r=setup(t,{mode:'shadow'});
-  for(let i=0;i<3;i++)r.store.learningSample('mqtt',{timestamp:r.now-(3-i)*900000,indoorC:21.2,outdoorC:10,phase:'normal',regime:'occupied',quality:[]});
+  for(let i=0;i<3;i++)appendLearningRecord(r.store,'mqtt','sample',{timestamp:r.now-(3-i)*900000,indoorC:21.2,outdoorC:10,phase:'normal',regime:'occupied',quality:[]});
   r.store.db.prepare('INSERT INTO state(key,value,updated_at) VALUES(?,?,?)').run('adaptive:mqtt','{broken',0);
   r.store.db.prepare('INSERT INTO state(key,value,updated_at) VALUES(?,?,?)').run('adaptive:history','{broken',0);
   assert.doesNotThrow(()=>r.engine.tick());assert.equal(r.engine.checkpoint.samples.length,4);
   assert.ok(r.store.events().some(e=>e.type==='checkpoint-rebuild'));
-  const valid=r.engine.checkpoint;r.engine.checkpoint=null;r.store.setState('adaptive:mqtt',{version:1,samples:[],model:{},health:{}});
+  const valid=r.engine.checkpoint;r.engine.checkpoint=null;r.store.setState('adaptive:mqtt',{version:1,samples:[],model:{version:4},health:{}});
   assert.doesNotThrow(()=>r.engine.tick());assert.ok(r.engine.checkpoint.model.parameters.lossPerHour>0);
   assert.equal(r.engine.checkpoint.cursor,valid.cursor);
 });

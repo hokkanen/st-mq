@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { readFileSync } from 'node:fs';
 import { startMqtt } from '../src/acquisition/mqtt.js';
+import { equipmentConfiguration } from '../src/acquisition/equipment-config.js';
 
 test('MQTT exposes provisional garage telemetry and both external sensors with no garage publication path', async () => {
   const base = 1_800_000_000_000, client = new EventEmitter(), subscribed = [], published = [], observations = [];
@@ -14,8 +15,7 @@ test('MQTT exposes provisional garage telemetry and both external sensors with n
   const engine = { clock: () => now, configureTemperatureReports() {}, ingest: row => observations.push(row),
     garage: { setAdapter(value) { adapter = value; }, adapterChanged(snapshot) { store.setState('garage:adapter:mqtt', snapshot); } } };
   const capture = await startMqtt({ engine, store, config: { input: 'mqtt',
-    connections: { mqtt: { address: 'mqtt://example.invalid', temperatureTopics: {
-      garage_temperature: 'fixture/garage/rear', garage_temperature_2: 'fixture/garage/front' } } },
+    connections: { mqtt: { address: 'mqtt://example.invalid' }, equipment: equipmentConfiguration({ devices: [{ id: 'garage_temperature', kind: 'temperature', signal: 'garage_temperature', connection: 'mqtt:fixture/garage/rear' }, { id: 'garage_temperature_2', kind: 'temperature', signal: 'garage_temperature_2', connection: 'mqtt:fixture/garage/front' }] }) },
     garage: { adapter: { stateTopic: 'fixture/garage/state', telemetryTopic: 'fixture/garage/telemetry' } } },
     connect: (_address, options) => { assert.equal(options.queueQoSZero, false); return client; } });
   try {
@@ -63,7 +63,7 @@ test('Shelly CN105 MQTT route monitors before commissioning, then handshakes and
     assert.equal(adapter.status().automaticControl, false);
     assert.equal(published.length, 0);
     state.mode = 'armed'; state.sequence++;
-    state.commissioning = { selectivePowerVerified: true, lowHeatVerified: true, expiryVerified: true, restartVerified: true };
+    state.commissioning = { selectivePowerVerified: true, lowHeatVerified: true, expiryVerified: true, restartVerified: true, releaseOrderingVerified: true };
     receive();
     const claim = published[0];
     assert.equal(claim.topic, settings.commandTopic);

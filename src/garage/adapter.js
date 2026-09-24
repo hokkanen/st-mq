@@ -193,7 +193,8 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
     if (!result || !RESULT_STATUSES.includes(result.status)) return;
     const command = commands.find(row => row.commandId === result.commandId && row.sequence === result.sequence
       && row.episodeId === result.episodeId && row.action === result.action);
-    if (!command || command.status === 'superseded') return;
+    if (!command || command.status === 'superseded' || state.bootId !== command.bootId
+      || state.sessionId !== command.sessionId) return;
     if (['rejected', 'failed', 'superseded'].includes(command.status)) return;
     if (result.status === 'accepted' && command.status === 'native-confirmed') return;
     command.status = result.status;
@@ -597,14 +598,25 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
         else { episode.endpointAt = state.lease.endpointAt; episode.status = 'paused'; }
       }
       const native = state.native.power;
-      const afterRestoreRequest = restorationRequestedAt !== null && native?.measuredAt >= restorationRequestedAt;
+      const releaseConfirmed = lastCommand?.action === 'release' && lastCommand.status === 'native-confirmed'
+        && finiteTime(lastCommand.nativeConfirmedAt)
+        && !commands.some(command => command.sequence > lastCommand.sequence && command.action !== 'release');
+      const expiry = outstandingPermissionExpiresAt();
+      const expired = finiteTime(expiry) && native?.measuredAt >= expiry;
+      const cancellation = value.event;
+      const cancelled = ['manual-on', 'watchdog-recovery'].includes(cancellation?.type)
+        && cancellation.ownerSession === hostSession && cancellation.episodeId === episode?.id
+        && Number.isSafeInteger(cancellation.throughSequence) && cancellation.throughSequence >= sequence
+        && finiteTime(cancellation.at) && native?.measuredAt >= cancellation.at;
+      // An observation after a request proves chronology, not cancellation.
+      // The device contract must fence queued and serial-in-flight OFF writes.
       const nativeRestored = native?.value === 'on' && freshField(native, now, settings.maxAgeMs)
         && native.measuredAt > (obligationAt ?? -Infinity)
-        && state.lease === null && !state.restorationPending && (afterRestoreRequest
-          || (bootChanged || lastEvent !== null) && native.measuredAt > (obligationAt ?? Infinity));
+        && state.lease === null && !state.restorationPending
+        && (releaseConfirmed || expired || cancelled || bootChanged);
       if (restorePending && nativeRestored && health(now).driverProgressing && health(now).pumpCommunicating) {
         if (episode) completedEpisodes = [...new Set([...completedEpisodes, episode.id])].slice(-64);
-        if (lastCommand?.action === 'release' && native.measuredAt >= lastCommand.requestedAt) {
+        if (releaseConfirmed) {
           lastCommand.nativeConfirmedAt = native.measuredAt;
           lastCommand.status = 'native-confirmed';
         }

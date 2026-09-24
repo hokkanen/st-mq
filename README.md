@@ -3,9 +3,9 @@
 ![ST-MQ icon](icon.png)
 
 ST-MQ is a local home-energy controller under development for a Raspberry Pi 5
-Home Assistant add-on and standalone Linux. The authoritative project brief is
-`CODEX/ST-MQ-Codex-handoff.md`; implementation status and remaining work are in
-[docs/PROGRESS.md](docs/PROGRESS.md).
+Home Assistant add-on and standalone Linux. Current behavior is described below
+and in the linked feature guides. Audit implementation decisions are recorded in
+[the audit ledger](docs/audit/README.md).
 
 The default icon and all three reusable SVG/PNG designs are in
 [branding assets](assets/branding/README.md).
@@ -18,7 +18,7 @@ supported H66 settings. Explicit manual MQTT and timed H66 tests are also availa
 Market, weather, MQTT temperature, TeslaMate and Easee acquisition plus dated contract
 setup are integrated. Charger 1 accepts any car, using manual battery values until
 BMW or Tesla is identified, and can use opt-in native Easee schedules. Charger 2
-represents Tesla charging and remains observation-only. Heating mode and charging permission are
+is a physical Shelly EVSE with commissioning-gated MQTT control. Tesla and BMW are read-only vehicle feeds for either charger. Heating mode and charging permission are
 independent. See [charging controls and estimates](docs/charging.md).
 ENTSO-E has a direct Elering backup; FMI supplies temperature
 and solar forecasts, with Open-Meteo as backup. Current outdoor temperature uses
@@ -46,7 +46,7 @@ Electricity history stores three estimated phase-energy increments for Easee and
 property import, plus one total-energy increment for TeslaMate portable charging.
 Meter readings and completed-session comparisons are diagnostic only. The house learner uses
 committed windows and a versioned replay journal. See
-[adaptive recording and migration](docs/recording.md), including local MQTT temperature sensors.
+[adaptive recording and CSV imports](docs/recording.md), including local MQTT temperature sensors.
 Home and Garage equipment uses explicit `shelly:<prefix>` or `mqtt:<state topic>`
 connections, with public topic defaults and private broker credentials. See
 [MQTT equipment and device setup](docs/mqtt-equipment.md) for garage probes, doors,
@@ -93,6 +93,9 @@ npm run build
 npm start
 ```
 
+The [A01–A11/B12 audit record](docs/audit/README.md) documents the current
+implementation, validation and commissioning limits.
+
 `npm run check` runs the routine offline Node tests and production build.
 `npm run test:extended` adds recovery stress and real SSH/SQLite transport checks;
 `npm run test:all` runs both Node suites. Extended CI runs weekly or manually. Browser
@@ -103,8 +106,7 @@ commands and the latest checked scope. Provider live checks remain opt-in.
 Open **http://127.0.0.1:1234**. The UI labels simulated readings and example prices.
 If the port is already in use, follow [startup troubleshooting](docs/startup.md)
 to identify the running instance and restart it cleanly.
-`node scheduler.js` also starts the safe application unless the separate legacy
-live gate is explicitly enabled. The public `config.json.options` defaults are
+The public `config.json.options` defaults are
 overridden by the permanent private `~/.config/st-mq/secrets.json` file (or
 `$XDG_CONFIG_HOME/st-mq/secrets.json`). Without an explicit input selection the application uses simulation.
 Simulation and offline modes do not connect to providers. The server serves the completed UI build; it does not
@@ -144,7 +146,7 @@ inside Garage's heating configuration. Home shows **Tariff control** directly
 above **Recirculation**, separating a request from confirmed equipment state.
 Connection links end each equipment section. Selection marks sit beside the
 button labels. The equipment inventory includes individual room and protection
-sensors, tariff relays and legacy Shelly devices. The Caravan fold groups air
+sensors, tariff relays and native Shelly devices. The Caravan fold groups air
 temperature and humidity, energy and dehumidifier controls. Native Mitsubishi
 temperatures remain in the heat-pump detail view.
 Held changes during Pause show an amber notice even when the sections are closed;
@@ -214,8 +216,8 @@ the current readings.
   forecasts in W/m², not a solar sensor. Only that group's legend items appear.
   New property/charger power comes from phase-energy increments divided by their
   actual intervals. Equivalent chart currents assume 230 V and unity power factor;
-  they are not the acquired current snapshots. Older current-only history retains
-  its `230 × (L1 + L2 + L3) / 1000` estimate. Neither path measures heat-pump consumption.
+  they are not the acquired current snapshots. Coherent current snapshots, including
+  v0.7.5 CSV imports, use `230 × (L1 + L2 + L3) / 1000`. Neither path measures heat-pump consumption.
 - **Right axis:** **Average indoor**, Garage, outdoor temperature and electricity prices
   stay available with every left-axis selection, retaining their existing colours.
   Average indoor is the same configured sensor average used by the house model,
@@ -239,15 +241,17 @@ the current readings.
   included energy at the recorded timestamps with the same daily energy at the
   whole Finnish day's average all-in price. Heat-pump electricity is reconstructed
   from recorded compressor activity and auxiliary output using the nominal powers
-  saved for that time. Charger electricity uses recorded phase-energy intervals;
-  older current-only history retains its 230 V estimate. The visible basis and
+  saved for that time. Charger electricity uses recorded phase or total energy intervals;
+  eligible current snapshots retain their 230 V estimate. The visible basis and
   source details identify those estimates and simulation. Missing equipment data
   or dated heat-pump power assumptions leave gaps. Heat-pump power is never
   property consumption minus charger consumption.
-  Both **Heating** and **Charging** show **Time included** as a percentage of
-  the selected elapsed time. Heating includes valid zero-power intervals;
-  charging leaves out idle periods at or below 100 W. For example, one included
-  hour in a 24-hour selection is 4%, regardless of device. A low charging
+  **Heating** and each charger's breakdown show **Time included** as a percentage of
+  the selected elapsed time. Combined **Charging** uses **charger-time**: one hour
+  on both chargers is two charger-hours, and a 24-hour selection contains 48
+  possible charger-hours. Its cost and energy are the sums of Charger 1 and Charger 2;
+  missing Charger 2 history remains unknown. Heating includes valid zero-power intervals;
+  charging leaves out idle periods at or below 100 W. A low charging
   percentage can therefore mean idle time, missing history, or incomplete prices.
   The full-day average price still includes every hour. Missing readings remain
   unknown, separate from idle time. With no detected charging, no comparison is shown.
@@ -274,9 +278,14 @@ the current readings.
 
 Chart changes affect the display only. Viewing history neither polls providers
 nor sends equipment commands. Large ranges use bounded display resolution,
-preserving extremes and missing-data breaks; dense shading represents recorded
-activity within each display interval. Queries run in a background worker and
-recent selections are cached. A newer selection cancels an obsolete request.
+preserving extremes and missing-data breaks. Power reduction also retains peaks
+for every visible combination of auxiliary power and the two chargers. A display
+bucket with too many separate gaps marks its interior unavailable. Interval-energy
+values appear as separate marks and never connect across unrecorded time. Dense
+shading represents recorded activity within each display interval. Queries run
+in a background worker and recent selections are cached. New energy-audit readings
+and finalized session checks invalidate their historical chart responses; unrelated
+operational events do not. A newer selection cancels an obsolete request.
 For date ranges containing now, temperature, power, phase-current and integral
 lines extend their last recorded value to the current time on each status refresh,
 even when the history response is cached. Hover text identifies the original
@@ -330,9 +339,10 @@ public add-on folder, accessible through SSH under
 `/addon_configs/<repository-id>_st-mq/st-mq/`. Simulation
 uses `simulation.sqlite`; real/offline household history uses `st-mq.sqlite`.
 Override the database directory with `STMQ_DATABASE_DIR`. Private provider token
-caches remain in `STMQ_DATA_DIR` (`/data/st-mq` in HA). Existing HA databases migrate
-through SQLite's backup API to the public folder; the original is retained and an
-existing destination is never overwritten. `/share/st-mq` remains the exchange
+caches remain in `STMQ_DATA_DIR` (`/data/st-mq` in HA). Only the explicitly selected
+current database is opened; other database paths are never discovered or relocated.
+An incompatible database is rejected unchanged. Before v1.0.0, initialize a new
+database deliberately and re-import supported v0.7.5 CSVs. `/share/st-mq` remains the exchange
 folder for historical CSVs and exported backups. See [SSH access and backups](DOCS.md#ssh-database-access-and-backups).
 These databases and supplied CSVs are excluded from Git and Docker contexts.
 Keep private configuration outside the repository. Standalone uses the permanent
@@ -341,7 +351,7 @@ Historical encrypted configuration is covered by the archival audit in
 [secret handling](docs/secret-handling.md); it is not the current configuration workflow.
 
 ```sh
-npm run history -- import
+npm run history -- import --file /path/to/st-mq.csv --kind stmq
 npm run history -- summary
 npm run history -- tail --follow
 npm run history -- export --output /tmp/indoor.csv --signal indoor_temperature
@@ -350,15 +360,17 @@ npm run history -- restore --input /tmp/st-mq-backup.sqlite --db /tmp/restored.s
 STMQ_INPUT=offline npm start
 ```
 
-Import defaults to the two supplied `CODEX` CSVs, with streaming batches,
-SHA-256 provenance, interruption recovery and idempotence across file paths.
+Explicitly select a v0.7.5 `st-mq.csv` or `easee.csv` input and its matching kind.
+The importer stages bounded batches with SHA-256 provenance and publishes only
+a verified complete generation. Interrupted attempts can be retried; publication
+IDs remain monotonic across independently completed files.
 Importing the same file twice adds no observations. Differently edited source
 files retain separate provenance; they are not silently merged into canonical
 historical readings. Historical prices stay ex VAT. Missing readings stay null,
 zero-current anomalies stay flagged, and commands never become compressor labels.
 March–May 2026 is an approximate absence/heating-off annotation excluded from
-occupied-model training. All 84 dated handoff counters are preserved; DHW runtime
-is not added to compressor runtime.
+occupied-model training. Manual counters and annotations can be entered explicitly with their own provenance.
+DHW runtime is not added to compressor runtime.
 
 Backups use SQLite's online backup API. Restore to a new path while the target
 application is stopped; validate it before changing the configured path. Keep
@@ -530,15 +542,14 @@ Charger voltage terminal mapping requires explicit verification before voltage
 weights are used. Easee acquisition can refresh authentication tokens. Separately
 enabling **Automatic charging** on Charger 1 permits native scheduling writes,
 including while heating is in monitoring or shadow mode; it is off by default.
-Charger 2 has no command adapter. See [charging](docs/charging.md) and
+Charger 2 supports verified EVSE start/stop and current limits, with control disabled until commissioned. See [charging](docs/charging.md) and
 [recording configuration and limitations](docs/recording.md).
 
-Optional [TeslaMate capture](docs/recording.md#teslamate-portable-charger-capture)
-uses the existing MQTT broker and the exact `Home` geofence. It records total kWh
-from charging power, with no phase-current series or PostgreSQL connection.
-Fresh property-power checks suppress impossible overlaps; physical connector
-identity remains ambiguous in some cases, with an explicit Easee assignment
-available to guarantee that charger 2 is not counted for a known Easee session.
+Optional [vehicle feeds and physical Charger 2](docs/recording.md#charger-2-physical-capture-and-vehicle-feeds)
+use the existing MQTT broker. TeslaMate supplies read-only vehicle identity, SoC
+and native constraints for either physical charger. Only the physical Shelly
+meter records new C2 home energy. See [commissioning](docs/charging-provider-capabilities.md)
+for the disabled-by-default device profile and unverified controller-loss behavior.
 
 Normal `npm test` and `npm run check` stay offline. To verify current service access
 and the configured keys explicitly, use the [bounded live test suite](docs/live-testing.md):
@@ -662,8 +673,10 @@ native settings. Start a timed circulation run separately if needed.
 
 The optional `electricity.effective_date` is a Finnish calendar date. First-use
 rates begin today if no date is supplied; subsequent changes begin when loaded.
-Rates, transfer amounts and VAT are saved per period so future changes preserve
-historical calculations. Unstarted scheduled changes can be revised in options.
+Rates, transfer amounts and VAT are saved per period with an explicit tax basis
+so future changes preserve historical calculations. Missing tax basis is not
+interpreted as an older native representation. Explicit dated VAT-inclusive
+tariff facts remain valid. Unstarted scheduled changes can be revised in options.
 For chart history and timing comparisons, missing historical contract periods
 use the nearest known rates while preserving historical spot prices. If only
 today's rates are known, those rates apply to earlier readings. The historical
@@ -720,7 +733,9 @@ Run `scripts/test-addon-container.sh st-mq:development` to check a local image.
 [deploy/st-mq.service](deploy/st-mq.service)
 is an example standalone systemd unit to adapt to an installation; it has not been
 installed or enabled by development. Stop the old command owner before any future
-live migration. [Legacy documentation](docs/LEGACY.md) is retained for reference.
+live commissioning. [The v0.7.5 CSV reference](docs/LEGACY.md) describes the only
+supported historical import boundary; development databases and configurations
+are not migrated.
 
 Firewood loads and mistaken-entry corrections are described in
 [Fireplace logging](docs/fireplace.md). The [model reconstruction and versioning

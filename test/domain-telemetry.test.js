@@ -152,9 +152,11 @@ test('phase-current snapshots flag data problems and preserve uncertainty about 
   assert.deepEqual(assessPhaseCurrents({ ...normal, eq_curr2: 26 }).phasesAboveFuse, [2]);
 });
 
-test('uninstalled H66 indoor sensor is neither catalogued nor decoded, including legacy scaling metadata', () => {
+test('uninstalled H66 indoor sensor is neither catalogued nor decoded and rejects retired metadata', () => {
   assert.equal(H66_REGISTERS['0008'], undefined);
-  const decoder = make({ verifiedRegisters: { '0008': { scale: 1, evidence: 'old installation metadata' } }, mqttScaleByRegister: { '0008': 1 } });
+  assert.throws(() => make({ mqttScaleByRegister: { '0008': 1 } }), /Invalid MQTT scale/);
+  assert.throws(() => make({ verifiedRegisters: { '0008': { scale: 1, evidence: 'retired metadata' } } }), /Invalid installed-device verification/);
+  const decoder = make();
   for (const retained of [false, true]) assert.equal(decoder.decode({ ...base, topic: 'fixture-device/HP/0008', retained, payload: '21' }), null);
   assert.equal(decoder.decode({ ...base, topic: 'fixture-device/HP/0203', payload: '20' }).signal, 'room_setting');
 });

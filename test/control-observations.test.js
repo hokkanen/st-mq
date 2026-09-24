@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { controlObservations, deriveChargerPower } from '../src/app/control-observations.js';
+import { controlObservations } from '../src/app/control-observations.js';
 import { initialAdaptiveModel } from '../src/control/adaptive-learning.js';
-import { timingPowerEvidence } from '../src/app/timing-evidence.js';
+import { timingEvidenceSource } from '../src/app/timing-evidence.js';
 import { Engine } from '../src/app/engine.js';
 import { Store } from '../src/storage/store.js';
 
@@ -58,19 +58,6 @@ test('stale or disconnected operation stays modelled and simulated energy stays 
   assert.equal(simulated.auxiliaryAssumed, false);
 });
 
-test('derived charger power carries explicit current-based evidence without changing its acquisition time', () => {
-  const latest = Object.fromEntries([1, 2, 3].map(phase => [`ev1_current_l${phase}`, reading(phase * 2, {
-    source: 'easee', sourceTime: now - phase * 1000,
-  })]));
-  const result = deriveChargerPower(latest, now);
-  assert.equal(result.value, 2.76);
-  assert.equal(result.sourceTime, now - 3000);
-  assert.equal(result.raw.powerBasis, 'currents');
-  assert.equal(timingPowerEvidence(result).key, 'currents');
-  latest.ev1_current_l1.sourceTime = now - 6 * MINUTE;
-  assert.equal(deriveChargerPower(latest, now), null);
-});
-
 test('live model evidence remains available without persisting it as original power history', t => {
   const store = new Store(':memory:');
   t.after(() => store.close());
@@ -88,11 +75,10 @@ test('live model evidence remains available without persisting it as original po
   assert.equal(engine.lastSample.powerReceivedAt, now);
 });
 
-test('invalid or incomplete legacy metadata cannot claim measured or observed energy', () => {
-  for (const raw of ['{bad', null, [], { basis: 'estimated' }, { powerBasis: 'private-not-for-display' }]) {
-    const evidence = timingPowerEvidence({ signal: 'heat_pump_power', raw });
-    assert.equal(evidence.key, 'unknown');
-    assert.equal(evidence.auxiliaryUnknown, true);
+test('current timing source names cannot expose arbitrary provenance', () => {
+  for (const key of ['{bad', null, [], {}, 'private-not-for-display']) {
+    const evidence = timingEvidenceSource(key);
+    assert.equal(evidence, 'unknown');
     assert(!JSON.stringify(evidence).includes('private-not-for-display'));
   }
 });

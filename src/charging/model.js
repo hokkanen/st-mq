@@ -12,8 +12,8 @@ export const CHARGER_DEFINITIONS = Object.freeze([
   Object.freeze({ id: 'charger1', label: 'Charger 1', provider: 'easee',
     capabilities: Object.freeze({ scheduling: true, currentControl: false, externalLoadBalancing: true,
       automatic: automaticCapabilities }) }),
-  Object.freeze({ id: 'charger2', label: 'Charger 2', provider: 'teslamate',
-    capabilities: Object.freeze({ scheduling: false, currentControl: false, externalLoadBalancing: false,
+  Object.freeze({ id: 'charger2', label: 'Charger 2', provider: 'shelly-evse',
+    capabilities: Object.freeze({ scheduling: true, currentControl: true, externalLoadBalancing: false,
       automatic: Object.freeze({ ...automaticCapabilities, minimumSoc: true }) }) }),
 ]);
 
@@ -97,6 +97,10 @@ export function buildCharger({ definition, settings, telemetry = {}, automaticSo
     availableCurrentA: automaticValue(telemetry, ['availableCurrentA'], source, value => finite(value) && value >= 0 && value <= 1000),
     actualCurrentA: automaticValue(telemetry, ['actualCurrentA'], source, value => finite(value) && value >= 0 && value <= 200),
     maximumCurrentA: maximumCurrent(telemetry, source),
+    nativeCurrentA: chargerValue(control?.manualCurrentA ?? null, { source: 'evse-native-current' }),
+    vehicleCurrentA: telemetry.vehicleCurrentA ?? chargerValue(null),
+    vehicleNotBefore: telemetry.vehicleNotBefore ?? chargerValue(null),
+    vehicleCeilingSoc: telemetry.vehicleCeilingSoc ?? chargerValue(null),
     phases: chargerValue(3, { source: 'installation-assumption', assumed: true }),
     voltageV: automaticValue(telemetry, ['voltageV'], source, value => finite(value) && value >= 200 && value <= 250),
     scheduledStartAt: automaticValue(telemetry, ['scheduledStartAt'], source, value => time(value) !== null),

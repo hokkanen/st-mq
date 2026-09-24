@@ -1,4 +1,3 @@
-import { shellyConfiguration } from '../acquisition/shelly-config.js';
 import { equipmentConfiguration } from '../acquisition/equipment-config.js';
 import { H66_MAX_AGE_MS } from '../domain/reading-freshness.js';
 import { isAbsolute, resolve } from 'node:path';
@@ -124,22 +123,14 @@ export function replicationConfiguration(input = {}, env = {}, { role = 'primary
 }
 
 export function teslamateConfiguration(input = {}) {
-  if (input.enabled !== undefined && typeof input.enabled !== 'boolean') throw new Error('TeslaMate enabled must be a boolean');
-  const enabled = input.enabled === true;
-  const carId = String(input.carId ?? input.car_id ?? '1');
-  const homeGeofence = input.homeGeofence ?? input.home_geofence ?? 'Home';
-  const namespace = input.namespace ?? '';
-  const chargerAssignment = input.chargerAssignment ?? input.charger_assignment ?? 'auto';
-  const chargerIdentification = input.chargerIdentification ?? input.charger_identification ?? false;
-  if (typeof chargerIdentification !== 'boolean') throw new Error('TeslaMate charger identification must be a boolean');
-  if (!/^[1-9]\d{0,8}$/.test(carId) || typeof homeGeofence !== 'string' || !homeGeofence.trim()
-    || homeGeofence.length > 100 || typeof namespace !== 'string' || namespace.length > 100
-    || /[\/+#\u0000]/.test(namespace) || !['auto', 'bmw', 'easee'].includes(chargerAssignment)) throw new Error('Invalid TeslaMate car, geofence, assignment or MQTT namespace');
-  if (input.max_age_seconds !== undefined && !Number.isFinite(input.max_age_seconds)) throw new Error('Invalid TeslaMate maximum age');
-  return { enabled, carId, homeGeofence, namespace, chargerAssignment, chargerIdentification,
-    maxAgeMs: Math.round(interval(input.maxAgeMs ?? (input.max_age_seconds == null ? undefined : input.max_age_seconds * 1000),
-      180_000, 30_000, 600_000, 'teslamate.max_age_seconds')),
-    propertyMaxAgeMs: 60_000, settleMs: 5000, powerToleranceKw: 1 };
+  if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(key => !['enabled', 'carId', 'homeGeofence', 'namespace', 'maxAgeMs'].includes(key)))
+    throw new Error('Unsupported TeslaMate configuration; use current vehicle-only settings');
+  const { enabled = false, carId = '1', homeGeofence = 'Home', namespace = '', maxAgeMs = 180000 } = input;
+  if (typeof enabled !== 'boolean' || typeof carId !== 'string' || !/^[1-9]\d{0,8}$/.test(carId)
+    || typeof homeGeofence !== 'string' || !homeGeofence.trim() || homeGeofence.length > 100
+    || typeof namespace !== 'string' || namespace.length > 100 || /[\/+#\u0000-\u001f]/.test(namespace)
+    || !Number.isFinite(maxAgeMs) || maxAgeMs < 30000 || maxAgeMs > 600000) throw new Error('Invalid TeslaMate vehicle configuration');
+  return { enabled, carId, homeGeofence, namespace, maxAgeMs };
 }
 
 export function controlConfiguration(input = {}) {
@@ -204,11 +195,6 @@ export function indoorSensorWeightsConfiguration(input, connections = {}) {
     const signal = device.temperatureSignal ?? device.signal ?? `${device.id}_temperature`;
     if (device.enabled !== false && device.kind === 'temperature' && signals.includes(signal)) configured.add(signal);
   }
-  for (const signal of ['downstairs_temperature', 'bedroom_temperature']) {
-    if ([connections.mqtt?.temperatureTopics?.[signal],
-      connections.mqtt?.temperature_topics?.[signal], connections.mqtt?.[`${signal}_topic`]]
-      .some(value => typeof value === 'string' && value.trim())) configured.add(signal);
-  }
   // Supervisor requires a nested schema object to exist in default options.
   // An empty object therefore selects automatic membership, like an absent map.
   const automatic = input === undefined || input !== null && typeof input === 'object'
@@ -242,52 +228,19 @@ function buildConfiguration(options, env, cwd, configuration, source, { bootstra
     mqtt.dhwr_topic = mqtt.dhwr_topic || 'stmq/home/dhwr/command/switch';
     if (typeof mqtt.dhwr_topic !== 'string' || !mqtt.dhwr_topic.trim() || mqtt.dhwr_topic.length > 500
       || /[+#\u0000]/.test(mqtt.dhwr_topic)) throw new Error('DHWR MQTT topic must be an exact switch command topic');
-    mqtt.temperatureTopics = {
-      ...(mqtt.temperature_topics ?? {}),
-      ...(mqtt.temperatureTopics ?? {}),
-      ...(mqtt.indoor_temperature_topic ? { indoor_temperature: mqtt.indoor_temperature_topic } : {}),
-      ...(mqtt.downstairs_temperature_topic ? { downstairs_temperature: mqtt.downstairs_temperature_topic } : {}),
-      ...(mqtt.bedroom_temperature_topic ? { bedroom_temperature: mqtt.bedroom_temperature_topic } : {}),
-      ...(mqtt.garage_temperature_topic ? { garage_temperature: mqtt.garage_temperature_topic } : {}),
-      ...(mqtt.garage_temperature_2_topic ? { garage_temperature_2: mqtt.garage_temperature_2_topic } : {}),
-    };
-    // Explicit legacy temperature overrides remain usable during migration.
-    // Their topics are already tied to the MQTT temperature decoder; new
-    // configuration uses one connection line on the equipment entry.
-    for (const [signal, topic] of Object.entries(mqtt.temperatureTopics))
-      if (typeof topic === 'string' && topic.startsWith('mqtt:')) mqtt.temperatureTopics[signal] = topic.slice(5);
-    if (new Set(Object.values(mqtt.temperatureTopics)).size !== Object.keys(mqtt.temperatureTopics).length)
-      throw new Error('Each temperature sensor must use a different MQTT topic');
-    const equipmentInput = structuredClone(options.equipment ?? {});
-    for (const device of equipmentInput.devices ?? []) {
-      if (device.kind !== 'temperature' || !device.connection?.startsWith('mqtt:')) continue;
-      const signal = device.signal ?? `${device.id}_temperature`;
-      if (mqtt.temperatureTopics[signal]) device.connection = `mqtt:${mqtt.temperatureTopics[signal]}`;
-    }
+    const equipmentInput = options.equipment ?? {};
     const equipment = equipmentConfiguration(equipmentInput);
     const dhwrFeedback = equipment.devices.find(device => device.enabled && device.id === 'dhwr');
     if (dhwrFeedback && [dhwrFeedback.topic, dhwrFeedback.mqtt.requestTopic,
       ...dhwrFeedback.readings.map(reading => reading.topic)].includes(mqtt.dhwr_topic))
       throw new Error('DHWR feedback and read-only requests must use topics separate from the DHWR switch command');
-    for (const device of equipment.devices) if (device.enabled && device.protocol === 'mqtt' && device.kind === 'temperature'
-      && ['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature'].includes(device.temperatureSignal))
-      mqtt.temperatureTopics[device.temperatureSignal] = device.topic;
-    for (const [signal, topic] of Object.entries(mqtt.temperatureTopics)) {
-      if (!['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature', 'garage_temperature_2'].includes(signal) || typeof topic !== 'string'
-        || !topic.trim() || topic.length > 500 || /[+#\u0000]/.test(topic)) throw new Error('Temperature MQTT topics must be exact indoor/garage topic names');
-    }
-    if (new Set(Object.values(mqtt.temperatureTopics)).size !== Object.keys(mqtt.temperatureTopics).length)
-      throw new Error('Each temperature sensor must use a different MQTT topic');
     mqtt.temperatureReportIntervalMs = Math.round(interval(mqtt.temperature_report_interval_minutes, 70, 0, 1440,
       'temperature_report_interval_minutes') * 60_000);
     mqtt.temperatureReportGraceMs = Math.round(interval(mqtt.temperature_report_grace_seconds, 300, 0, 900,
       'temperature_report_grace_seconds') * 1000);
     const { replication: _replication, pairing: _pairing, charging: _charging, ...providerOptions } = options;
     connections = { ...providerOptions, mqtt, teslamate: teslamateConfiguration(options.teslamate),
-      shelly: shellyConfiguration(options.shelly), equipment };
-    if (connections.shelly.devices.length && equipment.devices.some(device => device.enabled))
-      throw new Error('Move legacy Shelly settings to equipment.devices and remove the old shelly entries before enabling both configurations.');
-    if (connections.shelly.devices.length && !mqtt.address) throw new Error('Shelly requires the existing MQTT broker connection');
+      equipment };
     if (equipment.devices.some(device => device.enabled) && !mqtt.address) throw new Error('Equipment requires the existing MQTT broker connection');
     if (connections.teslamate.enabled && !mqtt.address) throw new Error('TeslaMate requires the existing MQTT broker connection');
     if (input === 'mqtt') {
@@ -295,8 +248,7 @@ function buildConfiguration(options, env, cwd, configuration, source, { bootstra
     }
   }
   const floorPreheat = floorOverrideConfiguration(options.controller?.floor_preheat);
-  const occupiedTopics = [...(connections.shelly?.devices ?? []).map(device => device.prefix),
-    ...(connections.equipment?.devices ?? []).filter(device => device.enabled && (device.controlsSwitch || device.controlsHeat || device.controlsCover))
+  const occupiedTopics = [...(connections.equipment?.devices ?? []).filter(device => device.enabled && (device.controlsSwitch || device.controlsHeat || device.controlsCover))
       .flatMap(device => [device.prefix, device.mqtt?.commandTopic]), connections.mqtt?.dhwr_topic].filter(Boolean);
   for (const device of floorPreheat.devices) if (occupiedTopics.some(topic => topic === device.topicPrefix
     || topic.startsWith(`${device.topicPrefix}/`) || device.topicPrefix.startsWith(`${topic}/`)))
@@ -315,7 +267,6 @@ function buildConfiguration(options, env, cwd, configuration, source, { bootstra
   const databaseName = input === 'simulated' ? 'simulation.sqlite' : 'st-mq.sqlite';
   const verification = env.STMQ_H66_VERIFICATION ?? options.controller?.h66_verification_file;
   const config = { addon, role, input, dataDir, databaseDir, dbPath: resolve(databaseDir, databaseName),
-    legacyDbPath: resolve(dataDir, databaseName),
     host, port, token, ingressPort, ingressHost: env.STMQ_INGRESS_HOST ?? '0.0.0.0', configuration,
     connections, priceSettings: configuredPriceSettings(options.electricity),
     charging: chargingConfiguration(options.charging),

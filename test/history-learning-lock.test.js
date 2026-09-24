@@ -6,7 +6,8 @@ import { join } from 'node:path';
 import { Worker } from 'node:worker_threads';
 import { Store } from '../src/storage/store.js';
 import { importCsv } from '../src/storage/history.js';
-import { appendLearningRecord, applyLearningRecord, replayLearningJournal } from '../src/app/committed-learning.js';
+import { applyLearningRecord, replayLearningJournal} from '../src/app/committed-learning.js';
+import { appendLearningRecord } from './helpers/home-learning-fixture.js';
 
 const start = Date.UTC(2026, 0, 1), HOUR = 3_600_000;
 
@@ -53,7 +54,7 @@ const { workerData, parentPort } = require('node:worker_threads');
   if (workerData.failCheckpoint) {
     const setState = Store.prototype.setState;
     Store.prototype.setState = function(key, value) {
-      if (key === 'learning:history') throw new Error('synthetic-checkpoint-failure');
+      if (key === 'adaptive:history') throw new Error('synthetic-checkpoint-failure');
       return setState.call(this, key, value);
     };
   }
@@ -122,7 +123,7 @@ test('a crash after journal commit resumes original entries even when model sett
   const saved = store.getState('adaptive:history');
   const { historyCursor, historyResampling, reconstruction, ...checkpoint } = saved;
   assert.deepEqual(checkpoint, entries.reduce((previous, entry) => applyLearningRecord(previous, entry), null));
-  assert.equal(historyCursor, store.getState('learning:history').cursor);
+  assert.equal(historyCursor, store.getState('learning:health').adaptiveCursor);
   assert.ok(historyResampling.previous);
   assert.equal(reconstruction.source, 'imported-requested-modes-and-temperatures');
   await runHistory(dbPath, { config: { heatPumpCompressorKw: 3.4 } });

@@ -16,7 +16,7 @@ function fixture(t, options = {}) {
 
 test('replica role is local, suppresses live input and does not require producer connections', t => {
   const read = fixture(t, { controller: { role: 'replica', input: 'providers', mode: 'active', h66_device: 'invented-device' },
-    mqtt: { address: '' }, teslamate: { enabled: true, charger_identification: true } });
+    mqtt: { address: '' }, teslamate: { enabled: true } });
   const config = read({ STMQ_INPUT: 'mqtt', STMQ_MODE: 'active' });
   assert.equal(config.role, 'replica');
   assert.equal(config.input, 'offline');

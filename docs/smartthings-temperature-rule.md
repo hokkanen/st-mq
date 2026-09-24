@@ -30,11 +30,11 @@ building from this checkout and reconstructing from pinned upstream source.
 | Wake-up selector, default 70 minutes | Request fresh measurements even during stable temperature; parameter 20 alone does not establish this cadence. |
 | Wake-up capabilities query, Set/Get and persisted interval/controller readback | Check advertised limits and distinguish an attempted setting from an accepted one; retry missing or mismatched readback on a later wake. |
 | Embedded preferences and first-wake application of their current selections | Provide consistent defaults and send them even when the SDK's initial snapshot already contains those values. |
-| Local/legacy preference lookup and count diagnostics | Support the transition from namespaced settings and detect stale hub preferences without logging their values. |
+| Current local preference IDs and count diagnostics | Match the bundled profiles to the sender and detect missing current preferences without logging their values. |
 | One forwarding Rule per physical source, with `changesOnly: false` | Preserve equal-value confirmations without copying another sensor's cached value. |
 
-Only five upstream files differ: package configuration, two Fibaro profiles,
-the Fibaro subdriver and the parent preference sender. Smoke/tamper/heat handlers,
+Six upstream files differ: package configuration, two Fibaro profiles,
+the Fibaro subdriver, parent preference sender and preference-ID table. Smoke/tamper/heat handlers,
 other device support and the existing Configuration parameter mappings remain
 inherited. The stock wake-up handler's smoke-clear event and `health_check = false`
 policy are also retained. These are not new alarm-verification mechanisms.
@@ -78,10 +78,10 @@ and temperature reports. This is a radio request/response path, not a guarantee
 that every scheduled report will arrive.
 
 Embedded preference names use local IDs such as `tempReportInterval`; dotted
-`certifiedpreferences.*` names cannot be embedded this way. New local IDs start
-with the defaults above, so save existing selections before upgrading and review
-the new settings afterward. Existing saved local values take priority over defaults.
-The sender uses a legacy value only when the corresponding local value is absent.
+`certifiedpreferences.*` names cannot be embedded this way. The bundled profiles
+and sender share one current ID set. Namespaced values do not supply a fallback.
+Review the current settings after installing the package; valid local values,
+including zero, are preserved.
 
 Once all nine local Configuration settings are available, their current values
 are attempted together on a real wake-up. A persisted marker records completion
@@ -89,7 +89,7 @@ of those sends, not detector acknowledgement. An interrupted send attempt is
 retried on a later wake. Later setting changes use the normal deferred preference
 callback. The wake-up selector is never sent as a Configuration parameter.
 
-**Retained legacy mismatch:** the threshold UI describes a reporting difference,
+**Inherited device mapping:** the threshold UI describes a reporting difference,
 but the driver maps its raw value to parameter 30, the absolute excess-temperature
 threshold, retaining the existing two-byte size. Raw `10` therefore requests a
 10°C threshold if accepted; it is not the report hysteresis. Parameter 21 is the
@@ -271,17 +271,15 @@ Check these independently:
    check audible behavior and expected remote notifications separately. Temperature
    success or a cached smoke-clear state does not verify alarm delivery.
 
-Initialization diagnostics report `mapped`, `local`, `legacy` and `attempted`.
-For the modified Fibaro profile, `mapped=9 local=9 legacy=0` means the new
+Initialization diagnostics report `mapped`, `local` and `attempted`.
+For the modified Fibaro profile, `mapped=9 local=9` means the current
 Configuration setting IDs are available; the separate wake-up selector is not
 part of that count. `attempted=true` records a completed send attempt only.
 
-If the cloud shows new settings but the hub reports `local=0 legacy=9`, its
-preferences are stale. Back up the current selections, switch that affected
-device to its saved original stock driver and then back to the modified driver,
-verify both assignments, and recheck hub counts and selections. Re-pairing is
-unnecessary. The stock driver may attempt its six-hour wake-up default, so verify
-the selected interval again after returning to the modified driver.
+If the hub reports fewer than nine local Configuration settings, verify that the
+installed package and assigned profile match this checkout, then review its
+current selections. A missing current preference is not synthesized from an
+older ID. Installing or switching a driver remains a separate owner operation.
 
 If reports are visible in Edge but absent from MQTT, check Rule filtering,
 source/destination mapping and publisher enablement. If MQTT reports arrive but

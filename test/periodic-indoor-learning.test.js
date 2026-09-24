@@ -8,8 +8,8 @@ import { Recorder } from '../src/storage/recorder.js';
 import { Engine } from '../src/app/engine.js';
 import { lastIndoorReading } from '../src/app/indoor-readings.js';
 import { addSensorChange } from '../src/app/sensor-changes.js';
-import { committedLearningSample, recordLearningContext, appendLearningRecord,
-  replayLearningJournal } from '../src/app/committed-learning.js';
+import { committedLearningSample, recordLearningContext, replayLearningJournal} from '../src/app/committed-learning.js';
+import { appendLearningRecord } from './helpers/home-learning-fixture.js';
 
 const MINUTE = 60_000, start = Date.parse('2026-01-01T00:00:00Z');
 const signal = 'indoor_temperature';

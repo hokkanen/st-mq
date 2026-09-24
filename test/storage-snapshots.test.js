@@ -1,14 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { createHash } from 'node:crypto';
 import { Store, SCHEMA_VERSION } from '../src/storage/store.js';
 
-// Frozen schema-v1 fixture: migration must accept an old database independently
-// of how the current constructor initializes a brand-new database.
+// Retired schema is retained only as an unsupported-input rejection fixture.
 const V1_SCHEMA = `
 CREATE TABLE state (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL);
 CREATE TABLE events (id INTEGER PRIMARY KEY, type TEXT NOT NULL, payload TEXT NOT NULL, at INTEGER NOT NULL);
@@ -51,27 +50,13 @@ function makeVersionOne(path) {
   } finally { db.close(); }
 }
 
-test('schema-v1 migration preserves controller recency, observations and event IDs', t => {
-  const path = join(directory(t), 'legacy.sqlite');
-  makeVersionOne(path);
-  let store = new Store(path);
-  try {
-    assert.equal(store.summary().schemaVersion, SCHEMA_VERSION);
-    assert.deepEqual(store.getState('controller:offline:shadow'), {
-      lastDhwrAt: '2026-09-06T09:00:00.000Z', deficitDegreeHours: 1.25,
-    });
-    assert.equal(store.events()[0].id, 7);
-    assert.equal(store.observations()[0].id, 42);
-    assert.equal(store.observations()[0].value, 21.3);
-    assert.deepEqual(store.snapshots(), []);
-    store.snapshot({ kind: 'weather', source: 'fixture', fetchedAt: 1788685300000, payload: { forecast: [] } });
-  } finally { store.close(); }
-  store = new Store(path);
-  try {
-    assert.equal(store.snapshots().length, 1);
-    assert.equal(store.events().length, 1);
-    assert.equal(store.observations().length, 1);
-  } finally { store.close(); }
+test('schema-v1 open rejects before changing the original file', t => {
+  const path=join(directory(t),'old.sqlite'); makeVersionOne(path);
+  const before=readFileSync(path);
+  assert.throws(()=>new Store(path),/Unsupported database schema/);
+  assert.throws(()=>new Store(path,{readOnly:true}),/Unsupported database schema/);
+  assert.deepEqual(readFileSync(path),before);
+  assert(!existsSync(`${path}-wal`));
 });
 
 test('snapshots preserve unknown provider issuance separately from local fetch time', t => {
@@ -111,24 +96,11 @@ test('fetched revisions append immutable snapshots while exact ingestion duplica
   } finally { store.close(); }
 });
 
-test('restoring a schema-v1 backup migrates only the new destination and preserves its source', async t => {
-  const dir = directory(t), source = join(dir, 'v1-backup.sqlite'), destination = join(dir, 'restored.sqlite');
-  makeVersionOne(source);
-  const hash = path => createHash('sha256').update(readFileSync(path)).digest('hex');
-  const originalHash = hash(source);
-  await Store.restore(source, destination);
-  const prior = new DatabaseSync(destination, { readOnly: true });
-  try { assert.equal(prior.prepare('PRAGMA user_version').get().user_version, 1); }
-  finally { prior.close(); }
-  const store = new Store(destination);
-  try {
-    assert.equal(store.summary().schemaVersion, SCHEMA_VERSION);
-    assert.equal(store.getState('controller:offline:shadow').deficitDegreeHours, 1.25);
-    assert.equal(store.observations()[0].value, 21.3);
-    assert.deepEqual(store.snapshots(), []);
-  } finally { store.close(); }
-  assert.equal(hash(source), originalHash);
-  await assert.rejects(Store.restore(source, destination), /new database/);
+test('restoring unsupported backup refuses without creating a destination', async t => {
+  const dir=directory(t), source=join(dir,'old.sqlite'), destination=join(dir,'new.sqlite');
+  makeVersionOne(source); const before=readFileSync(source);
+  await assert.rejects(Store.restore(source,destination),/Unsupported database schema/);
+  assert(!existsSync(destination)); assert.deepEqual(readFileSync(source),before);
 });
 
 test('a WAL backup includes every fetched forecast revision and its independent issuance metadata', async t => {
@@ -146,33 +118,4 @@ test('a WAL backup includes every fetched forecast revision and its independent 
       { issuedAt: 1500, fetchedAt: 2000, payload: { temperature: 3 } },
     ]);
   } finally { restored.close(); }
-});
-
-test('schema-v4 migration retains original snapshot bytes and IDs while new identical fetches share content',t=>{
-  const path=join(directory(t),'version-four.sqlite'), old=new DatabaseSync(path);
-  old.exec(V1_SCHEMA);
-  old.exec(`CREATE TABLE provider_snapshots(id INTEGER PRIMARY KEY,kind TEXT NOT NULL,source TEXT NOT NULL,
-    issued_at INTEGER,fetched_at INTEGER NOT NULL,payload TEXT NOT NULL,digest TEXT NOT NULL,
-    UNIQUE(kind,source,fetched_at,digest));
-    CREATE INDEX snapshots_kind_time ON provider_snapshots(kind,fetched_at,id);
-    CREATE TABLE learning_samples(id INTEGER PRIMARY KEY,input TEXT NOT NULL,at INTEGER NOT NULL,payload TEXT NOT NULL,UNIQUE(input,at));
-    CREATE INDEX learning_samples_input_at ON learning_samples(input,at);
-    CREATE TABLE learning_cycles(id TEXT PRIMARY KEY,input TEXT NOT NULL,started_at INTEGER NOT NULL,ended_at INTEGER,status TEXT NOT NULL,payload TEXT NOT NULL);
-    CREATE INDEX learning_cycles_input_at ON learning_cycles(input,started_at);
-    CREATE INDEX observations_easee_acquisition ON observations(device,received_at,id) WHERE source='easee' AND import_id IS NULL;
-    PRAGMA user_version=4;`);
-  const encoded='{ "fetchedAt":1000, "issuedAt":null, "forecast":[{"outdoorC":4}] }';
-  old.prepare('INSERT INTO provider_snapshots VALUES(?,?,?,?,?,?,?)').run(42,'weather','fixture',null,1000,encoded,'legacy-digest');
-  old.close();
-  const store=new Store(path);
-  try {
-    assert.equal(store.snapshotById(42).payload.fetchedAt,1000);
-    assert.equal(store.db.prepare('SELECT payload FROM provider_snapshot_fetches WHERE id=42').get().payload,encoded);
-    assert.equal(store.db.prepare('SELECT digest FROM provider_snapshot_fetches WHERE id=42').get().digest,'legacy-digest');
-    for(const fetchedAt of [2000,3000]) store.snapshot({kind:'weather',source:'fixture',fetchedAt,
-      payload:{fetchedAt,issuedAt:null,forecast:[{outdoorC:4}]}});
-    assert.equal(store.snapshots().length,3);
-    assert.equal(store.db.prepare('SELECT COUNT(*) AS n FROM provider_snapshot_contents').get().n,1);
-    assert.deepEqual(store.snapshots().map(s=>s.id),[42,43,44]);
-  } finally {store.close();}
 });

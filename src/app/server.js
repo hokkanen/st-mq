@@ -94,6 +94,7 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
           if (!pairContext) return json(409, { error: 'Paired operation is not configured.' });
           const input = await body(req);
           if (!stillAuthorized()) return;
+          if (settingsReloadStatus().stopping) return json(503, { error: 'The application is shutting down.' });
           return json(202, pairContext.requestAction(input));
         }
         if (role === 'replica' && !['GET', 'HEAD'].includes(req.method))
@@ -143,18 +144,6 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
         };
         if (req.method === 'GET' && url.pathname === '/api/status') return json(200, status());
         if (readContext && !readContext.store) return json(503, { error: 'Waiting for a verified primary snapshot.' });
-        if (req.method === 'GET' && url.pathname === '/api/charger-identification')
-          return json(200, engine.chargerIdentification?.status() ?? { enabled: false, active: false, verdict: null });
-        if (req.method === 'POST' && url.pathname === '/api/charger-identification')
-          return await mutate((current, input) => {
-            if (!input || typeof input !== 'object' || Array.isArray(input)
-              || Object.keys(input).some(key => key !== 'strategy') || !['auto', 'reduce', 'pause'].includes(input.strategy))
-              return json(400, { error: 'Choose auto, reduce or pause for charger identification.' });
-            if (!current.chargerIdentification) return json(409, { error: 'Charger identification is not enabled.' });
-            if (!current.chargerIdentification.request(input))
-              return json(409, { error: 'Charger identification is already running or unavailable.' });
-            return json(202, current.chargerIdentification.status());
-          });
         if (req.method === 'GET' && url.pathname === '/api/fireplace') return json(200, engine.fireplaceStatus());
         if (req.method === 'GET' && url.pathname === '/api/sensor-changes') return json(200, sensorChangesStatus());
         if (req.method === 'POST' && url.pathname === '/api/sensor-changes')

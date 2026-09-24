@@ -1,6 +1,5 @@
 import { parentPort, workerData } from 'node:worker_threads';
 import { Store } from '../storage/store.js';
-import { emptyCheckpoint, restoreCheckpoint, updateLearning } from '../control/learning.js';
 import { LEARNING_ALGORITHM, appendLearningRecord, applyLearningRecord, historicalLearningWindows, validLearningCheckpoint } from './committed-learning.js';
 
 // History runs off the command/UI thread. Only journal/checkpoint writes hold
@@ -9,12 +8,10 @@ const store = new Store(workerData.dbPath);
 let stopped = false;
 parentPort.on('message', message => { if (message === 'stop') stopped = true; });
 try {
-  let saved, adaptive;
-  try { saved = store.getState('learning:history'); } catch { saved = null; }
+  let adaptive;
   try { adaptive = store.getState('adaptive:history'); } catch { adaptive = null; }
-  let checkpoint = restoreCheckpoint(saved?.checkpoint, { now: Date.now() });
-  let cursor = saved?.version === 1 && checkpoint.processedThrough && Number.isSafeInteger(saved.cursor) ? saved.cursor : 0;
-  if (!cursor) checkpoint = emptyCheckpoint();
+  if (adaptive && (adaptive.algorithmVersion !== LEARNING_ALGORITHM || adaptive.model?.version !== 4))
+    throw new Error('Unsupported Home history checkpoint; start with a fresh development database and re-import supported CSV files.');
   const lastEntry = Number.isSafeInteger(adaptive?.journalCursor) && adaptive.journalCursor > 0
     ? store.learningJournal({ input: 'history', after: adaptive.journalCursor - 1, limit: 1, algorithmVersion: LEARNING_ALGORITHM })[0] : null;
   let adaptiveCursor = lastEntry && validLearningCheckpoint(adaptive, lastEntry) && adaptive.cursor
@@ -22,14 +19,9 @@ try {
   if (!adaptiveCursor) adaptive = null;
   let processed = 0;
   while (!stopped) {
-    const rows = store.trainingRows({ afterId: Math.min(cursor, adaptiveCursor), limit: 256 });
+    const rows = store.trainingRows({ afterId: adaptiveCursor, limit: 256 });
     if (!rows.length) break;
-    const samples = rows.filter(row => row.id > cursor).map(row => ({ timestamp: row.at, indoorC: row.indoorC, outdoorC: row.outdoorC,
-      action: row.action, quality: row.quality, regime: row.regime === 'occupied' ? 'occupied' : 'absence' }));
-    const sourceNow = Math.max(...rows.map(row => row.at));
-    if (samples.length) checkpoint = updateLearning(checkpoint, samples, { now: sourceNow });
     const windows = historicalLearningWindows(rows.filter(row => row.id > adaptiveCursor), adaptive?.historyResampling);
-    cursor = Math.max(cursor, rows.at(-1).id);
     adaptiveCursor = Math.max(adaptiveCursor, rows.at(-1).id);
     processed += rows.length;
     const existingSample = store.db.prepare("SELECT id FROM learning_journal WHERE input='history' AND kind='sample' AND at=? AND algorithm_version=?");
@@ -45,22 +37,21 @@ try {
     // encounters the same entries and applies them in the same order.
     for (const entry of entries) adaptive = applyLearningRecord(adaptive, entry);
     store.transaction(() => {
-      store.setState('learning:history', { version: 1, cursor, checkpoint });
       adaptive = { ...adaptive, historyCursor: adaptiveCursor, historyResampling: windows.state };
       store.setState('adaptive:history', { ...adaptive,
         reconstruction: { recordedAt: Date.now(), source: 'imported-requested-modes-and-temperatures',
           solar: 'unavailable; contemporary forecasts are never backfilled into history', energy: 'unverified' } });
-      store.setState('learning:health', { status: 'rebuilding-history', processed, cursor,
+      store.setState('learning:health', { status: 'rebuilding-history', processed, cursor: adaptiveCursor,
         adaptiveCursor, adaptive: adaptive?.health ?? null, updatedAt: Date.now() });
     });
     // Let ingestion acquire the database between bounded transactions.
     await new Promise(resolve => setTimeout(resolve, 10));
   }
-  store.setState('learning:health', { status: stopped ? 'paused' : 'history-current', processed, cursor,
-    model: checkpoint.health, reference: checkpoint.comfortReference,
+  store.setState('learning:health', { status: stopped ? 'paused' : 'history-current', processed, cursor: adaptiveCursor,
+    reference: adaptive?.comfortReference,
     adaptive: adaptive?.health ?? null, adaptiveCursor,
     evidence: 'Historical requested modes and temperatures; energy and causal savings unverified', updatedAt: Date.now() });
-  parentPort.postMessage({ processed, cursor });
+  parentPort.postMessage({ processed, cursor: adaptiveCursor });
 } catch (error) {
   parentPort.postMessage({ error: error.message });
 } finally { store.close(); parentPort.close(); }

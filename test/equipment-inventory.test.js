@@ -6,13 +6,13 @@ const now = Date.parse('2026-09-14T12:00:00Z');
 const temperature = (value, extra = {}) => ({ value, observedAt: now - 1000, stale: false, source: 'mqtt-temperature', ...extra });
 const signals = devices => devices.flatMap(device => Object.keys(device.readings ?? {}));
 
-test('inventory combines legacy equipment once and retains the home tariff relay and garage doors', () => {
-  const relay = { id: 'heat_savings', role: 'heat_savings', source: 'Shelly', available: true,
+test('inventory uses the current equipment contract and retains tariff relays, meters and doors', () => {
+  const relay = { id: 'heat_savings', area: 'home', source: 'Shelly', available: true,
     controls: { tariff: true }, readings: { heat_savings_active: { value: 0, unit: 'state', stale: false, observedAt: now } } };
   const door = { id: 'garage_door1', area: 'garage', kind: 'door', available: true,
     readings: { garage_door1_open: { value: 0, unit: 'state', stale: false, observedAt: now - 7 * 86400000 } } };
-  const status = { now, equipment: { devices: [{ ...relay, label: 'Current relay' }, door] },
-    shelly: { devices: [{ ...relay, label: 'Legacy relay' }, { id: 'caravan', kind: 'metered_switch', available: true }] } };
+  const status = { now, equipment: { devices: [{ ...relay, label: 'Current relay' }, door,
+    { id: 'caravan', area: 'garage', kind: 'metered_switch', available: true }] } };
   const devices = equipmentDevices(status), inventory = equipmentInventory(status);
   assert.equal(devices.length, 5);
   assert.equal(devices.find(device => device.id === relay.id).label, 'Current relay');

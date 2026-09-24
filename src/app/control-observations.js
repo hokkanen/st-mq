@@ -80,15 +80,3 @@ export function controlObservations({ latest, now, observations, outlook, checkp
     heating: { verified:compressor !== null && route !== null, compressorActive:compressor===1, route:route===1?'dhw':route===0?'space-heating':'unknown',quality:[] } };
   return { sample, equipment, radiation, weather: w };
 }
-
-export function deriveChargerPower(latest, now) {
-  const rows = [1,2,3].map(i => latest[`ev1_current_l${i}`]);
-  if (rows.some(o => !o || !finite(o.value) || o.value < 0 || o.value > 1000 || !finite(o.sourceTime)
-    || o.sourceTime > now || now - o.sourceTime > 300000
-    || (o.quality ?? []).some(q => !['good','estimated','current_snapshot_not_energy'].includes(q)))) return null;
-  if (Math.max(...rows.map(o => o.sourceTime)) - Math.min(...rows.map(o => o.sourceTime)) > 60000) return null;
-  return { source: 'controller-estimate', device: 'ev1', signal: 'charger_power',
-    value: rows.reduce((sum,o) => sum+o.value,0) * 230 / 1000, unit: 'kW', sourceTime: Math.min(...rows.map(o => o.sourceTime)),
-    receivedAt: now, quality: ['estimated'], raw: { basis: 'Three coherent phase currents × nominal 230 V; not an energy meter', powerBasis: 'currents',
-      phaseTimes: rows.map(o => o.sourceTime) } };
-}

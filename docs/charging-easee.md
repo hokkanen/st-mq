@@ -10,12 +10,11 @@ stop waiting on the charger. The Easee app shows the current native instruction;
 the dashboard shows the complete proposed periods and their confirmation state.
 
 The planner avoids pauses and intermediate periods shorter than 15 minutes and
-prefers fewer periods unless the extra period improves estimated cost by more
-than 1 cent. Intermediate periods normally retain their confirmed end while
+prefers fewer periods when their actual modeled electricity costs are equal. Intermediate periods normally retain their confirmed end while
 updated remaining energy and power forecasts can revise later periods. New or
 revised remaining price intervals can also replace an active period, including
 final release, while the target is unmet and the original ready-by time is still
-ahead. The replacement must meet that deadline and save more than 1 cent on the
+ahead. The replacement must meet that deadline and lower actual modeled cost on the
 remaining charge, crediting energy already delivered. An immediate pause requires
 at least 15 minutes of the current charging period and a gap of at least 15
 minutes. It uses the same native delayed start and pause confirmation as other
@@ -207,7 +206,7 @@ The planner replaces present demand with comparable household-history patterns
 and known scheduled charging, applies per-phase limits and the 6 A minimum, then
 averages the resulting charging power. The household reference includes original
 0.7.5 current/temperature imports and keeps older cold-weather conditions useful;
-see [household history](charging.md#household-history). With no usable supply-budget
+see [household history](charging.md#planning-and-equalizer). With no usable supply-budget
 evidence it uses live net allowance without subtracting demand twice. Missing
 voltage never becomes an invented 230 V value; valid property voltage can serve
 both household chargers.

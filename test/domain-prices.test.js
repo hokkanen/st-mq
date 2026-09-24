@@ -5,7 +5,8 @@ import { helsinkiCalendar, transferPrice, normalizePriceIntervals, allInPrice,
 
 // Deliberately synthetic test contract, not verified Finnish tax rates.
 const contract = { periods: [{ from: '2026-01-01T00:00:00Z', marginCtPerKwh: 0.5,
-  taxCtPerKwh: 2.5, vatRate: 0.2, provenance: 'Synthetic unit-test fixture' }] };
+  taxCtPerKwh: 2.5, transferRates: { vatIncluded: true, dayCtPerKwh: 3.34, nightCtPerKwh: 1.96, winterDayCtPerKwh: 4.17, otherCtPerKwh: 2.07 }, vatRate: 0.2, provenance: 'Synthetic unit-test fixture' }] };
+const fixtureTransfer = contract.periods[0].transferRates;
 const near = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e-10, `${actual} != ${expected}`);
 
 test('all-in price adds VAT once, transfer already has VAT; negative prices survive', () => {
@@ -19,21 +20,21 @@ test('all-in price adds VAT once, transfer already has VAT; negative prices surv
 test('day/night boundaries follow Helsinki in winter and summer', () => {
   for (const date of ['2026-01-02', '2026-07-02']) {
     const offset = date.includes('-01-') ? '+02:00' : '+03:00';
-    assert.equal(transferPrice(`${date}T06:59:59${offset}`), 1.96);
-    assert.equal(transferPrice(`${date}T07:00:00${offset}`), 3.34);
-    assert.equal(transferPrice(`${date}T21:59:59${offset}`), 3.34);
-    assert.equal(transferPrice(`${date}T22:00:00${offset}`), 1.96);
+    assert.equal(transferPrice(`${date}T06:59:59${offset}`, 'day-night', fixtureTransfer), 1.96);
+    assert.equal(transferPrice(`${date}T07:00:00${offset}`, 'day-night', fixtureTransfer), 3.34);
+    assert.equal(transferPrice(`${date}T21:59:59${offset}`, 'day-night', fixtureTransfer), 3.34);
+    assert.equal(transferPrice(`${date}T22:00:00${offset}`, 'day-night', fixtureTransfer), 1.96);
   }
 });
 
 test('seasonal tariff uses literal Monday-Saturday and November-March, including holidays', () => {
-  assert.equal(transferPrice('2026-01-03T12:00:00+02:00', 'seasonal'), 4.17); // Saturday
-  assert.equal(transferPrice('2026-01-04T12:00:00+02:00', 'seasonal'), 2.07); // Sunday
-  assert.equal(transferPrice('2026-12-25T12:00:00+02:00', 'seasonal'), 4.17); // Friday holiday
-  assert.equal(transferPrice('2026-03-31T21:59:59+03:00', 'seasonal'), 4.17);
-  assert.equal(transferPrice('2026-04-01T12:00:00+03:00', 'seasonal'), 2.07);
-  assert.equal(transferPrice('2026-10-31T12:00:00+02:00', 'seasonal'), 2.07);
-  assert.equal(transferPrice('2026-11-02T07:00:00+02:00', 'seasonal'), 4.17);
+  assert.equal(transferPrice('2026-01-03T12:00:00+02:00', 'seasonal', fixtureTransfer), 4.17); // Saturday
+  assert.equal(transferPrice('2026-01-04T12:00:00+02:00', 'seasonal', fixtureTransfer), 2.07); // Sunday
+  assert.equal(transferPrice('2026-12-25T12:00:00+02:00', 'seasonal', fixtureTransfer), 4.17); // Friday holiday
+  assert.equal(transferPrice('2026-03-31T21:59:59+03:00', 'seasonal', fixtureTransfer), 4.17);
+  assert.equal(transferPrice('2026-04-01T12:00:00+03:00', 'seasonal', fixtureTransfer), 2.07);
+  assert.equal(transferPrice('2026-10-31T12:00:00+02:00', 'seasonal', fixtureTransfer), 2.07);
+  assert.equal(transferPrice('2026-11-02T07:00:00+02:00', 'seasonal', fixtureTransfer), 4.17);
   assert.equal(allInPrice('2027-11-02T12:00:00+02:00', 0, contract).tariff, 'day-night');
 });
 

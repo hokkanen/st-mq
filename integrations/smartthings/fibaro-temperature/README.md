@@ -7,7 +7,7 @@ must still confirm that a report arrived; ordinary change filtering and the
 detector's change-conditional report interval cannot establish that evidence.
 
 Start with the [general installation guide](../../../docs/smartthings-temperature-rule.md)
-for the reasons, default selections, known legacy limitations, driver/channel
+for the reasons, default selections, inherited limitations, driver/channel
 setup, MQTT forwarding, report deadlines, verification and rollback.
 
 ## What is kept here
@@ -30,13 +30,14 @@ Upstream is
 [SmartThingsCommunity/SmartThingsEdgeDrivers](https://github.com/SmartThingsCommunity/SmartThingsEdgeDrivers/tree/19bb6f9b75a4a7590dfb5c5f9aed3bbf3308c77c/drivers/SmartThings/zwave-smoke-alarm),
 revision `19bb6f9b75a4a7590dfb5c5f9aed3bbf3308c77c`, under
 `drivers/SmartThings/zwave-smoke-alarm`. All original copyright notices and the
-license are retained. The patch changes five files:
+license are retained. The patch changes six files:
 
 - `config.yml`: custom package identity.
 - Two Fibaro smoke profiles: embedded defaults and the wake-up selector.
 - `src/fibaro-smoke-sensor/init.lua`: genuine-temperature event metadata and
   wake-up selection, capabilities query and interval readback.
-- `src/init.lua`: local/legacy preference lookup, first-wake setting application
+- `src/preferences.lua`: IDs matching the current bundled profiles, with unchanged hardware parameter numbers/sizes.
+- `src/init.lua`: current-profile preference lookup, first-wake setting application
   and diagnostic counts; the wake-up selector is excluded from Configuration.
 
 The temperature handler preserves Celsius/Fahrenheit units and the source
@@ -47,9 +48,9 @@ offers two, three, six and twelve hours. The driver records accepted interval
 readback separately from attempted writes and retries missing/mismatching
 readback on later wakes. It does not publish cached values on a timer.
 
-New local preference IDs begin with the profile defaults. Existing saved local
-choices remain authoritative; original namespaced selections are not automatically
-migrated. Once all nine local Configuration settings are present, their current
+Current local preference IDs match the bundled profiles and parameter map. Saved
+current choices remain authoritative. Obsolete ST-MQ namespaced preference IDs
+are ignored and never translated into current selections. Once all nine local Configuration settings are present, their current
 values are attempted once while awake. The persistent marker is a send-attempt
 record, not a parameter acknowledgement. The inherited alarm handlers and
 parameter mappings/sizes remain unchanged, including the documented threshold
@@ -77,10 +78,10 @@ installed. Follow the [installation steps](../../../docs/smartthings-temperature
 to upload, assign the channel version, install on a hub and assign devices.
 
 The verifier checks all 31 original files and the license after reversing the
-patch, validates both profiles, and runs 74 Lua assertions against the actual
+patch, validates both profiles, and runs 75 Lua assertions against the actual
 subdriver and parent preference sender using small SDK stubs. Cases include
 repeated/changed reports, invalid inputs, original alarm events, wake choices,
-readback/retry, restarts, controller mismatch, reported limits, local/legacy
+readback/retry, restarts, controller mismatch, reported limits, current-profile
 settings, deferred application and interrupted sends. These are source checks,
 not a simulation of cloud filtering or radio delivery.
 

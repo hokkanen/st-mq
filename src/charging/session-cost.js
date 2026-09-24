@@ -1,21 +1,5 @@
+import { canonicalRates, priceEnergy } from './rates.js';
 const finite = Number.isFinite;
-const rate = row => row.priceCtPerKwh ?? row.allInCentsPerKWh ?? row.totalCtPerKwh ?? row.price;
-
-function priceEnergy(intervals, prices) {
-  let cents = 0, pricedKwh = 0, energyKwh = 0;
-  for (const interval of intervals) {
-    if (!finite(interval.energyKwh) || interval.end <= interval.start) continue;
-    energyKwh += interval.energyKwh;
-    let cursor = interval.start;
-    for (const price of prices) {
-      if (price.end <= cursor || price.start >= interval.end) continue;
-      const start = Math.max(cursor, price.start), end = Math.min(interval.end, price.end);
-      const kwh = interval.energyKwh * (end - start) / (interval.end - interval.start);
-      cents += kwh * price.priceCtPerKwh; pricedKwh += kwh; cursor = end;
-    }
-  }
-  return { cents, pricedKwh, unpricedKwh: Math.max(0, energyKwh - pricedKwh) };
-}
 
 /** Connection totals have a separate lifetime from the changing SoC reference.
  * Keep the applicable published rates through restart and midnight rollover. */
@@ -23,10 +7,7 @@ export function updateSessionCost(previous, charger, now, prices = [], readEnerg
   if (charger.values.connected.value === false) return null;
   if (charger.values.connected.value !== true && !previous) return null;
   const startAt = previous?.startAt ?? charger.progress?.connectionAt ?? now;
-  const rates = [...new Map([...(previous?.prices ?? []), ...prices]
-    .filter(row => finite(row.start) && finite(row.end) && row.end > startAt && row.end > row.start && finite(rate(row)))
-    .map(row => [`${row.start}:${row.end}`, { start: row.start, end: row.end, priceCtPerKwh: rate(row) }])).values()]
-    .sort((a, b) => a.start - b.start);
+  const rates = canonicalRates(previous?.prices ?? [], prices).filter(row => row.end > startAt);
   const recorded = readEnergy({ id: charger.id, start: startAt, end: now });
   const actual = priceEnergy(recorded?.intervals ?? [], rates);
   const remaining = charger.progress?.remainingGridKwh ?? charger.requiredGridKwh;

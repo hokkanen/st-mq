@@ -23,7 +23,7 @@ function executorFixture(t) {
     setPhase: async options => { calls.push({ kind: 'native', ...options }); return { changed: ['0203'] }; },
     setManualPreheat: async options => { manualPreheat = options.enabled; calls.push({ kind: 'manual-native', ...options }); },
     restore: async options => { manualPreheat = false; calls.push({ kind: 'restore-native', ...options }); return { restorationPending: false }; } };
-  const commandTransport = { close: async () => {}, publish: async commands => { calls.push({ kind: 'tariff', commands }); return { sent: true }; },
+  const commandTransport = { targetIdentity: { tariff: 'a'.repeat(64), dhwr: 'b'.repeat(64) }, close: async () => {}, publish: async commands => { calls.push({ kind: 'tariff', commands }); return { sent: true }; },
     publishDhwr: async on => { calls.push({ kind: 'dhwr', on }); return { sent: true }; } };
   const executor = new Executor({ input: 'mqtt', store, commandTransport, h66, floorOverride: floor, clock: () => NOW });
   t.after(() => executor.close({ restore: false }));

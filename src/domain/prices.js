@@ -26,11 +26,6 @@ export function helsinkiCalendar(instant) {
     minute: +parts.minute, weekday: weekdays.indexOf(parts.weekday), timeZone: TIME_ZONE };
 }
 
-// Old database contracts used these VAT-inclusive rates implicitly. Preserve
-// their exact meaning when reading history; new configuration snapshots every
-// transfer component explicitly excluding VAT alongside its effective VAT rate.
-export const LEGACY_TRANSFER_RATES = Object.freeze({ vatIncluded: true,
-  dayCtPerKwh: 3.34, nightCtPerKwh: 1.96, winterDayCtPerKwh: 4.17, otherCtPerKwh: 2.07 });
 export const DEFAULT_TRANSFER_RATES_EX_VAT = Object.freeze({ vatIncluded: false,
   dayCtPerKwh: 2.66, nightCtPerKwh: 1.56,
   winterDayCtPerKwh: 3.32, otherCtPerKwh: 1.65 });
@@ -46,7 +41,7 @@ export function validateTransferRates(rates) {
 }
 
 /** Marginal transfer charge including VAT. No inferred holiday exceptions. */
-export function transferPrice(instant, tariff = 'day-night', rates = LEGACY_TRANSFER_RATES, vatRate) {
+export function transferPrice(instant, tariff = 'day-night', rates, vatRate) {
   const values = validateTransferRates(rates);
   const multiplier = values.vatIncluded ? 1 : 1 + finite(vatRate, 'Transfer VAT fraction');
   if (multiplier < 1 || multiplier > 2) throw new RangeError('VAT must be a fraction from 0 to 1');
@@ -90,7 +85,7 @@ export function validateContract(contract) {
     const vatRate = finite(period.vatRate, 'VAT fraction');
     if (taxCtPerKwh < 0 || vatRate < 0 || vatRate > 1) throw new RangeError('Tax must be nonnegative; VAT must be a fraction from 0 to 1');
     const tariff = period.tariff ?? 'day-night';
-    const transferRates = validateTransferRates(period.transferRates ?? LEGACY_TRANSFER_RATES);
+    const transferRates = validateTransferRates(period.transferRates);
     transferPrice(from, tariff, transferRates, vatRate);
     return { ...period, from, to, marginCtPerKwh, taxCtPerKwh, vatRate, tariff, transferRates };
   }).sort((a, b) => a.from - b.from);

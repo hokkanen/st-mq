@@ -413,7 +413,7 @@ export class Recorder {
     const observations = p.energies.map((value,i) => {
       const o = {source,device,signal:signals[i],value,unit:'kWh',sourceTime:p.end,receivedAt,
         quality:p.quality,raw:{intervalStart:p.start,intervalEnd:p.end,durationMs:p.end-p.start,
-          basis:prefix==='caravan'?'meter-counter-delta':prefix==='ev2'?'integrated-total-power':'integrated-power-phase-allocation',
+          basis:prefix==='caravan'?'meter-counter-delta':prefix==='ev2'?'native-meter-counter-delta':'integrated-power-phase-allocation',
           ...(prefix==='caravan'?{learningRole:'history-only'}:{}),recorder:{version:VERSION,reason,group:prefix}}};
       o.id = this.store.observation(o);
       const s = this.signalState(o,receivedAt);
@@ -482,17 +482,17 @@ export class Recorder {
     if (reportAge !== null) {
       const span = this.store.db.prepare(`SELECT * FROM recorder_coverage WHERE source=? AND device=? AND signal=?
         AND start_at<=? ORDER BY start_at DESC,id DESC LIMIT 1`).get(o.source,o.device,signal,at);
-      const available = span?.status==='fresh' && at<=span.source_time+reportAge;
+      const available = span?.status==='fresh' && at<span.source_time+reportAge;
       return {...o,value:available?o.value:null,quality:available?o.quality:flags([...o.quality,span?.status==='fresh'?'missing-report':span?.status??'unavailable']),
         reportObservedAt:span?.end_at<=at?span.source_time:null,
         reportReceivedAt:span?.end_at<=at?span.end_at:null,
         reportExpiresAt:available?Math.min(span.source_time+reportAge,span.end_at>at?at:Infinity):null};
     }
-    const coverage = this.store.db.prepare(`SELECT * FROM recorder_coverage WHERE signal=? AND start_at<=? AND end_at<=?
-      ORDER BY end_at DESC,id DESC LIMIT 1`).get(signal,at,at);
+    const coverage = this.store.db.prepare(`SELECT * FROM recorder_coverage WHERE source=? AND device=? AND signal=? AND start_at<=?
+      ORDER BY start_at DESC,id DESC LIMIT 1`).get(o.source,o.device,signal,at);
     if (coverage && coverage.end_at >= o.receivedAt) {
       if (coverage.status !== 'fresh') return {...o,value:null,quality:flags([...o.quality,coverage.status])};
-      if (coverage.observation_id === o.id && coverage.source_time > o.sourceTime)
+      if (coverage.end_at <= at && coverage.observation_id === o.id && coverage.source_time > o.sourceTime)
         return {...o,sourceTime:coverage.source_time,receivedAt:coverage.end_at,
           raw:{...o.raw,recorder:{...o.raw?.recorder,originalSourceTime:o.sourceTime,temporalBasis:'held-recorded-value',coverageId:coverage.id}}};
     }
@@ -522,7 +522,7 @@ export class Recorder {
         const records = buckets.reduce((n,b)=>n+b.records,0), polls = buckets.reduce((n,b)=>n+b.polls,0);
         const duration = Math.min(span,Math.max(0,now-s.startedAt)), errorTime = buckets.reduce((n,b)=>n+b.error_time,0);
         stats[label] = {records,polls,averageIntervalMs:records>1 ? duration/(records-1) : null,
-          normalizedRmsError:errorTime ? Math.sqrt(buckets.reduce((n,b)=>n+b.error_squared_time,0)/errorTime) : null,
+          normalizedRmsChange:errorTime ? Math.sqrt(buckets.reduce((n,b)=>n+b.error_squared_time,0)/errorTime) : null,
           estimatedBytes:buckets.reduce((n,b)=>n+b.bytes,0)};
       }
       const grouped = /_energy_l[123]$/.test(s.signal), totalEnergy = ['ev2_energy','caravan_energy'].includes(s.signal), exact = Boolean(s.reportPolicy) || ['state','code'].includes(s.unit) || EXACT.test(s.signal);

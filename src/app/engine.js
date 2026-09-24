@@ -1,7 +1,8 @@
+import { weatherAcquisitionIdentity } from '../acquisition/weather-identity.js';
 import { randomUUID } from 'node:crypto';
-import { dhwrEligible } from '../control/index.js';
-import { restoreAdaptiveCheckpoint, updateAdaptiveLearningBatch } from '../control/adaptive-learning.js';
-import { chooseCycle, evaluateCycle, economicAdmission, forecastIntervals, phaseAt, revalidatePlan, learningReadiness, recoveryPolicy, trialEnvelope, preheatRoomRequest } from '../control/planner.js';
+import { dhwrEligible } from '../control/dhwr.js';
+import { restoreAdaptiveCheckpoint } from '../control/adaptive-learning.js';
+import { chooseCycle, evaluateCycle, economicAdmission, forecastIntervals, cycleForecastCovered, phaseAt, revalidatePlan, learningReadiness, recoveryPolicy, trialEnvelope, preheatRoomRequest } from '../control/planner.js';
 import { CycleTracker } from './cycles.js';
 import { controlObservations } from './control-observations.js';
 import { heatingFeedback } from './heating-feedback.js';
@@ -44,8 +45,6 @@ function garageOwner(config, signal) {
     : device.kind === 'temperature' && device.temperatureSignal === signal
       ? { source: 'mqtt-temperature', device: signal } : { source: 'mqtt-equipment', device: device.id };
   if (isGarageDoorSignal(signal)) return null;
-  if (config.connections?.shelly?.devices?.some(device => device.role === 'garage')) return { source: 'shelly-mqtt', device: 'garage' };
-  if (config.connections?.mqtt?.temperatureTopics?.[signal]) return { source: 'mqtt-temperature', device: signal };
   return null;
 }
 function acceptsGarageObservation(config, observation) {
@@ -115,13 +114,19 @@ export class Engine {
         reason: enabled ? 'awaiting-mqtt' : 'not-enabled', connected: false, charging: false, home: false,
         healthy: false, lastMessageAt: null, suppressed: null, recording: false, sessionOpen: false };
     } else delete providers.teslamate;
+    const physical = this.charging?.chargers?.charger2?.adapter?.snapshot?.();
+    const enabled = this.charging?.configuration?.chargers?.charger2?.enabled === true;
+    providers['shelly-evse'] = { source: 'shelly-evse', enabled,
+      status: !enabled ? 'disabled' : physical?.online ? physical.controlReady ? 'ok' : 'degraded' : 'waiting',
+      reason: !enabled ? 'not-enabled' : physical?.online ? physical.controlReady ? 'physical-meter' : 'commissioning-required' : 'awaiting-mqtt',
+      connected: physical?.online === true, recording: physical?.fields?.phase_info != null };
     return providers;
   }
   fireplaceStatus() { return fireplaceView(this.store, this.config.input, { asOf: this.clock() }); }
   sensorChangesStatus() {
     const connections = this.config.connections ?? {};
-    const configured = [...INDOOR_SIGNALS, 'garage_temperature', 'garage_temperature_2']
-      .filter(signal => connections.mqtt?.temperatureTopics?.[signal]);
+    const configured = (connections.equipment?.devices ?? []).filter(device => device.enabled)
+      .flatMap(device => device.ownedSignals ?? []);
     return sensorChangesView(this.store, this.config.input, { now: this.clock(), config: this.control,
       observedSignals: [...Object.keys(this.latest), ...configured] });
   }
@@ -351,8 +356,9 @@ export class Engine {
     if (['mqtt', 'providers'].includes(config.input)) {
       const cachedWeather = store.getState('provider:weather'), health = store.getState('providers:health');
       const unsupported = value => typeof value?.source === 'string' && !WEATHER_SOURCES.includes(value.source);
-      const discardWeather = unsupported(cachedWeather);
-      const resetJobs = ['weather', 'outdoor'].filter(name => unsupported(health?.[name]) || name === 'weather' && discardWeather);
+      const identity = weatherAcquisitionIdentity(config.connections);
+      const discardWeather = cachedWeather && (unsupported(cachedWeather) || cachedWeather.acquisitionIdentity !== identity);
+      const resetJobs = ['weather', 'outdoor'].filter(name => unsupported(health?.[name]));
       if (discardWeather || resetJobs.length) store.transaction(() => {
         // Retired providers cannot drive the first tick or delay a replacement
         // download. Historical snapshots remain intact with their original source.
@@ -407,7 +413,9 @@ export class Engine {
       try {
         const cached = store.getState('provider:observations');
         if (Array.isArray(cached) && cached.length <= 64) for (const observation of cached) {
-          if (PROVIDER_OBSERVATION_SOURCES.includes(observation?.source)) this.rememberObservation(observation, clock());
+          if (PROVIDER_OBSERVATION_SOURCES.includes(observation?.source)
+            && (!WEATHER_SOURCES.includes(observation.source) || observation.raw?.acquisitionIdentity === weatherAcquisitionIdentity(config.connections)))
+            this.rememberObservation(observation, clock());
         }
       } catch {
         // Provider polling reconstructs a corrupt cache. Do not replay it into observation history.
@@ -453,6 +461,14 @@ export class Engine {
     return result;
   }
   ingestEnergy(interval) { return interval.signal === 'garage_energy' ? this.garage.ingestEnergy(interval) : this.recorder.recordEnergy(interval); }
+  ingestionCheckpoint() {
+    return structuredClone(Object.fromEntries(['latest', 'outdoorCandidates', 'lastKnownTemperatures',
+      'temperatureAttempts', 'garageDoorStates'].map(key => [key, this[key]])));
+  }
+  restoreIngestionCheckpoint(checkpoint) {
+    for (const key of ['latest', 'outdoorCandidates', 'lastKnownTemperatures', 'temperatureAttempts', 'garageDoorStates'])
+      this[key] = checkpoint[key];
+  }
   rememberObservation(observation, now) {
     if (observation?.signal === 'indoor_temperature' && observation.source?.startsWith('husdata')) return;
     if (!acceptsGarageObservation(this.config, observation)) return;
@@ -805,49 +821,9 @@ export class Engine {
       this.checkpoint = this.replayLearning(this.checkpoint);
       return this.checkpoint;
     }
-    if (!this.checkpoint) {
-      let saved = null;
-      try { saved = this.store.getState(`adaptive:${this.config.input}`); }
-      catch { this.store.event('checkpoint-rebuild', { input: this.config.input, reason: 'corrupt-adaptive-checkpoint' }, now); }
-      this.checkpoint = restoreAdaptiveCheckpoint(saved, this.control);
-      const invalid = !saved || !Array.isArray(saved.samples) || this.checkpoint.health.reason === 'invalid-checkpoint-model';
-      if (saved && invalid)
-        this.store.event('checkpoint-rebuild', { input: this.config.input, reason: 'invalid-adaptive-checkpoint' }, now);
-      if (invalid) { this.checkpoint.rebuildPending = true; this.checkpoint.rebuildAfter = 0; }
-    }
-    if (this.checkpoint.rebuildPending) {
-      const rows = this.store.learningSamples({ input: this.config.input, after: this.checkpoint.rebuildAfter ?? 0, limit: 256 });
-      this.checkpoint = updateAdaptiveLearningBatch(this.checkpoint, rows, { now, config: this.control });
-      this.checkpoint.rebuildAfter = rows.at(-1)?.id ?? this.checkpoint.rebuildAfter ?? 0;
-      this.checkpoint.rebuildPending = rows.length === 256;
-      this.store.setState(`adaptive:${this.config.input}`, this.checkpoint);
-    }
-    if (this.config.input !== 'simulated' && !this.cycles.active()) {
-      let saved;
-      try { saved = this.store.getState('adaptive:history'); } catch { /* Background reconstruction may replace a corrupt checkpoint. */ }
-      if (saved?.version === 1 && saved.algorithmVersion === LEARNING_ALGORITHM
-        && !this.checkpoint.measurementEpochAt && indoorWeights(this.control).indoor_temperature === 1) {
-        const history = restoreAdaptiveCheckpoint(saved, this.control);
-        const modelReady = history.model.validation && !this.checkpoint.model.validation;
-        const baselineReady = Number.isFinite(history.baselineC) && !Number.isFinite(this.checkpoint.baselineC)
-          && (!this.checkpoint.baselineResetAt || Date.parse(history.comfortReference?.windowStart) >= this.checkpoint.baselineResetAt);
-        if (modelReady || baselineReady) {
-          // A baseline is useful even before the temperature fit passes validation.
-          // Keep live records and avoid replaying a fitting workload on the UI tick.
-          if (modelReady) this.checkpoint.model = history.model;
-          if (baselineReady) {
-            this.checkpoint.baselineC = history.baselineC;
-            this.checkpoint.comfortReference = history.comfortReference;
-          }
-          if (!this.checkpoint.samples.length && !this.checkpoint.rebuildPending && !this.checkpoint.baselineResetAt) {
-            const { journalCursor, windowCursor, historyCursor, historyResampling, ...seed } = history;
-            this.checkpoint = seed;
-          }
-          this.store.setState(`adaptive:${this.config.input}`, this.checkpoint);
-          this.store.event('adaptive-history-seeded', { trainedAt: history.model.trainedAt, baselineC: history.baselineC }, now);
-        }
-      }
-    }
+    // The current journal is the only replay source. No coarse cache or
+    // earlier model interpreter can seed this runtime.
+    this.checkpoint ??= restoreAdaptiveCheckpoint(null, this.control);
     return this.checkpoint;
   }
   recordDhwr(expiresAt, now) {
@@ -942,7 +918,7 @@ export class Engine {
       if (modelReady || baselineReady) reference.historySeed = {
         ...(modelReady ? { model: history.model } : {}),
         ...(baselineReady ? { baselineC: history.baselineC, comfortReference: history.comfortReference } : {}),
-        source: { input: 'history', algorithmVersion: history.algorithmVersion ?? 'legacy',
+        source: { input: 'history', algorithmVersion: history.algorithmVersion,
           journalCursor: history.journalCursor ?? null, trainedAt: history.model?.trainedAt ?? null } };
     }
     if (reference.resetBaselineAt || reference.historySeed) {
@@ -1070,7 +1046,7 @@ export class Engine {
         const args = { intervals, model: checkpoint.model, initialState: { indoorC: sample.indoorC,
           reserveC: this.fireplaceReserveOverride ?? checkpoint.state?.reserveC ?? sample.indoorC, slabC: checkpoint.state?.slabC, integral: equipment.integral },
           targetC, config: this.control, equipment, occupancy: settings.occupancy, maxDropC: settings.comfort.maxDropC, maxRiseC: settings.comfort.maxRiseC };
-        if (!intervals.length || schedule.reductionEnd <= now || !equipment.h66Available && schedule.reductionEnd-now > this.control.maxUnobservedReductionHours*3600000) {
+        if (!cycleForecastCovered(intervals, schedule, now) || schedule.reductionEnd <= now || !equipment.h66Available && schedule.reductionEnd-now > this.control.maxUnobservedReductionHours*3600000) {
           this.cycles.shorten(now, 'control-or-forecast-coverage-lost'); phase = 'recovery'; reasons = ['control-or-forecast-coverage-lost'];
         } else {
           const continued = evaluateCycle({ ...args, schedule });
@@ -1247,10 +1223,11 @@ export class Engine {
     const episodeStatus = visibleCycle ? {id:visibleCycle.id,status:visibleCycle.status,startedAt:visibleCycle.startedAt,
       actual:visibleCycle.actual,stableSince:visibleCycle.stableSince,referenceLabel:visibleCycle.plan.referenceLabel,adjustments:visibleCycle.adjustments} : null;
     this.latestStatus = { now,input,mode:this.settings.mode,liveWrites:this.settings.mode==='active'&&input!=='simulated'&&Boolean(this.executor.commandTransport),
+      runtimeTiming:this.runtimeTiming?.() ?? null,
       settings:this.settings,demoComfortTargetC:this.plant&&checkpoint.baselineC===null?21:null,observations,override,decision:{...decision,plan:visiblePlan},execution,
       heatingTests:this.heatingTests(),preheatValves:this.preheatValveStatus(now),h66,prices:outlook.prices,forecast:outlook.forecast,spot:outlook.spot??[],
       priceStatus:this.plant?'simulated':outlook.priceStatus,weatherStatus:this.plant?'simulated':outlook.weatherStatus,
-      providers:this.providerStatus(),shelly:this.shelly?.status(now)??{configured:false,connected:false,devices:[]},
+      providers:this.providerStatus(),
       equipment:this.equipmentStatus(),equipmentTests:this.equipmentTestStatus(),equipmentControls:this.equipmentControlStatus(),dhwr:this.dhwrStatus(),
       contract:this.contract(),configuredPrices:this.config.priceSettings??null,
       recording:this.recorder.status(),fireplace:this.fireplaceStatus(),sensorChanges:this.sensorChangesStatus(),garage:this.garage.status(now),charging:this.charging.status(now),
@@ -1269,14 +1246,13 @@ export class Engine {
     const result = structuredClone(this.latestStatus);
     const now = this.clock();
     result.now = now;
+    result.runtimeTiming = this.runtimeTiming?.() ?? null;
     result.heatingTests = this.heatingTests();
     result.preheatValves = this.preheatValveStatus();
-    result.shelly = this.shelly?.status(now) ?? { configured: false, connected: false, devices: [] };
     result.equipment = this.equipmentStatus();
     result.equipmentTests = this.equipmentTestStatus();
     result.equipmentControls = this.equipmentControlStatus();
     result.dhwr = this.dhwrStatus();
-    result.chargerIdentification = this.chargerIdentification?.status() ?? { enabled: false, active: false, verdict: null };
     result.fireplace = this.fireplaceStatus();
     result.sensorChanges = this.sensorChangesStatus();
     result.garage = this.garage.status(now);

@@ -2,6 +2,7 @@ import { parentPort, workerData } from 'node:worker_threads';
 import { DatabaseSync, backup } from 'node:sqlite';
 import { open, rm } from 'node:fs/promises';
 import { normalizeSnapshot, snapshotDigest } from './publication.js';
+import { validateCurrentDatabase } from '../storage/store.js';
 
 try {
   const file = await open(workerData.destination, 'wx', 0o600);
@@ -14,6 +15,7 @@ try {
     // writer cannot keep restarting the backup, and remains free to append WAL.
     sourceStartedAt = Date.now();
     db.prepare('PRAGMA schema_version').get();
+    validateCurrentDatabase(db);
     sourceAt = Date.now();
     await backup(db, workerData.destination, { rate: 256 });
     db.exec('ROLLBACK');

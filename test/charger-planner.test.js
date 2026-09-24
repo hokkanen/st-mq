@@ -15,7 +15,9 @@ const make = (id = 'first', extra = {}) => {
     automatic: {}, ...capabilities } },
   settings: { ...settings.chargers.charger1, enabled: true, capacityKwh: 20, ...preferences }, configuration: { efficiency: .925 },
   telemetry: { connected: true, phases: 3, voltageV: 230, currentA: 16, maxCurrentA: 16,
-    soc: 0, minimumSoc: 80, ...telemetry }, deadlineAt: now + 6 * HOUR, now, ...remaining });
+    soc: 0, minimumSoc: 80,
+    vehicleCeilingSoc: { value: telemetry.minimumSoc === undefined ? 80 : telemetry.minimumSoc,
+      available: telemetry.minimumSoc !== null }, ...telemetry }, deadlineAt: now + 6 * HOUR, now, ...remaining });
 };
 const run = (chargers, extra = {}) => planChargers({ now, supply, chargers, prices: prices([30, 20, 5, 5, 20, 30]), ...extra });
 
@@ -76,12 +78,13 @@ test('current and AC voltage are required but three phases are assumed before ch
   assert.equal(phaseUnknown.assumptions.phases, 3);
 });
 
-test('momentary zero Equalizer allowance recovers observed household headroom for future charging', () => {
+test('clipped zero allowance does not establish future headroom', () => {
   const result = run([make('first', { telemetry: { currentA: 0, maxCurrentA: 16 } })], {
     supply: { ...supply, availableCurrentA: [0, 0, 0], propertyCurrentA: [25, 25, 25] },
   });
-  assert.equal(result.plans.first.feasible, true);
-  assert.equal(result.forecasts.first.powerKw, 11.04);
+  assert.equal(result.plans.first.feasible, false);
+  assert.equal(result.forecasts.first.powerKw, 0);
+  assert.equal(result.assumptions.supply, 'equalizer-live');
   assert.equal(result.currentLimits.length, 0);
 });
 
@@ -145,7 +148,7 @@ test('manual minimum completion never implies an unknown vehicle target will sto
 test('an observed competitor changes per-phase headroom and an Equalizer pause requires no automatic pause command', () => {
   const observed = make('observed', { capabilities: { scheduling: false, externalLoadBalancing: false },
     telemetry: { currentA: 20, maxCurrentA: 20, minimumSoc: 100, capacityKwh: 27.6,
-      scheduledStartAt: now + HOUR } });
+      scheduledStartAt: now + HOUR, scheduledEndAt: now + 3 * HOUR, scheduledEndKind: 'scheduled-stop' } });
   const result = run([make('first', { deadlineAt: now + 4 * HOUR }), observed], { prices: prices([10, 1, 1, 10]) });
   assert.equal(result.plans.first.startAt, now);
   assert.equal(result.plans.first.feasible, true);
@@ -276,7 +279,7 @@ test('an intermediate charging period can be replanned but an explicit final rel
   assert.equal(run([active], options).plans.first.periods.length, 2);
   const final = make('first', { telemetry: { charging: true }, control: { released: true } });
   assert.equal(run([final], options).plans.first.state, 'released');
-  assert.deepEqual(run([final], options).plans.first.periods, []);
+  assert.deepEqual(run([final], options).plans.first.periods, [{ startAt: now, endAt: null }]);
 });
 
 test('the readiness cap expires manual priority even without an identifiable native window', () => {
@@ -323,21 +326,21 @@ test('a scheduled load replaces its measured consumption without counting it twi
   assert.ok(netOnly.plans.first.intervals.every(row => row.phaseHeadroomA.every(current => current === 12)));
 });
 
-test('unscheduled active observed charging is not reserved as a future session', () => {
+test('unscheduled active observed charging remains a competing load', () => {
   const observed = make('observed', { capabilities: { scheduling: false, externalLoadBalancing: false },
     telemetry: { charging: true, currentA: 13, actualCurrentA: 13 } });
   const result = run([make(), observed]);
-  assert.ok(result.plans.first.intervals.every(row => row.fixedPhaseCurrentA.every(current => current === 0)));
+  assert.ok(result.plans.first.intervals.every(row => row.fixedPhaseCurrentA.every(current => current === 13)));
 });
 
-test('missing electrical data for unscheduled observed charging adds no competing load or planning warning', () => {
+test('unknown active peer load is disclosed without fabricating a numeric reservation', () => {
   const observed = make('observed', { capabilities: { scheduling: false, externalLoadBalancing: false },
     telemetry: { charging: true, currentA: null, maxCurrentA: null } });
   const result = run([make(), observed]);
   assert.equal(result.plans.first.feasible, true);
   assert.ok(result.plans.first.intervals.every(row => row.fixedPhaseCurrentA.every(current => current === 0)));
-  assert.deepEqual(result.warnings, []);
-  assert.deepEqual(result.plans.first.warnings, []);
+  assert.match(result.warnings.join(' '), /charging power cannot be estimated/);
+  assert.match(result.plans.first.warnings.join(' '), /charging power cannot be estimated/);
 });
 
 test('Equalizer allocation caps its charger without constraining independent charging to that cap', () => {
@@ -362,10 +365,11 @@ test('a fractional 45-second gap is removed in the real schedule and energy timi
   assert.ok(Math.abs(plan.deliveredGridKwh - plan.requiredGridKwh) < 1e-6);
 });
 
-test('extra transitions require meaningful savings and every intermediate span and pause lasts fifteen minutes', () => {
+test('cash savings use practical spans without an invented switching surcharge', () => {
   const tinySaving = run([make('first', { preferences: { capacityKwh: 25 }, deadlineAt: now + 4 * HOUR })],
     { prices: prices([1, 1.01, 1, 1.01]) }).plans.first;
-  assert.equal(tinySaving.periods.length, 1);
+  assert.equal(tinySaving.periods.length, 2);
+  assert.ok(tinySaving.savingsCents > 0 && tinySaving.savingsCents < 1);
   const chunks = [
     { start: now, end: now + HOUR / 12, price: -100 },
     { start: now + HOUR / 12, end: now + HOUR, price: 20 },
@@ -456,18 +460,19 @@ test('a provisional allowance remains eligible for economical planning even with
   assert.equal(result.plans.first.startAt, now + 2 * HOUR);
 });
 
-test('a known peer target bounds its scheduled reservation by the actual remaining energy', () => {
+test('a planning minimum never proves that an observed peer will stop', () => {
   const peer = make('second', { capabilities: { scheduling: false, externalLoadBalancing: false },
     preferences: { capacityKwh: 57 }, configuration: { efficiency: .925 },
     telemetry: { soc: 80, minimumSoc: 100, currentA: 16, scheduledStartAt: now + 3 * HOUR } });
   const result = run([make(), peer]);
   const forecast = result.forecasts.second;
-  assert.ok(forecast.endAt > now + 4 * HOUR && forecast.endAt < now + 4.2 * HOUR);
+  assert.ok(forecast.finishAt > now + 4 * HOUR && forecast.finishAt < now + 4.2 * HOUR);
+  assert.equal(forecast.endAt, now + 6 * HOUR);
   assert.ok(result.plans.first.intervals.filter(row => row.start >= forecast.endAt)
     .every(row => row.fixedPhaseCurrentA.every(current => current === 0)));
   const full = make('second', { capabilities: { scheduling: false, externalLoadBalancing: false },
     telemetry: { soc: 100, minimumSoc: 100, charging: true, scheduledStartAt: now + 3 * HOUR } });
   const satisfied = run([make(), full]);
-  assert.equal(satisfied.forecasts.second.reason, 'vehicle-target-already-reached');
-  assert.ok(satisfied.plans.first.intervals.every(row => row.fixedPhaseCurrentA.every(current => current === 0)));
+  assert.equal(satisfied.forecasts.second.reason, 'automatic-current-forecast');
+  assert.ok(satisfied.plans.first.intervals.every(row => row.fixedPhaseCurrentA.every(current => current === 16)));
 });

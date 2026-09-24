@@ -85,27 +85,12 @@ export function validGarageExposure(exposure, now = Infinity, settings = {}) {
   });
 }
 
-/** Old indices are not temperatures. New-model energy survives policy changes
- * without receiving extra reserve from a larger pipe or a lower margin. */
-export function upgradeGarageExposure(previous, settings = {}) {
+/** Current-policy changes retain energy conservatively; older representations
+ * are unsupported and require an explicit fresh development database. */
+export function reconcileGarageExposure(previous, settings = {}) {
   const config = garageSettings(settings);
   if (!previous) return createGarageExposure(config);
-  if (previous.version !== GARAGE_POLICY_VERSION) {
-    if (!['garage-exposure-v1', 'garage-exposure-v2'].includes(previous.version))
-      throw new Error('Unsupported garage exposure version');
-    const output = createGarageExposure(config);
-    output.previousVersion = previous.version;
-    output.at = finite(previous.at) ? previous.at : null;
-    for (const location of locations) {
-      const state = output.locations[location], old = previous.locations?.[location];
-      state.stateAt = output.at;
-      if (finite(output.at) && finite(old?.lastAt) && old.lastAt <= output.at && validC(old.lastC)) {
-        state.lastAt = old.lastAt; state.lastC = old.lastC;
-      }
-      state.uncertaintyReason = 'protection-policy-transition';
-    }
-    return output;
-  }
+  if (previous.version !== GARAGE_POLICY_VERSION) throw new Error('Unsupported garage exposure version; start a fresh development database');
   if (!validGarageExposure(previous, Infinity, config)) throw new Error('Invalid garage thermal reserve state');
   const output = copy(previous), oldPolicy = output.policy;
   if (policyKeys.some(key => oldPolicy[key] !== config.protection[key])) {
@@ -207,7 +192,7 @@ function advanceGap(state, until, bound, config, properties) {
 export function updateGarageExposure(previous, observation, settings = {}) {
   const config = garageSettings(settings), now = observation?.at;
   if (!finite(now)) throw new Error('Garage exposure requires numeric UTC observation time');
-  const output = upgradeGarageExposure(previous, config), p = reserveProperties(config);
+  const output = reconcileGarageExposure(previous, config), p = reserveProperties(config);
   if (finite(output.at) && now < output.at) return output;
   for (const location of locations) {
     const state = output.locations[location], current = garageSensorStatus(observation, location, now, config);
@@ -241,7 +226,7 @@ export function updateGarageExposure(previous, observation, settings = {}) {
  * Chain this helper for planning; its output is not a new measured observation
  * and must not be passed through updateGarageExposure/assessGarageProtection. */
 export function projectGarageExposure(previous, point, settings = {}) {
-  const config = garageSettings(settings), exposure = upgradeGarageExposure(previous, config);
+  const config = garageSettings(settings), exposure = reconcileGarageExposure(previous, config);
   if (!finite(point?.at) || !finite(exposure.at) || point.at < exposure.at)
     throw new Error('Garage reserve projection requires ordered numeric UTC times');
   const p = reserveProperties(config), result = { exposure, interventionAt: null, locations: {} };

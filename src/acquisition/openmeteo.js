@@ -1,3 +1,4 @@
+import { weatherAcquisitionIdentity } from './weather-identity.js';
 import { instantMs } from '../domain/prices.js';
 import { weatherCoordinates, weatherError, distanceKm } from './fmi.js';
 
@@ -80,13 +81,23 @@ function requestUrl(connections, forecast) {
   return url.toString();
 }
 
-export async function fetchOpenMeteoForecast({ connections, now, http, signal } = {}) {
+export async function fetchOpenMeteoForecast({ connections, now, http, signal, clock = Date.now } = {}) {
   const url = requestUrl(connections, true), coordinates = weatherCoordinates(connections);
-  try { return decodeOpenMeteo(await http.json(url, { method: 'GET', signal }), { fetchedAt: now, coordinates }); }
+  try {
+    const body = await http.json(url, { method: 'GET', signal });
+    const result = decodeOpenMeteo(body, { fetchedAt: clock(), coordinates });
+    const acquisitionIdentity = weatherAcquisitionIdentity(connections);
+    return { ...result, requestStartedAt: now, acquisitionIdentity };
+  }
   catch (error) { throw weatherError(error, 'Open-Meteo forecast acquisition failed'); }
 }
-export async function fetchOpenMeteoCurrent({ connections, now, http, signal } = {}) {
+export async function fetchOpenMeteoCurrent({ connections, now, http, signal, clock = Date.now } = {}) {
   const url = requestUrl(connections, false), coordinates = weatherCoordinates(connections);
-  try { return decodeOpenMeteoCurrent(await http.json(url, { method: 'GET', signal }), { fetchedAt: now, coordinates }); }
+  try {
+    const body = await http.json(url, { method: 'GET', signal });
+    const result = decodeOpenMeteoCurrent(body, { fetchedAt: clock(), coordinates });
+    const acquisitionIdentity = weatherAcquisitionIdentity(connections);
+    return result.map(row => ({ ...row, raw: { ...row.raw, requestStartedAt: now, acquisitionIdentity } }));
+  }
   catch (error) { throw weatherError(error, 'Open-Meteo current temperature acquisition failed'); }
 }

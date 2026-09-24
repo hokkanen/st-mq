@@ -1,6 +1,6 @@
 # Simple garage pause model
 
-The current algorithm is `committed-garage-v5-protection-limited`, with planning preference
+The current algorithm is `committed-garage-v6-source-clocks`, with planning preference
 `garage-protection-limited-opportunities-v2`. Its purpose is occasional worthwhile OFF opportunities
 under independent pipe protection. It has no preheat, hidden core, learned pump
 heat response, door heat coefficient or multi-pause optimizer.
@@ -100,7 +100,7 @@ choices prefer shorter and earlier pauses. Defaults require more than €0.50,
 one hour minimum planned OFF, three hours normal operation and one start per
 Finnish day. Temperature forecasts, the independent pipe reserve, uncertainty,
 remaining economics and available forecast coverage determine the pause endpoint.
-All positive legacy aggressiveness settings use those same explicit limits; zero disables economic pauses. Flat prices preserve normal
+All positive aggressiveness settings use those same explicit limits; zero disables economic pauses. Flat prices preserve normal
 heating. Safety restoration always overrides minimum OFF dwell.
 
 Each window contains one OFF interval. Before a future opportunity, ordinary
@@ -123,9 +123,10 @@ savings. There is no fabricated slow-core recovery or measured thermal kWh.
 
 Protection and recovery obligations are separate from replayable learning.
 `garage-thermal-reserve-v1` retains its copper-pipe assumptions and permission
-rules. Version 5 removes the old duration-related learning timeout and starts a
-fresh learning seed; v4 remains archival at `ccf0070`, without reinterpretation of
-its journal records. Protection and existing recovery obligations survive.
+rules. Version 6 identifies independent source-clock support and complete-cycle
+metering qualification. Incompatible development models, settings and episodes
+are rejected; initialize a fresh development database explicitly. Current-version
+restart preserves pipe reserve and unresolved physical restoration.
 See [reconstruction/versioning](reconstruction-and-versioning.md),
 [protection](garage-protection-defaults.md) and [simulation evidence](garage-simulation-audit.md).
 
@@ -141,3 +142,18 @@ active validation as incomplete, and retains learned cooling rates. The same
 context event replays deterministically; new normal-temperature evidence must
 qualify before another economic pause. Brief charging disturbances, changed
 baseline/source and unqualified electricity never fabricate completed savings.
+
+## Independent source clocks and electrical coverage
+
+A fresh cached front report does not dirty a clean episode. Learning waits until
+both available source reports advance, then weights each location by its own
+time span. Front prediction uses a bounded history of observed ambient/native
+segments on the front interval; missing support, stale/invalid clocks, source
+rollback and genuine disturbances exclude qualification. Rear-only observations
+still support rear learning without fabricating a front probe. Current replay and
+checkpoint continuation retain the same joined observations and support history.
+
+Electrical validation covers the complete OFF/recovery interval. Missing OFF
+power is unknown, measured zero is valid coverage, and measured standby power is
+included. Thermal validation remains available without electrical metering;
+assumed-zero economics does not become observed full-cycle validation.

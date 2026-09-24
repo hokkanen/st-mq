@@ -38,18 +38,18 @@ async function seedAddon() {
   mkdirSync('/data/st-mq', { recursive: true, mode: 0o700 });
   mkdirSync('/share/st-mq', { recursive: true });
   const fixture = providerFixture(now);
-  const legacy = new Store('/data/st-mq/st-mq.sqlite');
+  const current = new Store('/config/st-mq/st-mq.sqlite');
   try {
-    for (const row of await fixture.providerOptions.devices.temperatures()) legacy.observation(row);
-    for (const row of await fixture.providerOptions.outdoor()) legacy.observation(row);
-    legacy.setState('provider:market', await fixture.providerOptions.market());
-    legacy.setState('provider:weather', await fixture.providerOptions.weather());
-    legacy.setState('container-fixture', { synthetic: true, marker: 'retained-through-migration-and-restore' });
-    legacy.event('container-fixture', { synthetic: true }, now);
-  } finally { legacy.close(); }
+    for (const row of await fixture.providerOptions.devices.temperatures()) current.observation(row);
+    for (const row of await fixture.providerOptions.outdoor()) current.observation(row);
+    current.setState('provider:market', await fixture.providerOptions.market());
+    current.setState('provider:weather', await fixture.providerOptions.weather());
+    current.setState('container-fixture', { synthetic: true, marker: 'retained-through-restart-and-restore' });
+    current.event('container-fixture', { synthetic: true }, now);
+  } finally { current.close(); }
   writeJson('/data/st-mq/easee-tokens.json', { accessToken: 'synthetic-access', refreshToken: 'synthetic-refresh' }, { flag: 'wx' });
   writeJson(fixtureMarker, { kind: 'synthetic-addon-container-smoke', now,
-    optionsDigest: digest('/data/options.json'), originalDatabaseDigest: digest('/data/st-mq/st-mq.sqlite'),
+    optionsDigest: digest('/data/options.json'),
     tokenDigest: digest('/data/st-mq/easee-tokens.json') }, { flag: 'wx' });
 }
 
@@ -95,7 +95,6 @@ async function probeAddon({ restarted = false, restored = false } = {}) {
   assert.equal(chart.range.timeZone, 'Europe/Helsinki');
   assert.ok(chart.series.all_in_price.length > 0);
   assert.ok(chart.series.outdoor_forecast.length > 0);
-  assert.equal(digest('/data/st-mq/st-mq.sqlite'), marker.originalDatabaseDigest, 'Migration must retain the original database unchanged');
   assert.equal(digest('/data/st-mq/easee-tokens.json'), marker.tokenDigest, 'Offline startup must not alter private tokens');
   for (const destination of ['/config/st-mq/easee-tokens.json', '/share/st-mq/easee-tokens.json', '/config/options.json', '/share/st-mq/options.json']) {
     assert.equal(existsSync(destination), false, `Secrets must not be copied to ${destination}`);
@@ -136,7 +135,7 @@ function inspectSharedFiles() {
     const db = new DatabaseSync(`file:${path}?immutable=1`, { readOnly: true });
     try {
       assert.equal(db.prepare('PRAGMA quick_check').get().quick_check, 'ok');
-      assert.equal(readState(db, 'container-fixture').marker, 'retained-through-migration-and-restore');
+      assert.equal(readState(db, 'container-fixture').marker, 'retained-through-restart-and-restore');
       assert.equal(readState(db, 'occupancy:offline').mode, 'away');
       assert.equal(readState(db, 'override:offline').mode, 'normal');
       assert.equal(readState(db, 'contract:offline').periods.at(-1).marginCtPerKwh, 0.37);

@@ -5,44 +5,47 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../src/storage/store.js';
 import { createShellyCapture } from '../src/acquisition/shelly.js';
-import { shellyConfiguration } from '../src/acquisition/shelly-config.js';
+import { equipmentConfiguration } from '../src/acquisition/equipment-config.js';
 import { createCaravanEnergy } from '../src/acquisition/shelly-energy.js';
 import { Recorder } from '../src/storage/recorder.js';
 
 const HOUR = 3_600_000, initial = Date.parse('2026-09-10T12:00:00Z');
-function fixture(t, options = {}, initialAt = initial) {
+function fixture(t, devices = [], initialAt = initial) {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-shelly-'));
   const store = new Store(join(directory, 'test.sqlite'));
   let now = initialAt, authority = true;
   const observations = [], publications = [];
   const engine = { clock: () => now, ingest: row => { observations.push(row); store.observation(row); }, rememberObservation: row => observations.push(row) };
-  const settings = shellyConfiguration(options);
+  const settings = equipmentConfiguration({ devices });
   const capture = createShellyCapture({ engine, store, settings,
     publish: async (topic, payload, options) => { publications.push({ topic, payload, options }); },
     canControl: () => authority, readbackTimeoutMs: 100 });
   t.after(() => { capture.close(); store.close(); rmSync(directory, { recursive: true, force: true }); });
+  const identities = new Map();
   const reply = (publication, result, extra = {}) => {
-    const request = JSON.parse(publication.payload);
-    capture.receive(`${request.src}/rpc`, JSON.stringify({ id: request.id, dst: request.src, result, ...extra }), {}, now);
+    const request = JSON.parse(publication.payload), prefix = publication.topic.slice(0, -4);
+    if (request.method === 'Shelly.GetDeviceInfo') identities.set(prefix, result.id);
+    const current = structuredClone(result);
+    for (const [key, value] of Object.entries(current)) if (/^[a-z]+:\d+$/.test(key) && value && typeof value === 'object') value.id ??= Number(key.split(':')[1]);
+    if (request.method === 'Switch.GetStatus') current.id ??= request.params.id;
+    capture.receive(`${request.src}/rpc`, JSON.stringify({ id: request.id, dst: request.src, src: identities.get(prefix), result: current, ...extra }), {}, now);
+  };
+  const connect = capture.setConnected.bind(capture);
+  capture.setConnected = value => {
+    connect(value);
+    if (value) for (const publication of publications.filter(row => row.topic.endsWith('/rpc') && JSON.parse(row.payload).method === 'Shelly.GetDeviceInfo'))
+      reply(publication, { id: `fixture-${publication.topic.slice(0, -4).replaceAll('/', '-')}`, gen: 2 });
   };
   const status = result => reply(publications.findLast(row => JSON.parse(row.payload).method === 'Shelly.GetStatus'), result);
   return { capture, store, observations, publications, settings, status, reply,
     now: value => { now = value; }, authority: value => { authority = value; } };
 }
-const caravan = { enabled: true, generation: 2, topic_prefix: 'invented-caravan' };
-
-test('Shelly rejects malformed exact topics, ambiguous device roles and unsafe numeric settings', () => {
-  assert.deepEqual(shellyConfiguration().devices, []);
-  for (const topic_prefix of ['', 'with/+', 'with/#', ' trailing', 'foo/'])
-    assert.throws(() => shellyConfiguration({ caravan: { ...caravan, topic_prefix } }));
-  assert.throws(() => shellyConfiguration({ caravan: { ...caravan, controls_heat: true } }));
-  assert.throws(() => shellyConfiguration({ caravan, garage: { ...caravan } }));
-  assert.throws(() => shellyConfiguration({ poll_seconds: 100, max_age_seconds: 120 }));
-  assert.throws(() => shellyConfiguration({ caravan: { ...caravan, generation: 5 } }));
-});
+const caravan = { id: 'caravan', kind: 'metered_switch', connection: 'shelly:invented-caravan' };
+const garage = { id: 'garage', kind: 'switch', connection: 'shelly:invented-garage', temperature_id: 100 };
+const heat = { id: 'heat_savings', kind: 'switch', connection: 'shelly:invented-mini', tariff_control: true };
 
 test('Gen2 status reads actual plug values, ignores retained/replayed payloads and expires individual readings', t => {
-  const f = fixture(t, { caravan }); f.capture.setConnected(true);
+  const f = fixture(t, [caravan]); f.capture.setConnected(true);
   assert(f.publications.every(row => row.options.retain === false));
   f.status({ 'switch:0': { output: true, apower: 575, current: 2.5, aenergy: { total: 12000 } } });
   const values = Object.fromEntries(f.observations.map(row => [row.signal, row.value]));
@@ -59,7 +62,7 @@ test('Gen2 status reads actual plug values, ignores retained/replayed payloads a
 });
 
 test('Garage add-on uses external temperature component, never the relay CPU temperature', t => {
-  const f = fixture(t, { garage: { enabled: true, topic_prefix: 'invented-garage', temperature_id: 100 } });
+  const f = fixture(t, [garage]);
   f.capture.setConnected(true);
   f.status({ 'switch:0': { output: false, temperature: { tC: 55 } }, 'temperature:100': { tC: 12.5 } });
   assert.equal(f.observations.findLast(row => row.signal === 'garage_temperature').value, 12.5);
@@ -69,7 +72,7 @@ test('Garage add-on uses external temperature component, never the relay CPU tem
 });
 
 test('Direct heating requires a post-command Switch.GetStatus response and preserves configurable polarity', async t => {
-  const f = fixture(t, { heat_savings: { enabled: true, topic_prefix: 'invented-mini', reduction_on: false } });
+  const f = fixture(t, [{ ...heat, reduction_on: false }]);
   f.capture.setConnected(true);
   const pending = f.capture.publishHeating(['reduction']);
   await Promise.resolve();
@@ -87,7 +90,7 @@ test('Direct heating requires a post-command Switch.GetStatus response and prese
 });
 
 test('Readback timeout and device disconnect never claim delivery', async t => {
-  const f = fixture(t, { heat_savings: { enabled: true, topic_prefix: 'invented-mini' } });
+  const f = fixture(t, [heat]);
   f.capture.setConnected(true);
   await assert.rejects(f.capture.publishHeating(['reduction']), /readback timed out/);
   const pending = f.capture.publishHeating(['reduction']);
@@ -96,7 +99,7 @@ test('Readback timeout and device disconnect never claim delivery', async t => {
 });
 
 test('Gen1 plug watt-minute counter converts to kWh and labels current as an estimate', t => {
-  const f = fixture(t, { caravan: { ...caravan, generation: 1, topic_prefix: 'shellies/invented-plug' } });
+  const f = fixture(t, [{ ...caravan, generation: 1, connection: 'shelly:shellies/invented-plug' }]);
   f.capture.setConnected(true);
   f.capture.receive('shellies/invented-plug/relay/0', 'on');
   f.capture.receive('shellies/invented-plug/relay/0/power', '460');
@@ -107,7 +110,7 @@ test('Gen1 plug watt-minute counter converts to kWh and labels current as an est
 });
 
 test('Adaptive counter deltas survive restart and conserve measured energy across resets', t => {
-  const f = fixture(t, {}), recorder = new Recorder(f.store);
+  const f = fixture(t, []), recorder = new Recorder(f.store);
   const energy = createCaravanEnergy({ store: f.store, recorder, device: 'fixture-caravan', maxGapMs: 120_000 });
   energy.receive(20, initial - 30_000);
   energy.tick(initial);
@@ -133,7 +136,7 @@ test('Adaptive counter deltas survive restart and conserve measured energy acros
 });
 
 test('Midnight in Helsinki resets the daily display; long offline gaps and implausible counter jumps are not allocated', t => {
-  const f = fixture(t, {}), energy = createCaravanEnergy({ store: f.store, device: 'fixture-caravan', maxGapMs: 120_000 });
+  const f = fixture(t, []), energy = createCaravanEnergy({ store: f.store, device: 'fixture-caravan', maxGapMs: 120_000 });
   const midnight = Date.parse('2026-09-10T21:00:00Z');
   energy.receive(1, midnight - 30_000); energy.receive(1.01, midnight + 30_000);
   assert(Math.abs(energy.status(midnight + 30_000).dailyKwh - 0.005) < 1e-10);
@@ -144,7 +147,7 @@ test('Midnight in Helsinki resets the daily display; long offline gaps and impla
 });
 
 test('Full invalid switch status and unrelated partial changes cannot restore component availability', t => {
-  const f = fixture(t, { garage: { enabled: true, topic_prefix: 'invented-garage' } });
+  const f = fixture(t, [garage]);
   f.capture.setConnected(true);
   f.status({ 'switch:0': { output: true }, 'temperature:100': { tC: 12 } });
   assert.equal(f.capture.status(initial).devices[0].available, true);
@@ -153,7 +156,7 @@ test('Full invalid switch status and unrelated partial changes cannot restore co
   assert.equal(f.capture.status(initial + 30_000).devices[0].available, false);
   assert.equal(f.capture.status(initial + 30_000).devices[0].readings.garage_relay_active.value, null);
   f.now(initial + 151_000);
-  f.capture.receive('invented-garage/events/rpc', JSON.stringify({ method: 'NotifyStatus', params: { 'switch:0': { output: false } } }));
+  f.capture.receive('invented-garage/events/rpc', JSON.stringify({ src: 'fixture-invented-garage', method: 'NotifyStatus', params: { 'switch:0': { id: 0, output: false } } }));
   assert.equal(f.capture.status(initial + 151_000).devices[0].available, false, 'The external temperature still expired');
 });
 
@@ -165,8 +168,8 @@ test('Selected native garage ignores unselected MQTT topics and never creates an
   const directory = mkdtempSync(join(tmpdir(), 'stmq-shelly-integration-'));
   const store = new Store(join(directory, 'test.sqlite'));
   const config = { ...loadConfig({ XDG_CONFIG_HOME: directory }, directory), input: 'mqtt',
-    connections: { mqtt: { address: 'mqtt://example.invalid', temperatureTopics: { garage_temperature: 'invented-ha/garage' } },
-      shelly: shellyConfiguration({ garage: { enabled: true, topic_prefix: 'invented-direct-garage' }, caravan }) } };
+    connections: { mqtt: { address: 'mqtt://example.invalid' },
+      equipment: equipmentConfiguration({ devices: [{ ...garage, connection: 'shelly:invented-direct-garage' }, caravan] }) } };
   let now = initial;
   const engine = new Engine({ store, config, clock: () => now });
   const client = new EventEmitter();
@@ -176,12 +179,12 @@ test('Selected native garage ignores unselected MQTT topics and never creates an
   const acquisition = await startMqtt({ engine, store, config, connect: () => client });
   t.after(async () => { await acquisition.close(); store.close(); rmSync(directory, { recursive: true, force: true }); });
   client.emit('connect');
-  client.emit('message', 'invented-direct-garage/status/temperature:100', Buffer.from('{"tC":11}'));
+  client.emit('message', 'invented-direct-garage/status/temperature:100', Buffer.from('{"id":100,"tC":11}'));
   client.emit('message', 'invented-ha/garage', Buffer.from('18.5'));
   assert.equal(engine.latest.garage_temperature.value, 11);
   assert.equal(Object.keys(engine.latest).filter(signal => signal.startsWith('garage_temperature')).length, 1);
   assert.equal(store.observations({ signal: 'garage_temperature' }).length, 1);
-  assert.equal(engine.status().shelly.devices.length, 2);
+  assert.equal(engine.status().equipment.devices.length, 2);
   now += 30_000;
   client.emit('message', 'invented-ha/garage', Buffer.from('invalid-json'));
   assert.equal(engine.latest.garage_temperature.value, 11);
@@ -191,7 +194,7 @@ test('Selected native garage ignores unselected MQTT topics and never creates an
 });
 
 test('A late readback from a timed-out command cannot confirm a newer command with the same output', async t => {
-  const f = fixture(t, { heat_savings: { enabled: true, topic_prefix: 'invented-mini' } });
+  const f = fixture(t, [heat]);
   f.capture.setConnected(true);
   const first = f.capture.publishHeating(['reduction']);
   const firstSet = f.publications.find(row => JSON.parse(row.payload).method === 'Switch.Set');

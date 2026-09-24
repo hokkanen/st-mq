@@ -44,7 +44,7 @@ export default defineConfig({
     },
   }],
   server: {
-    host: '0.0.0.0', // Allow LAN access
+    host: '127.0.0.1', // Development tools stay local; use the authenticated application for remote access.
     port: 1212,
     proxy: { '/api': { target: 'http://127.0.0.1:1234', changeOrigin: true,
       configure(proxy) {
@@ -56,25 +56,12 @@ export default defineConfig({
       },
     } },
     fs: {
-      allow: (() => { // Redefine accessible folders due to HASSIO symlink to outside dir
-        const allow = [
-          resolve(__dirname, 'chart'), // Root path (needed because this list overwrites defaults)
-          resolve(__dirname, 'icon.png'), // Reuse the selected add-on icon as the browser favicon.
-          resolve(__dirname, 'src/domain'), // Shared, credential-free history catalogue.
-          resolve(__dirname, 'src/garage/settings.js'), // Public protection policy and fixed safety factor.
-        ];
-        const sharePath = resolve(__dirname, 'share');
-        if (fs.existsSync(sharePath) && fs.lstatSync(sharePath).isSymbolicLink()) {
-          allow.push(resolve(__dirname, '..', 'share', 'st-mq')); // HASSIO path behind symlink to outside dir
-        } else {
-          allow.push(resolve(__dirname, 'share', 'st-mq')); // Standard path (needed because this list overwrites defaults)
-        }
-        return allow;
-      })(),
+      allow: [resolve(__dirname,'chart'),resolve(__dirname,'icon.png'),
+        resolve(__dirname,'src/domain'),resolve(__dirname,'src/garage/settings.js')],
     },
   },
   preview: {
-    host: '0.0.0.0', // Allow LAN access
+    host: '127.0.0.1', // Development tools stay local; use the authenticated application for remote access.
     port: 1234,
   },
   build: {

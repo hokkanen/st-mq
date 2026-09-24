@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { garageSettings, GARAGE_POLICY_VERSION, GARAGE_HEAT_TRANSFER_SAFETY_FACTOR } from '../src/garage/settings.js';
-import { reserveProperties, createGarageExposure, updateGarageExposure, upgradeGarageExposure,
+import { reserveProperties, createGarageExposure, updateGarageExposure, reconcileGarageExposure,
   projectGarageExposure, projectCurrentGarageExposure, assessGarageProtection, validGarageExposure, garageSensorStatus } from '../src/garage/protection.js';
 import { knownGarageReserve } from './helpers/garage-reserve-fixture.js';
 
@@ -214,35 +214,26 @@ test('numeric settings changes cannot manufacture usable joules or erase frozen 
   const before = seed(), oldRemaining = props.capacityJPerMK * 5;
   for (const protection of [{ marginC: 0.5 }, { pipeOutsideDiameterMm: 30 }, { pipeOutsideDiameterMm: 10 }, { heatTransferWPerM2K: 10 }]) {
     const changed = garageSettings({ protection: { approved: true, ...protection } });
-    const next = upgradeGarageExposure(before, changed), p = reserveProperties(changed);
+    const next = reconcileGarageExposure(before, changed), p = reserveProperties(changed);
     assert.ok(Math.max(0, next.locations.rear.energyJPerM - p.capacityJPerMK * changed.protection.marginC) <= oldRemaining + 1e-6);
     assert.equal(next.locations.rear.uncertain, true);
     assert.equal(validGarageExposure(next, START, changed), true);
   }
   const unknown = createGarageExposure(settings), changed = { protection: { pipeOutsideDiameterMm: 30 } };
-  const next = upgradeGarageExposure(unknown, changed), p = reserveProperties(changed);
+  const next = reconcileGarageExposure(unknown, changed), p = reserveProperties(changed);
   assert.ok(next.locations.rear.energyJPerM <= -p.latentJPerM);
-  const slider = upgradeGarageExposure(before, { ...settings, aggressiveness: 100 });
+  const slider = reconcileGarageExposure(before, { ...settings, aggressiveness: 100 });
   assert.deepEqual(slider.locations, before.locations);
 });
 
-test('legacy policy normalization revokes approval while preserving independent learning settings', () => {
+test('retired protection policies and exposure representations are rejected', () => {
   for (const version of ['garage-exposure-v1', 'garage-exposure-v2']) {
-    const resolved = garageSettings({ enabled: true, maxSensorAgeMs: 3_600_000,
-      protection: { approved: true, version, floorC: 4, hardMinimumC: 0, budgetDegreeMinutes: 120,
-        recoveryAboveC: 6, recoveryDegreeMinutesPerMinute: 0.25, recoveryDwellMinutes: 30 } });
-    assert.equal(resolved.enabled, true); assert.equal(resolved.maxSensorAgeMs, 3_600_000);
-    assert.equal(resolved.protection.version, GARAGE_POLICY_VERSION); assert.equal(resolved.protection.approved, false);
-    assert.equal(Object.hasOwn(resolved.protection, 'floorC'), false);
-    const old = { version, at: START, locations: { rear: { degreeMinutes: 0, lastAt: START, lastC: 8 },
-      front: { degreeMinutes: 200, lastAt: START, lastC: 8 } } };
-    const upgraded = upgradeGarageExposure(old, resolved);
-    assert.equal(upgraded.previousVersion, version);
-    assert.equal(upgraded.locations.front.uncertain, true);
-    assert.ok(upgraded.locations.front.energyJPerM < 0);
-    assert.equal(validGarageExposure(upgraded, START, resolved), true);
+    assert.throws(() => garageSettings({ protection: { version } }), /Unsupported/);
+    assert.throws(() => reconcileGarageExposure({ version }, settings), /Unsupported/);
   }
-  assert.throws(() => garageSettings({ protection: { version: GARAGE_POLICY_VERSION, recoveryDwellMinutes: 20 } }), /Unknown/);
+  for (const key of ['maxPauseHours', 'maxHorizonHours', 'assumeISave10C'])
+    assert.throws(() => garageSettings({ [key]: 1 }), /Unknown/);
+  assert.throws(() => garageSettings({ protection: { recoveryDwellMinutes: 20 } }), /Unknown/);
 });
 
 test('malformed or future state cannot become permission and replayed clocks cannot warm it', () => {

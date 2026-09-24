@@ -25,7 +25,10 @@ npm run test:all        # routine followed by extended
 
 Extended tests live in `test/extended/`, with at most two files in parallel and
 a three-minute test deadline. They cover recovery at larger history volumes
-and real SQLite replication through SSH. Cheap mocked transport validation stays
+and real SQLite replication through SSH. A sensor duplicate-delivery regression
+also runs the installed MQTT.js client against an isolated Mosquitto broker and
+packet proxy. Install `mosquitto` to run it; set `STMQ_REQUIRE_MQTT_TESTS=1` to
+make a missing broker fail instead of skip. Cheap mocked transport validation stays
 in the routine suite. These tests use synthetic data and local processes; they
 make no paid model or provider API calls.
 
@@ -121,8 +124,7 @@ node scripts/browser-chart-smoke.js ws://127.0.0.1:39124/session
 node scripts/browser-pairing-smoke.js ws://127.0.0.1:39124/session
 ```
 
-`scripts/browser-smoke.js` is an alias for the chart suite. Stop any remaining
-disposable browser processes and remove their profiles afterward. Screenshots
+Stop any remaining disposable browser processes and remove their profiles afterward. Screenshots
 from synthetic fixtures go to ignored `var/` or reported temporary paths.
 
 ## Containers and Garage simulations

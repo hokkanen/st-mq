@@ -74,8 +74,8 @@ the service or recording another correction retries it.
 
 ## Version discipline
 
-The Home learning algorithm is `committed-house-v11-preheat-recovery`, with
-thermal model version 3. Production starts from a fresh database and an explicit
+The Home learning algorithm is `committed-house-v12-passive-thermal`, with
+thermal model version 4. Production starts from a fresh database and an explicit
 initial seed. There is no compatibility migration for development databases.
 
 The journal saves the resolved learning configuration, including the relative
@@ -137,163 +137,62 @@ model; it is separate from a forecast saved before execution or measured savings
 
 ## Separate Garage learning
 
-`committed-garage-v1-coupled` establishes Garage's own saved seed and journal
-stream (`garage:<input>`). It applies this same reconstruction contract without
-changing Home's learning algorithm or CSV interpretation. Ordered normalized
-samples, configuration and sensor-correction events drive both live updates and
-worker reconstruction. Memory publication follows successful durable checkpoint
-publication; a failed write retains the previous checkpoint. A Garage failure
-revokes its pause permission while Home control continues independently.
+`committed-garage-v6-source-clocks` uses Garage's saved seed and current
+`garage:<input>` journal. The same ordered update function drives live learning,
+checkpoint continuation, source corrections and worker reconstruction. Front and
+rear keep their original report clocks. Fresh held reports wait for a joined
+interval; each location uses its own elapsed duration and matching observed
+ambient/native support. Held reports never add thermal evidence. Frozen validation
+uses those same source intervals. Whole-cycle electrical qualification requires
+qualified measurements during both OFF and recovery, including measured zero.
 
-Garage's frozen episode reference and each protection location's thermal reserve are
-separate from replaceable model checkpoints. A corrected reconstruction never
-rewrites observed behavior, resurrects an old pause or clears physical recovery
-debt. Imported rear-only history remains a separate, explicitly incomplete
-reconstruction; missing front/native/OFF evidence is not fabricated. See
-[Garage learning](garage.md) for its supported evidence and provisional adapter
-boundary.
+Only this current algorithm and `garage-thermal-reserve-v1` state are accepted.
+Retired settings, exposure shapes, algorithm seeds and frozen episodes are
+rejected with explicit fresh-development-database guidance. There is no old-model
+interpreter, exposure converter or archived-episode continuation. Read-only v0.7.5
+CSV import remains the only historical software-format boundary and cannot
+invent absent front/native/OFF evidence.
 
-`committed-garage-v2-sparse` replaces v1's per-report recursive fit and short-step
-readiness with a smaller duration-weighted fit, retained regime statistics,
-whole OFF/recovery validation and supported-duration planning. The v1 algorithm
-and `garage-exposure-v1` arithmetic remain archival at Git revision `e0b0c11`;
-they are not replayed as v2. The first v2 journal entry saves a new explicit seed.
-Adapter boots interrupt active evidence but do not erase completed experiments;
-explicit sensor corrections still establish measurement boundaries.
+Current same-version restart and correction rebuilds retain the frozen episode,
+pipe-energy state and actual physical restoration obligation. A corrupt derived
+checkpoint can be reconstructed from a valid current journal; physical state is
+never cleared as a checkpoint repair. Successful worker publication is atomic,
+while a failed write retains the previous checkpoint and revokes Garage pause
+permission. Home control remains independent of Garage learning failures.
 
-An existing frozen v1 accounting episode remains an incomplete archived
-assessment with an active measured restoration obligation. New code never calls
-v2 prediction on its v1 model. Its original observations, frozen state and costs
-remain archived; both measured locations must recover before the obligation ends.
-If changed weather makes the former absolute temperatures unattainable, eight
-continuous hours of verified normal native availability with both locations above
-the then-configured warm-recovery threshold and local exposure repaid could close it as
-incomplete. That measured restoration rule grants no comparable-service or savings
-claim and never evaluates old dynamics as the new model.
-Operational exposure separately upgraded to `garage-exposure-v2`, retaining at
-least the previous debt and a full uncertain budget until measured warm recovery.
-An explicit v1 configuration value was accepted and normalized without editing
-private configuration or overriding custom numeric limits/approval. These are
-recorded forward transitions, not reinterpretations of the old learning journal.
+Door inputs retain their original timestamps and separate live confirmation.
+Opening, outage, invalid state or source restart interrupts the known-closed
+interval even if it recovers before the next temperature report. Such intervals
+do not train or qualify clean thermal validation. Door state does not replace
+either independent near-pipe temperature or authorize extra thermal reserve.
 
-`committed-garage-v3-event-doors` replaces the fixed five-minute contact age
-cutoff with confirmed event state. An unchanged door remains known while its
-configured source and MQTT connection remain available. Explicit source failure,
-invalid state, subscription loss, bridge outage or restart makes it unknown.
-Recovery requires a live source snapshot and the configured availability evidence;
-retained context and bridge birth alone cannot restore it. A recovery may confirm
-the original contact timestamp without pretending that it is a new measurement.
+Planning retains `garage-protection-limited-opportunities-v2`: contiguous published
+price/weather coverage, growing uncertainty beyond measured evidence, short
+renewable permission and a fixed original endpoint. Recovery electricity uses an
+explicit 125% allowance over at least three hours and 1.25 times the OFF duration.
+Completion requires actual temperatures, normal operation and both pipe reserves.
+Changed-weather recovery can close as incomplete without savings after the
+required continuous warm-native window; its reference reset is a current context
+event that replays deterministically.
 
-Each resolved sample saves the door source timestamp separately from live
-confirmation and the start of uninterrupted closed evidence. An opening, outage
-or restart ends that closed interval. Even if the door recovers before the next
-temperature sample, the interrupted interval cannot teach thermal coefficients,
-baseline warmth or clean validation evidence. That learning exclusion remains
-unchanged under the current protection policy. The original v3 planner also
-blocked economic pauses for configured unknown or open doors; the thermal-reserve
-policy removes that control veto. Frozen episode accounting preserves observed
-costs and restoration debt while withholding savings qualification after a door
-disturbance or gap. Historical inputs without configured contact
-evidence retain their explicitly incomplete interpretation. These are compact
-resolved sample inputs, not periodic door snapshots or a new telemetry archive.
+Permanent room targets remain owner intent rather than native readback. External
+room-temperature override must clear before an ordinary power/setting command.
+An explicit Normal selection can issue ordinary native ON from unmanaged OFF;
+background release only restores an existing managed obligation. Periodic ON alone
+cannot discharge possible queued OFF work. See [Garage adapter](garage-adapter.md)
+for causal release/expiry/cancellation fences and firmware qualification.
 
-The v2 journal and frozen episodes remain archival at Git revision `69a5ae4` and
-are never replayed with v3 semantics. The first v3 entry saves its explicit initial
-seed and begins a new learning epoch; exposure and outstanding physical recovery
-obligations remain intact. Home learning, CSV formats and imported source clocks
-are unchanged.
+The current thermal solver uses a passive envelope/ground partition and a
+positivity-preserving second-order step bounded by every room, reserve and slab
+row. Integrated energy uses the same averaged fluxes as state evolution. Model
+version 4 and `committed-house-v12-passive-thermal` identify these semantics;
+version 3 fits are not reused or converted.
 
-### Thermal-reserve protection policy
-
-`garage-thermal-reserve-v1` replaces the operational degree-minute exposure index
-with one continuously integrated reference temperature per protection location.
-The estimated heat above the configured margin is expressed in kJ per metre of
-the reference water-filled copper pipe. Cooling and warming depend on the
-air/reference temperature difference and elapsed time. There is no hard air
-limit, full assigned allowance, recovery dwell or fixed repayment rate.
-
-This is a **protection and planning policy version**, not a new garage learning
-algorithm. `committed-garage-v3-event-doors` retains its equations, coefficients,
-door-disturbance eligibility, original ordered inputs and live/rebuild update
-function. The operational transition preserves learned state and the old
-journal's saved configuration and digests; it does not relabel old records as a
-new algorithm. Home learning and imported CSV interpretation are unchanged.
-
-Old `garage-exposure-v1`/`garage-exposure-v2` configuration remains readable, but
-its numeric allowance and approval cannot authorize the new model. The effective
-thermal policy starts unapproved with the new defaults. Old operational debt is
-not converted numerically into joules. An unsupported or absent protection state
-starts conservatively and requires measured recovery; the policy boundary never
-grants a freshly warm reference from one air reading or forgives a persisted
-restoration obligation. Old protection records remain archival under their own
-arithmetic, and no private configuration file is silently rewritten.
-
-Episode recovery checks now use the reference heat reserve, while retaining the
-independent checks for measured local warmth and slow building memory. A positive
-freeze-protection reserve cannot alone finish a building-recovery episode or
-qualify savings. Historical frozen assessments retain their matching algorithm
-and evidence; an incompatible protection baseline cannot create a comparable
-recovery claim. See [protection details](garage-protection-defaults.md).
-
-
-## Garage simple OFF epoch
-
-`committed-garage-v4-simple-off` replaces the coupled v3 dynamics with two independent
-OFF cooling rates, observed normal references and explicit fixed electricity /
-recovery assumptions. It also replaces multi-pause preference scoring with
-`garage-simple-opportunities-v1`. The v3 learner, planning and assessment code is
-archival at Git revision `09618e5029d1e8a7d30af38909078b4db4c775d2`.
-The first v4 journal entry records a fresh explicit seed, settings checksum and
-algorithm boundary. Old records, coefficients, costs and frozen forecasts are not
-replayed or relabeled as v4; original old code remains available in Git.
-
-The operational protection policy stays `garage-thermal-reserve-v1`. Both local
-pipe states and unresolved native restoration survive independently of the new
-learning seed. An existing v3 episode becomes archived recovery: its frozen
-accounting is not advanced by v4 and cannot report new savings or renew OFF.
-Both measured locations and pipe reserves must recover, with continuous normal
-availability; the established eight-hour accepted-native fallback may close
-changed-weather recovery as incomplete, without savings. Gaps reset that dwell.
-
-Permanent external room targets are control intent, separate from observed
-native readbacks and verified economic-pause baseline evidence. Changing a room
-target cannot rewrite historical verification, temperatures or savings. Matching
-configuration and source epochs continue to drive the same ordered update in
-live learning, background replay and charts. Restart resumes a saved low target
-only after fresh independent source evidence and native setup; cached remote
-temperature commands are never treated as new observations.
-
-If changed weather makes the frozen pre-pause temperatures unreachable, eight
-continuous hours of fresh accepted native ON with both actual locations and both
-certain pipe references above the protection margin can close recovery as
-**incomplete**, with no savings claim. This also respects a longer configured
-minimum ON time. Closing and a normal-reference reset are committed atomically.
-The reset clears reference/electricity observers and their previous input, retires
-active validation as incomplete, and retains learned cooling rates. The same
-context event replays deterministically; new normal-temperature evidence must
-qualify before another economic pause. Brief charging disturbances, changed
-baseline/source and unqualified electricity never fabricate completed savings.
-
-## Garage protection-limited OFF epoch
-
-`committed-garage-v5-protection-limited` and planning policy
-`garage-protection-limited-opportunities-v2` remove fixed OFF duration ceilings.
-Completed experiment durations describe forecast evidence; uncertainty continues
-increasing beyond that evidence and feeds the unchanged copper-pipe protection.
-Planning uses contiguous published price/weather coverage, without a separate
-configured maximum horizon. Renewable driver permission remains short, and an
-active episode cannot extend its originally authorized endpoint.
-
-Recovery electricity retains the explicit 125% allowance, priced and accounted
-for over at least three hours and at least 1.25 times the actual OFF duration.
-Whole-episode validation waits for the same recovery allowance; elapsed OFF time
-alone never expires an experiment. Incomplete-recovery reporting timeouts start
-after restoration, and the warm-native fallback also respects the scaled
-recovery window. The retained episode and journal state stays bounded.
-
-The v4 learner and frozen assessments are archival at Git revision `ccf0070`.
-The first v5 journal entry saves a fresh seed and algorithm boundary; v4 records
-are never reinterpreted using the changed recovery arithmetic. Existing pipe
-states, original observations and unresolved native restoration survive. Old
-frozen episodes follow archived recovery without new savings claims or OFF
-renewal. Home learning, charging and CSV interpretation are unchanged.
+`model.validation` describes the latest sufficiently supported current holdout,
+including the retained incumbent when a replacement candidate is rejected.
+Contradictory evidence revokes thermal, action and fireplace readiness while
+retaining coefficients as an unvalidated fallback. `lastAcceptedValidation`
+retains the historical successful check without granting current authority.
+Insufficient data alone does not claim a failed check. Error envelopes count
+actual sampled endpoints; unsupported shorter horizons inherit a later bound and
+a conservative engineering floor, never invented subhour observations.

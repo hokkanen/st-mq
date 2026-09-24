@@ -1,57 +1,28 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createChargingTeslaCapture, teslamateChargerTelemetry, teslamateChargerAssignment } from '../src/charging/teslamate.js';
-
-const NOW = Date.parse('2026-09-15T18:00:00Z');
-test('TeslaMate reception is independent of recording and unchanged retained battery keeps its original clock across restart', () => {
-  let saved;
-  const capture = createChargingTeslaCapture({ clock: () => NOW, saveState: state => { saved = structuredClone(state); } });
-  capture.setConnected(true);
-  capture.receive('teslamate/cars/1/battery_level', '80', {}, NOW);
-  capture.receive('teslamate/cars/1/state', 'asleep', {}, NOW + 1000);
-  assert.equal(capture.reception().subscribed, true);
-  assert.equal(capture.reception().lastLiveAt, NOW + 1000);
-  assert.equal(capture.reception().chargerId, 'charger2');
-  const restored = createChargingTeslaCapture({ initialState: saved });
-  assert.equal(restored.reception().connected, false);
-  assert.equal(teslamateChargerTelemetry(restored.snapshot()).soc.value, 80);
-  assert.equal(teslamateChargerTelemetry(restored.snapshot()).connected.available, false);
-  restored.setConnected(true);
-  restored.receive('teslamate/cars/1/battery_level', '80', { retain: true }, NOW + 3600_000);
-  const battery = teslamateChargerTelemetry(restored.snapshot()).soc;
-  assert.equal(battery.receivedAt, NOW); assert.equal(battery.measuredAt, null);
-  assert.equal(restored.reception().lastLiveAt, null);
-  assert.equal(restored.reception().lastRetainedAt, NOW + 3600_000);
-  const changedRoute = createChargingTeslaCapture({ settings: { carId: '2' }, initialState: saved });
-  assert.equal(teslamateChargerTelemetry(changedRoute.snapshot()).soc.available, false);
+import { createChargingTeslaCapture, teslamateVehicleTelemetry } from '../src/charging/teslamate.js';
+const NOW=1800000000000;
+const topic=field=>`teslamate/cars/1/${field}`;
+test('healthy vehicle evidence stays separate from charger electricity and keeps last-known SoC when unhealthy',()=>{
+  const capture=createChargingTeslaCapture({clock:()=>NOW});capture.setConnected(true);
+  for(const [key,value] of Object.entries({healthy:'true',battery_level:'80',charge_limit_soc:'90',charge_current_request:'6',scheduled_charging_start_time:new Date(NOW+7200000).toISOString()}))capture.receive(topic(key),value,{},NOW);
+  let evidence=teslamateVehicleTelemetry(capture.snapshot(),{now:NOW});assert.equal(evidence.soc.value,80);assert.equal(evidence.vehicleCurrentA.value,6);assert.equal(evidence.vehicleNotBefore.value,NOW+7200000);assert.equal(evidence.powerKw,undefined);assert.equal(evidence.connected,undefined);
+  capture.receive(topic('healthy'),'false',{},NOW);evidence=teslamateVehicleTelemetry(capture.snapshot(),{now:NOW});assert.equal(evidence.soc.available,false);assert.equal(evidence.soc.lastKnownValue,80);
 });
-
-test('configured Charger 2 receives battery and schedule without an identification verdict, while an away vehicle is excluded', () => {
-  assert.equal(teslamateChargerAssignment({ assignment: 'auto' }, { identified: 'easee' }).chargerId, 'charger1');
-  const capture = createChargingTeslaCapture(); capture.setConnected(true);
-  const fields = { plugged_in: 'true', geofence: 'Home', battery_level: '80', charge_limit_soc: '100',
-    charge_current_request: '16', charge_current_request_max: '16', scheduled_charging_start_time: '2026-09-16T00:00:00Z' };
-  for (const [field, value] of Object.entries(fields)) capture.receive(`teslamate/cars/1/${field}`, value, {}, NOW);
-  let vehicle = teslamateChargerTelemetry(capture.snapshot(), { now: NOW });
-  assert.equal(vehicle.connected.value, true); assert.equal(vehicle.soc.value, 80); assert.equal(vehicle.minimumSoc.value, 100);
-  assert.equal(vehicle.currentA.value, 16); assert.equal(vehicle.scheduledStartAt.available, true);
-  capture.receive('teslamate/cars/1/geofence', 'Away', {}, NOW + 1000);
-  vehicle = teslamateChargerTelemetry(capture.snapshot(), { now: NOW + 1000 });
-  assert.equal(vehicle.connected.value, false);
+test('failed first live persistence rolls admission and clocks back so retained recovery is not suppressed',()=>{
+  let fail=true,saved;const capture=createChargingTeslaCapture({clock:()=>NOW,saveState:value=>{if(fail)throw Error('disk');saved=structuredClone(value);}});capture.setConnected(true);
+  assert.throws(()=>capture.receive(topic('battery_level'),'50',{},NOW));assert.equal(capture.reception().lastLiveAt,null);
+  fail=false;capture.receive(topic('battery_level'),'40',{retain:true},NOW);assert.equal(capture.snapshot().batteryLevel,40);assert.equal(saved.fields.battery_level.retained,true);
 });
-
-test('new retained values after reconnect replace the old connection cache; late replay cannot overwrite current live fields', () => {
-  const capture = createChargingTeslaCapture(); capture.setConnected(true);
-  capture.receive('teslamate/cars/1/battery_level', '80', {}, NOW);
-  capture.setConnected(false); capture.setConnected(true);
-  capture.receive('teslamate/cars/1/battery_level', '90', { retain: true }, NOW + 1000);
-  assert.equal(capture.snapshot().batteryLevel, 90);
-  capture.receive('teslamate/cars/1/battery_level', '91', {}, NOW + 2000);
-  capture.receive('teslamate/cars/1/battery_level', '90', { retain: true }, NOW + 3000);
-  assert.equal(capture.snapshot().batteryLevel, 91);
-  capture.receive('teslamate/cars/1/state', 'online', {}, NOW + 4000);
-  capture.receive('teslamate/cars/1/charging_state', 'Charging', {}, NOW + 5000);
-  assert.equal(capture.snapshot().charging, true);
-  capture.receive('teslamate/cars/1/state', 'online', {}, NOW + 6000);
-  assert.equal(capture.snapshot().charging, false, 'Fresh logger state has precedence even if its value is unchanged');
+test('negative/positive edges are durable and MQTT duplicate never renews evidence',()=>{
+  let saved;const capture=createChargingTeslaCapture({clock:()=>NOW+1000,saveState:value=>saved=structuredClone(value)});capture.setConnected(true);
+  capture.receive(topic('plugged_in'),'false',{},NOW);capture.receive(topic('plugged_in'),'true',{},NOW+1);
+  assert.deepEqual(saved.boundaries.map(edge=>edge.value),[false,true]);
+  capture.receive(topic('healthy'),'true',{},NOW);capture.receive(topic('healthy'),'true',{dup:true},NOW+1000);
+  assert.equal(capture.snapshot().fields.healthy.receivedAt,NOW);
+  const restored=createChargingTeslaCapture({initialState:saved,clock:()=>NOW+1000});assert.equal(restored.snapshot().healthy,false);assert.equal(restored.snapshot().boundaries.length,2);
+});
+test('old state and old assignment settings cannot authorize a new vehicle association',()=>{
+  assert.throws(()=>createChargingTeslaCapture({initialState:{signature:'old'}}),/Unsupported/);
+  assert.throws(()=>createChargingTeslaCapture({settings:{chargerAssignment:'easee'}}),/Unsupported/);
 });

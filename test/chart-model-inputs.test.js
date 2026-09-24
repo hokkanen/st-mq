@@ -7,10 +7,12 @@ import { LEARNING_ALGORITHM } from '../src/app/committed-learning.js';
 import { MODEL_INPUT_INFO } from '../src/domain/history-series.js';
 import { historyDatasets, historySeriesAt, leftAxisAvailability, historyStateLabel } from '../chart/history-model.js';
 
+import { currentHomeSample } from './helpers/home-learning-fixture.js';
+
 const MINUTE = 60_000, start = Date.parse('2026-09-08T08:00:00Z');
-function put(store, at, value, input = 'providers', algorithmVersion = 'synthetic-v1') {
+function put(store, at, value, input = 'providers', algorithmVersion = LEARNING_ALGORITHM) {
   store.appendLearningJournal(input, { kind: 'sample', at, algorithmVersion,
-    payload: { value, configuration: { privateFixture: 'invented-configuration-must-stay-private' } } });
+    payload: { value: currentHomeSample(value), configuration: { privateFixture: 'invented-configuration-must-stay-private' } } });
 }
 const segment = (a, b, overrides = {}) => ({ start: start + a * MINUTE, end: start + b * MINUTE,
   outdoorC: 8, solarRadiationWm2: 300, phase: 'normal', roomBoostC: 0, targetC: 21,
@@ -61,7 +63,7 @@ test('rejected windows, unknown heat input and simulation stay visibly separate'
   assert(project(store, 'simulated').series.model_compressor_duty.some(row => row.y === 100));
 });
 
-test('legacy model input history uses saved interval values and source labels without filling missing telemetry', t => {
+test('current imported model inputs use saved segment values and source labels without filling missing telemetry', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   put(store, start + 15 * MINUTE, { timestamp: start + 15 * MINUTE, windowStart: start,
     indoorC: 20, quality: [], intervalInputs: { outdoorC: 4, phase: 'reduction', compressorDuty: null, auxKw: null } }, 'history');
@@ -120,7 +122,7 @@ test('a narrow zoom keeps the Average indoor segment between saved endpoints and
   assert.deepEqual(future.series.model_indoor_temperature, [], 'An endpoint recorded after now cannot supply a display segment');
 });
 
-test('v7 saved indoor averages survive unrelated rejected learning inputs and preserve held-room provenance', t => {
+test('current saved indoor averages survive unrelated rejected learning inputs and preserve held-room provenance', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   const observedAt = start - 3 * 3_600_000;
   const saved = { indoorC: 20.5, valid: false, quality: ['missing'], indoorSensors: {
@@ -129,14 +131,13 @@ test('v7 saved indoor averages survive unrelated rejected learning inputs and pr
       attentionReasons: ['old-reading', 'disconnected', 'invented-private-reason'], privateFixture: 'invented-private-device' },
   } };
   put(store, start + 15 * MINUTE, sample(0, 15, [segment(0, 15)], saved), 'mqtt', 'committed-house-v6-sensors');
-  put(store, start + 30 * MINUTE, sample(15, 30, [segment(15, 30)], saved), 'mqtt', 'committed-house-v7-held-indoor');
+  put(store, start + 30 * MINUTE, sample(15, 30, [segment(15, 30)], saved), 'mqtt', LEARNING_ALGORITHM);
   put(store, start + 45 * MINUTE, sample(30, 45, [segment(30, 45)], { ...saved, indoorC: null }),
-    'mqtt', 'committed-house-v7-held-indoor');
+    'mqtt', LEARNING_ALGORITHM);
   const chart = getChartData({ store, input: 'mqtt', now: start + 60 * MINUTE, startDate: '2026-09-08', left: 'power' });
   const points = chart.series.model_indoor_temperature;
-  assert.deepEqual(points.map(row => [row.x, row.y]), [[start + 15 * MINUTE, null],
-    [start + 30 * MINUTE, 20.5], [start + 45 * MINUTE, null]]);
-  const average = points[1];
+  assert.deepEqual(points.map(row => [row.x, row.y]), [[start + 30 * MINUTE, 20.5], [start + 45 * MINUTE, null]]);
+  const average = points[0];
   assert.equal(average.savedIndoorAverage, true);
   assert.equal(average.learningUsable, false);
   assert.equal(average.held, true);
@@ -146,15 +147,15 @@ test('v7 saved indoor averages survive unrelated rejected learning inputs and pr
   assert.deepEqual(historySeriesAt(chart).model_indoor_temperature, points, 'Held room values do not extend saved average endpoints beyond the journal');
 });
 
-test('v8 shows a covered indoor average through unrelated failures and keeps missing reports as gaps',t=>{
+test('current reports show a covered indoor average through unrelated failures and keeps missing reports as gaps',t=>{
   const store=new Store(':memory:');t.after(()=>store.close());
   const covered={indoorC:20.5,valid:false,quality:['missing'],indoorSensors:{
     indoor_temperature:{value:20.5,weight:1,observedAt:start,reportCoverageComplete:true,held:false,needsAttention:false},
   }};
   const missing={...covered,indoorC:null,indoorSensors:{indoor_temperature:{value:null,weight:1,observedAt:start,
     reportCoverageComplete:false,held:true,needsAttention:true,attentionReasons:['missing-report','private-fixture']}}};
-  put(store,start+15*MINUTE,sample(0,15,[segment(0,15,{outdoorC:null})],covered),'mqtt','committed-house-v8-report-coverage');
-  put(store,start+30*MINUTE,sample(15,30,[segment(15,30)],missing),'mqtt','committed-house-v8-report-coverage');
+  put(store,start+15*MINUTE,sample(0,15,[segment(0,15,{outdoorC:null})],covered),'mqtt',LEARNING_ALGORITHM);
+  put(store,start+30*MINUTE,sample(15,30,[segment(15,30)],missing),'mqtt',LEARNING_ALGORITHM);
   const result=project(store,'mqtt'),points=result.series.model_indoor_temperature;
   assert.deepEqual(points.map(point=>point.y),[20.5,null]);
   assert.equal(points[0].savedIndoorAverage,true);assert.equal(points[0].learningUsable,false);

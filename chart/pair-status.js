@@ -93,7 +93,7 @@ export function pairDisplay(view, { now = Date.now(), formatTime = at => new Dat
   const phase = [phaseText[progress?.phase ?? view.transition?.phase ?? view.phase] ?? (view.busy || view.uiOperation?.state === 'running' ? 'An operation is in progress.' : ''),
     count(progress?.processed) !== null ? `${progress.processed} entries processed.` : ''].filter(Boolean).join(' ');
   const recovery = view.recovery ?? {};
-  const recoveryText = {
+  const recoveryText = recovery.pendingRelease ? 'Mirroring completion is uncertain. Retry to verify the same saved release with the other computer.' : {
     idle: '', checking: 'Checking the other computer for missing data. No history is changed by this check.',
     ready: 'Check complete. Review the preview below, then recover the gaps or explicitly discard them and resume mirroring.',
     recovering: 'Recovering gaps and rebuilding the model. Home control continues with the available model.',
@@ -234,7 +234,7 @@ export function createPairActions({ request, storage, confirm = message => globa
     unavailable() { available = false; notify(); }, retry: () => send(),
     run(action) {
       if (busy || pending || !available || !actions.includes(action) || !pairActionAllowed(view, action)) return Promise.resolve(false);
-      return send({ action, requestId: requestId(), ...(action !== 'check-recovery' ? { confirmed: true } : {}),
+      return send({ action, requestId: action === 'rejoin' && view.recovery?.pendingRelease ? view.recovery.pendingRelease.requestId : requestId(), ...(action !== 'check-recovery' ? { confirmed: true } : {}),
         ...(action === 'recover' ? { previewId: view.recovery.preview.previewId } : {}),
         ...(action === 'rejoin' && checkedPreview(view) ? { discardUnrecovered: true, previewId: view.recovery.preview.previewId } : {}) });
     } };

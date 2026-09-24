@@ -1,13 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { loadConfig as readConfig, configurationSource, validateSettings, recordingConfiguration, acquisitionConfiguration, teslamateConfiguration, indoorSensorWeightsConfiguration } from '../src/app/config.js';
-import { requireLegacyLive } from '../src/app/legacy-gate.js';
 import { chargingConfiguration } from '../src/charging/config.js';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const loadConfig = (env = {}, cwd) => readConfig({ HOME: '/missing-stmq-test-home', ...env }, cwd);
+
+const sensors = (ids = ['indoor', 'downstairs', 'bedroom', 'garage']) => ({ devices: ids.map(id => ({
+  id, kind: 'temperature', signal: `${id}_temperature`, connection: `mqtt:invented/${id}`, area: id === 'garage' ? 'garage' : 'home',
+})) });
 
 test('default startup is shadow with simulated devices, no provider connections and no real comfort target', () => {
   const cfg = loadConfig({}, '/missing-repository');
@@ -31,14 +34,9 @@ test('recording and acquisition options are independent, configurable and valida
 test('TeslaMate opt-in uses existing MQTT and validates exact car/geofence/namespace settings', t => {
   assert.equal(teslamateConfiguration().enabled, false);
   assert.equal(teslamateConfiguration().homeGeofence, 'Home');
-  assert.equal(teslamateConfiguration().chargerIdentification, false);
-  assert.equal(teslamateConfiguration({ charger_identification: true }).chargerIdentification, true);
-  assert.equal(teslamateConfiguration({ chargerIdentification: true }).chargerIdentification, true);
-  assert.throws(() => teslamateConfiguration({ charger_identification: 'true' }));
-  assert.equal(teslamateConfiguration({ car_id: 2, charger_assignment: 'easee', max_age_seconds: 120 }).carId, '2');
-  assert.equal(teslamateConfiguration({ charger_assignment: 'easee' }).chargerAssignment, 'easee');
-  for (const input of [{ car_id: '1/#' }, { home_geofence: '' }, { namespace: '#' }, { enabled: 'true' },
-    { charger_assignment: 'guess' }, { max_age_seconds: 0 }, { max_age_seconds: '120' }]) assert.throws(() => teslamateConfiguration(input));
+  assert.equal(teslamateConfiguration({carId:'2',maxAgeMs:120000}).carId,'2');
+  for (const input of [{charger_identification:true},{chargerIdentification:true},{car_id:2},{charger_assignment:'easee'},
+    {chargerAssignment:'auto'},{max_age_seconds:120},{enabled:'true'},{carId:''},{maxAgeMs:0}]) assert.throws(()=>teslamateConfiguration(input));
   const directory = mkdtempSync(join(tmpdir(), 'stmq-teslamate-config-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const path = join(directory, 'options.json');
@@ -49,27 +47,35 @@ test('TeslaMate opt-in uses existing MQTT and validates exact car/geofence/names
   assert.equal(config.connections.teslamate.enabled, true);
   assert.equal(config.connections.teslamate.homeGeofence, 'Home');
 });
-test('all indoor and garage MQTT topics are exact and keep private configuration unchanged',t=>{
-  const directory=mkdtempSync(join(tmpdir(),'stmq-temperature-config-'));t.after(()=>rmSync(directory,{recursive:true,force:true}));
-  const path=join(directory,'options.json');
-  const original=JSON.stringify({mqtt:{address:'mqtt://invented.invalid',indoor_temperature_topic:'invented/indoor',
-    downstairs_temperature_topic:'invented/downstairs',bedroom_temperature_topic:'invented/bedroom',garage_temperature_topic:'invented/garage'}});
-  writeFileSync(path,original);
-  const config=loadConfig({STMQ_INPUT:'mqtt',STMQ_CONFIG:path},directory);
-  assert.deepEqual(config.connections.mqtt.temperatureTopics,{indoor_temperature:'invented/indoor',
-    downstairs_temperature:'invented/downstairs',bedroom_temperature:'invented/bedroom',garage_temperature:'invented/garage'});
-  assert.deepEqual(config.control.indoorSensorWeights, { indoor_temperature: 1/3, downstairs_temperature: 1/3, bedroom_temperature: 1/3 });
+test('current equipment topics are exact, own each sensor and preserve the private source', t => {
+  const directory = mkdtempSync(join(tmpdir(),'stmq-temperature-config-')); t.after(() => rmSync(directory,{recursive:true,force:true}));
+  const path = join(directory,'fixture.json');
+  const options = { mqtt: { address: 'mqtt://invented.invalid' }, equipment: sensors() };
+  const original = JSON.stringify(options); writeFileSync(path,original);
+  const config = loadConfig({STMQ_INPUT:'mqtt',STMQ_CONFIG:path},directory);
+  assert.deepEqual(config.connections.equipment.devices.map(device => device.topic), ['invented/indoor','invented/downstairs','invented/bedroom','invented/garage']);
+  assert.equal(Object.hasOwn(config.connections.mqtt,'temperatureTopics'),false);
+  assert.equal(Object.hasOwn(config.connections,'shelly'),false);
+  assert.deepEqual(config.control.indoorSensorWeights,{indoor_temperature:1/3,downstairs_temperature:1/3,bedroom_temperature:1/3});
   assert.equal(readFileSync(path,'utf8'),original);
-  writeFileSync(path,JSON.stringify({mqtt:{indoor_temperature_topic:'invented/#'}}));
-  assert.throws(()=>loadConfig({STMQ_INPUT:'mqtt',STMQ_CONFIG:path},directory),/topic/);
-  writeFileSync(path,JSON.stringify({mqtt:{address:'mqtt://invented.invalid',
-    indoor_temperature_topic:'invented/shared',bedroom_temperature_topic:'invented/shared'}}));
-  assert.throws(()=>loadConfig({STMQ_INPUT:'mqtt',STMQ_CONFIG:path},directory),/different MQTT topic/);
+  options.equipment.devices[0].connection = 'mqtt:invented/#'; writeFileSync(path,JSON.stringify(options));
+  assert.throws(() => loadConfig({STMQ_INPUT:'mqtt',STMQ_CONFIG:path},directory),/topic|wildcards/i);
+});
+
+test('retired Shelly roles and MQTT temperature aliases are rejected before runtime construction', t => {
+  const directory = mkdtempSync(join(tmpdir(),'stmq-retired-config-')); t.after(() => rmSync(directory,{recursive:true,force:true}));
+  const path = join(directory,'fixture.json');
+  for (const options of [{shelly:{}}, ...['temperatureTopics','temperature_topics','indoor_temperature_topic',
+    'downstairs_temperature_topic','bedroom_temperature_topic','garage_temperature_topic','garage_temperature_2_topic']
+    .map(key => ({mqtt:{[key]:'invented/topic'}}))]) {
+    const source = JSON.stringify(options); writeFileSync(path,source);
+    assert.throws(() => loadConfig({STMQ_INPUT:'mqtt',STMQ_CONFIG:path},directory));
+    assert.equal(readFileSync(path,'utf8'),source);
+  }
 });
 test('indoor learning weights have stable configured membership, optional explicit preferences and no private identifiers', () => {
   assert.deepEqual(indoorSensorWeightsConfiguration(), { indoor_temperature: 1 });
-  const connections = { mqtt: { temperatureTopics: { downstairs_temperature: 'invented/downstairs',
-    bedroom_temperature: 'invented/bedroom' } } };
+  const connections = { equipment: sensors(['downstairs','bedroom']) };
   const automatic = indoorSensorWeightsConfiguration(undefined, connections);
   assert.deepEqual(automatic, { indoor_temperature: 1/3, downstairs_temperature: 1/3, bedroom_temperature: 1/3 });
   assert.deepEqual(indoorSensorWeightsConfiguration({}, connections), automatic);
@@ -106,7 +112,7 @@ test('add-on default indoor weights include the required nested object and retai
   assert(Object.values(addon.schema.controller.indoor_sensor_weights).every(type => type.endsWith('?')));
   assert.deepEqual(indoorSensorWeightsConfiguration(addon.options.controller.indoor_sensor_weights), { indoor_temperature: 1 });
   assert.deepEqual(indoorSensorWeightsConfiguration(addon.options.controller.indoor_sensor_weights,
-    { mqtt: { downstairs_temperature_topic: 'invented/downstairs', bedroom_temperature_topic: 'invented/bedroom' } }),
+    { equipment: sensors(['downstairs','bedroom']) }),
   { indoor_temperature: 1/3, downstairs_temperature: 1/3, bedroom_temperature: 1/3 });
 });
 test('explicit indoor weights load through the public schema and survive disabled replica acquisition', t => {
@@ -115,23 +121,20 @@ test('explicit indoor weights load through the public schema and survive disable
   const path = join(directory, 'fixture.json');
   writeFileSync(path, JSON.stringify({ controller: { input: 'providers', indoor_sensor_weights: {
     indoor_temperature: 1, downstairs_temperature: 2, bedroom_temperature: 2,
-  } }, mqtt: { downstairs_temperature_topic: 'invented/downstairs', bedroom_temperature_topic: 'invented/bedroom' } }));
+  } }, equipment: sensors() }));
   for (const role of ['primary', 'replica']) {
     const config = loadConfig({ STMQ_CONFIG: path, STMQ_ROLE: role }, directory);
     assert.deepEqual(config.control.indoorSensorWeights, { indoor_temperature: 0.2, downstairs_temperature: 0.4, bedroom_temperature: 0.4 });
     if (role === 'replica') assert.deepEqual(config.connections, {});
   }
 });
-test('legacy write gate requires the exact separate acknowledgement', () => {
-  for (const value of [undefined, '', 'true', '1']) assert.throws(() => requireLegacyLive({ STMQ_LEGACY_LIVE: value }));
-  assert.doesNotThrow(() => requireLegacyLive({ STMQ_LEGACY_LIVE: 'I_CONFIRM_LIVE_CONTROL' }));
-});
+
 test('network binding requires authentication and add-on persistent path is independent of cwd', () => {
   assert.throws(() => loadConfig({ STMQ_HOST: '0.0.0.0' }, '/missing-repository'), /token/i);
   const cfg = loadConfig({ STMQ_ADDON: '1', STMQ_HOST: '0.0.0.0', STMQ_API_TOKEN: 'a'.repeat(32) });
   assert.equal(cfg.dbPath, '/config/st-mq/simulation.sqlite');
   assert.equal(cfg.dataDir, '/data/st-mq');
-  assert.equal(cfg.legacyDbPath, '/data/st-mq/simulation.sqlite');
+  assert.equal(Object.hasOwn(cfg,'legacyDbPath'),false);
   assert.equal(cfg.addon, true);
 });
 test('settings reject invalid target, mode, drop and occupancy', () => {
@@ -145,9 +148,7 @@ test('provider opt-in reuses optional connection fields without requiring H66 or
   const directory = mkdtempSync(join(tmpdir(), 'stmq-provider-config-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const path = join(directory, 'options.json');
-  const options = { mqtt: { address: 'mqtt://invented.invalid', indoor_temperature_topic: 'invented/upstairs',
-    downstairs_temperature_topic: 'invented/downstairs', bedroom_temperature_topic: 'invented/bedroom',
-    garage_temperature_topic: 'invented/garage' },
+  const options = { mqtt: { address: 'mqtt://invented.invalid' }, equipment: sensors(),
     geoloc: { latitude: '60', longitude: '25', country_code: 'fi' } };
   for (const contents of [options, { options }]) for (const input of ['providers', 'mqtt']) {
     const original = JSON.stringify(contents);
@@ -156,8 +157,7 @@ test('provider opt-in reuses optional connection fields without requiring H66 or
     assert.equal(config.input, input);
     assert.equal(config.deviceId, undefined);
     assert.deepEqual(config.control.indoorSensorWeights, { indoor_temperature: 1/3, downstairs_temperature: 1/3, bedroom_temperature: 1/3 });
-    assert.deepEqual(config.connections.mqtt.temperatureTopics, { indoor_temperature: 'invented/upstairs',
-      downstairs_temperature: 'invented/downstairs', bedroom_temperature: 'invented/bedroom', garage_temperature: 'invented/garage' });
+    assert.deepEqual(config.connections.equipment.devices.map(device => device.topic), sensors().devices.map(device => device.connection.slice(5)));
     assert.equal(config.dbPath, join(directory, 'st-mq.sqlite'));
     assert.equal(config.settings.comfort.targetC, null);
     assert.equal(config.settings.comfort.maxDropC, 1.5);
@@ -185,7 +185,7 @@ test('explicit standalone options configure permanent settings without enabling 
   assert.equal(config.priceSettings.transferRates.winterDayCtPerKwh, 5);
   assert.equal(config.priceSettings.transferRates.vatIncluded, false);
   assert.equal(config.dbPath, join(directory, 'shared/simulation.sqlite'));
-  assert.equal(config.legacyDbPath, join(directory, 'var/simulation.sqlite'));
+  assert.equal(Object.hasOwn(config,'legacyDbPath'),false);
   const overridden = loadConfig({ STMQ_CONFIG: path, STMQ_MODE: 'shadow', STMQ_MAX_DROP_C: '1.2' }, directory);
   assert.equal(overridden.settings.mode, 'shadow');
   assert.equal(overridden.settings.comfort.maxDropC, 1.2);
@@ -290,37 +290,24 @@ test('add-on schema has explicit VAT basis, public database mount and no old sch
   assert.equal(addon.schema.easee.charger_id, 'str?');
 });
 
-test('public charging defaults preserve runtime defaults and standalone topic changes load and reload', async t => {
-  const directory = mkdtempSync(join(tmpdir(), 'stmq-charging-config-'));
-  t.after(() => rmSync(directory, { recursive: true, force: true }));
-  const path = join(directory, 'secrets.json');
-  assert.deepEqual(loadConfig({}, directory).charging, chargingConfiguration());
-  writeFileSync(path, JSON.stringify({ charging: { chargers: {
-    charger1: { mqttTopic: 'synthetic/first/vehicle', efficiency: .85 },
-    charger2: { mqttTopic: 'synthetic/second/vehicle' },
-  } } }));
-  const config = loadConfig({ STMQ_CONFIG: path }, directory);
-  assert.equal(config.charging.vehicles.bmw.mqttTopic, 'synthetic/first/vehicle', 'An explicit source alias wins over public BMW defaults');
-  assert.deepEqual(config.charging.chargers, {
-    charger1: { mqttTopic: 'synthetic/first/vehicle', efficiency: .925 },
-    charger2: { mqttTopic: 'synthetic/second/vehicle', efficiency: .925 },
-  });
-  assert.deepEqual(config.connections, {}, 'Machine charging settings do not enable provider connections in simulation');
-  writeFileSync(path, JSON.stringify({ charging: { chargers: {
-    charger1: { mqttTopic: null }, charger2: { mqttTopic: '', efficiency: .95 },
-  } } }));
-  const next = (await configurationSource(config).prepare()).config;
-  assert.equal(next.charging.vehicles.bmw.mqttTopic, null, 'A disabled source alias is not re-enabled by public defaults');
-  assert.deepEqual(next.charging.chargers, {
-    charger1: { mqttTopic: null, efficiency: .925 }, charger2: { mqttTopic: null, efficiency: .925 },
-  });
-  writeFileSync(path, JSON.stringify({ charging: { vehicles: {
-    bmw: { label: 'BMW', provider: 'bmw-cardata', mqttTopic: 'synthetic/vehicles/bmw' },
-  } } }));
-  const independent = (await configurationSource(next).prepare()).config.charging;
-  assert.equal(independent.vehicles.bmw.mqttTopic, 'synthetic/vehicles/bmw');
-  assert.equal(independent.chargers.charger1.mqttTopic, null);
-  assert.deepEqual(chargingConfiguration(independent), independent, 'Normalized source configuration remains independent on reload');
+test('physical charger settings and independent vehicle topics load and reload without aliases', async t => {
+  const directory = mkdtempSync(join(tmpdir(),'stmq-charging-config-')); t.after(() => rmSync(directory,{recursive:true,force:true}));
+  const path = join(directory,'fixture.json');
+  assert.deepEqual(loadConfig({},directory).charging,chargingConfiguration());
+  writeFileSync(path,JSON.stringify({charging:{vehicles:{bmw:{mqttTopic:'invented/vehicles/bmw'}}}}));
+  const config=loadConfig({STMQ_CONFIG:path},directory);
+  assert.equal(config.charging.vehicles.bmw.mqttTopic,'invented/vehicles/bmw');
+  assert.deepEqual(config.charging.chargers.charger1,{});
+  assert.equal(config.charging.chargers.charger2.enabled,false);
+  assert.deepEqual(config.connections,{});
+  writeFileSync(path,JSON.stringify({charging:{vehicles:{bmw:{mqttTopic:null}}}}));
+  const next=(await configurationSource(config).prepare()).config;
+  assert.equal(next.charging.vehicles.bmw.mqttTopic,null);
+  assert.deepEqual(chargingConfiguration(next.charging),next.charging);
+  for(const retired of [{mqttTopic:'invented/old'},{efficiency:.925}]) {
+    writeFileSync(path,JSON.stringify({charging:{chargers:{charger1:retired}}}));
+    await assert.rejects(configurationSource(next).prepare());
+  }
 });
 
 test('live MQTT can run without H66 and threshold configuration keeps native defaults separate from readings', t => {

@@ -40,8 +40,8 @@ export const CARAVAN_RUNNING_STATES = Object.freeze({ 0: 'Off', 1: 'Low', 2: 'Me
 export const SESSION_CHECK_INFO = Object.freeze({
   ev1_session_energy_check: { label: 'Charger 1', source: 'easee', color: 'ev', unit: 'kWh', group: 'Meter checks', role: 'Audit only', kind: 'Recorded',
     detail: 'Final session electricity reading; each point represents one completed session' },
-  tesla_session_energy_check: { label: 'Charger 2', source: 'teslamate', color: 'ev2', unit: 'kWh', group: 'Meter checks', role: 'Audit only', kind: 'Recorded',
-    detail: 'Final session energy added; differs from electrical input because of charging losses' },
+  shelly_session_energy_check: { label: 'Charger 2', source: 'shelly-evse', color: 'ev2', unit: 'kWh', group: 'Meter checks', role: 'Audit only', kind: 'Recorded',
+    detail: 'Final physical Charger 2 electricity reading; incomplete boundaries are excluded' },
 });
 export const SIGNAL_INFO = Object.freeze(Object.fromEntries([
   ...h66.map(([signal, label, unit, group, role]) => [signal, { label, unit, group, role, kind: 'Recorded' }]),
@@ -57,7 +57,7 @@ export const SIGNAL_INFO = Object.freeze(Object.fromEntries([
   ['garage_temperature', { label: 'Garage rear temperature', unit: '°C', group: 'Home temperatures', role: 'Garage protection input', kind: 'Recorded' }],
   ['auxiliary_power', { label: 'Auxiliary power estimate', unit: 'kW', group: 'Electricity', role: 'Equipment context', kind: 'Calculated', detail: 'Saved estimate from verified auxiliary output and rated capacity' }],
   ...PHASE_ENERGY_SIGNALS.map(signal => [signal, { label: `${signal.startsWith('property') ? 'Property' : 'Charger 1'} L${signal.at(-1)} energy`, unit: 'kWh', group: 'Electricity', role: 'Recorded energy', kind: 'Recorded', detail: 'Estimated energy over the recorded interval' }]),
-  ['ev2_energy', { label: 'Charger 2 total energy per interval', unit: 'kWh', group: 'Electricity', role: 'Recorded energy', kind: 'Recorded', detail: 'TeslaMate charging power integrated over the recorded interval; phase distribution unknown' }],
+  ['ev2_energy', { label: 'Charger 2 total energy per interval', unit: 'kWh', group: 'Electricity', role: 'Recorded energy', kind: 'Recorded', detail: 'Native physical Charger 2 electricity counter differences; phase distribution is not recorded' }],
   ...AUDIT_SIGNALS.map(signal=>[signal,{label:'Property meter counter',unit:'kWh',group:'Meter checks',role:'Audit only',kind:'Recorded',detail:'Reported cumulative meter value; never used to correct energy or train'}]),
 ]));
 
@@ -65,7 +65,7 @@ export const SIGNAL_INFO = Object.freeze(Object.fromEntries([
 // Keep them separate from SIGNAL_INFO so Recording details remains a storage view.
 export const MODEL_INPUT_INFO = Object.freeze(Object.fromEntries([
   ['model_indoor_temperature', 'Average indoor', '°C', 'indoor', 'The configured indoor average saved at the end of each completed learning interval. Missing inputs remain gaps. Imported learning keeps its original upstairs-only temperature.'],
-  ['model_outdoor_temperature', 'Outdoor temperature input', '°C', 'outdoor', 'Recorded outdoor values used within the completed interval, split at source and value changes. Older learning records retain their saved interval mean.'],
+  ['model_outdoor_temperature', 'Outdoor temperature input', '°C', 'outdoor', 'Recorded outdoor values used within the completed interval, split at source and value changes.'],
   ['model_solar_radiation', 'Solar radiation input', 'W/m²', 'solar', 'Radiation from the forecast available before the interval began. Missing forecasts remain unknown; later forecast updates do not rewrite this input.'],
   ['model_compressor_duty', 'Space-heating compressor duty', '%', 'auxiliary', 'The fraction of the interval with observed compressor activity routed to space heating. Hot-water operation contributes zero; unavailable attribution remains unknown.'],
   ['model_hydronic_heat', 'Combined hydronic heat estimate', 'kW thermal', 'compressorSpace', 'Estimated compressor heat plus resistance-heater heat attributed to space heating. The saved manufacturer performance map supplies compressor output; this is not heat metering. Unknown routing remains unknown.'],

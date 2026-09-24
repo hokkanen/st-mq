@@ -14,7 +14,7 @@ import { indoorStatusMetadata, recordedOutdoorObservation, recordedTemperatureAt
   temperatureBoundaryStatus } from './temperature-status.js';
 import { garageModelSummary, GARAGE_ALGORITHM_VERSION } from '../garage/model.js';
 import { LEARNING_ALGORITHM } from './committed-learning.js';
-import { migrateChargingSettings } from '../charging/settings.js';
+import { chargingSettings } from '../charging/settings.js';
 import { CHARGER_DEFINITIONS, buildCharger } from '../charging/model.js';
 
 const INPUTS = new Set(['mqtt', 'providers', 'simulated', 'offline']);
@@ -51,15 +51,17 @@ function chargingSnapshot(snapshot) {
   if (!snapshot) return null;
   const saved = snapshot.store.getState(`charging:${snapshot.input}`);
   if (!saved) return null;
+  if (saved.version !== 5) throw new Error('Unsupported charging snapshot; start a fresh development database');
+  if (!Array.isArray(saved.view?.chargers) || CHARGER_DEFINITIONS.some(({id}) => !saved.view.chargers.some(row => row.id === id && row.values)))
+    throw new Error('Malformed current charging snapshot; start a fresh development database');
   const snapshotAt = snapshot.publication.sourceAt;
-  const settings = migrateChargingSettings(saved.settings ?? {});
+  const settings = chargingSettings(saved.settings ?? {});
   const reception = value => ({ ...value, connected: null, brokerConnected: null, subscribed: null,
     subscriptionStatus: 'read-only-snapshot', reason: 'read-only-snapshot', readOnly: true, recorded: true, snapshotAt });
   const chargers = CHARGER_DEFINITIONS.map(definition => {
     const id = definition.id;
-    const record = saved.chargers?.[id] ?? (id === 'charger1' ? saved : {});
-    const ownership = snapshot.store.getState(`charging:${snapshot.input}:${id}:ownership`)
-      ?? (id === 'charger1' ? snapshot.store.getState(`charging:${snapshot.input}:ownership`) : null);
+    const record = saved.chargers?.[id] ?? {};
+    const ownership = record.association ? snapshot.store.getState(`charging:${snapshot.input}:${id}:${record.association}:ownership`) : null;
     const recorded = saved.view?.chargers?.find(charger => charger.id === id);
     const control = { ...(ownership ?? recorded?.control ?? { phase: 'unavailable', released: false }),
       enabled: settings.chargers[id].enabled, readOnly: true, snapshotAt, snapshot: null,
@@ -67,18 +69,12 @@ function chargingSnapshot(snapshot) {
     // A published view already contains the primary's selected vehicle, battery
     // facts and energy assumption. Rebuilding it with this viewer's code would
     // reinterpret historical decisions and discard independently stored feeds.
-    const charger = recorded?.values ? structuredClone(recorded) : {
-      ...buildCharger({ definition, settings: settings.chargers[id], timezone: TIME_ZONE,
-        telemetry: recorded?.telemetry ?? {}, automaticSoc: record.automaticSoc,
-        now: snapshotAt, deadlineAt: record.plan?.deadlineAt, control }),
-      configuration: recorded?.configuration ?? { efficiency: null },
-      requiredGridKwh: recorded?.requiredGridKwh ?? record.plan?.requiredGridKwh ?? null,
-    };
+    const charger = structuredClone(recorded);
     return { ...charger,
       referenceGridKwh: recorded?.referenceGridKwh ?? charger.requiredGridKwh,
       progress: recorded?.progress ?? null,
       readOnly: true, recorded: true, snapshotAt, control,
-      automaticSoc: recorded?.automaticSoc ?? record.automaticSoc ?? null,
+      automaticSoc: recorded?.automaticSoc ?? null,
       plan: record.plan ?? recorded?.plan ?? null, forecast: recorded?.forecast ?? null,
       mqtt: reception(recorded?.mqtt), vehicleMqtt: recorded?.vehicleMqtt ? reception(recorded.vehicleMqtt) : null,
       error: null };
@@ -134,6 +130,8 @@ export async function startReplica({ config, clock = Date.now,
   if (config?.role !== 'replica') throw new TypeError('Replica startup requires the local replica role');
   if (!config.replication?.directory) throw new TypeError('A local replica directory is required');
   let current = null, refreshing = null, closed = false, lastError = null;
+  let closePending = null, finishStartup;
+  const startupSettled = new Promise(resolve => { finishStartup = resolve; });
   const retiring = new Set(), signalHandlers = new Map();
   const staleAfterMs = config.replication.staleAfterMs ?? 180_000;
 
@@ -253,23 +251,32 @@ export async function startReplica({ config, clock = Date.now,
   const webAccess = createWebAccess({ config, role: 'replica', getReadContext, pairContext, controlAuthority,
     settingsReloadStatus: () => ({ available: false, busy: false, reason: unavailable }),
     staticDir: resolve(dirname(fileURLToPath(import.meta.url)), '../../dist') });
-  async function close() {
-    if (closed) return;
+  function close() {
+    if (closePending) return closePending;
     closed = true;
     for (const [signal, handler] of signalHandlers) process.removeListener(signal, handler);
-    await webAccess.close();
-    await refreshing;
-    if (current) { current.retired = true; retire(current); }
-    await Promise.allSettled([...retiring]);
+    closePending = (async () => {
+      await startupSettled;
+      const errors = [];
+      try { await webAccess.close(); } catch (error) { errors.push(error); }
+      try { await refreshing; } catch (error) { errors.push(error); }
+      if (current) { current.retired = true; retire(current); }
+      for (const result of await Promise.allSettled([...retiring])) if (result.status === 'rejected') errors.push(result.reason);
+      if (errors.length) throw new AggregateError(errors, 'Replica cleanup completed with errors.');
+    })();
+    return closePending;
+  }
+  if (installSignalHandlers) for (const signal of ['SIGINT', 'SIGTERM']) {
+    const handler = () => { void close().catch(() => { process.exitCode = 1; }); };
+    signalHandlers.set(signal, handler); process.once(signal, handler);
   }
   try {
     await refresh();
+    if (closed) throw new Error('The replica is shutting down.');
     await webAccess.start();
-    if (installSignalHandlers) for (const signal of ['SIGINT', 'SIGTERM']) {
-      const handler = () => { void close().catch(() => { process.exitCode = 1; }); };
-      signalHandlers.set(signal, handler); process.once(signal, handler);
-    }
+    if (closed) throw new Error('The replica is shutting down.');
+    finishStartup();
     return { get store() { return current?.store ?? null; }, get server() { return webAccess.server; },
       webAccess, close, refresh, status };
-  } catch (error) { await close(); throw error; }
+  } catch (error) { finishStartup(); try { await close(); } catch (cleanupError) { error.cleanupError = cleanupError; } throw error; }
 }

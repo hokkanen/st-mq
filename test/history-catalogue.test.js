@@ -63,7 +63,7 @@ test('left-axis menu puts electricity first and groups replay coefficients witho
   for (const key of ['firewood_load', 'model_fireplace_release', 'firewood_savings', 'firewood_electricity_avoided']) assert(choices.has(key));
   const meterChecks = select.children.find(group => group.label.split(' · ')[0] === 'Meter checks');
   assert.deepEqual(meterChecks.children.map(option => option.textContent), ['Property meter counter', 'Charger 1', 'Charger 2']);
-  assert.deepEqual(meterChecks.children.map(option => option.value), ['property_import_energy_counter', 'ev1_session_energy_check', 'tesla_session_energy_check']);
+  assert.deepEqual(meterChecks.children.map(option => option.value), ['property_import_energy_counter', 'ev1_session_energy_check', 'shelly_session_energy_check']);
   for (const obsolete of ['ev1_lifetime_energy_counter', 'ev1_session_energy_counter', 'ev2_energy']) assert(!choices.has(obsolete));
   assert(!recordingRows().some(row => row.signal.endsWith('_session_energy_check')), 'Finalized session views reuse event history without recorder channels');
   const manual = select.children.flatMap(group => group.children).find(option => option.value === 'firewood_load');

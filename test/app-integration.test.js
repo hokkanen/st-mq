@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
 import { Store } from '../src/storage/store.js';
 import { Engine } from '../src/app/engine.js';
+import { recordLearningContext } from '../src/app/committed-learning.js';
 import { loadConfig } from '../src/app/config.js';
 import { createAppServer } from '../src/app/server.js';
 import { startMqtt } from '../src/acquisition/mqtt.js';
@@ -64,9 +65,11 @@ test('physical inputs cannot activate control, ingest does not fabricate unknown
 });
 
 test('corrupt learned JSON cannot delay conservative startup', t => {
-  const { engine, store } = setup(t);
+  const { engine, store, config } = setup(t);
+  recordLearningContext(store, 'simulated', { phase: 'normal', regime: 'occupied', targetC: 21 }, engine.clock());
   store.db.prepare('INSERT INTO state (key,value,updated_at) VALUES (?,?,?)').run('adaptive:simulated', '{broken', 0);
-  assert.equal(engine.tick().decision.action, 'normal');
+  const restarted = new Engine({ store, config, clock: engine.clock });
+  assert.equal(restarted.tick().decision.action, 'normal');
   assert.ok(store.events().some(e => e.type === 'checkpoint-rebuild'));
 });
 

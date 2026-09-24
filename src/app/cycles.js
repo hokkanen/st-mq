@@ -143,7 +143,10 @@ export class CycleTracker {
       const currentQuote = quote ?? (pointQuote ? {price:pointQuote.priceCents,end:pointQuote.priceEnd}:null);
       const price = currentQuote?.price ?? frozen?.price;
       const boundaries = [schedule.preheatStart,schedule.preheatEnd,schedule.reductionStart,schedule.reductionEnd,
-        ...(sample.inputSegments??[]).map(s => s.start)].filter(t => t > cursor);
+        ...(sample.inputSegments??[]).flatMap(s => [s.start,s.end]),
+        ...(sample.priceIntervals??[]).filter(i => number(i.price)).flatMap(i => [i.start,i.end]),
+        ...[sample,previous].filter(s => number(s.priceCents)).flatMap(s => [s.priceStart,s.priceEnd]),
+        ...cycle.plan.intervals.flatMap(i => [i.start,i.end])].filter(t => number(t) && t > cursor);
       const end = Math.min(now, segment?.end ?? now, currentQuote?.end ?? frozen?.end ?? now,...boundaries);
       const hours = (end - cursor) / HOUR;
       const eligible = number(previous.indoorC) && number(sample.indoorC) && number(values.powerKw)

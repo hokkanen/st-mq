@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 import { recordHeatPumpConfiguration } from '../../src/app/chart-heat-pump.js';
+import { Recorder } from '../../src/storage/recorder.js';
 
 // Invented observations only. These days deliberately separate operating evidence,
 // missing telemetry, and incomplete prices without accessing a household database.
 export function seedTimingBrowserFixture(store) {
   const quarter = 15 * 60_000;
+  const recorder = new Recorder(store);
   const add = (signal, value, unit, at, raw = {}) => store.observation({
     source: 'browser-fixture', device: 'synthetic-timing-evidence', signal, value, unit,
     sourceTime: at, receivedAt: at, quality: ['estimated'], raw: { fixture: true, ...raw },
@@ -22,10 +24,13 @@ export function seedTimingBrowserFixture(store) {
           add('heat_pump_power', slot < 24 ? 2 : null, 'kW', from + slot * quarter,
             { basis: 'estimated', powerBasis: 'modelled', compressorObserved: false, auxiliaryObserved: false, auxiliaryAssumed: true });
         } else if (date === '2026-09-05' && slot < 48) {
-          const powerBasis = slot < 12 || slot >= 24 ? 'measured' : slot < 18 ? 'currents' : 'unknown';
-          // Six hours of low standby readings must not inflate measured charging
-          // evidence. The remaining unrecorded hours are unknown, not idle.
-          add('charger_power', slot < 12 ? 3 : slot < 24 ? 1 : 0.05, 'kW', from + slot * quarter, { powerBasis });
+          // Current snapshots precede the first saved energy interval. Six hours
+          // of later standby intervals remain idle; unrecorded hours stay unknown.
+          const at=from+slot*quarter,power=slot<12?3:slot<24?1:.05;
+          if(slot<12)for(let phase=1;phase<=3;phase++)add(`ev1_current_l${phase}`,power/(3*.23),'A',at);
+          else recorder.recordEnergy({source:'easee',device:'synthetic-timing-charger',prefix:'ev1',
+            start:at,end:at+quarter,receivedAt:at+quarter,energies:Array(3).fill(power/12),
+            powers:Array(3).fill(power/3),quality:['estimated']});
         }
       }
       if (date !== '2026-09-03') {
@@ -43,8 +48,6 @@ export function seedTimingBrowserFixture(store) {
             raw: { fixture: true, verified: true, usableForControl: true } });
         }
       }
-      // Finish scalar power before the next day's independent current fixture.
-      if (date === '2026-09-05') add('charger_power', null, 'kW', from + 48 * quarter);
       if (date === '2026-09-03') {
         for (let phase = 1; phase <= 3; phase++) add(`ev1_current_l${phase}`, null, 'A', from + 96 * quarter);
       }
@@ -240,12 +243,12 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
 
   assert.match(await text(card('heatPump')), /unavailable/i);
   assert.match(await text(`${card('charger')} .timing-amount`), /€[\d.]+/);
-  assert.match(await text(`${card('charger')} .timing-coverage`), /4% of time included/,
-    'Charging coverage uses the elapsed period, just like heating coverage');
+  assert.match(await text(`${card('charger')} .timing-coverage`), /2% of charger-time included/,
+    'Combined coverage includes the second charger’s unknown history in its explicit denominator');
   assert.match(await text(`${card('charger')} .timing-assumed`), /assumed rates/i);
   assert.match(await text('.timing-rate-explanation'), /nearest known contract rates/i);
   assert.match(await text('.timing-rate-explanation'), /historical spot prices/i);
-  assert.match(await text(detail('charger')), /100%.*of included time/i);
+  assert.match(await text(detail('charger')), /100%.*of included charger-time/i);
   assert.match(await text(card('charger')), /2026/);
   assert.match(await text(detail('charger')), /100\s*W/i);
   assert.match(await text('.timing-explanations'), /idle/i);
@@ -320,21 +323,20 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
   assert.match(await text(`${detail('heatPump')} .timing-source[data-source="observed"]`), /100%/);
   assert.match(await text(detail('heatPump')), /reconstruct|recorded equipment/i);
   assert.match(await text(`${card('charger')} .timing-basis`), /mixed/i);
-  for (const [source, share] of [['measured', '50%'], ['currents', '25%'], ['unknown', '25%']]) {
+  for (const [source, share] of [['recorded', '50%'], ['currents', '50%']]) {
     const sourceText = await text(`${detail('charger')} .timing-source[data-source="${source}"]`);
     assert.ok(sourceText.includes(share), `${source} is weighted by active charging time, excluding standby readings`);
-    assert.match(sourceText, /of included time/i);
+    assert.match(sourceText, /of included charger-time/i);
     assert.match(sourceText, /2026/, 'Contributing dates remain next to each source explanation');
   }
-  assert.match(await text(`${detail('charger')} .timing-source[data-source="measured"]`), /dedicated power/i);
+  assert.match(await text(`${detail('charger')} .timing-source[data-source="recorded"]`), /saved interval/i);
   assert.match(await text(`${detail('charger')} .timing-source[data-source="currents"]`), /230 V/i);
-  assert.match(await text(`${detail('charger')} .timing-source[data-source="unknown"]`), /does not say how it was measured or estimated/i);
   const coverage = JSON.parse(await evaluate(`fetch('/api/chart?start=2026-09-05&end=2026-09-05').then(response => response.json()).then(data => JSON.stringify(data.timingBenefit.charger.coverageDetails))`));
   assert.equal(coverage.chargingMs, 6 * 3_600_000);
   assert.equal(coverage.idleMs, 6 * 3_600_000);
-  assert.equal(coverage.missingPowerMs, 12 * 3_600_000);
+  assert.equal(coverage.missingPowerMs, 36 * 3_600_000);
   assert.match(await text(`${card('heatPump')} .timing-coverage`), /100% of time included/);
-  assert.match(await text(`${card('charger')} .timing-coverage`), /25% of time included/);
+  assert.match(await text(`${card('charger')} .timing-coverage`), /13% of charger-time included/);
   assert.match(await text(detail('charger')), /unknown|missing/i,
     'The charging detail still explains unrecorded time separately from idle time');
   await checkContentOrder();

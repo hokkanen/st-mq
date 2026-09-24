@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { Store } from '../src/storage/store.js';
 import { Engine } from '../src/app/engine.js';
 import { addSensorChange } from '../src/app/sensor-changes.js';
-import { committedLearningSample, appendLearningRecord, replayLearningJournal, recordLearningContext } from '../src/app/committed-learning.js';
+import { committedLearningSample, replayLearningJournal, recordLearningContext} from '../src/app/committed-learning.js';
+import { appendLearningRecord } from './helpers/home-learning-fixture.js';
 
 const MINUTE = 60_000, START = Date.parse('2026-09-13T00:00:00Z'), signal = 'indoor_temperature';
 const routeSignature = 'a'.repeat(64), policy = { reportIntervalMs: 70 * MINUTE, reportGraceMs: 5 * MINUTE };

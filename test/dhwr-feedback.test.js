@@ -148,7 +148,7 @@ test('DHWR remains usable without feedback configuration', () => {
 
 function externalPump(t, publishDhwr) {
   const store = new Store(':memory:');
-  const engine = new Engine({ store, clock: () => INITIAL, commandTransport: { publishDhwr, close: async () => {} },
+  const engine = new Engine({ store, clock: () => INITIAL, commandTransport: { targetIdentity: { tariff: 'a'.repeat(64), dhwr: 'b'.repeat(64) }, publishDhwr, close: async () => {} },
     config: { input: 'mqtt', settings: validateSettings({ mode: 'shadow' }) } });
   const state = { value: 1, unit: 'state', observedAt: INITIAL, stale: false };
   engine.equipment = { status: () => ({ devices: [{ id: 'dhwr', available: true, readings: { dhwr_active: state } }] }) };
@@ -159,14 +159,14 @@ function externalPump(t, publishDhwr) {
 test('manual DHWR Stop persists and delivers OFF for a fresh externally started pump', async t => {
   const calls = [];
   const f = externalPump(t, async on => {
-    assert.equal(f.store.getState('executor:mqtt').dhwrOutstanding, true, 'OFF obligation precedes delivery');
+    assert.equal(f.store.getState('executor:home').dhwrOutstanding, true, 'OFF obligation precedes delivery');
     calls.push(on); return { sent: true };
   });
   assert.equal(f.engine.dhwrStatus().active, false);
   assert.equal(f.engine.dhwrStatus().actualOn, true);
   const result = await f.engine.stopDhwr();
   assert.deepEqual(calls, [false]);
-  assert.equal(f.store.getState('executor:mqtt').dhwrOutstanding, false);
+  assert.equal(f.store.getState('executor:home').dhwrOutstanding, false);
   assert.equal(result.dhwr.actualOn, true, 'Broker acknowledgement cannot replace device feedback');
   assert.equal(result.dhwr.confirmed, false);
   f.state.stale = true;
@@ -182,11 +182,11 @@ test('failed external DHWR Stop survives restart and retries OFF without startin
   await assert.rejects(f.engine.stopDhwr(), { code: 'MQTT_TIMEOUT' });
   assert.equal(f.engine.dhwrStatus().active, false);
   assert.equal(f.engine.dhwrStatus().restorationPending, true);
-  assert.equal(f.store.getState('executor:mqtt').dhwrOutstanding, true);
+  assert.equal(f.store.getState('executor:home').dhwrOutstanding, true);
   await f.engine.executor.close({ restore: false });
   const calls = [];
   const restarted = new Executor({ input: 'mqtt', store: f.store, clock: () => INITIAL + 10_000,
-    commandTransport: { publishDhwr: async on => { calls.push(on); return { sent: true }; }, close: async () => {} } });
+    commandTransport: { targetIdentity: { tariff: 'a'.repeat(64), dhwr: 'b'.repeat(64) }, publishDhwr: async on => { calls.push(on); return { sent: true }; }, close: async () => {} } });
   try {
     await restarted.restore({ reason: 'restart' });
     assert.deepEqual(calls, [false]);

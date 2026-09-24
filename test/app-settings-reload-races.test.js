@@ -18,7 +18,7 @@ const deferred = () => {
 async function setup(t, options = {}, overrides = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-reload-races-'));
   const path = join(directory, 'options.json');
-  // These races exercise explicitly configured legacy topics, independently of
+  // These races exercise explicitly configured equipment topics, independently of
   // the public equipment catalogue and its read-only discovery requests.
   const write = value => writeFileSync(path, JSON.stringify({ equipment: { devices: [] }, ...value }));
   const read = () => loadConfig({ STMQ_CONFIG: path, STMQ_DATA_DIR: directory, STMQ_PORT: '0' }, directory);
@@ -125,13 +125,13 @@ test('shutdown during a delayed config read prevents reconnection and active dis
   const entered = deferred(), release = deferred(), mqtt = fakeMqtt();
   let next;
   const options = { controller: { input: 'mqtt' },
-    mqtt: { address: 'mqtt://invented-first.invalid', indoor_temperature_topic: 'invented/first' } };
+    mqtt: { address: 'mqtt://invented-first.invalid' }, equipment: { devices: [{ id: 'indoor', kind: 'temperature', connection: 'mqtt:' + 'invented/first' }] } };
   const { app, write, read } = await setup(t, options, {
     mqttOptions: { connect: mqtt.connect },
     readConfig: async () => { entered.resolve(); await release.promise; return next; },
   });
   write({ controller: { input: 'mqtt', mode: 'active' },
-    mqtt: { address: 'mqtt://invented-second.invalid', indoor_temperature_topic: 'invented/second' } });
+    mqtt: { address: 'mqtt://invented-second.invalid' }, equipment: { devices: [{ id: 'indoor', kind: 'temperature', connection: 'mqtt:' + 'invented/second' }] } });
   next = read();
   const old = app.engine;
   let ticks = 0;
@@ -161,7 +161,7 @@ test('failed replacement and recovery disable API mutations and scheduled contro
     return mqtt.connect();
   };
   const options = { controller: { input: 'mqtt' },
-    mqtt: { address: 'mqtt://invented-first.invalid', indoor_temperature_topic: 'invented/first' } };
+    mqtt: { address: 'mqtt://invented-first.invalid' }, equipment: { devices: [{ id: 'indoor', kind: 'temperature', connection: 'mqtt:' + 'invented/first' }] } };
   const { app, base, post, write } = await setup(t, options, { clock: () => now, mqttOptions: { connect } });
   write({ ...options, controller: { input: 'mqtt', max_drop_c: 0.5 } });
   // A broken finally block would arm a tick just 25 ms after failure.

@@ -86,11 +86,8 @@ export function heatBalanceCalculation(model = {}) {
       'H is hydronic thermal kW; α selects the confirmed-override or normal allocation; C_res is the fixed remaining capacity in kWh/K.'),
     equation('Selected slab', 'dT_slab/dt = [α × H − F_slab − F_ground] / C_slab',
       'The configured slab exchanges heat with the room and ground. Its state persists when the override ends.'),
-    equation('Envelope adjustment', model.floor.groundLossIncludedInEnvelope
-      ? 'L_net = k × (T_in − T_out) − g × K_ground × (T_in − T_ground)'
-      : 'L_net = k × (T_in − T_out)',
-      model.floor.groundLossIncludedInEnvelope ? 'Baseline ground loss is already included in envelope cooling; the subtracted term avoids counting it twice when explicit ground exchange is introduced.'
-        : 'The configuration treats explicit ground exchange as additional to envelope cooling.'),
+    equation('Above-ground envelope', 'L_net = k × (T_in − T_out)',
+      'The current coefficient describes the above-ground envelope. The configured ground path is separate; no loss is subtracted or converted from an older fit.'),
   );
   else equations.push(equation('Building reserve', 'dT_res/dt = (g × H − X) / (a × τ)',
     'H is hydronic thermal kW. a × τ is the fixed reserve-to-room capacity ratio; all hydronic heat enters this slow reserve before reaching the room.'));

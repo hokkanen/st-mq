@@ -8,48 +8,49 @@ const payload = { now: from + 10 * hour, range: { from, to: from + 24 * hour, st
 const result = {
   value: 0, coverage: 0.07, provisional: true,
   coverageDetails: { from, to: payload.now, elapsedMs: 10 * hour, includedMs: 0.7 * hour, powerMs: hour, missingPowerMs: 9 * hour, incompletePriceMs: 0.3 * hour },
-  evidence: { sources: [{ key: 'modelled', share: 1, durationMs: 0.7 * hour, firstAt: from + 8 * hour, lastAt: from + 9 * hour }] },
+  evidence: { energyBasis: 'reconstructed-equipment', sources: [{ key: 'observed', share: 1, durationMs: 0.7 * hour, firstAt: from + 8 * hour, lastAt: from + 9 * hour }] },
 };
+const chargerResult={...result,evidence:{energyBasis:'power-snapshots',sources:result.evidence.sources.map(source=>({...source,key:'currents'}))}};
 
-test('today model-only zero comparison explicitly separates model basis from elapsed-time coverage', () => {
+test('today reconstructed zero comparison explicitly separates equipment evidence from elapsed-time coverage', () => {
   const display = timingDisplay('heatPump', result, payload);
   assert.equal(display.amount, '€0.00');
   assert.equal(display.outcome, 'timing difference');
-  assert.equal(display.basis, 'Model-based');
+  assert.equal(display.basis, 'Operation estimate');
   assert.equal(display.sources[0].percentage, '100%');
   assert.equal(display.coverageLabel, '7% of time included');
   assert.equal(display.periodLabel, 'Today so far');
   assert.match(display.smallDifferenceExplanation, /energy use can still be nonzero/);
-  assert.match(display.energyExplanation, /whole-house power is not used/);
+  assert.match(display.energyExplanation, /whole-house power is not used/i);
   assert.match(timingExplanations.coverage.join(' '), /from Finnish midnight to the calculation time/);
-  assert.match(display.coverageExplanation, /Recorded estimates and modelled values count/);
+  assert.match(display.coverageExplanation, /valid, fresh equipment observations/);
   assert.match(display.coverageSummary, /device history or daily prices are incomplete/);
-  assert.match(display.sources[0].explanation, /does not confirm that the heat pump ran/);
+  assert.match(display.sources[0].explanation, /recorded compressor activity.*not separately metered/);
   assert.equal(display.includedTimeLabel, 'included time');
   assert.equal(display.coverageHeading, 'Time included');
 });
 
 test('included-time evidence shares preserve mixed assumptions and original sample dates', () => {
-  const mixed = { ...result, evidence: { sources: ['measured', 'observed', 'modelled', 'unknown'].map((key, index) => ({
+  const mixed = { ...chargerResult, evidence: { energyBasis:'recorded-and-legacy', sources: ['recorded', 'currents', 'unknown', 'simulated'].map((key, index) => ({
     key, share: 0.25, durationMs: 0.175 * hour, firstAt: from - 10 * 60_000 + index * hour, lastAt: from + index * hour,
   })), auxiliaryAssumedMs: hour / 4, auxiliaryAssumedShare: 0.25, auxiliaryUnknownMs: hour / 4, auxiliaryUnknownShare: 0.25 } };
-  const display = timingDisplay('heatPump', mixed, payload);
+  const display = timingDisplay('charger', mixed, payload);
   assert.equal(display.basis, 'Mixed basis');
   assert.deepEqual(display.sources.map(source => source.percentage), Array(4).fill('25%'));
   assert.match(display.sources[0].dates, /7 Sept 2026, 23:50/);
   assert.match(timingExplanations.evidence.join(' '), /shares of included time, not energy or accuracy/);
   assert.match(timingExplanations.evidence.join(' '), /can contain gaps/);
-  assert.match(display.auxiliaryNotes.join(' '), /Auxiliary heater output was assumed during 25%/);
-  assert.match(display.auxiliaryNotes.join(' '), /not recorded for 25%/);
+  assert.deepEqual(display.auxiliaryNotes,[]);
 });
 
-test('legacy estimates never acquire meter or model provenance from current live state', () => {
-  const legacy = { value: 236.98, coverage: 0.29, estimated: true };
-  const display = timingDisplay('heatPump', legacy, { ...payload, observations: { heatPumpPowerKw: { source: 'measured' } } });
-  assert.equal(display.basis, 'Basis unrecorded');
-  assert.equal(display.sources[0].key, 'unknown');
-  assert.match(display.sources[0].explanation, /does not say how it was measured or estimated.*basis cannot be classified now/);
-  assert.equal(display.coverageLabel, '29% of time included');
+test('unsupported old timing responses remain unavailable without invented source or coverage', () => {
+  for(const unsupported of [{value:236.98,coverage:.29,estimated:true},
+    {...result,evidence:{sources:[{key:'modelled',share:1,durationMs:hour}]}},
+    {...result,evidence:{energyBasis:'power-snapshots',sources:[{key:'measured',share:1,durationMs:hour}]}}]){
+    const display=timingDisplay('heatPump',unsupported,{...payload,observations:{heatPumpPowerKw:{source:'measured'}}});
+    assert.equal(display.available,false);assert.equal(display.amount,null);assert.deepEqual(display.sources,[]);
+    assert.match(display.energyExplanation,/Needs recorded compressor activity/);
+  }
 });
 
 test('unavailable identifies missing power, incomplete prices and future time separately from a zero amount', () => {
@@ -64,7 +65,7 @@ test('unavailable identifies missing power, incomplete prices and future time se
 
 test('rates explain historical spot prices and the included-time effect of an assumed daily average', () => {
   const display = timingDisplay('charger', { ...result, value: 236.98, assumedPrices: true,
-    evidence: { sources: [{ key: 'currents', durationMs: hour, share: 1 }] },
+    evidence: { energyBasis:'power-snapshots', sources: [{ key: 'currents', durationMs: hour, share: 1 }] },
     priceAssumptions: { durationMs: hour / 2, share: 0.5, firstAt: from, lastAt: from + hour } }, payload);
   assert.equal(display.basis, 'Current estimate');
   assert.equal(display.assumedRates, true);
@@ -86,14 +87,14 @@ test('small included shares remain visible and near-complete coverage does not r
 
 test('sub-cent differences preserve direction and cannot appear as a measured zero saving', () => {
   for (const [value, amount] of [[0.004, '+<€0.01'], [-0.004, '−<€0.01']]) {
-    const display = timingDisplay('charger', { value }, payload);
+    const display = timingDisplay('charger', { ...chargerResult,value }, payload);
     assert.equal(display.amount, amount);
     assert.match(display.smallDifferenceExplanation, /less than half a cent.*sign shows cheaper \(\+\) or dearer \(−\)/);
     assert.doesNotMatch(display.smallDifferenceExplanation, /rounds to €0\.00/);
   }
-  assert.equal(timingDisplay('charger', { value: -0 }, payload).amount, '€0.00');
-  assert.equal(timingDisplay('charger', { value: -12.34 }, payload).amount, '-€12.34');
-  assert.equal(timingDisplay('charger', { value: -12.34 }, payload).smallDifferenceExplanation, null);
+  assert.equal(timingDisplay('charger', { ...chargerResult,value: -0 }, payload).amount, '€0.00');
+  assert.equal(timingDisplay('charger', { ...chargerResult,value: -12.34 }, payload).amount, '-€12.34');
+  assert.equal(timingDisplay('charger', { ...chargerResult,value: -12.34 }, payload).smallDifferenceExplanation, null);
 });
 
 test('completed history with missing periods says partial data without promising backfill', () => {
@@ -106,8 +107,8 @@ test('completed history with missing periods says partial data without promising
 });
 
 test('the evidence ladder keeps its ordering when the earliest contributing source changes', () => {
-  const display = timingDisplay('heatPump', { value: 1, evidence: { sources: ['unknown', 'modelled', 'measured', 'observed'].map(key => ({ key, durationMs: hour, share: 0.25 })) } }, payload);
-  assert.deepEqual(display.sources.map(source => source.key), ['measured', 'observed', 'modelled', 'unknown']);
+  const display = timingDisplay('charger', { ...chargerResult,value: 1, evidence: { energyBasis:'recorded-and-legacy',sources: ['unknown', 'currents', 'recorded', 'simulated'].map(key => ({ key, durationMs: hour, share: 0.25 })) } }, payload);
+  assert.deepEqual(display.sources.map(source => source.key), ['recorded', 'currents', 'unknown', 'simulated']);
 });
 
 test('reconstructed heat-pump explanation describes recorded equipment and dated powers without suggesting a model fallback', () => {
@@ -176,7 +177,7 @@ test('shared comparison copy preserves the daily baseline, sign and limits for b
   assert.match(timingExplanations.comparison.join(' '), /Each day’s included energy is priced twice.*full day’s time-weighted average all-in price/);
   assert.match(timingExplanations.comparison.join(' '), /Positive means cheaper timing; negative means dearer timing/);
   assert.match(timingExplanations.comparison.join(' '), /not scaled up.*does not prove savings caused by the controller/);
-  assert.match(timingExplanations.coverage.join(' '), /share of elapsed time in the selection used for each comparison/);
+  assert.match(timingExplanations.coverage.join(' '), /elapsed time for heating and each charger.*Combined charging uses charger-time/);
   assert.match(timingExplanations.coverage.join(' '), /Heating includes valid zero-use periods; charging excludes idle periods/);
   assert.match(timingExplanations.coverage.join(' '), /Missing readings are unknown, not idle/);
   assert.match(timingExplanations.coverage.join(' '), /Future hours do not reduce the percentage, but the price average still needs the full day/);
@@ -195,15 +196,16 @@ test('unavailable rate metadata does not suggest a supported device comparison',
   assert.equal(display.smallDifferenceExplanation, null);
 });
 
-test('heating and charging use identical elapsed-time coverage and included-time source labels', () => {
+test('heating and individual chargers use elapsed-time coverage and included-time source labels', () => {
   const selection = { value: 1.25, coverage: 0.5,
     coverageDetails: { elapsedMs: 10 * hour, includedMs: hour, powerMs: 8 * hour,
       chargingMs: 2 * hour, idleMs: 6 * hour, missingPowerMs: 2 * hour,
-      incompletePriceMs: hour, minimumPowerKw: 0.1, coverageBasis: 'charging-time' },
-    evidence: { sources: [{ key: 'measured', durationMs: hour, share: 1 }] },
+      incompletePriceMs: hour, minimumPowerKw: 0.1, coverageBasis: 'elapsed-time' },
+    evidence: { energyBasis:'power-snapshots',sources: [{ key: 'currents', durationMs: hour, share: 1 }] },
   };
-  for (const [key, name] of [['heatPump', 'Heating'], ['charger', 'Charging']]) {
-    const display = timingDisplay(key, selection, payload);
+  for (const [key, name] of [['heatPump', 'Heating'], ['charger1', 'Charger 1']]) {
+    const selected=key==='heatPump'?{...selection,evidence:{energyBasis:'reconstructed-equipment',sources:[{key:'observed',durationMs:hour,share:1}]}}:selection;
+    const display = timingDisplay(key, selected, payload);
     assert.equal(display.name, name);
     assert.equal(display.coverageLabel, '10% of time included');
     assert.equal(display.includedTimeLabel, 'included time');

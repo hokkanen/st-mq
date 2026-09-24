@@ -16,14 +16,14 @@ function memoryStore(seed = {}) {
     event(type, detail, now) { this.events.push({ type, detail, now }); } };
 }
 function rig({ store = memoryStore(), values = baselines, settings = {}, behavior = null, startAt = initialTime } = {}) {
-  let now = startAt;
+  let now = startAt, elapsed = 0;
   const decoder = createH66Decoder({ deviceId, mqttScaleByRegister: settings.mqttScaleByRegister, verifiedRegisters: settings.verification });
   const sent = [], native = { ...values };
   let controller;
   const feed = (index, value = native[index], extra = {}) => controller.ingest(decoder.decode({
     topic: `${deviceId}/HP/${index}`, payload: String(value), receivedAt: now, ...extra,
   }));
-  controller = createH66Controller({ deviceId, store, clock: () => now,
+  controller = createH66Controller({ deviceId, store, clock: () => now, monotonicClock: () => elapsed,
     config: { writeEnabled: true, readbackTimeoutMs: 30, ...settings },
     publish: async (topic, payload, options) => {
       const index = topic.split('/').at(-1);
@@ -37,7 +37,7 @@ function rig({ store = memoryStore(), values = baselines, settings = {}, behavio
   });
   controller.setConnected(true);
   for (const [index, value] of Object.entries(native)) feed(index, value);
-  return { controller, sent, native, feed, store, setNow: value => { now = value; }, get now() { return now; } };
+  return { controller, sent, native, feed, store, setNow: value => { now = value; }, get now() { return now; }, elapse(ms) { elapsed += ms; } };
 }
 
 test('H66 transport settings can tighten but cannot extend the shared five-minute source lifetime', t => {
@@ -320,4 +320,42 @@ for (const baseline of [25, 27, 33, 35]) test(`five-degree preheat respects a ${
   assert.equal(r.native['0203'], target, 'Renewal retains the original baseline');
   await r.controller.setManualPreheat({ enabled: false });
   assert.equal(r.native['0203'], baseline);
+});
+
+for (const [register, manual] of [['2201', 0], ['0208', 58]]) test(`restoration preserves a ${register} panel edit during an earlier register readback`, async t => {
+  const r = rig({ behavior({ index, payload, feed, native }) {
+    if (index === '0212' && Number(payload) === 44) { native[register] = manual; feed(register, manual); }
+  } });
+  t.after(() => r.controller.close());
+  await r.controller.setPhase({ phase: 'reduction' });
+  const before = r.sent.length;
+  await r.controller.restore();
+  assert.equal(r.native[register], manual);
+  assert.equal(r.sent.slice(before).some(row => row.index === register), false);
+  assert(r.store.events.some(row => row.type === 'h66-external-setting-preserved' && row.detail.register === register));
+  assert.deepEqual(r.controller.status().obligations, {});
+});
+
+test('a no-op automatic register is watched and a later first write restores the new baseline', async t => {
+  const r = rig({ values: { ...baselines, '2201': 2 } }); t.after(() => r.controller.close());
+  await r.controller.setPhase({ phase: 'reduction' });
+  assert.equal(r.controller.status().obligations['2201'], undefined);
+  r.native['2201'] = 1; r.feed('2201', 1);
+  assert.equal(r.controller.status().externalChangeRevision, 1);
+  await nextTurn(); await r.controller.reconcile();
+  await r.controller.setPhase({ phase: 'reduction' });
+  assert.equal(r.controller.status().obligations['2201'].baseline, 1);
+  await r.controller.restore(); assert.equal(r.native['2201'], 1);
+});
+
+test('native manual elapsed deadline restores despite a wall-clock rollback', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const r = rig(); t.after(() => r.controller.close());
+  await r.controller.setSetting({ register: '0203', value: 25 });
+  r.setNow(initialTime - 3_600_000);
+  for (const [register, value] of Object.entries(r.native)) r.feed(register, value);
+  r.elapse(60_000); t.mock.timers.tick(60_000);
+  await nextTurn();
+  assert.equal(r.native['0203'], 20);
+  assert.deepEqual(r.controller.status().obligations, {});
 });

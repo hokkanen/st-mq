@@ -2,6 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { dashboardProviders, temperatureReadingStatus, temperatureAttentionDetails, describeProvider } from '../chart/provider-status.js';
 import { durationText, qualityReasonText } from '../chart/reading-status.js';
+import { equipmentConnections, equipmentConnectionSummary } from '../chart/equipment.js';
+import { createChargingTeslaCapture, teslamateVehicleTelemetry } from '../src/charging/teslamate.js';
+import { ChargingRuntime } from '../src/charging/runtime.js';
 
 const now = Date.parse('2026-09-13T12:00:00Z'), MINUTE = 60_000;
 const options = { now, formatTime: at => new Date(at).toISOString().slice(11, 19) };
@@ -103,12 +106,42 @@ test('unknown diagnostic fields cannot expose provider text or private sensor id
   assert.equal(durationText(NaN), 'unknown');
 });
 
-test('Tesla expiry explains each failed evidence clock despite a fresh unrelated MQTT message', () => {
-  const status = describeProvider('teslamate', { status: 'degraded', reason: 'teslamate-stale', lastMessageAt: now,
-    maxAgeMs: 3 * MINUTE, freshnessChecks: [{ key: 'vehicle-health', at: now - 4 * MINUTE, maxAgeMs: 3 * MINUTE },
-      { key: 'charging-evidence', at: now - 5 * MINUTE, maxAgeMs: 3 * MINUTE },
-      { key: 'invented-private-key', at: now, maxAgeMs: MINUTE }] }, options);
-  assert.match(status.detail, /Vehicle health: last update 11:56:00 is 4 min old; limit 3 min/);
-  assert.match(status.detail, /Charging evidence: last update 11:55:00 is 5 min old; limit 3 min/);
-  assert.doesNotMatch(status.detail, /invented-private/);
+test('Tesla vehicle feed separates live reception from expired logger and field evidence', async t => {
+  const capture = createChargingTeslaCapture({ clock: () => now, settings: { maxAgeMs: 3 * MINUTE } });
+  capture.setConnected(true);
+  const receive = (field, value, at) => capture.receive(`teslamate/cars/1/${field}`, value, {}, at);
+  receive('battery_level', '80', now - 5 * MINUTE);
+  receive('charge_current_request', '8', now - 5 * MINUTE);
+  receive('healthy', 'true', now - 4 * MINUTE);
+  receive('charger_power', '1', now);
+
+  const runtime = new ChargingRuntime({ engine: {}, store: { getState: () => null }, clock: () => now,
+    config: { input: 'mqtt', charging: { vehicles: { bmw: { mqttTopic: null } } } }, definitions: [] });
+  runtime.teslaCapture = capture;
+  t.after(() => runtime.close());
+  const charging = runtime.status(now), [feed] = charging.vehicleFeeds;
+  assert.equal(feed.id, 'tesla');
+  assert.equal(feed.usedByChargerId, null);
+  assert.equal(feed.reception.lastLiveAt, now);
+  const connection = equipmentConnections({ now, charging }).find(row => row.kind === 'vehicle');
+  assert.equal(connection.id, 'connection:vehicle:tesla:other');
+  assert.equal(equipmentConnectionSummary(connection).label, 'Connected');
+  assert.match(connection.connectionDetail, /sleeping or idle vehicle can remain quiet/);
+
+  const display = describeProvider('teslamate', capture.status(), options);
+  assert.equal(display.state, 'Needs attention');
+  assert.match(display.detail, /health is missing or unhealthy.*Last-known vehicle values.*without control authority/);
+  let evidence = teslamateVehicleTelemetry(capture.snapshot(), { now });
+  assert.equal(evidence.soc.available, false);
+  assert.equal(evidence.soc.lastKnownValue, 80);
+  assert.equal(evidence.soc.reason, 'vehicle-logger-unhealthy');
+  assert.equal(capture.snapshot().fields.healthy.receivedAt, now - 4 * MINUTE);
+
+  receive('healthy', 'true', now);
+  evidence = teslamateVehicleTelemetry(capture.snapshot(), { now });
+  assert.equal(evidence.soc.available, true, 'A healthy quiet vehicle retains its change-only SoC');
+  assert.equal(evidence.vehicleCurrentA.available, false, 'New health cannot refresh an expired operational field');
+  assert.equal(evidence.vehicleCurrentA.reason, 'vehicle-evidence-stale');
+  assert.equal(evidence.vehicleCurrentA.receivedAt, now - 5 * MINUTE);
+  assert.equal(evidence.vehicleCurrentA.measuredAt, null, 'Receipt clocks do not become invented measurement clocks');
 });

@@ -35,7 +35,6 @@ export const H66_REGISTERS = Object.freeze(Object.fromEntries([
   ['0233', 'tariff_reduction_setting', '°C'],
   ['1A20', 'alarm_active', 'state'], ['2A91', 'alarm_code', 'code'],
 ].map(([index, signal, unit]) => [index, Object.freeze({ index, signal, unit })])));
-const OMITTED_REGISTERS = new Set(['0008', '0012', '1A04']);
 
 /** Read-only decoder: no MQTT connection, subscription side effects, or command encoding. */
 export function createH66Decoder({ deviceId, verifiedRegisters = {}, maxAgeMs = H66_MAX_AGE_MS,
@@ -51,12 +50,10 @@ export function createH66Decoder({ deviceId, verifiedRegisters = {}, maxAgeMs = 
   const verification = new Map(Object.keys(H66_REGISTERS).map(index => [index,
     { scale: 1, offset: 0, evidence: 'documented-C60-MQTT-engineering-units', installed: false }]));
   for (const [index, scale] of Object.entries(mqttScaleByRegister)) {
-    if (OMITTED_REGISTERS.has(index.toUpperCase())) continue; // Preserve compatibility with existing installation metadata.
     if (!H66_REGISTERS[index] || !Number.isFinite(scale) || scale === 0) throw new TypeError(`Invalid MQTT scale for ${index}`);
     verification.set(index, { scale, offset: 0, evidence: 'configured-MQTT-scale', installed: false });
   }
   for (const [index, config] of Object.entries(verifiedRegisters)) {
-    if (OMITTED_REGISTERS.has(index.toUpperCase())) continue;
     if (!H66_REGISTERS[index] || !config || !Number.isFinite(config.scale) || config.scale === 0 ||
       !Number.isFinite(config.offset ?? 0) || typeof config.evidence !== 'string' || !config.evidence.trim()) {
       throw new TypeError(`Invalid installed-device verification for ${index}`);
@@ -113,6 +110,8 @@ export function createH66Decoder({ deviceId, verifiedRegisters = {}, maxAgeMs = 
       usableForControl: value != null && freshness === 'fresh' && !duplicate && !retained };
   }
   return Object.freeze({ decode, subscriptionTopic: `${deviceId}/HP/+`,
+    checkpoint() { return [...seen]; },
+    restore(checkpoint) { seen.clear(); for (const [key, entry] of checkpoint.slice(-maxDuplicates)) seen.set(key, entry); },
     get duplicateCacheSize() { return seen.size; } });
 }
 

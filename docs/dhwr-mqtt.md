@@ -26,8 +26,9 @@ The old `from_stmq/heat/action` `heaton60` button message is no longer published
 **Start circulation** runs for the configured duration, whether paused or not.
 Clicking it again starts a full new run from that click; **Stop circulation** ends
 it immediately. A controller update, the end of Pause or restoration of manual
-heating parameters does not shorten the run. Manual Preheating also starts a
-configured circulation run alongside its temporary ROOM boost.
+heating parameters does not shorten the run. Manual Preheating changes ROOM and
+configured floor outputs independently; it does not start circulation. Use the
+separate circulation Start/Stop control to request a timed run.
 Reload settings to apply a new duration; an existing run is stopped through the
 normal runtime restoration before the new configuration starts.
 
@@ -257,3 +258,18 @@ history before the first feedback sample retains recorded requested intervals.
 Imported historical CSV `heaton60` pulses keep their original ten-minute
 interpretation. These changes preserve the committed learning algorithm and CSV
 provenance.
+
+Current Home state is version 2 under `executor:home`, shared by physical input
+modes. Before ON, ST-MQ saves the OFF obligation and an opaque digest of the exact
+broker/account/topic route. Tariff obligations independently bind the actual
+configured relay identities. A replacement route cannot acknowledge or clear an
+original obligation; the unresolved state remains visible until the original
+authorized route is available. Credentials are never copied into this state.
+Older unscoped development state is rejected and requires deliberate offline
+fresh initialization, without an automatic reset or migration.
+
+A run uses an in-process elapsed deadline as well as its displayed wall deadline.
+Clock rollback cannot extend its duration. Calendar pauses also cannot extend
+beyond their originally admitted elapsed duration. Restart attempts cleanup
+instead of resuming ON. Expiry is an OFF/restoration attempt; unavailable delivery
+leaves a visible obligation for retry, not a guarantee of physical pump receipt.

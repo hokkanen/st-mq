@@ -6,7 +6,8 @@ import { join } from 'node:path';
 import { Store } from '../src/storage/store.js';
 import { Recorder } from '../src/storage/recorder.js';
 import { Engine } from '../src/app/engine.js';
-import { committedLearningSample, recordLearningContext, appendLearningRecord, replayLearningJournal, validLearningCheckpoint, LEARNING_ALGORITHM, LEARNING_WINDOW_MS } from '../src/app/committed-learning.js';
+import { committedLearningSample, recordLearningContext, replayLearningJournal, validLearningCheckpoint, LEARNING_ALGORITHM, LEARNING_WINDOW_MS} from '../src/app/committed-learning.js';
+import { appendLearningRecord } from './helpers/home-learning-fixture.js';
 import { initialAdaptiveModel, updateAdaptiveLearning, updateAdaptiveEpisode } from '../src/control/adaptive-learning.js';
 
 const MINUTE = 60_000, HOUR = 60 * MINUTE;
@@ -375,7 +376,7 @@ test('fresh learning saves the ROOM boost and shared recovery policy for determi
   appendLearningRecord(store, 'mqtt', 'context', { timestamp: start },
     { config: configuration, seed: { version: 1, samples: [], model } });
   const entry = store.learningJournal({ input: 'mqtt', algorithmVersion: LEARNING_ALGORITHM })[0];
-  assert.equal(LEARNING_ALGORITHM, 'committed-house-v11-preheat-recovery');
+  assert.equal(LEARNING_ALGORITHM, 'committed-house-v12-passive-thermal');
   assert.equal(entry.payload.configuration.preheatRoomBoostC, 5);
   assert.equal(entry.payload.configuration.recoveryHoldMinutes, 60);
   assert.equal(entry.payload.seed.model.floor.enabled, true);

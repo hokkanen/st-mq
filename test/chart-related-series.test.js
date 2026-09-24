@@ -98,7 +98,7 @@ test('compact CSV power and phases share their original timestamps and coherent 
       ...Array(3).fill(charger[index] / 3 / 0.23), ...Array(3).fill(value / 3 / 0.23)].join(','))].join('\n'));
   await importCsv(store, path, { kind: 'easee' });
   for (const left of ['power', 'phases']) {
-    const result = getChartData({ store, ...args, left });
+    const result = getChartData({ store, ...args, left, now: Date.now() });
     assert(result.meta.relatedSampling);
     if (left === 'power') coherent(result.series, ['property_power', 'charger_power']);
     else for (const phase of [1, 2, 3]) coherent(result.series, [`property_current_l${phase}`, `ev1_current_l${phase}`]);
@@ -125,7 +125,7 @@ test('shared sampling keeps source duplicate precedence and disconnects an omitt
   assert.deepEqual(explicitEdges.property.filter(point => point.x === 10).map(point => point.y), [10, 20]);
 });
 
-test('overlapping and duplicate original interval projections remain readable in source-time order', t => {
+test('conflicting original interval projections become unavailable while sequential tails remain readable', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   for (const [at, end, kw] of [[start, start + 2 * MINUTE, 3], [start + MINUTE, start + 3 * MINUTE, 6],
     [start + MINUTE, start + 3 * MINUTE, 9], [start + 3 * MINUTE, start + 4 * MINUTE, 3]])
@@ -138,7 +138,9 @@ test('overlapping and duplicate original interval projections remain readable in
   const result = getChartData({ store, ...args, left: 'power' });
   assert(result.meta.relatedSampling);
   assert(result.series.charger_power.every((point, index, rows) => !index || point.x >= rows[index - 1].x));
-  assert(result.series.charger_power.some(point => Math.abs(point.y - 9) < 1e-9));
+  assert(!result.series.charger_power.some(point => point.x < start + 3 * MINUTE && point.x >= start && Number.isFinite(point.y)));
+  assert.equal(result.meta.recordedEnergy.conflicts, 1);
+  assert(result.series.charger_power.some(point => point.x >= start + 3 * MINUTE && Math.abs(point.y - 3) < 1e-9));
   assert(!result.series.charger_power.some(point => point.y > 10), 'Legacy currents cannot overtake recorded energy after handover');
   const range = { from: start, to: start + 4 * MINUTE };
   const original = new Envelope(range.from, range.to, 2000);

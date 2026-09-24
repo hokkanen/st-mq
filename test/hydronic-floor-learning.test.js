@@ -122,9 +122,8 @@ test('isolated episodes cannot qualify from an invented room-temperature reserve
 });
 
 test('old separate-gain checkpoints and other treatment validation cannot qualify the new regime', () => {
-  const cp = restoreAdaptiveCheckpoint({ version: 1, samples: [row(0)], model: { version: 2,
-    parameters: { normalHeatCPerHour: 0.75, auxiliaryCPerKwh: 0.15 } } });
-  assert.equal(cp.model.version, 3); assert.deepEqual(cp.samples, []); assert.equal(cp.model.validation, null);
+  assert.throws(() => restoreAdaptiveCheckpoint({ version: 1, samples: [row(0)], model: { version: 2,
+    parameters: { normalHeatCPerHour: 0.75, auxiliaryCPerKwh: 0.15 } } }), /Unsupported Home checkpoint/);
   const model = initialAdaptiveModel();
   model.validation = { accepted: true, kind: 'conditional-thermal', samples: 3,
     parameterEvidence: { lossPerHour: { status: 'identified' }, hydronicCPerKwh: { status: 'identified' } } };

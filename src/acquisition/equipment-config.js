@@ -69,6 +69,14 @@ export function equipmentSignature(device) {
     stateMapping: (device.readings ?? []).filter(row => row.signal === device.stateSignal).map(({ label, record, ...row }) => row) })).digest('hex');
 }
 
+export function equipmentMeterIdentity(device, { brokerIdentity = null, nativeIdentity = null } = {}) {
+  return createHash('sha256').update(JSON.stringify({ version: 1, brokerIdentity, nativeIdentity,
+    protocol: device.protocol, connection: device.connection, generation: device.generation,
+    switchId: device.switchId, timestampPath: device.mqtt?.timestampPath ?? null,
+    counter: (device.readings ?? []).filter(row => row.key === 'energy_counter')
+      .map(({ topic, component, path, unit, scale, offset }) => ({ topic, component, path, unit, scale, offset })) })).digest('hex');
+}
+
 /** Connection syntax selects the protocol. No host/topic inspection or failed
  * protocol probes can silently select a different source. */
 export function equipmentConfiguration(input = {}) {
@@ -155,8 +163,10 @@ export function equipmentConfiguration(input = {}) {
       throw new Error('Energy counter mapping requires metered equipment and kWh or Wh units');
     if (protocol === 'mqtt') {
       const readTopics = [address, ...readings.map(value => value.topic).filter(Boolean)];
+      if (mqtt.requestTopic && [...readTopics, mqtt.availabilityTopic, mqtt.heartbeatTopic].includes(mqtt.requestTopic))
+        throw new Error('Read-only requests must use a separate topic from readings, availability and heartbeat');
       if (mqtt.commandTopic && readTopics.includes(mqtt.commandTopic)) throw new Error('Switch commands require a separate topic from state confirmation');
-      if ((controlsCover || controlsDehumidifier) && [mqtt.availabilityTopic, mqtt.heartbeatTopic].includes(mqtt.commandTopic))
+      if (mqtt.commandTopic && [mqtt.availabilityTopic, mqtt.heartbeatTopic, mqtt.requestTopic].includes(mqtt.commandTopic))
         throw new Error('Device commands must use a separate topic from availability and heartbeat');
       if ([mqtt.availabilityTopic, mqtt.bridgeAvailabilityTopic, mqtt.heartbeatTopic].some(topic => topic && readTopics.includes(topic))) throw new Error('Availability and heartbeat must use separate topics from equipment readings');
       if (mqtt.bridgeAvailabilityTopic && [mqtt.availabilityTopic, mqtt.heartbeatTopic, mqtt.commandTopic, mqtt.requestTopic].includes(mqtt.bridgeAvailabilityTopic))
@@ -187,12 +197,16 @@ export function equipmentConfiguration(input = {}) {
       throw new Error('Native equipment prefixes must be distinct and non-overlapping');
     const topics = row => row.protocol === 'mqtt' ? [row.topic, ...row.readings.map(value => value.topic).filter(Boolean)] : [];
     if (topics(device).some(topic => topics(other).includes(topic))) throw new Error('Enabled MQTT equipment cannot share a state topic');
-    if ([device, other].some((row, i) => (row.controlsCover || row.controlsDehumidifier) && row.mqtt.commandTopic
+    if ([device, other].some((row, i) => row.mqtt.requestTopic && [...topics([device, other][1 - i]),
+      [device, other][1 - i].mqtt.availabilityTopic, [device, other][1 - i].mqtt.bridgeAvailabilityTopic,
+      [device, other][1 - i].mqtt.heartbeatTopic].includes(row.mqtt.requestTopic)))
+      throw new Error('Read-only query topics must be separate from other equipment readings and availability');
+    if ([device, other].some((row, i) => row.mqtt.commandTopic
       && [...topics([device, other][1 - i]), [device, other][1 - i].mqtt.commandTopic,
         [device, other][1 - i].mqtt.requestTopic, [device, other][1 - i].mqtt.availabilityTopic,
         [device, other][1 - i].mqtt.bridgeAvailabilityTopic, [device, other][1 - i].mqtt.heartbeatTopic].includes(row.mqtt.commandTopic)))
       throw new Error('Device command topics must be dedicated to one configured device');
-    if ([device, other].some((native, i) => native.protocol === 'shelly' && [...topics([device, other][1 - i]), [device, other][1 - i].mqtt.availabilityTopic, [device, other][1 - i].mqtt.bridgeAvailabilityTopic, [device, other][1 - i].mqtt.heartbeatTopic].filter(Boolean).some(topic => topic === native.prefix || topic.startsWith(`${native.prefix}/`))))
+    if ([device, other].some((native, i) => native.protocol === 'shelly' && [...topics([device, other][1 - i]), [device, other][1 - i].mqtt.availabilityTopic, [device, other][1 - i].mqtt.bridgeAvailabilityTopic, [device, other][1 - i].mqtt.heartbeatTopic, [device, other][1 - i].mqtt.commandTopic, [device, other][1 - i].mqtt.requestTopic].filter(Boolean).some(topic => topic === native.prefix || topic.startsWith(`${native.prefix}/`))))
       throw new Error('MQTT equipment topics cannot overlap a native equipment prefix');
   }
   return { configured: devices.length > 0, devices, pollIntervalMs, maxAgeMs,

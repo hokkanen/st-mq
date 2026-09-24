@@ -139,28 +139,12 @@ export function indoorReportCoverage(store, { reading, from, at, notBefore = -In
  * a sensor boundary; that does not need to reconstruct report availability. */
 export function lastIndoorReading(store, { signal, at, input, notBefore = -Infinity, includeAvailability = true }) {
   const scope = input === 'simulated' ? "o.source='simulation'" : "o.source<>'simulation'";
-  let newerCoverage;
-  const withRecordedOrder = observation => {
-    // Older recorder rows used "stale" for both age and source-time rollback.
-    // A compressed fresh update can prove a rollback even when its actual value
-    // was not saved. Only evidence already known on receipt may reject the row;
-    // coverage never changes the retained measurement's original timestamp.
-    if (observation.quality.includes('stale') && !observation.quality.includes('out-of-order-source-time')) {
-      newerCoverage ??= store.db.prepare(`SELECT 1 FROM recorder_coverage
-        WHERE source=? AND device=? AND signal=? AND status='fresh'
-          AND source_time>? AND source_time<=? AND end_at<=? LIMIT 1`);
-      if (newerCoverage.get(observation.source, observation.device, observation.signal,
-        observation.sourceTime, observation.receivedAt, observation.receivedAt))
-        return { ...observation, quality: [...observation.quality, 'out-of-order-source-time'] };
-    }
-    return observation;
-  };
   const query = store.db.prepare(`SELECT o.* FROM observations o LEFT JOIN imports i ON i.id=o.import_id
     WHERE o.signal=? AND o.source_time>=? AND o.source_time<=? AND o.received_at<=?
       AND o.value IS NOT NULL AND (o.import_id IS NULL OR i.status='complete') AND ${scope}
     ORDER BY o.source_time DESC,o.id DESC`);
   for (const row of query.iterate(signal, notBefore, at, at)) {
-    const observation = withRecordedOrder(decode(row));
+    const observation = decode(row);
     if (!observation.raw?.acquisitionOnly && indoorReadingUsable(observation, at)) {
       if (!includeAvailability) return observation;
       const after = store.db.prepare(`SELECT * FROM observations WHERE signal=? AND source=? AND device=?
@@ -168,7 +152,7 @@ export function lastIndoorReading(store, { signal, at, input, notBefore = -Infin
         ORDER BY received_at DESC,id DESC`);
       let latest = observation;
       for (const attempt of after.iterate(signal, observation.source, observation.device, observation.receivedAt, at, observation.sourceTime, at)) {
-        const candidate = withRecordedOrder(decode(attempt));
+        const candidate = decode(attempt);
         if (candidate.raw?.retained === true || candidate.quality?.includes('retained') || candidate.raw?.acquisitionOnly) continue;
         latest = candidate; break;
       }

@@ -8,7 +8,7 @@ import { GarageRoomTemperature, GARAGE_ROOM_MIN_C, GARAGE_EXTERNAL_SOURCE_MAX_AG
 import { garagePausePermission, GARAGE_REVALIDATE_MS, GARAGE_TEMPERATURE_MAX_AGE_MS } from './permission.js';
 import { GARAGE_ALGORITHM_VERSION, GARAGE_MODEL_ASSUMPTIONS, garageRecoveryHours, createGarageModel, garageModelSummary } from './model.js';
 import { confirmedGarageDoor, garagePauseStartReason } from './door-state.js';
-import { createGarageExposure, upgradeGarageExposure, updateGarageExposure, assessGarageProtection, validGarageExposure } from './protection.js';
+import { createGarageExposure, reconcileGarageExposure, updateGarageExposure, assessGarageProtection, validGarageExposure } from './protection.js';
 import { planGarage } from './planner.js';
 import { startGarageAssessment, updateGarageAssessment, completeGarageAssessment, garageRecoveryDebt } from './episodes.js';
 import { appendGarageEntry, applyGarageEntry, garageInput, garageDigest, garageCorrectionContext,
@@ -25,9 +25,6 @@ const observationView = (row, now, maxAge) => ({ value: finite(row?.value) ? row
   observedAt: row?.sourceTime ?? null, source: row?.source ?? null, stale: !usable(row, now, maxAge) });
 const outdoorObservation = row => row?.source === 'openmeteo'
   ? { ...row, quality: (row.quality ?? []).filter(flag => flag !== 'estimated') } : row;
-const archivedEpisode = episode => Boolean(episode && (episode.algorithmVersion !== GARAGE_ALGORITHM_VERSION
-  || episode.frozenModel?.algorithm !== GARAGE_ALGORITHM_VERSION
-  || episode.accounting?.algorithmVersion !== GARAGE_ALGORITHM_VERSION));
 // Freeze reserve and recovered building warmth are separate obligations. Use
 // the existing comparable-service tolerance when checking a cycle's reserve;
 // exact equality would make exponential recovery take forever.
@@ -61,26 +58,37 @@ export class GarageRuntime {
     this.settings = garageSettings(owner); this.input = config.input;
     this.keys = Object.fromEntries(['checkpoint', 'exposure', 'episode', 'adapter', 'temporary', 'manual', 'roomTemperature'].map(name => [name, `garage:${name}:${this.input}`]));
     this.context = garageCorrectionContext(store, this.input);
-    const readState = key => { try { return store.getState(key); } catch (error) {
-      if (!(error instanceof SyntaxError)) throw error;
-      this.corruptState = true; return null;
-    } };
+    const readState = key => {
+      try { return store.getState(key); }
+      catch (error) {
+        // A derived checkpoint may be reconstructed from the current journal;
+        // exposure and physical restoration state are never discarded this way.
+        if (key !== this.keys.checkpoint || !(error instanceof SyntaxError)) throw error;
+        this.corruptState = true; return null;
+      }
+    };
     const room = readState(this.keys.roomTemperature);
     this.roomTemperature = new GarageRoomTemperature({ now: clock(), targetC:
       finite(room?.targetC) && room.targetC >= GARAGE_ROOM_MIN_C && room.targetC < 16
         && Number.isInteger(room.targetC * 2) ? room.targetC : null });
     const savedExposure = readState(this.keys.exposure);
-    try {
-      if (savedExposure != null && (typeof savedExposure !== 'object' || Array.isArray(savedExposure)))
-        throw new Error('Invalid saved Garage exposure');
-      this.exposure = upgradeGarageExposure(savedExposure, this.settings);
-      if (!validGarageExposure(this.exposure, clock(), this.settings)) throw new Error('Invalid saved Garage exposure');
-    } catch {
-      // Corrupt or missing thermal history cannot establish unused reserve.
-      // Rebuild warmth from genuine reports, independently of model learning.
-      this.corruptState = true; this.exposure = createGarageExposure(this.settings);
-    }
+    if (savedExposure != null && (typeof savedExposure !== 'object' || Array.isArray(savedExposure)))
+      throw new Error('Invalid saved Garage exposure; start a fresh development database');
+    this.exposure = reconcileGarageExposure(savedExposure, this.settings);
+    if (!validGarageExposure(this.exposure, clock(), this.settings))
+      throw new Error('Invalid saved Garage exposure; start a fresh development database');
     this.episode = readState(this.keys.episode);
+    this.checkpoint = readState(this.keys.checkpoint);
+    if (this.checkpoint && (this.checkpoint.algorithmVersion !== GARAGE_ALGORITHM_VERSION
+        || this.checkpoint.model?.algorithm && this.checkpoint.model.algorithm !== GARAGE_ALGORITHM_VERSION)
+      || this.episode && (this.episode.algorithmVersion !== GARAGE_ALGORITHM_VERSION
+        || this.episode.frozenModel?.algorithm !== GARAGE_ALGORITHM_VERSION
+        || this.episode.accounting?.algorithmVersion !== GARAGE_ALGORITHM_VERSION
+        || this.episode.initialExposure?.version !== GARAGE_POLICY_VERSION))
+      throw new Error('Unsupported Garage saved algorithm; start a fresh development database');
+    if (store.db.prepare('SELECT 1 FROM learning_journal WHERE input=? AND algorithm_version<>? LIMIT 1')
+      .get(garageInput(this.input), GARAGE_ALGORITHM_VERSION))
+      throw new Error('Unsupported Garage journal algorithm; start a fresh development database');
     this.temporary = readState(this.keys.temporary);
     if (!finite(this.temporary?.expiresAt) || this.temporary.expiresAt <= clock()) this.temporary = null;
     // Restarts retain price-control pauses, but never resume an OFF permission.
@@ -89,13 +97,8 @@ export class GarageRuntime {
     // Restart never resumes permission. Frozen accounting and heat debt remain.
     if (this.episode) {
       this.episode.restarted = true; this.episode.phase = 'recovery';
-      if (this.episode.initialExposure?.version !== GARAGE_POLICY_VERSION && this.episode.accounting) {
-        this.episode.accounting.qualified = false; this.episode.reason = 'protection-policy-changed';
-      }
       this.saveEpisode();
     }
-    this.checkpoint = readState(this.keys.checkpoint);
-    const archivedAlgorithm = this.checkpoint?.algorithmVersion !== GARAGE_ALGORITHM_VERSION ? this.checkpoint?.algorithmVersion : null;
     const last = this.checkpoint?.cursor ? store.learningJournal({ input: garageInput(this.input),
       after: this.checkpoint.cursor - 1, limit: 1, algorithmVersion: GARAGE_ALGORITHM_VERSION })[0] : null;
     if (!validGarageCheckpoint(this.checkpoint, last, this.context)) this.checkpoint = null;
@@ -103,9 +106,8 @@ export class GarageRuntime {
     const head = garageJournalHead(store, this.input);
     if (head && this.checkpoint?.cursor !== head) this.startRebuild();
     const settingsKey = `garage:configuration:${this.input}`, previous = store.getState(settingsKey);
-    if (garageDigest(previous) !== garageDigest(this.settings) || archivedAlgorithm && !head) {
+    if (garageDigest(previous) !== garageDigest(this.settings)) {
       this.append('context', { configurationChanged: garageDigest(previous) !== garageDigest(this.settings),
-        ...(archivedAlgorithm ? { algorithmChanged: true, archivedAlgorithm } : {}),
         baselineChanged: previous != null && previous.baselineC !== this.settings.baselineC },
         `configuration:${clock()}:${garageDigest(this.settings)}`);
       store.setState(settingsKey, this.settings);
@@ -175,7 +177,10 @@ export class GarageRuntime {
       && now >= adapter.native.powerAt && now - adapter.native.powerAt < (this.config.garage?.adapter?.maxAgeMs ?? 2 * MINUTE);
     const selectedMode = manual?.mode ?? (freshPower ? power === 'off' ? 'off' : power === 'on' ? 'normal' : null : null);
     const confirmed = Boolean(freshPower && (selectedMode === 'normal' ? power === 'on' : selectedMode === 'off' && power === 'off'));
-    return { available: reason === null, normalAvailable: reason === null && !busy,
+    const nativePower = this.adapter?.nativeControls?.(now, { afterExternalClear: true })?.settings?.power;
+    const normalReason = reason ?? (!adapter?.restorePending && power !== 'on' && !nativePower?.available
+      ? nativePower?.reason ?? 'Use the native power control when ordinary Mitsubishi power control is available.' : null);
+    return { available: reason === null, normalAvailable: normalReason === null && !busy, normalReason,
       offAvailable: offReason === null && !busy, reason, offReason, busy,
       selectedMode, requestedMode: manual?.mode ?? null, confirmed,
       holdUntil: manual?.expiresAt ?? null, paused: Boolean(pause), manualChanged: manual?.mode === 'off',
@@ -279,7 +284,7 @@ export class GarageRuntime {
     const now = this.clock(), controls = this.heatingControls(now);
     if (controls.busy) throw new Error('Wait for the current garage request to finish.');
     if (input.mode === 'off' ? !controls.offAvailable : !controls.normalAvailable)
-      throw new Error(input.mode === 'off' ? controls.offReason : controls.reason);
+      throw new Error(input.mode === 'off' ? controls.offReason : controls.normalReason);
     this.manualBusy = true;
     try {
       const pause = this.activePause(now), prior = this.activeManual(now);
@@ -295,7 +300,17 @@ export class GarageRuntime {
       if (this.episode?.accounting) {
         this.episode.accounting.qualified = false; this.episode.reason = 'manual-heating-selection'; this.saveEpisode();
       }
-      if (input.mode === 'normal') await this.release('manual-normal', { preserveManual: true });
+      if (input.mode === 'normal') {
+        if (adapter.restorePending) await this.release('manual-normal', { preserveManual: true });
+        else if (adapter.native?.power !== 'on') {
+          const request = { setting: 'power', value: 'on' }, external = this.adapter.externalTemperature?.(now);
+          if (this.roomTemperature.targetC !== null || this.roomTemperature.mustClear
+            || external?.restorationPending || external?.phase && external.phase !== 'internal') {
+            this.saveRoomTarget(null, now); this.roomTemperature.cancel(request, now);
+            void this.roomTemperatureTick();
+          } else await this.adapter.setNativeSetting(request, now);
+        }
+      }
       else {
         this.lastPlannerAt = now;
         const result = await this.adapter.plannerTick({ now, valid: true,
@@ -471,7 +486,9 @@ export class GarageRuntime {
       ev1: Boolean(this.config.connections?.easee?.enabled || this.config.connections?.easee?.charger_id
         || this.config.connections?.easee?.chargers?.length
         || latest.ev1_current_l1 || latest.ev1_energy_l1),
-      ev2: Boolean(this.config.connections?.teslamate?.enabled || latest.ev2_energy || this.engine.teslamate),
+      ev2: Boolean(this.engine.charging?.configuration?.chargers?.charger2?.enabled
+        || this.config.charging?.chargers?.charger2?.enabled
+        || latest.ev2_energy?.source === 'shelly-evse'),
     };
     if (!native?.health?.pumpCommunicating || !finite(nativeState.powerAt) || nativeState.powerAt > now
       || now - nativeState.powerAt >= (this.config.garage?.adapter?.maxAgeMs ?? 2 * MINUTE)) row.available = null;
@@ -492,7 +509,7 @@ export class GarageRuntime {
       const signals = prefix === 'ev1' ? ['ev1_energy_l1', 'ev1_energy_l2', 'ev1_energy_l3'] : ['ev2_energy'];
       const values = signals.map(signal => this.store.db.prepare(`SELECT o.* FROM observations o
         WHERE o.signal=? AND o.source_time<=? AND o.received_at<=? AND o.import_id IS NULL
-          AND ${this.input === 'simulated' ? "o.source='simulation'" : "o.source<>'simulation'"}
+          AND ${this.input === 'simulated' ? "o.source='simulation'" : prefix === 'ev2' ? "o.source='shelly-evse'" : "o.source<>'simulation'"}
         ORDER BY o.source_time DESC,o.id DESC LIMIT 1`).get(signal, now, now));
       if (values.some(value => !value)) continue;
       const intervals = values.map(value => ({ ...value, raw: JSON.parse(value.raw ?? '{}'), quality: JSON.parse(value.quality) }));
@@ -517,11 +534,21 @@ export class GarageRuntime {
       }
     }
     if (row.ev2Active === null) {
-      const ev = this.engine.teslamate?.identificationSnapshot?.();
-      if (ev?.connected && ev.home && ev.healthy && finite(ev.healthyAt) && now >= ev.healthyAt && now - ev.healthyAt < 3 * MINUTE
-        && finite(ev.currentA) && finite(ev.currentAt) && ev.currentAt <= now && now - ev.currentAt < 3 * MINUTE) {
-        row.ev2Active = ev.currentA > .5;
-        row.provenance.ev2 = { source: 'teslamate-current-activity', observedAt: ev.currentAt, basis: 'activity-only-no-watts' };
+      const adapter = this.engine.charging?.chargers?.charger2?.adapter;
+      const ev = adapter?.normalize?.(adapter.snapshot(), { now });
+      const physical = adapter?.liveCurrents?.();
+      const currentsFresh = physical?.healthy && physical.currents?.length === 3 && physical.times?.length === 3
+        && physical.currents.every(value => finite(value) && value >= 0)
+        && physical.times.every(at => finite(at) && at <= now && now - at < 3 * MINUTE);
+      const charging = ev?.charging;
+      const chargingFresh = ev?.providerConnected && charging?.available && typeof charging.value === 'boolean'
+        && finite(charging.receivedAt) && charging.receivedAt <= now && now - charging.receivedAt < 3 * MINUTE;
+      if (currentsFresh || chargingFresh) {
+        row.ev2Active = Boolean(currentsFresh && physical.currents.some(value => value > .5)
+          || chargingFresh && charging.value);
+        row.provenance.ev2 = { source: 'shelly-evse-current-activity',
+          observedAt: Math.min(...[...(currentsFresh ? physical.times : []), ...(chargingFresh ? [charging.receivedAt] : [])]),
+          basis: 'activity-only-no-watts' };
       }
     }
     row.doors = {};
@@ -672,7 +699,6 @@ export class GarageRuntime {
     const activePause = this.episode?.phase === 'pause' && adapterStatus?.phase === 'paused'
       ? { ...this.episode, id: this.episode.pauseId, state: 'paused',
         authorizedEndAt: Math.min(this.episode.pauseUntil, adapterStatus.episode?.endpointAt ?? Infinity) } : null;
-    const archivedRecovery = archivedEpisode(this.episode);
     const ongoingRecovery = this.episode && !activePause;
     const planningModel = this.episode ? { ...this.episode.frozenModel, state: this.episode.accounting.actualState }
       : this.checkpoint?.model ?? createGarageModel({ seedAt: now, baselineC: this.settings.baselineC });
@@ -680,8 +706,8 @@ export class GarageRuntime {
       || (this.pauseStartsToday(now) >= this.settings.maxPausesPerDay ? 'daily-pause-limit' : null)
       || (this.settings.minOnMs > 0 && (!finite(this.normalHeatingSince)
         || now - this.normalHeatingSince < this.settings.minOnMs) ? 'minimum-normal-heating-time' : null));
-    this.plan = archivedRecovery || ongoingRecovery || admissionReason ? { nextAction: 'available', pauseUntil: null,
-      reason: archivedRecovery ? 'archived-model-recovery' : ongoingRecovery ? 'normal-heating-recovery' : admissionReason } : planGarage({ now, observation, model: planningModel,
+    this.plan = ongoingRecovery || admissionReason ? { nextAction: 'available', pauseUntil: null,
+      reason: ongoingRecovery ? 'normal-heating-recovery' : admissionReason } : planGarage({ now, observation, model: planningModel,
       exposure: this.exposure, settings: { ...this.settings,
         minOnMs: Math.max(this.settings.minOnMs, adapterStatus?.limits?.minimumOnMs ?? 0) }, prices, forecast,
       activeEpisode: activePause, restorationDelayMs: this.restorationDelay(now, { renewal: true }) });
@@ -743,27 +769,6 @@ export class GarageRuntime {
     if (!this.episode) return;
     const episode = this.episode, native = this.adapter?.status(now);
     if (!episode.accounting) { this.finishEpisode('incomplete', 'unsupported-accounting-version'); return; }
-    if (archivedEpisode(episode)) {
-      // Archived dynamics cannot be executed as the new algorithm. Keep the old
-      // accounting untouched except its qualification and retain the real
-      // restoration obligation until both measured locations recover.
-      episode.accounting.qualified = false; episode.phase = 'recovery'; episode.reason = 'archived-model-recovery';
-      const warm = observation.available === true && !native?.restorePending && this.protection?.requiredFresh
-        && ['rear', 'front'].every(location => finite(observation[`${location}C`])
-          && observation[`${location}C`] >= episode.initialObservation?.[`${location}C`]
-          && !this.exposure.locations[location].uncertain)
-        && reserveRecovered(this.exposure, episode.initialExposure, this.settings.protection.marginC);
-      const continuous = finite(episode.archivalLastAt) && now >= episode.archivalLastAt
-        && now - episode.archivalLastAt <= this.settings.maxSensorAgeMs;
-      episode.warmSince = warm ? continuous ? episode.warmSince ?? now : now : null;
-      const normalRecovered = sustainedNormalRecovery(episode, observation, native, this.protection, this.exposure, this.settings, now);
-      episode.archivalLastAt = now;
-      if (warm && now - episode.warmSince >= this.settings.minOnMs) this.finishEpisode('incomplete', 'archived-model-warmth-restored');
-      else if (normalRecovered)
-        this.finishEpisode('incomplete', 'archived-model-warm-native-operation', null, { resetNormalReference: true });
-      else this.saveEpisode();
-      return;
-    }
     const currentPrice = observation.priceCtPerKwh;
     const previous = episode.accounting.previous;
     const previousEnd = Math.min(now, previous.priceEndAt ?? episode.accounting.at);

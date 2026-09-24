@@ -18,7 +18,7 @@ async function fixture(t, saved, ownership) {
   const dbPath = join(directory, 'snapshot.sqlite'), store = new Store(dbPath);
   store.event('decision', { input: 'mqtt', mode: 'monitoring' }, snapshotAt);
   store.setState('charging:mqtt', saved);
-  if (ownership) store.setState('charging:mqtt:charger1:ownership', ownership);
+  if (ownership) store.setState('charging:mqtt:charger1:synthetic-association:ownership', ownership);
   store.close();
   const raw = new DatabaseSync(dbPath); raw.exec('PRAGMA journal_mode=DELETE'); raw.close();
   const digest = () => createHash('sha256').update(readFileSync(dbPath)).digest('hex');
@@ -41,7 +41,7 @@ test('read-only replica shows saved charging preferences, SoC and ownership at t
   const plan = { state: 'waiting', reason: 'cheapest-feasible-start', startAt: snapshotAt + 3600_000,
     deadlineAt: snapshotAt + 4 * 3600_000, finishAt: snapshotAt + 3 * 3600_000, requiredGridKwh: 24, feasible: true };
   const owned = { planId: 'snapshot-plan', startAt: plan.startAt, confirmedAt: snapshotAt - 10_000, fingerprint: 'invented-fingerprint' };
-  const ownership = { version: 1, phase: 'waiting', owned,
+  const ownership = { version: 5, phase: 'waiting', owned,
     released: false, manual: null, reason: 'Native delayed start confirmed.' };
   const view = { settings, chargers: CHARGER_DEFINITIONS.map(definition => {
     const first = definition.id === 'charger1';
@@ -52,15 +52,15 @@ test('read-only replica shows saved charging preferences, SoC and ownership at t
       automaticSoc: first ? automaticSoc : null, plan: first ? plan : null,
       forecast: null, mqtt: { connected: true, subscribed: true, reason: null }, error: null };
   }), coordination: null, error: null };
-  // A publication from before the fixed-loss rule retains its own assumption.
-  view.chargers[0].configuration.efficiency = .9;
-  view.chargers[0].requiredGridKwh = 62 * (view.chargers[0].values.minimumSoc.value - 32) / 100 / .9;
+  // The snapshot keeps the primary's current connection assumptions frozen.
+  view.chargers[0].configuration.efficiency = .925;
+  view.chargers[0].requiredGridKwh = 62 * (view.chargers[0].values.minimumSoc.value - 32) / 100 / .925;
   view.chargers[0].referenceGridKwh = view.chargers[0].requiredGridKwh;
   view.chargers[0].requiredGridKwh -= 2;
   view.chargers[0].progress = { creditedGridKwh: 2, remainingGridKwh: view.chargers[0].requiredGridKwh,
     basis: { source: 'integrated-measured-power', lastMeasuredAt: snapshotAt - 10_000 } };
-  const { app, root, digest, originalDigest, advance } = await fixture(t, { version: 2, settings, chargers: {
-    charger1: { automaticSoc, plan }, charger2: { automaticSoc: null, plan: null },
+  const { app, root, digest, originalDigest, advance } = await fixture(t, { version: 5, settings, chargers: {
+    charger1: { association: 'synthetic-association', plan }, charger2: { automaticSoc: null, plan: null },
   }, view }, ownership);
   const status = await (await fetch(`${root}/api/status`)).json();
   assert.equal(status.role, 'replica');
@@ -77,7 +77,7 @@ test('read-only replica shows saved charging preferences, SoC and ownership at t
   assert.equal(charger1.control.released, false, 'Elapsed viewer time never releases a saved charging plan');
   assert.equal(charger1.values.soc.source, 'mqtt', 'SoC source is resolved at the source snapshot boundary');
   assert.equal(charger1.values.soc.value, 32);
-  assert.equal(charger1.configuration.efficiency, .9, 'The current viewer must not replace a recorded primary energy assumption');
+  assert.equal(charger1.configuration.efficiency, .925, 'The current viewer must not replace a recorded primary energy assumption');
   assert.equal(charger1.requiredGridKwh, view.chargers[0].requiredGridKwh);
   assert.deepEqual(charger1.progress, view.chargers[0].progress, 'Measured energy credit stays frozen at publication');
   assert.deepEqual(charger1.automaticSoc, automaticSoc);
@@ -112,9 +112,9 @@ test('replica preserves independent vehicle identification, selected values and 
   charger.vehicleMqtt = { provider: 'bmw-cardata', brokerConnected: true, subscribed: true, lastLiveAt: snapshotAt - 30_000 };
   const feed = { id: 'bmw', label: 'BMW', provider: 'bmw-cardata', topic: 'stmq/vehicles/bmw',
     usedByChargerId: 'charger1', reception: charger.vehicleMqtt };
-  const { app, root, digest, originalDigest, advance } = await fixture(t, { version: 4, settings,
+  const { app, root, digest, originalDigest, advance } = await fixture(t, { version: 5, settings,
     vehicleFeeds: { bmw: { reading: automaticSoc } }, chargers: { charger1: {}, charger2: {} },
-    view: { chargers: [charger], vehicleFeeds: [feed] } });
+    view: { chargers: [charger, buildCharger({definition:CHARGER_DEFINITIONS[1], settings:settings.chargers.charger2, now:snapshotAt})], vehicleFeeds: [feed] } });
   const charging = app.status().charging, actual = charging.chargers[0];
   for (const key of ['vehicle', 'values', 'automatic', 'automaticSoc', 'targetSelection', 'sessionCost', 'progress', 'configuration'])
     assert.deepEqual(actual[key], charger[key], `${key} remains the primary's published value`);
@@ -133,16 +133,7 @@ test('replica preserves independent vehicle identification, selected values and 
   assert.equal(digest(), originalDigest);
 });
 
-test('a legacy replica without a saved charger view never invents an energy assumption or fresh estimate', async t => {
-  const settings = chargingSettings();
-  const { app } = await fixture(t, { version: 1, settings, chargers: { charger1: {
-    automaticSoc: { soc: 40, measuredAt: snapshotAt - 60_000, readingId: 'legacy-soc' },
-    plan: { requiredGridKwh: 17, deadlineAt: snapshotAt + 3600_000 },
-  } } });
-  const [one, two] = app.status().charging.chargers;
-  assert.equal(one.values.soc.value, 40);
-  assert.equal(one.requiredGridKwh, 17, 'Only the primary plan can supply a saved energy requirement');
-  assert.equal(one.configuration.efficiency, null);
-  assert.equal(two.requiredGridKwh, null);
-  assert.equal(two.configuration.efficiency, null);
+test('replica rejects unsupported development charging payloads', async t => {
+  const { app } = await fixture(t, { version: 1, settings: chargingSettings(), chargers: {} });
+  assert.throws(() => app.status(), /Unsupported charging snapshot/);
 });

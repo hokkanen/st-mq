@@ -10,8 +10,9 @@ import { indoorAverage } from '../src/domain/indoor-sensors.js';
 import { lastIndoorReading, indoorReadingUsable } from '../src/app/indoor-readings.js';
 import { addSensorChange } from '../src/app/sensor-changes.js';
 import { restoreAdaptiveCheckpoint } from '../src/control/adaptive-learning.js';
-import { appendLearningRecord, applyLearningRecord, committedLearningSample, recordLearningContext,
-  replayLearningJournal, LEARNING_WINDOW_MS, LEARNING_ALGORITHM } from '../src/app/committed-learning.js';
+import { applyLearningRecord, committedLearningSample, recordLearningContext,
+  replayLearningJournal, LEARNING_WINDOW_MS, LEARNING_ALGORITHM} from '../src/app/committed-learning.js';
+import { appendLearningRecord } from './helpers/home-learning-fixture.js';
 
 const start = Date.parse('2026-01-01T00:00:00Z'), W = LEARNING_WINDOW_MS;
 const config = { indoorSensorWeights: { indoor_temperature: 1, downstairs_temperature: 1, bedroom_temperature: 1 } };
@@ -105,7 +106,7 @@ test('age-only stale publications remain genuine inputs while invalid measuremen
   assert.equal(lastIndoorReading(store, { signal: 'garage_temperature', at, input: 'providers' }).value, -8);
 });
 
-for (const legacy of [false, true]) test(`${legacy ? 'Legacy ambiguous stale' : 'Recorded out-of-order'} input cannot replace a newer compressed room update`, t => {
+test('Recorded out-of-order input cannot replace a newer compressed room update', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   const recorder = new Recorder(store, { config: { maxIntervalMs: 60 * 60_000 } });
   const signal = 'bedroom_temperature';
@@ -115,8 +116,8 @@ for (const legacy of [false, true]) test(`${legacy ? 'Legacy ambiguous stale' : 
   const initial = recorder.record(observation(20, 1));
   assert.equal(recorder.record(observation(20, 61)).saved, false, 'The newer genuine observation is represented by coverage');
   const delayed = observation(25, 31, 121);
-  const delayedId = legacy ? store.observation({ ...delayed, quality: ['stale'],
-    raw: { ...delayed.raw, recorder: { status: 'stale' } } }) : recorder.record(delayed).id;
+  const delayedId = recorder.record(delayed).id;
+  assert.ok(store.db.prepare('SELECT quality FROM observations WHERE id=?').get(delayedId).quality.includes('out-of-order-source-time'));
   const originalRow = store.db.prepare('SELECT * FROM observations WHERE id=?').get(delayedId);
   const held = lastIndoorReading(store, { signal, at: start + 121_000, input: 'providers' });
   assert.equal(held.value, 20); assert.equal(held.id, initial.id);

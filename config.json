@@ -138,7 +138,45 @@
     "charging": {
       "chargers": {
         "charger1": {},
-        "charger2": {}
+        "charger2": {
+          "enabled": false,
+          "profile": "top-ac-portable",
+          "deviceId": "",
+          "model": "",
+          "firmware": "",
+          "topicPrefix": "",
+          "associationVersion": 1,
+          "verified": false,
+          "serviceId": 0,
+          "minimumCurrentA": 6,
+          "maximumCurrentA": 16,
+          "currentStepA": 1,
+          "limiterEnabled": false,
+          "fallbackCurrentA": 12,
+          "mainFuseA": [
+            25,
+            25,
+            25
+          ],
+          "marginA": [
+            1,
+            1,
+            1
+          ],
+          "phaseMap": [
+            0,
+            1,
+            2
+          ],
+          "additiveCurrentVerified": false,
+          "maxAgeMs": 15000,
+          "maxSkewMs": 5000,
+          "dwellMs": 30000,
+          "rampA": 2,
+          "connectedStates": [],
+          "disconnectedStates": [],
+          "chargingStates": []
+        }
       },
       "vehicles": {
         "bmw": {
@@ -173,12 +211,7 @@
       "pw": "",
       "dhwr_topic": "stmq/home/dhwr/command/switch",
       "temperature_report_interval_minutes": 70,
-      "temperature_report_grace_seconds": 300,
-      "indoor_temperature_topic": "",
-      "downstairs_temperature_topic": "",
-      "bedroom_temperature_topic": "",
-      "garage_temperature_topic": "",
-      "garage_temperature_2_topic": ""
+      "temperature_report_grace_seconds": 300
     },
 
     "entsoe": {
@@ -195,12 +228,10 @@
 
     "teslamate": {
       "enabled": true,
-      "car_id": "1",
-      "home_geofence": "Home",
+      "carId": "1",
+      "homeGeofence": "Home",
       "namespace": "",
-      "charger_assignment": "auto",
-      "charger_identification": true,
-      "max_age_seconds": 180
+      "maxAgeMs": 180000
     },
 
     "equipment": {
@@ -451,35 +482,6 @@
       "timeout_seconds": 3600,
       "stale_seconds": 180,
       "ssh_config": ""
-    },
-
-    "shelly": {
-      "poll_seconds": 30,
-      "max_age_seconds": 120,
-      "garage": {
-        "enabled": false,
-        "generation": 2,
-        "topic_prefix": "",
-        "switch_id": 0,
-        "temperature_id": 100,
-        "controls_heat": false,
-        "reduction_on": true
-      },
-      "heat_savings": {
-        "enabled": false,
-        "generation": 3,
-        "topic_prefix": "",
-        "switch_id": 0,
-        "controls_heat": true,
-        "reduction_on": true
-      },
-      "caravan": {
-        "enabled": false,
-        "generation": 2,
-        "topic_prefix": "",
-        "switch_id": 0,
-        "nominal_voltage": 230
-      }
     }
   },
 
@@ -588,11 +590,45 @@
 
     "charging": {
       "chargers": {
-        "charger1": {
-          "mqttTopic": "str?"
-        },
+        "charger1": {},
         "charger2": {
-          "mqttTopic": "str?"
+          "enabled": "bool",
+          "profile": "str?",
+          "deviceId": "str?",
+          "model": "str?",
+          "firmware": "str?",
+          "topicPrefix": "str?",
+          "associationVersion": "int(0,300000)",
+          "verified": "bool",
+          "serviceId": "int(0,300000)",
+          "minimumCurrentA": "int(0,300000)",
+          "maximumCurrentA": "int(0,300000)",
+          "currentStepA": "int(0,300000)",
+          "limiterEnabled": "bool",
+          "fallbackCurrentA": "int(0,300000)",
+          "mainFuseA": [
+            "int"
+          ],
+          "marginA": [
+            "int"
+          ],
+          "phaseMap": [
+            "int"
+          ],
+          "additiveCurrentVerified": "bool",
+          "maxAgeMs": "int(0,300000)",
+          "maxSkewMs": "int(0,300000)",
+          "dwellMs": "int(0,300000)",
+          "rampA": "int(0,300000)",
+          "connectedStates": [
+            "str"
+          ],
+          "disconnectedStates": [
+            "str"
+          ],
+          "chargingStates": [
+            "str"
+          ]
         }
       },
       "vehicles": {
@@ -628,12 +664,7 @@
       "pw": "password",
       "dhwr_topic": "str",
       "temperature_report_interval_minutes": "float(0,1440)",
-      "temperature_report_grace_seconds": "float(0,900)",
-      "indoor_temperature_topic": "str?",
-      "downstairs_temperature_topic": "str?",
-      "bedroom_temperature_topic": "str?",
-      "garage_temperature_topic": "str?",
-      "garage_temperature_2_topic": "str?"
+      "temperature_report_grace_seconds": "float(0,900)"
     },
 
     "entsoe": {
@@ -653,12 +684,10 @@
 
     "teslamate": {
       "enabled": "bool",
-      "car_id": "str",
-      "home_geofence": "str",
+      "carId": "str",
+      "homeGeofence": "str",
       "namespace": "str?",
-      "charger_assignment": "list(auto|bmw|easee)",
-      "charger_identification": "bool",
-      "max_age_seconds": "int(30,600)"
+      "maxAgeMs": "int(30000,600000)"
     },
 
     "equipment": {
@@ -767,35 +796,6 @@
       "timeout_seconds": "int(30,86400)",
       "stale_seconds": "int(30,604800)",
       "ssh_config": "str?"
-    },
-
-    "shelly": {
-      "poll_seconds": "int(5,300)",
-      "max_age_seconds": "int(30,900)",
-      "garage": {
-        "enabled": "bool",
-        "generation": "int(1,4)",
-        "topic_prefix": "str?",
-        "switch_id": "int(0,3)",
-        "temperature_id": "int(0,255)",
-        "controls_heat": "bool",
-        "reduction_on": "bool"
-      },
-      "heat_savings": {
-        "enabled": "bool",
-        "generation": "int(1,4)",
-        "topic_prefix": "str?",
-        "switch_id": "int(0,3)",
-        "controls_heat": "bool",
-        "reduction_on": "bool"
-      },
-      "caravan": {
-        "enabled": "bool",
-        "generation": "int(1,4)",
-        "topic_prefix": "str?",
-        "switch_id": "int(0,3)",
-        "nominal_voltage": "int(100,260)"
-      }
     }
   }
 }

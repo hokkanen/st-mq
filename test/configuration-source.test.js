@@ -99,14 +99,22 @@ test('HA import validates before saving, merges current options and deletes only
 test('HA reload with no import reads fresh Supervisor settings instead of stale options export', async t => {
   const f = fixture(t);
   f.state.current.controller.mode = 'active';
-  f.state.current.easee.access_token = 'synthetic-retired-token';
   const transaction = await f.source.prepare();
   assert.equal(transaction.config.options.controller.mode, 'active');
-  assert.equal(transaction.config.options.easee.access_token, undefined);
   assert.equal(transaction.imported, false);
   await transaction.persist();
   assert.deepEqual(await transaction.complete(), { cleanupPending: false });
   assert.equal(f.posts(), 0);
+});
+
+test('HA rejects retired native token fields without translating or saving settings', async t => {
+  for (const field of ['access_token','refresh_token']) {
+    const f = fixture(t);
+    f.state.current.easee[field] = 'synthetic-retired-token';
+    await assert.rejects(f.source.prepare(), error => error.message === `Unknown configuration field: easee.${field}.`);
+    assert.equal(f.state.current.easee[field], 'synthetic-retired-token');
+    assert.equal(f.posts(),0);
+  }
 });
 
 test('HA rejects explicit null and new secret references before saving', async t => {

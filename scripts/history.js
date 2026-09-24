@@ -2,10 +2,10 @@
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Store } from '../src/storage/store.js';
-import { importCsv, exportCsv, seedHandoffObservations } from '../src/storage/history.js';
+import { importCsv, exportCsv } from '../src/storage/history.js';
 
 const usage = `Offline history administration (does not start device providers).
-  node scripts/history.js import [--db data/st-mq.sqlite] [--file FILE --kind stmq|easee]
+  node scripts/history.js import --file FILE --kind stmq|easee [--db data/st-mq.sqlite]
   node scripts/history.js summary [--db DB]
   node scripts/history.js export --output NEW.csv [--signal SIGNAL] [--from ISO --to ISO] [--db DB]
   node scripts/history.js backup --output NEW.sqlite [--db DB]
@@ -13,7 +13,7 @@ const usage = `Offline history administration (does not start device providers).
   node scripts/history.js tail [--follow] [--after ID] [--limit 100] [--db DB]
   node scripts/history.js counter --signal SIGNAL --value NUMBER --date YYYY-MM-DD [--note TEXT] [--db DB]
   node scripts/history.js annotate --kind KIND --from ISO --to ISO --note TEXT [--boundary-confidence approximate] [--db DB]
-Import defaults to the two CODEX CSVs and preserves dated handoff counters/absence annotations.
+Import explicitly selects a read-only v0.7.5 st-mq.csv or easee.csv source.
 ISO timestamps require Z or an explicit UTC offset. Query end times are exclusive.
 Backups, restores and CSV exports require a new destination. Restore while the application is stopped.`;
 
@@ -60,11 +60,7 @@ export async function main(argv = process.argv.slice(2)) {
     let result;
     switch (command) {
       case 'import': {
-        if (Boolean(options.file) !== Boolean(options.kind)) throw new Error('--file and --kind must be supplied together');
-        seedHandoffObservations(store);
-        const inputs = options.file ? [[options.file, options.kind]] : [['CODEX/st-mq-corrected.csv', 'stmq'], ['CODEX/easee.csv', 'easee']];
-        result = [];
-        for (const [file, kind] of inputs) result.push(await importCsv(store, file, { kind }));
+        result = await importCsv(store, required(options, 'file'), { kind: required(options, 'kind') });
         break;
       }
       case 'summary': result = store.summary(); break;

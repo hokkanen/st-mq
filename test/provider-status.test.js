@@ -6,6 +6,8 @@ import { ELECTRICITY_FIELDS } from '../src/acquisition/devices.js';
 
 const now = Date.parse('2026-09-07T10:00:00Z');
 const options = { now, formatTime: value => new Date(value).toISOString().slice(11, 16) };
+const easeeReadings = () => ({ charger: { qualityIssues: [], error: null, lastSuccessAt: now },
+  property: { qualityIssues: [], error: null, lastSuccessAt: now } });
 const temperature = (source, value = 21, extra = {}) => ({ source, value, observedAt: now, stale: false, ...extra });
 
 test('dashboard groups measured temperature channels under their actual sources and puts forecast last', () => {
@@ -158,76 +160,26 @@ test('H66 provider catalogue covers every decoded register without claiming tari
     /does not confirm that tariff control is active/);
 });
 
-test('electricity groups both connections and exposes Charger 2 totals without inventing phase measurements', () => {
-  const entries = dashboardProviders({ providers: { easee: { status: 'ok', lastSuccessAt: now },
-    market: { status: 'ok' }, teslamate: { status: 'ok', reason: 'recording', lastMessageAt: now } } }, options);
-  assert.deepEqual(entries.map(row => row.key), ['electricity', 'market']);
-  const [grouped] = entries;
-  assert.equal(grouped.display.title, 'Electricity consumption · Easee, Teslamate');
-  assert.equal(grouped.overviewTitle, 'Electricity consumption');
-  assert.equal(grouped.source, 'Easee, Teslamate');
-  assert.equal(grouped.display.state, 'Available');
-  assert.match(grouped.display.detail, /Property & Charger 1 · Easee: Available.*Last successful download 10:00/);
-  assert.match(grouped.display.detail, /Charger 2 · Teslamate: Available.*Recording Charger 2.*Last MQTT message 10:00/);
-  const tesla = providerSeries('teslamate');
-  assert.deepEqual(tesla.flatMap(row => row.signals), ['charger2_power', 'ev2_energy', 'tesla_session_energy_check']);
-  assert.deepEqual(grouped.series.filter(row => row.label.startsWith('Charger 2')),
-    tesla.map(row => ({ ...row, state: 'Available', tone: 'available' })));
-  assert.match(tesla[0].detail, /interval-average.*recorded total energy.*Phase distribution is unknown/);
-  assert.match(tesla[1].detail, /at home.*gap.*Charger 1.*double counting/);
-  assert.match(tesla[2].detail, /battery.*electrical input.*charging losses.*does not correct recorded energy or train/);
+test('electricity groups only physical meters and keeps Tesla vehicle health separate',()=>{
+  const entries=dashboardProviders({providers:{easee:{status:'ok',currentReadings:easeeReadings()},'shelly-evse':{status:'ok',reason:'physical-meter'},teslamate:{status:'ok',reason:'vehicle-observation'}}},options);
+  const group=entries.find(row=>row.key==='electricity');
+  assert.equal(group.source,'Easee, Shelly EVSE');assert.equal(group.display.state,'Available');
+  const physical=providerSeries('shelly-evse');assert.deepEqual(physical.flatMap(row=>row.signals),['charger2_power','ev2_energy','shelly_session_energy_check']);
+  assert.deepEqual(providerSeries('teslamate'),[]);
+  assert.match(group.display.detail,/Physical charger meter/);
 });
-
-test('either electricity source can request attention without hiding the other source diagnostics', () => {
-  const status = { providers: { easee: { status: 'ok' }, teslamate: { status: 'error', reason: 'mqtt-disconnected' } } };
-  let [grouped] = dashboardProviders(status, options);
-  assert.equal(grouped.display.state, 'Needs attention');
-  assert.equal(grouped.display.attention, true);
-  assert.match(grouped.display.detail, /Property & Charger 1 · Easee: Available/);
-  assert.match(grouped.display.detail, /Charger 2 · Teslamate: Needs attention.*MQTT connection is unavailable/);
-  status.providers.easee = { status: 'error', error: 'HTTP-429', nextAttemptAt: now + 300_000 };
-  status.providers.teslamate = { status: 'ok', reason: 'not-charging' };
-  [grouped] = dashboardProviders(status, options);
-  assert.equal(grouped.display.attention, true);
-  assert.match(grouped.display.detail, /Rate limited \(HTTP 429\).*Next try 10:05/);
-  assert.match(grouped.display.detail, /Charger 2 · Teslamate: Available.*recording is idle/);
-  status.providers.easee = { status: 'ok' };
-  status.providers.teslamate = { status: 'degraded', reason: 'teslamate-stale' };
-  assert.match(dashboardProviders(status, options)[0].display.detail, /Live charging readings are out of date/);
-  status.providers.teslamate.reason = 'duplicate-suspected';
-  assert.match(dashboardProviders(status, options)[0].display.detail, /Possible overlap with Charger 1/);
+test('physical Charger 2 commissioning and unavailable telemetry remain visible',()=>{
+  const providers={easee:{status:'ok',currentReadings:easeeReadings()},'shelly-evse':{status:'degraded',reason:'commissioning-required'}};
+  let group=dashboardProviders({providers},options).find(row=>row.key==='electricity');
+  assert.equal(group.display.attention,true);assert.match(group.display.detail,/verified model, firmware/);
+  providers['shelly-evse']={status:'waiting',reason:'awaiting-mqtt'};group=dashboardProviders({providers},options).find(row=>row.key==='electricity');
+  assert.equal(group.display.state,'Partly available');assert.match(group.display.detail,/physical Charger 2 MQTT/);
+  providers['shelly-evse']={status:'disabled',reason:'not-enabled'};assert.equal(dashboardProviders({providers},options).find(row=>row.key==='electricity').display.state,'Available');
 });
-
-test('electricity distinguishes waiting from idle, optional disabled sources and TeslaMate-only operation', () => {
-  const status = { providers: { easee: { status: 'ok' }, teslamate: { status: 'waiting', reason: 'awaiting-readings' } } };
-  let [grouped] = dashboardProviders(status, options);
-  assert.equal(grouped.display.state, 'Partly available');
-  assert.equal(grouped.display.attention, false);
-  for (const reason of ['not-charging', 'away-or-unknown-location', 'assigned-to-easee']) {
-    status.providers.teslamate = { status: 'ok', reason };
-    [grouped] = dashboardProviders(status, options);
-    assert.equal(grouped.display.state, 'Available');
-    assert.equal(grouped.display.attention, false);
-  }
-  status.providers.teslamate = { status: 'disabled', reason: 'not-enabled' };
-  [grouped] = dashboardProviders(status, options);
-  assert.equal(grouped.display.state, 'Available');
-  assert.match(grouped.display.detail, /Charger 2 · Teslamate: Not enabled/);
-  delete status.providers.easee;
-  status.providers.teslamate = { status: 'ok', reason: 'recording' };
-  [grouped] = dashboardProviders(status, options);
-  assert.equal(grouped.key, 'electricity');
-  assert.equal(grouped.display.state, 'Available');
-  assert.match(grouped.display.detail, /Property & Charger 1 · Easee: Not configured/);
-});
-
-test('electricity descriptions never include arbitrary MQTT identifiers or diagnostic content', () => {
-  const untrusted = 'invented-private-device';
-  for (const reason of [untrusted, 'constructor', '__proto__']) {
-    const [grouped] = dashboardProviders({ providers: { teslamate: { status: 'degraded', reason,
-      suppressed: untrusted, source: untrusted, device: untrusted, topic: untrusted, body: untrusted } } }, options);
-    assert.equal(grouped.display.attention, true);
-    assert.doesNotMatch(JSON.stringify(grouped), /invented-private-device|constructor|__proto__/);
+test('unknown physical EVSE diagnostics never expose raw payloads',()=>{
+  for(const reason of ['synthetic-private-device','constructor','__proto__']) {
+    const display=describeProvider('shelly-evse',{status:'degraded',reason},options);
+    assert.equal(display.attention,true);assert.doesNotMatch(JSON.stringify(display),/synthetic-private|constructor|__proto__/);
   }
 });
 
@@ -385,12 +337,11 @@ test('waiting providers show their scheduled download and distinguish a due requ
 
 test('Easee describes old readings without reporting different measurement times', () => {
   const result = describeProvider('easee', { status: 'degraded', lastSuccessAt: now, error: null,
-    nextAttemptAt: now + 300_000, qualityIssues: ['stale', 'asynchronous_snapshot'] }, options);
+    nextAttemptAt: now + 300_000, currentReadings: { property: { qualityIssues: ['property_stale', 'asynchronous_snapshot'] } } }, options);
   assert.equal(result.state, 'Needs attention');
   assert.equal(result.attention, true);
   assert.match(result.detail, /Last successful download 10:00/);
-  assert.match(result.detail, /Some readings have old source timestamps/);
-  assert.match(result.detail, /Charger 1 or property readings: Some readings have old source timestamps/);
+  assert.match(result.detail, /Property current readings have old source timestamps/);
   assert.doesNotMatch(result.detail, /measured at different times|asynchronous/);
   assert.doesNotMatch(result.detail, /download failed|No successful download|Next try/);
 });
@@ -401,7 +352,7 @@ test('Easee names stream and REST acquisition without warning on working backup'
     ['retrying', 'rest', /Live stream reconnecting\. Last acquisition used REST backup\./],
     ['connected', 'mixed', /Last acquisition combined live stream readings and REST backup\./],
   ]) {
-    const health = { status: 'ok', lastSuccessAt: now, qualityIssues: [], transport,
+    const health = { status: 'ok', lastSuccessAt: now, currentReadings: easeeReadings(), transport,
       stream: { state, connected: state === 'connected' } };
     const display = describeProvider('easee', health, options);
     assert.equal(display.state, 'Available');
@@ -418,7 +369,7 @@ test('Easee names stream and REST acquisition without warning on working backup'
 test('Easee stream connectivity does not hide stale property readings or failed backup', () => {
   for (const transport of ['stream', 'rest', 'mixed']) {
     const stale = describeProvider('easee', { status: 'degraded', lastSuccessAt: now,
-      transport, stream: { state: 'connected', connected: true }, qualityIssues: ['property_stale'],
+      transport, stream: { state: 'connected', connected: true }, currentReadings: { property: { qualityIssues: ['property_stale'] } },
       staleSourceTimes: { property_stale: now - 3_600_000 } }, options);
     assert.equal(stale.attention, true);
     assert.equal(stale.state, 'Needs attention');
@@ -446,7 +397,7 @@ test('Easee stream lifecycle and transport metadata only produce known display t
     assert.doesNotMatch(JSON.stringify(display), /private-secret|provider\.example|https:/);
   }
   for (const state of [secret, 'constructor', '__proto__', {}, null]) {
-    const display = describeProvider('easee', { status: 'ok', lastSuccessAt: now,
+    const display = describeProvider('easee', { status: 'ok', lastSuccessAt: now, currentReadings: easeeReadings(),
       stream: { state, connected: true }, transport: secret }, options);
     assert.equal(display.detail, 'Last successful download 10:00.');
   }
@@ -455,7 +406,7 @@ test('Easee stream lifecycle and transport metadata only produce known display t
 test('Easee ignores timestamp mismatch and charger age in cached degraded statuses', () => {
   for (const qualityIssues of [['asynchronous_snapshot'], ['charger_stale'], ['charger_stale', 'asynchronous_snapshot']]) {
     for (const status of ['ok', 'degraded']) {
-      const display = describeProvider('easee', { status, qualityIssues, error: null, failures: 1 }, options);
+      const display = describeProvider('easee', { status, currentReadings: { charger: { qualityIssues } }, error: null, failures: 1 }, options);
       assert.equal(display.state, 'Available');
       assert.equal(display.attention, false);
       assert.doesNotMatch(display.detail, /measured at different times|asynchronous/);
@@ -495,9 +446,6 @@ test('scoped charger age stays informational and scopes all other current notes'
   assert.equal(display.attention, false);
   assert.match(display.detail, /Charger 1 current readings: oldest source reading is 1 h 30 min old\. Attention threshold 30 min/);
   assert.doesNotMatch(display.detail, /[Pp]roperty|different times|asynchronous/);
-  informational.currentReadings.charger.qualityIssues = ['stale', 'asynchronous_snapshot'];
-  assert.equal(describeProvider('easee', informational, options).attention, false,
-    'Generic old flags must use the known charger scope');
   for (const key of ['charger', 'property']) {
     for (const flag of ['future_source_time', 'source_time_unknown', 'implausible_current', 'negative_current',
       'invalid_numeric', 'invalid_unit', 'conflicting_duplicate', 'missing', 'provider_error', 'missing_configuration']) {
@@ -534,13 +482,12 @@ test('cached request failures do not present generated empty fields as defective
   assert.doesNotMatch(display.detail, /missing|no source timestamp/);
 });
 
-test('Easee download sentence is shared across healthy, legacy and partially successful snapshots', () => {
+test('Easee download sentence is shared across healthy and partially successful current snapshots', () => {
   for (const health of [
     { lastSuccessAt: now, currentReadings: {
       charger: { lastSuccessAt: now, qualityIssues: [] }, property: { lastSuccessAt: now, qualityIssues: [] },
     } },
     { lastSuccessAt: now, currentReadings: { charger: { lastSuccessAt: now, qualityIssues: [] } } },
-    { lastSuccess: now },
   ]) {
     assert.equal(describeProvider('easee', { status: 'ok', ...health }, options).detail,
       'Last successful download 10:00.');
@@ -555,9 +502,9 @@ test('Easee download sentence is shared across healthy, legacy and partially suc
 
 test('download errors retain retry details alongside existing reading quality warnings', () => {
   const result = describeProvider('easee', { status: 'error', lastSuccessAt: now - 3_600_000,
-    error: 'HTTP-429', nextAttemptAt: now + 300_000, qualityIssues: ['stale'] }, options);
+    error: 'HTTP-429', nextAttemptAt: now + 300_000, currentReadings: { property: { qualityIssues: ['property_stale'], error: 'HTTP-429' } } }, options);
   assert.equal(result.attention, true);
-  assert.match(result.detail, /Some readings have old source timestamps/);
+  assert.match(result.detail, /Property current readings have old source timestamps/);
   assert.match(result.detail, /Rate limited \(HTTP 429\)/);
   assert.match(result.detail, /Next try 10:05/);
   assert.doesNotMatch(result.detail, /Next download/);
@@ -570,7 +517,10 @@ test('Easee identifies old charger and property timestamps and only property sta
     [['charger_stale', 'property_stale'], 'degraded', true, true],
     [[], 'ok', false, false],
   ]) {
-    const result = describeProvider('easee', { status, lastSuccessAt: now, qualityIssues }, options);
+    const result = describeProvider('easee', { status, lastSuccessAt: now, currentReadings: {
+      charger: { qualityIssues: qualityIssues.filter(flag => flag === 'charger_stale') },
+      property: { qualityIssues: qualityIssues.filter(flag => flag === 'property_stale') },
+    } }, options);
     assert.equal(result.state, property ? 'Needs attention' : 'Available');
     assert.equal(result.attention, property);
     assert.equal(result.detail.includes('Charger 1 current readings have old source timestamps.'), charger);
@@ -584,7 +534,7 @@ test('informational charger timestamps do not hide other Easee problems', () => 
     { status: 'degraded', qualityIssues: ['charger_stale', 'implausible_current'] },
     { status: 'error', qualityIssues: ['charger_stale'], error: 'HTTP-503' },
   ]) {
-    const result = describeProvider('easee', { lastSuccessAt: now, ...health }, options);
+    const result = describeProvider('easee', { lastSuccessAt: now, ...health, currentReadings: { charger: { qualityIssues: health.qualityIssues, error: health.error } } }, options);
     assert.equal(result.state, 'Needs attention');
     assert.equal(result.attention, true);
     assert.match(result.detail, /Charger 1 current readings have old source timestamps/);
@@ -596,7 +546,7 @@ test('source ages show elapsed time and the separate attention threshold for eac
   for (const [minutes, age] of [[30, '30 min'], [59.99, '1 h'], [60, '1 h'],
     [89.99, '1 h 30 min'], [90, '1 h 30 min'], [119.99, '2 h'], [120, '2 h'], [150, '2 h 30 min']]) {
     const result = describeProvider('easee', { status: 'degraded', lastSuccessAt: now,
-      qualityIssues: ['charger_stale', 'property_stale'],
+      currentReadings: { charger: { qualityIssues: ['charger_stale'] }, property: { qualityIssues: ['property_stale'] } },
       staleSourceTimes: { charger_stale: now - 48 * 3_600_000, property_stale: now - minutes * 60_000 } }, options);
     assert.ok(result.detail.includes(`Property current readings: oldest source reading is ${age} old.`), result.detail);
     assert.match(result.detail, /Charger 1 current readings: oldest source reading is 2 d old\./);
@@ -608,10 +558,10 @@ test('source ages show elapsed time and the separate attention threshold for eac
   assert.match(describeProvider('temperatures', health, { ...options, now: now + 30 * 60_000 }).detail, /2 h 45 min old.*Attention threshold 2 h/);
 });
 
-test('missing or invalid age metadata keeps legacy warnings without displaying provider text', () => {
+test('missing or invalid age metadata keeps current scoped warnings without displaying provider text', () => {
   for (const at of [undefined, null, NaN, Infinity, -1, 0, now + 60_000, String(now - 3_600_000),
     'https://provider.example/?token=private-secret', { value: now - 3_600_000 }]) {
-    const result = describeProvider('easee', { status: 'ok', qualityIssues: ['charger_stale'],
+    const result = describeProvider('easee', { status: 'ok', currentReadings: { charger: { qualityIssues: ['charger_stale'] } },
       staleSourceTimes: { charger_stale: at } }, options);
     assert.match(result.detail, /Charger 1 current readings have old source timestamps\./);
     assert.equal(result.attention, false);
@@ -649,10 +599,10 @@ test('provider names and entry bullets retain individual availability in a mixed
   const [group] = dashboardProviders({ providers: {
     easee: { status: 'error', error: 'HTTP-503', currentReadings: {
       property: { qualityIssues: [], error: null }, charger: { qualityIssues: ['provider_error'], error: 'HTTP-503' },
-    } }, teslamate: { status: 'ok', reason: 'recording' },
+    } }, 'shelly-evse': { status: 'ok', reason: 'physical-meter' },
   } }, options);
   assert.deepEqual(group.sourceStates.map(({ label, tone }) => ({ label, tone })), [
-    { label: 'Easee', tone: 'attention' }, { label: 'Teslamate', tone: 'available' },
+    { label: 'Easee', tone: 'attention' }, { label: 'Shelly EVSE', tone: 'available' },
   ]);
   for (const row of group.series) assert.equal(row.tone, row.signals[0].startsWith('ev1_') ? 'attention' : 'available');
 });
@@ -759,4 +709,11 @@ test('garage front is not invented for sparse observations and valid held readin
   assert.equal(front.tone, 'attention');
   assert.equal(front.value, '15.0 °C');
   assert.match(front.detail, /Using last known reading/);
+});
+
+test('retired unscoped Easee health and lastSuccess fields do not become current device status', () => {
+  const display = describeProvider('easee', { status: 'ok', lastSuccess: now, qualityIssues: ['stale', 'property_stale'] }, options);
+  assert.equal(display.state, 'Waiting for readings');
+  assert.equal(display.detail, 'No successful download recorded. Current device reading status is unavailable.');
+  assert.doesNotMatch(display.detail, /old source|Property current|Charger 1 current/);
 });

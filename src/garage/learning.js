@@ -32,7 +32,10 @@ export function validGarageCheckpoint(checkpoint, entry, context) {
  * they never rewrite observations, journal payloads, or original forecasts. */
 export function applyGarageEntry(checkpoint, entry, context = { changes: [], revision: garageDigest([]) }) {
   if (entry.algorithmVersion !== GARAGE_ALGORITHM_VERSION) throw new Error('Unsupported garage learning algorithm');
+  if (!['sample', 'context'].includes(entry.kind)) throw new Error('Unsupported Garage journal entry kind');
   const { settings, seed, value } = entry.payload;
+  garageSettings(settings);
+  if (seed && seed.algorithm !== GARAGE_ALGORITHM_VERSION) throw new Error('Unsupported garage seed algorithm');
   if (entry.configVersion !== garageDigest(settings)) throw new Error('Garage journal configuration checksum failed');
   if (checkpoint && entry.id <= checkpoint.cursor) throw new Error('Garage journal must be replayed in order');
   let model = structuredClone(checkpoint?.model ?? seed);

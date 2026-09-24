@@ -10,7 +10,7 @@ function setup(t, { room = 20, boostC = 5, writableMaximum, circulation = true, 
   let now = START;
   const store = new Store(':memory:'), native = { '0203': room, '0212': 44, '0208': 60, '2201': 1 };
   const writes = [], commands = [], switches = [];
-  const transport = { close: async () => {}, publish: async batch => { commands.push(batch); return { status: 'mqtt', sent: true }; },
+  const transport = { targetIdentity: { tariff: 'a'.repeat(64), dhwr: 'b'.repeat(64) }, close: async () => {}, publish: async batch => { commands.push(batch); return { status: 'mqtt', sent: true }; },
     ...(circulation ? { publishDhwr: async on => { switches.push(on); return { status: 'mqtt', sent: true }; } } : {}) };
   const engine = new Engine({ store, config: { input: 'providers', settings: { mode: 'shadow' },
     control: { preheatRoomBoostC: boostC } }, clock: () => now, commandTransport: transport });

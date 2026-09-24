@@ -31,7 +31,6 @@ export function withFireplaceInputs(sample, { fireplaceEvents = [], fireplaceSta
   const ignitions = fireplaceEvents.filter(event => instant(event.litAt ?? event.at) >= start && instant(event.litAt ?? event.at) < end);
   if (ignitions.length) result.fireplaceIgnitions = ignitions.map(({ id, litAt, at, kg }) => ({ id, litAt: litAt ?? at, kg }));
   else delete result.fireplaceIgnitions;
-  if (sample.intervalInputs) result.intervalInputs = { ...sample.intervalInputs, fireplaceKgPerHour: rate };
   if (sample.inputSegments) result.inputSegments = sample.inputSegments.flatMap(segment => {
     const boundaries = [...new Set([segment.start, segment.end, ...ignitions.map(event => instant(event.litAt ?? event.at))])]
       .filter(at => at >= segment.start && at <= segment.end).sort((a, b) => a - b);
@@ -39,7 +38,7 @@ export function withFireplaceInputs(sample, { fireplaceEvents = [], fireplaceSta
       const durationHours = (to - boundaries[i]) / HOUR;
       const split = { ...segment, start: boundaries[i], end: to, durationHours,
         fireplaceKgPerHour: fireplaceRate(fireplaceEvents, boundaries[i], to) };
-      for (const key of ['energyKwh', 'compressorKwh', 'spaceHeatingAuxKwh', 'dhwAuxKwh'])
+      for (const key of ['energyKwh', 'compressorKwh', 'spaceHeatingAuxKwh', 'dhwAuxKwh', 'hydronicHeatKwh'])
         if (Number.isFinite(segment[key])) split[key] = segment[key] * (to - boundaries[i]) / (segment.end - segment.start);
       return split;
     });

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chargingSettings, mergeChargingSettings, migrateChargingSettings } from '../src/charging/settings.js';
+import { chargingSettings, mergeChargingSettings } from '../src/charging/settings.js';
 import { buildCharger, CHARGER_DEFINITIONS } from '../src/charging/model.js';
 import { acceptSocReading } from '../src/charging/soc.js';
 
@@ -24,26 +24,9 @@ test('identical preference structures retain first-use values independently and 
     assert.throws(() => mergeChargingSettings(config, patch), /Unknown/);
 });
 
-test('legacy persisted preferences migrate without restoring guessed electrical limits', () => {
-  const migrated = migrateChargingSettings({ enabled: true, minimumSoc: 77, readyBy: '07:15', manualSoc: 33,
-    capacity1Kwh: 62, capacity2Kwh: 55, efficiency1: .85, mqttTopic: 'old/vehicle',
-    installation: { mainFuseA: 35, charger1MaxA: 32, charger2MaxA: 25, circuitA: 16 } });
-  assert.equal(migrated.chargers.charger1.enabled, true);
-  assert.equal(migrated.chargers.charger1.minimumSoc, 77);
-  assert.equal(migrated.chargers.charger1.manualSoc, 33);
-  assert.equal(migrated.chargers.charger1.capacityKwh, 62);
-  assert.equal(migrated.chargers.charger2.capacityKwh, 55);
-  assert.equal(migrated.chargers.charger2.enabled, false);
-  assert.equal(Object.hasOwn(migrated, 'installation'), false);
-  assert.equal(Object.hasOwn(migrated.chargers.charger1, 'efficiency'), false);
-  assert.equal(Object.hasOwn(migrated.chargers.charger1, 'mqtt'), false);
-  assert.deepEqual(migrateChargingSettings(migrated), migrated);
-  const former = { ...config, timezone: 'UTC', readinessMarginMinutes: 15, installation: { mainFuseA: 35 },
-    chargers: { ...config.chargers, charger1: { ...config.chargers.charger1, manualSoc: 33, efficiency: .8, mqtt: { topic: 'old/vehicle' } } } };
-  const refreshed = migrateChargingSettings(former);
-  assert.equal(refreshed.chargers.charger1.manualSoc, 33);
-  assert.deepEqual(Object.keys(refreshed), ['chargers']);
-  assert.deepEqual(Object.keys(refreshed.chargers.charger1), Object.keys(config.chargers.charger1));
+test('retired native charging settings are rejected instead of translated', () => {
+  for (const old of [{enabled:true,capacity1Kwh:62}, {timezone:'UTC'}, {chargers:{charger1:{efficiency:.925}}}])
+    assert.throws(() => chargingSettings(old));
 });
 
 test('each charger uses valid automatic capacity and target before identical manual fallbacks', () => {
@@ -80,8 +63,8 @@ test('automatic SoC always wins and the remembered fallback remains available wi
   assert.equal(fallback.values.soc.source, 'manual-fallback');
 });
 
-test('grid energy applies fixed 7.5% loss even with a retired configuration override', () => {
-  const charger = make(0, { configuration: { efficiency: .8, mqttTopic: 'garage/vehicle' },
+test('grid energy applies the explicit fixed 7.5% modeling assumption', () => {
+  const charger = make(0, { configuration: {},
     telemetry: { capacityKwh: 60, soc: 40, minimumSoc: 80 } });
   assert.equal(charger.requiredGridKwh, 24 / .925);
   assert.equal(charger.configuration.efficiency, .925);

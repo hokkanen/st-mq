@@ -4,22 +4,23 @@ import { Store } from '../src/storage/store.js';
 import { Recorder } from '../src/storage/recorder.js';
 import { addSensorChange } from '../src/app/sensor-changes.js';
 import { withSensorMeasurements } from '../src/app/sensor-samples.js';
-import { committedLearningSample, recordLearningContext, appendLearningRecord, applyLearningRecord,
-  replayLearningJournal } from '../src/app/committed-learning.js';
+import { committedLearningSample, recordLearningContext, applyLearningRecord,
+  replayLearningJournal} from '../src/app/committed-learning.js';
+import { appendLearningRecord } from './helpers/home-learning-fixture.js';
 
 const MINUTE = 60_000, start = Date.parse('2026-09-13T12:00:00Z');
 
 test('unaffected temperature projection preserves exact aggregates across finer equipment segments', () => {
   const sample = { sensorInputVersion: 1, windowStart: start, windowEnd: start + 7, indoorC: 21,
     indoorSensors: { indoor_temperature: { value: 21, weight: 1, observedAt: start + 7 } },
-    outdoorC: 10.3, quality: [], intervalInputs: { outdoorC: 10.3 },
+    outdoorC: 10.3, quality: [],
     inputSegments: [{ start, end: start + 2, outdoorC: 10.3, quality: [] },
       { start: start + 2, end: start + 7, outdoorC: 10.3, quality: [] }] };
   // Resumming 10.3 over lengths 2 and 5 would produce 10.299999999999999.
   // A reset-free sample must keep its committed aggregate without a patch.
   const neutral = withSensorMeasurements(sample);
   assert.equal(neutral.outdoorC, 10.3);
-  assert.equal(neutral.intervalInputs.outdoorC, 10.3);
+  assert.equal(neutral.inputSegments[0].outdoorC, 10.3);
   assert.equal(Object.hasOwn(neutral, 'measurementInputs'), false);
   const excluded = withSensorMeasurements(sample, { measurementEpochAt: start });
   assert.equal(excluded.indoorC, null);

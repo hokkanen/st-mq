@@ -1,3 +1,4 @@
+import {Engine} from '../src/app/engine.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -171,23 +172,6 @@ test('stream sessions retain finalized comparison fields without retaining autho
   assert.equal(f.stateCalls().length, 2);
 });
 
-test('identification rechecks REST state before a limit even when cached stream state permits probing', async t => {
-  const f = deviceFixture(t);
-  let writes = 0;
-  f.http.text = async () => { writes++; return ''; };
-  await f.devices.startStreaming();
-  await f.devices.electricity({ now: f.now });
-  const charging = observations(CHARGER, START, 6.9).map(row => [183, 184, 185].includes(row.id) ? { ...row, value: 10 } : row);
-  f.stream.publish(CHARGER, charging);
-  const control = f.devices.chargerIdentificationControl();
-  assert.equal((await control.read()).safeToProbe, true);
-  const previousGets = f.stateCalls().length;
-  f.handler = async () => charging.map(row => row.id === 31 ? { ...row, value: false } : row);
-  await assert.rejects(control.limit({ amps: 7, minutes: 1 }), /not currently safe/);
-  assert.equal(f.stateCalls().length, previousGets + 1);
-  assert.equal(writes, 0);
-});
-
 test('stream token rejection and simultaneous REST 401 share one refresh and durable token rotation', async t => {
   const saved = [], refreshing = deferred();
   let refreshes = 0;
@@ -221,7 +205,7 @@ function providerFixture(t, easee = connections().easee) {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-stream-integration-'));
   const store = new Store(':memory:'), stream = fakeStream(), intervals = [], gaps = [], calls = [];
   const f = { now: START, stream, store, intervals, gaps, calls, fail: null, hold: null, payload: null };
-  const engine = { latest: {}, outdoorCandidates: {}, ingest() {}, providerObservations() { return []; },
+  const engine = { ingestionCheckpoint:Engine.prototype.ingestionCheckpoint, restoreIngestionCheckpoint:Engine.prototype.restoreIngestionCheckpoint, latest: {}, outdoorCandidates: {}, ingest() {}, providerObservations() { return []; },
     ingestEnergy(row) { intervals.push(row); },
     recorder: { energyGap(row) { gaps.push(row); }, flush() {}, reload() {} } };
   f.engine = engine;

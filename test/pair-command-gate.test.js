@@ -35,12 +35,13 @@ test('authority lost after an acknowledgement prevents the next circulation comm
 test('authority-loss executor close preserves obligations without publishing restoration', async () => {
   const store = new Store(':memory:');
   const messages = [];
-  const transport = { publish: async values => { messages.push(...values); return { sent: true }; }, close: async () => {} };
+  const transport = { targetIdentity: { tariff: 'a'.repeat(64), dhwr: 'b'.repeat(64) }, publish: async values => { messages.push(...values); return { sent: true }; }, close: async () => {} };
   const executor = new Executor({ store, input: 'mqtt', commandTransport: transport });
+  executor.target('tariff', { acquire: true });
   executor.state.legacyOutstanding = true; executor.state.phase = 'reduction';
   executor.state.expiresAt = Date.now() + 10; executor.persist(); executor.armExpiry();
   await executor.close({ restore: false }); await delay(30);
   assert.equal(messages.length, 0); assert.equal(executor.closed, true);
-  assert.equal(store.getState('executor:mqtt').legacyOutstanding, true);
+  assert.equal(store.getState('executor:home').legacyOutstanding, true);
   store.close();
 });

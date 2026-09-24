@@ -12,7 +12,8 @@ import { loadConfig } from '../src/app/config.js';
 import { start } from '../src/main.js';
 import { addSensorChange } from '../src/app/sensor-changes.js';
 import { Recorder } from '../src/storage/recorder.js';
-import { appendLearningRecord, applyLearningRecord, LEARNING_ALGORITHM } from '../src/app/committed-learning.js';
+import { applyLearningRecord, LEARNING_ALGORITHM} from '../src/app/committed-learning.js';
+import { appendLearningRecord } from './helpers/home-learning-fixture.js';
 import { restoreAdaptiveCheckpoint } from '../src/control/adaptive-learning.js';
 import { appendGarageEntry, applyGarageEntry } from '../src/garage/learning.js';
 import { createGarageModel, GARAGE_ALGORITHM_VERSION } from '../src/garage/model.js';
@@ -42,7 +43,7 @@ function snapshot(directory, generation, value = 21, sourceAt = at) {
   store.event('decision', { input: 'mqtt', mode: 'active', phase: 'reduction', commands: ['reduction'] }, sourceAt);
   // Copied settings and outstanding obligations must never activate on a viewer.
   store.setState('settings:mqtt', { mode: 'active' });
-  store.setState('executor:mqtt', { version: 1, legacyOutstanding: true, phase: 'reduction' });
+  store.setState('executor:home', { version: 1, legacyOutstanding: true, phase: 'reduction' });
   store.setState('h66:control:synthetic-device', { version: 1, baseline: { '0203': 20 }, obligations: { '0203': { value: 20 } } });
   store.db.prepare(`INSERT INTO energy_audits(source,device,signal,source_time,received_at,value,quality)
     VALUES('easee','synthetic-device','ev1_lifetime_energy_counter',?,?,10,'[]')`).run(sourceAt, sourceAt);
@@ -223,7 +224,7 @@ test('read-only Store never migrates, deletes, creates a missing database or per
   const raw = new DatabaseSync(publication.dbPath);
   raw.exec(`PRAGMA user_version=${SCHEMA_VERSION - 1}`); raw.close();
   const oldDigest = digest(publication.dbPath);
-  assert.throws(() => new Store(publication.dbPath, { readOnly: true }), /schema does not match/);
+  assert.throws(() => new Store(publication.dbPath, { readOnly: true }), /Unsupported database schema/);
   assert.equal(digest(publication.dbPath), oldDigest);
   const missing = join(directory, 'missing', 'database.sqlite');
   assert.throws(() => new Store(missing, { readOnly: true }));

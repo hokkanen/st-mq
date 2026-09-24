@@ -5,9 +5,9 @@ contract. See [garage adapter setup](garage-adapter.md) for the explicit product
 driver, exact private MQTT topics and commissioning gates. The default synthetic
 `stmq-garage-fixture/v1` driver cannot publish real commands.
 
-- Production state includes all four installed commissioning results:
+- Production state includes all five installed commissioning results:
   `selectivePowerVerified`, `lowHeatVerified`, `expiryVerified`, and
-  `restartVerified`. Every result, the baseline and essential capabilities must
+  `restartVerified`, plus `releaseOrderingVerified`. Every result, the baseline and essential capabilities must
   be verified before ST-MQ claims an armed adapter or requests OFF. The adapter
   independently enforces its commissioned mode. Monitoring never claims it.
 - The consumer needs native baseline-preserving availability/OFF/release,
@@ -62,3 +62,11 @@ of the override must finish before ordinary native settings or a managed pause
 proceed. This host support does not establish physical frost protection or new
 low-heat commissioning evidence. Economic pauses continue to require the
 independently verified native baseline and installed restoration evidence.
+
+The release-ordering commissioning result is an additional host requirement from
+A04. It must cover delayed delivery and serial-in-flight OFF, renewed permissions,
+manual ON, expiry, reboot, host restart and owner-session transfer. A release result
+must fence every earlier possible OFF before native confirmation. Manual/watchdog
+cancellation events include `ownerSession`, `episodeId`, `throughSequence` and
+`at`; unrelated periodic ON reports never substitute for this fence. The separate
+firmware and installation are not commissioned by the repository test suite.

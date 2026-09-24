@@ -35,8 +35,7 @@ export const ELECTRICITY_FIELDS = Object.freeze({
     [40, 'active_power', 'kW'], [45, 'import_energy_counter', 'kWh']],
 });
 const API = 'https://api.easee.com';
-const IDENTIFICATION_IDS = [31, 47, 48, 96, 109, 111, 112, 113, 114, 120, 183, 184, 185, 230, 231, 232, 250,
-  ...CHARGER_TELEMETRY.map(row => row[0])];
+
 
 function number(value) {
   if (typeof value === 'number') return Number.isFinite(value) ? value : null;
@@ -224,62 +223,6 @@ function annotateElectricalCurrents(rows) {
   return rows;
 }
 
-// This projection is intentionally not an observation array: control metadata
-// stays in RAM and can never enter ordinary acquisition/storage accidentally.
-function identificationSnapshot(payload, now) {
-  const list = Array.isArray(payload) ? payload : payload?.observations;
-  if (!Array.isArray(list) || list.length > 1000) throw new Error('Invalid Easee control observations');
-  const pick = (id, unit, maximum = 1000, integer = false) => {
-    const matches = list.filter(row => number(row?.id) === id).map(row => ({
-      value: id === 31 && [true, 'true'].includes(row.value) ? 1
-        : id === 31 && [false, 'false'].includes(row.value) ? 0 : number(row.value), at: sourceTime(row.timestamp), unit: row.unit,
-    })).sort((a, b) => (b.at ?? -Infinity) - (a.at ?? -Infinity));
-    const row = matches[0];
-    if (!row || row.value === null || row.value < 0 || row.value > maximum || integer && !Number.isInteger(row.value)
-      || row.at === null || row.at < 0 || row.at > now || row.unit != null && row.unit !== unit
-      || matches.some(candidate => candidate.at === row.at && (candidate.value !== row.value || candidate.unit != null && candidate.unit !== unit)))
-      return { value: null, at: null };
-    return { value: row.value, at: row.at };
-  };
-  const max = pick(47, 'A', 80), dynamic = pick(48, 'A', 80), mode = pick(109, undefined, 10, true);
-  const enabled = pick(31, undefined, 1, true), reason = pick(96, undefined, 1000, true);
-  const output = pick(114, 'A', 80), power = pick(120, 'kW');
-  const currents = [183, 184, 185].map(id => pick(id, 'A', 80));
-  const circuit = [111, 112, 113].map(id => pick(id, 'A'));
-  const equalizer = [230, 231, 232].map(id => pick(id, 'A'));
-  const connection = deviceConnection(list, now);
-  const telemetryAt = chargerTelemetryAt(list, now);
-  // An old timestamp on a change-reported setting is valid state, not a fresh
-  // electrical measurement. Missing limits must never be interpreted as clear.
-  // Only an unrestricted per-charger cap may be replaced: after TTL expiry the
-  // existing static, circuit, Equalizer and car limits still apply.
-  const safeToProbe = connection.connected === true && max.value !== null && max.value >= 6 && max.value <= 32
-    && dynamic.value !== null && dynamic.value >= 32 && enabled.value === 1 && reason.value === 0;
-  const recent = (at, maximumAge) => at !== null && now - at <= maximumAge;
-  const electrical = [power, ...currents];
-  const baselineHeld = electrical.some(row => !recent(row.at, 60_000));
-  // The observations endpoint returns last reported values, not a new sample
-  // on each GET. An unchanged charging baseline can be held within the same
-  // 17-minute device-activity bound used by ordinary acquisition (Easee's
-  // documented online detection also uses TempMax/RSSI within 17 minutes).
-  // This only permits a bounded reduction; proving its effect/recovery still
-  // requires NEW electrical source timestamps after the command/expiry.
-  const baselineUsable = connection.connected === true && mode.value === 3 && power.value > 0
-    && electrical.every(row => row.value !== null && recent(row.at, 17 * 60_000))
-    && (!baselineHeld || recent(telemetryAt, 17 * 60_000));
-  return {
-    receivedAt: now, connected: connection.connected, connectedAt: connection.observedAt, telemetryAt,
-    mode: mode.value, modeAt: mode.at, powerKw: power.value, powerAt: power.at,
-    currents: currents.map(row => row.value), currentTimes: currents.map(row => row.at),
-    dynamicChargerCurrent: dynamic.value, dynamicChargerCurrentAt: dynamic.at,
-    maxChargerCurrent: max.value, maxChargerCurrentAt: max.at,
-    outputCurrent: output.value, outputCurrentAt: output.at,
-    dynamicCircuitCurrents: circuit.map(row => row.value), dynamicCircuitCurrentTimes: circuit.map(row => row.at),
-    equalizerCurrents: equalizer.map(row => row.value), equalizerCurrentTimes: equalizer.map(row => row.at),
-    safeToProbe, baselineUsable, baselineHeld, minCurrentA: 7,
-  };
-}
-
 /**
  * Inject bounded http.json(url, fetchOptions) and optional secret-only tokenStore.
  * Each call returns normalized observation arrays, including null error records for
@@ -353,7 +296,7 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
           && [31, 96, 100, 109, 250].includes(observation.id)) onChargerObservation(observation);
       },
       products: electricalDevices.map(device => ({ id: device.id,
-        ids: [...new Set([...device.ids, ...(device.prefix === 'ev1' ? [...CHARGING_OBSERVATION_IDS, ...IDENTIFICATION_IDS] : [])])] })) });
+        ids: [...new Set([...device.ids, ...(device.prefix === 'ev1' ? CHARGING_OBSERVATION_IDS : [])])] })) });
     stream.start();
   }
 
@@ -529,54 +472,6 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
     const requiredIds = ids.filter(id => !optional.has(id));
     return (await observationResult(device, ids, { requiredIds, ...options })).payload;
   }
-  let identificationFlight = false;
-  let identificationUntil = 0;
-  const identificationControl = {
-    async read({ signal, forceRest = false } = {}) {
-      if (!supplied(easee.charger_id)) throw new Error('Easee charger identification is not configured');
-      const payload = await readObservations(easee.charger_id, IDENTIFICATION_IDS, { signal, forceRest });
-      return identificationSnapshot(payload, clock());
-    },
-    async limit({ amps, minutes, signal, canMutate = () => true, requireUnscheduled = false } = {}) {
-      if (!canControl()) throw new Error('Controller authority was revoked');
-      if (!canMutate()) throw new Error('Charging schedule has priority over vehicle identification');
-      if (!Number.isInteger(amps) || !(amps === 0 || amps >= 6 && amps <= 32) || minutes !== 1)
-        throw new TypeError('Charger identification requires 0 or 6..32 amps and a one-minute expiry');
-      if (typeof http.text !== 'function') throw new Error('Easee charger identification transport is unavailable');
-      if (identificationFlight || clock() < identificationUntil) throw new Error('Easee charger identification is already active');
-      identificationFlight = true;
-      let attempted = false;
-      try {
-        // Re-read immediately before mutation, so a competing controller's newly
-        // applied cap is not knowingly replaced by an expiring diagnostic limit.
-        const snapshot = await identificationControl.read({ signal, forceRest: true });
-        if (!canMutate()) throw new Error('Charging schedule has priority over vehicle identification');
-        const active = snapshot.currents.filter(value => value !== null && value > 1);
-        if (!snapshot.safeToProbe || !snapshot.baselineUsable || !active.length || amps >= Math.min(...active))
-          throw new Error('Easee charger identification control is not currently safe');
-        if (requireUnscheduled) {
-          const schedule = await easeeAuthenticated(`${API}/api/chargers/${encodeURIComponent(easee.charger_id)}/schedules`, { method: 'GET', signal });
-          if (schedule?.enabled !== 'none') throw new Error('Charging schedule has priority over vehicle identification');
-        }
-        if (!canMutate()) throw new Error('Charging schedule has priority over vehicle identification');
-        const requestedAt = clock();
-        attempted = true;
-        identificationUntil = requestedAt + 60_000;
-        await easeeAuthenticated(`${API}/api/chargers/${encodeURIComponent(easee.charger_id)}/commands/set_dynamic_charger_current`, {
-          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ amps, minutes }), signal,
-          controlGuard: canMutate,
-        }, true);
-        // HTTP acceptance is not evidence the charger acted; callers must observe
-        // actual current/power. No response bodies or remote identifiers escape.
-        return { accepted: true, requestedAt, expiresAfterMs: 60_000 };
-      } finally {
-        // An ambiguous timeout must not trigger another write. Include request
-        // duration because the device's TTL starts after delivery, not dispatch.
-        if (attempted) identificationUntil = Math.max(identificationUntil, clock() + 60_000);
-        identificationFlight = false;
-      }
-    },
-  };
   const scheduleControl = createEaseeScheduleAdapter({ request: easeeAuthenticated, readObservations,
     chargerId: easee.charger_id, equalizerId: easee.equalizer_id, clock, canControl });
 
@@ -600,7 +495,6 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
       lifetime.abort();
       await stream?.close();
     },
-    chargerIdentificationControl() { return identificationControl; },
     chargerScheduleControl() { return scheduleControl; },
     async electricity({ now = Date.now(), signal } = {}) {
       validNow(now);

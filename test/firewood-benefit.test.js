@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Store } from '../src/storage/store.js';
 import { addFireplace, removeFireplace } from '../src/app/fireplace.js';
-import { appendLearningRecord, replayLearningJournal } from '../src/app/committed-learning.js';
+import { replayLearningJournal} from '../src/app/committed-learning.js';
+import { appendLearningRecord } from './helpers/home-learning-fixture.js';
 import { initialAdaptiveModel, thermalEvidenceReady, fireplaceEvidenceReady } from '../src/control/adaptive-learning.js';
 import { getFirewoodBenefit } from '../src/app/firewood-benefit.js';
 import { advanceFirewoodPair, firewoodScenarios } from '../src/domain/firewood-benefit.js';
@@ -146,10 +147,10 @@ test('legitimate boundary parameters and malformed model seeds cannot break the 
     for (const scenario of firewoodScenarios(model, { indoorC: 21, reserveC: 21 })) assert.doesNotThrow(() => advanceFirewoodPair(scenario,
       { start, end: start + WINDOW, outdoorC: 0, solarRadiationWm2: 0, price: 10, targetC: 21, fireplaceEvents: [] }));
   }
-  const { args } = fixture(t, { hours: 8, seed: { version: 1, samples: [], model: { version: 3, parameters: {} } } });
+  assert.throws(() => fixture(t, { hours: 8, seed: { version: 1, samples: [], model: { version: 3, parameters: {} } } }), /Unsupported Home seed/);
+  const { args } = fixture(t, { hours: 8 });
   const result = getFirewoodBenefit(args);
   assert.equal(result.summary.status, 'provisional');
-  assert.ok(result.summary.assumptions.some(value => /Malformed/.test(value)));
   args.store.db.prepare("INSERT INTO state(key,value,updated_at) VALUES('adaptive:mqtt','{',?)").run(args.now);
   assert.doesNotThrow(() => getFirewoodBenefit(args));
 });

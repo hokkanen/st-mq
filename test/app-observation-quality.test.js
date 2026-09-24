@@ -1,3 +1,4 @@
+import { weatherAcquisitionIdentity } from '../src/acquisition/weather-identity.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Store } from '../src/storage/store.js';
@@ -5,6 +6,7 @@ import { Engine } from '../src/app/engine.js';
 import { goodQuality } from '../src/control/learning.js';
 
 const MINUTE = 60_000;
+const connections = { geoloc: { latitude: 60, longitude: 25 } };
 const beginning = Date.parse('2026-09-06T09:00:00Z');
 
 function setup(t, { input = 'offline', cached = null } = {}) {
@@ -12,14 +14,15 @@ function setup(t, { input = 'offline', cached = null } = {}) {
   t.after(() => store.close());
   if (cached) store.setState('provider:observations', cached);
   let now = beginning;
-  const config = { input, settings: { mode: 'shadow', comfort: { maxDropC: 1 } } };
+  const config = { input, connections, settings: { mode: 'shadow', comfort: { maxDropC: 1 } } };
   const engine = new Engine({ store, config, clock: () => now });
   return { store, engine, config, setTime: value => { now = value; } };
 }
 
 function reading({ signal = 'indoor_temperature', value = 21, sourceTime = beginning,
   receivedAt = beginning, quality = [], source = signal === 'outdoor_temperature' ? 'fmi' : 'mqtt-temperature' } = {}) {
-  return { source, device: 'fixture-house', signal, value, unit: 'degC', sourceTime, receivedAt, quality };
+  return { source, device: 'fixture-house', signal, value, unit: 'degC', sourceTime, receivedAt, quality,
+    ...(['fmi', 'openmeteo'].includes(source) ? { raw: { acquisitionIdentity: weatherAcquisitionIdentity(connections) } } : {}) };
 }
 
 test('offline startup restores all three indoor readings for the configured average without freshening history', t => {

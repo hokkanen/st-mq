@@ -85,6 +85,22 @@ export function forecastIntervals(prices = [], forecast = [], now, horizonHours 
   return result;
 }
 
+/** One coverage contract for admission, active continuation and trial exposure.
+ * Two complete recovery hours are the minimum assessment window. */
+export function cycleForecastCovered(intervals, schedule, from = intervals?.[0]?.start) {
+  const until = schedule?.reductionEnd + 2 * HOUR;
+  if (!number(from) || !number(until) || until <= from) return false;
+  let cursor = from;
+  for (const interval of intervals ?? []) {
+    if (interval.end <= cursor) continue;
+    if (interval.start > cursor || !number(interval.price) || !number(interval.outdoorC)
+      || !number(interval.end) || interval.end <= interval.start) return false;
+    cursor = interval.end;
+    if (cursor >= until) return true;
+  }
+  return false;
+}
+
 export function auxiliaryThreshold(config = {}) {
   const c = { ...CONTROL_DEFAULTS, ...config };
   return c.a2Basis === 'offset'
@@ -326,6 +342,8 @@ function preheatTrialHours(model,config) {
 export function trialEnvelope({ schedule, initialState, targetC, intervals, model, config = {}, occupancy = {}, maxDropC = 1.5,
   maxRiseC = 1.5, equipment = {} }) {
   config = { ...CONTROL_DEFAULTS, ...config };
+  if (!cycleForecastCovered(intervals, schedule)) return { available: false, reason: 'forecast-coverage-lost',
+    comfortSafe: false, coldSafe: false, hotSafe: false, costExposureCents: null };
   const normalSupplyC = number(equipment.normalSupplyC) ? equipment.normalSupplyC : number(equipment.supplyC)
     ? equipment.supplyC - (equipment.observedPhase === 'preheat' ? 3 * (equipment.observedRoomBoostC ?? 0) : 0) : null;
   const duration = Math.max(0,(schedule.reductionEnd - schedule.reductionStart)/HOUR);
@@ -420,7 +438,7 @@ export function trialEnvelope({ schedule, initialState, targetC, intervals, mode
       }
     }
   }
-  return { comfortSafe: coldSafe && hotSafe, coldSafe, hotSafe, floorC, costExposureCents,
+  return { available: true, comfortSafe: coldSafe && hotSafe, coldSafe, hotSafe, floorC, costExposureCents,
     hotPeakC, hotPeakAt, hotStressHours, hotStressReason,
     basis: 'No-heat cold stress plus full compressor/rated permitted AUX during preheat and native demand afterward; delayed room peaks and fixed slab routing remain estimated.' };
 }
@@ -458,7 +476,7 @@ export function revalidatePlan({ plan, now, observations, prices, forecast, chec
     || !actionEvidenceReady(model, 'reduction', duration, plan.schedule.treatmentKey)))
     return rejected('scheduled-cycle-response-evidence-unavailable');
   const intervals = forecastIntervals(prices,forecast,now);
-  if (!intervals.length || intervals.at(-1).end < plan.schedule.reductionEnd+2*HOUR)
+  if (!cycleForecastCovered(intervals, plan.schedule, now))
     return rejected('scheduled-cycle-forecast-coverage-lost');
   const initialState = {indoorC:observations.indoor.value,reserveC:thermalState?.reserveC ?? observations.indoor.value,slabC:thermalState?.slabC ?? null,integral:equipment.integral};
   const args = { intervals, model, initialState, targetC, occupancy:settings.occupancy,
@@ -530,7 +548,7 @@ export function chooseCycle({ now, observations, prices, forecast, checkpoint, s
   // rather than multiplying the entire grid by every duration/boost combination.
   for (const reductionStart of starts) for (const duration of durations) {
     const reductionEnd=reductionStart+duration*HOUR,delay=(reductionStart-now)/HOUR;
-    if (reductionEnd+2*HOUR>intervals.at(-1).end)continue;
+    if (!cycleForecastCovered(intervals, { reductionEnd }, now)) continue;
     const option=addCandidate({preheatStart:reductionStart,preheatEnd:reductionStart,
       reductionStart,reductionEnd,roomBoostC:0,treatmentKey:'reduction-only-v1'},duration);
     const demandWindow=baseline.trajectory.filter(step=>step.at>reductionStart&&step.at<=reductionEnd+2*HOUR);

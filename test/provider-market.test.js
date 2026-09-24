@@ -103,7 +103,7 @@ test('GET helper uses existing country/token, UTC bounds, injected HTTP and sani
 
 test('all-in interval splitting rejects extreme calendar spans before allocation', () => {
   assert.throws(() => priceIntervals([{ start: at, end: at + 1000 * 365 * 86_400_000, unit: 'c/kWh', vatIncluded: false, spotCtPerKwh: 1 }], {
-    periods: [{ from: at, marginCtPerKwh: 0, taxCtPerKwh: 0, vatRate: 0 }],
+    periods: [{ from: at, marginCtPerKwh: 0, taxCtPerKwh: 0, transferRates: { vatIncluded: true, dayCtPerKwh: 3.34, nightCtPerKwh: 1.96, winterDayCtPerKwh: 4.17, otherCtPerKwh: 2.07 }, vatRate: 0 }],
   }), /calendar day/);
 });
 

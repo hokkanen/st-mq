@@ -53,7 +53,7 @@ test('forecast rejects wrong units, timezone, location, malformed arrays and imp
 
 test('keyless forecast/current requests use coordinates, explicit ICON model, units and UTC', async () => {
   for (const [forecast, fetcher] of [[true, fetchOpenMeteoForecast], [false, fetchOpenMeteoCurrent]]) {
-    const result = await fetcher({ connections, now: at, http: { json: async (url, opts) => {
+    const result = await fetcher({ connections, now: at, clock: () => at, http: { json: async (url, opts) => {
       const parsed = new URL(url), params = parsed.searchParams;
       assert.equal(parsed.origin, 'https://api.open-meteo.com'); assert.equal(parsed.pathname, '/v1/forecast');
       assert.equal(params.get('models'), 'icon_seamless'); assert.equal(params.get('latitude'), '60.39');
@@ -64,7 +64,7 @@ test('keyless forecast/current requests use coordinates, explicit ICON model, un
       return body;
     } } });
     assert.equal(forecast ? result.source : result[0].source, 'openmeteo');
-    await assert.rejects(fetcher({ connections, now: at, http: { json: async () => { throw new Error('synthetic-private-response'); } } }),
+    await assert.rejects(fetcher({ connections, now: at, clock: () => at, http: { json: async () => { throw new Error('synthetic-private-response'); } } }),
       error => !error.message.includes('synthetic-private-response') && /acquisition failed/.test(error.message));
   }
 });
@@ -90,7 +90,7 @@ test('weather/current chains independently fall back and sanitize provider failu
   const http = { text: async () => { primary++; throw Object.assign(new Error('synthetic-private-response'), { status: 429, retryAfterMs: 120_000 }); },
     json: async () => { backup++; return body; } };
   for (const fetcher of [fetchWeather, fetchOutdoorTemperature]) {
-    const result = await fetcher({ connections, now: at, http });
+    const result = await fetcher({ connections, now: at, clock: () => at, http });
     assert.deepEqual(result.acquisition, { primary: 'fmi', selected: 'openmeteo', fallbackUsed: true,
       attempts: [{ source: 'fmi', status: 'error', error: 'HTTP-429', retryAfterMs: 120_000 }, { source: 'openmeteo', status: 'ok', error: null }],
       ...(fetcher === fetchWeather ? { solarSource: 'openmeteo' } : {}) });
@@ -99,7 +99,7 @@ test('weather/current chains independently fall back and sanitize provider failu
 });
 
 test('FMI temperature survives missing solar, supplemented only at matching intervals with backup provenance', async () => {
-  const result = await fetchWeather({ connections, now: at, http: { text: async () => fmi, json: async () => body } });
+  const result = await fetchWeather({ connections, now: at, clock: () => at, http: { text: async () => fmi, json: async () => body } });
   assert.equal(result.source, 'fmi'); assert.equal(result.solarStatus, 'available');
   assert.deepEqual(result.forecast.map(row => [row.outdoorC, row.solarRadiationWm2]), [[10.5, 0], [13, 250], [14, 400]]);
   assert.ok(result.forecast.every(row => row.source === 'fmi' && row.solar.source === 'openmeteo' && row.solar.fetchedAt === at && row.solar.issuedAt === null));
@@ -109,7 +109,7 @@ test('FMI temperature survives missing solar, supplemented only at matching inte
 test('failed or backed-off solar backup retains good FMI temperatures and missing-solar metadata', async () => {
   for (const skipSources of [[], ['openmeteo']]) {
     let calls = 0;
-    const result = await fetchWeather({ connections, now: at, skipSources,
+    const result = await fetchWeather({ connections, now: at, clock: () => at, skipSources,
       http: { text: async () => fmi, json: async () => { calls++; throw new Error('synthetic-private-response'); } } });
     assert.equal(result.source, 'fmi'); assert.equal(result.forecast.length, 3); assert.equal(result.solarStatus, 'unavailable');
     assert.equal(result.acquisition.fallbackUsed, false); assert.equal(result.acquisition.solarSource, null);
@@ -120,23 +120,39 @@ test('failed or backed-off solar backup retains good FMI temperatures and missin
 test('fallback respects both provider backoffs, keyless operation and cancellation', async () => {
   let primary = 0, backup = 0;
   const http = { text: async () => { primary++; throw new Error('not available'); }, json: async () => { backup++; return body; } };
-  const result = await fetchWeather({ connections, now: at, http, skipSources: ['fmi'] });
+  const result = await fetchWeather({ connections, now: at, clock: () => at, http, skipSources: ['fmi'] });
   assert.equal(primary, 0); assert.equal(backup, 1); assert.equal(result.acquisition.attempts[0].status, 'backoff');
-  await assert.rejects(fetchWeather({ connections, now: at, http, skipSources: ['fmi', 'openmeteo'] }), error =>
+  await assert.rejects(fetchWeather({ connections, now: at, clock: () => at, http, skipSources: ['fmi', 'openmeteo'] }), error =>
     error.acquisition.attempts.every(attempt => attempt.status === 'backoff'));
   assert.equal(backup, 1);
   const controller = new AbortController();
-  await assert.rejects(fetchWeather({ connections, now: at, signal: controller.signal,
+  await assert.rejects(fetchWeather({ connections, now: at, clock: () => at, signal: controller.signal,
     http: { text: async () => { controller.abort(); throw new Error('cancel'); }, json: http.json } }), /cancelled/);
   assert.equal(backup, 1);
 });
 
 test('all weather failures preserve sanitized HTTP status without response content', async () => {
-  await assert.rejects(fetchOutdoorTemperature({ connections, now: at,
+  await assert.rejects(fetchOutdoorTemperature({ connections, now: at, clock: () => at,
     http: { text: async () => { throw new Error('synthetic-private-response'); },
       json: async () => { throw Object.assign(new Error('synthetic-private-response'), { status: 401 }); } } }), error => {
     assert.equal(error.status, 401); assert.equal(error.acquisition.selected, null);
     assert.equal(error.acquisition.attempts[1].error, 'HTTP-401');
     assert.equal(JSON.stringify(error).includes('synthetic-private-response'), false); return true;
   });
+});
+
+test('HTTP completion clocks are distinct from request start and still reject truly future current data', async () => {
+  let now = at;
+  const current = change(data => { data.current.time = (at + 1000) / 1000; });
+  const result = await fetchOpenMeteoCurrent({ connections, now: at, clock: () => now,
+    http: { json: async () => { now = at + 5000; return current; } } });
+  assert.equal(result[0].sourceTime, at + 1000); assert.equal(result[0].receivedAt, at + 5000);
+  assert.equal(result[0].raw.requestStartedAt, at);
+  const forecast = await fetchOpenMeteoForecast({ connections, now: at, clock: () => at + 5000,
+    http: { json: async () => body } });
+  assert.equal(forecast.fetchedAt, at + 5000);
+  assert.ok(forecast.forecast.every(row => row.fetchedAt === at + 5000));
+  current.current.time = (at + 6000) / 1000;
+  await assert.rejects(fetchOpenMeteoCurrent({ connections, now: at, clock: () => now,
+    http: { json: async () => current } }), /acquisition failed/);
 });

@@ -19,8 +19,19 @@ function put(store, signal, value, at, extra = {}) {
     unit: signal.includes('current') ? 'A' : signal === 'spot_price' ? 'c/kWh_ex_vat' : 'degC',
     sourceTime: at, receivedAt: at, ...extra });
 }
-function get(store, extra = {}) { return getChartData({ store, now, startDate: date, endDate: date, ...extra }); }
-const contract = { periods: [{ from: from - 10 * HOUR, marginCtPerKwh: 0.4, taxCtPerKwh: 2.2, vatRate: 0.255, tariff: 'day-night' }] };
+// These fixtures request present retrospective history after any synthetic import publication.
+function get(store, extra = {}) { const options = { store, now, startDate: date, endDate: date, ...extra };
+  options.now = Math.max(options.now, store.db.prepare("SELECT MAX(completed_at) AS at FROM imports WHERE status='complete'").get().at ?? -Infinity);
+  return getChartData(options); }
+function currentPower(store, value, at, extra = {}) {
+  for (let phase=1;phase<=3;phase++) put(store, `ev1_current_l${phase}`, value/3/0.23, at, { ...extra, unit: 'A' });
+}
+function csvRequest(store, value, at, extra = {}) {
+  let row=store.db.prepare("SELECT id FROM imports WHERE sha256='synthetic-request-fixture'").get();
+  if(!row)row={id:Number(store.db.prepare("INSERT INTO imports(kind,sha256,path,status,started_at,completed_at) VALUES('stmq','synthetic-request-fixture','synthetic.csv','complete',?,?)").run(from-HOUR,from-HOUR).lastInsertRowid)};
+  put(store,'requested_heat_mode',value,at,{...extra,source:'csv:stmq',unit:'legacy_command',provenance:{importId:row.id,rowNumber:at}});
+}
+const contract = { periods: [{ from: from - 10 * HOUR, marginCtPerKwh: 0.4, taxCtPerKwh: 2.2, transferRates: { vatIncluded: true, dayCtPerKwh: 3.34, nightCtPerKwh: 1.96, winterDayCtPerKwh: 4.17, otherCtPerKwh: 2.07 }, vatRate: 0.255, tariff: 'day-night' }] };
 const interval = (start, end, value) => ({ start, end, spotCtPerKwh: value, unit: 'c/kWh', vatIncluded: false, source: 'fixture' });
 
 test('daily timing comparison uses exact local-day duration, including both DST changes', () => {
@@ -29,20 +40,20 @@ test('daily timing comparison uses exact local-day duration, including both DST 
     const prices = [{ start: range.from, end: range.from + HOUR, totalCtPerKwh: -10 },
       { start: range.from + HOUR, end: range.to, totalCtPerKwh: 20 }];
     const timing = new DailyTimingBenchmark(range, range.to, prices);
-    for (let at = range.from; at <= range.to; at += 30 * MINUTE) timing.add('charger', at, at < range.from + HOUR ? 2 : 0);
+    for (let at = range.from; at <= range.to; at += 30 * MINUTE) timing.add('charger1', at, at < range.from + HOUR ? 2 : 0);
     const result = timing.result();
     const average = (-10 + (hours - 1) * 20) / hours;
-    assert.equal(result.charger.energyKwh, 2);
-    assert.equal(result.charger.actualCostEuro, -0.2);
-    assert(Math.abs(result.charger.value - (2 * average / 100 + 0.2)) < 1e-10);
-    assert.equal(result.charger.coverage, 1 / hours);
-    assert.equal(result.charger.coverageDetails.elapsedMs, hours * HOUR);
-    assert.equal(result.charger.coverageDetails.includedMs, HOUR);
-    assert.equal(result.charger.coverageDetails.chargingMs, HOUR);
-    assert.equal(result.charger.coverageDetails.idleMs, (hours - 1) * HOUR);
-    assert.equal(result.charger.coverageDetails.missingPowerMs, 0);
-    assert.equal(result.charger.evidence.sources[0].share, 1);
-    assert.equal(result.charger.provisional, false);
+    assert.equal(result.charger1.energyKwh, 2);
+    assert.equal(result.charger1.actualCostEuro, -0.2);
+    assert(Math.abs(result.charger1.value - (2 * average / 100 + 0.2)) < 1e-10);
+    assert.equal(result.charger1.coverage, 1 / hours);
+    assert.equal(result.charger1.coverageDetails.elapsedMs, hours * HOUR);
+    assert.equal(result.charger1.coverageDetails.includedMs, HOUR);
+    assert.equal(result.charger1.coverageDetails.chargingMs, HOUR);
+    assert.equal(result.charger1.coverageDetails.idleMs, (hours - 1) * HOUR);
+    assert.equal(result.charger1.coverageDetails.missingPowerMs, 0);
+    assert.equal(result.charger1.evidence.sources[0].share, 1);
+    assert.equal(result.charger1.provisional, false);
     assert.equal(result.heatPump.value, null, 'No property-minus-charger proxy for heat pump energy');
   }
 });
@@ -59,11 +70,11 @@ test('partial energy, missing prices and telemetry gaps never become a full-day 
   assert.equal(result.provisional, true);
   assert.equal(result.value, 0.23, 'Partial observed energy uses the full day’s price, not the partial hour average');
   const missingPrice = new DailyTimingBenchmark(range, range.to, prices.slice(0, 1));
-  missingPrice.add('charger', from, 2);
-  assert.equal(missingPrice.result().charger.value, null, 'Whole-day price coverage is required');
+  missingPrice.add('charger1', from, 2);
+  assert.equal(missingPrice.result().charger1.value, null, 'Whole-day price coverage is required');
   const unknown = new DailyTimingBenchmark(range, from + HOUR, prices);
-  unknown.add('charger', from, null);
-  assert.equal(unknown.result().charger.energyKwh, null);
+  unknown.add('charger1', from, null);
+  assert.equal(unknown.result().charger1.energyKwh, null);
 });
 
 test('learning histories retain the estimate known at each assessment and preserve unknown auxiliary evidence', () => {
@@ -92,7 +103,7 @@ test('controller estimates remain isolated and reduction requests end at their r
     put(store, 'auxiliary_power', 6, from + HOUR, { source: 'controller-estimate', device: 'simulated', unit: 'kW', quality: ['estimated'] });
     put(store, 'controller_phase', 2, from - 4 * HOUR, { source: 'controller', device: 'simulated', unit: 'state', quality: ['requested'], raw: { expiresAt: from + 2 * HOUR } });
     put(store, 'dhwr_request', 1, from + HOUR, { source: 'controller', device: 'simulated', unit: 'state', quality: ['requested'], raw: { expiresAt: from + HOUR + 10 * MINUTE } });
-    put(store, 'requested_heat_mode', 15, from + HOUR, { source: 'simulation', unit: 'legacy_command' });
+    csvRequest(store, 15, from + HOUR, { source: 'simulation', unit: 'legacy_command' });
     const simulated = get(store, { input: 'simulated' });
     assert(simulated.series.auxiliary_power.some(p => p.y === 6));
     assert.deepEqual(simulated.shading.heatOff, [{ start: from, end: from + 2 * HOUR }]);
@@ -128,7 +139,7 @@ test('timing estimates are independent of the selected axis and display decimati
       const raw = { verified: true, usableForControl: true };
       put(store, 'compressor_active', at < from + 4 * HOUR ? 1 : 0, at, { source: 'husdata-h66', unit: 'state', raw });
       put(store, 'auxiliary_output', 0, at, { source: 'husdata-h66', unit: '%', raw });
-      put(store, 'charger_power', at < from + 2 * HOUR ? 6 : 0, at, { unit: 'kW', quality: ['estimated'] });
+      currentPower(store, at < from + 2 * HOUR ? 6 : 0, at, { unit: 'kW', quality: ['estimated'] });
     }
     const baseline = get(store, { market, contract, points: 100 }).timingBenefit;
     for (const left of ['power', 'integral', 'solar_radiation', 'learning_profit'])
@@ -139,16 +150,16 @@ test('timing estimates are independent of the selected axis and display decimati
   } finally { store.close(); }
 });
 
-test('historical charger timing uses coherent phase acquisitions on every axis and hands over to scalar power once', () => {
+test('charger timing uses coherent current acquisitions on every axis', () => {
   const store = new Store(':memory:');
   try {
     const market = { fetchedAt: from, intervals: [interval(from, from + HOUR, 0), interval(from + HOUR, from + 24 * HOUR, 20)] };
     for (const at of [from, from + 30 * MINUTE]) for (let phase = 1; phase <= 3; phase++)
       put(store, `ev1_current_l${phase}`, 10, at);
-    put(store, 'charger_power', 2, from + HOUR, { unit: 'kW' });
-    put(store, 'charger_power', 0, from + HOUR + 30 * MINUTE, { unit: 'kW' });
+    currentPower(store, 2, from + HOUR, { unit: 'kW' });
+    currentPower(store, 0, from + HOUR + 30 * MINUTE, { unit: 'kW' });
     const power = get(store, { market, contract }).timingBenefit;
-    assert(Math.abs(power.charger.energyKwh - 7.9) < 1e-10);
+    assert(Math.abs(power.charger1.energyKwh - 7.9) < 1e-10);
     assert.deepEqual(get(store, { market, contract, left: 'integral' }).timingBenefit, power);
     assert.deepEqual(get(store, { market, contract, left: 'learning_aux_profit' }).timingBenefit, power);
   } finally { store.close(); }
@@ -167,21 +178,21 @@ test('old charger timing uses current known rates and historical spot without ch
     const savedContract = JSON.stringify(currentContract);
     const result = get(store, { market, contract: currentContract, now: current });
     const verified = get(store, { market, contract, now: current });
-    assert(result.timingBenefit.charger.value > 0);
-    assert.equal(result.timingBenefit.charger.value, verified.timingBenefit.charger.value);
-    assert.equal(result.timingBenefit.charger.assumedPrices, true);
-    assert.equal(result.timingBenefit.charger.priceAssumptions.share, 1,
+    assert(result.timingBenefit.charger1.value > 0);
+    assert.equal(result.timingBenefit.charger1.value, verified.timingBenefit.charger1.value);
+    assert.equal(result.timingBenefit.charger1.assumedPrices, true);
+    assert.equal(result.timingBenefit.charger1.priceAssumptions.share, 1,
       'Historical included time all uses assumed rates');
-    assert.equal(result.timingBenefit.charger.priceAssumptions.firstAt, from);
-    assert.equal(result.timingBenefit.charger.priceAssumptions.lastAt, from + HOUR);
-    assert.equal(verified.timingBenefit.charger.assumedPrices, false);
+    assert.equal(result.timingBenefit.charger1.priceAssumptions.firstAt, from);
+    assert.equal(result.timingBenefit.charger1.priceAssumptions.lastAt, from + HOUR);
+    assert.equal(verified.timingBenefit.charger1.assumedPrices, false);
     assert.equal(result.timingBenefit.heatPump.value, null);
     assert.equal(result.timingBenefit.heatPump.assumedPrices, false);
     assert.equal(result.meta.priceAssumptions.used, true);
     assert.equal(JSON.stringify(currentContract), savedContract);
     assert.equal(store.db.prepare('SELECT count(*) count FROM observations').get().count, before);
     const noContract = get(store, { market, now: current });
-    assert.equal(noContract.timingBenefit.charger.value, null);
+    assert.equal(noContract.timingBenefit.charger1.value, null);
     assert.equal(noContract.meta.priceAssumptions.used, false);
   } finally { store.close(); }
 });
@@ -191,11 +202,11 @@ test('timing evidence follows each held sample, weights time rather than sample 
   const timing = new DailyTimingBenchmark(range, from + 2 * HOUR, [
     { start: from, end: range.to, totalCtPerKwh: 20 },
   ]);
-  timing.add('heatPump', from - 10 * MINUTE, 1, { key: 'measured' });
+  timing.add('heatPump', from - 10 * MINUTE, 1, { key: 'recorded' });
   timing.add('heatPump', from + 10 * MINUTE, 2, { key: 'observed', auxiliaryAssumed: true });
-  timing.add('heatPump', from + 40 * MINUTE, 0, { key: 'modelled' });
-  timing.add('heatPump', from + 45 * MINUTE, 0, { key: 'modelled' });
-  timing.add('heatPump', from + 50 * MINUTE, 0, { key: 'modelled' });
+  timing.add('heatPump', from + 40 * MINUTE, 0, { key: 'currents' });
+  timing.add('heatPump', from + 45 * MINUTE, 0, { key: 'currents' });
+  timing.add('heatPump', from + 50 * MINUTE, 0, { key: 'currents' });
   timing.add('heatPump', from + 60 * MINUTE, 3, { key: 'unknown', auxiliaryUnknown: true });
   timing.add('heatPump', from + 110 * MINUTE, null);
   const result = timing.result().heatPump;
@@ -203,13 +214,13 @@ test('timing evidence follows each held sample, weights time rather than sample 
     powerMs: 90 * MINUTE, missingPowerMs: 30 * MINUTE, incompletePriceMs: 0,
     from, to: from + 2 * HOUR, firstPowerAt: from - 10 * MINUTE, lastPowerAt: from + HOUR });
   const sources = Object.fromEntries(result.evidence.sources.map(source => [source.key, source]));
-  assert.equal(sources.measured.durationMs, 10 * MINUTE, 'A carried-in sample counts only its selected overlap');
-  assert.equal(sources.measured.firstAt, from - 10 * MINUTE, 'Show the captured sample time, not the clipped boundary');
+  assert.equal(sources.recorded.durationMs, 10 * MINUTE, 'A carried-in sample counts only its selected overlap');
+  assert.equal(sources.recorded.firstAt, from - 10 * MINUTE, 'Show the captured sample time, not the clipped boundary');
   assert.equal(sources.observed.durationMs, 30 * MINUTE);
-  assert.equal(sources.modelled.durationMs, 20 * MINUTE);
-  assert.equal(sources.modelled.energyKwh, 0, 'Zero is still evidence coverage');
-  assert.equal(sources.modelled.firstAt, from + 40 * MINUTE);
-  assert.equal(sources.modelled.lastAt, from + 50 * MINUTE);
+  assert.equal(sources.currents.durationMs, 20 * MINUTE);
+  assert.equal(sources.currents.energyKwh, 0, 'Zero is still evidence coverage');
+  assert.equal(sources.currents.firstAt, from + 40 * MINUTE);
+  assert.equal(sources.currents.lastAt, from + 50 * MINUTE);
   assert.equal(sources.unknown.durationMs, 30 * MINUTE, 'Missing data after the 30-minute hold is excluded');
   assert.equal(result.evidence.auxiliaryAssumedShare, 1 / 3);
   assert.equal(result.evidence.auxiliaryUnknownShare, 1 / 3);
@@ -225,9 +236,9 @@ test('coverage explains missing power separately from incomplete full-day prices
     { start: from, end: next, totalCtPerKwh: 10 },
     { start: next, end: range.to - 15 * MINUTE, totalCtPerKwh: 20 },
   ]);
-  timing.add('heatPump', from, 0, { key: 'measured' });
+  timing.add('heatPump', from, 0, { key: 'recorded' });
   timing.add('heatPump', from + 30 * MINUTE, null);
-  timing.add('heatPump', next, 1, { key: 'modelled' });
+  timing.add('heatPump', next, 1, { key: 'currents' });
   timing.add('heatPump', next + 30 * MINUTE, null);
   const result = timing.result().heatPump, details = result.coverageDetails;
   assert.equal(details.elapsedMs, 25 * HOUR);
@@ -236,7 +247,7 @@ test('coverage explains missing power separately from incomplete full-day prices
   assert.equal(details.incompletePriceMs, 30 * MINUTE, 'A missing future price slot excludes this whole day');
   assert.equal(details.missingPowerMs, 24 * HOUR);
   assert.equal(details.includedMs + details.incompletePriceMs + details.missingPowerMs, details.elapsedMs);
-  assert.deepEqual(result.evidence.sources.map(source => source.key), ['measured'], 'Excluded values are not part of the included evidence mix');
+  assert.deepEqual(result.evidence.sources.map(source => source.key), ['recorded'], 'Excluded values are not part of the included evidence mix');
   const future = new DailyTimingBenchmark(range, from - HOUR).result().heatPump;
   assert.equal(future.coverageDetails.elapsedMs, 0);
   assert.equal(future.coverageDetails.to, from);
@@ -268,21 +279,21 @@ test('legacy heat-pump estimates do not replace missing original equipment and d
   } finally { store.close(); }
 });
 
-test('charger current and legacy scalar evidence remain distinct and missing prices still report available power', () => {
+test('current charger evidence retains its electrical basis and missing prices still report available power', () => {
   const store = new Store(':memory:');
   try {
     for (let phase = 1; phase <= 3; phase++) put(store, `ev1_current_l${phase}`, 3, from);
-    put(store, 'charger_power', 1, from + 30 * MINUTE, { unit: 'kW', raw: {
+    currentPower(store, 1, from + 30 * MINUTE, { unit: 'kW', raw: {
       basis: 'Three coherent phase currents × nominal 230 V; not an energy meter',
     } });
-    put(store, 'charger_power', 1, from + HOUR, { unit: 'kW' });
+    currentPower(store, 1, from + HOUR, { unit: 'kW' });
     const market = { fetchedAt: from, intervals: [interval(from, from + 24 * HOUR, 10)] };
-    const included = get(store, { market, contract, now: from + 90 * MINUTE }).timingBenefit.charger;
+    const included = get(store, { market, contract, now: from + 90 * MINUTE }).timingBenefit.charger1;
     assert.equal(included.coverage, 1);
     assert(included.value > 0, 'Charging uses the cheaper night transfer rate');
     assert.deepEqual(included.evidence.sources.map(source => [source.key, source.durationMs]),
-      [['currents', HOUR], ['unknown', 30 * MINUTE]]);
-    const excluded = get(store, { contract, now: from + 90 * MINUTE }).timingBenefit.charger;
+      [['currents', 90 * MINUTE]]);
+    const excluded = get(store, { contract, now: from + 90 * MINUTE }).timingBenefit.charger1;
     assert.equal(excluded.value, null);
     assert.equal(excluded.coverageDetails.powerMs, 90 * MINUTE, 'Historical phase values count even with no prices at all');
     assert.equal(excluded.coverageDetails.incompletePriceMs, 90 * MINUTE);
@@ -330,7 +341,7 @@ test('legacy CSV spot slots enable charger timing on short and compact ranges wi
     const current = from + 60 * 24 * HOUR;
     const currentContract = { periods: [{ ...contract.periods[0], from: current }] };
     const result = get(store, { now: current, contract: currentContract });
-    const benefit = result.timingBenefit.charger;
+    const benefit = result.timingBenefit.charger1;
     assert(Math.abs(benefit.energyKwh - 6.9) < 1e-10);
     const expectedAverage = ((-10 + 23 * 20) / 24 + 0.4 + 2.2) * 1.255 + (9 * 1.96 + 15 * 3.34) / 24;
     const expectedActualPrice = (-10 + 0.4 + 2.2) * 1.255 + 1.96;
@@ -339,15 +350,15 @@ test('legacy CSV spot slots enable charger timing on short and compact ranges wi
     assert.equal(result.timingBenefit.heatPump.value, null);
     for (const left of ['power', 'integral', 'learning_aux_profit']) {
       const compact = get(store, { now: current, contract: currentContract, startDate: '2026-01-08', left, points: 100 });
-      assert.equal(compact.timingBenefit.charger.value, benefit.value);
-      assert.equal(compact.timingBenefit.charger.energyKwh, benefit.energyKwh);
-      assert.equal(compact.timingBenefit.charger.assumedPrices, true);
+      assert.equal(compact.timingBenefit.charger1.value, benefit.value);
+      assert.equal(compact.timingBenefit.charger1.energyKwh, benefit.energyKwh);
+      assert.equal(compact.timingBenefit.charger1.assumedPrices, true);
     }
     // An authoritative missing slot is still missing even with known contract rates.
     put(store, 'spot_price', null, from + 8 * HOUR + 10 * 1000);
     const incomplete = get(store, { now: current, contract: currentContract });
-    assert.equal(incomplete.timingBenefit.charger.value, null);
-    assert.equal(incomplete.timingBenefit.charger.assumedPrices, false);
+    assert.equal(incomplete.timingBenefit.charger1.value, null);
+    assert.equal(incomplete.timingBenefit.charger1.assumedPrices, false);
   } finally { store.close(); rmSync(directory, { recursive: true, force: true }); }
 });
 
@@ -356,18 +367,18 @@ test('rate assumptions in the daily baseline are flagged even when charging has 
   try {
     const partialContract = { periods: [{ ...contract.periods[0], from: from + HOUR }] };
     const market = { fetchedAt: from, intervals: [interval(from, from + HOUR, -10), interval(from + HOUR, from + 24 * HOUR, 20)] };
-    put(store, 'charger_power', 2, from + HOUR, { unit: 'kW' });
-    put(store, 'charger_power', 0, from + HOUR + 30 * MINUTE, { unit: 'kW' });
+    currentPower(store, 2, from + HOUR, { unit: 'kW' });
+    currentPower(store, 0, from + HOUR + 30 * MINUTE, { unit: 'kW' });
     const result = get(store, { market, contract: partialContract });
-    assert(Number.isFinite(result.timingBenefit.charger.value));
-    assert.equal(result.timingBenefit.charger.assumedPrices, true);
-    assert.equal(result.timingBenefit.charger.priceAssumptions.share, 1,
+    assert(Number.isFinite(result.timingBenefit.charger1.value));
+    assert.equal(result.timingBenefit.charger1.assumedPrices, true);
+    assert.equal(result.timingBenefit.charger1.priceAssumptions.share, 1,
       'Assumed full-day baseline affects even the energy that has known rates');
-    assert.equal(result.timingBenefit.charger.priceAssumptions.firstAt, from + HOUR);
-    assert.equal(result.timingBenefit.charger.priceAssumptions.lastAt, from + 90 * MINUTE);
+    assert.equal(result.timingBenefit.charger1.priceAssumptions.firstAt, from + HOUR);
+    assert.equal(result.timingBenefit.charger1.priceAssumptions.lastAt, from + 90 * MINUTE);
     const verified = get(store, { market, contract });
-    assert.equal(verified.timingBenefit.charger.assumedPrices, false);
-    assert.equal(result.timingBenefit.charger.value, verified.timingBenefit.charger.value);
+    assert.equal(verified.timingBenefit.charger1.assumedPrices, false);
+    assert.equal(result.timingBenefit.charger1.value, verified.timingBenefit.charger1.value);
   } finally { store.close(); }
 });
 
@@ -583,11 +594,11 @@ test('all right-axis history stays present; bad readings and long gaps remain br
 test('shading respects bounded requests, DHWR pulses and separately verified compressor routing', () => {
   const store = new Store(':memory:');
   try {
-    put(store, 'requested_heat_mode', 0, from - 5 * MINUTE, { quality: ['requested_not_observed'], unit: 'legacy_command' });
-    put(store, 'requested_heat_mode', 15, from + 10 * MINUTE);
-    put(store, 'requested_heat_mode', 60, from + HOUR);
-    put(store, 'requested_heat_mode', 15, from + 2 * HOUR);
-    put(store, 'requested_heat_mode', 0, from + 4 * HOUR);
+    csvRequest(store, 0, from - 5 * MINUTE, { quality: ['requested_not_observed'], unit: 'legacy_command' });
+    csvRequest(store, 15, from + 10 * MINUTE);
+    csvRequest(store, 60, from + HOUR);
+    csvRequest(store, 15, from + 2 * HOUR);
+    csvRequest(store, 0, from + 4 * HOUR);
     const aux = { source: 'husdata-h66', unit: '%', raw: { verified: 'Installed fixture verification', usableForControl: true } };
     put(store, 'auxiliary_output', 50, from + HOUR, aux);
     put(store, 'auxiliary_output', 0, from + HOUR + 2 * MINUTE, aux);
@@ -653,15 +664,15 @@ test('provider intervals override reconstructed spot slots across partial and mi
   try {
     for (let slot = 0; slot < 96; slot++)
       put(store, 'spot_price', slot === 1 ? null : 10, from + slot * 15 * MINUTE + 7000);
-    put(store, 'charger_power', 2, from, { unit: 'kW' });
-    put(store, 'charger_power', 2, from + 30 * MINUTE, { unit: 'kW' });
-    put(store, 'charger_power', 0, from + HOUR, { unit: 'kW' });
+    currentPower(store, 2, from, { unit: 'kW' });
+    currentPower(store, 2, from + 30 * MINUTE, { unit: 'kW' });
+    currentPower(store, 0, from + HOUR, { unit: 'kW' });
     const override = interval(from + 5 * MINUTE, from + 35 * MINUTE, -10);
     const market = { fetchedAt: from, intervals: [override] };
     const result = get(store, { contract, market, now: from + 24 * HOUR });
     const explicit = get(store, { contract, now: from + 24 * HOUR, market: { ...market, intervals: [
       interval(from, override.start, 10), override, interval(override.end, from + 24 * HOUR, 10)] } });
-    assert(Number.isFinite(result.timingBenefit.charger.value));
+    assert(Number.isFinite(result.timingBenefit.charger1.value));
     for (const key of ['value', 'actualCostEuro', 'uniformCostEuro', 'energyKwh', 'coverage'])
       assert(Math.abs(result.timingBenefit.charger[key] - explicit.timingBenefit.charger[key]) < 1e-10, key);
     assert.equal(result.series.spot_price.find(point => point.x === override.start).y, -10);

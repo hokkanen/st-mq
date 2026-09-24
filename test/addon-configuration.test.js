@@ -117,36 +117,16 @@ test('startup import is saved before storage/runtime and removed only after succ
   assert.equal((await fetch(`${endpoint(app.server)}/api/status`, { headers: authorization(firstToken) })).status, 200);
 });
 
-test('charging deployment settings import and reload through Supervisor using empty disabled topics', async t => {
-  const f = fixture(t);
-  f.writeImport({ charging: { chargers: {
-    charger1: { mqttTopic: 'synthetic/first/vehicle', efficiency: .85 }, charger2: { mqttTopic: '' },
-  } } });
-  const app = await f.launch();
-  assert.deepEqual(app.engine.charging.configuration.chargers, {
-    charger1: { mqttTopic: 'synthetic/first/vehicle', efficiency: .925 },
-    charger2: { mqttTopic: null, efficiency: .925 },
-  });
-  assert.equal(app.engine.charging.configuration.vehicles.bmw.mqttTopic, 'synthetic/first/vehicle');
-  assert.equal(f.saved.charging.chargers.charger2.mqttTopic, '', 'Supervisor stores an empty string, never null');
-  assert.equal(Object.hasOwn(f.saved.charging.chargers.charger1, 'efficiency'), false, 'Retired loss overrides are not saved as editable options');
-  assert.equal(f.posts, 1);
-  assert.equal(existsSync(f.paths.importPath), false);
-  await app.engine.charging.setChargerSettings('charger1', { manualSoc: 55 });
-  f.writeImport({ charging: { chargers: {
-    charger1: { mqttTopic: '' }, charger2: { mqttTopic: 'synthetic/second/vehicle', efficiency: .95 },
-  } } });
-  assert.equal((await f.reload()).status, 200);
-  assert.deepEqual(app.engine.charging.configuration.chargers, {
-    charger1: { mqttTopic: null, efficiency: .925 },
-    charger2: { mqttTopic: 'synthetic/second/vehicle', efficiency: .925 },
-  });
-  assert.equal(f.saved.charging.chargers.charger1.mqttTopic, '');
-  assert.equal(app.engine.charging.configuration.vehicles.bmw.mqttTopic, null);
-  assert.equal(f.posts, 2);
-  assert.equal(existsSync(f.paths.importPath), false);
-  assert.equal(app.engine.charging.settings.chargers.charger1.manualSoc, 55);
-  assert.equal(app.engine.charging.settings.chargers.charger1.enabled, false);
+test('physical charger deployment configuration reloads without retired topic or efficiency translations',async t=>{
+  const f=fixture(t);
+  f.writeImport({charging:{chargers:{charger2:{enabled:true,deviceId:'synthetic-evse',topicPrefix:'synthetic/evse'}}}});
+  const app=await f.launch();
+  assert.equal(app.engine.charging.configuration.chargers.charger2.enabled,true);
+  assert.equal(app.engine.charging.configuration.chargers.charger2.verified,false);
+  await app.engine.charging.setChargerSettings('charger1',{manualSoc:55});
+  f.writeImport({charging:{chargers:{charger2:{enabled:false}}}});assert.equal((await f.reload()).status,200);
+  assert.equal(app.engine.charging.configuration.chargers.charger2.enabled,false);
+  assert.equal(app.engine.charging.settings.chargers.charger1.manualSoc,55);
 });
 
 test('vehicle feed deployment config stays separate from charger preferences through Supervisor reload', async t => {
@@ -158,7 +138,7 @@ test('vehicle feed deployment config stays separate from charger preferences thr
   await app.engine.charging.setChargerSettings('charger1', { manualSoc: 37, capacityKwh: 48 });
   assert.deepEqual(app.engine.charging.mqttRoutes().map(({ id, topic }) => ({ id, topic })),
     [{ id: 'bmw', topic: 'synthetic/vehicles/bmw' }]);
-  assert.equal(app.engine.charging.configuration.chargers.charger1.mqttTopic, null);
+  assert.equal(app.engine.charging.configuration.chargers.charger1.mqttTopic, undefined);
   f.writeImport({ charging: { vehicles: { bmw: { mqttTopic: '' } } } });
   assert.equal((await f.reload()).status, 200);
   assert.deepEqual(app.engine.charging.mqttRoutes(), []);

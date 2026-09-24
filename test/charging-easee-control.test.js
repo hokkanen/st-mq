@@ -309,7 +309,7 @@ test('a pre-existing foreign native schedule retains priority until explicit res
   const h = harness(); h.schedules = appWindow();
   let result = await h.update();
   assert.equal(result.phase, 'yielded'); assert.equal(result.manual.kind, 'window'); assert.equal(h.writes.length, 0);
-  assert.equal(result.version, 4); assert.equal(result.session.connected, true);
+  assert.equal(result.version, 5); assert.equal(result.session.connected, true);
   result = await h.update({ resume: true });
   assert.equal(result.phase, 'waiting'); assert.equal(result.manual, null);
   assert.equal(h.schedules.enabled, 'delayed'); assert.equal(h.writes.length, 1);
@@ -974,4 +974,25 @@ test('failure to persist a guarded pause witness prevents the schedule POST and 
   assert.equal(result.pending.pauseRequestedAt, undefined);
   assert.equal(h.saved.pending.pauseRequestedAt, undefined);
   assert.equal(h.writes.length, 0); assert.equal(h.schedules.enabled, 'none');
+});
+
+test('installed adapter rechecks expiry after the durable beforeWrite hook without sending a POST', async () => {
+  const h=harness(),before=await h.adapter.read();
+  await assert.rejects(h.adapter.installDelayed({startAt:NOW+16*60000,timezone:'Europe/Helsinki',maximumAmps:16,
+    expectedFingerprint:before.fingerprint,expectedControlFingerprint:before.controlFingerprint,
+    beforeWrite:async()=>{h.now+=2*60000;}}),error=>error.code==='start-passed');
+  assert.equal(h.writes.length,0);await h.controller.close();
+});
+test('fresh readback cannot certify an economic pause using older mode and reason clocks',async()=>{
+  const h=harness(),start=NOW+3600000;
+  const plan={id:'multi-period',startAt:NOW,deadlineAt:NOW+4*3600000,periods:[{startAt:NOW,endAt:NOW+30*60000},{startAt:start,endAt:null}]};
+  await h.update({plan});h.now=NOW+30*60000;
+  const request=h.request;
+  h.adapter=createEaseeScheduleAdapter({request:async(url,options)=>{
+    const result=await request(url,options);
+    if(options.method==='GET'&&Array.isArray(result))return result.map(row=>[96,109].includes(row.id)?{...row,timestamp:new Date(NOW).toISOString()}:row);
+    return result;
+  },chargerId:'synthetic-charger',clock:()=>h.now,canControl:()=>true});
+  h.restart();const result=await h.update({plan});
+  assert.equal(result.phase,'pause-unconfirmed');assert.equal(result.execution.pauseConfirmedThrough??0,0);await h.controller.close();
 });

@@ -104,12 +104,12 @@ test('saved model inputs use the same concise tooltip suffix without interval or
       raw: { modelInput: true, learningUsable: true, intervalStart: 0, intervalEnd: 1, source: 'fmi', inputSource: 'Imported history' } };
     const text = historyTooltipLabel(item);
     assert(text.startsWith(`${info.label}: `));
-    assert(text.endsWith(' · saved learning input · eligible for learning'));
+    assert(text.endsWith(' · saved learning input · recorded input quality usable; thermal fitting needs observed heat, sunshine and fresh endpoints'));
     assert.equal(text.split(' · ').length, 3, `${key} separates its saved basis and eligibility`);
     assert(!text.includes('Imported history') && !text.includes('GMT') && !text.includes('FMI'));
   }
   assert.equal(historyTooltipLabel({ dataset: { key: 'model_indoor_temperature', label: 'Average indoor', unit: '°C' },
-    parsed: { x: 1, y: 23.3 }, raw: { modelInput: true } }), 'Average indoor: 23.3 °C · saved learning input · learning eligibility unavailable');
+    parsed: { x: 1, y: 23.3 }, raw: { modelInput: true } }), 'Average indoor: 23.3 °C · saved learning input · recorded input quality unavailable');
 });
 
 test('tooltips retain truthful source, interval and derived-input distinctions for other series', () => {
@@ -140,7 +140,7 @@ test('Garage input tooltips distinguish qualified values from independent fittin
     parsed: { x: 1, y: .4 }, raw: point };
   const text = historyTooltipLabel(item);
   assert.match(text, /0.4 fraction · saved garage input · qualified recorded input; fitting depends on the interval and episode/);
-  assert.doesNotMatch(text, /eligible for learning|kW|40 %/);
+  assert.doesNotMatch(text, /recorded input quality usable; thermal fitting needs observed heat, sunshine and fresh endpoints|kW|40 %/);
   assert.equal(historyLearningLabel('garage_model_activity', { ...point, inputQualified: false }), 'input unavailable or unqualified');
 });
 
@@ -152,7 +152,7 @@ test('saved indoor average tooltip identifies held rooms, genuine observation ti
         { signal: 'bedroom_temperature', observedAt, reasons: ['old-reading', 'disconnected', 'invented-private-reason'] },
         { signal: 'invented-private-device', observedAt, reasons: [] },
       ] } });
-  assert.match(text, /Average indoor: 21 °C · saved indoor average · excluded from learning/);
+  assert.match(text, /Average indoor: 21 °C · saved indoor average · recorded input quality excluded/);
   assert.match(text, /needs attention · using last known readings: Bedroom observed 8 Sept 2026, 11:00 GMT\+3 \(over 2 hours old, sensor disconnected\)/);
   assert.doesNotMatch(text, /invented-private/);
 });
@@ -217,8 +217,8 @@ test('only saved input quality claims eligibility and never claims that eligibil
     assert.equal(historyLearningLabel(key, { learningUsable: true }), '');
   for (const learningUsable of [true, false, undefined]) {
     const text = historyLearningLabel('model_outdoor_temperature', { modelInput: true, learningUsable });
-    assert.equal(text, learningUsable === true ? 'eligible for learning' : learningUsable === false
-      ? 'excluded from learning' : 'learning eligibility unavailable');
+    assert.equal(text, learningUsable === true ? 'recorded input quality usable; thermal fitting needs observed heat, sunshine and fresh endpoints' : learningUsable === false
+      ? 'recorded input quality excluded' : 'recorded input quality unavailable');
     assert.doesNotMatch(text, /included|trained|used/);
   }
   assert.equal(historyLearningLabel('model_fireplace_release', { modelInput: true }), '');
@@ -228,7 +228,7 @@ test('only saved input quality claims eligibility and never claims that eligibil
 
 test('phone tooltip wrapping retains all content within the available canvas width', t => {
   const chart = createChart(t, {}); chart.resize(375, 600);
-  const text = 'Average indoor: 21 °C · saved indoor average · excluded from learning · needs attention · using last known readings: Bedroom observed 8 Sept 2026, 11:00 GMT+3 (over 2 hours old, sensor disconnected)';
+  const text = 'Average indoor: 21 °C · saved indoor average · recorded input quality excluded · needs attention · using last known readings: Bedroom observed 8 Sept 2026, 11:00 GMT+3 (over 2 hours old, sensor disconnected)';
   const lines = wrapHistoryTooltip(text, chart);
   assert(lines.length > 3);
   assert.equal(lines.join(' '), text);

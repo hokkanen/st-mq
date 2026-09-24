@@ -7,7 +7,8 @@ import { DatabaseSync } from 'node:sqlite';
 import { Store } from '../src/storage/store.js';
 import { Engine } from '../src/app/engine.js';
 import { validateSettings } from '../src/app/config.js';
-import { appendLearningRecord, applyLearningRecord, LEARNING_ALGORITHM, validLearningCheckpoint } from '../src/app/committed-learning.js';
+import { applyLearningRecord, LEARNING_ALGORITHM, validLearningCheckpoint} from '../src/app/committed-learning.js';
+import { appendLearningRecord } from './helpers/home-learning-fixture.js';
 import { fireplaceLearningContext } from '../src/app/fireplace-inputs.js';
 
 const WINDOW = 900_000, start = Date.parse('2026-01-01T00:00:00Z');

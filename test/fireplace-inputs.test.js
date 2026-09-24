@@ -10,12 +10,12 @@ const start = Date.UTC(2026, 0, 1), HOUR = 3_600_000;
 test('ignition splits preserve electrical energy and source samples while integrating delayed heat', () => {
   const sample = { timestamp: start + HOUR, windowStart: start, durationHours: 1,
     inputSegments: [{ start, end: start + HOUR, durationHours: 1,
-      energyKwh: 4, compressorKwh: 3, spaceHeatingAuxKwh: 0.5, dhwAuxKwh: 0.5 }] };
+      energyKwh: 4, hydronicHeatKwh: 4, compressorKwh: 3, spaceHeatingAuxKwh: 0.5, dhwAuxKwh: 0.5 }] };
   const original = structuredClone(sample);
   const events = [{ id: 1, at: start + HOUR / 4, kg: 8 }, { id: 2, at: start + HOUR / 2, kg: 2 }];
   const projected = withFireplaceInputs(sample, { fireplaceEvents: events, fireplaceStartedAt: start });
   assert.equal(projected.inputSegments.length, 3);
-  for (const field of ['energyKwh', 'compressorKwh', 'spaceHeatingAuxKwh', 'dhwAuxKwh'])
+  for (const field of ['energyKwh', 'hydronicHeatKwh', 'compressorKwh', 'spaceHeatingAuxKwh', 'dhwAuxKwh'])
     assert.equal(projected.inputSegments.reduce((sum, row) => sum + row[field], 0), sample.inputSegments[0][field]);
   const released = projected.inputSegments.reduce((sum, row) => sum + row.durationHours * row.fireplaceKgPerHour, 0);
   assert.ok(Math.abs(released - fireplaceIntegral(events, start, start + HOUR)) < 1e-12);

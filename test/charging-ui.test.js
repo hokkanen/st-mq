@@ -8,8 +8,8 @@ const now = Date.parse('2026-09-15T18:00:00Z'), startAt = now + 2 * 3600_000, de
 const reading = (value, source = 'teslamate', extra = {}) => ({ value, source, available: value != null, ...extra });
 function charger(id = 'charger1', patch = {}) {
   return { id, label: id === 'charger1' ? 'Charger 1' : 'Charger 2',
-    provider: id === 'charger1' ? 'easee' : 'teslamate',
-    settings: structuredClone(DEFAULT_CHARGING_SETTINGS.chargers[id]), capabilities: { scheduling: id === 'charger1', currentControl: false },
+    provider: id === 'charger1' ? 'easee' : 'shelly-evse',
+    settings: structuredClone(DEFAULT_CHARGING_SETTINGS.chargers[id]), capabilities: { scheduling: true, currentControl: id === 'charger2' },
     values: { soc: reading(20, 'manual-fallback'), minimumSoc: reading(80, 'manual-fallback'),
       capacityKwh: reading(id === 'charger1' ? 74 : 57, 'manual-fallback'), connected: reading(null) },
     requiredGridKwh: 32.888, ...patch };
@@ -54,7 +54,7 @@ test('both chargers use the same compact model and retain useful energy informat
   assert.deepEqual({ ...first, id: second.id, label: second.label }, second);
   assert.equal(first.soc, '20 %'); assert.equal(first.socSource, 'Starting charge'); assert.equal(first.gridEnergy, '32.9 kWh');
   assert.equal(chargingDisplay(status().charging, now).chargers.length, 2);
-  assert.equal(view(charger('charger2')).event, 'Monitoring');
+  assert.equal(view(charger('charger2')).event, 'Automatic charging OFF');
   assert(!first.rows.some(([label]) => ['Current charge', 'Minimum charge', 'Grid energy to minimum'].includes(label)), 'Do not repeat overview metrics');
 });
 
@@ -141,7 +141,7 @@ test('a read-only charger shows one verified native window while connected', () 
   assert.equal(view(scheduled).event, 'Scheduled 23:00–tomorrow 06:00');
   assert.equal(chargingContext(status(scheduled).charging, now), 'Charger 2: Scheduled 23:00–tomorrow 06:00.');
   const away = { ...scheduled, values: { ...scheduled.values, connected: reading(false), charging: reading(true), powerKw: reading(8.2) } };
-  assert.equal(view(away).state, 'Not connected'); assert.equal(view(away).event, 'Monitoring');
+  assert.equal(view(away).state, 'Not connected'); assert.equal(view(away).event, 'Automatic charging OFF');
   assert.equal(chargingContext(status(away).charging, now), '');
   const tomorrow = { ...scheduled, values: { ...scheduled.values, scheduledStartAt: reading(deadlineAt), scheduledEndAt: reading(deadlineAt + 3600_000) } };
   assert.equal(view(tomorrow).event, 'Scheduled tomorrow 06:00–07:00');
@@ -377,12 +377,12 @@ test('the explanation fold discloses operational assumptions without exposing ir
   assert.match(explanations['Current reference'], /details are not available yet/);
   assert.match(explanations['Current allocation'], /Equalizer controls/);
   assert.match(explanations['Period transitions'], /service and the Easee cloud/);
-  assert.match(explanations['Price planning'], /New prices can pause automatic charging.*more than 1 cent/);
+  assert.match(explanations['Price planning'], /New prices can pause automatic charging.*costs less/);
   assert.match(explanations['Price planning'], /Reaching the target or ready-by time does not stop charging/);
   assert.match(explanations['Manual priority'], /complete window, including after ready-by/);
   assert.match(explanations['Manual priority'], /until unplugging/);
   assert(!JSON.stringify(result).includes('ST-MQ'));
-  assert(!Object.fromEntries(view(charger('charger2')).explanations)['Period transitions']);
+  assert(Object.fromEntries(view(charger('charger2')).explanations)['Period transitions']);
 });
 
 test('historical replicas describe the recorded energy assumption without rewriting primary losses', () => {
@@ -399,20 +399,12 @@ test('historical replicas describe the recorded energy assumption without rewrit
   }
 });
 
-test('monitoring explanations describe vehicle controls without unsupported scheduling or Equalizer instructions', () => {
-  const observed = Object.fromEntries(view(charger('charger2')).explanations);
-  for (const heading of ['Price planning', 'Manual priority', 'Ready-by time', 'Household forecast', 'Current allocation', 'Turning automatic charging off'])
-    assert.equal(observed[heading], undefined, heading);
-  assert.match(observed.Monitoring, /cannot start, pause or schedule/);
-  assert.match(observed['Native schedule'], /does not supply a scheduled stop/);
-  assert.match(observed['Connection & readings'], /plugged in at this property/);
-  assert.match(observed['Charging current'], /does not change charging current/);
-  assert.match(observed['Target & completion'], /does not change the vehicle’s own charge limit/);
-  const unavailable = view(charger('charger2', { error: 'charging-adapter-unavailable' }));
-  assert.match(unavailable.problem, /Waiting for fresh charging readings/);
-  assert.doesNotMatch(unavailable.problem, /Automatic control/);
-  const generic = Object.fromEntries(view(charger('charger1', { provider: 'example-provider' })).explanations);
-  assert.doesNotMatch(generic['Period transitions'], /Easee/);
+test('physical Charger 2 explanations preserve native vehicle constraints and distinguish instructions from effects',()=>{
+  const details=Object.fromEntries(view(charger('charger2')).explanations);
+  assert.match(details['Price planning'],/costs less/);assert.match(details['Period transitions'],/confirmed charger instructions.*Actual charging activity/);
+  assert.match(details['Other charging'],/automatic scheduling off/);
+  assert.match(details['Target & completion'],/does not change the vehicle’s own charge limit/);
+  assert.doesNotMatch(details['Period transitions'],/Easee/);
 });
 
 test('known charger limits stay available in details while the vehicle is disconnected', () => {
@@ -526,15 +518,15 @@ test('identical forms adapt to capabilities and automatic values, with no shared
   const document = documentFixture(), panel = createChargingPanel({ document, request: async () => {} }), $ = id => document.getElementById(id);
   const two = charger('charger2'); panel.update(status(charger(), { ...two, values: { ...two.values, minimumSoc: reading(85), soc: reading(62) } }));
   assert.equal($('charger1-setting-minimumSoc').value, 80); assert(!$('charger1-setting-minimumSoc').disabled);
-  assert(!$('charger1-setting-readyBy').disabled); assert($('charger2-setting-readyBy').disabled);
+  assert(!$('charger1-setting-readyBy').disabled); assert(!$('charger2-setting-readyBy').disabled);
   const visibleFields = id => descendants($(`${id}-settings-form`))
     .filter(node => node.tagName === 'INPUT' && !node.parentElement.hidden).map(node => node.id);
   assert.equal(visibleFields('charger1')[0], 'charger1-setting-readyBy');
   assert(!$('charger1-setting-readyBy').parentElement.hidden);
-  assert($('charger2-setting-readyBy').parentElement.hidden);
-  assert.equal(visibleFields('charger2')[0], 'charger2-setting-manualSoc');
-  assert.equal($('charger2-setting-minimumSoc').value, 85); assert($('charger2-setting-minimumSoc').disabled);
-  assert.equal($('charger2-setting-manualSoc').value, 62); assert($('charger2-setting-manualSoc').disabled);
+  assert(!$('charger2-setting-readyBy').parentElement.hidden);
+  assert.equal(visibleFields('charger2')[0], 'charger2-setting-readyBy');
+  assert.equal($('charger2-setting-minimumSoc').value, 85); assert(!$('charger2-setting-minimumSoc').disabled);
+  assert.equal($('charger2-setting-manualSoc').value, 62); assert(!$('charger2-setting-manualSoc').disabled);
   assert.match($('charger2-setting-minimumSoc-help').textContent, /Saved fallback: 80%/);
   assert.match($('charger2-setting-manualSoc-help').textContent, /Saved fallback: 20%/);
   for (const id of ['charger1', 'charger2']) for (const { key } of chargingFields) {
@@ -542,7 +534,7 @@ test('identical forms adapt to capabilities and automatic values, with no shared
     assert(!help.querySelector('button'), 'Settings instructions remain inline beside their fields');
     assert.equal($(`${id}-setting-${key}`).getAttribute('aria-describedby'), help.id);
   }
-  assert(!$('charger2-setting-capacityKwh').disabled); assert($('charger2-enabled').disabled);
+  assert(!$('charger2-setting-capacityKwh').disabled); assert(!$('charger2-enabled').disabled);
   assert.equal($('charger1-setting-manualSoc').value, 20);
   const original = $('charger2-device'); panel.update(status()); assert.equal($('charger2-device'), original);
   assert.equal($('charger2-setting-manualSoc').value, 20); assert(!$('charger2-setting-manualSoc').disabled);
@@ -576,7 +568,7 @@ test('each charger saves its own SoC fallback and capacity through the same sett
   }
   await submit($('charger2-settings-form'));
   assert.equal($('charger1-enabled').textContent, 'OFF'); assert.equal($('charger1-setting-manualSoc').value, 20);
-  assert.deepEqual(calls, [['/api/charging/chargers/charger2/settings', { manualSoc: 42, capacityKwh: 59, capacityProfile: 'tesla' }]]);
+  assert.deepEqual(calls, [['/api/charging/chargers/charger2/settings', { manualSoc: 42, capacityKwh: 59, capacityProfile: 'generic:charger2' }]]);
   panel.close();
 });
 
@@ -616,14 +608,13 @@ test('a compact summary warning retains the full cause and updates its open expl
   assert($('charger1-problem').hidden); panel.close();
 });
 
-test('automatic SoC takes priority while preserving a draft to use when automatic readings are unavailable', async () => {
-  const document = documentFixture(), $ = id => document.getElementById(id), calls = [];
-  const panel = createChargingPanel({ document, request: async (...args) => { calls.push(args); return status(); } });
-  panel.update(status()); const field = $('charger2-setting-manualSoc'); field.value = '75'; field.listeners.get('input')();
-  const two = charger('charger2'); panel.update(status(charger(), { ...two, values: { ...two.values, soc: reading(85) } }));
-  assert.equal(field.value, 85); assert(field.disabled);
-  await submit($('charger2-settings-form')); assert.deepEqual(calls, []);
-  panel.update(status()); assert.equal(field.value, '75'); assert(!field.disabled); assert(!$('charger2-settings-save').disabled);
+test('live SoC updates preserve a user draft and permit an explicit saved-default edit', async () => {
+  const document=documentFixture(),$=id=>document.getElementById(id),calls=[];
+  const panel=createChargingPanel({document,request:async(...args)=>{calls.push(args);return status();}});
+  panel.update(status());const field=$('charger2-setting-manualSoc');field.value='75';field.dispatch('input');
+  const two=charger('charger2');panel.update(status(charger(),{...two,values:{...two.values,soc:reading(85)}}));
+  assert.equal(field.value,'75');assert.equal(field.disabled,false);
+  await submit($('charger2-settings-form'));assert.deepEqual(calls,[['/api/charging/chargers/charger2/settings',{manualSoc:75}]]);
   panel.close();
 });
 
@@ -648,8 +639,8 @@ test('visitor settings remain editable until identification and automatic fields
     values: { ...saved.values, soc: reading(57, 'bmw-cardata', { measuredAt: now }), minimumSoc: reading(83, 'bmw-cardata') } };
   panel.update(status(bmw));
   assert.equal($('charger1-vehicle').textContent, 'Easee · BMW identified');
-  assert.equal($('charger1-setting-manualSoc').value, 57); assert.equal($('charger1-setting-manualSoc').disabled, true);
-  assert.equal($('charger1-setting-minimumSoc').value, 83); assert.equal($('charger1-setting-minimumSoc').disabled, true);
+  assert.equal($('charger1-setting-manualSoc').value, 57); assert.equal($('charger1-setting-manualSoc').disabled, false);
+  assert.equal($('charger1-setting-minimumSoc').value, 83); assert.equal($('charger1-setting-minimumSoc').disabled, false);
   assert.match($('charger1-setting-manualSoc-help').textContent, /BMW CarData.*Saved fallback: 35%/);
   assert.equal($('charger1-setting-capacityKwh').value, 61); assert.equal($('charger1-setting-capacityKwh').disabled, false);
   panel.update(status({ ...saved, vehicle: { state: 'disconnected' }, values: { ...saved.values, connected: reading(false) } }));
@@ -790,20 +781,15 @@ test('BMW awaiting-stop identification explains the pending evidence while leavi
   assert.equal($('charger1-target-controls').hidden, true); panel.close();
 });
 
-test('Tesla identified at Charger 1 has one visible charging session and independent Tesla charging card', () => {
-  const document = documentFixture(), $ = id => document.getElementById(id), panel = createChargingPanel({ document, request: async () => {} });
-  const one = { ...active(), vehicle: { state: 'identified', id: 'tesla', label: 'Tesla', source: 'teslamate' } };
-  const two = charger('charger2', { vehicle: { state: 'elsewhere', id: 'tesla', label: 'Tesla', chargerId: 'charger1' },
-    sessionCost: { totalCents: 523 }, values: { soc: reading(65), minimumSoc: reading(80), connected: reading(false) } });
-  panel.update(status(one, two));
-  assert.equal($('charger1-vehicle').textContent, 'Easee · Tesla identified');
-  assert.equal($('charger2-title').textContent, 'Charger 2'); assert.equal($('charger2-vehicle').textContent, 'Tesla charging');
-  assert.equal($('charger2-event-value').textContent, 'Tesla connected to Charger 1');
-  assert.equal($('charger2-soc').textContent, '—'); assert.equal($('charger2-minimum').textContent, '—');
-  assert.equal($('charger2-cost').textContent, 'No estimate'); assert.equal($('charger2-completion').textContent, 'No estimate');
-  assert.match($('charger2-session-status').textContent, /Charging details are shown there/);
-  assert.equal($('charger2-notice').textContent, 'Session shown at the connected charger');
-  panel.close();
+test('Tesla identified at Charger 1 leaves physical Charger 2 independent', () => {
+  const document=documentFixture(),$=id=>document.getElementById(id),panel=createChargingPanel({document,request:async()=>{}});
+  const one={...active(),vehicle:{state:'identified',id:'tesla',label:'Tesla',source:'teslamate'}};
+  const two=charger('charger2',{vehicle:{state:'disconnected'},values:{connected:reading(false)}});
+  panel.update(status(one,two));
+  assert.equal($('charger1-vehicle').textContent,'Easee · Tesla identified');
+  assert.equal($('charger2-title').textContent,'Charger 2');
+  assert.doesNotMatch($('charger2-vehicle').textContent,/Tesla/);
+  assert.equal($('charger2-soc').textContent,'—');panel.close();
 });
 
 test('Tesla capacity uses its shared profile without submitting a generic visitor draft', async () => {
@@ -866,21 +852,12 @@ test('a stale vehicle capacity rejection preserves drafts for both vehicle profi
   panel.close();
 });
 
-test('Tesla observation capacity remains shared while identified elsewhere or disconnected', async () => {
-  const document = documentFixture(), $ = id => document.getElementById(id), calls = [];
-  const two = charger('charger2', { vehicle: { state: 'elsewhere', id: 'tesla', label: 'Tesla', chargerId: 'charger1' } });
-  const panel = createChargingPanel({ document, request: async (path, payload) => {
-    calls.push([path, payload]); return status(charger(), { ...two, settings: { ...two.settings, capacityKwh: 58 } });
-  } });
-  panel.update(status(charger(), two));
-  const capacity = $('charger2-setting-capacityKwh');
-  assert.match($('charger2-setting-capacityKwh-help').textContent, /Saved usable capacity for Tesla, shared wherever Tesla charges/);
-  capacity.value = '58'; capacity.dispatch('input');
-  panel.update(status(charger(), { ...two, vehicle: { state: 'disconnected' } }));
-  assert.equal(capacity.value, '58');
+test('unidentified physical Charger 2 edits its independent visitor capacity', async () => {
+  const document=documentFixture(),$=id=>document.getElementById(id),calls=[];
+  const panel=createChargingPanel({document,request:async(...args)=>{calls.push(args);return status();}});
+  panel.update(status());const capacity=$('charger2-setting-capacityKwh');capacity.value='58';capacity.dispatch('input');
   await submit($('charger2-settings-form'));
-  assert.deepEqual(calls, [['/api/charging/chargers/charger2/settings', { capacityKwh: 58, capacityProfile: 'tesla' }]]);
-  panel.close();
+  assert.deepEqual(calls,[['/api/charging/chargers/charger2/settings',{capacityKwh:58,capacityProfile:'generic:charger2'}]]);panel.close();
 });
 
 test('expanded last reported charge explains why the current charging estimate is higher', () => {
@@ -918,7 +895,7 @@ test('charge summary explanations update without disturbing form drafts, fold st
   assert.match($('charger2-setting-manualSoc-help').textContent, /Saved fallback: 22%/);
   assert.equal(popup.scrollTop, 42); assert.equal(popupBody.scrollTop, 18); assert.equal(document.activeElement, close);
   assert.equal($('charger1-setting-manualSoc'), field); assert.equal(field.value, '45'); assert.equal(device.open, false);
-  assert.equal($('charger2-setting-manualSoc').value, 63); assert($('charger2-setting-manualSoc').disabled);
+  assert.equal($('charger2-setting-manualSoc').value, 63); assert(!$('charger2-setting-manualSoc').disabled);
   const escape = document.dispatch('keydown', { key: 'Escape' });
   assert(escape.defaultPrevented); assert.equal(popup.hidden, true); assert.equal(document.activeElement, trigger);
   assert(!document.getElementById('charger2-source-info') && !document.getElementById('charger2-completion-info'));

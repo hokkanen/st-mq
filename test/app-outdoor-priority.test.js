@@ -1,3 +1,4 @@
+import { weatherAcquisitionIdentity } from '../src/acquisition/weather-identity.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
@@ -13,7 +14,7 @@ async function setup(t, { input = 'mqtt', maxAgeMs = 5 * MINUTE } = {}) {
   const store = new Store(':memory:');
   let now = beginning;
   const config = { input, settings: { mode: 'shadow' }, deviceId: 'synthetic-h66',
-    h66: { maxAgeMs, writeEnabled: false }, connections: { mqtt: { address: 'mqtt://fixture.invalid' } } };
+    h66: { maxAgeMs, writeEnabled: false }, connections: { mqtt: { address: 'mqtt://fixture.invalid' }, geoloc: { latitude: 60, longitude: 25 } } };
   const engine = new Engine({ store, config, clock: () => now });
   const client = new EventEmitter();
   client.subscribe = (topic, options, done) => done();
@@ -29,7 +30,7 @@ async function setup(t, { input = 'mqtt', maxAgeMs = 5 * MINUTE } = {}) {
   t.after(async () => { await reader.close(); store.close(); });
   const weather = (source, value, sourceTime = now, extra = {}) => engine.ingest({
     source, device: 'synthetic-weather', signal: 'outdoor_temperature', value, unit: 'degC',
-    sourceTime, receivedAt: now, quality: [], ...extra,
+    sourceTime, receivedAt: now, quality: [], raw: { acquisitionIdentity: weatherAcquisitionIdentity(config.connections) }, ...extra,
   });
   const publish = (value, packet = {}, register = '0007') => client.emit('message',
     `synthetic-h66/HP/${register}`, Buffer.from(String(value)), packet);
@@ -138,6 +139,7 @@ test('decoded Open-Meteo estimates are usable current fallback and retain proven
   const [estimate] = decodeOpenMeteoCurrent({ latitude: 60, longitude: 25, utc_offset_seconds: 0,
     current_units: { time: 'unixtime', interval: 'seconds', temperature_2m: '°C' },
     current: { time: (r.now - 5 * MINUTE) / 1000, interval: 900, temperature_2m: -2.5 } }, { fetchedAt: r.now });
+  estimate.raw.acquisitionIdentity = weatherAcquisitionIdentity(r.config.connections);
   r.engine.ingest(estimate);
   r.engine.ingest({ source: 'mqtt-temperature', device: 'synthetic-indoor', signal: 'indoor_temperature',
     value: 21, unit: 'degC', sourceTime: r.now, receivedAt: r.now, quality: [] });

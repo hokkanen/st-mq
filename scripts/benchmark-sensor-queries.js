@@ -94,7 +94,7 @@ if (baseline) {
     lastIndoorReading: readings.lastIndoorReading });
 }
 const report = { host: `${process.platform}/${process.arch}`, node: process.version, repetitions,
-  note: 'Synthetic in-memory query timings; no browser, disk, network or Raspberry Pi measurement. Baselines use the current schema; older versions may ignore includeAvailability=false.',
+  note: 'Synthetic in-memory query timings; no browser, disk, network or Raspberry Pi measurement. Baselines use the current schema.',
   expected: { boundaries: expectedBoundaries, latestValue: 21, latestSourceTime: now - minute,
     latestReportAvailable: true, earlierReportGapStale: true }, fixtures: [] };
 for (const size of [{ name: 'small', samples: 1000, spans: 30 },

@@ -6,8 +6,6 @@ const nativeForecast = forecast => ['forecast', 'uncertain'].includes(forecast?.
 
 /** A bounded summary notice; its full explanation remains available on demand. */
 export function chargingNotice(charger, view, summary) {
-  if (charger.vehicle?.state === 'elsewhere') return { label: 'Session shown at the connected charger',
-    detail: `${view.event}. Charge, progress and cost are shown only at that charger.`, state: 'quiet' };
   const detail = [view.problem, view.priority, view.readiness, ...view.notes].filter(Boolean).join('\n\n');
   if (view.problem || summary.roleState === 'uncertain') return { label: 'Charger needs attention',
     detail: [...new Set([view.problem, summary.roleDetail, view.priority, ...view.notes].filter(Boolean))].join('\n\n'), state: 'attention' };
@@ -66,9 +64,6 @@ export function chargingCost(charger, view, summary, { now = Date.now(), prices 
 
 /** Keep charger role, present activity and estimated completion separate. */
 export function chargerSummary(charger, view, { now = Date.now(), formatTime = value => new Date(value).toISOString() } = {}) {
-  if (charger.vehicle?.state === 'elsewhere') return { roleLabel: 'Observed', roleState: 'observed',
-    roleDetail: 'Tesla charging is shown at the charger where Tesla is identified.', activity: view.event,
-    completion: { value: 'No estimate', detail: 'Session shown at the connected charger', at: null }, compactSummary: view.event };
   const values = charger.values ?? {}, control = charger.control ?? {}, plan = charger.plan ?? {}, forecast = charger.forecast;
   const supported = charger.capabilities?.scheduling === true, enabled = supported && charger.settings?.enabled === true;
   const connected = values.connected?.value === true, charging = connected && values.charging?.value === true;

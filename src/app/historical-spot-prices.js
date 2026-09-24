@@ -41,12 +41,12 @@ export function historicalSpotIntervals(store, range, now) {
   };
   const rows = store.db.prepare(`SELECT o.id,o.value,o.unit,o.source_time,o.quality,o.import_id,o.row_number
     FROM observations o INDEXED BY observations_signal_time LEFT JOIN imports i ON i.id=o.import_id
-    WHERE o.signal='spot_price' AND o.source_time>=? AND o.source_time<? AND o.source_time<=?
+    WHERE o.signal='spot_price' AND o.source_time>=? AND o.source_time<? AND o.source_time<=? AND o.received_at<=?
     AND o.source<>'simulation'
     AND NOT(o.source IN ('controller-learning','controller-estimate','controller') AND o.device='simulated')
-    AND (o.import_id IS NULL OR i.status='complete' AND i.kind='stmq')
+    AND (o.import_id IS NULL OR i.status='complete' AND i.kind='stmq' AND i.completed_at<=?)
     ORDER BY o.source_time,o.id`)
-    .iterate(Math.floor(range.from / QUARTER_HOUR) * QUARTER_HOUR, range.to, now);
+    .iterate(Math.floor(range.from / QUARTER_HOUR) * QUARTER_HOUR, range.to, now, now, now);
   for (const row of rows) {
     const nextSlot = Math.floor(row.source_time / QUARTER_HOUR) * QUARTER_HOUR;
     if (nextSlot !== slot) {

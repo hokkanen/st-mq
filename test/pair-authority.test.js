@@ -1,17 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, copyFile } from 'node:fs/promises';
+import { mkdtemp, rm, copyFile, access } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
+import { Store } from '../src/storage/store.js';
 import { PairManager } from '../src/pairing/manager.js';
 import { readReplicaPublication } from '../src/replication/publication.js';
 import { acceptsLineage, compareAuthority, PairState } from '../src/pairing/state.js';
 
 function createDatabase(path) {
-  const db = new DatabaseSync(path);
-  db.exec('CREATE TABLE state(key TEXT PRIMARY KEY,value TEXT NOT NULL,updated_at INTEGER NOT NULL); CREATE TABLE readings(at INTEGER PRIMARY KEY,value REAL); INSERT INTO readings VALUES(100,20)');
+  const db = new Store(path).db;
+  db.exec("INSERT INTO observations(source,device,signal,value,unit,source_time,received_at,quality) VALUES('fixture','fixture','temperature',20,'degC',100,100,'[]')");
   db.close();
 }
 
@@ -104,7 +105,7 @@ test('graceful handover commits final snapshot, demotion survives restart and la
   await left.action('promote', command());
   assert.notEqual(left.state.value.activeDbPath, oldDb);
   const db = new DatabaseSync(left.state.value.activeDbPath, { readOnly: true });
-  assert.equal(db.prepare('SELECT value FROM readings').get().value, 20); db.close();
+  assert.equal(db.prepare('SELECT value FROM observations').get().value, 20); db.close();
 });
 
 test('database rollback breaks lineage and protects a more complete replica', async t => {
@@ -138,12 +139,12 @@ test('manual recovery pins donor, keeps protection until verified rejoin, then r
     recoveryPreview: async () => ({ previewId: randomUUID(), counts: { missing: 1, conflicts: 1, skipped: 0 } }),
     recoveryApply: async () => {
       const db = new DatabaseSync(primary.state.value.activeDbPath);
-      db.exec('INSERT INTO readings VALUES(200,21)'); db.close();
+      db.exec(`INSERT INTO observations(source,device,signal,value,unit,source_time,received_at,quality) VALUES('fixture','fixture','temperature',21,'degC',200,200,'[]')`); db.close();
       return { status: 'complete', imported: 1 };
     },
   } });
   const donor = await manager(t, root, 'donor'); connect(primary, donor);
-  const db = new DatabaseSync(donor.state.value.activeDbPath); db.exec('INSERT INTO readings VALUES(200,21); INSERT INTO readings VALUES(300,99)'); db.close();
+  const db = new DatabaseSync(donor.state.value.activeDbPath); db.exec(`INSERT INTO observations(source,device,signal,value,unit,source_time,received_at,quality) VALUES('fixture','fixture','temperature',21,'degC',200,200,'[]'); INSERT INTO observations(source,device,signal,value,unit,source_time,received_at,quality) VALUES('fixture','fixture','temperature',99,'degC',300,300,'[]')`); db.close();
   await donor.observeClaim(primary.state.claim());
   await primary.action('check-recovery', command());
   assert.equal(donor.state.value.role, 'protected');
@@ -153,7 +154,7 @@ test('manual recovery pins donor, keeps protection until verified rejoin, then r
   assert.equal(donor.state.value.role, 'replica'); assert.equal(donor.state.value.everWritten, false);
   await donor.action('promote', command());
   const clean = new DatabaseSync(donor.state.value.activeDbPath, { readOnly: true });
-  assert.deepEqual(clean.prepare('SELECT at FROM readings ORDER BY at').all().map(row => row.at), [100, 200]); clean.close();
+  assert.deepEqual(clean.prepare('SELECT source_time AS at FROM observations ORDER BY source_time').all().map(row => row.at), [100, 200]); clean.close();
 });
 
 test('recovery requires the latest successful check and a pending or failed recheck invalidates the old preview', async t => {
@@ -209,7 +210,7 @@ test('explicit rejoin without recovery requires the checked preview and replaces
   } });
   const donor = await manager(t, root, 'donor'); connect(primary, donor);
   const original = new DatabaseSync(donor.state.value.activeDbPath);
-  original.exec('UPDATE readings SET value=99; INSERT INTO readings VALUES(200,21)'); original.close();
+  original.exec(`UPDATE observations SET value=99; INSERT INTO observations(source,device,signal,value,unit,source_time,received_at,quality) VALUES('fixture','fixture','temperature',21,'degC',200,200,'[]')`); original.close();
   await donor.observeClaim(primary.state.claim());
   await primary.poll();
   await assert.rejects(primary.action('rejoin', { ...command(), discardUnrecovered: true, previewId: randomUUID() }), { code: 'recovery_required' });
@@ -231,7 +232,7 @@ test('explicit rejoin without recovery requires the checked preview and replaces
   const publication = await readReplicaPublication(donor.config.replicaDirectory);
   for (const path of [primary.state.value.activeDbPath, publication.dbPath]) {
     const db = new DatabaseSync(path, { readOnly: true });
-    assert.deepEqual(db.prepare('SELECT at,value FROM readings ORDER BY at').all().map(row => ({ ...row })), [{ at: 100, value: 20 }]);
+    assert.deepEqual(db.prepare('SELECT source_time AS at,value FROM observations ORDER BY source_time').all().map(row => ({ ...row })), [{ at: 100, value: 20 }]);
     db.close();
   }
   assert.equal(publication.digest, donor.state.value.accepted.digest);
@@ -272,12 +273,12 @@ test('discarding unchecked donor changes is rejected and leaves the donor protec
   await primary.action('check-recovery', command());
   const previewId = primary.status().recovery.preview.previewId;
   const changed = new DatabaseSync(donor.state.value.activeDbPath);
-  changed.exec('INSERT INTO readings VALUES(200,21)'); changed.close();
+  changed.exec(`INSERT INTO observations(source,device,signal,value,unit,source_time,received_at,quality) VALUES('fixture','fixture','temperature',21,'degC',200,200,'[]')`); changed.close();
   await assert.rejects(primary.action('rejoin', { ...command(), discardUnrecovered: true, previewId }), { code: 'recovery_required' });
   assert.equal(donor.state.value.role, 'protected');
   assert.equal(primary.status().recovery.state, 'ready');
   const preserved = new DatabaseSync(donor.state.value.activeDbPath, { readOnly: true });
-  assert.equal(preserved.prepare('SELECT value FROM readings WHERE at=200').get().value, 21); preserved.close();
+  assert.equal(preserved.prepare('SELECT value FROM observations WHERE source_time=200').get().value, 21); preserved.close();
 });
 
 test('lost handover acknowledgement never resumes the old master and leaves recovery possible', async t => {
@@ -319,7 +320,7 @@ test('a stale recovery completion cannot erase changes made to the protected don
   await donor.observeClaim(primary.state.claim());
   await primary.action('check-recovery', command());
   await primary.action('recover', { ...command(), previewId: primary.state.value.recovery.preview.previewId });
-  const db = new DatabaseSync(donor.state.value.activeDbPath); db.exec('INSERT INTO readings VALUES(900,22)'); db.close();
+  const db = new DatabaseSync(donor.state.value.activeDbPath); db.exec(`INSERT INTO observations(source,device,signal,value,unit,source_time,received_at,quality) VALUES('fixture','fixture','temperature',22,'degC',900,900,'[]')`); db.close();
   await assert.rejects(primary.action('rejoin', command()), { code: 'recovery_required' });
   assert.equal(donor.state.value.role, 'protected');
 });
@@ -327,8 +328,7 @@ test('a stale recovery completion cannot erase changes made to the protected don
 test('large catchup retains its immutable source and completed chunks across receiver restart', async t => {
   const root = await fixture(t), source = await manager(t, root, 'source');
   const original = new DatabaseSync(source.state.value.activeDbPath);
-  original.exec('CREATE TABLE bulk(payload BLOB)');
-  original.prepare('INSERT INTO bulk VALUES(?)').run(Buffer.alloc(3500000, 7)); original.close();
+  original.prepare("INSERT INTO events(type,payload,at) VALUES('bulk',json_object('value',?),0)").run('x'.repeat(3500000)); original.close();
   const replica = await manager(t, root, 'replica', { role: 'replica' }); connect(source, replica);
   const request = replica.peer.request.bind(replica.peer);
   let chunks = 0;
@@ -368,7 +368,7 @@ test('startup protects an accepted replica that acquired unclassified local writ
   await replica.synchronize(source.state.claim());
   const publication = await readReplicaPublication(replica.config.replicaDirectory);
   await replica.close();
-  const changed = new DatabaseSync(publication.dbPath); changed.exec('INSERT INTO readings VALUES(300,23)'); changed.close();
+  const changed = new DatabaseSync(publication.dbPath); changed.exec(`INSERT INTO observations(source,device,signal,value,unit,source_time,received_at,quality) VALUES('fixture','fixture','temperature',23,'degC',300,300,'[]')`); changed.close();
   const restarted = await manager(t, root, 'replica', { role: 'replica', create: false });
   assert.equal(restarted.state.value.role, 'protected'); assert.equal(restarted.state.value.reason, 'replica_verification_failed');
   const donor = await restarted.exportSnapshot({ force: true });
@@ -432,4 +432,52 @@ test('a stale activation callback cannot write or demote a newer local primary',
   resume(); const result = await stale;
   assert.equal(result.code, 'authority_changed'); assert.equal(writes, 0); assert.equal(releases, 0);
   assert.equal(app.state.value.epoch, epoch); assert.equal(app.canControl(), true);
+});
+
+test('A10-002 repeated cached synchronization remains a valid immutable publication',async t=>{
+  const root=await fixture(t),source=await manager(t,root,'source'),replica=await manager(t,root,'replica',{role:'replica'});
+  connect(source,replica);await replica.synchronize(source.state.claim());
+  const first=await readReplicaPublication(replica.config.replicaDirectory);
+  await replica.synchronize(source.state.claim());
+  const second=await readReplicaPublication(replica.config.replicaDirectory);
+  assert.equal(second.generation,first.generation);assert.notEqual(second.previousGeneration,second.generation);
+  assert.equal(replica.state.value.accepted.generation,first.generation);
+});
+
+test('A10-003 delayed pre-handover poll and MQTT claim cannot demote the new primary',async t=>{
+  const root=await fixture(t),source=await manager(t,root,'source',{platform:'hassio'}),target=await manager(t,root,'target',{role:'replica'});
+  connect(source,target);await target.synchronize(source.state.claim());const stale=source.state.claim();
+  const request=target.peer.request.bind(target.peer);let release;
+  target.peer.request=(operation,...args)=>operation==='status' && !release?new Promise(resolve=>{release=()=>resolve({claim:stale});}):request(operation,...args);
+  const polling=target.poll();await source.action('handover',command());assert.equal(target.canControl(),true);
+  release();await polling;assert.equal(target.canControl(),true);assert.equal(source.canControl(),false);
+  target.peer.request=request;await target.observeClaim(stale);assert.equal(target.canControl(),true,'stale MQTT claim is freshly challenged');
+});
+
+test('A10-004 lost release acknowledgement retries the same durable operation',async t=>{
+  const root=await fixture(t),primary=await manager(t,root,'master',{platform:'hassio',hooks:{
+    recoveryPreview:async()=>({previewId:randomUUID(),counts:{missing:0}}),recoveryApply:async()=>({status:'complete',imported:0}),
+  }}),donor=await manager(t,root,'donor');connect(primary,donor);
+  await donor.observeClaim(primary.state.claim());await primary.action('check-recovery',command());
+  await primary.action('recover',{...command(),previewId:primary.state.value.recovery.preview.previewId});
+  const request=primary.peer.request.bind(primary.peer),action=command();let lost=false;
+  primary.peer.request=async(operation,...args)=>{const result=await request(operation,...args);if(operation==='release'&&!lost){lost=true;throw Object.assign(Error(),{code:'peer_unavailable'});}return result;};
+  await assert.rejects(primary.action('rejoin',action),{code:'peer_unavailable'});
+  assert.equal(donor.state.value.role,'replica');const generation=donor.state.value.accepted.generation;
+  for (let n = 0; n < 3; n++) await primary.exportSnapshot({ force: true });
+  await primary.snapshots.chunk({ generation, index: 0 });
+  await primary.close(); await donor.close();
+  const restartedPrimary = await manager(t,root,'master',{platform:'hassio',create:false});
+  const restartedDonor = await manager(t,root,'donor',{role:'replica',create:false});
+  connect(restartedPrimary,restartedDonor);
+  for (let n = 0; n < 3; n++) await restartedPrimary.exportSnapshot({ force: true });
+  await restartedPrimary.snapshots.chunk({ generation, index: 0 });
+  assert.equal((await restartedPrimary.action('rejoin',action)).ok,true);
+  assert.equal(restartedPrimary.state.value.recovery.state,'resolved');assert.equal(restartedDonor.state.value.accepted.generation,generation);
+});
+
+test('peer snapshot requests cannot pin exports indefinitely', async t => {
+  const root = await fixture(t), primary = await manager(t, root, 'primary');
+  const metadata = await primary.handlePeer('snapshot', { force: true, pin: true });
+  await assert.rejects(access(join(primary.snapshots.directory, `export-${metadata.generation}.pin`)), { code: 'ENOENT' });
 });

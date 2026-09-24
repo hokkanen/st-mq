@@ -29,7 +29,7 @@ function validateValues(values) {
  * Persisted obligations are restored on expiry/restart/reconnect; this is not a device-side lease.
  */
 export function createH66Controller({ deviceId, publish, requestSnapshot = async () => {},
-  store, clock = Date.now, config = {} } = {}) {
+  store, clock = Date.now, monotonicClock = () => performance.now(), config = {} } = {}) {
   if (typeof deviceId !== 'string' || !deviceId || /[\/# +\u0000]/.test(deviceId)) throw new TypeError('Exact MQTT device identifier required');
   if (typeof publish !== 'function' || !store?.getState || !store?.setState) throw new TypeError('H66 requires transport and persistent state storage');
   const configuredAge = config.maxAgeMs ?? H66_MAX_AGE_MS;
@@ -40,15 +40,16 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
   const key = `h66:control:${deviceId}`;
   let saved;
   try { saved = store.getState(key); } catch { saved = null; }
-  let state = saved?.version === 1 && saved.baseline && saved.obligations
-    ? copy(saved) : { version: 1, phase: 'normal', baseline: {}, obligations: {}, requested: {}, expiresAt: null, lastResult: null };
+  if (saved != null && (saved.version !== 1 || !saved.baseline || !saved.obligations))
+    throw failure('H66_STATE_UNSUPPORTED', 'Unsupported native-setting state. Start with a fresh development database after safely restoring equipment.');
+  let state = saved != null ? copy(saved) : { version: 1, phase: 'normal', baseline: {}, obligations: {}, requested: {}, expiresAt: null, lastResult: null };
   if (state.lastManual?.status === 'pending') state.lastManual = { ...state.lastManual,
     status: 'unconfirmed', confirmed: false, code: 'H66_MANUAL_INTERRUPTED' };
   // Do not trust persisted telemetry as fresh, and never resume an override after a restart.
   let restoreRequired = Object.keys(state.obligations).length > 0 || manualPhase(state.phase);
   for (const obligation of Object.values(state.obligations)) obligation.requestedRevision = -1;
   let connected = false, closed = false, active = false, expiryTimer = null, reconcileQueued = false;
-  let revision = 0, connectionGeneration = 0;
+  let revision = 0, connectionGeneration = 0, elapsedExpiry = null;
   let lastPublicationAt = null;
   let compressorState = null;
   const readings = new Map(), pending = new Map();
@@ -82,10 +83,14 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
   function noteResult(result) { state.lastResult = { ...result, at: clock() }; persist(); }
   function armExpiry() {
     clearTimeout(expiryTimer);
-    const remaining = timestamp(state.expiresAt) - clock();
+    const wallEnd = timestamp(state.expiresAt);
+    if (!Number.isFinite(wallEnd)) elapsedExpiry = null;
+    else if (elapsedExpiry?.wallEnd !== wallEnd)
+      elapsedExpiry = { wallEnd, end: monotonicClock() + Math.max(0, wallEnd - clock()) };
+    const remaining = Math.min(wallEnd - clock(), elapsedExpiry ? elapsedExpiry.end - monotonicClock() : Infinity);
     if ((Object.keys(state.obligations).length || manualPhase(state.phase)) && Number.isFinite(remaining)) {
       expiryTimer = setTimeout(() => {
-        if (timestamp(state.expiresAt) > clock()) { armExpiry(); return; }
+        if (timestamp(state.expiresAt) > clock() && elapsedExpiry?.end > monotonicClock()) { armExpiry(); return; }
         restoreRequired = true; queueReconciliation();
       }, Math.min(MAX_TIMER_MS, Math.max(1, remaining)));
       expiryTimer.unref?.();
@@ -128,7 +133,7 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
   function captureBaselines(indices, now) {
     const next = { ...state.baseline };
     for (const index of indices) {
-      if (Object.hasOwn(next, index)) continue;
+      if (state.obligations[index] && Object.hasOwn(next, index)) continue;
       const reading = current(index, now);
       if (!reading) throw failure('H66_BASELINE_UNAVAILABLE', 'A fresh native-setting baseline is not available.');
       validateValues({ [index]: reading.value });
@@ -161,27 +166,38 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
       } catch { finish(failure('H66_WRITE_FAILED', 'The H66 write could not be confirmed.')); }
     });
   }
-  async function apply(values, { now, reason, expiresAt, restoring = false, manualPause = false, manualSetting = false }) {
+  async function apply(values, { now, reason, expiresAt, activationExpiresAt = expiresAt, restoring = false, restoreTokens = null, manualPause = false, manualSetting = false }) {
     validateValues(values);
     const checkedAt=clock();
+    const activationElapsedEnd = Number.isFinite(activationExpiresAt)
+      ? monotonicClock() + Math.max(0, activationExpiresAt - checkedAt) : Infinity;
     requireConnection(checkedAt);
     if (!restoring && restoreRequired) throw failure('H66_RESTORATION_PENDING', 'Previous H66 overrides are being restored.');
-    // Preflight all values before the first mutation or publish.
-    if (manualSetting) {
+    const tokens = restoring ? restoreTokens ?? { ...state.obligations } : null;
+    // No-op requests never acquire a baseline. A later first write captures
+    // the current native value, regardless of manual/automatic origin.
+    if (!restoring) {
       // An unchanged request owns nothing. Capture a fresh baseline only when
       // the first actual edit is made, including after an external panel edit.
       for (const index of Object.keys(values)) if (!state.obligations[index]) delete state.baseline[index];
     }
-    captureBaselines(Object.keys(values).filter(index => !manualSetting || state.obligations[index]
+    if (!restoring) captureBaselines(Object.keys(values).filter(index => !manualSetting || state.obligations[index]
       || !equal(current(index, checkedAt)?.value, values[index])), checkedAt);
     if (!restoring) state.expiresAt = deadline(checkedAt, expiresAt, manualPause);
     const changes = [];
     for (const index of SETTINGS.filter(index => Object.hasOwn(values, index))) {
       const value = values[index];
       if (!restoring && restoreRequired) throw failure('H66_RESTORATION_PENDING', 'The H66 transition was interrupted.');
-      if (!restoring && clock() >= state.expiresAt) throw failure('H66_EXPIRED', 'The H66 override expired before activation.');
+      if (!restoring && (clock() >= Math.min(state.expiresAt, activationExpiresAt ?? Infinity) || monotonicClock() >= activationElapsedEnd)) throw failure('H66_EXPIRED', 'The H66 override expired before activation.');
+      if (restoring && (!tokens[index] || state.obligations[index] !== tokens[index])) continue;
       const reading = current(index, clock());
       if (!reading) throw failure('H66_BASELINE_UNAVAILABLE', 'A native-setting readback became stale during the transition.');
+      if (restoring && !equal(reading.value, tokens[index].baseline)
+        && !equal(reading.value, tokens[index].expected) && !equal(reading.value, tokens[index].previousValue)) {
+        delete state.obligations[index]; delete state.requested[index];
+        event('h66-external-setting-preserved', { register: index });
+        continue;
+      }
       if (equal(reading.value, value)) {
         if (restoring) delete state.obligations[index];
         if (restoring && index === '0203') state.manualPreheat = null;
@@ -189,19 +205,22 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
         continue;
       }
       const obligation = state.obligations[index] ?? { baseline: state.baseline[index], originalAt: now };
-      state.obligations[index] = { ...obligation, expected: value, previousValue: reading.value,
+      const writtenObligation = { ...obligation, expected: value, previousValue: reading.value,
         requestedAt: clock(), requestedRevision: reading.revision, confirmed: false, restoring };
+      state.obligations[index] = writtenObligation;
       state.requested[index] = value;
       // Baseline and restoration obligation must reach durable storage before MQTT.
       persist();
       armExpiry();
       const readback = await publishAndReadback(index, value, clock());
-      if (restoring) delete state.obligations[index];
-      else state.obligations[index] = { ...state.obligations[index], confirmed: true, confirmedAt: readback.receivedAt };
+      if (state.obligations[index] === writtenObligation) {
+        if (restoring) delete state.obligations[index];
+        else state.obligations[index] = { ...writtenObligation, confirmed: true, confirmedAt: readback.receivedAt };
+      }
       if (restoring && index === '0203') state.manualPreheat = null;
       persist();
       changes.push(index);
-      if (!restoring && clock() >= state.expiresAt) throw failure('H66_EXPIRED', 'The H66 override expired during activation.');
+      if (!restoring && (clock() >= Math.min(state.expiresAt, activationExpiresAt ?? Infinity) || monotonicClock() >= activationElapsedEnd)) throw failure('H66_EXPIRED', 'The H66 override expired during activation.');
     }
     persist();
     armExpiry();
@@ -216,7 +235,7 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
       persist(); armExpiry(); return { status: 'confirmed', phase, changed: [] };
     }
     requireConnection(now);
-    const values = {};
+    const values = {}, restoreTokens = {};
     for (const index of SETTINGS.filter(index => remaining.includes(index))) {
       const observed = current(index, now), obligation = state.obligations[index];
       if (!observed) continue; // Restore independently available fields; retain the other obligations.
@@ -228,10 +247,10 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
         event('h66-external-setting-preserved', { register: index });
         continue;
       }
-      values[index] = obligation.baseline;
+      values[index] = obligation.baseline; restoreTokens[index] = obligation;
     }
     if (!state.obligations['0203']) state.manualPreheat = null;
-    const changed = Object.keys(values).length ? await apply(values, { now, reason, restoring: true }) : [];
+    const changed = Object.keys(values).length ? await apply(values, { now, reason, restoring: true, restoreTokens }) : [];
     restoreRequired = Object.keys(state.obligations).length > 0;
     state.phase = restoreRequired ? 'restoration-pending' : phase;
     if (!restoreRequired) { state.baseline = {}; state.requested = {}; state.expiresAt = null; state.pauseId = null; state.manualPreheat = null; }
@@ -244,7 +263,8 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
     return exclusive(() => restoreInternal(options), false);
   }
   async function reconcile({ now = clock() } = {}) {
-    if (state.expiresAt != null && timestamp(state.expiresAt) <= now) restoreRequired = true;
+    if (state.expiresAt != null && (timestamp(state.expiresAt) <= now
+      || elapsedExpiry && elapsedExpiry.end <= monotonicClock())) restoreRequired = true;
     if (!restoreRequired) return { status: 'unchanged', phase: state.phase };
     return restore({ now, reason: 'expiry-or-reconnect' });
   }
@@ -336,7 +356,7 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
       now, expiresAt, pauseId }, { enabled, roomSettingC, roomBoostC: enabled ? roomSettingC - baseValue : overlay.roomBoostC, baseValue, at: now });
     return { ...result, roomSettingC: enabled ? roomSettingC : baseValue, roomBoostC: enabled ? roomSettingC - baseValue : 0 };
   }
-  async function setPhase({ phase, roomBoostC = 5, compressorOnly = false, holdDhwReduced = false, now = clock(), expiresAt } = {}) {
+  async function setPhase({ phase, roomBoostC = 5, compressorOnly = false, holdDhwReduced = false, now = clock(), expiresAt, activationExpiresAt = expiresAt } = {}) {
     if (!['normal', 'recovery', 'preheat', 'reduction'].includes(phase)) throw failure('H66_PHASE_INVALID', 'Unknown H66 control phase.');
     if (phase === 'normal' || phase === 'recovery' && !compressorOnly && !holdDhwReduced) return restore({ now, reason: phase, phase });
     return exclusive(async () => {
@@ -360,16 +380,16 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
           changed.push(...await apply({ [index]: state.baseline[index] }, { now, reason: 'recovery', restoring: true }));
         const values = { ...(holdDhwReduced ? { '0212': Math.min(40, state.baseline['0212']), '0208': 50 } : {}),
           ...(compressorOnly ? { '2201': config.compressorOnlyMode ?? 2 } : {}) };
-        if (Object.keys(values).length) changed.push(...await apply(values, { now, reason: 'recovery-hold', expiresAt }));
+        if (Object.keys(values).length) changed.push(...await apply(values, { now, reason: 'recovery-hold', expiresAt, activationExpiresAt }));
       } else if (phase === 'preheat') {
         if (state.phase === 'reduction') throw failure('H66_PHASE_CONFLICT', 'Restore normal operation before starting preheat.');
         if (!Number.isFinite(roomBoostC) || roomBoostC < 0 || roomBoostC > 5) throw failure('H66_BOOST_INVALID', 'Preheat ROOM increase must be 0–5°C after device limits.');
-        changed = await apply({ '0203': Math.min(LIMITS['0203'][1], state.baseline['0203'] + roomBoostC) }, { now, reason: 'preheat', expiresAt });
+        changed = await apply({ '0203': Math.min(LIMITS['0203'][1], state.baseline['0203'] + roomBoostC) }, { now, reason: 'preheat', expiresAt, activationExpiresAt });
       } else {
         // ROOM restoration completes before reduction settings are sent. The executor owns DHWR.
         if (state.obligations['0203']) changed.push(...await apply({ '0203': state.baseline['0203'] }, { now, reason: 'preheat-complete', restoring: true }));
         changed.push(...await apply({ '0212': Math.min(40, state.baseline['0212']),
-          '0208': 50, '2201': config.compressorOnlyMode ?? 2 }, { now, reason: 'reduction', expiresAt }));
+          '0208': 50, '2201': config.compressorOnlyMode ?? 2 }, { now, reason: 'reduction', expiresAt, activationExpiresAt }));
       }
       state.phase = phase;
       const result = { status: 'confirmed', phase, changed, expiresAt: state.expiresAt,
@@ -379,7 +399,17 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
       noteResult(result); return result;
     });
   }
-  function ingest(reading) {
+  function ingestionCheckpoint() {
+    // Preserve obligation object identity: an in-flight restoration holds these
+    // exact tokens to avoid clearing a later owner's replacement obligation.
+    return { state: { ...state, baseline: { ...state.baseline }, obligations: { ...state.obligations }, requested: { ...state.requested } },
+      readings: new Map(readings), revision, lastPublicationAt, compressorState, restoreRequired };
+  }
+  function restoreIngestionCheckpoint(checkpoint) {
+    ({ state, revision, lastPublicationAt, compressorState, restoreRequired } = checkpoint);
+    readings.clear(); for (const [index, reading] of checkpoint.readings) readings.set(index, reading);
+  }
+  function ingest(reading, { afterCommit = effect => effect() } = {}) {
     if (closed || !reading || reading.deviceId !== deviceId || !H66_REGISTERS[reading.register] || reading.duplicate) return;
     if (reading.register === '1A01') trackCompressor(reading);
     reading = { ...reading, revision: ++revision, connectionGeneration };
@@ -388,11 +418,15 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
     if (reading.usableForControl) lastPublicationAt = reading.receivedAt;
     const waiter = pending.get(reading.register);
     if (waiter && reading.usableForControl && reading.receivedAt >= waiter.after && equal(reading.value, waiter.value)) {
-      waiter.finish(null, reading);
+      afterCommit(() => waiter.finish(null, reading));
       return;
     }
     const obligation = state.obligations[reading.register];
-    if (!waiter && reading.usableForControl && obligation?.confirmed && !equal(reading.value, obligation.expected)) {
+    const watched = !obligation && !manualPhase(state.phase)
+      && ['preheat', 'reduction', 'recovery'].includes(state.phase)
+      && Object.hasOwn(state.requested, reading.register);
+    if (!waiter && reading.usableForControl && (obligation?.confirmed && !equal(reading.value, obligation.expected)
+      || watched && !equal(reading.value, state.requested[reading.register]))) {
       delete state.obligations[reading.register];
       state.baseline[reading.register] = reading.value;
       state.externalChangeRevision=(state.externalChangeRevision??0)+1;
@@ -405,7 +439,7 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
       noteResult({ status: 'external-change', register: reading.register, restorationPending: restoreRequired });
       event('h66-external-setting-preserved', { register: reading.register });
     }
-    queueReconciliation();
+    afterCommit(queueReconciliation);
   }
   function setConnected(value) {
     const next = Boolean(value);
@@ -470,5 +504,5 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
     persist();
   }
   armExpiry();
-  return { ingest, setConnected, status, setPhase, writeSettings, setSetting, setManualPreheat, restore, reconcile, test, close };
+  return { ingest, ingestionCheckpoint, restoreIngestionCheckpoint, setConnected, status, setPhase, writeSettings, setSetting, setManualPreheat, restore, reconcile, test, close };
 }

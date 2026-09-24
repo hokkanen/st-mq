@@ -5,7 +5,8 @@ import { join } from 'node:path';
 import { Store } from '../../src/storage/store.js';
 import { createSourceSnapshot } from '../../src/replication/transport.js';
 import { recoveryPreview, recoverHistory } from '../../src/recovery/service.js';
-import { appendLearningRecord, replayLearningJournal, recordLearningContext, LEARNING_WINDOW_MS } from '../../src/app/committed-learning.js';
+import { replayLearningJournal, recordLearningContext, LEARNING_WINDOW_MS} from '../../src/app/committed-learning.js';
+import { appendLearningRecord } from './home-learning-fixture.js';
 
 export const start = Date.parse('2026-01-01T00:00:00Z'), HOUR = 3_600_000, W = LEARNING_WINDOW_MS;
 export function fixture(t) {

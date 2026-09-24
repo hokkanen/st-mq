@@ -4,8 +4,9 @@ import { readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Store } from '../src/storage/store.js';
 import { recoveryPreview, recoverHistory } from '../src/recovery/service.js';
-import { appendLearningRecord, replayLearningJournal, recordLearningContext,
-  LEARNING_ALGORITHM, learningVersion } from '../src/app/committed-learning.js';
+import { replayLearningJournal, recordLearningContext,
+  LEARNING_ALGORITHM, learningVersion} from '../src/app/committed-learning.js';
+import { appendLearningRecord } from './helpers/home-learning-fixture.js';
 import { recordChargingSessionCheck, chargingSessionCheckSummaries } from '../src/app/charging-session-checks.js';
 import { fireplaceLearningContext } from '../src/app/fireplace-inputs.js';
 import { addSensorChange, revertSensorChange } from '../src/app/sensor-changes.js';
@@ -356,7 +357,7 @@ function settlingSample(at, changedAt, { indoorC = 21, quality = [] } = {}) {
     indoorC, outdoorC: 0, quality,
     indoorSensors: { indoor_temperature: { value: indoorC, weight: 1, observedAt: at } },
     inputSegments: [{ start: at - W, end: at, outdoorC: 0, outdoorObservedAt: at, quality }],
-    intervalInputs: { outdoorC: 0 } }, { sensorEpochs: { outdoor_temperature: changedAt }, measurementEpochAt: changedAt });
+    }, { sensorEpochs: { outdoor_temperature: changedAt }, measurementEpochAt: changedAt });
 }
 
 test('recovery accepts reversible settling inputs while keeping genuine donor measurement gaps excluded', async t => {

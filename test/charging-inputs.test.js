@@ -4,7 +4,7 @@ import { createChargingTeslaCapture, decodeChargingTeslaField } from '../src/cha
 import { householdProfile } from '../src/charging/history.js';
 
 test('advance telemetry uses requested current at zero measured power and retains separate receipt clocks', () => {
-  const capture = createChargingTeslaCapture({ settings: { carId: '7', homeGeofence: 'Home', chargerAssignment: 'bmw' } });
+  const capture = createChargingTeslaCapture({ settings: { carId: '7', homeGeofence: 'Home' } });
   capture.setConnected(true);
   const send = (field, value, at, packet) => capture.receive(`teslamate/cars/7/${field}`, String(value), packet, at);
   send('battery_level', 40, 1000); send('charger_power', 0, 1100);
@@ -29,7 +29,7 @@ test('advance telemetry uses requested current at zero measured power and retain
   assert.equal(snapshot.batteryLevel, 40, 'Broker loss preserves the last valid charge and its original clock; connection status is separate');
   capture.setConnected(true);
   send('battery_level', 42, 3000, { dup: true });
-  assert.equal(capture.snapshot().batteryLevel, 42, 'DUP is not proof this subscriber previously consumed a reading');
+  assert.equal(capture.snapshot().batteryLevel, 40, 'Duplicate packets cannot establish fresh evidence');
   send('geofence', 'x'.repeat(201), 3100);
   assert.equal(capture.snapshot().atHome, undefined, 'Invalid location is not known-away evidence');
 });
