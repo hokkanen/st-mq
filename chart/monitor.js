@@ -337,13 +337,12 @@ function renderProviders(s) {
       const title = document.createElement('strong'); title.className = 'provider-category-title';
       const state = document.createElement('span'); state.className = 'provider-category-state';
       const meta = document.createElement('small'); meta.className = 'provider-category-meta';
-      const localSummary = document.createElement('small'); localSummary.className = 'provider-local-summary';
-      heading.append(title, state, meta, localSummary); summary.append(heading);
+      heading.append(title, state, meta); summary.append(heading);
       const body = document.createElement('div'); body.className = 'provider-body';
+      const introduction = document.createElement('p'); introduction.className = 'muted provider-introduction';
       const detail = document.createElement('p'); detail.className = 'muted provider-health';
-      const context = document.createElement('p'); context.className = 'muted provider-category-context';
-      const local = document.createElement('section'); local.className = 'provider-local-connection';
-      const localTitle = document.createElement('h4'); localTitle.textContent = 'Charger 1 local connection';
+      const local = document.createElement('details'); local.className = 'provider-local-connection provider-detail-fold';
+      const localTitle = document.createElement('summary'); localTitle.textContent = 'Connection setup & cloud backup';
       const localRows = document.createElement('dl');
       for (const [name, label] of [['setup', 'Charger setup'], ['readings', 'Local readings']]) {
         const term = document.createElement('dt'), value = document.createElement('dd');
@@ -358,7 +357,11 @@ function renderProviders(s) {
       localMessage.setAttribute('role', 'status'); localMessage.setAttribute('aria-live', 'polite');
       local.append(localTitle, localRows, endpoint, localHelp, localOutage, adopt, localMessage);
       const readings = document.createElement('div'); readings.className = 'provider-series-content';
-      body.append(detail, context, local, readings); fold.append(summary, body); row.append(fold);
+      const sections = document.createElement('div'); sections.className = 'provider-source-sections';
+      const vehicles = document.createElement('div'); vehicles.className = 'equipment-connection-list';
+      if (key === 'vehicle-telemetry') vehicles.id = 'vehicle-telemetry-connections';
+      vehicles.hidden = key !== 'vehicle-telemetry';
+      body.append(introduction, detail, sections, local, readings, vehicles); fold.append(summary, body); row.append(fold);
     }
     if (list.children[index] !== row) list.insertBefore(row, list.children[index] ?? null);
     row.dataset.state = display.attention ? 'attention' : backup ? 'backup'
@@ -369,23 +372,19 @@ function renderProviders(s) {
     setStatusDetail(state, { key: `provider-overview-${key}`, label: display.state, title: overviewTitle, detail: display.detail });
     const source = row.querySelector('.provider-category-meta');
     source.replaceChildren();
-    for (const [sourceIndex, sourceEntry] of (sourceStates ?? [{ label: sourceLabel, tone: row.dataset.state, state: display.state }]).entries()) {
+    for (const [sourceIndex, sourceEntry] of (sourceStates?.length ? sourceStates : [{ label: sourceLabel, tone: row.dataset.state, state: display.state }]).entries()) {
       if (sourceIndex) source.append(document.createTextNode(', '));
       const name = document.createElement('span'); name.className = 'provider-name'; name.dataset.state = sourceEntry.tone;
       name.textContent = sourceEntry.label; name.title = `${sourceEntry.label}: ${sourceEntry.state}`;
       name.setAttribute('aria-label', name.title); source.append(name);
     }
-    const context = row.querySelector('.provider-category-context');
-    context.textContent = key === 'market' ? $('price-status').textContent : key === 'weather' ? $('weather-status').textContent : '';
-    context.hidden = !context.textContent;
+    row.querySelector('.provider-introduction').textContent = entry.introduction;
     setStatusDetail(row.querySelector('.provider-health'), { key: `provider-health-${key}`,
       label: 'Source details', title: overviewTitle, detail: `${display.state}. ${display.detail}` });
-    const local = row.querySelector('.provider-local-connection'), localSummary = row.querySelector('.provider-local-summary');
-    local.hidden = localSummary.hidden = !entry.localConnection;
+    const local = row.querySelector('.provider-local-connection');
+    local.hidden = !entry.localConnection;
     if (entry.localConnection) {
       const connection = entry.localConnection;
-      localSummary.textContent = `Local connection · ${connection.setup.label}`;
-      localSummary.dataset.state = connection.setup.tone;
       for (const name of ['setup', 'readings']) {
         const value = local.querySelector(`[data-local-connection=${name}]`), status = connection[name];
         value.dataset.state = status.tone;
@@ -393,7 +392,7 @@ function renderProviders(s) {
           title: name === 'setup' ? 'Charger setup' : 'Local readings', detail: status.detail });
       }
       local.querySelector('.provider-local-endpoint').textContent = `${connection.endpoint}. ${connection.setup.detail}`;
-      local.querySelector('.provider-local-help').textContent = connection.detail;
+      local.querySelector('.provider-local-help').textContent = `${connection.detail} Cloud backup restores electricity readings; it does not automatically transfer native charging control back to the cloud.`;
       const outage = local.querySelector('.provider-local-outage');
       const outageTitle = document.createElement('strong'); outageTitle.textContent = 'If ST-MQ stops. ';
       outage.replaceChildren(outageTitle, document.createTextNode(connection.outage));
@@ -405,7 +404,26 @@ function renderProviders(s) {
       adopt.hidden = ocppSetupRevision(s) === null;
       adopt.disabled = adopt.hidden || temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy || equipmentBusy;
     }
-    renderProviderSeries(row.querySelector('.provider-series-content'), entry.datasets ?? entry.series, { datasets: true });
+    const sections = row.querySelector('.provider-source-sections');
+    for (const existing of [...sections.children]) if (!entry.sections?.some(section => section.key === existing.dataset.sourceSection)) existing.remove();
+    for (const [sectionIndex, section] of (entry.sections ?? []).entries()) {
+      let content = [...sections.children].find(node => node.dataset.sourceSection === section.key);
+      if (!content) {
+        content = document.createElement('section'); content.className = 'provider-source-section'; content.dataset.sourceSection = section.key;
+        const heading = document.createElement('h4'); heading.className = 'provider-source-title';
+        const description = document.createElement('p'); description.className = 'muted provider-source-description';
+        const readings = document.createElement('div'); readings.className = 'provider-source-readings';
+        content.append(heading, description, readings); sections.append(content);
+      }
+      if (sections.children[sectionIndex] !== content) sections.insertBefore(content, sections.children[sectionIndex] ?? null);
+      content.querySelector('.provider-source-title').textContent = section.title;
+      content.querySelector('.provider-source-description').textContent = section.description;
+      renderProviderSeries(content.querySelector('.provider-source-readings'), section.datasets, { datasets: true });
+      if (section.key === 'easee-ocpp' && local.parentElement !== content) content.append(local);
+    }
+    const readings = row.querySelector('.provider-series-content');
+    readings.hidden = Boolean(entry.sections?.length);
+    renderProviderSeries(readings, entry.sections?.length ? [] : entry.datasets ?? entry.series, { datasets: true });
   }
   $('provider-overview-state').textContent = attentionCount ? `${attentionCount} ${attentionCount === 1 ? 'needs' : 'need'} attention`
     : backupCount ? `${backupCount} using backup` : entries.length ? `${entries.length} data feeds`

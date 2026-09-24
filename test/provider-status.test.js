@@ -9,20 +9,143 @@ const options = { now, formatTime: value => new Date(value).toISOString().slice(
 const easeeReadings = () => ({ charger: { qualityIssues: [], error: null, lastSuccessAt: now },
   property: { qualityIssues: [], error: null, lastSuccessAt: now } });
 const temperature = (source, value = 21, extra = {}) => ({ source, value, observedAt: now, stale: false, ...extra });
+const completeDashboard = () => ({ now, input: 'mqtt', observations: {
+  indoor: temperature('mqtt-temperature'), garage: temperature('shelly-mqtt', 16), outdoor: temperature('fmi', 4),
+}, charging: { vehicleFeeds: [
+  { id: 'bmw', label: 'BMW', provider: 'bmw-cardata', enabled: true, topic: 'fixture/vehicles/bmw',
+    reception: { brokerConnected: true, subscriptionStatus: 'subscribed', lastLiveAt: now } },
+  { id: 'tesla', label: 'Tesla', provider: 'teslamate', enabled: true, topic: 'fixture/vehicles/tesla/#',
+    reception: { brokerConnected: true, subscriptionStatus: 'subscribed', lastLiveAt: now } },
+] }, providers: {
+  easee: { status: 'ok', currentReadings: easeeReadings(), deviceTransports: { charger: 'ocpp', property: 'stream' } },
+  'shelly-evse': { status: 'ok', reason: 'physical-meter', enabled: true },
+  market: { status: 'ok', source: 'entsoe' }, weather: { status: 'ok', source: 'fmi' },
+} });
 
-test('dashboard groups measured temperature channels under their actual sources and puts forecast last', () => {
+test('configured data overview has four consistent categories with both vehicle sources together', () => {
+  const entries = dashboardProviders(completeDashboard(), options);
+  assert.deepEqual(entries.map(row => row.key), ['electricity', 'market', 'vehicle-telemetry', 'main-temperatures']);
+  assert.deepEqual(entries.map(row => row.overviewTitle),
+    ['Electricity consumption', 'Electricity prices', 'Vehicle telemetry', 'Main temperatures & Weather']);
+  assert.deepEqual(entries.map(row => row.source), ['Easee, Shelly EVSE', 'ENTSO-E', 'BMW CarData, TeslaMate', 'MQTT, Shelly, FMI']);
+  assert.ok(entries.every(row => row.display.state === 'Available' && row.introduction?.length > 40));
+  assert.deepEqual(entries[2].sourceStates.map(row => [row.label, row.state]), [['BMW CarData', 'Connected'], ['TeslaMate', 'Connected']]);
+  assert.deepEqual(entries[3].sections.map(row => row.title), ['Main temperatures', 'Weather forecast']);
+  assert.doesNotMatch(JSON.stringify(entries[0]), /BMW|CarData|TeslaMate/);
+});
+
+test('electricity sections keep property, local Charger 1 and MQTT Charger 2 readings complete and distinct', () => {
+  const [group] = dashboardProviders(completeDashboard(), options);
+  assert.deepEqual(group.sections.map(row => row.title), ['Easee cloud', 'Easee OCPP', 'Shelly EVSE']);
+  const [cloud, ocpp, shelly] = group.sections;
+  assert.match(cloud.description, /Property.*Equalizer.*Easee cloud/);
+  assert.match(ocpp.description, /Charger 1.*local OCPP.*cloud.*backup/);
+  assert.match(shelly.description, /Charger 2.*MQTT/);
+  assert.ok(cloud.datasets.every(row => row.signals.every(signal => signal.startsWith('property_') || signal === 'ev1_session_energy_check')));
+  assert.ok(cloud.datasets.some(row => row.signals.includes('ev1_session_energy_check')));
+  assert.ok(ocpp.datasets.every(row => row.signals.every(signal => signal.startsWith('ev1_') && signal !== 'ev1_session_energy_check')));
+  assert.ok(ocpp.datasets.every(row => row.source.includes('Easee local OCPP')));
+  assert.deepEqual(shelly.datasets.flatMap(row => row.signals), ['charger2_power', 'ev2_energy', 'shelly_session_energy_check']);
+  const signals = group.sections.flatMap(section => section.datasets.flatMap(row => row.signals));
+  assert.equal(signals.length, new Set(signals).size, 'Every electrical signal has a single owning section');
+  assert.deepEqual([...signals].sort(), group.datasets.flatMap(row => row.signals).sort());
+});
+
+test('vehicle overview follows each MQTT feed and keeps quiet vehicles and electricity health independent', () => {
+  const cases = [
+    [{ brokerConnected: true, subscriptionStatus: 'pending' }, 'Partly available', false, 'Awaiting subscription'],
+    [{ brokerConnected: true, subscriptionStatus: 'subscribed' }, 'Available', false, 'Connected'],
+    [{ brokerConnected: true, subscriptionStatus: 'subscribed', lastLiveAt: now - 7 * 86_400_000 }, 'Available', false, 'Connected'],
+    [{ brokerConnected: false, subscriptionStatus: 'disconnected' }, 'Needs attention', true, 'Disconnected'],
+    [{ brokerConnected: true, subscriptionStatus: 'failed' }, 'Needs attention', true, 'Subscription failed'],
+    [{ brokerConnected: true, subscriptionStatus: 'subscribed', invalidReason: 'invalid-soc' }, 'Needs attention', true, 'Invalid vehicle report'],
+    [{ brokerConnected: true, subscriptionStatus: 'subscribed', available: false, reason: 'vehicle-feed-stale' }, 'Needs attention', true, 'Vehicle feed stale'],
+  ];
+  for (const index of [0, 1]) for (const [reception, state, attention, sourceState] of cases) {
+    const status = completeDashboard();
+    status.charging.vehicleFeeds[index].reception = reception;
+    const entries = dashboardProviders(status, options), vehicle = entries.find(row => row.key === 'vehicle-telemetry');
+    assert.equal(vehicle.display.state, state);
+    assert.equal(vehicle.display.attention, attention);
+    assert.equal(vehicle.sourceStates[index].state, sourceState);
+    assert.equal(entries[0].display.state, 'Available');
+  }
+  const status = completeDashboard();
+  for (const feed of status.charging.vehicleFeeds) feed.reception = { brokerConnected: true, subscriptionStatus: 'pending' };
+  assert.equal(dashboardProviders(status, options)[2].display.state, 'Waiting for readings');
+  for (const feed of status.charging.vehicleFeeds) feed.enabled = false;
+  assert.equal(dashboardProviders(status, options)[2].display.state, 'Not enabled');
+  status.charging.vehicleFeeds[0].enabled = true;
+  status.charging.vehicleFeeds[0].reception.subscriptionStatus = 'subscribed';
+  status.providers.easee = { status: 'error', error: 'HTTP-503' };
+  const entries = dashboardProviders(status, options);
+  assert.equal(entries[0].display.state, 'Needs attention');
+  assert.equal(entries[2].display.state, 'Available');
+});
+
+test('combined temperature and forecast summary preserves backup and attention with unique actual source names', () => {
+  const status = completeDashboard();
+  status.providers.weather = { status: 'fallback', source: 'fmi', acquisition: { solarSource: 'mixed' } };
+  status.forecast = [
+    { start: now, end: now + 3_600_000, outdoorC: 4, solarRadiationWm2: 20, source: 'fmi', solar: { source: 'fmi' } },
+    { start: now + 3_600_000, end: now + 7_200_000, outdoorC: 5, solarRadiationWm2: 40, source: 'fmi', solar: { source: 'openmeteo' } },
+  ];
+  let group = dashboardProviders(status, options)[3];
+  assert.equal(group.display.state, 'Using backup');
+  assert.equal(group.backup, true);
+  assert.equal(group.source, 'MQTT, Shelly, FMI, Open-Meteo');
+  assert.deepEqual(group.sourceStates.map(row => row.label), ['MQTT', 'Shelly', 'FMI', 'Open-Meteo']);
+  assert.equal(group.datasets.find(row => row.signals.includes('solar_forecast')).source, 'FMI + Open-Meteo');
+  assert.equal(group.datasets.find(row => row.signals.includes('outdoor_temperature')).state, 'Available');
+  status.observations.garage.observedAt = now - 3 * 3_600_000;
+  group = dashboardProviders(status, options)[3];
+  assert.equal(group.display.state, 'Needs attention');
+  assert.equal(group.backup, true);
+  assert.equal(group.sourceStates.find(row => row.label === 'Shelly').tone, 'attention');
+  status.observations.garage.observedAt = now;
+  status.weatherStatus = 'stale-forecast';
+  group = dashboardProviders(status, options)[3];
+  assert.equal(group.display.state, 'Needs attention');
+  assert.match(group.display.detail, /forecast is out of date/);
+  assert.equal(group.datasets.find(row => row.signals.includes('outdoor_temperature')).state, 'Available');
+});
+
+test('inactive weather sources do not reduce healthy temperature availability or invent source names', () => {
+  for (const weatherStatus of ['disabled', 'not-configured']) {
+    const status = completeDashboard();
+    status.providers.weather = { status: weatherStatus };
+    const group = dashboardProviders(status, options)[3];
+    assert.equal(group.display.state, 'Available');
+    assert.equal(group.source, 'MQTT, Shelly, FMI');
+    assert.ok(group.sections.find(section => section.key === 'forecast').datasets.every(row =>
+      row.state === (weatherStatus === 'disabled' ? 'Not enabled' : 'Not configured')));
+  }
+});
+
+test('a Shelly garage front sensor appears before forecast sources without duplicating sources', () => {
+  const status = completeDashboard();
+  status.observations.garage.source = 'mqtt-temperature';
+  status.observations.garageFront = temperature('shelly-mqtt', 15);
+  const group = dashboardProviders(status, options)[3];
+  assert.equal(group.source, 'MQTT, Shelly, FMI');
+  assert.equal(group.display.state, 'Available');
+  assert.equal(group.datasets.find(row => row.signals.includes('garage_temperature_2')).source, 'Shelly');
+});
+
+test('dashboard groups measured temperatures and forecasts under their actual sources', () => {
   const entries = dashboardProviders({ input: 'providers', observations: {
     indoor: temperature('mqtt-temperature'), garage: temperature('mqtt-temperature', 16), outdoor: temperature('fmi', 4),
   }, providers: { temperatures: { source: 'mqtt-temperature', status: 'ok', lastSuccessAt: now },
     easee: { status: 'ok' }, market: { status: 'ok', source: 'entsoe' },
     weather: { status: 'ok', source: 'fmi' }, outdoor: { status: 'ok', source: 'fmi', lastSuccessAt: now } } }, options);
-  assert.deepEqual(entries.map(row => row.key), ['electricity', 'market', 'main-temperatures', 'weather']);
+  assert.deepEqual(entries.map(row => row.key), ['electricity', 'market', 'main-temperatures']);
   const grouped = entries[2];
-  assert.equal(grouped.display.title, 'Main temperatures · MQTT, FMI');
+  assert.equal(grouped.display.title, 'Main temperatures & Weather · MQTT, FMI');
   assert.equal(grouped.display.state, 'Available');
   assert.equal(grouped.source, 'MQTT, FMI');
-  assert.deepEqual(grouped.series.map(row => row.source), ['MQTT', 'MQTT', 'FMI']);
-  assert.deepEqual(grouped.series.flatMap(row => row.signals), ['indoor_temperature', 'garage_temperature', 'outdoor_temperature']);
+  assert.deepEqual(grouped.series.map(row => row.source), ['MQTT', 'MQTT', 'FMI', 'FMI', 'FMI']);
+  assert.deepEqual(grouped.series.flatMap(row => row.signals), ['indoor_temperature', 'garage_temperature', 'outdoor_temperature',
+    'outdoor_forecast', 'solar_radiation', 'solar_forecast']);
   assert.match(grouped.series[1].detail, /Rear garage protection sensor.*front protection is separate/);
   assert.match(grouped.display.detail, /Temperature downloads · MQTT: Last successful download 10:00/);
   assert.match(grouped.display.detail, /Outdoor downloads · FMI: Observed at a nearby weather station. Last successful download 10:00/);
@@ -33,7 +156,7 @@ test('selected live temperatures take precedence over downloaded provider source
     indoor: temperature('mqtt-temperature'), outdoor: temperature('fmi', 4), garage: { value: null, stale: true },
   }, providers: { temperatures: { status: 'disabled' }, outdoor: { source: 'openmeteo', status: 'fallback' } } };
   const [grouped] = dashboardProviders(status, options);
-  assert.equal(grouped.display.title, 'Main temperatures · MQTT, FMI');
+  assert.equal(grouped.display.title, 'Main temperatures & Weather · MQTT, FMI');
   assert.equal(grouped.display.state, 'Available');
   assert.equal(grouped.display.attention, false);
   assert.equal(grouped.backup, false);
@@ -136,7 +259,7 @@ test('temperature group retains outdoor fallback diagnostics without exposing un
     acquisition: { primary: 'fmi', selected: 'openmeteo', attempts: [{ source: 'fmi', status: 'error', error: 'HTTP-429' }] },
     nextAttemptAt: now + 300_000, device: secret, body: secret } } };
   const [grouped] = dashboardProviders(status, options);
-  assert.equal(grouped.display.title, 'Main temperatures · Open-Meteo');
+  assert.equal(grouped.display.title, 'Main temperatures & Weather · Open-Meteo');
   assert.equal(grouped.display.state, 'Using backup');
   assert.equal(grouped.backup, true);
   assert.match(grouped.display.detail, /FMI: rate limited \(HTTP 429\).*Next FMI try 10:05/);
@@ -232,7 +355,7 @@ test('indoor provider rows show the three physical sensors separately from their
   const [grouped] = dashboardProviders(status, options);
   assert.deepEqual(grouped.series.map(row => row.label), ['Upstairs', 'Downstairs', 'Bedroom', 'Garage rear temperature', 'Outdoor temperature']);
   assert.deepEqual(grouped.series.flatMap(row => row.signals), ['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature', 'outdoor_temperature']);
-  assert.equal(grouped.display.title, 'Main temperatures · MQTT, FMI');
+  assert.equal(grouped.display.title, 'Main temperatures & Weather · MQTT, FMI');
   assert.ok(grouped.series.slice(0, 3).every(row => row.source === 'MQTT'));
   assert.equal(grouped.display.state, 'Available');
   assert.match(grouped.series[0].detail, /recorded separately/);
@@ -694,7 +817,9 @@ test('expanded temperature datasets include configured garage front with its own
   assert.equal(front.value, 'Unavailable');
   assert.equal(front.source, 'MQTT');
   assert.match(front.detail, /Expected temperature report missing/);
-  assert.deepEqual(group.display, initial.display);
+  assert.equal(initial.display.state, 'Available');
+  assert.equal(group.display.state, 'Needs attention');
+  assert.equal(group.display.attention, true);
   assert.deepEqual(group.series, initial.series);
   assert.deepEqual(group.datasets.flatMap(row => row.signals), ['indoor_temperature', 'garage_temperature', 'garage_temperature_2', 'outdoor_temperature']);
 });

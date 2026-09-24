@@ -22,6 +22,13 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
   let connected = false, admitted = false, online = false, closed = false, generation = 0, discovered = false, controlReady = false;
   let error = null, info = null, service = null, serviceStatus = null, nativeSchedules = null, serviceAt = null, currentConfig = null, polling = null, buffer = [], componentRoles = new Map(), pendingEvents = [];
   const source = `stmq-evse-${randomUUID()}`, pending = new Map();
+  let subscriptionStatus = 'disconnected', lastLiveAt = null;
+  const topics = [
+    { role: 'RPC responses', topic: `${source}/rpc`, direction: 'subscribe' },
+    { role: 'Charger status', topic: `${config.topicPrefix}/events/rpc`, direction: 'subscribe' },
+    { role: 'Availability', topic: `${config.topicPrefix}/online`, direction: 'subscribe' },
+    { role: 'RPC requests', topic: `${config.topicPrefix}/rpc`, direction: 'publish' },
+  ];
   const admission = createMqttAdmission();
   let overflow = false, eventOverflow = false;
   const ready = () => controlReady && !eventOverflow && finite(serviceAt) && clock() >= serviceAt && clock() - serviceAt <= config.maxAgeMs;
@@ -137,6 +144,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     if (!admitted) { if (buffer.length < 128 && !overflow) buffer.push({ topic, payload: Buffer.from(payload), packet, at: clock() }); else { overflow = true; buffer = []; error = 'evse-subscription-overflow'; } return; }
     if (topic === `${config.topicPrefix}/online`) {
       if (!admission.admit(topic, payload, packet, clock())) return;
+      if (!packet.retain && ['true', 'false'].includes(payload.toString())) lastLiveAt = receivedAt;
       online = payload.toString() === 'true'; if (!online) { discovered = controlReady = false; rejectPending('evse-offline'); } return;
     }
     let frame; try { frame = JSON.parse(payload); } catch { return; }
@@ -147,6 +155,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       if (!item || item.generation !== generation || frame.dst !== undefined && frame.dst !== source) return;
       if (!Object.hasOwn(frame, 'result') && !frame.error) return;
       if (!admission.admit(topic, payload, packet, clock(), { correlated: true })) return;
+      lastLiveAt = receivedAt;
       pending.delete(frame.id); clearTimeout(item.timer);
       if (frame.error) item.reject(fail('evse-rpc-rejected')); else item.resolve(frame.result);
       return;
@@ -155,6 +164,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       const admissionCheckpoint = admission.checkpoint();
       const timestamped = Object.values(frame.params ?? {}).some(value => finite(value?.last_update_ts) && value.last_update_ts > 0);
       if (!admission.admit(topic, payload, packet, clock(), { timestamped })) return;
+      if (!packet.retain) lastLiveAt = receivedAt;
       if (!discovered) {
         if (pendingEvents.length < 128) pendingEvents.push({ admissionCheckpoint, params: frame.params, at: receivedAt, retained: packet.retain === true });
         else { eventOverflow = true; controlReady = false; error = 'evse-event-overflow'; }
@@ -218,19 +228,22 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
   }
   function connect() {
     connected = true; admitted = false; generation++; buffer = []; pendingEvents = []; overflow = eventOverflow = false; admission.reset(); discovered = controlReady = false;
-    const epoch = generation, topics = [`${source}/rpc`, `${config.topicPrefix}/events/rpc`, `${config.topicPrefix}/online`];
-    client.subscribe(topics, { qos: 0 }, (error, grants) => {
+    subscriptionStatus = 'pending';
+    const epoch = generation, subscriptions = topics.filter(row => row.direction === 'subscribe').map(row => row.topic);
+    client.subscribe(subscriptions, { qos: 0 }, (error, grants) => {
       if (epoch !== generation || closed) return;
-      admitted = !overflow && !error && Array.isArray(grants) && topics.every(topic => grants.some(g => g.topic === topic && [0, 1, 2].includes(g.qos)));
+      admitted = !overflow && !error && Array.isArray(grants) && subscriptions.every(topic => grants.some(g => g.topic === topic && [0, 1, 2].includes(g.qos)));
+      subscriptionStatus = admitted ? 'subscribed' : 'failed';
       if (!admitted) { buffer = []; return; }
       const messages = buffer; buffer = []; for (const item of messages) receive(item.topic, item.payload, item.packet, item.at);
       void refresh();
     });
   }
-  function disconnect() { connected = admitted = online = discovered = controlReady = false; generation++; buffer = []; rejectPending('evse-offline'); }
+  function disconnect() { connected = admitted = online = discovered = controlReady = false; subscriptionStatus = 'disconnected'; generation++; buffer = []; rejectPending('evse-offline'); }
   client.on('connect', connect); client.on('message', receive); client.on('offline', disconnect); client.on('close', disconnect);
   const timer = setInterval(() => { void refresh().then(() => engine.charging?.tick({ force: true })); }, 5000); timer.unref?.();
   const snapshot = () => ({ association, online: connected && admitted && online, controlReady: ready(),
+    mqtt: { brokerConnected: connected, subscribed: admitted, subscriptionStatus, lastLiveAt }, topics: copy(topics),
     readAt: clock(), nativeScheduleActive: Boolean(nativeSchedules?.jobs.some(job => job.enable)), fields: copy(state.fields), session: copy(state.connection), error, generation,
     commissioning: { verified: config.verified, identityMatched: discovered, controlReady: ready(), controllerLossFallback: 'unverified',
       nativeCaps: service ? { energyKwh: service.global_charge_limit, durationMinutes: service.global_time_limit, autoCharge: service.auto_charge, state: serviceStatus?.state, restricted: Boolean(serviceStatus?.errors?.length || serviceStatus?.flags?.length) } : null } });

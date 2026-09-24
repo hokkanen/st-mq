@@ -278,11 +278,11 @@ try {
   assert.equal(await evaluate("document.getElementById('home-pump-dhw').textContent.includes('40–55 °C')"), true);
   assert.equal(await evaluate("document.getElementById('home-tariff-status') === null"), true);
   assert.equal(await evaluate("document.querySelectorAll('#providers .provider-fold').length > 0"), true);
-  assert.equal(await evaluate("document.querySelector('[data-provider=main-temperatures] .provider-heading > strong').textContent"), 'Main temperatures');
-  assert.deepEqual(await evaluate("[...document.querySelectorAll('[data-provider=main-temperatures] .provider-series > li > strong')].map(row => row.textContent)"),
+  assert.equal(await evaluate("document.querySelector('[data-provider=main-temperatures] .provider-heading > strong').textContent"), 'Main temperatures & Weather');
+  assert.deepEqual(await evaluate("[...document.querySelectorAll('[data-provider=main-temperatures] [data-source-section=temperatures] .provider-series > li > strong')].map(row => row.textContent)"),
     ['Upstairs', 'Downstairs', 'Bedroom', 'Garage rear temperature', 'Garage front temperature', 'Outdoor temperature']);
-  assert.equal(await evaluate("document.querySelector('#providers > :last-child').dataset.provider"), 'weather', 'Weather forecast follows the main temperature measurements');
-  assert.equal(await evaluate("document.querySelector('#provider-overview #providers > :last-child .provider-category-title').textContent"), 'Weather forecast', 'The source overview has weather last');
+  assert.equal(await evaluate("document.querySelector('#providers > :last-child').dataset.provider"), 'main-temperatures', 'Temperatures and weather share the final overview category');
+  assert.equal(await evaluate("document.querySelector('#provider-overview #providers > :last-child .provider-category-title').textContent"), 'Main temperatures & Weather', 'The source overview groups temperatures and weather last');
   assert.equal(await evaluate("!document.getElementById('connections-details').open && [...document.querySelectorAll('#providers .provider-fold > summary')].every(summary=>summary.checkVisibility())"), true, 'Source categories remain accessible with configuration closed');
   assert.equal((await fetch(`http://127.0.0.1:${app.server.address().port}/api/status`).then(r => r.json())).observations.garage.value, 16.4,
     'The temperature catalogue receives the actual garage observation');

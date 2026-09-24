@@ -760,8 +760,8 @@ try {
   await evaluate("document.querySelector('#provider-overview [data-source-key=market] .status-detail-trigger').click();true");
   assert.match(await evaluate("document.querySelector('#status-detail-popover .status-detail-body').textContent"), /Next ENTSO-E try/);
   await evaluate("document.querySelector('#status-detail-popover .status-detail-close').click();true");
-  assert.equal(await evaluate("document.querySelector('[data-provider=main-temperatures] .provider-heading > strong').textContent"), 'Main temperatures');
-  assert.equal(await evaluate("[...document.querySelectorAll('[data-provider=main-temperatures] .provider-series > li > strong')].map(row => row.textContent).join(',')"),
+  assert.equal(await evaluate("document.querySelector('[data-provider=main-temperatures] .provider-heading > strong').textContent"), 'Main temperatures & Weather');
+  assert.equal(await evaluate("[...document.querySelectorAll('[data-provider=main-temperatures] [data-source-section=temperatures] .provider-series > li > strong')].map(row => row.textContent).join(',')"),
     'Upstairs,Downstairs,Bedroom,Garage rear temperature,Garage front temperature,Outdoor temperature');
   assert.equal(await evaluate("document.querySelector('[data-provider=electricity] .provider-heading > strong').textContent"),
     'Electricity consumption');

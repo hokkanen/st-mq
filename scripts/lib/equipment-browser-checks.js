@@ -14,6 +14,10 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until 
     const reading = (label,value,unit,observedAt=at) => ({label,value,unit,observedAt,stale:false});
     const fixture = window.equipmentUiFixture = {fetch:window.fetch.bind(window),calls:[],responses:0,now:at,lastResult:null,heatingResult:null,status:{},
       originalHash:location.hash,openDetails:[...document.querySelectorAll('.controller-panels details[open]')].map(node=>node.id)};
+    const temperature=(source,value)=>({source,value,observedAt:at,stale:false});
+    fixture.observations={indoor:temperature('indoor-average',20.8),upstairs:temperature('mqtt-temperature',21.2),
+      downstairs:temperature('mqtt-temperature',20.4),bedroom:temperature('shelly-mqtt',20.8),
+      garage:temperature('shelly-mqtt',18.2),garageFront:temperature('shelly-mqtt',16.5),outdoor:temperature('fmi',12)};
     fixture.devices = [
       {id:'garage-probes',label:'Garage temperatures',area:'garage',kind:'temperature',source:'MQTT-shelly',available:true,
         controls:{switch:false},readings:{garage_temperature:reading('By the entrance',18.2,'degC'),garage_temperature_2:reading('By the back wall',16.5,'degC')},
@@ -30,10 +34,11 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until 
     ];
     fixture.dhwr={active:false,durationMinutes:10,actualOn:false,confirmed:false,requestedAt:null,commandTopic:'invented/dhwr/set',feedback:{configured:true,available:true,
       state:reading('Switch',0,'state'),power:reading('Live power',0,'W')}};
-    fixture.response = base => { if(fixture.dhwr.feedback.basis==='power') { const feedback=fixture.dhwr.feedback,power=feedback.power; feedback.state=power?{...power,value:power.value>0?1:0,unit:'state'}:null; fixture.dhwr.actualOn=feedback.available&&power&&!power.stale?power.value>0:null; } return ({...base,...fixture.status,now:fixture.now,equipment:{configured:true,connected:true,devices:fixture.devices,topicGroups:[
+    fixture.response = base => { if(fixture.dhwr.feedback.basis==='power') { const feedback=fixture.dhwr.feedback,power=feedback.power; feedback.state=power?{...power,value:power.value>0?1:0,unit:'state'}:null; fixture.dhwr.actualOn=feedback.available&&power&&!power.stale?power.value>0:null; } return ({...base,...fixture.status,now:fixture.now,observations:{...base.observations,...fixture.observations,...fixture.status.observations},providers:{...base.providers,temperatures:{source:'mqtt-temperature',status:'ok',lastSuccessAt:at},outdoor:{source:'fmi',status:'ok',lastSuccessAt:at},easee:{status:'ok',currentReadings:{property:{qualityIssues:[],lastSuccessAt:at},charger:{qualityIssues:[],lastSuccessAt:at}},deviceTransports:{charger:'ocpp',property:'stream'},localOcpp:{configured:true,connected:true,available:true,setup:{state:'ready',endpointSource:'configured'}}},'shelly-evse':{enabled:true,status:'ok',connected:true,recording:true,mqttStatus:{brokerConnected:true,subscriptionStatus:'subscribed',lastLiveAt:at},topics:[{role:'Charger status',topic:'invented/evse/events/rpc',direction:'subscribe'},{role:'RPC requests',topic:'invented/evse/rpc',direction:'publish'}]}},equipment:{configured:true,connected:true,devices:fixture.devices,topicGroups:[
       {id:'temperatures',label:'Temperature feeds',topics:[{role:'Upstairs',topic:'invented/home/upstairs/temperature',direction:'subscribe'}]},
+      {id:'vehicle:bmw',vehicleFeedId:'bmw',label:'BMW',topics:[{role:'Timestamped vehicle readings',topic:'invented/vehicles/bmw',direction:'subscribe'}]},
       {id:'vehicle:tesla',vehicleFeedId:'tesla',label:'TeslaMate',topics:[{role:'Vehicle subscription',topic:'invented/teslamate/cars/1/#',direction:'subscribe'}]}
-    ]},charging:{...base.charging,vehicleFeeds:[{id:'tesla',label:'Tesla',provider:'teslamate',topic:'invented/teslamate/cars/1/#',enabled:true,reception:{brokerConnected:true,subscriptionStatus:'subscribed',lastLiveAt:at,lastMessageAt:at}}]},dhwr:fixture.dhwr,
+    ]},charging:{...base.charging,vehicleFeeds:[{id:'bmw',label:'BMW',provider:'bmw-cardata',topic:'invented/vehicles/bmw',enabled:true,reception:{brokerConnected:true,subscriptionStatus:'subscribed',lastLiveAt:at,lastMessageAt:at}},{id:'tesla',label:'Tesla',provider:'teslamate',topic:'invented/teslamate/cars/1/#',enabled:true,reception:{brokerConnected:true,subscriptionStatus:'subscribed',lastLiveAt:at,lastMessageAt:at}}]},dhwr:fixture.dhwr,
       heatingTests:{available:true,lastResult:fixture.heatingResult},equipmentControls:{available:true,busy:false,lastResult:fixture.lastResult},equipmentTests:{available:true,busy:false}}); };
     window.fetch = async (...args) => {
       const path = new URL(args[0],location.href).pathname;
@@ -63,7 +68,27 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until 
   })()`);
   try {
     await refresh();
-    await evaluate("document.getElementById('home-equipment-details').open=true;document.getElementById('garage-equipment-details').open=true;document.getElementById('connections-details').open=true;document.getElementById('mqtt-devices-details').open=true;true");
+    assert.deepEqual(await evaluate("[...document.querySelectorAll('#providers > li')].map(row=>row.dataset.provider)"), ['electricity','market','vehicle-telemetry','main-temperatures']);
+    assert.equal(await evaluate("document.querySelectorAll('.provider-local-summary').length"), 0);
+    assert.deepEqual(await evaluate("[...document.querySelectorAll('[data-provider=\"main-temperatures\"] .provider-source-title')].map(node=>node.textContent)"), ['Main temperatures','Weather forecast']);
+    assert.equal(await evaluate("document.querySelector('[data-provider=\"main-temperatures\"] .provider-category-meta').textContent"), 'MQTT, Shelly, FMI');
+    assert.equal(await evaluate("[...document.querySelectorAll('#providers .provider-body')].every(body=>body.firstElementChild.classList.contains('provider-introduction')&&body.firstElementChild.textContent.length>30)"), true);
+    assert.equal(await evaluate("document.querySelector('#vehicle-telemetry-connections [data-device-id=\"connection:vehicle:bmw:other\"] .equipment-connection-meta').textContent"), 'Vehicle · BMW CarData');
+    await evaluate("document.querySelectorAll('#providers .provider-fold, #vehicle-telemetry-connections .equipment-connection-fold, #vehicle-telemetry-connections .equipment-packet-details').forEach(node=>node.open=true);window.equipmentUiFixture.bmwCard=document.querySelector('#vehicle-telemetry-connections [data-device-id=\"connection:vehicle:bmw:other\"]');true");
+    await refresh();
+    assert.equal(await evaluate("[...document.querySelectorAll('#providers .provider-fold, #vehicle-telemetry-connections .equipment-connection-fold, #vehicle-telemetry-connections .equipment-packet-details')].every(node=>node.open)"), true, 'Refresh preserves expanded categories, vehicle connections and packet diagnostics');
+    assert.equal(await evaluate("window.equipmentUiFixture.bmwCard===document.querySelector('#vehicle-telemetry-connections [data-device-id=\"connection:vehicle:bmw:other\"]')"), true);
+    for (const width of [1440,390]) {
+      await command('browsingContext.setViewport',{context,viewport:{width,height:1100},devicePixelRatio:1}); await settle();
+      const height=await evaluate("Math.ceil(document.getElementById('providers-controls').getBoundingClientRect().height)+60");
+      await command('browsingContext.setViewport',{context,viewport:{width,height},devicePixelRatio:1}); await settle();
+      await evaluate("document.getElementById('providers-controls').scrollIntoView({block:'start'});true"); await settle();
+      assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, `Expanded Data and settings fits at ${width}px`);
+      const screenshot=await command('browsingContext.captureScreenshot',{context,origin:'viewport'});
+      writeFileSync(`var/data-settings-expanded-${width}.png`,Buffer.from(screenshot.data,'base64'));
+    }
+    await command('browsingContext.setViewport',{context,viewport:{width:1440,height:1100},devicePixelRatio:1});
+    await evaluate("document.querySelectorAll('#providers .provider-fold').forEach(node=>node.open=false);document.getElementById('home-equipment-details').open=true;document.getElementById('garage-equipment-details').open=true;document.getElementById('connections-details').open=true;document.getElementById('mqtt-devices-details').open=true;true");
     assert.equal(await evaluate("document.getElementById('home-equipment-section').closest('#home-equipment-details') !== null"), true);
     assert.equal(await evaluate("document.querySelectorAll('#home-equipment-section input[type=number]').length"), 1, 'Only the H66 setting is numeric; manual controls have no duration inputs');
     assert.equal(await evaluate("document.querySelector('#garage-equipment-readings [data-device-id=door1] .status-detail-label').textContent"), 'Closed');
@@ -108,10 +133,15 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until 
     assert.equal(await evaluate("document.querySelector('#equipment-connections [data-device-id=caravan] .equipment-connection-name').textContent"), 'Caravan');
     assert.equal(await evaluate("document.querySelector('#equipment-connections [data-device-id=caravan] .equipment-device-status').textContent"), 'Available');
     assert.match(await evaluate("document.querySelector('#equipment-connections [data-device-id=caravan] .equipment-connection-recent').textContent"), /^Reported /);
-    assert.equal(await evaluate("document.querySelector('#equipment-connections [data-device-id=\"connection:vehicle:tesla:other\"] .equipment-connection-name').textContent"), 'Tesla');
-    assert.equal(await evaluate("document.querySelector('#equipment-connections [data-device-id=\"connection:vehicle:tesla:other\"]').closest('[data-connection-area]').dataset.connectionArea"), 'other');
-    assert.match(await evaluate("document.querySelector('#equipment-connections [data-device-id=\"connection:vehicle:tesla:other\"] .equipment-connection-meta').textContent"), /TeslaMate/);
+    assert.equal(await evaluate("document.querySelector('#vehicle-telemetry-connections [data-device-id=\"connection:vehicle:tesla:other\"] .equipment-connection-name').textContent"), 'Tesla');
+    assert.equal(await evaluate("document.querySelector('#vehicle-telemetry-connections [data-device-id=\"connection:vehicle:tesla:other\"]').closest('[data-provider]').dataset.provider"), 'vehicle-telemetry');
+    assert.equal(await evaluate("document.querySelector('#equipment-connections [data-device-id=\"connection:vehicle:tesla:other\"]')"), null);
+    assert.match(await evaluate("document.querySelector('#vehicle-telemetry-connections [data-device-id=\"connection:vehicle:tesla:other\"] .equipment-connection-meta').textContent"), /TeslaMate/);
+    assert.equal(await evaluate("document.querySelector('#equipment-connections [data-device-id=\"connection:shelly-evse:garage\"]').closest('[data-connection-area]').dataset.connectionArea"), 'garage');
+    assert.match(await evaluate("document.querySelector('#equipment-connections [data-device-id=\"connection:shelly-evse:garage\"]').textContent"), /Charger 2.*Charger · Shelly EVSE.*local Shelly MQTT.*invented\/evse\/events\/rpc.*RPC requests/);
     await evaluate("document.querySelectorAll('#equipment-connections .equipment-connection-fold, #equipment-connections .equipment-packet-details').forEach(d=>d.open=true);true");
+    await refresh();
+    assert.equal(await evaluate("[...document.querySelectorAll('#equipment-connections .equipment-connection-fold, #equipment-connections .equipment-packet-details')].every(node=>node.open)"), true, 'Refresh preserves expanded MQTT cards and packet diagnostics');
     assert.equal(await evaluate("[...document.querySelectorAll('#equipment-connections code')].some(n=>n.textContent==='invented/garage/long-device-prefix/door1/contact/state')"), true);
     assert.match(await evaluate("document.getElementById('equipment-connections').textContent"), /no status-request topic/);
     assert.match(await evaluate("document.getElementById('equipment-connections').textContent"), /Last live packet:/);
@@ -282,7 +312,7 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until 
     assert.match(await evaluate(`document.querySelector('${appliance}').textContent`), /electriQ DESD8LW.*Awaiting first MQTT report/);
     assert.equal(await evaluate(`Array.from(document.querySelectorAll('${appliance} button, ${appliance} select')).every(node=>node.disabled)`), true);
     assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('#equipment-connections [data-connection-area=garage] .equipment-connection-fold')).map(node=>node.dataset.deviceId)"),
-      ['connection:garage-adapter:garage','garage-probes','blu_ht','caravan_dehumidifier','caravan','door1','door2']);
+      ['connection:garage-adapter:garage','garage-probes','blu_ht','caravan_dehumidifier','caravan','door1','door2','connection:shelly-evse:garage']);
     assert.equal(await evaluate(`document.querySelector('${caravan}').open`), true, 'Adding Caravan devices preserves the open fold');
     for (const [width,height] of [[1440,1100],[390,1000],[320,900]]) {
       await command('browsingContext.setViewport',{context,viewport:{width,height},devicePixelRatio:1}); await settle();
@@ -310,7 +340,7 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until 
     assert.match(await evaluate(`document.querySelector('${appliance} .equipment-control-result').textContent`), /device reported/);
     await evaluate("window.equipmentUiFixture.status.role='replica';true"); await refresh();
     assert.equal(await evaluate(`document.querySelector('${fan}').disabled`), true, 'Replica remains read-only');
-    await evaluate("window.equipmentUiFixture.status={};window.equipmentUiFixture.devices=[];true"); await refresh();
+    await evaluate("window.equipmentUiFixture.status={};window.equipmentUiFixture.observations={};window.equipmentUiFixture.devices=[];true"); await refresh();
     assert.match(await evaluate("document.getElementById('garage-equipment-readings').textContent"), /No garage devices enabled/);
     assert.equal(await evaluate("document.querySelectorAll('#equipment-connections [data-device-id=caravan], #equipment-connections [data-device-id=garage-probes], #equipment-connections [data-device-id=door1], #equipment-connections [data-device-id=door2]').length"), 0);
     assert.equal(await evaluate("document.querySelector('#equipment-connections [data-device-id=\"connection:temperatures:home\"] code').textContent"), 'invented/home/upstairs/temperature', 'Configured feeds remain after equipment removal');

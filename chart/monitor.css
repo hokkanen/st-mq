@@ -985,10 +985,17 @@ button.status-detail-close:hover { background: var(--surface-soft); color: var(-
 #provider-overview > .muted { margin: 0; font-size: 11px; line-height: 1.6; }
 #provider-overview .provider-body { margin-top: 12px; padding: 12px 14px; background: var(--surface-soft); border-radius: 6px; }
 #provider-overview .provider-health { margin: 0 0 9px; font-size: 11px; }
-#provider-overview .provider-category-context { margin: 0 0 10px; color: var(--muted); font-size: 11px; line-height: 1.6; }
-#provider-overview .provider-local-summary { margin-left: 13px; color: var(--provider-tone, var(--muted)); font-size: 10px; line-height: 1.5; }
-#provider-overview .provider-local-connection { margin: 12px 0; padding: 12px 0; border-block: 1px solid var(--border); }
-#provider-overview .provider-local-connection h4 { margin: 0 0 8px; font-size: 12px; }
+#provider-overview .provider-local-connection { margin: 12px 0 0; padding: 12px 0; border-top: 1px solid var(--border); }
+#provider-overview .provider-introduction { margin: 0 0 12px; font-size: 11px; line-height: 1.65; }
+#provider-overview .provider-source-section { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); }
+#provider-overview .provider-source-title { margin: 0 0 6px; font-size: 12px; font-weight: 550; }
+#provider-overview .provider-source-description { margin: 0 0 8px; font-size: 11px; line-height: 1.65; }
+#provider-overview .provider-detail-fold > summary { display: flex; align-items: center; gap: 10px; list-style: none; font-size: 11px; line-height: 1.6; }
+#provider-overview .provider-detail-fold > summary::-webkit-details-marker { display: none; }
+#provider-overview .provider-detail-fold > summary::after { content: '›'; margin-left: auto; color: var(--muted); font-size: 17px; }
+#provider-overview .provider-detail-fold[open] > summary { margin-bottom: 12px; }
+#provider-overview .provider-detail-fold[open] > summary::after { transform: rotate(90deg); }
+#vehicle-telemetry-connections:empty { display: none; }
 #provider-overview .provider-local-connection dl { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: baseline; gap: 8px 12px; margin: 0; font-size: 11px; }
 #provider-overview .provider-local-connection dt { color: var(--muted); }
 #provider-overview .provider-local-connection dd { margin: 0; color: var(--provider-tone, var(--text)); overflow-wrap: anywhere; }
@@ -1007,37 +1014,42 @@ button.status-detail-close:hover { background: var(--surface-soft); color: var(-
 #provider-overview .provider-series-source { grid-column: 1 / -1; color: var(--muted); font-size: 10px; line-height: 1.5; }
 #mqtt-devices-details .mqtt-connections-intro { margin: 0 0 12px; font-size: 11px; line-height: 1.5; }
 #mqtt-devices-details #equipment-check-message:empty { display: none; }
-#mqtt-devices-details .equipment-connection-group { margin: 18px 0 0; }
-#mqtt-devices-details .equipment-connection-group-title { margin: 0 0 4px; color: var(--muted); font-size: 11px; font-weight: 550; }
-#mqtt-devices-details .equipment-connection-fold { margin: 0; border-top: 1px solid var(--border); }
-#mqtt-devices-details .equipment-connection-list > .equipment-connection-fold:first-child { border-top: 0; }
-#mqtt-devices-details .equipment-connection-summary { display: grid; grid-template-columns: minmax(0, 1fr) auto 10px; gap: 12px; align-items: center; padding: 12px 0; list-style: none; }
-#mqtt-devices-details .equipment-connection-summary::-webkit-details-marker { display: none; }
-#mqtt-devices-details .equipment-connection-summary::after { content: '›'; color: var(--muted); font-size: 18px; line-height: 1; }
-#mqtt-devices-details .equipment-connection-fold[open] > .equipment-connection-summary::after { transform: rotate(90deg); }
-#mqtt-devices-details .equipment-connection-identity { display: flex; flex-direction: column; min-width: 0; gap: 4px; }
-#mqtt-devices-details .equipment-connection-name { font-size: 12px; font-weight: 550; line-height: 1.4; overflow-wrap: anywhere; }
-#mqtt-devices-details .equipment-connection-meta, #mqtt-devices-details .equipment-connection-recent { color: var(--muted); font-size: 10px; line-height: 1.4; }
-#mqtt-devices-details .equipment-connection-health { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; max-width: 190px; text-align: right; }
-#mqtt-devices-details .equipment-connection-health > .equipment-device-status { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; }
-#mqtt-devices-details .equipment-connection-health > .equipment-device-status::before { content: ''; flex: 0 0 5px; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
-#mqtt-devices-details .equipment-connection-body { padding-bottom: 14px; }
-#mqtt-devices-details .equipment-connection-check { display: grid; gap: 5px; margin: 0 0 14px; }
-#mqtt-devices-details .equipment-connection-check p { margin: 0; font-size: 11px; line-height: 1.6; }
-#mqtt-devices-details .equipment-connection-check small { color: var(--muted); font-size: 10px; line-height: 1.5; }
-#mqtt-devices-details .equipment-topic-group { margin: 14px 0; }
-#mqtt-devices-details .equipment-topic-group > h5 { margin: 0 0 8px; color: var(--muted); font-size: 10px; font-weight: 550; }
-#mqtt-devices-details .equipment-topic-list { grid-template-columns: minmax(80px, .7fr) minmax(0, 2fr); align-items: baseline; gap: 8px 12px; margin: 0; }
-#mqtt-devices-details .equipment-topic-list > div { display: contents; }
-#mqtt-devices-details .equipment-topic-list dt { line-height: 1.5; }
-#mqtt-devices-details .equipment-topic-list dd { min-width: 0; margin: 0; }
-#mqtt-devices-details .equipment-topic-list code { margin: 0; font-size: 11px; line-height: 1.5; }
-#mqtt-devices-details .equipment-packet-details { margin: 12px 0 0; }
-#mqtt-devices-details .equipment-packet-details > summary { display: flex; align-items: center; gap: 10px; padding: 10px 0; font-size: 11px; list-style: none; }
-#mqtt-devices-details .equipment-packet-details > summary::-webkit-details-marker { display: none; }
-#mqtt-devices-details .equipment-packet-details > summary::after { content: '›'; margin-left: auto; color: var(--muted); font-size: 17px; line-height: 1; }
-#mqtt-devices-details .equipment-packet-details[open] > summary::after { transform: rotate(90deg); }
-#mqtt-devices-details .equipment-packet-status { margin: 0 0 8px; color: var(--muted); font-size: 10px; line-height: 1.6; overflow-wrap: anywhere; }
+:is(#mqtt-devices-details, #vehicle-telemetry-connections) .equipment-connection-group { margin: 18px 0 0; }
+:is(#mqtt-devices-details, #vehicle-telemetry-connections) .equipment-connection-group-title { margin: 0 0 4px; color: var(--muted); font-size: 11px; font-weight: 550; }
+:is(#mqtt-devices-details, #vehicle-telemetry-connections) .equipment-connection-fold { margin: 0; border-top: 1px solid var(--border); }
+:is(#mqtt-devices-details, #vehicle-telemetry-connections) .equipment-connection-list > .equipment-connection-fold:first-child { border-top: 0; }
+:is(#mqtt-devices-details, #vehicle-telemetry-connections) .equipment-connection-summary { display: grid; grid-template-columns: minmax(0, 1fr) auto 10px; gap: 12px; align-items: center; padding: 12px 0; list-style: none; }
+:is(#mqtt-devices-details, #vehicle-telemetry-connections) .equipment-connection-summary::-webkit-details-marker { display: none; }
+:is(#mqtt-devices-details, #vehicle-telemetry-connections) .equipment-connection-summary::after { content: '›'; color: var(--muted); font-size: 18px; line-height: 1; }
+:is(#mqtt-devices-details, #vehicle-telemetry-connections) .equipment-connection-fold[open] > .equipment-connection-summary::after { transform: rotate(90deg); }
+:is(#mqtt-devices-details, #vehicle-telemetry-connections) .equipment-connection-identity { display: flex; flex-direction: column; min-width: 0; gap: 4px; }
+:is(#mqtt-devices-details, #vehicle-telemetry-connections) .equipment-connection-name { font-size: 12px; font-weight: 550; line-height: 1.4; overflow-wrap: anywhere; }
+:is(#mqtt-devices-details, #vehicle-telemetry-connections) .equipment-connection-meta, :is(#mqtt-devices-details, #vehicle-telemetry-connections) .equipment-connection-recent { color: var(--muted); font-size: 10px; line-height: 1.4; }
+:is(#mqtt-devices-details, #vehicle-telemetry-connections) .equipment-connection-health { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; max-width: 190px; text-align: right; }
+:is(#mqtt-devices-details, #vehicle-telemetry-connections) .equipment-connection-health > .equipment-device-status { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; }
+:is(#mqtt-devices-details, #vehicle-telemetry-connections) .equipment-connection-health > .equipment-device-status::before { content: ''; flex: 0 0 5px; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+:is(#mqtt-devices-details, #vehicle-telemetry-connections) .equipment-connection-body { padding-bottom: 14px; }
+:is(#mqtt-devices-details, #vehicle-telemetry-connections) .equipment-connection-intro { margin: 0 0 12px; font-size: 11px; line-height: 1.65; overflow-wrap: anywhere; }
+:is(#mqtt-devices-details, #vehicle-telemetry-connections) .equipment-connection-check { display: grid; gap: 5px; margin: 0 0 14px; }
+:is(#mqtt-devices-details, #vehicle-telemetry-connections) .equipment-connection-check p { margin: 0; font-size: 11px; line-height: 1.6; }
+:is(#mqtt-devices-details, #vehicle-telemetry-connections) .equipment-connection-check small { color: var(--muted); font-size: 10px; line-height: 1.5; }
+:is(#mqtt-devices-details, #vehicle-telemetry-connections) .equipment-topic-group { margin: 14px 0; }
+:is(#mqtt-devices-details, #vehicle-telemetry-connections) .equipment-topic-group > h5 { margin: 0 0 8px; color: var(--muted); font-size: 10px; font-weight: 550; }
+:is(#mqtt-devices-details, #vehicle-telemetry-connections) .equipment-topic-list { grid-template-columns: minmax(80px, .7fr) minmax(0, 2fr); align-items: baseline; gap: 8px 12px; margin: 0; }
+:is(#mqtt-devices-details, #vehicle-telemetry-connections) .equipment-topic-list > div { display: contents; }
+:is(#mqtt-devices-details, #vehicle-telemetry-connections) .equipment-topic-list dt { line-height: 1.5; }
+:is(#mqtt-devices-details, #vehicle-telemetry-connections) .equipment-topic-list dd { min-width: 0; margin: 0; }
+:is(#mqtt-devices-details, #vehicle-telemetry-connections) .equipment-topic-list code { margin: 0; font-size: 11px; line-height: 1.5; }
+:is(#mqtt-devices-details, #vehicle-telemetry-connections) .equipment-packet-details { margin: 12px 0 0; }
+:is(#mqtt-devices-details, #vehicle-telemetry-connections) .equipment-packet-details > summary { display: flex; align-items: center; gap: 10px; padding: 10px 0; font-size: 11px; list-style: none; }
+:is(#mqtt-devices-details, #vehicle-telemetry-connections) .equipment-packet-details > summary::-webkit-details-marker { display: none; }
+:is(#mqtt-devices-details, #vehicle-telemetry-connections) .equipment-packet-details > summary::after { content: '›'; margin-left: auto; color: var(--muted); font-size: 17px; line-height: 1; }
+:is(#mqtt-devices-details, #vehicle-telemetry-connections) .equipment-packet-details[open] > summary::after { transform: rotate(90deg); }
+:is(#mqtt-devices-details, #vehicle-telemetry-connections) .equipment-packet-status { margin: 0 0 8px; color: var(--muted); font-size: 10px; line-height: 1.6; overflow-wrap: anywhere; }
+@media (max-width: 480px) {
+  #provider-overview .provider-body { padding-inline: 10px; }
+  :is(#mqtt-devices-details, #vehicle-telemetry-connections) .equipment-connection-summary { gap: 8px; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 10px; }
+}
 #connection-setup-details { margin: 18px 0 0 24px; }
 #connection-setup-details > .equipment-fold { margin: 12px 0 12px 12px; }
 #connection-setup-details > .equipment-fold > summary { min-height: 36px; padding: 9px 0; font-size: 11px; }

@@ -139,7 +139,7 @@ try {
     assert.equal(observations[key].value, value, `${key} remains available to the controller`);
   }
   assert.equal(await evaluate("document.querySelector('[data-provider=main-temperatures] .provider-heading > strong').textContent"),
-    'Main temperatures');
+    'Main temperatures & Weather');
   assert.equal(await evaluate("document.querySelectorAll('#chart-legend [data-chart-key=\"model_indoor_temperature\"]').length"), 1);
   assert.equal(await evaluate("document.querySelector('#chart-legend [data-chart-key=\"model_indoor_temperature\"]').textContent"), 'Average indoor');
   for (const signal of ['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature']) {

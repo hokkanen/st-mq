@@ -120,7 +120,8 @@ export class Engine {
     providers['shelly-evse'] = { source: 'shelly-evse', enabled,
       status: !enabled ? 'disabled' : physical?.online ? physical.controlReady ? 'ok' : 'degraded' : 'waiting',
       reason: !enabled ? 'not-enabled' : physical?.online ? physical.controlReady ? 'physical-meter' : 'commissioning-required' : 'awaiting-mqtt',
-      connected: physical?.online === true, recording: physical?.fields?.phase_info != null };
+      connected: physical?.online === true, recording: physical?.fields?.phase_info != null,
+      mqttStatus: physical?.mqtt ?? null, topics: physical?.topics ?? [] };
     return providers;
   }
   fireplaceStatus() { return fireplaceView(this.store, this.config.input, { asOf: this.clock() }); }

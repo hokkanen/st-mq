@@ -6,7 +6,7 @@ import { createCaravanContents, dehumidifierControlAllowed, dehumidifierValueAll
 
 const clock = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', month: 'short', day: 'numeric',
   hour: '2-digit', minute: '2-digit', timeZoneName: 'shortOffset' });
-const labels = { temperature: 'Temperatures', door: 'Door', switch: 'Switch', power: 'Power meter', metered_switch: 'Energy meter', dehumidifier: 'Dehumidifier', heat_pump: 'Heat pump', vehicle: 'Vehicle', floor_override: 'Switch' };
+const labels = { temperature: 'Temperatures', door: 'Door', switch: 'Switch', power: 'Power meter', metered_switch: 'Energy meter', dehumidifier: 'Dehumidifier', heat_pump: 'Heat pump', vehicle: 'Vehicle', charger: 'Charger', floor_override: 'Switch' };
 const pretty = text => String(text ?? '').replaceAll(/[_-]/g, ' ');
 const RESULT_NOTICE_MS = 60_000;
 const recentResult = (at, now) => !Number.isFinite(now)
@@ -18,7 +18,7 @@ function equipmentStateReading(device, now) {
     && Number.isFinite(reading.observedAt) && (!Number.isFinite(now) || reading.observedAt <= now) ? reading : null;
 }
 export const equipmentSource = device => ['Shelly', 'MQTT-shelly', 'shelly-mqtt'].includes(device.source) ? 'Shelly'
-  : ['H66', 'Mitsubishi', 'Simulation', 'TeslaMate', 'BMW CarData'].includes(device.source) ? device.source : 'MQTT';
+  : ['H66', 'Mitsubishi', 'Simulation', 'TeslaMate', 'BMW CarData', 'Shelly EVSE'].includes(device.source) ? device.source : 'MQTT';
 const temperatureKeys = { indoor_temperature: 'upstairs', downstairs_temperature: 'downstairs', bedroom_temperature: 'bedroom',
   garage_temperature: 'garage', garage_temperature_2: 'garageFront', outdoor_temperature: 'outdoor' };
 const temperatureIds = { upstairs: 'indoor_temperature', indoor: 'indoor_temperature', downstairs: 'downstairs_temperature',
@@ -369,11 +369,51 @@ function vehicleConnection({ reception = {}, enabled = true, label, source, deta
     connectionDetail: `Vehicle data for charging. Used automatically when this vehicle is identified at a charger. ${detail}${usedBy ? ` Used by: ${usedBy}.` : ''}`,
     packetDetail: [invalidReason ? 'The latest vehicle report could not be used; previous accepted readings keep their original timestamps.' : '',
       reception.reason === 'vehicle-feed-stale' ? 'The MQTT broker is connected, but the vehicle publisher has stopped reporting. Automatic vehicle inputs await a valid live report.' : '',
-      Number.isFinite(lastLiveAt) ? `Latest live report: ${clock.format(lastLiveAt)}.`
-        : Number.isFinite(lastRetainedAt) ? `Saved broker reading received ${clock.format(lastRetainedAt)}; no live vehicle report received yet.`
+      Number.isFinite(lastLiveAt) ? ''
+        : Number.isFinite(lastRetainedAt) ? 'Saved broker context only; no live vehicle report received yet.'
           : 'Connection status follows the MQTT subscription; vehicle charge readings keep their own timestamps.'].filter(Boolean).join(' '),
   };
 }
+
+/** Device purpose stays separate from changing connection-check results. */
+export function equipmentConnectionIntroduction(device) {
+  if (device.kind === 'floor_override') return 'Floor-heating valves report their override state through Shelly MQTT. Local scripts return them to thermostat control after preheating.';
+  if (device.connectionDetail) return device.connectionDetail;
+  if (device.controls?.tariff || device.controlsHeat || device.role === 'heat_savings')
+    return 'Heating requests and relay readback use MQTT. Reported relay state confirms whether the requested mode was applied.';
+  return ({
+    temperature: 'Temperature readings arrive over MQTT. Each sensor keeps its own reading and availability.',
+    door: 'Door position reports arrive over MQTT. Configured commands operate the door; a new position report confirms its state.',
+    switch: 'Switch reports and configured commands use MQTT. A new device report confirms the requested state.',
+    power: 'Power readings arrive over MQTT. Their reported times and availability remain visible alongside each reading.',
+    metered_switch: 'Power and switch reports arrive over MQTT and support energy history. A new device report confirms the requested switch state.',
+    dehumidifier: 'Dehumidifier status and configured commands use MQTT. New device reports confirm requested settings.',
+    heat_pump: 'Heat-pump readings and configured commands use MQTT. Reported device state confirms operation.',
+  })[device.kind] ?? 'Device reports and configured requests use MQTT. Connection status follows the available device evidence.';
+}
+
+function shellyChargerConnection(status) {
+  const health = status.providers?.['shelly-evse'];
+  if (!health) return null;
+  const mqtt = health.mqttStatus;
+  const [label, state] = health.enabled === false || health.status === 'disabled' ? ['Not enabled', 'pending']
+    : mqtt?.brokerConnected === false || mqtt?.subscriptionStatus === 'disconnected' ? ['Disconnected', 'attention']
+      : ['failed', 'denied', 'error', 'rejected'].includes(mqtt?.subscriptionStatus) ? ['Subscription failed', 'attention']
+        : health.status === 'degraded' ? [health.reason === 'commissioning-required' ? 'Needs commissioning' : 'Needs attention', 'attention']
+          : health.status === 'error' ? ['Needs attention', 'attention']
+            : health.connected === true ? [health.status === 'ok' ? 'Available' : 'Connected', 'available']
+              : ['not-configured', 'unconfigured'].includes(health.status) ? ['Not configured', 'pending']
+                : ['Waiting for device', 'pending'];
+  return { id: 'connection:shelly-evse:garage', label: 'Charger 2', area: 'garage', kind: 'charger', source: 'Shelly EVSE',
+    enabled: health.enabled, topics: health.topics ?? [], mqttStatus: mqtt, lastReportAt: mqtt?.lastLiveAt,
+    connectionState: { label, state },
+    connectionDetail: 'Charger 2 reports electricity use and charger state through its local Shelly MQTT connection. RPC requests read device status and apply charging settings.',
+    packetDetail: mqtt ? `Broker connection: ${mqtt.brokerConnected === true ? 'connected' : mqtt.brokerConnected === false ? 'disconnected' : 'unknown'}.` : '',
+  };
+}
+
+/** Vehicle feeds share the connection descriptors used by their detailed cards. */
+export const vehicleConnections = status => equipmentConnections(status).filter(device => device.kind === 'vehicle');
 
 /** Fold supplemental routes into their device once; unowned routes remain
  * separate connections with an explicit, evidence-based monitoring state. */
@@ -382,6 +422,8 @@ export function equipmentConnections(status = {}, devices = equipmentDevices(sta
     needsAttention: device.needsAttention || inventory.find(row => row.id === device.id)?.needsAttention,
     topics: device.topics?.length ? [...device.topics]
     : device.connection ? [{ role: 'Connection', topic: device.connection, direction: 'subscribe' }] : [] }));
+  const charger = shellyChargerConnection(status);
+  if (charger) rows.push(charger);
   const owner = new Map(rows.flatMap(row => row.topics.map(topic => [topicKey(topic), row])));
   const groups = new Map();
   for (const group of status.equipment?.topicGroups ?? []) {
@@ -730,20 +772,26 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
       result.textContent = actionKind === 'test' && actionArea === area ? message : '';
       result.hidden = !result.textContent; result.classList.toggle('form-error', error);
     }
-    const connectionRoot = $('equipment-connections');
+    const connectionRoot = $('equipment-connections'), vehicleRoot = $('vehicle-telemetry-connections');
+    const mqttConnections = connections.filter(device => device.kind !== 'vehicle');
     let groupIndex = 0;
-    for (const [area, label] of [['home', 'Home'], ['garage', 'Garage'], ['other', 'Other']]) {
-      const members = connections.filter(device => (['home', 'garage'].includes(device.area) ? device.area : 'other') === area);
-      let group = connectionGroups.get(area);
-      if (!members.length) { group?.section.remove(); continue; }
+    for (const [area, label] of [['home', 'Home'], ['garage', 'Garage'], ['other', 'Other'], ['vehicles', null]]) {
+      const vehicles = area === 'vehicles';
+      const members = vehicles ? connections.filter(device => device.kind === 'vehicle')
+        : mqttConnections.filter(device => (['home', 'garage'].includes(device.area) ? device.area : 'other') === area);
+      let group = vehicles ? vehicleRoot && { list: vehicleRoot } : connectionGroups.get(area);
+      if (!members.length) { if (!vehicles) group?.section.remove(); continue; }
+      if (vehicles && !vehicleRoot) continue;
       if (!group) {
         const section = make('section', '', 'equipment-connection-group'), list = make('div', '', 'equipment-connection-list');
         section.dataset.connectionArea = area;
         section.append(make('h4', label, 'equipment-connection-group-title'), list);
         group = { section, list }; connectionGroups.set(area, group);
       }
-      if (connectionRoot.children[groupIndex] !== group.section) connectionRoot.insertBefore(group.section, connectionRoot.children[groupIndex] ?? null);
-      groupIndex++;
+      if (!vehicles) {
+        if (connectionRoot.children[groupIndex] !== group.section) connectionRoot.insertBefore(group.section, connectionRoot.children[groupIndex] ?? null);
+        groupIndex++;
+      }
       for (const [index, device] of members.entries()) {
       let node = connectionNodes.get(device.id);
       if (!node) {
@@ -754,12 +802,13 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
         const state = make('span', '', 'equipment-device-status'), recent = make('small', '', 'equipment-connection-recent');
         identity.append(name, metadata); health.append(state, recent); summary.append(identity, health);
         const body = make('div', '', 'equipment-connection-body'), check = make('div', '', 'equipment-connection-check');
+        const intro = make('p', '', 'muted equipment-connection-intro');
         const checked = make('small', '', 'muted'), detail = make('p', '', 'muted equipment-check-detail');
         const topics = make('div', '', 'equipment-topic-groups'), diagnostics = make('details', '', 'equipment-packet-details');
         const packets = make('p', '', 'muted equipment-packet-status');
         diagnostics.append(make('summary', 'Packet diagnostics'), packets);
-        check.append(detail, checked); body.append(check, topics, diagnostics); row.append(summary, body);
-        node = { row, name, metadata, state, recent, checked, detail, topics, diagnostics, packets }; connectionNodes.set(device.id, node);
+        check.append(detail, checked); body.append(intro, check, topics, diagnostics); row.append(summary, body);
+        node = { row, name, metadata, state, recent, intro, check, checked, detail, topics, diagnostics, packets }; connectionNodes.set(device.id, node);
       }
       if (group.list.children[index] !== node.row) group.list.insertBefore(node.row, group.list.children[index] ?? null);
       node.name.textContent = device.label ?? labels[device.kind] ?? 'MQTT connection';
@@ -773,11 +822,13 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
       node.diagnostics.hidden = !node.packets.textContent;
       const summary = equipmentConnectionSummary(device);
       node.state.textContent = summary.label; node.state.dataset.state = summary.state; node.recent.textContent = summary.recent;
-      node.detail.textContent = device.connectionDetail ?? (Number.isFinite(device.check?.checkedAt) ? equipmentCheckText(device)
-        : device.enabled === false ? 'Disabled in configuration.' : device.available && !device.needsAttention
-          ? 'Device reports are available.' : 'Waiting for a usable device report.');
+      node.intro.textContent = equipmentConnectionIntroduction(device);
+      node.detail.textContent = device.kind === 'floor_override' ? device.connectionDetail
+        : Number.isFinite(device.check?.checkedAt) ? equipmentCheckText(device) : '';
+      node.detail.hidden = !node.detail.textContent;
       node.checked.textContent = Number.isFinite(device.check?.checkedAt) ? `Checked ${clock.format(device.check.checkedAt)}` : '';
       node.checked.hidden = !node.checked.textContent;
+      node.check.hidden = node.detail.hidden && node.checked.hidden;
       node.row.dataset.state = summary.state;
       }
     }
@@ -808,8 +859,8 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
     const commandRoot = $('heating-mqtt-topics');
     commandRoot.replaceChildren(); commandRoot.hidden = true;
     const checkMessage = actionKind === 'recheck' ? message : '';
-    $('equipment-check-message').textContent = checkMessage || (connections.length ? '' : 'No MQTT devices configured.');
-    $('equipment-check-message').hidden = !checkMessage && connections.length > 0;
+    $('equipment-check-message').textContent = checkMessage || (mqttConnections.length ? '' : 'No MQTT devices configured.');
+    $('equipment-check-message').hidden = !checkMessage && mqttConnections.length > 0;
     $('equipment-check-message').classList.toggle('form-error', Boolean(checkMessage && error));
   }
   for (const link of document.querySelectorAll('[data-open-mqtt-settings], [data-open-configuration]')) link.addEventListener('click', () => {

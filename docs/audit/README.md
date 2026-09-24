@@ -21,6 +21,9 @@ The [connection-loss and takeover review](RESILIENCE-2026-09.md) records subsequ
 charging timer, vehicle-feed, identification and garage recovery fixes, together
 with the remaining provider and device-loss limits.
 
+The [Data & settings review](DATA-SETTINGS-2026-09.md) records the four-category
+overview, relocated vehicle telemetry and consistent MQTT device diagnostics.
+
 | Scope | Implementation and evidence |
 | --- | --- |
 | A01 charging | [Physical Charger 2, identity, energy, scheduling and controls](A01.md); [acceptance tracker](A01-tracker.json) |

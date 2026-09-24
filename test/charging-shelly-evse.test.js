@@ -4,6 +4,7 @@ import { EventEmitter } from 'node:events';
 import { chargingConfiguration } from '../src/charging/config.js';
 import { createShellyEvseAdapter, createShellyController } from '../src/charging/shelly-evse.js';
 import { shellyCurrentLimit } from '../src/charging/shelly-limit.js';
+import { Engine } from '../src/app/engine.js';
 const NOW = 1800000000000;
 const config = extra => chargingConfiguration({chargers:{charger2:{enabled:true, deviceId:'synthetic-evse',topicPrefix:'test/evse',model:'synthetic-model',firmware:'synthetic-firmware',verified:true,
   connectedStates:['connected','paused'],disconnectedStates:['free'],chargingStates:['charging'],additiveCurrentVerified:true,marginA:[0,0,0],...extra}}}).chargers.charger2;
@@ -52,6 +53,58 @@ function fixture(t, extra={}) {
     async ready(){client.emit('connect');client.emit('message','test/evse/online',Buffer.from('true'),{retain:true});await adapter.refresh();},
     notify(role,value,packet={}){client.emit('message','test/evse/events/rpc',Buffer.from(JSON.stringify({src:'synthetic-evse',method:'NotifyStatus',params:{[`${roleTypes[role]}:${ids[role]}`]:{value,last_update_ts:now/1000}}})),packet);}};
 }
+test('MQTT diagnostics distinguish subscription health from charger availability and use real routes', async t => {
+  const f = fixture(t);
+  assert.deepEqual(f.adapter.snapshot().mqtt, { brokerConnected: false, subscribed: false,
+    subscriptionStatus: 'disconnected', lastLiveAt: null });
+  let subscribed, acknowledge;
+  f.client.subscribe = (topics, _options, callback) => { subscribed = topics; acknowledge = callback; };
+  f.client.emit('connect');
+  assert.equal(f.adapter.snapshot().mqtt.subscriptionStatus, 'pending');
+  assert.equal(f.adapter.snapshot().mqtt.brokerConnected, true);
+  acknowledge(null, subscribed.map((topic, index) => ({ topic, qos: index === 0 ? 128 : 0 })));
+  assert.equal(f.adapter.snapshot().mqtt.subscriptionStatus, 'failed');
+  assert.equal(f.adapter.snapshot().mqtt.subscribed, false);
+  assert.equal(f.adapter.snapshot().mqtt.lastLiveAt, null);
+  assert.equal(f.writes.length, 0);
+
+  f.client.emit('connect');
+  acknowledge(null, subscribed.map(topic => ({ topic, qos: 0 })));
+  await f.adapter.refresh();
+  const snapshot = f.adapter.snapshot();
+  assert.equal(snapshot.mqtt.subscriptionStatus, 'subscribed');
+  assert.equal(snapshot.mqtt.lastLiveAt, NOW);
+  assert.equal(snapshot.online, false, 'RPC reception does not invent charger availability');
+  assert.deepEqual(snapshot.topics.filter(row => row.direction === 'subscribe').map(row => row.topic), subscribed);
+  assert.deepEqual(snapshot.topics.find(row => row.direction === 'publish'),
+    { role: 'RPC requests', topic: 'test/evse/rpc', direction: 'publish' });
+  assert.ok(f.writes.every(row => row.topic === snapshot.topics.find(row => row.direction === 'publish').topic));
+  snapshot.topics[0].topic = 'modified';
+  assert.notEqual(f.adapter.snapshot().topics[0].topic, 'modified');
+
+  const provider = Engine.prototype.providerStatus.call({ config: { input: 'offline' }, store: { getState: () => null },
+    charging: { chargers: { charger2: { adapter: f.adapter } }, configuration: { chargers: { charger2: { enabled: true } } } } })['shelly-evse'];
+  assert.deepEqual(provider.mqttStatus, snapshot.mqtt);
+  assert.deepEqual(provider.topics, f.adapter.snapshot().topics);
+});
+test('MQTT live receipt time excludes retained, duplicate, unrelated and disconnected packets', async t => {
+  const f = fixture(t); await f.ready();
+  f.setNow(NOW + 1000);
+  f.notify('current_limit', 16, { retain: true });
+  f.client.emit('message', 'test/evse/online', Buffer.from('true'), { retain: true });
+  f.client.emit('message', 'test/evse/events/rpc', Buffer.from(JSON.stringify({ src: 'another-device', method: 'NotifyStatus', params: {} })), {});
+  assert.equal(f.adapter.snapshot().mqtt.lastLiveAt, NOW);
+  f.notify('current_limit', 16, { dup: true, messageId: 81 });
+  assert.equal(f.adapter.snapshot().mqtt.lastLiveAt, NOW + 1000);
+  f.setNow(NOW + 2000);
+  f.client.emit('message', 'test/evse/events/rpc', Buffer.from(JSON.stringify({ src: 'synthetic-evse', method: 'NotifyStatus',
+    params: { 'number:200': { value: 16, last_update_ts: (NOW + 1000) / 1000 } } })), { dup: true, messageId: 81 });
+  assert.equal(f.adapter.snapshot().mqtt.lastLiveAt, NOW + 1000);
+  f.client.emit('offline');
+  f.notify('current_limit', 16);
+  assert.deepEqual(f.adapter.snapshot().mqtt, { brokerConnected: false, subscribed: false,
+    subscriptionStatus: 'disconnected', lastLiveAt: NOW + 1000 });
+});
 test('official-shaped role RPC discovers capabilities and canonical C2 energy never uses a vehicle feed', async t=>{
   const f=fixture(t);await f.ready();assert.equal(f.adapter.snapshot().controlReady,true);
   f.setNow(NOW+1000);f.fields.phase_info.total_act_energy=.002;await f.adapter.refresh();

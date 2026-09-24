@@ -342,7 +342,7 @@ test('temperature groups show all probes directly without a duplicate Mitsubishi
   assert.equal(native, undefined);
 });
 
-test('vehicle connections identify TeslaMate and update a generic route to the reported BMW feed', () => {
+test('vehicle telemetry owns its connection cards and preserves expanded diagnostics across updates', () => {
   const document = equipmentDocument(), panel = createEquipmentPanel({ document, request: async () => {} });
   const initial = status({ charging: { vehicleFeeds: [
     { id: 'tesla', label: 'Tesla', provider: 'teslamate', topic: 'fixture/vehicle/teslamate', reception: {} },
@@ -353,7 +353,7 @@ test('vehicle connections identify TeslaMate and update a generic route to the r
       topics: [{ role: 'Timestamped vehicle readings', topic: 'fixture/vehicles/bmw', direction: 'subscribe' }] },
   ] } });
   panel.update(initial);
-  const connections = descendants(document.getElementById('equipment-connections'));
+  const connections = descendants(document.getElementById('vehicle-telemetry-connections'));
   const tesla = connections.find(node => node.dataset.deviceId === 'connection:vehicle:tesla:other');
   assert.equal(tesla.querySelector('.equipment-connection-name').textContent, 'Tesla');
   assert.equal(tesla.querySelector('.equipment-connection-meta').textContent, 'Vehicle · TeslaMate');
@@ -361,6 +361,7 @@ test('vehicle connections identify TeslaMate and update a generic route to the r
   assert.equal(generic.querySelector('.equipment-connection-name').textContent, 'Vehicle');
   assert.equal(generic.querySelector('.equipment-connection-meta').textContent, 'Vehicle · MQTT');
   assert.equal(generic.tagName, 'DETAILS', 'Connection folds still reveal their configured MQTT topics');
+  generic.open = true; generic.querySelector('.equipment-packet-details').open = true;
   panel.update({ ...initial, charging: { vehicleFeeds: [initial.charging.vehicleFeeds[0], {
     ...initial.charging.vehicleFeeds[1], label: 'BMW', provider: 'bmw-cardata', reception: {
       brokerConnected: true, subscriptionStatus: 'subscribed', lastMessageAt: now, lastLiveAt: now,
@@ -371,8 +372,39 @@ test('vehicle connections identify TeslaMate and update a generic route to the r
   assert.equal(generic.querySelector('.equipment-device-status').textContent, 'Connected');
   assert.match(generic.querySelector('.equipment-connection-recent').textContent, /^Reported /);
   assert.match(generic.textContent, /fixture\/vehicles\/bmw/);
-  assert.equal(descendants(document.getElementById('equipment-connections'))
+  assert.equal(generic.open, true);
+  assert.equal(generic.querySelector('.equipment-packet-details').open, true);
+  assert.equal(descendants(document.getElementById('equipment-connections')).some(node => node.dataset.deviceId?.includes('vehicle:')), false);
+  assert.equal(generic.querySelector('.equipment-connection-body').children[0], generic.querySelector('.equipment-connection-intro'));
+  assert.match(generic.querySelector('.equipment-connection-intro').textContent, /Vehicle data for charging/);
+  assert.equal(descendants(document.getElementById('vehicle-telemetry-connections'))
     .filter(node => node.dataset.deviceId === 'connection:vehicle:bmw:other').length, 1);
+});
+
+test('Shelly Charger 2 stays in MQTT with the same disclosure structure and actual packet diagnostics', () => {
+  const document = equipmentDocument(), panel = createEquipmentPanel({ document, request: async () => {} });
+  const initial = status({ providers: { 'shelly-evse': { enabled: true, status: 'ok', connected: true,
+    mqttStatus: { brokerConnected: true, subscriptionStatus: 'subscribed', lastLiveAt: now },
+    topics: [{ role: 'Charger status', topic: 'fixture/charger/events/rpc', direction: 'subscribe' },
+      { role: 'RPC requests', topic: 'fixture/charger/rpc', direction: 'publish' }] } } });
+  panel.update(initial);
+  const card = descendants(document.getElementById('equipment-connections'))
+    .find(node => node.dataset.deviceId === 'connection:shelly-evse:garage');
+  assert.equal(card.parentElement.parentElement.dataset.connectionArea, 'garage');
+  assert.equal(card.tagName, 'DETAILS');
+  assert.equal(card.querySelector('.equipment-connection-name').textContent, 'Charger 2');
+  assert.equal(card.querySelector('.equipment-connection-meta').textContent, 'Charger · Shelly EVSE');
+  assert.match(card.querySelector('.equipment-connection-intro').textContent, /local Shelly MQTT/);
+  assert.match(card.querySelector('.equipment-packet-status').textContent, /Subscription: subscribed.*Last live packet:.*Broker connection: connected/);
+  assert.match(card.querySelector('.equipment-topic-groups').textContent, /Incoming.*Charger status.*fixture\/charger\/events\/rpc.*Requests & commands.*RPC requests/);
+  assert.equal(card.querySelector('.equipment-connection-check').hidden, true);
+  assert.equal(descendants(document.getElementById('vehicle-telemetry-connections')).includes(card), false);
+  card.open = true;
+  panel.update({ ...initial, providers: { 'shelly-evse': { ...initial.providers['shelly-evse'], connected: false,
+    status: 'waiting', mqttStatus: { brokerConnected: false, subscriptionStatus: 'disconnected', lastLiveAt: now } } } });
+  assert.equal(card.open, true);
+  assert.equal(card.querySelector('.equipment-device-status').textContent, 'Disconnected');
+  assert.match(card.querySelector('.equipment-connection-recent').textContent, /^Reported /);
 });
 
 const caravanAir = () => ({ id: 'blu_ht', label: 'Caravan air', area: 'garage', kind: 'temperature', available: true,

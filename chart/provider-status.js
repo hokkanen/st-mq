@@ -1,6 +1,7 @@
 import { H66_HISTORY_SIGNALS, SIGNAL_INFO } from '../src/domain/history-series.js';
 import { temperatureReadingStatus } from './temperature-status.js';
 export { temperatureReadingStatus, temperatureAttentionDetails } from './temperature-status.js';
+import { vehicleConnections, equipmentConnectionSummary } from './equipment.js';
 import { durationText } from './reading-status.js';
 import { PROVIDER_CURRENT_ATTENTION_MS, PROVIDER_TEMPERATURE_ATTENTION_MS } from '../src/domain/reading-freshness.js';
 
@@ -305,9 +306,69 @@ function detailedDatasets(group, status, options) {
   return group.series;
 }
 
-/** Present electricity and current temperature sources together while keeping each provider's
- * acquisition diagnostics. No device identifiers or arbitrary source strings
- * enter these descriptors, and forecast data remains a separate final entry. */
+const providerIntroductions = {
+  electricity: 'Electricity readings come from the property meter and each charger. These sources supply consumption history and charging decisions.',
+  market: 'Day-ahead electricity prices come from ENTSO-E, with Elering as backup. Your contract, transfer charges and VAT determine the all-in price for each interval.',
+  'vehicle-telemetry': 'Vehicle services send readings over MQTT. Available charge, charge target and battery capacity are used when a vehicle is identified at a charger. Each reading keeps its original measurement time.',
+  'main-temperatures': 'Local MQTT and Shelly sensors report indoor and garage temperatures. FMI supplies outdoor observations and weather forecasts, with Open-Meteo as backup. These readings support heating control and forecasts.',
+};
+
+function vehicleDisplay(status) {
+  const connections = vehicleConnections(status);
+  const summaries = connections.map(connection => ({ ...equipmentConnectionSummary(connection), source: connection.source }));
+  const active = summaries.filter(summary => summary.label !== 'Not enabled');
+  const attention = active.some(summary => summary.state === 'attention');
+  const available = active.filter(summary => summary.state === 'available').length;
+  const state = attention ? 'Needs attention' : available && available === active.length ? 'Available'
+    : available ? 'Partly available' : active.length ? 'Waiting for readings' : summaries.length ? 'Not enabled' : 'Not configured';
+  const sourceStates = [...new Set(summaries.map(summary => summary.source))].map(label => {
+    const members = summaries.filter(summary => summary.source === label);
+    const worst = members.find(summary => summary.state === 'attention') ?? members.find(summary => summary.state === 'pending') ?? members[0];
+    return { label, state: worst.label, tone: worst.state };
+  });
+  return { key: 'vehicle-telemetry', overviewTitle: 'Vehicle telemetry', source: sourceStates.map(row => row.label).join(', ') || 'No vehicle feeds configured',
+    sourceStates, series: [], datasets: [], backup: false,
+    display: { title: 'Vehicle telemetry', state, attention,
+      detail: summaries.length ? summaries.map(summary => `${summary.source}: ${summary.label}. ${summary.recent}.`).join(' ')
+        : 'Configure a vehicle MQTT feed to receive charging inputs.' } };
+}
+
+function temperatureWeatherDisplay(status, temperatures, weather, options) {
+  const groups = [temperatures, weather].filter(Boolean);
+  const datasets = groups.flatMap(group => detailedDatasets(group, status, options));
+  const active = groups.filter(group => !inactiveStates.includes(group.display.state));
+  const activeDatasets = active.flatMap(group => detailedDatasets(group, status, options));
+  const attention = active.some(group => group.display.attention) || activeDatasets.some(row => row.tone === 'attention');
+  const backup = active.some(group => group.backup) || activeDatasets.some(row => row.tone === 'backup');
+  const state = attention ? 'Needs attention' : active.length && active.every(group => ['Available', 'Using backup'].includes(group.display.state))
+    ? backup ? 'Using backup' : 'Available' : active.some(group => group.display.state === 'Available') ? 'Partly available' : (active[0] ?? groups[0]).display.state;
+  const knownSources = new Set(Object.values(names));
+  const sources = groups.flatMap(group => group.sourceStates).filter(source => knownSources.has(source.label));
+  // Include separately recorded garage-front sensors and mixed forecast sources.
+  for (const row of activeDatasets) {
+    const labels = row.source === 'FMI + Open-Meteo' ? ['FMI', 'Open-Meteo'] : knownSources.has(row.source) ? [row.source] : [];
+    for (const label of labels) sources.push({ label, state: row.state, tone: row.tone });
+  }
+  const sourceStates = [...new Set(sources.map(source => source.label))].map(label => {
+    const members = sources.filter(source => source.label === label);
+    return members.find(source => source.tone === 'attention') ?? members.find(source => source.tone === 'backup')
+      ?? members.find(source => source.tone === 'pending') ?? members[0];
+  });
+  const sourceOrder = ['MQTT', 'Shelly', 'H66', 'FMI', 'Open-Meteo'];
+  sourceStates.sort((a, b) => sourceOrder.indexOf(a.label) - sourceOrder.indexOf(b.label));
+  const source = sourceStates.map(row => row.label).join(', ');
+  return { key: 'main-temperatures', overviewTitle: 'Main temperatures & Weather', source: source || 'Awaiting readings', sourceStates, backup,
+    display: { title: `Main temperatures & Weather${source ? ` · ${source}` : ''}`, state, attention,
+      detail: [...groups.map(group => group.display.detail), ...activeDatasets.filter(row => row.tone === 'attention' && row.statusDetail).map(row => `${row.label}: ${row.statusDetail}`)].join(' ') },
+    series: groups.flatMap(group => group.series), datasets,
+    sections: groups.map(group => ({ key: group.key === 'weather' ? 'forecast' : 'temperatures',
+      title: group.key === 'weather' ? 'Weather forecast' : 'Main temperatures',
+      description: group.key === 'weather' ? 'Forecast outdoor temperature and solar radiation help plan heating ahead.'
+        : 'Individual sensors keep their own measurement times and availability. The indoor average and outdoor reading support home control.',
+      datasets: detailedDatasets(group, status, options) })) };
+}
+
+/** Four data categories own their sources, readings and diagnostics. */
 export function dashboardProviders(status, options) {
   const entries = Object.entries(status.providers ?? {}).filter(([key, health]) => health && typeof health === 'object'
     && !(key === 'temperatures' && ['not-configured', 'disabled'].includes(health.status)));
@@ -316,17 +377,29 @@ export function dashboardProviders(status, options) {
   const describe = ([key, health]) => {
     const display = describeProvider(key, health, options);
     const source = providerName(health.source ?? health.acquisition?.selected) ?? display.title;
-    return { key, display, series: providerSeries(key, health).map(row => withStatus(row, display)), backup: health.status === 'fallback',
-      sourceStates: [sourceStatus(source, display)],
-      overviewTitle: ({ market: 'Electricity prices', weather: 'Weather forecast', teslamate: 'Vehicle telemetry' })[key] ?? 'Data source',
-      source };
+    const group = { key, display, series: providerSeries(key, health).map(row => withStatus(row, display)), backup: health.status === 'fallback',
+      sourceStates: [sourceStatus(source, display)], overviewTitle: key === 'market' ? 'Electricity prices' : 'Weather forecast', source };
+    return { ...group, datasets: detailedDatasets(group, status, options) };
   };
-  return [
-    ...entries.filter(([key]) => !temperatureJobs.includes(key) && key !== 'weather').flatMap(entry =>
-      electricityJobs.includes(entry[0]) ? entry === electricity[0] ? [electricityDisplay(electricity, options)] : [] : [describe(entry)]),
-    ...(temperatures.length || ['mqtt', 'providers'].includes(status.input) ? [temperatureDisplay(status, temperatures, options)] : []),
-    ...entries.filter(([key]) => key === 'weather').map(describe),
-  ].map(group => ({ ...group, datasets: detailedDatasets(group, status, options) }));
+  const market = entries.find(([key]) => key === 'market'), weather = entries.find(([key]) => key === 'weather');
+  const currentTemperatures = temperatures.length || ['mqtt', 'providers'].includes(status.input)
+    ? temperatureDisplay(status, temperatures, options) : null;
+  const consumption = electricity.length ? electricityDisplay(electricity, options) : null;
+  if (consumption) {
+    consumption.datasets = consumption.series;
+    consumption.sections = [
+      { key: 'easee-cloud', title: 'Easee cloud', description: 'Property readings come from the Easee Equalizer through Easee cloud. The cloud also supplies finalized Charger 1 session checks.',
+        datasets: consumption.datasets.filter(row => row.signals[0].startsWith('property_') || row.signals[0] === 'ev1_session_energy_check') },
+      { key: 'easee-ocpp', title: 'Easee OCPP', description: 'Charger 1 sends electricity readings directly to ST-MQ through local OCPP. Available Easee cloud readings provide a backup when local readings are unavailable.',
+        datasets: consumption.datasets.filter(row => row.signals[0].startsWith('ev1_') && row.signals[0] !== 'ev1_session_energy_check') },
+      { key: 'shelly-evse', title: 'Shelly EVSE', description: 'Charger 2 sends its physical power and energy readings over MQTT. Its local meter supplies consumption independently of vehicle telemetry.',
+        datasets: consumption.datasets.filter(row => ['charger2_power', 'ev2_energy', 'shelly_session_energy_check'].includes(row.signals[0])) },
+    ];
+  }
+  return [consumption, market ? describe(market) : null,
+    status.charging?.vehicleFeeds?.length || entries.some(([key]) => key === 'teslamate') ? vehicleDisplay(status) : null,
+    currentTemperatures || weather ? temperatureWeatherDisplay(status, currentTemperatures, weather ? describe(weather) : null, options) : null,
+  ].filter(Boolean).map(group => ({ ...group, introduction: providerIntroductions[group.key] }));
 }
 
 function failureLabel(value) {

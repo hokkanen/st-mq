@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { equipmentConnections, equipmentConnectionSummary, equipmentSource, equipmentTopicGroups } from '../chart/equipment.js';
+import { equipmentConnections, equipmentConnectionSummary, equipmentConnectionIntroduction, equipmentSource, equipmentTopicGroups, vehicleConnections } from '../chart/equipment.js';
 import { dashboardProviders } from '../chart/provider-status.js';
 
 const NOW = Date.parse('2026-09-14T12:00:00Z');
@@ -194,6 +194,7 @@ test('configured vehicle feeds retain independent names before reports and follo
     equipment: { topicGroups: [{ id: 'vehicle:bmw', vehicleFeedId: 'bmw', topics: [topic('Timestamped vehicle readings', 'fixture/vehicles/bmw')] },
       { id: 'vehicle:tesla', vehicleFeedId: 'tesla', topics: [topic('Vehicle subscription', 'fixture/teslamate/cars/7/#')] }] } };
   const rows = equipmentConnections(status).filter(row => row.kind === 'vehicle');
+  assert.deepEqual(vehicleConnections(status), rows);
   assert.deepEqual(rows.map(row => [row.label, equipmentSource(row)]), [['BMW', 'BMW CarData'], ['Tesla', 'TeslaMate']]);
   assert.equal(equipmentConnectionSummary(rows[0]).recent, 'Waiting for the first vehicle report');
   assert.match(rows[1].connectionDetail, /Used by: Charger 1/);
@@ -206,6 +207,45 @@ test('configured vehicle feeds retain independent names before reports and follo
   const starting = equipmentConnections(status)[0];
   assert.equal(starting.label, 'BMW'); assert.equal(equipmentSource(starting), 'BMW CarData');
   assert.equal(equipmentConnectionSummary(starting).label, 'Awaiting subscription');
+});
+
+test('Shelly Charger 2 exposes actual MQTT routes and health without inventing packet times', () => {
+  const topics = [topic('RPC responses', 'fixture/evse/replies/rpc'),
+    topic('Charger status', 'fixture/evse/events/rpc'), topic('Availability', 'fixture/evse/online'),
+    topic('RPC requests', 'fixture/evse/rpc', 'publish')];
+  const health = { enabled: true, status: 'ok', connected: true, recording: true, topics,
+    mqttStatus: { brokerConnected: true, subscriptionStatus: 'subscribed', lastLiveAt: NOW } };
+  const row = overrides => equipmentConnections({ providers: { 'shelly-evse': { ...health, ...overrides } } })
+    .find(device => device.kind === 'charger');
+  const live = row({});
+  assert.equal(live.label, 'Charger 2');
+  assert.equal(live.area, 'garage');
+  assert.equal(equipmentSource(live), 'Shelly EVSE');
+  assert.deepEqual(live.topics, topics);
+  assert.equal(equipmentConnectionSummary(live).label, 'Available');
+  assert.match(equipmentConnectionSummary(live).recent, /^Reported /);
+  assert.match(equipmentConnectionIntroduction(live), /electricity use.*local Shelly MQTT.*RPC/);
+  assert.deepEqual(equipmentTopicGroups(live.topics).map(group => group.label), ['Incoming', 'Requests & commands']);
+  assert.equal(equipmentConnectionSummary(row({ status: 'degraded', reason: 'commissioning-required' })).label, 'Needs commissioning');
+  assert.equal(equipmentConnectionSummary(row({ mqttStatus: { brokerConnected: true, subscriptionStatus: 'failed' } })).label, 'Subscription failed');
+  assert.equal(equipmentConnectionSummary(row({ mqttStatus: { brokerConnected: false, subscriptionStatus: 'disconnected' } })).label, 'Disconnected');
+  assert.equal(equipmentConnectionSummary(row({ enabled: false, status: 'disabled' })).label, 'Not enabled');
+  const waiting = row({ status: 'waiting', connected: false, topics: [], mqttStatus: null });
+  assert.equal(equipmentConnectionSummary(waiting).label, 'Waiting for device');
+  assert.equal(equipmentConnectionSummary(waiting).recent, 'No live report yet');
+  assert.deepEqual(waiting.topics, []);
+  assert.equal(equipmentConnections({}).some(device => device.kind === 'charger'), false);
+});
+
+test('MQTT device introductions describe purpose independently of connection checks', () => {
+  for (const kind of ['temperature', 'door', 'switch', 'power', 'metered_switch', 'dehumidifier', 'heat_pump']) {
+    const device = { kind, available: false, check: { status: 'timeout', checkedAt: NOW } };
+    const introduction = equipmentConnectionIntroduction(device);
+    assert.match(introduction, /MQTT/);
+    assert.doesNotMatch(introduction, /timeout|Last check|No live/);
+    assert.equal(equipmentConnectionIntroduction({ ...device, available: true, check: { status: 'available' } }), introduction);
+  }
+  assert.match(equipmentConnectionIntroduction({ kind: 'floor_override', connectionDetail: 'Output 0: unknown.' }), /Floor-heating valves.*Shelly MQTT/);
 });
 
 test('Garage MQTT order puts heat pump and temperatures before Caravan air, energy and both doors', () => {
