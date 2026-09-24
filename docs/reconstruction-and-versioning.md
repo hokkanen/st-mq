@@ -171,9 +171,26 @@ interval even if it recovers before the next temperature report. Such intervals
 do not train or qualify clean thermal validation. Door state does not replace
 either independent near-pipe temperature or authorize extra thermal reserve.
 
-Planning retains `garage-protection-limited-opportunities-v2`: contiguous published
-price/weather coverage, growing uncertainty beyond measured evidence, short
-renewable permission and a fixed original endpoint. Recovery electricity uses an
+Planning uses `garage-savings-preference-v3`: the configured 0–100 preference
+changes the new-start benefit hurdle and selects the shortest safe window
+retaining the required fraction of the best benefit. Zero remains a conservative
+preference, not disabled savings. This planning-semantic change leaves
+`committed-garage-v6-source-clocks` learning and `garage-thermal-reserve-v1`
+protection unchanged. Persisted episode plans with an incompatible preference
+version are rejected with fresh-development-database guidance; no old-policy
+interpreter or plan migration is retained.
+
+Contiguous published price/weather coverage, growing uncertainty beyond measured
+evidence, short renewable permission and a fixed original endpoint remain.
+The selected future window is retained only in memory and revalidated with fixed
+start/end times. Settings changes, manual/price pause, recovery, start blockers
+or invalid economics/protection clear it for reselection when eligible. A late
+start must still meet the minimum OFF duration and current new-start threshold
+within the retained endpoint. Restart replans; pending windows carry no persisted
+control authority and need no new reconstruction state.
+Continuation maximizes positive remaining benefit against restoration now,
+including already accrued recovery debt, without reapplying new-start preference
+selection. Recovery electricity uses an
 explicit 125% allowance over at least three hours and 1.25 times the OFF duration.
 Completion requires actual temperatures, normal operation and both pipe reserves.
 Changed-weather recovery can close as incomplete without savings after the

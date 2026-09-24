@@ -215,11 +215,29 @@ equipment** in Garage contain readbacks and manual tests; Garage's chargers sit
 directly below its heating summary. Home's upper summary includes indoor and
 outdoor temperatures, heating request and all-in price. **Tariff control** appears
 above **Recirculation** inside Home's heating configuration; an unverified request
-does not confirm the relay state. Each **Heating configuration** includes a learning summary above its pause controls for learning outcomes, model inputs and current
+does not confirm the relay state. Garage's equivalent summary shows **Heat-pump
+mode**, **Heating control** and **Room setting**, with current native feedback
+and saved external-setting availability kept distinct. Both configurations use
+the same order: current state, **Temporary heating override**, Away/Pause,
+preferences, then learning. Preferences are **Savings & comfort** for Home and
+**Savings & protection** for Garage. Temporary override explanations describe
+their lifetime independently of availability; Garage requires Active operating
+mode and live input, and freeze protection can restore heating sooner.
+
+Both display a configured 0–100 **Savings preference**, where zero is most
+conservative and **Pause price control** suspends savings. Use **Apply
+configuration** for permanent preference changes. Garage shows its effective
+minimum benefit, benefit retained, minimum planned OFF time, normal-heating
+interval and daily pause limit. The preference does not relax protection or
+recovery checks. Home shows an **Overall comfort reference** and expandable
+**Room references & limits**: individual learned references share the same
+configured drop/rise allowances, with the overall reference as fallback.
+
+Each learning summary opens learning outcomes, model inputs and current
 coefficients. Current coefficients come from existing learning state; the UI
 adds no coefficient storage. Historical coefficient chart axes separately replay
 the saved journal with its matching algorithm.
-**Garage settings** follows **Garage learning**. Both charger cards open their
+Both charger cards open their
 schedule, readings and preferences. Charger 1's **Automatic charging** is off by
 default and separately permits native Easee schedules, including while heating
 is in monitoring or shadow mode. Charger 2 observes TeslaMate and has no command
@@ -239,7 +257,8 @@ occupied requirements when the return falls within the available forecast horizo
 Data/model confidence requirements still apply. Pause requests normal native
 operation without price reductions and restores owned native settings. `active`
 operates real configured MQTT equipment for either live input.
-The house comfort reference is inferred; preferred drop defaults to 1.5 °C.
+Overall and room comfort references are inferred; the shared maximum drop and
+rise both default to 1.5 °C while occupied.
 Unsupported warm-weather temperature plateaus are excluded from new reference
 candidates. Cached provider readings keep their source timestamps through outages
 and restarts. FMI forecast publication, model analysis and valid times are stored

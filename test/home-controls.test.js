@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { activeRates, finnishDateTime, homePolicyValues, rateRows, temporaryValues } from '../chart/home-controls.js';
+import { activeRates, finnishDateTime, homePolicyValues, homeRoomReferences, priceControlState, rateRows, temporaryValues } from '../chart/home-controls.js';
 
 test('date controls display Finnish wall time across winter, summer and midnight', () => {
   const original = process.env.TZ;
@@ -24,6 +24,19 @@ test('saved controls show only unexpired away and pause deadlines', () => {
     override: { expiresAt: now + 7200_000 } };
   assert.deepEqual(temporaryValues(status), { awayUntilLocal: '2026-09-07T16:00', pauseUntilLocal: '2026-09-07T17:00' });
   assert.deepEqual(temporaryValues({ ...status, now: now + 7200_000 }), { awayUntilLocal: '', pauseUntilLocal: '' });
+});
+
+test('Home and Garage price badges distinguish active operation from shadow, monitoring and offline input', () => {
+  for (const [status, options, label, state] of [
+    [{ mode: 'active', input: 'mqtt' }, {}, 'Active', 'active'],
+    [{ mode: 'active', input: 'simulated' }, { away: true }, 'Away', 'active'],
+    [{ mode: 'shadow', input: 'mqtt' }, {}, 'Shadow', 'muted'],
+    [{ mode: 'monitoring', input: 'mqtt' }, {}, 'Monitoring', 'muted'],
+    [{ mode: 'active', input: 'offline' }, {}, 'Offline', 'muted'],
+    [{ mode: 'active', input: 'mqtt' }, { enabled: false }, 'Disabled', 'muted'],
+    [{ mode: 'active', input: 'mqtt' }, { paused: true }, 'Paused', 'paused'],
+    [{}, {}, '—', 'muted'],
+  ]) assert.deepEqual(priceControlState(status, options), { label, state });
 });
 
 test('rate report selects the active dated snapshot instead of future or configured rates', () => {
@@ -55,4 +68,20 @@ test('Home policy displays saved fixed settings without creating defaults for mi
   assert.deepEqual(homePolicyValues({ settings: { savingsAggressiveness: 0, preheatRoomBoostC: 5,
     comfort: { maxDropC: 1, maxRiseC: 1.5 } } }), { aggressiveness: '0 / 100', preheat: 'ROOM +5 °C', maximumRise: '1.5 °C', limits: '−1 / +1.5 °C' });
   assert.deepEqual(homePolicyValues({}), { aggressiveness: 'Unavailable', preheat: 'Unavailable', maximumRise: 'Unavailable', limits: 'Limits unavailable' });
+});
+
+test('Room preferences distinguish learned and overall references, occupied bounds and unknown values', () => {
+  const status = { comfortRooms: [
+    { id: 'bedroom', label: 'Bedroom', referenceC: 20, referenceSource: 'room', minC: 18.5, maxC: 21.5, limitsApply: true },
+    { id: 'office', label: 'Office', referenceC: 21, referenceSource: 'overall', minC: 19.5, maxC: 22.5, limitsApply: false },
+    { id: 'living', label: 'Living room', referenceC: null, referenceSource: 'unavailable', minC: null, maxC: null, limitsApply: true },
+  ] };
+  const before = structuredClone(status), rows = homeRoomReferences(status);
+  assert.deepEqual(rows.map(row => [row.reference, row.basis, row.limits, row.inactive]), [
+    ['20 °C', 'Learned room reference', '18.5 °C – 21.5 °C', false],
+    ['21 °C', 'Overall reference', '19.5 °C – 22.5 °C', true],
+    ['Unavailable', 'Reference not established', 'Limits unavailable', false],
+  ]);
+  assert.deepEqual(homeRoomReferences({}), []);
+  assert.deepEqual(status, before);
 });

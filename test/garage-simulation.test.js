@@ -84,9 +84,10 @@ test('independent noisy journal replay and repeated simulation are deterministic
   assert.deepEqual(first, second);
 });
 
-test('default policy chooses only a large opportunity and preserves normal operation for modest or flat tariffs', () => {
+test('savings preference changes selected duration and monetary admission without removing thermal protection', () => {
   const report = runPlanningAudit({ days: 43, cadenceMinutes: 15 });
-  for (const row of report.rows.filter(row => row.tariff !== 'exceptional-peak' || row.aggressiveness === 0)) {
+  for (const row of report.rows.filter(row => ['flat', 'mild-peak'].includes(row.tariff)
+    || row.tariff !== 'exceptional-peak' && row.aggressiveness <= 50)) {
     assert.equal(row.offHours, 0); assert.equal(row.simulatedBillDifferenceEur, 0);
   }
   const selected = report.rows.find(row => row.tariff === 'exceptional-peak' && row.aggressiveness === 50);
@@ -94,6 +95,9 @@ test('default policy chooses only a large opportunity and preserves normal opera
   assert.ok(selected.simulatedBillDifferenceEur > .5);
   assert.ok(selected.minimumFrontC > 3 && selected.minimumRearC > 3);
   assert.ok(selected.endDebtC.coreC < .2 && selected.endDebtC.slabC < .2);
-  const positivePreferences = report.rows.filter(row => row.tariff === 'exceptional-peak' && row.aggressiveness > 0);
-  assert.ok(positivePreferences.every(row => row.offHours === selected.offHours), 'Old aggression no longer tunes a warmth optimizer');
+  const preferences = report.rows.filter(row => row.tariff === 'exceptional-peak');
+  assert.deepEqual(preferences.map(row => row.offHours), [2.5, 3, 3.25, 3.75, 4]);
+  assert.ok(preferences.every(row => row.minimumFrontC > 3 && row.minimumRearC > 3));
+  assert.ok(report.rows.find(row => row.tariff === 'ordinary-peak' && row.aggressiveness === 100).offHours > 0,
+    'Highest preference accepts a smaller opportunity that fails the balanced monetary hurdle');
 });

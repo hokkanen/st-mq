@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { Store } from '../src/storage/store.js';
 import { GarageRuntime } from '../src/garage/runtime.js';
 import { GARAGE_ALGORITHM_VERSION, createGarageModel } from '../src/garage/model.js';
-import { garageSettings } from '../src/garage/settings.js';
+import { garageSettings, GARAGE_PREFERENCE_VERSION } from '../src/garage/settings.js';
 import { createGarageExposure, updateGarageExposure, assessGarageProtection, validGarageExposure } from '../src/garage/protection.js';
 import { knownGarageReserve } from './helpers/garage-reserve-fixture.js';
 import { startGarageAssessment } from '../src/garage/episodes.js';
@@ -44,6 +44,26 @@ test('an obsolete journal cannot seed a new current model', () => {
   } finally { store.close(); }
 });
 
+test('obsolete or unversioned saved planning preferences fail before any state or journal mutation', () => {
+  for (const preferenceVersion of [undefined, 'garage-protection-limited-opportunities-v2', 'unknown']) {
+    const store = new Store(':memory:');
+    try {
+      const model = createGarageModel({ seedAt: START });
+      const exposure = knownGarageReserve(settings, { at: START, rearC: 8, frontC: 8 });
+      const observation = { at: START, rearC: 8, frontC: 8, outdoorC: -5, available: false };
+      store.setState('garage:episode:mqtt', { algorithmVersion: GARAGE_ALGORITHM_VERSION,
+        frozenModel: model, initialExposure: exposure, accounting: startGarageAssessment(model, observation),
+        plan: { preferenceVersion } });
+      store.setState('garage:adapter:mqtt', { version: 1, restorePending: true, outstandingPermissionExpiresAt: START + MINUTE });
+      store.setState('garage:manual:mqtt', { mode: 'off', expiresAt: START + MINUTE });
+      const before = store.db.prepare('SELECT * FROM state ORDER BY key').all();
+      assert.throws(() => construct(store), /Unsupported Garage saved planning preference; start a fresh development database/);
+      assert.deepEqual(store.db.prepare('SELECT * FROM state ORDER BY key').all(), before);
+      assert.equal(store.learningJournal({ input: garageInput('mqtt') }).length, 0);
+    } finally { store.close(); }
+  }
+});
+
 test('current restart retains reserve, frozen accounting and restoration while reconstructing current journal', async () => {
   const store = new Store(':memory:'); let first, restored;
   try {
@@ -53,6 +73,7 @@ test('current restart retains reserve, frozen accounting and restoration while r
     const observation = { at: START, rearAt: START, frontAt: START, rearC: 8, frontC: 8, outdoorC: -5, available: false };
     const episode = { id: 'current-cycle', pauseId: 'current-pause', status: 'active', phase: 'pause',
       algorithmVersion: GARAGE_ALGORITHM_VERSION, frozenModel: model, settings,
+      plan: { preferenceVersion: GARAGE_PREFERENCE_VERSION },
       startedAt: START, pauseStartedAt: START, pauseUntil: START + 10 * MINUTE,
       initialObservation: observation, initialExposure: exposure, accounting: startGarageAssessment(model, observation) };
     store.setState('garage:exposure:mqtt', exposure); store.setState('garage:episode:mqtt', episode);

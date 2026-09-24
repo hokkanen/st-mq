@@ -2,7 +2,7 @@ import { Worker } from 'node:worker_threads';
 import { randomUUID } from 'node:crypto';
 import moment from 'moment-timezone';
 import { temporaryUpdate } from '../app/temporary.js';
-import { garageSettings, GARAGE_POLICY_VERSION } from './settings.js';
+import { garageSettings, GARAGE_POLICY_VERSION, GARAGE_PREFERENCE_VERSION } from './settings.js';
 import { GARAGE_NATIVE_SETTINGS, validateGarageNativeSetting } from './native-settings.js';
 import { GarageRoomTemperature, GARAGE_ROOM_MIN_C, GARAGE_EXTERNAL_SOURCE_MAX_AGE_MS } from './room-temperature.js';
 import { garagePausePermission, GARAGE_REVALIDATE_MS, GARAGE_TEMPERATURE_MAX_AGE_MS } from './permission.js';
@@ -86,6 +86,8 @@ export class GarageRuntime {
         || this.episode.accounting?.algorithmVersion !== GARAGE_ALGORITHM_VERSION
         || this.episode.initialExposure?.version !== GARAGE_POLICY_VERSION))
       throw new Error('Unsupported Garage saved algorithm; start a fresh development database');
+    if (this.episode && this.episode.plan?.preferenceVersion !== GARAGE_PREFERENCE_VERSION)
+      throw new Error('Unsupported Garage saved planning preference; start a fresh development database');
     if (store.db.prepare('SELECT 1 FROM learning_journal WHERE input=? AND algorithm_version<>? LIMIT 1')
       .get(garageInput(this.input), GARAGE_ALGORITHM_VERSION))
       throw new Error('Unsupported Garage journal algorithm; start a fresh development database');
@@ -158,7 +160,8 @@ export class GarageRuntime {
     const reason = !supported ? 'Garage monitoring is available; direct heat-pump control is not available on this installation yet.'
       : !this.canControl() ? 'Garage control authority is unavailable.'
         : !this.settings.enabled ? 'Garage control is disabled.'
-          : this.engine.settings.mode !== 'active' || this.input === 'offline' ? 'Garage heating controls require active control.'
+          : this.input === 'offline' ? 'Temporary heating overrides are unavailable with offline input.'
+            : this.engine.settings.mode !== 'active' ? 'Temporary heating overrides require Active mode.'
             : this.closed ? 'Garage control is closed.' : null;
     const busy = Boolean(this.manualBusy || this.dispatch);
     const blockers = (adapter?.blockedReasons ?? []).filter(value =>
@@ -241,7 +244,7 @@ export class GarageRuntime {
     try {
       this.store.event('garage-native-setting-requested', request, now);
       if (this.manual) { this.manual = null; this.saveManual(); }
-      this.plan = null; this.lastPlannerAt = null;
+      this.plan = null; this.scheduledOpportunity = null; this.lastPlannerAt = null;
       if (this.episode?.accounting) {
         this.episode.accounting.qualified = false; this.episode.reason = 'manual-native-setting'; this.saveEpisode();
       }
@@ -271,7 +274,7 @@ export class GarageRuntime {
         this.store.setState(this.keys.temporary, next); this.store.setState(this.keys.manual, null);
         this.store.event('garage-price-control-pause-changed', { pause: next }, now);
       });
-      this.temporary = next; this.manual = null;
+      this.temporary = next; this.manual = null; this.scheduledOpportunity = null;
       this.armControlDeadline();
       await this.release('price-control-pause-changed');
       return this.status();
@@ -296,7 +299,7 @@ export class GarageRuntime {
       this.store.transaction(() => {
         this.store.setState(this.keys.manual, next); this.store.event('garage-manual-requested', next, now);
       });
-      this.manual = next; this.armControlDeadline();
+      this.manual = next; this.scheduledOpportunity = null; this.armControlDeadline();
       if (this.episode?.accounting) {
         this.episode.accounting.qualified = false; this.episode.reason = 'manual-heating-selection'; this.saveEpisode();
       }
@@ -612,7 +615,7 @@ export class GarageRuntime {
       const manualPermission = manual?.mode === 'off' && native?.episode?.id === manual.id
         && ['starting', 'paused'].includes(native.episode.status);
       const valid = this.canControl() && this.engine.settings.mode === 'active' && this.input !== 'offline'
-        && this.settings.enabled && (manualPermission || !manual && !pause && this.settings.aggressiveness > 0)
+        && this.settings.enabled && (manualPermission || !manual && !pause)
         && this.protection.safeToPause && this.lastPlannerAt !== null && now >= this.lastPlannerAt
         && now - this.lastPlannerAt < GARAGE_TEMPERATURE_MAX_AGE_MS
         && !this.closed && (manual?.mode === 'off' || this.learningStatus === 'current');
@@ -659,7 +662,7 @@ export class GarageRuntime {
     return { temperatureEvidenceAt: permission.evidenceAt, permissionExpiresAt: permission.allowed ? permission.expiresAt : null };
   }
   fail(reason = 'garage-runtime-unavailable') {
-    this.lastError = reason; this.plan = null; this.lastPlannerAt = null;
+    this.lastError = reason; this.plan = null; this.scheduledOpportunity = null; this.lastPlannerAt = null;
     this.protection = { safeToPause: false, reasons: [reason] };
     // A Garage fault must neither keep an OFF intention alive nor interrupt
     // Home's independent control loop. Restoration still respects authority.
@@ -680,6 +683,7 @@ export class GarageRuntime {
     this.advanceEpisode(observation, prices, now);
     const manual = this.activeManual(now), pricePause = this.activePause(now);
     if (manual || pricePause) {
+      this.scheduledOpportunity = null;
       this.lastPlannerAt = now;
       this.plan = { nextAction: manual?.mode === 'off' ? 'manual-off' : 'price-control-paused',
         pauseUntil: manual?.mode === 'off' ? manual.expiresAt : null,
@@ -706,17 +710,30 @@ export class GarageRuntime {
       || (this.pauseStartsToday(now) >= this.settings.maxPausesPerDay ? 'daily-pause-limit' : null)
       || (this.settings.minOnMs > 0 && (!finite(this.normalHeatingSince)
         || now - this.normalHeatingSince < this.settings.minOnMs) ? 'minimum-normal-heating-time' : null));
-    this.plan = ongoingRecovery || admissionReason ? { nextAction: 'available', pauseUntil: null,
-      reason: ongoingRecovery ? 'normal-heating-recovery' : admissionReason } : planGarage({ now, observation, model: planningModel,
+    const settingsDigest = garageDigest(this.settings);
+    const canSchedule = this.canControl() && this.engine.settings.mode === 'active' && this.input !== 'offline'
+      && this.settings.enabled && this.learningStatus === 'current' && !this.manualBusy;
+    if (!canSchedule || activePause || ongoingRecovery || admissionReason || this.scheduledOpportunity?.settingsDigest !== settingsDigest)
+      this.scheduledOpportunity = null;
+    const planningInput = { now, observation, model: planningModel,
       exposure: this.exposure, settings: { ...this.settings,
         minOnMs: Math.max(this.settings.minOnMs, adapterStatus?.limits?.minimumOnMs ?? 0) }, prices, forecast,
-      activeEpisode: activePause, restorationDelayMs: this.restorationDelay(now, { renewal: true }) });
+      activeEpisode: activePause, restorationDelayMs: this.restorationDelay(now, { renewal: true }) };
+    this.plan = ongoingRecovery || admissionReason ? { nextAction: 'available', pauseUntil: null,
+      reason: ongoingRecovery ? 'normal-heating-recovery' : admissionReason } : planGarage({ ...planningInput,
+        scheduledOpportunity: this.scheduledOpportunity?.plan });
+    if (this.scheduledOpportunity && !['waiting', 'paused-plan'].includes(this.plan.state)) {
+      this.scheduledOpportunity = null;
+      this.plan = planGarage(planningInput);
+    }
+    this.scheduledOpportunity = canSchedule && ['waiting', 'paused-plan'].includes(this.plan.state)
+      ? { plan: this.plan, settingsDigest } : null;
     this.lastError = null;
     this.lastPlannerAt = now;
     const pause = ['pause', 'renew'].includes(this.plan.nextAction);
     const recoveryReady = !this.episode || Boolean(activePause && !this.episode.restarted);
     const valid = this.canControl() && this.engine.settings.mode === 'active' && this.input !== 'offline'
-      && this.settings.enabled && this.settings.aggressiveness > 0
+      && this.settings.enabled
       && this.learningStatus === 'current' && this.protection?.safeToPause === true && pause
       && this.pausePermission(now, observation).allowed;
     if (this.dispatch || this.manualBusy) return this.status(now);
@@ -751,6 +768,8 @@ export class GarageRuntime {
     });
   }
   startEpisode(id, plan, observation, now) {
+    if (plan?.preferenceVersion !== GARAGE_PREFERENCE_VERSION)
+      throw new Error('Unsupported Garage planning preference');
     this.episode = { id: randomUUID(), pauseId: id, status: 'active', phase: 'pause', startedAt: now, pauseStartedAt: now, endedAt: null,
       algorithmVersion: GARAGE_ALGORITHM_VERSION, settings: structuredClone(this.settings),
       frozenModel: structuredClone(this.checkpoint.model), initialObservation: structuredClone(observation),
@@ -758,6 +777,7 @@ export class GarageRuntime {
       accounting: startGarageAssessment(this.checkpoint.model, observation),
       initialExposure: structuredClone(this.exposure), usefulHeatReferenceC: observation.rearC };
     this.saveEpisode();
+    this.scheduledOpportunity = null;
   }
   saveEpisode() {
     this.store.transaction(() => {
@@ -853,7 +873,7 @@ export class GarageRuntime {
   }
   async release(reason = 'owner-cancelled', { preserveManual = false } = {}) {
     if (!preserveManual && this.manual) { this.manual = null; this.saveManual(); }
-    this.plan = null; this.lastPlannerAt = null;
+    this.plan = null; this.scheduledOpportunity = null; this.lastPlannerAt = null;
     if (this.episode) {
       this.episode.phase = 'recovery';
       try { this.saveEpisode(); } catch { /* An existing restore obligation still needs its ON request. */ }

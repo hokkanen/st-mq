@@ -22,7 +22,7 @@ import { temporaryUpdate } from './temporary.js';
 import { HEATING_COMMANDS, heatingErrorMessage } from '../control/mqtt.js';
 import { addSensorChange, revertSensorChange, sensorChangesView } from './sensor-changes.js';
 import { sensorBoundaries, affectsThermalLearning } from './sensor-inputs.js';
-import { indoorAverage, indoorWeights, INDOOR_SIGNALS, HELD_TEMPERATURE_SIGNALS, SENSOR_SETTLING_MS } from '../domain/indoor-sensors.js';
+import { indoorAverage, indoorWeights, INDOOR_SIGNALS, HELD_TEMPERATURE_SIGNALS, SENSOR_SETTLING_MS, TEMPERATURE_SENSORS } from '../domain/indoor-sensors.js';
 import { lastIndoorReading, indoorReadingUsable, indoorReadingAttention, indoorReportStatus } from './indoor-readings.js';
 import { temperatureReportMaxAge } from '../domain/temperature-reports.js';
 import { OUTDOOR_MAX_AGE_MS } from '../domain/reading-freshness.js';
@@ -571,6 +571,20 @@ export class Engine {
     preheatTargetC: preheatAvailable ? request.roomSettingC : null, preheatReason: preheatAvailable ? null
       : 'Preheating needs a fresh writable ROOM setting with room for the configured increase, or commissioned floor overrides.',
     lastResult: this.store.getState(`heating-test:${this.config.input}`) };
+  }
+  comfortRooms(checkpoint = this.checkpoint) {
+    const comfort = this.settings.comfort;
+    const overall = comfort.targetC ?? checkpoint?.baselineC;
+    return Object.keys(indoorWeights(this.control)).map(id => {
+      const learned = checkpoint?.sensorComfortReferences?.[id]?.targetC;
+      const referenceC = learned ?? overall;
+      const known = Number.isFinite(referenceC);
+      return { id, label: TEMPERATURE_SENSORS[id], referenceC: known ? referenceC : null,
+        referenceSource: !known ? 'unavailable' : Number.isFinite(learned) ? 'room' : 'overall',
+        minC: known ? referenceC - comfort.maxDropC : null,
+        maxC: known ? referenceC + comfort.maxRiseC : null,
+        limitsApply: this.settings.occupancy.mode !== 'away' };
+    });
   }
   preheatValveStatus(now = this.clock()) {
     return this.floorOverride?.status(now) ?? { enabled: this.config.floorPreheat?.enabled === true,
@@ -1225,6 +1239,7 @@ export class Engine {
     this.latestStatus = { now,input,mode:this.settings.mode,liveWrites:this.settings.mode==='active'&&input!=='simulated'&&Boolean(this.executor.commandTransport),
       runtimeTiming:this.runtimeTiming?.() ?? null,
       settings:this.settings,demoComfortTargetC:this.plant&&checkpoint.baselineC===null?21:null,observations,override,decision:{...decision,plan:visiblePlan},execution,
+      comfortRooms:this.comfortRooms(checkpoint),
       heatingTests:this.heatingTests(),preheatValves:this.preheatValveStatus(now),h66,prices:outlook.prices,forecast:outlook.forecast,spot:outlook.spot??[],
       priceStatus:this.plant?'simulated':outlook.priceStatus,weatherStatus:this.plant?'simulated':outlook.weatherStatus,
       providers:this.providerStatus(),

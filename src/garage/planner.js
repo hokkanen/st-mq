@@ -1,4 +1,4 @@
-import { garageSettings, GARAGE_PREFERENCE_VERSION } from './settings.js';
+import { garageSettings, garageSavingsPreference, GARAGE_PREFERENCE_VERSION } from './settings.js';
 import { assessGarageProtection, projectGarageExposure, projectCurrentGarageExposure } from './protection.js';
 import { predictGarageStep, garageModelSummary, GARAGE_MODEL_ASSUMPTIONS, garageRecoveryHours } from './model.js';
 import { garagePlanningEvidence, garagePlanningMargins, garagePlanningEnergyUncertainty } from './planning-evidence.js';
@@ -52,8 +52,8 @@ function recoveryPrices(steps, maximumPrice) {
  * copper-pipe reserve, available forecasts and whole-cycle economics determine
  * its endpoint. That endpoint cannot move later once the episode has started. */
 export function planGarage({ now, model, exposure, observation, settings = {}, prices = [], forecast = [],
-  activeEpisode = null, restorationDelayMs = null } = {}) {
-  const config = garageSettings(settings);
+  activeEpisode = null, scheduledOpportunity = null, restorationDelayMs = null } = {}) {
+  const config = garageSettings(settings), preference = garageSavingsPreference(config);
   if (!validTime(now)) throw new Error('Garage planner requires numeric UTC time');
   const delayKnown = finite(restorationDelayMs) && restorationDelayMs >= 0;
   const protection = assessGarageProtection(exposure, { now, observation, settings: config, restorationDelayMs: delayKnown ? restorationDelayMs : 0 });
@@ -63,9 +63,13 @@ export function planGarage({ now, model, exposure, observation, settings = {}, p
   const stop = reason => ({ ...base, reason });
   if (!config.enabled) return stop('automatic-control-disabled');
   if (!delayKnown) return stop('heating-response-bound-unavailable');
-  if (config.aggressiveness === 0) return stop('normal-heating-preference');
   if (!protection.safeToPause) return stop(protection.reasons[0] ?? 'protection-unavailable');
   const active = activeEpisode && !['completed', 'released', 'cancelled'].includes(activeEpisode.state);
+  const scheduled = !active && scheduledOpportunity;
+  if (scheduled && (scheduled.preferenceVersion !== GARAGE_PREFERENCE_VERSION
+    || !validTime(scheduled.pauseFrom) || !validTime(scheduled.plannedPauseUntil)
+    || scheduled.plannedPauseUntil <= scheduled.pauseFrom))
+    throw new Error('Unsupported Garage scheduled opportunity');
   const admission = !active && (garagePauseStartReason(observation)
     || ([1, 2].some(id => observation?.[`ev${id}Kw`] > .1 || observation?.[`ev${id}Active`] === true)
       ? 'charging-heat-opportunity-uncertain' : null));
@@ -75,9 +79,9 @@ export function planGarage({ now, model, exposure, observation, settings = {}, p
   if (!active && !evidence.eligible) return { ...stop(evidence.reason), evidence };
   const steps = horizon(now, prices, forecast, config);
   const activeEnd = active ? activeEpisode.authorizedEndAt ?? activeEpisode.pauseUntil ?? activeEpisode.endpointAt : null;
-  if (validTime(activeEnd)) {
-    const crossing = steps.findIndex(step => step.start < activeEnd && step.end > activeEnd);
-    if (crossing >= 0) { const step = steps[crossing]; steps.splice(crossing, 1, { ...step, end: activeEnd }, { ...step, start: activeEnd }); }
+  for (const boundary of [activeEnd, scheduled?.pauseFrom, scheduled?.plannedPauseUntil].filter(validTime)) {
+    const crossing = steps.findIndex(step => step.start < boundary && step.end > boundary);
+    if (crossing >= 0) { const step = steps[crossing]; steps.splice(crossing, 1, { ...step, end: boundary }, { ...step, start: boundary }); }
   }
   if (steps.length < 2) return stop('insufficient-price-weather-horizon');
   const maximumPrice = steps.reduce((value, s) => Math.max(value, s.priceCtPerKwh), -Infinity);
@@ -104,14 +108,21 @@ export function planGarage({ now, model, exposure, observation, settings = {}, p
   const existingRecoveryKwh = active ? Math.max(0, activeEpisode.accounting?.recoveryAllowanceKwh
     ?? power * elapsedOffHours * GARAGE_MODEL_ASSUMPTIONS.recoveryEnergyFactor) : 0;
   const restoringNowCost = existingRecoveryKwh * recoveryPrice(now, Math.max(garageRecoveryHours(elapsedOffHours), config.minOnMs / HOUR));
-  let best = null, hasEconomicCandidate = false, normalState = initial, normalReserve = initialReserve;
+  // Keep only the duration/benefit frontier, never every candidate trajectory.
+  // A window is dominated when a shorter window saves at least as much.
+  const candidates = [];
+  const preferMaximum = active || preference.retainedBenefitFraction === 1;
+  let hasEconomicCandidate = false, normalState = initial, normalReserve = initialReserve;
   for (let from = 0; from < (active ? 1 : steps.length); from++) {
     let avoidedKwh = 0, avoidedCostEur = 0, safeThrough = null;
     for (let to = from; to < steps.length; to++) {
       const step = steps[to], duration = step.end - steps[from].start;
+      if (scheduled && (steps[from].start !== Math.max(now, scheduled.pauseFrom)
+        || step.end > scheduled.plannedPauseUntil)) break;
       if (active && (!validTime(activeEnd) || step.end > activeEnd)) break;
       const hours = (step.end - step.start) / HOUR;
       avoidedKwh += power * hours; avoidedCostEur += power * hours * step.priceCtPerKwh / 100;
+      if (scheduled && step.end !== scheduled.plannedPauseUntil) continue;
       if (!active && duration < config.minOffMs) continue;
       if (step.end + restorationDelayMs > steps.at(-1).end) break;
       if (safeThrough !== null && step.end + restorationDelayMs > safeThrough) break;
@@ -125,11 +136,20 @@ export function planGarage({ now, model, exposure, observation, settings = {}, p
       const uncertaintyEur = uncertain.kwh * Math.max(0, maximumPrice - minimumPrice) / 100
         + uncertain.recoveryKwh * price;
       const net = avoidedCostEur - recoveryCostEur - uncertaintyEur;
-      if (net <= (active ? 0 : config.minSavingsEur)) continue;
+      if (net <= (active ? 0 : preference.minimumBenefitEur)) continue;
       hasEconomicCandidate = true;
-      if (best && (net < best.net || net === best.net && (duration > best.duration || duration === best.duration && from >= best.from))) continue;
+      const incumbent = candidates.at(-1);
+      if (preferMaximum && incumbent && (net < incumbent.net
+        || net === incumbent.net && duration >= incumbent.duration)) continue;
+      let slot = 0, upper = candidates.length;
+      while (slot < upper) {
+        const middle = Math.floor((slot + upper) / 2);
+        if (candidates[middle].duration < duration) slot = middle + 1; else upper = middle;
+      }
+      if (slot > 0 && candidates[slot - 1].net >= net
+        || candidates[slot]?.duration === duration && candidates[slot].net >= net) continue;
       // Calculate the cooling trajectory once per start, only when economics
-      // can improve the answer. Retain one winner, not every possible window.
+      // can improve the duration/benefit frontier.
       if (safeThrough === null) {
         let state = normalState, reserve = normalReserve;
         safeThrough = steps[from].start;
@@ -140,15 +160,25 @@ export function planGarage({ now, model, exposure, observation, settings = {}, p
         }
       }
       if (step.end + restorationDelayMs > safeThrough) break;
-      best = { from, to, duration, avoidedKwh, avoidedCostEur, recoveryKwh, recoveryHours, recoveryCostEur,
-        uncertaintyEur, uncertaintyBasis: uncertain.basis, net };
+      let after = slot;
+      while (after < candidates.length && (candidates[after].duration === duration || candidates[after].net <= net)) after++;
+      candidates.splice(slot, after - slot, { from, to, duration, avoidedKwh, avoidedCostEur, recoveryKwh,
+        recoveryHours, recoveryCostEur, uncertaintyEur, uncertaintyBasis: uncertain.basis, net });
+      if (preferMaximum && candidates.length > 1) candidates.splice(0, candidates.length - 1);
     }
     if (active || from === steps.length - 1) break;
     const next = projected(normalState, normalReserve, steps[from], steps[from].end, true);
     if (!next.safe) break;
     normalState = next.next.state; normalReserve = next.reserve;
   }
-  if (!best) return { ...stop(hasEconomicCandidate ? 'forecast-protection-requires-heating' : 'benefit-below-minimum-saving'), evidence };
+  if (!candidates.length) return { ...stop(hasEconomicCandidate ? 'forecast-protection-requires-heating' : 'benefit-below-minimum-saving'), evidence };
+  const maximumBenefitEur = candidates.at(-1).net;
+  // Apply the duration preference when admitting an opportunity. Reapplying a
+  // fraction to its remainder every minute would progressively shorten an
+  // unchanged plan. Renewals instead compare continuing with restoring now,
+  // including accumulated heat debt, within the originally accepted endpoint.
+  const best = active ? candidates.at(-1)
+    : candidates.find(candidate => candidate.net >= maximumBenefitEur * preference.retainedBenefitFraction);
   let state = initial, reserve = initialReserve;
   const path = [], until = steps[best.to].end + restorationDelayMs;
   for (let i = 0; i < steps.length && steps[i].start < until; i++) {

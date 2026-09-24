@@ -25,7 +25,7 @@ test('an initial worthwhile opportunity may exceed two hours when pipe protectio
   const value = model(); value.validation.episodes = [];
   const plan = planGarage({ now, restorationDelayMs: 120_000, exposure: knownGarageReserve(settings, { at: now }),
     model: value, observation, settings, ...outlook([300, 300, 300, 300, ...Array(20).fill(5)]) });
-  assert.equal(plan.learningTrial, true); assert.equal(plan.nextAction, 'pause');
+  assert.equal(plan.learningTrial, true); assert.equal(plan.state, 'waiting');
   assert.ok(offHours(plan) > 2); assert.ok(plan.scoreEur > settings.minSavingsEur);
   assert.equal(plan.evidence.validatedOffHours, 0); assert.equal(plan.evidence.eligible, true);
   const ordinary = planGarage({ now, restorationDelayMs: 120_000, exposure: knownGarageReserve(settings, { at: now }),

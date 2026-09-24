@@ -680,7 +680,7 @@ details details { margin-inline-start: 24px; }
 .equipment-fold > summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
 .equipment-fold > summary:has(> small)::after { margin-left: 0; }
 .equipment-fold > summary::-webkit-details-marker { display: none; }
-.equipment-fold > summary::after { content: '›'; margin-left: auto; color: var(--muted); font-size: 18px; line-height: 1; }
+.equipment-fold > summary::after { content: '›'; flex: none; width: 18px; height: 18px; overflow: hidden; margin-left: auto; color: var(--muted); font-size: 18px; line-height: 1; text-align: center; }
 .equipment-fold[open] > summary::after { color: var(--accent); transform: rotate(90deg); }
 .equipment-fold[open] > summary { padding-bottom: 8px; }
 .equipment-fold > .muted { margin: 5px 0 12px; }
@@ -1146,9 +1146,10 @@ button.status-detail-close:hover { background: var(--surface-soft); color: var(-
 .home-state-reading { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr); align-items: baseline; gap: 12px; font-size: 12px; line-height: 1.55; }
 .home-state-reading > span { color: var(--muted); }
 .home-state-reading > strong { min-width: 0; font-size: inherit; font-weight: 500; text-align: right; overflow-wrap: anywhere; }
+.home-state-reading[hidden] { display: none; }
 .home-heating-state .equipment-alarm { margin: 0; font-size: 12px; color: var(--stale); }
 .home-control-subtitle { margin: 18px 0 0; font-size: 12px; font-weight: 550; }
-#heating-test-details > .equipment-fold { margin-top: 14px; border-top: 1px solid var(--border); }
+#heating-test-details > .equipment-fold, #garage-manual-controls > .equipment-fold { margin-top: 14px; border-top: 1px solid var(--border); }
 #heating-test-message:empty { display: none; }
 .home-preferences > summary { gap: 8px; }
 .home-preferences > summary > small { text-align: right; font-variant-numeric: tabular-nums; }
@@ -1162,6 +1163,11 @@ button.status-detail-close:hover { background: var(--surface-soft); color: var(-
 .home-policy-values .home-comfort-reference { grid-column: 1 / -1; }
 .home-preferences-body > p { font-size: 11px; line-height: 1.65; margin: 8px 0; }
 .home-preferences-body > .home-preferences-edit { border-top: 1px solid var(--border); padding-top: 12px; margin-top: 14px; }
+.home-room-reference-list { margin: 8px 0 16px; }
+.home-room-reference-list > div { padding: 10px 0; border-top: 1px solid var(--border); font-size: 11px; line-height: 1.6; }
+.home-room-reference-list dt { font-weight: 550; }
+.home-room-reference-list dd { margin: 3px 0 0; color: var(--muted); }
+.home-room-reference-list strong { color: var(--text); font-weight: 500; font-variant-numeric: tabular-nums; }
 .zone-content .heating-mode-buttons { margin: 12px 0 0; }
 .heating-mode-buttons .heating-button-state { flex: none; color: currentColor; font-size: 12px; line-height: 1; }
 .heating-mode-buttons .heating-button-state:empty { display: none; }
@@ -1169,7 +1175,6 @@ button.status-detail-close:hover { background: var(--surface-soft); color: var(-
 .heating-mode-buttons button[data-mode-state="active"] { color: var(--chart-indoor); border-color: var(--chart-indoor); }
 .heating-mode-buttons button[data-mode-state="requested"] { color: var(--stale); border-color: var(--stale); }
 .heating-mode-buttons button:not(:disabled):hover { background: var(--surface-soft); border-color: var(--accent); }
-.zone-content .zone-configuration > .equipment-fold { margin: 14px 0 0; }
 .zone-content .equipment-device { min-width: 0; padding: 0; margin: 0; border: 0; border-top: 1px solid var(--border); border-radius: 0; background: transparent; }
 .zone-content .equipment-device[open] { background: color-mix(in srgb, var(--surface-soft) 65%, var(--surface)); }
 .equipment-device > .equipment-device-summary { position: relative; display: grid; gap: 6px 16px; grid-template-columns: minmax(0, 1fr) auto; min-height: 86px; padding: 18px 38px 18px 12px; list-style: none; }
@@ -1241,10 +1246,10 @@ button.status-detail-close:hover { background: var(--surface-soft); color: var(-
 .garage-policy-status, .garage-live-label { color: var(--muted); font-size: 10px; }
 .garage-policy-status { padding: 3px 8px; border: 1px solid var(--border); border-radius: 20px; }
 .garage-setting-list { margin: 8px 0 0; }
-.garage-setting { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 18px; padding: 10px 0; font-size: 12px; }
-.garage-setting dt { min-width: 0; }
-.garage-setting dt small { display: block; margin-top: 5px; color: var(--muted); font-size: 11px; line-height: 1.6; }
-.garage-setting dd { margin: 0; text-align: right; font-weight: 550; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.garage-setting { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 5px 18px; padding: 10px 0; font-size: 12px; line-height: 1.6; }
+.garage-setting dt, .garage-setting dd { min-width: 0; overflow-wrap: anywhere; }
+.garage-setting dd { margin: 0; text-align: right; font-weight: 550; font-variant-numeric: tabular-nums; }
+.garage-setting .garage-setting-help { grid-column: 1 / -1; color: var(--muted); font-size: 11px; font-weight: 400; text-align: left; }
 .garage-settings-help { margin: 8px 0 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
 .garage-settings .garage-recovery { margin-top: 8px; padding-left: 12px; border-left: 1px solid var(--border); }
 .garage-settings .garage-recovery > summary { min-height: 36px; padding: 6px 0; }

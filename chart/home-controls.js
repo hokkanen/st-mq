@@ -19,6 +19,16 @@ export function temporaryValues(status) {
     pauseUntilLocal: status.override?.expiresAt > status.now ? finnishDateTime(status.override.expiresAt) : '' };
 }
 
+/** Configured price control is not actively commanding equipment in every mode. */
+export function priceControlState(status = {}, { enabled = true, paused = false, away = false } = {}) {
+  if (paused) return { label: 'Paused', state: 'paused' };
+  if (enabled === false) return { label: 'Disabled', state: 'muted' };
+  if (status.input === 'offline') return { label: 'Offline', state: 'muted' };
+  if (enabled !== true || !status.mode) return { label: '—', state: 'muted' };
+  if (status.mode !== 'active') return { label: status.mode[0].toUpperCase() + status.mode.slice(1), state: 'muted' };
+  return { label: away ? 'Away' : 'Active', state: 'active' };
+}
+
 export function activeRates(status) {
   return status.contract?.periods?.find(period => Number(period.from) <= status.now
     && (period.to == null || Number(period.to) > status.now)) ?? null;
@@ -53,4 +63,41 @@ export function homePolicyValues(status = {}) {
     limits: Number.isFinite(comfort.maxDropC) && Number.isFinite(comfort.maxRiseC)
       ? `−${comfort.maxDropC} / +${comfort.maxRiseC} °C` : 'Limits unavailable',
   };
+}
+
+/** The backend resolves individual learned references and shared occupied bounds. */
+export function homeRoomReferences(status = {}) {
+  const temperature = value => Number.isFinite(value)
+    ? `${new Intl.NumberFormat('en-GB', { maximumFractionDigits: 1 }).format(value)} °C` : 'Unavailable';
+  return (status.comfortRooms ?? []).map(room => ({
+    id: room.id, label: room.label,
+    reference: temperature(room.referenceC),
+    basis: room.referenceSource === 'room' ? 'Learned room reference'
+      : room.referenceSource === 'overall' ? 'Overall reference' : 'Reference not established',
+    limits: Number.isFinite(room.minC) && Number.isFinite(room.maxC)
+      ? `${temperature(room.minC)} – ${temperature(room.maxC)}` : 'Limits unavailable',
+    inactive: room.limitsApply === false,
+  }));
+}
+
+export function renderHomeRoomReferences(document, status) {
+  const root = document.getElementById('home-room-references');
+  if (!root) return;
+  const rows = homeRoomReferences(status);
+  const heading = document.getElementById('home-room-limits-status');
+  if (heading) heading.textContent = rows.length && rows.every(row => row.inactive) ? 'Inactive while away' : 'When you are home';
+  const fragment = document.createDocumentFragment();
+  for (const row of rows) {
+    const item = document.createElement('div'), title = document.createElement('dt'), detail = document.createElement('dd');
+    const reference = document.createElement('strong');
+    title.textContent = row.label; reference.textContent = row.reference;
+    detail.append(reference, ` · ${row.basis}. Limits: ${row.limits}${row.inactive ? ' · inactive while away' : ''}.`);
+    item.append(title, detail); fragment.append(item);
+  }
+  if (!rows.length) {
+    const unavailable = document.createElement('p');
+    unavailable.className = 'muted'; unavailable.textContent = 'Room references are unavailable.';
+    fragment.append(unavailable);
+  }
+  root.replaceChildren(fragment);
 }

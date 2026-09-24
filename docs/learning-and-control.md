@@ -61,7 +61,8 @@ manufacturer link and limitations, using the same calculation disclosure as othe
 
 Each dashboard includes its learning summary alongside the heating and pause controls.
 Home shows current heat-pump, tariff and circulation status first, followed by
-temporary heating controls and **Away & pause**. **Comfort & preferences** holds
+**Temporary heating override** and **Pause price control**, including Away.
+**Savings & comfort** holds
 the normal-temperature reference, occupied drop/rise limits, savings preference
 and ROOM increase; its closed summary shows the configured room limits. Permanent
 preferences still use configuration and **Apply configuration**. **Home learning**
@@ -113,7 +114,12 @@ average of Upstairs, Bedroom and Downstairs is the live indoor state and predict
 target, with fixed membership and equal weights by default. Missing contributing
 readings leave gaps; imported CSV learning retains its original Upstairs input.
 The model also learns a comfort reference for each participating room and checks
-each room before permitting occupied heating reduction. See
+each room before permitting occupied heating reduction. The same configured
+maximum drop and rise apply to every room relative to its own learned normal
+temperature; a room without its own learned reference falls back to the overall
+reference. **Overall comfort reference** and expandable room references in
+Heating configuration expose this distinction. There are no separately configured
+room allowances. See
 [indoor temperatures](temperature-sensors.md) for averaging, room limits and sensor
 changes, recorded inside the **Average indoor** model-input details.
 Requested phase, ROOM boost and comfort target describe control context; they do
@@ -247,7 +253,7 @@ Automatic floor-preheat candidates require a configured slab within the reserve
 capacity budget; a deliberate manual override uses commissioned device authority
 without pretending its thermal behavior is already validated.
 
-Home **Savings aggressiveness** is a configured 0–100 preference. It changes the
+Home **Savings preference** is a configured 0–100 preference. It changes the
 economic hurdle and continuous comfort cost, including duration within an allowed
 band. It does not relax hard occupied-room upper/lower bounds. The planner checks
 each participating room conservatively; a warm floor downstairs does not prove
@@ -263,8 +269,12 @@ For preference fraction `a = aggressiveness/100`, a new cycle needs conservative
 benefit greater than `50 − 40a` cents, plus `30 − 25a` cents per weighted hot/cold
 °C²-hour, 2 cents per extra active hour and 2 cents to start. Continuation excludes
 the already committed start hurdle. Among admitted choices, the mildest retaining
-at least `0.6 + 0.4a` of the best positive conservative benefit is selected. At zero,
-automatic tariff cycles are disabled while normal heating and learning continue.
+at least `0.6 + 0.4a` of the best positive conservative benefit is selected. Zero
+is the most conservative preference; qualifying automatic cycles remain possible.
+Use **Pause price control** to suspend economic control. Garage uses the same
+0–100 presentation and zero semantics, with a benefit threshold and preference for
+shorter OFF windows suited to its separate model; see
+[Garage selection](garage-model.md#one-opportunity-at-a-time).
 
 Selection, dispatch and continuation share paired stress scenarios for action and
 reference: heat response and loss ±15%, initial reserve/slab ±0.5 °C, compressor

@@ -89,7 +89,7 @@
                   <div class="home-state-reading"><span>Tariff control</span><strong id="tariff-control-state">—</strong></div>
                   <div class="home-state-reading"><span>Hot-water circulation</span><strong id="dhwr">—</strong></div>
                 </div>
-                <h5 id="home-temporary-heating-title" class="home-control-subtitle">Temporary heating</h5>
+                <h5 id="home-temporary-heating-title" class="home-control-subtitle">Temporary heating override</h5>
                 <p id="heating-test-help" class="muted zone-control-help">Changes reset on the next controller update, normally within 1 minute. Pause price control to hold them longer.</p>
                 <div id="heating-test-buttons" class="heating-test-buttons heating-mode-buttons" role="group" aria-labelledby="home-temporary-heating-title" aria-describedby="heating-test-help home-hold-warning heating-test-status">
                   <button id="test-normal" class="secondary-button" type="button" data-heating-command="normal" aria-pressed="false" disabled><span>Normal heating</span><span class="heating-button-state" aria-hidden="true"></span></button>
@@ -120,16 +120,21 @@
                   </form>
                 </details>
                 <details id="home-preferences-details" class="equipment-fold home-preferences">
-                  <summary><span>Comfort &amp; preferences</span><small id="home-comfort-limits">Configured limits</small></summary>
+                  <summary><span>Savings &amp; comfort</span><small id="home-comfort-limits">Configured limits</small></summary>
                   <div class="home-preferences-body">
                     <dl class="home-policy-values">
-                      <div class="home-comfort-reference"><dt>Comfort reference</dt><dd><strong id="reference">—</strong><small id="reference-source">Learning normal temperature</small></dd></div>
+                      <div class="home-comfort-reference"><dt>Overall comfort reference</dt><dd><strong id="reference">—</strong><small id="reference-source">Learning normal temperature</small></dd></div>
                       <div><dt>Maximum drop</dt><dd><strong id="drop">—</strong><small id="drop-note">When you are home</small></dd></div>
-                      <div><dt>Maximum rise</dt><dd><strong id="home-maximum-rise">—</strong><small>When you are home</small></dd></div>
-                      <div><dt>Savings aggressiveness</dt><dd><strong id="home-aggressiveness">—</strong></dd></div>
+                      <div><dt>Maximum rise</dt><dd><strong id="home-maximum-rise">—</strong><small id="rise-note">When you are home</small></dd></div>
+                      <div><dt>Savings preference</dt><dd><strong id="home-aggressiveness">—</strong></dd></div>
                       <div><dt>Preheat request</dt><dd><strong id="home-preheat-setting">—</strong></dd></div>
                     </dl>
-                    <p class="muted">Room limits apply around each room’s normal temperature. Higher savings aggressiveness accepts more variation within those limits.</p>
+                    <p class="muted">While you are home, the same maximum temperature drop and rise apply to every monitored room, relative to its learned normal temperature. Rooms without a learned reference use the overall reference.</p>
+                    <details id="home-room-references-details" class="equipment-fold home-room-references">
+                      <summary><span>Room references &amp; limits</span><small id="home-room-limits-status">When you are home</small></summary>
+                      <dl id="home-room-references" class="home-room-reference-list"></dl>
+                    </details>
+                    <p class="muted">Higher savings preference favours savings within these limits; it does not widen them. 0 is most conservative and 100 most savings-oriented. Use Pause price control to suspend automatic savings.</p>
                     <p class="muted">ROOM increases heat-pump demand; it is not a room-air target.</p>
                     <p class="muted home-preferences-edit">Edit permanent preferences in configuration, then use Apply configuration in Data &amp; settings.</p>
                   </div>
@@ -463,17 +468,22 @@
           </summary>
           <div class="zone-content equipment-area">
             <section id="garage-manual-controls" class="zone-section zone-configuration" aria-labelledby="garage-heating-configuration-title">
-              <div class="zone-section-heading"><h4 id="garage-heating-configuration-title">Heating control</h4></div>
-              <h5 id="garage-temporary-heating-title" class="home-control-subtitle">Temporary heating</h5>
-              <p id="garage-heating-help" class="muted zone-control-help">Changes reset on the next controller update, normally within 1 minute. Pause price control to hold them longer.</p>
-              <div id="garage-heating-buttons" class="heating-mode-buttons heating-mode-buttons-two" role="group" aria-labelledby="garage-temporary-heating-title" aria-describedby="garage-heating-help garage-hold-warning">
+              <div class="zone-section-heading"><h4 id="garage-heating-configuration-title">Heating control</h4><p id="garage-heating-status" class="muted home-control-availability"></p></div>
+              <div id="garage-heating-state" class="home-heating-state" role="group" aria-label="Current heating state">
+                <div id="garage-current-mode-row" class="home-state-reading" hidden><span>Heat-pump mode</span><strong id="garage-current-mode">Unavailable</strong></div>
+                <div class="home-state-reading"><span>Heating control</span><strong id="garage-current-control">—</strong></div>
+                <div id="garage-current-room-row" class="home-state-reading" hidden><span>Room setting</span><strong id="garage-current-room">Unavailable</strong></div>
+              </div>
+              <h5 id="garage-temporary-heating-title" class="home-control-subtitle">Temporary heating override</h5>
+              <p id="garage-heating-help" class="muted zone-control-help">Changes reset on the next controller update, normally within 1 minute. Pause price control to hold them longer. Freeze protection can restore heating sooner.</p>
+              <div id="garage-heating-buttons" class="heating-mode-buttons heating-mode-buttons-two" role="group" aria-labelledby="garage-temporary-heating-title" aria-describedby="garage-heating-help garage-hold-warning garage-heating-status">
                 <button id="garage-mode-normal" class="secondary-button" type="button" data-garage-heating-mode="normal" aria-pressed="false" disabled><span>Normal heating</span><span class="heating-button-state" aria-hidden="true"></span></button>
                 <button id="garage-mode-off" class="secondary-button" type="button" data-garage-heating-mode="off" aria-pressed="false" disabled><span>Heating off</span><span class="heating-button-state" aria-hidden="true"></span></button>
               </div>
               <p id="garage-hold-warning" class="heating-hold-warning heating-hold-warning-strong" role="status" hidden></p>
               <p id="garage-heating-message" class="temporary-status" role="status" aria-live="polite"></p>
               <details id="garage-pause-details" class="equipment-fold temporary-panel">
-                <summary><span>Pause price control</span><small id="garage-pause-overview">Savings active</small></summary>
+                <summary><span>Pause price control</span><small id="garage-pause-overview">Status unavailable</small></summary>
                 <form id="garage-pause-form" class="temporary-form">
                   <p class="muted form-timezone">All dates and times below are in Finland · Europe/Helsinki.</p>
                   <div class="temporary-field">

@@ -68,6 +68,29 @@ successful import and application. Omitting a key from a later import preserves
 its saved value. See [permanent configuration](../README.md#permanent-configuration-and-prices)
 for exact paths, reload behavior and restart requirements.
 
+## Heating savings preferences
+
+Home `controller.savings_aggressiveness` and Garage `garage.aggressiveness` are
+configured 0–100 preferences, shown as **Savings preference** in each Heating
+configuration. Change the owning configuration source and choose **Apply
+configuration**. Zero means most conservative for both; use **Pause price control**
+to suspend savings temporarily.
+
+Garage `minSavingsEur` is the new-pause benefit threshold at preference 50. Its
+effective threshold is `minSavingsEur * (1.5 - aggressiveness / 100)`, after
+estimated recovery cost and uncertainty. With the shared €0.50 baseline, the
+thresholds are €0.75, €0.50 and €0.25 at preferences 0, 50 and 100. The preference
+also chooses shorter safe windows retaining 60–100% of the best benefit.
+`minOffMs`, `minOnMs`, `maxPausesPerDay` and protection requirements remain
+independent constraints. The Garage preferences display their current values and
+the effective benefit threshold. See [Garage policy](garage-model.md#one-opportunity-at-a-time).
+
+Home's shared `controller.max_drop_c` and `controller.max_rise_c` apply around
+each participating room's learned reference, falling back to the overall comfort
+reference where needed. The preference changes selection within these bounds;
+it never widens them. Room references are learned separately, but there are no
+separate configured drop/rise limits per room.
+
 ## Section map
 
 The public `options` and `schema` use the same section order. Settings stay with

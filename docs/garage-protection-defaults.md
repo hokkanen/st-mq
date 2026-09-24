@@ -12,7 +12,7 @@ Using this reference does not establish that every container or fitting cools
 more slowly, or that the pipe wall cannot begin freezing before the estimated
 bulk temperature reaches zero.
 
-## Parameters shown in Garage settings
+## Parameters shown in Savings & protection
 
 | Parameter | Initial value | Meaning |
 | --- | ---: | --- |
@@ -22,7 +22,8 @@ bulk temperature reaches zero.
 | Heat transfer | 20 W/m²·K | Initial estimate of heat exchange with the adjacent air. |
 | Safety factor | 2, fixed | Counts heat loss twice as fast and credits heat gain half as fast. |
 
-Normal heating remains 10°C; aggressiveness remains 50. Automatic operation is
+The configured normal-heating baseline defaults to 10°C and savings preference
+to 50. Every preference retains the same protection requirements. Automatic operation is
 disabled and the protection policy is unapproved by default. The heat-transfer
 coefficient and safety factor are engineering assumptions, not values learned
 from the garage or an installed safety certificate.

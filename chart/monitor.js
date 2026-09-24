@@ -6,7 +6,7 @@ import { createMitsubishiControls } from './mitsubishi.js';
 import { createChargingPanel } from './charging.js';
 import { createHistoryChart } from './history-chart.js';
 import { dashboardProviders, outdoorSourceLabel, providerName, providerSeries, temperatureReadingStatus } from './provider-status.js';
-import { activeRates, rateRows, temporaryValues, homePolicyValues } from './home-controls.js';
+import { activeRates, rateRows, temporaryValues, priceControlState, homePolicyValues, renderHomeRoomReferences } from './home-controls.js';
 import { learningDisplay, h66Control, h66HomeSummary, h66EquipmentSummary, h66ReadingStatus, h66ReadingValue, h66Registers, h66ReadingGroups, renderModelInputs } from './learning-status.js';
 import { renderRecording, renderEnergyAudits, recordingOverviewRefresh } from './recording.js';
 import { bindDatabaseExport } from './database-export.js';
@@ -197,7 +197,9 @@ function renderTemporary(s) {
   $('override-status').textContent = saved.pauseUntilLocal
     ? `Price control paused until ${time(s.override.expiresAt)}.` : 'Price control is not paused.';
   $('temporary-overview').textContent = [saved.awayUntilLocal ? `Away until ${time(s.settings.occupancy.returnAt)}` : 'At home',
-    saved.pauseUntilLocal ? `Paused until ${time(s.override.expiresAt)}` : 'No pause'].join(' · ');
+    saved.pauseUntilLocal ? `Paused until ${time(s.override.expiresAt)}`
+      : s.input === 'offline' ? 'Unavailable offline'
+        : s.mode === 'active' ? 'Not paused' : s.mode ? `${priceControlState(s).label} mode` : 'Status unavailable'].join(' · ');
   $('override-scope').textContent = s.input === 'simulated'
     ? 'These changes apply to the simulation only.'
     : s.liveWrites ? 'Away and pause update the active heating plan. Starting a pause requests Normal heating, then holds any changes you make until the pause ends.'
@@ -668,8 +670,9 @@ function render(s) {
   renderContract(s); renderProviders(s); renderH66(s); equipmentPanel.update(s); renderFloorPreheat(document, s); renderGarage(document, s);
   if ($('recording-details')?.open) renderRecording(s,$('recording-content'));
   const temporary = temporaryValues(s);
-  $('control-price').textContent = temporary.pauseUntilLocal ? 'Paused' : temporary.awayUntilLocal ? 'Away' : 'Active';
-  $('control-price').parentElement.dataset.state = temporary.pauseUntilLocal ? 'paused' : 'active';
+  const controlPrice = priceControlState(s, { paused: Boolean(temporary.pauseUntilLocal), away: Boolean(temporary.awayUntilLocal) });
+  $('control-price').textContent = controlPrice.label;
+  $('control-price').parentElement.dataset.state = controlPrice.state;
   const dhwr = dhwrReadingSummary(s);
   $('dhwr').textContent = dhwr.summary;
   $('dhwr').classList.toggle('stale', dhwr.attention);
@@ -682,9 +685,11 @@ function render(s) {
   $('home-aggressiveness').textContent = homePolicy.aggressiveness;
   $('home-preheat-setting').textContent = homePolicy.preheat;
   $('home-maximum-rise').textContent = homePolicy.maximumRise;
-  $('home-comfort-limits').textContent = s.decision.comfort?.maxDropApplies === false ? 'Away · drop limit inactive' : homePolicy.limits;
+  $('home-comfort-limits').textContent = s.decision.comfort?.maxDropApplies === false ? 'Away · limits inactive' : homePolicy.limits;
   $('drop').textContent = `${s.settings.comfort.maxDropC} °C`;
   $('drop-note').textContent = s.decision.comfort?.maxDropApplies === false ? 'Inactive while you are away' : 'When you are home';
+  $('rise-note').textContent = $('drop-note').textContent;
+  renderHomeRoomReferences(document, s);
   renderLearning(s);
   const scope = settingsReloadScope(s);
   $('settings-reload-help').textContent = scope.message;

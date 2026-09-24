@@ -146,6 +146,19 @@ test('unsupported live garage adapter never sends manual commands; price-control
   assert.equal(f.commands.length, 0);
 });
 
+test('temporary override availability distinguishes operating mode from offline input', async t => {
+  const f = setup(t);
+  for (const mode of ['shadow', 'monitoring']) {
+    f.engine.settings.mode = mode;
+    assert.equal(f.runtime.heatingControls().available, false);
+    assert.equal(f.runtime.heatingControls().reason, 'Temporary heating overrides require Active mode.');
+  }
+  f.runtime.input = 'offline';
+  assert.equal(f.runtime.heatingControls().reason, 'Temporary heating overrides are unavailable with offline input.');
+  f.runtime.input = 'mqtt'; f.engine.settings.mode = 'active';
+  assert.equal(f.runtime.heatingControls().available, true);
+});
+
 test('garage pause survives restart but manual Off permission does not', async t => {
   const f = setup(t);
   await f.runtime.setTemporary({ pauseUntil: new Date(BASE + 30 * MINUTE).toISOString() });

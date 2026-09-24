@@ -30,7 +30,7 @@ export function validateSettings(input = {}) {
   if (targetC !== null && (!Number.isFinite(targetC) || targetC < 15 || targetC > 26)) throw new Error('Comfort target must be 15–26 °C or unset');
   if (!Number.isFinite(maxDropC) || maxDropC < 0 || maxDropC > 2) throw new Error('Preferred drop must be 0–2 °C');
   if (!Number.isFinite(maxRiseC) || maxRiseC < 0.25 || maxRiseC > 2) throw new Error('Preferred rise must be 0.25–2 °C');
-  if (!Number.isFinite(settings.savingsAggressiveness) || settings.savingsAggressiveness < 0 || settings.savingsAggressiveness > 100) throw new Error('Savings aggressiveness must be 0–100');
+  if (!Number.isFinite(settings.savingsAggressiveness) || settings.savingsAggressiveness < 0 || settings.savingsAggressiveness > 100) throw new Error('Savings preference must be 0–100');
   if (!Number.isInteger(settings.preheatRoomBoostC) || settings.preheatRoomBoostC < 1 || settings.preheatRoomBoostC > 5) throw new Error('Preheat ROOM increase must be 1–5 °C');
   if (!['occupied', 'away'].includes(settings.occupancy.mode)) throw new Error('Invalid occupancy mode');
   if (settings.occupancy.returnAt != null && !Number.isFinite(Date.parse(settings.occupancy.returnAt))) throw new Error('Invalid return time');

@@ -606,10 +606,10 @@ try {
   for (const id of ['garage-heating-settings', 'garage-protection-settings', 'garage-recovery-settings']) {
     assert.equal(await evaluate(`(() => {
       const rows = [...document.querySelectorAll('#${id} > .garage-setting')];
-      return rows.length > 0 && rows.every(row => row.querySelector(':scope > dt small')?.textContent.trim()
+      return rows.length > 0 && rows.every(row => row.querySelector(':scope > dd.garage-setting-help')?.textContent.trim()
         && row.querySelector(':scope > dd')?.textContent.trim()
         && row.querySelector(':scope > dd').children.length === 0);
-    })()`), true, `${id} puts setting explanations beside plain values`);
+    })()`), true, `${id} separates full-width explanations from plain values`);
   }
   assert.equal(await evaluate(`(() => {
     const live = document.getElementById('garage-live-budgets');

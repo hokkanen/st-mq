@@ -8,8 +8,18 @@ Home heating, charging schedules and their savings accounting remain separate.
 
 ## Configuration and everyday controls
 
-The Garage card opens Heating configuration. Its controls, Pause savings,
-Savings & protection and Garage learning follow the structure of Home heating.
+The Garage card opens Heating configuration. Home and Garage use the same order:
+current state, **Temporary heating override**, **Pause price control**,
+preferences, then learning. Home calls its preferences **Savings & comfort**;
+Garage uses **Savings & protection**. Garage's current state shows heat-pump
+mode, heating control and the saved room setting, distinguishing current device
+feedback from a requested state and external-control availability.
+Both show a configured **Savings preference** from 0 to 100; changes use the
+existing **Apply configuration** workflow. Zero is the most conservative
+preference, not an off switch. Use **Pause price control** to suspend savings.
+Garage's preferences show the effective minimum saving, benefit retained,
+minimum planned OFF time, minimum normal-heating interval and daily pause limit
+beside protection settings.
 The learning disclosure has four sections:
 
 - **Learning outcomes · Calculated:** validated cooling evidence, prediction
@@ -25,7 +35,7 @@ Permanent installation choices use sparse private overrides and **Apply
 configuration**; shared engineering defaults and standard MQTT topics stay in
 `config.json.options.garage`. See the [configuration guide](configuration.md) for
 a minimal override. Public defaults are `enabled:false`,
-`protection.approved:false`, `minSavingsEur:0.50`, `minOffMs:3600000` (one hour),
+`protection.approved:false`, `aggressiveness:50`, `minSavingsEur:0.50`, `minOffMs:3600000` (one hour),
 `minOnMs:10800000` (three hours) and `maxPausesPerDay:1`.
 
 `enabled` opts the installation into automatic Garage control.
@@ -45,9 +55,19 @@ temperatures, the predicted pipe reserve and uncertainty, price/weather coverage
 savings determine how long heating can stay OFF.
 The daily limit counts starts in the Finnish calendar day, including unsuccessful
 attempts. A new process must observe the normal-heating dwell again. A reporting
-interruption or OFF state resets that dwell. The retained `aggressiveness` setting
-is only an enable preference: zero disables economic pauses; every positive value
-uses the same explicit opportunity thresholds.
+interruption or OFF state resets that dwell.
+
+For preference fraction `a = aggressiveness / 100`, the minimum saving to start
+is `minSavingsEur * (1.5 - a)`. The default baseline therefore requires more than
+€0.75 at 0, €0.50 at 50 or €0.25 at 100, after estimated recovery and uncertainty.
+Among qualifying safe windows, the planner chooses the shortest retaining at
+least `0.6 + 0.4a` of the best net benefit. Equal durations prefer greater benefit,
+then an earlier start. At 100 this chooses the greatest benefit, with shorter
+duration breaking ties. Lower settings favour shorter pauses even when a longer
+pause could save slightly more. These are configured engineering preferences,
+not learned optimal values or percentages of annual savings. Temperature
+protection, uncertainty, minimum OFF/recovery requirements and daily limits apply
+at every preference. See [the selection model](garage-model.md#one-opportunity-at-a-time).
 
 **Room setting** in Heat-pump settings accepts a permanent target down to **5°C**
 when the installed Pill supports external temperature control and its local
@@ -81,10 +101,13 @@ baseline; external temperature control does not supply that commissioning
 evidence. Driver configuration, deployment and live commissioning are separate
 from editing ST-MQ. See [adapter contract](garage-adapter.md).
 
-**Pause savings** suspends economic control until its Finnish local deadline.
-**Normal heating** and **Heating off** are explicit manual selections. During
-Pause savings the selection is held until its deadline; otherwise the next
-controller update takes over. Manual OFF still needs the adapter's lease,
+**Pause price control** suspends economic control until its Finnish local deadline.
+**Normal heating** and **Heating off** are explicit manual selections under
+**Temporary heating override**. These controls require Active operating mode and
+live input; this does not mean the compressor must already be heating. During
+Pause the selection is held until its deadline; otherwise the next controller
+update, normally within one minute, takes over. Freeze protection can restore
+heating sooner. Manual OFF still needs the adapter's lease,
 authority, restoration and freezing-protection checks. Restart retains the price
 pause but restores an owned OFF request. Native ON is a request to allow the
 pump's own thermostat to work, not a claim that it is producing heat.

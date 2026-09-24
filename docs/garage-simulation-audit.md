@@ -7,6 +7,12 @@ measured electricity. These are software experiments, not installed garage
 measurements, Mitsubishi metering verification, pipe-safety validation or realized
 savings.
 
+The recorded planning results below predate the `garage-savings-preference-v3`
+selection policy. The two-rate thermal learning algorithm is unchanged, but these
+results do not establish the behavior of the new preference-dependent selection.
+Current policy is documented in [Garage model](garage-model.md#one-opportunity-at-a-time);
+rerun the planning commands below for results under that policy.
+
 ## Independent plant and evidence
 
 `test/helpers/garage-plant.js` imports no garage predictor. Its equations contain
@@ -67,8 +73,10 @@ establishes complete physical recovery or measured savings.
 The frozen planning audit trains against the independent plant and evaluates flat,
 mild, ordinary, exceptional and repeated-peak tariffs. It compares one contiguous
 OFF opportunity against unchanged native heating, without preheating or a second
-shutdown. The default €0.50 minimum saving remains after recovery and uncertainty
-allowances; removing duration ceilings does not remove the economic threshold.
+shutdown. The audited policy used a default €0.50 minimum saving after recovery
+and uncertainty allowances; removing duration ceilings did not remove that
+economic threshold. The current preference 50 retains the €0.50 threshold and
+also prefers a shorter window retaining at least 80% of the best benefit.
 Exceptional tariffs are stress inputs, not representative or forecast prices.
 
 Bootstrap starts with untouched priors. Only the planner's own choices provide

@@ -1,7 +1,7 @@
 # Simple garage pause model
 
 The current algorithm is `committed-garage-v6-source-clocks`, with planning preference
-`garage-protection-limited-opportunities-v2`. Its purpose is occasional worthwhile OFF opportunities
+`garage-savings-preference-v3`. Its purpose is occasional worthwhile OFF opportunities
 under independent pipe protection. It has no preheat, hidden core, learned pump
 heat response, door heat coefficient or multi-pause optimizer.
 
@@ -94,20 +94,51 @@ charges it. Uncertainty never turns an unavailable measurement into zero.
 
 The planner enumerates contiguous windows within the available price/weather
 coverage, at 15-minute steps by default. There is no fixed maximum OFF duration
-or artificial planning-horizon cutoff. It compares avoided cost with
-recovery cost and uncertainty, choosing the largest net saving; equivalent
-choices prefer shorter and earlier pauses. Defaults require more than €0.50,
-one hour minimum planned OFF, three hours normal operation and one start per
-Finnish day. Temperature forecasts, the independent pipe reserve, uncertainty,
-remaining economics and available forecast coverage determine the pause endpoint.
-All positive aggressiveness settings use those same explicit limits; zero disables economic pauses. Flat prices preserve normal
-heating. Safety restoration always overrides minimum OFF dwell.
+or artificial planning-horizon cutoff. For each safe candidate it calculates
+conservative net benefit as avoided electricity cost minus recovery electricity
+cost and the uncertainty allowance. The preference fraction
+`a = aggressiveness / 100` sets two rules for a new pause:
+
+1. Net benefit must exceed `minSavingsEur * (1.5 - a)`. `minSavingsEur` is the
+   configured baseline at preference 50, not the effective threshold at every
+   preference.
+2. Choose the shortest qualifying window retaining at least `0.6 + 0.4a` of the
+   greatest qualifying net benefit. Equal durations prefer greater benefit, then
+   an earlier start.
+
+With the default `minSavingsEur:0.50`, preference 0 requires more than €0.75 and
+retains at least 60% of the best benefit; 50 requires more than €0.50 and retains
+80%; 100 requires more than €0.25 and chooses the greatest benefit. Zero is the
+most conservative setting. Use **Pause price control** to suspend economic control.
+
+For example, if a two-hour pause offers €0.90 and a four-hour pause €1.00, both
+qualify at the default baseline. Preferences 0 and 50 choose two hours; 100
+chooses four. These thresholds and retention fractions are explicit engineering
+policy, not learned optima or predicted annual saving percentages.
+
+Defaults independently require one hour minimum planned OFF, three hours normal
+operation and one start per Finnish day. Temperature forecasts, the independent
+pipe reserve, uncertainty, remaining economics and available forecast coverage
+determine the pause endpoint. Preference never relaxes these protection or recovery
+requirements. Flat prices preserve normal heating. Safety restoration always
+overrides minimum OFF dwell.
 
 Each window contains one OFF interval. Before a future opportunity, ordinary
-native heating remains available; it never raises the setting. Actual conditions
-are checked again when the opportunity arrives. An active interval may shorten
-or end early but never extend its original endpoint. Renewal must have positive
-remaining economics and current protection permission. The Pill has no fixed total
+native heating remains available; it never raises the setting. The runtime keeps
+the selected future start and endpoint in memory and revalidates that exact
+window, so repeated updates do not continually slide or resize the pending pause.
+Changed settings, manual control, Pause price control, recovery, a start blocker,
+or invalid economics/protection discard the pending choice; selection resumes
+when eligible. If an update reaches the start late, the remaining interval must
+still meet the configured minimum OFF time and effective new-start benefit
+threshold. Its endpoint cannot be extended to compensate for the late start.
+Restart replans from current evidence; a pending choice is not saved authority
+to turn heating off. An active interval may shorten
+or end early but never extend its original endpoint. Continuation chooses the
+greatest positive remaining net benefit compared with restoring heating now,
+including recovery debt already accumulated. It does not reapply the new-start
+benefit hurdle or the shortest-window retention rule at every update. Renewal
+also requires current protection permission. The Pill has no fixed total
 episode-duration ceiling. Its short renewable permission still expires locally
 if ST-MQ or communication fails; maintaining a long pause does not require repeated
 pump starts or a growing device-side history. Recovery blocks every
@@ -123,8 +154,10 @@ savings. There is no fabricated slow-core recovery or measured thermal kWh.
 
 Protection and recovery obligations are separate from replayable learning.
 `garage-thermal-reserve-v1` retains its copper-pipe assumptions and permission
-rules. Version 6 identifies independent source-clock support and complete-cycle
-metering qualification. Incompatible development models, settings and episodes
+rules. Learning version 6 identifies independent source-clock support and
+complete-cycle metering qualification; preference version 3 identifies the current
+pause-selection semantics without changing learned cooling coefficients.
+Incompatible development models, settings and episodes
 are rejected; initialize a fresh development database explicitly. Current-version
 restart preserves pipe reserve and unresolved physical restoration.
 See [reconstruction/versioning](reconstruction-and-versioning.md),

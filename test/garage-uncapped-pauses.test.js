@@ -9,7 +9,7 @@ import { knownGarageReserve } from './helpers/garage-reserve-fixture.js';
 const HOUR = 3_600_000, NOW = Date.parse('2026-01-01T10:00:00Z');
 const repeated = (count, value) => Array.from({ length: Math.ceil(count) }, () => value);
 function candidate(values, { outdoorC = 8, priorOnly = false, settings: preferences = {} } = {}) {
-  const settings = garageSettings({ enabled: true, protection: { approved: true }, ...preferences });
+  const settings = garageSettings({ enabled: true, aggressiveness: 100, protection: { approved: true }, ...preferences });
   const model = assignGaragePlanningEvidence(createGarageModel({ seedAt: NOW }), { at: NOW, hours: 2 });
   model.normalReference.interceptC = 10; model.normalReference.frontC = 9.5;
   if (priorOnly) {

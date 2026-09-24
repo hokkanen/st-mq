@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Store } from '../src/storage/store.js';
 import { GarageRuntime } from '../src/garage/runtime.js';
-import { garageSettings } from '../src/garage/settings.js';
+import { garageSettings, GARAGE_PREFERENCE_VERSION } from '../src/garage/settings.js';
 import { garagePauseStartReason } from '../src/garage/door-state.js';
 import { createGarageModel } from '../src/garage/model.js';
 import { planGarage } from '../src/garage/planner.js';
@@ -13,7 +13,7 @@ import { knownGarageReserve } from './helpers/garage-reserve-fixture.js';
 
 const HOUR = 3_600_000, MINUTE = 60_000, NOW = Date.parse('2026-01-01T10:00:00Z');
 function candidate(extra = {}) {
-  const settings = garageSettings({ enabled: true, protection: { approved: true } });
+  const settings = garageSettings({ enabled: true, aggressiveness: 100, protection: { approved: true } });
   const model = assignGaragePlanningEvidence(createGarageModel({ seedAt: NOW }));
   model.normalReference.interceptC = 10; model.normalReference.frontC = 9;
   const observation = { at: NOW, rearAt: NOW, frontAt: NOW, rearC: 10, frontC: 9,
@@ -83,7 +83,7 @@ test('forecast must cover the pause and useful-heating delay', () => {
 function runtimeFixture(t, extra = {}, seed = null) {
   const store = new Store(':memory:'); let now = NOW, owner = true;
   const engine = { latest: {}, lastKnownTemperatures: {}, settings: { mode: 'active' } };
-  const config = { input: 'mqtt', garage: garageSettings({ enabled: true, protection: { approved: true }, ...extra }) };
+  const config = { input: 'mqtt', garage: garageSettings({ enabled: true, aggressiveness: 100, protection: { approved: true }, ...extra }) };
   if (seed) appendGarageEntry(store, 'mqtt', 'context', {}, config.garage, NOW - 1, { key: 'explicit-test-seed', seed });
   const runtime = new GarageRuntime({ store, engine, config, clock: () => now, canControl: () => owner });
   const calls = [], native = { automaticControl: false, health: { pumpCommunicating: true },
@@ -199,7 +199,7 @@ test('ordinary native OFF and ON boundaries preserve a clean learning episode', 
 test('changed-weather recovery closes without savings after sustained normal operation and resets references in replay', t => {
   const model = candidate().model, f = runtimeFixture(t, {}, model);
   const first = { at: NOW, rearC: 10, frontC: 9, outdoorC: 0, available: true };
-  f.runtime.startEpisode('test-recovery', { pauseUntil: NOW + HOUR }, first, NOW);
+  f.runtime.startEpisode('test-recovery', { preferenceVersion: GARAGE_PREFERENCE_VERSION, pauseUntil: NOW + HOUR }, first, NOW);
   f.runtime.episode.phase = 'recovery'; f.runtime.episode.accounting.qualified = false;
   f.runtime.protection = { requiredFresh: true };
   for (let minute = 0; minute <= 480; minute++) {
@@ -222,7 +222,7 @@ test('changed-weather recovery closes without savings after sustained normal ope
 
 test('incomplete recovery reset is atomic when clearing the saved episode fails', t => {
   const model = candidate().model, f = runtimeFixture(t, {}, model);
-  f.runtime.startEpisode('test-atomic-recovery', { pauseUntil: NOW + HOUR },
+  f.runtime.startEpisode('test-atomic-recovery', { preferenceVersion: GARAGE_PREFERENCE_VERSION, pauseUntil: NOW + HOUR },
     { at: NOW, rearC: 10, frontC: 9, outdoorC: 0, available: true }, NOW);
   const before = structuredClone(f.runtime.checkpoint), original = f.store.setState;
   f.store.setState = function (key, value) {
@@ -241,7 +241,7 @@ test('sustained normal recovery cannot close on stale inputs, unaccepted baselin
   for (const blocker of ['stale', 'baseline', 'restore', 'pipe']) {
     const model = candidate().model, f = runtimeFixture(t, {}, model);
     const first = { at: NOW, rearC: 10, frontC: 9, outdoorC: 0, available: true };
-    f.runtime.startEpisode(`test-${blocker}`, { pauseUntil: NOW + HOUR }, first, NOW);
+    f.runtime.startEpisode(`test-${blocker}`, { preferenceVersion: GARAGE_PREFERENCE_VERSION, pauseUntil: NOW + HOUR }, first, NOW);
     f.runtime.episode.phase = 'recovery'; f.runtime.episode.accounting.qualified = false;
     f.runtime.protection = { requiredFresh: blocker !== 'stale' };
     f.native.restorePending = blocker === 'restore';
@@ -261,7 +261,7 @@ test('a healthy pause beyond seven days retains its evidence until actual restor
   const model = candidate().model, f = runtimeFixture(t, {}, model);
   const first = { at: NOW, rearC: 10, frontC: 9, outdoorC: 8, available: false,
     baselineAccepted: true, priceCtPerKwh: 100, priceStartAt: NOW - HOUR, priceEndAt: NOW + HOUR };
-  f.runtime.startEpisode('long-pause-reporting', { pauseUntil: NOW + 24 * HOUR, recoveryHours: 270 }, first, NOW);
+  f.runtime.startEpisode('long-pause-reporting', { preferenceVersion: GARAGE_PREFERENCE_VERSION, pauseUntil: NOW + 24 * HOUR, recoveryHours: 270 }, first, NOW);
   f.native.native.power = 'off'; f.native.phase = 'paused';
   const episode = f.runtime.episode;
   episode.startedAt = NOW - 8 * 24 * HOUR;
@@ -276,7 +276,7 @@ test('a healthy pause beyond seven days retains its evidence until actual restor
 
 test('long-pause changed-weather recovery cannot close at the old eight-hour fallback', t => {
   const model = candidate().model, f = runtimeFixture(t, {}, model);
-  f.runtime.startEpisode('long-pause-recovery', { pauseUntil: NOW, recoveryHours: 30 },
+  f.runtime.startEpisode('long-pause-recovery', { preferenceVersion: GARAGE_PREFERENCE_VERSION, pauseUntil: NOW, recoveryHours: 30 },
     { at: NOW, rearC: 10, frontC: 9, outdoorC: 0, available: true }, NOW);
   f.runtime.episode.phase = 'recovery'; f.runtime.episode.accounting.qualified = false;
   f.runtime.episode.accounting.offHours = 24;

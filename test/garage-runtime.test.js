@@ -8,7 +8,7 @@ import { Store } from '../src/storage/store.js';
 import { GarageRuntime } from '../src/garage/runtime.js';
 import { appendGarageEntry, applyGarageEntry, replayGarageJournal, garageCorrectionContext, garageInput,
   garageCheckpointDigest, garageJournalHead } from '../src/garage/learning.js';
-import { garageSettings } from '../src/garage/settings.js';
+import { garageSettings, GARAGE_PREFERENCE_VERSION } from '../src/garage/settings.js';
 import { createGarageModel } from '../src/garage/model.js';
 import { startGarageAssessment, updateGarageAssessment, completeGarageAssessment } from '../src/garage/episodes.js';
 import { decodeMqttTemperature } from '../src/acquisition/mqtt-temperature.js';
@@ -235,7 +235,7 @@ test('a failed group of source corrections retries every boundary without losing
 
 test('completion and clearing the active recovery obligation commit together and remain retryable', async t => {
   const f = setup(t); f.temperatures(); f.runtime.tick(); await f.runtime.dispatch;
-  f.runtime.startEpisode('fixture-pause', { pauseUntil: START + 10 * MINUTE }, f.runtime.read(), START);
+  f.runtime.startEpisode('fixture-pause', { preferenceVersion: GARAGE_PREFERENCE_VERSION, pauseUntil: START + 10 * MINUTE }, f.runtime.read(), START);
   const id = f.runtime.episode.id, original = f.store.setState.bind(f.store);
   f.store.setState = (key, value) => {
     if (key === f.runtime.keys.episode && value === null) throw new Error('fixture clearing active episode failure');

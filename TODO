@@ -2,6 +2,34 @@
 -Implement support for local mqtt-based temperature receives (eg, from shelly or HASS through Meteorologisk Institute); just store last received temp values and time stamps (maybe in storage class, see below) when received (and accept if received within 1h)
 -Chart dataset control buttons don't work when datasets are manually hidden/unhidden from legend, how to fix?
 
+Completed 2026-09-24 — Consistent Home and Garage heating controls
+- Align nested control indentation, spacing, savings preference labels and
+  temporary-override explanations. Add Garage's current mode, heating-control
+  confirmation and saved/reported room setting. Keep missing/stale feedback
+  explicit and show operating mode truthfully in both price-control badges.
+  Existing Home/Garage Pause controls and APIs remain the suspension mechanism;
+  no additional savings enable switch was introduced.
+- Garage's 0–100 preference now adjusts its minimum estimated benefit around the
+  configured midpoint and chooses the shortest safe pause retaining 60–100% of
+  the best net benefit. Zero is conservative, not disabled. Keep chosen future
+  windows stable while revalidating them; manual actions, configuration changes
+  and failed checks discard them. Continuation retains recovery debt and cannot
+  extend the original endpoint. Protection, uncertainty, recovery and daily limits
+  remain independent of the preference.
+- Show Home's overall comfort reference and expandable individual room references,
+  including aggregate fallback, shared occupied bounds and inactive Away limits.
+  Garage setting descriptions span the available width on narrow screens.
+- Reviewed source producers, UI consumers, configuration, persisted plans, tests
+  and docs. Removed the former zero/positive enable interpretation and stale copy.
+  Current planning is garage-savings-preference-v3; incompatible saved episode
+  plans reject before mutation, with no migration or old-policy interpreter.
+  Current thermal learning, pipe state and restoration obligations are retained.
+- Validation: 299 Garage backend tests, 36 Home engine/configuration/API tests
+  and 72 UI/chart tests passed. Production build and expanded synthetic Chromium
+  Home/Garage checks and full Garage browser regression passed (320–1920px);
+  desktop/mobile screenshots reviewed in both themes.
+  Checks used disposable fixtures and did not operate household equipment.
+
 Completed 2026-09-24 — Floor preheating setup architecture
 - Move floor setup out of everyday Home heating controls into Data & settings →
   Connections & configuration → Floor preheating. Show current status and the

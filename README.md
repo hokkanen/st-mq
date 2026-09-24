@@ -73,9 +73,11 @@ reports, how to build/install it, configure forwarding and report deadlines, and
 verify or roll back an installation. The complete small driver package, pinned
 upstream source reference and exact reconstruction patch are kept in st-mq.
 
-The comfort reference is inferred from sustained occupied normal-temperature
-plateaus under the house's existing controls. The preferred maximum drop defaults
-to **1.5 °C**. References stay fixed during cooling, recovery and preheating. A
+The overall and individual room comfort references are inferred from sustained
+occupied normal-temperature plateaus under the house's existing controls.
+The shared maximum drop and rise both default to **1.5 °C** around each room's
+reference, falling back to the overall reference when needed. References stay
+fixed during cooling, recovery and preheating. A
 missing reference keeps the requested heating mode normal. Initial model estimates
 retain uncertainty and limit the duration and cost of learning trials.
 A provisional historical reference is not automatically applied to the live house.
@@ -139,13 +141,18 @@ Live active mode applies the plan; monitoring and shadow show it without automat
 equipment commands.
 
 Open the **Home** or **Garage** upper summary to find **Heating configuration**
-with manual heating buttons and Away/Pause controls. Equipment is in separate
+with current state, **Temporary heating override**, Away/Pause controls,
+preferences and learning in that order. Preferences are **Savings & comfort**
+for Home and **Savings & protection** for Garage. Both display their configured
+**Savings preference** as 0–100; zero is conservative, and Pause suspends savings.
+Changes to permanent preferences use **Apply configuration**. Equipment is in separate
 **Sensors & Equipment** (Home) and **Sensors & More equipment** (Garage) folds.
 Garage's two chargers sit directly below its heating summary. Each heat pump has
 an overview followed by its detailed readings; the ground-source heat pump also
-contains **Adjust heat-pump parameters**. **Garage settings** follows **Garage learning**
-inside Garage's heating configuration. Home shows **Tariff control** directly
+contains **Adjust heat-pump parameters**. Home shows **Tariff control** directly
 above **Recirculation**, separating a request from confirmed equipment state.
+Garage shows **Heat-pump mode**, **Heating control** and **Room setting**, keeping
+fresh device feedback, a request and the saved external setting distinct.
 Connection links end each equipment section. Selection marks sit beside the
 button labels. The equipment inventory includes individual room and protection
 sensors, tariff relays and native Shelly devices. The Caravan fold groups air
@@ -304,7 +311,7 @@ status and a chart button. Home's upper summary shows the indoor average, outdoo
 temperature, heating request and all-in electricity price; Garage's shows its rear
 temperature, doors, heating request and the same price. Each upper summary opens
 **Heating configuration**, including manual heating and temporary controls.
-Home offers Away/Pause; Garage offers Pause savings. The expandable **Fireplace**
+Home offers Away/Pause; Garage offers **Pause price control**. The expandable **Fireplace**
 follows Home's equipment fold.
 **Sensors & Equipment** contains Home's readings and equipment controls.
 Garage's two expandable chargers sit above **Sensors & More equipment**.
@@ -312,7 +319,7 @@ Tariff requests remain explicitly unverified when relay readback
 is unavailable; stale H66 readings are not presented as current settings.
 
 **Home learning** and **Garage learning** sit in their respective **Heating configuration**,
-above the Away/Pause controls. Home reports counts
+after temporary controls and savings preferences. Home reports counts
 of usable observations and accepted model updates. Missing counts remain unknown.
 Each learning summary opens its **calculated outcomes**,
 **model inputs** and **current model coefficients** sections. Coefficients show values,
@@ -451,14 +458,21 @@ is Bedroom and channel 3 is Downstairs. These three MQTT sensors are the indoor
 inputs; there is no H66 indoor sensor or fallback. Garage rear/front protection
 and learned scheduling are independent of Home; see [Garage heating](docs/garage.md).
 Freezing protection tracks separate local heat reserves for pipes and stored
-liquids, using a water-filled copper pipe as the reference. Garage settings show
+liquids, using a water-filled copper pipe as the reference. **Savings & protection** shows
 the temperature margin, reference dimensions, heat-transfer estimate and fixed
 safety factor. Cooling and recovery follow measured air temperature continuously;
 there is no fixed refill timer. An open door blocks a new savings pause below
 2°C outside; an existing pause is reassessed against measured protection.
 Savings pauses have a one-hour planned minimum and no fixed maximum; local
 temperatures, forecast pipe reserve, uncertainty, economics and available forecast
-coverage determine their duration. The Pill's short renewable OFF permission
+coverage determine their duration. Garage's 0–100 **Savings preference** changes
+the minimum estimated benefit and the fraction of the best benefit a shorter
+pause must retain. The default 50 requires more than €0.50 and retains at least
+80% of the best benefit; 0 requires more than €0.75 and retains 60%, while 100
+requires more than €0.25 and chooses the greatest benefit. These use the shared
+€0.50 baseline and are engineering policy, not learned optimal thresholds.
+Protection and recovery requirements remain independent of the preference.
+The Pill's short renewable OFF permission
 still restores heating on communication loss without limiting the total pause. See
 [protection parameters](docs/garage-protection-defaults.md) for assumptions and
 reporting/restoration deadlines.
@@ -676,8 +690,11 @@ November–March, Monday–Saturday 07:00–22:00; Sundays and all other times u
 lower seasonal rate. Seasonal is available but is not activated automatically.
 
 `controller.max_drop_c` and `controller.max_rise_c` both default to 1.5°C around
-the learned occupied comfort reference. The drop limit does not constrain away
-cooling. `controller.preheat_room_boost_c` defaults to 5°C above the ROOM setting
+each room's learned occupied reference, with the overall reference as fallback.
+**Overall comfort reference** and expandable **Room references & limits** show
+these values. The allowances are shared across rooms and do not constrain Away
+operation; savings preference never widens them.
+`controller.preheat_room_boost_c` defaults to 5°C above the ROOM setting
 captured before preheat, capped at the device maximum. It changes heat-pump demand,
 not the room-air comfort reference. `controller.recovery_hold_minutes` defaults to
 60: space heating resumes while DHWR remains suppressed and DHW settings remain

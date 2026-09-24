@@ -1,19 +1,20 @@
 import { garageLearningCalculation } from './garage-learning-math.js';
 import { confirmAction } from './confirmation.js';
 import { isReadOnlyReplica } from './replica-status.js';
-import { mitsubishiReadings, mitsubishiRoomTemperature, mitsubishiCompressor, mitsubishiValue, renderMitsubishiReadings } from './mitsubishi.js';
+import { mitsubishiReadings, createMitsubishiReadingView, mitsubishiRoomTemperature, mitsubishiCompressor, mitsubishiValue, renderMitsubishiReadings } from './mitsubishi.js';
 import { outdoorSourceLabel } from './provider-status.js';
 import { equipmentReadingRows } from './equipment.js';
 import { setStatusDetail } from './status-details.js';
 import { renderCurrentPrice } from './current-price.js';
 import { garageHeatingConfirmation, setHeatingStatusDetail } from './heating-status.js';
-import { finnishDateTime } from './home-controls.js';
+import { finnishDateTime, priceControlState } from './home-controls.js';
 import { garageHeatingWarning } from './heating-warning.js';
-import { GARAGE_HEAT_TRANSFER_SAFETY_FACTOR } from '../src/garage/settings.js';
+import { GARAGE_HEAT_TRANSFER_SAFETY_FACTOR, garageSavingsPreference } from '../src/garage/settings.js';
 import { renderLearningRows } from './learning-rows.js';
 const finite = Number.isFinite;
 const text = value => typeof value === 'string' ? value.replace(/([a-z])([A-Z])/g, '$1 $2').replaceAll(/[_-]/g, ' ') : 'Unknown';
 const number = (value, unit = '') => finite(value) ? `${new Intl.NumberFormat('en-GB', { maximumFractionDigits: 2 }).format(value)}${unit ? ` ${unit}` : ''}` : 'Unavailable';
+const benefit = value => new Intl.NumberFormat('en-GB', { maximumFractionDigits: 4 }).format(value);
 const native = value => value && typeof value === 'object' ? value.value : value;
 const temperature = reading => finite(reading?.value) ? `${number(reading.value, '°C')}${reading.stale ? ' · stale' : ''}` : 'Unavailable';
 const state = value => value === true ? 'Yes' : value === false ? 'No' : 'Unknown';
@@ -21,7 +22,6 @@ const clock = value => finite(value) ? new Intl.DateTimeFormat('en-GB', { timeZo
 const sentences = values => values.map(value => text(value).trim().replace(/[.\s]+$/, '')).filter(Boolean).map(value => `${value}.`).join(' ');
 const opportunity = reason => ({
   'automatic-control-disabled': 'Automatic control is disabled',
-  'normal-heating-preference': 'Normal heating selected',
   'protection-limited-learning-opportunity': 'Initial cooling estimates use extra uncertainty margins; pipe protection limits the pause',
   'continue-authorized-economic-episode': 'Continue the current pause within its original endpoint',
   'garage-door-open-below-2c': 'An open door below 2°C outdoors prevents a new pause',
@@ -45,7 +45,6 @@ const opportunity = reason => ({
 })[reason] ?? text(reason ?? 'Normal heating').replace(/^./, value => value.toUpperCase());
 const opportunitySummary = reason => ({
   'automatic-control-disabled': 'Automatic control disabled',
-  'normal-heating-preference': 'Normal heating selected',
   'insufficient-normal-heating-evidence': 'Awaiting normal-heating evidence',
   'learning-episode-recovering': 'Awaiting recovery',
   'learning-trial-recovery-interval': 'Between learning trials',
@@ -150,18 +149,19 @@ function garageLearningRows(garage, policy) {
     learningRow('local-allowance-recovery', 'Pipe reference reserve', finite(policy.marginC) ? 'Rear and front independently' : 'Unavailable', 'Protection context', 'Calculated',
       'A water-filled copper reference follows each local air temperature continuously. It estimates pipe warmth rather than measuring it; cooling and warming use fixed conservative heat-transfer assumptions.'));
   const settings = garage.settings ?? {};
+  const preference = garageSavingsPreference(settings);
   const planningDetails = [
     learningRow('current-opportunity', 'Current decision', opportunitySummary(planReason), 'Decision', 'Current plan', opportunity(planReason)),
     learningRow('pause-window', 'Planned OFF window', finite(plan.pauseFrom) && finite(plan.plannedPauseUntil ?? plan.pauseUntil) ? `${clock(plan.pauseFrom)} – ${clock(plan.plannedPauseUntil ?? plan.pauseUntil)}` : 'None',
       'Decision', 'Current plan', 'One worthwhile price period is selected. Heating stays at its existing setting beforehand and returns to normal afterward; no preheating is requested.'),
     learningRow('door-policy', 'Door opening', 'Reassess local pipe reserve', 'Pause limits', 'Fixed policy',
       'An opening rechecks protection using the local readings. Unknown configured doors or outdoor temperature block a new pause, as does an open door below 2°C outdoors.'),
-    learningRow('minimum-savings', 'Minimum estimated benefit', finite(settings.minSavingsEur) ? `€${number(settings.minSavingsEur)}` : 'Unavailable',
-      'Pause limits', 'Configured', 'A pause must exceed this saving estimate after recovery electricity and prediction uncertainty allowances. Small price differences are left to normal heating.'),
+    learningRow('minimum-savings', 'Minimum estimated benefit', finite(settings.aggressiveness) && finite(settings.minSavingsEur) ? `€${benefit(preference.minimumBenefitEur)}` : 'Unavailable',
+      'Pause limits', 'Savings preference', 'A pause must exceed this benefit after recovery electricity and prediction uncertainty allowances. The savings preference adjusts this threshold around the configured minimum at 50 / 100.'),
     learningRow('pause-duration-limits', 'Minimum planned OFF time', number(finite(settings.minOffMs) ? settings.minOffMs / 3_600_000 : null, 'h'),
       'Pause limits', 'Configured', 'There is no fixed maximum pause. Temperatures, forecast pipe reserve, uncertainty, available price and weather data, and remaining savings determine the endpoint. Protection can always end a pause before the planned minimum.'),
     learningRow('daily-pause-limit', 'Maximum pauses per day', number(settings.maxPausesPerDay), 'Pause limits', 'Configured',
-      'Only the larger opportunities are selected, keeping additional pump starts infrequent.',
+      'This cap limits additional pump starts independently of the savings preference.',
       finite(garage.planningLimits?.pausesToday) ? `${number(garage.planningLimits.pausesToday)} starts recorded today, including unconfirmed attempts.` : undefined),
     learningRow('minimum-normal-heating', 'Normal heating between pauses', number(finite(settings.minOnMs) ? settings.minOnMs / 3_600_000 : null, 'h minimum'),
       'Pause limits', 'Configured', 'Fresh normal-heating evidence is required for at least this long, including after startup or a reading gap. After a pause, both local temperatures and pipe reserves must also recover.',
@@ -244,10 +244,16 @@ export function garageDisplay(garage = {}, now = Date.now()) {
     ['Control capability', adapter.liveControlSupported ? 'Installed contract' : 'Monitoring · real contract unavailable'],
     ['Plan', text(plan.reason ?? garage.reason)], ['Planned pause endpoint', finite(plan.plannedPauseUntil ?? plan.pauseUntil) ? clock(plan.plannedPauseUntil ?? plan.pauseUntil) : 'No pause planned']);
   const policy = settings.protection ?? {};
+  const preference = garageSavingsPreference(settings);
   const settingGroups = {
     heating: [
       ['Normal room setting', room ? `${room.value} saved · ${room.basis}` : number(settings.baselineC, '°C'), 'Change the permanent room setting in Mitsubishi Heat-pump settings. Below 16 °C uses the Garage rear sensor with a native 17 °C target.'],
-      ['Savings selection', finite(settings.aggressiveness) ? settings.aggressiveness === 0 ? 'Normal heating' : 'Larger opportunities' : 'Unavailable', 'Normal heating stays available when savings are disabled. Otherwise only pauses meeting the minimum benefit and planned OFF time, with current pipe protection and recovery checks are considered.'],
+      ['Savings preference', finite(settings.aggressiveness) ? `${number(settings.aggressiveness)} / 100` : 'Unavailable', '0 is most conservative and 100 most savings-oriented. Higher values accept smaller benefits and more off time for additional savings. Use Pause price control to suspend automatic savings.'],
+      ['Minimum estimated benefit', finite(settings.aggressiveness) && finite(settings.minSavingsEur) ? `More than €${benefit(preference.minimumBenefitEur)}` : 'Unavailable', 'Effective threshold after recovery electricity and prediction uncertainty. The configured minimum applies at 50 / 100; preference 0 requires 1.5 times that amount and 100 requires half.'],
+      ['Benefit retained', finite(settings.aggressiveness) ? `${number(preference.retainedBenefitFraction * 100)}% of best opportunity` : 'Unavailable', 'Choose the shortest qualifying safe window retaining at least this share of the best estimated benefit. Equal lengths favour greater benefit, then an earlier start.'],
+      ['Minimum planned off time', number(finite(settings.minOffMs) ? settings.minOffMs / 3_600_000 : null, 'h'), 'A selected pause must be planned for at least this long. Protection can restore heating sooner; there is no fixed maximum duration.'],
+      ['Normal heating between pauses', number(finite(settings.minOnMs) ? settings.minOnMs / 3_600_000 : null, 'h minimum'), 'Fresh normal-heating evidence is required for at least this long. Both locations and their pipe reserves must also recover. Savings preference does not relax these checks.'],
+      ['Maximum pauses per day', number(settings.maxPausesPerDay), 'This cap limits additional pump starts independently of savings preference. Pause starts count even if device confirmation is missing.'],
     ],
     protection: [
       ['Protection margin', number(policy.marginC, '°C'), 'Heat reserve is calculated above this temperature. Heating is requested early to allow time for warming.'],
@@ -269,6 +275,60 @@ export function garageDisplay(garage = {}, now = Date.now()) {
     rows, settingGroups, coefficients: coefficients.rows, coefficientDetails: coefficients.details, ...learningRows, limitations: learning.limitations ?? [] };
 }
 
+/** Both summaries describe the same requested power, independently of confirmation. */
+export function garageHeatingRequest(garage = {}) {
+  const controls = garage.heatingControls ?? {}, adapter = garage.adapter ?? {}, action = garage.plan?.nextAction;
+  return controls.requestedMode === 'off' ? 'Off'
+    : controls.requestedMode === 'normal' ? 'Normal'
+      : adapter.phase === 'paused' ? 'Reduction'
+        : adapter.restorePending || garage.episode?.restorationPending || adapter.phase === 'restoring' ? 'Restoring'
+          : ['pause', 'renew'].includes(action) ? 'Reduction'
+            : ['available', 'release'].includes(action) || garage.temporary?.pauseActive ? 'Normal' : 'No request';
+}
+
+export function garagePauseSummary(status = {}) {
+  const garage = status.garage ?? {}, temporary = garage.temporary ?? {};
+  if (temporary.pauseActive && temporary.pauseUntil > status.now) return `Paused until ${clock(temporary.pauseUntil)}`;
+  if (garage.settings?.enabled === false) return 'Automatic control disabled';
+  if (status.input === 'offline') return 'Unavailable offline';
+  if (status.mode && status.mode !== 'active') return `Inactive in ${text(status.mode)} mode`;
+  if (garage.settings?.enabled !== true) return 'Status unavailable';
+  return 'Not paused';
+}
+
+const heatingStateViews = new WeakMap();
+function renderGarageHeatingState(document, status, requested) {
+  const root = document.getElementById('garage-heating-state');
+  if (!root) return;
+  if (!heatingStateViews.has(root)) heatingStateViews.set(root, createMitsubishiReadingView());
+  const garage = status.garage ?? {}, now = status.now ?? Date.now();
+  const readings = heatingStateViews.get(root)(garage, now);
+  const mode = readings.find(row => row.key === 'native-mode');
+  const room = mitsubishiRoomTemperature(garage), target = readings.find(row => row.key === 'native-targetC');
+  for (const [key, reading] of [['mode', mode], ['room', room || target]]) {
+    const row = document.getElementById(`garage-current-${key}-row`);
+    if (row) row.hidden = !reading;
+  }
+  if (mode) {
+    const node = document.getElementById('garage-current-mode');
+    node?.classList.toggle('stale', !mode.available);
+    setStatusDetail(node, { key: 'garage-current-mode', label: mode.value, title: 'Heat-pump mode', detail: mode.detail });
+  }
+  if (room || target) {
+    const node = document.getElementById('garage-current-room');
+    node?.classList.toggle('stale', !room && !target.available);
+    setStatusDetail(node, { key: 'garage-current-room', title: 'Room setting',
+      label: room ? `${room.value} · saved · ${room.basis}` : `${target.value}${target.available ? ' · reported' : ''}`,
+      detail: room?.detail ?? target.detail });
+  }
+  const confirmation = garageHeatingConfirmation(status, requested);
+  const name = ({ Normal: 'Normal heating', Off: 'Off', Reduction: 'Heating pause', Restoring: 'Restoring heating' })[requested];
+  setHeatingStatusDetail(document.getElementById('garage-current-control'), {
+    key: 'garage-current-control', title: 'Garage heating control', confirmation,
+    label: name ? `${name}${confirmation.state === 'confirmed' ? ' · confirmed' : ' requested · needs attention'}` : 'No current request',
+    detail: 'Heating availability follows the requested pump power. Compressor activity is shown with the heat-pump readings.' });
+}
+
 export function renderGarage(document, status) {
   const display = garageDisplay(status?.garage, status?.now);
   const set = (id, value) => { const node = document.getElementById(id); if (node) node.textContent = value; };
@@ -281,10 +341,8 @@ export function renderGarage(document, status) {
   const now = status?.now ?? Date.now();
   const control = document.getElementById('garage-control-price');
   if (control) {
-    control.textContent = garage.temporary?.pauseActive ? 'Paused'
-      : garage.settings?.enabled === true ? 'Active' : garage.settings?.enabled === false ? 'Disabled' : '—';
-    control.parentElement.dataset.state = garage.temporary?.pauseActive ? 'paused'
-      : garage.settings?.enabled === true ? 'active' : 'muted';
+    const price = priceControlState(status, { enabled: garage.settings?.enabled ?? null, paused: Boolean(garage.temporary?.pauseActive) });
+    control.textContent = price.label; control.parentElement.dataset.state = price.state;
   }
   const devices = status?.equipment?.devices ?? [];
   const temperatureDevice = devices.find(device => device.enabled !== false && device.readings?.garage_temperature);
@@ -368,22 +426,17 @@ export function renderGarage(document, status) {
   const targetBasis = document.getElementById('garage-native-target-basis');
   if (targetBasis) targetBasis.hidden = !room;
   detail('garage-pump-reading-info', 'Reading details', 'Mitsubishi heat-pump readings', [power, mode, target, compressor].map(reading => reading.detail).join('\n\n'));
-  const controls = garage.heatingControls ?? {}, action = garage.plan?.nextAction;
+  const controls = garage.heatingControls ?? {};
   const held = controls.paused && controls.holdUntil > now;
-  const requested = controls.requestedMode === 'off' ? 'Off'
-    : controls.requestedMode === 'normal' ? 'Normal'
-      : adapter.phase === 'paused' ? 'Reduction'
-        : adapter.restorePending || garage.episode?.restorationPending || adapter.phase === 'restoring' ? 'Restoring'
-          : ['pause', 'renew'].includes(action) ? 'Reduction'
-            : ['available', 'release'].includes(action) || garage.temporary?.pauseActive ? 'Normal' : 'No request';
+  const requested = garageHeatingRequest(garage);
   set('garage-requested-label', 'HEATING REQUEST');
   setHeatingStatusDetail(document.getElementById('garage-requested'), { key: 'garage-requested',
     label: `${requested}${held ? ' · held' : ''}`, title: 'Garage heating request',
     confirmation: garageHeatingConfirmation(status, requested),
     detail: `${display.reason}.${held ? ` Manual heating selection is held until ${clock(controls.holdUntil)} or Resume now.` : ''} The request describes the heating plan.` });
+  renderGarageHeatingState(document, status, requested);
   renderCurrentPrice(document, status, 'garage-');
-  set('garage-pause-overview', garage.temporary?.pauseActive
-    ? `Price control paused until ${clock(garage.temporary.pauseUntil)}` : 'Pause automatic price control');
+  set('garage-pause-overview', garagePauseSummary(status));
   const list = (id, rows) => {
     const root = document.getElementById(id); if (!root) return;
     const fragment = document.createDocumentFragment();
@@ -407,10 +460,10 @@ export function renderGarage(document, status) {
     const fragment = document.createDocumentFragment();
     for (const [label, value, description] of rows) {
       const row = document.createElement('div'), dt = document.createElement('dt'), dd = document.createElement('dd');
-      const help = document.createElement('small');
+      const help = document.createElement('dd');
       row.className = 'garage-setting';
-      dt.textContent = label; help.textContent = description; dt.append(help);
-      dd.textContent = value; row.append(dt, dd); fragment.append(row);
+      dt.textContent = label; help.textContent = description; help.className = 'garage-setting-help';
+      dd.textContent = value; row.append(dt, dd, help); fragment.append(row);
     }
     root.replaceChildren(fragment);
   }
@@ -464,9 +517,13 @@ export function createGarageControls({ document, request, onStatus = () => {}, o
     if (until && !dirty) until.value = temporary.pauseUntilLocal ?? finnishDateTime(temporary.pauseUntil);
     if ($('garage-pause-status')) $('garage-pause-status').textContent = temporary.pauseActive
       ? `Price control paused until ${clock(temporary.pauseUntil)}.` : 'Price control is not paused.';
-    if ($('garage-heating-help')) $('garage-heating-help').textContent = controls.available
-      ? 'If price control is not paused, manual changes revert on the next update, normally within 1 minute. During Pause, they stay until it ends. Freeze protection can restore heating sooner.'
-      : controls.reason ?? 'Waiting for the garage heating connection.';
+    if ($('garage-heating-help')) $('garage-heating-help').textContent = `${temporary.pauseActive && temporary.pauseUntil > status?.now
+      ? `Changes are held until ${clock(temporary.pauseUntil)} or Resume now, then normal heating returns.`
+      : 'Changes reset on the next controller update, normally within 1 minute. Pause price control to hold them longer.'} Freeze protection can restore heating sooner.`;
+    setStatusDetail($('garage-heating-status'), { key: 'garage-heating-availability', title: 'Garage heating control',
+      label: controls.available ? 'Control available' : 'Control unavailable',
+      detail: controls.available ? 'These controls require Active operating mode and a live or simulated input. Requests are confirmed by current pump power readback.'
+        : controls.reason ?? 'Waiting for the garage heating connection.' });
     const normal = $('garage-mode-normal');
     if (normal) normal.title = controls.normalAvailable ? '' : controls.normalReason ?? controls.reason ?? 'Normal heating is unavailable.';
     const off = $('garage-mode-off');

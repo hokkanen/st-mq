@@ -2,7 +2,7 @@
  * is an operational approximation, not a certified first-ice prediction. */
 export const GARAGE_POLICY_VERSION = 'garage-thermal-reserve-v1';
 export const GARAGE_HEAT_TRANSFER_SAFETY_FACTOR = 2;
-export const GARAGE_PREFERENCE_VERSION = 'garage-protection-limited-opportunities-v2';
+export const GARAGE_PREFERENCE_VERSION = 'garage-savings-preference-v3';
 export const DEFAULT_GARAGE_SETTINGS = Object.freeze({
   enabled: false, aggressiveness: 50, baselineC: 10, frontRequired: false,
   minSavingsEur: .5, maxPausesPerDay: 1,
@@ -40,4 +40,12 @@ export function garageSettings(input = {}) {
   if (policy.pipeWallMm * 2 >= policy.pipeOutsideDiameterMm)
     throw new Error('Garage pipe wall must leave a positive water diameter');
   return output;
+}
+
+/** Zero is the most conservative savings preference; price-control pause is
+ * the separate suspension mechanism. Protection and recovery limits never scale. */
+export function garageSavingsPreference(settings = {}) {
+  const config = garageSettings(settings), preference = config.aggressiveness / 100;
+  return { minimumBenefitEur: config.minSavingsEur * (1.5 - preference),
+    retainedBenefitFraction: .6 + .4 * preference };
 }

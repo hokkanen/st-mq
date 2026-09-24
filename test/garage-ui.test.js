@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { garageDisplay, garageReleaseAvailable, createGarageControls, renderGarage } from '../chart/garage-status.js';
+import { garageDisplay, garageHeatingRequest, garagePauseSummary, garageReleaseAvailable, createGarageControls, renderGarage } from '../chart/garage-status.js';
 import { heatingScopeDisplay } from '../chart/heating-scope.js';
 import { heatingDisplay } from '../chart/heating-benefit.js';
 import { timingDisplay } from '../chart/timing-model.js';
@@ -22,7 +22,7 @@ test('Garage Heat control badge follows its own pause and configuration', () => 
     [{ settings: { enabled: true }, temporary: { pauseActive: true } }, 'Paused', 'paused'],
     [{ settings: { enabled: true }, temporary: { pauseActive: false } }, 'Active', 'active'],
   ]) {
-    renderGarage(document, { now, garage, override: { expiresAt: now + 60_000 } });
+    renderGarage(document, { now, mode: 'active', garage, override: { expiresAt: now + 60_000 } });
     assert.equal(badge.textContent, expected);
     assert.equal(badge.parentElement.dataset.state, state);
   }
@@ -178,7 +178,9 @@ test('Garage settings keep configured values separate from descriptions and live
   const garage = { settings, protection: { locations: { rear: { remainingKjPerM: 0 }, front: { remainingKjPerM: 12 } } } };
   const before = structuredClone(garage), display = garageDisplay(garage);
   const groups = Object.fromEntries(Object.entries(display.settingGroups).map(([key, rows]) => [key, Object.fromEntries(rows)]));
-  assert.deepEqual(groups.heating, { 'Normal room setting': '16 °C', 'Savings selection': 'Normal heating' });
+  assert.deepEqual(groups.heating, { 'Normal room setting': '16 °C', 'Savings preference': '0 / 100',
+    'Minimum estimated benefit': 'More than €0.75', 'Benefit retained': '60% of best opportunity',
+    'Minimum planned off time': '1 h', 'Normal heating between pauses': '3 h minimum', 'Maximum pauses per day': '1' });
   assert.deepEqual(groups.protection, { 'Protection margin': '1 °C', 'Reference pipe diameter': '21 mm', 'Assumed wall thickness': '1 mm', 'Heat transfer': '20 W/m²K', 'Safety factor': '2×' });
   assert.deepEqual(groups.recovery, { 'Cold allowance': 'Calculated · kJ/m', 'Recovery': 'Continuous' });
   for (const rows of Object.values(display.settingGroups)) for (const [, value, description] of rows) {
@@ -192,6 +194,43 @@ test('Garage settings keep configured values separate from descriptions and live
   const html = readFileSync(new URL('../chart/index.html', import.meta.url), 'utf8');
   assert.match(html, /pipes and stored liquids.*water-filled copper pipe/);
   assert(!html.includes('garage-settings-budget-rear-meter'));
+});
+
+test('Garage preference displays effective thresholds for the same policy the planner uses', () => {
+  for (const [aggressiveness, minimum, retained] of [[0, .75, 60], [50, .5, 80], [100, .25, 100]]) {
+    const display = garageDisplay({ settings: garageSettings({ aggressiveness }) });
+    const rows = Object.fromEntries(display.settingGroups.heating);
+    assert.equal(rows['Savings preference'], `${aggressiveness} / 100`);
+    assert.equal(rows['Minimum estimated benefit'], `More than €${minimum}`);
+    assert.equal(rows['Benefit retained'], `${retained}% of best opportunity`);
+    assert.equal(display.planningDetails.find(row => row.key === 'minimum-savings').value, `€${minimum}`);
+    assert.match(display.settingGroups.heating.find(([label]) => label === 'Savings preference')[2], /0 is most conservative.*Pause price control/);
+  }
+  const configured = Object.fromEntries(garageDisplay({ settings: garageSettings({ aggressiveness: 100, minSavingsEur: 2 }) }).settingGroups.heating);
+  assert.equal(configured['Minimum estimated benefit'], 'More than €1');
+});
+
+test('Garage pause summary reports current pause, disabled, unavailable and operating mode truthfully', () => {
+  const active = { now, mode: 'active', input: 'mqtt', garage: { settings: { enabled: true } } };
+  assert.equal(garagePauseSummary(active), 'Not paused');
+  assert.equal(garagePauseSummary({}), 'Status unavailable');
+  assert.equal(garagePauseSummary({ ...active, mode: 'shadow' }), 'Inactive in shadow mode');
+  assert.equal(garagePauseSummary({ ...active, input: 'offline' }), 'Unavailable offline');
+  assert.equal(garagePauseSummary({ ...active, garage: { settings: { enabled: false } } }), 'Automatic control disabled');
+  assert.match(garagePauseSummary({ ...active, garage: { ...active.garage,
+    temporary: { pauseActive: true, pauseUntil: now + 60_000 } } }), /^Paused until /);
+  assert.equal(garagePauseSummary({ ...active, garage: { ...active.garage,
+    temporary: { pauseActive: true, pauseUntil: now - 1 } } }), 'Not paused');
+});
+
+test('Garage current state and overview share the requested power through manual, plan and restoration states', () => {
+  assert.equal(garageHeatingRequest({}), 'No request');
+  assert.equal(garageHeatingRequest({ plan: { nextAction: 'available' } }), 'Normal');
+  assert.equal(garageHeatingRequest({ plan: { nextAction: 'pause' } }), 'Reduction');
+  assert.equal(garageHeatingRequest({ adapter: { phase: 'paused', restorePending: true } }), 'Reduction');
+  assert.equal(garageHeatingRequest({ adapter: { phase: 'restoring', restorePending: true } }), 'Restoring');
+  assert.equal(garageHeatingRequest({ heatingControls: { requestedMode: 'off' }, adapter: { phase: 'paused' } }), 'Off');
+  assert.equal(garageHeatingRequest({ heatingControls: { requestedMode: 'normal' }, adapter: { restorePending: true } }), 'Normal');
 });
 
 

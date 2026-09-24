@@ -55,9 +55,11 @@ qualification. Combined timing coverage divides included Home plus Garage time
 by their combined elapsed time; it does not imply that the same hours were
 observed in both systems. Missing periods are never scaled up.
 
-The Garage heating configuration follows Home's control, pause and learning
-structure. Savings & protection lists explicit minimum benefit, minimum planned OFF time,
-normal-heating dwell, daily limit and reference-pipe assumptions. Garage learning
+The Garage heating configuration follows Home's current-state, temporary-control,
+pause, preferences and learning structure. **Savings & protection** shows the
+configured 0–100 preference, effective minimum benefit, benefit retained, minimum
+planned OFF time, normal-heating dwell, daily limit and reference-pipe assumptions.
+Garage learning
 has four matching sections: **Learning outcomes · Calculated**, **Model inputs ·
 Recorded & modeled**, **Model coefficients · Current values**, and **Planning &
 safeguards · Decisions & limits**. Rows distinguish learned cooling, observed normal
