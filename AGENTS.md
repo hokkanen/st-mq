@@ -184,3 +184,12 @@ See [docs/secret-handling.md](docs/secret-handling.md) for historical audit scop
 - Feature tests must explicitly configure the synthetic integrations relevant
   to their scenario instead of inheriting unrelated public device subscriptions.
   Keep separate coverage for intended public defaults and sparse override merging.
+
+## UI wording
+
+- Do not use the project name **ST-MQ** in user-facing labels, descriptions,
+  popovers, status messages or errors. Use natural wording such as “the controller”
+  or “this application”. Keep actual file paths and protocol identifiers accurate.
+- Keep Mitsubishi reading fields visible when their data becomes missing, stale,
+  invalid or unsupported. Show an explicit unavailable state and preserve source,
+  freshness and quality details; never interpret missing compressor activity as idle.

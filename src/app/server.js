@@ -138,7 +138,7 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
           if (pairContext && !pairContext.canControl())
             return json(409, { error: 'This instance does not own device control.' });
           if (controlAuthority && !controlAuthority.canControl())
-            return json(409, { error: 'Another ST-MQ controller owns device control. This instance is protected.' });
+            return json(409, { error: 'Another controller owns device control. This instance is protected.' });
           if (pairContext?.recovering() && ['/api/fireplace', '/api/fireplace/remove', '/api/sensor-changes',
             '/api/sensor-changes/revert', '/api/sensor-changes/retry-rebuild', '/api/settings/reload', '/api/charging/ocpp-setup'].includes(url.pathname))
             return json(409, { error: 'Historical recovery is running. Wait before changing source corrections or configuration.' });

@@ -290,24 +290,52 @@ test('all streamed optional values retain their own clocks and diagnostic qualif
   assert.equal(f.observations.length, 0);
 });
 
-test('public production readings omit never-observed and unsupported fields while preserving stale observed values', t => {
+test('public production status retains unavailable diagnostics without qualifying controls or learning', async t => {
   const f = fixture(t);
-  f.state({ native: { power: { value: 'on', measuredAt: BASE }, vane: { value: null, measuredAt: BASE } } });
-  assert.deepEqual(Object.keys(f.adapter.status().native.readbacks), ['power']);
+  f.state({ native: { power: { value: 'on', measuredAt: BASE }, vane: { value: null, measuredAt: BASE - 2000 } } });
+  assert.deepEqual(Object.keys(f.adapter.status().native.readbacks), ['power', 'vane']);
+  assert.deepEqual(f.adapter.status().native.readbacks.vane, { value: null, measuredAt: BASE - 2000 });
   assert.equal(Object.hasOwn(f.adapter.status().native, 'vane'), false);
+  assert.equal(f.runtime.status().nativeControls.settings.vane.usable, false);
+  await assert.rejects(f.runtime.setNativeSettings({ setting: 'vane', value: 1 }), /fresh native/);
+  assert.equal(f.published.length, 0);
   const field = (value, unit, quality = 'observed-unverified', supported = true) => ({ value, unit, quality,
-    supported, decodeVerified: false, measuredAt: BASE });
+    supported, decodeVerified: true, measuredAt: BASE - 2000 });
   f.adapter.receive(SETTINGS.telemetryTopic, JSON.stringify({ schema: SHELLY_CN105_CONTRACT,
     deviceId: TEMPLATE.deviceId, bootId: TEMPLATE.bootId, sequence: 1, observedAt: BASE,
     fields: { indoorTemperature: field(12, 'degC'), power: field(0, 'W', 'unknown'),
-      energy: field(null, 'kWh', 'unsupported', false), compressorFrequency: field(null, 'Hz', 'unknown') } }));
+      energy: field(null, 'kWh', 'unsupported', false), compressorFrequency: field(null, 'Hz', 'unknown'),
+      compressorActive: field(true, null, 'invalid'), defrost: field(false, null, 'unknown') } }));
   let status = f.adapter.status();
   assert.equal(status.telemetry.indoorTemperature.value, 12);
-  for (const key of ['power', 'energy', 'compressorFrequency']) assert.equal(Object.hasOwn(status.telemetry, key), false, key);
+  for (const [key, value, quality] of [['power', 0, 'unknown'], ['energy', null, 'unsupported'],
+    ['compressorFrequency', null, 'unknown'], ['compressorActive', true, 'invalid'], ['defrost', false, 'unknown']]) {
+    const reading = status.telemetry[key];
+    assert.equal(reading.value, value, key);
+    assert.equal(reading.sourceTime, BASE - 2000, key);
+    assert.equal(reading.receivedAt, BASE, key);
+    assert.equal(reading.usable, false, key);
+    assert.ok(reading.quality.includes(quality), key);
+  }
+  assert.equal(status.telemetry.energy.supported, false);
+  assert.equal(status.telemetry.garage_compressor_active, status.telemetry.compressorActive);
+  assert.equal(status.telemetry.outdoorTemperature, undefined, 'Never-received reports remain absent from the API');
+  assert.equal(status.native.compressorActive, undefined, 'Invalid diagnostics do not become qualified native activity');
+  assert.equal(status.native.defrost, undefined);
+  assert.equal(f.runtime.read().activity, null);
+  assert.equal(f.runtime.read().powerKw, null);
+  assert.equal(f.observations.find(row => row.signal === 'garage_compressor_active').value, null,
+    'Invalid compressor state remains a history gap');
+  status.native.readbacks.vane.measuredAt = 0;
+  assert.equal(f.adapter.status().native.readbacks.vane.measuredAt, BASE - 2000,
+    'Diagnostic status cannot mutate retained native evidence');
   f.at(BASE + 120_000); status = f.adapter.status();
   assert.equal(status.telemetry.indoorTemperature.value, 12);
   assert.ok(status.telemetry.indoorTemperature.quality.includes('stale'));
   assert.equal(status.native.readbacks.power.measuredAt, BASE);
+  assert.equal(status.telemetry.compressorActive.sourceTime, BASE - 2000);
+  assert.ok(status.telemetry.compressorActive.quality.includes('stale'));
+  assert.ok(status.telemetry.compressorActive.quality.includes('invalid'));
 });
 
 test('ordinary Mitsubishi HTTP route uses shared write authorization and returns pending native status', async t => {

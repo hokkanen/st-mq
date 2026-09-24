@@ -394,7 +394,7 @@ function renderProviders(s) {
       local.querySelector('.provider-local-endpoint').textContent = `${connection.endpoint}. ${connection.setup.detail}`;
       local.querySelector('.provider-local-help').textContent = `${connection.detail} Cloud backup restores electricity readings; it does not automatically transfer native charging control back to the cloud.`;
       const outage = local.querySelector('.provider-local-outage');
-      const outageTitle = document.createElement('strong'); outageTitle.textContent = 'If ST-MQ stops. ';
+      const outageTitle = document.createElement('strong'); outageTitle.textContent = 'If the controller stops. ';
       outage.replaceChildren(outageTitle, document.createTextNode(connection.outage));
       if (s.providers?.easee?.localOcpp?.setup?.state === 'ready') {
         const message = local.querySelector('.provider-local-message');

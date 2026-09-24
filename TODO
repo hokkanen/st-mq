@@ -1,3 +1,20 @@
 -Make README.md better and more descriptive of the app, especially the beginning of it
 -Implement support for local mqtt-based temperature receives (eg, from shelly or HASS through Meteorologisk Institute); just store last received temp values and time stamps (maybe in storage class, see below) when received (and accept if received within 1h)
 -Chart dataset control buttons don't work when datasets are manually hidden/unhidden from legend, how to fix?
+
+Completed 2026-09-24 — Mitsubishi information visibility and UI wording
+- Audited all five commits from today. Mitsubishi disappearance filters originate
+  in 09618e5 (September 21), not today. Today reorganized source sections, moved
+  floor setup guidance, collapsed the small-screen fullscreen legend and removed
+  chart pan/zoom buttons; supported measurements remain available. Obsolete
+  Tesla-derived Charger 2 readings were replaced by physical Shelly EVSE readings.
+- Keep all 18 current Mitsubishi reading fields visible, including unavailable
+  values and their quality/freshness details. Compressor Running/Idle/Unknown stays
+  in the summary. Short temperature copy links to sensor/offset/control details.
+- Remove the project name from UI copy and server-produced UI messages. Current
+  control qualification, read-only gating and raw-unit meanings remain intact;
+  no compatibility aliases, migrations or old runtime formats were added.
+- Validation: all 2,925 unit tests passed; 48 focused adapter/runtime checks
+  passed after preserving unavailable producer diagnostics. Dashboard build and
+  synthetic Chromium checks passed for stable fields, compressor transitions,
+  details, controls and 320/390/1440px layouts in both themes.

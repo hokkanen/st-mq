@@ -178,14 +178,14 @@ test('Home Assistant configuration instructions distinguish sparse import, saved
   const missingSlug = settingsReloadScope({ settingsReload: reload });
   assert.doesNotMatch(missingSlug.instructions.join(' '), /<.*slug|undefined|null/);
   assert.deepEqual(missingSlug.location.rows, [{ label: 'Inside add-on', value: '/config/secrets.json' }]);
-  assert.equal(missingSlug.location.message, 'Restart ST-MQ to load configuration paths, then refresh this page');
+  assert.equal(missingSlug.location.message, 'Restart the controller to load configuration paths, then refresh this page');
 });
 
 test('configuration location reports missing metadata explicitly without guessing private paths', () => {
   for (const configuration of [undefined, null, {}, { environment: 'ubuntu' }, { environment: 'home-assistant' },
     { environment: 'ubuntu', privatePath: '' }, { environment: 'ubuntu', privatePath: '/folder/' }]) {
     const scope = settingsReloadScope({ settingsReload: { available: true, configuration } });
-    assert.equal(scope.location.message, 'Restart ST-MQ to load configuration paths, then refresh this page');
+    assert.equal(scope.location.message, 'Restart the controller to load configuration paths, then refresh this page');
     assert.deepEqual(scope.location.rows, []);
     assert.doesNotMatch(scope.instructions.join(' '), /undefined|null|\/home\/|\/addon_configs\/|\/config\/secrets/);
   }

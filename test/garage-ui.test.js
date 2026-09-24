@@ -118,6 +118,22 @@ test('heat-pump metric rows stay visible once in their summaries while controls 
   }
   assert.match(html, /id="home-pump-state-age" hidden/);
   assert(!html.includes('home-pump-preview') && !html.includes('garage-pump-preview'));
+  const mitsubishi=html.slice(html.indexOf('<details id="garage-controller-details"'));
+  assert.match(mitsubishi.slice(0,mitsubishi.indexOf('</summary>')), /id="garage-native-compressor" class="muted">Unknown<\/strong>/);
+  assert.equal(html.split('id="garage-native-compressor"').length-1,1);
+});
+
+test('Mitsubishi summary preserves compressor state through running, idle and lost telemetry', () => {
+  const node={textContent:'',classList:{toggle(){}}};
+  const document={getElementById:id=>id==='garage-native-compressor'?node:undefined};
+  const garage={adapter:{connected:true,telemetry:{}}};
+  for(const [value,expected] of [[true,'Running'],[false,'Idle'],[null,'Unknown']]){
+    garage.adapter.telemetry.compressorActive={value,supported:true,sourceTime:now};
+    renderGarage(document,{now,garage});
+    assert.equal(node.textContent,expected);
+  }
+  renderGarage(document,{now,garage:{}});
+  assert.equal(node.textContent,'Unknown');
 });
 
 test('Away and Pause use the same disclosure style as Garage settings inside heating configuration', () => {

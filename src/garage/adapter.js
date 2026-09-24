@@ -761,9 +761,9 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
   function status(now = clock()) {
     const reasons = blockers(now);
     const baseline = baselineAssessment(now);
-    const telemetry = Object.fromEntries(Object.entries(latest).filter(([, row]) => !production
-      || row.supported && row.value !== null && !row.quality.some(flag => ['unknown', 'unsupported', 'invalid'].includes(flag)))
-      .map(([signal, row]) => {
+    // Keep unavailable reports and their clocks/quality visible for diagnostics.
+    // Qualification still governs control, learning and electrical accounting.
+    const telemetry = Object.fromEntries(Object.entries(latest).map(([signal, row]) => {
       const stale = row.sourceTime === null || row.sourceTime > now || now - row.sourceTime >= settings.maxAgeMs || !connected;
       return [signal, { value: row.value, sourceTime: row.sourceTime, receivedAt: row.receivedAt,
         quality: [...new Set([...row.quality, ...(stale ? ['stale'] : [])])], supported: row.supported,
@@ -784,7 +784,7 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
       native: { ...Object.fromEntries(Object.entries(state?.native ?? {}).filter(([, field]) => field?.value != null)
         .map(([key, field]) => [key, field.value])),
         ...(state?.native.power?.value != null ? { powerAt: state.native.power.measuredAt } : {}),
-        readbacks: structuredClone(Object.fromEntries(Object.entries(state?.native ?? {}).filter(([, field]) => field?.value != null))),
+        readbacks: structuredClone(Object.fromEntries(Object.entries(state?.native ?? {}).filter(([, field]) => field != null))),
         ...(telemetry.compressorActive?.usable ? { compressorActive: telemetry.compressorActive.value,
           compressorActiveAt: telemetry.compressorActive.sourceTime } : {}),
         ...(telemetry.defrost?.usable ? { defrost: telemetry.defrost.value } : {}) },

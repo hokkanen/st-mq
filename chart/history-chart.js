@@ -32,7 +32,7 @@ const shades = [
 ];
 const activityTracks = [
   { key: 'operatingMode', id: 'operating-modes', label: 'Pump mode', detail: 'Configured operating mode from H66 readback; independent of compressor activity', color: 'outdoor' },
-  { key: 'dhwr', label: 'DHWR', detail: 'Requested hot-water circulation; duration controlled by ST-MQ. MQTT acknowledgement is not physical pump feedback.' },
+  { key: 'dhwr', label: 'DHWR', detail: 'Timed hot-water circulation request. MQTT acknowledgement is not physical pump feedback.' },
   { key: 'fireplace', label: 'Fireplace', detail: 'Model burn window after manually recorded firewood additions; stored heat continues afterward' },
 ];
 

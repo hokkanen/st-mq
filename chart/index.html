@@ -123,7 +123,7 @@
                   <summary><span>Floor preheating setup</span><small>Shelly commissioning</small></summary>
                   <div class="home-preferences-body">
                     <p>Living and Storage each override two thermostats; all four outputs preheat together. OFF must restore ordinary thermostat control. Relay readback confirms the contact only, not valve movement or water flow.</p>
-                    <p>Each Shelly requires the ST-MQ floor-lease script with startup execution enabled. Configure outputs 0 and 1 with power-on OFF, detached inputs, automatic ON disabled and automatic OFF after 900 seconds. The script checks these settings before accepting a lease.</p>
+                    <p>Each Shelly requires the floor-lease script with startup execution enabled. Configure outputs 0 and 1 with power-on OFF, detached inputs, automatic ON disabled and automatic OFF after 900 seconds. The script checks these settings before accepting a lease.</p>
                     <p>The controller renews an admitted override every 5 minutes. The local script and native switch timer end it at the planned deadline or within 15 minutes without renewal. Local expiry does not restore the heat-pump ROOM setting.</p>
                     <p>Before enabling control, follow <strong>docs/floor-preheat.md → Commissioning</strong>: initialize the persistent boot counter once, verify mapping and clock, and test actual thermostat restoration after host, network, script and power failures. Keep control disabled until commissioning is complete.</p>
                   </div>
@@ -539,6 +539,7 @@
                   <div class="garage-native-overview pump-native-overview">
                     <div class="equipment-value"><span>Power</span><strong id="garage-native-power" class="muted">—</strong></div>
                     <div class="equipment-value"><span>Mode</span><strong id="garage-native-mode" class="muted">—</strong></div>
+                    <div class="equipment-value"><span>Compressor</span><strong id="garage-native-compressor" class="muted">Unknown</strong></div>
                     <div class="equipment-value"><span>Room setting</span><strong id="garage-native-target" class="muted">—</strong><small id="garage-native-target-basis" hidden></small></div>
                   </div>
                 </summary>
@@ -558,15 +559,15 @@
                       <p class="equipment-control-state"><span>Reported pump setting</span><strong id="garage-native-reported">Unavailable</strong></p>
                       <button id="garage-native-submit" class="secondary-button" type="submit" disabled>Apply setting</button>
                     </form>
-                    <p id="garage-native-temperature-help" class="muted" hidden>Below 16 °C, your room setting is maintained using Garage rear. The pump itself stays at 17 °C, so its reported setting differs from your room setting. Select Reading details above for the current sensor, supplied temperature and safety checks. Settings of 16 °C or higher use normal pump control.</p>
+                    <p id="garage-native-temperature-help" class="muted" hidden>Below 16 °C, Garage rear guides heating while the pump is set to 17 °C. <span id="garage-native-temperature-details">How it works</span></p>
                     <p id="garage-native-status" class="muted">Waiting for a supported native control connection.</p>
                     <p id="garage-native-message" class="temporary-status" role="status" aria-live="polite"></p>
                   </details>
-                  <details id="garage-readings-details" class="equipment-fold" hidden>
-                    <summary>All heat-pump readings</summary>
-                    <p id="garage-native-readings-help" class="muted">Values reported by the heat pump. Select a value for freshness, receipt time and measurement quality.</p>
+                  <section id="garage-readings-details" class="equipment-reading-section" aria-labelledby="garage-readings-title">
+                    <h5 id="garage-readings-title" class="equipment-body-title">Heat-pump readings</h5>
+                    <p id="garage-native-readings-help" class="muted">Select a value for its source, freshness and quality.</p>
                     <div id="garage-native-readings" aria-describedby="garage-native-readings-help"></div>
-                  </details>
+                  </section>
                   <details id="garage-automatic-details" class="equipment-fold">
                     <summary>Automatic savings &amp; protection</summary>
                     <p id="garage-controller-reason" class="muted"></p>
@@ -574,7 +575,7 @@
                     <p class="muted">The two pipe-location sensors protect independently. Pump temperatures are separate equipment readings. Qualified native electricity remains provisional unless checked.</p>
                     <div class="equipment-inline-controls">
                       <button id="garage-release" class="secondary-button" type="button" aria-describedby="garage-release-help" disabled>End automatic savings episode</button>
-                      <p id="garage-release-help" class="muted">Ends a savings episode managed by ST-MQ and awaits restoration of normal heating.</p>
+                      <p id="garage-release-help" class="muted">Ends the current savings episode and waits for normal heating to resume.</p>
                       <p id="garage-release-message" class="temporary-status" role="status" aria-live="polite"></p>
                     </div>
                   </details>

@@ -79,7 +79,7 @@ try {
   assert.equal(await evaluate(`document.querySelector('${button}').hidden`), true);
   await evaluate("document.querySelector('[data-provider=electricity] details').open = true; true");
   assert.match(await evaluate(`document.querySelector('${local}').textContent`), /standalone address.*apply configuration/);
-  assert.match(await evaluate(`document.querySelector('${local} .provider-local-outage').textContent`), /If ST-MQ stops.*crash or power loss.*waiting for approval.*Restart ST-MQ/);
+  assert.match(await evaluate(`document.querySelector('${local} .provider-local-outage').textContent`), /If the controller stops.*crash or power loss.*waiting for approval.*Restart the controller/);
   for (const [reason, label] of [['native-control-unavailable', 'Activation pending'],
     ['cloud-schedule-active', 'Waiting for cloud schedule'], ['control-transition-pending', 'Control handover pending']]) {
     await evaluate(`window.setupFixture = {state:'blocked', reason:${JSON.stringify(reason)}, endpointSource:'pairing-vip', canAdopt:false}; true`);

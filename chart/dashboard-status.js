@@ -87,7 +87,7 @@ function configurationLocation(configuration) {
   }
   if (addon && isFilePath(configuration.importPath)) rows.push({ label: 'Inside add-on', value: configuration.importPath });
   return { title: addon ? 'Host dashboard · upload location' : ubuntu ? 'Ubuntu · permanent configuration file' : 'Configuration file location',
-    rows, message: isFilePath(path) ? '' : 'Restart ST-MQ to load configuration paths, then refresh this page' };
+    rows, message: isFilePath(path) ? '' : 'Restart the controller to load configuration paths, then refresh this page' };
 }
 
 /** Only the API can declare a configuration source available. Instructions use

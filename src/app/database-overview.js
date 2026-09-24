@@ -105,7 +105,7 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
   for (const [kind, signals] of Object.entries(importedSignals)) {
     const values = sum(signals.map(signal => observations.get(`${kind}:${signal}`) ?? empty()));
     const fact = importFacts.get(kind) ?? {};
-    importItems.push(item(`csv-${kind}`, `${kind === 'stmq' ? 'st-mq' : 'Easee'} CSV observations`,
+    importItems.push(item(`csv-${kind}`, `${kind === 'stmq' ? 'Controller' : 'Easee'} CSV observations`,
       kind === 'stmq' ? 'Historical spot prices, requested heating commands, and upstairs, garage and outdoor temperatures.'
         : 'Historical charger and property currents for each of three phases. These are current snapshots, not metered kWh.', values, {
       dateBasis: 'observation time', writeBehavior: 'Once when each CSV is imported; file digests and row identities prevent duplicates.',
@@ -124,7 +124,7 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
     countLabel: 'imports', retention: 'mixed', retentionDescription: 'One retained import entry; its progress and outcome are updated in place.',
     writeBehavior: 'Created when import starts, updated as it progresses and finishes.',
     fields: fields(['Identity and provenance', 'CSV kind, file digest and private source path.'], ['Progress', 'Start/completion times, status, row count and rejected count.']) }));
-  add('imports', 'Imported CSV history', 'Old st-mq and Easee CSVs can be imported at the real migration. Source rows and decoded observations are separate stored records, not additional measurements.', importItems);
+  add('imports', 'Imported CSV history', 'Supported v0.7.5 controller and Easee CSVs can be imported as historical observations. Source rows and decoded observations are separate stored records, not additional measurements.', importItems);
 
   const snapshots = grouped('provider_snapshot_fetches', "CASE WHEN kind IN ('weather','market') THEN kind ELSE 'other' END", 'fetched_at');
   const contentCount = db.prepare('SELECT COUNT(*) count FROM provider_snapshot_contents').get().count;

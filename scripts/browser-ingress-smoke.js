@@ -150,7 +150,7 @@ try {
   await until("document.getElementById('history')?.dataset.ready === 'true'");
   assert.equal(await evaluate("document.getElementById('settings-location-message').hidden"), false);
   assert.equal(await evaluate("document.getElementById('settings-location-message').textContent"),
-    'Restart ST-MQ to load configuration paths, then refresh this page');
+    'Restart the controller to load configuration paths, then refresh this page');
   assert.equal(await evaluate("document.getElementById('settings-location').children.length"), 0, 'Missing backend metadata never invents a folder');
   // Real browser timers and network: stalled initial auxiliary reads cannot
   // prevent status polling; a body that never completes cannot hold its latch.
@@ -173,7 +173,7 @@ try {
   assert.equal(await evaluate("document.getElementById('connection').textContent.includes('Monitoring is stale')"), false);
   rejectStatus = true;
   await send('Page.reload');
-  await until("document.getElementById('error')?.textContent.includes('Reopen ST-MQ from the host dashboard')");
+  await until("document.getElementById('error')?.textContent.includes('Reopen this application from the host dashboard')");
   assert.equal(await evaluate("document.getElementById('auth').hidden"), true, 'Expired HA session never prompts for an ST-MQ token');
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ result: 'ingress-browser-smoke-passed', checks: ['built theme, CSS and module assets under ingress prefix',

@@ -44,21 +44,26 @@ try {
     const originalFetch=globalThis.fetch.bind(globalThis);
     globalThis.pumpSmokeValues={power:'on',mode:'heat',targetC:22,fan:'auto',vane:'auto',wideVane:'center'};
     globalThis.pumpSmokeCalls=[];globalThis.pumpSmokeResult=null;globalThis.pumpSmokeReadOnly=false;globalThis.pumpSmokeOffline=false;
+    globalThis.pumpSmokeCompressor='running';globalThis.pumpSmokeMissingReadings=false;globalThis.pumpSmokeRoom=null;
     const pumpFixture=status=>{
       const at=status.now,stale=globalThis.pumpSmokeOffline,values=globalThis.pumpSmokeValues;
       const choices={power:['on','off'],mode:['heat','cool','auto','dry','fan'],fan:['auto','quiet',1,2,3,4],vane:['auto',1,2,3,4,5,'swing'],wideVane:['far-left','left','center','right','far-right','split','swing']};
-      status.readOnly=globalThis.pumpSmokeReadOnly;
+      status.readOnly=globalThis.pumpSmokeReadOnly;status.garage.roomTemperature=globalThis.pumpSmokeRoom;
       status.garage.adapter={...status.garage.adapter,connected:!stale,health:{deviceOnline:!stale,pumpCommunicating:!stale,driverProgressing:!stale},
         native:{...values,powerAt:at,readbacks:Object.fromEntries(Object.entries(values).map(([key,value])=>[key,{value,measuredAt:at}]))},
         telemetry:{indoorTemperature:{value:21.25,sourceTime:at,receivedAt:at,supported:true,usable:true,unit:'degC',quality:[],accuracyVerified:false},
           outdoorTemperature:{value:null,sourceTime:at,supported:false,quality:['unsupported'],unit:'degC'},
           compressorFrequency:{value:0,sourceTime:at,supported:true,usable:true,quality:[],unit:'Hz'},
+          compressorActive:{value:globalThis.pumpSmokeCompressor!=='idle',sourceTime:globalThis.pumpSmokeCompressor==='stale'?at-120000:at,
+            supported:globalThis.pumpSmokeCompressor!=='unsupported',usable:true,quality:globalThis.pumpSmokeCompressor==='unsupported'?['unsupported']:[],unit:'boolean'},
           defrost:{value:false,sourceTime:at,supported:true,usable:true,quality:[],unit:'boolean'},
           energyCounterRaw:{value:0,sourceTime:at,supported:false,usable:false,quality:['unverified'],unit:'count'}}};
+      if(globalThis.pumpSmokeCompressor==='missing')delete status.garage.adapter.telemetry.compressorActive;
+      if(globalThis.pumpSmokeMissingReadings){status.garage.adapter.native={};status.garage.adapter.telemetry={};}
       status.garage.nativeControls={available:!stale,reason:stale?'Pump connection unavailable':null,
         busy:false,pending:globalThis.pumpSmokeResult?.status==='accepted',result:globalThis.pumpSmokeResult,
-        settings:Object.fromEntries(Object.entries(values).map(([key,value])=>[key,{value,measuredAt:at,supported:true,usable:!stale,available:!stale,
-          ...(key==='targetC'?{min:16,max:31,step:.5}:{values:choices[key]})}]))};
+        settings:Object.fromEntries(Object.entries(values).map(([key,value])=>[key,{value:key==='targetC'&&globalThis.pumpSmokeRoom?globalThis.pumpSmokeRoom.targetC:value,measuredAt:at,supported:true,usable:!stale,available:!stale,
+          ...(key==='targetC'?{min:8,max:31,step:.5}:{values:choices[key]})}]))};
       return status;
     };
     globalThis.fetch=async(input,options)=>{
@@ -93,20 +98,86 @@ try {
   await evaluate("document.getElementById('garage-native-temperature').value='23.5';document.getElementById('garage-native-temperature').dispatchEvent(new Event('input'));document.getElementById('garage-native-temperature').focus();globalThis.refreshPumpSmoke()");
   await pause(150);
   assert.equal(await evaluate("document.getElementById('garage-native-temperature').value==='23.5'&&document.activeElement.id==='garage-native-temperature'"),true);
-  await evaluate("document.getElementById('garage-readings-details').open=true");
-  assert.equal(await evaluate("document.querySelector('[data-reading=telemetry-compressorFrequency] td').textContent.includes('0 Hz')"),true);
-  assert.equal(await evaluate("document.querySelector('[data-reading=telemetry-outdoorTemperature]')===null"),true);
+  const readingKeys=['telemetry-compressorFrequency','telemetry-compressorActive','telemetry-defrost','telemetry-actualFan',
+    'telemetry-preheat','telemetry-standby','telemetry-faultRaw','telemetry-indoorTemperature','telemetry-outdoorTemperature',
+    'telemetry-power','telemetry-energy','telemetry-energyCounterRaw','native-power','native-mode','native-targetC',
+    'native-fan','native-vane','native-wideVane'];
+  assert.equal(await evaluate("document.getElementById('garage-readings-details').tagName"),'SECTION');
+  assert.deepEqual(await evaluate("[...document.querySelectorAll('#garage-native-readings [data-reading]')].map(row=>row.dataset.reading)"),readingKeys);
+  await evaluate("globalThis.pumpSmokeReadingRows=[...document.querySelectorAll('#garage-native-readings [data-reading]')]");
+  const stableRows=async()=>assert.equal(await evaluate("globalThis.pumpSmokeReadingRows.every(row=>row.isConnected&&document.querySelector('[data-reading='+row.dataset.reading+']')===row)"),true,'reading rows survive status changes');
+  assert.equal(await evaluate("document.querySelector('[data-reading=telemetry-compressorFrequency] td strong').textContent"),'0 Hz');
+  assert.equal(await evaluate("document.querySelector('[data-reading=telemetry-outdoorTemperature] td strong').textContent"),'Unavailable');
+  for(const [state,summary,reading,qualifier] of [['running','Running','Running','Provisional'],['idle','Idle','Idle','Provisional'],
+    ['stale','Unknown','Unavailable','Stale or unavailable'],['missing','Unknown','Unavailable','No reading'],['unsupported','Unknown','Unavailable','Unsupported']]){
+    await evaluate(`globalThis.pumpSmokeCompressor=${JSON.stringify(state)};globalThis.refreshPumpSmoke()`);
+    await until(`document.getElementById('garage-native-compressor').textContent===${JSON.stringify(summary)}&&document.querySelector('[data-reading=telemetry-compressorActive] .equipment-reading-qualifier').textContent===${JSON.stringify(qualifier)}`);
+    assert.equal(await evaluate("document.querySelector('[data-reading=telemetry-compressorActive] td strong').textContent"),reading,state);
+    assert.equal(await evaluate("document.querySelector('[data-reading=telemetry-compressorActive]').offsetHeight>0"),true);
+    await stableRows();
+  }
+  await evaluate('globalThis.pumpSmokeMissingReadings=true;globalThis.refreshPumpSmoke()');
+  await until("[...document.querySelectorAll('#garage-native-readings td strong')].every(node=>node.textContent==='Unavailable')");
+  await stableRows();
+  assert.equal(await evaluate("document.getElementById('garage-native-compressor').textContent"),'Unknown');
+  await evaluate("globalThis.pumpSmokeMissingReadings=false;globalThis.pumpSmokeCompressor='running';globalThis.refreshPumpSmoke()");
+  await until("document.getElementById('garage-native-compressor').textContent==='Running'");
+  await stableRows();
+  const description=await evaluate("document.querySelector('[data-reading=telemetry-indoorTemperature] .h66-reading-description').textContent");
+  assert.equal(description,'Temperature used by the pump’s thermostat.');
   await evaluate("document.querySelector('[data-reading=telemetry-indoorTemperature] .status-detail-trigger').click()");
-  assert.equal(await evaluate("document.getElementById('status-detail-popover').textContent.includes('Measurement accuracy has not been verified')"),true);
+  const temperatureDetail=await evaluate("document.getElementById('status-detail-popover').textContent");
+  assert.match(temperatureDetail,/internal sensor.*supplied external temperature.*offset/s);
+  assert.match(temperatureDetail,/not necessarily measured room air/);
+  assert.match(temperatureDetail,/Measurement accuracy has not been verified/);
   await evaluate("document.querySelector('.status-detail-close').click()");
+  assert.equal(await evaluate("document.activeElement.closest('[data-reading]')?.dataset.reading"),'telemetry-indoorTemperature');
+  assert.equal(await evaluate("document.getElementById('garage-native-temperature-help').hidden"),false);
+  assert.equal(await evaluate("document.getElementById('garage-room-temperature-status').hidden"),true,'help exists before saving a room setting');
+  assert.equal(await evaluate("document.getElementById('garage-native-temperature-help').textContent.trim().split(/\\s+/).length<=25"),true);
+  await evaluate("document.querySelector('#garage-native-temperature-details .status-detail-trigger').click()");
+  const controlHelp=await evaluate("document.getElementById('status-detail-popover').textContent");
+  assert.match(controlHelp,/Below 16 °C.*Garage rear.*17 °C.*offset/s);
+  assert.match(controlHelp,/16 °C or higher use normal pump control/);
+  assert.match(controlHelp,/fresh sensor readings.*power on, heating mode and 17 °C/s);
+  assert.match(controlHelp,/checks fail.*renewals stop.*internal sensor/s);
+  await evaluate("document.querySelector('.status-detail-close').click()");
+  assert.equal(await evaluate("document.activeElement.closest('#garage-native-temperature-details')?.id"),'garage-native-temperature-details');
+  await evaluate(`globalThis.pumpSmokeRoom={targetC:10,nativeTargetC:17,offsetC:7,sourceC:10,suppliedC:17,measuredAt:${now},phase:'active',acknowledged:true};globalThis.pumpSmokeValues={...globalThis.pumpSmokeValues,power:'on',mode:'heat',targetC:17};globalThis.pumpSmokeResult={setting:'targetC',value:10,status:'acknowledged'};globalThis.refreshPumpSmoke()`);
+  await until("document.getElementById('garage-native-target-basis').textContent==='Garage rear · active'");
+  assert.equal(await evaluate("document.getElementById('garage-native-target').textContent"),'10 °C');
+  assert.equal(await evaluate("document.getElementById('garage-native-reported').textContent"),'17 °C');
+  await evaluate("document.getElementById('garage-native-setting').dispatchEvent(new Event('change'))");
+  assert.equal(await evaluate("document.getElementById('garage-native-temperature').value"),'10');
+  assert.match(await evaluate("document.getElementById('garage-room-temperature-status').textContent"),/Room setting 10 °C.*Garage rear control is active/);
+  await evaluate("document.querySelector('#garage-native-temperature-details .status-detail-trigger').click()");
+  const activeHelp=await evaluate("document.getElementById('status-detail-popover').textContent");
+  assert.match(activeHelp,/Saved room setting: 10 °C.*native pump target of 17 °C.*adds 7 °C/s);
+  assert.match(activeHelp,/Garage rear: 10 °C.*Supplied temperature: 17 °C/s);
+  assert.match(activeHelp,/fresh pump readings show ON, HEAT and 17 °C.*check fails.*renewals stop/s);
+  assert.match(activeHelp,/16 °C or higher.*ends external temperature control/s);
+  await evaluate("document.querySelector('.status-detail-close').click()");
+  assert.doesNotMatch(await evaluate("document.body.innerText"),/ST-MQ/i);
   for(const width of [1440,390,320])for(const theme of ['dark','light']){
     await send('Emulation.setDeviceMetricsOverride',{width,height:1000,deviceScaleFactor:1,mobile:false});
     await evaluate(`window.homeEnergyTheme.setTheme('${theme}');document.getElementById('garage-controller-details').scrollIntoView({block:'start',behavior:'instant'})`);
     assert.equal(await evaluate('document.documentElement.scrollWidth<=window.innerWidth'),true,`${width} ${theme} page overflow`);
     const overflow=await evaluate("(()=>{const root=document.getElementById('garage-controller-details'),bounds=root.getBoundingClientRect();return [...root.querySelectorAll('select,input,table')].filter(node=>node.offsetParent).filter(node=>{const r=node.getBoundingClientRect();return r.left<bounds.left-1||r.right>bounds.right+1;}).map(node=>node.id||node.tagName);})()");
     assert.deepEqual(overflow,[],`${width} ${theme} equipment content stays inside the card`);
-    const screenshot=await send('Page.captureScreenshot',{format:'png'});
-    writeFileSync(join(artifacts,`mitsubishi-${width}-${theme}.png`),Buffer.from(screenshot.data,'base64'));
+    const unavailableLines=await evaluate("[...document.querySelectorAll('#garage-native-readings td.stale .status-detail-label')].filter(node=>node.textContent==='Unavailable').map(node=>{const range=document.createRange();range.selectNodeContents(node);return {reading:node.closest('[data-reading]').dataset.reading,lines:range.getClientRects().length};})");
+    assert(unavailableLines.length>0,`${width} ${theme} includes unavailable readings`);
+    assert.deepEqual(unavailableLines.filter(reading=>reading.lines!==1),[],`${width} ${theme} unavailable values stay on one line`);
+    const capture=async name=>{
+      const screenshot=await send('Page.captureScreenshot',{format:'png'});
+      writeFileSync(join(artifacts,`mitsubishi-${name}${width}-${theme}.png`),Buffer.from(screenshot.data,'base64'));
+    };
+    await capture('');
+    await evaluate("document.querySelector('[data-reading=telemetry-indoorTemperature]').scrollIntoView({block:'start',behavior:'instant'})");
+    await capture('temperatures-');
+    await evaluate("document.getElementById('garage-native-temperature-help').scrollIntoView({block:'start',behavior:'instant'});document.querySelector('#garage-native-temperature-details .status-detail-trigger').click()");
+    assert.equal(await evaluate("(()=>{const panel=document.getElementById('status-detail-popover'),r=panel.getBoundingClientRect();return !panel.hidden&&r.left>=0&&r.top>=0&&r.right<=innerWidth&&r.bottom<=innerHeight})()"),true,`${width} ${theme} popup stays inside the viewport`);
+    await capture('help-');
+    await evaluate("document.querySelector('.status-detail-close').click()");
   }
   await evaluate('globalThis.pumpSmokeOffline=true;globalThis.refreshPumpSmoke()');
   await until("document.getElementById('garage-controller-state').textContent==='Not connected'");
@@ -116,7 +187,7 @@ try {
   await until("document.getElementById('garage-native-status').textContent.includes('read-only')");
   assert.equal(await evaluate("document.getElementById('garage-native-submit').disabled"),true);
   assert.deepEqual(errors,[]);
-  console.log(JSON.stringify({result:'mitsubishi-browser-smoke-passed',artifacts,checks:['all six typed controls','accepted versus native confirmation','dirty edit and focus preserved','freshness and quality details','unsupported telemetry','320/390/1440px both themes','offline and read-only gating','no browser exceptions']}));
+  console.log(JSON.stringify({result:'mitsubishi-browser-smoke-passed',artifacts,checks:['all six typed controls','accepted versus native confirmation','dirty edit and focus preserved','compressor running idle and unknown states','stable complete readings through data loss','concise temperature and low-target popup help','active room sensor and offset details','freshness and quality details','unsupported telemetry remains visible','320/390/1440px both themes','unavailable values remain on one line','offline and read-only gating','no browser exceptions']}));
   await send('Page.close');
 }finally{
   socket?.close();for(const task of pending.values())clearTimeout(task.timer);

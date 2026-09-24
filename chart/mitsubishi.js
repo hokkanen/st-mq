@@ -10,13 +10,13 @@ export const mitsubishiSettings = Object.freeze({
   wideVane: { label: 'Horizontal vane', description: 'Left/right airflow setting.' },
 });
 const telemetryMetadata = {
-  indoorTemperature: ['Pump control temperature', 'Temperatures', '°C', 'Temperature interpreted by the heat pump. It may use its internal sensor or the supplied external temperature, including the ST-MQ offset; it is not necessarily measured room air.'],
+  indoorTemperature: ['Pump control temperature', 'Temperatures', '°C', 'Temperature used by the pump’s thermostat.', 'The pump may use its internal sensor or a supplied external temperature, including an offset. This is not necessarily measured room air.'],
   outdoorTemperature: ['Pump outdoor temperature', 'Temperatures', '°C', 'Temperature reported by the outdoor unit.'],
   power: ['Electrical input', 'Electricity', 'W', 'Native electrical input; accuracy remains unverified unless checked.'],
   energy: ['Cumulative energy', 'Electricity', 'kWh', 'Decoded native cumulative electricity reading.'],
   energyCounterRaw: ['Raw energy counter', 'Electricity', '', 'Raw counter; no energy unit or consumption is inferred.'],
   compressorFrequency: ['Compressor frequency', 'Operation', 'Hz', 'Reported compressor frequency; not measured electrical power.'],
-  compressorActive: ['Compressor active', 'Operation', '', 'Native operating indication.'],
+  compressorActive: ['Compressor state', 'Operation', '', 'Reported compressor activity; separate from the power setting.'],
   defrost: ['Defrost', 'Operation', '', 'Native defrost indication.'],
   actualFan: ['Actual fan', 'Operation', '', 'Reported fan operation; separate from the selected fan setting.'],
   preheat: ['Preheat', 'Operation', '', 'Native preheat indication.'],
@@ -35,6 +35,7 @@ const clock = at => Number.isFinite(at) ? new Intl.DateTimeFormat('en-GB', { tim
   month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(at) : null;
 const scalar = value => typeof value === 'boolean' || typeof value === 'string' && value.length > 0 || Number.isFinite(value);
 export function mitsubishiValue(setting, value, unit = mitsubishiSettings[setting]?.unit ?? '') {
+  if (setting === 'compressorActive') return typeof value === 'boolean' ? value ? 'Running' : 'Idle' : 'Unavailable';
   if (!scalar(value)) return 'Unavailable';
   const formatted = typeof value === 'boolean' ? value ? 'Yes' : 'No'
     : Number.isFinite(value) ? new Intl.NumberFormat('en-GB', { maximumFractionDigits: 2 }).format(value) : words(value);
@@ -52,16 +53,20 @@ export function mitsubishiRoomTemperature(garage = {}) {
   const nativeTarget = mitsubishiValue('targetC', control.nativeTargetC ?? 17);
   const progress = active ? 'Garage rear control is active.'
     : control.phase === 'preparing' || control.phase === 'active' ? 'Waiting for the pump to confirm Garage rear control.'
-      : control.phase === 'clearing' ? 'Clearing the supplied temperature and waiting for internal-sensor acknowledgement before the next control step.'
-        : 'External temperature control is unavailable. Check the control status below; the driver returns to its internal temperature sensor when the current permission expires.';
+      : control.phase === 'clearing' ? 'Returning to the pump’s internal sensor.'
+        : 'External temperature control is unavailable.';
   const detail = [`Saved room setting: ${mitsubishiValue('targetC', control.targetC)}. ${progress}`,
-    `Garage rear is the room sensor. External control uses a native pump target of ${nativeTarget}; ST-MQ adds ${mitsubishiValue('targetC', control.offsetC)} to the rear reading to obtain the lower room setting.`,
+    `Garage rear is the room sensor. External control uses a native pump target of ${nativeTarget}; the controller adds ${mitsubishiValue('targetC', control.offsetC)} to the rear reading to obtain the lower room setting.`,
     `Garage rear: ${mitsubishiValue('targetC', control.sourceC)}.${clock(control.measuredAt) ? ` Measured ${clock(control.measuredAt)}.` : ''} Supplied temperature: ${mitsubishiValue('targetC', control.suppliedC)}.`,
     control.reason ? `Control status: ${words(control.reason)}.` : '',
-    `Before enabling or renewing external control, ST-MQ confirms fresh pump readings show ON, HEAT and ${nativeTarget}. If that check fails, renewals stop and the current permission expires. Internal temperature control then uses the pump's current settings.`,
+    control.phase === 'clearing' ? 'Waiting for internal-sensor acknowledgement before the next control step.'
+      : !active && control.phase !== 'preparing' && control.phase !== 'active' ? 'The driver returns to its internal temperature sensor when the current permission expires.' : '',
+    `Before enabling or renewing external control, the controller confirms fresh pump readings show ON, HEAT and ${nativeTarget}. If that check fails, renewals stop and the current permission expires. Internal temperature control then uses the pump's current settings.`,
     `Missing or stale sensor readings also stop external control. A room setting of 16 °C or higher, or another heat-pump setting change, ends external temperature control.`].filter(Boolean).join('\n\n');
   return { value: mitsubishiValue('targetC', control.targetC), basis, detail, active, progress };
 }
+
+export const mitsubishiTemperatureControlHelp = 'Below 16 °C, Garage rear is the room sensor. The pump stays set to 17 °C, and an offset is added to the supplied temperature to maintain your lower room setting. Settings of 16 °C or higher use normal pump control.\n\nExternal control requires fresh sensor readings and confirmed pump settings: power on, heating mode and 17 °C. If these checks fail, renewals stop; the pump returns to its internal sensor when the current permission expires. Changing another pump setting also ends external temperature control.';
 
 /** Present reported settings and diagnostic measurements without promoting
  * provisional telemetry to control evidence or interpreting raw units. */
@@ -72,17 +77,19 @@ export function mitsubishiReadings(garage = {}, now = Date.now()) {
   const add = (key, label, group, unit, description, reading, value, nativeSetting) => {
     const at = reading?.measuredAt ?? reading?.sourceTime ?? (key === 'power' && nativeSetting ? native.powerAt : null);
     const quality = Array.isArray(reading?.quality) ? reading.quality : reading?.quality ? [reading.quality] : [];
-    if (quality.some(flag => /unknown|unsupported|invalid|sentinel/i.test(flag))) return;
+    // Keep every reading visible when its value becomes unknown or unsupported.
+    // Quality controls whether it can be presented as current, not row visibility.
     const supported = reading?.supported !== false;
     const fresh = connected && Number.isFinite(at) && at <= now && now - at < 120_000
       && reading?.stale !== true && !quality.some(value => /stale|invalid|unavailable|unsupported|unknown|sentinel/i.test(value));
-    const available = supported && scalar(value) && fresh && reading?.available !== false && (!nativeSetting || reading?.usable !== false);
+    const valid = scalar(value) && (key !== 'compressorActive' || typeof value === 'boolean');
+    const available = supported && valid && fresh && reading?.available !== false && (!nativeSetting || reading?.usable !== false);
     const last = mitsubishiValue(key, value, unit);
-    const qualifier = !supported ? 'Unsupported' : !scalar(value) ? 'No reading'
-      : !fresh ? 'Stale or unavailable' : nativeSetting ? 'Native readback'
+    const qualifier = !supported ? 'Unsupported' : !scalar(value) ? 'No reading' : !valid ? 'Invalid reading'
+      : !fresh ? 'Stale or unavailable' : !available ? 'Unavailable' : nativeSetting ? 'Native readback'
         : reading?.accuracyVerified === true ? 'Verified' : 'Provisional';
-    const detail = [description, !supported ? 'This reading is unsupported or its meaning is not established.'
-      : !scalar(value) ? 'No usable value has been reported.' : !available ? `Current value unavailable. Last reported: ${last}.`
+    const detail = [description, !supported ? 'This reading is unsupported or its meaning is not established.' : '',
+      !valid ? 'No usable value has been reported.' : !available ? `Current value unavailable. Last reported: ${last}.`
         : `Reported: ${last}.`, at != null && clock(at) ? `Measured ${clock(at)}.` : 'Measurement time unavailable.',
     Number.isFinite(reading?.receivedAt) ? `Received ${clock(reading.receivedAt)}.` : '',
     quality.length ? `Quality: ${quality.map(words).join(', ')}.` : '',
@@ -96,7 +103,6 @@ export function mitsubishiReadings(garage = {}, now = Date.now()) {
     const meta = mitsubishiSettings[key] ?? { label: words(key), description: 'Additional setting reported by the heat pump.' };
     const reading = readbacks[key] ?? (native[key] && typeof native[key] === 'object' ? native[key] : {});
     const value = reading.value ?? native[key];
-    if (reading.supported === false || !scalar(value)) continue;
     add(key, meta.label, 'Pump settings', meta.unit, meta.description, reading, value, true);
   }
   const telemetry = adapter.telemetry ?? {}, fields = new Map();
@@ -104,20 +110,25 @@ export function mitsubishiReadings(garage = {}, now = Date.now()) {
     const key = aliases[signal] ?? signal;
     if (!fields.get(key) || Object.hasOwn(telemetryMetadata, signal)) fields.set(key, reading);
   }
-  for (const [key, reading] of fields) {
-    if (reading?.supported !== true || !scalar(reading.value)) continue;
-    const [label, group, unit, description] = telemetryMetadata[key] ?? [words(key), 'Other readings', reading?.unit ?? '', 'Additional diagnostic reported by the heat pump.'];
-    add(key, label, group, unit, description, reading, reading?.value, false);
+  for (const key of new Set([...Object.keys(telemetryMetadata), ...fields.keys()])) {
+    const reading = fields.get(key);
+    const [label, group, unit, description, explanation] = telemetryMetadata[key] ?? [words(key), 'Other readings', reading?.unit ?? '', 'Additional diagnostic reported by the heat pump.'];
+    add(key, label, group, unit, description, reading ? { ...reading, supported: reading.supported === true } : undefined, reading?.value, false);
+    if (explanation) rows.at(-1).detail = `${explanation}\n\n${rows.at(-1).detail}`;
   }
-  return rows;
+  const groups = ['Operation', 'Temperatures', 'Electricity', 'Pump settings', 'Other readings'];
+  return rows.sort((a, b) => groups.indexOf(a.group) - groups.indexOf(b.group));
+}
+
+export function mitsubishiCompressor(garage = {}, now = Date.now()) {
+  const reading = mitsubishiReadings(garage, now).find(row => row.key === 'telemetry-compressorActive');
+  return { ...reading, value: reading.available ? reading.value : 'Unknown' };
 }
 
 export function renderMitsubishiReadings(document, status) {
   const root = document.getElementById('garage-native-readings');
   if (!root) return;
   const rows = mitsubishiReadings(status?.garage, status?.now), groups = [...new Set(rows.map(row => row.group))];
-  const fold = document.getElementById('garage-readings-details');
-  if (fold) fold.hidden = !rows.length;
   for (const table of [...root.children]) if (!groups.includes(table.dataset.group)) table.remove();
   for (const group of groups) {
     let table = [...root.children].find(node => node.dataset.group === group);
@@ -209,6 +220,9 @@ export function createMitsubishiControls({ document, request, onStatus = () => {
     const key = setting.value, control = mitsubishiControl(status, key), numeric = key === 'targetC';
     const temperatureHelp = $('garage-native-temperature-help');
     if (temperatureHelp) temperatureHelp.hidden = !numeric || !(control.min < 16 || room);
+    setStatusDetail($('garage-native-temperature-details'), { key: 'mitsubishi-temperature-control',
+      label: 'How it works', title: 'Room temperature control',
+      detail: room ? room.detail : mitsubishiTemperatureControlHelp });
     const values = (control.values ?? []).filter(scalar), signature = JSON.stringify([key, values]);
     $('garage-native-temperature-field').hidden = !numeric; $('garage-native-value-field').hidden = numeric;
     input.min = control.min ?? ''; input.max = control.max ?? ''; input.step = control.step ?? 'any';
@@ -228,9 +242,9 @@ export function createMitsubishiControls({ document, request, onStatus = () => {
     setStatusDetail($('garage-native-reported'), { key: `mitsubishi-selected-${key}`, title: mitsubishiSettings[key].label,
       label: reading?.value ?? 'Unavailable', detail: reading?.detail ?? 'Waiting for a current native readback.' });
     $('garage-native-status').textContent = control.available
-      ? numeric && control.min < 16 ? 'Saves your room setting. The status above confirms when Garage rear control is active.'
-        : room ? 'Changing this setting ends external temperature control after the supplied temperature is cleared.'
-          : 'Changes the selected pump setting. Wait for fresh pump confirmation. Automatic savings remain separate.'
+      ? numeric && control.min < 16 ? 'Saves your room setting. Wait for control confirmation.'
+        : room ? 'Changing this setting ends external temperature control.'
+          : 'Applies the setting. Wait for pump confirmation.'
       : /\s/.test(control.reason) ? control.reason : words(control.reason);
     if (!busy && !requestError) { message.textContent = mitsubishiResult(status?.garage?.nativeControls?.result);
       message.classList.toggle('form-error', ['rejected', 'uncertain', 'failed'].includes(status?.garage?.nativeControls?.result?.status)); }

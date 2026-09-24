@@ -139,7 +139,7 @@ export function createCaravanContents({ document, actions, blocked, readingsFor,
       const availability = allowed ? '' : `${help.textContent} `;
       help.textContent = `${availability}Power follows Caravan air: off at 1 °C or below, on at 2 °C or above. ${guard.colocated
         ? 'History is recorded while both air readings agree.' : 'Waiting for fresh, matching temperature and humidity; history is paused.'} ${guard.reason === 'appliance-unavailable'
-        ? 'Appliance unavailable; ST-MQ cannot confirm or change its power.' : guard.reason === 'air-unavailable'
+        ? 'Appliance unavailable; its power cannot be confirmed or changed.' : guard.reason === 'air-unavailable'
           ? 'Without fresh air readings, automatic control requests OFF when device control is available.' : ''}`;
     }
     const scoped = actionKind === 'dehumidifier' && actionDeviceId === appliance.id;

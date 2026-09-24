@@ -826,7 +826,7 @@ export class Engine {
   recordDhwr(expiresAt, now) {
     this.store.observation({ source:'controller',device:this.config.input,signal:'dhwr_request',value:1,
       unit:'state',sourceTime:now,receivedAt:now,quality:this.plant?['simulated']:['requested'],
-      raw:{expiresAt,verified:Boolean(this.plant),basis:'ST-MQ timed circulation request; physical DHWR state is not observed'} });
+      raw:{expiresAt,verified:Boolean(this.plant),basis:'Controller timed circulation request; physical DHWR state is not observed'} });
   }
   tick() {
     if (this.suspended) return structuredClone(this.latestStatus);
@@ -1120,7 +1120,7 @@ export class Engine {
       || decision.phase === 'recovery' && !decision.recoveryHoldActive) && dhwrEligible(now,lastPulseAt,'normal');
     decision.commands = decision.phase === 'reduction' ? ['reduction'] : pulse ? ['circulation','normal'] : ['normal'];
     decision.dhwr = { requested: pulse, durationMinutes: this.control.dhwrPulseMinutes, lastPulseAt: lastPulseAt ?? null,
-      basis: 'ST-MQ requests MQTT ON/OFF; measured positive power verifies on and zero verifies off.' };
+      basis: 'The controller requests MQTT ON/OFF; measured positive power verifies on and zero verifies off.' };
     decision.nextState = { phase: decision.phase };
     if (holdManualSettings) decision.manualHold = { until: override.expiresAt,
       phase: manualPause ? priorExecutor.manualRequested?.phase ?? this.applied.phase : this.applied.phase,

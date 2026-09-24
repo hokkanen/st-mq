@@ -588,7 +588,7 @@ export function planChargers({ now, chargers = [], prices = [], household = [], 
   // Keep this car in the peer forecasts below, including any later native start.
   const blockedTimers = jobs.filter(job => (value(job.charger, 'vehicleNotBefore') ?? now) >= job.targetAt);
   for (const job of blockedTimers) {
-    const warning = `${job.charger.label}: its vehicle timer prevents charging before ready-by; ST-MQ allows charging now and the vehicle still controls its start.`;
+    const warning = `${job.charger.label}: its vehicle timer prevents charging before ready-by; the controller allows charging now and the vehicle still controls its start.`;
     warnings.push(warning);
     Object.assign(plans[job.charger.id], { state: 'release', reason: 'vehicle-start-after-deadline',
       startAt: now, finalStartAt: now, periods: [{ startAt: now, endAt: null }],

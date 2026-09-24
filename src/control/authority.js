@@ -54,7 +54,7 @@ export async function standaloneAuthority({ config, onLoss, clock = Date.now, co
     canControl: () => !blocked && !closed,
     status: () => ({ state: blocked ? 'protected' : 'ready',
       stoppedAt: identity.stoppedAt ?? null,
-      reason: blocked ? 'Another ST-MQ controller won authority. This instance is read-only; use paired recovery before rejoining.' : null }),
+      reason: blocked ? 'Another controller won authority. This instance is read-only; use paired recovery before rejoining.' : null }),
     async reconfigure(connection) {
       if (JSON.stringify(announcements.connection) === JSON.stringify(connection)) return;
       await announcements.close(); announcements.connection = connection;

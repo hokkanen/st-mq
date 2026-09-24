@@ -1,7 +1,7 @@
 import { garageLearningCalculation } from './garage-learning-math.js';
 import { confirmAction } from './confirmation.js';
 import { isReadOnlyReplica } from './replica-status.js';
-import { mitsubishiReadings, mitsubishiRoomTemperature, renderMitsubishiReadings } from './mitsubishi.js';
+import { mitsubishiReadings, mitsubishiRoomTemperature, mitsubishiCompressor, renderMitsubishiReadings } from './mitsubishi.js';
 import { outdoorSourceLabel } from './provider-status.js';
 import { equipmentReadingRows } from './equipment.js';
 import { setStatusDetail } from './status-details.js';
@@ -352,6 +352,11 @@ export function renderGarage(document, status) {
   const power = nativeReading('power', 'Mitsubishi power', text);
   const mode = nativeReading('mode', 'Mitsubishi mode', text);
   const target = nativeReading('targetC', 'Native Mitsubishi target', value => number(value, '°C'));
+  const compressor = mitsubishiCompressor(garage, now);
+  set('garage-native-compressor', compressor.value);
+  const compressorNode = document.getElementById('garage-native-compressor');
+  compressorNode?.classList.toggle('stale', !compressor.available);
+  compressorNode?.classList.toggle('muted', !compressor.available);
   const room = mitsubishiRoomTemperature(garage);
   if (room) {
     set('garage-native-target', room.value);
@@ -362,7 +367,7 @@ export function renderGarage(document, status) {
   set('garage-native-target-basis', room?.basis ?? '');
   const targetBasis = document.getElementById('garage-native-target-basis');
   if (targetBasis) targetBasis.hidden = !room;
-  detail('garage-pump-reading-info', 'Reading details', 'Mitsubishi heat-pump readings', [power, mode, target].map(reading => reading.detail).join('\n\n'));
+  detail('garage-pump-reading-info', 'Reading details', 'Mitsubishi heat-pump readings', [power, mode, target, compressor].map(reading => reading.detail).join('\n\n'));
   const controls = garage.heatingControls ?? {}, action = garage.plan?.nextAction;
   const held = controls.paused && controls.holdUntil > now;
   const requested = controls.requestedMode === 'off' ? 'Off'

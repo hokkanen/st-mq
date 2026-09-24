@@ -875,7 +875,7 @@ test('completed setup does not imply complete fresh local measurements', () => {
   let display = easeeLocalConnectionDisplay({ localOcpp }, options);
   assert.equal(display.setup.label, 'Setup complete');
   assert.match(display.outage, /Normal service stop requests a return to cloud control.*paired handover keeps OCPP active/);
-  assert.match(display.outage, /crash or power loss.*waiting for approval.*Restart ST-MQ or disable Direct OCPP/);
+  assert.match(display.outage, /crash or power loss.*waiting for approval.*Restart the controller or disable Direct OCPP/);
   assert.match(display.outage, /Expiring pauses do not restore cloud authorization/);
   assert.equal(display.readings.label, 'Waiting for readings');
   assert.match(display.readings.detail, /acknowledge measurement settings/);
@@ -911,7 +911,7 @@ test('standalone endpoint requirement directs configuration without exposing pri
 test('native control readiness and exclusive cloud handover are pending rather than failed readings', () => {
   for (const [reason, label, detail] of [
     ['native-control-unavailable', 'Activation pending', /native scheduling and plug-in authorization.*current charging control is preserved/],
-    ['cloud-schedule-active', 'Waiting for cloud schedule', /cloud schedule owns charging.*preserving it/],
+    ['cloud-schedule-active', 'Waiting for cloud schedule', /cloud schedule owns charging.*preserved.*waits to activate/],
     ['control-transition-pending', 'Control handover pending', /finishing the current charging instruction.*confirmed handover/],
   ]) {
     const group = dashboardProviders({ providers: { easee: { status: 'ok', currentReadings: easeeReadings(),

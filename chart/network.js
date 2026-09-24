@@ -11,7 +11,7 @@ export function usesHomeAssistantLogin(pathname = location.pathname) {
 
 export function authenticationMessage(ingress) {
   return ingress
-    ? 'Your host session needs attention. Reopen ST-MQ from the host dashboard.'
+    ? 'Your host session needs attention. Reopen this application from the host dashboard.'
     : 'Enter your access token to view this installation.';
 }
 

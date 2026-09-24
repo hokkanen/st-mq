@@ -20,7 +20,7 @@ export function createOcppSetupAction({ document, request, getStatus, blocked = 
     pending = true;
     try {
       if (!await confirm({ document, title: 'Replace the charger’s OCPP connection?',
-        message: 'This replaces the charger’s existing OCPP server connection with this installation’s configured ST-MQ connection. Native OCPP takes over charging authorization and schedules from Easee cloud. Normal stop requests cloud handback. After a crash or power loss, charging may wait for approval until ST-MQ restarts or Direct OCPP is disabled through Easee configuration.',
+        message: 'This replaces the charger’s existing OCPP server connection with this installation’s configured local connection. Native OCPP takes over charging authorization and schedules from Easee cloud. Normal stop requests cloud handback. After a crash or power loss, charging may wait for approval until the controller restarts or Direct OCPP is disabled through Easee configuration.',
         action: 'Set up local connection' })) return;
       if (blocked() || ocppSetupRevision(getStatus()) !== revision) {
         onMessage('Charger setup or control authority changed. Review the current status before trying again.', true);

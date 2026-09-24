@@ -114,7 +114,7 @@ export function replicaDisplay(status, { now = status?.now ?? Date.now(), format
     : `Database identity verified ${formatTime(verifiedAt)}. Later primary changes are copied on the next synchronization.`;
   const protectedHistory = status?.pairing?.enabled === true && status.pairing.role === 'protected';
   return { state, available, snapshotAt, lastSuccessAt, verifiedAt,
-    summary: stoppedController ? 'Another ST-MQ controller won authority. This controller is stopped and its local history is protected for manual recovery.'
+    summary: stoppedController ? 'Another controller won authority. This controller is stopped and its local history is protected for manual recovery.'
       : protectedHistory ? 'Local history is protected. Mirroring will resume only after the master explicitly resolves recovery.' : summary,
     snapshot: stoppedController ? snapshotAt ? `Local history snapshot: ${formatTime(snapshotAt)}.` : 'Showing the preserved local history.' : snapshot,
     success: stoppedController ? '' : success,
@@ -183,7 +183,7 @@ export function renderReplicaStatus(document, status, { formatTime = at => new D
     : status.pairing?.role === 'protected' ? 'PROTECTED RECOVERY · HOME CONTROL DISABLED'
     : status.pairing?.transition ? 'ROLE CHANGE · WAITING FOR CONFIRMATION'
       : `${paired ? 'READ-ONLY HISTORY' : 'READ-ONLY REPLICA'} · ${display.state === 'ready' ? 'HISTORY AVAILABLE' : display.state === 'waiting' ? 'WAITING FOR SNAPSHOT' : 'SYNC NEEDS ATTENTION'}`;
-  $('context').textContent = stoppedController ? 'Another ST-MQ controller owns control. This computer preserves its local history and remains read-only until its history is explicitly recovered.'
+  $('context').textContent = stoppedController ? 'Another controller owns control. This computer preserves its local history and remains read-only until its history is explicitly recovered.'
     : paired && status.pairing.role === 'protected' ? 'Local history is protected for recovery. This computer does not record measurements or control devices. Use the master’s Paired computers section to check this history, then recover its gaps or explicitly discard them before resuming mirroring.'
     : 'Recorded history from the primary computer. This viewer does not connect to devices or control the home. The primary’s current operating state is unknown.';
   for (const node of document.querySelectorAll('[data-snapshot-content]')) node.hidden = !display.available;
