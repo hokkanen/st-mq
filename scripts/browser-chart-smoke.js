@@ -709,7 +709,11 @@ try {
   // Supply capture health independently of the manual-command broker fixture.
   // No MQTT connection, household identifiers or raw TeslaMate fields are used.
   let charger2Status = { source: 'shelly-evse', enabled: true, status: 'ok', reason: 'physical-meter',
-    connected: true, recording: true };
+    connected: true, recording: true, maxAgeMs: 300000,
+    readings: Object.fromEntries([
+      ...[1,2,3].flatMap(phase => [[`ev2_current_l${phase}`,10,'A'],[`ev2_voltage_l${phase}`,230,'V'],[`ev2_active_power_l${phase}`,2.3,'kW']]),
+      ['ev2_active_power',6.9,'kW'],['ev2_import_energy_counter',123.4,'kWh'],['ev2_session_energy',4.2,'kWh'],
+    ].map(([signal,value,unit]) => [signal,{value,unit,sourceTime:now,receivedAt:now,available:true,quality:[]}])) };
   const realProviderStatus = app.engine.providerStatus.bind(app.engine);
   app.engine.providerStatus = () => ({ ...realProviderStatus(), 'shelly-evse': { ...charger2Status } });
   seedChargingFixture(app.store,'shelly-evse');
@@ -770,8 +774,10 @@ try {
   const electricitySeries = JSON.parse(await evaluate(`JSON.stringify([...document.querySelectorAll(
     '[data-provider=electricity] .provider-series > li > strong')].map(row => row.textContent))`));
   assert.deepEqual(electricitySeries.filter(label => label.startsWith('Charger 2')), [
-    'Charger 2 total power', 'Charger 2 total energy', 'Charger 2 session check',
-  ], 'Charger 2 exposes total quantities and the audit reference without invented phase readings');
+    'Charger 2 phase currents L1–L3', 'Charger 2 phase voltages L1–L3', 'Charger 2 phase active power L1–L3',
+    'Charger 2 active power', 'Charger 2 meter counter', 'Charger 2 total energy', 'Charger 2 session energy', 'Charger 2 session check',
+  ], 'Charger 2 exposes supported native phase readings separately from total and session energy');
+  assert.equal(electricitySeries.includes('Charger 2 phase energy L1–L3'), false, 'Native total energy is never represented as measured phase energy');
   for (const label of ['Property phase energy L1–L3', 'Charger 1 phase energy L1–L3'])
     assert.ok(electricitySeries.includes(label), `${label} remains in the combined catalogue`);
   const electricityOverview = () => evaluate(`JSON.stringify((() => {
@@ -787,7 +793,7 @@ try {
         accessible: node.getAttribute('aria-label'),
       }));
       const bullets = [...document.querySelectorAll('[data-provider=electricity] .provider-series > li')].map(node => ({
-        label: node.querySelector('strong').textContent, state: node.dataset.state,
+        label: node.querySelector('strong').textContent, series: node.dataset.series, state: node.dataset.state,
         color: getComputedStyle(node.querySelector('.provider-series-value'), '::before').backgroundColor, accessible: node.getAttribute('aria-label'),
       }));
       return {names, bullets};
@@ -798,8 +804,11 @@ try {
     assert.equal(easee.color === shelly.color, !needsAttention, 'Provider names follow their individual availability');
     for (const bullet of result.bullets) {
       const provider = bullet.label.startsWith('Charger 2') ? shelly : easee;
-      assert.equal(bullet.color, provider.color, `${bullet.label}: bullet and provider use the same status color`);
-      assert.equal(bullet.state, provider.state);
+      const nativeFresh = bullet.series.startsWith('ev2_') && bullet.series !== 'ev2_energy';
+      assert.equal(bullet.color, nativeFresh ? easee.color : provider.color,
+        `${bullet.label}: color follows fresh measurement availability or provider-dependent capture status`);
+      assert.equal(bullet.state, nativeFresh ? 'available' : provider.state,
+        'Fresh native readings remain available independently of charging-control commissioning');
       assert(bullet.accessible, 'Status is available without relying on color');
     }
   };
@@ -829,8 +838,8 @@ try {
   charger2Status = { ...charger2Status, status: 'ok', reason: 'physical-meter' };
   await evaluate("document.getElementById('auth').dispatchEvent(new Event('submit', { cancelable: true })); true");
   await until("document.querySelector('[data-provider=electricity] .provider-category-state').textContent === 'Available'");
-  assert.equal(await evaluate("document.querySelector('#providers > :last-child').dataset.provider"), 'weather', 'Weather forecast is the final provider');
-  assert.equal(await evaluate("document.querySelector('#provider-overview #providers > :last-child .provider-category-title').textContent"), 'Weather forecast', 'Weather forecast is last in the source overview');
+  assert.equal(await evaluate("document.querySelector('#providers > :last-child').dataset.provider"), 'main-temperatures', 'Temperature and weather feeds form the final category');
+  assert.equal(await evaluate("document.querySelector('#provider-overview #providers > :last-child .provider-category-title').textContent"), 'Main temperatures & Weather', 'The combined temperature and weather category is last in the source overview');
   assert.equal(await evaluate("document.getElementById('weather-status').textContent.includes('FMI')"), true);
   assert.equal(testConnections, 0, 'Configured manual tests do not connect during startup or polling');
   assert.equal(await evaluate("document.getElementById('home-equipment-details').open"), false);
@@ -882,7 +891,7 @@ try {
   await capture('home-energy-provider-fixture-mobile');
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ result: 'chart-browser-smoke-passed', browserTimeZone, timings,
-    electricityConnections: ['combined-source-overview-and-connection', 'charger2-total-series-and-session-check',
+    electricityConnections: ['combined-source-overview-and-connection', 'charger2-native-phase-readings-and-total-energy',
       'source-scoped-charger2-errors', 'keyboard-expansion', 'refresh-preserves-expansion'],
     chargingChecks:['charger2-visible-power-dark-and-light','charger2-visible-with-lower-loads-hidden-or-absent','charger2-no-invented-phases','exactly-two-charger-session-axes','property-latest-plus-charger-session-averages','session-counts-exclusions-and-energy-weighting'],
     checked: ['electricity-first-without-right-axis-duplicates', 'four-coefficients-from-read-only-replay', 'coefficient-visible-pixels-and-status', 'last-theme-restored-on-reload', 'theme-toggle', 'Finnish-today', 'single-old-day', 'immediate-end-date', 'immediate-date-range', 'one-day-window-stepping', 'rapid-range-stepping', 'calendar-boundary-stepping', 'compact-responsive-arrow-buttons', 'range-validation', 'shortcut-order-and-state', 'axis-and-legend-selection', 'property-and-charger-visible-pixels', 'asynchronous-provider-phase-power', 'historical-charger-assumed-rates', 'timing-evidence-shares-and-dates', 'heating-model-and-timing-selector-keyboard-touch', 'heating-saving-selection-refresh-reload-persistence', 'heating-model-positive-zero-negative-and-unavailable', 'timing-reconstructed-and-unavailable', 'timing-consistent-elapsed-time-coverage-and-standby-exclusion', 'timing-equal-closed-card-heights-and-independent-expansion', 'timing-stable-heading-and-fold-positions', 'timing-nested-fold-keyboard-touch-and-refresh', 'timing-dark-light-responsive-inline-explanations', 'grouped-history-catalogue', 'recording-frequencies', 'recording-inventory-lazy-fetch', 'recording-inventory-keyboard-mobile', 'recording-inventory-refresh-and-error-preservation', 'physical-storage-accounting', 'reconstructed-heat-pump-note', 'audit-only-diagnostics', 'price-defaults', 'date-races', 'tomorrow-only', 'desktop-mobile', 'Finnish-away-and-pause', 'independent-cancellation', 'draft-poll-preservation', 'DST-atomic-rejection', 'read-only-rates', 'home-model-settings-with-folded-equipment', 'equipment-grouped-readings-and-manual-controls', 'status-detail-escape-outside-dismissal-and-focus', 'status-detail-poll-preservation', 'status-detail-bounded-mobile-and-landscape', 'dynamic-equipment-rows-and-inline-controls', 'nested-learning-keyboard', 'closed-away-and-pause-deadlines', 'provider-sources-and-fallbacks', 'collapsed-MQTT-tests', 'MQTT-publish-acknowledgement-and-failure', 'MQTT-draft-preservation'] }, null, 2));

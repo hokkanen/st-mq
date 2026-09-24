@@ -5,6 +5,7 @@ import { recordChargingSessionCheck } from '../app/charging-session-checks.js';
 const finite = Number.isFinite;
 const copy = value => structuredClone(value);
 const TYPES = { current_limit: 'Number', start_charging: 'Boolean', work_state: 'Enum', phase_info: 'Object', energy_charge: 'Number', time_charge: 'Number' };
+const PHASE_KEYS = ['phase_a', 'phase_b', 'phase_c'];
 const METHODS = new Set(['Shelly.GetDeviceInfo', 'Service.GetConfig', 'Service.GetStatus', 'Schedule.List', ...Object.values(TYPES).map(type => `${type}.GetConfig`), ...Object.values(TYPES).map(type => `${type}.GetStatus`), 'Number.Set', 'Boolean.Set']);
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const fail = code => Object.assign(new Error(code), { code });
@@ -247,7 +248,36 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     readAt: clock(), nativeScheduleActive: Boolean(nativeSchedules?.jobs.some(job => job.enable)), fields: copy(state.fields), session: copy(state.connection), error, generation,
     commissioning: { verified: config.verified, identityMatched: discovered, controlReady: ready(), controllerLossFallback: 'unverified',
       nativeCaps: service ? { energyKwh: service.global_charge_limit, durationMinutes: service.global_time_limit, autoCharge: service.auto_charge, state: serviceStatus?.state, restricted: Boolean(serviceStatus?.errors?.length || serviceStatus?.flags?.length) } : null } });
-  const adapter = { association, config, snapshot, refresh, rpc, accept, capabilities: { scheduling: true, currentControl: true, externalLoadBalancing: false },
+  // Public electrical readings retain the native source clock and installation
+  // phase order. These are current observations, not additional history channels.
+  const readings = (now = clock()) => {
+    const reading = (value, unit, role = 'phase_info') => {
+      const field = state.fields[role], quality = [];
+      if (!field || !finite(value)) quality.push('missing');
+      if (field?.retained) quality.push('retained');
+      if (field && (!finite(field.measuredAt) || field.measuredAt <= 0)) quality.push('source_time_unknown');
+      else if (field?.measuredAt > now) quality.push('future_source_time');
+      else if (field && now - field.measuredAt > config.maxAgeMs) quality.push('stale');
+      if (!connected || !admitted) quality.push('mqtt-disconnected');
+      else if (!online) quality.push('device-offline');
+      return { value: finite(value) ? value : null, unit, source: 'shelly-evse',
+        sourceTime: field?.measuredAt ?? null, receivedAt: field?.receivedAt ?? null,
+        available: quality.length === 0, quality, acquisitionOnly: true };
+    };
+    const physical = state.fields.phase_info?.value;
+    return Object.fromEntries([
+      ...config.phaseMap.flatMap((nativePhase, index) => {
+        const phase = physical?.[PHASE_KEYS[nativePhase]], suffix = `l${index + 1}`;
+        return [[`ev2_current_${suffix}`, reading(phase?.current, 'A')],
+          [`ev2_voltage_${suffix}`, reading(phase?.voltage, 'V')],
+          [`ev2_active_power_${suffix}`, reading(finite(phase?.power) ? phase.power / 1000 : null, 'kW')]];
+      }),
+      ['ev2_active_power', reading(finite(physical?.total_power) ? physical.total_power / 1000 : null, 'kW')],
+      ['ev2_import_energy_counter', reading(physical?.total_act_energy, 'kWh')],
+      ['ev2_session_energy', reading(state.fields.energy_charge?.value, 'kWh', 'energy_charge')],
+    ]);
+  };
+  const adapter = { association, config, snapshot, readings, refresh, rpc, accept, capabilities: { scheduling: true, currentControl: true, externalLoadBalancing: false },
     normalize(_snapshot, { now = clock() } = {}) {
       const physical = state.fields.phase_info, phases = physical?.value;
       const knownState = [...config.connectedStates, ...config.chargingStates, ...config.disconnectedStates].includes(state.fields.work_state?.value);

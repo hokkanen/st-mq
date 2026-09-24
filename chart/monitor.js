@@ -293,12 +293,12 @@ function renderProviderSeries(root, rows, { datasets = false } = {}) {
     let item = [...list.children].find(item => item.dataset.series === key);
     if (!item) {
       item = document.createElement('li'); item.dataset.series = key;
-      item.append(document.createElement('strong'), document.createElement('span'), document.createElement('small'));
+      item.append(document.createElement('strong'), document.createElement('span'), document.createElement('small'), document.createElement('p'));
     }
     if (list.children[index] !== item) list.insertBefore(item, list.children[index] ?? null);
     item.dataset.state = row.tone ?? 'pending';
     if (row.state) item.setAttribute('aria-label', `${row.label}: ${row.value ?? row.state}${row.value ? `, ${row.state}` : ''}`);
-    const title = item.children[0], value = item.children[1], source = item.children[2];
+    const title = item.children[0], value = item.children[1], source = item.children[2], description = item.children[3];
     title.textContent = `${row.label}${!datasets && row.unit ? ` · ${row.unit}` : ''}`;
     if (row.state) {
       value.className = 'provider-series-value';
@@ -306,13 +306,16 @@ function renderProviderSeries(root, rows, { datasets = false } = {}) {
         label: datasets && row.value && row.value !== row.state ? `${row.value} · ${row.state}` : row.value ?? row.state,
         title: row.label, detail: `${row.state}. ${row.statusDetail ? `${row.statusDetail} ` : ''}${row.detail}${row.source ? ` Source: ${row.source}.` : ''}` });
       source.className = 'provider-series-source';
-      source.textContent = datasets ? [row.source, row.unit && !row.value ? row.unit : ''].filter(Boolean).join(' · ') : row.source ?? '';
+      source.textContent = datasets ? [row.source, row.unit && !row.value ? row.unit : '', row.reported].filter(Boolean).join(' · ') : row.source ?? '';
       source.hidden = !source.textContent;
     } else {
       value.className = 'provider-series-description';
       value.textContent = `${row.detail}${row.source ? ` Source: ${row.source}.` : ''}`;
       source.hidden = true;
     }
+    description.className = 'provider-series-description';
+    description.textContent = row.description ?? '';
+    description.hidden = !description.textContent;
   }
 }
 function renderProviders(s) {
@@ -342,7 +345,7 @@ function renderProviders(s) {
       const introduction = document.createElement('p'); introduction.className = 'muted provider-introduction';
       const detail = document.createElement('p'); detail.className = 'muted provider-health';
       const local = document.createElement('details'); local.className = 'provider-local-connection provider-detail-fold';
-      const localTitle = document.createElement('summary'); localTitle.textContent = 'Connection setup & cloud backup';
+      const localTitle = document.createElement('summary'); localTitle.textContent = 'Local connection & charging control';
       const localRows = document.createElement('dl');
       for (const [name, label] of [['setup', 'Charger setup'], ['readings', 'Local readings']]) {
         const term = document.createElement('dt'), value = document.createElement('dd');
@@ -350,18 +353,18 @@ function renderProviders(s) {
       }
       const endpoint = document.createElement('p'); endpoint.className = 'provider-local-endpoint';
       const localHelp = document.createElement('p'); localHelp.className = 'provider-local-help';
+      const localBackup = document.createElement('p'); localBackup.className = 'provider-local-backup';
       const localOutage = document.createElement('p'); localOutage.className = 'provider-local-outage';
       const adopt = document.createElement('button'); adopt.type = 'button'; adopt.className = 'secondary-button provider-local-adopt';
       adopt.textContent = 'Set up local connection'; adopt.addEventListener('click', adoptOcppSetup);
       const localMessage = document.createElement('p'); localMessage.className = 'provider-local-message';
       localMessage.setAttribute('role', 'status'); localMessage.setAttribute('aria-live', 'polite');
-      local.append(localTitle, localRows, endpoint, localHelp, localOutage, adopt, localMessage);
+      local.append(localTitle, localRows, endpoint, localHelp, localBackup, localOutage, adopt, localMessage);
       const readings = document.createElement('div'); readings.className = 'provider-series-content';
       const sections = document.createElement('div'); sections.className = 'provider-source-sections';
-      const vehicles = document.createElement('div'); vehicles.className = 'equipment-connection-list';
-      if (key === 'vehicle-telemetry') vehicles.id = 'vehicle-telemetry-connections';
-      vehicles.hidden = key !== 'vehicle-telemetry';
-      body.append(introduction, detail, sections, local, readings, vehicles); fold.append(summary, body); row.append(fold);
+      body.append(introduction, detail, sections);
+      if (key === 'electricity') body.append(local);
+      body.append(readings); fold.append(summary, body); row.append(fold);
     }
     if (list.children[index] !== row) list.insertBefore(row, list.children[index] ?? null);
     row.dataset.state = display.attention ? 'attention' : backup ? 'backup'
@@ -379,10 +382,12 @@ function renderProviders(s) {
       name.setAttribute('aria-label', name.title); source.append(name);
     }
     row.querySelector('.provider-introduction').textContent = entry.introduction;
-    setStatusDetail(row.querySelector('.provider-health'), { key: `provider-health-${key}`,
+    const health = row.querySelector('.provider-health');
+    health.hidden = key === 'vehicle-telemetry';
+    setStatusDetail(health, { key: `provider-health-${key}`,
       label: 'Source details', title: overviewTitle, detail: `${display.state}. ${display.detail}` });
     const local = row.querySelector('.provider-local-connection');
-    local.hidden = !entry.localConnection;
+    if (local) local.hidden = !entry.localConnection;
     if (entry.localConnection) {
       const connection = entry.localConnection;
       for (const name of ['setup', 'readings']) {
@@ -392,7 +397,10 @@ function renderProviders(s) {
           title: name === 'setup' ? 'Charger setup' : 'Local readings', detail: status.detail });
       }
       local.querySelector('.provider-local-endpoint').textContent = `${connection.endpoint}. ${connection.setup.detail}`;
-      local.querySelector('.provider-local-help').textContent = `${connection.detail} Cloud backup restores electricity readings; it does not automatically transfer native charging control back to the cloud.`;
+      local.querySelector('.provider-local-help').textContent = connection.detail;
+      const backup = local.querySelector('.provider-local-backup');
+      const backupTitle = document.createElement('strong'); backupTitle.textContent = 'Cloud backup. ';
+      backup.replaceChildren(backupTitle, document.createTextNode('Available cloud readings can replace missing local readings. Charging authorization stays with OCPP until cloud control is restored.'));
       const outage = local.querySelector('.provider-local-outage');
       const outageTitle = document.createElement('strong'); outageTitle.textContent = 'If the controller stops. ';
       outage.replaceChildren(outageTitle, document.createTextNode(connection.outage));
@@ -418,8 +426,9 @@ function renderProviders(s) {
       if (sections.children[sectionIndex] !== content) sections.insertBefore(content, sections.children[sectionIndex] ?? null);
       content.querySelector('.provider-source-title').textContent = section.title;
       content.querySelector('.provider-source-description').textContent = section.description;
-      renderProviderSeries(content.querySelector('.provider-source-readings'), section.datasets, { datasets: true });
-      if (section.key === 'easee-ocpp' && local.parentElement !== content) content.append(local);
+      const sectionReadings = content.querySelector('.provider-source-readings');
+      renderProviderSeries(sectionReadings, section.datasets, { datasets: true });
+      if (section.key === 'easee-ocpp' && local.nextElementSibling !== sectionReadings) content.insertBefore(local, sectionReadings);
     }
     const readings = row.querySelector('.provider-series-content');
     readings.hidden = Boolean(entry.sections?.length);

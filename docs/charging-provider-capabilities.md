@@ -3,6 +3,8 @@
 | Capability | Charger 1: Easee | Charger 2: Shelly EVSE | TeslaMate / BMW |
 | --- | --- | --- | --- |
 | Physical home energy | Easee phase intervals | Shelly native meter deltas | Never |
+| Live phase currents and voltages | L1–L3; local OCPP phase-neutral voltage, cloud terminal voltages require verified mapping | L1–L3 from native `phase_info`, in configured phase order | Never used as charger meter readings |
+| Live active power | Reported total; phase energy is estimated | Native phase power and total power | Never used as charger meter readings |
 | Connection lifecycle | Timestamped Easee state | Commissioned physical work-state mapping | Corroborating vehicle edges |
 | Economic control | Exclusive cloud delayed starts or native OCPP expiring 0 A transaction pauses | EVSE start/stop over MQTT RPC | No vehicle writes |
 | Current changes by ST-MQ | Native OCPP may impose an expiring 0 A pause; no positive-current setpoint | Verified common current | Read native limits only |
@@ -23,6 +25,21 @@ waiting for approval. Restart ST-MQ or disable Direct OCPP through Easee
 configuration; an expired pause does not restore cloud authorization.
 
 The Charger 2 profile targets the [Top AC Portable EV Charger](https://shelly-api-docs.shelly.cloud/gen2/Devices/ShellyX/XT1/TopACPortableEVCharger/) on Shelly XT1. The integration uses the documented EVSE roles for state, current, start permission and electrical data. This is not a generic Shelly relay adapter. [XT1](https://shelly-api-docs.shelly.cloud/gen2/Devices/ShellyX/XT1/) documents role addressing, service state and access permissions; [Number](https://shelly-api-docs.shelly.cloud/gen2/DynamicComponents/Virtual/Number/) documents numeric limits and `meta.ui.step`.
+
+The device documentation's `phase_info` response supplies `phase_a`, `phase_b` and
+`phase_c`, each with `voltage`, `current` and `power`, plus `total_power` and
+`total_act_energy`. The public provider status exposes phase currents (A), voltages
+(V), active powers (converted from W to kW), total active power, the accumulated
+total (kWh) and the separate `energy_charge` session reading (kWh). `phaseMap`
+assigns the native phases to installation L1–L3. Original measurement and receipt
+times remain visible; missing, retained, stale or disconnected readings are
+unavailable even when charger control is commissioned. Conversely, valid read-only
+measurements do not require permission to control charging.
+
+The manual documents accumulated energy only as a total. No native phase-energy
+counters are advertised or created, and current phase values do not become extra
+recorded history. Easee keeps its existing measured L1–L3 current/voltage readings,
+reported total active power and explicitly estimated phase-energy intervals.
 
 ## Commissioning contract
 

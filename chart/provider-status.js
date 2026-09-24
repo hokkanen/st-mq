@@ -89,10 +89,20 @@ export function providerSeries(job, health = {}) {
   if (job === 'teslamate') return [];
   if (job === 'shelly-evse') {
     return [
-      seriesRow(['charger2_power'], 'Charger 2 total power', 'kW',
-        'Interval-average power from physical Charger 2 electricity. Phase distribution is not recorded.', 'Shelly EVSE'),
+      seriesRow(phaseSignals('ev2_current'), 'Charger 2 phase currents L1–L3', 'A',
+        'Measured current on each phase, using the configured phase mapping and original charger measurement time.', 'Shelly EVSE'),
+      seriesRow(phaseSignals('ev2_voltage'), 'Charger 2 phase voltages L1–L3', 'V',
+        'Measured voltage on each phase, using the configured phase mapping and original charger measurement time.', 'Shelly EVSE'),
+      seriesRow(phaseSignals('ev2_active_power'), 'Charger 2 phase active power L1–L3', 'kW',
+        'Measured active power on each phase, converted from watts to kilowatts. These are live readings, separate from interval-average chart power.', 'Shelly EVSE'),
+      seriesRow(['ev2_active_power'], 'Charger 2 active power', 'kW',
+        'Reported total active power, converted from watts to kilowatts. Historical chart power is calculated from recorded total energy.', 'Shelly EVSE'),
+      seriesRow(['ev2_import_energy_counter'], 'Charger 2 meter counter', 'kWh',
+        'Native cumulative total energy. The charger reports a total counter, without separate phase energy counters.', 'Shelly EVSE'),
       seriesRow(['ev2_energy'], 'Charger 2 total energy', 'kWh',
         'Native physical charger meter differences. Resets, gaps and invalid source clocks are excluded.', 'Shelly EVSE'),
+      seriesRow(['ev2_session_energy'], 'Charger 2 session energy', 'kWh',
+        'Energy reported by the charger for its current charging session, with its own measurement time.', 'Shelly EVSE'),
       seriesRow(['shelly_session_energy_check'], 'Charger 2 session check', 'kWh',
         'Physical meter reference compared with recorded power integration. Incomplete connection boundaries are excluded.', 'Shelly EVSE'),
     ];
@@ -205,26 +215,52 @@ function electricityDisplay(entries, options) {
     return health ? describeProvider(key, health, options)
       : { title: jobs[key], state: 'Not configured', attention: false, detail: 'No connection configured.' };
   });
+  const series = electricityJobs.flatMap((key, index) => providerSeries(key, entries.find(([job]) => job === key)?.[1]).map(row => {
+      const health = entries.find(([job]) => job === key)?.[1];
+      const scope = row.signals[0].startsWith('property_') ? 'property' : 'charger';
+      const current = key === 'easee' && health?.currentReadings?.[scope];
+      let display = current ? describeProvider(key, { ...health, currentReadings: { [scope]: current },
+        error: current.error, status: current.error ? 'error' : health.status === 'error' ? 'ok' : health.status,
+        qualityIssues: current.qualityIssues ?? [] }, options) : displays[index];
+      if (key === 'shelly-evse' && row.signals.every(signal => signal !== 'ev2_energy' && signal !== 'shelly_session_energy_check')
+        && !inactiveStates.includes(display.state)) {
+        const readings = row.signals.map(signal => health?.readings?.[signal]);
+        const now = options?.now ?? Date.now();
+        const usable = readings.filter(reading => reading?.available === true && Number.isFinite(reading.value)
+          && Number.isFinite(reading.sourceTime) && reading.sourceTime > 0 && reading.sourceTime <= now
+          && Number.isFinite(health.maxAgeMs) && now - reading.sourceTime <= health.maxAgeMs).length;
+        const attention = display.attention || readings.some(reading => reading?.quality?.some(flag =>
+          ['stale', 'future_source_time', 'invalid_numeric', 'invalid_unit'].includes(flag)))
+          || readings.some(reading => Number.isFinite(reading?.sourceTime) && Number.isFinite(health.maxAgeMs)
+            && (reading.sourceTime > now || now - reading.sourceTime > health.maxAgeMs));
+        display = usable === readings.length ? { state: 'Available', attention: false }
+          : { state: usable ? 'Partly available' : attention ? 'Needs attention' : 'Waiting for readings', attention,
+            detail: 'Complete fresh charger readings are required. Retained, missing or old measurements remain unavailable.' };
+      }
+      return withStatus(row, display);
+    }));
+  const shellyIndex = electricityJobs.indexOf('shelly-evse'), shelly = displays[shellyIndex];
+  if (!shelly.attention && !inactiveStates.includes(shelly.state)) {
+    const rows = series.filter(row => row.source === 'Shelly EVSE');
+    const incomplete = rows.filter(row => row.state !== 'Available');
+    if (incomplete.length) displays[shellyIndex] = { ...shelly,
+      state: incomplete.some(row => row.tone === 'attention') ? 'Needs attention'
+        : rows.some(row => row.state === 'Available' || row.state === 'Partly available') ? 'Partly available' : 'Waiting for readings',
+      attention: incomplete.some(row => row.tone === 'attention'),
+      detail: `${shelly.detail} Some charger measurements are unavailable. Check the individual readings below.` };
+  }
   const active = displays.filter(display => !inactiveStates.includes(display.state));
   const attention = active.some(display => display.attention);
   const available = active.filter(display => display.state === 'Available').length;
   const state = attention ? 'Needs attention' : active.length && available === active.length ? 'Available'
-    : available ? 'Partly available' : active.some(display => display.state === 'Updating') ? 'Updating'
-      : active.length ? 'Waiting for readings' : displays.every(display => display.state === 'Not enabled') ? 'Not enabled' : 'Not configured';
+    : available || active.some(display => display.state === 'Partly available') ? 'Partly available'
+      : active.some(display => display.state === 'Updating') ? 'Updating'
+        : active.length ? 'Waiting for readings' : displays.every(display => display.state === 'Not enabled') ? 'Not enabled' : 'Not configured';
   return { key: 'electricity', overviewTitle: 'Electricity consumption', source: 'Easee, Shelly EVSE', backup: false,
     localConnection: easeeLocalConnectionDisplay(entries.find(([job]) => job === 'easee')?.[1], options),
     sourceStates: electricityJobs.map((key, index) => sourceStatus(providerName(key), displays[index])),
     display: { title: 'Electricity consumption · Easee, Shelly EVSE', state, attention,
-      detail: displays.map(display => `${display.title}: ${display.state}. ${display.detail}`).join(' ') },
-    series: electricityJobs.flatMap((key, index) => providerSeries(key, entries.find(([job]) => job === key)?.[1]).map(row => {
-      const health = entries.find(([job]) => job === key)?.[1];
-      const scope = row.signals[0].startsWith('property_') ? 'property' : 'charger';
-      const current = key === 'easee' && health?.currentReadings?.[scope];
-      const display = current ? describeProvider(key, { ...health, currentReadings: { [scope]: current },
-        error: current.error, status: current.error ? 'error' : health.status === 'error' ? 'ok' : health.status,
-        qualityIssues: current.qualityIssues ?? [] }, options) : displays[index];
-      return withStatus(row, display);
-    })) };
+      detail: displays.map(display => `${display.title}: ${display.state}. ${display.detail}`).join(' ') }, series };
 }
 
 const datasetStatus = (row, state, detail, attention = false) => {
@@ -309,7 +345,7 @@ function detailedDatasets(group, status, options) {
 const providerIntroductions = {
   electricity: 'Electricity readings come from the property meter and each charger. These sources supply consumption history and charging decisions.',
   market: 'Day-ahead electricity prices come from ENTSO-E, with Elering as backup. Your contract, transfer charges and VAT determine the all-in price for each interval.',
-  'vehicle-telemetry': 'Vehicle services send readings over MQTT. Available charge, charge target and battery capacity are used when a vehicle is identified at a charger. Each reading keeps its original measurement time.',
+  'vehicle-telemetry': 'Vehicle services supply charge, charge target and available battery capacity for charging plans when a vehicle is identified at a charger. Readings keep their source time, or their first receipt time when no measurement time is supplied.',
   'main-temperatures': 'Local MQTT and Shelly sensors report indoor and garage temperatures. FMI supplies outdoor observations and weather forecasts, with Open-Meteo as backup. These readings support heating control and forecasts.',
 };
 
@@ -326,8 +362,13 @@ function vehicleDisplay(status) {
     const worst = members.find(summary => summary.state === 'attention') ?? members.find(summary => summary.state === 'pending') ?? members[0];
     return { label, state: worst.label, tone: worst.state };
   });
+  const datasets = connections.map((connection, index) => ({
+    signals: [`vehicle_feed_${connection.id}`], label: connection.label, source: connection.source,
+    state: summaries[index].label, tone: summaries[index].state, reported: summaries[index].recent,
+    description: connection.feedDetail, detail: `${connection.feedDetail} ${summaries[index].recent}.`,
+  }));
   return { key: 'vehicle-telemetry', overviewTitle: 'Vehicle telemetry', source: sourceStates.map(row => row.label).join(', ') || 'No vehicle feeds configured',
-    sourceStates, series: [], datasets: [], backup: false,
+    sourceStates, series: [], datasets, backup: false,
     display: { title: 'Vehicle telemetry', state, attention,
       detail: summaries.length ? summaries.map(summary => `${summary.source}: ${summary.label}. ${summary.recent}.`).join(' ')
         : 'Configure a vehicle MQTT feed to receive charging inputs.' } };
@@ -392,8 +433,8 @@ export function dashboardProviders(status, options) {
         datasets: consumption.datasets.filter(row => row.signals[0].startsWith('property_') || row.signals[0] === 'ev1_session_energy_check') },
       { key: 'easee-ocpp', title: 'Easee OCPP', description: 'Charger 1 sends electricity readings directly to this controller through local OCPP. Available Easee cloud readings provide a backup when local readings are unavailable.',
         datasets: consumption.datasets.filter(row => row.signals[0].startsWith('ev1_') && row.signals[0] !== 'ev1_session_energy_check') },
-      { key: 'shelly-evse', title: 'Shelly EVSE', description: 'Charger 2 sends its physical power and energy readings over MQTT. Its local meter supplies consumption independently of vehicle telemetry.',
-        datasets: consumption.datasets.filter(row => ['charger2_power', 'ev2_energy', 'shelly_session_energy_check'].includes(row.signals[0])) },
+      { key: 'shelly-evse', title: 'Shelly EVSE', description: 'Charger 2 sends three-phase current, voltage and active power over MQTT. Its meter reports total and session energy; separate phase energy counters are not provided.',
+        datasets: consumption.datasets.filter(row => row.signals[0].startsWith('ev2_') || row.signals[0] === 'shelly_session_energy_check') },
     ];
   }
   return [consumption, market ? describe(market) : null,
@@ -461,7 +502,7 @@ const localSetupStates = Object.freeze({
   'waiting-charger': ['Waiting for charger', 'Waiting for the charger to become available for setup.'],
   applying: ['Applying setup', 'Saving and applying the local connection settings through Easee cloud.'],
   connecting: ['Waiting for connection', 'The charger settings are applied. Waiting for its local connection.'],
-  ready: ['Setup complete', 'The charger’s local connection setup is confirmed. Fresh measurements are checked separately.'],
+  ready: ['Setup complete', 'The charger’s local connection settings are confirmed.'],
   blocked: ['Setup needs attention', 'Automatic setup cannot continue. Check the saved charger configuration, then apply configuration.'],
   retrying: ['Retrying setup', 'The cloud setup request did not complete. Setup will retry automatically.'],
 });
@@ -508,7 +549,7 @@ export function easeeLocalConnectionDisplay(health, { now, formatTime } = {}) {
     : setup.endpointSource === 'configured' ? 'Configured standalone address' : 'Address not configured';
   const timing = typeof formatTime === 'function' && Number.isFinite(now)
     && Number.isSafeInteger(setup.nextAttemptAt) && setup.nextAttemptAt > now
-    ? ` Next setup attempt ${formatTime(setup.nextAttemptAt)}.` : '';
+    ? ` ${setup.state === 'ready' ? 'Next connection check' : 'Next setup attempt'} ${formatTime(setup.nextAttemptAt)}.` : '';
   const readings = setup.state === 'disabled' ? ['Not enabled', 'Local charger readings are disabled. Cloud readings remain available.', 'pending']
     : local.error ? ['Needs attention', 'The local listener needs attention. Available cloud readings remain the backup.', 'attention']
     : local.available === true ? ['Available', 'Fresh charger electricity readings are available through local OCPP.', 'available']
@@ -522,10 +563,10 @@ export function easeeLocalConnectionDisplay(health, { now, formatTime } = {}) {
     readings: { label: readings[0], detail: readings[1] + configuration,
       tone: local.configurationFailures?.length ? 'attention' : readings[2] },
     endpoint,
-    outage: 'Normal service stop requests a return to cloud control; paired handover keeps OCPP active. If cloud handback fails, it remains unconfirmed. A crash or power loss can leave charging or Easee app Start waiting for approval. Restart the controller or disable Direct OCPP through Easee configuration. Expiring pauses do not restore cloud authorization.',
+    outage: 'A normal shutdown requests a return to Easee cloud control; a paired handover keeps the local connection active. A failed handback, crash or power loss can leave charging and Easee app Start waiting for authorization. Restart the controller or disable Direct OCPP in Easee configuration. An expired pause does not restore cloud authorization.',
     detail: setup.endpointSource === 'pairing-vip'
-      ? 'The charger follows the shared address during handover. The other computer must be ready to serve the same local connection. Native OCPP takes over charging authorization and schedules; property readings use Easee cloud.'
-      : 'Charger setup is managed automatically. Native OCPP takes over charging authorization and schedules; property readings use Easee cloud.' };
+      ? 'Setup is automatic. OCPP handles charging authorization and schedules locally. During paired handover, the other computer must be ready to accept the charger at the shared address.'
+      : 'Setup is automatic. OCPP handles charging authorization and schedules locally.' };
 }
 
 function easeeStreamDetail(health) {

@@ -32,9 +32,13 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until 
         check:{status:'listening',checkedAt:at},recheck:{method:'subscription',requestSupported:false,description:'This device publishes changes; no status-request topic is configured.'},
         topics:[{role:'Door state',topic:'invented/garage/long-device-prefix/door'+index+'/contact/state',direction:'subscribe'}]})),
     ];
+    fixture.chargerReadings=Object.fromEntries([
+      ...[1,2,3].flatMap(phase=>[[\`ev2_current_l\${phase}\`,10,'A'],[\`ev2_voltage_l\${phase}\`,230,'V'],[\`ev2_active_power_l\${phase}\`,2.3,'kW']]),
+      ['ev2_active_power',6.9,'kW'],['ev2_import_energy_counter',123.4,'kWh'],['ev2_session_energy',4.2,'kWh'],
+    ].map(([signal,value,unit])=>[signal,{value,unit,sourceTime:at,receivedAt:at,available:true,quality:[]}]));
     fixture.dhwr={active:false,durationMinutes:10,actualOn:false,confirmed:false,requestedAt:null,commandTopic:'invented/dhwr/set',feedback:{configured:true,available:true,
       state:reading('Switch',0,'state'),power:reading('Live power',0,'W')}};
-    fixture.response = base => { if(fixture.dhwr.feedback.basis==='power') { const feedback=fixture.dhwr.feedback,power=feedback.power; feedback.state=power?{...power,value:power.value>0?1:0,unit:'state'}:null; fixture.dhwr.actualOn=feedback.available&&power&&!power.stale?power.value>0:null; } return ({...base,...fixture.status,now:fixture.now,observations:{...base.observations,...fixture.observations,...fixture.status.observations},providers:{...base.providers,temperatures:{source:'mqtt-temperature',status:'ok',lastSuccessAt:at},outdoor:{source:'fmi',status:'ok',lastSuccessAt:at},easee:{status:'ok',currentReadings:{property:{qualityIssues:[],lastSuccessAt:at},charger:{qualityIssues:[],lastSuccessAt:at}},deviceTransports:{charger:'ocpp',property:'stream'},localOcpp:{configured:true,connected:true,available:true,setup:{state:'ready',endpointSource:'configured'}}},'shelly-evse':{enabled:true,status:'ok',connected:true,recording:true,mqttStatus:{brokerConnected:true,subscriptionStatus:'subscribed',lastLiveAt:at},topics:[{role:'Charger status',topic:'invented/evse/events/rpc',direction:'subscribe'},{role:'RPC requests',topic:'invented/evse/rpc',direction:'publish'}]}},equipment:{configured:true,connected:true,devices:fixture.devices,topicGroups:[
+    fixture.response = base => { if(fixture.dhwr.feedback.basis==='power') { const feedback=fixture.dhwr.feedback,power=feedback.power; feedback.state=power?{...power,value:power.value>0?1:0,unit:'state'}:null; fixture.dhwr.actualOn=feedback.available&&power&&!power.stale?power.value>0:null; } return ({...base,...fixture.status,now:fixture.now,observations:{...base.observations,...fixture.observations,...fixture.status.observations},providers:{...base.providers,temperatures:{source:'mqtt-temperature',status:'ok',lastSuccessAt:at},outdoor:{source:'fmi',status:'ok',lastSuccessAt:at},easee:{status:'ok',currentReadings:{property:{qualityIssues:[],lastSuccessAt:at},charger:{qualityIssues:[],lastSuccessAt:at}},deviceTransports:{charger:'ocpp',property:'stream'},localOcpp:{configured:true,connected:true,available:true,setup:{state:'ready',endpointSource:'configured'}}},'shelly-evse':{enabled:true,status:'ok',connected:true,recording:true,maxAgeMs:300000,readings:fixture.chargerReadings,...fixture.chargerStatus,mqttStatus:{brokerConnected:true,subscriptionStatus:'subscribed',lastLiveAt:at},topics:[{role:'Charger status',topic:'invented/evse/events/rpc',direction:'subscribe'},{role:'RPC requests',topic:'invented/evse/rpc',direction:'publish'}]}},equipment:{configured:true,connected:true,devices:fixture.devices,topicGroups:[
       {id:'temperatures',label:'Temperature feeds',topics:[{role:'Upstairs',topic:'invented/home/upstairs/temperature',direction:'subscribe'}]},
       {id:'vehicle:bmw',vehicleFeedId:'bmw',label:'BMW',topics:[{role:'Timestamped vehicle readings',topic:'invented/vehicles/bmw',direction:'subscribe'}]},
       {id:'vehicle:tesla',vehicleFeedId:'tesla',label:'TeslaMate',topics:[{role:'Vehicle subscription',topic:'invented/teslamate/cars/1/#',direction:'subscribe'}]}
@@ -73,12 +77,57 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until 
     assert.deepEqual(await evaluate("[...document.querySelectorAll('[data-provider=\"main-temperatures\"] .provider-source-title')].map(node=>node.textContent)"), ['Main temperatures','Weather forecast']);
     assert.equal(await evaluate("document.querySelector('[data-provider=\"main-temperatures\"] .provider-category-meta').textContent"), 'MQTT, Shelly, FMI');
     assert.equal(await evaluate("[...document.querySelectorAll('#providers .provider-body')].every(body=>body.firstElementChild.classList.contains('provider-introduction')&&body.firstElementChild.textContent.length>30)"), true);
-    assert.equal(await evaluate("document.querySelector('#vehicle-telemetry-connections [data-device-id=\"connection:vehicle:bmw:other\"] .equipment-connection-meta').textContent"), 'Vehicle · BMW CarData');
-    await evaluate("document.querySelectorAll('#providers .provider-fold, #vehicle-telemetry-connections .equipment-connection-fold, #vehicle-telemetry-connections .equipment-packet-details').forEach(node=>node.open=true);window.equipmentUiFixture.bmwCard=document.querySelector('#vehicle-telemetry-connections [data-device-id=\"connection:vehicle:bmw:other\"]');true");
+    const charger2 = '[data-source-section=shelly-evse] .provider-series > li';
+    assert.deepEqual(await evaluate(`[...document.querySelectorAll('${charger2} > strong')].map(node=>node.textContent)`), [
+      'Charger 2 phase currents L1–L3', 'Charger 2 phase voltages L1–L3', 'Charger 2 phase active power L1–L3',
+      'Charger 2 active power', 'Charger 2 meter counter', 'Charger 2 total energy', 'Charger 2 session energy', 'Charger 2 session check',
+    ], 'Shelly native phase readings are listed alongside supported total and session measurements');
+    assert.equal(await evaluate(`[...document.querySelectorAll('${charger2}')].slice(0,5).every(node=>node.dataset.state==='available')`), true);
+    assert.equal(await evaluate("[...document.querySelectorAll('[data-provider=electricity] .provider-series > li > strong')].some(node=>node.textContent==='Charger 2 phase energy L1–L3')"), false, 'Total meter energy is not invented phase energy');
+    await evaluate('window.equipmentUiFixture.completeChargerReadings=structuredClone(window.equipmentUiFixture.chargerReadings);delete window.equipmentUiFixture.chargerReadings.ev2_voltage_l2;true');
     await refresh();
-    assert.equal(await evaluate("[...document.querySelectorAll('#providers .provider-fold, #vehicle-telemetry-connections .equipment-connection-fold, #vehicle-telemetry-connections .equipment-packet-details')].every(node=>node.open)"), true, 'Refresh preserves expanded categories, vehicle connections and packet diagnostics');
-    assert.equal(await evaluate("window.equipmentUiFixture.bmwCard===document.querySelector('#vehicle-telemetry-connections [data-device-id=\"connection:vehicle:bmw:other\"]')"), true);
-    for (const width of [1440,390]) {
+    assert.match(await evaluate(`document.querySelectorAll('${charger2}')[1].getAttribute('aria-label')`), /Partly available/, 'A missing phase cannot appear as complete three-phase voltage');
+    await evaluate("for(const phase of [1,2,3])window.equipmentUiFixture.chargerReadings['ev2_current_l'+phase].sourceTime-=300001;true");
+    await refresh();
+    assert.match(await evaluate(`document.querySelector('${charger2}').getAttribute('aria-label')`), /Needs attention/, 'Old phase measurements remain unavailable');
+    assert.equal(await evaluate("document.querySelector('[data-provider=electricity] .provider-category-state').textContent"), 'Needs attention', 'Stale native readings reach the closed electricity overview');
+    assert.equal(await evaluate("[...document.querySelectorAll('[data-provider=electricity] .provider-name')].find(node=>node.textContent==='Shelly EVSE').dataset.state"), 'attention', 'Stale native readings affect the Shelly source status');
+    await evaluate("window.equipmentUiFixture.chargerStatus={enabled:false,status:'disabled'};true");
+    await refresh();
+    assert.equal(await evaluate(`[...document.querySelectorAll('${charger2}')].every(node=>node.getAttribute('aria-label').includes('Not enabled'))`), true);
+    await evaluate('window.equipmentUiFixture.chargerReadings=window.equipmentUiFixture.completeChargerReadings;window.equipmentUiFixture.chargerStatus={};true');
+    await refresh();
+    await evaluate("window.equipmentUiFixture.chargerStatus={status:'degraded',reason:'commissioning-required'};true");
+    await refresh();
+    assert.equal(await evaluate("document.querySelector('[data-provider=electricity] .provider-category-state').textContent"), 'Needs attention', 'Commissioning remains visible in the source overview');
+    assert.equal(await evaluate(`[...document.querySelectorAll('${charger2}')].filter(node=>!['ev2_energy','shelly_session_energy_check'].includes(node.dataset.series)).every(node=>node.dataset.state==='available')`), true, 'Fresh native measurements do not become unavailable when charging control needs commissioning');
+    await evaluate('window.equipmentUiFixture.chargerStatus={};true');
+    await refresh();
+    const vehicles = '[data-provider=vehicle-telemetry] .provider-body';
+    assert.deepEqual(await evaluate(`[...document.querySelectorAll('${vehicles} .provider-series > li > strong')].map(node=>node.textContent)`), ['BMW','Tesla']);
+    assert.equal(await evaluate(`document.querySelectorAll('${vehicles} details').length`), 0, 'Vehicle feeds are ordinary rows within the category');
+    assert.doesNotMatch(await evaluate(`document.querySelector('${vehicles}').textContent`), /invented\/vehicles|invented\/teslamate/, 'MQTT addresses stay in MQTT connections');
+    const local = '[data-source-section=easee-ocpp] .provider-local-connection';
+    assert.equal(await evaluate(`document.querySelector('${local}').previousElementSibling.className`), 'muted provider-source-description');
+    assert.equal(await evaluate(`document.querySelector('${local}').nextElementSibling.className`), 'provider-source-readings', 'Connection setup follows the OCPP introduction and precedes readings');
+    assert.equal(await evaluate(`document.querySelector('${local} > summary').textContent`), 'Local connection & charging control');
+    assert.doesNotMatch(await evaluate(`document.querySelector('${local}').textContent`), /ST-MQ|property readings/i);
+    assert.equal(await evaluate("document.querySelector('#equipment-connections [data-device-id=\"connection:vehicle:bmw:other\"] .equipment-connection-meta').textContent"), 'Vehicle · BMW CarData');
+    await evaluate("document.querySelectorAll('#providers .provider-fold, #equipment-connections [data-connection-area=vehicles] .equipment-connection-fold, #equipment-connections [data-connection-area=vehicles] .equipment-packet-details').forEach(node=>node.open=true);window.equipmentUiFixture.bmwCard=document.querySelector('#equipment-connections [data-device-id=\"connection:vehicle:bmw:other\"]');true");
+    assert.equal(await evaluate(`document.querySelector('${local}').open`), false, 'Setup details begin collapsed below the OCPP introduction');
+    await evaluate(`document.querySelector('${local} > summary').focus();true`);
+    await command('input.performActions',{context,actions:[{type:'key',id:'local-connection',actions:[{type:'keyDown',value:'\uE007'},{type:'keyUp',value:'\uE007'}]}]});
+    await settle();
+    assert.equal(await evaluate(`document.querySelector('${local}').open`), true, 'Keyboard opens local charging control details');
+    assert.equal(await evaluate(`[...document.querySelectorAll('${vehicles} .provider-series > li')].every(node=>node.checkVisibility())`), true);
+    assert.equal(await evaluate(`document.querySelector('${vehicles} .provider-health').checkVisibility()`), false, 'Feed descriptions do not need a Source details disclosure');
+    assert.equal(await evaluate(`[...document.querySelectorAll('${vehicles} .provider-series-description')].filter(node=>node.checkVisibility()).length`), 2);
+    await refresh();
+    assert.equal(await evaluate(`document.querySelector('${local}').open`), true, 'Refresh preserves expanded charging control details');
+    assert.equal(await evaluate("[...document.querySelectorAll('#providers .provider-fold, #equipment-connections [data-connection-area=vehicles] .equipment-connection-fold, #equipment-connections [data-connection-area=vehicles] .equipment-packet-details')].every(node=>node.open)"), true, 'Refresh preserves expanded categories and vehicle MQTT diagnostics');
+    assert.equal(await evaluate("window.equipmentUiFixture.bmwCard===document.querySelector('#equipment-connections [data-device-id=\"connection:vehicle:bmw:other\"]')"), true);
+    await evaluate('document.activeElement.blur();true');
+    for (const width of [1440,390,320]) {
       await command('browsingContext.setViewport',{context,viewport:{width,height:1100},devicePixelRatio:1}); await settle();
       const height=await evaluate("Math.ceil(document.getElementById('providers-controls').getBoundingClientRect().height)+60");
       await command('browsingContext.setViewport',{context,viewport:{width,height},devicePixelRatio:1}); await settle();
@@ -86,6 +135,19 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until 
       assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, `Expanded Data and settings fits at ${width}px`);
       const screenshot=await command('browsingContext.captureScreenshot',{context,origin:'viewport'});
       writeFileSync(`var/data-settings-expanded-${width}.png`,Buffer.from(screenshot.data,'base64'));
+      if (width !== 320) {
+        await command('browsingContext.setViewport',{context,viewport:{width,height:1000},devicePixelRatio:1}); await settle();
+        await evaluate(`document.querySelector('${local}').open=false;document.querySelector('[data-source-section=easee-ocpp]').scrollIntoView({block:'start'});true`); await settle();
+        const chargerShot=await command('browsingContext.captureScreenshot',{context,origin:'viewport'});
+        writeFileSync(`var/charger-source-settings-${width}.png`,Buffer.from(chargerShot.data,'base64'));
+        await evaluate(`document.querySelector('${local}').open=true;document.querySelector('[data-provider=vehicle-telemetry]').scrollIntoView({block:'start'});true`); await settle();
+        const feedsShot=await command('browsingContext.captureScreenshot',{context,origin:'viewport'});
+        writeFileSync(`var/vehicle-feeds-${width}.png`,Buffer.from(feedsShot.data,'base64'));
+        await evaluate("document.getElementById('connections-details').open=true;document.getElementById('mqtt-devices-details').open=true;document.querySelector('#equipment-connections [data-connection-area=vehicles]').scrollIntoView({block:'start'});true"); await settle();
+        const mqttShot=await command('browsingContext.captureScreenshot',{context,origin:'viewport'});
+        writeFileSync(`var/vehicle-mqtt-${width}.png`,Buffer.from(mqttShot.data,'base64'));
+        await evaluate("document.getElementById('connections-details').open=false;document.getElementById('mqtt-devices-details').open=false;true");
+      }
     }
     await command('browsingContext.setViewport',{context,viewport:{width:1440,height:1100},devicePixelRatio:1});
     await evaluate("document.querySelectorAll('#providers .provider-fold').forEach(node=>node.open=false);document.getElementById('home-equipment-details').open=true;document.getElementById('garage-equipment-details').open=true;document.getElementById('connections-details').open=true;document.getElementById('mqtt-devices-details').open=true;true");
@@ -133,10 +195,10 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until 
     assert.equal(await evaluate("document.querySelector('#equipment-connections [data-device-id=caravan] .equipment-connection-name').textContent"), 'Caravan');
     assert.equal(await evaluate("document.querySelector('#equipment-connections [data-device-id=caravan] .equipment-device-status').textContent"), 'Available');
     assert.match(await evaluate("document.querySelector('#equipment-connections [data-device-id=caravan] .equipment-connection-recent').textContent"), /^Reported /);
-    assert.equal(await evaluate("document.querySelector('#vehicle-telemetry-connections [data-device-id=\"connection:vehicle:tesla:other\"] .equipment-connection-name').textContent"), 'Tesla');
-    assert.equal(await evaluate("document.querySelector('#vehicle-telemetry-connections [data-device-id=\"connection:vehicle:tesla:other\"]').closest('[data-provider]').dataset.provider"), 'vehicle-telemetry');
-    assert.equal(await evaluate("document.querySelector('#equipment-connections [data-device-id=\"connection:vehicle:tesla:other\"]')"), null);
-    assert.match(await evaluate("document.querySelector('#vehicle-telemetry-connections [data-device-id=\"connection:vehicle:tesla:other\"] .equipment-connection-meta').textContent"), /TeslaMate/);
+    assert.equal(await evaluate("document.querySelector('#equipment-connections [data-device-id=\"connection:vehicle:tesla:other\"] .equipment-connection-name').textContent"), 'Tesla');
+    assert.equal(await evaluate("document.querySelector('#equipment-connections [data-device-id=\"connection:vehicle:tesla:other\"]').closest('[data-connection-area]').dataset.connectionArea"), 'vehicles');
+    assert.equal(await evaluate("document.querySelector('#vehicle-telemetry-connections')"), null, 'MQTT diagnostics have a single home in MQTT connections');
+    assert.match(await evaluate("document.querySelector('#equipment-connections [data-device-id=\"connection:vehicle:tesla:other\"] .equipment-connection-meta').textContent"), /TeslaMate/);
     assert.equal(await evaluate("document.querySelector('#equipment-connections [data-device-id=\"connection:shelly-evse:garage\"]').closest('[data-connection-area]').dataset.connectionArea"), 'garage');
     assert.match(await evaluate("document.querySelector('#equipment-connections [data-device-id=\"connection:shelly-evse:garage\"]').textContent"), /Charger 2.*Charger · Shelly EVSE.*local Shelly MQTT.*invented\/evse\/events\/rpc.*RPC requests/);
     await evaluate("document.querySelectorAll('#equipment-connections .equipment-connection-fold, #equipment-connections .equipment-packet-details').forEach(d=>d.open=true);true");

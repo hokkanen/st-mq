@@ -102,7 +102,8 @@ test('TeslaMate connection follows its vehicle subscription rather than idle cha
   assert.equal(live.source, 'TeslaMate');
   assert.equal(equipmentConnectionSummary(live).label, 'Connected');
   assert.match(equipmentConnectionSummary(live).recent, /^Reported /);
-  assert.match(live.connectionDetail, /Vehicle data for charging.*sleeping or idle/);
+  assert.match(live.connectionDetail, /TeslaMate.*MQTT subscription/);
+  assert.match(live.feedDetail, /TeslaMate.*charge.*target.*first received/);
   assert.doesNotMatch(JSON.stringify(live), /No live report yet/);
   const retained = connection({ brokerConnected: true, subscriptionStatus: 'subscribed', lastRetainedAt: NOW, lastMessageAt: NOW });
   assert.equal(equipmentConnectionSummary(retained).label, 'Connected');
@@ -132,7 +133,8 @@ test('BMW vehicle MQTT displays source, real reception and feed problems indepen
   assert.equal(equipmentSource(live), 'BMW CarData');
   assert.equal(equipmentConnectionSummary(live).label, 'Connected');
   assert.match(equipmentConnectionSummary(live).recent, /^Reported /);
-  assert.match(live.connectionDetail, /BMW CarData.*charge.*target.*capacity/);
+  assert.match(live.feedDetail, /BMW CarData.*charge.*target.*capacity/);
+  assert.match(live.connectionDetail, /BMW CarData.*MQTT subscription/);
   assert.doesNotMatch(live.connectionDetail, /Home Assistant/);
   assert.deepEqual(live.topics.map(item => item.topic), ['fixture/bmw/vehicle']);
   const retained = row({ ...connected, lastMessageAt: NOW, lastRetainedAt: NOW });
@@ -197,10 +199,10 @@ test('configured vehicle feeds retain independent names before reports and follo
   assert.deepEqual(vehicleConnections(status), rows);
   assert.deepEqual(rows.map(row => [row.label, equipmentSource(row)]), [['BMW', 'BMW CarData'], ['Tesla', 'TeslaMate']]);
   assert.equal(equipmentConnectionSummary(rows[0]).recent, 'Waiting for the first vehicle report');
-  assert.match(rows[1].connectionDetail, /Used by: Charger 1/);
+  assert.match(rows[1].feedDetail, /Used by Charger 1/);
   assert.doesNotMatch(JSON.stringify(rows), /Configured vehicle feed for Charger|via Home Assistant/);
   status.charging.vehicleFeeds[1].usedByChargerId = 'charger2';
-  assert.match(equipmentConnections(status)[1].connectionDetail, /Used by: Charger 2/);
+  assert.match(equipmentConnections(status)[1].feedDetail, /Used by Charger 2/);
   const synthetic = equipmentConnections({ now: NOW, charging: status.charging }).filter(row => row.kind === 'vehicle');
   assert.deepEqual(synthetic.map(row => [row.label, row.topics[0].topic]), rows.map(row => [row.label, row.topics[0].topic]));
   status.charging.vehicleFeeds[0].reception = null;

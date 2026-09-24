@@ -113,6 +113,76 @@ test('official-shaped role RPC discovers capabilities and canonical C2 energy ne
   f.setNow(NOW+2000);f.fields.phase_info.total_act_energy=0;await f.adapter.refresh();assert.equal(f.energy.length,1);
   assert.equal(f.adapter.snapshot().error,'evse-counter-reset');
 });
+test('native Shelly phases expose current, voltage and active power in installed L1–L3 order', async t => {
+  const f = fixture(t, { phaseMap: [2, 0, 1], verified: false });
+  Object.assign(f.fields.phase_info, { total_power: 6000, total_act_energy: 42.5,
+    phase_a: { current: 10, voltage: 231, power: 2200 },
+    phase_b: { current: 8, voltage: 228, power: 1700 },
+    phase_c: { current: 9, voltage: 233, power: 2100 } });
+  f.fields.energy_charge = 3.75;
+  await f.ready();
+  const readings = f.adapter.readings();
+  assert.deepEqual([1, 2, 3].map(n => readings[`ev2_current_l${n}`].value), [9, 10, 8]);
+  assert.deepEqual([1, 2, 3].map(n => readings[`ev2_voltage_l${n}`].value), [233, 231, 228]);
+  assert.deepEqual([1, 2, 3].map(n => readings[`ev2_active_power_l${n}`].value), [2.1, 2.2, 1.7]);
+  assert.equal(readings.ev2_active_power.value, 6);
+  assert.equal(readings.ev2_import_energy_counter.value, 42.5);
+  assert.equal(readings.ev2_session_energy.value, 3.75);
+  assert.deepEqual(readings.ev2_active_power_l1, { value: 2.1, unit: 'kW', source: 'shelly-evse',
+    sourceTime: NOW, receivedAt: NOW, available: true, quality: [], acquisitionOnly: true });
+  assert.ok(Object.values(readings).every(row => row.available), 'Read-only measurements do not require permission to control');
+  assert.equal(f.adapter.snapshot().controlReady, false);
+  const provider = Engine.prototype.providerStatus.call({ config: { input: 'offline' }, store: { getState: () => null },
+    charging: { chargers: { charger2: { adapter: f.adapter } }, configuration: { chargers: { charger2: { enabled: true } } } } })['shelly-evse'];
+  assert.deepEqual(provider.readings, readings);
+  assert.equal(provider.maxAgeMs, 15000);
+  assert.equal(f.energy.length, 0, 'A live phase snapshot does not create another history channel');
+  readings.ev2_current_l1.value = 999;
+  assert.equal(f.adapter.readings().ev2_current_l1.value, 9, 'Public values cannot mutate the native snapshot');
+});
+test('public Shelly phase readings preserve source age and withdraw availability on retained, stale or offline evidence', async t => {
+  const f = fixture(t);
+  assert.equal(f.adapter.readings().ev2_current_l1.value, null);
+  assert.deepEqual(f.adapter.readings().ev2_current_l1.quality, ['missing', 'mqtt-disconnected']);
+  await f.ready();
+  f.setNow(NOW + 1000);
+  f.notify('phase_info', f.fields.phase_info, { retain: true });
+  assert.deepEqual(f.adapter.readings().ev2_current_l1.quality, ['retained']);
+  assert.equal(f.adapter.readings().ev2_current_l1.available, false);
+  await f.adapter.refresh();
+  assert.equal(f.adapter.readings().ev2_current_l1.available, true);
+  assert.equal(f.adapter.readings().ev2_current_l1.sourceTime, NOW + 1000);
+  f.setNow(NOW + 16001);
+  for (const reading of Object.values(f.adapter.readings())) {
+    assert.equal(reading.available, false);
+    assert.deepEqual(reading.quality, ['stale']);
+    assert.equal(reading.sourceTime, NOW + 1000);
+  }
+  assert.equal(f.adapter.readings().ev2_active_power.value, 8.28, 'Keep stale values for diagnosis');
+  assert.equal(f.adapter.readings(NOW).ev2_active_power.quality[0], 'future_source_time');
+  f.setNow(NOW + 2000);
+  f.client.emit('offline');
+  assert.deepEqual(f.adapter.readings().ev2_active_power.quality, ['mqtt-disconnected']);
+  assert.equal(f.adapter.readings().ev2_active_power.available, false);
+});
+test('invalid or future Shelly phase packets cannot replace supported electrical readings', async t => {
+  const f = fixture(t); await f.ready();
+  f.setNow(NOW + 1000);
+  const incomplete = structuredClone(f.fields.phase_info); delete incomplete.phase_b.current;
+  assert.throws(() => f.adapter.accept('phase_info', { value: incomplete, last_update_ts: f.now() / 1000 }), /invalid-evse-electrical-units/);
+  assert.equal(f.adapter.accept('phase_info', { value: f.fields.phase_info, last_update_ts: (f.now() + 1000) / 1000 }), false);
+  assert.equal(f.adapter.readings().ev2_current_l2.sourceTime, NOW);
+  assert.equal(f.adapter.readings().ev2_current_l2.value, 12);
+  f.fields.phase_info.phase_a = { current: 0, voltage: 0, power: 0 };
+  f.fields.phase_info.phase_b = { current: 0, voltage: 0, power: 0 };
+  f.fields.phase_info.phase_c = { current: 0, voltage: 0, power: 0 };
+  f.fields.phase_info.total_power = 0;
+  await f.adapter.refresh();
+  assert.ok(Object.values(f.adapter.readings()).every(row => row.available));
+  assert.equal(f.adapter.readings().ev2_active_power_l3.value, 0, 'Reported idle zero is a valid measurement');
+  assert.equal(f.energy.length, 1);
+  assert.equal(f.energy[0].energies.length, 1, 'Native total energy remains a single physical contribution');
+});
 test('each physical negative/positive notification closes its epoch even between polling ticks',async t=>{
   const f=fixture(t);await f.ready();const first=f.adapter.snapshot().session.sessionId;
   f.setNow(NOW+1000);f.notify('work_state','free');f.setNow(NOW+2000);f.notify('work_state','connected');

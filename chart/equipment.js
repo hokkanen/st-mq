@@ -366,7 +366,8 @@ function vehicleConnection({ reception = {}, enabled = true, label, source, deta
               : { label: 'Awaiting subscription', state: 'pending' },
     recent: Number.isFinite(lastMessageAt) ? `Received ${clock.format(lastMessageAt)}`
       : subscribed ? 'Waiting for the first vehicle report' : 'No vehicle report yet',
-    connectionDetail: `Vehicle data for charging. Used automatically when this vehicle is identified at a charger. ${detail}${usedBy ? ` Used by: ${usedBy}.` : ''}`,
+    feedDetail: `${detail}${usedBy ? ` Used by ${usedBy}.` : ''}`,
+    connectionDetail: `${source} sends vehicle reports through this MQTT subscription. Connection status and packet diagnostics show whether the publisher is reporting. A sleeping or idle vehicle can remain quiet while MQTT stays connected.`,
     packetDetail: [invalidReason ? 'The latest vehicle report could not be used; previous accepted readings keep their original timestamps.' : '',
       reception.reason === 'vehicle-feed-stale' ? 'The MQTT broker is connected, but the vehicle publisher has stopped reporting. Automatic vehicle inputs await a valid live report.' : '',
       Number.isFinite(lastLiveAt) ? ''
@@ -474,8 +475,9 @@ export function equipmentConnections(status = {}, devices = equipmentDevices(sta
         const source = ({ 'bmw-cardata': 'BMW CarData', teslamate: 'TeslaMate' })[feed.provider] ?? 'MQTT';
         const usedBy = status.charging?.chargers?.find(charger => charger.id === feed.usedByChargerId)?.label;
         Object.assign(row, vehicleConnection({ label: feed.label, source, enabled: feed.enabled, reception: feed.reception, usedBy,
-          detail: feed.provider === 'teslamate' ? 'A sleeping or idle vehicle can remain quiet while MQTT stays connected.'
-            : `${feed.provider === 'bmw-cardata' ? 'BMW CarData supplies charge, charge target and usable battery capacity. ' : ''}Vehicle readings keep their original measurement timestamps. A quiet vehicle does not mean the MQTT connection is lost.` }));
+          detail: feed.provider === 'teslamate' ? 'TeslaMate supplies charge and charge target, plus vehicle state for charger identification. Times show when each reading was first received.'
+            : feed.provider === 'bmw-cardata' ? 'BMW CarData supplies charge, charge target and usable battery capacity, with the original measurement time for each reading.'
+              : 'Available charge, charge target and battery capacity support charging when this vehicle is identified at a charger. Each reading keeps its original measurement time.' }));
       } else if (group.id === 'dhwr' || group.id === 'heating') {
         row.kind = 'control'; row.connectionState = { label: 'Commands configured', state: 'pending' };
         row.recent = 'Delivery is confirmed separately';
@@ -772,26 +774,21 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
       result.textContent = actionKind === 'test' && actionArea === area ? message : '';
       result.hidden = !result.textContent; result.classList.toggle('form-error', error);
     }
-    const connectionRoot = $('equipment-connections'), vehicleRoot = $('vehicle-telemetry-connections');
-    const mqttConnections = connections.filter(device => device.kind !== 'vehicle');
+    const connectionRoot = $('equipment-connections');
     let groupIndex = 0;
-    for (const [area, label] of [['home', 'Home'], ['garage', 'Garage'], ['other', 'Other'], ['vehicles', null]]) {
-      const vehicles = area === 'vehicles';
-      const members = vehicles ? connections.filter(device => device.kind === 'vehicle')
-        : mqttConnections.filter(device => (['home', 'garage'].includes(device.area) ? device.area : 'other') === area);
-      let group = vehicles ? vehicleRoot && { list: vehicleRoot } : connectionGroups.get(area);
-      if (!members.length) { if (!vehicles) group?.section.remove(); continue; }
-      if (vehicles && !vehicleRoot) continue;
+    for (const [area, label] of [['home', 'Home'], ['garage', 'Garage'], ['other', 'Other'], ['vehicles', 'Vehicles']]) {
+      const members = connections.filter(device => (device.kind === 'vehicle' ? 'vehicles'
+        : ['home', 'garage'].includes(device.area) ? device.area : 'other') === area);
+      let group = connectionGroups.get(area);
+      if (!members.length) { group?.section.remove(); continue; }
       if (!group) {
         const section = make('section', '', 'equipment-connection-group'), list = make('div', '', 'equipment-connection-list');
         section.dataset.connectionArea = area;
         section.append(make('h4', label, 'equipment-connection-group-title'), list);
         group = { section, list }; connectionGroups.set(area, group);
       }
-      if (!vehicles) {
-        if (connectionRoot.children[groupIndex] !== group.section) connectionRoot.insertBefore(group.section, connectionRoot.children[groupIndex] ?? null);
-        groupIndex++;
-      }
+      if (connectionRoot.children[groupIndex] !== group.section) connectionRoot.insertBefore(group.section, connectionRoot.children[groupIndex] ?? null);
+      groupIndex++;
       for (const [index, device] of members.entries()) {
       let node = connectionNodes.get(device.id);
       if (!node) {
@@ -859,8 +856,8 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
     const commandRoot = $('heating-mqtt-topics');
     commandRoot.replaceChildren(); commandRoot.hidden = true;
     const checkMessage = actionKind === 'recheck' ? message : '';
-    $('equipment-check-message').textContent = checkMessage || (mqttConnections.length ? '' : 'No MQTT devices configured.');
-    $('equipment-check-message').hidden = !checkMessage && mqttConnections.length > 0;
+    $('equipment-check-message').textContent = checkMessage || (connections.length ? '' : 'No MQTT devices configured.');
+    $('equipment-check-message').hidden = !checkMessage && connections.length > 0;
     $('equipment-check-message').classList.toggle('form-error', Boolean(checkMessage && error));
   }
   for (const link of document.querySelectorAll('[data-open-mqtt-settings], [data-open-configuration]')) link.addEventListener('click', () => {

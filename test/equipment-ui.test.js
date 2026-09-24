@@ -342,7 +342,7 @@ test('temperature groups show all probes directly without a duplicate Mitsubishi
   assert.equal(native, undefined);
 });
 
-test('vehicle telemetry owns its connection cards and preserves expanded diagnostics across updates', () => {
+test('MQTT groups vehicle connection cards and preserves expanded diagnostics across updates', () => {
   const document = equipmentDocument(), panel = createEquipmentPanel({ document, request: async () => {} });
   const initial = status({ charging: { vehicleFeeds: [
     { id: 'tesla', label: 'Tesla', provider: 'teslamate', topic: 'fixture/vehicle/teslamate', reception: {} },
@@ -353,7 +353,7 @@ test('vehicle telemetry owns its connection cards and preserves expanded diagnos
       topics: [{ role: 'Timestamped vehicle readings', topic: 'fixture/vehicles/bmw', direction: 'subscribe' }] },
   ] } });
   panel.update(initial);
-  const connections = descendants(document.getElementById('vehicle-telemetry-connections'));
+  const connections = descendants(document.getElementById('equipment-connections'));
   const tesla = connections.find(node => node.dataset.deviceId === 'connection:vehicle:tesla:other');
   assert.equal(tesla.querySelector('.equipment-connection-name').textContent, 'Tesla');
   assert.equal(tesla.querySelector('.equipment-connection-meta').textContent, 'Vehicle · TeslaMate');
@@ -374,10 +374,10 @@ test('vehicle telemetry owns its connection cards and preserves expanded diagnos
   assert.match(generic.textContent, /fixture\/vehicles\/bmw/);
   assert.equal(generic.open, true);
   assert.equal(generic.querySelector('.equipment-packet-details').open, true);
-  assert.equal(descendants(document.getElementById('equipment-connections')).some(node => node.dataset.deviceId?.includes('vehicle:')), false);
+  assert.equal(generic.parentElement.parentElement.dataset.connectionArea, 'vehicles');
   assert.equal(generic.querySelector('.equipment-connection-body').children[0], generic.querySelector('.equipment-connection-intro'));
-  assert.match(generic.querySelector('.equipment-connection-intro').textContent, /Vehicle data for charging/);
-  assert.equal(descendants(document.getElementById('vehicle-telemetry-connections'))
+  assert.match(generic.querySelector('.equipment-connection-intro').textContent, /BMW CarData sends vehicle reports through this MQTT subscription/);
+  assert.equal(descendants(document.getElementById('equipment-connections'))
     .filter(node => node.dataset.deviceId === 'connection:vehicle:bmw:other').length, 1);
 });
 
@@ -398,7 +398,6 @@ test('Shelly Charger 2 stays in MQTT with the same disclosure structure and actu
   assert.match(card.querySelector('.equipment-packet-status').textContent, /Subscription: subscribed.*Last live packet:.*Broker connection: connected/);
   assert.match(card.querySelector('.equipment-topic-groups').textContent, /Incoming.*Charger status.*fixture\/charger\/events\/rpc.*Requests & commands.*RPC requests/);
   assert.equal(card.querySelector('.equipment-connection-check').hidden, true);
-  assert.equal(descendants(document.getElementById('vehicle-telemetry-connections')).includes(card), false);
   card.open = true;
   panel.update({ ...initial, providers: { 'shelly-evse': { ...initial.providers['shelly-evse'], connected: false,
     status: 'waiting', mqttStatus: { brokerConnected: false, subscriptionStatus: 'disconnected', lastLiveAt: now } } } });

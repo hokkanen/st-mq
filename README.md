@@ -321,13 +321,18 @@ additional coefficient storage. Historical coefficient chart axes separately
 replay the saved journal with its matching algorithm. See the detailed
 [learning and control explanation](docs/learning-and-control.md).
 
-**Data & settings** shows a compact provider-health overview. Each provider row
-opens its data series and **Source details**, with source names below availability.
+**Data & settings** groups electricity consumption, electricity prices, vehicle
+telemetry, and temperatures and weather. Each category opens its reading lists,
+with source names and availability. Named vehicle feeds and their descriptions
+appear directly in Vehicle telemetry.
 **Connections & configuration** contains **MQTT**, **Electricity rates**
-and **Configuration**. **Electricity consumption · Easee, Teslamate** groups
-property import, Charger 1 and Charger 2 in its provider row.
-Easee and TeslaMate keep separate acquisition diagnostics;
-Charger 2 lists total power, estimated interval energy and its session check.
+and **Configuration**. MQTT owns device and vehicle connection details, topics
+and packet diagnostics. Electricity consumption separates Easee cloud, local
+Easee OCPP and Shelly EVSE. The local connection and charging-control disclosure
+sits below the OCPP introduction. Shelly supplies measured three-phase current,
+voltage and active power, a total energy counter and session energy; recorded
+consumption uses total meter differences. Vehicle feeds do not supply charger
+electricity measurements.
 On wide screens, Home and **Data & settings** occupy the left column, with Garage
 on the right. On narrow screens, the cards appear in this
 order: Home, Garage, Data & settings. The event log follows them.

@@ -53,7 +53,7 @@ try {
   mkdirSync('var',{recursive:true});
   await checkEquipmentBrowser({evaluate,command,context:'cdp',until});
   assert.deepEqual(errors,[]);
-  console.log('Equipment browser checks passed: mocked switch, door and dehumidifier controls, Caravan air/energy layout, pending/live/replica states, MQTT order, DHWR feedback, five responsive viewports.');
+  console.log('Equipment browser checks passed: charger phase availability, local OCPP setup placement and keyboard disclosure, flat vehicle feeds with MQTT diagnostics, mocked equipment controls, Caravan layout, DHWR feedback and five responsive viewports.');
 } finally {
   socket?.close();for(const p of pending.values())clearTimeout(p.timer);await app?.close();
   if(browser&&browser.exitCode===null) {browser.kill();await new Promise(resolve=>browser.once('exit',resolve));}

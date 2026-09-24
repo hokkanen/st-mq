@@ -8,6 +8,13 @@ const now = Date.parse('2026-09-07T10:00:00Z');
 const options = { now, formatTime: value => new Date(value).toISOString().slice(11, 16) };
 const easeeReadings = () => ({ charger: { qualityIssues: [], error: null, lastSuccessAt: now },
   property: { qualityIssues: [], error: null, lastSuccessAt: now } });
+const shellySignals = [
+  ...['current', 'voltage', 'active_power'].flatMap(field => [1, 2, 3].map(phase => `ev2_${field}_l${phase}`)),
+  'ev2_active_power', 'ev2_import_energy_counter', 'ev2_energy', 'ev2_session_energy', 'shelly_session_energy_check',
+];
+const shellyReadings = () => ({ maxAgeMs: 60_000, readings: Object.fromEntries(shellySignals
+  .filter(signal => signal !== 'ev2_energy' && signal !== 'shelly_session_energy_check')
+  .map(signal => [signal, { value: 0, available: true, sourceTime: now, quality: [] }])) });
 const temperature = (source, value = 21, extra = {}) => ({ source, value, observedAt: now, stale: false, ...extra });
 const completeDashboard = () => ({ now, input: 'mqtt', observations: {
   indoor: temperature('mqtt-temperature'), garage: temperature('shelly-mqtt', 16), outdoor: temperature('fmi', 4),
@@ -18,7 +25,7 @@ const completeDashboard = () => ({ now, input: 'mqtt', observations: {
     reception: { brokerConnected: true, subscriptionStatus: 'subscribed', lastLiveAt: now } },
 ] }, providers: {
   easee: { status: 'ok', currentReadings: easeeReadings(), deviceTransports: { charger: 'ocpp', property: 'stream' } },
-  'shelly-evse': { status: 'ok', reason: 'physical-meter', enabled: true },
+  'shelly-evse': { status: 'ok', reason: 'physical-meter', enabled: true, ...shellyReadings() },
   market: { status: 'ok', source: 'entsoe' }, weather: { status: 'ok', source: 'fmi' },
 } });
 
@@ -30,6 +37,10 @@ test('configured data overview has four consistent categories with both vehicle 
   assert.deepEqual(entries.map(row => row.source), ['Easee, Shelly EVSE', 'ENTSO-E', 'BMW CarData, TeslaMate', 'MQTT, Shelly, FMI']);
   assert.ok(entries.every(row => row.display.state === 'Available' && row.introduction?.length > 40));
   assert.deepEqual(entries[2].sourceStates.map(row => [row.label, row.state]), [['BMW CarData', 'Connected'], ['TeslaMate', 'Connected']]);
+  assert.deepEqual(entries[2].datasets.map(row => [row.label, row.source, row.state]),
+    [['BMW', 'BMW CarData', 'Connected'], ['Tesla', 'TeslaMate', 'Connected']]);
+  assert.ok(entries[2].datasets.every(row => row.description && row.reported.startsWith('Reported ')));
+  assert.doesNotMatch(JSON.stringify(entries[2].datasets), /fixture\/vehicles|brokerConnected|subscriptionStatus/);
   assert.deepEqual(entries[3].sections.map(row => row.title), ['Main temperatures', 'Weather forecast']);
   assert.doesNotMatch(JSON.stringify(entries[0]), /BMW|CarData|TeslaMate/);
 });
@@ -45,7 +56,7 @@ test('electricity sections keep property, local Charger 1 and MQTT Charger 2 rea
   assert.ok(cloud.datasets.some(row => row.signals.includes('ev1_session_energy_check')));
   assert.ok(ocpp.datasets.every(row => row.signals.every(signal => signal.startsWith('ev1_') && signal !== 'ev1_session_energy_check')));
   assert.ok(ocpp.datasets.every(row => row.source.includes('Easee local OCPP')));
-  assert.deepEqual(shelly.datasets.flatMap(row => row.signals), ['charger2_power', 'ev2_energy', 'shelly_session_energy_check']);
+  assert.deepEqual(shelly.datasets.flatMap(row => row.signals), shellySignals);
   const signals = group.sections.flatMap(section => section.datasets.flatMap(row => row.signals));
   assert.equal(signals.length, new Set(signals).size, 'Every electrical signal has a single owning section');
   assert.deepEqual([...signals].sort(), group.datasets.flatMap(row => row.signals).sort());
@@ -284,10 +295,10 @@ test('H66 provider catalogue covers every decoded register without claiming tari
 });
 
 test('electricity groups only physical meters and keeps Tesla vehicle health separate',()=>{
-  const entries=dashboardProviders({providers:{easee:{status:'ok',currentReadings:easeeReadings()},'shelly-evse':{status:'ok',reason:'physical-meter'},teslamate:{status:'ok',reason:'vehicle-observation'}}},options);
+  const entries=dashboardProviders({providers:{easee:{status:'ok',currentReadings:easeeReadings()},'shelly-evse':{status:'ok',reason:'physical-meter',...shellyReadings()},teslamate:{status:'ok',reason:'vehicle-observation'}}},options);
   const group=entries.find(row=>row.key==='electricity');
   assert.equal(group.source,'Easee, Shelly EVSE');assert.equal(group.display.state,'Available');
-  const physical=providerSeries('shelly-evse');assert.deepEqual(physical.flatMap(row=>row.signals),['charger2_power','ev2_energy','shelly_session_energy_check']);
+  const physical=providerSeries('shelly-evse');assert.deepEqual(physical.flatMap(row=>row.signals),shellySignals);
   assert.deepEqual(providerSeries('teslamate'),[]);
   assert.match(group.display.detail,/Physical charger meter/);
 });
@@ -304,6 +315,54 @@ test('unknown physical EVSE diagnostics never expose raw payloads',()=>{
     const display=describeProvider('shelly-evse',{status:'degraded',reason},options);
     assert.equal(display.attention,true);assert.doesNotMatch(JSON.stringify(display),/synthetic-private|constructor|__proto__/);
   }
+});
+
+test('Shelly catalogue shows native three-phase support without inventing phase energy or vehicle meters', () => {
+  const rows = providerSeries('shelly-evse');
+  for (const field of ['current', 'voltage', 'active_power']) {
+    const row = rows.find(row => row.signals.includes(`ev2_${field}_l1`));
+    assert.deepEqual(row.signals, [1, 2, 3].map(phase => `ev2_${field}_l${phase}`));
+    assert.equal(row.source, 'Shelly EVSE');
+  }
+  assert.match(rows.find(row => row.signals.includes('ev2_import_energy_counter')).detail, /without separate phase energy counters/);
+  assert.doesNotMatch(JSON.stringify(rows), /TeslaMate|ev2_energy_l[123]|Phase distribution is not recorded/);
+});
+
+test('Shelly phase availability follows each native reading and keeps inactive chargers inactive', () => {
+  const health = { status: 'ok', reason: 'physical-meter', maxAgeMs: 60_000, readings: Object.fromEntries(
+    [1, 2, 3].map(phase => [`ev2_current_l${phase}`, { value: 6, available: true, sourceTime: now, quality: [] }])) };
+  const dataset = () => dashboardProviders({ providers: { 'shelly-evse': health } }, options)[0].datasets.find(row => row.signals[0] === 'ev2_current_l1');
+  assert.equal(dataset().state, 'Available');
+  delete health.readings.ev2_current_l3;
+  assert.equal(dataset().state, 'Partly available');
+  health.readings = {};
+  assert.equal(dataset().state, 'Waiting for readings');
+  health.readings.ev2_current_l1 = { value: 6, available: false, sourceTime: now, quality: ['retained'] };
+  assert.equal(dataset().state, 'Waiting for readings');
+  health.readings.ev2_current_l1 = { value: 6, available: true, sourceTime: now - 60_001, quality: [] };
+  assert.equal(dataset().state, 'Needs attention', 'Cached available state cannot outlive the source measurement');
+  health.readings.ev2_current_l1.sourceTime = now + 1;
+  assert.equal(dataset().state, 'Needs attention');
+  health.status = 'disabled';
+  health.reason = 'not-enabled';
+  assert.equal(dataset().state, 'Not enabled');
+});
+
+test('Shelly native freshness reaches the source summary while commissioning remains a separate warning', () => {
+  const health = { status: 'ok', reason: 'physical-meter', ...shellyReadings() };
+  const group = () => dashboardProviders({ providers: { 'shelly-evse': health } }, options)[0];
+  assert.equal(group().display.state, 'Available');
+  health.readings.ev2_current_l1.sourceTime = now - 60_001;
+  assert.equal(group().display.state, 'Needs attention');
+  assert.equal(group().sourceStates.find(row => row.label === 'Shelly EVSE').tone, 'attention');
+  health.readings.ev2_current_l1.sourceTime = now;
+  delete health.readings.ev2_voltage_l3;
+  assert.equal(group().display.state, 'Partly available');
+  Object.assign(health, shellyReadings(), { status: 'degraded', reason: 'commissioning-required' });
+  const uncommissioned = group();
+  assert.equal(uncommissioned.display.state, 'Needs attention');
+  assert.equal(uncommissioned.datasets.find(row => row.signals[0] === 'ev2_current_l1').state, 'Available');
+  assert.equal(uncommissioned.datasets.find(row => row.signals[0] === 'ev2_energy').state, 'Needs attention');
 });
 
 test('Easee provider catalogue includes acquired fields and one Charger 1 session check without a lifetime counter', () => {
@@ -720,7 +779,7 @@ test('provider names and entry bullets retain individual availability in a mixed
   const [group] = dashboardProviders({ providers: {
     easee: { status: 'error', error: 'HTTP-503', currentReadings: {
       property: { qualityIssues: [], error: null }, charger: { qualityIssues: ['provider_error'], error: 'HTTP-503' },
-    } }, 'shelly-evse': { status: 'ok', reason: 'physical-meter' },
+    } }, 'shelly-evse': { status: 'ok', reason: 'physical-meter', ...shellyReadings() },
   } }, options);
   assert.deepEqual(group.sourceStates.map(({ label, tone }) => ({ label, tone })), [
     { label: 'Easee', tone: 'attention' }, { label: 'Shelly EVSE', tone: 'available' },
@@ -850,7 +909,8 @@ test('Data and settings propagates the actual local/cloud source for each electr
   assert.equal(rows.get('property_active_power').source, 'Easee cloud');
   assert.equal(rows.get('ev1_energy_l1').source, 'Calculated from Easee local OCPP');
   assert.match(rows.get('ev1_voltage_l1').detail, /phase-to-neutral/);
-  assert.match(group.display.detail, /Native OCPP takes over charging authorization and schedules; property readings use Easee cloud/);
+  assert.match(group.localConnection.detail, /OCPP handles charging authorization and schedules locally/);
+  assert.doesNotMatch(group.localConnection.detail, /property|ST-MQ/);
 });
 
 test('automatic charger setup remains visible independently of working cloud readings', () => {
@@ -874,9 +934,9 @@ test('completed setup does not imply complete fresh local measurements', () => {
     setup: { state: 'ready', endpointSource: 'configured' }, pendingConfiguration: ['MeterValuesSampledData'] };
   let display = easeeLocalConnectionDisplay({ localOcpp }, options);
   assert.equal(display.setup.label, 'Setup complete');
-  assert.match(display.outage, /Normal service stop requests a return to cloud control.*paired handover keeps OCPP active/);
-  assert.match(display.outage, /crash or power loss.*waiting for approval.*Restart the controller or disable Direct OCPP/);
-  assert.match(display.outage, /Expiring pauses do not restore cloud authorization/);
+  assert.match(display.outage, /normal shutdown requests a return to Easee cloud control.*paired handover keeps the local connection active/);
+  assert.match(display.outage, /failed handback, crash or power loss.*waiting for authorization.*Restart the controller or disable Direct OCPP/);
+  assert.match(display.outage, /expired pause does not restore cloud authorization/);
   assert.equal(display.readings.label, 'Waiting for readings');
   assert.match(display.readings.detail, /acknowledge measurement settings/);
   assert.equal(display.endpoint, 'Configured standalone address');
@@ -890,6 +950,13 @@ test('completed setup does not imply complete fresh local measurements', () => {
   assert.equal(display.setup.label, 'Setup complete');
   assert.equal(display.readings.tone, 'attention');
   assert.match(display.readings.detail, /did not accept all measurement settings/);
+});
+
+test('completed charger setup schedules a connection check without implying another setup attempt', () => {
+  const display = easeeLocalConnectionDisplay({ localOcpp: { available: true,
+    setup: { state: 'ready', endpointSource: 'configured', nextAttemptAt: now + 60_000 } } }, options);
+  assert.match(display.setup.detail, /Next connection check 10:01/);
+  assert.doesNotMatch(JSON.stringify(display), /Next setup attempt|property readings|ST-MQ/);
 });
 
 test('standalone endpoint requirement directs configuration without exposing private setup data', () => {

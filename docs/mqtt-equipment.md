@@ -300,8 +300,11 @@ The charger shows its actual subscribed topics, generated RPC reply route,
 subscription status and last accepted live packet time independently of physical
 charger readiness.
 
-Independent BMW/Tesla feeds live under **Data & settings → Vehicle telemetry**,
-with the same card structure, topics and packet diagnostics. Vehicle names and providers
+Independent BMW/Tesla connection cards live in the **Vehicles** group under
+**Connections & configuration → MQTT**, with topics and packet diagnostics beside
+the other MQTT connections. **Data & settings → Vehicle telemetry** lists each
+named feed, its availability, report time and description directly, without
+another disclosure. Vehicle names and providers
 come from configuration, not a charger number or the first arriving packet. The
 BMW feed uses `stmq/vehicles/bmw`; TeslaMate retains its native vehicle subscription.
 Connection health is separate from any current charger association. A reading owned by the equipment catalogue appears

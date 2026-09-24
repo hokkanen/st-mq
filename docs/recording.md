@@ -222,6 +222,15 @@ advance energy. A counter reset, implausible jump or excessive gap establishes a
 new baseline and keeps missing coverage visible. Pause/resume does not split a
 physical plug connection. No counter from a vehicle supplies home electricity.
 
+Current provider status also exposes the documented Shelly `phase_info` currents,
+voltages and active powers for L1–L3, mapped with the installation's `phaseMap`,
+along with total active power. Native watts are converted to kW. These live-only
+readings retain source and receipt times and become unavailable on source expiry,
+retained delivery or disconnection; they do not add raw polls to recording.
+The accumulated total and native `energy_charge` session diagnostic are kept
+distinct from interval energy and finalized session checks. Shelly documents no
+individual phase-energy counters, so total energy remains one `ev2_energy` series.
+
 TeslaMate and BMW remain read-only vehicle evidence for either physical charger.
 Their feed health, timestamps, plug events and home scope control applicability
 of identity and planning fields. Disabling economic charging never enables a

@@ -115,12 +115,14 @@ export class Engine {
         reason: enabled ? 'awaiting-mqtt' : 'not-enabled', connected: false, charging: false, home: false,
         healthy: false, lastMessageAt: null, suppressed: null, recording: false, sessionOpen: false };
     } else delete providers.teslamate;
-    const physical = this.charging?.chargers?.charger2?.adapter?.snapshot?.();
+    const physicalAdapter = this.charging?.chargers?.charger2?.adapter;
+    const physical = physicalAdapter?.snapshot?.();
     const enabled = this.charging?.configuration?.chargers?.charger2?.enabled === true;
     providers['shelly-evse'] = { source: 'shelly-evse', enabled,
       status: !enabled ? 'disabled' : physical?.online ? physical.controlReady ? 'ok' : 'degraded' : 'waiting',
       reason: !enabled ? 'not-enabled' : physical?.online ? physical.controlReady ? 'physical-meter' : 'commissioning-required' : 'awaiting-mqtt',
       connected: physical?.online === true, recording: physical?.fields?.phase_info != null,
+      readings: physicalAdapter?.readings?.() ?? {}, maxAgeMs: physicalAdapter?.config?.maxAgeMs ?? null,
       mqttStatus: physical?.mqtt ?? null, topics: physical?.topics ?? [] };
     return providers;
   }
