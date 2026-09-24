@@ -1,6 +1,7 @@
 import { isReadOnlyReplica } from './replica-status.js';
 import { setStatusDetail } from './status-details.js';
 import { chargerSummary, chargingCost, chargingNotice } from './charging-summary.js';
+import { createChargingPriority } from './charging-priority.js';
 import { CHARGING_LOSS_FRACTION, CHARGING_EFFICIENCY } from '../src/domain/charging-energy.js';
 
 const finite = Number.isFinite;
@@ -361,6 +362,8 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
   };
   const bind = (node, event, action) => { if (!node) return; node.addEventListener(event, action); listeners.push(() => node.removeEventListener(event, action)); };
   const writable = () => Boolean(status?.charging && status.readOnly !== true && status.charging.readOnly !== true && !isReadOnlyReplica(status));
+  const sharedPriority = createChargingPriority({ document,
+    save: (priority, message) => mutate('/api/charging/settings', { priority }, message, 'Priority saved.') });
   const set = (id, text) => { if ($(id)) $(id).textContent = text; };
   const rowNodes = new WeakMap();
   const energyNodes = new WeakMap();
@@ -522,6 +525,7 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     targetControls.append(targetHelp, targetToggle); settings.fields.get('minimumSoc').label.append(targetControls);
     const targetMessage = make('p', '', 'temporary-status', `${id}-target-message`); targetMessage.setAttribute('role', 'status');
     preferences.append(targetMessage);
+    preferences.append(sharedPriority.createEntry(id));
     const explanationFold = make('details', '', 'equipment-fold charging-explanations', `${id}-explanation-details`);
     explanationFold.append(make('summary', 'How charging works'));
     const explanations = make('dl', '', 'equipment-readings', `${id}-explanations`); explanationFold.append(explanations); body.append(explanationFold);
@@ -538,11 +542,12 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     devices.set(id, device); return device;
   }
   async function mutate(path, payload, message, success, saved = () => {}) {
-    if (busy || !writable()) return;
+    if (busy || !writable()) return false;
     busy = true; message.textContent = 'Saving…'; message.classList.remove('form-error'); refreshControls();
     try {
       beforeRequest(); const result = await request(path, payload); saved(); update(result); onStatus(result); message.textContent = typeof success === 'function' ? success() : success;
-    } catch (error) { message.textContent = error.message ?? 'Could not save charging settings.'; message.classList.add('form-error'); }
+      return true;
+    } catch (error) { message.textContent = error.message ?? 'Could not save charging settings.'; message.classList.add('form-error'); return false; }
     finally { busy = false; refreshControls(); afterRequest(); }
   }
   function updateFields(group, settings, charger) {
@@ -569,6 +574,7 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
   }
   function refreshControls() {
     const locked = busy || !writable();
+    sharedPriority.update(status?.charging, { busy, writable: writable() });
     for (const device of devices.values()) {
       const { charger, settings } = device, supported = charger.capabilities?.scheduling === true;
       for (const [key, { field, input, label }] of settings.fields) {
@@ -589,16 +595,6 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     if (Number.isSafeInteger(next?.charging?.revision) && Number.isSafeInteger(status?.charging?.revision) && next.charging.revision < status.charging.revision) return;
     status = next;
     const charging = next?.charging;
-    let prioritySelect = $('charging-priority');
-    if (!prioritySelect && $('charging-devices')) {
-      const label = make('label', 'Charger priority '); prioritySelect = make('select', '', '', 'charging-priority');
-      for (const [value, text] of [['balanced', 'Balanced'], ['charger1', 'Charger 1 · Easee'], ['charger2', 'Charger 2 · Shelly']]) { const option = make('option', text); option.value = value; prioritySelect.append(option); }
-      label.append(prioritySelect); const devicesRoot=$('charging-devices');
-      if (devicesRoot.before) devicesRoot.before(label); else devicesRoot.append(label);
-      const message = make('span', '', 'temporary-status'); label.append(message);
-      bind(prioritySelect, 'change', () => mutate('/api/charging/settings', { priority: prioritySelect.value }, message, 'Priority updated.'));
-    }
-    if (prioritySelect) { prioritySelect.value = charging?.settings?.priority ?? 'balanced'; prioritySelect.disabled = busy || !writable(); }
     const globalError = ({ 'charging-planning-unavailable': 'The charging plan could not be updated. The last charger instructions remain in effect.',
       'charging-reconciliation-unavailable': 'The current charging instructions could not be confirmed.' })[charging?.error] ?? (charging?.error ? human(charging.error) : '');
     set('charging-status', globalError); if ($('charging-status')) $('charging-status').hidden = !globalError;
@@ -701,9 +697,9 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
       const enabled = charger.settings.enabled === true; device.toggle.textContent = enabled ? 'ON' : 'OFF'; device.toggle.setAttribute('aria-checked', String(enabled));
       updateFields(device.settings, charger.settings, charger);
     }
-    for (const [id, device] of devices) if (!currentIds.has(id)) { device.section.remove(); devices.delete(id); }
+    for (const [id, device] of devices) if (!currentIds.has(id)) { device.section.remove(); devices.delete(id); sharedPriority.removeEntry(id); }
     refreshControls();
   }
   refreshControls();
-  return { update, refreshControls, close() { for (const remove of listeners) remove(); } };
+  return { update, refreshControls, close() { sharedPriority.close(); for (const remove of listeners) remove(); } };
 }

@@ -2,6 +2,28 @@
 -Implement support for local mqtt-based temperature receives (eg, from shelly or HASS through Meteorologisk Institute); just store last received temp values and time stamps (maybe in storage class, see below) when received (and accept if received within 1h)
 -Chart dataset control buttons don't work when datasets are manually hidden/unhidden from legend, how to fix?
 
+Completed 2026-09-24 — Shared charger priority editor
+- Remove the standalone selector from the Garage overview. Either charger's
+  existing Details & settings opens one shared priority dialog; both entries
+  display the authoritative saved preference. Compact charger summary dimensions
+  stay unchanged, and opening the dialog does not resize the Garage card.
+- Explain balanced shortfall sharing and physical-point preference, persistent
+  scope, deadline/cost planning and manual-control precedence. Save explicitly;
+  Cancel/Escape discards drafts and restores focus. Preserve edits during polling,
+  handle failures/retries and newer revisions, and share the existing mutation
+  lock and read-only authorization with the other charger settings.
+- Reviewed current UI, API, runtime/settings, planner, state, tests and docs.
+  Removed the ad hoc overview selector; no retired contracts, aliases, persisted
+  format changes or compatibility paths added. Corrected the synthetic browser
+  fixture to provide current connection-energy evidence separately from progress.
+- Validation: 131 focused charging/garage UI, summary, configuration and planner
+  tests passed; production dashboard build passed in an isolated /tmp directory.
+  Synthetic Chromium Garage smoke passed across 22 charging states and
+  320–1920px layouts in both themes, with no browser exceptions. Priority checks
+  cover explicit saves, cancelled drafts, refresh, keyboard focus, unchanged card
+  dimensions and usable actions at 320×640. Screenshots reviewed; no live devices
+  or household data were used and the running installation was not changed.
+
 Completed 2026-09-24 — Clear stale local charger setup warnings
 - Temporary listener prerequisites no longer overwrite the last setup result.
   Recovery clears the warning immediately while preserving cloud verification,

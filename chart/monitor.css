@@ -1332,6 +1332,37 @@ button.status-detail-close:hover { background: var(--surface-soft); color: var(-
 .charging-field-help { display: block; margin-top: 6px; color: var(--muted); font-size: 10px; line-height: 1.5; }
 .charging-field-disabled > label, .charging-field-disabled > input { opacity: .65; }
 .charging-form-help { font-size: 11px; line-height: 1.6; }
+.charging-priority-entry { display: flex; align-items: center; justify-content: space-between; gap: 14px; width: 100%; margin: 20px 0 0; padding: 12px 0 0; border: 0; border-top: 1px solid var(--border); border-radius: 0; color: var(--text); background: transparent; text-align: left; }
+.charging-priority-entry > span:first-child { min-width: 0; }
+.charging-priority-entry strong { display: block; font-size: 12px; font-weight: 500; }
+.charging-priority-entry small { display: block; margin-top: 4px; color: var(--muted); font-size: 10px; font-weight: 400; }
+.charging-priority-entry-value { display: flex; align-items: center; gap: 10px; font-size: 11px; font-weight: 500; }
+.charging-priority-entry-value::after { content: '›'; font-size: 20px; font-weight: 400; color: var(--muted); }
+.charging-priority-entry:hover { color: var(--accent); background: transparent; }
+.charging-priority-entry:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+.charging-priority-dialog { width: min(460px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); padding: 24px; overflow-y: auto; border: 1px solid var(--border); border-radius: 12px; color: var(--text); background: var(--surface); box-shadow: 0 18px 60px #0006; }
+.charging-priority-dialog::backdrop { background: #0007; }
+.charging-priority-dialog h2 { margin: 0 0 10px; font-size: 19px; font-weight: 550; letter-spacing: -.2px; }
+.charging-priority-dialog p { margin: 0 0 16px; font-size: 12px; line-height: 1.6; }
+.charging-priority-dialog .charging-priority-current { color: var(--muted); font-size: 11px; }
+.charging-priority-options { min-width: 0; margin: 0; padding: 0; border: 0; }
+.charging-priority-options legend { padding: 0; margin-bottom: 10px; font-size: 12px; font-weight: 500; }
+.charging-priority-option { display: flex; flex-direction: row; align-items: flex-start; gap: 12px; margin: 0 0 8px; padding: 14px; border: 1px solid var(--border); border-radius: 8px; cursor: pointer; }
+.charging-priority-option:has(input:checked) { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 7%, var(--surface)); }
+.charging-priority-option:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+.charging-priority-option:has(input:disabled) { cursor: default; opacity: .65; }
+.charging-priority-option input { flex: 0 0 16px; width: 16px; height: 16px; min-height: 0; margin: 2px 0 0; padding: 0; accent-color: var(--accent); }
+.charging-priority-option input:focus-visible { outline: none; }
+.charging-priority-option strong { display: block; font-size: 13px; font-weight: 550; }
+.charging-priority-option small { display: block; margin-top: 5px; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.charging-priority-dialog .charging-priority-note { margin: 8px 0 0; color: var(--muted); font-size: 11px; }
+.charging-priority-dialog .temporary-status { margin: 12px 0 0; }
+.charging-priority-dialog .temporary-status:empty { display: none; }
+.charging-priority-dialog .confirmation-actions button { padding-inline: 12px; white-space: nowrap; }
+@media (max-width: 400px) {
+  .charging-priority-dialog { padding: 18px; }
+  .charging-priority-option { padding: 12px; }
+}
 .charging-device .temporary-status:empty { display: none; }
 .charging-device .equipment-readings dd { overflow-wrap: anywhere; }
 .charging-notes { padding-left: 18px; color: var(--stale); font-size: 11px; line-height: 1.6; }

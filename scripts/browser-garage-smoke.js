@@ -11,6 +11,7 @@ import { seedChartFixture } from './lib/chart-fixture.js';
 import { appendGarageEntry } from '../src/garage/learning.js';
 import { garageSettings } from '../src/garage/settings.js';
 import { checkDashboardDisclosures, checkDashboardLayout } from './lib/dashboard-browser-checks.js';
+import { checkChargingPriority } from './lib/charging-priority-browser-checks.js';
 
 const directory = mkdtempSync(join(tmpdir(), 'stmq-garage-browser-'));
 const artifacts = mkdtempSync(join(tmpdir(), 'stmq-garage-screenshots-'));
@@ -148,7 +149,7 @@ try {
           charger.values.scheduledStartAt = observation(status.now + 2 * 3600_000);
           charger.values.charging = observation(state === 'charging');
           charger.values.powerKw = observation(8.2);
-          charger.requiredGridKwh = 15; charger.progress = null;
+          charger.requiredGridKwh = 15; charger.progress = null; charger.sessionCost = null;
           charger.forecast = { state: 'forecast', feasible: true, startAt: status.now + 2 * 3600_000, finishAt: status.now + 3.5 * 3600_000,
             powerKw: 10, shortfallGridKwh: 0 };
           status.prices = [{ start: status.now, end: status.now + 24 * 3600_000, allInCentsPerKWh: 20 }];
@@ -197,6 +198,7 @@ try {
               charger.values.charging = observation(true); charger.values.actualCurrentA = observation(16);
               charger.progress = { estimatedSoc: 52, estimatedSocSource: 'starting-charge', hasEnergyEstimate: true,
                 deliveredGridKwh: 10, remainingGridKwh: 27 };
+              charger.sessionCost = { recordedGridKwh: 10, deliveredGridKwh: 10 };
               charger.forecast = { feasible: true, finishAt: status.now + 10 * 3600_000 };
               charger.control = { phase: 'active', execution: { periods: [
                 { startAt: status.now - 3600_000, endAt: status.now + 3600_000 }, periods[1] ] } };
@@ -204,6 +206,7 @@ try {
                 charger.values.soc = { ...observation(85), measuredAt: status.now - 3600_000 };
                 charger.values.minimumSoc = observation(95);
                 charger.progress = { ...charger.progress, estimatedSoc: 89, estimatedSocSource: 'vehicle', deliveredGridKwh: 3.5, remainingGridKwh: 5 };
+                charger.sessionCost = { recordedGridKwh: 13.5, deliveredGridKwh: 13.5 };
               }
               if (state === 'full') {
                 charger.values.minimumSoc = observation(100);
@@ -259,6 +262,7 @@ try {
   assert.equal(await evaluate("document.querySelector('.charging-secondary, .charging-soc-form')"), null);
   assert.equal(await evaluate("document.querySelector('.charging-settings-form .status-detail-trigger')"), null,
     'Charger form guidance stays inline beside each input');
+  await checkChargingPriority({ send, evaluate, until, keyPress, artifacts });
   await evaluate("document.getElementById('garage-equipment-details').open=true; true");
   for (const [charger, value] of [[1, '76'], [2, '59']]) {
     await evaluate(`(() => { document.getElementById('charger${charger}-device').open=true;
@@ -1034,6 +1038,7 @@ try {
       'Controlled and Observed roles with shared charge, target, completion, delivered energy, remaining energy and cost in the always-visible summary',
       'fixed matching charger summary heights across both themes, all viewports, connection, charging, planning, manual priority, risk and handover states, and open or closed folds',
       'equal desktop charger columns, narrow mobile stacking, independent folds without stretching the closed sibling, and active full-dashboard screenshots',
+      'shared priority dialog saves explicitly, discards cancelled drafts, preserves focus and status-refresh edits, and leaves Garage dimensions unchanged at 320/390/1440px in both themes',
       'unsaved charger settings and focus survive status polling and reflow between desktop and mobile',
       'summary bands remain separate without vertical overflow; disconnected and unknown readings retain the layout without stale percentages',
       'metric explanations open without toggling equipment, preserve focus during refresh, and return on Escape; form guidance and all charging periods remain inline',

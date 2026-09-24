@@ -492,7 +492,9 @@ class Node extends Events {
     }
     return null;
   }
-  focus() { this.document.activeElement = this; }
+  focus() { if (!this.disabled) this.document.activeElement = this; }
+  showModal() { this.open = true; }
+  close() { this.open = false; this.dispatch('close'); }
   showPopover() { this.popoverOpen = true; this.showCount = (this.showCount ?? 0) + 1; }
   hidePopover() { this.popoverOpen = false; this.dispatch('toggle', { newState: 'closed' }); }
   getBoundingClientRect() {
@@ -1030,5 +1032,170 @@ test('Added energy keeps the recorded connection total after a new battery readi
   assert.equal($('charger1-delivered').textContent, '18.4 kWh', 'Cost-only estimated missing energy is not presented as measured energy');
   panel.update(status({ ...item, values: { ...item.values, connected: reading(false) }, sessionCost: null }));
   assert.equal($('charger1-delivered').textContent, '—');
+  panel.close();
+});
+
+function priorityStatus(priority = 'balanced', revision = 1) {
+  const snapshot = status(); snapshot.charging.settings.priority = priority; snapshot.charging.revision = revision;
+  return snapshot;
+}
+function choosePriority(document, value) {
+  for (const choice of ['balanced', 'charger1', 'charger2']) document.getElementById(`charging-priority-${choice}`).checked = choice === value;
+  const radio = document.getElementById(`charging-priority-${value}`); radio.focus(); radio.dispatch('change');
+  return radio;
+}
+
+test('shared priority stays in charger details and opens one accessible dialog outside the Garage content', () => {
+  const document = documentFixture(), $ = id => document.getElementById(id), calls = [];
+  const panel = createChargingPanel({ document, request: async (...args) => { calls.push(args); return priorityStatus(); } });
+  panel.update(priorityStatus());
+  assert.equal($('charging-priority'), null, 'No standalone selector adds an overview row');
+  assert.equal($('charging-priority-dialog'), null, 'The editor is created only when opened');
+  assert.deepEqual($('charging-devices').children.map(node => node.id), ['charger1-device', 'charger2-device']);
+  for (const id of ['charger1', 'charger2']) {
+    const entry = $(`${id}-shared-priority`);
+    assert.equal(entry.tagName, 'BUTTON'); assert.equal(entry.type, 'button');
+    assert.equal(entry.getAttribute('aria-haspopup'), 'dialog');
+    assert($(`${id}-settings-details`).contains(entry));
+    assert(!$(`${id}-device-summary`).contains(entry), 'The compact summary gains no charging preference control');
+    assert.equal($(`${id}-shared-priority-value`).textContent, 'Balanced');
+  }
+  const first = $('charger1-shared-priority'); first.focus(); first.dispatch('click');
+  const dialog = $('charging-priority-dialog');
+  assert.equal(dialog.tagName, 'DIALOG'); assert.equal(dialog.parentElement, document.body); assert.equal(dialog.open, true);
+  assert.equal(first.getAttribute('aria-controls'), dialog.id);
+  assert($('charging-priority-balanced').checked); assert($('charging-priority-save').disabled);
+  choosePriority(document, 'charger2'); assert.deepEqual(calls, [], 'Choosing a draft does not mutate charging');
+  $('charging-priority-cancel').dispatch('click'); assert.equal(dialog.open, false); assert(document.activeElement === first, 'Cancel returns focus to the entry');
+  const second = $('charger2-shared-priority'); second.focus(); second.dispatch('click');
+  assert.equal($('charging-priority-dialog'), dialog, 'Both chargers open the same global editor');
+  assert($('charging-priority-balanced').checked, 'Cancelling discards the uncommitted selection');
+  assert.equal(descendants(document.body).filter(node => node.id === 'charging-priority-dialog').length, 1);
+  const cancel = dialog.dispatch('cancel'); assert(!cancel.defaultPrevented); dialog.close();
+  assert(document.activeElement === second, 'Escape returns focus to the entry that opened the editor'); assert.deepEqual(calls, []);
+  panel.close(); assert.equal($('charging-priority-dialog'), null); assert(!first.listeners.has('click'));
+});
+
+test('shared priority saves only on submit and updates both entries from the acknowledged preference', async () => {
+  const document = documentFixture(), $ = id => document.getElementById(id), calls = []; let complete;
+  const panel = createChargingPanel({ document, request: (path, payload) => {
+    calls.push([path, payload]); return new Promise(resolve => { complete = resolve; });
+  } });
+  panel.update(priorityStatus()); const entry = $('charger2-shared-priority'); entry.focus(); entry.dispatch('click');
+  choosePriority(document, 'charger2');
+  assert.equal($('charger1-shared-priority-value').textContent, 'Balanced');
+  assert.equal($('charger2-shared-priority-value').textContent, 'Balanced');
+  const saving = submit($('charging-priority-form'));
+  assert.deepEqual(calls, [['/api/charging/settings', { priority: 'charger2' }]]);
+  assert($('charging-priority-save').disabled); assert($('charging-priority-cancel').disabled);
+  assert($('charging-priority-balanced').disabled); assert($('charger1-enabled').disabled); assert($('charger2-setting-readyBy').disabled);
+  assert($('charging-priority-dialog').dispatch('cancel').defaultPrevented, 'Native Escape cannot dismiss an in-flight save');
+  await submit($('charging-priority-form')); await $('charger1-enabled').listeners.get('click')();
+  assert.equal(calls.length, 1, 'The shared charging mutation lock prevents duplicate and competing requests');
+  complete(priorityStatus('charger2', 2)); await saving;
+  assert.equal($('charging-priority-dialog').open, false); assert(document.activeElement === entry, 'Save returns focus after re-enabling the invoking entry');
+  assert.equal($('charger1-shared-priority-value').textContent, 'Charger 2');
+  assert.equal($('charger2-shared-priority-value').textContent, 'Charger 2');
+  assert(!$('charger1-enabled').disabled); assert(!$('charger2-setting-readyBy').disabled);
+  $('charger1-shared-priority').dispatch('click'); assert($('charging-priority-charger2').checked);
+  panel.close();
+});
+
+test('priority polling follows committed changes until edited and then preserves the open draft and focus', () => {
+  const document = documentFixture(), $ = id => document.getElementById(id);
+  const panel = createChargingPanel({ document, request: async () => priorityStatus() });
+  panel.update(priorityStatus()); $('charger1-shared-priority').dispatch('click');
+  const dialog = $('charging-priority-dialog');
+  panel.update(priorityStatus('charger1', 2));
+  assert($('charging-priority-charger1').checked, 'A pristine editor follows the authoritative preference');
+  assert($('charging-priority-save').disabled);
+  const draft = choosePriority(document, 'charger2');
+  panel.update(priorityStatus('balanced', 3));
+  assert.equal($('charging-priority-dialog'), dialog); assert.equal(dialog.open, true);
+  assert(draft.checked); assert.equal(document.activeElement, draft); assert(!$('charging-priority-save').disabled);
+  assert.equal($('charger1-shared-priority-value').textContent, 'Balanced');
+  assert.equal($('charger2-shared-priority-value').textContent, 'Balanced');
+  panel.update(priorityStatus('charger1', 2));
+  assert.equal($('charger1-shared-priority-value').textContent, 'Balanced', 'Older snapshots cannot roll back the committed preference');
+  assert(draft.checked);
+  $('charging-priority-cancel').dispatch('click'); $('charger2-shared-priority').dispatch('click');
+  assert($('charging-priority-balanced').checked); assert($('charging-priority-save').disabled);
+  panel.close();
+});
+
+test('a failed shared-priority save retains the draft, reports the error and allows retry', async () => {
+  const document = documentFixture(), $ = id => document.getElementById(id), calls = [];
+  const panel = createChargingPanel({ document, request: async (path, payload) => {
+    calls.push([path, payload]); if (calls.length === 1) throw new Error('The controller could not be reached.');
+    return priorityStatus(payload.priority, 2);
+  } });
+  panel.update(priorityStatus()); $('charger1-shared-priority').dispatch('click'); choosePriority(document, 'charger1');
+  await submit($('charging-priority-form'));
+  assert.equal($('charging-priority-dialog').open, true); assert($('charging-priority-charger1').checked);
+  assert.match($('charging-priority-message').textContent, /controller could not be reached/);
+  assert($('charging-priority-message').matches('.form-error'));
+  assert(!$('charging-priority-save').disabled); assert(!$('charging-priority-charger1').disabled);
+  assert.equal($('charger1-shared-priority-value').textContent, 'Balanced');
+  await submit($('charging-priority-form'));
+  assert.equal(calls.length, 2); assert.deepEqual(calls[1], calls[0]);
+  assert.equal($('charging-priority-dialog').open, false);
+  assert.equal($('charger1-shared-priority-value').textContent, 'Charger 1');
+  assert.equal($('charger2-shared-priority-value').textContent, 'Charger 1');
+  panel.close();
+});
+
+test('priority stays inspectable while replica and read-only transitions lock every mutation', async () => {
+  const document = documentFixture(), $ = id => document.getElementById(id), calls = [];
+  const panel = createChargingPanel({ document, request: async (...args) => { calls.push(args); return priorityStatus(); } });
+  panel.update(priorityStatus()); $('charger1-shared-priority').dispatch('click'); choosePriority(document, 'charger2');
+  for (const snapshot of [
+    { ...priorityStatus(), role: 'replica' },
+    { ...priorityStatus(), readOnly: true },
+    (() => { const snapshot = priorityStatus(); snapshot.charging.readOnly = true; return snapshot; })(),
+  ]) {
+    panel.update(snapshot);
+    assert(!$('charger1-shared-priority').disabled, 'Read-only users can inspect the shared policy');
+    for (const value of ['balanced', 'charger1', 'charger2']) assert($(`charging-priority-${value}`).disabled);
+    assert($('charging-priority-save').disabled); assert(!$('charging-priority-cancel').disabled);
+    await submit($('charging-priority-form')); assert.deepEqual(calls, []);
+    assert($('charging-priority-charger2').checked, 'A permission transition does not erase the unsaved draft');
+  }
+  $('charging-priority-cancel').dispatch('click'); $('charger2-shared-priority').dispatch('click');
+  assert.equal($('charging-priority-dialog').open, true); assert($('charging-priority-save').disabled);
+  panel.update(priorityStatus()); assert(!$('charging-priority-charger1').disabled);
+  choosePriority(document, 'charger1'); assert(!$('charging-priority-save').disabled);
+  panel.close();
+});
+
+test('a charger-settings save locks the shared priority editor and releases it without losing the draft', async () => {
+  const document = documentFixture(), $ = id => document.getElementById(id), calls = []; let complete;
+  const panel = createChargingPanel({ document, request: (path, payload) => {
+    calls.push([path, payload]); return new Promise(resolve => { complete = resolve; });
+  } });
+  panel.update(priorityStatus()); const field = $('charger1-setting-manualSoc'); field.value = '45'; field.dispatch('input');
+  $('charger1-shared-priority').dispatch('click'); choosePriority(document, 'charger2');
+  const saving = submit($('charger1-settings-form'));
+  assert.deepEqual(calls, [['/api/charging/chargers/charger1/settings', { manualSoc: 45 }]]);
+  assert($('charging-priority-save').disabled); assert($('charging-priority-charger2').disabled);
+  await submit($('charging-priority-form')); assert.equal(calls.length, 1);
+  const acknowledged = priorityStatus('balanced', 2); acknowledged.charging.chargers[0].settings.manualSoc = 45;
+  complete(acknowledged); await saving;
+  assert.equal($('charging-priority-dialog').open, true); assert($('charging-priority-charger2').checked);
+  assert(!$('charging-priority-save').disabled); assert(!$('charging-priority-charger2').disabled);
+  panel.close();
+});
+
+test('a superseded priority response cannot close the editor or claim its draft became authoritative', async () => {
+  const document = documentFixture(), $ = id => document.getElementById(id); let complete;
+  const panel = createChargingPanel({ document, request: () => new Promise(resolve => { complete = resolve; }) });
+  panel.update(priorityStatus()); $('charger1-shared-priority').dispatch('click'); choosePriority(document, 'charger2');
+  const saving = submit($('charging-priority-form'));
+  panel.update(priorityStatus('charger1', 3));
+  complete(priorityStatus('charger2', 2)); await saving;
+  assert.equal($('charging-priority-dialog').open, true); assert($('charging-priority-charger2').checked);
+  assert.equal($('charger1-shared-priority-value').textContent, 'Charger 1');
+  assert.equal($('charger2-shared-priority-value').textContent, 'Charger 1');
+  assert.match($('charging-priority-message').textContent, /confirm|changed/i);
+  assert(!$('charging-priority-save').disabled, 'The user can review and retry an unconfirmed preference');
   panel.close();
 });
