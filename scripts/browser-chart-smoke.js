@@ -586,8 +586,13 @@ try {
     await checkDateAlignment();
     await evaluate("true");
     await capture(`home-energy-dark-${viewport.width}`);
-    await evaluate("document.getElementById('fireplace-details').scrollIntoView({block:'start'}); true");
+    await evaluate("document.getElementById('fireplace-shortcut').click(); true");
+    assert.equal(await evaluate("document.getElementById('fireplace-dialog').matches(':modal') && document.getElementById('fireplace-form').checkVisibility()"), true,
+      'Home shortcut opens the fireplace window');
+    assert.equal(await evaluate("document.getElementById('fireplace-dialog').scrollWidth <= document.getElementById('fireplace-dialog').clientWidth && document.documentElement.scrollWidth <= innerWidth"), true,
+      'Fireplace window fits the mobile viewport without horizontal overflow');
     await capture(`home-energy-fireplace-${viewport.width}`);
+    await evaluate("document.getElementById('fireplace-close').click(); true");
     await evaluate("document.querySelector('.history-panel').scrollIntoView(); true");
     await capture(`home-energy-chart-${viewport.width}`);
     await evaluate('scrollTo(0, 0); true');

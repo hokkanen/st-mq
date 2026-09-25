@@ -96,12 +96,22 @@ export function createFireplaceActions({ request, onChange = () => {}, makeReque
 export function createFireplacePanel({ document, request, storage, beforeMutation, afterMutation }) {
   const $ = id => document.getElementById(id);
   const slider = $('fireplace-kg'), rows = new Map();
+  const dialog = $('fireplace-dialog'), shortcut = $('fireplace-shortcut'), closeButton = $('fireplace-close');
   let now = Date.now(), rendered;
   const showAmount = () => {
     $('fireplace-amount').textContent = `${slider.value} kg`;
     slider.setAttribute('aria-valuetext', `${slider.value} kilograms of dry firewood`);
   };
   const actions = createFireplaceActions({ request, storage, beforeMutation, afterMutation, onChange: render });
+  let showPending = !!actions.snapshot().pending;
+  function open() {
+    if (dialog.open || dialog.hidden || shortcut.hidden || shortcut.disabled) return;
+    dialog.showModal();
+    shortcut.setAttribute('aria-expanded', 'true');
+    const retry = $('fireplace-retry');
+    (!retry.hidden && !retry.disabled ? retry : !slider.disabled ? slider : closeButton).focus();
+  }
+  function close() { if (dialog.open) dialog.close(); }
   function render(state) {
     const display = fireplaceView(state.view, Math.max(now, state.view?.lastAt ?? now)), available = !!state.view?.available;
     if (state.pending?.path === '/api/fireplace') slider.value = String(state.pending.body.kg);
@@ -146,9 +156,27 @@ export function createFireplacePanel({ document, request, storage, beforeMutatio
     rendered = state;
   }
   slider.addEventListener('input', showAmount);
+  shortcut.addEventListener('click', event => {
+    event.preventDefault(); event.stopPropagation();
+    open();
+  });
+  closeButton.addEventListener('click', close);
+  dialog.addEventListener('close', () => {
+    shortcut.setAttribute('aria-expanded', 'false');
+    if (!shortcut.hidden && !shortcut.disabled) shortcut.focus({ preventScroll: true });
+  });
   $('fireplace-form').addEventListener('submit', event => { event.preventDefault(); void actions.add(Number(slider.value)); });
   $('fireplace-retry').addEventListener('click', () => { void actions.retry(); });
   render(actions.snapshot());
-  if (actions.snapshot().pending) $('fireplace-details').open = true;
-  return { update(view, at) { now = Number.isFinite(at) ? at : Date.now(); actions.update(view); if (rendered?.view && !view) render(rendered); } };
+  return {
+    update(view, at) {
+      now = Number.isFinite(at) ? at : Date.now();
+      actions.update(view);
+      if (rendered?.view && !view) render(rendered);
+      if (showPending && view?.available && !dialog.hidden && !shortcut.hidden && !shortcut.disabled) {
+        showPending = false; open();
+      }
+    },
+    close,
+  };
 }

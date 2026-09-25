@@ -54,8 +54,8 @@
               <h2 id="control-title">Home<span class="zone-expand" aria-hidden="true"></span></h2>
               <div class="home-heading-actions">
                 <span class="control-badge" data-controller-only><span>Heat control</span><strong id="control-price">—</strong></span>
-                <button id="chart-shortcut" class="chart-shortcut secondary-button" type="button" aria-label="Open history chart in fullscreen" title="Open chart in fullscreen" aria-expanded="false" aria-controls="history">
-                  <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4v16h16M7 14l4-5 4 3 5-7"/></svg>
+                <button id="fireplace-shortcut" class="fireplace-shortcut secondary-button" type="button" aria-label="Open fireplace" title="Open fireplace" aria-haspopup="dialog" aria-expanded="false" aria-controls="fireplace-dialog" data-controller-only>
+                  <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21V7h16v14M3 7h18V4H3zM2 21h20M8 21v-7a4 4 0 0 1 8 0v7"/><path d="M12 20c-3 0-3-3-1-5 0 2 2 2 2-1 3 3 2 6-1 6Z"/></svg>
                 </button>
               </div>
             </div>
@@ -349,26 +349,6 @@
                 <p id="home-equipment-result" class="equipment-test-result" role="status" aria-live="polite" hidden></p>
                 <div class="zone-connections"><a href="#mqtt-devices-details" data-open-mqtt-settings>Connections &amp; MQTT topics →</a></div>
               </section>
-            </div>
-          </details>
-          <details id="fireplace-details" class="dashboard-disclosure fireplace-details" data-controller-only>
-            <summary><span>Fireplace</span><small id="fireplace-overview">Add firewood</small></summary>
-            <div id="fireplace-content" class="fireplace-content">
-              <form id="fireplace-form">
-                <div class="fireplace-amount"><label for="fireplace-kg">Dry firewood</label><output id="fireplace-amount" for="fireplace-kg">8 kg</output></div>
-                <input id="fireplace-kg" type="range" min="2" max="10" step="1" value="8" aria-describedby="fireplace-help" disabled>
-                <div class="fireplace-scale" aria-hidden="true"><span>2 kg</span><span>4</span><span>6</span><span>8</span><span>10 kg</span></div>
-                <p id="fireplace-help" class="muted">Record new wood as you light either fireplace or add another load. Its heat is released gradually.</p>
-                <button id="fireplace-submit" type="submit" disabled>Record firewood now</button>
-              </form>
-              <p id="fireplace-message" class="temporary-status" role="status" aria-live="polite"></p>
-              <button id="fireplace-retry" class="secondary-button" type="button" hidden>Retry saving</button>
-              <p id="fireplace-model-status" class="muted" role="status" aria-live="polite"></p>
-              <div class="fireplace-history-heading"><h3>Past 48 hours</h3><span id="fireplace-total" class="muted">No entries</span></div>
-              <p class="muted fireplace-timezone">Finnish local time · Europe/Helsinki</p>
-              <ul id="fireplace-entries" class="fireplace-entries" aria-label="Firewood recorded in the past 48 hours"></ul>
-              <p id="fireplace-empty" class="muted">No firewood recorded in the past 48 hours.</p>
-              <p class="muted fireplace-correction-help">Remove only mistaken entries. Saved entries and their corrections stay in history. Leave real fires recorded after they go out.</p>
             </div>
           </details>
         </div>
@@ -863,6 +843,28 @@
     </section>
   </main>
   <footer>Finnish local time · Europe/Helsinki · Weather: <a href="https://en.ilmatieteenlaitos.fi/open-data">FMI</a> / <a href="https://open-meteo.com/">Open-Meteo</a> (DWD ICON)</footer>
+  <dialog id="fireplace-dialog" class="fireplace-dialog" aria-labelledby="fireplace-title" aria-describedby="fireplace-help" data-controller-only>
+    <h2 id="fireplace-title">Fireplace</h2>
+    <p id="fireplace-overview" class="muted">Add firewood</p>
+    <div id="fireplace-content" class="fireplace-content">
+      <form id="fireplace-form">
+        <div class="fireplace-amount"><label for="fireplace-kg">Dry firewood</label><output id="fireplace-amount" for="fireplace-kg">8 kg</output></div>
+        <input id="fireplace-kg" type="range" min="2" max="10" step="1" value="8" aria-describedby="fireplace-help" disabled>
+        <div class="fireplace-scale" aria-hidden="true"><span>2 kg</span><span>4</span><span>6</span><span>8</span><span>10 kg</span></div>
+        <p id="fireplace-help" class="muted">Record new wood as you light either fireplace or add another load. Its heat is released gradually.</p>
+        <button id="fireplace-submit" type="submit" disabled>Record firewood now</button>
+      </form>
+      <p id="fireplace-message" class="temporary-status" role="status" aria-live="polite"></p>
+      <button id="fireplace-retry" class="secondary-button" type="button" hidden>Retry saving</button>
+      <p id="fireplace-model-status" class="muted" role="status" aria-live="polite"></p>
+      <div class="fireplace-history-heading"><h3>Past 48 hours</h3><span id="fireplace-total" class="muted">No entries</span></div>
+      <p class="muted fireplace-timezone">Finnish local time · Europe/Helsinki</p>
+      <ul id="fireplace-entries" class="fireplace-entries" aria-label="Firewood recorded in the past 48 hours"></ul>
+      <p id="fireplace-empty" class="muted">No firewood recorded in the past 48 hours.</p>
+      <p class="muted fireplace-correction-help">Remove only mistaken entries. Saved entries and their corrections stay in history. Leave real fires recorded after they go out.</p>
+    </div>
+    <div class="confirmation-actions"><button id="fireplace-close" class="secondary-button" type="button">Close</button></div>
+  </dialog>
   <script type="module" src="./monitor.js"></script>
 </body>
 </html>

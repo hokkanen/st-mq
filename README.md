@@ -307,13 +307,14 @@ Auxiliary output has a five-minute freshness bound. Learning histories keep the
 estimate assessed at the time and never rewrite old points using a later model.
 
 Above the chart, separate **Home** and **Garage** cards show **Heat control**
-status and a chart button. Home's upper summary shows the indoor average, outdoor
+status. Home has a **Fireplace** button; Garage has a chart button.
+Home's upper summary shows the indoor average, outdoor
 temperature, heating request and all-in electricity price; Garage's shows its rear
 temperature, doors, heating request and the same price. Each upper summary opens
 **Heating configuration**, including manual heating and temporary controls.
-Home offers Away/Pause; Garage offers **Pause price control**. The expandable **Fireplace**
-follows Home's equipment fold.
-**Sensors & Equipment** contains Home's readings and equipment controls.
+Home offers Away/Pause; Garage offers **Pause price control**. Home's **Fireplace**
+button opens a window for recording firewood and reviewing recent entries.
+**Sensors & Equipment** spans Home's width and contains its readings and equipment controls.
 Garage's two expandable chargers sit above **Sensors & More equipment**.
 Tariff requests remain explicitly unverified when relay readback
 is unavailable; stale H66 readings are not presented as current settings.

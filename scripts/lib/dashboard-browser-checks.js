@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 
 export async function checkDashboardDisclosures({ evaluate, keyPress, until }) {
-  const folds = ['home-heat-pump-details', 'garage-heating-details', 'fireplace-details',
+  const folds = ['home-heat-pump-details', 'garage-heating-details',
     'home-equipment-details', 'garage-equipment-details', 'connections-details', 'learning-panel-details', 'garage-learning-details'];
   assert.deepEqual(await evaluate(`Array.from(document.querySelectorAll('.controller-column'))
     .map(column => [...column.querySelectorAll(':scope > article')].map(card => card.id))`),
@@ -14,7 +14,11 @@ export async function checkDashboardDisclosures({ evaluate, keyPress, until }) {
     && document.querySelectorAll('#garage-equipment-details [id^=charger]').length === 0`), true,
   'Garage chargers remain visible outside the heating and equipment folds without duplicates');
   assert.deepEqual(await evaluate(`[...document.querySelectorAll('#home-control .home-support > details')].map(node => node.id)`),
-    ['home-equipment-details', 'fireplace-details'], 'Home equipment and fireplace are sibling disclosures below the overview');
+    ['home-equipment-details'], 'Sensors & Equipment occupies the Home support area on its own');
+  assert.equal(await evaluate("document.querySelector('#fireplace-details, #chart-shortcut') === null"), true,
+    'The Home fireplace disclosure and chart shortcut have been replaced');
+  assert.equal(await evaluate("document.getElementById('fireplace-dialog').open"), false,
+    'The fireplace window starts closed');
   assert.equal(await evaluate(`['outdoor', 'outdoor-age'].every(id => document.querySelector('#home-heat-pump-details > summary .overview-zone').contains(document.getElementById(id)))
     && ['home', 'garage'].every(area => {
       const prefix = area === 'home' ? '' : 'garage-';
@@ -71,22 +75,50 @@ export async function checkDashboardDisclosures({ evaluate, keyPress, until }) {
     }
     await evaluate(`document.getElementById('${fold}').open=false`);
   }
-  await evaluate("document.querySelector('#home-equipment-details > summary').click(); document.querySelector('#fireplace-details > summary').click()");
-  assert.equal(await evaluate("document.getElementById('home-equipment-details').open && document.getElementById('fireplace-details').open && document.getElementById('fireplace-form').checkVisibility()"), true,
-    'Equipment and fireplace can remain open together');
-  await evaluate("document.querySelector('#home-equipment-details > summary').click()");
-  assert.equal(await evaluate("document.getElementById('fireplace-details').open && document.getElementById('fireplace-form').checkVisibility()"), true,
-    'Closing equipment leaves the fireplace and its form open');
-  await evaluate("document.querySelector('#fireplace-details > summary').click()");
-  for (const [id, fold] of [['chart-shortcut', 'home-heat-pump-details'], ['garage-chart-shortcut', 'garage-heating-details']]) {
+  const originalKg = await evaluate("document.getElementById('fireplace-kg').value");
+  for (const expanded of [false, true]) {
+    await evaluate(`document.getElementById('home-heat-pump-details').open=${expanded};
+      document.getElementById('home-equipment-details').open=${expanded};
+      document.getElementById('fireplace-shortcut').focus()`);
+    await keyPress('Enter');
+    await until("document.getElementById('fireplace-dialog').matches(':modal')");
+    assert.equal(await evaluate("document.getElementById('fireplace-shortcut').getAttribute('aria-expanded')"), 'true');
+    assert.equal(await evaluate("document.getElementById('fireplace-dialog').contains(document.activeElement)"), true,
+      'Opening Fireplace moves keyboard focus into the window');
+    assert.equal(await evaluate("document.getElementById('fireplace-form').checkVisibility()"), true,
+      'Fireplace controls are visible independently of the Home folds');
+    assert.deepEqual(await evaluate("['home-heat-pump-details', 'home-equipment-details'].map(id => document.getElementById(id).open)"),
+      [expanded, expanded], 'Opening Fireplace preserves the Home and equipment folds');
+    await evaluate("document.getElementById('fireplace-kg').value='6'; document.getElementById('fireplace-kg').dispatchEvent(new Event('input'))");
+    assert.equal(await evaluate("document.getElementById('fireplace-amount').textContent"), '6 kg');
+    if (expanded) {
+      await evaluate("document.getElementById('fireplace-close').focus()");
+      await keyPress('Enter');
+    } else await keyPress('Escape');
+    await until("!document.getElementById('fireplace-dialog').open && document.getElementById('fireplace-shortcut').getAttribute('aria-expanded') === 'false'");
+    assert.equal(await evaluate("document.getElementById('fireplace-shortcut').getAttribute('aria-expanded')"), 'false');
+    assert.equal(await evaluate("document.activeElement === document.getElementById('fireplace-shortcut')"), true,
+      'Closing Fireplace restores focus to its Home shortcut');
+    await keyPress('Enter');
+    await until("document.getElementById('fireplace-dialog').open");
+    assert.equal(await evaluate("document.getElementById('fireplace-kg').value"), '6',
+      'The selected firewood amount survives closing and reopening the window');
+    await keyPress('Escape');
+    await until("!document.getElementById('fireplace-dialog').open && document.getElementById('fireplace-shortcut').getAttribute('aria-expanded') === 'false'");
+  }
+  await evaluate(`document.getElementById('fireplace-kg').value=${JSON.stringify(originalKg)};
+    document.getElementById('fireplace-kg').dispatchEvent(new Event('input'));
+    document.getElementById('home-heat-pump-details').open=false;
+    document.getElementById('home-equipment-details').open=false`);
+  for (const [id, fold] of [['garage-chart-shortcut', 'garage-heating-details']]) {
     for (const expanded of [false, true]) {
       await evaluate(`document.getElementById('${fold}').open=${expanded};
         document.getElementById('${id}').focus(); document.getElementById('${id}').click()`);
       await until("document.querySelector('.history-panel').dataset.fullscreen === 'true'");
       assert.equal(await evaluate(`document.getElementById('${fold}').open`), expanded,
         `${id} opens the chart without changing its heating disclosure`);
-      assert.deepEqual(await evaluate("['chart-shortcut', 'garage-chart-shortcut'].map(id => document.getElementById(id).getAttribute('aria-expanded'))"),
-        ['true', 'true'], 'Both chart shortcuts reflect the open chart');
+      assert.equal(await evaluate("document.getElementById('garage-chart-shortcut').getAttribute('aria-expanded')"),
+        'true', 'The Garage chart shortcut reflects the open chart');
       await keyPress('Escape');
       assert.equal(await evaluate("document.querySelector('.history-panel').dataset.fullscreen"), 'true',
         'Escape preserves the chart inspection view');
@@ -95,8 +127,8 @@ export async function checkDashboardDisclosures({ evaluate, keyPress, until }) {
       await until("document.querySelector('.history-panel').dataset.fullscreen === 'false'");
       assert.equal(await evaluate(`document.activeElement === document.getElementById('${id}')`), true,
         `${id} receives focus when the chart closes`);
-      assert.deepEqual(await evaluate("['chart-shortcut', 'garage-chart-shortcut'].map(id => document.getElementById(id).getAttribute('aria-expanded'))"),
-        ['false', 'false'], 'Both chart shortcuts reflect the closed chart');
+      assert.equal(await evaluate("document.getElementById('garage-chart-shortcut').getAttribute('aria-expanded')"),
+        'false', 'The Garage chart shortcut reflects the closed chart');
     }
     await evaluate(`document.getElementById('${fold}').open=false`);
   }
@@ -124,10 +156,10 @@ export async function checkDashboardLayout({ evaluate, width }) {
   }
   assert.equal(await evaluate(`['home', 'garage'].every(area => {
     const card = document.getElementById(area + '-control').getBoundingClientRect();
-    const button = document.getElementById(area === 'home' ? 'chart-shortcut' : 'garage-chart-shortcut').getBoundingClientRect();
+    const button = document.getElementById(area === 'home' ? 'fireplace-shortcut' : 'garage-chart-shortcut').getBoundingClientRect();
     return button.left > (card.left + card.right) / 2 && button.top >= card.top
       && button.bottom < card.top + 90 && button.right <= card.right;
-  })`), true, `Both chart shortcuts remain at the top right at ${width}px`);
+  })`), true, `Home Fireplace and Garage chart shortcuts remain at the top right at ${width}px`);
   assert.equal(await evaluate(`['home', 'garage'].every(area => {
     const overview = document.querySelector('#' + area + '-control .overview-zone');
     const bounds = overview.getBoundingClientRect(), cells = [...overview.children].map(node => node.getBoundingClientRect());
@@ -143,25 +175,21 @@ export async function checkDashboardLayout({ evaluate, width }) {
   })`), true, `Overview values and explanation buttons stay inside their columns at ${width}px`);
   const support = await evaluate(`(() => {
     const root = document.querySelector('#home-control .home-support');
-    return { width: root.getBoundingClientRect().width, border: getComputedStyle(root).borderTopWidth,
+    const bounds = root.getBoundingClientRect();
+    return { left: bounds.left, right: bounds.right, border: getComputedStyle(root).borderTopWidth,
       items: [...root.children].map(node => {
         const box = node.getBoundingClientRect();
         return { left: box.left, right: box.right, top: box.top, bottom: box.bottom,
           border: getComputedStyle(node).borderTopWidth };
       }) };
   })()`);
-  const [equipment, fireplace] = support.items;
-  assert.equal(support.items.length, 2);
-  if (support.width > 360) {
-    assert.ok(Math.abs(equipment.top - fireplace.top) <= 1 && equipment.right < fireplace.left,
-      `Closed Home equipment and fireplace sit side by side at ${width}px`);
-  } else {
-    assert.ok(fireplace.top > equipment.bottom && Math.abs(equipment.left - fireplace.left) <= 1,
-      `Closed Home equipment and fireplace use separate rows in the narrow ${width}px layout`);
-  }
-  assert.deepEqual([support.border, equipment.border, fireplace.border], ['1px', '0px', support.width > 360 ? '0px' : '1px'],
-    `Home support has one consistent divider without a doubled Fireplace border at ${width}px`);
-  assert.equal(await evaluate(`['home-equipment-details', 'fireplace-details', 'garage-equipment-details', 'connections-details'].every(id => {
+  const [equipment] = support.items;
+  assert.equal(support.items.length, 1);
+  assert.ok(Math.abs(equipment.left - support.left) <= 1 && Math.abs(equipment.right - support.right) <= 1,
+    `Closed Sensors & Equipment fills the Home support width at ${width}px`);
+  assert.deepEqual([support.border, equipment.border], ['1px', '0px'],
+    `Home support has one consistent divider at ${width}px`);
+  assert.equal(await evaluate(`['home-equipment-details', 'garage-equipment-details', 'connections-details'].every(id => {
     const summary = document.querySelector('#' + id + ' > summary');
     const meta = summary.querySelector(':scope > small');
     if (!meta?.textContent.trim()) return true;
@@ -169,9 +197,9 @@ export async function checkDashboardLayout({ evaluate, width }) {
     const bounds = summary.getBoundingClientRect(), box = meta.getBoundingClientRect();
     return box.left >= title.right - 1 && box.right <= bounds.right - 1
       && box.top < title.bottom && title.top < box.bottom;
-  })`), true, `Equipment, Fireplace and Connections keep their supporting text beside the title at ${width}px`);
+  })`), true, `Equipment and Connections keep their supporting text beside the title at ${width}px`);
   await checkProviderLayout({ evaluate, width });
-  for (const id of ['home-equipment-details', 'fireplace-details']) {
+  for (const id of ['home-equipment-details']) {
     await evaluate(`document.querySelector('#${id} > summary').click()`);
     assert.equal(await evaluate(`(() => {
       const root = document.querySelector('#home-control .home-support'), bounds = root.getBoundingClientRect();
@@ -181,6 +209,14 @@ export async function checkDashboardLayout({ evaluate, width }) {
     })()`), true, `${id} expands to the full Home width without overflow at ${width}px`);
     await evaluate(`document.querySelector('#${id} > summary').click()`);
   }
+  await evaluate("document.getElementById('fireplace-shortcut').click()");
+  assert.equal(await evaluate(`(() => {
+    const dialog = document.getElementById('fireplace-dialog'), bounds = dialog.getBoundingClientRect();
+    return dialog.matches(':modal') && bounds.left >= 0 && bounds.right <= innerWidth
+      && bounds.top >= 0 && bounds.bottom <= innerHeight
+      && dialog.scrollWidth <= dialog.clientWidth && document.documentElement.scrollWidth <= innerWidth;
+  })()`), true, `Fireplace window stays inside the viewport without horizontal overflow at ${width}px`);
+  await evaluate("document.getElementById('fireplace-close').click()");
 }
 
 export async function checkProviderLayout({ evaluate, width }) {
