@@ -99,7 +99,7 @@ try {
     ['Heating', 'Ground loop', 'Hot water', 'Equipment states', 'Settings', 'Runtime counters']);
   assert.deepEqual((await evaluate("[...document.querySelectorAll('#h66-readings tr[data-register]')].map(row => row.dataset.register)")).sort(),
     Object.keys(H66_REGISTERS).sort(), 'Every supported reading appears once in a group');
-  assert.equal(await evaluate("document.querySelector('#learning-details summary').textContent"), 'Learning outcomes · Calculated');
+  assert.equal(await evaluate("document.querySelector('#learning-details summary').textContent"), 'Learning outcomes · Estimates & checks');
   assert.deepEqual(JSON.parse(await evaluate("JSON.stringify([...document.querySelectorAll('#model-inputs-content > details')].map(fold=>fold.dataset.modelInput).sort())")),Object.keys(MODEL_INPUT_INFO).sort());
   assert.deepEqual(await evaluate("[...document.querySelectorAll('.controller-column')].map(column => [...column.querySelectorAll(':scope > article')].map(card => card.id))"),
     [['home-control', 'providers-controls'], ['garage-control']]);
@@ -283,6 +283,10 @@ try {
     ['Upstairs', 'Downstairs', 'Bedroom', 'Garage rear temperature', 'Garage front temperature', 'Outdoor temperature']);
   assert.equal(await evaluate("document.querySelector('#providers > :last-child').dataset.provider"), 'main-temperatures', 'Temperatures and weather share the final overview category');
   assert.equal(await evaluate("document.querySelector('#provider-overview #providers > :last-child .provider-category-title').textContent"), 'Main temperatures & Weather', 'The source overview groups temperatures and weather last');
+  assert.deepEqual(await evaluate("[...document.querySelectorAll('#providers > [data-provider]')].map(row => row.dataset.provider)"),
+    ['electricity', 'market', 'vehicle-telemetry', 'main-temperatures'], 'The overview has four current source categories, including combined temperatures and weather');
+  assert.deepEqual(await evaluate("[...document.querySelectorAll('#connections-details > .controller-fold')].map(fold => fold.id)"),
+    ['mqtt-devices-details', 'floor-preheat-details', 'electricity-details', 'controls-details'], 'Connection settings include MQTT, floor preheating, rates and configuration');
   assert.equal(await evaluate("!document.getElementById('connections-details').open && [...document.querySelectorAll('#providers .provider-fold > summary')].every(summary=>summary.checkVisibility())"), true, 'Source categories remain accessible with configuration closed');
   assert.equal((await fetch(`http://127.0.0.1:${app.server.address().port}/api/status`).then(r => r.json())).observations.garage.value, 16.4,
     'The temperature catalogue receives the actual garage observation');
@@ -298,16 +302,16 @@ try {
     await evaluate("document.getElementById('connections-details').open=true; document.querySelectorAll('#providers .provider-fold').forEach(fold=>fold.open=true); document.getElementById('home-equipment-details').open=true; document.getElementById('home-pump-device').open=true; document.getElementById('h66-readings-details').open=true; document.getElementById('providers-controls').scrollIntoView({block:'start'})");
     assert.equal(await evaluate(`(() => {
       const summaries = [...document.querySelectorAll('#providers .provider-fold > summary')];
-      return summaries.length === 5 && summaries.every(summary => summary.checkVisibility()
+      return summaries.every(summary => summary.checkVisibility()
         && Math.abs(summary.getBoundingClientRect().left - summaries[0].getBoundingClientRect().left) < 1);
-    })()`), true, 'The five current source categories share a left edge');
+    })()`), true, 'Expanded source categories share a left edge');
     assert.equal(await evaluate(`(() => {
       const rows = [...document.querySelectorAll('#connections-details > .controller-fold')].map(fold => ({
         box: fold.getBoundingClientRect(), summary: fold.querySelector(':scope > summary') }));
-      return rows.length === 3 && rows.every((row, index) => row.summary.checkVisibility()
+      return rows.every((row, index) => row.summary.checkVisibility()
         && Math.abs(row.summary.getBoundingClientRect().left - rows[0].summary.getBoundingClientRect().left) < 1
         && (!index || row.box.top >= rows[index - 1].box.bottom - 1));
-    })()`), true, 'MQTT topics, rates and configuration form three aligned rows without vertical overlap');
+    })()`), true, 'MQTT, floor preheating, rates and configuration form aligned rows without vertical overlap');
     assert.equal(await evaluate(`(() => {
       const parents = { 'home-pump-device': 'home-equipment-details', 'h66-readings-details': 'home-pump-device',
         'h66-test-details': 'home-pump-device' };

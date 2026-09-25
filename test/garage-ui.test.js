@@ -96,7 +96,7 @@ test('Garage heating, equipment and learning have independent closed disclosures
     const tag = html.match(new RegExp(`<details[^>]+id="${id}"[^>]*>`))[0];
     assert(!/\sopen(?:\s|>|=)/.test(tag));
   }
-  assert.match(html, /Learning outcomes<\/span><small[^>]*> · Calculated/); assert.match(html, /Heating strategy &amp; protection/);
+  assert.match(html, /Learning outcomes<\/span><small[^>]*> · Estimates &amp; checks/); assert.match(html, /Heating strategy &amp; protection/);
   assert.match(html, /Edit the savings strategy in configuration, then use Apply configuration/);
   const policy = html.slice(html.indexOf('<details id="garage-settings-details"'), html.indexOf('<details id="garage-learning-details"'));
   for (const title of ['Savings strategy', 'Protection boundaries', 'How decisions are made', 'Control choices']) assert(policy.includes(`>${title}</h5>`));
@@ -444,14 +444,15 @@ test('Garage separates validation, sources and planning with honest missing and 
   assert.equal(inputs['front-air-temperature'].value, '1 °C · stale');
   assert.equal(inputs['outdoor-temperature'].value, 'Unavailable');
   assert.equal(inputs['outdoor-temperature'].available, false);
-  assert.equal(inputs['charger-1-input'].value, '0 kW estimated heat');
+  assert.equal(inputs['charger-1-input'].value, '0 kW');
+  assert.match(inputs['charger-1-input'].evidence, /0 kW estimated heat/);
   assert.equal(inputs['charger-2-input'].value, 'Unavailable');
   assert.match(inputs['charger-2-input'].evidence, /Unknown is not treated as zero/);
-  assert.equal(inputs['local-allowance-recovery'].value, 'Rear and front independently');
+  assert.equal(inputs['local-allowance-recovery'], undefined, 'Derived pipe protection belongs with the strategy, not model source inputs');
   assert(display.evidenceDetails.some(row => row.key === 'rear-cooling-error'));
   assert(!display.outcomeDetails.some(row => row.key === 'rear-cooling-error'));
   assert(display.planningDetails.some(row => row.key === 'daily-pause-limit' && row.value === '1'));
-  assert.match(Object.fromEntries(display.rows)['Normal heating setting basis'], /5 °C saved · Garage rear · Active/);
+  assert.equal(Object.fromEntries(display.rows)['Normal heating setting basis'], '5 °C · Garage rear · Active');
   for (const rows of [display.outcomeDetails, display.evidenceDetails, display.inputDetails, display.coefficientDetails, display.planningDetails]) {
     assert.equal(new Set(rows.map(row => row.key)).size, rows.length);
     assert(rows.every(row => row.title && row.value && row.provenance && row.detail));
@@ -499,8 +500,47 @@ test('Garage rendering fills the learning contexts and keeps reconstruction insi
   renderGarage({ getElementById: id => nodes.get(id) }, { garage: { learning: garageModelSummary(createGarageModel()) }, now });
   assert.match(nodes.get('garage-learning-context').textContent, /cooling and recovery checks/);
   assert.match(nodes.get('garage-input-context').textContent, /Missing readings remain unknown/);
-  assert.match(nodes.get('garage-coefficient-context').textContent, /Only the rear and front cooling rates are fitted/);
+  assert.match(nodes.get('garage-coefficient-context').textContent, /rear and front cooling rates are fitted independently/);
+  assert.match(nodes.get('garage-coefficient-context').textContent, /electrical average can replace assumed pump power/);
   assert.equal(garageDisplay({ learning: { reconstruction: 'snapshot' } }).evidenceDetails.find(row => row.key === 'recorded-history-reconstruction').value, 'Recorded primary snapshot');
+});
+
+test('Garage model distinguishes source evidence, initial references and fitted values still awaiting validation', () => {
+  const model = createGarageModel({ baselineC: 10 });
+  const initial = garageDisplay({ learning: garageModelSummary(model) }, now);
+  const initialReference = initial.outcomeDetails.find(row => row.key === 'normal-rear-warmth');
+  assert.equal(initialReference.value, '10 °C');
+  assert.equal(initialReference.provenance, 'Initial estimate');
+  assert.match(initialReference.detail, /Starting estimate from the configured baseline/);
+  assert.equal(initial.inputDetails.find(row => row.key === 'heat-pump-input').value, '0 h qualified');
+  model.rear.active[0] = true; model.rear.values[0] = .02;
+  model.native.active[0] = true; model.native.values[0] = .4; model.native.hours = 3;
+  model.normalReference.initialized = true; model.normalReference.interceptC = 8; model.normalReference.qualifiedHours = 2;
+  const garage = { learning: garageModelSummary(model), observations: { charging: {
+    ev1: { known: true, powerKw: 2, heatKw: .15 }, ev2: { known: false, required: false },
+  } }, adapter: { connected: true, health: { deviceOnline: true, pumpCommunicating: true },
+    native: { power: 'off', powerAt: now, readbacks: { power: { measuredAt: now } } } } };
+  const learned = garageDisplay(garage, now);
+  assert.equal(learned.coefficientDetails.find(row => row.key === 'rear-cooling-rate').provenance, 'Learned');
+  assert.equal(learned.outcomeDetails.find(row => row.key === 'temperature-prediction').value, 'Awaiting validation');
+  assert.equal(learned.outcomeDetails.find(row => row.key === 'normal-rear-warmth').provenance, 'Learned');
+  assert.match(learned.outcomeDetails.find(row => row.key === 'normal-rear-warmth').detail, /anchors the recovery forecast/);
+  assert.equal(learned.inputDetails.find(row => row.key === 'heat-pump-input').value, '3 h qualified');
+  assert.equal(learned.coefficientDetails.find(row => row.key === 'normal-pump-power').value, '0.4 kW');
+  assert.equal(learned.inputDetails.find(row => row.key === 'charger-1-input').value, '2 kW');
+  assert.match(learned.inputDetails.find(row => row.key === 'charger-1-input').evidence, /0.15 kW estimated heat/);
+  assert.equal(learned.inputDetails.find(row => row.key === 'charger-2-input').value, 'Not required');
+  assert.equal(learned.inputDetails.find(row => row.key === 'heating-availability').value, 'Off');
+  const stale = garageDisplay(garage, now + 180_000).inputDetails.find(row => row.key === 'heating-availability');
+  assert.equal(stale.value, 'Unavailable');
+  assert.equal(stale.available, false);
+  const cooling = learned.coefficientDetails.find(row => row.key === 'rear-cooling-rate').calculation;
+  assert.match(cooling.paragraphs.join(' '), /twice the episode forecast error/);
+  assert.match(cooling.paragraphs.join(' '), /supported OFF duration/);
+  const charging = learned.coefficientDetails.find(row => row.key === 'charger-heat-fraction').calculation;
+  assert.match(charging.paragraphs.join(' '), /not added to the cooling or recovery temperature equations/);
+  const recovery = learned.coefficientDetails.find(row => row.key === 'recovery-energy-factor').calculation;
+  assert.match(recovery.equations.map(row => row.expression).join(' '), /extra recovery energy = avoided energy × 1.25/);
 });
 
 test('saved external room setting identifies active and fallback control while native 17°C remains unchanged', () => {

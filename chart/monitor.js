@@ -44,7 +44,7 @@ for (const summary of document.querySelectorAll('.zone-summary')) {
     }
   });
 }
-// Model references open their separate disclosure and place keyboard focus on it.
+// Strategy and model references open their disclosure and place keyboard focus on it.
 for (const link of document.querySelectorAll('[data-policy-model-link]')) {
   link.addEventListener('click', event => {
     if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;

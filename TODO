@@ -2,6 +2,28 @@
 -Implement support for local mqtt-based temperature receives (eg, from shelly or HASS through Meteorologisk Institute); just store last received temp values and time stamps (maybe in storage class, see below) when received (and accept if received within 1h)
 -Chart dataset control buttons don't work when datasets are manually hidden/unhidden from legend, how to fix?
 
+Completed 2026-09-25 — Home and Garage model explanation polish
+- Review both main folds against the current thermal learners, forecasting,
+  strategy, protection and equipment-control implementations. Give both models
+  the same outcomes / inputs / coefficients structure with explicit purposes,
+  provenance and links back to heating strategy. Explain estimates versus
+  commands, calculated savings versus metering, and fitted versus validated.
+- Correct Home's obsolete ground-loss explanation and separate hydronic power
+  input from its learned temperature response. Correct Garage's planning
+  uncertainty, normal-temperature seed, recovery electricity and charging-heat
+  explanations. Separate source observations from derived pipe protection,
+  keep historical electricity evidence distinct from current power, and respect
+  pump-reading freshness. Remove “saved” from Garage room-setting summaries.
+- Review producers, consumers, state, configuration, UI, tests and documentation.
+  No obsolete compatibility paths were needed or added; remove stale explanations
+  and the unused pipe-input calculation route. Learning, control, persistence,
+  replay and restoration behavior remain unchanged.
+- Validation: all 3,074 offline tests and production build pass; final focused
+  display tests pass. Synthetic browser checks cover Home/Garage calculations,
+  disclosure state, bidirectional strategy/model links, keyboard focus, polling,
+  unknown/zero readings, narrow screens and both themes. No household services,
+  private data, equipment commands or controller restarts were used.
+
 Completed 2026-09-25 — Chart inspection toolbar
 - Align dates, the left-axis selector and Exit in one row from 800 px, below
   the title so window controls have space above the actions. Show the existing

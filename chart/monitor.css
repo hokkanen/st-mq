@@ -717,6 +717,8 @@ details details { margin-inline-start: 24px; }
 .learning-model-details > summary { align-items: start; flex-wrap: nowrap; border-top: 1px solid var(--border); }
 .learning-model-details > summary:hover .learning-model-label { color: var(--accent); }
 .learning-model-details > summary::after { margin-top: 2px; }
+.learning-model-purpose { margin: 4px 14px 18px; font-size: 12px; line-height: 1.7; color: var(--muted); }
+.learning-model-purpose p { margin: 10px 0; }
 .reload-scope { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; margin: 16px 0; }
 .reload-scope h3 { font-size: 12px; margin: 0 0 8px; font-weight: 550; }
 .reload-scope ul { font-size: 11px; line-height: 1.7; color: var(--muted); margin: 0; padding-left: 16px; }
@@ -1194,8 +1196,8 @@ button.status-detail-close:hover { background: var(--surface-soft); color: var(-
 .heating-policy-decision > strong { font-weight: 550; }
 .heating-policy-decision > p { margin: 5px 0 0; color: var(--muted); }
 
-.heating-policy-body a { color: var(--accent); text-underline-offset: 3px; }
-.heating-policy-body a:focus-visible { outline: 2px solid var(--focus); outline-offset: 4px; }
+.heating-policy-body a, .learning-model-purpose a { color: var(--accent); text-underline-offset: 3px; }
+.heating-policy-body a:focus-visible, .learning-model-purpose a:focus-visible { outline: 2px solid var(--focus); outline-offset: 4px; }
 .heating-policy-values { margin: 12px 0; }
 .heating-policy-setting { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 4px 16px; padding: 10px 0; font-size: 12px; line-height: 1.6; }
 .heating-policy-setting dt, .heating-policy-setting dd { min-width: 0; overflow-wrap: anywhere; }

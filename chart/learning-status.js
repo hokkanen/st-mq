@@ -18,7 +18,7 @@ const metricDefinitions = [
   ['profit', 'Assessed space-heating benefit', '€/cycle', 'Estimated mean space-heating benefit against the alternative fixed when planned, including recovery. This completed-cycle subset does not establish total household or hot-water savings. Negative values mean the assessed heating cycles cost more.'],
   ['auxProfit', 'Benefit with auxiliary recovery', '€/cycle', 'The same space-heating estimate, restricted to completed cycles with observed space-heating auxiliary use during recovery. Unknown auxiliary history is excluded; no qualifying cycles means unavailable, not zero.'],
   ['recoveryError', 'Space-heating recovery prediction error', '€/cycle', 'Mean absolute difference between the original space-heating recovery prediction and the completed recovery cost estimate. Lower is better; this checks the prediction, not a measured saving.'],
-  ['indoorTemperature', 'Normal indoor temperature', '°C', 'The temperature achieved during sustained, stable periods declared occupied with normal heating. Verified heating activity supports the reference; sustained cool weather can establish a provisional reference when equipment observations are missing. Preheating, recovery and logged fireplace heating do not raise it.'],
+  ['indoorTemperature', 'Normal indoor temperature', '°C', 'The temperature achieved during sustained, stable periods declared occupied with normal heating. It supplies the overall comfort reference unless a temperature is configured; rooms can have their own learned references. Verified heating activity supports the reference; sustained cool weather can establish a provisional reference when equipment observations are missing. Preheating, recovery and logged fireplace heating do not raise it.'],
 ];
 const coefficientLabels = {
   lossPerHour: 'Heat loss', hydronicCPerKwh: 'Combined compressor + auxiliary response', solarCPerHourPerKwM2: 'Solar response',
@@ -49,10 +49,10 @@ export function modelInputDescriptions() {
     model_indoor_temperature: ['Temperatures & weather', 'Recorded average'],
     model_outdoor_temperature: ['Temperatures & weather', 'Recorded or modeled · source varies'],
     model_solar_radiation: ['Temperatures & weather', 'Modeled forecast'],
-    model_compressor_duty: ['Observed heating', 'Calculated from recorded states'],
-    model_hydronic_heat: ['Observed heating', 'Modeled thermal power'],
-    model_valve_override: ['Control context', 'Recorded valve mode'],
-    model_auxiliary_power: ['Observed heating', 'Estimated from recorded output'],
+    model_compressor_duty: ['Heating inputs', 'Calculated from recorded states'],
+    model_hydronic_heat: ['Heating inputs', 'Estimated thermal power'],
+    model_valve_override: ['Control context', 'Recorded relay mode'],
+    model_auxiliary_power: ['Heating inputs', 'Estimated from recorded output'],
     model_controller_phase: ['Control context', 'Recorded request'],
     model_room_boost: ['Control context', 'Recorded request'],
     model_target_temperature: ['Control context', 'Recorded reference'],
@@ -118,7 +118,10 @@ export function modelCoefficientDescriptions(learning = {}) {
       group: info.fixed ? 'Building assumptions' : 'Thermal responses',
       value: available ? `${number(rawValue, info.digits)} ${info.unit}` : 'Unavailable',
       provenance: coefficientProvenance[state],
-      detail: info.detail, calculation: key === 'reserveTimeHours' && !finite(model.parameters?.hydronicCPerKwh)
+      detail: key === 'hydronicCPerKwh' && model.floor?.enabled
+        ? 'Effective temperature response per estimated thermal kWh supplied by the compressor and resistance heater together. Heat enters the remaining building reserve and selected slab before it reaches indoor air. This is a house response, not COP or measured heat capacity.'
+        : info.detail,
+      calculation: key === 'reserveTimeHours' && !finite(model.parameters?.hydronicCPerKwh)
         ? undefined : coefficientCalculation(key, model),
       evidence: [coefficientEvidenceText(evidence), latest?.reason ? `Latest unaccepted update: ${evidenceReason(latest.reason)}` : ''].filter(Boolean).join(' · ') };
   });
@@ -153,7 +156,7 @@ export function learningDisplay(learning = {}, context = {}) {
   const title = status === 'prior-estimates' ? 'Learning from initial estimates'
     : status === 'retained-previous' ? 'Keeping the previous model'
       : status === 'learning' ? 'Learning from observed temperatures' : words(status || 'Collecting observations');
-  const process = 'Learning uses completed 15-minute intervals, preserving genuine sensor-report timing and changes in heat input. Compressor and AUX thermal energy use a shared response; firewood has its own delayed response. Temperature checks, equipment-response checks and forecasts saved before cycles answer different questions. None observes the unexecuted alternative.';
+  const process = 'Learning fits the temperature response from completed 15-minute intervals, preserving genuine sensor-report timing and changes in heat input. Later observations test those estimates. Temperature checks use recorded heat input; equipment-response checks predict compressor duty; forecasts saved before a cycle test the complete prediction. These checks determine which predictions planning can use. They do not observe the unexecuted alternative or prove savings.';
   const evidence = [], coefficientEvidence = [], evidenceRows = [], coefficientEvidenceRows = [];
   const record = (title, value, detail) => {
     evidence.push(detail);

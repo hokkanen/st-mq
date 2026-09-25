@@ -201,7 +201,7 @@ try {
     'Simulation is not presented as physical confirmation');
   await evaluate(`homeFixture.garageReading = 'fresh'; homeFixture.garageExternal = 'active'; await homeFixture.poll()`);
   assert.equal(await evaluate(`document.getElementById('garage-current-mode').textContent`), 'Heat');
-  assert.equal(await evaluate(`document.getElementById('garage-current-room').textContent`), '5 °C · saved · Garage rear · Active');
+  assert.equal(await evaluate(`document.getElementById('garage-current-room').textContent`), '5 °C · Garage rear · Active');
   assert.equal(await evaluate(`document.getElementById('garage-pause-overview').textContent`), 'Not paused');
   assert.equal(await evaluate(`document.getElementById('garage-heating-state').checkVisibility()
     && !document.getElementById('garage-settings-details').open`), true, 'Current state precedes folded preferences');
@@ -209,7 +209,7 @@ try {
   assert.equal(await evaluate(`document.getElementById('garage-current-mode-row').hidden`), false,
     'Previously observed fields stay visible when reports disappear');
   assert.equal(await evaluate(`document.getElementById('garage-current-mode').textContent`), 'Unavailable');
-  assert.equal(await evaluate(`document.getElementById('garage-current-room').textContent`), '5 °C · saved · External sensor · Fallback');
+  assert.equal(await evaluate(`document.getElementById('garage-current-room').textContent`), '5 °C · External sensor · Fallback');
   await evaluate(`homeFixture.garageReading = 'stale'; homeFixture.garageExternal = false; await homeFixture.poll()`);
   assert.equal(await evaluate(`document.getElementById('garage-current-mode').textContent`), 'Unavailable');
   assert.equal(await evaluate(`document.getElementById('garage-current-room').textContent`), 'Unavailable', 'Stale native targets are not current settings');
@@ -268,7 +268,24 @@ try {
     assert.equal(await evaluate(`document.getElementById('${modelId}').open
       && document.activeElement === document.querySelector('#${modelId} > summary')`), true,
     'The heat-model reference opens the separate fold and transfers keyboard focus');
-    await evaluate(`document.getElementById('${modelId}').open = false`);
+    await evaluate(`document.getElementById('${policyId}').open = false;
+      document.querySelector('#${modelId} > .learning-section').open = true;
+      document.querySelector('#${modelId} > .learning-model-purpose [data-policy-model-link]').focus()`);
+    await keyPress('Enter');
+    assert.equal(await evaluate(`(() => {
+      const policy = document.getElementById('${policyId}'), summary = policy.querySelector(':scope > summary');
+      const bounds = summary.getBoundingClientRect();
+      return policy.open && summary.checkVisibility() && document.activeElement === summary
+        && bounds.top >= -1 && bounds.bottom <= innerHeight + 1
+        && document.getElementById('${modelId}').open
+        && document.querySelector('#${modelId} > .learning-section').open;
+    })()`), true, 'The model return link opens and focuses the visible strategy without resetting model disclosures');
+    await keyPress(' ');
+    assert.equal(await evaluate(`!document.getElementById('${policyId}').open
+      && document.getElementById('${modelId}').open`), true,
+    'The strategy still collapses by keyboard after return-link navigation');
+    await evaluate(`document.getElementById('${modelId}').open = false;
+      document.querySelector('#${modelId} > .learning-section').open = false`);
   }
   console.log(`Home controls screenshots available: ${artifacts}`);
   await evaluate(`homeFixture.paused = true; homeFixture.garagePaused = true; await homeFixture.poll()`);
@@ -319,6 +336,10 @@ try {
   }
   await evaluate(`homeFixture.paused = false; await homeFixture.poll()`);
   assert.match(await evaluate(`document.getElementById('heating-test-help').textContent`), /next controller update.*1 minute/);
+  await evaluate(`document.getElementById('dashboard-reset').click()`);
+  assert.equal(await evaluate(`document.querySelectorAll('details[open]').length`), 0,
+    'Dashboard reset closes controls, strategies and models after cross-link navigation');
+  assert.equal(await evaluate(`document.activeElement.id`), 'dashboard-reset');
   assert.deepEqual(await evaluate('homeFixture.mutations'), [], 'No mutating API request was attempted');
   assert.deepEqual(errors, [], 'Production monitor runs without browser exceptions');
   console.log(`Home controls browser checks passed. Synthetic screenshots: ${artifacts}`);

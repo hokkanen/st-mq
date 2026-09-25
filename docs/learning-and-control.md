@@ -61,18 +61,32 @@ manufacturer link and limitations, using the same calculation disclosure as othe
 
 Each dashboard includes its learning summary alongside the heating and pause controls.
 Home shows current heat-pump, tariff and circulation status first, followed by
-**Temporary heating override** and **Pause price control**, including Away.
-**Savings & comfort** holds
+**Temporary heating override** and **Away & pause**.
+**Heating strategy & comfort** holds
 the normal-temperature reference, occupied drop/rise limits, savings preference
 and ROOM increase; its closed summary shows the configured room limits. Permanent
-preferences still use configuration and **Apply configuration**. **Home learning**
+preferences still use configuration and **Apply configuration**. **Home heat model**
 follows these controls, with the reconstruction explanation under **Learning outcomes →
 Validation & evidence → Reconstructing the model**. Home reports
 counts of usable observations and accepted model updates. These counts describe
 current evidence; missing values remain unknown and no completion percentage is
-inferred. The **Home learning** and **Garage learning** summaries each open learning details,
-with separate closed sections for **Learning outcomes · Calculated**,
-**Model inputs · Recorded & modeled** and **Model coefficients · Current values**.
+inferred. The **Home heat model** and **Garage heat model** summaries each open learning details.
+Both explain the model's role before the nested sections: the model estimates a
+response, planning combines that response with prices and comfort or protection
+requirements, and control sends the allowed commands. Links lead back to each
+zone's heating strategy and current decision. The three closed sections are:
+
+- **Learning outcomes · Estimates & checks**: results and validation evidence
+  used to assess forecasts. Calculated savings use a modeled alternative, so even
+  a qualified electricity measurement does not make the comparison metered savings.
+- **Model inputs · Recorded & estimated**: source observations and derived inputs
+  used for fitting, validation and forecasts. Home lists input definitions and
+  units, with values in the chart; Garage shows current readings and identifies
+  its historical electricity average separately.
+- **Model coefficients · Learned & assumed**: current responses and assumptions
+  that turn inputs into predictions. Initial estimates, accepted or retained fits,
+  observed averages and fixed assumptions keep their own provenance.
+
 Both use the same expandable rows: the name, value or unit, and provenance stay visible;
 explanations and supporting evidence open underneath. Inputs and coefficients are grouped by
 their role. **Validation & evidence** keeps detailed checks alongside the outcomes without

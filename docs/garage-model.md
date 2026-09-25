@@ -22,11 +22,13 @@ sensors and held-out intervals cannot supply clean fit evidence. Local plunges
 still update actual air and protection immediately.
 
 Only observed rear/front temperatures form the state. Missing front remains
-missing. A normal reference is learned from both locations during sustained
-accepted native baseline operation: eight hours available plus a stable two-hour
-trend, with no pause, recovery, door or charger disturbance. The native baseline
-requires independent verification. A sensor boundary or changed baseline has a
-documented new seed/context; source changes interrupt continuity. The saved room
+missing. A normal reference is learned from both locations after at least eight
+uninterrupted hours of eligible normal heating and two qualified observation
+hours with a settled rear temperature, without pause, recovery, door or charger
+disturbance. The rear settling check uses a two-hour smoothing time scale. The native baseline
+must be accepted by the current control checks or independently verified. A sensor
+boundary or changed baseline has a documented new seed/context; source changes
+interrupt continuity. The saved room
 target, native thermostat readback and measured local temperatures remain
 distinct; an external temperature offset does not verify a low-heat baseline.
 
@@ -196,10 +198,19 @@ assumed-zero economics does not become observed full-cycle validation.
 
 ## Dashboard explanations
 
-Garage learning uses the Home learning structure: outcomes and validation,
-model inputs, coefficients, and planning/safeguards. Every Garage entry includes
+Garage learning uses the Home heat-model structure: outcomes and validation,
+model inputs, and coefficients. Heating strategy & protection holds planning
+rules, pipe reserves and the current decision; each fold links to the other.
+The model introduction explains how cooling estimates feed planning and how
+heating control applies the resulting off permission and restoration.
+Every Garage entry includes
 an expandable calculation or eligibility explanation. Cooling, recovery,
 electricity, observed validation duration and the reference-pipe heat balance
-show their equations and assumptions separately. Model reconstruction requires
+show their equations and assumptions separately. Initial normal-temperature
+references remain explicitly estimated until settled observations establish them.
+Fitted cooling rates still require separate episode validation; the planner's
+temperature margins grow beyond validated durations. The illustrative normal
+warming curve does not establish actual recovery or refill pipe reserves.
+Model reconstruction requires
 the complete committed journal, initial seed, configuration and matching software;
 it does not certify physical command delivery or measured savings.

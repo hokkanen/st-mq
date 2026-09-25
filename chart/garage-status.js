@@ -62,27 +62,27 @@ function garageCoefficientRows(learning) {
     const row = learning.coefficients?.[location]?.find(value => value.name === 'coolingPerHour');
     const title = `${location === 'rear' ? 'Rear' : 'Front'} cooling rate`;
     const fitted = row?.basis === 'fitted-effective-response';
-    const result = learningRow(`${location}-cooling-rate`, title, coefficientNumber(row?.value, '1/h'), 'Learned cooling',
+    const result = learningRow(`${location}-cooling-rate`, title, coefficientNumber(row?.value, '1/h'), 'Cooling responses',
       !finite(row?.value) ? 'Unavailable' : fitted ? 'Learned' : 'Initial estimate',
-      'Cooling per degree of local air-to-outdoor temperature difference while the pump is OFF. The two locations are learned independently; there is no hidden building-temperature state.',
+      'Cooling per degree of local air-to-outdoor temperature difference while the pump is OFF. Each location has its own rate. Forecasts use the displayed value, including an initial estimate before enough clean observations allow fitting.',
       `${number(row?.evidence, 'h')} clean cooling observations. Door openings and charging exclude an interval from fitting. A fitted rate still needs episode validation.`);
     return result;
   });
   details.push(
     learningRow('normal-pump-power', 'Normal pump electricity', number(electricity.normalPowerKw ?? assumptions.normalPowerKw, 'kW'),
       'Electricity estimate', electricity.basis === 'observed-normal-power' ? 'Recorded average' : 'Assumed',
-      'Average electrical input used to estimate the value of moving heating to a cheaper period. A fixed estimate is used without a qualified meter. Compressor frequency is not converted to watts.',
+      'Average electrical input used to price heating avoided during a pause and the extra recovery allowance. A fixed estimate is used until two qualified hours establish an observed normal-heating average. Compressor frequency is not converted to watts.',
       electricity.basis === 'observed-normal-power' ? `${number(electricity.hours, 'h')} qualified normal-heating electricity.` : 'Estimated savings remain assumption-based until dedicated pump electricity is qualified.'),
     learningRow('charger-heat-fraction', 'Charging heat fraction', finite(assumptions.evHeatFraction) ? number(assumptions.evHeatFraction * 100, '%') : 'Unavailable',
-      'Fixed assumptions', 'Assumed', '7.5% of recorded charging electricity is attributed to garage heat. This is an estimate, not measured vehicle heat. Expected charging never extends a safe pause.'),
+      'Fixed assumptions', 'Assumed', '7.5% of recorded charging electricity is reported as estimated garage heat. It is not added to temperature forecasts. Charging observations instead identify disturbed intervals to exclude from cooling-rate learning.'),
     learningRow('recovery-time', 'Recovery temperature time scale', number(assumptions.recoveryTimeHours, 'h'), 'Fixed assumptions', 'Assumed',
       'Time scale used only for the illustrative temperature forecast after normal heating resumes. The electricity allowance uses a longer period for long pauses. Actual recovery at both locations and their pipe reserves determines readiness for another pause.'),
     learningRow('recovery-energy-factor', 'Recovery electricity allowance', number(assumptions.recoveryEnergyFactor, '×'), 'Fixed assumptions', 'Assumed',
-      'Allows for additional electricity when heat is restored. Its pricing period is at least three hours and at least 1.25 times the OFF duration, also respecting the configured minimum normal-heating time. The full allowance is priced before a pause can count as worthwhile. Recovery is not assumed complete when the temperature forecast’s three-hour time scale elapses.'));
+      'Adds recovery electricity equal to 1.25 times the estimated electricity avoided while OFF, on top of normal heating after the pause. Its pricing period is at least three hours and at least 1.25 times the OFF duration, also respecting the minimum normal-heating time. This fixed allowance is priced before a pause can count as worthwhile.'));
   return { details, rows: details.map(row => [row.title, `${row.value} · ${row.provenance}. ${row.detail}${row.evidence ? ` ${row.evidence}` : ''}`]) };
 }
 
-function garageLearningRows(garage, policy) {
+function garageLearningRows(garage, now) {
   const learning = garage.learning ?? {}, validation = learning.validation;
   const reference = learning.normalReference;
   const thermal = learning.thermalReady, electrical = learning.electricalReady;
@@ -90,18 +90,20 @@ function garageLearningRows(garage, policy) {
     : finite(learning.validatedOffHours) ? 'Not yet established' : 'Unavailable';
   const outcomes = [
     learningRow('temperature-prediction', 'Cooling prediction', thermal === true ? 'Validated' : thermal === false ? 'Awaiting validation' : 'Unavailable',
-      'Pause readiness', 'Calculated', 'Complete cooling and recovery episodes test the two local cooling forecasts. The pipe reserve and fresh measurements still limit each actual pause.'),
-    learningRow('thermal-pause-duration', 'Validated OFF evidence', duration, 'Forecast evidence', 'Episode checks',
+      'Cooling forecasts', 'Validation', 'Complete cooling and recovery episodes test the two local cooling forecasts. Initial and fitted estimates can support protection-limited planning before validation; this status does not itself permit a pause.'),
+    learningRow('thermal-pause-duration', 'Validated OFF evidence', duration, 'Cooling forecasts', 'Episode checks',
       'OFF duration covered by retained clean cooling and recovery checks. Longer forecasts receive larger uncertainty margins; this evidence does not impose a maximum pause.'),
     learningRow('electricity-prediction', 'Savings estimate basis', electrical === true ? 'Qualified electricity' : learning.electricity ?
       learning.electricity.basis === 'observed-normal-power' ? 'Recorded average + recovery allowance' : 'Assumed electricity + recovery allowance' : 'Unavailable',
-      'Savings estimate', electrical === true ? 'Recorded & modeled' : 'Estimated',
+      'Savings estimate', electrical === true ? 'Recorded & estimated' : 'Estimated',
       'Forecast savings price the avoided normal-heating electricity and the recovery allowance. Assumed pump input is shown explicitly; forecast savings are not measured savings.'),
   ];
   for (const location of ['rear', 'front']) if (reference) outcomes.push(learningRow(`normal-${location}-warmth`,
-    `Normal ${location} warmth`, number(reference[`${location}C`], '°C'), 'Observed references',
+    `Normal ${location} warmth`, number(reference[`${location}C`], '°C'), 'Normal-heating references',
     reference.initialized === true ? 'Learned' : reference.initialized === false ? 'Initial estimate' : 'Unknown basis',
-    'Air temperature observed during settled normal heating, separate from the pump thermostat setting.',
+    reference.initialized === true
+      ? 'Air temperature learned from settled normal heating. It anchors the recovery forecast and helps the planner judge heating demand and recovery; it is separate from the pump thermostat setting.'
+      : 'Starting estimate from the configured baseline, updated as settled normal-heating observations arrive. Enough qualified observations must establish this reference before a new automatic pause is eligible.',
     `${number(reference.qualifiedHours, 'h')} qualified normal-heating observations.`));
   const reconstruction = ({ current: 'Up to date', snapshot: 'Recorded primary snapshot', rebuilding: 'Rebuilding from recorded history', failed: 'Reconstruction unavailable' })[learning.reconstruction] ?? 'Unavailable';
   const evidenceDetails = [];
@@ -115,7 +117,7 @@ function garageLearningRows(garage, policy) {
         'Forecast errors', 'Validation', 'Root mean square error during clean OFF periods, using the model frozen before the pause. Missing evidence stays unavailable.'));
     }
     if (validation.active) evidenceDetails.push(learningRow('active-episode', 'Episode being assessed',
-      validation.active.phase === 'off' ? 'Cooling' : 'Recovery', 'Current episode', 'In progress', 'The current episode contributes to validation only after it has ended and passed the required checks.'));
+      validation.active.phase === 'off' ? 'Cooling' : 'Recovery', 'Current episode', 'In progress', 'This episode is assigned to training or validation. A validation episode can extend forecast support only after cooling and recovery finish and the required checks pass.'));
   }
   evidenceDetails.push(learningRow('recorded-history-reconstruction', 'Recorded history reconstruction', reconstruction, 'Model record', 'Recorded history',
     'The current model is rebuilt from its recorded inputs and selected corrections. A primary snapshot is historical evidence, not live pause eligibility.'));
@@ -123,6 +125,7 @@ function garageLearningRows(garage, policy) {
   if (version) evidenceDetails.push(learningRow('model-version', 'Model version', `Garage ${version[1]}`, 'Model record', 'Algorithm',
     'Version of the garage algorithm used for learning and replay.'));
   const observations = garage.observations ?? {};
+  const pumpState = mitsubishiReadings(garage, now).find(row => row.key === 'native-power');
   const inputDetails = ['rear', 'front'].map(location => learningRow(`${location}-air-temperature`, `${location === 'rear' ? 'Rear' : 'Front'} air temperature`,
     temperature(observations[location]), 'Temperatures', 'Recorded',
     'External air reading beside the local pipe. Both locations need fresh readings for every automatic pause; pump indoor temperature is separate diagnostic context.'));
@@ -130,27 +133,28 @@ function garageLearningRows(garage, policy) {
     learningRow('outdoor-temperature', 'Outdoor temperature', temperature(observations.outdoor), 'Temperatures',
       observations.outdoor?.source === 'openmeteo' ? 'Modeled' : ['husdata-h66', 'fmi', 'mqtt-temperature', 'shelly-mqtt'].includes(observations.outdoor?.source) ? 'Recorded' : 'Source varies',
       `${outdoorSourceLabel(observations.outdoor?.source) ?? 'Source unavailable'}. Learning uses the recorded outdoor input; planning uses the forecast available when deciding.`),
-    learningRow('heating-availability', 'Heat-pump state', text(native(garage.adapter?.native?.power) ?? 'Unavailable'), 'Heating inputs', 'Recorded',
+    learningRow('heating-availability', 'Heat-pump power setting', pumpState?.value ?? 'Unavailable', 'Heating inputs', 'Recorded',
       'Fresh native OFF identifies cooling intervals. Native ON makes normal heating available; it does not prove useful heat at the pipes. Compressor activity is diagnostic context, not thermal kW.'),
-    learningRow('heat-pump-input', 'Heat-pump electricity', learning.electricity?.basis === 'observed-normal-power' ? number(learning.electricity.normalPowerKw, 'kW average') : 'No qualified meter',
-      'Heating inputs', learning.electricity?.basis === 'observed-normal-power' ? 'Recorded' : 'Unavailable',
-      'Only qualified dedicated electrical measurements establish pump electricity. An unscaled native counter or compressor frequency supplies no measured watts, heat output or COP.'),
+    learningRow('heat-pump-input', 'Pump electricity observations', number(learning.electricity?.hours, 'h qualified'),
+      'Heating inputs', 'Recorded history',
+      'Qualified normal-heating electricity observations build the average shown in Model coefficients; this is accumulated evidence, not current pump power. An unscaled native counter or compressor frequency supplies no measured watts, heat output or COP.'),
     ...[1, 2].map(id => {
       const charging = observations.charging?.[`ev${id}`];
-      return learningRow(`charger-${id}-input`, `Charger ${id} heat contribution`,
-        charging?.known === true ? number(charging.heatKw, 'kW estimated heat') : 'Unavailable', 'Heating inputs', 'Recorded × assumption',
-        `Recorded charger ${id} electricity is multiplied by 0.075 for estimated garage heat. Charging intervals do not fit the cooling rates. Future charging warmth is excluded from protection.`,
-        charging?.known === true ? `${number(charging.powerKw, 'kW')} recorded electrical input.` : 'No qualified current electrical input. Unknown is not treated as zero heat.');
+      return learningRow(`charger-${id}-input`, `Charger ${id} electricity`,
+        charging?.known === true ? number(charging.powerKw, 'kW') : charging?.required === false ? 'Not required' : 'Unavailable', 'Heating inputs', 'Recorded',
+        `Charger ${id} power and activity identify charging-disturbed intervals, which are excluded from clean cooling learning. Multiplying recorded electricity by 0.075 also gives an illustrative heat estimate; this estimate adds no warmth to temperature forecasts or protection.`,
+        charging?.known === true ? `${number(charging.heatKw, 'kW')} estimated heat contribution.`
+          : charging?.required === false ? 'This charger is not required for clean learning evidence.'
+            : typeof charging?.active === 'boolean' ? `${charging.active ? 'Charging' : 'Not charging'} is reported, but electrical power is unavailable. Unknown power is not treated as zero heat.`
+              : 'No qualified current electrical input. Unknown is not treated as zero heat.');
     }),
     learningRow('doors-and-local-cooling', 'Garage doors', 'Opening events + local temperatures', 'Operating context', 'Recorded',
-      'Door size and indoor/outdoor temperatures do not fully determine air exchange. The model excludes disturbed cooling intervals; fresh local readings and the reference-pipe reserve capture actual cooling. Door events trigger a protection reassessment.'),
-    learningRow('local-allowance-recovery', 'Pipe reference reserve', finite(policy.marginC) ? 'Rear and front independently' : 'Unavailable', 'Protection context', 'Calculated',
-      'A water-filled copper reference follows each local air temperature continuously. It estimates pipe warmth rather than measuring it; cooling and warming use fixed conservative heat-transfer assumptions.'));
+      'Door events identify disturbed cooling intervals to exclude from learning; door size and temperatures alone cannot establish air exchange. This row describes how the input is used; current door readings are in the Garage summary and equipment. Door changes also trigger a separate protection reassessment.'));
   return { outcomeRows: outcomes.map(row => [row.title, `${row.value}. ${row.detail}`]), inputRows: inputDetails.map(row => [row.title, row.detail]),
     outcomeDetails: outcomes, evidenceDetails, inputDetails,
-    outcomeContext: 'Two cooling rates describe how the garage cools with heating off. Complete cooling and recovery checks measure forecast accuracy. Temperatures and the pipe reserve limit each pause, with extra margins beyond observed evidence.',
-    inputContext: 'Recorded temperatures, door events and pump state support the model. Charging heat and unmetered electricity remain explicit assumptions. Missing readings remain unknown.',
-    coefficientContext: 'Only the rear and front cooling rates are fitted. The electricity and recovery estimates below stay visible as separate assumptions.' };
+    outcomeContext: 'These results show what observations have established: cooling forecast accuracy, the OFF duration tested, normal warmth and the basis of savings estimates. Complete cooling and recovery checks provide evidence for planning; they do not grant control permission.',
+    inputContext: 'These are the source readings and observation history used for learning. Temperatures describe the response; pump, door and charger reports identify eligible intervals. Estimated outdoor values and charging heat are labeled separately. Missing readings remain unknown.',
+    coefficientContext: 'These are the numbers used in forecasts and estimates. The rear and front cooling rates are fitted independently; a qualified electrical average can replace assumed pump power. Charging heat and recovery factors stay fixed. A learned value can be used before the complete forecast passes validation.' };
 }
 
 function garagePolicyRows(garage, policy) {
@@ -235,7 +239,7 @@ export function garageDisplay(garage = {}, now = Date.now()) {
     if (finite(local.interventionAt)) rows.push([`${location === 'rear' ? 'Rear' : 'Front'} intervention by`, clock(local.interventionAt)]);
   }
   rows.push(['Limiting protection location', text(protection.limitingLocation)],
-    ['Normal heating setting basis', room ? `${room.value} saved · ${room.basis}` : adapter.baselineVerified === true ? 'Verified native baseline' : 'Native baseline not verified'],
+    ['Normal heating setting basis', room ? `${room.value} · ${room.basis}` : adapter.baselineVerified === true ? 'Verified native baseline' : 'Native baseline not verified'],
     ['Device online', state(health.deviceOnline)], ['Driver progressing', state(health.driverProgressing)],
     ['Pump communicating', state(health.pumpCommunicating)],
     ['Local lease remaining', finite(adapter.episode?.leaseExpiresAt) ? number(Math.max(0, adapter.episode.leaseExpiresAt - now) / 60_000, 'min') : 'No accepted lease'],
@@ -262,7 +266,7 @@ export function garageDisplay(garage = {}, now = Date.now()) {
       ['Maximum pauses per day', number(settings.maxPausesPerDay), 'This cap limits additional pump starts independently of the strategy. Pause starts count even if device confirmation is missing; the count uses the Finnish calendar day.'],
     ],
     protection: [
-      ['Normal room setting', room ? `${room.value} saved · ${room.basis}` : finite(settings.baselineC) ? `${number(settings.baselineC, '°C')} configured` : 'Unavailable', 'Shows the saved room setting when available, otherwise the configured native baseline. It is not a minimum air temperature during savings. Change the room setting in Mitsubishi Heat-pump settings; below 16 °C uses the Garage rear sensor with a native 17 °C target.'],
+      ['Normal room setting', room ? `${room.value} · ${room.basis}` : finite(settings.baselineC) ? `${number(settings.baselineC, '°C')} configured` : 'Unavailable', 'Shows the saved room setting when available, otherwise the configured native baseline. It is not a minimum air temperature during savings. Change the room setting in Mitsubishi Heat-pump settings; below 16 °C uses the Garage rear sensor with a native 17 °C target.'],
       ['Protection margin', number(policy.marginC, '°C'), 'The reference pipe must stay above this temperature, including the delay until useful heat returns. This is an estimated pipe-temperature boundary, not the pump thermostat or an air-temperature switch.'],
     ],
     recovery: [
@@ -275,7 +279,7 @@ export function garageDisplay(garage = {}, now = Date.now()) {
     ],
   };
   const coefficients = garageCoefficientRows(learning);
-  const learningRows = garageLearningRows(garage, policy);
+  const learningRows = garageLearningRows(garage, now);
   return { status: text(garage.status ?? (settings.enabled ? 'commissioning' : 'monitoring')),
     reason: text(garage.reason ?? 'Automatic control awaits the implemented adapter contract and installed commissioning')
       .trim().replace(/^./, value => value.toUpperCase()),
@@ -326,7 +330,7 @@ function renderGarageHeatingState(document, status, requested) {
     const node = document.getElementById('garage-current-room');
     node?.classList.toggle('stale', !room && !target.available);
     setStatusDetail(node, { key: 'garage-current-room', title: 'Room setting',
-      label: room ? `${room.value} · saved · ${room.basis}` : `${target.value}${target.available ? ' · reported' : ''}`,
+      label: room ? `${room.value} · ${room.basis}` : `${target.value}${target.available ? ' · reported' : ''}`,
       detail: room?.detail ?? target.detail });
   }
   const confirmation = garageHeatingConfirmation(status, requested);

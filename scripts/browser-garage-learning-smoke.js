@@ -164,7 +164,7 @@ try {
   }
   assert.equal(await evaluate("document.querySelectorAll('#garage-learning-coefficients > .learning-entry').length"), 6);
   assert.deepEqual(await evaluate("[...document.querySelectorAll('#garage-learning-coefficients > .learning-row-group')].map(node => node.textContent)"),
-    ['Learned cooling', 'Electricity estimate', 'Fixed assumptions'], 'Each coefficient group appears once after repeated refreshes');
+    ['Cooling responses', 'Electricity estimate', 'Fixed assumptions'], 'Each coefficient group appears once after repeated refreshes');
   await evaluate("document.getElementById('garage-equipment-details').open=true; document.getElementById('garage-controller-details').open=true; document.getElementById('garage-native-control-details').open=true");
   await until("document.getElementById('garage-native-submit').disabled === false");
   assert.equal(await evaluate("document.getElementById('garage-assume-isave')"), null);
@@ -177,6 +177,7 @@ try {
   await evaluate("globalThis.garageSmokePhase='active'; globalThis.refreshGarageSmoke()");
   await until("document.getElementById('garage-native-target-basis').textContent === 'Garage rear · Active'");
   assert.equal(await evaluate("document.getElementById('garage-native-target').textContent"), '5 °C');
+  assert.equal(await evaluate("document.getElementById('garage-current-room').textContent"), '5 °C · Garage rear · Active');
   assert.equal(await evaluate("document.getElementById('garage-native-temperature').value"), '5');
   assert.match(await evaluate("document.querySelector('#garage-native-readings [data-reading=native-targetC]').textContent"), /17 °C/);
   assert.match(await evaluate("document.getElementById('garage-native-reported').textContent"), /17 °C/);

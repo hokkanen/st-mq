@@ -193,9 +193,14 @@
                     <div id="learning-progress" class="learning-progress"></div>
                   </div>
                 </summary>
+                <div class="learning-model-purpose">
+                  <p>The model estimates how the house warms, cools and stores heat. It combines recorded inputs with learned responses and fixed assumptions.</p>
+                  <p>Planning uses those estimates with prices and comfort limits to choose a heating cycle. Heating control sends the allowed commands. See <a class="heating-policy-link" href="#home-preferences-details" data-policy-model-link="home-preferences-details">Heating strategy &amp; comfort</a> for the decision and its rules.</p>
+                </div>
                 <details id="learning-details" class="learning-section section-fold">
-                  <summary><span class="learning-section-title">Learning outcomes</span><small class="learning-section-kind"> · Calculated</small></summary>
+                  <summary><span class="learning-section-title">Learning outcomes</span><small class="learning-section-kind"> · Estimates &amp; checks</small></summary>
                   <div class="learning-section-body">
+                    <p class="learning-intro">Results from completed cycles and later observations show how well the estimates hold up. Calculated savings compare a recorded cycle with the modeled alternative fixed before it started; they are estimates, not metered savings. Prediction checks help determine which future plans the model can support.</p>
                     <p id="learning-detail" class="learning-intro"></p>
                     <div id="learning-metrics"></div>
                     <details id="learning-validation-details" class="learning-support">
@@ -214,9 +219,10 @@
                   </div>
                 </details>
                 <details id="model-inputs-details" class="learning-section section-fold">
-                  <summary><span class="learning-section-title">Model inputs</span><small class="learning-section-kind"> · Recorded &amp; modeled</small></summary>
+                  <summary><span class="learning-section-title">Model inputs</span><small class="learning-section-kind"> · Recorded &amp; estimated</small></summary>
                   <div class="learning-section-body">
-                    <p class="learning-intro">The temperatures, heating inputs and control context saved for learning. Expand an input for its source, meaning and calculation where applicable.</p>
+                    <p class="learning-intro">Temperatures, heating activity, weather and control context describe what happened. Some inputs are recorded readings; others estimate heat from equipment reports or manual firewood entries. Learning uses these inputs to fit and check the model. Future forecasts instead supply expected weather and proposed heating actions.</p>
+                    <p class="learning-note">The rows below explain each input and its unit. Select Model inputs on the chart to see recorded values over time.</p>
                     <div id="model-inputs-content"></div>
                     <details id="sensor-change-details" class="sensor-change-details" hidden>
                       <summary><span>Sensor changes</span><small id="sensor-change-overview">Replacement, move or calibration</small></summary>
@@ -266,9 +272,9 @@
                   </div>
                 </details>
                 <details id="model-coefficients-details" class="learning-section section-fold">
-                  <summary><span class="learning-section-title">Model coefficients</span><small class="learning-section-kind"> · Current values</small></summary>
+                  <summary><span class="learning-section-title">Model coefficients</span><small class="learning-section-kind"> · Learned &amp; assumed</small></summary>
                   <div class="learning-section-body">
-                    <p class="learning-intro">Current responses, fixed assumptions and their equations. Each value shows how it was established; validation and planning checks determine whether it can support control.</p>
+                    <p class="learning-intro">These current values turn inputs into temperature and stored-heat estimates: how quickly heat escapes, how much warmth heating adds and how slowly stored heat returns. Each row distinguishes an initial estimate, a fitted or retained response, or a fixed assumption. Learning updates supported responses; validation determines what forecasts they can support.</p>
                     <div id="model-coefficients-content"></div>
                     <details class="learning-support"><summary>Heat balance, calibration &amp; history</summary><p id="coefficient-context" class="learning-note"></p><div id="coefficient-evidence"></div></details>
                   </div>
@@ -568,7 +574,7 @@
                   <section class="heating-policy-section" aria-labelledby="garage-decision-title">
                     <h5 id="garage-decision-title">How decisions are made</h5>
                     <ol class="heating-policy-steps">
-                      <li><strong>Forecast cooling and recovery.</strong> Fresh rear and front temperatures, the outdoor forecast and the <a class="heating-policy-link" href="#garage-learning-details" data-policy-model-link="garage-learning-details">Garage heat model</a> estimate how the space would cool during a pause. Less proven forecasts receive larger uncertainty margins.</li>
+                      <li><strong>Forecast cooling during a pause.</strong> Fresh rear and front temperatures, the outdoor forecast and the <a class="heating-policy-link" href="#garage-learning-details" data-policy-model-link="garage-learning-details">Garage heat model</a> estimate how the space would cool while heating is off and through the delay before useful heat returns. Less proven forecasts receive larger uncertainty margins.</li>
                       <li><strong>Keep protection ahead of savings.</strong> Only windows that leave enough reserve at both locations through the delay before useful heat returns can qualify. Expected charging warmth never extends the safe window.</li>
                       <li><strong>Choose a worthwhile pause and keep checking.</strong> Compare electricity avoided at current prices with later recovery electricity and an uncertainty allowance. Choose the shortest qualifying window that keeps the strategy’s share of the best benefit. Reassess as readings and forecasts change; a started pause can end early, but its original endpoint cannot move later.</li>
                     </ol>
@@ -578,7 +584,7 @@
                     <h5 id="garage-choices-title">Control choices</h5>
                     <dl class="heating-policy-values">
                       <div class="heating-policy-setting"><dt>Normal heating</dt><dd>Usual room setting</dd><dd class="heating-policy-setting-help">The pump’s thermostat decides when to heat. Automatic savings never raise the room setting or preheat the garage.</dd></div>
-                      <div class="heating-policy-setting"><dt>Heating off</dt><dd>Protected pause</dd><dd class="heating-policy-setting-help">Available only with approved protection, fresh temperatures and a ready adapter that can restore heating locally when its short off permission expires. Automatic pauses also need a verified normal-heating setup.</dd></div>
+                      <div class="heating-policy-setting"><dt>Heating off</dt><dd>Protected pause</dd><dd class="heating-policy-setting-help">Available only with approved protection, fresh temperatures and a ready adapter that can restore heating locally when its short off permission expires. Automatic pauses also need an accepted normal-heating setup.</dd></div>
                     </dl>
                     <p class="heating-policy-note">New savings pauses wait for settled normal-heating evidence, recovery at both locations, and the configured spacing and daily limit. An open or unknown configured door blocks a new pause only below 2 °C outdoors; at 2 °C or above, either state passes this rule. Outdoor temperature must be known. Charging does not restrict pauses or add forecast warmth. Door changes during a pause trigger a protection reassessment.</p>
                     <p class="heating-policy-note">Missing temperature evidence or inadequate reserve ends off permission and requests normal heating. Afterward, both local temperatures and pipe reserves must recover. A confirmed ON state alone does not establish recovery.</p>
@@ -604,8 +610,12 @@
                     <div id="garage-learning-progress" class="learning-progress"></div>
                   </div>
                 </summary>
+                <div class="learning-model-purpose">
+                  <p>The model estimates cooling at the rear and front of the garage and keeps evidence from heating pauses. It combines recorded inputs with learned responses and fixed assumptions.</p>
+                  <p>Planning uses those estimates with prices, recovery costs and pipe protection to choose an off window. Heating control manages off permission and restoration. See <a class="heating-policy-link" href="#garage-settings-details" data-policy-model-link="garage-settings-details">Heating strategy &amp; protection</a> for the decision and its rules.</p>
+                </div>
                 <details id="garage-outcomes-details" class="learning-section section-fold">
-                  <summary><span class="learning-section-title">Learning outcomes</span><small class="learning-section-kind"> · Calculated</small></summary>
+                  <summary><span class="learning-section-title">Learning outcomes</span><small class="learning-section-kind"> · Estimates &amp; checks</small></summary>
                   <div class="learning-section-body">
                     <p id="garage-learning-context" class="learning-intro"></p>
                     <div id="garage-learning-outcomes"></div>
@@ -619,11 +629,11 @@
                   </div>
                 </details>
                 <details id="garage-inputs-details" class="learning-section section-fold">
-                  <summary><span class="learning-section-title">Model inputs</span><small class="learning-section-kind"> · Recorded &amp; modeled</small></summary>
+                  <summary><span class="learning-section-title">Model inputs</span><small class="learning-section-kind"> · Recorded &amp; estimated</small></summary>
                   <div class="learning-section-body"><p id="garage-input-context" class="learning-intro"></p><div id="garage-learning-inputs"></div></div>
                 </details>
                 <details id="garage-coefficients-details" class="learning-section section-fold">
-                  <summary><span class="learning-section-title">Model coefficients</span><small class="learning-section-kind"> · Current values</small></summary>
+                  <summary><span class="learning-section-title">Model coefficients</span><small class="learning-section-kind"> · Learned &amp; assumed</small></summary>
                   <div class="learning-section-body"><p id="garage-coefficient-context" class="learning-intro"></p><div id="garage-learning-coefficients"></div></div>
                 </details>
               </details>

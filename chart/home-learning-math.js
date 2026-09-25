@@ -8,15 +8,16 @@ import { HEATING_STRATEGIES } from '../src/domain/heating-strategy.js';
 // fireplace.js (fixed source conversions).
 const equation = (label, expression, legend) => ({ label, expression, legend });
 const calculation = (equations, paragraphs = [], summary = 'Calculation') => ({ summary, equations, paragraphs });
+const hydronicHeatEquation = () => equation('Heat supplied to space heating', 'H = d × Q(T_water) + A',
+  'H is thermal power (kW); d is space-heating compressor duty (0–1); Q is estimated compressor heat output; A is space-heating AUX power, approximately equal to its electrical input.');
 
 export function coefficientCalculation(key, model = {}) {
   const definitions = {
     lossPerHour: calculation([equation('Cooling contribution', 'L = k × (T_in − T_out)',
       'k is this coefficient (1/h); temperatures are in °C. L is the cooling contribution in °C/h, before heating and stored-heat release.')],
-    ['For a 10 °C indoor–outdoor difference, multiply the coefficient by 10. With explicit ground exchange, the heat balance adjusts this term to avoid counting baseline ground loss twice.']),
+    ['For a 10 °C indoor–outdoor difference, multiply the coefficient by 10. With an explicit slab-to-ground path, this coefficient describes above-ground envelope loss and the ground exchange is calculated separately. Without that path, it describes effective total heat loss.']),
     hydronicCPerKwh: calculation([
-      equation('Heat supplied to space heating', 'H = d × Q(T_water) + A',
-        'H is thermal power (kW); d is space-heating compressor duty (0–1); Q is estimated compressor heat output; A is space-heating AUX power, approximately equal to its electrical input.'),
+      hydronicHeatEquation(),
       equation('Heating contribution', 'h = g × H',
         'g is this coefficient (°C/kWh thermal); h is the temperature-model input in °C/h. Over Δt hours, the input is g × H × Δt.'),
     ], ['This input first charges the slow reserve and, when configured, the selected slab. Their later release determines room warming. The source-map equations and electrical accounting are under Installed heat-pump model.']),
@@ -89,7 +90,7 @@ export function heatBalanceCalculation(model = {}) {
     equation('Selected slab', 'dT_slab/dt = [α × H − F_slab − F_ground] / C_slab',
       'The configured slab exchanges heat with the room and ground. Its state persists when the override ends.'),
     equation('Above-ground envelope', 'L_net = k × (T_in − T_out)',
-      'The current coefficient describes the above-ground envelope. The configured ground path is separate; no loss is subtracted or converted from an older fit.'),
+      'The coefficient describes envelope cooling. When slab-to-ground exchange is configured, that separate path accounts for ground loss.'),
   );
   else equations.push(equation('Building reserve', 'dT_res/dt = (g × H − X) / (a × τ)',
     'H is hydronic thermal kW. a × τ is the fixed reserve-to-room capacity ratio; all hydronic heat enters this slow reserve before reaching the room.'));
@@ -172,7 +173,8 @@ export function comfortReferenceCalculation() {
 }
 
 export function inputCalculation(key) {
-  if (key === 'model_hydronic_heat') return coefficientCalculation('hydronicCPerKwh');
+  if (key === 'model_hydronic_heat') return calculation([hydronicHeatEquation()],
+    ['This estimates the heat entering the building in thermal kW. The separate Combined compressor + auxiliary response coefficient converts it into the temperature model, where stored heat delays room warming. Electrical power and cost are calculated separately.']);
   if (key === 'model_fireplace_release') return calculation([
     equation('Cumulative release from one load', 'C_raw(t) = 1 − [18 × exp(−t/18) − 2 × exp(−t/2)] / 16',
       't is elapsed time in hours. C(t) is 0 before ignition, C_raw(t) / C_raw(120) between 0 and 120 hours, and 1 thereafter.'),
