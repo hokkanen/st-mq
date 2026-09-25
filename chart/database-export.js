@@ -1,36 +1,55 @@
-/** Choose a destination before the request so supporting browsers retain the
- * user gesture. Other browsers use their normal download location/prompt. */
-export function bindDatabaseExport({ button, message, request, window, document }) {
-  button.addEventListener('click', async () => {
-    if (button.disabled) return;
-    button.disabled = true;
+/** Both actions share one pending request; downloads stream when a picker is available. */
+export function bindDatabaseExport({ saveButton, downloadButton, message, request, window, document }) {
+  async function run(method) {
+    if (saveButton.disabled || downloadButton.disabled) return;
+    saveButton.disabled = downloadButton.disabled = true;
+    message.classList.remove('form-error');
+    message.textContent = method === 'POST' ? 'Saving a database copy on the server…' : 'Preparing a database download…';
     let output;
     try {
-      const suggestedName = `stmq-${new Date().toISOString().slice(0, 10)}.sqlite`;
-      const handle = window.showSaveFilePicker ? await window.showSaveFilePicker({ suggestedName,
-        types: [{ description: 'SQLite database', accept: { 'application/vnd.sqlite3': ['.sqlite'] } }] }) : null;
-      message.textContent = 'Preparing a current database snapshot…';
-      const response = await request();
+      // Open the picker before any network await to retain the user gesture.
+      const handle = method === 'GET' && window.showSaveFilePicker ? await window.showSaveFilePicker({
+        suggestedName: `stmq-${new Date().toISOString().replaceAll(':', '-').replace('.', '-')}.sqlite`,
+        types: [{ description: 'SQLite database', accept: { 'application/vnd.sqlite3': ['.sqlite'] } }],
+      }) : null;
+      const response = await request(method);
       if (!response.ok) {
-        const result = await response.json();
-        throw new Error(result.error ?? 'Database export failed.');
+        const result = await response.json().catch(() => null);
+        throw new Error(result?.error ?? 'Database export failed. Please try again.');
       }
-      if (handle) {
+      if (method === 'POST') {
+        const result = await response.json();
+        message.textContent = `Database copy saved on the server: ${result.path}`;
+      } else if (handle) {
         output = await handle.createWritable();
         await response.body.pipeTo(output);
         output = null;
-        message.textContent = 'Database saved.';
+        message.textContent = 'Database download saved.';
       } else {
+        const filename = response.headers.get('content-disposition')?.match(/filename="(stmq-[\w.-]+\.sqlite)"/)?.[1];
+        if (!filename) throw new Error('The database download has no valid filename. Please try again.');
         const url = window.URL.createObjectURL(await response.blob());
         const link = document.createElement('a');
-        link.href = url; link.download = suggestedName;
-        document.body.append(link); link.click(); link.remove();
-        window.setTimeout(() => window.URL.revokeObjectURL(url), 60_000);
-        message.textContent = 'Download ready. Your browser chooses where to save it.';
+        try {
+          link.href = url; link.download = filename;
+          document.body.append(link); link.click();
+        } finally {
+          link.remove();
+          window.setTimeout(() => window.URL.revokeObjectURL(url), 60_000);
+        }
+        message.textContent = `Download ready: ${filename}. Your browser chooses where to save it.`;
       }
     } catch (error) {
       try { await output?.abort(); } catch {}
-      message.textContent = error.name === 'AbortError' ? 'Export cancelled.' : error.message;
-    } finally { button.disabled = false; }
-  });
+      if (error.name === 'AbortError') message.textContent = 'Download cancelled.';
+      else {
+        message.classList.add('form-error');
+        message.textContent = error.message || 'Database export failed. Please try again.';
+      }
+    } finally {
+      saveButton.disabled = downloadButton.disabled = false;
+    }
+  }
+  saveButton.addEventListener('click', () => run('POST'));
+  downloadButton.addEventListener('click', () => run('GET'));
 }

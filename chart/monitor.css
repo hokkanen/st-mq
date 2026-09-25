@@ -810,6 +810,9 @@ details details { margin-inline-start: 24px; }
 .recording-overview-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin: 2px 0 14px; }
 .recording-overview-toolbar p { margin: 0; }
 .recording-overview-toolbar button { flex-shrink: 0; }
+.database-export-actions { display: flex; flex-wrap: wrap; gap: 12px 24px; }
+.database-export-actions > div { flex: 1 1 240px; }
+#database-export-message { overflow-wrap: anywhere; }
 .recording-overview-size { font-size: 12px; }
 .recording-data-group { margin-top: 12px; }
 .recording-data-group > summary { font-weight: 550; }

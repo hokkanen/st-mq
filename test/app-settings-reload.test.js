@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { start } from '../src/main.js';
@@ -86,6 +86,32 @@ test('reload validates authentication, JSON and startup settings before touching
   assert.match(failure.error, /read or validated/);
   assert.doesNotMatch(JSON.stringify({ failure, events: app.store.events() }), /synthetic-secret-value|options\.json/);
   assert.equal(app.engine, engine);
+});
+
+test('database saves use the latest configured directory after reload and retain it when validation fails', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-export-reload-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const first = join(directory, 'first'), second = join(directory, 'second');
+  const { app, base, headers, write, post } = await setup(t, { recording: { export_directory: first } });
+  const listener = app.server;
+  const save = async destination => {
+    const response = await fetch(`${base}/api/database-export`, { method: 'POST', headers, body: '{}' });
+    assert.equal(response.status, 200);
+    const saved = await response.json();
+    assert.equal(saved.path, join(destination, saved.filename));
+    assert.equal(existsSync(saved.path), true);
+    assert.equal(Object.hasOwn(app.engine.recorder.config, 'exportDirectory'), false);
+    return saved;
+  };
+  const original = await save(first);
+  write({ recording: { export_directory: second } });
+  assert.equal((await post()).status, 200);
+  assert.equal(app.server, listener);
+  await save(second);
+  assert.equal(existsSync(original.path), true);
+  write({ recording: { export_directory: 'relative/directory' } });
+  assert.equal((await post()).status, 400);
+  await save(second);
 });
 
 function fakeMqtt() {

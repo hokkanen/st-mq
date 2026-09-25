@@ -211,6 +211,23 @@ test('replica does not substitute priors for missing, unsupported or post-public
   }
 });
 
+test('replica saves a separate local copy in its configured directory without changing the verified snapshot', async t => {
+  const directory = fixture(t), publication = snapshot(directory, 'export-source');
+  const exportDirectory = join(directory, 'local-copies');
+  const { request } = await viewer(t, directory, async () => publication, {
+    config: { ...configuration(directory), recording: { exportDirectory } },
+  });
+  const result = await request('/api/database-export', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+  });
+  assert.equal(result.status, 200);
+  assert.equal(result.body.path, join(exportDirectory, result.body.filename));
+  const copy = new Store(result.body.path, { readOnly: true });
+  try { assert.equal(copy.getState('settings:mqtt').mode, 'active'); }
+  finally { copy.close(); }
+  assert.equal(digest(publication.dbPath), publication.digest);
+});
+
 test('read-only Store never migrates, deletes, creates a missing database or permits writes', t => {
   const directory = fixture(t), publication = snapshot(directory, 'readonly');
   const store = new Store(publication.dbPath, { readOnly: true });

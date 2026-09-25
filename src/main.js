@@ -1,6 +1,7 @@
 import { weatherAcquisitionIdentity } from './acquisition/weather-identity.js';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { resolve, dirname } from 'node:path';
+import { homedir } from 'node:os';
 import { isDeepStrictEqual } from 'node:util';
 import { Store } from './storage/store.js';
 import { loadConfig, configurationReader, configurationSource } from './app/config.js';
@@ -432,6 +433,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
     // held by settingsReloadStatus().busy until startup has completed.
     chartService = createChartService({ store });
     webAccess = createWebAccess({ config, getEngine: () => engine, store, chartService,
+      getDatabaseExportDirectory: () => config.recording?.exportDirectory ?? homedir(),
       replicationStatus: () => replication?.status() ?? null,
       pairContext,
       controlAuthority: authority,

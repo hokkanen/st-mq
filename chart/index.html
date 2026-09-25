@@ -757,10 +757,6 @@
           <summary>Adaptive measurements</summary>
           <div id="recording-content"></div>
         </details>
-        <details id="energy-audit-details">
-          <summary>Meter accuracy checks</summary>
-          <div id="energy-audit-content"></div>
-        </details>
         <details id="recording-overview-details">
           <summary>Other recorded data</summary>
           <div class="recording-overview-toolbar">
@@ -769,11 +765,24 @@
           </div>
           <div id="recording-overview-content"></div>
         </details>
+        <details id="energy-audit-details">
+          <summary>Meter accuracy checks</summary>
+          <div id="energy-audit-content"></div>
+        </details>
         <details id="database-export-details">
           <summary>Export database</summary>
-          <p class="muted">Save a complete SQLite snapshot, including committed changes still in the write-ahead log. Recording continues during export. This file contains the installation’s recorded history and saved state.</p>
-          <button id="database-export" type="button" class="secondary-button">Save database…</button>
-          <p id="database-export-message" class="muted" role="status" aria-live="polite">Choose a location when your browser supports it; otherwise its download settings apply.</p>
+          <p class="muted">Export a complete copy of the recorded history and saved state. Recording continues during export. Filenames include the export date and time in UTC.</p>
+          <div class="database-export-actions">
+            <div>
+              <button id="database-export-save" type="button" class="secondary-button" aria-describedby="database-export-save-help">Save local copy</button>
+              <p id="database-export-save-help" class="muted">Save on the server in its configured export folder, which defaults to the server account’s home folder.</p>
+            </div>
+            <div>
+              <button id="database-export-download" type="button" class="secondary-button" aria-describedby="database-export-download-help">Download database</button>
+              <p id="database-export-download-help" class="muted">Save to this device. Choose a location when prompted, or use your browser’s download folder.</p>
+            </div>
+          </div>
+          <p id="database-export-message" class="muted" role="status" aria-live="polite"></p>
         </details>
       </details>
     </section>

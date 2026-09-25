@@ -844,7 +844,8 @@ freshness and growth. Its explanation distinguishes fast acquisition from
 recording changes against the last saved value, and describes the shared rolling
 storage objective. An average recording interval is not a fixed poll schedule.
 
-The **Other recorded data** fold appears after **Meter accuracy checks**. It
+The **Other recorded data** fold appears immediately after **Adaptive measurements**,
+followed by **Meter accuracy checks** and **Export database**. It
 describes the remaining datasets using field lists, counts, available dates and
 the way each dataset is updated. Groups cover:
 
@@ -1020,19 +1021,37 @@ backfill charts from current live readings.
 
 ## Single-file database export
 
-Open **Recording details → Export database → Save database…**. ST-MQ uses the
-SQLite online backup API to copy the current committed database, including WAL
-pages, into one private temporary file. Recording can continue; the file represents
-a consistent snapshot, not a promise to include writes committed after that
-snapshot. There is no checkpoint or overwrite of the running database.
+Open **Recording details → Export database** and choose:
 
-Browsers with a save-file picker can stream the download to the selected location.
-Other browsers use their download settings (and buffer the response before saving).
-The destination is on the browser's computer; the web API does not accept arbitrary
-server filesystem paths. The temporary server copy is removed when the download
-finishes or disconnects. Only one export runs at a time. The normal web/ingress
-authentication applies and is checked again before the file is sent. Replica exports
-hold the verified snapshot they began with until streaming completes.
+- **Save local copy** saves on the server, in `recording.export_directory`.
+  The default `"~"` means the home folder of the operating-system account running
+  the application, including inside an add-on/container. Set an absolute path or
+  a home-relative path such as `"~/database-exports"` in configuration to choose
+  another location. The saved file's full path is shown after success.
+- **Download database** saves to the browser's computer. Supporting browsers
+  prompt for a destination and stream directly to the selected file. Other
+  browsers buffer the response and use their usual download settings.
+
+Both actions use the same filename format, for example
+`stmq-2026-09-25T15-04-32-123Z.sqlite`: date, time, milliseconds and `Z` for UTC.
+The browser file picker suggests the download's start time; the download fallback
+uses the server's snapshot filename. An existing server export is never overwritten;
+simultaneous timestamp collisions get a distinguishing suffix.
+
+The SQLite online backup API copies the current committed database, including WAL
+pages, into one private file. Recording continues; the file represents a consistent
+snapshot and does not promise to include later writes. Only the copy switches to
+DELETE journal mode, so it can be opened without WAL/SHM companion files. There is
+no checkpoint or overwrite of the running database. Server copies use mode `0600`;
+new export directories use mode `0700`. A copy is published only after completion.
+
+The web API accepts no destination path: authenticated `POST /api/database-export`
+with an empty JSON object saves in the configured server folder, and authenticated
+`GET /api/database-export` downloads a temporary snapshot. Temporary files are removed
+on completion, failure or disconnection. Only one export runs at a time per web
+server. Normal web/ingress authentication applies and is checked again before the
+copy is saved or sent. Replica exports hold the verified snapshot they began with
+until the operation completes.
 
 An export includes private history and saved application state. Retain the matching
 software version for model replay; restore remains the existing offline operation
