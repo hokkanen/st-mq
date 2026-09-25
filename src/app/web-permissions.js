@@ -9,7 +9,7 @@ const writes = new Set(['/api/fireplace', '/api/fireplace/remove', '/api/tempora
 // New endpoints receive no family write or download authority by default.
 export function familyRouteAllowed(method, path) {
   return method === 'GET' ? reads.has(path) : method === 'POST' && (writes.has(path)
-    || /^\/api\/charging\/chargers\/[^/]+\/(settings|control|resume|target|charge-now)$/.test(path));
+    || /^\/api\/charging\/chargers\/[^/]+\/(settings|control|resume|target|charge-now|identify)$/.test(path));
 }
 
 export function familyActionAllowed(path, input, engine) {

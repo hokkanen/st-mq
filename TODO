@@ -2,6 +2,35 @@
 -Implement support for local mqtt-based temperature receives (eg, from shelly or HASS through Meteorologisk Institute); just store last received temp values and time stamps (maybe in storage class, see below) when received (and accept if received within 1h)
 -Chart dataset control buttons don't work when datasets are manually hidden/unhidden from legend, how to fix?
 
+Completed 2026-09-25 — Active vehicle identification per connection
+- Replace the passive three-minute scheduling observation with a durable
+  identification attempt. Easee cloud and OCPP can release their own economic
+  delay and request a short native expiring pause, including with Automatic OFF
+  or Charge now. Preserve manual Stop, native limits, faults and authority.
+- Wait for actual charging without expiring the pending label. Use available
+  evidence immediately; bound the observation to 60 seconds or 0.15 kWh and the
+  identification pause to 90–91 seconds. Apply normal charging choices after
+  success or an inconclusive result; continue passive matching of late evidence.
+- Preserve attempts and absolute deadlines across current-version restart;
+  create one attempt for an already connected charger with no saved connection.
+  Match fresh ongoing BMW charging and its witnessed stop without inventing a
+  missing start. Keep physical/session/source evidence and consumption fences.
+- Move Charging controls below Session settings and add Identify at the end.
+  Allow an explicit new check even after identification, disable unavailable or
+  ongoing tests, and show waiting/testing/inconclusive states with Automatic OFF.
+  Preserve family/admin permission, read-only views and request revision fences.
+- Active pauses require a native expiry: current Shelly EVSE remains passive.
+  Remove the retired passive-observation callback. The active Easee pending
+  state has no ten-minute expiry; passive matching retains its evidence windows.
+  Add no old-format aliases, database migration or compatibility interpreter.
+- UI/API validation: 131 focused tests and 32 isolated Chromium state/theme/size
+  checks pass, including keyboard Identify and 320–1440px layout. Mobile/desktop
+  screenshots reviewed. All fixtures use invented data and disposable files.
+- Final validation: all 3,470 standard tests, all nine extended tests and the
+  production build passed. The 60 focused lifecycle/integration tests cover
+  immediate BMW start/confirmation handoff, slow native requests and queued
+  manual Resume. No household device was probed or running service restarted.
+
 Completed 2026-09-25 — Admin and family web access
 - Retain controller.web_token / STMQ_API_TOKEN as the admin credential and add
   optional controller.web_family_token / STMQ_FAMILY_API_TOKEN. Require distinct

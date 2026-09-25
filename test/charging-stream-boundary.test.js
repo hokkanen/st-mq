@@ -55,19 +55,19 @@ test('live stream disconnect and reconnect between polls end any old vehicle ses
   const h = harness(); await h.begin();
   assert.ok(h.controller.status().execution);
   const event = reconnected(disconnected());
-  let state = await h.update({ vehicleDisconnect: event, plan: { state: 'identifying' } });
+  let state = await h.update({ vehicleDisconnect: event, plan: null });
   assert.equal(state.snapshot.pluggedIn, true, 'The unchanged polled observation stays raw');
   assert.equal(state.session.connectedAt, h.now); assert.equal(state.session.lastDisconnectedAt, event.measuredAt);
   assert.equal(state.vehicleDisconnect.source, 'easee-stream');
   assert.equal(state.vehicleDisconnect.awaitingConnection, false); assert.equal(state.vehicleDisconnect.cleanupPending, false);
-  assert.equal(state.phase, 'identifying'); assert.equal(state.execution, null); assert.equal(state.released, false);
+  assert.equal(state.phase, 'unavailable'); assert.equal(state.execution, null); assert.equal(state.released, false);
   assert.equal(state.owned, null); assert.deepEqual(h.writes, ['install', 'clear']);
   const connectedAt = state.session.connectedAt;
   h.now += MINUTE; h.restart();
-  state = await h.update({ vehicleDisconnect: event, plan: { state: 'identifying' } });
+  state = await h.update({ vehicleDisconnect: event, plan: null });
   assert.equal(state.session.connectedAt, connectedAt, 'Persisted replay cannot open another session');
   assert.deepEqual(h.writes, ['install', 'clear']);
-  state = await h.update({ vehicleDisconnect: disconnected({ readingId: 'old-replay' }), plan: { state: 'identifying' } });
+  state = await h.update({ vehicleDisconnect: disconnected({ readingId: 'old-replay' }), plan: null });
   assert.equal(state.session.connectedAt, connectedAt, 'A different ID cannot reuse the ended connection');
 });
 
@@ -76,17 +76,17 @@ test('stream disconnect clears released status even when the old native start ha
   await h.update({ plan: { id: 'released-plan', startAt: START } });
   assert.equal(h.controller.status().released, true);
   h.now += 35 * MINUTE;
-  const state = await h.update({ vehicleDisconnect: reconnected(disconnected()), plan: { state: 'identifying' } });
-  assert.equal(state.phase, 'identifying'); assert.equal(state.released, false); assert.equal(state.execution, null);
+  const state = await h.update({ vehicleDisconnect: reconnected(disconnected()), plan: null });
+  assert.equal(state.phase, 'unavailable'); assert.equal(state.released, false); assert.equal(state.execution, null);
   assert.equal(state.session.connectedAt, h.now); assert.deepEqual(h.writes, []);
 });
 
 test('stream reconnect cannot bypass a fresh online controller read', async t => {
   for (const change of [{ readAt: START }, { online: false }]) await t.test(JSON.stringify(change), async () => {
     const h = harness(); await h.begin(); Object.assign(h, change);
-    const state = await h.update({ vehicleDisconnect: reconnected(disconnected()), plan: { state: 'identifying' } });
+    const state = await h.update({ vehicleDisconnect: reconnected(disconnected()), plan: null });
     assert.equal(state.session.connectedAt, null); assert.equal(state.vehicleDisconnect.awaitingConnection, true);
-    assert.notEqual(state.phase, 'identifying');
+    assert.equal(state.released, false);
   });
 });
 
@@ -94,9 +94,9 @@ test('replayed stream boundary identity and clocks cannot be revised to add reco
   for (const change of [{ measuredAt: disconnected().measuredAt + 1 }, { receivedAt: disconnected().receivedAt + 1 },
     { source: 'bmw-cardata' }, { endedConnectedAt: START + 1 }]) await t.test(JSON.stringify(change), async () => {
     const h = harness(); await h.begin(); const event = disconnected();
-    let state = await h.update({ vehicleDisconnect: event, plan: { state: 'identifying' } });
+    let state = await h.update({ vehicleDisconnect: event, plan: null });
     assert.equal(state.session.connectedAt, null);
-    state = await h.update({ vehicleDisconnect: { ...reconnected(event), ...change }, plan: { state: 'identifying' } });
+    state = await h.update({ vehicleDisconnect: { ...reconnected(event), ...change }, plan: null });
     assert.equal(state.session.connectedAt, null); assert.equal(state.vehicleDisconnect.reconnected, undefined);
     assert.equal(state.vehicleDisconnect.measuredAt, event.measuredAt);
     assert.equal(state.vehicleDisconnect.receivedAt, event.receivedAt);
@@ -110,7 +110,7 @@ test('invalid, future, same-clock and retained stream boundary facts never reope
     { measuredAt: event.measuredAt }, { receivedAt: START + 40 * MINUTE }, { measuredAt: START + 40 * MINUTE },
     { receivedAt: null }]) await t.test(JSON.stringify(change), async () => {
     const h = harness(); await h.begin();
-    const state = await h.update({ vehicleDisconnect: { ...event, reconnected: { ...valid, ...change } }, plan: { state: 'identifying' } });
+    const state = await h.update({ vehicleDisconnect: { ...event, reconnected: { ...valid, ...change } }, plan: null });
     assert.equal(state.session.connectedAt, null); assert.equal(state.vehicleDisconnect.awaitingConnection, true);
     assert.equal(state.vehicleDisconnect.reconnected, undefined);
   });
@@ -130,12 +130,12 @@ test('wrong-session and invalid stream disconnect provenance leave the existing 
 test('failed stream-boundary cleanup survives restart and retries only the exact owned delay', async () => {
   const h = harness(); await h.begin(); h.failClear = true;
   const event = reconnected(disconnected());
-  let state = await h.update({ vehicleDisconnect: event, plan: { state: 'identifying' } });
+  let state = await h.update({ vehicleDisconnect: event, plan: null });
   assert.equal(state.phase, 'unconfirmed'); assert.equal(state.pending.action, 'clear');
   assert.equal(state.vehicleDisconnect.cleanupPending, true); assert.ok(state.owned);
   h.failClear = false; h.now += MINUTE; h.restart();
-  state = await h.update({ vehicleDisconnect: event, plan: { state: 'identifying' } });
-  assert.equal(state.phase, 'identifying'); assert.equal(state.owned, null); assert.equal(state.pending, null);
+  state = await h.update({ vehicleDisconnect: event, plan: null });
+  assert.equal(state.phase, 'unavailable'); assert.equal(state.owned, null); assert.equal(state.pending, null);
   assert.equal(state.vehicleDisconnect.cleanupPending, false); assert.deepEqual(h.writes, ['install', 'clear']);
 });
 
@@ -147,10 +147,10 @@ test('a stream boundary received during an old-session write queues cleanup afte
   h.writeHook = async () => { begin(); await release; h.writeHook = null; };
   const installing = h.update({ plan: { id: 'in-flight', startAt: START + 4 * 60 * MINUTE } });
   await begun; h.now += 1000;
-  const ending = h.update({ vehicleDisconnect: reconnected(disconnected()), plan: { state: 'identifying' } });
+  const ending = h.update({ vehicleDisconnect: reconnected(disconnected()), plan: null });
   finish(); await installing;
   const state = await ending;
-  assert.equal(state.phase, 'identifying'); assert.equal(state.owned, null); assert.equal(state.execution, null);
+  assert.equal(state.phase, 'unavailable'); assert.equal(state.owned, null); assert.equal(state.execution, null);
   assert.equal(state.vehicleDisconnect.cleanupPending, false); assert.deepEqual(h.writes, ['install', 'install', 'clear']);
 });
 
@@ -158,11 +158,11 @@ test('stream reconnect preserves manual stops and foreign schedules instead of g
   await t.test('manual stop', async () => {
     const h = harness(); await h.begin(); h.enabled = false; h.reason = 53;
     const event = reconnected(disconnected());
-    let state = await h.update({ vehicleDisconnect: event, plan: { state: 'identifying' } });
+    let state = await h.update({ vehicleDisconnect: event, plan: null });
     assert.equal(state.phase, 'yielded'); assert.equal(state.manual.kind, 'stop');
     assert.equal(state.vehicleDisconnect.cleanupPending, true); assert.ok(state.owned);
     h.now += MINUTE; h.restart();
-    state = await h.update({ vehicleDisconnect: event, plan: { state: 'identifying' } });
+    state = await h.update({ vehicleDisconnect: event, plan: null });
     assert.equal(state.manual.kind, 'stop'); assert.deepEqual(h.writes, ['install']);
   });
   await t.test('foreign schedule', async () => {
@@ -170,7 +170,7 @@ test('stream reconnect preserves manual stops and foreign schedules instead of g
     h.schedule = normalizeScheduleState({ enabled: 'daily', daily: { timezone: 'UTC',
       periods: [{ startTime: '09:00', stopTime: '10:00', maximumAmps: 16 }] } });
     const saved = structuredClone(h.schedule);
-    const state = await h.update({ vehicleDisconnect: reconnected(disconnected()), plan: { state: 'identifying' } });
+    const state = await h.update({ vehicleDisconnect: reconnected(disconnected()), plan: null });
     assert.equal(state.phase, 'yielded'); assert.equal(state.manual.kind, 'window'); assert.equal(state.owned, null);
     assert.deepEqual(h.schedule, saved); assert.deepEqual(h.writes, ['install']);
   });
@@ -191,8 +191,8 @@ test('Easee reconnect ordering follows source clocks when delivery is reversed o
     const event = disconnected({ receivedAt: disconnected().measuredAt + 20_000 });
     event.reconnected = { readingId: 'source-later-reconnect', retained: false,
       measuredAt: event.measuredAt + 5000, receivedAt: event.receivedAt + receiptOffset };
-    const state = await h.update({ vehicleDisconnect: event, plan: { state: 'identifying' } });
-    assert.equal(state.phase, 'identifying'); assert.equal(state.session.connectedAt, h.now);
+    const state = await h.update({ vehicleDisconnect: event, plan: null });
+    assert.equal(state.phase, 'unavailable'); assert.equal(state.session.connectedAt, h.now);
     assert.deepEqual(state.vehicleDisconnect.reconnected, event.reconnected, 'Original delivery clocks remain intact');
     assert.deepEqual(h.writes, ['install', 'clear']);
   });
@@ -201,19 +201,19 @@ test('Easee reconnect ordering follows source clocks when delivery is reversed o
 test('a second live disconnect replaces a pending reconnect while the durable session remains closed', async () => {
   const h = harness(); await h.begin(); h.readAt = START;
   const first = reconnected(disconnected());
-  let state = await h.update({ vehicleDisconnect: first, plan: { state: 'identifying' } });
+  let state = await h.update({ vehicleDisconnect: first, plan: null });
   assert.equal(state.session.connectedAt, null); assert.equal(state.vehicleDisconnect.awaitingConnection, true);
   assert.deepEqual(state.vehicleDisconnect.reconnected, first.reconnected);
   const second = disconnected({ readingId: 'next-source-disconnect', measuredAt: first.measuredAt + 10_000,
     receivedAt: first.receivedAt + 10_000 });
   h.readAt = undefined; h.sourceAt = first.reconnected.measuredAt;
-  state = await h.update({ vehicleDisconnect: second, plan: { state: 'identifying' } });
+  state = await h.update({ vehicleDisconnect: second, plan: null });
   assert.equal(state.session.connectedAt, null); assert.equal(state.phase, 'disconnected');
   assert.equal(state.vehicleDisconnect.readingId, second.readingId);
   assert.equal(state.vehicleDisconnect.reconnected, undefined, 'The old reconnect cannot open the newer ended connection');
   assert.equal(state.session.lastDisconnectedAt, second.measuredAt);
   h.restart(); h.now += MINUTE;
-  state = await h.update({ vehicleDisconnect: first, plan: { state: 'identifying' } });
+  state = await h.update({ vehicleDisconnect: first, plan: null });
   assert.equal(state.session.connectedAt, null); assert.equal(state.vehicleDisconnect.readingId, second.readingId);
   assert.deepEqual(h.writes, ['install', 'clear']);
 });

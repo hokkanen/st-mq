@@ -198,7 +198,7 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
   };
   if (connections.easee?.charger_id && devices.chargerScheduleControl)
     engine.charging?.setAdapter('charger1', devices.chargerScheduleControl());
-  // Vehicle identification is continuous passive runtime work. No Easee current probe.
+  // The charging runtime owns bounded identification pauses and passive matching.
   const easee = connections.easee ?? {}, cadence = config.acquisition ?? {};
   const readTemperatures = typeof temperatureProvider === 'function' ? temperatureProvider
     : typeof devices.temperatures === 'function' ? args => devices.temperatures(args) : null;

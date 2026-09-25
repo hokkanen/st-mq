@@ -33,7 +33,7 @@ async function fixture(t, options = {}) {
       { id: 'disabled_door', area: 'garage', kind: 'door', enabled: false, controls: { cover: { open: true, close: true, stop: true } } },
       { id: 'sensor_door', area: 'garage', kind: 'door', enabled: true, controls: { cover: false } },
     ] }),
-    charging: Object.fromEntries(['setSettings', 'setChargerSettings', 'setControl', 'resume', 'setTarget', 'chargeNow']
+    charging: Object.fromEntries(['setSettings', 'setChargerSettings', 'setControl', 'resume', 'setTarget', 'chargeNow', 'identifyVehicle']
       .map(name => [name, record(`charging.${name}`)])),
     garage: Object.fromEntries(['release', 'setTemporary', 'setHeating', 'setNativeSettings']
       .map(name => [name, record(`garage.${name}`)])),
@@ -114,10 +114,12 @@ test('family may use every charging card route but not charger commissioning', a
     ['/api/charging/chargers/charger1/resume', {}, 'charging.resume'],
     ['/api/charging/chargers/charger1/target', { connectedAt: INITIAL, mode: 'full' }, 'charging.setTarget'],
     ['/api/charging/chargers/charger1/charge-now', { association: 'synthetic-identity', sessionId: 'synthetic-session', revision: 1 }, 'charging.chargeNow'],
+    ['/api/charging/chargers/charger1/identify', { association: 'synthetic-identity', sessionId: 'synthetic-session', revision: 1 }, 'charging.identifyVehicle'],
   ];
   for (const [path, input, name] of actions) {
     assert.equal((await f.post(path, input)).status, 200, path);
     assert.equal(f.calls.at(-1).name, name);
+    if (name === 'charging.identifyVehicle') assert.deepEqual(f.calls.at(-1).args, ['charger1', input]);
   }
   assert.equal((await f.post('/api/charging/ocpp-setup', { action: 'adopt', revision: 'a'.repeat(64) })).status, 403);
   assert.equal(f.calls.length, actions.length);
@@ -196,7 +198,7 @@ test('family permissions preserve controller ownership protection', async t => {
   const f = await fixture(t, { server: { controlAuthority: { canControl: () => false, status: () => ({ protected: true }) } } });
   for (const [path, input] of [['/api/temporary', { pauseUntil: null }], ['/api/heating-test', { command: 'circulation' }],
     ['/api/garage/heating', { mode: 'off' }], ['/api/equipment/cover', { deviceId: 'garage_door1', action: 'open' }],
-    ['/api/charging/chargers/charger1/charge-now', {}]]) {
+    ['/api/charging/chargers/charger1/charge-now', {}], ['/api/charging/chargers/charger1/identify', {}]]) {
     assert.equal((await f.post(path, input)).status, 409, path);
   }
   assert.deepEqual(f.calls, []);

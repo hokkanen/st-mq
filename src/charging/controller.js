@@ -1,6 +1,5 @@
 import { resolveChargingDeadline } from './settings.js';
 import { TIME_ZONE } from '../domain/prices.js';
-import { IDENTIFYING_REASON } from './identity-evidence.js';
 import { delayedScheduleFor, effectiveScheduleFingerprint, manualScheduleWindow, nextLocalOccurrence, scheduleFingerprint } from './easee.js';
 
 const copy = value => structuredClone(value);
@@ -12,6 +11,16 @@ const ownedFingerprint = owned => owned?.activeFingerprint ?? (owned?.schedule ?
 const STOP_REASON = 'The charger was paused or disabled in Easee. Resume it there before returning to automatic charging.';
 const RELEASE_REASON = 'Charging is released and may continue beyond the minimum and deadline.';
 const MIN_PRICE_PAUSE_MS = 15 * 60_000;
+const MAX_IDENTIFICATION_PAUSE_MS = 5 * 60_000;
+const identificationFields = ['purpose', 'identificationId', 'identificationConnectedAt'];
+function validIdentificationOwnership(value) {
+  if (!value || !identificationFields.some(key => Object.hasOwn(value, key))) return true;
+  const requestedAt = value.scheduleRequestedAt ?? value.installRequestedAt ?? value.startedAt;
+  return value.purpose === 'identification' && boundaryId(value.identificationId)
+    && isTime(value.identificationConnectedAt) && isTime(requestedAt)
+    && value.identificationConnectedAt <= requestedAt && isTime(value.startAt)
+    && value.startAt > requestedAt && value.startAt - requestedAt <= MAX_IDENTIFICATION_PAUSE_MS;
+}
 const DIAGNOSTICS = {
   'read-failed': 'Easee could not be read. Automatic control will retry when the connection recovers.',
   'command-failed': 'Easee did not confirm the schedule command. Its current instruction will be checked before retrying.',
@@ -30,20 +39,22 @@ const DIAGNOSTICS = {
 
 /** Durable native instruction ownership and observed manual priority. */
 export function createChargingController({ adapter, initialState = null, saveState = () => {}, clock = Date.now,
-  canControl = () => false, getPlan, getMaximumAmps } = {}) {
-  if (initialState && initialState.version !== 5) throw new Error('Unsupported charging ownership; start a fresh development database');
+  canControl = () => false, getPlan, getMaximumAmps, getIdentification } = {}) {
+  if (initialState && (initialState.version !== 5 || !validIdentificationOwnership(initialState.owned)
+    || !validIdentificationOwnership(initialState.pending))) throw new Error('Unsupported charging ownership; start a fresh development database');
   const previous = initialState ? copy(initialState) : {};
   let state = { phase: 'off', owned: null, pending: null, manual: null, released: false,
     disconnected: false, execution: null, handoverConfirmed: true, reason: 'Automatic charging is off.',
     ...previous, version: 5, session: previous.session ?? null, errorCode: null };
   let desired = { enabled: false, plan: null, readyBy: '06:00', timezone: TIME_ZONE }, snapshot = null, closed = false, generation = 0, queue = Promise.resolve();
-  let planningRevision = null;
+  let planningRevision = null, identification = null;
   const permitted = () => !closed && canControl() === true;
   const chargeNowActive = () => desired.chargeNow?.connectedAt === state.session?.connectedAt
     && Number.isSafeInteger(desired.chargeNow?.connectedAt) && snapshot?.pluggedIn === true
     && !state.vehicleDisconnect?.awaitingConnection;
-  const controlRequested = () => desired.enabled === true || chargeNowActive();
-  const status = () => ({ ...copy(state), enabled: desired.enabled === true, planningRevision, snapshot: snapshot ? copy(snapshot) : null });
+  const controlRequested = () => desired.enabled === true || chargeNowActive() || identification !== null;
+  const status = () => ({ ...copy(state), enabled: desired.enabled === true, planningRevision,
+    identification: identification ? copy(identification) : null, snapshot: snapshot ? copy(snapshot) : null });
   const currentFingerprint = () => activeFingerprint(snapshot.schedule);
   const ownsCurrent = () => state.owned && ownedFingerprint(state.owned) === currentFingerprint();
   async function persist() { await saveState(copy(state)); }
@@ -67,6 +78,8 @@ export function createChargingController({ adapter, initialState = null, saveSta
       activeFingerprint: currentFingerprint(), schedule: copy(snapshot.schedule), confirmedAt: now,
       ...(isTime(pending.pauseRequestedAt) && pending.pauseRequestedAt <= now ? { requestedAt: pending.pauseRequestedAt } : {}),
       scheduleRequestedAt: pending.installRequestedAt,
+      ...(pending.purpose === 'identification' ? { purpose: pending.purpose, identificationId: pending.identificationId,
+        identificationConnectedAt: pending.identificationConnectedAt } : {}),
       ...(pending.periods ? { periods: copy(pending.periods), finalStartAt: pending.finalStartAt } : {}) };
   }
   function normalExpiry(now) {
@@ -293,8 +306,65 @@ export function createChargingController({ adapter, initialState = null, saveSta
     if (state.vehicleDisconnect?.cleanupPending) state.vehicleDisconnect.cleanupPending = false;
     rememberOwnInstruction(clock());
   }
+  async function refreshIdentification(now) {
+    const next = typeof getIdentification === 'function' ? await getIdentification(copy(snapshot)) : null;
+    if (next != null && (typeof next !== 'object' || Array.isArray(next)
+      || Object.keys(next).some(key => !['id', 'connectedAt', 'phase', 'pauseUntil'].includes(key))
+      || !boundaryId(next.id) || !isTime(next.connectedAt) || next.connectedAt > now
+      || !['waiting', 'charging', 'pausing'].includes(next.phase)
+      || next.phase === 'pausing' && (!isTime(next.pauseUntil) || next.pauseUntil - now > MAX_IDENTIFICATION_PAUSE_MS)
+      || next.phase !== 'pausing' && next.pauseUntil !== undefined)) throw Object.assign(new Error('Invalid identification request'), { code: 'invalid-plan' });
+    identification = next && next.connectedAt === state.session?.connectedAt && snapshot.pluggedIn === true
+      && !state.vehicleDisconnect?.awaitingConnection && (next.phase !== 'pausing' || next.pauseUntil > now)
+      ? copy(next) : null;
+  }
+  async function identify(expectedGeneration) {
+    const request = identification, now = clock();
+    state.execution = null; state.released = false; state.provisional = false;
+    if (request.phase !== 'pausing') {
+      if (ownsCurrent()) await clearCurrent(snapshot.schedule.enabled, expectedGeneration);
+      await phase('identifying', request.phase === 'waiting' ? 'Vehicle identification is pending until charging starts.'
+        : 'Charging briefly to identify the connected vehicle.');
+      return;
+    }
+    const startAt = request.pauseUntil;
+    const maximumAmps = typeof getMaximumAmps === 'function' ? getMaximumAmps(copy(snapshot)) : desired.maximumAmps;
+    const delayed = delayedScheduleFor({ startAt, timezone: desired.timezone, maximumAmps }, now);
+    const expectedState = { ...copy(snapshot.schedule), enabled: 'delayed', delayed };
+    const expectedActiveFingerprint = activeFingerprint(expectedState);
+    if (ownsCurrent() && state.owned.purpose === 'identification' && state.owned.identificationId === request.id
+      && currentFingerprint() === expectedActiveFingerprint) {
+      await phase('identifying', 'Waiting for the charger and vehicle to confirm the identification pause.');
+      return;
+    }
+    const pending = { action: 'install', planId: request.id, startAt, purpose: 'identification',
+      identificationId: request.id, identificationConnectedAt: request.connectedAt,
+      expectedFingerprint: scheduleFingerprint(expectedState), expectedActiveFingerprint,
+      previousFingerprint: snapshot.fingerprint, previousActiveFingerprint: currentFingerprint(), startedAt: now };
+    state.pending = pending;
+    await phase('identifying', 'Requesting a brief charging pause to identify the connected vehicle.');
+    snapshot = await adapter.installDelayed({ startAt, timezone: desired.timezone, maximumAmps,
+      identification: { id: request.id, connectedAt: request.connectedAt }, allowChargingPause: true,
+      expectedFingerprint: snapshot.fingerprint, expectedControlFingerprint: snapshot.controlFingerprint,
+      canMutate: () => permitted() && expectedGeneration === generation && identification?.id === request.id
+        && identification.connectedAt === state.session?.connectedAt && clock() < startAt,
+      beforeWrite: async before => {
+        const previous = state.pending, witnessed = { ...pending, installRequestedAt: clock(),
+          ...(before.mode === 3 ? { pauseRequestedAt: clock() } : {}) };
+        state.pending = witnessed;
+        try { await persist(); } catch (error) { state.pending = previous; throw error; }
+        Object.assign(pending, witnessed);
+      } });
+    state.lastReadAt = snapshot.readAt;
+    if (currentFingerprint() !== expectedActiveFingerprint) throw Object.assign(new Error('Schedule readback mismatch'), { code: 'readback-mismatch' });
+    state.owned = confirmedOwned(clock(), pending); state.pending = null;
+    rememberOwnInstruction(clock());
+    if (state.manual) await phase('yielded', state.manual.reason);
+    else await phase('identifying', 'Waiting for the charger and vehicle to confirm the identification pause.');
+  }
   async function reconcile(expectedGeneration, refreshed = false) {
     let now = clock(), operation = 'read-failed';
+    const previousIdentification = identification !== null || state.owned?.purpose === 'identification';
     if (closed || expectedGeneration !== generation) return status();
     if (!adapter?.read) {
       await phase(desired.enabled ? 'unavailable' : 'off', desired.enabled ? 'The Easee connection is not configured.' : 'Automatic charging is off.');
@@ -348,6 +418,22 @@ export function createChargingController({ adapter, initialState = null, saveSta
       if (state.owned && !ownsCurrent()) {
         if (normalExpiry(now) && (!state.execution || now >= state.execution.finalStartAt)) state.released = snapshot.pluggedIn === true;
         state.owned = null;
+      }
+      await refreshIdentification(now);
+      if (closed || expectedGeneration !== generation) return status();
+      if (previousIdentification && !identification) {
+        state.execution = null; state.released = false; state.provisional = false;
+      }
+      // Only a temporary identification restriction is released on completion.
+      // Reset automatic execution even if charging had been released earlier.
+      if (state.owned?.purpose === 'identification' && (!identification
+        || state.owned.identificationId !== identification.id)) {
+        // A future economic plan can replace the delay in one write. Releasing
+        // first would briefly restart charging between the two restrictions.
+        if (ownsCurrent() && (!desired.enabled || chargeNowActive() || identification || now >= state.owned.startAt)) {
+          operation = 'command-failed'; await clearCurrent('delayed', expectedGeneration, true);
+        }
+        state.execution = null; state.released = false; state.provisional = false;
       }
       if (!controlRequested()) {
         if (snapshot.online === true && isTime(state.manual?.resumeAt) && now >= state.manual.resumeAt) {
@@ -406,6 +492,7 @@ export function createChargingController({ adapter, initialState = null, saveSta
           state.released = false;
         } else { await phase('yielded', prior.reason); return status(); }
       }
+      if (identification) { operation = 'command-failed'; await identify(expectedGeneration); return status(); }
       if (chargeNowActive() && !state.manual) {
         // A session override releases only our own restriction. External native
         // instructions and all device protections continue to take precedence.
@@ -441,10 +528,6 @@ export function createChargingController({ adapter, initialState = null, saveSta
           operation = 'command-failed'; await clearCurrent(snapshot.schedule.enabled, expectedGeneration);
         }
         await phase('released', RELEASE_REASON); return status();
-      }
-      if (plan?.state === 'identifying') {
-        await phase('identifying', IDENTIFYING_REASON);
-        return status();
       }
       let execution = priceExecution ?? (state.execution && now >= state.execution.periods[0].startAt
         ? state.execution : executionFor(plan));
@@ -498,6 +581,7 @@ export function createChargingController({ adapter, initialState = null, saveSta
       const expectedState = { ...copy(snapshot.schedule), enabled: 'delayed', delayed };
       const expectedFingerprint = scheduleFingerprint(expectedState), expectedActiveFingerprint = activeFingerprint(expectedState);
       if (state.owned && currentFingerprint() === expectedActiveFingerprint) {
+        delete state.owned.purpose; delete state.owned.identificationId; delete state.owned.identificationConnectedAt;
         state.owned.planId = plan.id ?? plan.planId ?? null;
         state.execution = execution ? copy(execution) : null; state.released = false;
         await waitingPhase(plannedPause, pauseRequested); return status();
@@ -558,6 +642,7 @@ export function createChargingController({ adapter, initialState = null, saveSta
     return status();
   }
   return {
+    supportsIdentification: true,
     status,
     update(input = {}) {
       desired = { ...desired, ...input, enabled: input.enabled ?? desired.enabled,

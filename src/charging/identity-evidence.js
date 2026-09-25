@@ -1,7 +1,5 @@
 import { effectiveScheduleFingerprint, nextLocalOccurrence } from './easee.js';
 
-export const IDENTIFYING_REASON = 'Identifying the connected vehicle from its initial charging telemetry. Automatic scheduling follows when identified or after the three-minute observation limit.';
-
 const MAX_READ_AGE_MS = 60_000, STOP_CLOCK_TOLERANCE_MS = 30_000;
 const time = value => Number.isSafeInteger(value) && value >= 0;
 const transactionId = value => Number.isSafeInteger(value) && value > 0 && value < 2147483647;
@@ -10,7 +8,8 @@ const fresh = (at, now) => observed(at, now) && now - at <= MAX_READ_AGE_MS;
 
 function currentIdentitySession(control, now) {
   const snapshot = control?.snapshot, session = control?.session;
-  return time(now) && snapshot && control.enabled === true && !control.errorCode
+  return time(now) && snapshot && (control.enabled === true || control.identification != null
+    || control.owned?.purpose === 'identification') && !control.errorCode
     && !control.pending && !control.manual && !control.released && !control.disconnected
     && !control.vehicleDisconnect?.awaitingConnection && !control.vehicleDisconnect?.cleanupPending
     && session?.connected === true && snapshot.pluggedIn === true && snapshot.online === true
@@ -25,22 +24,6 @@ const currentTransaction = (snapshot, session, until) => snapshot.transactionCon
   && transactionId(snapshot.transactionId) && snapshot.transactionId === session.transactionId
   && observed(snapshot.transactionStartedAt, until)
   && (session.lastDisconnectedAt == null || snapshot.transactionStartedAt > session.lastDisconnectedAt);
-
-/** A bounded identification observation may defer a new economic restriction
- * only while the connected charger is already available without our command.
- * Existing ownership and foreign/manual restrictions retain their priority. */
-export function identityObservationAvailable(control, now) {
-  if (!currentIdentitySession(control, now) || control.owned) return false;
-  const { snapshot, session } = control;
-  if (snapshot.transport === 'ocpp') return !snapshot.nativeInstruction
-    && currentTransaction(snapshot, session, snapshot.readAt)
-    && ['Preparing', 'Charging', 'SuspendedEV'].includes(snapshot.connectorStatus)
-    && observed(snapshot.statusAt, snapshot.readAt);
-  if (snapshot.transport === undefined) return cloudAvailable(snapshot)
-    && [2, 3, 4, 6].includes(snapshot.mode) && observed(snapshot.modeAt, snapshot.readAt)
-    && snapshot.schedule?.enabled === 'none';
-  return false;
-}
 
 /** Transport facts become one vehicle-independent, current-session pause proof.
  * Ownership alone never establishes that the requested physical stop occurred.

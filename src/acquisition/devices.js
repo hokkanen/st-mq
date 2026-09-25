@@ -1,11 +1,9 @@
-// Observation boundary, with separately opted-in native charging schedules and
-// one-minute charger identification. Installer/circuit settings are read-only.
+// Observation boundary and native charging schedule transport. The runtime owns
+// economic scheduling and identification pauses; installation limits stay read-only.
 // Protocol sources checked 2026-09-06:
 // https://developer.easee.com/reference/getobservations
 // https://developer.easee.com/reference/account_refreshtoken
 // https://developer.easee.com/docs/charger-observation-ids
-// Identification control checked 2026-09-09:
-// https://developer.easee.com/reference/charger_set_dynamic_charger_current
 // https://developer.easee.com/docs/amqp-commands
 // https://developer.easee.com/docs/enumerations
 // https://developer.easee.com/docs/load-balancing

@@ -57,7 +57,7 @@ function harness() {
 test('verified unplug closes the old session despite cached connected Easee and replug opens an unidentified observation', async () => {
   const h = harness(); await h.begin();
   const event = disconnect();
-  let state = await h.update({ vehicleDisconnect: event, plan: { state: 'identifying' } });
+  let state = await h.update({ vehicleDisconnect: event, plan: null });
   assert.equal(state.snapshot.pluggedIn, true, 'Raw Easee connection telemetry is never fabricated');
   assert.equal(state.session.connectedAt, null); assert.equal(state.session.connected, false);
   assert.equal(state.session.lastDisconnectedAt, event.measuredAt);
@@ -66,8 +66,8 @@ test('verified unplug closes the old session despite cached connected Easee and 
   assert.equal(state.vehicleDisconnect.cleanupPending, false);
   assert.deepEqual(h.writes, ['install', 'clear']);
   h.now += 1000;
-  state = await h.update({ vehicleDisconnect: reconnect(event), plan: { state: 'identifying' } });
-  assert.equal(state.phase, 'identifying'); assert.equal(state.session.connectedAt, h.now);
+  state = await h.update({ vehicleDisconnect: reconnect(event), plan: null });
+  assert.equal(state.phase, 'unavailable'); assert.equal(state.session.connectedAt, h.now);
   assert.equal(state.session.lastDisconnectedAt, event.measuredAt);
   assert.equal(state.vehicleDisconnect.awaitingConnection, false);
   assert.equal(state.vehicleDisconnect.source, 'bmw-cardata');
@@ -75,7 +75,7 @@ test('verified unplug closes the old session despite cached connected Easee and 
   assert.deepEqual(h.writes, ['install', 'clear']);
   const connectedAt = state.session.connectedAt;
   h.now += MINUTE; h.restart();
-  state = await h.update({ vehicleDisconnect: reconnect(event), plan: { state: 'identifying' } });
+  state = await h.update({ vehicleDisconnect: reconnect(event), plan: null });
   assert.equal(state.session.connectedAt, connectedAt, 'A replay across restart cannot create another observation');
   assert.deepEqual(h.writes, ['install', 'clear']);
 });
@@ -85,8 +85,8 @@ test('new Easee mode or pilot source evidence can open the next connection witho
     const h = harness(); await h.begin();
     if (source === 'mode') h.sourceAt = h.now;
     else h.pilotAt = h.now;
-    const state = await h.update({ vehicleDisconnect: disconnect(), plan: { state: 'identifying' } });
-    assert.equal(state.phase, 'identifying'); assert.equal(state.session.connectedAt, h.now);
+    const state = await h.update({ vehicleDisconnect: disconnect(), plan: null });
+    assert.equal(state.phase, 'unavailable'); assert.equal(state.session.connectedAt, h.now);
     assert.equal(state.vehicleDisconnect.awaitingConnection, false);
     assert.deepEqual(h.writes, ['install', 'clear']);
   });
@@ -95,28 +95,28 @@ test('new Easee mode or pilot source evidence can open the next connection witho
 test('same-clock or future positive Easee evidence does not reopen the ended session', async t => {
   for (const sourceAt of [disconnect().measuredAt, START + 40 * MINUTE]) await t.test(String(sourceAt), async () => {
     const h = harness(); await h.begin(); h.sourceAt = sourceAt; h.pilotAt = sourceAt;
-    const state = await h.update({ vehicleDisconnect: disconnect(), plan: { state: 'identifying' } });
+    const state = await h.update({ vehicleDisconnect: disconnect(), plan: null });
     assert.equal(state.session.connectedAt, null); assert.equal(state.vehicleDisconnect.awaitingConnection, true);
   });
 });
 
 test('a read predating the unplug cannot turn a later BMW replug into a connected session', async () => {
   const h = harness(); await h.begin(); h.readAt = START;
-  const state = await h.update({ vehicleDisconnect: reconnect(disconnect()), plan: { state: 'identifying' } });
+  const state = await h.update({ vehicleDisconnect: reconnect(disconnect()), plan: null });
   assert.equal(state.session.connectedAt, null); assert.equal(state.vehicleDisconnect.awaitingConnection, true);
 });
 
 test('a newer real Easee disconnect prevents an earlier BMW replug from reopening the session', async () => {
   const h = harness(); await h.begin(); const event = reconnect(disconnect());
   h.mode = 1; h.pilot = 'A'; h.sourceAt = h.pilotAt = event.measuredAt + 25_000;
-  let state = await h.update({ vehicleDisconnect: event, plan: { state: 'identifying' } });
+  let state = await h.update({ vehicleDisconnect: event, plan: null });
   assert.equal(state.session.lastDisconnectedAt, event.measuredAt + 25_000);
   h.mode = 2; h.pilot = 'B'; h.sourceAt = h.pilotAt = event.measuredAt + 20_000;
-  state = await h.update({ vehicleDisconnect: event, plan: { state: 'identifying' } });
+  state = await h.update({ vehicleDisconnect: event, plan: null });
   assert.equal(state.session.connectedAt, null); assert.equal(state.vehicleDisconnect.awaitingConnection, true);
   h.sourceAt = h.now;
-  state = await h.update({ vehicleDisconnect: event, plan: { state: 'identifying' } });
-  assert.equal(state.session.connectedAt, h.now); assert.equal(state.phase, 'identifying');
+  state = await h.update({ vehicleDisconnect: event, plan: null });
+  assert.equal(state.session.connectedAt, h.now); assert.equal(state.phase, 'unavailable');
 });
 
 test('retained, old, or future BMW replug events cannot reopen a session with cached Easee evidence', async t => {
@@ -125,7 +125,7 @@ test('retained, old, or future BMW replug events cannot reopen a session with ca
     { receivedAt: event.receivedAt }, { measuredAt: START + 40 * MINUTE }, { receivedAt: START + 40 * MINUTE }])
     await t.test(JSON.stringify(extra), async () => {
       const h = harness(); await h.begin();
-      const state = await h.update({ vehicleDisconnect: { ...event, reconnected: { ...valid, ...extra } }, plan: { state: 'identifying' } });
+      const state = await h.update({ vehicleDisconnect: { ...event, reconnected: { ...valid, ...extra } }, plan: null });
       assert.equal(state.session.connectedAt, null); assert.equal(state.vehicleDisconnect.awaitingConnection, true);
       assert.equal(state.vehicleDisconnect.reconnected, undefined);
     });
@@ -134,13 +134,13 @@ test('retained, old, or future BMW replug events cannot reopen a session with ca
 test('clear failure retains the old owned instruction and durable boundary for restart retry', async () => {
   const h = harness(); await h.begin(); h.failClear = true;
   const event = disconnect();
-  let state = await h.update({ vehicleDisconnect: event, plan: { state: 'identifying' } });
+  let state = await h.update({ vehicleDisconnect: event, plan: null });
   assert.equal(state.phase, 'unconfirmed'); assert.ok(state.owned); assert.equal(state.pending.action, 'clear');
   assert.equal(state.vehicleDisconnect.cleanupPending, true); assert.equal(state.session.connectedAt, null);
   assert.deepEqual(h.writes, ['install']);
   h.restart(); h.failClear = false; h.now += MINUTE; h.sourceAt = h.now;
-  state = await h.update({ vehicleDisconnect: event, plan: { state: 'identifying' } });
-  assert.equal(state.phase, 'identifying'); assert.equal(state.owned, null); assert.equal(state.pending, null);
+  state = await h.update({ vehicleDisconnect: event, plan: null });
+  assert.equal(state.phase, 'unavailable'); assert.equal(state.owned, null); assert.equal(state.pending, null);
   assert.equal(state.vehicleDisconnect.cleanupPending, false); assert.equal(state.session.connectedAt, h.now);
   assert.deepEqual(h.writes, ['install', 'clear']);
 });
@@ -155,7 +155,7 @@ test('a verified unplug arriving during an old-session install waits for readbac
   await begun;
   h.now += 1000;
   const ending = h.update({ vehicleDisconnect: disconnect({ measuredAt: h.now - 1, receivedAt: h.now }),
-    plan: { state: 'identifying' } });
+    plan: null });
   finish(); await installing;
   const state = await ending;
   assert.equal(state.phase, 'disconnected'); assert.equal(state.owned, null); assert.equal(state.pending, null);
@@ -168,7 +168,7 @@ test('a foreign manual window replaces ownership and survives the verified unplu
   h.schedule = normalizeScheduleState({ enabled: 'daily', daily: { timezone: 'UTC',
     periods: [{ startTime: '09:00', stopTime: '10:00', maximumAmps: 16 }] } });
   const manualSchedule = structuredClone(h.schedule);
-  const state = await h.update({ vehicleDisconnect: reconnect(disconnect()), plan: { state: 'identifying' } });
+  const state = await h.update({ vehicleDisconnect: reconnect(disconnect()), plan: null });
   assert.equal(state.phase, 'yielded'); assert.equal(state.manual.kind, 'window');
   assert.equal(state.owned, null); assert.deepEqual(h.schedule, manualSchedule);
   assert.deepEqual(h.writes, ['install']);
@@ -179,8 +179,8 @@ test('stopped, offline, faulted, unauthorized, and revoked-control snapshots ret
     { online: false }, { mode: 5, reason: 56 },
     { mode: 7, reason: 55 }, { allowed: false }]) await t.test(JSON.stringify(change), async () => {
     const h = harness(); await h.begin(); Object.assign(h, change);
-    const state = await h.update({ vehicleDisconnect: reconnect(disconnect()), plan: { state: 'identifying' } });
-    assert.notEqual(state.phase, 'identifying'); assert.ok(state.owned);
+    const state = await h.update({ vehicleDisconnect: reconnect(disconnect()), plan: null });
+    assert.equal(state.released, false); assert.ok(state.owned);
     assert.equal(state.vehicleDisconnect.cleanupPending, true);
     if (change.enabled === false) assert.equal(state.manual.kind, 'stop');
     if (change.online === false) assert.equal(state.session.connectedAt, null);
@@ -190,7 +190,7 @@ test('stopped, offline, faulted, unauthorized, and revoked-control snapshots ret
 
 test('automatic off can relinquish its owned instruction without creating a new plan', async () => {
   const h = harness(); await h.begin();
-  const state = await h.update({ enabled: false, vehicleDisconnect: reconnect(disconnect()), plan: { state: 'identifying' } });
+  const state = await h.update({ enabled: false, vehicleDisconnect: reconnect(disconnect()), plan: null });
   assert.equal(state.phase, 'off'); assert.equal(state.owned, null); assert.equal(state.execution, null);
   assert.deepEqual(h.writes, ['install', 'clear']);
 });
@@ -213,16 +213,16 @@ test('failure to persist the boundary cannot clear a schedule or consume the eve
   assert.equal(h.controller.status().vehicleDisconnect, undefined);
   assert.deepEqual(h.writes, ['install']);
   h.failSave = false;
-  const state = await h.update({ vehicleDisconnect: reconnect(disconnect()), plan: { state: 'identifying' } });
-  assert.equal(state.phase, 'identifying'); assert.deepEqual(h.writes, ['install', 'clear']);
+  const state = await h.update({ vehicleDisconnect: reconnect(disconnect()), plan: null });
+  assert.equal(state.phase, 'unavailable'); assert.deepEqual(h.writes, ['install', 'clear']);
 });
 
 test('an already-passed old release cannot skip the new observation after unplug', async () => {
   const h = harness(); await h.begin();
   h.now = START + 4 * 60 * MINUTE;
   const event = disconnect({ measuredAt: h.now - MINUTE, receivedAt: h.now - MINUTE + 1000 });
-  const state = await h.update({ vehicleDisconnect: reconnect(event), plan: { state: 'identifying' } });
-  assert.equal(state.phase, 'identifying'); assert.equal(state.released, false);
+  const state = await h.update({ vehicleDisconnect: reconnect(event), plan: null });
+  assert.equal(state.phase, 'unavailable'); assert.equal(state.released, false);
   assert.equal(state.execution, null); assert.equal(state.owned, null);
   assert.deepEqual(h.writes, ['install', 'clear']);
 });
@@ -231,7 +231,7 @@ test('a confirmed Easee disconnect retains cleanup ownership even after the old 
   const h = harness(); await h.begin(); h.now = START + 4 * 60 * MINUTE;
   h.mode = 1; h.pilot = 'A'; h.sourceAt = h.pilotAt = h.now - 1000;
   const state = await h.update({ vehicleDisconnect: disconnect({ measuredAt: h.now - MINUTE,
-    receivedAt: h.now - MINUTE + 1000 }), plan: { state: 'identifying' } });
+    receivedAt: h.now - MINUTE + 1000 }), plan: null });
   assert.equal(state.phase, 'disconnected'); assert.equal(state.owned, null);
   assert.deepEqual(h.writes, ['install', 'clear']);
 });

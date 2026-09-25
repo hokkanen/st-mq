@@ -13,7 +13,7 @@ test('family requests allow household controls and reads while all other writes 
     ['/api/dhwr/stop', {}], ['/api/heating-test', { command: 'circulation' }], ['/api/heating-test', { command: 'preheat' }],
     ['/api/garage/heating', { mode: 'off' }], ['/api/garage/temporary', { pauseUntil: null }], ['/api/garage/release', {}],
     ['/api/equipment/cover', { deviceId: 'door', action: 'open' }], ['/api/charging/settings', { priority: [] }],
-    ...['settings', 'control', 'charge-now', 'resume', 'target'].map(action => [`/api/charging/chargers/test/${action}`, {}]),
+    ...['settings', 'control', 'charge-now', 'resume', 'target', 'identify'].map(action => [`/api/charging/chargers/test/${action}`, {}]),
   ]) assert.equal(webRequestAllowed(family, path, data, status), true, path);
   for (const [path, data] of [
     ['/api/database-export'], ['/api/database-export', {}], ['/api/downloads/floor-lease-script'],

@@ -41,11 +41,42 @@ const connectedSession = charger => Boolean(charger.request && charger.values?.c
 const sessionTargetFor = charger => charger.vehicle?.state === 'identified' && charger.vehicle.id === 'bmw'
   && charger.values?.connected?.value === true && Number.isSafeInteger(charger.targetSelection?.connectedAt)
   ? charger.targetSelection : null;
+function identificationPresentation(charger) {
+  const identification = charger.identification;
+  if (!identification || charger.values?.connected?.value !== true) return null;
+  const waiting = {
+    'manual-stop': 'Waiting for manual Stop to end. Identification will not override it.',
+    'unsupported': 'This charger cannot run a bounded identification test. Waiting for live vehicle matching.',
+    'telemetry-unavailable': 'Waiting for live vehicle readings before testing this connection.',
+    'charger-unavailable': 'Waiting for the charger to become available.',
+    'another-identification-active': 'Waiting for the other charger’s identification test to finish.',
+  }[identification.reason] ?? 'Waiting for the vehicle to start charging. Its own timer or charging limit stays in effect.';
+  if (identification.active) return {
+    label: identification.phase === 'waiting' ? 'Identification pending' : 'Identifying vehicle',
+    detail: identification.phase === 'waiting' ? waiting
+      : identification.phase === 'pausing' ? 'A brief pause is checking which vehicle responds. Waiting for matching charger and vehicle readings before confirming identity.'
+        : 'Observing charging to identify the vehicle. Charging will pause briefly as soon as enough evidence is available, if a pause is needed.',
+  };
+  if (identification.phase === 'inconclusive') return { label: 'Identification inconclusive',
+    detail: `${({
+      'manual-stop': 'Manual Stop interrupted the identification test and keeps priority.',
+      'charge-time-limit': 'The short charging test reached its time limit without enough matching evidence.',
+      'charge-energy-limit': 'The short charging test reached its energy limit without enough matching evidence.',
+      'pause-timeout': 'The identification pause ended before matching vehicle confirmation arrived.',
+    })[identification.reason] ?? 'The identification attempt ended without a conclusive match.'} Normal charging control has resumed. Live readings can still confirm the vehicle, or choose Identify to try again when available.` };
+  return null;
+}
 function vehiclePresentation(charger) {
   const vehicle = charger.vehicle;
+  const identification = identificationPresentation(charger);
+  if (vehicle?.state === 'conflict') return { label: 'Vehicle evidence conflicts',
+    detail: `Both connections remain separately metered. Use the charger fallback request until the evidence resolves.${identification ? ` ${identification.detail}` : ''}` };
+  if (identification) return { label: vehicle?.state === 'identified'
+    ? `${vehicle.label} identified · ${identification.label.toLowerCase()}`
+    : identification.label,
+    detail: `${identification.detail}${vehicle?.state === 'identified' ? ` The confirmed ${vehicle.label} association remains available while this connection is checked.` : ' Session battery settings remain available below.'}` };
   if (vehicle?.state === 'identified') return { label: `${vehicle.label} identified`,
     detail: `${vehicle.label} is associated with this physical charger for the current connection. Vehicle readings carry their own source and quality.` };
-  if (vehicle?.state === 'conflict') return { label: 'Vehicle evidence conflicts', detail: 'Both connections remain separately metered. Use the charger fallback request until the evidence resolves.' };
   if (vehicle?.reason === 'awaiting-stop-confirmation' && charger.values?.connected?.value === true)
     return { label: 'BMW identification pending', detail: 'BMW is a candidate for this connection. Waiting for matching charging-stop readings from BMW and Easee before confirming it. Configured vehicle defaults remain in use.' };
   if (vehicle?.state === 'identifying') return { label: 'Identifying vehicle',
@@ -103,9 +134,10 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
   const connected = values.connected?.value, charging = connected === true && values.charging?.value === true;
   const supported = charger.capabilities?.scheduling === true, enabled = supported && settings.enabled === true;
   const chargeNow = connected === true && charger.request?.chargeNow === true;
-  const phase = control.phase ?? '', manual = enabled || chargeNow ? control.manual ?? control.manualOverride : null;
-  const uncertain = (enabled || chargeNow) && (['uncertain', 'ownership-uncertain', 'unavailable', 'pause-unconfirmed'].includes(phase) || chargeNow && (phase === 'unconfirmed' || control.confirmed === false) || Boolean(control.errorCode));
-  const yielded = (enabled || chargeNow) && (['yielded', 'manual'].includes(phase) || Boolean(manual));
+  const identificationActive = connected === true && charger.identification?.active === true;
+  const phase = control.phase ?? '', manual = enabled || chargeNow || identificationActive ? control.manual ?? control.manualOverride : null;
+  const uncertain = (enabled || chargeNow || identificationActive) && (['uncertain', 'ownership-uncertain', 'unavailable', 'pause-unconfirmed'].includes(phase) || (chargeNow || identificationActive) && (phase === 'unconfirmed' || control.confirmed === false) || Boolean(control.errorCode));
+  const yielded = (enabled || chargeNow || identificationActive) && (['yielded', 'manual'].includes(phase) || Boolean(manual));
   const activeManual = yielded && manual?.kind !== 'unknown';
   const handoverUnconfirmed = !enabled && control.handoverConfirmed === false;
   const released = (enabled || chargeNow) && ['released', 'charging'].includes(phase);
@@ -156,6 +188,11 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
   if (connected !== true) {
     event = activeManual && resumption ? resumption : enabled ? connected === false ? 'Automatic charging is ready for the next connection' : 'Waiting for charger readings'
       : supported ? 'Automatic charging OFF' : 'Monitoring';
+  } else if (identificationActive && !yielded && !uncertain && !handoverUnconfirmed) {
+    const identification = identificationPresentation(charger);
+    state = identification.label;
+    event = charger.identification.phase === 'pausing' ? charging ? 'Identification pause awaiting charger response' : 'Brief pause · waiting for vehicle confirmation'
+      : charger.identification.phase === 'charging' ? 'Checking charging evidence before scheduling' : identification.detail;
   } else if (chargeNow && !charging && !uncertain && !yielded) {
     state = 'Charge now selected'; event = 'Charging requested until unplugging'; eventKind = 'manual';
   } else if (activeManual && validTime(resumeAt) && Number(resumeAt) <= now) {
@@ -185,8 +222,6 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
   } else if (released || provisional || (owned || execution) && currentPeriod) {
     event = 'Charging is allowed';
     if (validTime(finishAt) && Number(finishAt) > now && requiredGridKwh > 0) event += ` · ${number(minimum, '%')} estimated ${time(finishAt)}`;
-  } else if (phase === 'identifying') {
-    state = 'Identifying vehicle'; event = 'Observing initial charging before scheduling';
   } else if (enabled && validTime(nextPeriod?.startAt ?? plan.startAt) && Number(nextPeriod?.startAt ?? plan.startAt) > now) {
     eventAt = nextPeriod?.startAt ?? plan.startAt; eventKind = 'proposed'; event = `Proposed start ${time(eventAt)}`;
   } else if (!enabled && validTime(nativeStart) && Number(nativeStart) > now) {
@@ -196,7 +231,7 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
   else event = supported ? 'Automatic charging OFF' : 'Monitoring';
   if (handoverUnconfirmed) state = 'Handover unconfirmed';
   const showMetrics = connected === true;
-  const showPlan = enabled && showMetrics && !yielded && (!uncertain || ownedStart != null);
+  const showPlan = enabled && showMetrics && !identificationActive && !yielded && (!uncertain || ownedStart != null);
   const currentForecast = forecastAbsent || Object.hasOwn(forecast, 'feasible') ? forecast : plan;
   const deadlineAt = plan.deadlineAt ?? charger.deadlineAt;
   const risk = showPlan && !targetReached
@@ -205,7 +240,7 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
   const deadline = showMetrics && enabled && !yielded && validTime(deadlineAt) ? `Ready by ${time(deadlineAt)}` : '';
   const readiness = !deadline ? '' : targetReached ? 'Target reached'
     : risk ? `${number(minimum, '%')} by ready-by is at risk`
-      : currentForecast.feasible === true && currentFinish && !uncertain && !revisionPending
+      : currentForecast.feasible === true && currentFinish && !uncertain && !revisionPending && !identificationActive
         ? 'Expected on time' : 'Readiness being checked';
   const readingTime = showMetrics && automatic(referenceSoc) ? validTime(referenceSoc.measuredAt) ? `Charge measured ${chargingReadingTime(referenceSoc.measuredAt, timezone)}`
     : validTime(referenceSoc.receivedAt) ? `Charge received ${chargingReadingTime(referenceSoc.receivedAt, timezone)} · measurement time unknown` : 'Charge measurement time unknown' : '';
@@ -519,10 +554,14 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     enabledValue.setAttribute('role', 'switch'); enabledValue.setAttribute('aria-checked', 'false');
     enabledValue.setAttribute('aria-labelledby', masterLabel.id); master.append(masterLabel, enabledValue);
     const controlDetail = make('p', '', 'muted charging-form-help', `${id}-control-detail`);
-    const preferences = make('section', '', 'charging-detail-section');
+    const preferences = make('section', '', 'charging-detail-section', `${id}-charging-controls`);
     const scopeNote = make('p', 'Changes apply until unplugging. General and vehicle defaults are changed only in configuration.', 'charging-form-help');
-    preferences.append(make('h5', 'Charging controls'), master, controlDetail, resume, sharedPriority.createEntry(id)); body.append(preferences);
-    const sessionPreferences = make('section', '', 'charging-detail-section');
+    const identify = make('button', 'Identify', 'secondary-button', `${id}-identify`); identify.type = 'button';
+    const identificationStatus = make('p', '', 'charging-form-help', `${id}-identification-status`);
+    identificationStatus.setAttribute('role', 'status'); identify.setAttribute('aria-describedby', identificationStatus.id);
+    const identificationMessage = make('p', '', 'temporary-status', `${id}-identification-message`); identificationMessage.setAttribute('role', 'status');
+    preferences.append(make('h5', 'Charging controls'), master, controlDetail, resume, sharedPriority.createEntry(id), identificationStatus, identify, identificationMessage);
+    const sessionPreferences = make('section', '', 'charging-detail-section', `${id}-session-settings`);
     sessionPreferences.append(make('h5', 'Session settings'), scopeNote); body.append(sessionPreferences);
     const form = make('form', '', 'charging-settings-form', `${id}-settings-form`), primaryFields = make('div', '', 'charging-fields');
     const save = make('button', 'Save for this session', 'secondary-button', `${id}-settings-save`); save.type = 'submit';
@@ -536,11 +575,18 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     targetControls.append(targetHelp, targetToggle); settings.fields.get('minimumSoc').label.append(targetControls);
     const targetMessage = make('p', '', 'temporary-status', `${id}-target-message`); targetMessage.setAttribute('role', 'status');
     sessionPreferences.append(targetMessage);
+    body.append(preferences);
     const explanationFold = make('details', '', 'equipment-fold charging-explanations', `${id}-explanation-details`);
     explanationFold.append(make('summary', 'How charging works'));
     const explanations = make('dl', '', 'equipment-readings', `${id}-explanations`); explanationFold.append(explanations); body.append(explanationFold);
     section.append(summary, body); $('charging-devices')?.append(section);
-    const device = { id, chargeNow, chargeNowState, controlMessage, section, title, vehicle, state, event, eventLabel, eventValue, overview, sources, metrics, chargeLabel, targetLabel, targetSource, targetNotice, targetControls, targetHelp, targetToggle, targetMessage, completionLabel, completion, readiness, priority, readingTime, deadline, deadlineGroup, facts, deliveredLabel, deliveredValue, remaining, energyLabel, energyValue, costLabel, cost, costMetric, scheduleInfo, scheduleHeading, periodCount, periods, problem, explanations, readings, notes, settings, enabledValue, resume, controlDetail, charger, notice, footerHint, sessionStatus };
+    const device = { id, chargeNow, chargeNowState, controlMessage, identify, identificationStatus, identificationMessage, section, title, vehicle, state, event, eventLabel, eventValue, overview, sources, metrics, chargeLabel, targetLabel, targetSource, targetNotice, targetControls, targetHelp, targetToggle, targetMessage, completionLabel, completion, readiness, priority, readingTime, deadline, deadlineGroup, facts, deliveredLabel, deliveredValue, remaining, energyLabel, energyValue, costLabel, cost, costMetric, scheduleInfo, scheduleHeading, periodCount, periods, problem, explanations, readings, notes, settings, enabledValue, resume, controlDetail, charger, notice, footerHint, sessionStatus };
+    bind(identify, 'click', () => {
+      if (identify.disabled) return;
+      const current = device.charger;
+      return mutate(`${prefix}/identify`, { association: current.association,
+        sessionId: current.request.sessionId, revision: current.request.revision }, identificationMessage);
+    });
     bind(enabledValue, 'click', () => {
       if (enabledValue.disabled) return;
       const current = device.charger;
@@ -635,6 +681,17 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
       device.chargeNow.title = !supported ? 'Monitoring only' : !writable() || charger.readOnly ? 'View only'
         : !connectedSession(charger) ? 'Connect a vehicle'
           : chargeNowActive ? 'Charge now is on until unplugging. Turn off to use automatic charging.' : 'Turn on immediate charging until unplugging.';
+      const identification = identificationPresentation(charger);
+      device.identify.disabled = locked || charger.readOnly === true || !connectedSession(charger)
+        || charger.identification?.available !== true || charger.identification?.active === true;
+      device.identify.title = !writable() || charger.readOnly ? 'View only'
+        : !connectedSession(charger) ? 'Connect a vehicle'
+          : charger.identification?.active ? 'Identification is already in progress'
+            : charger.identification?.available !== true ? 'Identification is currently unavailable' : 'Check which vehicle is connected. This may briefly pause charging.';
+      device.identificationStatus.textContent = identification ? `${identification.label}. ${identification.detail}`
+        : !connectedSession(charger) ? 'Connect a vehicle to identify it.'
+          : charger.identification?.available !== true ? 'Identification is currently unavailable. Live vehicle matching continues.'
+            : 'Identify this connection again at any time. A short charging test may briefly pause charging, including with automatic charging off or Charge now selected. Manual Stop keeps priority.';
       device.resume.hidden = !supported || !view.yielded;
       device.resume.disabled = locked || charger.readOnly === true || device.resume.hidden;
       device.targetToggle.disabled = locked || charger.readOnly === true || !device.targetAction;

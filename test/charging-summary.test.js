@@ -63,6 +63,22 @@ test('turning automatic charging off changes the role and discards its old estim
   assert.equal(currentNativeForecast.completion.at, finishAt);
 });
 
+test('identification keeps progress visible with automatic OFF without reviving stale forecasts or hiding manual Stop', () => {
+  const identification = { phase: 'waiting', active: true, available: false, reason: 'manual-stop' };
+  const item = charger({ settings: { enabled: false }, identification,
+    control: { phase: 'yielded', manual: { kind: 'stop', reason: 'Manual Stop is active.' } } });
+  const stopped = summary(item);
+  assert.equal(stopped.roleLabel, 'Manual override'); assert.match(stopped.activity, /Manual Stop/);
+  assert.equal(stopped.completion.at, null);
+  const testing = { ...item, settings: { enabled: true }, identification: { ...identification, phase: 'pausing', reason: 'awaiting-stop-confirmation' }, control: { phase: 'identifying' } };
+  const result = summary(testing);
+  assert.equal(result.roleLabel, 'Identifying'); assert.equal(result.completion.value, 'Checking');
+  assert.equal(result.completion.at, null); assert.deepEqual(chargerDisplay(testing, { now }).periodRows, []);
+  assert.doesNotMatch(chargerDisplay(testing, { now }).readiness, /Expected on time/);
+  const unconfirmed = summary({ ...testing, settings: { enabled: false }, control: { phase: 'pause-unconfirmed' } });
+  assert.equal(unconfirmed.roleLabel, 'Control unconfirmed');
+});
+
 test('live activity keeps charging and pause status while the ETA moves to its own column', () => {
   const item = charger(), values = { ...item.values, charging: reading(true), powerKw: reading(8.2) };
   const charging = summary({ ...item, values, control: { phase: 'released' }, forecast: { finishAt } });

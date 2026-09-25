@@ -22,7 +22,7 @@ Charger 2 is disabled and unverified by default because the hardware has not arr
 
 ## Dashboard and requests
 
-Both charger cards show the physical connection, assigned vehicle or uncertainty, current request, measured/estimated progress, connection cost and control state. The Automatic charging switch governs economic scheduling. Passive identification and metering continue with automatic charging OFF. The separately configured Charger 2 limiter can remain active with economic scheduling OFF.
+Both charger cards show the physical connection, assigned vehicle or uncertainty, current request, measured/estimated progress, connection cost and control state. The Automatic charging switch governs economic scheduling. Vehicle identification and metering continue with automatic charging OFF. The separately configured Charger 2 limiter can remain active with economic scheduling OFF.
 
 Permanent defaults come only from configuration. Both unidentified charging
 points start with 20% charge, an 80% minimum, 06:00 ready-by and 74 kWh capacity
@@ -124,15 +124,54 @@ fallback requires both live vehicle transitions to match the charger transitions
 around a verified pause request; fresh-plug matching can use a natural stop.
 Unknown charger state never counts as a stop.
 
-For a new unrestricted connection with plausible at-home vehicle context,
-automatic scheduling observes the initial charge for at most three minutes.
-A Tesla match can end this wait early; BMW can then use a stop caused by ordinary
-economic scheduling. Restart preserves the original connection deadline for this
-observation. It sends no identification probes, clears no existing restrictions,
-and leaves Charge now, manual priority, native faults and automatic OFF intact.
-Retained home context can justify this bounded observation but cannot establish
-identity. If no suitable charging transition occurs (for example, a full battery
-or a vehicle-side timer), the vehicle stays unidentified and uses manual inputs.
+Identification is an explicit connection phase before economic scheduling.
+Easee cloud and local OCPP support one automatic active attempt per physical
+connection, including when Automatic charging is OFF or Charge now is selected.
+An already confirmed passive match skips the test. Otherwise, live charger
+readiness and plausible at-home vehicle context allow the controller to release
+its own economic delay and observe charging. Native electrical limits, faults,
+authorization, vehicle timers and manual Stop retain priority. Pending
+identification has no ten-minute label expiry: a vehicle timer or full battery
+can leave it waiting until charging starts. Missing vehicle context leaves it
+pending without repeatedly starting a test.
+
+Once charging starts, a fresh Tesla power match can finish immediately. A usable
+BMW charging baseline instead triggers a brief, confirmed pause as soon as it
+is available. Startup can use live ongoing BMW charging without inventing a
+missing historical start edge. Matching charger and vehicle stop evidence is
+still required; an accepted pause command alone is insufficient. Active tests
+are serialized across charging points. The current Shelly EVSE adapter has no
+native expiring pause contract, so it uses passive matching and its Identify
+button remains unavailable.
+
+The test observes charging for at most 60 seconds or 0.15 kWh, whichever is
+observed first, then ends inconclusively if no usable match or pause candidate
+arrived. These are controller decision limits; telemetry and actuator response
+delays can add physical charging. A requested identification pause expires after
+90 seconds rounded up to the next whole second, giving a 90–91 second maximum
+wait shared by cloud and OCPP. A confirmed identity ends the temporary test
+immediately and applies the current charging choice. An expired or interrupted
+test becomes **Identification inconclusive** and returns to normal charging
+control with session/default battery inputs. Passive matching continues; late
+BMW stop evidence can still confirm the same witnessed pause for up to fifteen
+minutes. Tests never repeat automatically for that connection.
+
+The attempt, absolute deadlines and physical evidence survive a current-version
+restart. A known connection resumes its pending attempt or completed outcome;
+restart does not renew its budget. An already connected charger with no saved
+connection starts one attempt when fresh readings permit it. Unplugging cancels
+the attempt and clears its scope. Native pause expiry prevents a stopped process
+from leaving an identification-only pause indefinitely.
+
+Each card places **Charging controls** below **Session settings**, with
+**Identify** at the end of the controls. It requests another attempt for the
+current connection, even if a vehicle is already identified. The confirmed
+association remains visible during that check. The button is disabled when
+identification is unavailable, already pending/in progress, or the viewer has no
+control authority. It uses the current charger association, session ID and
+request revision; an old screen cannot test a replacement connection. Admin and
+family users may both use it. Waiting, active testing and an inconclusive outcome
+remain separate visible states, independently of the Automatic charging switch.
 
 ## Planning and Equalizer
 

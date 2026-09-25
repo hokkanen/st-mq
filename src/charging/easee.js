@@ -329,7 +329,13 @@ export function createEaseeScheduleAdapter({ request, readObservations, chargerI
     },
     readTelemetry(options = {}) { return adapter.read({ ...options, telemetryOnly: true }); },
     async installDelayed({ startAt, timezone, maximumAmps, expectedFingerprint, expectedControlFingerprint, signal,
-      canMutate = () => true, allowChargingPause = false, beforeWrite = () => {} } = {}) {
+      canMutate = () => true, allowChargingPause = false, beforeWrite = () => {}, identification = null } = {}) {
+      if (identification !== null && (typeof identification !== 'object' || Array.isArray(identification)
+        || Object.keys(identification).some(key => !['id', 'connectedAt'].includes(key))
+        || typeof identification.id !== 'string' || !identification.id.length || identification.id.length > 128
+        || !Number.isSafeInteger(identification.connectedAt) || identification.connectedAt < 0
+        || identification.connectedAt > clock() || startAt - clock() > 5 * 60_000))
+        throw failure('invalid-plan', 'The identification pause is invalid.');
       // A stream snapshot may precede a competing instruction. Keep the final
       // command guard and readback on freshly fetched device observations.
       const before = await adapter.read({ signal, forceRest: true });
@@ -341,7 +347,7 @@ export function createEaseeScheduleAdapter({ request, readObservations, chargerI
         throw failure('access-denied', 'The charger is not available for an automatic schedule.');
       const delayed = delayedScheduleFor({ startAt, timezone, maximumAmps }, clock());
       const temporalGuard = () => {
-        if (!canMutate() || !canControl() || startAt - clock() < 15 * 60000) return false;
+        if (!canMutate() || !canControl() || startAt - clock() < (identification ? 1000 : 15 * 60000)) return false;
         try { delayedScheduleFor({ startAt, timezone, maximumAmps }, clock()); return true; } catch { return false; }
       };
       // Let the controller durably record this guarded observation before the

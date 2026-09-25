@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { effectiveScheduleFingerprint } from '../src/charging/easee.js';
-import { confirmedIdentityPause, identityObservationAvailable } from '../src/charging/identity-evidence.js';
+import { confirmedIdentityPause } from '../src/charging/identity-evidence.js';
 
 const NOW = Date.parse('2026-09-25T09:00:00Z'), MINUTE = 60_000;
 const expected = { connectedAt: NOW - 5 * MINUTE, requestedAt: NOW - 30_000,
@@ -184,85 +184,5 @@ test('freshness accepts exactly one minute and rejects one millisecond older', (
     if (transport === 'ocpp') control.snapshot.powerAt = NOW;
     assert.deepEqual(confirmedIdentityPause(control, now), expected, transport);
     assert.equal(confirmedIdentityPause(control, now + 1), null, transport);
-  }
-});
-
-function observationFixture(transport) {
-  const control = fixture(transport); control.owned = null;
-  if (transport === 'ocpp') {
-    control.ownsInstruction = false; control.pauseConfirmed = false;
-    control.snapshot.connectorStatus = 'Charging'; control.snapshot.powerKw = 7;
-    control.snapshot.nativeInstruction = null;
-  } else {
-    control.snapshot.schedule = { enabled: 'none' };
-    control.snapshot.mode = 3; control.snapshot.reason = 0;
-  }
-  return control;
-}
-
-test('both transports permit observation only on an already available current connection', () => {
-  for (const transport of ['cloud', 'ocpp']) {
-    const control = observationFixture(transport), before = structuredClone(control);
-    assert.equal(identityObservationAvailable(control, NOW), true, transport);
-    assert.deepEqual(control, before);
-    // Stable source state is change-reported; fresh successful reads establish
-    // availability, without inventing a new charging edge on each poll.
-    if (transport === 'ocpp') control.snapshot.statusAt = NOW - 4 * MINUTE;
-    else control.snapshot.modeAt = NOW - 4 * MINUTE;
-    assert.equal(identityObservationAvailable(control, NOW), true, `${transport} unchanged source state`);
-    for (const [name, change] of commonInvalid.filter(([name]) => !['missing owner', 'future request',
-      'missing guarded request', 'request before connection', 'unconfirmed instruction', 'future confirmation',
-      'confirmation before request', 'expired pause', 'invalid future start', 'prior session instruction'].includes(name))) {
-      const invalid = observationFixture(transport); change(invalid);
-      assert.equal(identityObservationAvailable(invalid, NOW), false, `${transport}: ${name}`);
-    }
-    const owned = observationFixture(transport); owned.owned = fixture(transport).owned;
-    assert.equal(identityObservationAvailable(owned, NOW), false, `${transport}: existing instruction`);
-  }
-  assert.equal(identityObservationAvailable(null, NOW), false);
-  assert.equal(identityObservationAvailable(observationFixture('cloud'), NaN), false);
-});
-
-test('cloud observation respects native schedules, stops, faults and authorization', () => {
-  const invalid = [
-    c => { c.snapshot.controlKnown = false; },
-    c => { c.snapshot.enabled = false; },
-    c => { c.snapshot.stopped = true; },
-    c => { c.snapshot.manualStop = true; },
-    c => { c.snapshot.authorizationBlocked = true; },
-    c => { c.snapshot.faulted = true; },
-    c => { c.snapshot.schedule = fixture('cloud').snapshot.schedule; },
-    c => { c.snapshot.schedule = null; },
-    c => { c.snapshot.modeAt = NOW + 1; },
-    c => { c.snapshot.mode = 7; },
-  ];
-  for (const change of invalid) {
-    const control = observationFixture('cloud'); change(control);
-    assert.equal(identityObservationAvailable(control, NOW), false);
-  }
-  for (const mode of [2, 3, 4, 6]) {
-    const control = observationFixture('cloud'); control.snapshot.mode = mode;
-    assert.equal(identityObservationAvailable(control, NOW), true);
-  }
-});
-
-test('OCPP observation cannot cross a transaction or bypass an existing native restriction', () => {
-  const invalid = [
-    c => { c.snapshot.transactionConfirmed = false; },
-    c => { c.snapshot.transactionId += 1; },
-    c => { c.snapshot.transactionStartedAt = NOW + 1; },
-    c => { c.snapshot.transactionStartedAt = c.session.lastDisconnectedAt; },
-    c => { c.snapshot.statusAt = NOW + 1; },
-    c => { c.snapshot.nativeInstruction = fixture('ocpp').owned; },
-  ];
-  for (const status of ['SuspendedEVSE', 'Finishing', 'Available', 'Reserved', 'Unavailable', 'Faulted', 'unknown'])
-    invalid.push(c => { c.snapshot.connectorStatus = status; });
-  for (const change of invalid) {
-    const control = observationFixture('ocpp'); change(control);
-    assert.equal(identityObservationAvailable(control, NOW), false);
-  }
-  for (const status of ['Preparing', 'Charging', 'SuspendedEV']) {
-    const control = observationFixture('ocpp'); control.snapshot.connectorStatus = status;
-    assert.equal(identityObservationAvailable(control, NOW), true);
   }
 });

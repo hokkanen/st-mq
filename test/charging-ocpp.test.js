@@ -5,7 +5,7 @@ import { ChargingRuntime } from '../src/charging/runtime.js';
 
 const START = Date.parse('2026-09-24T09:00:00Z'), MINUTE = 60_000, scope = 'a'.repeat(64);
 const plan = (startAt, extra = {}) => ({ id: 'synthetic-plan', startAt, feasible: true, periods: [{ startAt, endAt: null }], ...extra });
-function fixture({ initialState = null } = {}) {
+function fixture({ initialState = null, identification = null } = {}) {
   let now = START, authority = true, connected = true, confirmed = true, transactionId = 7, connectionId = 'synthetic-socket', physicalPause = true;
   let stored = null, saveError = false, witnessSaveError = false, interceptor = null, manualEvent = null, snapshotChanges = {};
   const profiles = new Map(), calls = [], saves = [];
@@ -36,6 +36,7 @@ function fixture({ initialState = null } = {}) {
       && value.transactionId === transactionId && (!unchangedStatus || value.connectorStatus === readSnapshot().connectorStatus
         && value.statusAt === readSnapshot().statusAt) });
   const controller = adapter.createController({ initialState, clock: () => now, canControl: () => authority,
+    getIdentification: snapshot => typeof identification === 'function' ? identification(snapshot) : identification,
     saveState: state => {
       if (saveError || witnessSaveError && state.pending?.instruction.pauseRequestedAt !== undefined) throw Error('synthetic disk error');
       stored = structuredClone(state); saves.push(stored);
@@ -47,6 +48,7 @@ function fixture({ initialState = null } = {}) {
     witnessSaveError: value => { witnessSaveError = value; },
     intercept: value => { interceptor = value; }, manual: value => { manualEvent = value; },
     snapshot: value => { snapshotChanges = value; },
+    identify: value => { identification = value; },
     reconnect: () => { connectionId += '-new'; confirmed = false; } };
 }
 const writes = f => f.calls.filter(row => row.action !== 'GetCompositeSchedule');
@@ -513,4 +515,112 @@ test('an earlier OCPP session’s Charge Now cannot release a new transaction’
   const view = await f.controller.update({ enabled: true, plan: plan(START + 40 * MINUTE), chargeNow: { connectedAt } });
   assert.equal(view.phase, 'paused'); assert.equal(view.released, false);
   assert.equal(f.stored.owned.transactionId, 8);
+});
+
+const activeIdentification = (phase = 'pausing') => ({ id: 'identify-one', connectedAt: START - MINUTE, phase,
+  ...(phase === 'pausing' ? { pauseUntil: START + 90_000 } : {}) });
+
+test('native identification pauses briefly with Automatic OFF and Charge Now and releases immediately afterward', async () => {
+  const f = fixture({ identification: activeIdentification('waiting') });
+  assert.equal(f.controller.supportsIdentification, true);
+  let view = await f.controller.update({ enabled: false, chargeNow: { connectedAt: START - MINUTE } });
+  assert.equal(view.phase, 'identifying'); assert.equal(writes(f).length, 0);
+  f.identify(activeIdentification());
+  view = await f.controller.update({ enabled: false });
+  assert.equal(view.phase, 'identifying'); assert.equal(view.pauseConfirmed, true);
+  assert.equal(view.owned.purpose, 'identification'); assert.equal(view.owned.identificationId, 'identify-one');
+  assert.equal(view.owned.startAt, START + 90_000); assert.equal(view.owned.pauseRequestedAt, START);
+  assert.equal(writes(f).length, 1);
+  f.identify(snapshot => {
+    assert.equal(snapshot.connectorStatus, 'SuspendedEVSE');
+    assert.equal(f.controller.status().pauseConfirmed, true, 'fresh pause proof is available before lifecycle decision');
+    return null;
+  });
+  view = await f.controller.update({ enabled: false });
+  assert.equal(view.phase, 'released'); assert.equal(view.owned, null); assert.equal(writes(f).length, 2);
+});
+
+test('native identification releases only controller profiles and reapplies economics after a released session', async () => {
+  const f = fixture();
+  let view = await f.controller.update({ enabled: true, plan: plan(START) });
+  assert.equal(view.released, true);
+  const foreign = ocppPauseInstruction({ profileId: 99, transactionId: 7, now: START, startAt: START + 30 * MINUTE });
+  f.profiles.set(99, foreign.payload.csChargingProfiles);
+  f.identify(activeIdentification('waiting'));
+  view = await f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+  assert.equal(view.phase, 'identifying'); assert.equal(view.released, false);
+  assert.equal(f.profiles.has(99), true); assert.equal(writes(f).length, 0);
+  f.identify(null);
+  view = await f.controller.update({ enabled: true });
+  assert.equal(view.phase, 'paused'); assert.equal(view.owned.purpose, undefined);
+  assert.equal(f.profiles.has(99), true);
+});
+
+test('native identification respects manual Stop, current transaction confirmation and stale session requests', async () => {
+  for (const blocked of ['stop', 'transaction', 'session']) {
+    const f = fixture({ identification: activeIdentification() });
+    if (blocked === 'stop') f.manual({ id: 'native-stop', kind: 'stop', at: START, transactionId: 7 });
+    if (blocked === 'transaction') f.confirmed(false);
+    if (blocked === 'session') f.identify({ ...activeIdentification(), connectedAt: START - 2 * MINUTE });
+    const view = await f.controller.update({ enabled: false });
+    assert.equal(writes(f).length, 0);
+    assert.equal(view.phase, blocked === 'stop' ? 'yielded' : blocked === 'transaction' ? 'unavailable' : 'off');
+  }
+});
+
+test('native identification restart retains the exact bounded profile and expiry reapplies the plan', async () => {
+  const f = fixture({ identification: activeIdentification() });
+  await f.controller.update({ enabled: false });
+  const resumed = fixture({ initialState: f.stored, identification: activeIdentification() });
+  for (const [key, value] of f.profiles) resumed.profiles.set(key, value);
+  let view = await resumed.controller.update({ enabled: false });
+  assert.equal(view.phase, 'identifying'); assert.equal(writes(resumed).length, 0);
+  assert.equal(view.owned.pauseRequestedAt, START);
+  resumed.advance(90_000);
+  view = await resumed.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+  assert.equal(view.phase, 'paused'); assert.equal(view.owned.purpose, undefined);
+  assert.equal(writes(resumed)[0].action, 'ClearChargingProfile');
+  assert.equal(writes(resumed)[1].action, 'SetChargingProfile');
+});
+
+test('native short identification dispatch requires saved witness, live transaction and unexpired bounded intent', async () => {
+  for (const failure of ['storage', 'transaction', 'expiry']) {
+    const f = fixture({ identification: activeIdentification() });
+    if (failure === 'storage') f.witnessSaveError(true);
+    else f.intercept((action, payload, options, result) => {
+      if (action === 'SetChargingProfile') {
+        if (failure === 'transaction') f.transaction(8);
+        else f.advance(90_000);
+        assert.equal(options.guard(), false);
+        throw Object.assign(Error('synthetic changed authority'), { code: 'control-revoked' });
+      }
+      return result();
+    });
+    const view = await f.controller.update({ enabled: false });
+    assert.equal(f.profiles.size, 0); assert.equal(view.owned, null);
+    if (failure === 'storage') assert.equal(writes(f).length, 0);
+  }
+});
+
+test('native identification rejects unknown ownership markers and retains the economic minimum duration', async () => {
+  const f = fixture({ identification: activeIdentification() });
+  await f.controller.update({ enabled: false });
+  for (const changed of [{ purpose: 'old-test' }, { identificationId: '' },
+    { identificationConnectedAt: START + 1 }, { requestedAt: START - 10 * MINUTE }]) {
+    const malformed = structuredClone(f.stored); Object.assign(malformed.owned, changed);
+    assert.throws(() => fixture({ initialState: malformed }), /Unsupported native charging ownership/);
+  }
+  const economic = fixture();
+  const view = await economic.controller.update({ enabled: true, plan: plan(START + 90_000) });
+  assert.equal(view.errorCode, 'invalid-plan'); assert.equal(writes(economic).length, 0);
+});
+
+test('a completed native identification pause becomes the economic profile without clearing its restriction', async () => {
+  const f = fixture({ identification: activeIdentification() });
+  const initial = await f.controller.update({ enabled: true });
+  f.identify(null);
+  const final = await f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+  assert.equal(final.phase, 'paused'); assert.equal(final.owned.purpose, undefined);
+  assert.equal(final.owned.profileId, initial.owned.profileId);
+  assert.equal(writes(f).length, 2); assert.equal(writes(f).every(row => row.action === 'SetChargingProfile'), true);
 });

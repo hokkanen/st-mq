@@ -321,7 +321,11 @@ test('BMW polling tolerance cannot borrow an earlier connection across disconnec
     adapter.setObservation({ mode: 2, modeAt: initialNow + 85_000 }); await runtime.reconcile();
     runtime.receiveSoc(topic, JSON.stringify({ provider: 'bmw-cardata', charging: false,
       fields: { charging: { measuredAt: initialNow + 85_000, readingId: 'later-stop' } } }));
-    assert.equal(chargerView(runtime).vehicle.state, 'unidentified', 'Unconsumed BMW events before the disconnect cannot match the new car');
+    const current = chargerView(runtime);
+    assert.equal(current.vehicle.state, 'identifying');
+    assert.equal(current.vehicle.id, null, 'Unconsumed BMW events before the disconnect cannot match the new car');
+    assert.equal(current.identification.connectedAt, current.control.session.connectedAt);
+    assert.equal(current.identification.candidate, null, 'The previous connection supplies no active-test candidate');
     assert.equal(runtime.vehicleFeeds.bmw.consumedPlugId, null);
     assert.equal(chargerView(runtime).control.session.lastDisconnectedAt, disconnectedAt);
   });
@@ -1061,18 +1065,22 @@ test('a matched BMW quick unplug ends the old schedule even when every Easee pol
   const replugged = chargerView(runtime);
   assert.equal(replugged.control.session.connectedAt, replugAt);
   assert.equal(replugged.control.phase, 'identifying');
-  assert.equal(replugged.control.owned, null, 'The new connection gets its bounded observation before economic scheduling');
+  assert.equal(replugged.control.owned, null, 'The new connection waits for actual charging before identification');
   assert.equal(replugged.vehicle.id, null, 'A new connection must still identify its vehicle');
   assert.equal(runtime.chargers.charger1.targetState, null);
 
   const startAt = replugAt + 2000;
-  f.setNow(startAt); adapter.setObservation({ mode: 3, modeAt: startAt });
+  f.setNow(startAt); adapter.setObservation({ mode: 3, modeAt: startAt, powerKw: 7, powerMeasuredAt: startAt });
   fact('charging', true, startAt); await runtime.reconcile();
   assert.equal(chargerView(runtime).vehicle.state, 'identifying');
-  f.setNow(replugAt + 180_000); await runtime.reconcile();
-  assert.equal(chargerView(runtime).control.phase, 'pause-unconfirmed');
+  f.setNow(startAt + 1000); await runtime.reconcile();
+  const identification = chargerView(runtime);
+  assert.equal(identification.control.phase, 'identifying');
+  assert.equal(identification.control.owned.purpose, 'identification');
+  assert.equal(identification.control.owned.identificationConnectedAt, replugAt);
+  assert(identification.control.owned.startAt <= f.clock() + 150_000, 'Identification uses a short expiring pause immediately');
   const stopAt = f.clock() + 20_000;
-  f.setNow(stopAt); adapter.setObservation({ mode: 2, modeAt: stopAt });
+  f.setNow(stopAt); adapter.setObservation({ mode: 2, modeAt: stopAt, powerKw: 0, powerMeasuredAt: stopAt });
   fact('charging', false, stopAt); await runtime.reconcile();
   assert.equal(chargerView(runtime).vehicle.id, 'bmw');
   assert.equal(chargerView(runtime).control.phase, 'waiting');

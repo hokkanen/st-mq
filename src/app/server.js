@@ -243,11 +243,11 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
         }
         if (req.method === 'POST' && url.pathname === '/api/charging/settings')
           return await mutate(async (current, input) => { await current.charging.setSettings(input); return json(200, status()); });
-        const chargerAction = url.pathname.match(/^\/api\/charging\/chargers\/([^/]+)\/(settings|control|resume|target|charge-now)$/);
+        const chargerAction = url.pathname.match(/^\/api\/charging\/chargers\/([^/]+)\/(settings|control|resume|target|charge-now|identify)$/);
         if (req.method === 'POST' && chargerAction)
           return await mutate(async (current, input) => {
             const [, id, action] = chargerAction;
-            const method = { settings: 'setChargerSettings', control: 'setControl', resume: 'resume', target: 'setTarget', 'charge-now': 'chargeNow' }[action];
+            const method = { settings: 'setChargerSettings', control: 'setControl', resume: 'resume', target: 'setTarget', 'charge-now': 'chargeNow', identify: 'identifyVehicle' }[action];
             await current.charging[method](id, input); return json(200, status());
           });
         if (req.method === 'POST' && url.pathname === '/api/garage/release')

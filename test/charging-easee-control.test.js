@@ -31,6 +31,7 @@ function harness() {
   };
   h.adapter = createEaseeScheduleAdapter({ request: h.request, chargerId: 'synthetic-charger', clock: () => h.now, canControl: () => h.allowed });
   h.restart = () => { h.controller?.close(); h.controller = createChargingController({ adapter: h.adapter, initialState: h.saved,
+    getIdentification: snapshot => h.identificationHook ? h.identificationHook(snapshot) : h.identification ?? null,
     saveState: value => { h.saveHook?.(value); h.saved = structuredClone(value); }, clock: () => h.now, canControl: () => h.allowed }); };
   h.restart();
   h.update = extra => h.controller.update({ enabled: true, plan: { id: 'plan-one', startAt: NOW + 3 * 3600_000 },
@@ -1009,4 +1010,110 @@ test('Charge Now releases an owned Easee delay with automatic OFF and retains na
   result = await h.update({ enabled: false, chargeNow: { connectedAt } });
   assert.equal(result.phase, 'yielded'); assert.equal(h.schedules.enabled, 'daily'); assert.equal(h.writes.length, 2);
   h.controller.close();
+});
+
+test('active identification runs with Automatic OFF and Charge Now, then releases its exact short pause', async () => {
+  const h = harness();
+  h.identification = { id: 'identify-one', connectedAt: NOW, phase: 'waiting' };
+  assert.equal(h.controller.supportsIdentification, true);
+  let result = await h.update({ enabled: false, chargeNow: { connectedAt: NOW } });
+  assert.equal(result.phase, 'identifying'); assert.equal(h.writes.length, 0);
+  h.mode = 3; h.now += 1000;
+  h.identification = { ...h.identification, phase: 'pausing', pauseUntil: NOW + 91_000 };
+  h.writeHook = url => { if (url.endsWith('/delayed')) h.mode = 2; };
+  result = await h.update({ enabled: false });
+  assert.equal(result.phase, 'identifying'); assert.equal(result.enabled, false);
+  assert.equal(result.owned.purpose, 'identification'); assert.equal(result.owned.identificationId, 'identify-one');
+  assert.equal(result.owned.requestedAt, NOW + 1000); assert.equal(result.owned.startAt, NOW + 91_000);
+  assert.equal(h.writes.length, 1);
+  h.identification = null;
+  result = await h.update({ enabled: false });
+  assert.equal(result.phase, 'released'); assert.equal(result.owned, null);
+  assert.equal(h.writes.length, 2); assert.ok(h.writes[1].url.endsWith('/disable'));
+});
+
+test('identification replaces an economic delay and restores scheduling after an already released session', async () => {
+  const h = harness();
+  await h.update();
+  h.identification = { id: 'identify-one', connectedAt: NOW, phase: 'waiting' };
+  let result = await h.update();
+  assert.equal(result.phase, 'identifying'); assert.equal(result.owned, null);
+  assert.ok(h.writes.at(-1).url.endsWith('/disable'));
+  h.identification = null;
+  result = await h.update({ plan: { id: 'release', startAt: NOW } });
+  assert.equal(result.released, true);
+  h.identification = { id: 'identify-retry', connectedAt: NOW, phase: 'charging' };
+  result = await h.update();
+  assert.equal(result.released, false); assert.equal(result.execution, null);
+  h.identification = null;
+  result = await h.update();
+  assert.equal(result.phase, 'waiting'); assert.equal(result.owned.planId, 'plan-one');
+});
+
+test('identification waits behind an explicit native stop or a foreign schedule even with Automatic OFF', async () => {
+  for (const blocked of ['stop', 'schedule']) {
+    const h = harness();
+    await h.update({ enabled: false });
+    h.identification = { id: 'identify-one', connectedAt: NOW, phase: 'pausing', pauseUntil: NOW + 90_000 };
+    if (blocked === 'stop') { h.enabled = false; h.reason = 53; }
+    else h.schedules = normalizeScheduleState({ enabled: 'daily', daily: { timezone: 'UTC',
+      periods: [{ startTime: '19:00', stopTime: '20:00', maximumAmps: 16 }] } });
+    const saved = structuredClone(h.schedules), result = await h.update({ enabled: false });
+    assert.equal(result.phase, 'yielded'); assert.equal(h.writes.length, 0);
+    assert.deepEqual(h.schedules, saved);
+  }
+});
+
+test('an identification pause survives restart once and native expiry returns to the economic plan', async () => {
+  const h = harness(); h.mode = 3;
+  h.identification = { id: 'identify-one', connectedAt: NOW, phase: 'pausing', pauseUntil: NOW + 90_000 };
+  h.writeHook = url => { if (url.endsWith('/delayed')) h.mode = 2; };
+  await h.update({ enabled: false });
+  h.restart();
+  let result = await h.update({ enabled: false });
+  assert.equal(result.phase, 'identifying'); assert.equal(h.writes.length, 1);
+  h.now += 90_000; h.schedules.enabled = 'none';
+  result = await h.update();
+  assert.equal(result.phase, 'waiting'); assert.equal(result.owned.planId, 'plan-one');
+  assert.equal(result.owned.purpose, undefined); assert.equal(h.writes.length, 2);
+});
+
+test('identification witness storage and final expiry guards prevent unsafe short cloud dispatch', async () => {
+  for (const failure of ['storage', 'expiry']) {
+    const h = harness(); h.mode = 3;
+    h.identification = { id: 'identify-one', connectedAt: NOW, phase: 'pausing', pauseUntil: NOW + 90_000 };
+    h.saveHook = value => {
+      if (value.pending?.pauseRequestedAt === undefined) return;
+      if (failure === 'storage') throw Error('synthetic storage error');
+      h.now = NOW + 90_000;
+    };
+    const result = await h.update({ enabled: false });
+    assert.equal(h.writes.length, 0); assert.equal(result.owned, null);
+    if (failure === 'storage') assert.equal(result.pending.pauseRequestedAt, undefined);
+  }
+});
+
+test('cloud identification ownership rejects malformed purpose, identity, connection and unbounded pause state', async () => {
+  const h = harness(); h.mode = 3;
+  h.identification = { id: 'identify-one', connectedAt: NOW, phase: 'pausing', pauseUntil: NOW + 90_000 };
+  await h.update({ enabled: false });
+  for (const changed of [{ purpose: 'retired-identification' }, { identificationId: '' },
+    { identificationConnectedAt: NOW + 1 }, { startAt: NOW + 6 * 60_000 }]) {
+    const invalid = structuredClone(h.saved); Object.assign(invalid.owned, changed);
+    assert.throws(() => createChargingController({ adapter: h.adapter, initialState: invalid }), /Unsupported charging ownership/);
+  }
+  h.identification = { id: 'wrong-session', connectedAt: NOW - 1, phase: 'pausing', pauseUntil: NOW + 90_000 };
+  const result = await h.update({ enabled: false });
+  assert.equal(result.phase, 'off'); assert.equal(result.owned, null);
+});
+
+test('a completed identification pause becomes the economic delay without briefly releasing charging', async () => {
+  const h = harness(); h.mode = 3;
+  h.identification = { id: 'identify-one', connectedAt: NOW, phase: 'pausing', pauseUntil: NOW + 90_000 };
+  h.writeHook = url => { if (url.endsWith('/delayed')) h.mode = 2; };
+  await h.update();
+  h.identification = null;
+  const result = await h.update();
+  assert.equal(result.owned.planId, 'plan-one'); assert.equal(result.owned.purpose, undefined);
+  assert.equal(h.writes.length, 2); assert.equal(h.writes.some(row => row.url.endsWith('/disable')), false);
 });

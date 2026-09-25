@@ -1184,6 +1184,72 @@ test('a superseded priority response cannot close the editor or claim its draft 
 });
 
 const clickAction = node => node.listeners.get('click')({ preventDefault() {}, stopPropagation() {} });
+test('Identify follows session settings, supports an identified vehicle with automatic OFF, and serializes its fenced request', async () => {
+  const document = documentFixture(), $ = id => document.getElementById(id), calls = []; let finish;
+  const item = { ...connected(), vehicle: { state: 'identified', id: 'bmw', label: 'BMW' },
+    identification: { phase: 'completed', available: true, active: false, attempted: true } };
+  const panel = createChargingPanel({ document, request: (...args) => { calls.push(args); return new Promise(resolve => { finish = resolve; }); } });
+  panel.update(status(item));
+  const controls = $('charger1-charging-controls'), body = $('charger1-settings-details'), button = $('charger1-identify');
+  assert(body.children.indexOf($('charger1-session-settings')) < body.children.indexOf(controls));
+  assert.equal(descendants(controls).filter(node => node.tagName === 'BUTTON').at(-1), button);
+  assert.equal(button.textContent, 'Identify'); assert.equal(button.disabled, false);
+  assert.match($('charger1-identification-status').textContent, /short charging test.*automatic charging off.*Manual Stop/s);
+  const pending = clickAction(button);
+  assert.deepEqual(calls, [['/api/charging/chargers/charger1/identify', { association: item.association, sessionId: item.request.sessionId, revision: 1 }]]);
+  assert(button.disabled); assert($('charger1-charge-now').disabled); assert($('charger1-settings-save').disabled);
+  await clickAction(button); assert.equal(calls.length, 1);
+  finish(status({ ...item, identification: { phase: 'pausing', available: true, active: true, attempted: true } })); await pending;
+  assert(button.disabled); assert.match($('charger1-vehicle').textContent, /BMW identified · identifying vehicle/);
+  assert.match($('charger1-identification-status').textContent, /brief pause.*matching charger and vehicle readings/);
+  assert.match($('charger1-state').textContent, /Identifying/);
+  panel.close(); assert(!button.listeners.has('click'));
+});
+
+test('identification remains pending while waiting and an inconclusive result stays visible with Charge now or automatic OFF', () => {
+  const document = documentFixture(), $ = id => document.getElementById(id);
+  const panel = createChargingPanel({ document, request: async () => {} });
+  const item = connected(); item.request.chargeNow = true;
+  panel.update(status({ ...item, identification: { phase: 'waiting', reason: 'waiting-for-charging', active: true, available: false } }));
+  assert.match($('charger1-vehicle').textContent, /Identification pending/);
+  assert.match($('charger1-identification-status').textContent, /vehicle to start charging.*timer/);
+  assert.match($('charger1-state').textContent, /Identification pending/);
+  assert.equal($('charger1-charge-now-state').textContent, 'ON'); assert($('charger1-identify').disabled);
+  panel.update(status({ ...item, identification: { phase: 'inconclusive', active: false, available: true, attempted: true } }));
+  assert.match($('charger1-vehicle').textContent, /Identification inconclusive/);
+  assert.equal($('charger1-notice').textContent, 'Identification inconclusive');
+  assert.match($('charger1-identification-status').textContent, /Normal charging control has resumed/);
+  assert(!$('charger1-identify').disabled); panel.close();
+});
+
+test('Identify respects availability, ongoing work, read-only authority and the connected session', async () => {
+  const document = documentFixture(), $ = id => document.getElementById(id), calls = [];
+  const panel = createChargingPanel({ document, request: async (...args) => { calls.push(args); } });
+  const item = { ...connected(), identification: { phase: 'completed', active: false, available: true } };
+  for (const snapshot of [
+    { ...status(item), role: 'replica' }, { ...status(item), readOnly: true }, status({ ...item, readOnly: true }),
+    status({ ...item, request: null }), status({ ...item, values: { ...item.values, connected: reading(false) } }),
+    status({ ...item, identification: { ...item.identification, available: false } }),
+    status({ ...item, identification: { ...item.identification, active: true, phase: 'charging' } }),
+  ]) {
+    panel.update(snapshot); assert($('charger1-identify').disabled);
+    await clickAction($('charger1-identify')); assert.deepEqual(calls, []);
+  }
+  panel.update(status(item)); assert(!$('charger1-identify').disabled); panel.close();
+});
+
+test('an identification request failure preserves identity and allows a retry without claiming a test started', async () => {
+  const document = documentFixture(), $ = id => document.getElementById(id);
+  const panel = createChargingPanel({ document, request: async () => { throw new Error('The connection changed. Review it before trying again.'); } });
+  panel.update(status({ ...connected(), vehicle: { state: 'identified', id: 'tesla', label: 'Tesla' },
+    identification: { phase: 'completed', active: false, available: true } }));
+  await clickAction($('charger1-identify'));
+  assert.match($('charger1-vehicle').textContent, /Tesla identified/);
+  assert.match($('charger1-identification-message').textContent, /connection changed/);
+  assert($('charger1-identification-message').matches('.form-error')); assert(!$('charger1-identify').disabled);
+  panel.close();
+});
+
 test('Charge now toggles the current session without adding confirmation messages or a second summary action', async () => {
   const document = documentFixture(), $ = id => document.getElementById(id), calls = [];
   const item = active();
