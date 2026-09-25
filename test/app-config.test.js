@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { loadConfig as readConfig, configurationSource, validateSettings, recordingConfiguration, acquisitionConfiguration, teslamateConfiguration, indoorSensorWeightsConfiguration } from '../src/app/config.js';
 import { chargingConfiguration } from '../src/charging/config.js';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const loadConfig = (env = {}, cwd) => readConfig({ HOME: '/missing-stmq-test-home', ...env }, cwd);
@@ -21,8 +21,8 @@ test('default startup is shadow with simulated devices, no provider connections 
   assert.equal(cfg.dbPath, '/missing-repository/var/simulation.sqlite');
 });
 test('recording and acquisition options are independent, configurable and validated',()=>{
-  assert.deepEqual(recordingConfiguration(),{annualBudgetBytes:10000000000});
-  assert.deepEqual(recordingConfiguration({annual_budget_gb:4}),{annualBudgetBytes:4000000000});
+  assert.deepEqual(recordingConfiguration(),{annualBudgetBytes:10000000000,exportDirectory:homedir()});
+  assert.deepEqual(recordingConfiguration({annual_budget_gb:4}),{annualBudgetBytes:4000000000,exportDirectory:homedir()});
   assert.equal(acquisitionConfiguration().easeeIntervalMs,15000);
   assert.equal(acquisitionConfiguration().electricityTelemetryMaxAgeMs,1020000);
   assert.equal(acquisitionConfiguration({electricity_telemetry_max_age_seconds:600}).electricityTelemetryMaxAgeMs,600000);
@@ -30,6 +30,31 @@ test('recording and acquisition options are independent, configurable and valida
   assert.equal(acquisitionConfiguration({weather_poll_minutes:60}).weatherIntervalMs,3600000);
   for(const options of [{max_interval_minutes:5},{unknown:1},{annual_budget_gb:-1},{annual_budget_gb:'10'}])assert.throws(()=>recordingConfiguration(options));
   assert.throws(()=>acquisitionConfiguration({easee_poll_seconds:1}));
+});
+test('recording export directory uses the server account home and accepts only explicit destinations', () => {
+  assert.equal(loadConfig({}, '/missing-repository').recording.exportDirectory, homedir());
+  assert.equal(recordingConfiguration({ export_directory: '~' }).exportDirectory, homedir());
+  assert.equal(recordingConfiguration({ export_directory: '~/database copies' }).exportDirectory, join(homedir(), 'database copies'));
+  assert.equal(recordingConfiguration({ export_directory: '~//database-copies/' }).exportDirectory, join(homedir(), 'database-copies'));
+  assert.equal(recordingConfiguration({ export_directory: '/invented/database-copies/' }).exportDirectory, '/invented/database-copies');
+  for (const export_directory of [null, false, 1, [], {}, '', ' ', 'database-copies', '~another-user', '~another-user/copies', '/invented/\ncopy', '/invented/\0copy'])
+    assert.throws(() => recordingConfiguration({ export_directory }), /export_directory/);
+});
+test('sparse recording destination overrides preserve public budget defaults and reject invalid sources', t => {
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-export-config-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const path = join(directory, 'fixture.json');
+  const source = JSON.stringify({ recording: { export_directory: '~/database-copies' } });
+  writeFileSync(path, source, { mode: 0o600 });
+  const config = loadConfig({ STMQ_CONFIG: path }, directory);
+  assert.deepEqual(config.recording, { annualBudgetBytes: 10_000_000_000, exportDirectory: join(homedir(), 'database-copies') });
+  assert.equal(readFileSync(path, 'utf8'), source);
+  for (const export_directory of [null, false, '', 'relative/copies']) {
+    const invalid = JSON.stringify({ recording: { export_directory } });
+    writeFileSync(path, invalid, { mode: 0o600 });
+    assert.throws(() => loadConfig({ STMQ_CONFIG: path }, directory), /export_directory/);
+    assert.equal(readFileSync(path, 'utf8'), invalid);
+  }
 });
 test('TeslaMate opt-in uses existing MQTT and validates exact car/geofence/namespace settings', t => {
   assert.equal(teslamateConfiguration().enabled, false);

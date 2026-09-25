@@ -477,7 +477,8 @@
     },
 
     "recording": {
-      "annual_budget_gb": 10
+      "annual_budget_gb": 10,
+      "export_directory": "~"
     },
 
     "pairing": {
@@ -825,7 +826,8 @@
     },
 
     "recording": {
-      "annual_budget_gb": "float(0.01,10000)"
+      "annual_budget_gb": "float(0.01,10000)",
+      "export_directory": "str"
     },
 
     "pairing": {

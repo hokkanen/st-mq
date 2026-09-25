@@ -935,8 +935,11 @@ $('h66-test-form').addEventListener('submit', async event => {
 });
 const refreshRecordingOverview=recordingOverviewRefresh({request:api,root:$('recording-overview-content'),
   details:$('recording-overview-details'),parent:$('recording-details'),message:$('recording-overview-message'),button:$('recording-overview-refresh')});
-bindDatabaseExport({ button: $('database-export'), message: $('database-export-message'), window, document,
-  request: () => fetch(applicationUrl('/api/database-export'), { headers: token ? { Authorization: `Bearer ${token}` } : {} }) });
+bindDatabaseExport({ saveButton: $('database-export-save'), downloadButton: $('database-export-download'),
+  message: $('database-export-message'), window, document,
+  request: method => fetch(applicationUrl('/api/database-export'), { method,
+    headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(method === 'POST' ? { 'Content-Type': 'application/json' } : {}) },
+    ...(method === 'POST' ? { body: '{}' } : {}) }) });
 $('recording-overview-details').addEventListener('toggle',()=>void refreshRecordingOverview());
 $('recording-overview-refresh').addEventListener('click',()=>void refreshRecordingOverview({force:true}));
 setInterval(refreshRecordingOverview,60_000);

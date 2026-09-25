@@ -2,6 +2,26 @@
 -Implement support for local mqtt-based temperature receives (eg, from shelly or HASS through Meteorologisk Institute); just store last received temp values and time stamps (maybe in storage class, see below) when received (and accept if received within 1h)
 -Chart dataset control buttons don't work when datasets are manually hidden/unhidden from legend, how to fix?
 
+Completed 2026-09-25 — Database export destinations and recording order
+- Place Other recorded data immediately below Adaptive measurements, followed by
+  Meter accuracy checks and Export database.
+- Split export into Save local copy on the server and Download database to the
+  browser. Configure the server folder with recording.export_directory, defaulting
+  to the server account's home; apply destination changes through configuration
+  reload. Both actions use UTC filenames including time, milliseconds and Z.
+- Publish private, complete server copies without overwriting prior exports.
+  Preserve committed WAL contents, current-schema backup/restore, browser picker
+  streaming, authentication rechecks, bounded exports and verified replica leases.
+  Show the saved server path and actionable save errors. Clean up failed copies.
+- Reviewed producers, consumers, configuration, UI, tests and documentation.
+  Replace the single ambiguous save button and date-only browser filename;
+  no aliases, migrations, schema changes or persisted preferences are introduced.
+- Validation: all 3,280 offline tests, production build and synthetic Chrome
+  export checks pass. Browser checks cover real standalone
+  SQLite copies, streaming, cancellation, busy/error recovery and both themes at
+  320 and 1440px; screenshots were reviewed. The updated Firefox recording-only
+  smoke passes exports, inventory interactions and 390/1440px layouts.
+
 Completed 2026-09-25 — Compact Charge now toggle
 - Use one visibly selected Charge now button; clicking it again performs the
   existing return to automatic charging, including enabling Automatic when OFF.

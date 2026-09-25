@@ -2,6 +2,7 @@ import { equipmentConfiguration } from '../acquisition/equipment-config.js';
 import { heatingStrategy } from '../domain/heating-strategy.js';
 import { H66_MAX_AGE_MS } from '../domain/reading-freshness.js';
 import { isAbsolute, resolve } from 'node:path';
+import { homedir } from 'node:os';
 import { configuredPriceSettings } from './contract.js';
 import { configurationPaths, createConfigurationSource, readConfigurationOptions } from './configuration-source.js';
 import { pairingEnabled, pairingConfiguration } from '../pairing/config.js';
@@ -61,10 +62,15 @@ function interval(value, fallback, minimum, maximum, name) {
 
 export function recordingConfiguration(input = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new TypeError('Recording settings must be an object');
-  for (const key of Object.keys(input)) if (key !== 'annual_budget_gb')
+  for (const key of Object.keys(input)) if (!['annual_budget_gb', 'export_directory'].includes(key))
     throw new Error(`Unsupported recording setting: ${key}. Recording has no maximum interval.`);
+  const directory = input.export_directory === undefined ? '~' : input.export_directory;
+  if (typeof directory !== 'string' || !directory.trim() || /[\u0000-\u001f\u007f]/.test(directory)
+    || !(directory === '~' || directory.startsWith('~/') || isAbsolute(directory)))
+    throw new Error('Invalid recording setting: export_directory must be an absolute path, ~ or ~/ followed by a directory.');
   return {
     annualBudgetBytes: Math.round(interval(input.annual_budget_gb, 10, 0.01, 10000, 'annual_budget_gb') * 1_000_000_000),
+    exportDirectory: directory.startsWith('~') ? resolve(`${homedir()}${directory.slice(1)}`) : resolve(directory),
   };
 }
 

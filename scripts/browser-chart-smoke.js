@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { start } from '../src/main.js';
@@ -73,7 +73,8 @@ let app, ws, command, ownsBrowser=false;
 const pending = new Map(), errors = [], timings = [];
 let id = 0;
 try {
-  writeFileSync(join(directory, 'options.json'), '{}');
+  const exportDirectory = join(directory, 'database-exports');
+  writeFileSync(join(directory, 'options.json'), JSON.stringify({ recording: { export_directory: exportDirectory } }));
   const config = loadConfig({ STMQ_CONFIG: join(directory, 'options.json'), STMQ_DATA_DIR: directory, STMQ_PORT: '0', STMQ_INPUT: 'simulated' }, directory);
   config.priceSettings = { ...config.priceSettings, effectiveDate: '2020-01-01' };
   // Seed this temporary simulation before startup writes its current context,
@@ -256,19 +257,29 @@ try {
   assert.equal(await evaluate(`document.querySelector('#recording-content details[data-stream-id="${focusedReading}"]').open`),true,
     'fresh status rendering preserves source disclosure and keyboard focus');
   assert.equal(await evaluate("window.recordingFixture.requests"),0,'opening the adaptive table does not fetch the separate inventory');
-  assert.equal(await evaluate("[...document.querySelectorAll('#recording-details > details')].map(node=>node.id).join(',')"),'recording-adaptive-details,energy-audit-details,recording-overview-details,database-export-details');
+  assert.equal(await evaluate("[...document.querySelectorAll('#recording-details > details')].map(node=>node.id).join(',')"),'recording-adaptive-details,recording-overview-details,energy-audit-details,database-export-details');
   await evaluate(`(() => {
-    window.exportFixture = { create: URL.createObjectURL, click: HTMLAnchorElement.prototype.click };
+    window.exportFixture = { create: URL.createObjectURL, click: HTMLAnchorElement.prototype.click, picker: window.showSaveFilePicker };
+    window.showSaveFilePicker = undefined;
     URL.createObjectURL = blob => { window.exportFixture.blob = blob; return window.exportFixture.create(blob); };
     HTMLAnchorElement.prototype.click = function () { if (this.download) window.exportFixture.name = this.download; else window.exportFixture.click.call(this); };
     document.getElementById('database-export-details').open = true;
-    document.getElementById('database-export').click(); return true;
+    document.getElementById('database-export-download').click(); return true;
   })()`);
-  await until("Boolean(window.exportFixture.blob) && !document.getElementById('database-export').disabled");
+  await until("Boolean(window.exportFixture.blob) && !document.getElementById('database-export-download').disabled");
   assert.equal(await evaluate("window.exportFixture.blob.slice(0,16).text()"), 'SQLite format 3\0');
-  assert.match(await evaluate("window.exportFixture.name"), /^stmq-.*\.sqlite$/);
+  const exportFilename = /^stmq-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z(?:-\d+)?\.sqlite$/;
+  assert.match(await evaluate("window.exportFixture.name"), exportFilename);
   assert.match(await evaluate("document.getElementById('database-export-message').textContent"), /Download ready/);
-  await evaluate("URL.createObjectURL=window.exportFixture.create; HTMLAnchorElement.prototype.click=window.exportFixture.click; document.getElementById('database-export-details').open=false; true");
+  await evaluate("URL.createObjectURL=window.exportFixture.create; HTMLAnchorElement.prototype.click=window.exportFixture.click; window.showSaveFilePicker=window.exportFixture.picker; document.getElementById('database-export-save').click(); true");
+  await until("!document.getElementById('database-export-save').disabled && document.getElementById('database-export-message').textContent.startsWith('Database copy saved on the server:')");
+  const savedFiles = readdirSync(exportDirectory);
+  assert.equal(savedFiles.length, 1);
+  assert.match(savedFiles[0], exportFilename);
+  const savedDatabase = new Store(join(exportDirectory, savedFiles[0]), { readOnly: true });
+  try { assert.equal(savedDatabase.getState('settings:browser-fixture').input, 'simulated'); }
+  finally { savedDatabase.close(); }
+  await evaluate("document.getElementById('database-export-details').open=false; true");
   await evaluate("document.querySelector('#recording-overview-details > summary').focus(); true");
   await command('input.performActions',{context,actions:[{type:'key',id:'recording-keyboard',actions:[{type:'keyDown',value:'\uE007'},{type:'keyUp',value:'\uE007'}]}]});
   await until("document.querySelectorAll('#recording-overview-content .recording-data-group').length>=8");

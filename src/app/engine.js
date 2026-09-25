@@ -361,7 +361,8 @@ export class Engine {
     this.store = store;
     this.config = config;
     this.clock = clock;
-    this.recorder = new Recorder(store, { config: config.recording, clock });
+    const { exportDirectory, ...recorderConfig } = config.recording ?? {};
+    this.recorder = new Recorder(store, { config: recorderConfig, clock });
     if (['mqtt', 'providers'].includes(config.input)) {
       const cachedWeather = store.getState('provider:weather'), health = store.getState('providers:health');
       const unsupported = value => typeof value?.source === 'string' && !WEATHER_SOURCES.includes(value.source);

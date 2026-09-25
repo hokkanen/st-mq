@@ -68,6 +68,24 @@ successful import and application. Omitting a key from a later import preserves
 its saved value. See [permanent configuration](../README.md#permanent-configuration-and-prices)
 for exact paths, reload behavior and restart requirements.
 
+## Database export destination
+
+In **Export database**, **Save local copy** writes to the server directory in
+`recording.export_directory`. Its shared default, `"~"`, means the home folder
+of the operating-system account running the server. In an add-on or container,
+this is that account's home inside the container. Choose a persistent directory
+available to the server when copies must survive container replacement.
+
+To change the destination, merge an override such as
+`"recording": { "export_directory": "~/database-copies" }` into the existing
+configuration and choose **Apply configuration**. Use an absolute path, `"~"`,
+or a path beginning with `"~/"`; other relative paths and `~user` paths are
+rejected. The server account needs write permission to the destination.
+
+**Download database** saves a copy through the browser. Both actions create a
+complete SQLite snapshot with the same timestamped filename format. See
+[database exports](recording.md#single-file-database-export) for details.
+
 ## Charging defaults and dashboard overrides
 
 `charging.defaults` supplies both charging points whenever the vehicle is

@@ -1,6 +1,7 @@
 import { createServer } from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { resolve, extname } from 'node:path';
 import { getChartData } from './chart-data.js';
 import { simulatedOutlook } from './simulator.js';
@@ -47,13 +48,13 @@ function optionalTimestampParam(url, key) {
 
 export function createAppServer({ engine, getEngine = () => engine, store, chartService, token = '',
   getAccess, ingress = false, role = 'primary', getReadContext, replicationStatus,
-  pairContext, controlAuthority,
+  pairContext, controlAuthority, getDatabaseExportDirectory = homedir,
   reloadSettings, settingsReloadStatus = () => ({ available: false, busy: false,
     reason: 'This instance has no reloadable configuration source.' }), staticDir = resolve('dist') }) {
   const overviewService = getReadContext ? null : chartService?.overview ? chartService : createChartService({ store });
   const fixedAccess = { enabled: true, token, tokenRequired: false };
   const access = getAccess ?? (() => fixedAccess);
-  const exportDatabase = createDatabaseExport();
+  const exportDatabase = createDatabaseExport({ getDirectory: getDatabaseExportDirectory });
   const server = createServer(async (req, res) => {
     let acceptedAccess, completingReload = false, readContext;
     const json = (code, value) => {
@@ -99,7 +100,10 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
           if (settingsReloadStatus().stopping) return json(503, { error: 'The application is shutting down.' });
           return json(202, pairContext.requestAction(input));
         }
-        if (role === 'replica' && !['GET', 'HEAD'].includes(req.method))
+        const saveDatabase = req.method === 'POST' && url.pathname === '/api/database-export';
+        // Saving a verified database snapshot grants no device-control authority
+        // and is also available on replicas.
+        if (role === 'replica' && !['GET', 'HEAD'].includes(req.method) && !saveDatabase)
           return json(405, { error: 'This replica is read-only. Make changes on the primary instance.' });
         const unavailable = () => {
           const state = settingsReloadStatus();
@@ -107,6 +111,13 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
           return state.busy ? 'Settings are being updated. Retry shortly.' : null;
         };
         if (unavailable()) return json(503, { error: unavailable() });
+        if (saveDatabase) {
+          const input = await body(req);
+          if (!stillAuthorized()) return;
+          if (unavailable()) return json(503, { error: unavailable() });
+          if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length)
+            return json(400, { error: 'Save a database copy with an empty JSON object.' });
+        }
         readContext = await getReadContext?.();
         const engine = readContext?.engine ?? getEngine();
         const readerStore = readContext?.store ?? store;
@@ -148,6 +159,16 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
         if (readContext && !readContext.store) return json(503, { error: 'Waiting for a verified primary snapshot.' });
         if (req.method === 'GET' && url.pathname === '/api/database-export')
           return await exportDatabase({ store: readerStore, response: res, authorized: stillAuthorized });
+        if (saveDatabase) {
+          try {
+            const result = await exportDatabase({ store: readerStore, response: res, authorized: stillAuthorized, save: true });
+            if (result) return json(200, result);
+          } catch (error) {
+            if (error.statusCode === 409) throw error;
+            return json(503, { error: 'Could not save the database copy. Check that the configured export folder is writable and has enough free space.' });
+          }
+          return;
+        }
         if (req.method === 'POST' && url.pathname === '/api/charging/ocpp-setup')
           return await mutate(async (current, input) => {
             if (!input || typeof input !== 'object' || Array.isArray(input)
