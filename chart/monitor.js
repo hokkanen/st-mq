@@ -634,6 +634,7 @@ function render(s) {
   const replica = renderReplicaStatus(document, s, { formatTime: time });
   sensorChangePanel.update(isReadOnlyReplica(s) ? { ...s.sensorChanges, available: false, readOnly: true } : s.sensorChanges);
   if (replica) {
+    fireplacePanel.close();
     if (replica.available && s.recording && $('recording-details')?.open) renderRecording(s, $('recording-content'));
     return replica;
   }

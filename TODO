@@ -30,6 +30,19 @@ Completed 2026-09-25 — Charging controls owned by the dashboard
   shared priority edits, stable focus/drafts and balanced card layouts.
   All validation used synthetic services and temporary databases.
 
+Completed 2026-09-25 — Home fireplace window
+- Replace Home's chart shortcut with a fireplace icon and a window matching the
+  charger-priority dialog from commit 3ae0e1b. Keep the existing firewood amount,
+  recording, recent history, corrections and unconfirmed-save retry behavior.
+- Remove the Fireplace fold, obsolete Home chart wiring and split support layout.
+  Sensors & Equipment spans the Home card; Data & settings stays unchanged.
+  Close and Escape restore focus, polling retains draft values, and a switch to
+  a read-only replica closes the window. No data/API/settings compatibility path
+  or migration is introduced; update current UI consumers and documentation.
+- Validation: 122 focused Node tests and the production build pass. The isolated
+  Chromium dashboard suite passes keyboard/focus, state retention and responsive
+  layout checks in both themes, including full-width equipment and the dialog.
+
 Completed 2026-09-25 — Persistent heat-pump settings and room intent
 - Ordinary Home pump parameters remain until explicitly changed; readback owns
   their current values and later automatic control restores the accepted device

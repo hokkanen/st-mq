@@ -870,6 +870,9 @@ try {
         document.getElementById('home-control').scrollIntoView({block: 'start'})`);
       await checkDashboardLayout({ evaluate, width });
       await capture(`dashboard-${width}-${theme}`);
+      await evaluate("document.getElementById('fireplace-shortcut').click()");
+      await capture(`fireplace-${width}-${theme}`);
+      await evaluate("document.getElementById('fireplace-close').click()");
       await checkIndependentChargerFolds(`${width}-${theme}`, width === 1440);
       await evaluate("globalThis.chargingSmokeValues={charger1:'progress',charger2:'charging'}; globalThis.nativePumpSmokeValues=true; globalThis.refreshLearningSmokeStatus()");
       await until("['charger1','charger2'].every(id=>document.getElementById(id+'-device').dataset.state==='Charging')");
@@ -1045,7 +1048,8 @@ try {
       'unsaved charger settings and focus survive status polling and reflow between desktop and mobile',
       'summary bands remain separate without vertical overflow; disconnected and unknown readings retain the layout without stale percentages',
       'metric explanations open without toggling equipment, preserve focus during refresh, and return on Escape; form guidance and all charging periods remain inline',
-      'separate Home and Garage cards, independent keyboard disclosures, and both chart shortcuts preserve fold state and focus',
+      'separate Home and Garage cards, independent keyboard disclosures, and Fireplace and Garage chart shortcuts preserve fold state and focus',
+      'full-width Home equipment and a responsive Fireplace dialog with keyboard dismissal, focus restoration and retained firewood amount',
       'desktop column grouping and mobile Home, Garage, Data order',
       'matching Home and Garage learning headings', 'episode-based Garage progress',
       'shared learning rows and section structure', 'Enter and Space operate each learning section and entry',

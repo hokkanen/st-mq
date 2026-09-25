@@ -1,7 +1,8 @@
 # Fireplace logging
 
-Open **Home → Fireplace**, below the equipment fold. Choose a whole number from **2 to
-10 kg**, initially **8 kg**, and press **Record firewood now**. The server records
+Press the **Fireplace** icon at the top right of the **Home** card to open the
+fireplace window. Choose a whole number from **2 to 10 kg**, initially **8 kg**,
+and press **Record firewood now**. The server records
 the current time. Each deliberate press records another load, including simultaneous
 fires and extra wood. The two similar masonry fireplaces share one response model.
 Use the weight of dry firewood consistently; this is a manual fuel estimate, not a

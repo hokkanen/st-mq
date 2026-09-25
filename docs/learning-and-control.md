@@ -6,7 +6,7 @@ execution. Cheap electricity during reduction alone does not establish a saving;
 recovery, comfort and comparable heating service matter too. Offline and synthetic
 checks do not establish savings on the installed equipment.
 
-Firewood can be logged through **Home → Fireplace**, below the equipment fold. See
+Firewood can be logged using the **Fireplace** icon at the top right of **Home**. See
 [fireplace logging](fireplace.md) for corrections, delayed heat and validation gates.
 
 ## What learns
