@@ -328,7 +328,7 @@ test('late negative source evidence revokes BMW even when its source clock prece
   pauseBmw(runtime, f, START + 4 * MINUTE);
   assert.equal(view(runtime).vehicle.id, 'bmw');
   f.setNow(START + 5 * MINUTE); publish(runtime, facts(START + 3 * MINUTE, { pluggedIn: false }));
-  assert.equal(view(runtime).vehicle.state, 'unidentified');
+  assert.equal(view(runtime).vehicle.state, 'disconnected');
 });
 
 test('BMW target can change independently from 100 to 95 without rebasing its 85 percent measurement', async t => {
@@ -441,10 +441,11 @@ test('vehicle unplug evidence revokes identification even while charger connecti
       f.tesla.fields = { plugged_in: { receivedAt: START + 2 * MINUTE, retained: false } };
       runtime.tick();
     }
-    assert.equal(view(runtime).vehicle.state, 'unidentified');
+    assert.equal(view(runtime).vehicle.state, vehicle === 'bmw' ? 'disconnected' : 'unidentified');
     assert.equal(view(runtime).values.soc.source, 'manual-fallback');
     f.setConnection(true, START); f.tesla.pluggedIn = true; runtime.tick();
-    assert.equal(view(runtime).vehicle.state, 'unidentified', 'Old positive evidence cannot restore a revoked match');
+    assert.equal(view(runtime).vehicle.state, vehicle === 'bmw' ? 'disconnected' : 'unidentified',
+      'Old positive evidence cannot restore a revoked match');
   });
 });
 

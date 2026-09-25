@@ -123,8 +123,13 @@ live BMW plug event allows a new observation window, and the new connection stil
 needs matching charging-start and stop evidence before vehicle readings apply.
 
 A confirmed match is scoped to the charger connection, survives scheduled pauses
-and restart, and clears on unplug. Consumed plug or charging-start events cannot
-identify the next car. Available automatic battery fields take precedence individually without
+and restart, and clears on unplug. Startup preserves the saved match, session edits
+and target choice while the charger adapter initializes. Until its session and
+readback are available, the vehicle remains unidentified in the live view and
+session edits are unavailable. The same connection restores the match without
+reusing a plug event; a different connection or confirmed departure clears it.
+Consumed plug or charging-start events cannot identify the next car. Available
+automatic battery fields take precedence individually without
 overwriting saved generic defaults. Missing fields remain editable. Tesla on
 Easee appears in Charger 1, while Charger 2 indicates that association instead of
 displaying a duplicate session.

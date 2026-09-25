@@ -267,11 +267,13 @@ export function createOcppChargingController({ adapter, initialState = null, sav
       const disconnected = snapshot.pluggedIn === false;
       const awaiting = state.vehicleDisconnect?.awaitingConnection && !(snapshot.transactionConfirmed
         && snapshot.transactionStartedAt > state.vehicleDisconnect.measuredAt);
+      const lastDisconnectedAt = Math.max(prior?.lastDisconnectedAt ?? -1, state.vehicleDisconnect?.measuredAt ?? -1,
+        disconnected ? snapshot.statusAt : -1);
       const session = { transactionId: snapshot.transactionConfirmed ? snapshot.transactionId : prior?.transactionId ?? null,
         connected: disconnected ? false : awaiting ? null : snapshot.pluggedIn,
         connectedAt: disconnected ? null : changedTransaction || prior?.connectedAt == null
           ? snapshot.transactionStartedAt ?? snapshot.statusAt : prior.connectedAt,
-        lastDisconnectedAt: disconnected ? Math.max(prior?.lastDisconnectedAt ?? 0, snapshot.statusAt) : prior?.lastDisconnectedAt ?? null };
+        lastDisconnectedAt: lastDisconnectedAt >= 0 ? lastDisconnectedAt : null };
       await commit({ session, ...(state.vehicleDisconnect && !awaiting ? { vehicleDisconnect: { ...state.vehicleDisconnect, awaitingConnection: false } } : {}),
         ...(changedTransaction || disconnected ? { execution: null, released: false, provisional: false,
           manual: state.manual?.kind === 'stop' && !changedTransaction ? state.manual : null } : {}) });

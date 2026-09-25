@@ -295,11 +295,15 @@ export class ChargingRuntime {
     if (result.accepted) {
       const previous = item.reading;
       const matches = Object.fromEntries(Object.entries(this.chargers).map(([id, charger]) => [id,
-        structuredClone({ vehicleMatch: charger.vehicleMatch, vehicleEvidence: charger.vehicleEvidence, vehicleConflict: charger.vehicleConflict, targetState: charger.targetState, vehicleDisconnect: charger.vehicleDisconnect })]));
+        structuredClone({ request: charger.request, vehicleMatch: charger.vehicleMatch, vehicleEvidence: charger.vehicleEvidence, vehicleConflict: charger.vehicleConflict, targetState: charger.targetState, vehicleDisconnect: charger.vehicleDisconnect })]));
       const consumed = Object.fromEntries(Object.entries(this.vehicleFeeds).map(([id, feed]) => [id, { consumedPlugId: feed.consumedPlugId, consumedChargingId: feed.consumedChargingId }]));
-      const easee = this.chargers.charger1;
+      const easee = this.chargers.charger1, control = easee?.controller?.status();
+      // A live departure still ends the saved matched connection while its
+      // controller is starting. No ownership from another backend is consulted.
+      const connectedAt = control?.snapshot && control.snapshot.online !== false
+        ? control.session?.connectedAt : easee?.vehicleMatch?.connectedAt;
       const boundary = route.id === 'bmw' ? bmwDisconnectEvent(previous, result.reading, {
-        match: easee?.vehicleMatch, connectedAt: easee?.controller?.status()?.session?.connectedAt, now }) : null;
+        match: easee?.vehicleMatch, connectedAt, now }) : null;
       const episode = boundary ? { plan: easee.plan, progress: easee.progress, sessionCost: easee.sessionCost,
         wasPluggedIn: easee.wasPluggedIn } : null;
       try {
@@ -334,7 +338,7 @@ export class ChargingRuntime {
     return true;
   }
   telemetry(now) {
-    const result = {}, candidates = {}, tesla = this.teslaCapture?.snapshot() ?? {}, bmw = this.vehicleFeeds.bmw;
+    const result = {}, candidates = {}, awaitingConnection = new Set(), tesla = this.teslaCapture?.snapshot() ?? {}, bmw = this.vehicleFeeds.bmw;
     const bmwAvailable = vehicleFeedAvailable(bmw, now);
     for (const [id, item] of Object.entries(this.chargers)) {
       const control = item.controller?.status(), snapshot = control?.snapshot;
@@ -349,19 +353,32 @@ export class ChargingRuntime {
         && (snapshot.transport === 'ocpp' ? control.ownsInstruction === true
           : control.owned.activeFingerprint === effectiveScheduleFingerprint(snapshot.schedule)))
         result[id].scheduledStartAt = { ...result[id].scheduledStartAt, value: control.owned.startAt };
-      if (item.vehicleDisconnect?.source === 'easee-stream' && (control?.session?.connectedAt === item.vehicleDisconnect.endedConnectedAt || control?.vehicleDisconnect?.awaitingConnection))
-        result[id].connected = { value: false, available: true, source: 'easee-stream', measuredAt: item.vehicleDisconnect.measuredAt };
+      if (['easee-stream', 'bmw-cardata'].includes(item.vehicleDisconnect?.source)
+        && (control?.session?.connectedAt === item.vehicleDisconnect.endedConnectedAt || control?.vehicleDisconnect?.awaitingConnection))
+        result[id].connected = { value: false, available: true, source: item.vehicleDisconnect.source, measuredAt: item.vehicleDisconnect.measuredAt };
       const connected = result[id].connected?.value, session = control?.session;
-      const connectedAt = session?.connectedAt, scope = Number.isSafeInteger(connectedAt) ? `${item.association}:${connectedAt}` : null;
-      if (connected === false || item.vehicleMatch?.scope !== scope) item.vehicleMatch = null;
-      if (connected === false || item.vehicleConflict?.scope !== scope) item.vehicleConflict = null;
+      const observedSession = snapshot && snapshot.online !== false;
+      const disconnected = connected === false || observedSession && session?.connected === false;
+      const connectedAt = session?.connectedAt, scope = !disconnected && observedSession && Number.isSafeInteger(connectedAt)
+        ? `${item.association}:${connectedAt}` : null;
+      if (disconnected || scope !== null && item.vehicleMatch?.scope !== scope) item.vehicleMatch = null;
+      if (disconnected || scope !== null && item.vehicleConflict?.scope !== scope) item.vehicleConflict = null;
       if (item.vehicleMatch?.id === 'tesla' && (tesla.pluggedIn === false || tesla.atHome === false
         || (tesla.boundaries ?? []).some(edge => edge.at > item.vehicleMatch.matchedAt
           && (edge.field === 'plugged_in' && edge.value === false || edge.field === 'geofence')))) item.vehicleMatch = null;
-      if (item.vehicleMatch?.id === 'bmw' && (bmw.reading?.pluggedIn === false || bmw.reading?.atHome === false)) item.vehicleMatch = null;
+      if (bmw.reading?.pluggedIn === false || bmw.reading?.atHome === false) {
+        if (item.vehicleMatch?.id === 'bmw') item.vehicleMatch = null;
+        item.targetState = null;
+      }
+      if (item.vehicleConflict) item.vehicleConflict.ids = item.vehicleConflict.ids.filter(vehicle => vehicle === 'tesla'
+        ? tesla.pluggedIn !== false && tesla.atHome !== false : bmw.reading?.pluggedIn !== false && bmw.reading?.atHome !== false);
+      candidates[id] = [];
+      // Startup can publish and persist status before the adapter has restored
+      // its session and read the charger. Unknown scope is not a new connection.
+      // Keep durable context without granting vehicle readings or session edits.
+      if (!scope && !disconnected) { awaitingConnection.add(id); continue; }
       if (item.request?.scope !== scope) item.request = scope ? { scope, sessionId: scope, revision: 1,
         deadlineAt: resolveChargingDeadline(connectedAt, this.settings.chargers[id].readyBy, TIME_ZONE), overrides: {} } : null;
-      candidates[id] = [];
       if (connected === true && scope) {
         if (item.vehicleEvidence?.scope !== scope) item.vehicleEvidence = { scope, chargingTimes: [], stoppedTimes: [] };
         const evidence = item.vehicleEvidence;
@@ -392,14 +409,15 @@ export class ChargingRuntime {
         candidates[id] = [...new Set(candidates[id])];
       }
       if (connected == null && item.vehicleMatch) candidates[id].push(item.vehicleMatch.id);
-      if (item.vehicleConflict) {
-        item.vehicleConflict.ids = item.vehicleConflict.ids.filter(vehicle => vehicle === 'tesla'
-          ? tesla.pluggedIn !== false && tesla.atHome !== false : bmw.reading?.pluggedIn !== false && bmw.reading?.atHome !== false);
-        candidates[id] = [...new Set([...candidates[id], ...item.vehicleConflict.ids])];
-      }
+      if (item.vehicleConflict) candidates[id] = [...new Set([...candidates[id], ...item.vehicleConflict.ids])];
     }
     // Both chargers and all consumers use one simultaneous, revisioned assignment.
     for (const [id, item] of Object.entries(this.chargers)) {
+      if (awaitingConnection.has(id)) {
+        result[id].vehicle = { state: 'unidentified', id: null, label: null, source: null, reason: 'assignment-unresolved',
+          chargerId: id, association: item.association, sessionId: null, revision: this.revision };
+        continue;
+      }
       const options = candidates[id], connected = result[id].connected?.value;
       const conflict = options.length > 1 || options.some(vehicle => Object.entries(candidates).some(([other, choices]) => other !== id && choices.includes(vehicle)));
       if (conflict) item.vehicleConflict = { scope: item.request?.scope, ids: options, at: now };
@@ -488,7 +506,8 @@ export class ChargingRuntime {
       const progress = updateChargingProgress(item.progress, charger, now, this.readEnergy);
       const feed = this.vehicleFeeds[telemetry[id]?.vehicle?.id];
       const reception = feed ? vehicleReception(feed, now) : null;
-      return { ...charger, association: item.association, request: item.request, vehicle: telemetry[id]?.vehicle ?? null,
+      return { ...charger, association: item.association,
+        request: telemetry[id]?.vehicle?.sessionId ? item.request : null, vehicle: telemetry[id]?.vehicle ?? null,
         referenceGridKwh: charger.requiredGridKwh, requiredGridKwh: progress.remainingGridKwh,
         progress: { ...progress, state: undefined, creditedGridKwh: progress.state.creditKwh },
         automaticSoc: telemetry[id]?.vehicle?.id === 'bmw' && telemetry[id].vehicle.state === 'identified' ? feed?.reading : null, plan: item.plan,
@@ -786,8 +805,9 @@ export class ChargingRuntime {
     const item = this.charger(id);
     if (Object.keys(input).some(key => !['scope', 'association', 'sessionId', 'revision', 'changes'].includes(key))
       || !object(input.changes)) throw new Error('Invalid session request');
-    this.views();
-    if (!item.request || input.association !== item.association || input.sessionId !== item.request.sessionId
+    const view = this.views().find(charger => charger.id === id);
+    if (!item.request || view.vehicle?.sessionId !== item.request.sessionId
+      || input.association !== item.association || input.sessionId !== item.request.sessionId
       || input.revision !== item.request.revision) throw new Error('Charging connection changed; refresh before editing');
     if (Object.keys(input.changes).some(key => !['manualSoc', 'capacityKwh', 'minimumSoc', 'readyBy'].includes(key))) throw new Error('Invalid session field');
     const checked = mergeChargingSettings(this.settings, { chargers: { [id]: input.changes } }).chargers[id];

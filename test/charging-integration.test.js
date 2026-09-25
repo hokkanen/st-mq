@@ -108,7 +108,8 @@ test('session target API authenticates, enforces controller authority and reject
   const item = runtime.chargers.charger1;
   item.adapter = { normalize: () => ({ connected: { value: true, available: true },
     charging: { value: charging, available: true, measuredAt: engine.clock() } }) };
-  item.controller = { status: () => ({ session: { connectedAt: sessionAt }, phase: 'off' }), async update() {}, close() {} };
+  item.controller = { status: () => ({ session: { connectedAt: sessionAt },
+    snapshot: { online: true, readAt: engine.clock() }, phase: 'off' }), async update() {}, close() {} };
   const publish = packet => runtime.receiveSoc(runtime.configuration.vehicles.bmw.mqttTopic, JSON.stringify(packet));
   publish({ provider: 'bmw-cardata', soc: 40, chargeLimitSoc: 85, measuredAt: connectedAt, readingId: 'api-battery',
     atHome: true, pluggedIn: true, charging: true, fields: Object.fromEntries(['atHome', 'pluggedIn', 'charging'].map(key =>

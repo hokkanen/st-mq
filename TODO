@@ -2,6 +2,28 @@
 -Implement support for local mqtt-based temperature receives (eg, from shelly or HASS through Meteorologisk Institute); just store last received temp values and time stamps (maybe in storage class, see below) when received (and accept if received within 1h)
 -Chart dataset control buttons don't work when datasets are manually hidden/unhidden from legend, how to fix?
 
+Completed 2026-09-25 — Vehicle identification through charger startup
+- Preserve the current connection's saved vehicle match, conflict evidence,
+  session request and BMW target choice while the charger backend initializes or
+  returns offline readback. Withhold vehicle identity, automatic readings and
+  session edits until a session can be observed; retain current unplug, new
+  connection, changed configuration and negative vehicle-evidence boundaries.
+  Capture live BMW unplug events against the saved matched connection during
+  startup; fence OCPP charging evidence at that boundary and roll back session
+  edits with identity state when event persistence fails.
+- Exercise startup status/tick/persist before adapter attachment, restored native
+  ownership, offline readback, temporary cloud ownership and same-session recovery
+  with real controllers and synthetic readings. Session API fixtures now include
+  their physical readback rather than assuming an initialized charger.
+- Reviewed acquisition, runtime, saved ownership, request/target APIs, UI consumers,
+  configuration, tests and BMW documentation. Retain the current charging schema
+  and event-consumption safeguards; no migrations, historical backfills, alternate
+  identity formats or live household-state repair added.
+- Validation: all 3,017 offline regression tests passed, including 13 startup,
+  reconnect and failed-save cases. Syntax and whitespace checks passed. Test
+  fixtures used isolated servers and synthetic state; the running controller and
+  household data were not changed.
+
 Completed 2026-09-24 — Consistent Home and Garage heating controls
 - Align nested control indentation, spacing, savings preference labels and
   temporary-override explanations. Add Garage's current mode, heating-control
