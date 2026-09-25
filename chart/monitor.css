@@ -895,6 +895,32 @@ button.status-detail-trigger .status-detail-label { color: inherit; }
 button.status-detail-close { flex: none; display: grid; place-items: center; width: 32px; height: 32px; min-width: 32px; margin: -4px -6px 0 0; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--muted); font-size: 20px; }
 button.status-detail-close:hover { background: var(--surface-soft); color: var(--text); }
 .status-detail-body { margin: 0; font-size: 12px; line-height: 1.65; color: var(--muted); overflow-wrap: anywhere; white-space: pre-line; }
+.garage-door-controls { white-space: normal; padding-top: 2px; }
+.garage-door-list { display: grid; gap: 8px; }
+.garage-door-row { display: grid; grid-template-columns: 38px minmax(0, 1fr) auto; align-items: center; gap: 4px 10px; padding: 14px 10px; border: 1px solid var(--border); border-radius: 7px; background: color-mix(in srgb, var(--surface-soft) 60%, var(--surface)); }
+.garage-door-icon { width: 38px; height: 38px; fill: none; stroke: var(--muted); stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.garage-door-icon-opening { stroke: var(--border); }
+.garage-door-icon-panel { transform-box: fill-box; transform-origin: top; transition: transform .35s ease; }
+.garage-door-row[data-state="closed"] .garage-door-icon-panel { stroke: var(--chart-indoor); }
+.garage-door-row[data-state="open"] .garage-door-icon-panel { transform: scaleY(.23); stroke: var(--stale); }
+.garage-door-row[data-state="moving"] .garage-door-icon-panel { transform: scaleY(.55); stroke: var(--stale); }
+.garage-door-row[data-state="unknown"] .garage-door-icon-panel { opacity: .35; }
+.garage-door-description { display: grid; gap: 3px; min-width: 0; }
+.garage-door-name { color: var(--text); font-size: 12px; font-weight: 550; line-height: 1.4; }
+.garage-door-state { display: flex; align-items: center; gap: 6px; width: fit-content; font-size: 11px; line-height: 1.4; }
+.garage-door-state::before { content: ""; width: 5px; height: 5px; flex: none; border-radius: 50%; background: currentColor; }
+.garage-door-row[data-state="closed"] .garage-door-state { color: var(--chart-indoor); }
+.garage-door-row:is([data-state="open"], [data-state="moving"]) .garage-door-state { color: var(--stale); }
+button.garage-door-action { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-width: 84px; min-height: 40px; margin: 0; padding: 8px 10px; border-color: color-mix(in srgb, var(--accent) 34%, var(--border)); border-radius: 5px; color: var(--accent); background: color-mix(in srgb, var(--accent) 7%, var(--surface)); font-size: 12px; font-weight: 550; transition: background .15s ease, border-color .15s ease; }
+button.garage-door-action:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 16%, var(--surface)); border-color: var(--accent); }
+button.garage-door-action:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+button.garage-door-action:disabled { opacity: .55; cursor: default; }
+.garage-door-action svg { flex: none; width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.garage-door-action[data-cover-action=""] svg { display: none; }
+.garage-door-feedback { grid-column: 2 / -1; margin: 5px 0 0; font-size: 10px; line-height: 1.55; }
+.garage-door-empty { margin: 4px 0; }
+@media (pointer: coarse) { button.garage-door-action { min-height: 44px; } }
+@media (prefers-reduced-motion: reduce) { .garage-door-icon-panel, button.garage-door-action { transition: none; } }
 .provider-series-live { list-style: none; padding: 0; }
 .provider-series-description { display: block; }
 .provider-series-live > li { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: baseline; gap: 0 12px; border-top: 1px solid var(--border); padding: 8px 0; }

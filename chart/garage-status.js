@@ -4,6 +4,7 @@ import { isReadOnlyReplica } from './replica-status.js';
 import { mitsubishiReadings, createMitsubishiReadingView, mitsubishiRoomTemperature, mitsubishiCompressor, mitsubishiValue, renderMitsubishiReadings } from './mitsubishi.js';
 import { outdoorSourceLabel } from './provider-status.js';
 import { equipmentReadingRows } from './equipment.js';
+import { garageDoorDevices } from './garage-doors.js';
 import { setStatusDetail } from './status-details.js';
 import { renderCurrentPrice } from './current-price.js';
 import { garageHeatingConfirmation, setHeatingStatusDetail } from './heating-status.js';
@@ -343,13 +344,13 @@ function renderGarageHeatingState(document, status, requested) {
     detail: 'Heating availability follows the requested pump power. Compressor activity is shown with the heat-pump readings.' });
 }
 
-export function renderGarage(document, status) {
+export function renderGarage(document, status, { doorContent } = {}) {
   const display = garageDisplay(status?.garage, status?.now);
   const set = (id, value) => { const node = document.getElementById(id); if (node) node.textContent = value; };
-  const detail = (id, label, title, description, stale = false) => {
+  const detail = (id, label, title, description, stale = false, content = null) => {
     const node = document.getElementById(id); if (!node) return;
     node.classList.toggle('stale', stale);
-    setStatusDetail(node, { label, title, detail: description, key: id });
+    setStatusDetail(node, { label, title, detail: description, key: id, content });
   };
   const garage = status?.garage ?? {}, adapter = garage.adapter ?? {}, reported = adapter.native ?? adapter.readbacks ?? {};
   const now = status?.now ?? Date.now();
@@ -379,19 +380,23 @@ export function renderGarage(document, status) {
     if (settingNode) settingNode.dataset.state = budget.attention ? 'attention' : 'muted';
     set(`${settingId}-remaining`, budget.summary);
   }
-  const doors = devices.filter(device => device.enabled !== false && device.kind === 'door' && ((device.area ?? 'garage') === 'garage'
-    || Object.keys(device.readings ?? {}).some(signal => /^garage_door/.test(signal)))).flatMap(device => {
+  const doors = garageDoorDevices(status).flatMap(device => {
     const rows = equipmentReadingRows(device).filter(row => /_open$/.test(row.signal));
     return rows.length ? rows.map(row => ({ ...row, name: device.label ?? row.label }))
       : [{ name: device.label ?? 'Door', value: 'Unknown', stale: true, detail: 'No usable reading received' }];
   });
   const openDoors = doors.filter(row => row.value === 'Open'), closedDoors = doors.filter(row => row.value === 'Closed');
+  const movingDoors = doors.filter(row => ['Opening', 'Closing'].includes(row.value));
   const unknownDoors = doors.filter(row => !['Open', 'Closed'].includes(row.value));
   const doorName = row => /^garage_door(\d+)_open$/.test(row.signal)
     ? `Door ${row.signal.match(/^garage_door(\d+)_open$/)[1]}` : row.name.replace(/^Garage\s+/i, '');
   let doorSummary = 'Unknown';
   if (doors.length === 1) doorSummary = doors[0].value;
-  else if (doors.length === 2) {
+  else if (movingDoors.length) {
+    doorSummary = doors.length === 2 && movingDoors.length === 2 && movingDoors[0].value === movingDoors[1].value
+      ? `Both ${movingDoors[0].value.toLowerCase()}`
+      : movingDoors.map(row => `${doorName(row)} ${row.value.toLowerCase()}`).join(' · ');
+  } else if (doors.length === 2) {
     if (openDoors.length === 2) doorSummary = 'Both open';
     else if (closedDoors.length === 2) doorSummary = 'Both closed';
     else if (openDoors.length === 1) doorSummary = `${doorName(openDoors[0])} open${unknownDoors.length ? ' · other unknown' : ''}`;
@@ -403,7 +408,7 @@ export function renderGarage(document, status) {
   }
   detail('garage-door-summary', doorSummary,
     'Garage doors', doors.length ? doors.map(row => `${row.name}: ${row.value}. ${row.detail}`).join('\n')
-      : 'No garage door reports are available.', !doors.length || doors.some(row => row.stale));
+      : 'No garage door reports are available.', !doors.length || doors.some(row => row.stale), doorContent);
   const doorStatus = document.getElementById('garage-door-summary');
   if (doorStatus) doorStatus.dataset.state = doors.length && closedDoors.length === doors.length && !doors.some(row => row.stale)
     ? 'confirmed' : 'attention';
