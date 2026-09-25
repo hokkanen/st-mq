@@ -2,6 +2,31 @@
 -Implement support for local mqtt-based temperature receives (eg, from shelly or HASS through Meteorologisk Institute); just store last received temp values and time stamps (maybe in storage class, see below) when received (and accept if received within 1h)
 -Chart dataset control buttons don't work when datasets are manually hidden/unhidden from legend, how to fix?
 
+Completed 2026-09-25 — Configuration ownership and temporary dashboard overrides
+- Keep permanent charging defaults, identified vehicle defaults, scheduling
+  enablement, shared priority and Garage room target in configuration. Remove
+  persistent dashboard preference writes; scoped session/deadline overrides
+  restore configuration behavior and survive restart only within valid scope.
+- Add visible Charge Now actions to charger headers for immediate session
+  scheduling override, preserving physical commissioning and native constraints.
+- Record the configuration-ownership rule in AGENTS.md and document explicit
+  native device/configuration import actions separately from controller defaults.
+- Review producers, consumers, state, configuration, UI, tests and docs. Charging
+  state version 6 and database schema 14 reject retired durable preferences;
+  no development migration or settings translation is provided. Current session
+  recovery, device ownership, metering and restoration duties remain supported.
+- Validation: all 3,096 offline tests and the production build pass. Coverage
+  includes configuration reload, rejected permanent writes, authenticated Charge
+  Now requests, stale-session rejection, same-session restart and expiry, native
+  constraints, Garage restoration and incompatible-database rejection before
+  mutation. Correct the synthetic MQTT fixture to permit callback-free heartbeat
+  publishing. Tests use synthetic services and temporary databases; no household
+  equipment commands or private configuration edits were made.
+- Final focused runtime checks pass all 73 tests, including effective session
+  ready-by handling. Browser smoke passes 22 charging states in both themes at
+  widths from 320 to 1920 pixels, including one-click Charge Now and return to
+  automatic control, without overlaps, overflow or browser errors.
+
 Completed 2026-09-25 — Home and Garage model explanation polish
 - Review both main folds against the current thermal learners, forecasting,
   strategy, protection and equipment-control implementations. Give both models

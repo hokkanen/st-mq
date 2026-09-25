@@ -241,8 +241,10 @@ reaching the 45-second uncertain-result cleanup and switching to internal sensin
 Accepted writes, missing or conflicting evidence, and expired permissions still
 use the existing cleanup path. No Pill firmware change is required.
 
-The room target is durable intent. Restart does not replay a cached remote
-temperature: the host must obtain fresh source evidence and reestablish native
+The permanent room target comes from `garage.roomTargetC`. Dashboard overrides
+last two hours and retain only their original deadline on restart. Expiry resumes
+the configured target or restores native control and its prior target. Restart
+does not replay a cached remote temperature: the host must obtain fresh source evidence and reestablish native
 setup before resuming. Native changes and managed pauses wait for serial clearing
 of the external override; MQTT publication alone does not prove it cleared.
 External control does not establish physical frost protection, low-heat

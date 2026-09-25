@@ -6,7 +6,7 @@ export const GARAGE_POLICY_VERSION = 'garage-thermal-reserve-v1';
 export const GARAGE_HEAT_TRANSFER_SAFETY_FACTOR = 2;
 export const GARAGE_PREFERENCE_VERSION = 'garage-savings-strategy-v1';
 export const DEFAULT_GARAGE_SETTINGS = Object.freeze({
-  enabled: false, savingsStrategy: 'balanced', baselineC: 10,
+  enabled: false, savingsStrategy: 'balanced', baselineC: 10, roomTargetC: null,
   minSavingsEur: .5, maxPausesPerDay: 1,
   maxSensorAgeMs: 120_000, minOnMs: 3 * 3_600_000, minOffMs: 3_600_000,
   stepMinutes: 15,
@@ -28,6 +28,10 @@ export function garageSettings(input = {}) {
   const output = { ...DEFAULT_GARAGE_SETTINGS, ...input, protection };
   for (const key of ['enabled']) if (typeof output[key] !== 'boolean') throw new Error(`Garage ${key} must be boolean`);
   heatingStrategy(output.savingsStrategy); number(output, 'baselineC', 8, 16);
+  if (output.roomTargetC !== null) {
+    number(output, 'roomTargetC', 5, 15.5);
+    if (!Number.isInteger(output.roomTargetC * 2)) throw new Error('Garage roomTargetC must use half-degree steps');
+  }
   number(output, 'minSavingsEur', 0, 100);
   number(output, 'maxPausesPerDay', 1, 4);
   if (!Number.isInteger(output.maxPausesPerDay)) throw new Error('Garage maxPausesPerDay must be a whole number');

@@ -12,7 +12,7 @@ other fields. There is no separate file to maintain for each feature.
 | Standalone `secrets.json` | Credentials, private locations/device identifiers and only the installation choices you want to supply or override. Non-secret overrides are allowed. |
 | Saved Home Assistant add-on options | The authoritative installation settings in the add-on. An uploaded sparse `secrets.json` is an import into these settings. |
 | Environment variables | Explicit process/deployment overrides, taking precedence over file settings. |
-| Dashboard controls | Everyday preferences and temporary actions described by the relevant feature. |
+| Dashboard controls | Explicit temporary session/deadline overrides and labeled device actions; permanent controller defaults are edited only in configuration. |
 | `config.json.schema` and manifest metadata | Software configuration: accepted fields, types, ranges and Home Assistant packaging. These are not installation overrides. |
 
 Any supported option can be overridden. Validation checks field names, types and
@@ -68,6 +68,51 @@ successful import and application. Omitting a key from a later import preserves
 its saved value. See [permanent configuration](../README.md#permanent-configuration-and-prices)
 for exact paths, reload behavior and restart requirements.
 
+## Charging defaults and dashboard overrides
+
+`charging.defaults` supplies both charging points whenever the vehicle is
+unidentified: `readyBy: "06:00"`, `manualSoc: 20`, `minimumSoc: 80`, and
+`capacityKwh: 74`. `charging.vehicles.bmw.defaults` and
+`charging.vehicles.tesla.defaults` override only the leaves supplied for the
+identified vehicle. Their public capacity defaults are 74 kWh and 57 kWh;
+other values inherit the shared defaults. Capacity and starting charge are
+planning assumptions when no applicable live reading exists.
+
+The permanent automatic scheduling switches are
+`charging.chargers.charger1.schedulingEnabled` and
+`charging.chargers.charger2.schedulingEnabled`, both false by default.
+Charger 2's separate `enabled` field controls its physical integration and does
+not grant scheduling or commissioning permission. `charging.priority` is
+`balanced`, `charger1` or `charger2`, initially `balanced`.
+
+For example, merge only these intentional choices into your configuration:
+
+```json
+{
+  "charging": {
+    "defaults": { "readyBy": "07:00" },
+    "chargers": { "charger1": { "schedulingEnabled": true } },
+    "vehicles": { "tesla": { "defaults": { "minimumSoc": 90 } } }
+  }
+}
+```
+
+**Save for this session** cannot change these defaults. Its scope ends with the
+physical connection; restart preserves only the same ongoing session. Automatic
+scheduling enablement and priority are shown read-only in the dashboard. **Charge
+Now** releases automatic scheduling for the current connection, subject to
+native limits and device readiness. See [charging](charging.md).
+
+Garage's optional `garage.roomTargetC` sets its configured external-sensor room
+target from 5°C to 15.5°C in half-degree steps. Omit it to use native internal
+sensor control. A dashboard room override lasts two hours; expiry returns to
+this configured target or restores native control and the prior native target.
+Restart retains only the original deadline. Setting up the external sensor still
+requires the installed adapter capability and fresh native/sensor evidence.
+Native heat-pump and dehumidifier controls directly change the device's settings;
+local charger setup explicitly configures the device connection. Those actions
+are labeled separately and do not change controller configuration defaults.
+
 ## Heating strategies and limits
 
 Home `controller.savings_strategy` and Garage `garage.savingsStrategy` choose
@@ -116,7 +161,7 @@ larger sections without adding another configuration format.
 
 | Sections, in file order | Settings they own |
 | --- | --- |
-| `controller`, `garage`, `charging`, `electricity` | Home operation and heating, Garage policy/adapter, charger and vehicle sources, electricity tariffs. |
+| `controller`, `garage`, `charging`, `electricity` | Home operation and heating, Garage policy/adapter, charger/vehicle sources and permanent charging defaults, electricity tariffs. |
 | `geoloc`, `mqtt`, `entsoe`, `easee`, `teslamate` | Location, broker access and provider connections. `easee.local_ocpp` contains the authenticated local charger listener and explicit authorization tags; see [Easee setup](charging-easee.md#direct-local-ocpp-telemetry-firmware-344-or-later). |
 | `equipment` | The current MQTT/Shelly equipment inventory and device mappings. |
 | `acquisition`, `recording` | Provider polling/freshness and recording/storage settings. |

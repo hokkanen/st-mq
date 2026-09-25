@@ -22,11 +22,30 @@ Charger 2 is disabled and unverified by default because the hardware has not arr
 
 ## Dashboard and requests
 
-Both charger cards show the physical connection, assigned vehicle or uncertainty, current request, measured/estimated progress, connection cost and control state. The automatic switch governs economic scheduling. Passive identification and metering continue with automatic charging OFF. The separately configured Charger 2 limiter can remain active with economic scheduling OFF.
+Both charger cards show the physical connection, assigned vehicle or uncertainty, current request, measured/estimated progress, connection cost and control state. Configured automatic scheduling permission governs economic scheduling. Passive identification and metering continue with automatic charging OFF. The separately configured Charger 2 limiter can remain active with economic scheduling OFF.
 
-Saved defaults are separate from current-session edits. Automatic charging initially defaults OFF, starting charge to 20%, minimum charge to 80%, and ready-by to 06:00. Unidentified vehicles use each charger's manual capacity fallback (74 kWh for C1, 57 kWh for C2). Identified vehicles use their profiles: BMW 74 kWh, Tesla 57 kWh initially. These usable-capacity values are editable assumptions, not measurements of the owner's batteries.
+Permanent defaults come only from configuration. Both unidentified charging
+points start with 20% charge, an 80% minimum, 06:00 ready-by and 74 kWh capacity
+from `charging.defaults`. Identified vehicles apply their sparse
+`charging.vehicles.<vehicle>.defaults`: BMW 74 kWh and Tesla 57 kWh initially,
+with other values inherited from the shared defaults. These usable capacities
+are assumptions, not measurements. Automatic scheduling defaults OFF through
+`charging.chargers.<charger>.schedulingEnabled`.
 
-The **Save defaults** action updates persistent preferences. Default-derived fields also update the connected request; a deliberate session override remains pinned. **Apply edits to this connection** requires the current physical association, session ID and request revision. It rejects a stale browser tab or a cable swap. Editing a field does not erase the live source reading beside it. Draft edits survive ordinary status refreshes.
+**Save for this session** changes only the current physical connection. The
+server requires the current physical association, session ID and request revision, rejecting a stale browser
+tab or cable swap. Overrides survive restart only within that same connection;
+unplugging returns to configuration defaults. Editing a field does not erase the
+live source reading beside it. Draft edits survive ordinary status refreshes.
+Change permanent defaults in configuration and choose **Apply configuration**.
+
+**Charge Now** is immediately visible at the top right of each charger card.
+It releases the controller's automatic scheduling delay for the current session
+without changing the configured schedule. It requires configured automatic
+charging permission. **Use automatic** ends the override;
+unplugging also ends it. Native vehicle timers, targets, user stops, faults,
+charger limits and authorization still apply, and unavailable or uncommissioned
+hardware cannot be started through this action.
 
 A manual SoC is a one-time anchor. A newer applicable vehicle reading supersedes it using the provider's source clock, or explicitly labeled receipt time when no measurement clock exists. A pinned capacity outranks the provider capacity. An explicit requested minimum remains distinct from the vehicle's actual ceiling; requesting 95% while the vehicle reports an 80% ceiling is constrained rather than silently rewritten. Vehicle current limits and native not-before times constrain either charging point.
 
@@ -76,7 +95,7 @@ An unreachable charger cannot receive a release, and an unavailable OCPP
 authorization server can block new charging. Shelly EVSE controller-loss behavior
 remains unverified; software cannot promise an autonomous hardware fallback.
 
-The ready-by time becomes one concrete occurrence when the physical connection starts. Midnight, identification, progress updates, priority changes and restart do not roll it forward. A deliberate request/default edit may change it. Late identification replaces default-derived vehicle inputs without splitting the physical session or resetting its costs.
+The ready-by time becomes one concrete occurrence when the physical connection starts. Midnight, identification, progress updates, priority changes and restart do not roll it forward. A deliberate session ready-by edit may change it. Late identification replaces default-derived vehicle inputs without splitting the physical session or resetting its costs.
 
 ## Vehicle assignment
 
@@ -90,7 +109,10 @@ TeslaMate has transport, subscription, live logger-health and per-field evidence
 
 The global priority setting is **balanced**, **Charger 1**, or **Charger 2**. It belongs to the physical charging point and immediately revises allocation when changed. The revision invalidates queued intentions without resetting session requests, manual instructions, metered energy or cost.
 
-Open either charger's **Details & settings**, then **Charger priority**, to edit this shared preference. Both entries show the saved value and open the same dialog. Choose a priority and **Save priority** to apply it; closing without saving leaves it unchanged. The preference stays in effect across connections until changed. The dialog keeps unsaved choices during status refreshes, reports failed saves inline, and permits inspection on read-only instances. Priority controls stay inside the expanded settings, leaving the compact Garage overview and charger summaries unchanged.
+The dashboard shows the configured priority read-only in charger details.
+Change `charging.priority` in configuration and choose **Apply configuration**
+to change the permanent allocation preference. Scheduling enablement is also
+configuration-only.
 
 The planner first respects device/vehicle limits, manual permission, native start times and credible capacity. It protects both deadlines where the modeled opportunities allow that. Actual all-in electricity cost then governs period selection. Priority must not buy more expensive energy merely to favor a charger. In infeasible cases, charger priority favors its remaining request; balanced mode shares normalized shortfall. Eligible charging time and grid-energy need determine pressure. Shared budgets below two minimum currents use bounded time slices rather than invalid sub-minimum simultaneous commands.
 
@@ -124,7 +146,7 @@ Price revisions are canonicalized by publication authority over their actual cov
 
 Current-format sessions, requests, assignments, costs and uncertain commands recover only within the same physical/source association. Device, MQTT broker/root, configured firmware/profile or phase association changes cannot borrow old ownership. A potentially dispatched command is reconciled with native readback before another intention; it is never blindly replayed.
 
-Pre-1.0 native state is not migrated. The current charging state uses version 5; the physical adapter uses its own explicitly scoped current state. Old pseudo-C2 settings, charger-bound vehicle topics, efficiency overrides, unscoped verdicts and aliases are rejected. Only the v0.7.5 `easee.csv` and `st-mq.csv` import paths are supported legacy boundaries. Imported C1/property history retains its provenance and does not become a Shelly observation.
+Pre-1.0 native state is not migrated. The current charging state uses version 6; the physical adapter uses its own explicitly scoped current state. Persistent dashboard default preferences, old pseudo-C2 settings, charger-bound vehicle topics, efficiency overrides, unscoped verdicts and aliases are rejected. Only the v0.7.5 `easee.csv` and `st-mq.csv` import paths are supported legacy boundaries. Imported C1/property history retains its provenance and does not become a Shelly observation.
 
 The **Added energy** tile shows recorded grid energy for the whole plugged-in
 connection. A fresh vehicle battery reading can change the charge estimate's

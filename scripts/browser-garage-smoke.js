@@ -144,6 +144,7 @@ try {
           charger.values.soc = { ...observation(62), measuredAt: status.now - 4 * 86400_000 };
           charger.values.minimumSoc = observation(85);
           charger.values.connected = observation(state.startsWith('unknown') ? null : !state.startsWith('disconnected'));
+          charger.request = charger.values.connected.value === true ? { sessionId: 'synthetic-browser-session', revision: 1, overrides: {} } : null;
           charger.vehicle = { state: charger.values.connected.value === true ? 'identified' : 'disconnected',
             id: charger.id === 'charger1' ? 'bmw' : 'tesla', label: charger.id === 'charger1' ? 'BMW' : 'Tesla' };
           charger.values.scheduledStartAt = observation(status.now + 2 * 3600_000);
@@ -243,16 +244,16 @@ try {
   await send('Page.navigate', { url: `http://127.0.0.1:${app.server.address().port}` });
   await until("document.getElementById('history')?.dataset.ready === 'true'");
   assert.equal(await evaluate("document.getElementById('error').hidden"), true);
-  await until("document.getElementById('charger1-setting-capacityKwh')?.disabled === false");
+  await until("document.getElementById('charger1-setting-capacityKwh') !== null");
   assert.deepEqual(await evaluate("['control-title','garage-title'].map(id=>document.getElementById(id).textContent)"), ['Home', 'Garage']);
   await checkDashboardDisclosures({ evaluate, keyPress, until });
   assert.deepEqual(await evaluate("[...document.querySelectorAll('#charging-devices > .equipment-device')].map(node=>node.id)"), ['charger1-device', 'charger2-device']);
-  assert.deepEqual(await evaluate("['charger1-setting-minimumSoc','charger1-setting-readyBy','charger1-setting-capacityKwh','charger2-setting-capacityKwh'].map(id=>document.getElementById(id).value)"), ['80', '06:00', '74', '57']);
+  assert.deepEqual(await evaluate("['charger1-setting-minimumSoc','charger1-setting-readyBy','charger1-setting-capacityKwh','charger2-setting-capacityKwh'].map(id=>document.getElementById(id).value)"), ['80', '06:00', '74', '74']);
   assert.equal(await evaluate("document.getElementById('charger1-setting-manualSoc').value"), '20');
-  assert.equal(await evaluate("document.getElementById('charger1-enabled').getAttribute('aria-checked')"), 'false');
-  assert.equal(await evaluate("document.getElementById('charger1-setting-readyBy').disabled"), false);
-  assert.equal(await evaluate("document.getElementById('charger2-setting-readyBy').disabled"), false);
-  assert.equal(await evaluate("document.getElementById('charger2-enabled').disabled"), false);
+  assert.equal(await evaluate("document.getElementById('charger1-enabled').textContent"), 'OFF');
+  assert.equal(await evaluate("document.getElementById('charger1-setting-readyBy').disabled"), true);
+  assert.equal(await evaluate("document.getElementById('charger2-setting-readyBy').disabled"), true);
+  assert.equal(await evaluate("document.getElementById('charger2-enabled').tagName"), 'SPAN');
   assert.notEqual(await evaluate("getComputedStyle(document.getElementById('charger2-setting-readyBy').closest('.charging-field')).display"), 'none',
     'Physical Charger 2 offers a ready-by setting');
   assert.notEqual(await evaluate("getComputedStyle(document.getElementById('charger2-enabled').parentElement).display"), 'none',
@@ -264,19 +265,14 @@ try {
     'Charger form guidance stays inline beside each input');
   await checkChargingPriority({ send, evaluate, until, keyPress, artifacts });
   await evaluate("document.getElementById('garage-equipment-details').open=true; true");
-  for (const [charger, value] of [[1, '76'], [2, '59']]) {
-    await evaluate(`(() => { document.getElementById('charger${charger}-device').open=true;
-      const input=document.getElementById('charger${charger}-setting-capacityKwh'); input.value='${value}';
-      input.dispatchEvent(new Event('input')); document.getElementById('charger${charger}-settings-form').requestSubmit(); })()`);
-    await until(`document.getElementById('charger${charger}-settings-message').textContent === 'Settings saved.'`);
-  }
-  await evaluate("(() => { const field=document.getElementById('charger1-setting-manualSoc'); field.value='43'; field.dispatchEvent(new Event('input')); document.getElementById('charger1-settings-form').requestSubmit(); })()");
-  await until("document.getElementById('charger1-settings-message').textContent==='Settings saved.'");
+  assert.equal(await evaluate("document.getElementById('charger1-settings-save').textContent"), 'Save for this session');
+  assert.equal(await evaluate("document.getElementById('charger1-settings-save').disabled"), true,
+    'A disconnected charger has no session to override');
   await send('Page.reload');
-  await until("document.getElementById('charger1-setting-capacityKwh')?.disabled === false");
+  await until("document.getElementById('charger1-setting-capacityKwh') !== null");
   await until("typeof globalThis.refreshLearningSmokeStatus === 'function'");
-  assert.deepEqual(await evaluate("['charger1-setting-capacityKwh','charger2-setting-capacityKwh'].map(id=>document.getElementById(id).value)"), ['76', '59']);
-  assert.equal(await evaluate("document.getElementById('charger1-setting-manualSoc').value"), '43');
+  assert.deepEqual(await evaluate("['charger1-setting-capacityKwh','charger2-setting-capacityKwh'].map(id=>document.getElementById(id).value)"), ['74', '74']);
+  assert.equal(await evaluate("document.getElementById('charger1-setting-manualSoc').value"), '20');
   assert.equal(await evaluate("document.getElementById('charger1-soc').textContent"), '—',
     'The saved starting charge does not appear as a current charge before a connection is known');
   assert.equal(await evaluate("document.getElementById('charger1-overview').hidden"), false);
@@ -318,6 +314,7 @@ try {
     role: '#charger2-state', activity: '#charger2-event-value', context: '#charger2-notice',
   };
   for (const expanded of [false, true]) for (const [metric, selector] of Object.entries(chargerMetricSelectors)) {
+    if (metric === 'role' && !expanded) continue; // Control-role details live inside the fold.
     await evaluate(`(() => {
       document.getElementById('charger2-device').open=${expanded};
       const trigger = document.querySelector('${selector} .status-detail-trigger');
@@ -410,9 +407,9 @@ try {
     ['—', '—', '—', '—'], 'Disconnected summaries replace stale charge and energy readings with dashes');
   assert.equal(await evaluate("document.getElementById('charger2-reading-time').hidden"), true);
   await evaluate("globalThis.chargingSmokeValues=null; globalThis.refreshLearningSmokeStatus()");
-  await until("document.getElementById('charger2-setting-minimumSoc').disabled===false");
+  await until("document.getElementById('charger2-setting-minimumSoc').disabled===true");
   assert.equal(await evaluate("document.getElementById('charger2-setting-manualSoc').value"), '20');
-  assert.equal(await evaluate("document.getElementById('charger2-setting-manualSoc').disabled"), false);
+  assert.equal(await evaluate("document.getElementById('charger2-setting-manualSoc').disabled"), true);
   assert.deepEqual(await evaluate("[...document.querySelectorAll('.controller-column > article, .controller-panels > article')].map(card => card.id)"),
     ['home-control', 'providers-controls', 'garage-control'],
     'Home and Garage have separate dashboard cards beside Data & settings');
@@ -881,7 +878,7 @@ try {
       await capture(`dashboard-active-overview-${width}-${theme}`);
       await checkIndependentChargerFolds(`active-${width}-${theme}`, width === 1440);
       await evaluate("globalThis.chargingSmokeValues=null; globalThis.nativePumpSmokeValues=false; globalThis.refreshLearningSmokeStatus()");
-      await until("document.getElementById('charger2-setting-manualSoc').disabled===false");
+      await until("document.getElementById('charger2-setting-manualSoc').disabled===true");
       await evaluate(`window.homeEnergyTheme.setTheme('${theme}');
         document.querySelectorAll('.learning-model-details, .learning-model-details details').forEach(fold => fold.open = false);
         document.getElementById('home-heat-pump-details').open = true;
@@ -973,7 +970,7 @@ try {
         }
       }
       await evaluate("globalThis.chargingSmokeValues=null; globalThis.nativePumpSmokeValues=false; globalThis.refreshLearningSmokeStatus()");
-      await until("document.getElementById('charger2-setting-manualSoc').disabled===false");
+      await until("document.getElementById('charger2-setting-manualSoc').disabled===true");
     }
     // Preserve the equipment and savings layout checks from this smoke test.
     for (const [id, name] of [['timing-details', 'savings'], ['garage-controller-details', 'equipment'], ['charger1-device', 'charging']]) {
@@ -984,7 +981,9 @@ try {
       await capture(`${name}-${width}`);
     }
   }
-  // Responsive reflow and status polling must keep an in-progress edit intact.
+  // Responsive reflow and status polling must keep an in-progress session edit intact.
+  await evaluate("globalThis.chargingSmokeValues={charger1:'single'}; globalThis.refreshLearningSmokeStatus()");
+  await until("!document.getElementById('charger1-setting-capacityKwh').disabled");
   await evaluate(`(() => {
     const device = document.getElementById('charger1-device'); device.open = true;
     globalThis.chargingSmokeEdit = document.getElementById('charger1-setting-capacityKwh');
@@ -1000,9 +999,10 @@ try {
       && document.getElementById('charger1-device').open`), true,
       `An unsaved charger setting, focus and open fold survive polling at ${width}px`);
   }
-  await evaluate(`globalThis.chargingSmokeEdit.value = globalThis.chargingSmokeSavedCapacity;
-    globalThis.chargingSmokeEdit.dispatchEvent(new Event('input')); document.getElementById('charger1-settings-form').requestSubmit()`);
-  await until("document.getElementById('charger1-settings-message').textContent==='Settings saved.'");
+  await evaluate("globalThis.chargingSmokeValues=null; globalThis.refreshLearningSmokeStatus()");
+  await until("document.getElementById('charger1-setting-capacityKwh').disabled");
+  assert.equal(await evaluate("document.getElementById('charger1-settings-save').disabled"), true,
+    'Ending the synthetic session discards its draft');
   // Cover the single-column tablet layout, narrow desktop columns, and both sides of pairing.
   for (const width of [624, 625, 626, 640, 768, 900, 1024, 1200, 1266, 1267, 1268, 1280, 1366, 1920]) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: 1100, deviceScaleFactor: 1, mobile: false });
@@ -1038,10 +1038,10 @@ try {
       'disabled release without an owned episode', 'closed Garage disclosures', '320–1920px layouts including tablet and charger-pair boundaries',
       'equipment rows open with Enter and full-summary pointer clicks and preserve focus and expansion during refresh',
       'shared charger cards, energy-based percentage with source and original vehicle timestamp, 20% starting fallback, confirmed periods, current readiness, TeslaMate reception, seasonal history explanation',
-      'Controlled and Observed roles with shared charge, target, completion, delivered energy, remaining energy and cost in the always-visible summary',
+      'Charge Now in the summary, control-role details inside the fold, and shared charge, target, completion, delivered energy, remaining energy and cost metrics',
       'fixed matching charger summary heights across both themes, all viewports, connection, charging, planning, manual priority, risk and handover states, and open or closed folds',
       'equal desktop charger columns, narrow mobile stacking, independent folds without stretching the closed sibling, and active full-dashboard screenshots',
-      'shared priority dialog saves explicitly, discards cancelled drafts, preserves focus and status-refresh edits, and leaves Garage dimensions unchanged at 320/390/1440px in both themes',
+      'shared priority stays configuration-owned and Charge Now stays visible at the top right at 320/390/1440px in both themes',
       'unsaved charger settings and focus survive status polling and reflow between desktop and mobile',
       'summary bands remain separate without vertical overflow; disconnected and unknown readings retain the layout without stale percentages',
       'metric explanations open without toggling equipment, preserve focus during refresh, and return on Escape; form guidance and all charging periods remain inline',

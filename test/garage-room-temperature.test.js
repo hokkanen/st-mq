@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { GarageRoomTemperature } from '../src/garage/room-temperature.js';
-import { GarageRuntime } from '../src/garage/runtime.js';
+import { GarageRuntime, GARAGE_ROOM_OVERRIDE_MS } from '../src/garage/runtime.js';
+import { garageSettings } from '../src/garage/settings.js';
 import { Store } from '../src/storage/store.js';
 
 const BASE = 1_800_000_000_000;
@@ -236,7 +237,7 @@ test('missing startup sensor data still establishes the native17 fallback withou
   assert.equal(f.sent.filter(command => Number.isFinite(command.temperatureC)).length, 0);
 });
 
-test('runtime persists room intent atomically, restores only the intent, and removes it for ordinary settings', async t => {
+test('runtime persists only a bounded room override and removes it for ordinary settings', async t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   const f = fixture(null), engine = { latest: {}, settings: { mode: 'shadow' } };
   const options = { engine, store, config: { input: 'mqtt', garage: { enabled: false } }, clock: f.now };
@@ -244,7 +245,8 @@ test('runtime persists room intent atomically, restores only the intent, and rem
   t.after(() => runtime.close({ restore: false }));
   await runtime.setNativeSettings({ setting: 'targetC', value: 5 });
   await runtime.roomDispatch;
-  assert.deepEqual(store.getState(runtime.keys.roomTemperature), { targetC: 5 });
+  assert.deepEqual(store.getState(runtime.keys.roomTemperature), { targetC: 5, createdAt: BASE,
+    expiresAt: BASE + GARAGE_ROOM_OVERRIDE_MS, restoreTargetC: 17, adapterKey: runtime.roomAdapterKey });
   assert.equal(runtime.nativeControls().settings.targetC.value, 5);
   assert.equal(runtime.nativeControls().settings.targetC.min, 5);
   const restarted = new GarageRuntime(options); t.after(() => restarted.close({ restore: false }));
@@ -253,8 +255,113 @@ test('runtime persists room intent atomically, restores only the intent, and rem
   f.ack(); await runtime.roomTemperatureTick();
   await runtime.setNativeSettings({ setting: 'targetC', value: 18 });
   await runtime.roomDispatch;
-  assert.deepEqual(store.getState(runtime.keys.roomTemperature), { targetC: null });
+  assert.equal(store.getState(runtime.keys.roomTemperature), null);
   assert.equal(runtime.roomTemperature.targetC, null);
+});
+
+test('configured room defaults resume at the original override deadline, including restart', async t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  const f = fixture(null), engine = { latest: {}, settings: { mode: 'shadow' } };
+  const config = { input: 'mqtt', garage: { roomTargetC: 10 } };
+  const options = { engine, store, config, clock: f.now };
+  const runtime = new GarageRuntime(options); runtime.setAdapter(f.adapter);
+  t.after(() => runtime.close({ restore: false }));
+  assert.equal(runtime.roomTemperature.targetC, 10);
+  await runtime.setNativeSettings({ setting: 'targetC', value: 7 }); await runtime.roomDispatch;
+  assert.equal(runtime.roomTemperatureStatus().overrideUntil, BASE + GARAGE_ROOM_OVERRIDE_MS);
+  assert.equal(config.garage.roomTargetC, 10);
+  f.advance(GARAGE_ROOM_OVERRIDE_MS - 1000);
+  const restarted = new GarageRuntime(options); t.after(() => restarted.close({ restore: false }));
+  assert.equal(restarted.roomTemperature.targetC, 7);
+  assert.equal(restarted.roomTemperatureStatus().overrideUntil, BASE + GARAGE_ROOM_OVERRIDE_MS);
+  f.advance(1000); restarted.expireControls(f.now());
+  assert.equal(restarted.roomTemperature.targetC, 10);
+  assert.equal(restarted.roomTemperatureStatus().source, 'configuration');
+  assert.equal(store.getState(restarted.keys.roomTemperature), null);
+  assert.equal(store.getState(restarted.keys.roomRestoration), null);
+});
+
+test('expired room overrides restore internal sensing and the previous native target across restart', async t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  const f = fixture(null), engine = { latest: {}, settings: { mode: 'shadow' } };
+  f.native.targetC = 20;
+  const options = { engine, store, config: { input: 'mqtt', garage: {} }, clock: f.now };
+  const runtime = new GarageRuntime(options); runtime.setAdapter(f.adapter);
+  t.after(() => runtime.close({ restore: false }));
+  await runtime.setNativeSettings({ setting: 'targetC', value: 7 }); await runtime.roomDispatch;
+  f.advance(GARAGE_ROOM_OVERRIDE_MS);
+  const restarted = new GarageRuntime(options); restarted.setAdapter(f.adapter);
+  t.after(() => restarted.close({ restore: false }));
+  assert.equal(restarted.roomTemperature.targetC, null);
+  assert.equal(store.getState(restarted.keys.roomTemperature), null);
+  assert.deepEqual(store.getState(restarted.keys.roomRestoration), { targetC: 20, createdAt: f.now(), adapterKey: runtime.roomAdapterKey });
+  const again = new GarageRuntime(options); again.setAdapter(f.adapter);
+  t.after(() => again.close({ restore: false }));
+  f.ack(); await again.roomTemperatureTick();
+  assert.equal(f.sent.at(-1).temperatureC, null);
+  f.ack(); await again.roomTemperatureTick();
+  assert.deepEqual(f.sent.at(-1), { setting: 'targetC', value: 20, requestedAt: f.now() });
+  assert.ok(store.getState(again.keys.roomRestoration), 'publication does not complete restoration');
+  f.ack(); await again.roomTemperatureTick();
+  assert.equal(store.getState(again.keys.roomRestoration), null);
+  assert.equal(f.native.targetC, 20);
+});
+
+test('ordinary device edits only suspend a configured room default for two hours', async t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  const f = fixture(null), runtime = new GarageRuntime({ store, engine: { latest: {}, settings: { mode: 'shadow' } },
+    config: { input: 'mqtt', garage: { roomTargetC: 10 } }, clock: f.now });
+  runtime.setAdapter(f.adapter); t.after(() => runtime.close({ restore: false }));
+  await runtime.setNativeSettings({ setting: 'power', value: 'off' }); await runtime.roomDispatch;
+  assert.equal(runtime.roomTemperature.targetC, null);
+  assert.equal(runtime.roomTemperatureStatus().overrideUntil, BASE + GARAGE_ROOM_OVERRIDE_MS);
+  f.advance(GARAGE_ROOM_OVERRIDE_MS); runtime.expireControls(f.now());
+  assert.equal(runtime.roomTemperature.targetC, 10);
+  assert.equal(f.sent.some(row => row.setting === 'power' && row.value === 'on'), false,
+    'resuming configured intent never forces the pump back on');
+});
+
+test('saved room overrides cannot authorize a newly configured adapter', async t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  const f = fixture(null), options = { store, engine: { latest: {}, settings: { mode: 'shadow' } },
+    config: { input: 'mqtt', garage: {} }, clock: f.now };
+  const runtime = new GarageRuntime(options); runtime.setAdapter(f.adapter);
+  t.after(() => runtime.close({ restore: false }));
+  await runtime.setNativeSettings({ setting: 'targetC', value: 7 }); await runtime.roomDispatch;
+  assert.throws(() => new GarageRuntime({ ...options,
+    config: { input: 'mqtt', garage: { adapter: { driver: 'shelly-cn105', commandTopic: 'invented/replacement/command' } } } }),
+  /Unsupported saved Garage room override/);
+  assert.equal(store.getState(runtime.keys.roomTemperature).targetC, 7);
+});
+
+test('failed expiry persistence cannot renew an expired room override', async t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  const f = fixture(null), runtime = new GarageRuntime({ store, engine: { latest: {}, settings: { mode: 'shadow' } },
+    config: { input: 'mqtt', garage: {} }, clock: f.now });
+  runtime.setAdapter(f.adapter); t.after(() => runtime.close({ restore: false }));
+  await runtime.setNativeSettings({ setting: 'targetC', value: 7 }); await runtime.roomDispatch;
+  f.advance(GARAGE_ROOM_OVERRIDE_MS); const before = f.sent.length, original = store.setState.bind(store);
+  store.setState = (key, value) => { if (key === runtime.keys.roomTemperature) throw new Error('storage unavailable'); return original(key, value); };
+  await runtime.roomTemperatureTick();
+  assert.equal(f.sent.length, before);
+  assert.equal(runtime.roomTemperature.phase, 'blocked');
+  store.setState = original;
+  await runtime.roomTemperatureTick();
+  assert.equal(runtime.roomTemperature.targetC, null);
+  assert.equal(runtime.roomRestoration.targetC, 17);
+});
+
+test('obsolete permanent preferences and malformed room overrides fail before database mutation', t => {
+  for (const saved of [{ targetC: 7 }, { targetC: 7, createdAt: BASE, expiresAt: BASE + 1, restoreTargetC: 17 }]) {
+    const store = new Store(':memory:'); t.after(() => store.close());
+    store.setState('garage:roomTemperature:mqtt', saved);
+    const original = store.setState; store.setState = () => { throw new Error('unexpected mutation'); };
+    assert.throws(() => new GarageRuntime({ store, engine: { latest: {}, settings: { mode: 'shadow' } },
+      config: { input: 'mqtt', garage: {} }, clock: () => BASE }), /Unsupported saved Garage room override/);
+    store.setState = original;
+  }
+  for (const roomTargetC of [4, 16, 7.1, '10']) assert.throws(() => garageSettings({ roomTargetC }), /roomTargetC/);
+  assert.equal(garageSettings({ roomTargetC: 7.5 }).roomTargetC, 7.5);
 });
 
 test('runtime rejects stale preference API, unsupported low target, replicas and failed persistence', async t => {

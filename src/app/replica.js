@@ -51,11 +51,11 @@ function chargingSnapshot(snapshot) {
   if (!snapshot) return null;
   const saved = snapshot.store.getState(`charging:${snapshot.input}`);
   if (!saved) return null;
-  if (saved.version !== 5) throw new Error('Unsupported charging snapshot; start a fresh development database');
-  if (!Array.isArray(saved.view?.chargers) || CHARGER_DEFINITIONS.some(({id}) => !saved.view.chargers.some(row => row.id === id && row.values)))
+  if (saved.version !== 6 || Object.hasOwn(saved, 'settings')) throw new Error('Unsupported charging snapshot; start a fresh development database');
+  if (!saved.view?.settings || !Array.isArray(saved.view?.chargers) || CHARGER_DEFINITIONS.some(({id}) => !saved.view.chargers.some(row => row.id === id && row.values)))
     throw new Error('Malformed current charging snapshot; start a fresh development database');
   const snapshotAt = snapshot.publication.sourceAt;
-  const settings = chargingSettings(saved.settings ?? {});
+  const settings = chargingSettings(saved.view.settings);
   const reception = value => ({ ...value, connected: null, brokerConnected: null, subscribed: null,
     subscriptionStatus: 'read-only-snapshot', reason: 'read-only-snapshot', readOnly: true, recorded: true, snapshotAt });
   const chargers = CHARGER_DEFINITIONS.map(definition => {

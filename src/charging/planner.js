@@ -15,7 +15,7 @@ const manualActive = (charger, now) => Boolean(charger.control?.manual
 const released = charger => charger.control?.provisional !== true
   && (charger.control?.released === true || charger.control?.phase === 'released');
 const shouldPlan = (charger, now) => charger.settings.enabled && charger.capabilities.scheduling
-  && !manualActive(charger, now) && (!released(charger) || charger.capabilities.currentControl) && charger.requiredGridKwh > EPS && value(charger, 'connected') === true;
+  && !charger.request?.chargeNow && !manualActive(charger, now) && (!released(charger) || charger.capabilities.currentControl) && charger.requiredGridKwh > EPS && value(charger, 'connected') === true;
 const expectedSingleCurrents = new WeakMap();
 
 function electrical(charger, supply = {}) {
@@ -54,7 +54,7 @@ export function forecastCharger({ now, deadlineAt, charger, supply = {} } = {}) 
   if (charger.requiredGridKwh <= EPS && targetKnown(charger) && value(charger, 'charging') !== true && !(value(charger, 'actualCurrentA') > 0))
     return { ...base, reason: 'vehicle-target-already-reached' };
   const charging = value(charger, 'charging') === true
-    || released(charger) && !(value(charger, 'vehicleNotBefore') > now);
+    || (released(charger) || charger.request?.chargeNow) && !(value(charger, 'vehicleNotBefore') > now);
   const chargerStart = value(charger, 'scheduledStartAt'), vehicleStart = value(charger, 'vehicleNotBefore');
   const starts = [chargerStart, vehicleStart].filter(finite);
   const schedule = starts.length ? Math.max(...starts) : null;

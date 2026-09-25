@@ -277,31 +277,35 @@ test('late real telemetry appears even at zero and constant reports remain usefu
 });
 
 
-test('room setting permits 5°C only when advertised and preserves the saved target across fallback', async () => {
+test('room setting exposes a two-hour override and keeps its expiry visible during fallback', async () => {
   const f = panelFixture(), status = structuredClone(f.status);
   Object.assign(status.garage.adapter.native, { targetC: 17 });
   status.garage.adapter.native.readbacks.targetC.value = 17;
   Object.assign(status.garage.nativeControls.settings.targetC, { min: 5, value: 5, usable: false });
   status.garage.roomTemperature = { targetC: 5, phase: 'waiting', reason: 'rear-temperature-stale',
-    sourceC: null, measuredAt: null, offsetC: 12, suppliedC: null, nativeTargetC: 17, acknowledged: false };
+    sourceC: null, measuredAt: null, offsetC: 12, suppliedC: null, nativeTargetC: 17, acknowledged: false,
+    defaultTargetC: 10, overrideUntil: now + 2 * 3_600_000 };
   f.panel.update(status); f.change('targetC');
   assert.equal(f.nodes.get('garage-native-temperature').min, 5);
   assert.equal(f.nodes.get('garage-native-temperature').value, '5');
   assert.equal(f.nodes.get('garage-native-temperature-help').hidden, false);
+  assert.equal(f.nodes.get('garage-native-submit').textContent, 'Save for 2 hours');
   assert.match(f.nodes.get('garage-room-temperature-status').textContent, /Room setting 5 °C.*External temperature control is unavailable/);
+  assert.match(f.nodes.get('garage-room-temperature-status').textContent, /Temporary until/);
   for (const value of ['4.5', '31.5', '5.25']) { f.nodes.get('garage-native-temperature').value = value; await f.submit(); }
   assert.equal(f.calls.length, 0);
   f.nodes.get('garage-native-temperature').value = '5';
   f.reply({ ...status, garage: { ...status.garage, nativeControls: { ...status.garage.nativeControls,
-    result: { setting: 'targetC', value: 5, status: 'saved' } } } });
+    result: { setting: 'targetC', value: 5, status: 'saved', expiresAt: now + 2 * 3_600_000 } } } });
   await f.submit();
   assert.deepEqual(f.calls, [['/api/garage/native', { setting: 'targetC', value: 5 }]]);
-  assert.match(f.nodes.get('garage-native-message').textContent, /Saved; preparing external temperature control/);
+  assert.match(f.nodes.get('garage-native-message').textContent, /Temporary until.*preparing external temperature control/);
   assert.equal(mitsubishiReadings(status.garage, now).find(row => row.key === 'native-targetC').value, '17 °C');
   assert.equal(f.nodes.get('garage-native-temperature').value, '5');
   f.change('fan');
   assert.equal(f.nodes.get('garage-native-temperature-help').hidden, true);
-  assert.match(f.nodes.get('garage-native-status').textContent, /ends external temperature control/);
+  assert.match(f.nodes.get('garage-native-status').textContent, /suspends configured room control for 2 hours/);
+  assert.equal(f.nodes.get('garage-native-submit').textContent, 'Apply to heat pump');
 });
 
 test('room control status distinguishes acknowledgement, preparation and fallback without rewriting native evidence', () => {

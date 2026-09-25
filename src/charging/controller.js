@@ -368,6 +368,18 @@ export function createChargingController({ adapter, initialState = null, saveSta
           : 'Enable or resume the charger in Easee before automatic charging can schedule it.', state.manual?.kind === 'stop' ? null : 'charger-stopped');
         return status();
       }
+      if (desired.chargeNow && desired.chargeNow.connectedAt === state.session?.connectedAt
+        && snapshot.pluggedIn === true && !state.vehicleDisconnect?.awaitingConnection && !state.manual) {
+        // A session override releases only our own restriction. External native
+        // instructions and all device protections continue to take precedence.
+        if (ownsCurrent()) { operation = 'command-failed'; await clearCurrent(snapshot.schedule.enabled, expectedGeneration); }
+        state.execution = null; state.released = true; state.provisional = false;
+        await phase('released', 'Charge Now is active for this connection. Charger and vehicle limits still apply.');
+        return status();
+      }
+      if (desired.resume === true && !state.manual) {
+        state.released = false; state.execution = null; state.provisional = false; state.phase = 'unavailable';
+      }
       if (state.vehicleDisconnect?.cleanupPending) {
         state.execution = null; state.released = false; state.provisional = false;
         if (state.manual?.kind === 'stop') state.manual = null;

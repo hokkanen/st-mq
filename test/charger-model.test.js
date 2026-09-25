@@ -9,10 +9,10 @@ const config = chargingSettings();
 const make = (index = 0, extra = {}) => buildCharger({ definition: CHARGER_DEFINITIONS[index],
   settings: config.chargers[CHARGER_DEFINITIONS[index].id], now, ...extra });
 
-test('identical preference structures retain first-use values independently and deep-merge patches', () => {
+test('both unidentified chargers share config defaults and session patches remain independently validated', () => {
   assert.deepEqual(Object.keys(config.chargers.charger1), Object.keys(config.chargers.charger2));
   assert.deepEqual(Object.values(config.chargers).map(item => [item.enabled, item.minimumSoc, item.readyBy, item.manualSoc, item.capacityKwh]),
-    [[false, 80, '06:00', 20, 74], [false, 80, '06:00', 20, 57]]);
+    [[false, 80, '06:00', 20, 74], [false, 80, '06:00', 20, 74]]);
   const saved = mergeChargingSettings(config, { chargers: { charger2: { capacityKwh: 60, manualSoc: 35 } } });
   assert.equal(saved.chargers.charger1.capacityKwh, 74);
   assert.equal(saved.chargers.charger2.manualSoc, 35);

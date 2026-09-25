@@ -41,8 +41,8 @@ driver, exact private MQTT topics and commissioning gates. The default synthetic
   remain host inputs. Do not move optimization, thermal-reserve policy or EV scheduling
   into the Pill. Both vehicle doors are at the front; door2 is not a rear door.
 
-ST-MQ also supports the Pill's external temperature control for permanent room
-settings down to 5°C. The pump must already be ON in HEAT mode. ST-MQ explicitly
+ST-MQ also supports the Pill's external temperature control for configuration-owned
+room targets and two-hour dashboard overrides down to 5°C. The pump must already be ON in HEAT mode. ST-MQ explicitly
 commands and confirms the native 17°C target, then feeds the independent Garage rear
 temperature plus `17 − requested room setting`:
 a 5°C setting adds 12°C. This uses neither Mitsubishi i-save nor an owner

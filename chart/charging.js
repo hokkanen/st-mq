@@ -36,7 +36,8 @@ const sourceLabel = (field, vehicle) => {
   return ({ mqtt: 'Vehicle MQTT', 'bmw-cardata': 'BMW CarData', teslamate: 'TeslaMate', easee: 'Easee', 'shelly-evse':'Shelly EVSE', 'session-anchor':'Connection charge anchor', 'session-request':'Connection request' })[source] ?? 'Automatic';
 };
 const automaticFor = (charger, field) => (!charger.vehicle || charger.vehicle.state === 'identified') && automatic(field);
-const capacityProfileFor = charger => charger.vehicle?.state === 'identified' ? charger.vehicle.id : `generic:${charger.id}`;
+const requestKey = charger => charger.request ? `${charger.association}:${charger.request.sessionId}:${charger.request.revision}` : null;
+const connectedSession = charger => Boolean(charger.request && charger.values?.connected?.value === true);
 const sessionTargetFor = charger => charger.vehicle?.state === 'identified' && charger.vehicle.id === 'bmw'
   && charger.values?.connected?.value === true && Number.isSafeInteger(charger.targetSelection?.connectedAt)
   ? charger.targetSelection : null;
@@ -46,33 +47,27 @@ function vehiclePresentation(charger) {
     detail: `${vehicle.label} is associated with this physical charger for the current connection. Vehicle readings carry their own source and quality.` };
   if (vehicle?.state === 'conflict') return { label: 'Vehicle evidence conflicts', detail: 'Both connections remain separately metered. Use the charger fallback request until the evidence resolves.' };
   if (vehicle?.reason === 'awaiting-stop-confirmation' && charger.values?.connected?.value === true)
-    return { label: 'BMW identification pending', detail: 'BMW is a candidate for this connection. Waiting for matching charging-stop readings from BMW and Easee before confirming it. Saved vehicle settings remain in use.' };
+    return { label: 'BMW identification pending', detail: 'BMW is a candidate for this connection. Waiting for matching charging-stop readings from BMW and Easee before confirming it. Configured vehicle defaults remain in use.' };
   if (vehicle?.state === 'identifying') return { label: 'Identifying vehicle',
-    detail: 'Checking which vehicle is connected. You can enter starting charge, target and usable battery capacity below; these values are used until a vehicle is identified.' };
+    detail: 'Checking which vehicle is connected. You can edit starting charge, target and usable battery capacity for this session below.' };
   if (charger.values?.connected?.value === true) return { label: 'Vehicle unidentified',
-    detail: 'Use the saved starting charge, target and usable battery capacity below for this vehicle, including visitors. BMW or Tesla readings take over only after identification.' };
-  return { label: 'Any vehicle', detail: 'This charger accepts any vehicle. Saved manual settings are available for visitors; BMW and Tesla readings are used only after identification.' };
+    detail: 'Configured defaults cover unidentified vehicles, including visitors. You can change starting charge, target and usable battery capacity for this session below. BMW or Tesla readings take over only after identification.' };
+  return { label: 'Any vehicle', detail: 'This charger accepts any vehicle. Configured defaults are available for visitors; BMW and Tesla readings are used only after identification.' };
 }
 const notices = value => (Array.isArray(value) ? value : value ? [value] : []).map(item => human(item?.message ?? item?.reason ?? item));
 const settingId = (id, key) => `${id}-setting-${key.replaceAll('.', '-')}`;
 const get = (object, path) => path.split('.').reduce((value, key) => value?.[key], object);
-function assign(object, path, value) {
-  const keys = path.split('.'), last = keys.pop();
-  for (const key of keys) object = object[key] ??= {};
-  object[last] = value;
-}
-
 // One field definition and one renderer serve every charger. The server supplies
-// first-use defaults and capabilities, including for chargers added later.
+// configured defaults and capabilities, including for chargers added later.
 export const chargingFields = [
   { key: 'readyBy', label: 'Ready-by time · local', type: 'time', scheduling: true,
     help: 'Plan to reach the target by this time. New prices can move charging to cheaper periods. Reaching the target or this time does not stop charging.' },
   { key: 'manualSoc', reading: 'soc', label: 'Starting charge · %', type: 'number', min: 0, max: 100, step: 0.1, automatic: true,
-    help: 'Saved starting charge for an unidentified vehicle or a missing vehicle reading. Update it for a visitor or after driving; delivered energy updates the estimate from here.' },
+    help: 'Starting charge for this session. Update it for a visitor or after driving; delivered energy updates the estimate from here. A newer vehicle reading can replace this reference.' },
   { key: 'minimumSoc', label: 'Target charge · %', type: 'number', min: 0, max: 100, step: 1, automatic: true,
-    help: 'Saved target for an unidentified vehicle. An identified vehicle’s reported target takes priority without changing this saved value.' },
+    help: 'Planning target for this session. This does not change the vehicle’s own charging limit.' },
   { key: 'capacityKwh', label: 'Usable battery capacity · kWh', type: 'number', min: 1, max: 300, step: 0.1, automatic: true,
-    help: 'Saved usable capacity for an unidentified vehicle or a missing capacity reading.' },
+    help: 'Usable battery capacity for this session. Permanent defaults are set in configuration.' },
 ].map(field => ({ type: 'text', ...field }));
 
 export function chargingReadingTime(value, timezone = 'Europe/Helsinki') {
@@ -231,7 +226,7 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
     `${number(referenceSoc.value, '%')} · ${sourceLabel(referenceSoc, charger.vehicle)} · ${readingTime.replace(/^Charge /, '')}`,
     'This is the last charge reported by the vehicle. The main charge estimate adds measured energy delivered after this reference, allowing for charging losses. The reference can be newer than plugging in; it is not necessarily the session’s starting charge.']);
   else if (showMetrics && estimatedSoc && finite(soc.value)) rows.push(['Starting charge (manual)', number(soc.value, '%'),
-    'This saved starting charge is the reference for the main estimate. Measured energy delivered after this reference advances the estimate, allowing for charging losses. Update the starting value for another vehicle or after driving.']);
+    'This starting charge is the reference for the main estimate. Measured energy delivered after this reference advances the estimate, allowing for charging losses. Update the starting value for another vehicle or after driving.']);
   if (showPlan && !released && !charging && finite(plan.costCents) && !uncertain && !revisionPending) {
     rows.push(['Estimated cost to target', `€${(plan.costCents / 100).toFixed(2)}`]);
     if (periods.length > 1 && finite(plan.savingsCents) && plan.savingsCents > 0) rows.push(['Saving from pauses', `€${(plan.savingsCents / 100).toFixed(2)} compared with one continuous period`]);
@@ -263,7 +258,7 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
   if (showMetrics && progress.basis?.energyCoverageIncomplete) notes.push('Some charging energy was not measured. The charge estimate may be low until a new vehicle reading arrives.');
   if (showMetrics && retainedVehicleReference) notes.push('Vehicle readings are unavailable. The estimate keeps the last vehicle charge and measured energy for this connection. Edit Starting charge to replace it.');
   const controlDetail = !supported ? 'This integration supports monitoring only.'
-    : activeManual ? 'Resume automatic charging to end manual priority early. A later manual change takes priority again.'
+    : activeManual ? 'Choose “Use automatic” to end manual priority early. A later manual change takes priority again.'
       : provisional ? 'Charging is allowed for now. The forecast is being updated; economical periods can still be scheduled when it improves.'
       : 'Choose economical charging periods to reach the target by the ready-by time.';
   const provider = charger.provider ?? charger.telemetry?.provider;
@@ -276,9 +271,9 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
     : `Charging loss is fixed at ${number(CHARGING_LOSS_FRACTION * 100, '%')} of grid energy (${number(CHARGING_EFFICIENCY * 100, '%')} reaches the battery). Grid energy and cost estimates include these losses.`;
   const explanations = [
     ['Vehicle identification', vehiclePresentation(charger).detail],
-    ['Readings & fallbacks', 'Only an identified vehicle’s charge, target and usable capacity take priority, separately for each available field. Otherwise, saved starting charge, target and capacity are used and remain editable. Update these for a visitor or after driving. Automatic readings do not erase saved values. The original reading time stays visible as it ages; a receipt time is labeled separately when measurement time is unknown.'],
-    ['Target & completion', 'The displayed target comes from the vehicle when available. A saved target is used for estimates and does not change the vehicle’s own charge limit. The estimated target time is a forecast, not a command to stop charging. Estimated cost includes all energy delivered since plugging in plus the energy still needed to reach the target. It stays visible after reaching the target and grows with any further charging.'],
-    ['Charging progress', 'Delivered charging energy raises the estimated charge from the starting value, allowing for charging losses and usable capacity. Added energy shows recorded grid energy since plugging in and stays until disconnection. A new vehicle reading updates only the battery estimate reference. The original vehicle reading stays separate; missing energy is not invented. The estimate can keep rising beyond the requested target. Disconnecting clears connection progress; a saved starting charge must be updated after driving when no vehicle reading is available.'],
+    ['Readings & fallbacks', 'Only an identified vehicle’s charge, target and usable capacity take priority, separately for each available field. Otherwise, configured starting charge, target and capacity are used. Explicit session edits take priority for this connection; a newer vehicle charge reading can replace the starting-charge reference. Unplugging restores configured defaults. Automatic readings never erase configured values. The original reading time stays visible as it ages; a receipt time is labeled separately when measurement time is unknown.'],
+    ['Target & completion', 'The displayed target comes from the vehicle when available. The requested target is used for estimates and does not change the vehicle’s own charge limit. The estimated target time is a forecast, not a command to stop charging. Estimated cost includes all energy delivered since plugging in plus the energy still needed to reach the target. It stays visible after reaching the target and grows with any further charging.'],
+    ['Charging progress', 'Delivered charging energy raises the estimated charge from the starting value, allowing for charging losses and usable capacity. Added energy shows recorded grid energy since plugging in and stays until disconnection. A new vehicle reading updates only the battery estimate reference. The original vehicle reading stays separate; missing energy is not invented. The estimate can keep rising beyond the requested target. Disconnecting clears connection progress; the starting charge should be updated for each session after driving when no vehicle reading is available.'],
     ['Energy estimate', `Three-phase charging is assumed; voltage comes from provider readings. ${energyAssumption}`],
   ];
   if (!supported) explanations.push(
@@ -286,7 +281,7 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
     ['Native schedule', 'Vehicle and charger native constraints remain separate from the planning request. A forecast completion is not a scheduled stop.'],
   );
   if (supported) explanations.push(
-    ['Ready-by time', 'The saved local time is the deadline for reaching the target. The estimated target time shows the current forecast; readiness compares that forecast with the deadline. Ready-by is not a scheduled stop.'],
+    ['Ready-by time', 'The configured or session-specific local time is the deadline for reaching the target. The estimated target time shows the current forecast; readiness compares that forecast with the deadline. Ready-by is not a scheduled stop.'],
     ['Price planning', 'New prices can pause automatic charging for cheaper periods if the target is still unmet, ready-by can still be met, and the remaining charge costs less. Charging runs at least 15 minutes before such a pause, and planned pauses last at least 15 minutes. Manual charging instructions keep priority. Reaching the target or ready-by time does not stop charging. Estimates cover reaching the requested target.'],
     ['Period transitions', provider === 'easee'
       ? 'Installing planned pauses and next starts requires this service and the Easee cloud. Easee shows the current instruction; this page shows all planned periods. An installed one-off start can run independently. If contact is lost, the last instruction remains in effect and an open period may continue past a planned pause. A confirmed schedule does not by itself confirm a physical pause. Missed or unconfirmed transitions are reported when contact resumes.'
@@ -294,9 +289,9 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
     ['Household forecast', 'Property consumption is reduced by known charging, then matched to local hours and outdoor conditions. A couple of usable nights can begin the estimate. Recent similar nights carry more weight, while older cold-weather readings remain useful when those conditions return. Broader history is used when close matches are scarce; zero other load is assumed only when no usable reference exists.'],
     ['Current reference', householdReferenceText(assumptions.householdReference, now)],
     ['Other charging', 'A physically charging peer consumes capacity even with automatic scheduling off. Its continuing demand remains reserved when its stop is unknown. Household forecasting subtracts each physical charger once.'],
-    ['Manual priority', 'A simple manual schedule has priority through its complete window, including after ready-by. Charge now has priority until unplugging. Multiple periods or an unknown end require Resume automatic charging; a later manual change takes priority again. A fresh charger read is required before handover.'],
-    ['Saved priority', 'An existing schedule with unknown ownership is preserved. Our own changes and normal schedule expiry do not count as manual changes. Manual windows survive reconnection and restart. Editing ready-by does not move a recorded window end.'],
-    ['Turning automatic charging off', 'OFF stops automatic scheduling and removes only a confirmed restriction owned by this service. Newer manual instructions are preserved. OFF does not stop physical charging. If the charger cannot confirm removal, the handover stays visibly unconfirmed.'],
+    ['Manual priority', 'A simple manual schedule has priority through its complete window, including after ready-by. Charge now has priority until unplugging. Multiple periods or an unknown end require “Use automatic”; a later manual change takes priority again. A fresh charger read is required before handover.'],
+    ['Manual instruction ownership', 'An existing schedule with unknown ownership is preserved. Our own changes and normal schedule expiry do not count as manual changes. Manual windows survive reconnection and restart. Editing ready-by does not move a recorded window end.'],
+    ['Configured automatic charging', 'Automatic charging is enabled or disabled in configuration. OFF stops automatic scheduling and removes only a confirmed restriction owned by this service. Newer manual instructions are preserved. OFF does not stop physical charging. If the charger cannot confirm removal, the handover stays visibly unconfirmed.'],
     ['Unavailable data', 'Without a reliable price or power forecast, or with too little time, charging is allowed immediately while planning continues. Economical periods can still be scheduled when the forecast improves. A disabled charger, fault or authorization requirement must be resolved first. Unconfirmed changes retain the last known instruction and are retried after another charger reading.'],
   );
   if (charger.capabilities?.externalLoadBalancing) {
@@ -362,8 +357,7 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
   };
   const bind = (node, event, action) => { if (!node) return; node.addEventListener(event, action); listeners.push(() => node.removeEventListener(event, action)); };
   const writable = () => Boolean(status?.charging && status.readOnly !== true && status.charging.readOnly !== true && !isReadOnlyReplica(status));
-  const sharedPriority = createChargingPriority({ document,
-    save: (priority, message) => mutate('/api/charging/settings', { priority }, message, 'Priority saved.') });
+  const sharedPriority = createChargingPriority({ document });
   const set = (id, text) => { if ($(id)) $(id).textContent = text; };
   const rowNodes = new WeakMap();
   const energyNodes = new WeakMap();
@@ -414,22 +408,30 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
       group.dirty.add(field.key); group.drafts.set(field.key, input.value); refreshControls(); });
   }
   function group(id, descriptors, root, form, save, message, path) {
-    const result = { id, fields: new Map(), dirty: new Set(), drafts: new Map(), capacityDrafts: new Map(), save, message, path };
+    const result = { id, fields: new Map(), dirty: new Set(), drafts: new Map(), save, message, path };
     for (const field of descriptors) createField(result, field, root(field));
     bind(form, 'submit', event => {
-      event.preventDefault(); if (form.reportValidity && !form.reportValidity()) return;
-      const payload = {}, saved = [];
+      event.preventDefault();
+      const charger = devices.get(id)?.charger;
+      if (save.disabled || !connectedSession(charger) || form.reportValidity && !form.reportValidity()) return;
+      if (result.draftSession !== requestKey(charger)) {
+        message.textContent = 'The session changed. Review and edit the current values again.'; return;
+      }
+      const changes = {};
       for (const [key, { input, field }] of result.fields) {
         if (!result.dirty.has(key) || input.disabled) continue;
-        assign(payload, key, input.value === '' && field.nullable ? null : field.type === 'number' ? Number(input.value) : input.value.trim());
-        saved.push({ key, draft: result.drafts.get(key), profile: result.capacityProfile });
-        if (key === 'capacityKwh') payload.capacityProfile = result.capacityProfile;
+        changes[key] = field.type === 'number' ? Number(input.value) : input.value.trim();
       }
-      if (saved.length) return mutate(path, payload, message, 'Settings saved.', () => saved.forEach(({ key, draft, profile }) => {
-        if (key === 'capacityKwh' && result.capacityProfile !== profile) {
-          if (result.capacityDrafts.get(profile) === draft) result.capacityDrafts.delete(profile);
-        } else if (result.drafts.get(key) === draft) { result.dirty.delete(key); result.drafts.delete(key); }
-      }));
+      if (!Object.keys(changes).length) return;
+      const scope = requestKey(charger), submitted = new Map(result.drafts);
+      return mutate(path, { scope: 'session', association: charger.association,
+        sessionId: charger.request.sessionId, revision: charger.request.revision, changes }, message,
+      'Saved for this session. Configured defaults are unchanged.', () => {
+        if (result.currentSession !== scope) return;
+        for (const [key, draft] of submitted) if (result.drafts.get(key) === draft) {
+          result.dirty.delete(key); result.drafts.delete(key);
+        }
+      });
     });
     return result;
   }
@@ -440,7 +442,14 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     const summary = make('summary', '', 'equipment-device-summary', `${id}-device-summary`);
     const heading = make('div', '', 'equipment-device-heading'), title = make('h4', charger.label, '', `${id}-title`);
     const identity = make('div', '', 'charging-identity'), vehicle = make('span', '', 'charging-vehicle', `${id}-vehicle`); identity.append(title, vehicle);
-    const state = make('span', '', 'equipment-device-status', `${id}-state`); heading.append(identity, state); summary.append(heading);
+    const state = make('span', '', 'equipment-device-status', `${id}-state`);
+    const actions = make('div', '', 'charging-actions');
+    const chargeNow = make('button', 'Charge Now', 'charging-charge-now', `${id}-charge-now`); chargeNow.type = 'button';
+    chargeNow.setAttribute('aria-pressed', 'false'); chargeNow.setAttribute('aria-describedby', `${id}-charge-now-hint`);
+    const chargeNowHint = make('small', '', 'charging-charge-now-hint', `${id}-charge-now-hint`);
+    const resume = make('button', 'Use automatic', 'charging-use-automatic secondary-button', `${id}-resume`); resume.type = 'button';
+    actions.append(chargeNow, chargeNowHint); identity.append(resume); heading.append(identity, actions); summary.append(heading);
+    const controlMessage = make('p', '', 'temporary-status charging-control-message', `${id}-control-message`); controlMessage.setAttribute('role', 'status');
     const overview = make('div', '', 'charging-overview', `${id}-overview`), metrics = {};
     const charge = make('div', '', 'equipment-value charging-charge');
     const current = make('strong', 'Unknown', '', `${id}-soc`), target = make('strong', 'Unknown', '', `${id}-minimum`);
@@ -483,7 +492,7 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     const footer = make('div', '', 'charging-disclosure');
     footer.append(make('span', 'Details & settings', 'charging-disclosure-closed'), make('span', 'Close details', 'charging-disclosure-open'));
     const footerHint = make('span', '', 'charging-disclosure-hint'); footer.append(footerHint);
-    summary.append(facts, notice, footer);
+    summary.append(facts, notice, footer, controlMessage);
     const readingTime = make('p', '', 'charging-reading-time', `${id}-reading-time`);
     const scheduleHeading = make('div', '', 'charging-schedule-heading');
     const scheduleInfo = make('span', '', '', `${id}-schedule-info`), periodCount = make('span', '', 'charging-period-count', `${id}-period-count`);
@@ -492,32 +501,19 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     const periods = make('dl', '', 'equipment-readings charging-periods', `${id}-periods`);
     const session = make('section', '', 'charging-detail-section');
     const sessionStatus = make('p', '', 'charging-session-status', `${id}-session-status`);
-    session.append(make('h5', 'Schedule & readings'), sessionStatus, problem, priority, readiness, readingTime, scheduleHeading, periods, readings, notes);
+    session.append(make('h5', 'Schedule & readings'), state, sessionStatus, problem, priority, readiness, readingTime, scheduleHeading, periods, readings, notes);
     body.append(session);
-    const master = make('div', '', 'charging-master'), masterLabel = make('span', 'Automatic charging', '', `${id}-enabled-label`);
-    const toggle = make('button', 'OFF', '', `${id}-enabled`); toggle.type = 'button'; toggle.setAttribute('role', 'switch');
-    toggle.setAttribute('aria-checked', 'false'); toggle.setAttribute('aria-labelledby', masterLabel.id); master.append(masterLabel, toggle);
+    const master = make('div', '', 'charging-master'), masterLabel = make('span', 'Automatic charging · configuration', '', `${id}-enabled-label`);
+    const enabledValue = make('span', '', '', `${id}-enabled`); master.append(masterLabel, enabledValue);
     const controlDetail = make('p', '', 'muted charging-form-help', `${id}-control-detail`);
-    const resume = make('button', 'Resume automatic charging', 'secondary-button', `${id}-resume`); resume.type = 'button';
-    const controlMessage = make('p', '', 'temporary-status', `${id}-control-message`); controlMessage.setAttribute('role', 'status');
     const preferences = make('section', '', 'charging-detail-section');
-    preferences.append(make('h5', 'Charging preferences'), master, controlDetail, resume, controlMessage); body.append(preferences);
+    const scopeNote = make('p', 'Changes apply until unplugging. General and vehicle defaults are changed only in configuration.', 'charging-form-help');
+    preferences.append(make('h5', 'Session settings'), scopeNote, master, controlDetail); body.append(preferences);
     const form = make('form', '', 'charging-settings-form', `${id}-settings-form`), primaryFields = make('div', '', 'charging-fields');
-    const save = make('button', 'Save defaults', 'secondary-button', `${id}-settings-save`); save.type = 'submit';
+    const save = make('button', 'Save for this session', 'secondary-button', `${id}-settings-save`); save.type = 'submit';
     const message = make('p', '', 'temporary-status', `${id}-settings-message`); message.setAttribute('role', 'status');
     form.append(primaryFields, save); preferences.append(form, message);
     const settings = group(id, chargingFields, () => primaryFields, form, save, message, `${prefix}/settings`);
-    const sessionEdit = make('button', 'Apply edits to this connection', 'secondary-button', `${id}-session-save`); sessionEdit.type = 'button'; form.append(sessionEdit);
-    bind(sessionEdit, 'click', () => {
-      const current = devices.get(id)?.charger; if (!current?.request) return;
-      const changes = {};
-      for (const [key, { input, field }] of settings.fields) if (settings.dirty.has(key)) changes[key] = field.type === 'number' ? Number(input.value) : input.value;
-      if (!Object.keys(changes).length) return;
-      if (settings.draftSession !== `${current.association}:${current.request.sessionId}:${current.request.revision}`) {
-        message.textContent = 'Connection changed. Review and edit the values again before applying them.'; return;
-      }
-      return mutate(`${prefix}/settings`, { scope: 'session', association: current.association, sessionId: current.request.sessionId, revision: current.request.revision, changes }, message, 'Request updated for this connection.', () => { settings.dirty.clear(); settings.drafts.clear(); });
-    });
     const targetControls = make('div', '', '', `${id}-target-controls`);
     const targetHelp = make('p', '', 'charging-form-help', `${id}-target-help`);
     const targetToggle = make('button', '', 'secondary-button', `${id}-target-toggle`); targetToggle.type = 'button';
@@ -530,9 +526,20 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     explanationFold.append(make('summary', 'How charging works'));
     const explanations = make('dl', '', 'equipment-readings', `${id}-explanations`); explanationFold.append(explanations); body.append(explanationFold);
     section.append(summary, body); $('charging-devices')?.append(section);
-    const device = { id, sessionEdit, section, title, vehicle, state, event, eventLabel, eventValue, overview, sources, metrics, chargeLabel, targetLabel, targetSource, targetNotice, targetControls, targetHelp, targetToggle, targetMessage, completionLabel, completion, readiness, priority, readingTime, deadline, deadlineGroup, facts, deliveredLabel, deliveredValue, remaining, energyLabel, energyValue, costLabel, cost, costMetric, scheduleInfo, scheduleHeading, periodCount, periods, problem, explanations, readings, notes, settings, toggle, resume, controlDetail, charger, notice, footerHint, sessionStatus };
-    bind(toggle, 'click', () => mutate(`${prefix}/settings`, { enabled: !device.charger.settings.enabled }, controlMessage, 'Control preference saved.'));
-    bind(resume, 'click', () => mutate(`${prefix}/resume`, {}, controlMessage, 'Automatic control requested.'));
+    const device = { id, chargeNow, chargeNowHint, controlMessage, section, title, vehicle, state, event, eventLabel, eventValue, overview, sources, metrics, chargeLabel, targetLabel, targetSource, targetNotice, targetControls, targetHelp, targetToggle, targetMessage, completionLabel, completion, readiness, priority, readingTime, deadline, deadlineGroup, facts, deliveredLabel, deliveredValue, remaining, energyLabel, energyValue, costLabel, cost, costMetric, scheduleInfo, scheduleHeading, periodCount, periods, problem, explanations, readings, notes, settings, enabledValue, resume, controlDetail, charger, notice, footerHint, sessionStatus };
+    bind(chargeNow, 'click', event => {
+      event.preventDefault(); event.stopPropagation();
+      if (chargeNow.disabled) return;
+      const current = device.charger;
+      return mutate(`${prefix}/charge-now`, { association: current.association,
+        sessionId: current.request.sessionId, revision: current.request.revision }, controlMessage,
+      'Charge Now requested until unplugging. Check the charging status below.');
+    });
+    bind(resume, 'click', event => {
+      event.preventDefault(); event.stopPropagation();
+      if (resume.disabled) return;
+      return mutate(`${prefix}/resume`, {}, controlMessage, 'Automatic charging requested.');
+    });
     bind(targetToggle, 'click', () => {
       if (targetToggle.disabled || !device.targetAction) return;
       const action = { ...device.targetAction };
@@ -551,43 +558,47 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     finally { busy = false; refreshControls(); afterRequest(); }
   }
   function updateFields(group, settings, charger) {
-    const capacityProfile = capacityProfileFor(charger);
-    if (group.capacityProfile !== capacityProfile) {
-      if (group.capacityProfile && group.dirty.has('capacityKwh')) group.capacityDrafts.set(group.capacityProfile, group.drafts.get('capacityKwh'));
-      group.dirty.delete('capacityKwh'); group.drafts.delete('capacityKwh'); group.capacityProfile = capacityProfile;
-      if (group.capacityDrafts.has(capacityProfile)) {
-        group.dirty.add('capacityKwh'); group.drafts.set('capacityKwh', group.capacityDrafts.get(capacityProfile));
-        group.capacityDrafts.delete(capacityProfile);
-      }
+    const session = requestKey(charger);
+    if (group.currentSession !== session) {
+      if (group.dirty.size) group.message.textContent = 'The session changed. Review and edit the current values again.';
+      group.dirty.clear(); group.drafts.clear(); group.draftSession = null;
     }
+    group.currentSession = session;
     for (const [key, { field, input, help }] of group.fields) {
       const reading = charger?.values?.[field.reading ?? key], live = field.automatic && automaticFor(charger, reading);
       input.value = (group.dirty.has(key) ? group.drafts.get(key) : live ? reading.value : get(settings, key)) ?? '';
       const unsupported = field.scheduling && !charger?.capabilities?.scheduling;
-      const detail = live ? `${sourceLabel(reading, charger.vehicle)} supplies this value. Saved fallback: ${get(settings, key)}${key === 'capacityKwh' ? ' kWh' : '%'}. ${field.help ?? ''}`
-        : unsupported ? 'Scheduling is unavailable with this integration.'
-          : key === 'capacityKwh' && capacityProfile === 'tesla'
-            ? `Saved usable capacity for Tesla, shared wherever Tesla charges.${charger.id === 'charger2' ? '' : ' Editing it keeps this charger’s generic vehicle default unchanged.'}` : field.help ?? '';
-      help.textContent = detail;
-      help.hidden = !detail;
+      const configured = get(charger.defaults ?? settings, key);
+      const configuredDetail = configured == null ? '' : `Configured default: ${configured}${key === 'capacityKwh' ? ' kWh' : key === 'readyBy' ? '' : '%'}. `;
+      help.textContent = unsupported ? 'Scheduling is unavailable with this integration.'
+        : `${live ? `${sourceLabel(reading, charger.vehicle)} supplies the current value. ` : ''}${configuredDetail}${field.help ?? ''}`;
+      help.hidden = !help.textContent;
     }
   }
   function refreshControls() {
     const locked = busy || !writable();
-    sharedPriority.update(status?.charging, { busy, writable: writable() });
+    sharedPriority.update(status?.charging);
     for (const device of devices.values()) {
       const { charger, settings } = device, supported = charger.capabilities?.scheduling === true;
       for (const [key, { field, input, label }] of settings.fields) {
-        const unsupported = field.scheduling && !supported, live = field.automatic && automaticFor(charger, charger.values?.[field.reading ?? key]);
-        input.disabled = Boolean(locked || unsupported); label.hidden = unsupported; label.classList.toggle('charging-field-disabled', Boolean(unsupported));
+        const unsupported = field.scheduling && !supported;
+        input.disabled = Boolean(locked || charger.readOnly || !connectedSession(charger) || unsupported);
+        label.hidden = unsupported; label.classList.toggle('charging-field-disabled', Boolean(unsupported));
       }
-      settings.currentSession = charger.request ? `${charger.association}:${charger.request.sessionId}:${charger.request.revision}` : null;
-      device.sessionEdit.disabled = locked || !charger.request || !settings.dirty.size || settings.draftSession !== settings.currentSession;
-      settings.save.disabled = locked || ![...settings.fields].some(([key, { input }]) => settings.dirty.has(key) && !input.disabled);
-      device.toggle.disabled = locked || !supported; device.toggle.parentElement.hidden = !supported;
-      const view = chargerDisplay(charger);
-      device.resume.hidden = !supported || !charger.settings.enabled || !view.yielded;
-      device.resume.disabled = locked || device.resume.hidden;
+      settings.save.disabled = locked || !connectedSession(charger) || settings.draftSession !== settings.currentSession
+        || ![...settings.fields].some(([key, { input }]) => settings.dirty.has(key) && !input.disabled);
+      device.enabledValue.parentElement.hidden = !supported;
+      const chargeNowActive = charger.request?.chargeNow === true, view = chargerDisplay(charger);
+      device.chargeNow.hidden = !supported;
+      device.chargeNow.textContent = 'Charge Now';
+      device.chargeNow.setAttribute('aria-pressed', String(chargeNowActive));
+      device.chargeNow.disabled = locked || charger.readOnly === true || !supported || !charger.settings.enabled
+        || !connectedSession(charger) || chargeNowActive;
+      device.chargeNowHint.textContent = !supported ? 'Monitoring only' : !writable() || charger.readOnly ? 'View only'
+        : !charger.settings.enabled ? 'Disabled in configuration' : !connectedSession(charger) ? 'Connect a vehicle'
+          : chargeNowActive ? 'Selected until unplugging' : 'Until unplugging';
+      device.resume.hidden = !supported || !charger.settings.enabled || !(chargeNowActive || view.yielded);
+      device.resume.disabled = locked || charger.readOnly === true || device.resume.hidden;
       device.targetToggle.disabled = locked || charger.readOnly === true || !device.targetAction;
     }
   }
@@ -641,7 +652,7 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
       const sourceDetail = !view.showMetrics ? 'A confirmed vehicle connection is needed before a remembered charge reading can be shown as current.'
         : [view.soc.startsWith('≈') ? `${view.socSource}, allowing for charging losses. The battery estimate advances from the latest charge reference; Added energy covers the whole connection.` : view.socSource, view.readingTime].filter(Boolean).join('\n');
       metricDetail(device.chargeLabel, { label: 'Charge', title: 'Current charge', detail: sourceDetail, key: `${charger.id}:source` });
-      metricDetail(device.targetLabel, { label: 'Target', title: 'Target charge', detail: !view.showMetrics ? 'The target will be shown for the connected vehicle. Your saved fallback is in Charging preferences.' : [`${view.minimumSource}. Estimates cover reaching this charge, which is not a command to stop the vehicle.`, view.targetDetail].filter(Boolean).join('\n\n'), key: `${charger.id}:target` });
+      metricDetail(device.targetLabel, { label: 'Target', title: 'Target charge', detail: !view.showMetrics ? 'The target will be shown for the connected vehicle. Configured defaults are shown in Session settings.' : [`${view.minimumSource}. Estimates cover reaching this charge, which is not a command to stop the vehicle.`, view.targetDetail].filter(Boolean).join('\n\n'), key: `${charger.id}:target` });
       const completionDetail = presentation.completion.at !== null
         ? 'Forecast time to reach the displayed target at the expected charging power. Charging can continue after the target is reached.'
         : presentation.completion.detail;
@@ -694,7 +705,7 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
       list(device.readings, rows); device.readings.hidden = !rows.length;
       device.notes.replaceChildren(...view.notes.map(note => make('li', note))); device.notes.hidden = !view.notes.length;
       device.controlDetail.textContent = presentation.roleState === 'uncertain' ? presentation.roleDetail : view.controlDetail;
-      const enabled = charger.settings.enabled === true; device.toggle.textContent = enabled ? 'ON' : 'OFF'; device.toggle.setAttribute('aria-checked', String(enabled));
+      device.enabledValue.textContent = charger.settings.enabled === true ? 'ON' : 'OFF';
       updateFields(device.settings, charger.settings, charger);
     }
     for (const [id, device] of devices) if (!currentIds.has(id)) { device.section.remove(); devices.delete(id); sharedPriority.removeEntry(id); }

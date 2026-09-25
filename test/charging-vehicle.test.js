@@ -121,13 +121,13 @@ test('BMW pre-poll evidence is bounded and remains subject to disconnect and rep
     'Easee evidence must be within the same connection window');
 });
 
-function fixture() {
+function fixture(chargingConfig = {}) {
   let now = START, connected = true, charging = true, sessionAt = START, verdict = null, identifiedAt = null;
   const tesla = { connected: true, pluggedIn: true, atHome: true, assignment: 'auto', batteryLevel: 75, chargeLimitSoc: 90 };
   const values = new Map(), store = { getState: key => structuredClone(values.get(key)),
     setState: (key, value) => { if (store.fail) throw new Error('database unavailable'); values.set(key, structuredClone(value)); } };
   const engine = {};
-  const config = { input: 'mqtt' };
+  const config = { input: 'mqtt', charging: chargingConfig };
   const create = () => {
     const runtime = new ChargingRuntime({ engine, store, config, clock: () => now });
     runtime.setMqttStatus({connected:true,subscribed:true},'bmw');
@@ -151,8 +151,7 @@ function pauseBmw(runtime, f, at = START + MINUTE) {
 
 
 test('visitor keeps manual defaults until positive BMW correlation, then each available field takes precedence', async t => {
-  const f = fixture(), runtime = f.create(); t.after(() => runtime.close());
-  await runtime.setChargerSettings('charger1', { manualSoc: 25, minimumSoc: 80, capacityKwh: 50 });
+  const f = fixture({ defaults: { manualSoc: 25, minimumSoc: 80, capacityKwh: 50 } }), runtime = f.create(); t.after(() => runtime.close());
   publish(runtime, facts(START - 60 * MINUTE), { retain: true });
   assert.equal(view(runtime).vehicle.state, 'unidentified'); assert.equal(view(runtime).values.soc.value, 25);
   publish(runtime, facts(START - MINUTE, { pluggedIn: false, charging: false }));
@@ -188,8 +187,7 @@ test('identity-only BMW can match without imposing absent battery fields', async
 });
 
 test('BMW bridge silence expires automatic fields while preserving same-session progress and manual control inputs', async t => {
-  const f = fixture(), runtime = f.create(); t.after(() => runtime.close());
-  await runtime.setChargerSettings('charger1', { manualSoc: 90, minimumSoc: 85 });
+  const f = fixture({ defaults: { manualSoc: 90, minimumSoc: 85 } }), runtime = f.create(); t.after(() => runtime.close());
   publish(runtime, facts(START, { usableCapacityKwh: 74, chargeLimitSoc: 85 })); pauseBmw(runtime, f);
   runtime.readEnergy = () => ({ gridKwh: 4, coveredMs: MINUTE }); runtime.tick();
   const before = view(runtime);
@@ -346,18 +344,22 @@ test('BMW target can change independently from 100 to 95 without rebasing its 85
   assert.equal(view(runtime).referenceGridKwh, 72 * .1 / .925);
 });
 
-test('editing Tesla capacity at Charger 1 edits its vehicle fallback and preserves visitor capacity', async t => {
-  const f = fixture(), runtime = f.create(); t.after(() => runtime.close());
-  await runtime.setChargerSettings('charger1', { capacityKwh: 50 });
-  await runtime.setSettings({vehicles:{tesla:{capacityKwh:60}}});
+test('session capacity edit preserves configured Tesla and unidentified defaults across disconnect and restart', async t => {
+  const f = fixture({ defaults: { capacityKwh: 50 }, vehicles: { tesla: { defaults: { capacityKwh: 60 } } } });
+  const runtime = f.create(); t.after(() => runtime.close());
   f.setTeslaEvidence('easee'); runtime.tick();
   assert.equal(view(runtime).settings.capacityKwh, 60); assert.equal(view(runtime).values.capacityKwh.value, 60);
-  await runtime.setChargerSettings('charger1', { capacityKwh: 58, capacityProfile:'tesla' });
+  const initial = view(runtime);
+  await runtime.setChargerSettings('charger1', { scope: 'session', association: initial.association,
+    sessionId: initial.request.sessionId, revision: initial.request.revision, changes: { capacityKwh: 58 } });
   assert.equal(view(runtime).settings.capacityKwh, 58); assert.equal(view(runtime).values.capacityKwh.value, 58);
-  assert.equal(runtime.settings.chargers.charger1.capacityKwh, 50); assert.equal(runtime.settings.vehicles.tesla.capacityKwh, 58);
+  assert.equal(runtime.settings.chargers.charger1.capacityKwh, 50); assert.equal(runtime.settings.vehicles.tesla.capacityKwh, 60);
   assert.equal(view(runtime).referenceGridKwh, 58 * .15 / .925);
-  f.setConnection(false); runtime.tick(); assert.equal(view(runtime).settings.capacityKwh, 50);
-  assert.equal(view(runtime).values.capacityKwh.value, 50);
+  const restarted = f.create(); t.after(() => restarted.close());
+  assert.equal(view(restarted).values.capacityKwh.value, 58);
+  assert.equal(restarted.settings.vehicles.tesla.capacityKwh, 60);
+  f.setConnection(false); restarted.tick(); assert.equal(view(restarted).settings.capacityKwh, 50);
+  assert.equal(view(restarted).values.capacityKwh.value, 50);
 });
 
 test('old Tesla plug state cannot rebound from unplugged Easee into a duplicate Charger 2 session, including restart', async t => {
@@ -449,22 +451,22 @@ test('vehicle unplug evidence revokes identification even while charger connecti
   });
 });
 
-test('capacity edits reject a changed vehicle profile and always use Tesla capacity on its observation card', async t => {
-  const f = fixture(), runtime = f.create(); t.after(() => runtime.close());
-  await runtime.setChargerSettings('charger1', { capacityKwh: 50, capacityProfile: 'generic:charger1' });
+test('session capacity edits reject stale revisions, wrong charging points and disconnected sessions without changing defaults', async t => {
+  const f = fixture({ defaults: { capacityKwh: 50 } }), runtime = f.create(); t.after(() => runtime.close());
   f.setTeslaEvidence('easee'); runtime.tick();
-  const before = structuredClone(runtime.settings);
-  await assert.rejects(runtime.setChargerSettings('charger1', { capacityKwh: 70, capacityProfile: 'generic:charger1' }), /Vehicle changed/);
+  const initial = view(runtime), before = structuredClone(runtime.settings);
+  const request = { scope: 'session', association: initial.association, sessionId: initial.request.sessionId,
+    revision: initial.request.revision, changes: { capacityKwh: 58 } };
+  await runtime.setChargerSettings('charger1', request);
   assert.deepEqual(runtime.settings, before);
-  await runtime.setChargerSettings('charger1', { capacityKwh: 58, capacityProfile: 'tesla' });
-  await assert.rejects(runtime.setChargerSettings('charger2', { capacityKwh: 59, capacityProfile: 'tesla' }), /Vehicle changed/);
-  assert.equal(runtime.settings.vehicles.tesla.capacityKwh, 58);
-  assert.equal(runtime.settings.chargers.charger1.capacityKwh, 50);
+  assert.equal(view(runtime).values.capacityKwh.value, 58);
+  await assert.rejects(runtime.setChargerSettings('charger1', request), /connection changed/);
+  await assert.rejects(runtime.setChargerSettings('charger2', request), /connection changed/);
+  await assert.rejects(runtime.setChargerSettings('charger1', { capacityKwh: 58, capacityProfile: 'tesla' }), /configuration/);
   f.setConnection(false); runtime.tick();
-  await assert.rejects(runtime.setChargerSettings('charger1', { capacityKwh: 60, capacityProfile: 'tesla' }), /Vehicle changed/);
-  await runtime.setSettings({vehicles:{tesla:{capacityKwh:61}}});
-  assert.equal(runtime.settings.vehicles.tesla.capacityKwh, 61);
-  await assert.rejects(runtime.setChargerSettings('charger1', { capacityProfile: 'generic:charger1' }), /requires a capacity setting/);
+  await assert.rejects(runtime.setChargerSettings('charger1', request), /connection changed/);
+  assert.equal(runtime.settings.vehicles.tesla.capacityKwh, 57);
+  assert.equal(view(runtime).values.capacityKwh.value, 50);
 });
 
 

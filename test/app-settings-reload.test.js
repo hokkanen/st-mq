@@ -94,7 +94,7 @@ function fakeMqtt() {
     const client = new EventEmitter();
     Object.assign(client, { address, options, connected: true, endCalls: 0, subscriptions: [] });
     client.subscribe = (topic, options, done) => { client.subscriptions.push(topic); done(); };
-    client.publish = (topic, payload, options, done) => { packets.push({ address, topic, payload }); done(); };
+    client.publish = (topic, payload, options, done) => { packets.push({ address, topic, payload }); done?.(); };
     client.end = (force, options, done) => { client.endCalls++; done(); };
     if (!options?.clientId?.startsWith('stmq-identity-')) clients.push(client);
     return client;

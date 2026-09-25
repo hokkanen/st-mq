@@ -16,7 +16,7 @@ function fixture(t) {
 }
 const stHeader = 'unix_time,price,heat_on,temp_in,temp_ga,temp_out\n';
 const evHeader = 'unix_time,ch_curr1,ch_curr2,ch_curr3,eq_curr1,eq_curr2,eq_curr3\n';
-test('current schema bootstraps once, checkpoints survive restart, future schema is rejected', t => {
+test('current schema bootstraps once, checkpoints survive restart, other schemas are rejected before mutation', t => {
   const { store, path } = fixture(t);
   assert.equal(store.summary().schemaVersion, SCHEMA_VERSION);
   assert.equal(store.getState('missing'), null);
@@ -25,8 +25,12 @@ test('current schema bootstraps once, checkpoints survive restart, future schema
   const reopened = new Store(path);
   assert.deepEqual(reopened.getState('learning'), { version: 1, cursor: 23, parameters: [1, 2] });
   reopened.close();
-  const raw = new DatabaseSync(path); raw.exec('PRAGMA user_version = 999'); raw.close();
-  assert.throws(() => new Store(path), /Unsupported database schema/);
+  for (const version of [SCHEMA_VERSION - 1, 999]) {
+    const raw = new DatabaseSync(path); raw.exec(`PRAGMA user_version = ${version}`); raw.close();
+    const before = readFileSync(path);
+    assert.throws(() => new Store(path), /Unsupported database schema/);
+    assert.deepEqual(readFileSync(path), before, 'incompatible state is rejected without rewriting the database');
+  }
 });
 
 test('current schema contains the acquisition lookup index and no historical tables', t => {

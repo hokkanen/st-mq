@@ -59,7 +59,7 @@ test('read-only replica shows saved charging preferences, SoC and ownership at t
   view.chargers[0].requiredGridKwh -= 2;
   view.chargers[0].progress = { creditedGridKwh: 2, remainingGridKwh: view.chargers[0].requiredGridKwh,
     basis: { source: 'integrated-measured-power', lastMeasuredAt: snapshotAt - 10_000 } };
-  const { app, root, digest, originalDigest, advance } = await fixture(t, { version: 5, settings, chargers: {
+  const { app, root, digest, originalDigest, advance } = await fixture(t, { version: 6, chargers: {
     charger1: { association: 'synthetic-association', plan }, charger2: { automaticSoc: null, plan: null },
   }, view }, ownership);
   const status = await (await fetch(`${root}/api/status`)).json();
@@ -112,9 +112,9 @@ test('replica preserves independent vehicle identification, selected values and 
   charger.vehicleMqtt = { provider: 'bmw-cardata', brokerConnected: true, subscribed: true, lastLiveAt: snapshotAt - 30_000 };
   const feed = { id: 'bmw', label: 'BMW', provider: 'bmw-cardata', topic: 'stmq/vehicles/bmw',
     usedByChargerId: 'charger1', reception: charger.vehicleMqtt };
-  const { app, root, digest, originalDigest, advance } = await fixture(t, { version: 5, settings,
+  const { app, root, digest, originalDigest, advance } = await fixture(t, { version: 6,
     vehicleFeeds: { bmw: { reading: automaticSoc } }, chargers: { charger1: {}, charger2: {} },
-    view: { chargers: [charger, buildCharger({definition:CHARGER_DEFINITIONS[1], settings:settings.chargers.charger2, now:snapshotAt})], vehicleFeeds: [feed] } });
+    view: { settings, chargers: [charger, buildCharger({definition:CHARGER_DEFINITIONS[1], settings:settings.chargers.charger2, now:snapshotAt})], vehicleFeeds: [feed] } });
   const charging = app.status().charging, actual = charging.chargers[0];
   for (const key of ['vehicle', 'values', 'automatic', 'automaticSoc', 'targetSelection', 'sessionCost', 'progress', 'configuration'])
     assert.deepEqual(actual[key], charger[key], `${key} remains the primary's published value`);
@@ -136,4 +136,13 @@ test('replica preserves independent vehicle identification, selected values and 
 test('replica rejects unsupported development charging payloads', async t => {
   const { app } = await fixture(t, { version: 1, settings: chargingSettings(), chargers: {} });
   assert.throws(() => app.status(), /Unsupported charging snapshot/);
+});
+
+test('replica rejects a current snapshot missing its recorded configuration instead of inventing defaults', async t => {
+  const settings = chargingSettings();
+  const { app } = await fixture(t, { version: 6, chargers: {}, view: {
+    chargers: CHARGER_DEFINITIONS.map(definition => buildCharger({ definition,
+      settings: settings.chargers[definition.id], now: snapshotAt })),
+  } });
+  assert.throws(() => app.status(), /Malformed current charging snapshot/);
 });

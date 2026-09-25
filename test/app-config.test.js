@@ -297,7 +297,7 @@ test('physical charger settings and independent vehicle topics load and reload w
   writeFileSync(path,JSON.stringify({charging:{vehicles:{bmw:{mqttTopic:'invented/vehicles/bmw'}}}}));
   const config=loadConfig({STMQ_CONFIG:path},directory);
   assert.equal(config.charging.vehicles.bmw.mqttTopic,'invented/vehicles/bmw');
-  assert.deepEqual(config.charging.chargers.charger1,{});
+  assert.deepEqual(config.charging.chargers.charger1,{schedulingEnabled:false});
   assert.equal(config.charging.chargers.charger2.enabled,false);
   assert.deepEqual(config.connections,{});
   writeFileSync(path,JSON.stringify({charging:{vehicles:{bmw:{mqttTopic:null}}}}));
@@ -321,4 +321,26 @@ test('live MQTT can run without H66 and threshold configuration keeps native def
   assert.equal(cfg.control.compressorIntegralA1,-60);assert.equal(cfg.control.compressorHysteresisC,10);
   const defaults=loadConfig({},'/missing-repository');
   assert.equal(defaults.control.compressorIntegralA1,-100);assert.equal(defaults.control.compressorHysteresisC,10);
+});
+
+
+test('sparse charging defaults load and reload solely from configuration', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-charging-defaults-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const path = join(directory, 'fixture.json');
+  const overrides = { charging: { defaults: { readyBy: '08:30', minimumSoc: 70 }, priority: 'charger1',
+    chargers: { charger1: { schedulingEnabled: true } }, vehicles: { bmw: { defaults: { manualSoc: 40 } } } } };
+  const contents = JSON.stringify(overrides); writeFileSync(path, contents);
+  const config = loadConfig({ STMQ_CONFIG: path }, directory);
+  assert.deepEqual(config.charging.defaults, { readyBy: '08:30', manualSoc: 20, minimumSoc: 70, capacityKwh: 74 });
+  assert.deepEqual(config.charging.vehicles.bmw.defaults, { capacityKwh: 74, manualSoc: 40 });
+  assert.deepEqual(config.charging.vehicles.tesla.defaults, { capacityKwh: 57 });
+  assert.equal(config.charging.priority, 'charger1');
+  assert.equal(config.charging.chargers.charger1.schedulingEnabled, true);
+  assert.equal(readFileSync(path, 'utf8'), contents);
+  writeFileSync(path, JSON.stringify({ charging: { defaults: { readyBy: '09:00' } } }));
+  const transaction = await configurationSource(config).prepare();
+  assert.equal(transaction.config.charging.defaults.readyBy, '09:00');
+  assert.equal(transaction.config.charging.defaults.minimumSoc, 80);
+  assert.equal(transaction.config.charging.chargers.charger1.schedulingEnabled, false);
 });

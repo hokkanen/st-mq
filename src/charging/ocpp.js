@@ -300,6 +300,16 @@ export function createOcppChargingController({ adapter, initialState = null, sav
       if (['Unavailable', 'Faulted', 'Reserved'].includes(snapshot.connectorStatus)) return display('unavailable', 'The charger is unavailable for automatic native scheduling.');
       if (!snapshot.transactionConfirmed || snapshot.transactionId === null || snapshot.pluggedIn !== true)
         return display('unavailable', 'Waiting for a current transaction confirmed on this connection.', 'transaction-unconfirmed');
+      if (desired.chargeNow?.connectedAt === state.session.connectedAt) {
+        const restriction = state.pending?.instruction ?? state.owned;
+        if (restriction && !await clearInstruction(restriction, current, signal)) return display('unconfirmed', 'Charge Now is waiting for the native profile release.');
+        await commit({ execution: null, released: true, provisional: false });
+        return display('released', 'Charge Now is active for this connection. Charger and vehicle limits still apply.');
+      }
+      if (desired.resetPlan) {
+        await commit({ released: false, execution: null, provisional: false }); desired.resetPlan = false;
+        display('unavailable', 'Updating the automatic charging plan.');
+      }
       const previousInstruction = state.pending?.instruction ?? state.owned;
       if (previousInstruction && clock() >= previousInstruction.startAt) {
         // Explicitly clear our exact ID even after expiry; composite output can
@@ -386,7 +396,7 @@ export function createOcppChargingController({ adapter, initialState = null, sav
   }
   return { status,
     update(input = {}) {
-      desired = { ...desired, ...input, resume: input.resume === true ? state.manual?.id ?? null : null };
+      desired = { ...desired, ...input, resetPlan: input.resume === true, resume: input.resume === true ? state.manual?.id ?? null : null };
       const current = ++generation;
       abort?.abort(); abort = new AbortController();
       queue = queue.catch(() => {}).then(() => reconcile(current));

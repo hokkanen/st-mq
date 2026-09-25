@@ -1,5 +1,5 @@
 // One current schema. Pre-production databases are never migrated.
-export const SCHEMA_VERSION = 13;
+export const SCHEMA_VERSION = 14;
 export const CURRENT_SCHEMA = `
 CREATE TABLE annotations (
   id INTEGER PRIMARY KEY, kind TEXT NOT NULL, start_at INTEGER NOT NULL, end_at INTEGER,

@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { createGarageAdapter } from '../src/garage/adapter.js';
 import { createShellyCn105Transport } from '../src/garage/shelly-cn105.js';
 import { SHELLY_CN105_CONTRACT } from '../src/garage/contract.js';
-import { GarageRuntime } from '../src/garage/runtime.js';
+import { GarageRuntime, GARAGE_ROOM_OVERRIDE_MS } from '../src/garage/runtime.js';
 import { Store } from '../src/storage/store.js';
 import { mitsubishiControl } from '../chart/mitsubishi.js';
 
@@ -150,7 +150,8 @@ test('external temperature history begins only after device acknowledgement and 
 
 test('real runtime and Pill adapter select5 through clearACK, forced native17 confirmation and room+12', async t => {
   const f = fixture(t); await f.start();
-  assert.deepEqual(f.store.getState(f.runtime.keys.roomTemperature), { targetC: 5 });
+  assert.deepEqual(f.store.getState(f.runtime.keys.roomTemperature), { targetC: 5, createdAt: BASE,
+    expiresAt: BASE + GARAGE_ROOM_OVERRIDE_MS, restoreTargetC: 17, adapterKey: f.runtime.roomAdapterKey });
   assert.equal(f.runtime.nativeControls().settings.targetC.value, 5);
   assert.equal(f.runtime.status().adapter.native.targetC, 17);
   assert.equal(f.runtime.status().roomTemperature.offsetC, 12);
@@ -343,7 +344,7 @@ test('ordinary targets and powerOFF pass through acknowledged internal-sensor cl
       assert.equal(f.published.length, 4);
       assert.equal(f.published[3].command.action, 'remote-temperature');
       assert.equal(f.published[3].command.temperatureC, null);
-      assert.deepEqual(f.store.getState(f.runtime.keys.roomTemperature), { targetC: null });
+      assert.equal(f.store.getState(f.runtime.keys.roomTemperature), null);
       await f.advanceReport('accepted');
       assert.equal(f.published.length, 4, 'an accepted clear must not allow the native command through');
       await f.advanceReport('acknowledged');

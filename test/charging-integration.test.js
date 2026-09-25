@@ -23,8 +23,13 @@ function fixture(t, charging) {
 
 const chargerView = (runtime, id = 'charger1') => runtime.status().chargers.find(item => item.id === id);
 
-test('charging API persists preferences across engines and obeys authentication and controller authority', async t => {
-  const { store, engine, config } = fixture(t);
+test('charging API rejects permanent preference writes and authenticates scoped session edits', async t => {
+  const { store, engine, config } = fixture(t, { defaults: { capacityKwh: 79, readyBy: '07:15', manualSoc: 43 } });
+  const item = engine.charging.chargers.charger1, connectedAt = engine.clock();
+  item.adapter = { normalize: () => ({ connected: { value: true, available: true },
+    charging: { value: false, available: true, measuredAt: engine.clock() } }) };
+  item.controller = { status: () => ({ session: { connectedAt }, snapshot: { readAt: engine.clock() }, phase: 'off' }),
+    async update() {}, close() {} };
   let primary = true;
   const token = 'synthetic-charging-test-authorization';
   const server = createAppServer({ engine, store, token,
@@ -35,36 +40,90 @@ test('charging API persists preferences across engines and obeys authentication 
   const post = (path, body, authenticated = true) => fetch(`${base}/api/charging/${path}`, { method: 'POST',
     headers: { 'content-type': 'application/json', ...(authenticated ? { authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify(body) });
   assert.equal((await post('chargers/charger1/settings', { enabled: true }, false)).status, 401);
-  assert.equal((await post('settings', { chargers: { charger1: { capacityKwh: 79, readyBy: '07:15' }, charger2: { capacityKwh: 61 } } })).status, 200);
-  const response = await post('chargers/charger1/settings', { manualSoc: 43 });
+  assert.equal((await post('settings', { priority: 'charger2' })).status, 405);
+  assert.equal((await post('settings', { chargers: { charger1: { capacityKwh: 50 } } })).status, 405);
+  assert.equal((await post('chargers/charger1/settings', { manualSoc: 44 })).status, 400);
+  const displayed = chargerView(engine.charging);
+  const request = { scope: 'session', association: displayed.association, sessionId: displayed.request.sessionId,
+    revision: displayed.request.revision, changes: { manualSoc: 44, capacityKwh: 70 } };
+  assert.equal((await post('chargers/charger1/settings', { ...request, changes: { enabled: true } })).status, 400);
+  primary = false;
+  assert.equal((await post('chargers/charger1/settings', request)).status, 409);
+  primary = true;
+  const response = await post('chargers/charger1/settings', request);
   assert.equal(response.status, 200);
   const status = await response.json();
-  assert.equal(status.charging.chargers.find(item => item.id === 'charger1').values.soc.source, 'manual-fallback');
+  assert.equal(status.charging.chargers.find(row => row.id === 'charger1').values.soc.value, 44);
   assert.equal(status.charging.timezone, 'Europe/Helsinki');
-  assert.equal((await post('settings', { installation: { mainFuseA: 25 } })).status, 400);
-  assert.equal((await post('chargers/charger1/settings', { capacityKwh: -1 })).status, 400);
-  assert.equal((await post('settings', { unknown: true })).status, 400);
-  assert.equal((await post('chargers/charger2/settings', { enabled: true })).status, 200);
-  assert.equal((await post('chargers/missing/settings', { manualSoc: 50 })).status, 400);
-  assert.equal((await post('chargers/charger2/settings', { manualSoc: 56 })).status, 200);
-  primary = false;
-  assert.equal((await post('chargers/charger1/settings', { enabled: true })).status, 409);
-  assert.equal((await post('chargers/charger1/settings', { manualSoc: 1 })).status, 409);
-  primary = true;
+  assert.equal((await post('chargers/charger1/settings', request)).status, 400);
+  assert.equal((await post('chargers/missing/settings', request)).status, 400);
   const restarted = new Engine({ store, config, clock: engine.clock });
   assert.equal(restarted.charging.settings.chargers.charger1.enabled, false);
   assert.equal(restarted.charging.settings.chargers.charger1.capacityKwh, 79);
-  assert.equal(restarted.charging.settings.chargers.charger2.capacityKwh, 61);
-  assert.equal(restarted.charging.settings.installation, undefined);
+  assert.equal(restarted.charging.settings.chargers.charger2.capacityKwh, 79);
   assert.equal(restarted.charging.settings.chargers.charger1.manualSoc, 43);
-  assert.equal(restarted.charging.settings.chargers.charger2.manualSoc, 56);
-  assert.equal(chargerView(restarted.charging, 'charger2').values.soc.value, 56);
-  assert.equal(chargerView(restarted.charging).values.soc.value, 43);
+  assert.equal(restarted.charging.settings.priority, 'balanced');
+  assert.equal(Object.hasOwn(store.getState('charging:mqtt') ?? {}, 'settings'), false);
   await restarted.charging.close();
 });
 
+test('Charge Now API authenticates, rejects stale scope and requires configured scheduling permission', async t => {
+  for (const schedulingEnabled of [true, false]) await t.test(`configured scheduling ${schedulingEnabled ? 'on' : 'off'}`, async t => {
+    const { store, engine, config, advance } = fixture(t, { defaults: { readyBy: '07:15' },
+      chargers: { charger1: { schedulingEnabled } } });
+    const runtime = engine.charging, item = runtime.chargers.charger1, connectedAt = engine.clock(), updates = [];
+    let sessionAt = connectedAt, primary = true;
+    item.adapter = { normalize: () => ({ connected: { value: true, available: true },
+      charging: { value: false, available: true, measuredAt: engine.clock() } }) };
+    item.controller = { status: () => ({ session: { connectedAt: sessionAt },
+      snapshot: { online: true, readAt: engine.clock() }, phase: 'waiting' }),
+      async update(input) { updates.push(structuredClone(input)); }, close() {} };
+    const token = 'synthetic-charge-now-api-authorization';
+    const server = createAppServer({ engine, store, token,
+      controlAuthority: { canControl: () => primary, status: () => ({}) } });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    t.after(() => new Promise(resolve => server.close(resolve)));
+    const url = `http://127.0.0.1:${server.address().port}/api/charging/chargers/charger1/charge-now`;
+    const post = (body, authenticated = true) => fetch(url, { method: 'POST',
+      headers: { 'content-type': 'application/json', ...(authenticated ? { authorization: `Bearer ${token}` } : {}) },
+      body: JSON.stringify(body) });
+    const initial = chargerView(runtime), settings = structuredClone(runtime.settings), configured = structuredClone(config.charging);
+    const request = { association: initial.association, sessionId: initial.request.sessionId, revision: initial.request.revision };
+    assert.equal((await post(request, false)).status, 401);
+    primary = false;
+    assert.equal((await post(request)).status, 409);
+    primary = true;
+    assert.equal((await post({})).status, 400);
+    assert.equal((await post({ ...request, enabled: true })).status, 400);
+    assert.equal((await post({ ...request, revision: request.revision + 1 })).status, 400);
+    assert.equal((await post({ ...request, association: 'different-physical-charger' })).status, 400);
+    assert.equal(chargerView(runtime).request.chargeNow, undefined);
+    const response = await post(request);
+    assert.equal(response.status, schedulingEnabled ? 200 : 400);
+    if (schedulingEnabled) {
+      const accepted = (await response.json()).charging.chargers.find(row => row.id === 'charger1');
+      assert.equal(accepted.request.chargeNow, true);
+      assert.equal(accepted.request.sessionId, request.sessionId);
+      assert.equal(accepted.request.revision, request.revision + 1);
+      assert.deepEqual(updates.at(-1).chargeNow, { connectedAt });
+      assert.equal(store.getState('charging:mqtt').chargers.charger1.request.chargeNow, true);
+      assert.equal((await post(request)).status, 400, 'an old screen cannot overwrite the accepted request');
+      advance(60_000); sessionAt = engine.clock();
+      assert.equal((await post({ ...request, revision: accepted.request.revision })).status, 400);
+      assert.equal(chargerView(runtime).request.chargeNow, undefined, 'a replacement connection does not inherit Charge Now');
+    } else {
+      assert.match((await response.json()).error, /configured automatic charging/);
+      assert.equal(chargerView(runtime).request.chargeNow, undefined);
+      assert.equal(updates.some(update => update.chargeNow), false);
+    }
+    assert.deepEqual(runtime.settings, settings);
+    assert.deepEqual(config.charging, configured);
+    assert.equal(Object.hasOwn(store.getState('charging:mqtt') ?? {}, 'settings'), false);
+  });
+});
+
 test('independent MQTT vehicle routes keep source timestamps without overriding unassigned charger defaults', async t => {
-  const { store, engine, config, cleanup, advance } = fixture(t, { vehicles: { bmw: { mqttTopic: 'stmq/test/bmw' } } }), client = new EventEmitter(), subscriptions = [];
+  const { store, engine, config, cleanup, advance } = fixture(t, { defaults: { manualSoc: 44 }, vehicles: { bmw: { mqttTopic: 'stmq/test/bmw' } } }), client = new EventEmitter(), subscriptions = [];
   client.subscribe = (topic, options, done) => { subscriptions.push({ topic, qos: options.qos }); done(null, [{ topic, qos: options.qos }]); };
   client.unsubscribe = (_topic, done) => done();
   client.end = (_force, _options, done) => done();
@@ -76,18 +135,17 @@ test('independent MQTT vehicle routes keep source timestamps without overriding 
     measuredAt: engine.clock() - 24 * 3_600_000 };
   const sendSoc = (value, topic = engine.charging.configuration.vehicles.bmw.mqttTopic) => client.emit('message', topic, Buffer.from(JSON.stringify(value)), { retain: true });
   sendSoc(reading);
-  assert.equal(chargerView(engine.charging).values.soc.value, 20);
+  assert.equal(chargerView(engine.charging).values.soc.value, 44);
   advance(1000); client.emit('offline'); client.emit('connect'); sendSoc(reading);
   assert.equal(engine.charging.vehicleFeeds.bmw.reading.measuredAt, reading.measuredAt);
   assert.equal(engine.charging.vehicleFeeds.bmw.reading.receivedAt, engine.clock() - 1000);
-  await engine.charging.setChargerSettings('charger1', { manualSoc: 44 });
   sendSoc({ ...reading, readingId: 'sample-2', measuredAt: engine.clock(), soc: 65 });
-  assert.equal(chargerView(engine.charging).values.soc.value, 44, 'Unknown vehicle retains the editable fallback');
-  assert.equal(engine.charging.settings.chargers.charger1.manualSoc, 44, 'Fallback remains saved');
-  await assert.rejects(engine.charging.setChargerSettings('charger1', { mqtt: { topic: 'new/topic' } }), /Unknown/);
+  assert.equal(chargerView(engine.charging).values.soc.value, 44, 'Unknown vehicle retains the configured fallback');
+  assert.equal(engine.charging.settings.chargers.charger1.manualSoc, 44, 'Fallback comes from configuration');
+  await assert.rejects(engine.charging.setChargerSettings('charger1', { mqtt: { topic: 'new/topic' } }), /configuration/);
   assert(subscriptions.some(row => row.topic === 'stmq/test/bmw' && row.qos === 1));
   sendSoc({ readingId: 'second-car', measuredAt: engine.clock(), soc: 48 }, 'stmq/garage/charger2/vehicle');
-  assert.equal(chargerView(engine.charging, 'charger2').values.soc.value, 20, 'A generic extra feed cannot identify the Tesla');
+  assert.equal(chargerView(engine.charging, 'charger2').values.soc.value, 44, 'A generic extra feed cannot identify the Tesla');
   assert.equal(chargerView(engine.charging).values.soc.value, 44, 'Vehicle topics cannot attach themselves to a charger');
   advance(1000);
   const send = (field, value) => client.emit('message', `teslamate/cars/7/${field}`, Buffer.from(String(value)));

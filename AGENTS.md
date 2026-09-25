@@ -185,6 +185,26 @@ See [docs/secret-handling.md](docs/secret-handling.md) for historical audit scop
   to their scenario instead of inheriting unrelated public device subscriptions.
   Keep separate coverage for intended public defaults and sparse override merging.
 
+## Configuration ownership and temporary dashboard controls
+
+- Permanent controller defaults belong exclusively to configuration. Dashboard
+  edits must never rewrite those defaults or create persistent database
+  preferences that replace them. Reloading or restarting must derive defaults
+  from the current configuration, not from an earlier dashboard preference.
+- Dashboard overrides require an explicit physical session or expiry. Display
+  that scope beside the action, restore configured behavior when it ends, and
+  persist only the remaining valid scope across restart. Validate session and
+  device identity before accepting an edit; a new connection inherits no old
+  override. Live device observations retain separate provenance and authority.
+- Charging uses shared unidentified-vehicle defaults, configured vehicle-specific
+  defaults, then explicit session overrides. Scheduling enablement and priority
+  are configuration-only; no permanent dashboard save action is permitted.
+- Explicit configuration import/application and clearly labeled native-device
+  setup/commands are separate from controller-default edits. Keep their actual
+  effect visible. Historical records, restoration obligations, commissioning and
+  pairing state are not configuration defaults; preserve their appropriate
+  persistence and safety duties.
+
 ## UI wording
 
 - Do not use the project name **ST-MQ** in user-facing labels, descriptions,

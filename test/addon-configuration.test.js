@@ -119,23 +119,21 @@ test('startup import is saved before storage/runtime and removed only after succ
 
 test('physical charger deployment configuration reloads without retired topic or efficiency translations',async t=>{
   const f=fixture(t);
-  f.writeImport({charging:{chargers:{charger2:{enabled:true,deviceId:'synthetic-evse',topicPrefix:'synthetic/evse'}}}});
+  f.writeImport({charging:{defaults:{manualSoc:55},chargers:{charger2:{enabled:true,deviceId:'synthetic-evse',topicPrefix:'synthetic/evse'}}}});
   const app=await f.launch();
   assert.equal(app.engine.charging.configuration.chargers.charger2.enabled,true);
   assert.equal(app.engine.charging.configuration.chargers.charger2.verified,false);
-  await app.engine.charging.setChargerSettings('charger1',{manualSoc:55});
   f.writeImport({charging:{chargers:{charger2:{enabled:false}}}});assert.equal((await f.reload()).status,200);
   assert.equal(app.engine.charging.configuration.chargers.charger2.enabled,false);
   assert.equal(app.engine.charging.settings.chargers.charger1.manualSoc,55);
 });
 
-test('vehicle feed deployment config stays separate from charger preferences through Supervisor reload', async t => {
+test('vehicle feed deployment and configured defaults remain independent through Supervisor reload', async t => {
   const f = fixture(t);
-  f.writeImport({ charging: { vehicles: { bmw: {
+  f.writeImport({ charging: { defaults: { manualSoc: 37, capacityKwh: 48 }, vehicles: { bmw: {
     label: 'BMW', provider: 'bmw-cardata', mqttTopic: 'synthetic/vehicles/bmw',
   } } } });
   const app = await f.launch();
-  await app.engine.charging.setChargerSettings('charger1', { manualSoc: 37, capacityKwh: 48 });
   assert.deepEqual(app.engine.charging.mqttRoutes().map(({ id, topic }) => ({ id, topic })),
     [{ id: 'bmw', topic: 'synthetic/vehicles/bmw' }]);
   assert.equal(app.engine.charging.configuration.chargers.charger1.mqttTopic, undefined);

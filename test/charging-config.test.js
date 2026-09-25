@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { chargingConfiguration } from '../src/charging/config.js';
-import { chargingSettings } from '../src/charging/settings.js';
+import { chargingSettings, chargingSettingsFromConfiguration } from '../src/charging/settings.js';
 import { teslamateConfiguration } from '../src/app/config.js';
 test('physical EVSE defaults keep uncommissioned Shelly control disabled', () => {
   const config = chargingConfiguration();
@@ -24,8 +24,26 @@ test('installation safety inputs, disjoint working states and concrete routes ar
     assert.throws(() => chargingConfiguration({chargers:{charger2:field}}));
   assert.throws(() => chargingConfiguration({vehicles:{bmw:{mqttTopic:'cars/#'}}}));
 });
-test('priority and usable capacity belong to explicit current settings', () => {
-  const settings = chargingSettings({priority:'charger2',vehicles:{tesla:{capacityKwh:61}}});
-  assert.equal(settings.priority,'charger2'); assert.equal(settings.vehicles.tesla.capacityKwh,61);
-  assert.throws(() => chargingSettings({priority:'tesla'}));
+test('configuration owns shared unidentified defaults and sparse vehicle defaults independently of the charging point', () => {
+  const config = chargingConfiguration({ defaults: { readyBy: '07:15', minimumSoc: 85, capacityKwh: 65 }, priority: 'charger2',
+    chargers: { charger1: { schedulingEnabled: true } },
+    vehicles: { tesla: { defaults: { capacityKwh: 61, manualSoc: 30 } }, bmw: { defaults: { minimumSoc: 90 } } } });
+  const settings = chargingSettingsFromConfiguration(config);
+  assert.equal(settings.priority, 'charger2');
+  assert.deepEqual(settings.chargers.charger1, { enabled: true, readyBy: '07:15', manualSoc: 20, minimumSoc: 85, capacityKwh: 65 });
+  assert.deepEqual(settings.chargers.charger2, { ...settings.chargers.charger1, enabled: false });
+  assert.deepEqual(settings.vehicles.tesla, { readyBy: '07:15', manualSoc: 30, minimumSoc: 85, capacityKwh: 61 });
+  assert.deepEqual(settings.vehicles.bmw, { readyBy: '07:15', manualSoc: 20, minimumSoc: 90, capacityKwh: 74 });
+  assert.equal(config.chargers.charger2.enabled, false);
+  assert.deepEqual(chargingConfiguration(config), config);
+});
+test('charging default paths validate values and reject retired durable preference fields', () => {
+  for (const defaults of [{ readyBy: '24:01' }, { readyBy: 600 }, { manualSoc: -1 }, { minimumSoc: 101 },
+    { capacityKwh: 0 }, { capacityKwh: 301 }, { enabled: true }, { unknown: 1 }]) {
+    assert.throws(() => chargingConfiguration({ defaults }));
+    assert.throws(() => chargingConfiguration({ vehicles: { tesla: { defaults } } }));
+  }
+  for (const invalid of [{ priority: 'tesla' }, { chargers: { charger1: { enabled: true } } },
+    { chargers: { charger2: { schedulingEnabled: 'yes' } } }, { vehicles: { tesla: { capacityKwh: 61 } } }])
+    assert.throws(() => chargingConfiguration(invalid));
 });

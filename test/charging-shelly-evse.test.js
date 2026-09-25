@@ -298,3 +298,58 @@ test('absolute command expiry after durable intent persistence prevents an unsen
  }});t.after(()=>controller.close());await controller.update({enabled:false,allocation:{}});
  assert.equal(f.writes.some(row=>row.method.endsWith('.Set')),false);assert.equal(controller.status().pending,null);
 });
+
+test('Charge Now releases a Shelly economic pause for this session and Use automatic restores the price plan', async t => {
+  const f = fixture(t); await f.ready();
+  const publish = f.client.publish;
+  f.client.publish = (topic, payload, options, callback) => {
+    if (JSON.parse(payload).method.endsWith('.Set')) f.setNow(f.now() + 1000);
+    return publish(topic, payload, options, callback);
+  };
+  const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true }); t.after(() => controller.close());
+  const future = { periods: [{ startAt: NOW + 3600000, endAt: null }] };
+  await controller.update({ enabled: true, plan: future, allocation: {} });
+  assert.equal(f.fields.start_charging, false); assert.equal(controller.status().ownedPause, true);
+  const connectedAt = f.adapter.snapshot().session.connectedAt;
+  f.setNow(NOW + f.adapter.config.dwellMs + 1000);
+  await controller.update({ enabled: true, plan: future, chargeNow: { connectedAt }, allocation: {} });
+  assert.equal(f.fields.start_charging, true); assert.equal(controller.status().ownedPause, false);
+  assert.equal(controller.status().reason, 'charge-now');
+  assert.equal(f.writes.filter(row => row.method === 'Boolean.Set' && row.params.value === true).length, 1);
+  await controller.update({ enabled: true, plan: future, chargeNow: null, resume: true, allocation: {} });
+  assert.equal(f.fields.start_charging, false); assert.equal(controller.status().reason, 'economic-wait');
+});
+
+test('Shelly Charge Now preserves a native stop, native schedule and vehicle start boundary', async t => {
+  for (const mode of ['stop', 'schedule', 'vehicle-start']) {
+    const f = fixture(t); f.fields.current_limit = 12;
+    if (mode === 'stop') { f.fields.start_charging = false; f.fields.work_state = 'paused'; }
+    if (mode === 'schedule') f.schedules.jobs = [{ id: 1, enable: true }];
+    await f.ready();
+    const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true }); t.after(() => controller.close());
+    await controller.update({ enabled: true, chargeNow: { connectedAt: f.adapter.snapshot().session.connectedAt },
+      allocation: mode === 'vehicle-start' ? { notBefore: NOW + 3600000 } : {} });
+    assert.equal(controller.status().reason, mode === 'stop' ? 'manual-stop' : mode === 'schedule' ? 'native-schedule' : 'vehicle-not-before');
+    assert.equal(f.writes.some(row => row.method === 'Boolean.Set'), false, `${mode} cannot be overridden by Charge Now`);
+    assert.equal(f.writes.some(row => row.method === 'Service.SetConfig'), false);
+  }
+});
+
+test('Shelly Charge Now still pauses for the property fuse limit and rejects a previous connection’s override', async t => {
+  const f = fixture(t, { limiterEnabled: true }); await f.ready();
+  const publish = f.client.publish;
+  f.client.publish = (topic, payload, options, callback) => {
+    if (JSON.parse(payload).method.endsWith('.Set')) f.setNow(f.now() + 1000);
+    return publish(topic, payload, options, callback);
+  };
+  const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true }); t.after(() => controller.close());
+  const connectedAt = f.adapter.snapshot().session.connectedAt;
+  await controller.update({ enabled: true, chargeNow: { connectedAt }, allocation: { property: reading([44, 30, 32]), easee: reading([12, 12, 12]) } });
+  assert.equal(controller.status().limiter.currentA, 0); assert.equal(f.fields.start_charging, false);
+  f.setNow(f.now() + 1000); f.notify('work_state', 'free');
+  f.setNow(f.now() + f.adapter.config.dwellMs + 1000); f.notify('work_state', 'connected');
+  f.fields.work_state = 'connected'; f.fields.start_charging = true;
+  assert.notEqual(f.adapter.snapshot().session.connectedAt, connectedAt);
+  await controller.update({ enabled: true, chargeNow: { connectedAt }, plan: { periods: [{ startAt: f.now() + 3600000, endAt: null }] }, allocation: {} });
+  assert.equal(controller.status().reason, 'economic-wait'); assert.equal(f.fields.start_charging, false);
+});

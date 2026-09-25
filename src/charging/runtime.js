@@ -1,4 +1,4 @@
-import { mergeChargingSettings, chargingSettings, resolveChargingDeadline } from './settings.js';
+import { chargingDefaults, mergeChargingSettings, chargingSettingsFromConfiguration, resolveChargingDeadline } from './settings.js';
 import { acceptVehicleReading, connectionEvidenceStart, matchTeslaSession, matchBmwSession, matchBmwControlledPause, pendingBmwControlledPause, pendingBmwSession, bmwDisconnectEvent, bmwReconnectEvent } from './vehicle.js';
 import { chargingConfiguration } from './config.js';
 import { TIME_ZONE } from '../domain/prices.js';
@@ -32,6 +32,21 @@ const vehicleReception = (feed, now) => ({ ...feed.mqtt, provider: feed.provider
 const MIN_PRICE_PAUSE_MS = 15 * MINUTE, MIN_PRICE_SAVINGS_CENTS = 0;
 const copyRequest = value => structuredClone(value);
 const object = input => input && typeof input === 'object' && !Array.isArray(input);
+const sessionConnectedAt = request => Number(request.scope.split(':').at(-1));
+function validateSavedRequest(request, association) {
+  if (request == null) return;
+  try {
+    if (!object(request) || Object.keys(request).some(key => !['scope', 'sessionId', 'revision', 'deadlineAt', 'overrides', 'anchorAt', 'readyBy', 'chargeNow'].includes(key))
+      || typeof request.scope !== 'string' || request.scope !== `${association}:${sessionConnectedAt(request)}`
+      || !Number.isSafeInteger(sessionConnectedAt(request)) || sessionConnectedAt(request) < 0 || request.sessionId !== request.scope
+      || !Number.isSafeInteger(request.revision) || request.revision < 1
+      || !Number.isSafeInteger(request.deadlineAt) || !object(request.overrides)
+      || request.chargeNow !== undefined && request.chargeNow !== true
+      || request.anchorAt !== undefined && (!Number.isSafeInteger(request.anchorAt) || request.anchorAt < 0)) throw new Error();
+    chargingDefaults(request.overrides, { partial: true });
+    if (request.readyBy !== undefined) chargingDefaults({ readyBy: request.readyBy }, { partial: true });
+  } catch { throw new Error('Unsupported saved charging session; start a fresh development database'); }
+}
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const priceSnapshot = prices => prices.map(row => [row.start, row.end,
   row.priceCtPerKwh ?? row.allInCentsPerKWh ?? row.totalCtPerKwh ?? row.price]);
@@ -63,20 +78,20 @@ const scheduleCeiling = snapshot => {
   return limits.length ? Math.floor(Math.min(...limits)) : undefined;
 };
 
-/** Every charger has the same durable preferences, readings, planning episode
+/** Every charger has configured defaults, scoped requests, readings, planning episode
  * and controller slot. Adapters own provider-specific native command semantics. */
 export class ChargingRuntime {
   constructor({ engine, store, config, clock = Date.now, canControl = () => true, definitions = CHARGER_DEFINITIONS }) {
     Object.assign(this, { engine, store, config, clock, canControl, definitions });
     this.key = `charging:${config.input}`;
     const saved = store.getState(this.key) ?? {};
-    if (Object.keys(saved).length && saved.version !== 5) throw new Error('Unsupported charging state; start a fresh development database');
-    this.settings = chargingSettings(saved.settings ?? {});
+    if (Object.keys(saved).length && (saved.version !== 6 || Object.hasOwn(saved, 'settings'))) throw new Error('Unsupported charging state; start a fresh development database');
     this.revision = saved.revision ?? 0;
     this.configuration = chargingConfiguration(config.charging);
+    this.settings = chargingSettingsFromConfiguration(this.configuration);
     this.streamAssociation = digest(config.connections?.easee?.charger_id ?? null);
     this.streamPending = new Set(); this.streamPersistencePending = false;
-    this.vehicleFeeds = Object.fromEntries(Object.entries(this.configuration.vehicles).map(([id, definition]) => {
+    this.vehicleFeeds = Object.fromEntries(Object.entries(this.configuration.vehicles).filter(([, definition]) => definition.provider === 'bmw-cardata').map(([id, definition]) => {
       const previous = saved.vehicleFeeds?.[id];
       const association = digest([definition.provider, definition.mqttTopic, config.connections?.mqtt?.address, config.connections?.mqtt?.user]);
       const reading = previous?.reading?.association === association ? previous.reading : null;
@@ -88,6 +103,7 @@ export class ChargingRuntime {
       const association = definition.id === 'charger1' ? digest(['easee', config.connections?.easee?.charger_id, config.connections?.easee?.equalizer_id])
         : shellyAssociation(this.configuration.chargers.charger2, config.connections?.mqtt);
       const previous = saved.chargers?.[definition.id]?.association === association ? saved.chargers[definition.id] : {};
+      validateSavedRequest(previous.request, association);
       const streamMatches = previous.streamAssociation === this.streamAssociation;
       return [definition.id, { definition, association, ownershipAdmitted: saved.chargers?.[definition.id]?.association === association,
         request: previous.request ?? null, plan: previous.plan ?? null,
@@ -131,7 +147,7 @@ export class ChargingRuntime {
         streamAssociation: this.streamAssociation, streamEvidence: item.streamEvidence }]));
     const vehicleFeeds = Object.fromEntries(Object.entries(this.vehicleFeeds).map(([id, item]) => [id,
       { reading: item.reading, consumedPlugId: item.consumedPlugId, consumedChargingId: item.consumedChargingId }]));
-    this.store.setState(this.key, { version: 5, revision: this.revision, settings: this.settings, chargers, vehicleFeeds, view });
+    this.store.setState(this.key, { version: 6, revision: this.revision, chargers, vehicleFeeds, view });
   }
   mqttRoutes() {
     return Object.values(this.vehicleFeeds).filter(item => item.mqttTopic)
@@ -482,9 +498,14 @@ export class ChargingRuntime {
     const telemetry = this.telemetry(now);
     return Object.entries(this.chargers).map(([id, item]) => {
       const savedSettings = this.settings.chargers[id], control = this.controlStatus(id);
-      const settings = { ...savedSettings, ...item.request?.overrides };
       const assignedVehicle = telemetry[id]?.vehicle?.id;
-      if (assignedVehicle && !Object.hasOwn(item.request?.overrides ?? {}, 'capacityKwh')) settings.capacityKwh = this.settings.vehicles[assignedVehicle].capacityKwh;
+      const defaults = { ...savedSettings, ...(assignedVehicle ? this.settings.vehicles[assignedVehicle] : {}) };
+      const settings = { ...defaults, ...item.request?.overrides };
+      // Identification changes fallback defaults without replacing session edits.
+      if (item.request && !Object.hasOwn(item.request.overrides, 'readyBy') && item.request.readyBy !== settings.readyBy) {
+        item.request.readyBy = settings.readyBy;
+        item.request.deadlineAt = resolveChargingDeadline(sessionConnectedAt(item.request), settings.readyBy, TIME_ZONE);
+      }
       const definition = { ...item.definition, capabilities: { ...item.definition.capabilities, ...item.adapter?.capabilities } };
       const selectedTarget = telemetry[id]?.vehicle?.id === 'bmw' && telemetry[id].vehicle.state === 'identified'
         && (vehicleFeedAvailable(this.vehicleFeeds.bmw, now) || item.targetState?.override?.value === 100)
@@ -506,7 +527,7 @@ export class ChargingRuntime {
       const progress = updateChargingProgress(item.progress, charger, now, this.readEnergy);
       const feed = this.vehicleFeeds[telemetry[id]?.vehicle?.id];
       const reception = feed ? vehicleReception(feed, now) : null;
-      return { ...charger, association: item.association,
+      return { ...charger, defaults, association: item.association,
         request: telemetry[id]?.vehicle?.sessionId ? item.request : null, vehicle: telemetry[id]?.vehicle ?? null,
         referenceGridKwh: charger.requiredGridKwh, requiredGridKwh: progress.remainingGridKwh,
         progress: { ...progress, state: undefined, creditedGridKwh: progress.state.creditKwh },
@@ -569,7 +590,7 @@ export class ChargingRuntime {
       const item = this.charger(view.id), control = view.control;
       item.priceRecheckAt = null;
       if (!this.pricesInitialized || !this.historyReady || !view.settings.enabled || !view.capabilities.scheduling
-        || control?.manual || control?.pending || control?.provisional || !control?.execution?.planId
+        || view.request?.chargeNow || control?.manual || control?.pending || control?.provisional || !control?.execution?.planId
         || !activePeriod(control, now) || item.newEpisode || !item.plan
         || view.values.connected.value !== true || !(view.requiredGridKwh > 1e-7) || view.deadlineAt <= now) return false;
       const priorPrices = item.plan.priceSnapshot ?? priceSnapshot(item.plan.intervals ?? []);
@@ -594,6 +615,12 @@ export class ChargingRuntime {
     for (const view of views) {
       const item = this.charger(view.id), control = view.control;
       item.forecast = result.forecasts?.[view.id] ?? null;
+      if (view.request?.chargeNow) {
+        item.plan = { ...result.plans[view.id], id: `charge-now:${view.request.sessionId}`, state: 'release',
+          reason: 'charge-now', startAt: now, periods: [{ startAt: now, endAt: null }], finalStartAt: now,
+          provisional: false, priceRevision: undefined };
+        continue;
+      }
       if (!this.historyReady && view.settings.enabled && view.capabilities.scheduling) {
         const reason = this.historyError ?? 'household-history-loading';
         const warning = this.historyError ? 'Household history is unavailable. Charging is allowed while preparation retries.'
@@ -740,13 +767,14 @@ export class ChargingRuntime {
     if (item.adapterPending) await item.adapterFlight;
     if (!item.controller || this.closed || item.backendTransition) return;
     if (!this.flushStreamEvidence()) { this.scheduleStreamReconcile(1000); return; }
-    const controller = item.controller, settings = this.settings.chargers[id];
+    const controller = item.controller, settings = this.views().find(view => view.id === id).settings;
     item.lastReconcileAt = this.clock();
     // The native schedule ceiling follows the reported fixed charger limit;
     // it is never a command to change Equalizer's live allowance.
     const maximumAmps = scheduleCeiling(controller.status()?.snapshot);
     await controller.update({ enabled: settings.enabled, plan: this.pricesInitialized ? item.plan : null,
       timezone: TIME_ZONE, readyBy: settings.readyBy, maximumAmps, resume,
+      chargeNow: item.request?.chargeNow === true ? { connectedAt: sessionConnectedAt(item.request) } : null,
       allocation: id === 'charger2' ? this.allocationContext() : undefined,
       vehicleDisconnect: item.vehicleDisconnect ? { ...item.vehicleDisconnect,
         reconnected: item.vehicleDisconnect.source === 'easee-stream' ? item.vehicleDisconnect.reconnected
@@ -755,67 +783,49 @@ export class ChargingRuntime {
     item.error = null;
     try { this.updatePlan(); this.error = null; } catch { this.error = 'charging-planning-unavailable'; }
   }
-  async setSettings(input) {
-    const previous = this.settings, previousRevision = this.revision, next = mergeChargingSettings(previous, input);
-    const views = this.views();
-    for (const view of views) if (next.chargers[view.id].enabled && !view.capabilities.scheduling)
-      throw new Error(`${view.label} does not support automatic scheduling`);
-    const oldRecords = Object.fromEntries(Object.entries(this.chargers).map(([id, item]) => [id,
-      { association: item.association, request: structuredClone(item.request), plan: item.plan, progress: item.progress, supplyEstimate: item.supplyEstimate }]));
-    this.settings = next; this.revision++;
-    if (next.priority !== previous.priority) for (const item of Object.values(this.chargers)) item.plan = null;
-    for (const [id, item] of Object.entries(this.chargers)) {
-      const before = previous.chargers[id], after = next.chargers[id];
-      const control = item.controller?.status();
-      if (before.readyBy !== after.readyBy && item.request && !Object.hasOwn(item.request.overrides, 'readyBy')) item.request.deadlineAt = resolveChargingDeadline(this.clock(), after.readyBy, TIME_ZONE);
-      if (before.readyBy !== after.readyBy && !control?.released) {
-        if (item.plan && activePeriod(control, this.clock())) item.plan = { ...item.plan, replanReadyBy: after.readyBy };
-        else item.plan = null;
-      }
-    }
-    try { this.persist(); } catch (error) {
-      this.settings = previous; this.revision = previousRevision;
-      for (const [id, saved] of Object.entries(oldRecords)) Object.assign(this.chargers[id], saved);
-      throw error;
-    }
-    this.historyAt = null;
-    for (const item of Object.values(this.chargers)) item.controller?.invalidate?.();
-    // Revoke OFF before optional history/forecast work can fail.
-    for (const id of Object.keys(this.chargers)) if (!next.chargers[id].enabled) await this.reconcile(id);
-    try { this.updatePlan(); } catch { this.error = 'charging-planning-unavailable'; }
-    for (const id of Object.keys(this.chargers)) if (next.chargers[id].enabled) await this.reconcile(id);
-  }
   async setChargerSettings(id, input) {
     this.charger(id);
-    if (!object(input)) throw new Error('Charger settings must be an object');
-    if (input.scope === 'session') return this.setSessionRequest(id, input);
-    const { capacityProfile, ...settings } = input;
-    if (Object.hasOwn(input, 'capacityProfile')) {
-      if (!Object.hasOwn(input, 'capacityKwh')) throw new Error('Capacity profile requires a capacity setting');
-      const vehicle = this.views().find(view => view.id === id)?.vehicle;
-      const currentProfile = vehicle?.state === 'identified' ? vehicle.id : `generic:${id}`;
-      if (capacityProfile !== currentProfile) throw new Error('Vehicle changed; review its capacity before saving');
-    }
-    if (capacityProfile && !capacityProfile.startsWith('generic:')) {
-      const { capacityKwh, ...other } = settings;
-      await this.setSettings({ vehicles: { [capacityProfile]: { capacityKwh } }, chargers: { [id]: other } });
-    } else await this.setSettings({ chargers: { [id]: settings } });
+    if (!object(input) || input.scope !== 'session')
+      throw new Error('Permanent charging settings come from configuration. Use Save for this session for temporary changes.');
+    return this.setSessionRequest(id, input);
   }
-  async setSessionRequest(id, input) {
-    const item = this.charger(id);
-    if (Object.keys(input).some(key => !['scope', 'association', 'sessionId', 'revision', 'changes'].includes(key))
-      || !object(input.changes)) throw new Error('Invalid session request');
-    const view = this.views().find(charger => charger.id === id);
-    if (!item.request || view.vehicle?.sessionId !== item.request.sessionId
+  checkedSession(id, input) {
+    const item = this.charger(id), view = this.views().find(charger => charger.id === id);
+    if (!object(input) || !item.request || view.vehicle?.sessionId !== item.request.sessionId
       || input.association !== item.association || input.sessionId !== item.request.sessionId
       || input.revision !== item.request.revision) throw new Error('Charging connection changed; refresh before editing');
+    return { item, view };
+  }
+  async chargeNow(id, input) {
+    if (!object(input) || Object.keys(input).sort().join(',') !== 'association,revision,sessionId')
+      throw new Error('Charge Now requires the displayed charging connection.');
+    const { item, view } = this.checkedSession(id, input);
+    if (!this.canControl() || this.closed || !['mqtt', 'providers'].includes(this.config.input)
+      || !view.settings.enabled || !view.capabilities.scheduling || !item.controller)
+      throw new Error('Charge Now requires configured automatic charging and control authority.');
+    if (view.values.connected.value !== true) throw new Error('Connect a vehicle before choosing Charge Now.');
+    const previous = copyRequest(item.request), previousRevision = this.revision, previousPlan = item.plan;
+    item.request.chargeNow = true; item.request.revision++; this.revision++; item.plan = null;
+    try { this.persist(); } catch (error) { item.request = previous; item.plan = previousPlan; this.revision = previousRevision; throw error; }
+    item.controller.invalidate?.();
+    try { this.updatePlan(); } catch { this.error = 'charging-planning-unavailable'; }
+    // Release scheduling immediately even when price/history work is unavailable.
+    await this.reconcile(id);
+  }
+  async setSessionRequest(id, input) {
+    if (Object.keys(input).some(key => !['scope', 'association', 'sessionId', 'revision', 'changes'].includes(key))
+      || !object(input.changes)) throw new Error('Invalid session request');
+    const { item } = this.checkedSession(id, input);
     if (Object.keys(input.changes).some(key => !['manualSoc', 'capacityKwh', 'minimumSoc', 'readyBy'].includes(key))) throw new Error('Invalid session field');
     const checked = mergeChargingSettings(this.settings, { chargers: { [id]: input.changes } }).chargers[id];
     const previous = copyRequest(item.request), previousRevision = this.revision, previousPlan = item.plan;
     for (const key of Object.keys(input.changes)) item.request.overrides[key] = checked[key];
     if (Object.hasOwn(input.changes, 'manualSoc')) item.request.anchorAt = this.clock();
     if (Object.hasOwn(input.changes, 'readyBy')) item.request.deadlineAt = resolveChargingDeadline(this.clock(), checked.readyBy, TIME_ZONE);
-    item.request.revision++; this.revision++; item.plan = null;
+    item.request.revision++; this.revision++;
+    const control = item.controller?.status();
+    item.plan = control?.released ? previousPlan : previousPlan && activePeriod(control, this.clock())
+      ? { ...previousPlan, ...(Object.hasOwn(input.changes, 'readyBy') ? { replanReadyBy: checked.readyBy } : {}) } : null;
     try { this.persist(); } catch (error) { item.request = previous; item.plan = previousPlan; this.revision = previousRevision; throw error; }
     item.controller?.invalidate?.(); this.updatePlan(); await this.reconcile(id);
   }
@@ -840,7 +850,14 @@ export class ChargingRuntime {
     const view = this.views().find(item => item.id === id);
     if (!view.capabilities.scheduling) throw new Error(`${view.label} does not support automatic scheduling`);
     if (!view.settings.enabled) throw new Error('Enable automatic charging before resuming');
-    this.updatePlan(); await this.reconcile(id, { resume: true });
+    const item = this.charger(id);
+    if (item.request?.chargeNow) {
+      const previous = copyRequest(item.request), previousRevision = this.revision, previousPlan = item.plan;
+      delete item.request.chargeNow; item.request.revision++; this.revision++; item.plan = null;
+      try { this.persist(); } catch (error) { item.request = previous; item.plan = previousPlan; this.revision = previousRevision; throw error; }
+      item.controller?.invalidate?.();
+    }
+    await this.reconcile(id, { resume: true });
   }
   status(now = this.clock()) {
     const chargers = this.views(now);

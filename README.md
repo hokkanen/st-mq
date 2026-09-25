@@ -477,7 +477,8 @@ still restores heating on communication loss without limiting the total pause. S
 [protection parameters](docs/garage-protection-defaults.md) for assumptions and
 reporting/restoration deadlines.
 The `shelly-cn105` Pill integration supports native controls and commissioned
-selective pause leases. **Room setting** supports permanent targets down to 5°C
+selective pause leases. Permanent low-temperature targets belong in
+`garage.roomTargetC`; **Room setting** applies a two-hour override down to 5°C
 using the independent Garage rear sensor and the Pill's external temperature
 feature: ST-MQ selects native 17°C heating and the reported external value adds
 `17 − room setting` (+12°C for a 5°C target). Each enable or renewal requires
@@ -565,8 +566,13 @@ fill missing intervals or make cached device values fresh. Provider diagnostics
 name the live stream and REST backup while retaining reading-quality warnings.
 Charger voltage terminal mapping requires explicit verification before voltage
 weights are used. Easee acquisition can refresh authentication tokens. Separately
-enabling **Automatic charging** on Charger 1 permits scheduling writes,
-including while heating is in monitoring or shadow mode; it is off by default.
+enabling `charging.chargers.charger1.schedulingEnabled` in configuration permits
+automatic scheduling writes, including while heating is in monitoring or shadow
+mode; it is off by default. The dashboard shows automatic scheduling permission
+and priority read-only. Shared and vehicle defaults are configuration-owned;
+**Save for this session** cannot replace them. The prominent **Charge Now**
+button releases economic scheduling for the current connection while preserving
+native device and vehicle constraints.
 Cloud delayed starts and native OCPP control are exclusive. Native OCPP setup is
 managed by ST-MQ, with a stable shared address in paired mode. Opt-in
 `plug-and-charge` authorization supports RFID-free starts; economic pauses use

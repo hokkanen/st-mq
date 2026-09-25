@@ -65,7 +65,7 @@ async function savedMatch(t) {
     changes: { readyBy: '08:30', capacityKwh: 79 } });
   runtime.persist();
   const saved = f.store.getState(runtime.key);
-  assert.equal(saved.version, 5);
+  assert.equal(saved.version, 6);
   assert.equal(saved.chargers.charger1.vehicleMatch.id, 'bmw');
   assert.equal(saved.chargers.charger1.targetState.override.value, 100);
   assert.equal(saved.chargers.charger1.request.revision, 2);

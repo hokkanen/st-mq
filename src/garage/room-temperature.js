@@ -5,7 +5,7 @@ export const GARAGE_EXTERNAL_SOURCE_MAX_AGE_MS = 90_000;
 const pending = result => ['pending', 'published', 'accepted'].includes(result?.status);
 const failed = result => ['rejected', 'failed', 'uncertain', 'superseded'].includes(result?.status);
 
-/** Saved room intent is separate from short-lived sensor permission. No sample,
+/** Configured or bounded room intent is separate from short-lived sensor permission. No sample,
  * command envelope or native confirmation survives a host/driver session. */
 export class GarageRoomTemperature {
   constructor({ targetC = null, now = Date.now() } = {}) {

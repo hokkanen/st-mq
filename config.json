@@ -135,9 +135,19 @@
     },
 
     "charging": {
+      "defaults": {
+        "readyBy": "06:00",
+        "manualSoc": 20,
+        "minimumSoc": 80,
+        "capacityKwh": 74
+      },
+      "priority": "balanced",
       "chargers": {
-        "charger1": {},
+        "charger1": {
+          "schedulingEnabled": false
+        },
         "charger2": {
+          "schedulingEnabled": false,
           "enabled": false,
           "profile": "top-ac-portable",
           "deviceId": "",
@@ -181,7 +191,17 @@
         "bmw": {
           "label": "BMW",
           "provider": "bmw-cardata",
-          "mqttTopic": "stmq/vehicles/bmw"
+          "mqttTopic": "stmq/vehicles/bmw",
+          "defaults": {
+            "capacityKwh": 74
+          }
+        },
+        "tesla": {
+          "label": "Tesla",
+          "provider": "teslamate",
+          "defaults": {
+            "capacityKwh": 57
+          }
         }
       }
     },
@@ -574,6 +594,7 @@
       "enabled": "bool",
       "savingsStrategy": "list(gentle|balanced|savings)",
       "baselineC": "float(8,16)",
+      "roomTargetC": "float(5,15.5)?",
 
       "minSavingsEur": "float(0,100)",
       "maxPausesPerDay": "int(1,4)",
@@ -603,9 +624,19 @@
     },
 
     "charging": {
+      "defaults": {
+        "readyBy": "str",
+        "manualSoc": "float(0,100)",
+        "minimumSoc": "float(0,100)",
+        "capacityKwh": "float(1,300)"
+      },
+      "priority": "list(balanced|charger1|charger2)",
       "chargers": {
-        "charger1": {},
+        "charger1": {
+          "schedulingEnabled": "bool"
+        },
         "charger2": {
+          "schedulingEnabled": "bool",
           "enabled": "bool",
           "profile": "str?",
           "deviceId": "str?",
@@ -649,7 +680,23 @@
         "bmw": {
           "label": "str?",
           "provider": "list(bmw-cardata)?",
-          "mqttTopic": "str?"
+          "mqttTopic": "str?",
+          "defaults": {
+            "readyBy": "str?",
+            "manualSoc": "float(0,100)?",
+            "minimumSoc": "float(0,100)?",
+            "capacityKwh": "float(1,300)?"
+          }
+        },
+        "tesla": {
+          "label": "str?",
+          "provider": "list(teslamate)?",
+          "defaults": {
+            "readyBy": "str?",
+            "manualSoc": "float(0,100)?",
+            "minimumSoc": "float(0,100)?",
+            "capacityKwh": "float(1,300)?"
+          }
         }
       }
     },

@@ -1,26 +1,37 @@
+import { DEFAULT_CHARGING_DEFAULTS, chargingDefaults } from './settings.js';
+
 const object = value => value && typeof value === 'object' && !Array.isArray(value);
 const strict = (value, allowed, label) => {
   if (!object(value) || Object.keys(value).some(key => !allowed.includes(key))) throw new Error(`Invalid ${label}; use the current physical-EVSE configuration`);
 };
 const topic = value => value === '' || value === null || typeof value === 'string' && value.length <= 256 && !/[+#\u0000-\u0020]/.test(value);
 export const DEFAULT_CHARGING_CONFIGURATION = Object.freeze({
-  chargers: { charger1: {}, charger2: {
-    enabled: false, profile: 'top-ac-portable', deviceId: '', model: '', firmware: '', topicPrefix: '',
+  defaults: DEFAULT_CHARGING_DEFAULTS, priority: 'balanced',
+  chargers: { charger1: { schedulingEnabled: false }, charger2: {
+    schedulingEnabled: false, enabled: false, profile: 'top-ac-portable', deviceId: '', model: '', firmware: '', topicPrefix: '',
     associationVersion: 1, verified: false, serviceId: 0, minimumCurrentA: 6, maximumCurrentA: 16, currentStepA: 1,
     limiterEnabled: false, fallbackCurrentA: 12, mainFuseA: [25, 25, 25], marginA: [1, 1, 1],
     phaseMap: [0, 1, 2], additiveCurrentVerified: false, maxAgeMs: 15000, maxSkewMs: 5000,
     dwellMs: 30000, rampA: 2, connectedStates: [], disconnectedStates: [], chargingStates: [],
   } },
-  vehicles: { bmw: { mqttTopic: 'stmq/vehicles/bmw', label: 'BMW', provider: 'bmw-cardata' } },
+  vehicles: {
+    bmw: { label: 'BMW', provider: 'bmw-cardata', mqttTopic: 'stmq/vehicles/bmw', defaults: { capacityKwh: 74 } },
+    tesla: { label: 'Tesla', provider: 'teslamate', defaults: { capacityKwh: 57 } },
+  },
 });
 export function chargingConfiguration(input = {}) {
-  strict(input, ['chargers', 'vehicles'], 'charging configuration');
+  strict(input, ['defaults', 'priority', 'chargers', 'vehicles'], 'charging configuration');
+  const generalDefaults = chargingDefaults(input.defaults);
+  const priority = input.priority ?? DEFAULT_CHARGING_CONFIGURATION.priority;
+  if (!['balanced', 'charger1', 'charger2'].includes(priority)) throw new Error('Invalid charging priority');
   strict(input.chargers ?? {}, ['charger1', 'charger2'], 'chargers');
-  strict(input.chargers?.charger1 ?? {}, [], 'Easee configuration');
+  strict(input.chargers?.charger1 ?? {}, ['schedulingEnabled'], 'Easee configuration');
+  const c1 = { ...DEFAULT_CHARGING_CONFIGURATION.chargers.charger1, ...input.chargers?.charger1 };
+  if (typeof c1.schedulingEnabled !== 'boolean') throw new Error('Invalid Easee schedulingEnabled');
   const defaults = DEFAULT_CHARGING_CONFIGURATION.chargers.charger2, supplied = input.chargers?.charger2 ?? {};
   strict(supplied, Object.keys(defaults), 'Shelly EVSE configuration');
   const c2 = { ...structuredClone(defaults), ...supplied };
-  for (const key of ['enabled', 'verified', 'limiterEnabled', 'additiveCurrentVerified']) if (typeof c2[key] !== 'boolean') throw new Error(`Invalid EVSE ${key}`);
+  for (const key of ['schedulingEnabled', 'enabled', 'verified', 'limiterEnabled', 'additiveCurrentVerified']) if (typeof c2[key] !== 'boolean') throw new Error(`Invalid EVSE ${key}`);
   if (c2.profile !== 'top-ac-portable' || !topic(c2.topicPrefix) || !topic(c2.deviceId)) throw new Error('Unsupported EVSE profile or topic');
   for (const key of ['model', 'firmware']) if (typeof c2[key] !== 'string' || c2[key].length > 100 || /[\u0000-\u001f]/.test(c2[key])) throw new Error(`Invalid EVSE ${key}`);
   for (const key of ['associationVersion', 'serviceId', 'minimumCurrentA', 'maximumCurrentA', 'currentStepA', 'fallbackCurrentA', 'maxAgeMs', 'maxSkewMs', 'dwellMs', 'rampA'])
@@ -40,10 +51,20 @@ export function chargingConfiguration(input = {}) {
   }
   if (c2.enabled && (!c2.topicPrefix || !c2.deviceId)) throw new Error('An enabled EVSE needs a device identity and topic');
   if (c2.verified && (!c2.model || !c2.firmware || !c2.disconnectedStates.length || !c2.chargingStates.length || !c2.connectedStates.length)) throw new Error('EVSE commissioning requires model, firmware and verified state semantics');
-  strict(input.vehicles ?? {}, ['bmw'], 'vehicles');
-  strict(input.vehicles?.bmw ?? {}, ['mqttTopic', 'label', 'provider'], 'BMW vehicle configuration');
-  const bmw = { ...DEFAULT_CHARGING_CONFIGURATION.vehicles.bmw, ...input.vehicles?.bmw };
-  if (!topic(bmw.mqttTopic) || typeof bmw.label !== 'string' || !bmw.label.trim() || bmw.label.length > 80 || bmw.provider !== 'bmw-cardata') throw new Error('Invalid BMW vehicle configuration');
-  if (bmw.mqttTopic === '') bmw.mqttTopic = null;
-  return { chargers: { charger1: {}, charger2: c2 }, vehicles: { bmw } };
+  strict(input.vehicles ?? {}, ['bmw', 'tesla'], 'vehicles');
+  const vehicles = {};
+  for (const [id, defaults] of Object.entries(DEFAULT_CHARGING_CONFIGURATION.vehicles)) {
+    const supplied = input.vehicles?.[id] ?? {};
+    strict(supplied, Object.keys(defaults), `${id} vehicle configuration`);
+    const vehicle = { ...defaults, ...supplied,
+      defaults: chargingDefaults({ ...defaults.defaults, ...chargingDefaults(supplied.defaults, { partial: true }) }, { partial: true }) };
+    if (typeof vehicle.label !== 'string' || !vehicle.label.trim() || vehicle.label.length > 80
+      || vehicle.provider !== defaults.provider) throw new Error(`Invalid ${id} vehicle configuration`);
+    if (id === 'bmw') {
+      if (!topic(vehicle.mqttTopic)) throw new Error('Invalid BMW vehicle configuration');
+      if (vehicle.mqttTopic === '') vehicle.mqttTopic = null;
+    }
+    vehicles[id] = vehicle;
+  }
+  return { defaults: generalDefaults, priority, chargers: { charger1: c1, charger2: c2 }, vehicles };
 }

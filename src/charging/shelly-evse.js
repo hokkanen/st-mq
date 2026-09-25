@@ -317,7 +317,12 @@ export function createShellyController({ adapter, initialState, saveState = () =
         if (closed || intentRevision !== revision) return;
         await adapter.refresh();
         const snapshot = adapter.snapshot(), sessionId = snapshot.session?.sessionId;
-        if (state.sessionId !== sessionId) { state.manual = null; state.manualCurrentA = null; state.ownedPause = false; state.sessionId = sessionId; state.pending = null; }
+        if (state.sessionId !== sessionId) {
+          state.manual = null; state.manualCurrentA = null; state.ownedPause = false; state.sessionId = sessionId; state.pending = null;
+          // A new vehicle connection has its own native baseline. Commands from
+          // the previous connection cannot establish manual activity here.
+          delete state.lastStart; delete state.lastCurrent;
+        }
         const fresh = field => field?.measuredAt > 0 && field.measuredAt <= clock() && field.receivedAt <= clock() && clock() - field.receivedAt <= adapter.config.maxAgeMs && !field.retained;
         const start = snapshot.fields.start_charging, current = snapshot.fields.current_limit;
         const workState = snapshot.fields.work_state;
@@ -350,7 +355,8 @@ export function createShellyController({ adapter, initialState, saveState = () =
         const context = input.allocation ?? {}, limitation = shellyCurrentLimit({ config: adapter.config,
           ...context, nativeCurrentA: state.manualCurrentA, shelly: adapter.liveCurrents(), now: clock() });
         state.limiter = limitation;
-        const plan = input.plan, windows = plan?.periods ?? [];
+        const chargeNow = input.enabled && input.chargeNow?.connectedAt === snapshot.session?.connectedAt;
+        const plan = input.plan, windows = chargeNow ? [{ startAt: clock(), endAt: null }] : plan?.periods ?? [];
         const economic = input.enabled && !state.manual && !snapshot.nativeScheduleActive && windows.length > 0;
         const inWindow = windows.some(period => period.startAt <= clock() && (period.endAt === null || period.endAt > clock()));
         const nativeBlocked = finite(context.notBefore) && context.notBefore > clock();
@@ -402,7 +408,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
           if (state.executionStage === 'read-back' && actual.healthy && actual.times.every(at => at >= (state.commandAt ?? Infinity))
             && (pause ? actual.currents.every(v => v < .5) : actual.currents.every(v => v <= cap + 1))) state.executionStage = 'physical-effect';
           state.phase = state.manual ? 'manual' : pause ? 'waiting' : input.enabled ? 'released' : 'off';
-          state.reason = state.manual ? `manual-${state.manual.kind}` : snapshot.nativeScheduleActive ? 'native-schedule' : nativeBlocked ? 'vehicle-not-before' : pause && economic && !inWindow ? 'economic-wait' : limitation.reason;
+          state.reason = state.manual ? `manual-${state.manual.kind}` : snapshot.nativeScheduleActive ? 'native-schedule' : nativeBlocked ? 'vehicle-not-before' : pause && economic && !inWindow ? 'economic-wait' : chargeNow && !pause ? 'charge-now' : limitation.reason;
         } catch (cause) { state.phase = 'uncertain'; state.reason = cause.code ?? 'command-unconfirmed'; }
         await persist();
       });

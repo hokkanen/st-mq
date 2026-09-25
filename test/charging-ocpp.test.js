@@ -354,3 +354,41 @@ test('exact profile cleanup permits a current connection with unconfirmed transa
   await assert.rejects(adapter.clear({ profileId: 419 }, snapshot), { code: 'control-revoked' });
   assert.equal(writes.length, 1);
 });
+
+test('Charge Now clears only this session’s owned pause, preserves foreign profiles, and resumes planning explicitly', async () => {
+  const f = fixture(), future = plan(START + 30 * MINUTE);
+  await f.controller.update({ enabled: true, plan: future });
+  const ownId = f.stored.owned.profileId, connectedAt = f.controller.status().session.connectedAt;
+  f.profiles.set(999999999, { transactionId: 7, validFrom: new Date(START).toISOString(), validTo: new Date(START + 60 * MINUTE).toISOString() });
+  let view = await f.controller.update({ enabled: true, plan: future, chargeNow: { connectedAt } });
+  assert.equal(view.phase, 'released'); assert.equal(view.execution, null);
+  assert.deepEqual(writes(f).at(-1), { action: 'ClearChargingProfile', payload: { id: ownId } });
+  assert(f.profiles.has(999999999), 'Native restrictions remain in the charger');
+  assert(!f.profiles.has(ownId));
+  const count = writes(f).length;
+  await f.controller.update({ enabled: true, plan: future, chargeNow: { connectedAt } });
+  assert.equal(writes(f).length, count, 'A price plan cannot replace the active session override');
+  view = await f.controller.update({ enabled: true, plan: future, chargeNow: null, resume: true });
+  assert.equal(view.phase, 'paused'); assert(f.profiles.has(999999999));
+  assert.equal(writes(f).at(-1).action, 'SetChargingProfile');
+});
+
+test('Charge Now preserves a confirmed native OCPP stop and never sends a remote start', async () => {
+  const f = fixture(); await f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+  const connectedAt = f.controller.status().session.connectedAt;
+  f.advance(1000); f.manual({ id: 'native-stop', kind: 'stop', at: f.now, transactionId: 7 });
+  const view = await f.controller.update({ enabled: true, chargeNow: { connectedAt } });
+  assert.equal(view.phase, 'yielded'); assert.equal(view.manual.kind, 'stop');
+  assert.equal(f.profiles.size, 0, 'Only the controller’s earlier restriction is removed');
+  assert(!writes(f).some(row => /RemoteStart|RemoteStop/.test(row.action)));
+});
+
+test('an earlier OCPP session’s Charge Now cannot release a new transaction’s planned pause', async () => {
+  const f = fixture(); await f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+  const connectedAt = f.controller.status().session.connectedAt;
+  await f.controller.update({ enabled: true, chargeNow: { connectedAt } });
+  f.advance(2000); f.transaction(8); f.snapshot({ transactionStartedAt: f.now });
+  const view = await f.controller.update({ enabled: true, plan: plan(START + 40 * MINUTE), chargeNow: { connectedAt } });
+  assert.equal(view.phase, 'paused'); assert.equal(view.released, false);
+  assert.equal(f.stored.owned.transactionId, 8);
+});

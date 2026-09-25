@@ -50,7 +50,7 @@ export function mitsubishiValue(setting, value, unit = mitsubishiSettings[settin
   return `${formatted}${unit && unit !== 'boolean' && unit !== 'raw' ? ` ${unit === 'degC' ? '°C' : unit}` : ''}`;
 }
 
-/** A saved room target and its current control basis are separate from pump readback. */
+/** The configured or temporary room target remains separate from pump readback. */
 export function mitsubishiRoomTemperature(garage = {}) {
   const control = garage.roomTemperature;
   if (!Number.isFinite(control?.targetC)) return null;
@@ -63,18 +63,22 @@ export function mitsubishiRoomTemperature(garage = {}) {
     : control.phase === 'preparing' || control.phase === 'active' ? 'Waiting for the pump to confirm Garage rear control.'
       : control.phase === 'clearing' ? 'Returning to the pump’s internal sensor.'
         : 'External temperature control is unavailable.';
-  const detail = [`Saved room setting: ${mitsubishiValue('targetC', control.targetC)}. ${progress}`,
+  const scope = Number.isFinite(control.overrideUntil) ? `Temporary until ${clock(control.overrideUntil)}.` : 'Default from configuration.';
+  const detail = [`Room setting: ${mitsubishiValue('targetC', control.targetC)}. ${scope} ${progress}`,
+    Number.isFinite(control.overrideUntil) ? Number.isFinite(control.defaultTargetC)
+      ? `The configured room setting of ${mitsubishiValue('targetC', control.defaultTargetC)} resumes when this override ends.`
+      : 'When this override ends, the pump returns to its internal sensor and its previous native thermostat target.' : '',
     `Garage rear is the room sensor. External control uses a native pump target of ${nativeTarget}; the controller adds ${mitsubishiValue('targetC', control.offsetC)} to the rear reading to obtain the lower room setting.`,
     `Garage rear: ${mitsubishiValue('targetC', control.sourceC)}.${clock(control.measuredAt) ? ` Measured ${clock(control.measuredAt)}.` : ''} Supplied temperature: ${mitsubishiValue('targetC', control.suppliedC)}.`,
     control.reason ? `Control status: ${words(control.reason)}.` : '',
     control.phase === 'clearing' ? 'Waiting for internal-sensor acknowledgement before the next control step.'
       : !active && control.phase !== 'preparing' && control.phase !== 'active' ? 'The driver returns to its internal temperature sensor when the current permission expires.' : '',
     `Before enabling or renewing external control, the controller confirms fresh pump readings show ON, HEAT and ${nativeTarget}. If that check fails, renewals stop and the current permission expires. Internal temperature control then uses the pump's current settings.`,
-    `Missing or stale sensor readings also stop external control. A room setting of 16 °C or higher, or another heat-pump setting change, ends external temperature control.`].filter(Boolean).join('\n\n');
-  return { value: mitsubishiValue('targetC', control.targetC), basis, detail, active, progress };
+    `Missing or stale sensor readings also stop external control. A room setting of 16 °C or higher, or another heat-pump setting change, suspends configured external temperature control for two hours.`].filter(Boolean).join('\n\n');
+  return { value: mitsubishiValue('targetC', control.targetC), basis, detail, active, progress, scope };
 }
 
-export const mitsubishiTemperatureControlHelp = 'Below 16 °C, Garage rear is the room sensor. The pump stays set to 17 °C, and an offset is added to the supplied temperature to maintain your lower room setting. Settings of 16 °C or higher use normal pump control.\n\nExternal control requires fresh sensor readings and confirmed pump settings: power on, heating mode and 17 °C. If these checks fail, renewals stop; the pump returns to its internal sensor when the current permission expires. Changing another pump setting also ends external temperature control.';
+export const mitsubishiTemperatureControlHelp = 'Room settings below 16 °C are temporary overrides for two hours. Permanent room defaults belong in configuration. When the override ends, the configured room target resumes, or the pump returns to its internal sensor and previous native thermostat target.\n\nBelow 16 °C, Garage rear is the room sensor. The pump stays set to 17 °C, and an offset is added to the supplied temperature to maintain your lower room setting. Settings of 16 °C or higher change the pump directly.\n\nExternal control requires fresh sensor readings and confirmed pump settings: power on, heating mode and 17 °C. If these checks fail, renewals stop; the pump returns to its internal sensor when the current permission expires. Changing another pump setting suspends a configured external room target for two hours.';
 
 /** Present reported settings and diagnostic measurements without promoting
  * provisional telemetry to control evidence or interpreting raw units. */
@@ -207,7 +211,7 @@ export function mitsubishiResult(result) {
   if (!result) return '';
   const setting = mitsubishiSettings[result.setting]?.label ?? 'Heat-pump setting';
   const request = `${setting}: ${mitsubishiValue(result.setting, result.value)}.`;
-  if (result.status === 'saved') return `${request} Saved; preparing external temperature control.`;
+  if (result.status === 'saved') return `${request} ${clock(result.expiresAt) ? `Temporary until ${clock(result.expiresAt)}; preparing` : 'Preparing'} external temperature control.`;
   if (result.status === 'acknowledged') return `${request} External temperature acknowledged by the driver.`;
   if (result.status === 'native-confirmed') return `${request} Confirmed by the pump${clock(result.nativeConfirmedAt) ? ` at ${clock(result.nativeConfirmedAt)}` : ''}.`;
   if (['pending', 'published', 'accepted'].includes(result.status)) return `${request} Requested; waiting for fresh pump confirmation.`;
@@ -229,6 +233,8 @@ export function createMitsubishiControls({ document, request, onStatus = () => {
     select.disabled = locked || !control.available || setting.value === 'targetC';
     input.disabled = locked || !control.available || setting.value !== 'targetC';
     submit.disabled = locked || !control.available;
+    submit.textContent = setting.value === 'targetC' && input.value.trim() !== '' && Number(input.value) < 16
+      ? 'Save for 2 hours' : 'Apply to heat pump';
     form.setAttribute('aria-busy', String(busy || Boolean(status?.garage?.nativeControls?.busy || status?.garage?.nativeControls?.pending)));
   };
   const render = ({ useReadback = false } = {}) => {
@@ -241,7 +247,12 @@ export function createMitsubishiControls({ document, request, onStatus = () => {
     if (fold) fold.hidden = !known.length;
     form.hidden = !known.length;
     const room = mitsubishiRoomTemperature(status?.garage), roomStatus = $('garage-room-temperature-status');
-    if (roomStatus) { roomStatus.hidden = !room; roomStatus.textContent = room ? `Room setting ${room.value}. ${room.progress}` : ''; }
+    if (roomStatus) {
+      const until = status?.garage?.roomTemperature?.overrideUntil;
+      roomStatus.hidden = !room && !Number.isFinite(until);
+      roomStatus.textContent = room ? `Room setting ${room.value}. ${room.scope} ${room.progress}`
+        : Number.isFinite(until) ? `Configured room control resumes after ${clock(until)}.` : '';
+    }
     if (settingSignature !== JSON.stringify(known)) {
       const previous = setting.value;
       setting.replaceChildren();
@@ -277,9 +288,9 @@ export function createMitsubishiControls({ document, request, onStatus = () => {
     setStatusDetail($('garage-native-reported'), { key: `mitsubishi-selected-${key}`, title: mitsubishiSettings[key].label,
       label: reading?.value ?? 'Unavailable', detail: reading?.detail ?? 'Waiting for a current native readback.' });
     $('garage-native-status').textContent = control.available
-      ? numeric && control.min < 16 ? 'Saves your room setting. Wait for control confirmation.'
-        : room ? 'Changing this setting ends external temperature control.'
-          : 'Applies the setting. Wait for pump confirmation.'
+      ? numeric && control.min < 16 ? 'Below 16 °C: save for 2 hours. Permanent room defaults are set in configuration.'
+        : room ? 'Changes the pump directly and suspends configured room control for 2 hours.'
+          : 'Changes the heat pump’s device setting. Wait for pump confirmation.'
       : /\s/.test(control.reason) ? control.reason : words(control.reason);
     if (!busy && !requestError) { message.textContent = mitsubishiResult(status?.garage?.nativeControls?.result);
       message.classList.toggle('form-error', ['rejected', 'uncertain', 'failed'].includes(status?.garage?.nativeControls?.result?.status)); }
@@ -297,7 +308,7 @@ export function createMitsubishiControls({ document, request, onStatus = () => {
       else setting.blur();
     }
   };
-  const edit = () => { edited = true; requestError = null; };
+  const edit = () => { edited = true; requestError = null; refreshControls(); };
   const send = async event => {
     event.preventDefault();
     const key = setting.value, control = mitsubishiControl(status, key);

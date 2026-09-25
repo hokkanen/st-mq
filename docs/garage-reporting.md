@@ -69,12 +69,13 @@ There are two adjustable thermal coefficients, rear/front cooling per hour.
 It is never labeled a maximum pause: longer forecasts receive extra uncertainty
 margins, and temperatures plus the pipe reserve determine the safe duration.
 
-The Mitsubishi Heat-pump settings fold includes a permanent **Room setting**
+The Mitsubishi Heat-pump settings fold includes a two-hour **Room setting** override
 down to 5°C when external temperature control is available. Below 16°C the
 requested room setting is distinct from the actual native 17°C readback. Status
 shows the Garage rear sensor, offset, remote temperature and active or fallback
-state; it never infers Mitsubishi i-save. The owning instance persists the target;
-replicas are read-only. Enabling or renewing the external feed requires fresh
+state and override expiry; it never infers Mitsubishi i-save. Permanent targets
+come from `garage.roomTargetC`; replicas are read-only. The owning instance
+persists only the remaining override time and required restoration state. Enabling or renewing the external feed requires fresh
 ON, HEAT and 17°C readbacks; a failed check stops renewals and lets the current
 lease expire. Missing or stale source evidence also ends the feed. Internal-sensor
 control uses the pump's current native settings, 17°C if unchanged from setup;

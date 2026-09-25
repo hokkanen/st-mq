@@ -1,15 +1,17 @@
 import moment from 'moment-timezone';
 import { TIME_ZONE } from '../domain/prices.js';
 
-const chargerDefaults = capacityKwh => Object.freeze({
-  enabled: false, readyBy: '06:00', capacityKwh, minimumSoc: 80, manualSoc: 20,
+export const DEFAULT_CHARGING_DEFAULTS = Object.freeze({
+  readyBy: '06:00', manualSoc: 20, minimumSoc: 80, capacityKwh: 74,
 });
+const chargerDefaults = Object.freeze({ enabled: false, ...DEFAULT_CHARGING_DEFAULTS });
 
-/** Durable user preferences only. Connections and conversion assumptions belong
- * to application configuration; electrical limits are provider observations. */
-export const DEFAULT_CHARGING_SETTINGS = Object.freeze({ priority: 'balanced', vehicles: Object.freeze({ tesla: Object.freeze({ capacityKwh: 57 }), bmw: Object.freeze({ capacityKwh: 74 }) }), chargers: Object.freeze({
-  charger1: chargerDefaults(74), charger2: chargerDefaults(57),
-}) });
+// Validated runtime values derived from configuration, never a separate saved
+// preference source. Both unidentified charging points use the same defaults.
+export const DEFAULT_CHARGING_SETTINGS = Object.freeze({ priority: 'balanced', vehicles: Object.freeze({
+  tesla: Object.freeze({ ...DEFAULT_CHARGING_DEFAULTS, capacityKwh: 57 }),
+  bmw: Object.freeze({ ...DEFAULT_CHARGING_DEFAULTS, capacityKwh: 74 }),
+}), chargers: Object.freeze({ charger1: chargerDefaults, charger2: chargerDefaults }) });
 
 function object(value, label) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${label} must be an object`);
@@ -22,6 +24,28 @@ function range(value, name, min, max) {
 }
 const validReadyBy = value => typeof value === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(value);
 
+export function chargingDefaults(input = {}, { partial = false } = {}) {
+  object(input, 'Charging defaults'); knownKeys(input, DEFAULT_CHARGING_DEFAULTS, 'charging default');
+  const value = partial ? { ...input } : { ...DEFAULT_CHARGING_DEFAULTS, ...input };
+  if (Object.hasOwn(value, 'readyBy') && !validReadyBy(value.readyBy)) throw new Error('Charging readyBy must be HH:mm');
+  for (const key of ['manualSoc', 'minimumSoc', 'capacityKwh']) if (Object.hasOwn(value, key))
+    range(value[key], key, key === 'capacityKwh' ? 1 : 0, key === 'capacityKwh' ? 300 : 100);
+  return value;
+}
+
+/** Resolve the config-owned baseline. Vehicle identity and session overrides
+ * are applied by the runtime, with observations retaining their provenance. */
+export function chargingSettingsFromConfiguration(configuration) {
+  const defaults = chargingDefaults(configuration.defaults);
+  return chargingSettings({
+    priority: configuration.priority,
+    vehicles: Object.fromEntries(Object.entries(configuration.vehicles).map(([id, vehicle]) =>
+      [id, { ...defaults, ...vehicle.defaults }])),
+    chargers: Object.fromEntries(Object.entries(configuration.chargers).map(([id, charger]) =>
+      [id, { enabled: charger.schedulingEnabled, ...defaults }])),
+  });
+}
+
 export function chargingSettings(input = {}) {
   object(input, 'Charging settings'); knownKeys(input, DEFAULT_CHARGING_SETTINGS, 'charging setting');
   if (input.chargers !== undefined) object(input.chargers, 'Charging chargers');
@@ -31,7 +55,7 @@ export function chargingSettings(input = {}) {
   const vehicles = {};
   for (const [id, defaults] of Object.entries(DEFAULT_CHARGING_SETTINGS.vehicles)) {
     const supplied = input.vehicles?.[id] ?? {}; object(supplied, 'Vehicle profile'); knownKeys(supplied, defaults, 'vehicle profile setting');
-    vehicles[id] = { ...defaults, ...supplied }; range(vehicles[id].capacityKwh, `${id} capacityKwh`, 1, 300);
+    vehicles[id] = chargingDefaults({ ...defaults, ...supplied });
   }
   const result = { priority: input.priority ?? 'balanced', vehicles, chargers: {} };
   for (const [id, defaults] of Object.entries(DEFAULT_CHARGING_SETTINGS.chargers)) {

@@ -15,7 +15,25 @@ import { appendGarageEntry, applyGarageEntry, garageInput, garageDigest, garageC
   garageJournalHead, replayGarageJournal, validGarageCheckpoint } from './learning.js';
 
 const MINUTE = 60_000, HOUR = 60 * MINUTE;
+export const GARAGE_ROOM_OVERRIDE_MS = 2 * HOUR;
 const finite = Number.isFinite;
+const validRoomTarget = value => value === null || finite(value) && value >= GARAGE_ROOM_MIN_C
+  && value < 16 && Number.isInteger(value * 2);
+const validNativeTarget = value => finite(value) && value >= 16 && value <= 31 && Number.isInteger(value * 2);
+function validateRoomOverride(value, now, adapterKey) {
+  if (value == null) return;
+  if (typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length !== 5 || value.adapterKey !== adapterKey
+    || !validRoomTarget(value.targetC) || !Number.isSafeInteger(value.createdAt) || value.createdAt > now
+    || value.expiresAt !== value.createdAt + GARAGE_ROOM_OVERRIDE_MS
+    || !(value.restoreTargetC === null || validNativeTarget(value.restoreTargetC)))
+    throw new Error('Unsupported saved Garage room override; start a fresh development database');
+}
+function validateRoomRestoration(value, adapterKey) {
+  if (value == null) return;
+  if (typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length !== 3 || value.adapterKey !== adapterKey
+    || !validNativeTarget(value.targetC) || !Number.isSafeInteger(value.createdAt))
+    throw new Error('Unsupported saved Garage room restoration; start a fresh development database');
+}
 const instant = value => typeof value === 'number' ? value : Date.parse(value);
 const allowed = new Set(['good', 'simulated', 'historical', 'converted_fahrenheit']);
 const usable = (row, now, maxAge) => row && finite(row.value) && finite(row.sourceTime) && row.sourceTime <= now
@@ -61,7 +79,7 @@ export class GarageRuntime {
       try { garageSettings(previous); }
       catch { throw new Error('Unsupported saved Garage settings; start a fresh development database'); }
     }
-    this.keys = Object.fromEntries(['checkpoint', 'exposure', 'episode', 'adapter', 'temporary', 'manual', 'roomTemperature'].map(name => [name, `garage:${name}:${this.input}`]));
+    this.keys = Object.fromEntries(['checkpoint', 'exposure', 'episode', 'adapter', 'temporary', 'manual', 'roomTemperature', 'roomRestoration'].map(name => [name, `garage:${name}:${this.input}`]));
     this.context = garageCorrectionContext(store, this.input);
     const readState = key => {
       try { return store.getState(key); }
@@ -72,10 +90,16 @@ export class GarageRuntime {
         this.corruptState = true; return null;
       }
     };
-    const room = readState(this.keys.roomTemperature);
+    this.roomOverride = readState(this.keys.roomTemperature);
+    this.roomRestoration = readState(this.keys.roomRestoration);
+    this.roomAdapterKey = garageDigest(config.garage?.adapter ?? null);
+    validateRoomOverride(this.roomOverride, clock(), this.roomAdapterKey);
+    validateRoomRestoration(this.roomRestoration, this.roomAdapterKey);
+    if (this.roomOverride && this.roomRestoration)
+      throw new Error('Conflicting saved Garage room state; start a fresh development database');
     this.roomTemperature = new GarageRoomTemperature({ now: clock(), targetC:
-      finite(room?.targetC) && room.targetC >= GARAGE_ROOM_MIN_C && room.targetC < 16
-        && Number.isInteger(room.targetC * 2) ? room.targetC : null });
+      this.roomOverride?.expiresAt > clock() ? this.roomOverride.targetC : this.settings.roomTargetC });
+    if (this.roomRestoration) this.roomTemperature.cancel({ setting: 'targetC', value: this.roomRestoration.targetC }, clock());
     const savedExposure = readState(this.keys.exposure);
     if (savedExposure != null && (typeof savedExposure !== 'object' || Array.isArray(savedExposure)))
       throw new Error('Invalid saved Garage exposure; start a fresh development database');
@@ -121,6 +145,7 @@ export class GarageRuntime {
         this.episode.accounting.qualified = false; this.saveEpisode();
       }
     }
+    this.expireRoomOverride(clock());
     this.armControlDeadline();
   }
   activePause(now = this.clock()) { return this.temporary?.expiresAt > now ? this.temporary : null; }
@@ -132,16 +157,18 @@ export class GarageRuntime {
   armControlDeadline() {
     clearTimeout(this.controlTimer);
     if (this.closed) return;
-    const ends = [this.temporary?.expiresAt, this.manual?.expiresAt].filter(finite);
+    const ends = [this.temporary?.expiresAt, this.manual?.expiresAt, this.roomOverride?.expiresAt].filter(finite);
     if (!ends.length) return;
     this.controlTimer = setTimeout(() => {
       try { this.expireControls(this.clock()); }
       catch { void this.release('manual-expiry-persistence-failed').catch(() => {}); }
       this.armControlDeadline();
+      void this.roomTemperatureTick();
     }, Math.min(2_147_483_647, Math.max(1, Math.min(...ends) - this.clock())));
     this.controlTimer.unref?.();
   }
   expireControls(now, { automaticUpdate = false } = {}) {
+    this.expireRoomOverride(now);
     if (this.temporary && this.temporary.expiresAt <= now) {
       this.temporary = null; this.store.setState(this.keys.temporary, null);
     }
@@ -214,13 +241,15 @@ export class GarageRuntime {
     const reason = !this.canControl() ? 'This instance does not own device control.'
       : !['mqtt', 'providers'].includes(this.input) ? 'Ordinary Mitsubishi controls require a live connection.'
         : this.closed ? 'Garage control is closed.'
-          : this.manualBusy || this.dispatch ? 'Wait for the current garage request to finish.' : null;
+          : this.roomRestoration ? 'Wait for the previous temporary room setting to restore.'
+            : this.manualBusy || this.dispatch ? 'Wait for the current garage request to finish.' : null;
     return { ...controls, available: reason === null && controls.available,
       busy: Boolean(controls.busy || this.manualBusy || this.dispatch), reason: reason ?? controls.reason,
       settings: Object.fromEntries(Object.entries(controls.settings).map(([key, value]) => [key,
         reason ? { ...value, available: false, reason } : value])) };
   }
   async setNativeSettings(input) {
+    this.expireRoomOverride(this.clock());
     const now = this.clock(), controls = this.nativeControls(now);
     const lower = input?.setting === 'targetC' && finite(input.value) && input.value < 16;
     // Native bounds stay unchanged. Only this owner-facing room intent can use
@@ -234,6 +263,7 @@ export class GarageRuntime {
     if (!this.canControl() || this.closed || !['mqtt', 'providers'].includes(this.input))
       throw new Error(controls.reason ?? 'Ordinary Mitsubishi controls are unavailable.');
     if (controls.busy) throw new Error('Wait for the current garage request to finish.');
+    if (this.roomRestoration) throw new Error('Wait for the previous temporary room setting to restore.');
     const choices = controls.settings[request.setting]?.values;
     if (choices && !choices.includes(request.value)) throw new Error('The connected heat pump does not support this setting value.');
     // Automatic OFF has a restoration obligation. Finish that handover before
@@ -254,11 +284,15 @@ export class GarageRuntime {
       }
       const external = this.adapter?.externalTemperature?.(now);
       if (lower) {
-        this.saveRoomTarget(request.value, now);
+        const restoreTargetC = this.roomOverride?.restoreTargetC ??
+          (this.settings.roomTargetC === null ? this.adapter.status(now).native?.targetC : null);
+        if (this.settings.roomTargetC === null && !validNativeTarget(restoreTargetC))
+          throw new Error('A temporary room setting requires a native target between 16 and 31 °C to restore. Set a permanent lower room target in configuration.');
+        this.saveRoomOverride(request.value, now, restoreTargetC);
         this.roomTemperature.select(request.value, now);
       } else if (this.roomTemperature.targetC !== null || this.roomTemperature.mustClear
         || external?.restorationPending || external?.phase && external.phase !== 'internal') {
-        this.saveRoomTarget(null, now);
+        this.saveRoomOverride(null, now);
         this.roomTemperature.cancel(request, now);
       } else await this.adapter.setNativeSetting(request, now);
       return this.status();
@@ -313,7 +347,7 @@ export class GarageRuntime {
           const request = { setting: 'power', value: 'on' }, external = this.adapter.externalTemperature?.(now);
           if (this.roomTemperature.targetC !== null || this.roomTemperature.mustClear
             || external?.restorationPending || external?.phase && external.phase !== 'internal') {
-            this.saveRoomTarget(null, now); this.roomTemperature.cancel(request, now);
+            this.saveRoomOverride(null, now); this.roomTemperature.cancel(request, now);
             void this.roomTemperatureTick();
           } else await this.adapter.setNativeSetting(request, now);
         }
@@ -335,6 +369,11 @@ export class GarageRuntime {
   roomTemperatureStatus(now = this.clock()) {
     const observation = this.engine.latest.garage_temperature;
     const status = this.roomTemperature.status(observation);
+    status.defaultTargetC = this.settings.roomTargetC;
+    status.overrideUntil = this.roomOverride?.expiresAt > now ? this.roomOverride.expiresAt : null;
+    status.source = status.overrideUntil ? 'temporary' : 'configuration';
+    status.restorationPending = Boolean(this.roomRestoration);
+    if (status.result) status.result.expiresAt = status.overrideUntil;
     const external = this.adapter?.externalTemperature?.(now);
     if (status.acknowledged && (!this.canControl() || this.closed
       || !usable(observation, now, GARAGE_EXTERNAL_SOURCE_MAX_AGE_MS)
@@ -349,24 +388,58 @@ export class GarageRuntime {
   roomTemperatureTick() {
     if (this.closed || this.roomDispatch || this.manualBusy || this.dispatch) return;
     const now = this.clock(), observation = this.engine.latest.garage_temperature;
-    this.roomDispatch = Promise.resolve().then(() => this.roomTemperature.tick({ adapter: this.adapter,
-      observation, now, canControl: this.canControl() && ['mqtt', 'providers'].includes(this.input),
-      sourceUsable: usable(observation, now, GARAGE_EXTERNAL_SOURCE_MAX_AGE_MS) === true,
-    })).catch(() => {
+    this.roomDispatch = Promise.resolve().then(() => {
+      this.expireRoomOverride(now);
+      if (this.roomRestoration) {
+        const controls = this.adapter?.nativeControls?.(now), result = controls?.result;
+        if (result?.setting === 'targetC' && result.value === this.roomRestoration.targetC
+          && result.status === 'native-confirmed' && result.requestedAt >= this.roomRestoration.createdAt) {
+          this.store.setState(this.keys.roomRestoration, null); this.roomRestoration = null;
+          if (this.settings.roomTargetC !== null) this.roomTemperature.select(this.settings.roomTargetC, now);
+        } else if (!this.roomTemperature.ordinary && !controls?.busy && !controls?.pending) {
+          this.roomTemperature.ordinary = { setting: 'targetC', value: this.roomRestoration.targetC };
+        }
+      }
+      return this.roomTemperature.tick({ adapter: this.adapter,
+        observation, now, canControl: this.canControl() && ['mqtt', 'providers'].includes(this.input),
+        sourceUsable: usable(observation, now, GARAGE_EXTERNAL_SOURCE_MAX_AGE_MS) === true,
+      });
+    }).catch(() => {
       this.roomTemperature.phase = 'blocked';
       this.roomTemperature.reason = 'External temperature control could not complete. Waiting for fresh device state.';
     }).finally(() => { this.roomDispatch = null; });
     return this.roomDispatch;
   }
-  saveRoomTarget(targetC, now) {
+  saveRoomOverride(targetC, now, restoreTargetC = null) {
+    const next = targetC === null && this.settings.roomTargetC === null ? null
+      : { targetC, createdAt: now, expiresAt: now + GARAGE_ROOM_OVERRIDE_MS, restoreTargetC, adapterKey: this.roomAdapterKey };
     const checkpoint = this.checkpoint;
     try {
       this.store.transaction(() => {
-        this.store.setState(this.keys.roomTemperature, { targetC });
+        this.store.setState(this.keys.roomTemperature, next);
         this.append('context', { normalReferenceReset: true, roomTargetC: targetC }, `room-target:${randomUUID()}`, now);
-        this.store.event('garage-room-target-changed', { targetC }, now);
+        this.store.event('garage-room-override-changed', { override: next }, now);
       });
     } catch (error) { this.checkpoint = checkpoint; throw error; }
+    this.roomOverride = next; this.armControlDeadline();
+  }
+  expireRoomOverride(now) {
+    const previous = this.roomOverride;
+    if (!previous || previous.expiresAt > now) return;
+    const restore = this.settings.roomTargetC === null && validNativeTarget(previous.restoreTargetC)
+      ? { targetC: previous.restoreTargetC, createdAt: now, adapterKey: this.roomAdapterKey } : null;
+    const checkpoint = this.checkpoint;
+    try {
+      this.store.transaction(() => {
+        this.store.setState(this.keys.roomTemperature, null);
+        this.store.setState(this.keys.roomRestoration, restore);
+        this.append('context', { normalReferenceReset: true, roomTargetC: this.settings.roomTargetC }, `room-target:${randomUUID()}`, now);
+        this.store.event('garage-room-override-ended', { targetC: this.settings.roomTargetC }, now);
+      });
+    } catch (error) { this.checkpoint = checkpoint; throw error; }
+    this.roomOverride = null; this.roomRestoration = restore;
+    if (this.settings.roomTargetC !== null) this.roomTemperature.select(this.settings.roomTargetC, now);
+    else this.roomTemperature.cancel(restore ? { setting: 'targetC', value: restore.targetC } : null, now);
   }
   pauseStartsToday(now = this.clock()) {
     const day = moment.tz(now, 'Europe/Helsinki').startOf('day');
