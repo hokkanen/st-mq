@@ -24,14 +24,20 @@ export async function checkChargingPriority({ send, evaluate, until, artifacts }
       const actions = await evaluate(`['charger1', 'charger2'].map(id => {
         const device = document.getElementById(id + '-device'), summary = device.querySelector('summary');
         const button = document.getElementById(id + '-charge-now'), bounds = button.getBoundingClientRect(), card = summary.getBoundingClientRect();
-        return { id, visible: button.checkVisibility(), caption: button.textContent, height: bounds.height,
+        const state = document.getElementById(id + '-charge-now-state'), range = document.createRange(); range.selectNodeContents(button);
+        return { id, visible: button.checkVisibility(), caption: button.textContent, accessibleName: button.getAttribute('aria-label'),
+          state: state.textContent, stateHidden: state.getAttribute('aria-hidden'), pressed: button.getAttribute('aria-pressed'), height: bounds.height,
+          labelsFit: [...range.getClientRects()].every(rect => rect.left >= bounds.left && rect.right <= bounds.right && rect.top >= bounds.top && rect.bottom <= bounds.bottom),
           fits: bounds.left >= card.left && bounds.right <= card.right && bounds.top >= card.top && bounds.bottom <= card.bottom,
           rightAligned: bounds.left + bounds.width / 2 > card.left + card.width / 2,
           priorityHidden: !document.getElementById(id + '-shared-priority').checkVisibility() };
       })`);
       for (const action of actions) {
         assert(action.visible && action.fits && action.rightAligned && action.priorityHidden, `${width}px ${theme}: ${action.id} exposes Charge now at the top right: ${JSON.stringify(action)}`);
-        assert.equal(action.caption, 'Charge now'); assert(action.height >= 44, 'The immediate-charge button has a generous touch target');
+        assert.match(action.caption, /^Charge now\s*(ON|OFF)$/); assert.equal(action.accessibleName, 'Charge now');
+        assert.equal(action.state, action.pressed === 'true' ? 'ON' : 'OFF'); assert.equal(action.stateHidden, 'true');
+        assert(action.labelsFit, 'The label and explicit state fit inside the button');
+        assert.equal(action.height, 44, 'The immediate-charge button keeps its original touch-target height');
       }
       assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, `${width}px ${theme} has no horizontal overflow`);
       const screenshot = await send('Page.captureScreenshot', { format: 'png' });
@@ -77,14 +83,18 @@ export async function checkChargingPriority({ send, evaluate, until, artifacts }
       globalThis.refreshLearningSmokeStatus()`);
     await until("document.getElementById('charger1-charge-now').disabled === false");
     assert.equal(await evaluate("document.getElementById('charger1-enabled').getAttribute('aria-checked')"), 'false', 'Charge now is available with automatic charging OFF');
+    assert.equal(await evaluate("document.getElementById('charger1-charge-now').title"), 'Turn on immediate charging until unplugging.');
     const actionLayout = async (width, theme) => {
       await send('Emulation.setDeviceMetricsOverride', { width, height: 1100, deviceScaleFactor: 1, mobile: false });
       await evaluate(`window.homeEnergyTheme.setTheme('${theme}'); document.getElementById('charger1-device').scrollIntoView({block: 'center'})`);
       return evaluate(`(() => {
         const summary = document.getElementById('charger1-device-summary'), box = summary.getBoundingClientRect();
         const button = document.getElementById('charger1-charge-now'), bounds = button.getBoundingClientRect();
+        const state = document.getElementById('charger1-charge-now-state'), range = document.createRange(); range.selectNodeContents(button);
         return { height: box.height, buttonHeight: bounds.height, buttonWidth: bounds.width,
-          background: getComputedStyle(button).backgroundColor,
+          background: getComputedStyle(button).backgroundColor, state: state.textContent,
+          knobTransform: getComputedStyle(state, '::after').transform,
+          labelsFit: [...range.getClientRects()].every(rect => rect.left >= bounds.left && rect.right <= bounds.right && rect.top >= bounds.top && rect.bottom <= bounds.bottom),
           fits: bounds.left >= box.left && bounds.right <= box.right && bounds.top >= box.top && bounds.bottom <= box.bottom,
           hasSecondAction: summary.contains(document.getElementById('charger1-resume')),
           hasMessage: document.getElementById('charger1-control-message').checkVisibility() };
@@ -104,12 +114,16 @@ export async function checkChargingPriority({ send, evaluate, until, artifacts }
       ['/api/charging/chargers/charger1/charge-now', { association: 'synthetic-browser-charger', sessionId: 'synthetic-browser-session', revision: 1 }],
     ], 'One click requests immediate charging for exactly the displayed connection');
     assert.equal(await evaluate("document.getElementById('charger1-device').open"), false, 'Charge now does not open the settings fold');
-    assert.equal(await evaluate("document.getElementById('charger1-charge-now').title"), 'Selected until unplugging. Click again to use automatic charging.');
+    assert.equal(await evaluate("document.getElementById('charger1-charge-now').title"), 'Charge now is on until unplugging. Turn off to use automatic charging.');
     for (const width of [320, 390, 1440]) for (const theme of ['dark', 'light']) {
       const layout = await actionLayout(width, theme), before = layouts.get(`${width}:${theme}`);
       assert(layout.fits && !layout.hasSecondAction && !layout.hasMessage, `${width}px ${theme}: only the toggle occupies the action area`);
+      assert.equal(layout.state, 'ON', 'The selected request remains explicit even when the vehicle is not charging');
+      assert.equal(before.state, 'OFF'); assert(layout.labelsFit); assert.equal(layout.buttonHeight, 44);
       assert.notEqual(layout.background, before.background, 'Selected Charge now has a distinct fill');
-      assert.deepEqual({ ...layout, background: before.background }, before, 'Selected Charge now keeps the card and button dimensions');
+      assert.notEqual(layout.knobTransform, before.knobTransform, 'The switch thumb moves when Charge now is on');
+      assert.deepEqual({ ...layout, background: before.background, state: before.state, knobTransform: before.knobTransform }, before,
+        'Selected Charge now keeps the card and button dimensions');
       const screenshot = await send('Page.captureScreenshot', { format: 'png' });
       writeFileSync(join(artifacts, `charging-selected-${width}-${theme}.png`), Buffer.from(screenshot.data, 'base64'));
     }
@@ -123,10 +137,26 @@ export async function checkChargingPriority({ send, evaluate, until, artifacts }
     assert.deepEqual(await evaluate('globalThis.chargingActionSmokeWrites[1]'), ['/api/charging/chargers/charger1/control', { association: 'synthetic-browser-charger', revision: 0, enabled: true }]);
     assert.deepEqual(await evaluate('globalThis.chargingActionSmokeWrites[2]'), ['/api/charging/chargers/charger1/resume', {}]);
     assert.equal(await evaluate("document.getElementById('charger1-enabled').getAttribute('aria-checked')"), 'true');
+    await evaluate("document.getElementById('charger1-charge-now').focus()");
+    await send('Input.dispatchKeyEvent', { type: 'keyDown', key: ' ', code: 'Space', windowsVirtualKeyCode: 32, text: ' ' });
+    await send('Input.dispatchKeyEvent', { type: 'keyUp', key: ' ', code: 'Space', windowsVirtualKeyCode: 32 });
+    await until("document.getElementById('charger1-charge-now').getAttribute('aria-pressed') === 'true' && globalThis.chargingActionSmokeWrites.length === 4 && !document.getElementById('charger1-charge-now').disabled");
+    assert.equal(await evaluate("document.getElementById('charger1-charge-now-state').textContent"), 'ON', 'Space turns Charge now on');
+    assert.equal(await evaluate("document.getElementById('charger1-device').open"), false);
+    await evaluate("document.getElementById('charger1-charge-now').focus()");
+    await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r' });
+    await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+    await until("document.getElementById('charger1-charge-now').getAttribute('aria-pressed') === 'false' && globalThis.chargingActionSmokeWrites.length === 5 && !document.getElementById('charger1-charge-now').disabled");
+    assert.equal(await evaluate("document.getElementById('charger1-charge-now-state').textContent"), 'OFF', 'Enter turns Charge now off');
+    assert.equal(await evaluate("document.getElementById('charger1-device').open"), false);
+    assert.deepEqual(await evaluate('globalThis.chargingActionSmokeWrites.slice(3)'), [
+      ['/api/charging/chargers/charger1/charge-now', { association: 'synthetic-browser-charger', sessionId: 'synthetic-browser-session', revision: 1 }],
+      ['/api/charging/chargers/charger1/resume', {}],
+    ], 'Keyboard input toggles the same session request in both directions');
     await evaluate("document.getElementById('charger1-device').open = true; document.getElementById('charger1-shared-priority').click(); document.getElementById('charging-priority-charger2').click(); document.getElementById('charging-priority-save').click()");
     await until("!document.getElementById('charging-priority-dialog').open");
     assert.deepEqual(await evaluate("['charger1', 'charger2'].map(id => document.getElementById(id + '-shared-priority-value').textContent)"), ['Charger 2', 'Charger 2']);
-    const priorityWrite = await evaluate('globalThis.chargingActionSmokeWrites[3]');
+    const priorityWrite = await evaluate('globalThis.chargingActionSmokeWrites[5]');
     assert.equal(priorityWrite[0], '/api/charging/settings'); assert.equal(priorityWrite[1].priority, 'charger2');
     assert.equal(priorityWrite[1].revision, 1); assert.equal(priorityWrite[1].associations.charger1, 'synthetic-browser-charger');
     await evaluate("document.getElementById('charger1-enabled').click()");

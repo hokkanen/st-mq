@@ -46,8 +46,11 @@ Change permanent defaults in configuration and choose **Apply configuration**.
 **Charge now** is immediately visible at the top right of each charger card.
 It releases the controller's automatic scheduling delay for the current session
 without changing the Automatic charging choice. It works with Automatic
-charging OFF. The button stays highlighted while selected; click **Charge now**
-again to end the override and use automatic charging (enabling it if it was OFF).
+charging OFF. The button has an explicit **ON/OFF** indicator with a sliding knob
+and stays highlighted while ON; click **Charge now** again to turn the override
+OFF and use automatic charging (enabling it if it was OFF). ON means immediate
+charging is requested; the card's activity line reports whether the vehicle is
+actually charging, waiting or blocked.
 The card keeps its height while saving and after either action, without an extra
 confirmation message. Unplugging also ends the override. **Use automatic** remains
 in Details & settings when an external charger instruction has manual priority.
