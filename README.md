@@ -315,6 +315,10 @@ Home offers Away/Pause; Garage offers **Pause price control**. The expandable **
 follows Home's equipment fold.
 **Sensors & Equipment** contains Home's readings and equipment controls.
 Garage's two expandable chargers sit above **Sensors & More equipment**.
+Select the **Doors** status (such as **Both closed**) to operate either door from
+the popup. Each door offers **Open** or **Close** from its reported state, or
+**Stop** during movement when supported. Sent requests stay separate from the
+reported position; unknown readings and read-only views cannot operate a door.
 Tariff requests remain explicitly unverified when relay readback
 is unavailable; stale H66 readings are not presented as current settings.
 

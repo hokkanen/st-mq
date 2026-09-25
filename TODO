@@ -2,6 +2,24 @@
 -Implement support for local mqtt-based temperature receives (eg, from shelly or HASS through Meteorologisk Institute); just store last received temp values and time stamps (maybe in storage class, see below) when received (and accept if received within 1h)
 -Chart dataset control buttons don't work when datasets are manually hidden/unhidden from legend, how to fix?
 
+Completed 2026-09-25 — Garage door popup controls
+- The Garage Doors status opens compact, themed door rows with an illustrated
+  reported position and one context-sensitive Open, Close or supported Stop
+  action. Pending delivery, unconfirmed positions and failures stay per door;
+  polling preserves the popup and keyboard focus. Both themes fit 320px screens.
+- Reuse current equipment commands, capabilities, authority and busy state.
+  Unknown or invalid contact evidence cannot choose an action. Role and pairing
+  updates disable an already-open popup immediately. Retain the detailed
+  equipment controls, event-driven contact health and physical readback semantics.
+- Reviewed acquisition producers, cover API, configuration, state, UI, tests and
+  documentation. No compatibility aliases, new settings or persisted formats
+  were introduced. Replace the browser fixture's retired native-parameter hold
+  expectations with current persistent device-setting expectations.
+- Validation: full offline suite (3,149 tests), 14 new door-control tests, shared
+  popup tests and production build pass. Isolated Chromium checks cover mocked
+  requests, keyboard activation, focus, read-only transitions and both themes at
+  1440, 390 and 320px. All commands use disposable synthetic fixtures.
+
 Completed 2026-09-25 — Persistent heat-pump settings and room intent
 - Ordinary Home pump parameters remain until explicitly changed; readback owns
   their current values and later automatic control restores the accepted device

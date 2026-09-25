@@ -562,7 +562,7 @@ export function dhwrReadingSummary(status) {
     available: feedback.available === true, configured: feedback.configured === true };
 }
 
-export function createEquipmentPanel({ document, request, onStatus, beforeRequest, onBusy = () => {}, blocked = () => false }) {
+export function createEquipmentPanel({ document, request, onStatus, beforeRequest, onBusy = () => {}, onChange = () => {}, blocked = () => false }) {
   const $ = id => document.getElementById(id), connectionNodes = new Map(), connectionGroups = new Map(), restoreNodes = new Map(), readingNodes = new Map();
   let current;
   const make = (tag, text = '', className = '') => {
@@ -773,6 +773,7 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
   function render(snapshot) {
     const { status, busy, message, error, actionKind } = snapshot;
     if (!status) return;
+    onChange(snapshot);
     const devices = equipmentDevices(status), inventory = equipmentInventory(status), active = status.equipmentTests?.active;
     const connections = equipmentConnections(status, devices, inventory);
     const isCaravanMember = device => device.area === 'garage' && ['blu_ht', 'caravan_dehumidifier'].includes(device.id);

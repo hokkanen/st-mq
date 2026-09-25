@@ -19,6 +19,7 @@ import { applicationUrl, usesHomeAssistantLogin, authenticationMessage, createPo
 import { isReadOnlyReplica, renderReplicaStatus, replicaSnapshotKey, renderInstanceRole, pairPanelView } from './replica-status.js';
 import { createPairPanel, isPairManagementRequest } from './pair-status.js';
 import { createEquipmentPanel, dhwrReadingSummary } from './equipment.js';
+import { createGarageDoorContents } from './garage-doors.js';
 import { renderFloorPreheat } from './floor-preheat.js';
 import floorGuideUrl from '../docs/floor-preheat.md?url';
 import floorScriptUrl from '../scripts/shelly/floor-lease.js?url';
@@ -120,9 +121,13 @@ const sensorChangePanel = createSensorChangePanel({ document, request: api, stor
   beforeMutation: () => { ++refreshSequence; }, afterMutation: () => refresh({ forceChart: true }) });
 const pairPanel = createPairPanel({ document, request: api, storage: sessionStorage, formatTime: time,
   afterMutation: () => refresh({ forceChart: true }) });
+const garageDoors = createGarageDoorContents({ document,
+  onAction: (deviceId, action) => equipmentPanel.actions.cover(deviceId, action),
+  blocked: () => !lastStatus || isReadOnlyReplica(lastStatus) || temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy });
 const equipmentPanel = createEquipmentPanel({ document, request: api,
   beforeRequest: () => { ++refreshSequence; }, onStatus: result => render(result),
   onBusy: busy => { equipmentBusy = busy; updateTemporaryButtons(false); },
+  onChange: snapshot => garageDoors.update(snapshot),
   blocked: () => temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy });
 const garageControls = createGarageControls({ document, request: api,
   beforeRequest: () => { ++refreshSequence; }, onStatus: result => render(result),
@@ -634,6 +639,7 @@ function render(s) {
   const replica = renderReplicaStatus(document, s, { formatTime: time });
   sensorChangePanel.update(isReadOnlyReplica(s) ? { ...s.sensorChanges, available: false, readOnly: true } : s.sensorChanges);
   if (replica) {
+    garageDoors.update({ ...equipmentPanel.actions.snapshot(), status: s });
     if (replica.available && s.recording && $('recording-details')?.open) renderRecording(s, $('recording-content'));
     return replica;
   }
@@ -678,7 +684,7 @@ function render(s) {
     confirmation: homeHeatingConfirmation(s),
     detail: [controlMode, decisionTitle, decisionReasons, recoveryDetail].filter(Boolean).join('\n\n') });
   renderCurrentPrice(document, s);
-  renderContract(s); renderProviders(s); renderH66(s); equipmentPanel.update(s); renderFloorPreheat(document, s); renderGarage(document, s);
+  renderContract(s); renderProviders(s); renderH66(s); equipmentPanel.update(s); renderFloorPreheat(document, s); renderGarage(document, s, { doorContent: garageDoors.content });
   if ($('recording-details')?.open) renderRecording(s,$('recording-content'));
   const temporary = temporaryValues(s);
   const controlPrice = priceControlState(s, { paused: Boolean(temporary.pauseUntilLocal), away: Boolean(temporary.awayUntilLocal) });
@@ -779,6 +785,7 @@ async function refreshPairing() {
     const previous = lastStatus.pairing;
     const changed = pairing.role !== previous.role || pairing.canControl !== previous.canControl || Boolean(pairing.transition) !== Boolean(previous.transition);
     lastStatus = { ...lastStatus, pairing };
+    garageDoors.update({ ...equipmentPanel.actions.snapshot(), status: lastStatus });
     pairPanel.update(pairPanelView(lastStatus));
     renderInstanceRole(document, lastStatus);
     if (isReadOnlyReplica(lastStatus)) renderReplicaStatus(document, lastStatus, { formatTime: time });
