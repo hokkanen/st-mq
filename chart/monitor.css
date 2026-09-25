@@ -657,9 +657,9 @@ details details { margin-inline-start: 24px; }
 .home-support > .dashboard-disclosure > summary:hover > span { color: var(--accent); }
 .home-support > .dashboard-disclosure > summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
 .home-support > .dashboard-disclosure[open] > summary { padding-bottom: 16px; }
-.fireplace-dialog { width: min(460px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); padding: 24px; overflow-y: auto; border: 1px solid var(--border); border-radius: 12px; color: var(--text); background: var(--surface); box-shadow: 0 18px 60px #0006; }
-.fireplace-dialog::backdrop { background: #0007; }
-.fireplace-dialog h2 { margin: 0 0 10px; font-size: 19px; font-weight: 550; letter-spacing: -.2px; }
+.control-dialog { width: min(460px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); padding: 24px; overflow-y: auto; border: 1px solid var(--border); border-radius: 12px; color: var(--text); background: var(--surface); box-shadow: 0 18px 60px #0006; }
+.control-dialog::backdrop { background: #0007; }
+.control-dialog h2 { margin: 0 0 10px; font-size: 19px; font-weight: 550; letter-spacing: -.2px; }
 .fireplace-dialog p { font-size: 12px; line-height: 1.6; }
 .fireplace-dialog #fireplace-overview { margin: 0 0 16px; font-size: 11px; }
 .fireplace-content { margin-top: 16px; }
@@ -687,7 +687,7 @@ details details { margin-inline-start: 24px; }
 .fireplace-entry .fireplace-remove { margin: 0; font-size: 10px; min-height: 36px; padding: 8px 10px; }
 .fireplace-dialog .fireplace-correction-help { font-size: 10px; margin-bottom: 0; }
 @media (max-width: 420px) {
-  .fireplace-dialog { padding: 18px; }
+  .control-dialog { padding: 18px; }
   .fireplace-entry { align-items: flex-start; flex-wrap: wrap; gap: 8px; }
   .fireplace-entry-info { flex-basis: 100%; }
   .fireplace-entry .fireplace-remove { min-height: 40px; }
@@ -926,7 +926,9 @@ button.status-detail-trigger .status-detail-label { color: inherit; }
 button.status-detail-close { flex: none; display: grid; place-items: center; width: 32px; height: 32px; min-width: 32px; margin: -4px -6px 0 0; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--muted); font-size: 20px; }
 button.status-detail-close:hover { background: var(--surface-soft); color: var(--text); }
 .status-detail-body { margin: 0; font-size: 12px; line-height: 1.65; color: var(--muted); overflow-wrap: anywhere; white-space: pre-line; }
-.garage-door-controls { white-space: normal; padding-top: 2px; }
+#garage-doors-help { margin: 0 0 16px; font-size: 12px; line-height: 1.6; }
+.garage-doors-dialog .confirmation-actions { padding-top: 16px; border-top: 1px solid var(--border); }
+.garage-door-controls { color: var(--muted); font-size: 12px; line-height: 1.65; overflow-wrap: anywhere; }
 .garage-door-list { display: grid; gap: 8px; }
 .garage-door-row { display: grid; grid-template-columns: 38px minmax(0, 1fr) auto; align-items: center; gap: 4px 10px; padding: 14px 10px; border: 1px solid var(--border); border-radius: 7px; background: color-mix(in srgb, var(--surface-soft) 60%, var(--surface)); }
 .garage-door-icon { width: 38px; height: 38px; fill: none; stroke: var(--muted); stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }

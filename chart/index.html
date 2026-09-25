@@ -479,7 +479,7 @@
                 <small class="overview-note">Rear sensor</small>
                 <small id="garage-temperature-age" class="overview-note">Waiting for readings</small>
               </div>
-              <div class="overview-doors"><p class="overview-label">Doors</p><strong id="garage-door-summary">Unknown</strong></div>
+              <div class="overview-doors"><p class="overview-label">Doors</p><strong id="garage-door-summary"><button id="garage-doors-shortcut" class="status-detail-trigger" type="button" aria-label="Garage doors: Unknown. Show controls" aria-haspopup="dialog" aria-expanded="false" aria-controls="garage-doors-dialog"><span id="garage-doors-label" class="status-detail-label">Unknown</span></button></strong></div>
               <div class="overview-request">
                 <p id="garage-requested-label" class="overview-label">Heating request</p>
                 <strong id="garage-requested" role="status">—</strong>
@@ -843,7 +843,13 @@
     </section>
   </main>
   <footer>Finnish local time · Europe/Helsinki · Weather: <a href="https://en.ilmatieteenlaitos.fi/open-data">FMI</a> / <a href="https://open-meteo.com/">Open-Meteo</a> (DWD ICON)</footer>
-  <dialog id="fireplace-dialog" class="fireplace-dialog" aria-labelledby="fireplace-title" aria-describedby="fireplace-help" data-controller-only>
+  <dialog id="garage-doors-dialog" class="control-dialog garage-doors-dialog" aria-labelledby="garage-doors-title" aria-describedby="garage-doors-help" data-controller-only>
+    <h2 id="garage-doors-title">Garage doors</h2>
+    <p id="garage-doors-help" class="muted">Choose a door to open or close. Its reported position is shown below.</p>
+    <div id="garage-doors-content" class="garage-door-controls"></div>
+    <div class="confirmation-actions"><button id="garage-doors-back" class="secondary-button" type="button" autofocus>Go back</button></div>
+  </dialog>
+  <dialog id="fireplace-dialog" class="control-dialog fireplace-dialog" aria-labelledby="fireplace-title" aria-describedby="fireplace-help" data-controller-only>
     <h2 id="fireplace-title">Fireplace</h2>
     <p id="fireplace-overview" class="muted">Add firewood</p>
     <div id="fireplace-content" class="fireplace-content">

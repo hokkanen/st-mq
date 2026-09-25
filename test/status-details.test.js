@@ -235,32 +235,3 @@ test('browser dismissal clears expanded state and missing explanations become pl
   assert.equal(root.children.length, 0);
   assert.equal(popup().hidden, true);
 });
-
-test('interactive details preserve action nodes and focus across updates and switch cleanly back to text', () => {
-  for (const native of [true, false]) {
-    const { document, root, popup } = fixture({ native });
-    const content = document.createElement('div'), action = document.createElement('button');
-    action.textContent = 'Open'; content.append(action);
-    const options = { label: 'Both closed', title: 'Garage doors', key: 'garage-doors', content };
-    const trigger = setStatusDetail(root, options);
-    trigger.dispatch('click'); action.focus();
-    popup().scrollTop = 40;
-    action.textContent = 'Sending…';
-    setStatusDetail(root, options);
-    assert.equal(popup().querySelector('.status-detail-body').children[0], content);
-    assert.equal(document.activeElement, action);
-    assert.equal(popup().scrollTop, 40);
-    assert.equal(popup().style.maxHeight, '440px');
-    document.dispatch('pointerdown', { target: action });
-    assert.equal(popup().hidden, false, 'Operating a door does not dismiss the popup');
-    document.dispatch('keydown', { key: 'Escape' });
-    assert.equal(document.activeElement, trigger);
-    const other = document.createElement('strong'); document.body.append(other);
-    const plain = setStatusDetail(other, unavailable); plain.dispatch('click');
-    assert.equal(popup().querySelector('.status-detail-body').textContent, unavailable.detail);
-    assert.equal(popup().querySelector('.status-detail-body').children.length, 0);
-    assert.equal(popup().style.maxHeight, '288px');
-    trigger.dispatch('click');
-    assert.equal(popup().querySelector('.status-detail-body').children[0], content);
-  }
-});

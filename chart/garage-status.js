@@ -344,13 +344,13 @@ function renderGarageHeatingState(document, status, requested) {
     detail: 'Heating availability follows the requested pump power. Compressor activity is shown with the heat-pump readings.' });
 }
 
-export function renderGarage(document, status, { doorContent } = {}) {
+export function renderGarage(document, status) {
   const display = garageDisplay(status?.garage, status?.now);
   const set = (id, value) => { const node = document.getElementById(id); if (node) node.textContent = value; };
-  const detail = (id, label, title, description, stale = false, content = null) => {
+  const detail = (id, label, title, description, stale = false) => {
     const node = document.getElementById(id); if (!node) return;
     node.classList.toggle('stale', stale);
-    setStatusDetail(node, { label, title, detail: description, key: id, content });
+    setStatusDetail(node, { label, title, detail: description, key: id });
   };
   const garage = status?.garage ?? {}, adapter = garage.adapter ?? {}, reported = adapter.native ?? adapter.readbacks ?? {};
   const now = status?.now ?? Date.now();
@@ -406,10 +406,10 @@ export function renderGarage(document, status, { doorContent } = {}) {
     doorSummary = [[openDoors.length, 'open'], [closedDoors.length, 'closed'], [unknownDoors.length, 'unknown']]
       .filter(([count]) => count).map(([count, state]) => `${count} ${state}`).join(' · ');
   }
-  detail('garage-door-summary', doorSummary,
-    'Garage doors', doors.length ? doors.map(row => `${row.name}: ${row.value}. ${row.detail}`).join('\n')
-      : 'No garage door reports are available.', !doors.length || doors.some(row => row.stale), doorContent);
+  set('garage-doors-label', doorSummary);
+  document.getElementById('garage-doors-shortcut')?.setAttribute('aria-label', `Garage doors: ${doorSummary}. Show controls`);
   const doorStatus = document.getElementById('garage-door-summary');
+  doorStatus?.classList.toggle('stale', !doors.length || doors.some(row => row.stale));
   if (doorStatus) doorStatus.dataset.state = doors.length && closedDoors.length === doors.length && !doors.some(row => row.stale)
     ? 'confirmed' : 'attention';
 

@@ -28,7 +28,6 @@ function createDetails(document) {
   document.body.append(panel);
   let active = null;
   let activeKey = null;
-  let activeContent = null;
   let pageScroll = null;
   let native = typeof panel.showPopover === 'function';
   const pagePosition = () => [window?.scrollX ?? document.documentElement.scrollLeft ?? 0,
@@ -60,7 +59,7 @@ function createDetails(document) {
     Object.assign(panel.style, {
       position: 'fixed', inset: 'auto', margin: '0', boxSizing: 'border-box',
       width: `${Math.min(352, availableWidth)}px`, maxWidth: `${availableWidth}px`,
-      maxHeight: `${Math.min(activeContent ? 440 : 288, availableHeight)}px`, overflowY: 'auto',
+      maxHeight: `${Math.min(288, availableHeight)}px`, overflowY: 'auto',
     });
     const anchor = active.getBoundingClientRect();
     const bounds = panel.getBoundingClientRect();
@@ -80,10 +79,7 @@ function createDetails(document) {
     activeKey = entry.key;
     active.setAttribute('aria-expanded', 'true');
     if (heading.textContent !== entry.title) heading.textContent = entry.title;
-    if (entry.content) {
-      if (activeContent !== entry.content) body.replaceChildren(entry.content);
-    } else if (activeContent || body.textContent !== entry.detail) body.textContent = entry.detail;
-    activeContent = entry.content;
+    if (body.textContent !== entry.detail) body.textContent = entry.detail;
     position();
     panel.scrollTop = scrollTop;
     body.scrollTop = bodyScrollTop;
@@ -140,18 +136,15 @@ function createDetails(document) {
   window?.addEventListener('resize', position);
   window?.visualViewport?.addEventListener('resize', position);
   window?.visualViewport?.addEventListener('scroll', position);
-  // Interactive contents can grow after a request without reopening the popup.
-  if (window?.ResizeObserver) new window.ResizeObserver(position).observe(body);
 
   return {
     update(root, options) {
       const entry = {
         label: String(options.label ?? ''), title: String(options.title || 'Status details'),
         detail: String(options.detail ?? '').trim(), key: options.key ?? root,
-        content: options.content ?? null,
       };
       let trigger = root.querySelector('.status-detail-trigger');
-      if (!entry.detail && !entry.content) {
+      if (!entry.detail) {
         if (active && (active === trigger || activeKey === entry.key)) close();
         root.textContent = entry.label;
         return null;
@@ -181,8 +174,7 @@ function createDetails(document) {
 
 /** Keep routine status concise; show its explanation on click, tap or keyboard activation.
  * Stable keys preserve an open explanation when its surrounding row is rerendered.
- * Optional content is a stable DOM node, updated in place to preserve control focus.
- * Without content or an explanation, render a plain label and return null.
+ * Without an explanation, render a plain label and return null.
  */
 export function setStatusDetail(root, options = {}) {
   if (!root) return null;

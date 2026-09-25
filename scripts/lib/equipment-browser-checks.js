@@ -86,7 +86,7 @@ async function checkFloorPreheatingBrowser({ evaluate, command, context, refresh
 }
 
 /** All device actions below terminate in a browser fixture, never at hardware. */
-export async function checkEquipmentBrowser({ evaluate, command, context, until }) {
+export async function checkEquipmentBrowser({ evaluate, command, context, until, garageDoorsOnly = false }) {
   const settle = () => evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve(true))))');
   const refresh = async () => {
     const count = await evaluate('window.equipmentUiFixture.responses');
@@ -157,6 +157,7 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until 
   try {
     await refresh();
     await checkGarageDoorBrowser({ evaluate, command, context, refresh, settle, until });
+    if (garageDoorsOnly) return;
     await checkFloorPreheatingBrowser({ evaluate, command, context, refresh, settle });
     assert.deepEqual(await evaluate("[...document.querySelectorAll('#providers > li')].map(row=>row.dataset.provider)"), ['electricity','market','vehicle-telemetry','main-temperatures']);
     assert.equal(await evaluate("document.querySelectorAll('.provider-local-summary').length"), 0);

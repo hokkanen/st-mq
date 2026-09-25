@@ -4,19 +4,20 @@ import { writeFileSync } from 'node:fs';
 /** The surrounding equipment fixture intercepts every command before it reaches hardware. */
 export async function checkGarageDoorBrowser({ evaluate, command, context, refresh, settle, until }) {
   const trigger = '#garage-door-summary .status-detail-trigger';
-  const panel = '#status-detail-popover';
+  const panel = '#garage-doors-dialog';
   const row = id => `${panel} .garage-door-row[data-device-id="${id}"]`;
   const action = id => `${row(id)} .garage-door-action`;
   const text = selector => evaluate(`document.querySelector('${selector}').textContent.trim()`);
   const buttonState = id => evaluate(`(() => {const b=document.querySelector('${action(id)}');return {action:b.dataset.coverAction,disabled:b.disabled};})()`);
   const click = selector => evaluate(`document.querySelector('${selector}').click();true`);
-  const close = () => evaluate(`document.querySelector('${panel} .status-detail-close')?.click();true`);
+  const close = () => evaluate(`document.querySelector('#garage-doors-back')?.click();true`);
+  const press = value => command('input.performActions', { context, actions: [{ type: 'key', id: 'garage-window-key', actions: [{ type: 'keyDown', value }, { type: 'keyUp', value }] }] });
   const open = async () => {
     await evaluate(`document.querySelector('${trigger}').scrollIntoView({block:'center'});true`);
     await settle();
     await evaluate(`if(document.querySelector('${trigger}').getAttribute('aria-expanded')!=='true')document.querySelector('${trigger}').click();true`);
     await settle();
-    assert.equal(await evaluate(`document.querySelector('${panel}').checkVisibility()`), true);
+    assert.equal(await evaluate(`document.querySelector('${panel}').matches(':modal')`), true);
   };
   await evaluate(`(() => {const f=window.equipmentUiFixture;f.savedGarageDoorUi={
     devices:structuredClone(f.devices),status:structuredClone(f.status),now:f.now,calls:f.calls.slice(),
@@ -28,15 +29,28 @@ export async function checkGarageDoorBrowser({ evaluate, command, context, refre
   try {
     await refresh();
     assert.equal(await text(trigger), 'Both closed');
+    const folds = await evaluate("[...document.querySelectorAll('.controller-panels details')].map(node=>node.open)");
     await open();
-    assert.equal(await text(`${panel} .status-detail-heading`), 'Garage doors');
+    assert.equal(await text('#garage-doors-title'), 'Garage doors');
+    assert.equal(await text('#garage-doors-back'), 'Go back');
+    assert.equal(await evaluate("document.activeElement.id"), 'garage-doors-back', 'Initial focus leaves movement an explicit choice');
+    await press('\uE007');
+    await until(`!document.querySelector('${panel}').open`);
+    assert.equal(await evaluate(`document.activeElement===document.querySelector('${trigger}')`), true, 'Go back returns focus to the Doors summary');
+    await press('\uE007');
+    await until(`document.querySelector('${panel}').matches(':modal')`);
+    for (let i=0;i<4;i++) {
+      await press('\uE004');
+      assert.equal(await evaluate(`document.querySelector('${panel}').contains(document.activeElement) || document.activeElement===document.body`), true, 'Tab cannot reach dashboard controls behind the modal');
+    }
+    assert.deepEqual(await evaluate("[...document.querySelectorAll('.controller-panels details')].map(node=>node.open)"), folds, 'Window navigation preserves dashboard folds');
     assert.equal(await evaluate(`document.querySelectorAll('${panel} .garage-door-controls .garage-door-row').length`), 2);
     assert.equal(await evaluate(`[...document.querySelectorAll('${panel} .garage-door-row')].every(r=>r.querySelectorAll('button').length===1)`), true, 'Each door offers one context-sensitive action');
     assert.deepEqual(await buttonState('door1'), { action: 'open', disabled: false });
     assert.deepEqual(await buttonState('door2'), { action: 'open', disabled: false });
     assert.match(await text(action('door1')), /^Open$/);
     assert.match(await evaluate(`document.querySelector('${action('door1')}').getAttribute('aria-label')`), /open.*door 1|door 1.*open/i);
-    assert.equal(await evaluate('window.equipmentUiFixture.calls.length'), 0, 'Opening the popup sends no device command');
+    assert.equal(await evaluate('window.equipmentUiFixture.calls.length'), 0, 'Opening the window sends no device command');
 
     await evaluate(`window.equipmentUiFixture.garageDoorNode=document.querySelector('${row('door1')}');window.equipmentUiFixture.garageDoorButton=document.querySelector('${action('door1')}');document.querySelector('${action('door1')}').focus();true`);
     await refresh();
@@ -47,8 +61,13 @@ export async function checkGarageDoorBrowser({ evaluate, command, context, refre
     await settle();
     assert.deepEqual(await evaluate('window.equipmentUiFixture.calls[0]'), { path: '/api/equipment/cover', body: { deviceId: 'door1', action: 'open' } });
     assert.equal((await buttonState('door1')).disabled, true, 'Repeated clicks cannot republish during delivery');
-    assert.equal((await buttonState('door2')).disabled, true, 'The popup shares the existing equipment delivery lock');
+    assert.equal((await buttonState('door2')).disabled, true, 'The window shares the existing equipment delivery lock');
     assert.equal(await text(`${row('door1')} .garage-door-state`), 'Closed', 'Sending never invents physical motion');
+    await close();
+    await until(`!document.querySelector('${panel}').open`);
+    await open();
+    assert.equal((await buttonState('door1')).disabled, true, 'Reopening retains the pending command');
+    assert.equal(await evaluate('window.equipmentUiFixture.calls.length'), 1, 'Going back and reopening never repeat a command');
     const heldResponses = await evaluate('window.equipmentUiFixture.responses');
     await evaluate("document.getElementById('auth').dispatchEvent(new Event('submit',{cancelable:true}));true");
     await settle();
@@ -109,9 +128,18 @@ export async function checkGarageDoorBrowser({ evaluate, command, context, refre
       await refresh();
     }
 
+    await evaluate(`document.querySelector('${action('door1')}').focus();window.equipmentUiFixture.savedDoors=window.equipmentUiFixture.devices;window.equipmentUiFixture.devices=window.equipmentUiFixture.devices.filter(d=>d.kind!=='door');true`);
+    await refresh();
+    assert.equal(await evaluate("document.activeElement.id"), 'garage-doors-back', 'Removing a focused door keeps focus inside the window');
+    assert.equal(await text(`${panel} .garage-door-empty`), 'No garage doors are configured.');
+    assert.equal(await evaluate(`document.querySelector('${panel} .garage-door-empty').checkVisibility()`), true);
+    await evaluate("window.equipmentUiFixture.devices=window.equipmentUiFixture.savedDoors;delete window.equipmentUiFixture.savedDoors;true");
+    await refresh();
+
     await evaluate("window.equipmentUiFixture.status.role='replica';true");
     await refresh();
-    assert.equal(await evaluate(`!document.querySelector('${panel}').checkVisibility()||[...document.querySelectorAll('${panel} .garage-door-action')].every(b=>b.disabled)`), true, 'An open popup cannot retain primary control after becoming a replica');
+    assert.equal(await evaluate(`!document.querySelector('${panel}').checkVisibility()||[...document.querySelectorAll('${panel} .garage-door-action')].every(b=>b.disabled)`), true, 'An open window cannot retain primary control after becoming a replica');
+    assert.equal(await evaluate(`document.querySelector('${panel}').matches(':modal')`), false, 'A replica transition releases the modal');
     const replicaCalls = await evaluate('window.equipmentUiFixture.calls.length');
     await evaluate(`document.querySelector('${action('door1')}')?.click();true`);
     assert.equal(await evaluate('window.equipmentUiFixture.calls.length'), replicaCalls);
@@ -121,12 +149,13 @@ export async function checkGarageDoorBrowser({ evaluate, command, context, refre
 
     for (const theme of ['dark', 'light']) {
       await evaluate(`document.documentElement.dataset.theme='${theme}';true`);
-      for (const [width, height] of [[1440,1100],[390,844],[320,720]]) {
+      for (const [width, height] of [[1440,1100],[390,844],[320,720],[640,360]]) {
         await command('browsingContext.setViewport', { context, viewport: { width, height }, devicePixelRatio: 1 });
         await settle();
         await open();
+        assert.equal(await evaluate(`Math.abs(document.querySelector('${panel}').getBoundingClientRect().left + document.querySelector('${panel}').getBoundingClientRect().width / 2 - document.documentElement.clientWidth / 2) < 1`), true, 'The window is centered');
         assert.equal(await evaluate('document.documentElement.scrollWidth<=innerWidth'), true, `No page overflow at ${width}px in ${theme}`);
-        assert.equal(await evaluate(`(() => {const p=document.querySelector('${panel}'),b=p.getBoundingClientRect();return b.left>=7&&b.right<=innerWidth-7&&b.top>=7&&b.bottom<=innerHeight-7&&p.scrollWidth<=p.clientWidth;})()`), true, 'The popup stays inside the viewport');
+        assert.equal(await evaluate(`(() => {const p=document.querySelector('${panel}'),b=p.getBoundingClientRect();return b.left>=7&&b.right<=innerWidth-7&&b.top>=7&&b.bottom<=innerHeight-7&&p.scrollWidth<=p.clientWidth;})()`), true, 'The window stays inside the viewport');
         assert.equal(await evaluate(`(() => {const p=document.querySelector('${panel}').getBoundingClientRect();return [...document.querySelectorAll('${panel} .garage-door-action')].every(n=>{const b=n.getBoundingClientRect();return b.width>=44&&b.height>=40&&b.left>=p.left&&b.right<=p.right&&b.top>=p.top&&b.bottom<=p.bottom;});})()`), true, 'Door actions remain visible and touchable');
         const screenshot = await command('browsingContext.captureScreenshot', { context, origin: 'viewport' });
         writeFileSync(`var/garage-doors-${theme}-${width}.png`, Buffer.from(screenshot.data, 'base64'));

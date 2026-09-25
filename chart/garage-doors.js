@@ -43,11 +43,27 @@ export function garageDoorControl(status, device, snapshot = {}) {
     disabled: !known || !action || !equipmentCoverAllowed(status, device, action, snapshot.busy || snapshot.blocked) };
 }
 
-export function createGarageDoorContents({ document, onAction, blocked = () => false }) {
+export function createGarageDoorPanel({ document, onAction, blocked = () => false }) {
+  const dialog = document.getElementById('garage-doors-dialog');
+  const shortcut = document.getElementById('garage-doors-shortcut');
+  const back = document.getElementById('garage-doors-back');
+  const close = () => { if (dialog.open) dialog.close(); };
+  shortcut.addEventListener('click', event => {
+    event.preventDefault(); event.stopPropagation();
+    if (dialog.open || dialog.hidden || shortcut.disabled) return;
+    dialog.showModal();
+    shortcut.setAttribute('aria-expanded', 'true');
+    back.focus({ preventScroll: true });
+  });
+  back.addEventListener('click', close);
+  dialog.addEventListener('close', () => {
+    shortcut.setAttribute('aria-expanded', 'false');
+    if (shortcut.isConnected && !shortcut.disabled) shortcut.focus({ preventScroll: true });
+  });
   const make = (tag, className, text = '') => {
     const node = document.createElement(tag); node.className = className; node.textContent = text; return node;
   };
-  const content = make('div', 'garage-door-controls'), list = make('div', 'garage-door-list');
+  const content = document.getElementById('garage-doors-content'), list = make('div', 'garage-door-list');
   const empty = make('p', 'garage-door-empty', 'No garage doors are configured.');
   content.append(list, empty);
   const nodes = new Map();
@@ -86,10 +102,13 @@ export function createGarageDoorContents({ document, onAction, blocked = () => f
     return { row, name, state, action, label, shape, feedback };
   }
   const text = (node, value) => { if (node.textContent !== value) node.textContent = value; };
-  return { content, update(snapshot) {
+  return { close, update(snapshot) {
     current = snapshot;
     const devices = garageDoorDevices(snapshot.status), ids = new Set(devices.map(device => device.id));
-    for (const [id, node] of nodes) if (!ids.has(id)) { node.row.remove(); nodes.delete(id); }
+    for (const [id, node] of nodes) if (!ids.has(id)) {
+      if (document.activeElement === node.action) back.focus({ preventScroll: true });
+      node.row.remove(); nodes.delete(id);
+    }
     empty.hidden = devices.length > 0;
     for (const [index, device] of devices.entries()) {
       let node = nodes.get(device.id);
@@ -102,6 +121,7 @@ export function createGarageDoorContents({ document, onAction, blocked = () => f
       node.row.dataset.state = view.tone;
       node.row.setAttribute('aria-label', name);
       node.action.dataset.coverAction = view.action ?? '';
+      if (view.disabled && document.activeElement === node.action) back.focus({ preventScroll: true });
       node.action.disabled = view.disabled;
       node.action.setAttribute('aria-label', `${view.label} ${name}`);
       node.action.setAttribute('aria-busy', String(Boolean(view.sending)));

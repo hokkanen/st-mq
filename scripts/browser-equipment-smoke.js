@@ -11,6 +11,7 @@ import { checkEquipmentBrowser } from './lib/equipment-browser-checks.js';
 const directory=mkdtempSync(join(tmpdir(),'stmq-equipment-browser-'));
 let app, socket, browser, id=0;
 const pending=new Map(),errors=[];
+const garageDoorsOnly=process.argv.includes('--garage-doors');
 try {
   writeFileSync(join(directory,'options.json'),'{}');
   const config=loadConfig({STMQ_CONFIG:join(directory,'options.json'),STMQ_DATA_DIR:directory,STMQ_PORT:'0',STMQ_INPUT:'simulated'},directory);
@@ -19,7 +20,7 @@ try {
     market:{source:'entsoe',status:'ok',lastSuccessAt:Date.parse('2026-09-07T12:00:00Z')},
     weather:{source:'fmi',status:'ok',lastSuccessAt:Date.parse('2026-09-07T12:00:00Z')}
   });
-  let endpoint=process.argv[2];
+  let endpoint=process.argv.slice(2).find(arg=>arg!=='--garage-doors');
   if(!endpoint) {
     const profile=join(directory,'chrome');mkdirSync(profile);
     browser=spawn(process.env.STMQ_CHROME_BIN??'/opt/google/chrome/chrome',['--headless','--no-sandbox','--disable-gpu',
@@ -43,7 +44,7 @@ try {
   const command=async(method,params)=>{
     if(method==='browsingContext.setViewport')return send('Emulation.setDeviceMetricsOverride',{...params.viewport,deviceScaleFactor:1,mobile:false});
     if(method==='browsingContext.captureScreenshot')return send('Page.captureScreenshot',{format:'png'});
-    if(method==='input.performActions'){for(const group of params.actions)for(const action of group.actions){const key=action.value==='\uE00C'?'Escape':'Enter';await send('Input.dispatchKeyEvent',{type:action.type==='keyDown'?'keyDown':'keyUp',key,code:key,windowsVirtualKeyCode:key==='Escape'?27:13,...(key==='Enter'&&action.type==='keyDown'?{text:'\r',unmodifiedText:'\r'}:{})});}return;}
+    if(method==='input.performActions'){for(const group of params.actions)for(const action of group.actions){const key=({'\uE00C':'Escape','\uE004':'Tab'})[action.value]??'Enter';await send('Input.dispatchKeyEvent',{type:action.type==='keyDown'?'keyDown':'keyUp',key,code:key,windowsVirtualKeyCode:({Escape:27,Tab:9,Enter:13})[key],...(key==='Enter'&&action.type==='keyDown'?{text:'\r',unmodifiedText:'\r'}:{})});}return;}
     throw new Error(`Unsupported browser operation ${method}`);
   };
   await send('Runtime.enable');await send('Page.enable');
@@ -51,9 +52,9 @@ try {
   await send('Page.navigate',{url:`http://127.0.0.1:${app.server.address().port}/`});
   await until("document.getElementById('updated')?.textContent.startsWith('Updated')");
   mkdirSync('var',{recursive:true});
-  await checkEquipmentBrowser({evaluate,command,context:'cdp',until});
+  await checkEquipmentBrowser({evaluate,command,context:'cdp',until,garageDoorsOnly});
   assert.deepEqual(errors,[]);
-  console.log('Equipment browser checks passed: charger phase availability, local OCPP setup placement and keyboard disclosure, flat vehicle feeds with MQTT diagnostics, mocked equipment controls, Caravan layout, DHWR feedback and five responsive viewports.');
+  console.log(garageDoorsOnly ? 'Garage door browser checks passed: modal navigation, focus, pending commands, live reports, authority, and both themes at desktop, mobile and landscape sizes.' : 'Equipment browser checks passed: charger phase availability, local OCPP setup placement and keyboard disclosure, flat vehicle feeds with MQTT diagnostics, mocked equipment controls, Caravan layout, DHWR feedback and five responsive viewports.');
 } finally {
   socket?.close();for(const p of pending.values())clearTimeout(p.timer);await app?.close();
   if(browser&&browser.exitCode===null) {browser.kill();await new Promise(resolve=>browser.once('exit',resolve));}
