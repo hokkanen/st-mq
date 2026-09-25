@@ -29,7 +29,7 @@ test('skew, nonadditive residual and telemetry loss use accepted fallback with t
 function fixture(t, extra={}) {
   let now=NOW, authority=true, failSave=false;
   const service={id:0,auto_balance:{enable:false},auto_charge:true,global_charge_limit:0,global_time_limit:0},serviceStatus={state:'running'},schedules={rev:1,jobs:[]};
-  const client=new EventEmitter(), values=new Map(), writes=[], energy=[];
+  const client=new EventEmitter(), values=new Map(), writes=[], energy=[], gaps=[];
   const roleTypes={current_limit:'number',start_charging:'boolean',work_state:'enum',phase_info:'object',energy_charge:'number',time_charge:'number'};
   const roles=Object.keys(roleTypes), ids=Object.fromEntries(roles.map((role,i)=>[role,i+200]));
   const fields={current_limit:16,start_charging:true,work_state:'charging',phase_info:{total_power:8280,total_act_energy:0,phase_a:{voltage:230,current:12,power:2760},phase_b:{voltage:230,current:12,power:2760},phase_c:{voltage:230,current:12,power:2760}},energy_charge:0,time_charge:0};
@@ -46,10 +46,10 @@ function fixture(t, extra={}) {
     cb?.();queueMicrotask(()=>client.emit('message',`${frame.src}/rpc`,Buffer.from(JSON.stringify({id:frame.id,src:'synthetic-evse',dst:frame.src,result})),{}));
   };
   const store={getState:key=>structuredClone(values.get(key)),setState:(key,value)=>{if(failSave)throw Error('disk');values.set(key,structuredClone(value));},transaction:fn=>fn(),event:()=>1};
-  const engine={recorder:{recordEnergy:value=>energy.push(value)}};
+  const engine={recorder:{recordEnergy:value=>energy.push(value),energyGap:value=>gaps.push(value)}};
   const adapter=createShellyEvseAdapter({config:config(extra),broker:{address:'mqtt://synthetic'},client,store,engine,clock:()=>now,canControl:()=>authority});
   t.after(()=>adapter.close());
-  return {adapter,client,fields,writes,energy,values,service,serviceStatus,schedules,now:()=>now,setNow:value=>now=value,setAuthority:value=>authority=value,setFail:value=>failSave=value,
+  return {adapter,client,fields,writes,energy,gaps,values,service,serviceStatus,schedules,now:()=>now,setNow:value=>now=value,setAuthority:value=>authority=value,setFail:value=>failSave=value,
     async ready(){client.emit('connect');client.emit('message','test/evse/online',Buffer.from('true'),{retain:true});await adapter.refresh();},
     notify(role,value,packet={}){client.emit('message','test/evse/events/rpc',Buffer.from(JSON.stringify({src:'synthetic-evse',method:'NotifyStatus',params:{[`${roleTypes[role]}:${ids[role]}`]:{value,last_update_ts:now/1000}}})),packet);}};
 }
@@ -108,9 +108,11 @@ test('MQTT live receipt time excludes retained, duplicate, unrelated and disconn
 test('official-shaped role RPC discovers capabilities and canonical C2 energy never uses a vehicle feed', async t=>{
   const f=fixture(t);await f.ready();assert.equal(f.adapter.snapshot().controlReady,true);
   f.setNow(NOW+1000);f.fields.phase_info.total_act_energy=.002;await f.adapter.refresh();
-  assert.equal(f.energy.length,1);assert.equal(f.energy[0].source,'shelly-evse');assert.equal(f.energy[0].prefix,'ev2');assert.equal(f.energy[0].energies[0],.002);
-  await f.adapter.refresh();assert.equal(f.energy.length,1);
-  f.setNow(NOW+2000);f.fields.phase_info.total_act_energy=0;await f.adapter.refresh();assert.equal(f.energy.length,1);
+  assert.equal(f.energy.length,2);assert.equal(f.energy[0].source,'shelly-evse');assert.equal(f.energy[0].prefix,'ev2');assert.equal(f.energy[0].energies[0],.002);
+  assert.equal(f.energy[1].prefix,'ev2-phase');
+  assert.equal(f.energy[1].energies.reduce((sum,value)=>sum+value,0),.002);
+  await f.adapter.refresh();assert.equal(f.energy.length,2);
+  f.setNow(NOW+2000);f.fields.phase_info.total_act_energy=0;await f.adapter.refresh();assert.equal(f.energy.length,2);
   assert.equal(f.adapter.snapshot().error,'evse-counter-reset');
 });
 test('native Shelly phases expose current, voltage and active power in installed L1–L3 order', async t => {
@@ -139,6 +141,35 @@ test('native Shelly phases expose current, voltage and active power in installed
   assert.equal(f.energy.length, 0, 'A live phase snapshot does not create another history channel');
   readings.ev2_current_l1.value = 999;
   assert.equal(f.adapter.readings().ev2_current_l1.value, 9, 'Public values cannot mutate the native snapshot');
+});
+
+test('C2 phase energy follows measured changing phase shares in installation order and conserves its native total', async t => {
+  const f = fixture(t, { phaseMap: [2, 0, 1] }); await f.ready();
+  f.setNow(NOW + 1000);
+  Object.assign(f.fields.phase_info, { total_power: 6000, total_act_energy: .002,
+    phase_a: { voltage: 230, current: 4, power: 1000 }, phase_b: { voltage: 230, current: 9, power: 2000 },
+    phase_c: { voltage: 230, current: 13, power: 3000 } });
+  await f.adapter.refresh();
+  const [total, phases] = f.energy;
+  assert.equal(total.prefix, 'ev2'); assert.equal(phases.prefix, 'ev2-phase');
+  assert.deepEqual(phases.powers, [3, 1, 2]);
+  const weights = [2760 + 3000, 2760 + 1000, 2760 + 2000];
+  phases.energies.forEach((value, index) => assert(Math.abs(value - .002 * weights[index] / weights.reduce((a,b)=>a+b,0)) < 1e-12));
+  assert.equal(phases.energies.reduce((a,b)=>a+b,0), total.energies[0]);
+  assert(phases.quality.includes('phase_allocation_estimated'));
+});
+
+test('a positive C2 meter increment with no phase-power evidence preserves total and records a phase gap', async t => {
+  const f = fixture(t); await f.ready();
+  for (const name of ['phase_a','phase_b','phase_c']) f.fields.phase_info[name].power = 0;
+  f.fields.phase_info.total_power = 0;
+  f.setNow(NOW + 1000); await f.adapter.refresh();
+  f.energy.length = 0;
+  f.setNow(NOW + 2000); f.fields.phase_info.total_act_energy = .001; await f.adapter.refresh();
+  assert.equal(f.energy.length, 1);
+  assert.deepEqual(f.energy[0].energies, [.001]);
+  assert.equal(f.gaps.at(-1).prefix, 'ev2-phase');
+  assert.deepEqual(f.gaps.at(-1).quality, ['unknown-phase-share']);
 });
 test('public Shelly phase readings preserve source age and withdraw availability on retained, stale or offline evidence', async t => {
   const f = fixture(t);
@@ -180,7 +211,7 @@ test('invalid or future Shelly phase packets cannot replace supported electrical
   await f.adapter.refresh();
   assert.ok(Object.values(f.adapter.readings()).every(row => row.available));
   assert.equal(f.adapter.readings().ev2_active_power_l3.value, 0, 'Reported idle zero is a valid measurement');
-  assert.equal(f.energy.length, 1);
+  assert.equal(f.energy.length, 2);
   assert.equal(f.energy[0].energies.length, 1, 'Native total energy remains a single physical contribution');
 });
 test('each physical negative/positive notification closes its epoch even between polling ticks',async t=>{

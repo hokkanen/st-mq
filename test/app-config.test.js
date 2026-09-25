@@ -21,14 +21,14 @@ test('default startup is shadow with simulated devices, no provider connections 
   assert.equal(cfg.dbPath, '/missing-repository/var/simulation.sqlite');
 });
 test('recording and acquisition options are independent, configurable and validated',()=>{
-  assert.deepEqual(recordingConfiguration(),{maxIntervalMs:300000,annualBudgetBytes:10000000000});
-  assert.deepEqual(recordingConfiguration({max_interval_minutes:2,annual_budget_gb:4}),{maxIntervalMs:120000,annualBudgetBytes:4000000000});
+  assert.deepEqual(recordingConfiguration(),{annualBudgetBytes:10000000000});
+  assert.deepEqual(recordingConfiguration({annual_budget_gb:4}),{annualBudgetBytes:4000000000});
   assert.equal(acquisitionConfiguration().easeeIntervalMs,15000);
   assert.equal(acquisitionConfiguration().electricityTelemetryMaxAgeMs,1020000);
   assert.equal(acquisitionConfiguration({electricity_telemetry_max_age_seconds:600}).electricityTelemetryMaxAgeMs,600000);
   assert.throws(()=>acquisitionConfiguration({electricity_telemetry_max_age_seconds:0}));
   assert.equal(acquisitionConfiguration({weather_poll_minutes:60}).weatherIntervalMs,3600000);
-  for(const options of [{max_interval_minutes:0},{annual_budget_gb:-1},{annual_budget_gb:'10'}])assert.throws(()=>recordingConfiguration(options));
+  for(const options of [{max_interval_minutes:5},{unknown:1},{annual_budget_gb:-1},{annual_budget_gb:'10'}])assert.throws(()=>recordingConfiguration(options));
   assert.throws(()=>acquisitionConfiguration({easee_poll_seconds:1}));
 });
 test('TeslaMate opt-in uses existing MQTT and validates exact car/geofence/namespace settings', t => {

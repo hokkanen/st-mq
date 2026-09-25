@@ -2,6 +2,7 @@ import { Worker } from 'node:worker_threads';
 import { randomUUID } from 'node:crypto';
 import moment from 'moment-timezone';
 import { temporaryUpdate } from '../app/temporary.js';
+import { pendingEnergyObservations } from '../storage/pending-energy.js';
 import { garageSettings, GARAGE_POLICY_VERSION, GARAGE_PREFERENCE_VERSION } from './settings.js';
 import { GARAGE_NATIVE_SETTINGS, validateGarageNativeSetting } from './native-settings.js';
 import { GarageRoomTemperature, GARAGE_ROOM_MIN_C, GARAGE_EXTERNAL_SOURCE_MAX_AGE_MS } from './room-temperature.js';
@@ -597,21 +598,29 @@ export class GarageRuntime {
     if (row.activity !== null) row.activityAt = activity.sourceTime;
     for (const [prefix, target] of [['ev1', 'ev1Kw'], ['ev2', 'ev2Kw']]) {
       const signals = prefix === 'ev1' ? ['ev1_energy_l1', 'ev1_energy_l2', 'ev1_energy_l3'] : ['ev2_energy'];
-      const values = signals.map(signal => this.store.db.prepare(`SELECT o.* FROM observations o
+      const pending = pendingEnergyObservations(this.store, { now, input: this.input, prefix,
+        ...(this.input !== 'simulated' && prefix === 'ev2' ? { source: 'shelly-evse' } : {}) });
+      const values = signals.map(signal => {
+        const stored = this.store.db.prepare(`SELECT o.* FROM observations o
         WHERE o.signal=? AND o.source_time<=? AND o.received_at<=? AND o.import_id IS NULL
+          AND COALESCE(json_extract(CASE WHEN json_valid(o.raw) THEN o.raw ELSE '{}' END,'$.timeBasis'),'')<>'completed-hour'
           AND ${this.input === 'simulated' ? "o.source='simulation'" : prefix === 'ev2' ? "o.source='shelly-evse'" : "o.source<>'simulation'"}
-        ORDER BY o.source_time DESC,o.id DESC LIMIT 1`).get(signal, now, now));
+        ORDER BY o.source_time DESC,o.id DESC LIMIT 1`).get(signal, now, now);
+        return [stored, ...pending.filter(row => row.signal === signal)].filter(Boolean)
+          .sort((a, b) => b.source_time - a.source_time || b.received_at - a.received_at)[0];
+      });
       if (values.some(value => !value)) continue;
       const intervals = values.map(value => ({ ...value, raw: JSON.parse(value.raw ?? '{}'), quality: JSON.parse(value.quality) }));
       if (intervals.every(value => finite(value.value) && value.value >= 0 && value.unit === 'kWh'
         && value.raw.intervalEnd > value.raw.intervalStart && value.raw.intervalEnd <= now && now - value.raw.intervalEnd <= 5 * MINUTE
-        && value.raw.intervalEnd - value.raw.intervalStart <= 5 * MINUTE
         && value.raw.intervalStart === intervals[0].raw.intervalStart && value.raw.intervalEnd === intervals[0].raw.intervalEnd
+        && value.source === intervals[0].source && value.device === intervals[0].device
         && !value.quality.some(flag => /missing|gap|invalid|stale|retained/.test(flag)))) {
         row[target] = intervals.reduce((sum, value) => sum + value.value, 0) * HOUR / (intervals[0].raw.intervalEnd - intervals[0].raw.intervalStart);
         row[`${prefix}Active`] = row[target] > 0.05;
         row.provenance[prefix] = { source: intervals[0].source, intervalStart: intervals[0].raw.intervalStart,
-          intervalEnd: intervals[0].raw.intervalEnd, observationIds: intervals.map(value => value.id) };
+          intervalEnd: intervals[0].raw.intervalEnd, observationIds: intervals.filter(value => value.id != null).map(value => value.id),
+          ...(intervals.some(value => value.raw.pending) ? { pendingEnergy: true } : {}) };
       }
     }
     if (row.ev1Active === null) {

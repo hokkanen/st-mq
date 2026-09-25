@@ -65,6 +65,17 @@ The device rejects ON if its UTC clock is absent or differs from the host timest
 
 The host persists the release obligation before publishing any ON. Its obligation includes a SHA-256 scope digest of the broker address and username; neither raw account details nor passwords are stored in this scope marker. It uses fresh request-correlated device readback for both outputs on both devices, rejecting retained, duplicated, stale and unrelated statuses. It polls every 30 seconds when ticked; feedback expires after 90 seconds. Call the adapter's `tick` at least once per minute. Tick performs polling and release retries, **not autonomous preheat renewal**: the currently admitted preheat decision must keep calling `lease`.
 
+History stores all four electrical outputs as exact changes, independently of
+the adaptive recorder: `floor_storage_0_active`, `floor_storage_1_active`,
+`floor_living_0_active` and `floor_living_1_active`. Values are 1 for reported ON,
+0 for reported OFF and null for unknown. Only correlated device replies establish
+an output; requests do not. Repeated unchanged replies extend report coverage.
+Startup, disconnection, expired feedback and invalid channels create explicit
+unknown periods, and quality changes are retained. A release reply can establish
+OFF even when the device clock is unavailable, with that quality stated. Old
+device mappings retained only for restoration cannot populate current outputs.
+These records describe electrical override contacts, not valve travel or flow.
+
 Cancellation, manual owner replacement, failed/partial activation, lost readback, restart and expired permission release all owned channels. Lost OFF acknowledgement keeps the durable obligation pending and blocks a replacement treatment until release is confirmed. Broker reconnection performs release before resuming control. An interrupted attempt is not evidence of an all-open treatment. On an unreachable device, the local deadline remains the independent release mechanism.
 
 ## Private configuration and MQTT
@@ -135,6 +146,6 @@ The initial software treatment is pooled. Separate Storage/Living experimentatio
 
 `createFloorOverride` in [floor-override.js](../src/control/floor-override.js) accepts durable `getState`/`setState`, a publish callback, normalized settings, a clock, an authority callback and a broker identity. The acquisition layer supplies the broker address and username for the private scope digest. Its methods are `setConnected`, `ingest`, `status`, `lease`, `release`, `tick` and `close`; `topics` includes subscriptions needed for both current mappings and outstanding older mappings. `lease({owner, until})` uses a stable unique episode owner and an absolute millisecond deadline. It resolves with `confirmed: true` only after all four outputs confirm. Disabled/uncommissioned activation throws `FLOOR_DISABLED`; a normal release with no obligation is a no-op. `close({restore: false})` stops without device writes and preserves outstanding obligations for the successor; normal close requests release before disconnecting.
 
-Run `node --test test/floor-override.test.js test/floor-integration.test.js`. The tests execute the uploadable script against mocked official API shapes and independent native timers, alongside the host adapter. They establish software behavior, not equipment commissioning.
+Run `node --test test/floor-override.test.js test/floor-integration.test.js test/floor-recording.test.js`. The tests execute the uploadable script against mocked official API shapes and independent native timers, alongside the host adapter, and verify actual SQLite history. They establish software behavior, not equipment commissioning.
 
 References: Shelly's [MQTT scripting API](https://shelly-api-docs.shelly.cloud/gen2/Scripts/APIs/MQTT/), [Switch configuration and timers](https://shelly-api-docs.shelly.cloud/gen2/ComponentsAndServices/Switch/), [KVS storage](https://shelly-api-docs.shelly.cloud/gen2/ComponentsAndServices/KVS/) and [system time/status](https://shelly-api-docs.shelly.cloud/gen2/ComponentsAndServices/Sys/).

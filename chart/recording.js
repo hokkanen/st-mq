@@ -1,6 +1,7 @@
-import { HISTORY_AXES, HISTORY_GROUPS, RIGHT_AXIS_SIGNALS, SIGNAL_INFO } from '../src/domain/history-series.js';
+import { HISTORY_AXES, HISTORY_GROUPS, RIGHT_AXIS_SIGNALS } from '../src/domain/history-series.js';
 import { durationText, qualityReasonText } from './reading-status.js';
 import { providerName } from './provider-status.js';
+import { recordingPolicy, recordedSignalInfo, RECORDING_POLICIES } from '../src/domain/recording-policy.js';
 
 // Separate daily comparisons from diagnostic inputs without hiding any current
 // series. The menu labels describe the plotted basis, not how SQLite stores it.
@@ -36,7 +37,7 @@ export function populateHistoryAxes(select) {
 }
 
 export function durationLabel(ms) {
-  if (!Number.isFinite(ms) || ms <= 0) return 'Collecting';
+  if (!Number.isFinite(ms) || ms < 0) return 'Collecting';
   if (ms < 60_000) return `${Math.round(ms/1000)} s`;
   if (ms < 3_600_000) return `${Number((ms/60_000).toFixed(1))} min`;
   return `${Number((ms/3_600_000).toFixed(1))} h`;
@@ -76,59 +77,75 @@ export function recordingStatus(row = {}, { now = Date.now() } = {}) {
 }
 
 export function recordingRows(status = {}) {
-  const known = new Map(Object.entries(SIGNAL_INFO).filter(([,info])=>info.role!=='Audit only').map(([signal,info]) => [signal,{signal,...info}]));
-  const result=[],seen=new Set();
-  for (const parameter of status.parameters ?? []) {
-    if(parameter.signal==='heat_pump_power')continue;
-    const signals = parameter.grouped && /^(ev1|property)_energy$/.test(parameter.signal)
-      ? [1,2,3].map(phase=>`${parameter.signal}_l${phase}`) : [parameter.signal];
-    for (const signal of signals) {
-      result.push({...(known.get(signal) ?? {signal,label:readable(signal),group:'Other',role:'History only'}),...parameter,signal});
-      seen.add(signal);
-    }
-  }
-  for(const [signal,row] of known)if(!seen.has(signal))result.push(row);
+  const result = (status.parameters ?? []).filter(parameter =>
+    (RECORDING_POLICIES[parameter.policy] ?? recordingPolicy(parameter)).adaptive)
+    .map(parameter => ({ ...recordedSignalInfo(parameter.signal, parameter.unit), ...parameter }));
+  const duplicates = new Map();
+  const sourceKey = row => JSON.stringify([row.signal, row.source]);
+  for (const row of result) duplicates.set(sourceKey(row), (duplicates.get(sourceKey(row)) ?? 0) + 1);
+  for (const row of result) if (duplicates.get(sourceKey(row)) > 1) row.streamQualifier = row.streamId?`Stream ${row.streamId}`:'Stream identity unavailable';
   return result.sort((a,b) => {
     const order = group => {const i=HISTORY_GROUPS.indexOf(group);return i<0?HISTORY_GROUPS.length:i;};
-    return order(a.group)-order(b.group)||a.label.localeCompare(b.label)||String(a.source??'').localeCompare(String(b.source??''));
+    return order(a.group)-order(b.group)||a.label.localeCompare(b.label)||String(a.source??'').localeCompare(String(b.source??''))
+      || String(a.streamId??'').localeCompare(String(b.streamId??''));
   });
 }
 
 export function renderRecording(status, root) {
   if (!root) return;
-  const recording=status?.recording ?? {}, summary=document.createElement('p');
-  summary.className='muted';
-  summary.textContent=`${recording.measurementHours ? `${number(recording.projectedAnnualBytes/1e9)} GB/year projected` : 'Collecting growth measurements'} · ${number((recording.annualBudgetBytes ?? 1e10)/1e9)} GB/year rolling target · ${durationLabel(recording.maxIntervalMs ?? 300000)} maximum interval. ${number((recording.measuredDatabaseBytes ?? 0)/1e6)} MB database.`;
+  const expanded=new Set([...root.querySelectorAll('details[data-stream-id][open]')].map(node=>node.dataset.streamId));
+  const focusedStream=root.contains(document.activeElement)?document.activeElement.closest('details[data-stream-id]')?.dataset.streamId:null;
+  const recording=status?.recording ?? {}, rows=recordingRows(recording), summary=document.createElement('dl');
+  summary.className='recording-metrics';
+  for (const [label,value] of [['Adaptive streams',rows.length],
+    ['Projected growth',recording.measurementHours?`${number(recording.projectedAnnualBytes/1e9)} GB/year`:'Collecting'],
+    ['Rolling target',`${number((recording.annualBudgetBytes??1e10)/1e9)} GB/year`],
+    ['Database',`${number((recording.measuredDatabaseBytes??0)/1e6)} MB`]]) {
+    const group=document.createElement('div'),term=document.createElement('dt'),detail=document.createElement('dd');
+    term.textContent=label;detail.textContent=String(value);group.append(term,detail);summary.append(group);
+  }
   const description=document.createElement('p');description.className='muted';
-  description.textContent='Devices can be polled or streamed more often than values are recorded. Each new reading is compared with the last saved value. A shared learned tolerance adjusts the change thresholds toward the rolling storage target; most fresh readings are recorded by the maximum interval even when unchanged. Periodic indoor temperatures save value changes and compact report coverage instead of repeated values. Equipment-state and quality changes are recorded immediately. Failed requests and old source timestamps are distinguished from fresh, unchanged readings.';
+  description.textContent='These observed streams use learned change thresholds. Fresh unchanged readings extend availability coverage. Energy keeps accumulating in a saved open interval until power or quality changes close it. Exact sensor changes, states, settings, counters and every-report feedback are under Other recorded data.';
   const note=document.createElement('p');note.className='muted';
-  note.textContent='These are achieved average saving intervals, not source expiry limits or fixed schedules. Status details show source expiry separately. The change metric compares each input with the previous saved value; it describes signal variation, not recording loss or an accuracy bound. Recording a parameter does not imply that it is used to fit the house model.';
-  const table=document.createElement('table');table.className='recording-table';
+  note.textContent='Mean spacing uses actual saved timestamps. Source details explain freshness separately. Payload sizes are approximate. The rolling target covers database growth; only adaptive streams use the learned threshold. Saved adaptive datasets, including recovered history without a current checkpoint, are listed under Other recorded data → Recording and storage support.';
+  const table=document.createElement('table');table.className='recording-table recording-measurements';
   const head=document.createElement('thead'),headers=document.createElement('tr');
-  for(const name of ['Parameter / source','Average · 1 h / 24 h / 7 d','Change threshold','Normalized pre-update change · 24 h','Status']) {
+  for(const name of ['Measurement / source','Saved · 24 h','Mean spacing · 1 h / 24 h / 7 d','Change threshold','Source / open interval']) {
     const cell=document.createElement('th');cell.scope='col';cell.textContent=name;headers.append(cell);
   }
   head.append(headers);table.append(head);
   const body=document.createElement('tbody');let previousGroup;
-  for(const row of recordingRows(recording)) {
+  for(const row of rows) {
     const availability=recordingStatus(row,{now:status?.now ?? Date.now()});
     if(row.group!==previousGroup) {const tr=document.createElement('tr'),cell=document.createElement('th');cell.colSpan=5;cell.scope='colgroup';cell.textContent=row.group;tr.className='recording-group';tr.append(cell);body.append(tr);previousGroup=row.group;}
     const tr=document.createElement('tr'),title=document.createElement('th');title.scope='row';title.textContent=row.label;
-    if(row.source) {const source=document.createElement('small');source.textContent=providerName(row.source) ?? readable(row.source);title.append(source);}tr.append(title);
-    for(const text of [
-      [row.hour,row.day,row.week].map(period=>durationLabel(period?.averageIntervalMs)).join(' / '),
-      Number.isFinite(row.threshold)?row.threshold<1e-9?'Any measurable change':`${number(row.threshold)} ${row.thresholdUnit ?? row.unit ?? ''}${row.grouped?' (phase group)':''}`:'Event / collecting',
-      Number.isFinite(row.day?.normalizedRmsChange)?`${number(row.day.normalizedRmsChange*100)}%`:'—',
-      availability.label,
-    ]) {const cell=document.createElement('td');cell.textContent=text;tr.append(cell);}
-    const detail=document.createElement('small');
-    detail.textContent=`${availability.detail}${row.day ? ` ${number((row.day.estimatedBytes ?? 0)/1000)} kB / 24 h.` : ''}`;
-    tr.lastChild.append(detail);
+    tr.dataset.signal=row.signal;tr.dataset.streamId=row.streamId??row.signal;
+    if(row.source) {const source=document.createElement('small');const name=({ 'garage-adapter':'Garage heat pump', 'mqtt-equipment':'MQTT equipment', 'shelly-mqtt':'Shelly', simulation:'Simulation' })[row.source]??providerName(row.source)??readable(row.source);
+      source.textContent=`${name} · ${({degC:'°C','degree-minutes':'°min'})[row.unit]??row.unit??''}`;title.append(source);}
+    if(row.streamQualifier) {const qualifier=document.createElement('small');qualifier.className='recording-stream-qualifier';qualifier.textContent=row.streamQualifier;title.append(qualifier);}
+    tr.append(title);
+    const saved=document.createElement('td');saved.textContent=integerLabel(row.day?.records);saved.dataset.label='Saved · 24 h';
+    if(Number.isFinite(row.day?.estimatedBytes)) {const bytes=document.createElement('small');bytes.textContent=`Approx. ${number(row.day.estimatedBytes/1000)} kB payload`;saved.append(bytes);}tr.append(saved);
+    for(const [label,text] of [
+      ['Mean spacing · 1 h / 24 h / 7 d',[row.hour,row.day,row.week].map(period=>Number.isFinite(period?.averageIntervalMs)?durationLabel(period.averageIntervalMs):'—').join(' / ')],
+      ['Change threshold',Number.isFinite(row.threshold)?row.threshold<1e-9?'Any measurable change':`${number(row.threshold)} ${({degC:'°C','degree-minutes':'°min'})[row.thresholdUnit??row.unit]??row.thresholdUnit??row.unit??''}${row.grouped?' (phase group)':''}`:'Collecting'],
+    ]) {const cell=document.createElement('td');cell.dataset.label=label;cell.textContent=text;tr.append(cell);}
+    const sourceCell=document.createElement('td'),details=document.createElement('details'),heading=document.createElement('summary'),detail=document.createElement('p');
+    sourceCell.dataset.label='Source / open interval';details.className='recording-reading-details';details.dataset.streamId=row.streamId??row.signal;details.open=expanded.has(details.dataset.streamId);
+    heading.textContent=availability.label;detail.textContent=availability.detail;details.append(heading,detail);sourceCell.append(details);
+    if(row.openInterval) {const pending=document.createElement('small');pending.className='recording-open-interval';
+      pending.textContent=`Open: ${number(row.openInterval.kwh)} kWh over ${durationLabel(row.openInterval.end-row.openInterval.start)} · saved as readings arrive`;sourceCell.append(pending);}
+    tr.append(sourceCell);
     body.append(tr);
+  }
+  if (!body.children.length) {
+    const row=document.createElement('tr'), cell=document.createElement('td');cell.colSpan=5;
+    cell.textContent='No adaptive measurement streams have been observed yet.';row.append(cell);body.append(row);
   }
   table.append(body);
   const wrap=document.createElement('div');wrap.className='table-scroll';wrap.append(table);
   root.replaceChildren(summary,description,note,wrap);
+  if(focusedStream) [...root.querySelectorAll('details[data-stream-id]')].find(node=>node.dataset.streamId===focusedStream)?.querySelector('summary')?.focus({preventScroll:true});
 }
 
 const inventoryDateFormat=new Intl.DateTimeFormat('en-GB',{timeZone:'Europe/Helsinki',dateStyle:'medium',timeStyle:'short'});
@@ -148,7 +165,7 @@ const inventoryCount=item=>{
 };
 
 export function inventoryItemSummary(item) {
-  return `${item?.status==='empty'?'No records yet':inventoryCount(item)} · ${retentionLabels[item?.retention]??'Recorded data'}`;
+  return `${item?.status==='empty'?'No records yet':inventoryCount(item)}${item?.policyLabel?` · ${item.policyLabel}`:''} · ${retentionLabels[item?.retention]??'Recorded data'}`;
 }
 
 export function inventoryDateSpan(item) {
@@ -170,8 +187,12 @@ export function renderRecordingOverview(overview,root) {
   const focusedKey=root.contains(focused)?focused.closest('[data-overview-key]')?.dataset.overviewKey:null;
   const nodes=[];
   const intro=document.createElement('p');intro.className='muted';
-  intro.textContent=overview.summary??'The database also keeps forecasts, control and learning records, settings, imported history and supporting data. Expand a dataset to see what is stored and when it changes.';
+  intro.textContent=overview.summary??'Exact measurements, equipment states, every-report feedback and the remaining stored datasets are listed here. Each row explains its saving rule, retained history or overwritten state, record count and dates. Matching scalar signals with the same unit and saving rule are combined across sources.';
   nodes.push(intro);
+  if (overview.inventoryIssues?.length) {
+    const notice=document.createElement('p');notice.className='recording-inventory-notice';
+    notice.textContent=`Inventory needs attention: ${overview.inventoryIssues.join(' ')}`;nodes.push(notice);
+  }
   const size=overview.database?.allocatedBytes??overview.database?.bytes;
   if(Number.isFinite(size)) {
     const usage=document.createElement('p');usage.className='recording-overview-size muted';
@@ -199,9 +220,25 @@ export function renderRecordingOverview(overview,root) {
       if(item.writeBehavior)fact('When saved',item.writeBehavior);
       fact('Retention',item.retentionDescription??retentionDescriptions[item.retention]??'Stored in the database.');
       fact('Dates',inventoryDateSpan(item));
-      if(Number.isFinite(item.missingCount))fact('Missing values',integerLabel(item.missingCount));
+      if(Number.isFinite(item.missingCount))fact(item.retention==='current'?'Cleared entries':'Missing values',integerLabel(item.missingCount));
       for(const detail of item.facts??[])fact(detail.label,typeof detail.value==='number'?number(detail.value):detail.value);
       dataset.append(behavior);
+      if(item.breakdown?.length) {
+        const title=document.createElement('h4');title.textContent='Included records';dataset.append(title);
+        const table=document.createElement('table');table.className='recording-breakdown';
+        const head=document.createElement('thead'), headings=document.createElement('tr');
+        for(const text of [item.breakdownLabel??'Type','Records','Recorded dates']) { const cell=document.createElement('th');cell.scope='col';cell.textContent=text;headings.append(cell); }
+        head.append(headings);table.append(head);
+        const body=document.createElement('tbody');
+        for(const entry of item.breakdown) {
+          const row=document.createElement('tr'), name=document.createElement('th');name.scope='row';name.textContent=entry.label;row.append(name);
+          for(const text of [integerLabel(entry.count),inventoryDateSpan({...entry,status:entry.count?'present':'empty'})]) {
+            const cell=document.createElement('td');cell.textContent=text;row.append(cell);
+          }
+          body.append(row);
+        }
+        table.append(body);const wrap=document.createElement('div');wrap.className='table-scroll';wrap.append(table);dataset.append(wrap);
+      }
       if(item.fields?.length) {
         const label=document.createElement('h4');label.textContent='Stored fields';dataset.append(label);
         const fields=document.createElement('dl');fields.className='recording-dataset-fields';
@@ -304,7 +341,7 @@ export function energyAuditRow(item) {
   return {title:'Property',subtitle:'Cumulative import meter',when:`Meter reading: ${date(item.sourceTime)}`,
     value:c?`${number(c.differenceKwh)} kWh difference · ${number(c.differencePercent)}% · estimated minus meter`
       :'Comparison pending: two valid counters and matching energy coverage needed',
-    details:c?[`${number(c.estimatedKwh)} kWh estimated / ${number(c.meteredKwh)} kWh meter${c.edgeEstimated?' · interval edges prorated':''}`,
+    details:c?[`${number(c.estimatedKwh)} kWh estimated / ${number(c.meteredKwh)} kWh meter${c.edgeEstimated?' · interval edges prorated':''}${c.includesOpenInterval?' · includes ongoing recorded interval':''}`,
       `Compared: ${date(c.start)} – ${date(c.end)}`]:[]};
 }
 

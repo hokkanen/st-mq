@@ -34,6 +34,10 @@ function energy(store, signal, value, start, end, quality = []) {
   store.observation({ source: 'easee', device: 'example-property', signal, value, unit: 'kWh', sourceTime: end,
     receivedAt: end, quality, raw: { intervalStart: start, intervalEnd: end } });
 }
+function peerEnergy(store, phaseKw, start, end) {
+  energy(store, 'ev2_energy', phaseKw.reduce((a,b)=>a+b,0) * (end-start)/HOUR, start, end);
+  phaseKw.forEach((value,index)=>energy(store,`ev2_energy_l${index+1}`,value*(end-start)/HOUR,start,end));
+}
 function nativeHour(store, date, { current = [3, 4, 5], temperature = -20, peer = true, step = HOUR } = {}) {
   const start = Date.parse(`${date}T01:00:00Z`);
   for (let at = start; at < start + HOUR; at += step) {
@@ -72,7 +76,7 @@ test('two original 0.7.5 nights immediately provide a temperature and phase awar
 test('known Charger 2 intervals are subtracted from an imported reference, without requiring modern property energy', async t => {
   const { store, dir } = fixture(t), date = '2026-02-14', start = Date.parse(`${date}T01:00:00Z`);
   await legacy(store, dir, [date], { current: [10, 11, 12] });
-  energy(store, 'ev2_energy', 4 * 3 * 230 / 1000, start, start + HOUR);
+  peerEnergy(store, [4,4,4].map(value=>value*230/1000), start, start + HOUR);
   const [forecast] = forecastHousehold(store, options);
   forecast.phaseCurrentA.forEach((value, phase) => assert.ok(Math.abs(value - (6 + phase)) < 1e-10));
   assert.equal(forecast.reference.unknownCharger2, false);
@@ -244,7 +248,7 @@ test('a later recorded Charger 2 interval updates an already cached imported nig
   await legacy(store, dir, ['2026-02-14'], { current: [10, 11, 12] });
   const [before] = forecastHousehold(store, options);
   assert.deepEqual(before.phaseCurrentA, [10, 11, 12]);
-  energy(store, 'ev2_energy', 4 * 3 * 230 / 1000, start, start + HOUR);
+  peerEnergy(store, [4,4,4].map(value=>value*230/1000), start, start + HOUR);
   const [after] = forecastHousehold(store, options);
   after.phaseCurrentA.forEach((value, phase) => assert.ok(Math.abs(value - (6 + phase)) < 1e-10));
   assert.equal(after.reference.unknownCharger2, false);
@@ -254,7 +258,7 @@ test('the first voltage report adds energy history to the existing legacy index 
   const { store, dir } = fixture(t);
   await legacy(store, dir, ['2026-02-14'], { current: [10, 11, 12] });
   const start = Date.parse('2026-02-14T01:00:00Z');
-  energy(store, 'ev2_energy', 4 * 3 * 230 / 1000, start, start + HOUR);
+  peerEnergy(store, [4,4,4].map(value=>value*230/1000), start, start + HOUR);
   const withoutVoltage = { ...options, voltageV: null };
   const [initial] = forecastHousehold(store, withoutVoltage), reference = householdReference(store, withoutVoltage);
   assert.deepEqual(initial.phaseCurrentA, [10, 11, 12]);

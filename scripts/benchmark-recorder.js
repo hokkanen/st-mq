@@ -10,6 +10,7 @@ import { H66_HISTORY_SIGNALS, SIGNAL_INFO, PHASE_ENERGY_SIGNALS } from '../src/d
 import { chartRange, getChartData } from '../src/app/chart-data.js';
 import { recordHeatPumpConfiguration } from '../src/app/chart-heat-pump.js';
 import { getDatabaseOverview } from '../src/app/database-overview.js';
+import { recordingPolicy } from '../src/domain/recording-policy.js';
 
 const args=process.argv.slice(2), number=(name,fallback)=>{
   const index=args.indexOf(name);return index<0 ? fallback : Number(args[index+1]);
@@ -19,6 +20,7 @@ const profileRequested=args.includes('--profile');
 if (!Number.isInteger(requestedDays) || requestedDays<1 || requestedDays>365 || ![1,5].includes(h66Minutes)
   || !Number.isFinite(maximumSeconds) || maximumSeconds<1) throw new Error('Use --days 1..365 --h66-minutes 1|5 --max-seconds positive');
 const HOUR=3_600_000,DAY=24*HOUR,MINUTE=60_000;
+const recordedH66 = H66_HISTORY_SIGNALS.filter(signal => recordingPolicy({ source:'husdata-h66',signal,unit:SIGNAL_INFO[signal].unit }).recorded);
 const root=mkdtempSync(join(tmpdir(),'stmq-synthetic-year-')),store=new Store(join(root,'synthetic.sqlite'));
 const cleanup=()=>{try{store.close();}finally{rmSync(root,{recursive:true,force:true});}};
 for(const signal of ['SIGINT','SIGTERM']) process.once(signal,()=>{cleanup();process.exit(130);});
@@ -40,20 +42,26 @@ try {
       for(let minute=0;minute<60;minute++) {
         const t=at+minute*MINUTE;
         for(const signal of PHASE_ENERGY_SIGNALS) {
-          const isCar=signal.startsWith('ev1'),power=isCar ? (hour>=12&&hour<14 ? 2.3 : 0) : 0.3+0.05*Number(signal.at(-1))+0.15*Math.sin(hour/24*2*Math.PI);
+          const group=signal.startsWith('ev1')?'ev1':signal.startsWith('ev2')?'ev2-phase':'property';
+          const isCar=group!=='property',power=isCar ? (hour>=12&&hour<14 ? 2.3 : 0) : 0.3+0.05*Number(signal.at(-1))+0.15*Math.sin(hour/24*2*Math.PI);
           const value=power/60;
-          insert({source:'easee',device:isCar?'synthetic-charger':'synthetic-property',signal,value,unit:'kWh',sourceTime:t+MINUTE,
+          insert({source:group==='ev2-phase'?'shelly-evse':'easee',device:`synthetic-${group}`,signal,value,unit:'kWh',sourceTime:t+MINUTE,
             quality:['estimated','phase_allocation_estimated'],raw:{intervalStart:t,intervalEnd:t+MINUTE,durationMs:MINUTE,
-              basis:'integrated-power-phase-allocation',recorder:{version:'adaptive-recorder-v1',reason:'synthetic-cadence',group:isCar?'ev1':'property'}}});
+              basis:group==='ev2-phase'?'native-meter-counter-phase-allocation':'integrated-power-phase-allocation',
+              recorder:{version:'recording-contract-v2',policy:'adaptive-energy',reason:'synthetic-cadence',group}}});
         }
+        insert({source:'shelly-evse',device:'synthetic-ev2-phase',signal:'ev2_energy',value:(hour>=12&&hour<14?6.9:0)/60,
+          unit:'kWh',sourceTime:t+MINUTE,quality:[],raw:{intervalStart:t,intervalEnd:t+MINUTE,durationMs:MINUTE,
+            basis:'native-meter-counter',recorder:{version:'recording-contract-v2',policy:'adaptive-energy',reason:'synthetic-cadence',group:'ev2'}}});
         if(minute%h66Minutes) continue;
-        for(const signal of H66_HISTORY_SIGNALS) {
+        for(const signal of recordedH66) {
           const info=SIGNAL_INFO[signal],state=info.unit==='state'||info.unit==='code';
           const value=state ? Number(signal==='compressor_active'&&hour%3!==0)
             : info.unit==='h' ? day*10+hour/2 : info.unit==='%' ? 30+(hour%3)*10
             : signal==='heating_integral' ? -50+minute : 20+5*Math.sin((day+hour/24)/365*2*Math.PI)+Math.sin(minute/60*2*Math.PI);
           insert({source:'husdata-h66',device:'synthetic-heatpump',signal,value,unit:info.unit,sourceTime:t,
-            quality:[],raw:{usableForControl:true,verified:true,timeBasis:'mqtt-received',recorder:{version:'adaptive-recorder-v1',
+            quality:[],raw:{usableForControl:true,verified:true,timeBasis:'mqtt-received',recorder:{version:'recording-contract-v2',
+              policy:recordingPolicy({source:'husdata-h66',signal,unit:info.unit}).id,
               reason:'synthetic-cadence',threshold:0.02,originalSourceTime:t,status:'fresh',temporalBasis:'source-observation'}}});
         }
       }
@@ -101,7 +109,7 @@ try {
     jsonBytes: Buffer.byteLength(JSON.stringify(overview)), groups: overview.groups.length,
     tables: overview.accounting.tables.length, totalRows: overview.accounting.totalRows };
   console.log(JSON.stringify({synthetic:true,hardware:cpus()[0]?.model,node:process.version,requestedDays,populatedDays:days,
-    electricityIntervalMinutes:1,h66IntervalMinutes:h66Minutes,h66Signals:H66_HISTORY_SIGNALS.length,rows,
+    electricityIntervalMinutes:1,h66IntervalMinutes:h66Minutes,h66Signals:recordedH66.length,rows,
     databaseBytes:store.databaseBytes(),annualizedBytes:Math.round(store.databaseBytes()*365/days),
     populationMs:Math.round(populatedMs),peakRssMiB:Math.round(process.resourceUsage().maxRSS/1024),queries,inventory,...(cpuProfile?{cpuProfile}:{}),
     limitations:'Bulk synthetic population plus one nominal-power configuration; no representative provider/forecast/journal/coverage/state growth or live write-throughput measurement. Host results, not Raspberry Pi timings.'},null,2));

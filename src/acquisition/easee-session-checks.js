@@ -55,7 +55,7 @@ export function recordEaseeSessionChecks({ store, rows, now, flush = () => {} })
       }
       continue;
     }
-    flush();
+    flush(row.device);
     const compared = compareEaseeSessionEnergy(store, { device: row.device, start: session.start, end: session.end });
     const headKey = `easee:session-check-head:${digest(row.device)}`, head = store.getState(headKey);
     const quality = ['estimated', ...(session.quality ?? []).filter(flag => flag === 'counter-reset'),

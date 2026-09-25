@@ -1,5 +1,7 @@
 import { statSync } from 'node:fs';
-import { H66_HISTORY_SIGNALS, ENERGY_SIGNALS, SIGNAL_INFO } from '../domain/history-series.js';
+import { createHash } from 'node:crypto';
+import { SIGNAL_INFO } from '../domain/history-series.js';
+import { recordingPolicy, recordedSignalInfo, RECORDING_POLICIES } from '../domain/recording-policy.js';
 
 export const OVERVIEW_REFRESH_MS = 5 * 60_000;
 const fields = (...pairs) => pairs.map(([name, description]) => ({ name, description }));
@@ -25,7 +27,7 @@ const episodeFields = fields(
   ['Replay provenance', 'Committed-history basis, forecast reference, saved learning configuration, algorithm/configuration versions and initial seed when required.']);
 const nonAdaptive = [
   ['controller_phase', 'Requested controller phase', 'Normal, preheat, reduction or recovery requested by the controller.', 'When the requested phase changes or its recorded coverage is renewed.'],
-  ['dhwr_request', 'Hot-water recirculation request', 'Requested circulation pulse and its expected duration; not proof of measured pump operation.', 'When a circulation pulse is requested.'],
+  ['dhwr_request', 'Hot-water recirculation request', 'Requested circulation pulse and its expected duration; not proof of measured pump operation.', 'When a circulation pulse is requested or its end is recorded.'],
   ['learning_profit', 'Space-heating benefit after recovery', 'Estimated mean space-heating benefit for comparable completed cycles, with sample count and uncertainty; excludes hot-water service changes and unfinished attempts.', 'When the set of learning metrics changes.'],
   ['learning_aux_profit', 'Space-heating benefit with auxiliary recovery', 'The completed-cycle space-heating estimate for cycles with observed auxiliary space-heating output during recovery.', 'When the set of learning metrics changes.'],
   ['learning_recovery_error', 'Space-heating recovery-cost prediction error', 'Calculated error between the original space-heating recovery-cost prediction and assessed space-heating recovery.', 'When the set of learning metrics changes.'],
@@ -54,10 +56,10 @@ function sum(rows) {
 function item(id, label, description, values, options = {}) {
   return { id, label, description, retention: 'history', retentionDescription: 'Retained as historical records.',
     countLabel: 'records', dateBasis: 'recorded time', ...stats(values), status: values?.count ? 'present' : 'empty',
-    fields: [], ...options };
+    basis: description, fields: [], ...options };
 }
 const quote = value => `'${value.replaceAll("'", "''")}'`;
-const list = values => values.map(quote).join(',');
+const opaqueId = value => createHash('sha256').update(String(value)).digest('hex').slice(0, 12);
 const fileSize = path => { try { return statSync(path).size; } catch { return 0; } };
 
 /** Aggregate metadata only: no history payloads, credentials, device identifiers,
@@ -73,28 +75,67 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
   const groups = [];
   const add = (id, label, description, items) => groups.push({ id, label, description, items });
 
-  // The CASE expression has a bounded number of groups even when an imported
-  // database contains arbitrary source or signal names. Imported rows always
-  // belong to the import inventory, including incomplete/failed imports.
-  const adaptiveSignals = [...H66_HISTORY_SIGNALS, ...ENERGY_SIGNALS, 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature', 'auxiliary_power',
-    'caravan_temperature', 'caravan_humidity', 'caravan_dehumidifier_running_state'];
-  const observationCategory = `CASE
-    WHEN source='csv:stmq' THEN CASE ${importedSignals.stmq.map(signal => `WHEN signal=${quote(signal)} THEN ${quote(`stmq:${signal}`)}`).join(' ')} ELSE 'import-other' END
-    WHEN source='csv:easee' THEN CASE ${importedSignals.easee.map(signal => `WHEN signal=${quote(signal)} THEN ${quote(`easee:${signal}`)}`).join(' ')} ELSE 'import-other' END
-    WHEN import_id IS NOT NULL THEN 'import-other'
-    ${nonAdaptive.map(([signal]) => `WHEN signal=${quote(signal)} THEN ${quote(signal)}`).join(' ')}
-    WHEN signal IN (${list(adaptiveSignals)}) THEN 'adaptive'
-    ELSE 'other' END`;
-  const observations = grouped('observations', observationCategory, 'source_time', 'source_time', ',SUM(value IS NULL) missingCount');
+  // Group metadata in SQLite: history payloads and private device identities never
+  // leave the database. The same policy drives the recorder and this inventory.
+  const raw = "CASE WHEN json_valid(raw) THEN raw ELSE '{}' END";
+  const streams = db.prepare(`SELECT source,signal,unit,import_id IS NOT NULL imported,
+    json_extract(${raw},'$.recorder.policy') policyId,
+    json_extract(${raw},'$.timeBasis') timeBasis,
+    COUNT(*) count,MIN(COALESCE(source_time,received_at)) firstAt,
+    MAX(COALESCE(source_time,received_at)) lastAt,SUM(value IS NULL) missingCount
+    FROM observations GROUP BY source,signal,unit,imported,policyId,timeBasis`).all();
+  const observations = new Map(), observedDatasets = new Map(), inventoryIssues = [];
+  const addCount = (map, key, row) => map.set(key, sum([map.get(key) ?? empty(), stats(row)]));
+  for (const row of streams) {
+    const imported = row.imported || row.source.startsWith('csv:');
+    let policy = imported ? recordingPolicy({ ...row, importId: 1 })
+      : row.policyId && RECORDING_POLICIES[row.policyId]
+        ? { id: row.policyId, ...RECORDING_POLICIES[row.policyId] }
+        : recordingPolicy({ ...row, raw: { timeBasis: row.timeBasis } });
+    if (!imported && !RECORDING_POLICIES[row.policyId]
+      && !['event', 'every-report', 'interval', 'hourly-energy'].includes(policy.id)) {
+      inventoryIssues.push('Scalar observations without a registered current writer policy are present.');
+      policy = { id: 'unclassified', adaptive: false, recorded: true, label: 'Unregistered writer',
+        writeBehavior: 'No current recorder policy or recognized direct writer is recorded for this stream.',
+        basis: 'Original stored scalar values; verify the producer before interpreting their saving rule.' };
+    }
+    const csvKind = row.source.slice(4);
+    const category = imported ? importedSignals[csvKind]?.includes(row.signal) ? `${csvKind}:${row.signal}` : 'import-other'
+      : policy.adaptive ? 'adaptive' : row.signal;
+    addCount(observations, category, row);
+    if (imported) continue;
+    const signal = /^[a-z][a-z0-9_]{0,100}$/.test(row.signal) ? row.signal : `unrecognized_${opaqueId(row.signal)}`;
+    if (signal !== row.signal) inventoryIssues.push('An unrecognized signal identifier is listed with an opaque reference.');
+    const key = JSON.stringify([signal, row.unit, policy.id]);
+    const previous = observedDatasets.get(key);
+    observedDatasets.set(key, { ...row, signal, policy, ...sum([previous ?? empty(), stats(row)]) });
+  }
   const totalObservations = sum([...observations.values()]);
-  add('other_observations', 'Control and calculated history', 'The named control and learning series below are written on events, without adaptive recording thresholds.',
-    nonAdaptive.map(([signal, label, description, writeBehavior]) => item(signal, label, description, observations.get(signal), {
-      dateBasis: 'observation time', writeBehavior, fields: [...observationFields,
-        ...(signal.startsWith('learning_') ? fields(['Assessment metadata', 'Assessment time, contributing sample/cycle count, calculation basis, uncertainty when available and model version.'])
-          : fields(['Request coverage', 'Requested phase or circulation pulse, expiry time and verification flag. The request does not itself prove physical execution.']))] })));
-  if (observations.get('other')?.count) groups.at(-1).items.push(item('additional-observations', 'Additional stored observations',
-    'Other scalar observations present in this database, outside the current adaptive and control catalogues.', observations.get('other'), {
-      dateBasis: 'observation time', writeBehavior: 'Depends on the original writer.', fields: observationFields }));
+  const scalarItems = [...observedDatasets.values()].filter(row => !row.policy.adaptive).map(row => {
+    const info = recordedSignalInfo(row.signal, row.unit), definition = nonAdaptive.find(([signal]) => signal === row.signal);
+    const reason = row.signal === 'auxiliary_power' ? 'Calculated from exact auxiliary-output state and the nominal rating; every changed estimate is retained.'
+      : row.signal.endsWith('_hours') || row.signal === 'garage_native_energy' ? 'Counter increments must remain exact; a learned tolerance must not skip a changed total.'
+        : ['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature', 'garage_temperature_2'].includes(row.signal)
+          ? 'Every real sensor change is retained for thermal learning; unchanged genuine reports extend availability coverage.'
+          : row.signal.startsWith('floor_') ? info.basis : row.policy.basis;
+    return item(row.signal, info.label, definition?.[2] ?? reason, row, {
+      signal: row.signal, unit: row.unit, recordingPolicy: row.policy.id, policyLabel: row.policy.label,
+      dateBasis: 'observation time, or receipt time when unavailable', retention: row.signal.startsWith('learning_') || row.signal === 'auxiliary_power' ? 'derived' : 'history',
+      writeBehavior: definition?.[3] ?? row.policy.writeBehavior,
+      basis: info.basis ?? row.policy.basis, fields: [...observationFields, ...fields(['Recording reason', reason])],
+      facts: [{ label: 'Signal', value: row.signal }, { label: 'Unit', value: row.unit },
+        { label: 'Recording policy', value: row.policy.label }, { label: 'Basis', value: info.basis ?? row.policy.basis }],
+    });
+  });
+  // A signal may have multiple current producers or units; preserve each policy
+  // without colliding disclosure identities or silently merging different units.
+  const duplicateIds = new Map();
+  for (const dataset of scalarItems) duplicateIds.set(dataset.id, (duplicateIds.get(dataset.id) ?? 0) + 1);
+  for (const dataset of scalarItems) if (duplicateIds.get(dataset.id) > 1)
+    dataset.id += `:${dataset.recordingPolicy}:${opaqueId(dataset.unit)}`;
+  add('other_observations', 'Exact measurements, states and calculated history',
+    'Each observed non-adaptive stream is listed below. Exact changes, every-report feedback, direct energy intervals and controller events have separate saving rules.',
+    scalarItems.sort((a, b) => a.label.localeCompare(b.label)));
 
   const imports = grouped('imports', "CASE WHEN kind IN ('stmq','easee') THEN kind ELSE 'other' END", 'started_at', 'COALESCE(completed_at,started_at)');
   const importRows = aggregate('import_rows', 'source_time');
@@ -127,7 +168,9 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
   add('imports', 'Imported CSV history', 'Supported v0.7.5 controller and Easee CSVs can be imported as historical observations. Source rows and decoded observations are separate stored records, not additional measurements.', importItems);
 
   const snapshots = grouped('provider_snapshot_fetches', "CASE WHEN kind IN ('weather','market') THEN kind ELSE 'other' END", 'fetched_at');
-  const contentCount = db.prepare('SELECT COUNT(*) count FROM provider_snapshot_contents').get().count;
+  const content = stats(db.prepare(`SELECT COUNT(DISTINCT c.id) count,MIN(f.fetched_at) firstAt,MAX(f.fetched_at) lastAt
+    FROM provider_snapshot_contents c LEFT JOIN provider_snapshot_fetches f ON f.content_id=c.id`).get());
+  const contentCount = content.count;
   const contentStats = new Map(db.prepare(`SELECT CASE WHEN kind IN ('weather','market') THEN kind ELSE 'other' END category,
     COUNT(DISTINCT content_id) versions,SUM(content_id IS NOT NULL) referenceCount FROM provider_snapshot_fetches GROUP BY category`)
     .all().map(row => [row.category, row]));
@@ -159,7 +202,7 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
         ['Energy components', 'Margin and electricity tax excluding VAT; VAT rate.'],
         ['Network transfer', 'Tariff selection and dated day/night/seasonal transfer rates.']) })]);
 
-  const journal = grouped('learning_journal', "CASE WHEN kind IN ('sample','episode','context') THEN kind ELSE 'other' END", 'at');
+  const journal = grouped('learning_journal', "CASE WHEN input LIKE 'garage:%' THEN 'garage:' ELSE '' END || kind", 'at');
   const cycles = aggregate('learning_cycles', 'started_at', 'COALESCE(ended_at,started_at)');
   const cycleFacts = db.prepare(`SELECT SUM(status='completed') completed,SUM(status='incomplete') incomplete,
     SUM(json_type(CASE WHEN json_valid(payload) THEN payload ELSE '{}' END,'$.assessment')='object') assessed FROM learning_cycles`).get();
@@ -168,11 +211,24 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
   }[kind], { sample: 'Immutable causal samples constructed from committed history.', episode: 'Immutable completed episode inputs used for learning updates.',
     context: 'Immutable reference contexts, saved configurations, seeds and baseline-reset information required to replay learning.' }[kind], journal.get(kind), {
     writeBehavior: kind === 'sample' ? 'For eligible committed 15-minute learning windows.' : kind === 'episode' ? 'When a learning episode completes.' : 'When learning context or its reference configuration must be journalled.',
-    fields: kind === 'sample' ? learningFields : kind === 'episode' ? episodeFields : fields(
+      fields: kind === 'sample' ? learningFields : kind === 'episode' ? episodeFields : fields(
       ['Reference context', 'Reference timestamp, optional room observation and baseline-reset time, or adopted historical model/baseline seed and its source.'],
+      ['Sensor and control transitions', 'Sensor replacement/calibration and correction, pooled floor override mode, requested phase, room boost and occupancy changes.'],
       ['Learning configuration', 'Saved control/thermal assumptions associated with this context.'],
       ['Replay versions', 'Algorithm and configuration versions, forecast reference when present, and initial model seed when required.']) }));
-  if (journal.get('other')?.count) learningItems.push(item('journal-other', 'Additional journal records', 'Other stored learning journal kinds.', journal.get('other'), { fields: learningFields }));
+  for (const kind of ['sample', 'context']) learningItems.push(item(`garage-journal-${kind}`,
+    kind === 'sample' ? 'Garage learning samples' : 'Garage learning context',
+    kind === 'sample' ? 'Original normalized garage inputs: rear/front/outdoor temperatures, electrical and compressor evidence, charger disturbances, native availability and protection context.'
+      : 'Versioned garage configuration, room-target reference, sensor changes and deterministic reconstruction seed.', journal.get(`garage:${kind}`), {
+      dateBasis: 'journal time', writeBehavior: kind === 'sample' ? 'On each completed garage learning tick.' : 'When garage configuration, sensor epoch or reference context changes.',
+      fields: fields(['Physical inputs', 'Temperatures in °C, electrical input in kW, compressor and charger activity as fractions; missing evidence stays unknown.'],
+        ['Configuration and provenance', 'Saved configuration, current algorithm, source timing and original seed; not a repeated adaptive measurement.']) }));
+  for (const [kind, values] of journal) if (!['sample', 'episode', 'context', 'garage:sample', 'garage:context'].includes(kind)) {
+    inventoryIssues.push('An unrecognized learning journal kind needs a recording description.');
+    learningItems.push(item(`journal-unrecognized-${opaqueId(kind)}`, `Unrecognized journal kind · ${opaqueId(kind)}`,
+      'This distinct journal kind is counted separately; it has no current writer description.', values, {
+        writeBehavior: 'Unrecognized writer; inspect the current producer before interpreting these records.', fields: learningFields }));
+  }
   learningItems.push(item('learning-cycles', 'Cycle plans, execution and assessments', 'Each cycle contains its original plan and forecast, observations, adjustments, calculated costs and completed assessment when available.', cycles, {
     countLabel: 'cycles', retention: 'mixed', retentionDescription: 'A cycle record is updated while active and retained after completion or interruption.',
     dateBasis: 'cycle start / end', writeBehavior: 'On planning and as a cycle progresses or completes.',
@@ -213,6 +269,15 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
     ['recovery', "key LIKE 'recovery:%'", 'History recovery progress', 'Current manual recovery progress and its accepted, conflicting and skipped record counts. The complete reconstructed model is published after catching up live learning.'],
     ['settings', "key LIKE 'settings:%' OR key LIKE 'occupancy:%' OR key LIKE 'override:%'", 'Settings and temporary overrides', 'Current operating settings, occupancy and expiring manual overrides; credentials remain in external configuration.'],
     ['control', "key LIKE 'executor:%' OR key LIKE 'h66:%' OR key LIKE 'applied:%' OR key LIKE 'pending-plan:%' OR key LIKE 'phase-snapshot:%' OR key LIKE 'dhwr:%' OR key LIKE 'heating-test:%' OR key LIKE 'cycle:%' OR key LIKE 'trials:%' OR key LIKE 'native-room-reference:%'", 'Control execution and active plans', 'Execution/readback/restoration state, native room reference, active cycle, pending plan, phase coverage and bounded trial allowance.'],
+    ['floor', "key='floor-override:v1'", 'Floor override restoration', 'Current ownership, sequence, outstanding release obligations and latest result. Individual contact history is listed under exact measurements.'],
+    ['equipment-tests', "key='equipment-tests:v1'", 'Equipment tests and manual operations', 'Current bounded equipment operation, restoration requirement and latest test result.'],
+    ['equipment-doors', "key LIKE 'equipment:door:%'", 'Last reported door contacts', 'Latest event-only contact state and route identity retained across reconnects; original changes are recorded separately.'],
+    ['equipment-energy', "key LIKE 'shelly:%energy:%' OR key LIKE 'mqtt:equipment-energy:%'", 'Equipment meter accumulation', 'Current counter baseline, reset/gap evidence and pending caravan or other metered-equipment accumulation.'],
+    ['charging-ownership', "key LIKE 'charging:%:ownership' OR key LIKE 'charging:%:ownership:ocpp'", 'Charger ownership and restoration', 'Device-bound control permission, native baseline and unfinished current-limit restoration.'],
+    ['charging', "key LIKE 'charging:%' OR key LIKE 'shelly-evse:%'", 'Charging sessions and device state', 'Current physical connections, energy baselines, vehicle observations, session overrides, schedules and charger-controller state.'],
+    ['easee-ocpp', "key LIKE 'easee:ocpp%'", 'Charger 1 OCPP setup', 'Current native OCPP setup verification, saved restoration baseline and control readiness.'],
+    ['garage', "key LIKE 'garage:%'", 'Garage control and learning state', 'Current model checkpoint, protection exposure, active episode, adapter restoration, temporary price-control pause and device-bound room target.'],
+    ['pairing', "key='pairing-lineage'", 'Paired database lineage', 'Current pairing lineage used to identify a published database and fence replica ownership; private identifiers are omitted.'],
     ['simulation', "key LIKE 'simulation:%'", 'Simulation state', 'Current simulated plant state for resuming a simulation.'],
   ];
   const state = grouped('state', `CASE ${stateCategories.map(([id, where]) => `WHEN ${where} THEN ${quote(id)}`).join(' ')} ELSE 'other' END`, 'updated_at', 'updated_at', ",SUM(value='null') missingCount");
@@ -226,7 +291,13 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
         ['Occupancy', 'Occupied/away mode and planned return time.'],
         ['Temporary overrides', 'Override action and expiry; cleared state may remain as an explicit null entry.'],
         ['Last update', 'When each current settings document was last changed.']) } : {}) })),
-      ...(state.get('other')?.count ? [item('state-other', 'Other application state', 'Additional stored current state; private keys and payloads are not listed.', state.get('other'), currentOptions)] : [])]);
+      ...(state.get('other')?.count ? [item('state-other', 'Unrecognized current-state entries', 'Each unrecognized entry is identified below by an opaque reference to avoid exposing private device identifiers. No current writer description is available.', state.get('other'), currentOptions)] : [])]);
+  if (state.get('other')?.count) {
+    inventoryIssues.push('Current-state entries without a registered writer description are present.');
+    groups.at(-1).items.at(-1).breakdown = db.prepare(`SELECT key,updated_at FROM state WHERE NOT
+      (${stateCategories.map(([, where]) => `(${where})`).join(' OR ')}) ORDER BY key`).all()
+      .map(row => ({ label: `State entry ${opaqueId(row.key)}`, count: 1, firstAt: row.updated_at, lastAt: row.updated_at }));
+  }
 
   const eventCategories = [
     ['charging-checks', "type='charging-session-check'", 'Finalized charging comparisons', 'One immutable reference and estimated energy comparison per Charger 1 session or Charger 2 charging period; incomplete coverage is excluded from averages.'],
@@ -234,16 +305,39 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
     ['decisions', "type='decision'", 'Controller decisions', 'Action, phase, reasons, commands and execution outcomes recorded for each decision.'],
     ['settings', "type IN ('settings-changed','configured-rates-applied','contract-period-added','occupancy-changed','occupancy-expired','override-changed','override-expired')", 'Settings and override changes', 'Changes to settings, contract rates and temporary operating instructions.'],
     ['cycles', "type LIKE 'cycle-%'", 'Cycle events', 'Cycle planning, progression, interruption and completion notifications.'],
-    ['execution', "type LIKE 'h66-%' OR type LIKE 'heating-test-%' OR type LIKE 'control-%' OR type='restoration-pending' OR type='simulated-command-readback'", 'Equipment execution and readback events', 'Requests, confirmations, failures, restoration and manual-test outcomes.'],
+    ['execution', "type LIKE 'h66-%' OR type LIKE 'floor-%' OR type LIKE 'heating-test-%' OR type LIKE 'control-%' OR type='restoration-pending' OR type='simulated-command-readback'", 'Equipment execution and readback events', 'Requests, confirmations, failures, restoration and manual-test outcomes.'],
+    ['garage-feed', "type='garage-external-temperature-diagnostic'", 'Garage external-temperature problems', 'Only abnormal feed conditions and recovery from them. Successful renewals and normal external-temperature values are not recorded.'],
+    ['garage-diagnostics', "type='garage-pump-diagnostic'", 'Garage native diagnostic bytes', 'Changes to raw native diagnostic bytes and their availability after genuine observation. These bytes are not interpreted as a diagnosed fault.'],
+    ['garage', "type LIKE 'garage-%'", 'Garage control changes', 'Native-setting requests, room-target changes, manual control and temporary price-control changes.'],
+    ['sensors', "type LIKE 'sensor-%' OR type='indoor-baseline-reset'", 'Sensor and temperature-reference changes', 'Sensor replacement, movement, calibration, correction and baseline boundaries used during reconstruction.'],
+    ['mqtt', "type LIKE 'mqtt-%'", 'MQTT connection and acquisition events', 'Connection, subscription and transport failures or recovery, separate from scalar sensor coverage.'],
+    ['learning', "type LIKE 'learning-%' OR type LIKE 'checkpoint-%' OR type='scheduled-cycle-rejected'", 'Learning and planning diagnostics', 'Learning worker faults, checkpoint reconstruction and rejected scheduled cycles.'],
+    ['history', "type LIKE 'history%'", 'History import and recovery events', 'Import completion and atomic recovery outcomes; source files and private paths are not displayed.'],
+    ['application', "type IN ('controller-error','provider-cache-rebuild','settings-reloaded','settings-reload-failed','charging-session-check-conflict')", 'Application diagnostics', 'Controller errors, cache rebuilds, configuration reload results and conflicting charger checks.'],
   ];
-  const events = grouped('events', `CASE ${eventCategories.map(([id, where]) => `WHEN ${where} THEN ${quote(id)}`).join(' ')} ELSE 'other' END`, 'at');
+  const eventTypes = db.prepare(`SELECT CASE ${eventCategories.map(([id, where]) => `WHEN ${where} THEN ${quote(id)}`).join(' ')} ELSE 'other' END category,
+    type,COUNT(*) count,MIN(at) firstAt,MAX(at) lastAt FROM events GROUP BY category,type ORDER BY type`).all();
+  const events = new Map();
+  for (const row of eventTypes) addCount(events, row.category, row);
   const eventItems = eventCategories.map(([id, , label, description]) => item(`events-${id}`, label, description, events.get(id), {
     writeBehavior: id === 'decisions' ? 'On every recorded controller decision.' : 'When the event occurs.',
     fields: id === 'charging-checks' ? fields(['Period and energy', 'Start/end, source, integrated kWh and final reference kWh.'], ['Coverage', 'Completeness and quality; Charger 2 energy added differs from electrical input.'])
       : id === 'heat-power-config' ? fields(['Nominal powers', 'Compressor, circulation and rated auxiliary power in kW.'], ['Version and effective time', 'Algorithm/configuration version, input mode and effective timestamp.'])
       : fields(['Event type and time', 'What happened and when.'], ['Event context', 'Associated decision, configuration, command, assessment or failure details.']) }));
-  eventItems.push(item('events-other', 'Acquisition, import and application events', 'Provider/MQTT health, imports, learning resets, rebuilds and other application events.', events.get('other'), {
-    writeBehavior: 'When the event occurs.', fields: fields(['Event type and time', 'What happened and when.'], ['Event context', 'Relevant details; payloads are not exposed here.']) }));
+  if (events.get('other')?.count) eventItems.push(item('events-other', 'Unrecognized event types', 'Distinct event types without a current writer description.', events.get('other'), {
+    writeBehavior: 'Unrecognized writer; inspect the current producer before interpreting these events.', fields: fields(['Event type and time', 'What happened and when.'], ['Event context', 'Relevant details; payloads are not exposed here.']) }));
+  for (const dataset of eventItems) {
+    const category = dataset.id.slice('events-'.length);
+    dataset.breakdown = eventTypes.filter(row => row.category === category).map(row => ({
+      label: category === 'other' ? `Unrecognized event ${opaqueId(row.type)}` : row.type,
+      ...stats(row), writeBehavior: category === 'garage-feed' ? 'On abnormal-status or reason change, and once on recovery.' : dataset.writeBehavior,
+    }));
+  }
+  if (events.get('other')?.count) {
+    inventoryIssues.push('Event types without a registered writer description are present.');
+    const unknown = eventItems.find(row => row.id === 'events-other');
+    unknown.label = 'Unrecognized event types'; unknown.description = 'Each distinct unrecognized event type is counted separately below with an opaque reference; payloads remain private.';
+  }
   const counters = aggregate('counters', "COALESCE(source_time,CAST(strftime('%s',observed_date) AS INTEGER)*1000)");
   const annotations = aggregate('annotations', 'start_at', 'COALESCE(end_at,start_at)');
   eventItems.push(item('manual-counters', 'Dated manual runtime counters', 'Manually entered compressor, auxiliary-stage and hot-water runtime readings. A date alone does not imply a known time of day.', counters, {
@@ -264,8 +358,15 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
   const otherEpochs = aggregate('learning_journal_entries', 'at', 'at',
     "epoch<>COALESCE((SELECT epoch FROM learning_epochs WHERE input=learning_journal_entries.input),'original')");
   add('support', 'Recording and storage support', 'These support records are stored in addition to measurements. Charts read original committed records using SQLite indexes. Display-point reduction and cached chart responses stay in memory; no separate chart summaries are stored in the database.', [
-    item('adaptive-observations', 'Adaptive observations', 'The temperature, equipment, phase energy, charger-2 total energy and caravan monitoring series listed in the main recording table above.', observations.get('adaptive'), {
-      dateBasis: 'observation time', writeBehavior: 'When adaptive thresholds, maximum fresh-data spacing, state or quality changes require a record.', fields: observationFields }),
+    item('adaptive-observations', 'Saved adaptive measurement history', 'Every saved adaptive dataset is listed here, including recovered history without a current recorder checkpoint. The Adaptive measurements table shows streams with a current checkpoint and their thresholds. Matching signals with the same unit and saving rule are combined across sources.', observations.get('adaptive'), {
+      dateBasis: 'observation time, or receipt time when unavailable', writeBehavior: 'When a learned numeric change threshold, quality transition or accumulated-energy interval closure requires a record; unchanged values are not repeated.', fields: observationFields,
+      breakdownLabel: 'Measurement / unit / saving rule',
+      breakdown: [...observedDatasets.values()].filter(row => row.policy.adaptive).map(row => ({
+        ...stats(row), signal: row.signal, unit: row.unit, recordingPolicy: row.policy.id,
+        label: `${recordedSignalInfo(row.signal, row.unit).label} (${row.signal}) · ${row.unit} · ${row.policy.label}`,
+        dateBasis: 'observation time, or receipt time when unavailable',
+      })).sort((a, b) => a.label.localeCompare(b.label)),
+    }),
     item('coverage', 'Availability and verification coverage', 'Compact spans distinguish fresh unchanged readings from stale, failed or unavailable acquisition.', coverage, {
       countLabel: 'spans', dateBasis: 'span start / end', retention: 'mixed', retentionDescription: 'New spans are retained; the current unchanged span is extended in place.',
       writeBehavior: 'Updated by acquisition; new span on a status or associated saved-reading change, or after a source-freshness gap.',
@@ -273,21 +374,24 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
     item('recorder-statistics', 'Recording statistics', 'Hourly counts and time-weighted pre-update change statistics used by the recording display and storage optimizer.', metrics, {
       countLabel: 'hourly buckets', dateBasis: 'bucket time', retention: 'rolling', retentionDescription: 'Hourly buckets updated in place; buckets older than seven days are pruned by the recorder.',
       writeBehavior: 'Each acquisition updates its current hourly bucket.',
-      fields: fields(['Counts', 'Polls, saved records and stale/failed/unavailable acquisitions.'], ['Compression statistics', 'Approximate serialized observation bytes and accumulated normalized pre-update change/time; not per-table disk usage.']) }),
-    item('snapshot-content', 'Shared provider snapshot content', 'Immutable deduplicated content shared by timestamped weather and market fetch references listed above.', contentCount ? { count: contentCount } : empty(), {
-      countLabel: 'versions', writeBehavior: 'Once per new content digest.', fields: fields(['Content', 'Provider forecast/price intervals.'], ['Digest', 'Content identity used to reuse unchanged data.']) }),
+      fields: fields(['Counts and saved times', 'Polls, saved records, first/last saved receipt times and stale/failed/unavailable acquisitions.'], ['Compression statistics', 'Approximate serialized observation bytes and accumulated normalized pre-update change/time; not per-table disk usage.']) }),
+    item('snapshot-content', 'Shared provider snapshot content', 'Immutable deduplicated content shared by timestamped weather and market fetch references listed above.', content, {
+      countLabel: 'versions', dateBasis: 'associated fetch times', writeBehavior: 'Once per new content digest.', fields: fields(['Content', 'Provider forecast/price intervals.'], ['Digest', 'Content identity used to reuse unchanged data.']) }),
     item('meter-audits', 'Property cumulative meter readings', 'Property import counters and diagnostic metadata. Charger 1 and Charger 2 use finalized session references instead of cumulative charger counters.', audits, {
       dateBasis: 'meter observation time', writeBehavior: 'When a changed cumulative counter is received; never used to correct estimates or train.',
       fields: fields(['Meter reading', 'Cumulative kWh, source and receipt timestamps, quality.'], ['Diagnostic context', 'Optional stored comparison metadata; current checks can also be calculated read-only from matching energy coverage.']) }),
     item('learning-archive', 'Other model history epochs', 'Original committed learning remains available after a successful recovery. A recovery in progress also stages its candidate history here until verification and publication.', otherEpochs, {
       retention: 'mixed', retentionDescription: 'Successful original epochs remain reconstructible. Compact ordering references reuse original inputs; abandoned unpublished candidates are removed on retry.',
-      dateBasis: 'learning record time', fields: learningFields }),
+      dateBasis: 'learning record time', writeBehavior: 'During current-format history recovery; source entries are referenced without duplicating their payload.', fields: learningFields }),
     item('learning-epochs', 'Selected model histories', 'One selection per recovered input identifies the complete learning history currently used by the model.', epochs, {
-      retention: 'current', retentionDescription: 'Updated atomically with the completed model checkpoint.', countLabel: 'selections' }),
+      retention: 'current', retentionDescription: 'Updated atomically with the completed model checkpoint.', countLabel: 'selections',
+      writeBehavior: 'On atomic publication of a recovered learning history.', dateBasis: 'no independent timestamps stored' }),
     item('recovery-runs', 'Manual recovery records', 'Recovery boundaries and outcomes identify how combined model history was reconstructed. Counts and dates are shown without source identities or payloads.', recoveryRuns, {
-      countLabel: 'recoveries', retention: 'mixed', retentionDescription: 'Completed recoveries retain their reconstruction boundary; abandoned incomplete jobs are removed on retry.' }),
+      countLabel: 'recoveries', retention: 'mixed', writeBehavior: 'Created when recovery starts, updated at verified completion; abandoned incomplete runs are removed on retry.',
+      retentionDescription: 'Completed recoveries retain their reconstruction boundary; abandoned incomplete jobs are removed on retry.' }),
     item('recovery-provenance', 'Recovered source references', 'Source-to-master reference mappings prevent duplicate imports and keep accepted record references consistent across interrupted recovery attempts.', recoverySources, {
-      countLabel: 'references', fields: fields(['Origin and disposition', 'Opaque source identity, mapped local record reference and whether it was accepted or rejected; values are not displayed.']) }),
+      countLabel: 'references', writeBehavior: 'Once per recovered source record disposition; interruption retries reuse the mapping.', dateBasis: 'no independent timestamps stored',
+      fields: fields(['Origin and disposition', 'Opaque source identity, mapped local record reference and whether it was accepted or rejected; values are not displayed.']) }),
   ]);
   if (snapshots.get('other')?.count) groups.at(-1).items.push(item('snapshot-other', 'Other provider fetch references',
     'Additional provider snapshot kinds present in the database.', snapshots.get('other'), { dateBasis: 'fetch time' }));
@@ -304,6 +408,7 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
     fireplace_events: sum([...fireplace.values()]).count,
   };
   const actualTables = db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all();
+  if (actualTables.some(({ name }) => !Object.hasOwn(tableCounts, name))) inventoryIssues.push('An unregistered physical table needs a writer and retention description.');
   const tables = actualTables.map(({ name }, index) => Object.hasOwn(tableCounts, name) ? { name, rows: tableCounts[name] }
     : { name: `Additional internal table ${index + 1}`, rows: db.prepare(`SELECT COUNT(*) count FROM "${name.replaceAll('"', '""')}"`).get().count });
   const pageSize = db.prepare('PRAGMA page_size').get().page_size;
@@ -312,6 +417,7 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
   const fileBytes = store.path && store.path !== ':memory:' ? fileSize(store.path) : null;
   const walBytes = store.path && store.path !== ':memory:' ? fileSize(`${store.path}-wal`) : 0;
   return { generatedAt: now, refreshAfterMs: OVERVIEW_REFRESH_MS,
+    catalogueComplete: inventoryIssues.length === 0, inventoryIssues: [...new Set(inventoryIssues)],
     database: { allocatedBytes, reusableBytes, fileBytes, walBytes, totalFileBytes: fileBytes === null ? null : fileBytes + walBytes,
       description: 'SQLite allocated pages include recorded data, indexes that speed lookups and reusable pages. Chart responses and display-point reduction use memory, not additional database tables. Main-file plus WAL bytes are physical files and include temporary journal overhead; dataset sizes are not estimated.' },
     groups, accounting: { tables, totalRows: tables.reduce((total, table) => total + table.rows, 0),

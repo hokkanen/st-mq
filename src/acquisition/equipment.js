@@ -98,7 +98,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     // A contact and its availability may arrive in either order. Keep the
     // candidate here, then publish it to the model only when both are live.
     if (device.record !== false && definition.record !== false && !(['door', 'dehumidifier'].includes(device.kind) && value !== null)) {
-      if (device.id === 'caravan' || ['heat_savings_active', 'garage_relay_active'].includes(definition.signal))
+      if (device.id === 'caravan' || definition.signal === 'garage_relay_active')
         engine.rememberObservation?.(observation, receivedAt);
       else {
         const result = engine.ingest(observation);

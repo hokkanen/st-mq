@@ -37,8 +37,9 @@ test('native indoor/outdoor, zero, negative, activity, unsupported and uncertain
   assert.equal(s.native.defrost, false);
   assert.equal(s.telemetry.outdoorTemperature.usable, true);
   assert.equal(f.energy.length, 0);
-  assert.deepEqual(f.observations.map(row => row.signal), ['garage_native_indoor_temperature', 'garage_compressor_frequency', 'garage_compressor_active']);
-  assert.equal(f.observations.at(-1).value, 1);
+  assert.deepEqual(f.observations.map(row => row.signal), ['garage_native_indoor_temperature', 'garage_compressor_frequency', 'garage_compressor_active', 'garage_native_defrost']);
+  assert.equal(f.observations.find(row => row.signal === 'garage_compressor_active').value, 1);
+  assert.equal(f.observations.at(-1).value, 0);
   assert.equal(f.observations.at(-1).unit, 'state');
   f.at(BASE + 1000); f.receive({ indoorTemperature: f.field(0, 'degC', { supported: false }),
     outdoorTemperature: f.field(4, 'raw') });
@@ -139,6 +140,34 @@ test('missing power stays unavailable even with compressor Hz; reported zero pow
   f.at(BASE + 60_000); f.power(0); f.at(BASE + 120_000); f.power(0);
   assert.equal(f.energy.length, 1);
   assert.equal(f.energy[0].value, 0);
+  assert.equal(f.adapter.status().telemetry.power.value, 0);
+  assert(!f.observations.some(row => row.signal === 'garage_power'), 'live power and energy integration do not create power history');
+});
+
+test('native defrost and raw diagnostic bytes retain observed changes without unsupported placeholders', () => {
+  const events = [], f = fixture('none', { onEquipmentDiagnostic: (row, at) => events.push({ ...row, at }) });
+  f.receive({ defrost: f.field(null, 'boolean', { supported: false }),
+    faultRaw: f.field(null, null, { supported: false }) });
+  assert.deepEqual(f.observations, []);
+  assert.deepEqual(events, []);
+  f.at(BASE + 1000);
+  f.receive({ defrost: f.field(false, 'boolean'), faultRaw: f.field('00000000', null) });
+  assert.equal(f.observations.at(-1).signal, 'garage_native_defrost');
+  assert.equal(f.observations.at(-1).value, 0);
+  assert.equal(events[0].value, '00000000', 'raw bytes are not converted into an invented fault diagnosis');
+  f.at(BASE + 2000); f.receive({ faultRaw: f.field('00000000', null) });
+  assert.equal(events.length, 1);
+  f.at(BASE + 3000); f.receive({ faultRaw: f.field('a1000000', null) });
+  assert.equal(events.length, 2);
+  f.at(BASE + 4000); f.adapter.setConnected(false);
+  assert.equal(f.observations.at(-1).value, null);
+  assert.equal(events.at(-1).value, null);
+  assert.equal(events.at(-1).status, 'unavailable');
+  assert(events.at(-1).quality.includes('mqtt-disconnected'));
+  f.adapter.setConnected(true);
+  f.at(BASE + 5000); f.receive({ faultRaw: f.field('a1000000', null) });
+  assert.equal(events.at(-1).value, 'a1000000');
+  assert.equal(events.length, 4);
 });
 
 test('restarts preserve deduplication watermark but never interpolate across offline time', () => {

@@ -789,6 +789,21 @@ details details { margin-inline-start: 24px; }
 
 .recording-details { margin-top: 18px; border-top: 1px solid var(--border); padding-top: 12px; }
 .recording-section-title { font-size: 14px; font-weight: 550; margin: 10px 0; }
+.recording-metrics { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 12px; margin: 8px 0 18px; }
+.recording-metrics > div { padding: 12px; background: var(--surface-soft); border: 1px solid var(--border); border-radius: 8px; }
+.recording-metrics dt { color: var(--muted); font-size: 11px; }
+.recording-metrics dd { margin: 5px 0 0; font-size: 16px; font-variant-numeric: tabular-nums; }
+.recording-stream-qualifier { font-family: ui-monospace, monospace; }
+.recording-table .recording-reading-details { margin: 0; padding: 0; border: 0; }
+.recording-reading-details > summary { padding: 0; min-height: 24px; font-size: 12px; color: var(--text); }
+.recording-reading-details > p { margin: 8px 0; font-size: 11px; line-height: 1.5; color: var(--muted); max-width: 32em; }
+.recording-open-interval { max-width: 30em; line-height: 1.5; }
+.recording-inventory-notice { padding: 12px; background: var(--notice); border-left: 3px solid var(--notice-border); color: var(--text); line-height: 1.5; }
+.recording-breakdown { width: 100%; border-collapse: collapse; font-size: 12px; text-align: left; }
+.recording-breakdown th, .recording-breakdown td { padding: 9px 8px; border-bottom: 1px solid var(--border); vertical-align: top; font-weight: 400; }
+.recording-breakdown thead th { color: var(--muted); }
+.recording-breakdown tbody th { overflow-wrap: anywhere; }
+.recording-breakdown td:nth-child(2) { font-variant-numeric: tabular-nums; }
 .recording-overview-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin: 2px 0 14px; }
 .recording-overview-toolbar p { margin: 0; }
 .recording-overview-toolbar button { flex-shrink: 0; }
@@ -819,6 +834,22 @@ details details { margin-inline-start: 24px; }
 @media(max-width: 640px) {
   details details { margin-inline-start: 16px; }
   .recording-table { min-width: 720px; }
+  .recording-metrics { grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; }
+  .recording-metrics dd { font-size: 14px; }
+  .recording-measurements { display: block; min-width: 0; }
+  .recording-measurements thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .recording-measurements tbody { display: block; }
+  .recording-measurements tr { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); padding: 8px 0; border-bottom: 1px solid var(--border); }
+  .recording-measurements th, .recording-measurements td { display: block; border: 0; padding: 7px 6px; overflow-wrap: anywhere; }
+  .recording-measurements tr > th { grid-column: 1/-1; font-size: 13px; }
+  .recording-measurements td::before { display: block; content: attr(data-label); margin-bottom: 5px; font-size: 10px; color: var(--muted); }
+  .recording-measurements td:nth-child(2) { order: 1; }
+  .recording-measurements td:nth-child(4) { order: 2; }
+  .recording-measurements td:nth-child(3) { order: 3; grid-column: 1/-1; }
+  .recording-measurements td:nth-child(5) { order: 4; grid-column: 1/-1; }
+  .recording-measurements .recording-group { display: block; border: 0; padding: 0; }
+  .recording-reading-details > summary { min-height: 32px; }
+  .recording-breakdown { min-width: 400px; }
   .recording-overview-toolbar { align-items: flex-start; flex-direction: column; gap: 10px; }
   .recording-dataset-facts, .recording-dataset-fields { grid-template-columns: minmax(0,1fr); gap: 3px; }
   .recording-dataset dd { margin-bottom: 10px; }

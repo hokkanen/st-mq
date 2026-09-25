@@ -48,7 +48,8 @@ export function floorOverrideConfiguration(options = {}) {
 // Local-script acknowledgements are actual relay readback, never proof of valve
 // movement or hydronic flow. The caller owns the decision to renew preheating.
 export function createFloorOverride({ store, publish, settings = floorOverrideConfiguration(),
-  clock = Date.now, canControl = () => true, readbackTimeoutMs = 10_000, brokerIdentity = null }) {
+  clock = Date.now, canControl = () => true, readbackTimeoutMs = 10_000, brokerIdentity = null,
+  onObservation = () => {} }) {
   if (!store?.getState || !store?.setState || typeof publish !== 'function')
     throw new Error('Floor override requires durable state and MQTT transport.');
   if (!Number.isFinite(readbackTimeoutMs) || readbackTimeoutMs <= 0) throw new Error('Invalid floor readback timeout.');
@@ -64,6 +65,7 @@ export function createFloorOverride({ store, publish, settings = floorOverrideCo
   let connected = false, closed = false, epoch = 0, queue = Promise.resolve(), active = null;
   let lastProbe = -Infinity, restartPending = Boolean(state.outstanding);
   const readings = new Map(), requests = new Map();
+  const historyAvailability = new Map();
   const brokerMatches = () => !state.outstanding || Object.hasOwn(state.outstanding, 'brokerDigest') && state.outstanding.brokerDigest === brokerDigest;
   const allDevices = () => [...new Map([...settings.devices, ...(brokerMatches() ? state.outstanding?.devices || [] : [])]
     .map(device => [device.topicPrefix, device])).values()];
@@ -74,9 +76,33 @@ export function createFloorOverride({ store, publish, settings = floorOverrideCo
   const fresh = (device, now) => {
     const row = readings.get(device.topicPrefix);
     return connected && row && now >= row.receivedAt && now - row.receivedAt <= 90_000 && row.ready && row.clockOk
-      && Number.isSafeInteger(row.boot) && row.boot > 0 && row.channels?.length === 2
-      && row.channels.every((channel, id) => channel.id === id && typeof channel.output === 'boolean' && !channel.error);
+      && Number.isSafeInteger(row.boot) && row.boot > 0 && Array.isArray(row.channels) && row.channels.length === 2
+      && row.channels.every((channel, id) => channel?.id === id && typeof channel.output === 'boolean' && !channel.error);
   };
+  // Only a response to a current request proves electrical output. Commands,
+  // saved leases and ordinary thermostats never prove valve position or flow.
+  function recordOutputs(device, row, now, unavailable = null) {
+    if (!settings.devices.some(configured => configured.topicPrefix === device.topicPrefix)) return;
+    if (unavailable && historyAvailability.get(device.topicPrefix) === unavailable) return;
+    const channels = Array.isArray(row?.channels) ? row.channels : [];
+    for (const id of [0, 1]) {
+      const channel = channels.find(channel => channel?.id === id);
+      const valid = !unavailable && row.boot > 0 && channels.length === 2
+        && channels.filter(channel => channel?.id === id).length === 1
+        && typeof channel?.output === 'boolean' && !channel.error;
+      const quality = unavailable ? ['unavailable', unavailable] : !valid ? ['unavailable', 'invalid-output-readback']
+        : [...(row.clockOk ? [] : ['device-clock-unavailable']), ...(row.ready ? [] : ['device-not-ready'])];
+      onObservation({ source: 'floor-override', device: `floor-${device.group}`, signal: `floor_${device.group}_${id}_active`,
+        value: valid ? Number(channel.output) : null, unit: 'state', sourceTime: now, receivedAt: clock(), quality,
+        raw: { usableForControl: false, timeBasis: unavailable ? 'availability-transition' : 'request-readback',
+          reportIntervalMs: 90_000, reportGraceMs: 0,
+          verification: createHash('sha256').update(JSON.stringify([brokerDigest, device.topicPrefix, row?.boot ?? null])).digest('hex') } });
+    }
+    historyAvailability.set(device.topicPrefix, unavailable);
+  }
+  function recordUnavailable(reason, now = clock()) {
+    for (const device of settings.devices) recordOutputs(device, null, now, reason);
+  }
   function cancelRequests() {
     for (const request of [...requests.values()]) request.finish(fail('FLOOR_CANCELLED'));
   }
@@ -162,8 +188,12 @@ export function createFloorOverride({ store, publish, settings = floorOverrideCo
     get topics() { return allDevices().flatMap(device => [`${device.topicPrefix}/stmq/floor/status`, `${device.topicPrefix}/online`]); },
     setConnected(value) {
       connected = value === true; readings.clear();
-      if (!connected) { epoch++; cancelRequests(); active = null; }
-      else if (!closed) { void probe(); if (state.outstanding) { restartPending = true; void enqueue(() => releaseInternal('broker-reconnected')); } }
+      if (!connected) { epoch++; cancelRequests(); active = null; recordUnavailable('mqtt-disconnected'); }
+      else if (!closed) {
+        void probe(); if (state.outstanding) { restartPending = true; void enqueue(() => releaseInternal('broker-reconnected')); }
+        for (const device of settings.devices) if (historyAvailability.get(device.topicPrefix) === null)
+          recordOutputs(device, null, clock(), 'awaiting-readback');
+      }
     },
     ingest(topicName, payload, packet = {}, now = clock()) {
       if (packet.retain || packet.dup || closed) return false;
@@ -171,14 +201,18 @@ export function createFloorOverride({ store, publish, settings = floorOverrideCo
       if (!device) return false;
       if (topicName.endsWith('/online')) {
         if (String(payload) === 'false') { readings.delete(device.topicPrefix); epoch++; cancelRequests(); active = null;
-          if (state.outstanding) void enqueue(() => releaseInternal('device-offline', now)); }
+          if (state.outstanding) void enqueue(() => releaseInternal('device-offline', now));
+          recordOutputs(device, null, now, 'device-offline'); }
         return true;
       }
       let row; try { row = JSON.parse(String(payload)); } catch { return false; }
+      if (!row || typeof row !== 'object' || Array.isArray(row)) return false;
       const pending = requests.get(row.requestId);
       if (!pending || pending.device.topicPrefix !== device.topicPrefix || row.protocol !== PROTOCOL) return false;
       if ((pending.wanted !== false && (typeof row.at !== 'number' || Math.abs(now / 1000 - row.at) > 30)) || !Number.isSafeInteger(row.boot)) {
-        pending.finish(fail('FLOOR_READBACK')); return false;
+        pending.finish(fail('FLOOR_READBACK'));
+        recordOutputs(device, null, now, 'invalid-output-readback');
+        return false;
       }
       const previous = readings.get(device.topicPrefix);
       readings.set(device.topicPrefix, { ...row, receivedAt: now });
@@ -186,14 +220,15 @@ export function createFloorOverride({ store, publish, settings = floorOverrideCo
         epoch++; active = null; restartPending = true;
       }
       let error = null;
-      if (pending.wanted !== null && (row.sequence !== pending.message.sequence || row.channels?.length !== 2
-          || row.channels.some((channel, id) => channel.id !== id || channel.output !== pending.wanted || channel.error)
+      if (pending.wanted !== null && (row.sequence !== pending.message.sequence || !Array.isArray(row.channels) || row.channels.length !== 2
+          || row.channels.some((channel, id) => channel?.id !== id || channel.output !== pending.wanted || channel.error)
           || (pending.wanted && (!row.ready || !row.clockOk || row.owner !== pending.message.owner
             || row.expiresAt !== pending.message.expiresAt)))) error = fail('FLOOR_READBACK');
       pending.finish(error, row);
-      if (active && (!row.ready || !row.clockOk || row.channels?.length !== 2 || row.channels.some(channel => !channel.output || channel.error))) {
+      if (active && (!row.ready || !row.clockOk || !Array.isArray(row.channels) || row.channels.length !== 2 || row.channels.some(channel => !channel?.output || channel.error))) {
         epoch++; active = null; void enqueue(() => releaseInternal('lost-output-readback', now));
       }
+      recordOutputs(device, row, now);
       return true;
     },
     status(now = clock()) {
@@ -220,10 +255,18 @@ export function createFloorOverride({ store, publish, settings = floorOverrideCo
     },
     async tick(now = clock()) {
       if (closed) return api.status(now);
+      let recordingError;
+      try {
+        if (connected) for (const device of settings.devices) {
+          const row = readings.get(device.topicPrefix);
+          if (row && now - row.receivedAt > 90_000) recordOutputs(device, null, row.receivedAt + 90_000, 'missing-report');
+        }
+      } catch (error) { recordingError = error; }
       if (state.outstanding && (!active || !canControl() || now >= active.leaseUntil || now >= active.until
           || !settings.devices.every(device => fresh(device, now))))
         await api.release({ reason: 'expired-or-unavailable', now });
       if (connected && now - lastProbe >= 30_000) await probe(now);
+      if (recordingError) throw recordingError;
       return api.status(now);
     },
     async close({ restore = true } = {}) {
@@ -231,7 +274,9 @@ export function createFloorOverride({ store, publish, settings = floorOverrideCo
       if (restore) await api.release({ reason: 'shutdown' });
       else { epoch++; active = null; }
       closed = true; cancelRequests();
+      recordUnavailable('host-stopped');
     },
   };
+  recordUnavailable('host-started');
   return api;
 }

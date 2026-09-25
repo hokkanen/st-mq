@@ -98,7 +98,9 @@ test('overview distinguishes saved/null values, imports, shared forecasts, journ
     assert.equal(rows.get('learning_profit').missingCount, 1);
     assert.equal(rows.get('csv-stmq').count, 5);
     assert.equal(rows.get('csv-easee').count, 6);
-    assert.equal(rows.get('adaptive-observations').count, 1, 'imported temperatures do not inflate adaptive observations');
+    assert.equal(rows.get('adaptive-observations').count, 0, 'room temperatures retain exact changes outside adaptive measurements');
+    assert.equal(rows.get('garage_temperature').count, 1);
+    assert.equal(rows.get('garage_temperature').recordingPolicy, 'change-only');
     assert.equal(rows.get('weather-snapshots').count, 2);
     assert.deepEqual(rows.get('weather-snapshots').facts.map(fact => fact.value), [1, 1]);
     assert.equal(rows.get('snapshot-content').count, 2, 'shared content is counted once physically');
@@ -120,10 +122,106 @@ test('overview distinguishes saved/null values, imports, shared forecasts, journ
     for (const table of overview.accounting.tables) assert.equal(table.rows,
       store.db.prepare(`SELECT COUNT(*) count FROM ${table.name}`).get().count, table.name);
     const encoded = JSON.stringify(overview);
+    assert.equal(overview.catalogueComplete, false, 'unknown writer identities are explicitly reported');
     assert(!encoded.includes(privateMarker));
     assert(!encoded.includes(directory));
     assert(!encoded.includes('invented-private-device'));
   } finally { store.close(); rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('recording inventory partitions every current observation writer without conflating exact and adaptive streams', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  const recorder = new Recorder(store, { clock: () => at });
+  const exact = ['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature',
+    'garage_temperature_2', 'compressor_active', 'heating_pump_active', 'dhw_routing', 'room_setting', 'alarm_code',
+    'auxiliary_output', 'compressor_hours', 'garage_native_energy', 'auxiliary_power', 'heat_savings_active',
+    'garage_door1_open', 'garage_door2_open', ...['living', 'storage'].flatMap(group => [0, 1].map(id => `floor_${group}_${id}_active`))];
+  for (const signal of exact) recorder.record({ source: 'mqtt-equipment', device: 'private-example-device', signal,
+    value: 1, unit: /active|open|routing/.test(signal) ? 'state' : signal === 'alarm_code' ? 'code' : 'degC',
+    sourceTime: at, receivedAt: at, quality: [] });
+  const adaptive = ['outdoor_temperature', 'supply_temperature', 'heating_integral', 'garage_native_indoor_temperature',
+    'garage_compressor_frequency', 'caravan_temperature', 'caravan_humidity'];
+  for (const signal of adaptive) recorder.record({ source: 'mqtt-equipment', device: 'private-example-device', signal,
+    value: 10, unit: 'degC', sourceTime: at, receivedAt: at, quality: [], raw: { reportIntervalMs: 60_000 } });
+  for (const prefix of ['property', 'ev1', 'ev2', 'ev2-phase', 'caravan']) recorder.recordEnergy({ source: 'fixture-meter', device: 'private-meter',
+    prefix, start: at - 60_000, end: at, powers: ['caravan', 'ev2'].includes(prefix) ? [1] : [1, 2, 3],
+    energies: ['caravan', 'ev2'].includes(prefix) ? [1 / 60] : [1 / 60, 2 / 60, 3 / 60], receivedAt: at, quality: [] });
+  put(store, 'dhwr_active', 1); put(store, 'dhwr_active', 1, at + 1000);
+  put(store, 'garage_energy', 0.1, at, { unit: 'kWh', raw: { intervalStart: at - 60_000, intervalEnd: at } });
+  put(store, 'workshop_energy', 1, at, { unit: 'kWh', raw: { intervalStart: at - 3_600_000, intervalEnd: at, timeBasis: 'completed-hour' } });
+  put(store, 'ev2_energy', 1, at, { unit: 'kWh', raw: { intervalStart: at - 3_600_000, intervalEnd: at, timeBasis: 'completed-hour' } });
+  for (const signal of ['controller_phase', 'dhwr_request', 'learning_profit', 'learning_aux_profit', 'learning_recovery_error', 'learning_indoor_temperature'])
+    put(store, signal);
+  const overview = getDatabaseOverview({ store, now: at + 2000 }), rows = items(overview);
+  assert.equal(overview.catalogueComplete, true);
+  for (const signal of exact) {
+    assert.equal(rows.get(signal).count, 1, signal);
+    assert.equal(rows.get(signal).recordingPolicy, 'change-only', signal);
+    assert(rows.get(signal).unit && rows.get(signal).writeBehavior && rows.get(signal).basis, signal);
+  }
+  assert.equal(rows.get('dhwr_active').count, 2);
+  assert.equal(rows.get('dhwr_active').recordingPolicy, 'every-report');
+  assert.match(rows.get('dhwr_active').writeBehavior, /Every received.*including repeated/);
+  assert.equal(rows.get('garage_energy').recordingPolicy, 'interval');
+  assert.equal(rows.get('workshop_energy').recordingPolicy, 'hourly-energy');
+  assert.equal(rows.get('ev2_energy').recordingPolicy, 'hourly-energy', 'A supported custom equipment ID cannot override its actual hourly writer policy');
+  for (const signal of adaptive) assert(!rows.has(signal), signal);
+  const actualAdaptive = store.db.prepare("SELECT COUNT(*) count FROM observations WHERE json_extract(raw,'$.recorder.policy') LIKE 'adaptive-%'").get().count;
+  assert.equal(rows.get('adaptive-observations').count, actualAdaptive);
+  assert.equal(rows.get('adaptive-observations').breakdown.reduce((count, row) => count + row.count, 0), actualAdaptive);
+  const scalarCount = overview.groups.find(group => group.id === 'other_observations').items.reduce((n, row) => n + row.count, 0);
+  assert.equal(scalarCount + actualAdaptive, store.db.prepare('SELECT COUNT(*) count FROM observations').get().count);
+  assert(!JSON.stringify(overview).includes('private-example-device'));
+});
+
+test('saved adaptive datasets remain individually discoverable without recorder checkpoints', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  for (const [unit, policy, value] of [['degC', 'adaptive-value', 12], ['%', 'adaptive-value', 45]])
+    put(store, 'workshop_temperature', value, at, { unit, raw: { recorder: { policy } } });
+  put(store, 'ev1_energy_l1', 0.25, at + 1000, { unit: 'kWh', raw: { recorder: { policy: 'adaptive-energy' } } });
+  const recorder = new Recorder(store, { clock: () => at });
+  assert.equal(recorder.status(at).parameters.length, 0, 'No live checkpoint is invented from recovered observations');
+  const overview = getDatabaseOverview({ store, now: at + 2000 });
+  const saved = items(overview).get('adaptive-observations');
+  assert.equal(overview.catalogueComplete, true);
+  assert.equal(saved.count, 3);
+  assert.equal(saved.breakdown.length, 3);
+  assert.deepEqual(saved.breakdown.filter(row => row.signal === 'workshop_temperature').map(row => row.unit).sort(), ['%', 'degC']);
+  for (const entry of saved.breakdown) {
+    assert.equal(entry.count, 1);
+    assert(Number.isFinite(entry.firstAt) && Number.isFinite(entry.lastAt));
+    assert.match(entry.recordingPolicy, /^adaptive-/);
+    assert(entry.label.includes(entry.signal) && entry.label.includes(entry.unit));
+  }
+});
+
+test('garage journals, state families and individual event types have separate truthful counts', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  for (const input of ['providers', 'garage:providers']) for (const kind of ['sample', 'context'])
+    store.appendLearningJournal(input, { kind, at, algorithmVersion: 'fixture', key: kind, payload: {} });
+  for (const key of ['floor-override:v1', 'equipment-tests:v1', 'equipment:door:v1:private-door',
+    'shelly:caravan-energy:v2', 'mqtt:equipment-energy:v1:private-meter', 'charging:providers',
+    'charging:providers:charger1:private-association:ownership:ocpp', 'easee:ocpp', 'garage:roomTemperature:providers'])
+    store.setState(key, { secret: 'private-synthetic-state-payload' });
+  for (const type of ['garage-external-temperature-diagnostic', 'garage-external-temperature-diagnostic',
+    'garage-room-target-changed', 'mqtt-connected', 'mqtt-disconnected', 'h66-native-setting-confirmed'])
+    store.event(type, { secret: 'private-synthetic-event-payload' }, at);
+  store.db.exec('PRAGMA query_only=ON');
+  const overview = getDatabaseOverview({ store, now: at }), rows = items(overview);
+  assert.equal(overview.catalogueComplete, true);
+  assert.equal(rows.get('journal-sample').count, 1);
+  assert.equal(rows.get('garage-journal-sample').count, 1);
+  assert.equal(rows.get('state-floor').count, 1);
+  assert.equal(rows.get('state-equipment-energy').count, 2);
+  assert.equal(rows.get('state-charging-ownership').count, 1);
+  assert.equal(rows.get('state-charging').count, 1);
+  assert.equal(rows.get('events-garage-feed').count, 2);
+  assert.equal(rows.get('events-garage').count, 1);
+  assert.deepEqual(rows.get('events-garage').breakdown.map(row => row.label), ['garage-room-target-changed']);
+  assert.deepEqual(rows.get('events-mqtt').breakdown.map(row => [row.label, row.count]), [['mqtt-connected', 1], ['mqtt-disconnected', 1]]);
+  for (const row of overview.groups.find(group => group.id === 'events').items.filter(row => row.breakdown))
+    assert.equal(row.breakdown.reduce((count, entry) => count + entry.count, 0), row.count, row.id);
+  assert(!JSON.stringify(overview).includes('private-'));
 });
 
 test('fireplace inventory separates retained loads, correction actions and current rebuild state without exposing entries', () => {

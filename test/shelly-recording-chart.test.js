@@ -32,7 +32,7 @@ test('scalar charger energy coalesces, survives recorder restart and never creat
   assert.equal(recorder.status(start+8*MINUTE).parameters[0].thresholdUnit,'kW');
 });
 
-test('charger 2 power is reconstructed only from its scalar energy, with gaps and no phase-current fiction',t=>{
+test('charger 2 power uses native total energy; absent phase evidence remains empty',t=>{
   const store=new Store(':memory:');t.after(()=>store.close());
   const recorder=new Recorder(store);
   const interval=(a,b,kwh)=>recorder.recordEnergy({source:'shelly-evse',device:'invented-car',prefix:'ev2',start:a,end:b,
@@ -45,8 +45,8 @@ test('charger 2 power is reconstructed only from its scalar energy, with gaps an
   assert(power.series.charger2_power.some(row=>row.x===start && Math.abs(row.y-7.2)<1e-9));
   assert(power.series.charger2_power.some(row=>row.x===start+12*MINUTE && Math.abs(row.y-3.6)<1e-9));
   assert(power.series.charger2_power.some(row=>row.y===null && row.x>=start+10*MINUTE && row.x<start+12*MINUTE));
-  assert(!Object.keys(phases.series).some(key=>/ev2|charger2/.test(key)));
-  assert(!HISTORY_AXIS_BY_KEY.phases.signals.some(key=>/ev2|charger2/.test(key)));
+  assert([1,2,3].every(phase=>phases.series[`ev2_current_l${phase}`].every(row=>row.y===null)));
+  assert(HISTORY_AXIS_BY_KEY.phases.signals.includes('ev2_current_l1'));
   assert.equal(HISTORY_AXIS_BY_KEY.ev2_energy,undefined,'stored total energy has no separate asymmetric left-axis entry');
   assert(!store.observations().some(row=>row.signal==='charger2_power'));
 });

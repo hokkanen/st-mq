@@ -2,9 +2,11 @@ import moment from 'moment-timezone';
 import { TIME_ZONE } from '../domain/prices.js';
 import { decodeHistoryRow } from '../storage/history.js';
 import { HouseholdReference, HOUR, DAY, summarizeHousehold, predictHousehold } from './history-reference.js';
+import { pendingEnergyObservations } from '../storage/pending-energy.js';
+import { recordedEnergyGroups } from '../storage/energy-history.js';
 
 const SIGNALS = ['property_energy_l1', 'property_energy_l2', 'property_energy_l3',
-  'ev1_energy_l1', 'ev1_energy_l2', 'ev1_energy_l3', 'ev2_energy'];
+  'ev1_energy_l1', 'ev1_energy_l2', 'ev1_energy_l3', 'ev2_energy', 'ev2_energy_l1', 'ev2_energy_l2', 'ev2_energy_l3'];
 const BAD = new Set(['missing', 'invalid_numeric', 'invalid_unit', 'provider_error', 'integration_gap', 'unknown_phase_share',
   'negative_current', 'implausible_current', 'all_zero_property_current', 'ev_exceeds_property_current',
   'conflicting_duplicate', 'future_source_time', 'implausible_temperature', 'excluded_occupied_training']);
@@ -12,7 +14,8 @@ const finite = Number.isFinite;
 const valid = row => finite(row.value) && !(row.quality ?? []).some(flag => BAD.has(flag));
 const parse = (value, fallback) => { try { return typeof value === 'string' ? JSON.parse(value) : value ?? fallback; } catch { return fallback; } };
 const voltages = voltageV => Array.isArray(voltageV) && voltageV.length === 3 ? voltageV : [voltageV, voltageV, voltageV];
-const nativeScope = input => input === 'simulated' ? "source='simulation'" : "source<>'simulation' AND NOT(source='controller-estimate' AND device='simulated')";
+const nativeScope = input => `${input === 'simulated' ? "source='simulation'" : "source<>'simulation' AND NOT(source='controller-estimate' AND device='simulated')"}
+  AND COALESCE(json_extract(CASE WHEN json_valid(raw) THEN raw ELSE '{}' END,'$.timeBasis'),'')<>'completed-hour'`;
 
 /** Subtract chargers only where their original energy intervals overlap. An
  * explicit zero is valid idle evidence. Missing Charger 2 records retain an
@@ -27,7 +30,7 @@ export function householdSpans(rows, { voltageV } = {}) {
   for (const original of rows) {
     const row = { ...original, raw: parse(original.raw, {}), quality: parse(original.quality, ['missing']) };
     const index = SIGNALS.indexOf(row.signal), start = row.raw?.intervalStart, end = row.raw?.intervalEnd;
-    if (index < 0 || !finite(start) || !finite(end) || end <= start || end - start > DAY) continue;
+    if (index < 0 || row.raw?.timeBasis === 'completed-hour' || !finite(start) || !finite(end) || end <= start) continue;
     const power = row.unit === 'kWh' && valid(row) && row.value >= 0 ? row.value * HOUR / (end - start) : null;
     const item = { index, power, key: key++, start, end, id: row.id ?? 0, priority: row.import_id == null ? 1 : 0 };
     events.push({ at: start, item, begins: true }, { at: end, item, begins: false });
@@ -49,10 +52,16 @@ export function householdSpans(rows, { voltageV } = {}) {
     if (previous !== null && event.at > previous) {
       const values = active.map(selected);
       if (values.slice(0, 6).every(finite) && values[6] !== null) {
-        const residual = values.slice(0, 3).map((power, phase) => power - values[phase + 3] - (values[6] ?? 0) / 3);
+        // A total meter does not reveal which phase carried the load. Native
+        // zero proves all phases idle; otherwise use the recorded phase shares
+        // only when all three are known, conserving the authoritative total.
+        const phaseTotal = values.slice(7).every(finite) ? values.slice(7).reduce((sum, value) => sum + value, 0) : null;
+        const knownPeer = values[6] === 0 || finite(values[6]) && phaseTotal > 0;
+        const peer = values.slice(7).map(value => values[6] === 0 ? 0 : knownPeer ? values[6] * value / phaseTotal : 0);
+        const residual = values.slice(0, 3).map((power, phase) => power - values[phase + 3] - peer[phase]);
         if (residual.every(value => value >= -0.05)) spans.push({ start: previous, end: event.at,
           phaseCurrentA: residual.map((power, phase) => Math.max(0, power) * 1000 / voltage[phase]),
-          unknownCharger2: values[6] === undefined });
+          unknownCharger2: !knownPeer });
       }
     }
     if (event.begins) active[event.item.index].set(event.item.key, event.item);
@@ -129,16 +138,17 @@ function buildLegacy(store, reference, now, voltageV, { from = 0, to = now, onSp
     ORDER BY r.source_time,i.id,r.row_number`);
   let previous = null, pendingTime = null, easee = null, outside = null, day = null, spans = [];
   const temperatures = [];
-  const firstPeer = store.db.prepare(`SELECT min(source_time) AS at FROM observations
+  const firstPeer = store.db.prepare(`SELECT min(json_extract(raw,'$.intervalStart')) AS at FROM observations
     WHERE signal='ev2_energy' AND import_id IS NULL AND ${nativeScope('live')}`).get().at;
   const peerRows = store.db.prepare(`SELECT id,signal,value,unit,raw,quality FROM observations
-    WHERE signal='ev2_energy' AND source_time>? AND source_time<=? AND import_id IS NULL
+    WHERE signal IN ('ev2_energy','ev2_energy_l1','ev2_energy_l2','ev2_energy_l3') AND source_time>? AND source_time<=? AND received_at<=? AND import_id IS NULL
+      AND json_valid(raw) AND json_extract(raw,'$.intervalStart')<?
       AND ${nativeScope('live')} ORDER BY source_time,id`);
   const flushDay = () => {
     if (spans.length) {
       let resolved = spans;
-      if (finite(firstPeer) && spans.at(-1).end >= firstPeer - DAY) {
-        const peers = peerRows.all(spans[0].start, Math.min(now, spans.at(-1).end + DAY));
+      if (finite(firstPeer) && spans.at(-1).end >= firstPeer) {
+        const peers = peerRows.all(spans[0].start, now, now, spans.at(-1).end);
         if (peers.length) resolved = subtractKnownPeer(spans, peers, voltageV);
       }
       resolved = resolved.map(span => ({ ...span, start: Math.max(span.start, from), end: Math.min(span.end, to) })).filter(span => span.end > span.start);
@@ -191,22 +201,29 @@ function buildLegacy(store, reference, now, voltageV, { from = 0, to = now, onSp
 
 const cacheByDb = new WeakMap();
 function nextSourceAt(store, now, input) {
-  return store.db.prepare(`SELECT min(source_time) AS at FROM observations
+  return store.db.prepare(`SELECT min(max(source_time,received_at)) AS at FROM observations
     WHERE signal IN (${[...SIGNALS, 'outdoor_temperature'].map(() => '?').join(',')})
-      AND source_time>? AND import_id IS NULL AND ${nativeScope(input)}`)
+      AND max(source_time,received_at)>? AND import_id IS NULL AND ${nativeScope(input)}`)
     .get(...SIGNALS, 'outdoor_temperature', now).at;
 }
 function modernRows(store, { from, to, now, input }) {
-  return store.db.prepare(`SELECT id,signal,value,unit,raw,quality,source_time FROM observations
-    WHERE signal IN (${SIGNALS.map(() => '?').join(',')}) AND source_time>? AND source_time<=?
-      AND import_id IS NULL AND ${nativeScope(input)} ORDER BY source_time,id`)
-    .all(...SIGNALS, from, Math.min(now, to + DAY));
+  const rows = [];
+  for (const group of recordedEnergyGroups(store, { from, to, now, input: input === 'simulated' ? input : 'providers' })) {
+    if (!['property','ev1','ev2','ev2-phase'].includes(group.prefix)) continue;
+    const prefix = group.prefix === 'ev2-phase' ? 'ev2' : group.prefix;
+    group.values.forEach((value,index) => rows.push({ id: group.observationIds[index] ?? 0,
+      signal: group.prefix === 'ev2' ? 'ev2_energy' : `${prefix}_energy_l${index+1}`,
+      value: group.conflict ? null : value, unit: 'kWh', quality: [], source_time: group.end,
+      raw: { intervalStart: group.start, intervalEnd: group.end } }));
+  }
+  return rows;
 }
 function modernTemperatures(store, { from, to, now, input }) {
   return store.db.prepare(`SELECT id,value,quality,source_time,unit FROM observations
     WHERE signal='outdoor_temperature' AND source_time>=? AND source_time<=?
+      AND received_at<=?
       AND import_id IS NULL AND ${nativeScope(input)} ORDER BY source_time,id`)
-    .all(from - 9 * HOUR, Math.min(now, to)).map(row => ({ at: row.source_time,
+    .all(from - 9 * HOUR, Math.min(now, to), now).map(row => ({ at: row.source_time,
       value: ['degC', '°C'].includes(row.unit) && valid({ ...row, quality: parse(row.quality, ['missing']) }) ? row.value : null }));
 }
 function uncoveredSpans(spans, covered) {
@@ -241,7 +258,7 @@ function updateModern(store, reference, { from, to, now, input, voltageV }) {
     for (const row of rows) {
       if (!row.signal.startsWith('property_energy_')) continue;
       const raw = parse(row.raw, {}), from = Math.max(start, raw.intervalStart), to = Math.min(end, raw.intervalEnd);
-      if (!finite(from) || !finite(to) || to <= from || to - from > DAY) continue;
+      if (!finite(from) || !finite(to) || to <= from) continue;
       covered.push({ start: from, end: to });
       for (let at = from; at < to;) {
         const local = moment.tz(at, reference.timezone);
@@ -280,15 +297,19 @@ export function householdReference(store, { now, input = 'live', voltageV, timez
   const imports = input === 'simulated' ? '' : JSON.stringify(store.db.prepare("SELECT id,row_count,completed_at FROM imports WHERE status='complete' AND kind IN ('stmq','easee') ORDER BY id").all());
   const voltageAvailable = voltages(voltageV).every(value => finite(value) && value >= 200 && value <= 250);
   const key = JSON.stringify([input, timezone]);
+  const pendingRows = pendingEnergyObservations(store, { now, input: input === 'simulated' ? input : 'providers' })
+    .filter(row => SIGNALS.includes(row.signal));
+  const pendingKey = JSON.stringify(pendingRows);
   let cache = cacheByDb.get(store.db);
   const watermark = store.db.prepare('SELECT max(id) AS id FROM observations').get().id ?? 0;
   if (!cache || cache.key !== key || cache.imports !== imports || now < cache.now) {
     const reference = new HouseholdReference({ timezone });
     if (input !== 'simulated') buildLegacy(store, reference, now, voltageV);
-    const first = store.db.prepare(`SELECT min(source_time) AS at FROM observations
-      WHERE signal IN (${SIGNALS.map(() => '?').join(',')}) AND import_id IS NULL AND ${nativeScope(input)}`).get(...SIGNALS).at;
+    const firstSaved = store.db.prepare(`SELECT min(json_extract(raw,'$.intervalStart')) AS at FROM observations
+      WHERE signal IN (${SIGNALS.map(() => '?').join(',')}) AND json_valid(raw) AND import_id IS NULL AND ${nativeScope(input)}`).get(...SIGNALS).at;
+    const first = Math.min(firstSaved ?? Infinity, ...pendingRows.map(row => parse(row.raw, {}).intervalStart));
     if (voltageAvailable && finite(first) && first <= now) updateModern(store, reference, { from: moment.tz(first - DAY, timezone).startOf('day').valueOf(), to: now, now, input, voltageV });
-    cache = { key, imports, reference, watermark, now, voltageReady: voltageAvailable, nextSourceAt: nextSourceAt(store, now, input) };
+    cache = { key, imports, reference, watermark, now, pendingKey, pendingRows, voltageReady: voltageAvailable, nextSourceAt: nextSourceAt(store, now, input) };
     cacheByDb.set(store.db, cache);
     return reference;
   }
@@ -301,7 +322,7 @@ export function householdReference(store, { now, input = 'live', voltageV, timez
     if (input !== 'simulated' && importedDates.size) for (const row of store.db.prepare(`SELECT source_time,raw FROM observations
       WHERE signal='ev2_energy' AND source_time<=? AND import_id IS NULL AND ${nativeScope(input)}`).iterate(now)) {
       const raw = parse(row.raw, {});
-      if (!finite(raw.intervalStart) || !finite(raw.intervalEnd) || raw.intervalEnd <= raw.intervalStart || raw.intervalEnd - raw.intervalStart > DAY) continue;
+      if (!finite(raw.intervalStart) || !finite(raw.intervalEnd) || raw.intervalEnd <= raw.intervalStart) continue;
       for (let at = moment.tz(raw.intervalStart, timezone).startOf('day'); at.valueOf() < raw.intervalEnd; at.add(1, 'day'))
         if (importedDates.has(at.format('YYYY-MM-DD'))) peerDates.add(at.format('YYYY-MM-DD'));
     }
@@ -310,20 +331,22 @@ export function householdReference(store, { now, input = 'live', voltageV, timez
       cache.reference.removeDates(new Set([date]), 0);
       buildLegacy(store, cache.reference, now, voltageV, { from: from.valueOf(), to });
     }
-    const first = store.db.prepare(`SELECT min(source_time) AS at FROM observations
-      WHERE signal IN (${SIGNALS.map(() => '?').join(',')}) AND import_id IS NULL AND ${nativeScope(input)}`).get(...SIGNALS).at;
+    const firstSaved = store.db.prepare(`SELECT min(json_extract(raw,'$.intervalStart')) AS at FROM observations
+      WHERE signal IN (${SIGNALS.map(() => '?').join(',')}) AND json_valid(raw) AND import_id IS NULL AND ${nativeScope(input)}`).get(...SIGNALS).at;
+    const first = Math.min(firstSaved ?? Infinity, ...pendingRows.map(row => parse(row.raw, {}).intervalStart));
     if (finite(first) && first <= now) updateModern(store, cache.reference,
       { from: moment.tz(first - DAY, timezone).startOf('day').valueOf(), to: now, now, input, voltageV });
-    cache.voltageReady = true; cache.watermark = watermark; cache.now = now;
+    cache.voltageReady = true; cache.watermark = watermark; cache.now = now; cache.pendingKey = pendingKey; cache.pendingRows = pendingRows;
     cache.nextSourceAt = nextSourceAt(store, now, input);
     return cache.reference;
   }
-  if (watermark > cache.watermark || finite(cache.nextSourceAt) && cache.nextSourceAt <= now) {
+  if (watermark > cache.watermark || pendingKey !== cache.pendingKey || finite(cache.nextSourceAt) && cache.nextSourceAt <= now) {
     const changed = store.db.prepare(`SELECT source_time,raw,signal FROM observations WHERE id>? AND id<=?
       AND signal IN (${[...SIGNALS, 'outdoor_temperature'].map(() => '?').join(',')})
       AND import_id IS NULL AND ${nativeScope(input)}`).all(cache.watermark, watermark, ...SIGNALS, 'outdoor_temperature');
+    if (pendingKey !== cache.pendingKey) changed.push(...cache.pendingRows, ...pendingRows);
     if (finite(cache.nextSourceAt) && cache.nextSourceAt <= now) changed.push(...store.db.prepare(`SELECT source_time,raw,signal
-      FROM observations WHERE source_time>? AND source_time<=?
+      FROM observations WHERE max(source_time,received_at)>? AND max(source_time,received_at)<=?
         AND signal IN (${[...SIGNALS, 'outdoor_temperature'].map(() => '?').join(',')})
         AND import_id IS NULL AND ${nativeScope(input)}`).all(cache.now, now, ...SIGNALS, 'outdoor_temperature'));
     const dates = new Map(), changedPeerDates = new Set();
@@ -334,7 +357,7 @@ export function householdReference(store, { now, input = 'live', voltageV, timez
       for (let at = moment.tz(start, timezone).startOf('day'); at.valueOf() <= affectedUntil;) {
         const date = at.format('YYYY-MM-DD');
         dates.set(date, [at.valueOf(), at.clone().add(1, 'day').valueOf()]);
-        if (row.signal === 'ev2_energy') changedPeerDates.add(date);
+        if (row.signal.startsWith('ev2_energy')) changedPeerDates.add(date);
         at.add(1, 'day');
       }
     }
@@ -347,6 +370,7 @@ export function householdReference(store, { now, input = 'live', voltageV, timez
     }
     for (const [from, to] of dates.values()) updateModern(store, cache.reference, { from, to, now, input, voltageV });
     cache.watermark = watermark;
+    cache.pendingKey = pendingKey; cache.pendingRows = pendingRows;
     cache.nextSourceAt = nextSourceAt(store, now, input);
   }
   cache.now = now;

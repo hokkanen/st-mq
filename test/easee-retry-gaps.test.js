@@ -115,7 +115,7 @@ for (const status of [401, 403, 429]) test(`a transient charger error cannot hid
   assert.equal(f.health().nextAttemptAt, start + (status === 429 ? 5 : 30) * MINUTE);
 });
 
-test('recorder batching delays only the newest chart tail and creates no interior gap when committed', async t => {
+test('durable ongoing energy extends history without forced writes or interior gaps', async t => {
   const f = fixture(t, () => null);
   const chart = now => getChartData({ store: f.store, input: 'providers', startDate: '2026-09-08',
     endDate: '2026-09-08', now, left: 'power' });
@@ -124,10 +124,12 @@ test('recorder batching delays only the newest chart tail and creates no interio
   const pending = chart(start + 4 * MINUTE);
   const confirmedEnd = pending.series.charger_power.at(-1).x;
   assert.equal(pending.series.charger_power.at(-1).y, null);
-  assert(confirmedEnd < start + 4 * MINUTE, 'An uncommitted recorder tail is not presented as recorded history');
+  assert.equal(confirmedEnd, start + 4 * MINUTE, 'Durably accumulated completed acquisitions extend history immediately');
+  assert(pending.series.charger_power.some(point => point.pending === true));
   assert.equal(f.store.db.prepare('SELECT COUNT(*) n FROM observations').get().n, before, 'Chart reads cannot force recorder writes');
   for (let at = start + 4 * MINUTE + 15 * SECOND; at <= start + 7 * MINUTE; at += 15 * SECOND) await f.poll(at);
   const committed = chart(start + 7 * MINUTE).series.charger_power;
-  assert(committed.at(-1).x > confirmedEnd, 'The normal recorder deadline publishes the completed pending interval');
+  assert.equal(committed.at(-1).x, start + 7 * MINUTE, 'A steady ongoing interval advances without a recorder deadline');
+  assert(committed.at(-1).x > confirmedEnd);
   assert(committed.slice(0, -1).every(point => Number.isFinite(point.y)), 'Coalesced intervals have no artificial interior gaps');
 });

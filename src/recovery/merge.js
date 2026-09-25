@@ -2,6 +2,11 @@ import { createHash } from 'node:crypto';
 import { setImmediate as yieldTurn } from 'node:timers/promises';
 import { LEARNING_ALGORITHM, LEARNING_WINDOW_MS, learningVersion, assertCurrentLearningSample } from '../app/committed-learning.js';
 import { originalSensorSample } from '../app/sensor-samples.js';
+import { pendingEnergyObservations } from '../storage/pending-energy.js';
+import { recordedEnergyGroups, validEnergyQuality } from '../storage/energy-history.js';
+import { Recorder, RECORDING_VERSION } from '../storage/recorder.js';
+import { recordingPolicy, recordingStreamKey, RECORDING_POLICIES } from '../domain/recording-policy.js';
+import { ENERGY_SIGNALS } from '../domain/history-series.js';
 
 export const RECOVERY_POLICY = 'master-wins-gaps-only-v1';
 const json = JSON.stringify;
@@ -20,6 +25,19 @@ const without = (row, keys) => Object.fromEntries(Object.entries(row).filter(([k
 const digest = value => createHash('sha256').update(json(value)).digest('hex');
 const dispositions = ['missing', 'conflicts', 'duplicates', 'skipped'];
 const firstUsable = rows => { for (const row of rows) if (usable(row)) return row; return null; };
+const PENDING_ENERGY = 'recorder_pending_energy';
+const HOUR = 3_600_000;
+const phaseSignals = row => /^(property|ev1|ev2)_energy_l[123]$/.test(row.signal)
+  ? [1, 2, 3].map(phase => row.signal.replace(/l[123]$/, `l${phase}`)) : null;
+const energyEquivalent = (old, row, raw) => {
+  if (old.value !== row.value || old.unit !== row.unit || old.source_time !== row.source_time
+    || !same(decode(old.quality), decode(row.quality))) return false;
+  const previous = decode(old.raw);
+  // Finalizing an already recovered open interval changes storage provenance,
+  // not its measured energy. Its original basis and endpoints still must match.
+  return raw?.intervalStart === previous?.intervalStart && raw?.intervalEnd === previous?.intervalEnd
+    && raw?.basis === previous?.basis && raw?.timeBasis === previous?.timeBasis;
+};
 const ID_TABLES = ['imports', 'observations', 'recorder_coverage', 'provider_snapshot_contents',
   'provider_snapshot_fetches', 'fireplace_events', 'learning_cycles', 'learning_journal'];
 
@@ -30,12 +48,14 @@ export function emptyReport() {
 
 /** The input database is frozen. Target writes are short, restartable batches.
  * Only accepted source history is inserted; mutable controller state, recorder
- * accumulators and old adaptive checkpoints are never copied from the donor. */
+ * accumulators and old adaptive checkpoints are never copied from the donor.
+ * Valid frozen energy tails become immutable history with separate provenance. */
 export class HistoryMerge {
-  constructor({ target, donor, donorDigest, input, progress = () => {} }) {
+  constructor({ target, donor, donorDigest, input, progress = () => {}, now = Date.now() }) {
     this.target = target; this.donor = donor; this.digest = donorDigest; this.input = input;
     this.progress = progress; this.report = emptyReport(); this.maps = Object.fromEntries(ID_TABLES.map(table => [table, new Map()]));
     this.journal = []; this.processed = 0;
+    this.now = now; this.metrics = new Recorder(target);
   }
   count(table, disposition, at = null) {
     let row = this.report.tables.find(value => value.name === table);
@@ -63,14 +83,41 @@ export class HistoryMerge {
   insert(table, row) {
     const columns = Object.keys(row);
     const result = this.target.db.prepare(`INSERT INTO ${table}(${columns.join(',')}) VALUES(${columns.map(() => '?').join(',')})`).run(...columns.map(key => row[key]));
+    if (table === 'observations') this.countRecoveredObservation(row);
     return row.id ?? Number(result.lastInsertRowid);
   }
-  async rows(table, fn, { query = `SELECT * FROM ${table} ORDER BY id`, map = true } = {}) {
-    let batch = [];
+  countRecoveredObservation(row) {
+    if (row.import_id !== null) return;
+    const raw = decode(row.raw), policy = raw?.recorder?.policy;
+    if (raw?.recorder?.version !== RECORDING_VERSION || !Object.hasOwn(RECORDING_POLICIES, policy)
+      || !RECORDING_POLICIES[policy].recorded) return;
+    const observation = { ...row, raw, recordingPolicy: policy };
+    if (recordingPolicy(observation).id !== policy) return;
+    const boundary = this.target.getState('recorder:global:v2')?.metricsPrunedBefore;
+    // Older history is read from raw records by status(). Do not recreate
+    // pruned metric buckets, donor poll counts, or donor adaptive state.
+    if (Number.isFinite(boundary) && Math.floor(row.received_at / HOUR) * HOUR < boundary) return;
+    this.metrics.count({ key: recordingStreamKey(observation) }, row.received_at,
+      { saved: true, polls: 0, bytes: Buffer.byteLength(json(row)) });
+  }
+  async rows(table, fn, { query = `SELECT * FROM ${table} ORDER BY id`, map = true, group, prepare } = {}) {
+    let batch = [], size = 0;
+    const grouped = new Set();
     const flush = async () => {
       this.target.transaction(() => {
-        for (const row of batch) {
+        for (const cohort of batch) {
+          const forced = prepare?.(cohort);
+          for (const row of cohort) {
           try {
+            if (forced) {
+              this.count(table, forced);
+              const prior = map ? this.known(table, row.id) : null;
+              if (map && prior?.disposition !== 'missing') this.remember(table, row.id, prior?.id ?? null, forced);
+              // Keep the persisted deletion tombstone, but reject this run's
+              // dependent coverage and journal references to every lost phase.
+              if (map && this.maps[table]) this.maps[table].set(row.id, { id: null, disposition: forced });
+              continue;
+            }
             const prior = map ? this.known(table, row.id) : null;
             if (prior?.id !== null && prior && this.target.db.prepare(`SELECT 1 FROM ${table} WHERE id=?`).get(prior.id)) {
               if (this.maps[table]) this.maps[table].set(row.id, prior);
@@ -91,14 +138,18 @@ export class HistoryMerge {
             if (!(error instanceof TypeError || error instanceof SyntaxError || error?.code === 'RECOVERY_ROW_INVALID')) throw error;
             this.count(table, 'skipped'); if (map) this.remember(table, row.id, null, 'skipped');
           }
+          }
         }
       });
-      this.processed += batch.length; batch = [];
+      this.processed += size; batch = []; size = 0;
       this.progress({ phase: 'importing', processed: this.processed });
       await yieldTurn();
     };
     for (const row of this.donor.db.prepare(query).iterate()) {
-      batch.push(row); if (batch.length === 64) await flush();
+      if (grouped.delete(row.id)) continue;
+      const cohort = group ? group(row) : [row];
+      if (cohort.length > 1) for (const member of cohort) if (member.id !== row.id) grouped.add(member.id);
+      batch.push(cohort); size += cohort.length; if (size >= 64) await flush();
     }
     if (batch.length) await flush();
   }
@@ -124,10 +175,23 @@ export class HistoryMerge {
     const db = this.target.db;
     if (instant(raw?.intervalStart) && instant(raw?.intervalEnd) && raw.intervalEnd > raw.intervalStart) {
       // Never prorate donor totals over partially overlapping master energy.
-      return firstUsable(db.prepare(`SELECT * FROM observations WHERE device=? AND signal=? AND value IS NOT NULL
+      const hourly = raw.timeBasis === 'completed-hour';
+      const physical = !hourly && ENERGY_SIGNALS.includes(row.signal);
+      // Physical chart/model streams have one logical installation scope. A
+      // changed native device ID or acquisition provider cannot overlap it.
+      const namespace = physical ? `source${row.source === 'simulation' ? '=' : '<>'}'simulation'` : 'device=?';
+      const recorded = firstUsable(db.prepare(`SELECT * FROM observations WHERE ${namespace} AND signal=? AND value IS NOT NULL
         AND json_valid(raw) AND json_extract(raw,'$.intervalStart')<?
-        AND (CASE WHEN json_valid(raw) THEN json_extract(raw,'$.intervalEnd') END)>? ORDER BY id DESC`)
-        .iterate(row.device, row.signal, raw.intervalEnd, raw.intervalStart));
+        AND (CASE WHEN json_valid(raw) THEN json_extract(raw,'$.intervalEnd') END)>?
+        AND COALESCE(json_extract(raw,'$.timeBasis')='completed-hour',0)=? ORDER BY id DESC`)
+        .iterate(...(physical ? [] : [row.device]), row.signal, raw.intervalEnd, raw.intervalStart, Number(hourly)));
+      if (recorded || hourly) return recorded;
+      // Pending energy is already durable master history. Check it under the
+      // same write transaction as the insert, including other source labels.
+      return pendingEnergyObservations(this.target, { now: Math.max(this.now, Date.now()),
+        ...(physical ? { input: row.source === 'simulation' ? 'simulated' : 'providers' } : { device: row.device }) })
+        .find(pending => pending.signal === row.signal && validEnergyQuality(decode(pending.quality))
+          && decode(pending.raw).intervalStart < raw.intervalEnd && pending.source_time > raw.intervalStart) ?? null;
     }
     const point = firstUsable(db.prepare(`SELECT * FROM observations WHERE source=? AND device=? AND signal=? AND source_time IS ?
       AND value IS NOT NULL ORDER BY id DESC`).iterate(row.source, row.device, row.signal, row.source_time));
@@ -137,17 +201,63 @@ export class HistoryMerge {
       AND o.value IS NOT NULL ORDER BY c.id DESC`).iterate(row.source, row.device, row.signal, row.source_time, row.source_time));
     return null;
   }
+  observationCohort(row) {
+    const signals = phaseSignals(row);
+    let raw; try { raw = decode(row.raw); } catch { return [row]; }
+    if (!signals || row.import_id !== null || raw?.timeBasis === 'completed-hour'
+      || !instant(raw?.intervalStart) || !instant(raw?.intervalEnd) || raw.intervalEnd !== row.source_time) return [row];
+    return this.donor.db.prepare(`SELECT * FROM observations WHERE signal IN (?,?,?) AND source_time=?
+      AND source=? AND device=? AND import_id IS NULL AND json_valid(raw)
+      AND json_extract(raw,'$.intervalStart')=? AND json_extract(raw,'$.intervalEnd')=? ORDER BY id`)
+      .all(...signals, row.source_time, row.source, row.device, raw.intervalStart, raw.intervalEnd);
+  }
+  prepareObservationCohort(cohort) {
+    const row = cohort[0], signals = phaseSignals(row);
+    let raw; try { raw = decode(row.raw); } catch { return null; }
+    if (!signals || row.import_id !== null || raw?.timeBasis === 'completed-hour'
+      || !instant(raw?.intervalStart) || !instant(raw?.intervalEnd)) return null;
+    try {
+      for (const member of cohort) {
+        this.validateObservation(member);
+        this.require(member.unit === 'kWh' && decode(member.raw).basis === raw.basis
+          && same(decode(member.quality), decode(row.quality)));
+      }
+    } catch (error) {
+      if (error instanceof TypeError || error instanceof SyntaxError) return 'skipped';
+      throw error;
+    }
+    // Preflight every member before inserting any phase. A partial existing
+    // master cohort wins as a whole; recovery never fills its other phases
+    // with energy from an overlapping donor interpretation.
+    const overlaps = cohort.map(member => this.observationOverlap(member, decode(member.raw)));
+    const removed = cohort.some(member => {
+      const prior = this.known('observations', member.id);
+      return prior?.disposition === 'missing' && prior.id !== null
+        && !this.target.db.prepare('SELECT 1 FROM observations WHERE id=?').get(prior.id);
+    });
+    if (removed || overlaps.some(Boolean) && !overlaps.every((old, i) => old && energyEquivalent(old, cohort[i], decode(cohort[i].raw))))
+      return 'conflicts';
+    if (cohort.length !== 3 || new Set(cohort.map(member => member.signal)).size !== 3) return 'skipped';
+    return null;
+  }
+  validateObservation(row) {
+    const raw = decode(row.raw), quality = decode(row.quality);
+    this.require([row.source, row.device, row.signal, row.unit].every(text) && (row.value === null || finite(row.value))
+      && (row.source_time === null || instant(row.source_time)) && instant(row.received_at) && flags(quality)
+      && (raw === null || object(raw)));
+    if (row.unit === 'kWh' && raw && ('intervalStart' in raw || 'intervalEnd' in raw))
+      this.require(instant(raw.intervalStart) && instant(raw.intervalEnd) && raw.intervalEnd > raw.intervalStart
+        && raw.intervalEnd === row.source_time && raw.intervalEnd <= row.received_at && row.received_at <= this.now
+        && (row.value === null || row.value >= 0));
+  }
   async observations() {
     await this.rows('observations', row => {
       let raw = decode(row.raw); const quality = decode(row.quality);
-      this.require([row.source, row.device, row.signal, row.unit].every(text) && (row.value === null || finite(row.value))
-        && (row.source_time === null || instant(row.source_time)) && instant(row.received_at) && flags(quality)
-        && (raw === null || object(raw)));
-      if (row.unit === 'kWh' && raw && ('intervalStart' in raw || 'intervalEnd' in raw))
-        this.require(instant(raw.intervalStart) && instant(raw.intervalEnd) && raw.intervalEnd > raw.intervalStart && (row.value === null || row.value >= 0));
+      this.validateObservation(row);
       const old = this.observationOverlap(row, raw);
       if (old) {
-        const equivalent = old.value === row.value && old.unit === row.unit && old.source_time === row.source_time
+        const equivalent = raw?.intervalStart != null ? energyEquivalent(old, row, raw)
+          : old.value === row.value && old.unit === row.unit && old.source_time === row.source_time
           && same(decode(old.quality), quality) && same(decode(old.raw), raw);
         return { id: old.id, disposition: equivalent ? 'duplicates' : 'conflicts' };
       }
@@ -167,7 +277,7 @@ export class HistoryMerge {
       if (raw) raw = this.remap(raw);
       const id = this.insert('observations', { ...without(row, ['id']), raw: raw === null ? null : json(raw), import_id: importId });
       return { id, disposition: 'missing', at: row.source_time };
-    });
+    }, { group: row => this.observationCohort(row), prepare: cohort => this.prepareObservationCohort(cohort) });
     await this.rows('recorder_coverage', row => {
       this.require([row.source, row.device, row.signal].every(text) && ['fresh', 'stale', 'failed', 'unavailable'].includes(row.status)
         && instant(row.start_at) && instant(row.end_at)
@@ -188,6 +298,65 @@ export class HistoryMerge {
       // complete import. Row numbers, units and original source times survive.
       this.target.db.prepare("UPDATE imports SET status='complete' WHERE id=? AND status='recovering'").run(mapped.id);
       if (++completed % 64 === 0) await yieldTurn();
+    }
+  }
+  async pendingEnergy() {
+    // The donor connection is a frozen, read-only snapshot. Its bounded open
+    // interval contains accepted measurements that may span days; it is source
+    // history even though the adaptive writer has not closed it yet.
+    for (const checkpoint of this.donor.db.prepare("SELECT key,value FROM state WHERE key LIKE 'recorder:energy:%' ORDER BY key").iterate()) {
+      let identity, state, rows = [], valid = false;
+      try {
+        identity = decode(checkpoint.key.slice('recorder:energy:'.length)); state = decode(checkpoint.value);
+        if (!state?.pending) continue;
+        this.require(Array.isArray(identity) && identity.length === 3 && identity.every(text));
+        const [source, device, prefix] = identity, pending = state.pending;
+        this.require(instant(pending.start) && instant(pending.end) && instant(pending.receivedAt)
+          && pending.end === state.lastEnd && pending.receivedAt === state.lastReceivedAt
+          && pending.end <= pending.receivedAt && pending.receivedAt <= this.now && flags(pending.quality));
+        rows = pendingEnergyObservations(this.donor, { now: this.now, source, device, prefix });
+        this.require(rows.length > 0);
+        const groups = [...recordedEnergyGroups(this.donor, { from: pending.start, to: pending.end,
+          now: this.now, input: source === 'simulation' ? 'simulated' : 'providers', prefix })];
+        this.require(groups.length === 1 && groups[0].pending && !groups[0].conflict
+          && groups[0].source === source && groups[0].device === device
+          && groups[0].start === pending.start && groups[0].end === pending.end
+          && groups[0].observationIds.length === 0 && groups[0].values.every(finite));
+        valid = true;
+      } catch (error) {
+        if (!(error instanceof TypeError || error instanceof SyntaxError)) throw error;
+      }
+      if (!valid) {
+        this.target.transaction(() => {
+          this.count(PENDING_ENERGY, 'skipped');
+          this.remember(PENDING_ENERGY, digest([checkpoint.key, 'invalid']), null, 'skipped');
+        });
+      } else this.target.transaction(() => {
+        const ids = rows.map(row => digest([checkpoint.key, row.signal]));
+        const prior = ids.map(id => this.known(PENDING_ENERGY, id));
+        const removed = prior.some(value => value?.disposition === 'missing' && value.id !== null
+          && !this.target.db.prepare('SELECT 1 FROM observations WHERE id=?').get(value.id));
+        const overlaps = rows.map(row => this.observationOverlap(row, decode(row.raw)));
+        const disposition = removed ? 'conflicts' : overlaps.every((old, i) => old && energyEquivalent(old, rows[i], decode(rows[i].raw)))
+          ? 'duplicates' : overlaps.some(Boolean) ? 'conflicts' : 'missing';
+        for (let i = 0; i < rows.length; i++) {
+          let id = overlaps[i]?.id ?? prior[i]?.id ?? null;
+          if (disposition === 'missing') {
+            const row = rows[i], raw = decode(row.raw);
+            delete raw.pending;
+            raw.recorder = { version: RECORDING_VERSION, policy: 'adaptive-energy', reason: 'recovered-open-interval', group: identity[2] };
+            raw.recovery = { kind: 'frozen-recorder-energy', donorDigest: this.digest, donorState: digest(checkpoint.key) };
+            id = this.insert('observations', { ...row, raw: json(raw), import_id: null, row_number: null });
+          }
+          this.count(PENDING_ENERGY, disposition, rows[i].source_time);
+          // A deliberate master deletion remains a durable tombstone, even if
+          // only one member of a previously accepted phase cohort was removed.
+          if (prior[i]?.disposition !== 'missing') this.remember(PENDING_ENERGY, ids[i], id, disposition);
+        }
+      });
+      this.processed += Math.max(rows.length, 1);
+      this.progress({ phase: 'importing', processed: this.processed });
+      await yieldTurn();
     }
   }
   async snapshots() {
@@ -411,7 +580,8 @@ export class HistoryMerge {
       this.report.model.status = 'rebuild-required';
   }
   async run() {
-    await this.imports(); await this.snapshots(); await this.observations(); await this.manual(); await this.evidence(); await this.scanJournal();
+    await this.imports(); await this.snapshots(); await this.observations(); await this.pendingEnergy();
+    await this.manual(); await this.evidence(); await this.scanJournal();
     return this.report;
   }
 }

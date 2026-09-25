@@ -36,7 +36,7 @@ function weather(store, at, value) {
 test('causal windows use committed H66 heat inputs and frozen forecasts, never raw acquisition or audit values', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   knownContext(store);
-  const recorder = new Recorder(store, { config: { maxIntervalMs: 5 * MINUTE }, clock: () => start + 15 * MINUTE });
+  const recorder = new Recorder(store, { clock: () => start + 15 * MINUTE });
   const forecastId = weather(store, start - HOUR, 120);
   for (let minute = 0; minute <= 15; minute++) {
     for (const [signal, value] of [['indoor_temperature', 21], ['outdoor_temperature', 0],
@@ -100,6 +100,27 @@ test('phase energy remains separate context and cannot turn property consumption
   assert.equal(result.electricalContext.property.phases.reduce((sum, phase) => sum + phase.kwh, 0), 6);
   assert.equal(result.powerKw, null);
   assert.equal(result.compressorDuty, null);
+});
+
+test('learning freezes ongoing energy context without flushing or reusing later receipt evidence', t => {
+  const store = new Store(':memory:'); t.after(()=>store.close());
+  knownContext(store);
+  const recorder = new Recorder(store), at = start+LEARNING_WINDOW_MS;
+  const interval = (from,to) => ({source:'easee',device:'invented-property',prefix:'property',start:from,end:to,
+    receivedAt:to,energies:[3*(to-from)/HOUR,0,0],powers:[3,0,0],quality:['estimated']});
+  recorder.recordEnergy(interval(start,start+MINUTE));
+  recorder.recordEnergy(interval(start+MINUTE,at));
+  const sample = committedLearningSample({store,input:'mqtt',at,config});
+  assert.equal(sample.electricalContext.property.complete,true);
+  assert.equal(sample.electricalContext.property.phases[0].kwh,0.75);
+  assert.equal(sample.electricalContext.property.phases[0].openIntervals[0].receivedAt,at);
+  assert.equal(store.observations().length,3,'reading context does not close the ongoing interval');
+  const before = JSON.stringify(sample);
+  store.appendLearningJournal('mqtt',{kind:'sample',at,algorithmVersion:LEARNING_ALGORITHM,payload:{value:sample}});
+  recorder.recordEnergy(interval(at,at+MINUTE));
+  assert.equal(JSON.stringify(store.learningJournal({input:'mqtt'}).find(row=>row.kind==='sample').payload.value),before);
+  const earlier = committedLearningSample({store,input:'mqtt',at:at-MINUTE,config});
+  assert.equal(earlier.electricalContext.property.complete,false,'a later receipt cannot fill an earlier journal boundary');
 });
 
 test('held indoor input outlives freshness while retaining its actual source timestamp', t => {
@@ -287,7 +308,7 @@ test('joint routing and activity preserve space/DHW heat and energy across chang
 test('later unchanged polls cannot alter earlier resolved inputs with long recording intervals', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   knownContext(store);
-  const recorder = new Recorder(store, { config: { maxIntervalMs: 60 * MINUTE } });
+  const recorder = new Recorder(store, { });
   equipmentWindow(store, { recorder });
   const before = committedLearningSample({ store, input: 'mqtt', at: start + 15 * MINUTE, config });
   assert.deepEqual(before.quality, []);
@@ -304,7 +325,7 @@ test('later unchanged polls cannot alter earlier resolved inputs with long recor
 test('a delayed receipt cannot rejuvenate the source timestamp of an earlier held indoor input', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   knownContext(store);
-  const recorder = new Recorder(store, { config: { maxIntervalMs: 60 * MINUTE } });
+  const recorder = new Recorder(store, { });
   const put = (sourceMinute, receiptMinute) => recorder.record({ ...sourceFor('indoor_temperature'),
     signal: 'indoor_temperature', value: 21, unit: 'degC', sourceTime: start + sourceMinute * MINUTE,
     receivedAt: start + receiptMinute * MINUTE, quality: [], raw: { usableForControl: true, retained: false } });
@@ -319,7 +340,7 @@ test('a delayed receipt cannot rejuvenate the source timestamp of an earlier hel
 test('coverage prefixes remain stable through failure, repeated failure and recovery', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   knownContext(store);
-  const recorder = new Recorder(store, { config: { maxIntervalMs: 60 * MINUTE } });
+  const recorder = new Recorder(store, { });
   const signals = [['indoor_temperature', 21], ['outdoor_temperature', 0],
     ['compressor_active', 1], ['dhw_routing', 0], ['auxiliary_output', 0]];
   const prefixes = [];

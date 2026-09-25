@@ -39,7 +39,7 @@ test('reload applies disk settings, rates and recording while preserving tempora
   const before = app.engine.status();
   now += 60_000;
   const options = { controller: { mode: 'monitoring', max_drop_c: 0.6, heat_pump_compressor_kw: 4 },
-    electricity: { margin_ct_per_kwh_ex_vat: 0.8 }, recording: { max_interval_minutes: 2, annual_budget_gb: 4 } };
+    electricity: { margin_ct_per_kwh_ex_vat: 0.8 }, recording: { annual_budget_gb: 4 } };
   write(options);
   const original = readFileSync(path, 'utf8');
   const response = await post();
@@ -48,7 +48,7 @@ test('reload applies disk settings, rates and recording while preserving tempora
   assert.equal(status.mode, 'monitoring');
   assert.equal(status.settings.comfort.maxDropC, 0.6);
   assert.equal(status.learning.parameters.heatPumpCompressorKw, 4);
-  assert.equal(app.engine.recorder.config.maxIntervalMs, 120_000);
+  assert.equal(Object.hasOwn(app.engine.recorder.config, 'maxIntervalMs'), false);
   assert.equal(app.engine.recorder.config.annualBudgetBytes, 4_000_000_000);
   assert.equal(status.contract.periods.at(-1).marginCtPerKwh, 0.8);
   assert.equal(status.contract.periods[0].marginCtPerKwh, config.priceSettings.marginCtPerKwh);

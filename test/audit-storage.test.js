@@ -81,7 +81,7 @@ test('A08-004 coverage extension, recovery and unrelated streams cannot rewrite 
   assert.equal(recorder.committedAt('room_setting',2500).value,null);
 });
 
-test('A08-005 exact retained transitions report variation without claiming recording loss',t=>{
+test('A08-005 exact retained transitions remain outside adaptive error metrics',t=>{
   const {store}=fixture(t),recorder=new Recorder(store,{clock:()=>6000});
   const states=[0,1,0,1,0];
   states.forEach((value,index)=>recorder.record({source:'synthetic',device:'one',signal:'compressor_active',
@@ -93,8 +93,9 @@ test('A08-005 exact retained transitions report variation without claiming recor
     const reconstructed=saved.filter(row=>row.sourceTime<=time).at(-1).value;
     assert.equal(reconstructed,states[Math.min(4,Math.floor((time-1000)/1000))]);
   }
-  const metric=recorder.status().parameters.find(row=>row.signal==='compressor_active').day;
-  assert(metric.normalizedRmsChange>0);
+  const metric=recorder.status().exactParameters.find(row=>row.signal==='compressor_active').day;
+  assert.equal(metric.normalizedRmsChange,null);
+  assert.equal(recorder.status().parameters.length,0);
   assert.equal(Object.hasOwn(metric,'normalizedRmsError'),false);
 });
 

@@ -10,10 +10,10 @@ const easeeReadings = () => ({ charger: { qualityIssues: [], error: null, lastSu
   property: { qualityIssues: [], error: null, lastSuccessAt: now } });
 const shellySignals = [
   ...['current', 'voltage', 'active_power'].flatMap(field => [1, 2, 3].map(phase => `ev2_${field}_l${phase}`)),
-  'ev2_active_power', 'ev2_import_energy_counter', 'ev2_energy', 'ev2_session_energy', 'shelly_session_energy_check',
+  'ev2_active_power', 'ev2_import_energy_counter', 'ev2_energy', ...[1,2,3].map(phase=>`ev2_energy_l${phase}`), 'ev2_session_energy', 'shelly_session_energy_check',
 ];
 const shellyReadings = () => ({ maxAgeMs: 60_000, readings: Object.fromEntries(shellySignals
-  .filter(signal => signal !== 'ev2_energy' && signal !== 'shelly_session_energy_check')
+  .filter(signal => !signal.startsWith('ev2_energy') && signal !== 'shelly_session_energy_check')
   .map(signal => [signal, { value: 0, available: true, sourceTime: now, quality: [] }])) });
 const temperature = (source, value = 21, extra = {}) => ({ source, value, observedAt: now, stale: false, ...extra });
 const completeDashboard = () => ({ now, input: 'mqtt', observations: {
@@ -317,7 +317,7 @@ test('unknown physical EVSE diagnostics never expose raw payloads',()=>{
   }
 });
 
-test('Shelly catalogue shows native three-phase support without inventing phase energy or vehicle meters', () => {
+test('Shelly catalogue distinguishes native readings and total counter from estimated phase energy', () => {
   const rows = providerSeries('shelly-evse');
   for (const field of ['current', 'voltage', 'active_power']) {
     const row = rows.find(row => row.signals.includes(`ev2_${field}_l1`));
@@ -325,7 +325,10 @@ test('Shelly catalogue shows native three-phase support without inventing phase 
     assert.equal(row.source, 'Shelly EVSE');
   }
   assert.match(rows.find(row => row.signals.includes('ev2_import_energy_counter')).detail, /without separate phase energy counters/);
-  assert.doesNotMatch(JSON.stringify(rows), /TeslaMate|ev2_energy_l[123]|Phase distribution is not recorded/);
+  assert.doesNotMatch(JSON.stringify(rows), /TeslaMate|Phase distribution is not recorded/);
+  const phases=rows.find(row=>row.signals.includes('ev2_energy_l1'));
+  assert.equal(phases.source,'Calculated from Shelly EVSE');
+  assert.match(phases.detail,/Estimated phase distribution/);
 });
 
 test('Shelly phase availability follows each native reading and keeps inactive chargers inactive', () => {

@@ -4,6 +4,7 @@ import { Store } from '../src/storage/store.js';
 import { Recorder } from '../src/storage/recorder.js';
 
 const MINUTE=60_000,HOUR=60*MINUTE;
+const parameters=(recorder,now)=>{const status=recorder.status(now);return [...status.parameters,...status.exactParameters];};
 function fixture(t,config={}) {
   const store=new Store(':memory:'); t.after(()=>store.close());
   let now=1000;
@@ -16,18 +17,19 @@ function fixture(t,config={}) {
 }
 
 test('deadband compares with the last saved value and applies the same learned scale to different units',t=>{
-  const {store,recorder,put}=fixture(t);
+  const {store,recorder,put:record}=fixture(t);
+  const put=(value,at)=>record(value,at,{signal:'supply_temperature'});
   put(20,1000);
-  const key='recorder:signal:'+JSON.stringify(['synthetic','fixture-house','indoor_temperature']);
+  const key='recorder:signal:'+JSON.stringify(['synthetic','fixture-house','supply_temperature','degC','adaptive-value']);
   const s=store.getState(key);s.mean=20;s.variance=100;s.scale=10;s.step=0.01;store.setState(key,s);
   for(let i=1;i<=15;i++) assert.equal(put(20+i*0.01,1000+i*1000).saved,false);
   assert.equal(store.observations().length,1);
   assert.equal(put(20.21,17000).saved,true,'slow drift eventually exceeds saved-value threshold');
-  assert.equal(recorder.latestCommitted('indoor_temperature').value,20.21);
-  assert.equal(recorder.status().parameters.length,1);
+  assert.equal(recorder.latestCommitted('supply_temperature').value,20.21);
+  assert.equal(parameters(recorder).length,1);
 });
 
-test('fresh unchanged samples compact coverage and maximum interval preserves a source-backed heartbeat',t=>{
+test('fresh unchanged samples extend coverage without any maximum recording interval',t=>{
   const {store,recorder,put}=fixture(t);
   put(20,1000);
   for(let i=1;i<20;i++) assert.equal(put(20,1000+i*15000).saved,false);
@@ -36,8 +38,8 @@ test('fresh unchanged samples compact coverage and maximum interval preserves a 
   const held=recorder.latestCommitted('indoor_temperature');
   assert.equal(held.sourceTime,286000);assert.equal(held.raw.recorder.originalSourceTime,1000);
   assert.equal(held.raw.recorder.temporalBasis,'held-recorded-value');
-  assert.equal(put(20,301000).reason,'maximum-interval');
-  assert.equal(store.observations().length,2);
+  assert.equal(put(20,301000).saved,false);
+  assert.equal(store.observations().length,1);
   const historical=recorder.committedAt('indoor_temperature',151000);
   assert.equal(historical.sourceTime,1000,'later coverage updates cannot leak into an earlier model window');
 });
@@ -52,7 +54,7 @@ test('recording diagnostics expire report coverage without changing saved acquis
   const savedState=store.db.prepare('SELECT key,value FROM state ORDER BY key').all();
   const savedCoverage=store.db.prepare('SELECT * FROM recorder_coverage').all();
   const deadline=1000+47*MINUTE;
-  const fresh=recorder.status(deadline-1).parameters[0];
+  const fresh=parameters(recorder,deadline-1)[0];
   assert.equal(fresh.freshness.status,'fresh');
   assert.equal(fresh.freshness.sourceObservedAt,1000+30*MINUTE);
   assert.equal(fresh.freshness.savedValueAt,1000);
@@ -61,7 +63,7 @@ test('recording diagnostics expire report coverage without changing saved acquis
   assert.equal(fresh.freshness.reportGraceMs,2*MINUTE);
   assert.equal(fresh.freshness.ageBasis,'periodic-report');
   assert.equal(fresh.hour.averageIntervalMs,null,'One saved value still has no average saving interval');
-  const stale=recorder.status(deadline).parameters[0];
+  const stale=parameters(recorder,deadline)[0];
   assert.equal(stale.status,'fresh','The recorded acquisition remains classified as fresh');
   assert.equal(stale.freshness.status,'stale');
   assert.deepEqual(stale.freshness.reasons,['missing-report']);
@@ -72,18 +74,18 @@ test('recording diagnostics expire report coverage without changing saved acquis
 });
 
 test('recording diagnostics distinguish H66 expiry, held temperatures, and completed energy intervals',t=>{
-  const {put,recorder}=fixture(t,{maxIntervalMs:1000});
+  const {put,recorder}=fixture(t);
   put(20,1000,{source:'husdata-h66',signal:'supply_temperature'});
-  assert.equal(recorder.status(1000+5*MINUTE).parameters[0].freshness.status,'fresh');
-  const stale=recorder.status(1001+5*MINUTE).parameters[0].freshness;
+  assert.equal(parameters(recorder,1000+5*MINUTE)[0].freshness.status,'fresh');
+  const stale=parameters(recorder,1001+5*MINUTE)[0].freshness;
   assert.equal(stale.status,'stale');assert.equal(stale.maxAgeMs,5*MINUTE);
   assert.deepEqual(stale.reasons,['source-expired']);
   put(20,1000);
-  const indoor=recorder.status(1001+2*HOUR).parameters.find(row=>row.signal==='indoor_temperature').freshness;
+  const indoor=parameters(recorder,1001+2*HOUR).find(row=>row.signal==='indoor_temperature').freshness;
   assert.equal(indoor.status,'held-attention');assert.equal(indoor.maxAgeMs,null);
   assert.equal(indoor.attentionAfterMs,2*HOUR);
   recorder.recordEnergy({source:'shelly-evse',device:'invented-car',prefix:'ev2',start:1000,end:2000,energies:[0.01],powers:[36]});
-  const energy=recorder.status(72*HOUR).parameters.find(row=>row.signal==='ev2_energy').freshness;
+  const energy=parameters(recorder,72*HOUR).find(row=>row.signal==='ev2_energy').freshness;
   assert.equal(energy.status,'recorded-interval');assert.equal(energy.maxAgeMs,null);
 });
 
@@ -91,19 +93,19 @@ test('recording diagnostic failure reasons are safe and distinguish time rollbac
   const {put,recorder}=fixture(t);
   put(20,2000);
   put(21,3000,{sourceTime:1000});
-  assert.deepEqual(recorder.status().parameters[0].freshness.reasons,['out-of-order-source-time']);
+  assert.deepEqual(parameters(recorder)[0].freshness.reasons,['out-of-order-source-time']);
   put(21,4000,{sourceTime:5000});
-  assert(recorder.status(6000).parameters[0].freshness.reasons.includes('source-time-after-receipt'));
+  assert(parameters(recorder,6000)[0].freshness.reasons.includes('source-time-after-receipt'));
   recorder.recordFailure({source:'synthetic',device:'fixture-house',signal:'indoor_temperature',unit:'degC',at:7000,
     quality:['mqtt-disconnected','invented-private-failure']});
-  const unavailable=recorder.status(7000).parameters[0].freshness;
+  const unavailable=parameters(recorder,7000)[0].freshness;
   assert.equal(unavailable.status,'failed');
   assert.deepEqual(unavailable.reasons,['mqtt-disconnected']);
   assert(!JSON.stringify(unavailable).includes('invented-private-failure'));
 });
 
 test('periodic temperatures save only exact changes while days of reports occupy one coverage span',t=>{
-  const {store,put,recorder,setNow}=fixture(t,{maxIntervalMs:1000});
+  const {store,put,recorder,setNow}=fixture(t);
   const first=1000;
   put(20,first,periodicReport);
   for(let i=1;i<=3*24*4;i++) assert.equal(put(20,first+i*15*MINUTE,periodicReport).saved,false);
@@ -188,7 +190,7 @@ test('temperature report revision follows genuine confirmations and outages inde
   const {recorder,put}=fixture(t);
   put(20,1000,periodicReport);
   const original=recorder.status();
-  assert.equal(original.parameters.find(row=>row.signal==='indoor_temperature').threshold,null);
+  assert.equal(original.exactParameters.find(row=>row.signal==='indoor_temperature').threshold,null);
   put(20,1000+MINUTE,{...periodicReport,sourceTime:1000});
   assert.equal(recorder.status().temperatureReportRevision,original.temperatureReportRevision);
   put(-100,1000+2*MINUTE,{signal:'heating_integral',unit:'degMin'});
@@ -212,7 +214,7 @@ test('old H66 source timestamps do not become fresh measurements; failures and r
   assert.equal(store.observations().length,1);
   put(20,316000,{...extra,sourceTime:1000});
   assert.equal(recorder.latestCommitted('supply_temperature').value,null);
-  assert.equal(recorder.status().parameters[0].status,'stale');
+  assert.equal(parameters(recorder)[0].status,'stale');
   setNow(330000);
   recorder.recordFailure({source:'husdata-h66',device:'fixture-house',signal:'supply_temperature',unit:'degC',at:330000});
   assert.equal(recorder.latestCommitted('supply_temperature').value,null);
@@ -253,19 +255,19 @@ test('held room readings still record unavailable, retained, future and out-of-o
   const extra={source:'mqtt-temperature',signal:'garage_temperature'};
   put(12,1000,extra);
   put(12,2*HOUR,{...extra,sourceTime:1000,quality:['retained'],raw:{retained:true}});
-  assert.equal(recorder.status().parameters[0].status,'unavailable');
+  assert.equal(parameters(recorder)[0].status,'unavailable');
   assert.equal(recorder.latestCommitted('garage_temperature').value,null);
   assert.equal(recorder.latestCommitted('garage_temperature').sourceTime,1000);
   put(13,2*HOUR+1000,{...extra,sourceTime:2*HOUR});
   assert.equal(recorder.latestCommitted('garage_temperature').value,13);
   put(99,2*HOUR+2000,{...extra,sourceTime:500});
-  assert.equal(recorder.status().parameters[0].status,'stale');
+  assert.equal(parameters(recorder)[0].status,'stale');
   put(99,2*HOUR+3000,{...extra,sourceTime:3*HOUR});
-  assert.equal(recorder.status().parameters[0].status,'stale');
+  assert.equal(parameters(recorder)[0].status,'stale');
   put(null,2*HOUR+4000,{...extra,sourceTime:null,quality:['missing','source_time_unknown']});
-  assert.equal(recorder.status().parameters[0].status,'unavailable');
+  assert.equal(parameters(recorder)[0].status,'unavailable');
   recorder.recordFailure({...extra,device:'fixture-house',unit:'degC',at:2*HOUR+5000});
-  assert.equal(recorder.status().parameters[0].status,'failed');
+  assert.equal(parameters(recorder)[0].status,'failed');
 });
 
 test('state changes and pump zero crossings bypass numeric deadband; excluded H66 values stay outside history',t=>{
@@ -280,11 +282,11 @@ test('state changes and pump zero crossings bypass numeric deadband; excluded H6
   assert.equal(store.observations().length,4);
 });
 
-test('recording spacing cannot change source freshness or turn repeated old timestamps into new readings',t=>{
-  const {recorder,put}=fixture(t,{maxIntervalMs:1000});
+test('change-only recording cannot change source freshness or turn repeated old timestamps into new readings',t=>{
+  const {recorder,put}=fixture(t);
   put(20,1000,{source:'husdata-h66',signal:'supply_temperature'});
   assert.equal(put(20,31000,{source:'husdata-h66',signal:'supply_temperature',sourceTime:1000}).saved,false);
-  assert.equal(recorder.status().parameters[0].status,'fresh','H66 source remains within its independent five-minute validity');
+  assert.equal(parameters(recorder)[0].status,'fresh','H66 source remains within its independent five-minute validity');
   assert.equal(recorder.latestCommitted('supply_temperature').sourceTime,1000);
 });
 
@@ -302,12 +304,13 @@ function energy(start,end,power=3,extra={}) {
 test('energy integrates all acquisition intervals while only three values per selected block enter history',t=>{
   const {store,recorder}=fixture(t);
   for(let i=0;i<24;i++) recorder.recordEnergy(energy(1000+i*15000,1000+(i+1)*15000));
-  // Initial sample plus one five-minute block. Last 45 seconds remain in a
-  // fixed-size checkpoint, then flush without estimating beyond the last poll.
-  assert.equal(store.observations().length,6);
+  // Constant power retains one bounded durable open interval until an explicit
+  // boundary. Routine ticks never create time-based history.
+  assert.equal(recorder.flush(361000).length,0);
+  assert.equal(store.observations().length,3);
   assert.equal(recorder.flush(361000,{force:true}).length,3);
   const rows=store.observations();
-  assert.equal(rows.length,9);
+  assert.equal(rows.length,6);
   assert.ok(Math.abs(rows.reduce((n,o)=>n+o.value,0)-0.3)<1e-12);
   for(const row of rows) {
     assert.equal(row.unit,'kWh');assert.ok(row.raw.durationMs>0);
@@ -349,7 +352,7 @@ test('outer rollback also restores numerical recorder state and coverage',t=>{
   put(20,1000);
   assert.throws(()=>store.transaction(()=>{put(30,2000);throw new Error('synthetic abort');}),/abort/);
   assert.equal(store.observations().length,1);
-  assert.equal(recorder.status().parameters[0].lastSavedAt,1000);
+  assert.equal(parameters(recorder)[0].lastSavedAt,1000);
   put(30,2000);
   assert.equal(store.observations().length,2);
 });
@@ -416,7 +419,10 @@ test('property meter audit compares only complete matching intervals and never c
   recorder.recordEnergy(propertyEnergy(1000,16000));
   recorder.recordEnergy(propertyEnergy(16000,31000));
   audit(31000,10.03);
-  assert.equal(store.energyAudits()[1].comparison,null,'pending estimates are not forced by audit');
+  const pendingAudit = store.energyAudits()[1].comparison;
+  assert.equal(pendingAudit.includesOpenInterval,true,'diagnostics include durable energy without forcing history');
+  assert.ok(Math.abs(pendingAudit.estimatedKwh-0.025)<1e-12);
+  assert.equal(store.observations().length,3);
   recorder.flush(31000,{force:true});
   const before=JSON.stringify(store.observations()), threshold=recorder.status().normalizedTolerance;
   const comparison=store.energyAudits()[1].comparison;
@@ -464,4 +470,184 @@ test('charger counters cannot enter cumulative meter storage',t=>{
       /Only the property import counter/);
   }
   assert.equal(store.db.prepare('SELECT count(*) AS n FROM energy_audits').get().n,0);
+});
+
+test('days of fresh unchanged measurements and exact states never create heartbeat records', t => {
+  const { store, recorder, put } = fixture(t);
+  for (let i = 0; i <= 3 * 24 * 12; i++) {
+    const at = 1000 + i * 5 * MINUTE;
+    put(30, at, { source: 'husdata-h66', signal: 'supply_temperature' });
+    put(1, at, { source: 'husdata-h66', signal: 'compressor_active', unit: 'state' });
+    recorder.flush(at);
+  }
+  assert.equal(store.observations().length, 2);
+  assert.equal(store.db.prepare('SELECT COUNT(*) n FROM recorder_coverage').get().n, 2);
+  assert.deepEqual(recorder.status().parameters.map(row => row.signal), ['supply_temperature']);
+  assert.deepEqual(recorder.status().exactParameters.map(row => row.signal), ['compressor_active']);
+  assert.equal(recorder.latestCommitted('supply_temperature').value, 30);
+  assert.throws(() => recorder.configure({ maxIntervalMs: 300_000 }), /Unsupported/);
+});
+
+test('report deadlines do not turn continuous diagnostics into exact channels; learning endpoints stay exact', t => {
+  const { store, recorder, put } = fixture(t);
+  const report = { source: 'garage-adapter', signal: 'garage_compressor_frequency', unit: 'Hz',
+    raw: { reportIntervalMs: 2 * MINUTE, reportGraceMs: 0 } };
+  put(40, 1000, report);
+  const key = 'recorder:signal:' + JSON.stringify(['garage-adapter', 'fixture-house', report.signal, 'Hz', 'adaptive-value']);
+  const state = store.getState(key);
+  Object.assign(state, { scale: 100, variance: 10000, mean: 40, step: 0.01 }); store.setState(key, state);
+  assert.equal(put(40.01, 2000, report).saved, false);
+  assert.equal(recorder.status().parameters[0].policy, 'adaptive-value');
+  put(20, 3000, periodicReport);
+  assert.equal(put(20.0000001, 4000, periodicReport).saved, true);
+  assert.equal(recorder.status().exactParameters[0].policy, 'change-only');
+  assert.equal(recorder.status().exactParameters[0].threshold, null);
+});
+
+test('open energy survives long steady operation and restart, revises history, and closes only the selected session', t => {
+  const { store, recorder } = fixture(t);
+  const at = 1000, period = MINUTE;
+  for (const prefix of ['ev1', 'property']) recorder.recordEnergy(energy(at, at + period, 3, { prefix, device: prefix }));
+  const revision = recorder.status(at + period).historyRevision;
+  for (let i = 1; i <= 25 * 60; i++) recorder.recordEnergy(energy(at + i * period, at + (i + 1) * period, 3,
+    { prefix: 'ev1', device: 'ev1' }));
+  const end = at + 1501 * period;
+  recorder.recordEnergy(energy(at + period, end, 3, { prefix: 'property', device: 'property' }));
+  assert.equal(store.observations().length, 6);
+  assert.equal(recorder.flush(end).length, 0);
+  const restarted = new Recorder(store, { clock: () => end });
+  const status = restarted.status();
+  assert.notEqual(status.historyRevision, revision);
+  assert.equal(status.parameters.find(row => row.signal === 'ev1_energy_l1').openInterval.end, end);
+  const finalized = restarted.flush(end, { force: true, source: 'easee', device: 'ev1', prefix: 'ev1' });
+  assert.equal(finalized.length, 3);
+  assert.ok(Math.abs(finalized.reduce((sum, row) => sum + row.value, 0) - 75) < 1e-9);
+  assert.equal(restarted.status().parameters.find(row => row.signal === 'ev1_energy_l1').openInterval, null);
+  assert.notEqual(restarted.status().parameters.find(row => row.signal === 'property_energy_l1').openInterval, null);
+  assert.equal(restarted.flush(end, { force: true, prefix: 'ev1' }).length, 0);
+});
+
+test('Charger 2 phase group preserves measured-total allocation and commits all phases atomically', t => {
+  const { store, recorder } = fixture(t);
+  const interval = { source: 'shelly-evse', device: 'invented-charger', prefix: 'ev2-phase', start: 1000, end: 61000,
+    receivedAt: 62000, energies: [0.01, 0.02, 0.03], powers: [0.6, 1.2, 1.8], quality: ['phase-allocation-estimated'] };
+  recorder.recordEnergy(interval);
+  assert.deepEqual(store.observations().map(row => row.signal), ['ev2_energy_l1', 'ev2_energy_l2', 'ev2_energy_l3']);
+  assert(store.observations().every(row => row.raw.basis === 'native-meter-counter-phase-allocation'));
+  assert.equal(recorder.recordEnergy(interval).reason, 'duplicate-interval');
+  assert.throws(() => recorder.recordEnergy({ ...interval, start: 61000, end: 121000, receivedAt: 120000 }), /Invalid/);
+  assert.throws(() => store.transaction(() => {
+    recorder.recordEnergy({ ...interval, start: 61000, end: 121000, receivedAt: 122000 });
+    throw new Error('synthetic interruption');
+  }), /synthetic interruption/);
+  assert.equal(store.observations().length, 3);
+  assert.equal(recorder.status(122000).parameters.filter(row => row.openInterval).length, 0);
+});
+
+test('a sharp power step cannot be spread backwards into a multi-day steady interval', t => {
+  const { store, recorder } = fixture(t);
+  recorder.recordEnergy(energy(1000,61000,1));
+  const edge = 1000+50*HOUR;
+  recorder.recordEnergy(energy(61000,edge,1));
+  recorder.recordEnergy(energy(edge,edge+MINUTE,10));
+  const rows = store.observations({signal:'ev1_energy_l1'});
+  assert.equal(rows.length,3);
+  const steady = rows.find(row=>row.raw.intervalStart===61000);
+  const changed = rows.find(row=>row.raw.intervalStart===edge);
+  assert.equal(steady.raw.intervalEnd,edge);
+  assert.equal(steady.value*HOUR/steady.raw.durationMs,1);
+  assert.equal(changed.value*HOUR/changed.raw.durationMs,10);
+  assert.equal(changed.raw.durationMs,MINUTE);
+});
+
+test('energy receipts and delayed gaps retain their real causal publication times', t => {
+  const { store, recorder } = fixture(t);
+  recorder.recordEnergy(energy(1000,16000,3,{receivedAt:50000}));
+  recorder.recordEnergy(energy(16000,31000,3,{receivedAt:60000}));
+  assert.throws(()=>recorder.recordEnergy(energy(31000,46000,3,{receivedAt:55000})),/Out-of-order energy receipt/);
+  assert.throws(()=>recorder.energyGap({device:'fixture-charger',prefix:'ev1',start:31000,end:40000}),/Out-of-order/);
+  const gap = recorder.energyGap({device:'fixture-charger',prefix:'ev1',start:31000,end:40000,receivedAt:70000});
+  assert(gap.every(row=>row.receivedAt===70000));
+  assert.equal(store.observations({signal:'ev1_energy_l1'}).find(row=>row.value===null).sourceTime,40000);
+  const saved = JSON.stringify(store.observations());
+  assert.throws(()=>recorder.recordEnergy(energy(40000,55000,3,{receivedAt:65000})),/Out-of-order/);
+  assert.equal(JSON.stringify(store.observations()),saved);
+});
+
+test('recording interval statistics use actual retained timestamps and exact window membership', t => {
+  const { recorder, put } = fixture(t);
+  for (const [at,value] of [[1000,1],[1000+HOUR-1,2],[1000+HOUR+MINUTE,3],[1000+2*HOUR,4]])
+    put(value,at,{signal:'heating_integral',unit:'degMin'});
+  const row = recorder.status(1000+2*HOUR).parameters[0];
+  assert.equal(row.hour.records,2,'the observation just outside the rolling window is excluded');
+  assert.equal(row.hour.averageIntervalMs,59*MINUTE);
+  assert.equal(row.day.records,4);
+  assert.equal(row.day.averageIntervalMs,2*HOUR/3);
+});
+
+test('hour buckets preserve exact rolling timestamp counts at partial boundaries and historical upper cutoffs', t => {
+  const {store,recorder,put}=fixture(t), DAY=24*HOUR, now=9*DAY+37*MINUTE+321;
+  const times=[now-7*DAY-1,now-7*DAY,now-6*DAY,now-DAY-1,now-DAY,
+    now-HOUR-1,now-HOUR,now-10*MINUTE,now,now+1];
+  times.forEach((at,index)=>put(index+1,at,{signal:'heating_integral',unit:'degMin'}));
+  const row=recorder.status(now).parameters[0];
+  for(const [name,span] of [['hour',HOUR],['day',DAY],['week',7*DAY]]) {
+    const expected=times.filter(at=>at>=now-span&&at<=now);
+    assert.equal(row[name].records,expected.length,name);
+    assert.equal(row[name].averageIntervalMs,(expected.at(-1)-expected[0])/(expected.length-1),name);
+  }
+  const bucket=store.db.prepare('SELECT records,first_saved_at,last_saved_at FROM recorder_metrics WHERE bucket=?')
+    .get(Math.floor(now/HOUR)*HOUR);
+  assert.equal(bucket.records,3);
+  assert.equal(bucket.first_saved_at,now-10*MINUTE);
+  assert.equal(bucket.last_saved_at,now+1);
+});
+
+test('saved extrema ignore unsaved polls, retain same-millisecond records and survive restart atomically', t => {
+  const {store,recorder,put}=fixture(t);
+  put(1,1000,{signal:'heating_integral',unit:'degMin'});
+  put(1,HOUR+1000,{signal:'heating_integral',unit:'degMin'});
+  let bucket=store.db.prepare('SELECT * FROM recorder_metrics WHERE bucket=?').get(HOUR);
+  assert.equal(bucket.records,0); assert.equal(bucket.first_saved_at,null); assert.equal(bucket.last_saved_at,null);
+  const sample={source:'synthetic',device:'same-ms',signal:'custom_reading',unit:'state',value:0,sourceTime:HOUR+2000,receivedAt:HOUR+2000,quality:[]};
+  recorder.record(sample,{force:true}); recorder.record({...sample,value:1},{force:true});
+  const before=store.db.prepare('SELECT * FROM recorder_metrics ORDER BY key,bucket').all();
+  assert.throws(()=>store.transaction(()=>{recorder.record({...sample,value:0,sourceTime:HOUR+3000,receivedAt:HOUR+3000},{force:true});throw Error('rollback');}),/rollback/);
+  assert.deepEqual(store.db.prepare('SELECT * FROM recorder_metrics ORDER BY key,bucket').all(),before);
+  const resumed=new Recorder(store), status=parameters(resumed,HOUR+3000);
+  const row=status.find(row=>row.signal==='custom_reading');
+  assert.equal(row.hour.records,2); assert.equal(row.hour.averageIntervalMs,0);
+  bucket=store.db.prepare('SELECT * FROM recorder_metrics WHERE records=2').get();
+  assert.equal(bucket.first_saved_at,HOUR+2000); assert.equal(bucket.last_saved_at,HOUR+2000);
+});
+
+test('historical spacing remains exact after hourly metrics were pruned and the recorder restarted', t => {
+  const {store,put}=fixture(t),DAY=24*HOUR;
+  for(let day=0;day<=12;day++) put(day+1,1000+day*DAY,{signal:'heating_integral',unit:'degMin'});
+  assert(store.db.prepare('SELECT MIN(bucket) first FROM recorder_metrics').get().first>3*DAY);
+  const resumed=new Recorder(store),row=resumed.status(1000+2*DAY).parameters[0];
+  assert.equal(row.week.records,3); assert.equal(row.week.averageIntervalMs,DAY);
+  assert.equal(row.day.records,2); assert.equal(row.day.averageIntervalMs,DAY);
+  assert.equal(row.hour.records,1); assert.equal(row.hour.averageIntervalMs,null);
+});
+
+test('changed configurable units and policies retain distinct historical streams and statistics after restart', t => {
+  const { store, recorder, put } = fixture(t);
+  for (const [unit, at] of [['degC', 1000], ['%', 2000], ['state', 3000]])
+    put(1, at, { signal: 'custom_reading', unit });
+  const reopened = new Recorder(store, { clock: () => 3000 });
+  const status = reopened.status();
+  assert.deepEqual(status.parameters.map(row => row.unit).sort(), ['%', 'degC']);
+  assert.deepEqual(status.exactParameters.map(row => row.unit), ['state']);
+  const rows = [...status.parameters, ...status.exactParameters];
+  assert.equal(new Set(rows.map(row => row.streamId)).size, 3);
+  for (const row of rows) {
+    assert.equal(row.week.records, 1, `${row.unit} counts only its own policy and unit`);
+    assert.equal(row.week.averageIntervalMs, null);
+  }
+  put(2, 4000, { signal: 'custom_reading', unit: 'degC' });
+  const updated = recorder.status(4000).parameters.find(row => row.unit === 'degC');
+  assert.equal(updated.week.records, 2);
+  assert.equal(updated.week.averageIntervalMs, 3000);
+  assert.equal(recorder.status(4000).parameters.find(row => row.unit === '%').week.records, 1);
 });

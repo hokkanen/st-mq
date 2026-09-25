@@ -24,6 +24,10 @@ with the remaining provider and device-loss limits.
 The [Data & settings review](DATA-SETTINGS-2026-09.md) records the four-category
 overview, relocated vehicle telemetry and consistent MQTT device diagnostics.
 
+The [recording contract review](RECORDING-CONTRACT-2026-09.md) records the complete
+adaptive/exact/event audit, removal of timed duplicate history, Charger 2 phase
+parity, durable open energy and the complete database inventory.
+
 | Scope | Implementation and evidence |
 | --- | --- |
 | A01 charging | [Physical Charger 2, identity, energy, scheduling and controls](A01.md); [acceptance tracker](A01-tracker.json) |

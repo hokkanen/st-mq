@@ -50,18 +50,20 @@ function energy(signal, value, from = start, to = start + HOUR) {
 test('household forecast intersects clocks and subtracts both three-phase chargers on each phase', () => {
   const rows = [1, 2, 3].flatMap(p => [energy(`property_energy_l${p}`, 3), energy(`ev1_energy_l${p}`, 1)]);
   rows.push(energy('ev2_energy', 2, start + HOUR / 2, start + HOUR));
+  rows.push(...[1,2,3].map(phase=>energy(`ev2_energy_l${phase}`,2/3,start+HOUR/2,start+HOUR)));
   const profile = householdProfile(rows, { timezone: 'UTC', voltageV: 230 });
   assert.equal(profile[12].coverageMs, HOUR);
   assert.ok(profile[12].phaseCurrentA.every(current => Math.abs(current - 4000 / 3 / 230) < 1e-9),
     'Known Charger 2 energy is subtracted only over its overlap; unknown earlier consumption remains in the reference');
   assert.equal(profile[13], null);
-  assert.equal(householdProfile(rows.slice(0, -1), { timezone: 'UTC', voltageV: 230 })[12].unknownCharger2, true,
+  assert.equal(householdProfile(rows.slice(0, 6), { timezone: 'UTC', voltageV: 230 })[12].unknownCharger2, true,
     'Missing Charger 2 records retain useful household history with attribution uncertainty');
 });
 
 test('household forecast preserves phase imbalance and requires automatic voltage', () => {
   const rows = [1, 2, 3].flatMap(phase => [energy(`property_energy_l${phase}`, phase + 1), energy(`ev1_energy_l${phase}`, 1)]);
   rows.push(energy('ev2_energy', 3));
+  rows.push(...[1,2,3].map(phase=>energy(`ev2_energy_l${phase}`,1)));
   const profile = householdProfile(rows, { timezone: 'UTC', voltageV: [220, 230, 240] });
   assert.deepEqual(profile[12].phaseCurrentA, [0, 1000 / 230, 2000 / 240]);
   assert.equal(householdProfile(rows, { timezone: 'UTC' })[12], null);
@@ -70,8 +72,9 @@ test('household forecast preserves phase imbalance and requires automatic voltag
 test('overlapping source intervals and negative residuals cannot create headroom', () => {
   const rows = [1, 2, 3].flatMap(p => [energy(`property_energy_l${p}`, 1), energy(`ev1_energy_l${p}`, 1)]);
   rows.push(energy('ev2_energy', 2));
+  rows.push(...[1,2,3].map(phase=>energy(`ev2_energy_l${phase}`,2/3)));
   assert.equal(householdProfile(rows, { timezone: 'UTC', voltageV: 230 })[12], null);
-  rows.at(-1).value = 0;
+  rows.find(row=>row.signal==='ev2_energy').value = 0;
   rows.push(energy('property_energy_l1', 2));
   assert.equal(householdProfile(rows, { timezone: 'UTC', voltageV: 230 })[12], null);
 });

@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { recordingRows, recordingStatus, inventoryItemSummary, inventoryDateSpan, recordingOverviewRefresh } from '../chart/recording.js';
+import { recordingRows, recordingStatus, inventoryItemSummary, inventoryDateSpan, recordingOverviewRefresh, energyAuditRow, durationLabel } from '../chart/recording.js';
+import { Store } from '../src/storage/store.js';
+import { Recorder } from '../src/storage/recorder.js';
 
 test('recording status distinguishes periodic report freshness from saved-value age and saving cadence',()=>{
   const now=3*86400_000,reportAt=now-17*60_000-1;
@@ -96,4 +98,49 @@ test('inventory distinguishes stored calculations, overwritten state and missing
   const rows=recordingRows({parameters:[{signal:'heat_pump_power',threshold:0.1},{signal:'heat_pump_meter_power',threshold:0.1}]});
   assert(!rows.some(row=>row.signal==='heat_pump_power'));
   assert(rows.some(row=>row.signal==='heat_pump_meter_power'),'a separately metered heat pump remains an independent measurement');
+});
+
+test('adaptive inventory contains only observed adaptive streams, including custom measurements and every charger phase', () => {
+  assert.deepEqual(recordingRows({}), [], 'the catalogue does not manufacture waiting measurements');
+  const parameters = [
+    { signal: 'caravan_temperature', unit: 'degC', policy: 'adaptive-value' },
+    { signal: 'garage_compressor_frequency', unit: 'Hz', policy: 'adaptive-value' },
+    { signal: 'workshop_pressure', unit: 'bar', policy: 'adaptive-value' },
+    { signal: 'room_setting', unit: 'degC', policy: 'change-only' },
+    { signal: 'floor_living_0_active', unit: 'state', policy: 'change-only' },
+    { signal: 'dhwr_active', unit: 'state', policy: 'every-report' },
+    ...['property', 'ev1', 'ev2'].flatMap(prefix => [1, 2, 3].map(phase => ({
+      signal: `${prefix}_energy_l${phase}`, unit: 'kWh', grouped: true, policy: 'adaptive-energy',
+    }))),
+    { signal: 'ev2_energy', unit: 'kWh', policy: 'adaptive-energy' },
+    { signal: 'caravan_energy', unit: 'kWh', policy: 'adaptive-energy' },
+  ];
+  const rows = recordingRows({ parameters });
+  assert.deepEqual(rows.map(row => row.signal).sort(), parameters.filter(row => row.policy.startsWith('adaptive-')).map(row => row.signal).sort());
+  assert.equal(rows.filter(row => row.signal.startsWith('ev2_energy_l')).length, 3);
+  assert.equal(rows.find(row => row.signal === 'workshop_pressure').label, 'workshop pressure');
+  assert(!rows.some(row => row.signal === 'indoor_temperature'), 'never-observed indoor readings do not appear');
+});
+
+test('property meter comparison distinguishes durable ongoing energy from closed intervals', () => {
+  const comparison = { estimatedKwh: 1, meteredKwh: 1, differenceKwh: 0, differencePercent: 0,
+    start: 0, end: 60_000, edgeEstimated: true, includesOpenInterval: true };
+  const ongoing = energyAuditRow({ sourceTime: 60_000, comparison });
+  assert.match(ongoing.details[0], /interval edges prorated.*includes ongoing recorded interval/);
+  assert(!energyAuditRow({ sourceTime: 60_000, comparison: { ...comparison, includesOpenInterval: false } }).details[0].includes('ongoing'));
+});
+
+test('two devices reporting the same measurement remain distinct without exposing private device identifiers', t => {
+  const store=new Store(':memory:');t.after(()=>store.close());
+  const now=1_000_000,recorder=new Recorder(store,{clock:()=>now});
+  for(const [device,value] of [['private-probe-a',9],['private-probe-b',10]]) recorder.record({source:'mqtt-equipment',
+    device,signal:'workshop_temperature',unit:'degC',value,sourceTime:now,receivedAt:now,quality:[]});
+  const status=recorder.status(now),rows=recordingRows(status);
+  assert.equal(rows.length,2);
+  assert.equal(new Set(rows.map(row=>row.streamId)).size,2);
+  assert(rows.every(row=>/^Stream [0-9a-f]{12}$/.test(row.streamQualifier)));
+  assert(!JSON.stringify(status).includes('private-probe'));
+  const restarted=recordingRows(new Recorder(store,{clock:()=>now}).status(now));
+  assert.deepEqual(restarted.map(row=>row.streamId),rows.map(row=>row.streamId));
+  assert.equal(durationLabel(0),'0 s','equal receipt timestamps are not presented as missing statistics');
 });

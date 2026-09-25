@@ -2,7 +2,7 @@
 
 Acquisition, recording and house learning have separate responsibilities. Devices
 can be read frequently while history retains a compact approximation. Only
-committed history and its recorded interpretation feed the learner. Recording a
+durably recorded values and their saved interpretation feed the learner. Recording a
 garage temperature or a diagnostic does not make it a fitted model input.
 
 This version is still in development. Existing experimental SQLite contents do
@@ -70,15 +70,20 @@ contact providers or use private credentials.
 
 The electrical dataset contains `ev1_energy_l1` through `ev1_energy_l3` for the
 Easee charger, and `property_energy_l1` through `property_energy_l3` for property import.
-Shelly EVSE adds scalar `ev2_energy` from its native accumulated meter. The total
-is not copied into invented phase-energy series.
-Each value is an **estimated kWh increment over an explicit interval**, not an
-instantaneous power reading or a cumulative phase meter.
+Shelly EVSE retains scalar `ev2_energy` from its native accumulated meter and
+`ev2_energy_l1` through `ev2_energy_l3` as estimated phase allocations. Its measured
+total increment is allocated using the actual mapped phase powers at the two
+source endpoints. Missing phase evidence leaves phase history unavailable while
+the independently valid measured total remains recorded. No equal split is invented.
+Each value is a **kWh increment over an explicit interval**, not an instantaneous
+power reading or a cumulative phase meter. Property and Charger 1 are integrated
+estimates; Charger 2 and Caravan totals are measured counter differences. Charger 2
+phase allocations remain estimates even though their sum preserves the measured total.
 
 Every usable acquisition contributes to integration, including polls between
 database records. The acquisition accumulator retains only its preceding power
 snapshot, source freshness, availability and audit-counter heads. The recorder
-retains the three pending energy sums. Both checkpoints have bounded size;
+retains the pending energy sums and their latest genuine source/receipt bounds. Both checkpoints have bounded size;
 there is no growing log of raw current/voltage/power polls.
 
 The Easee and Equalizer calculation is:
@@ -92,9 +97,10 @@ The Easee and Equalizer calculation is:
    actual elapsed receipt time. Polling delay, asynchronous source updates and
    holding a last-reported value remain estimation limitations.
 4. Pass those energy increments to the recorder. It decides when to save from
-   changes in phase power, quality and elapsed interval, while accumulating all
-   intervening energy. Constant power therefore continues consuming energy even
-   when no numerical change triggers a record.
+   changes in phase power, quality and real acquisition/session boundaries, while
+   accumulating all intervening energy. Constant power continues consuming energy
+   without forcing periodic historical rows. An open interval is durable current
+   state and remains visible to chart, accounting and charging readers.
 
 If active total power is unavailable but all three currents and verified
 phase-neutral voltages are usable, voltage × current supplies a fallback explicitly
@@ -169,11 +175,14 @@ continues while consecutive polls remain within the integration gap limit.
 Stream recovery can resume cached acquisition during a REST cooldown without
 issuing requests that bypass that cooldown.
 
-The newest chart tail can separately lag by the recording interval (five minutes
-by default) while the recorder accumulates its pending energy batch. The normal
-commit fills that tail with adjacent completed intervals. It does not create
-interior gaps. Chart reads never force extra database writes, display pending
-checkpoint sums as finalized observations, or extrapolate through an outage.
+There is no time-triggered energy flush. History readers include the durable
+open interval only through its latest accepted source endpoint and after its
+receipt time. The UI identifies ongoing intervals; reads neither finalize them
+nor extrapolate through an outage. Real power/quality changes, acquisition gaps,
+session completion and shutdown finalize appropriate intervals. A charger session
+boundary closes only that charger's groups, not unrelated property or Caravan data.
+Open and finalized intervals share overlap, quality and source-identity checks;
+long intervals are not dropped or cut off by an arbitrary history duration limit.
 
 Charts derive interval-average kW as `kWh × 3,600,000 / durationMs`. This conversion
 does not use 230 V. Equivalent chart currents divide estimated phase kW by `0.23`;
@@ -224,12 +233,15 @@ physical plug connection. No counter from a vehicle supplies home electricity.
 
 Current provider status also exposes the documented Shelly `phase_info` currents,
 voltages and active powers for L1–L3, mapped with the installation's `phaseMap`,
-along with total active power. Native watts are converted to kW. These live-only
-readings retain source and receipt times and become unavailable on source expiry,
-retained delivery or disconnection; they do not add raw polls to recording.
+along with total active power. Native watts are converted to kW. These readings retain source and receipt times and become unavailable on source
+expiry, retained delivery or disconnection. Raw snapshots remain live-only; valid
+phase powers also allocate the measured total increments into adaptive phase
+energy. Historical equivalent phase currents are derived from interval energy,
+using the same presentation as Charger 1, and are labeled estimates.
 The accumulated total and native `energy_charge` session diagnostic are kept
-distinct from interval energy and finalized session checks. Shelly documents no
-individual phase-energy counters, so total energy remains one `ev2_energy` series.
+distinct from interval energy and finalized session checks. The integration has no native individual phase-energy counters; `ev2_energy`
+remains the authoritative measured total, separate from the three estimated
+phase-energy series. The phase sum and total must never both be counted as demand.
 
 TeslaMate and BMW remain read-only vehicle evidence for either physical charger.
 Their feed health, timestamps, plug events and home scope control applicability
@@ -293,7 +305,8 @@ does not produce a division-by-zero percentage.
 
 **Audit values never correct history, calibrate integration, tune the house model
 or determine per-signal recording thresholds.** Cumulative comparisons are computed
-when diagnostics are read; finalized session comparisons are frozen after matching
+when diagnostics are read, including eligible durable open energy with an explicit
+ongoing-interval marker; finalized session comparisons are frozen after matching
 energy intervals have been committed. A cumulative counter update does not force
 an extra energy record.
 
@@ -304,7 +317,6 @@ Permanent options:
 ```json
 {
   "recording": {
-    "max_interval_minutes": 5,
     "annual_budget_gb": 10
   },
   "acquisition": {
@@ -321,10 +333,10 @@ Permanent options:
 ```
 
 Acquisition schedules and recording settings are independent. GB means decimal
-gigabytes. The five-minute recording value is a maximum interval **when fresh
-source data exists**, not a promise to invent readings from an unavailable source.
-Periodic indoor MQTT temperatures are exempt: equal reports extend coverage,
-while every value change is saved exactly.
+gigabytes. There is no maximum recording interval, and the retired
+`max_interval_minutes` configuration is rejected. Source reporting deadlines and
+acquisition schedules remain independent. No elapsed recording time can create a
+new value or extend an expired source. Equal reports extend compact coverage.
 The ten-GB value is a soft rolling annual growth target, not a quota that expires
 in December. It never causes historical deletion or an end-of-year squeeze.
 
@@ -333,11 +345,14 @@ and uses a shared normalized change threshold. That tolerance changes gradually
 in response to measured SQLite growth, using smoothed daily and weekly estimates.
 Signals are compared with their last saved value. There are no hand-assigned
 accuracy targets or model-importance weights for those approximated signals.
-Periodic indoor temperatures use exact change recording so coverage always
-refers to the actual reported value. The displayed normalized pre-update change
+All room/protection temperatures use exact change recording so learning endpoints
+remain actual reported values. A reporting deadline does not itself make other
+continuous measurements exact: Caravan air/humidity and native pump diagnostics
+remain adaptive. The displayed normalized pre-update change
 compares incoming values with the previous saved value, weighted by elapsed time.
-It includes real signal changes, even when every transition is saved exactly; it
-is not a reconstruction-loss measurement or a continuous-time accuracy bound.
+It describes variation in adaptive inputs, not reconstruction loss or a
+continuous-time accuracy bound. Exact channels have no learned threshold or
+normalized variation statistic.
 
 Exact states, settings, alarms, runtime counters and availability transitions have
 semantic recording rules. They are not blurred into fractional states to meet a
@@ -359,7 +374,8 @@ then; it is not duplicated as a synthetic one-minute solar observation and is no
 labelled as house-measured radiation. Later forecasts cannot replace the version
 used by an earlier learning sample.
 
-Charts are constructed from original committed history at every date range.
+Charts are constructed from original finalized history and eligible durable
+ongoing energy at every date range.
 The database does not store hourly scalar summaries or 15-minute chart-energy
 copies. Electrical power is calculated from each original recorded energy
 interval, and timing comparisons split that interval at the applicable price
@@ -408,6 +424,72 @@ their own committed source inputs.
 The current schema has no persisted chart-cache tables. Actual
 annual size and year-query latency must be measured on the deployment; no
 Raspberry Pi 5 timing guarantee follows from desktop tests.
+
+## Recording policies and complete database inventory
+
+`src/domain/recording-policy.js` is the shared policy catalogue used by the writer,
+status API and database inventory. Each recorder observation saves its policy.
+**Adaptive measurements** lists only streams actually observed with a learned
+numeric threshold: equipment/weather continuous measurements, Caravan air and
+humidity, and property/charger/Caravan interval energy. It does not populate
+unobserved chart options or mix exact contacts into the adaptive table.
+
+**Other recorded data** accounts for every other physical table and writer:
+
+- Room and garage protection temperatures: initial value and every real change,
+  plus availability/quality transitions; unchanged reports extend coverage.
+- Equipment states, alarms, settings and runtime/meter counters: every change,
+  without a numeric tolerance. This includes the four individual floor override
+  outputs and actual tariff relay feedback. Contact readback proves an electrical
+  output, not valve position, water flow or successful heat reduction.
+- Hot-water circulation feedback: every report, including repeated states and
+  unavailable reports. Raw watts remain live-only; requested pulses are separate.
+- Garage compressor activity and reported defrost: exact state changes. Native
+  interpreted temperature and compressor frequency belong in Adaptive measurements. Garage power
+  remains live input only. Qualified dedicated garage energy intervals and saved
+  garage learning inputs retain their own independent history.
+- External temperature feed: no numeric history and no routine renewal events.
+  Diagnostic events record abnormal onset, changed reason and recovery once.
+  Current command/restoration state remains durable separately.
+- Calculated outputs, requests, market/weather snapshots, manual inputs, learning
+  journals, session checks, imported rows and provenance, source corrections,
+  recovery records, bounded statistics and overwritten operational state each
+  have their own saving rules and retention description.
+
+The inventory reports actual stream and event-type counts, units/basis, dates,
+write behaviour and retention. It lists unregistered stored writers explicitly
+instead of silently guessing that they are adaptive. Physical-table counts provide
+an independent completeness check; overlapping views and provenance counts must
+not be added to those totals. No private device identifiers, topics, credentials,
+source paths or payload values are exposed by the inventory.
+
+Multiple devices with the same signal/source have stable opaque stream references.
+A changed unit or recording policy creates a separate stream so earlier adaptive
+history stays visible with its own units, threshold and saving statistics.
+
+Average saving intervals use the first/last actual saved receipt timestamps within
+the selected one-hour/day/week window, and require at least two records. Exact
+hourly metrics plus indexed partial-hour boundaries avoid repeated full-week
+scans on control ticks. Approximate
+byte and variation metrics remain labeled as such. Current open energy is shown
+separately from finalized observation counts. The annual target measures overall
+SQLite growth; mandatory exact/history records are never dropped to meet it.
+
+This recording contract uses database schema 15. An incompatible development
+schema is rejected before mutation with fresh-database guidance; no migration,
+backfill or automatic reset is provided. Supported read-only v0.7.5 CSV import,
+current-version restart, backup/restore and deterministic journal replay remain.
+
+Current-format history recovery also reads the frozen donor's durable open energy.
+Accepted intervals become immutable observations with recovery provenance; donor
+accumulators and live control state are not copied. Energy phase cohorts are
+accepted together or rejected together. Existing master history and its durable
+open intervals win conflicts, and retries cannot duplicate accepted energy.
+If a later live acquisition straddles recovered history, that indivisible local
+interval is skipped, its uncovered remainder stays explicitly unknown, and the
+next acquisition resumes from its own new endpoint. No donor total is prorated
+to fill a partial overlap. The inventory lists saved adaptive datasets even when
+recovery intentionally did not copy their original recorder checkpoints.
 
 ## Chart curves and popup meanings
 
@@ -782,7 +864,8 @@ or model inputs. Purely reconstructed chart values are not listed as independent
 stored series; persisted calculated learning results are described as such.
 The overview explains that chart point reduction and response caching use RAM,
 while the retained SQLite indexes support queries over original records. Storage
-accounting lists the 15 physical tables; there are no persisted chart summaries
+accounting lists all 18 physical tables and separately identifies the three SQL
+views; there are no persisted chart summaries
 or chart-summary bookkeeping entries.
 
 Database inventory queries are read-only and requested when the other-data fold
@@ -800,7 +883,8 @@ Views longer than seven days normally refresh at five-minute intervals. Periodic
 temperature reports and availability changes refresh any view containing today
 promptly, including unchanged reports, so a cached deadline cannot create a false
 gap. Ordinary raw polls and recorder checkpoints do not force a long history
-download. Short views react to new committed data. The chart query runs in a separate worker with bounded memory
+download. Short views react to new committed data, including the durable open
+energy interval. The chart query runs in a separate worker with bounded memory
 and a cancellable queue, so a large query does not block the control event loop.
 The **Energy cost comparisons** fold starts closed beneath the chart, alongside
 **Recording details**. **Heating**, **Charging** and **Firewood** summary boxes
@@ -838,7 +922,10 @@ work only and reports the hottest functions. It also measures the uncached
 database overview and seeds nominal power assumptions to exercise heat-pump
 reconstruction from the synthetic H66 records.
 
-On the development Ryzen 5 1600 host with Node 22.19.0, six electrical series every
+The following older benchmark predates the current recording contract and its
+additional Charger 2 phases and indexes. It is retained as a dated comparison,
+not a measurement of the current recorder. On the development Ryzen 5 1600 host
+with Node 22.19.0, six electrical series every
 minute plus all 30 H66 series every five minutes produced 6,307,200 observations
 and a 2.88 GB database using original history only. The previous equivalent
 workload with chart summaries occupied about 4.02 GB: removing those summaries
@@ -890,7 +977,9 @@ commands and other dehumidifier settings are not recorded as measurements.
 Caravan energy uses the same adaptive interval recorder as property and charging
 energy. Its input is the measured difference between successive meter counters,
 not an estimate from watts. The recorder chooses interval lengths from changes in
-the measured interval power and the shared recording budget/maximum spacing.
+the measured interval power and the shared recording budget. There is no maximum
+recording interval. A durable open interval remains available to history readers
+without forcing extra observations.
 All measured increments are conserved when compacted. First reports establish a
 baseline; counter resets, excessive gaps and implausible jumps interrupt coverage.
 Pending increments are checkpointed with the counter and daily total. Caravan
@@ -916,13 +1005,16 @@ The retained data has distinct responsibilities:
 | Dated power assumptions and controller auxiliary estimates | Historical equipment interpretation and the estimate actually available to control; not separately measured heat-pump electricity. |
 | Learning outcome assessments and cycle events | Original assessment known at that time, kept distinct from corrected replay. |
 | Meter/session checks | Independent reference evidence for accuracy; not duplicate energy contributions. |
-| Native garage pump indoor/frequency/activity and external feed | Previously live-only evidence needed to distinguish room sensors, pump interpretation and accepted control feed. Compressed with explicit validity bounds; no per-minute derived shading rows. |
+| Native garage pump interpreted indoor temperature/frequency | Adaptive observed diagnostics with explicit validity bounds; separate from room/protection sensor measurements. |
+| Native garage compressor activity and defrost | Exact observed state changes; no inferred fault or defrost interpretation from arbitrary diagnostic bytes. |
+| External feed diagnostics | Abnormal onset, changed reason and recovery events; no numeric feed series or healthy renewal log. |
 
 Garage compressor shading comes from fresh native activity coverage and appears
 with every left-axis selection. Unknown periods are blank, never inferred off.
 The pump's interpreted indoor reading may incorporate its external feed; it is
-not relabeled as a physical indoor sensor. The feed curve is stepped and exists
-only while acknowledged and valid. Neither adds heat estimates or learning inputs.
+not relabeled as a physical indoor sensor. External feed failures and recoveries
+are retained as diagnostics outside adaptive measurements. Neither adds heat
+estimates or learning inputs.
 This review does not delete historical evidence, introduce a second schema, or
 backfill charts from current live readings.
 

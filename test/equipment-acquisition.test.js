@@ -430,7 +430,7 @@ test('one equipment subscription rejection leaves successfully subscribed equipm
   assert.equal(status.devices.find(row => row.id === 'garage_door1').available, false);
 });
 
-test('Caravan instantaneous values and tariff/garage relay states stay live without database datasets', t => {
+test('Caravan instantaneous values stay live while actual tariff contact feedback is recorded', t => {
   const f = fixture(t, [plug, garage, { id: 'heat_savings', kind: 'switch', connection: 'shelly:invented/tariff' }]);
   const ingested = [], ingest = f.engine.ingest;
   f.engine.ingest = observation => { ingested.push(observation.signal); ingest(observation); };
@@ -442,10 +442,12 @@ test('Caravan instantaneous values and tariff/garage relay states stay live with
   assert.equal(caravanStatus.readings.caravan_active.value, 1); assert.equal(caravanStatus.readings.caravan_power.value, 0.5);
   assert.equal(caravanStatus.readings.caravan_current.value, 2.2);
   assert.equal(caravanStatus.source, 'Shelly');
-  for (const signal of ['caravan_active', 'caravan_power', 'caravan_current', 'heat_savings_active', 'garage_relay_active']) {
+  for (const signal of ['caravan_active', 'caravan_power', 'caravan_current', 'garage_relay_active']) {
     assert(!ingested.includes(signal)); assert.equal(f.store.observations({ signal }).length, 0);
   }
   assert.equal(f.store.observations({ signal: 'garage_temperature' }).length, 1);
+  assert(ingested.includes('heat_savings_active'));
+  assert.equal(f.store.observations({ signal: 'heat_savings_active' }).at(-1).value, 0);
 });
 
 test('generic Caravan state/current/power remain runtime-only while adaptive measured energy persists', t => {

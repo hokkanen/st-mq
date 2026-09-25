@@ -195,7 +195,7 @@ test('all Garage input and coefficient axes are selectable without adding them t
   assert.equal(GARAGE_ALGORITHM_VERSION, 'committed-garage-v7-room-reference');
 });
 
-test('native garage compressor shading and pump feed respect recorded report deadlines on every axis', t => {
+test('native garage compressor shading and interpreted temperature respect recorded report deadlines on every axis', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   const recorder = new Recorder(store), at = range.from + MINUTE;
   const report = (signal, value, offset, unit = 'state') => recorder.record({
@@ -206,17 +206,11 @@ test('native garage compressor shading and pump feed respect recorded report dea
   report('garage_compressor_active', 1, 0);
   report('garage_compressor_active', 1, MINUTE);
   report('garage_compressor_active', 0, 5 * MINUTE);
-  report('garage_external_temperature', 24, 0, 'degC');
-  report('garage_external_temperature', null, MINUTE, 'degC');
   report('garage_native_indoor_temperature', 25, 0, 'degC');
   const before = store.db.prepare('SELECT count(*) n FROM observations').get().n;
-  for (const left of ['power', 'temperatures', 'garage_external_temperature', 'garage_native_indoor_temperature']) {
+  for (const left of ['power', 'temperatures', 'garage_native_indoor_temperature']) {
     const result = getChartData({ store, input: 'providers', startDate: range.startDate, now: at + 10 * MINUTE, left });
     assert.deepEqual(result.shading.compressorGarage, [{ start: at, end: at + 3 * MINUTE }]);
-    if (left === 'garage_external_temperature') {
-      assert(result.series[left].some(point => point.y === 24));
-      assert(result.series[left].filter(point => point.x >= at + MINUTE).every(point => point.y === null));
-    }
     if (left === 'garage_native_indoor_temperature') {
       assert(result.series[left].some(point => point.y === 25));
       assert(result.series[left].some(point => point.x === at + 2 * MINUTE && point.y === null));

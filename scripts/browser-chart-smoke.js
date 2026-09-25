@@ -29,6 +29,28 @@ const coefficientValues = {
   model_coefficient_fireplace_response: { parameter: 'fireplaceCPerKg', value: 0.16 },
 };
 const coefficientKeys = Object.keys(coefficientValues);
+const recordingOnly = process.argv.includes('--recording-only');
+function seedRecordingFixture(app) {
+  const record = (signal,value,unit,device,source='mqtt-equipment') => app.engine.recorder.record({
+    source,device,signal,value,unit,sourceTime:now,receivedAt:now,quality:[],raw:{reportIntervalMs:90_000} });
+  for(const [device,value] of [['private-recording-probe-a',18],['private-recording-probe-b',19]])
+    record('workshop_temperature',value,'degC',device);
+  record('workshop_temperature',45,'%', 'private-recording-probe-a');
+  for(const group of ['living','storage']) for(const output of [0,1])
+    record(`floor_${group}_${output}_active`,output,'state',`private-floor-${group}`,'floor-override');
+  record('garage_native_defrost',0,'state','private-pump','garage-adapter');
+  for (let interval = 0; interval < 2; interval++) app.engine.recorder.recordEnergy({
+    source:'shelly-mqtt',device:'private-caravan-meter',prefix:'caravan',start:now-(2-interval)*60_000,
+    end:now-(1-interval)*60_000,receivedAt:now-(1-interval)*60_000,powers:[1],energies:[1/60],quality:[],
+  });
+  // Current-format recovered observations need not have a live recorder checkpoint.
+  app.store.observation({source:'mqtt-equipment',device:'private-recovered-probe',signal:'workshop_pressure',
+    value:2,unit:'bar',sourceTime:now,receivedAt:now,quality:[],raw:{recorder:{policy:'adaptive-value'}}});
+  for(let i=0;i<2;i++) app.store.observation({source:'mqtt-equipment',device:'private-circulation',signal:'dhwr_active',
+    value:1,unit:'state',sourceTime:now-i*1000,receivedAt:now-i*1000,quality:[],raw:{basis:'measured-power'}});
+  app.store.event('garage-external-temperature-diagnostic',{status:'abnormal',reason:'synthetic-report-gap'},now);
+  app.engine.latestStatus.recording=app.engine.recorder.status(now);
+}
 function seedChargingFixture(store, energySource='simulation') {
   store.transaction(() => {
     for (let slot=0;slot<12;slot++) {
@@ -73,6 +95,7 @@ try {
   app = await start({ config, clock: () => now });
   seedChartFixture(app.store, now);
   seedChargingFixture(app.store);
+  seedRecordingFixture(app);
   addFireplace(app.store, 'simulated', { kg: 8, requestId: 'synthetic-browser-fire' }, now - 3 * 3600000);
   addFireplace(app.store, 'simulated', { kg: 4, requestId: 'synthetic-browser-topup' }, now - 2 * 3600000);
   app.store.snapshot({kind:'weather',source:'browser-fixture',fetchedAt:now-4*86400000,
@@ -211,10 +234,27 @@ try {
   })()`);
   await evaluate("document.getElementById('recording-details').open=true; true");
   await evaluate("document.getElementById('recording-adaptive-details').open=true; true");
-  await until("document.querySelectorAll('#recording-content tbody tr').length>35");
-  assert.match(await evaluate("document.getElementById('recording-content').textContent"),/rolling target/);
-  assert.match(await evaluate("document.getElementById('recording-content').textContent"), /Garage rear temperature/);
-  assert.match(await evaluate("document.getElementById('recording-content').textContent"), /Garage front temperature/);
+  await until("document.querySelectorAll('#recording-content tr[data-stream-id]').length>0");
+  assert.match(await evaluate("document.getElementById('recording-content').textContent"),/Rolling target/);
+  for(const label of ['Garage rear temperature','Garage front temperature','maximum interval'])
+    assert(!await evaluate(`document.getElementById('recording-content').textContent.includes(${JSON.stringify(label)})`));
+  const expectedStreams=app.engine.recorder.status(now).parameters.map(row=>row.streamId).sort();
+  assert.deepEqual(await evaluate("[...document.querySelectorAll('#recording-content tr[data-stream-id]')].map(row=>row.dataset.streamId).sort()"),expectedStreams,
+    'every actual adaptive stream appears once; exact and never-observed streams do not appear');
+  const duplicateRows=await evaluate("[...document.querySelectorAll('#recording-content tr[data-signal=workshop_temperature]')].map(row=>({id:row.dataset.streamId,text:row.querySelector('th').textContent}))");
+  assert.equal(duplicateRows.length,3);assert.equal(new Set(duplicateRows.map(row=>row.id)).size,3);
+  assert(duplicateRows.every(row=>row.text.includes(`Stream ${row.id}`)));
+  assert(duplicateRows.some(row=>row.text.includes('°C'))&&duplicateRows.some(row=>row.text.includes('%')));
+  assert(!JSON.stringify(duplicateRows).includes('private-recording-probe'));
+  assert.match(await evaluate("document.querySelector('#recording-content tr[data-signal=caravan_energy]').textContent"),/Caravan energy.*1.*Open:.*kWh over 1 min.*saved as readings arrive/);
+  assert.equal(await evaluate("Boolean(document.querySelector('#recording-content tr[data-signal=workshop_pressure]'))"),false,
+    'saved history without a checkpoint does not invent a current threshold');
+  await evaluate("document.querySelector('#recording-content details[data-stream-id]').open=true; document.querySelector('#recording-content details[data-stream-id] summary').focus(); true");
+  const focusedReading=await evaluate("document.activeElement.closest('details').dataset.streamId");
+  await evaluate("document.getElementById('recording-details').dispatchEvent(new Event('toggle')); true");
+  assert.equal(await evaluate("document.activeElement.closest('details').dataset.streamId"),focusedReading);
+  assert.equal(await evaluate(`document.querySelector('#recording-content details[data-stream-id="${focusedReading}"]').open`),true,
+    'fresh status rendering preserves source disclosure and keyboard focus');
   assert.equal(await evaluate("window.recordingFixture.requests"),0,'opening the adaptive table does not fetch the separate inventory');
   assert.equal(await evaluate("[...document.querySelectorAll('#recording-details > details')].map(node=>node.id).join(',')"),'recording-adaptive-details,energy-audit-details,recording-overview-details,database-export-details');
   await evaluate(`(() => {
@@ -234,6 +274,14 @@ try {
   await until("document.querySelectorAll('#recording-overview-content .recording-data-group').length>=8");
   assert.equal(await evaluate("document.getElementById('recording-overview-details').open"),true,'native summary opens by keyboard');
   assert.equal(await evaluate("window.recordingFixture.requests"),1);
+  for(const group of ['living','storage']) for(const output of [0,1]) {
+    const key=`floor_${group}_${output}_active`;
+    assert.match(await evaluate(`document.querySelector('[data-dataset-id="${key}"]').textContent`),/Every change/);
+  }
+  assert.match(await evaluate("document.querySelector('[data-dataset-id=dhwr_active]').textContent"),/2 records.*Every report/);
+  assert.match(await evaluate("document.querySelector('[data-dataset-id=garage_native_defrost]').textContent"),/Garage defrost state/);
+  assert.match(await evaluate("document.querySelector('[data-dataset-id=events-garage-feed]').textContent"),/garage-external-temperature-diagnostic/);
+  assert.match(await evaluate("document.querySelector('[data-dataset-id=adaptive-observations]').textContent"),/workshop_pressure.*bar.*Adaptive measurement/);
   assert.match(await evaluate("document.getElementById('recording-overview-message').textContent"),/Database snapshot:/);
   assert.equal(await evaluate("Boolean(document.querySelector('[data-dataset-id=heat_pump_power]'))"),false,'calculated heat-pump power is not a separate stored series');
   assert(await evaluate("document.querySelectorAll('.recording-storage-accounting tbody tr').length")>10,'physical table accounting is available separately');
@@ -297,8 +345,21 @@ try {
   mkdirSync('var',{recursive:true});
   const recordingShot=await command('browsingContext.captureScreenshot',{context,origin:'viewport'});
   writeFileSync('var/home-energy-recording.png',Buffer.from(recordingShot.data,'base64'));
+  for(const theme of ['dark','light']) for(const width of [390,1440]) {
+    if(await evaluate('document.documentElement.dataset.theme')!==theme) await evaluate("document.getElementById('theme-toggle').click(); true");
+    await command('browsingContext.setViewport',{context,viewport:{width,height:width===390?844:1100},devicePixelRatio:1});
+    await evaluate("document.getElementById('recording-adaptive-details').scrollIntoView({block:'start'}); true");
+    assert.equal(await evaluate('document.documentElement.scrollWidth<=innerWidth'),true,`${theme}/${width}: page stays within viewport`);
+    assert.equal(await evaluate("document.querySelector('.recording-measurements').scrollWidth<=document.querySelector('.recording-measurements').clientWidth+1"),true,
+      `${theme}/${width}: adaptive rows fit without sideways scrolling`);
+    const screenshot=await command('browsingContext.captureScreenshot',{context,origin:'viewport'});
+    writeFileSync(`var/recording-${theme}-${width}.png`,Buffer.from(screenshot.data,'base64'));
+  }
+  await evaluate("document.getElementById('theme-toggle').click(); true");
+  await command('browsingContext.setViewport',{context,viewport:{width:1440,height:1100},devicePixelRatio:1});
   await evaluate("document.getElementById('recording-details').open=false; window.scrollTo(0,0); true");
 
+  if (!recordingOnly) {
   assert.equal(await evaluate("document.body.textContent.includes('A comfortable home')"), false);
   assert.equal(await evaluate("document.getElementById('error').hidden"), true);
   const legendState = text => evaluate(`Array.from(document.querySelectorAll('#chart-legend button')).find(b => b.textContent.toLowerCase().includes(${JSON.stringify(text.toLowerCase())}))?.getAttribute('aria-pressed')`);
@@ -889,8 +950,12 @@ try {
   await capture('home-energy-mqtt-tests-mobile');
   await evaluate("document.getElementById('providers').scrollIntoView({block:'center'}); true");
   await capture('home-energy-provider-fixture-mobile');
+  }
   assert.deepEqual(errors, []);
-  console.log(JSON.stringify({ result: 'chart-browser-smoke-passed', browserTimeZone, timings,
+  console.log(JSON.stringify(recordingOnly?{result:'recording-browser-smoke-passed',browserTimeZone,
+    checked:['actual-adaptive-streams-only','opaque-duplicate-stream-identities','unit-distinction','all-four-floor-outputs',
+      'every-report-circulation-feedback','observed-defrost','abnormal-feed-events','event-type-breakdown','saved-history-without-checkpoint','durable-open-energy','lazy-read-only-inventory',
+      'counts-and-dates','keyboard-and-refresh-preservation','dark-and-light','390-and-1440-layouts','physical-table-accounting']}:{ result: 'chart-browser-smoke-passed', browserTimeZone, timings,
     electricityConnections: ['combined-source-overview-and-connection', 'charger2-native-phase-readings-and-total-energy',
       'source-scoped-charger2-errors', 'keyboard-expansion', 'refresh-preserves-expansion'],
     chargingChecks:['charger2-visible-power-dark-and-light','charger2-visible-with-lower-loads-hidden-or-absent','charger2-no-invented-phases','exactly-two-charger-session-axes','property-latest-plus-charger-session-averages','session-counts-exclusions-and-energy-weighting'],

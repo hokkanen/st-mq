@@ -41,12 +41,15 @@ The dashboard shows each computer's role, synchronization and verification
 status, and the explicit recovery controls. There is no automatic failover.
 
 An independent recording optimizer targets a configurable **10 GB/year** rolling
-growth rate with a **five-minute maximum interval when fresh measurements exist**.
-Periodic indoor temperatures store changes and compact report coverage instead
-of forced equal-value rows; missing reports leave chart and learning gaps.
-Electricity history stores three estimated phase-energy increments for Easee and
-property import, plus one total-energy increment for TeslaMate portable charging.
-Meter readings and completed-session comparisons are diagnostic only. The house learner uses
+growth rate for continuous measurements and accumulated energy. There is no
+maximum recording interval: unchanged values extend coverage instead of creating
+repeated rows. Room temperatures, settings and equipment states retain every
+change; missing reports leave chart and learning gaps. Electricity history stores
+three estimated phase-energy increments for property and both physical chargers.
+Charger 2 also retains its native measured total; vehicle feeds never supply home
+electricity. The database UI separates adaptive measurements from exact history,
+full-report feedback, events, learning journals, imports and current state.
+Separate property meter checks and completed-session comparisons are diagnostic only. The house learner uses
 committed windows and a versioned replay journal. See
 [adaptive recording and CSV imports](docs/recording.md), including local MQTT temperature sensors.
 Home and Garage equipment uses explicit `shelly:<prefix>` or `mqtt:<state topic>`
@@ -674,8 +677,9 @@ The dashboard reports the active values; Away/Pause and explicit timed tests are
 temporary controls. Configuration takes precedence over old browser-saved
 mode/drop settings. `temp_to_hours` is obsolete and has been removed.
 
-`recording.max_interval_minutes` defaults to `5` and
-`recording.annual_budget_gb` to `10`. Acquisition intervals have separate options;
+`recording.annual_budget_gb` defaults to `10`. There is no maximum recording
+interval; the retired `max_interval_minutes` option is rejected. Acquisition
+intervals and source expiry have separate options;
 the complete example and local MQTT sensor payloads are in
 [docs/recording.md](docs/recording.md). A storage target is not a calendar quota or
 an automatic deletion policy.

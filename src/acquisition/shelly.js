@@ -75,7 +75,7 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
       raw: { timeBasis: value === null ? 'availability-transition' : 'mqtt-live-status',
         ...((unit === 'degC' || unit === '°C') ? { reportIntervalMs: pollInterval(device),
           reportGraceMs: Math.max(0, maxAge(device) - pollInterval(device)) } : {}), ...raw } };
-    if (device.role === 'caravan' || ['heat_savings_active', 'garage_relay_active'].includes(signal))
+    if (device.role === 'caravan' || signal === 'garage_relay_active')
       engine.rememberObservation?.(observation, engine.clock());
     else engine.ingest(observation);
     device.readings[signal] = { value, unit, label: definition?.label ?? signal, observedAt: at, quality, ...raw };

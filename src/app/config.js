@@ -60,8 +60,10 @@ function interval(value, fallback, minimum, maximum, name) {
 }
 
 export function recordingConfiguration(input = {}) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) throw new TypeError('Recording settings must be an object');
+  for (const key of Object.keys(input)) if (key !== 'annual_budget_gb')
+    throw new Error(`Unsupported recording setting: ${key}. Recording has no maximum interval.`);
   return {
-    maxIntervalMs: Math.round(interval(input.max_interval_minutes, 5, 0.25, 60, 'max_interval_minutes') * 60_000),
     annualBudgetBytes: Math.round(interval(input.annual_budget_gb, 10, 0.01, 10000, 'annual_budget_gb') * 1_000_000_000),
   };
 }

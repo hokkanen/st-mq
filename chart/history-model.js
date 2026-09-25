@@ -64,7 +64,7 @@ export const defaultVisibility = Object.freeze({ heatOff: true, compressorSpace:
 export const leftGroups = Object.freeze({
   ...Object.fromEntries(HISTORY_AXES.map(axis => [axis.key, axis.signals])),
   power: ['property_power', 'auxiliary_power', 'charger_power', 'charger2_power'],
-  phases: ['property_current_l1', 'property_current_l2', 'property_current_l3', 'ev1_current_l1', 'ev1_current_l2', 'ev1_current_l3'],
+  phases: ['property', 'ev1', 'ev2'].flatMap(prefix => [1, 2, 3].map(phase => `${prefix}_current_l${phase}`)),
   integral: ['heating_integral'],
   learning_profit: ['learning_profit'],
   learning_aux_profit: ['learning_aux_profit'],
@@ -94,7 +94,7 @@ export function visible(key, preferences = {}) {
 const seriesInfo = {
   property_power: ['Property', 'kW · interval average from recorded energy; older history uses 230 V × current', 'property'],
   charger_power: ['Charger 1', 'kW · interval average from recorded energy; older history uses 230 V × current', 'ev', 'fill'],
-  charger2_power: ['Charger 2', 'kW · interval average from recorded total energy; phase distribution unknown', 'ev2', 'fill'],
+  charger2_power: ['Charger 2', 'kW · interval average from recorded native total meter energy', 'ev2', 'fill'],
   caravan_energy: ['Caravan energy', 'kWh · measured meter energy over the recorded interval', 'garage', 'interval-energy'],
   caravan_temperature: ['Caravan air', '°C', 'garage'],
   caravan_humidity: ['Caravan relative humidity', '%', 'outdoor'],
@@ -109,6 +109,9 @@ const seriesInfo = {
   ev1_current_l1: ['Charger 1 L1', 'A', 'phase1', 'fill'],
   ev1_current_l2: ['Charger 1 L2', 'A', 'phase2', 'fill'],
   ev1_current_l3: ['Charger 1 L3', 'A', 'phase3', 'fill'],
+  ev2_current_l1: ['Charger 2 L1', 'A · equivalent interval average from estimated phase energy', 'phase1'],
+  ev2_current_l2: ['Charger 2 L2', 'A · equivalent interval average from estimated phase energy', 'phase2'],
+  ev2_current_l3: ['Charger 2 L3', 'A · equivalent interval average from estimated phase energy', 'phase3'],
   heating_integral: ['Heating integral', '°min', 'integral'],
   learning_profit: ['Space-heating benefit after recovery', '€/cycle · estimated completed-cycle mean; hot-water service excluded', 'learning', 'learning'],
   learning_aux_profit: ['Space-heating benefit with auxiliary recovery', '€/cycle · observed space-heating auxiliary recovery cycles only', 'learning', 'learning'],

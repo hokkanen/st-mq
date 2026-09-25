@@ -235,7 +235,7 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
           return;
         }
         if (req.method === 'GET' && url.pathname === '/api/energy-audits') {
-          const property = readerStore.energyAudits({ signal:'property_import_energy_counter', newestFirst:true, limit:1 })
+          const property = readerStore.energyAudits({ signal:'property_import_energy_counter', newestFirst:true, limit:1, now:engine.clock() })
             .map(({signal,sourceTime,quality,comparison}) => ({signal,sourceTime,quality,comparison}));
           return json(200, [...property, ...chargingSessionCheckSummaries(readerStore)]);
         }

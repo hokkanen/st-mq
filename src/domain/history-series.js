@@ -33,7 +33,7 @@ const h66 = [
 ];
 
 export const H66_HISTORY_SIGNALS = Object.freeze(h66.map(([signal]) => signal));
-export const PHASE_ENERGY_SIGNALS = Object.freeze(['property', 'ev1'].flatMap(prefix => [1, 2, 3].map(phase => `${prefix}_energy_l${phase}`)));
+export const PHASE_ENERGY_SIGNALS = Object.freeze(['property', 'ev1', 'ev2'].flatMap(prefix => [1, 2, 3].map(phase => `${prefix}_energy_l${phase}`)));
 export const ENERGY_SIGNALS = Object.freeze([...PHASE_ENERGY_SIGNALS, 'ev2_energy', 'caravan_energy']);
 export const AUDIT_SIGNALS = Object.freeze(['property_import_energy_counter']);
 export const CARAVAN_RUNNING_STATES = Object.freeze({ 0: 'Off', 1: 'Low', 2: 'Medium', 3: 'High', 4: 'Auto' });
@@ -48,7 +48,7 @@ export const SIGNAL_INFO = Object.freeze(Object.fromEntries([
   ['indoor_temperature', { label: 'Upstairs', unit: '°C', group: 'Home temperatures', role: 'House input', kind: 'Recorded' }],
   ['downstairs_temperature', { label: 'Downstairs', unit: '°C', group: 'Home temperatures', role: 'House input', kind: 'Recorded' }],
   ['bedroom_temperature', { label: 'Bedroom', unit: '°C', group: 'Home temperatures', role: 'House input', kind: 'Recorded' }],
-  ['caravan_energy', { label: 'Caravan energy per interval', unit: 'kWh', group: 'Electricity', role: 'History only', kind: 'Recorded', detail: 'Measured meter-counter increments over adaptive recording intervals; excluded from house and garage learning' }],
+  ['caravan_energy', { label: 'Caravan energy', unit: 'kWh', group: 'Electricity', role: 'History only', kind: 'Recorded', detail: 'Measured meter-counter increments over adaptive recording intervals; excluded from house and garage learning' }],
   ['caravan_temperature', { label: 'Caravan air temperature', unit: '°C', group: 'Caravan', role: 'History only', kind: 'Recorded', detail: 'Shelly BLU air temperature; excluded from house and garage learning' }],
   ['caravan_humidity', { label: 'Caravan relative humidity', unit: '%', group: 'Caravan', role: 'History only', kind: 'Recorded', detail: 'Shelly BLU relative humidity; battery and Bluetooth signal remain live details' }],
   ['caravan_dehumidifier_running_state', { label: 'Caravan dehumidifier running state', unit: 'state', group: 'Caravan', role: 'History only', kind: 'Recorded', detail: 'Reported Off, Low, Medium, High or Auto; missing reports remain gaps, commands do not create readings' }],
@@ -56,12 +56,11 @@ export const SIGNAL_INFO = Object.freeze(Object.fromEntries([
   ...[1, 2].map(index => [`garage_door${index}_open`, { label: `Garage door ${index}`, unit: 'state', group: 'Equipment states', role: 'History only', kind: 'Recorded', detail: 'Reported open or closed state; no age-based change is inferred for an event-only contact' }]),
   ['garage_temperature', { label: 'Garage rear temperature', unit: '°C', group: 'Home temperatures', role: 'Garage protection input', kind: 'Recorded' }],
   ['garage_native_indoor_temperature', { label: 'Pump interpreted indoor temperature', unit: '°C', group: 'Garage heat pump', role: 'History only', kind: 'Recorded', detail: 'Temperature reported by the pump; it may reflect its internal sensor or the supplied external value and native processing, not an independent room measurement' }],
-  ['garage_external_temperature', { label: 'External temperature feed', unit: '°C', group: 'Garage heat pump', role: 'History only', kind: 'Recorded', detail: 'Acknowledged temperature supplied to the pump while its external-temperature permission is active; inactive, expired or unconfirmed periods remain gaps' }],
   ['garage_compressor_frequency', { label: 'Compressor frequency', unit: 'Hz', group: 'Garage heat pump', role: 'History only', kind: 'Recorded', detail: 'Native compressor frequency; not electrical power' }],
   ['garage_compressor_active', { label: 'Compressor running', unit: 'state', group: 'Garage heat pump', role: 'History only', kind: 'Recorded', detail: 'Native compressor operation; also available as Garage compressor shading with every left-axis selection' }],
   ['auxiliary_power', { label: 'Auxiliary power estimate', unit: 'kW', group: 'Electricity', role: 'Equipment context', kind: 'Calculated', detail: 'Saved estimate from verified auxiliary output and rated capacity' }],
-  ...PHASE_ENERGY_SIGNALS.map(signal => [signal, { label: `${signal.startsWith('property') ? 'Property' : 'Charger 1'} L${signal.at(-1)} energy`, unit: 'kWh', group: 'Electricity', role: 'Recorded energy', kind: 'Recorded', detail: 'Estimated energy over the recorded interval' }]),
-  ['ev2_energy', { label: 'Charger 2 total energy per interval', unit: 'kWh', group: 'Electricity', role: 'Recorded energy', kind: 'Recorded', detail: 'Native physical Charger 2 electricity counter differences; phase distribution is not recorded' }],
+  ...PHASE_ENERGY_SIGNALS.map(signal => [signal, { label: `${signal.startsWith('property') ? 'Property' : signal.startsWith('ev2') ? 'Charger 2' : 'Charger 1'} L${signal.at(-1)} energy`, unit: 'kWh', group: 'Electricity', role: 'Recorded energy', kind: 'Recorded', detail: signal.startsWith('ev2') ? 'Native total meter energy allocated using measured phase-power shares; estimated phase energy, never an additional contribution to total consumption' : 'Estimated energy over the recorded interval' }]),
+  ['ev2_energy', { label: 'Charger 2 total energy', unit: 'kWh', group: 'Electricity', role: 'Recorded energy', kind: 'Recorded', detail: 'Authoritative native Charger 2 electricity counter differences over the recorded interval' }],
   ...AUDIT_SIGNALS.map(signal=>[signal,{label:'Property meter counter',unit:'kWh',group:'Meter checks',role:'Audit only',kind:'Recorded',detail:'Reported cumulative meter value; never used to correct energy or train'}]),
 ]));
 
@@ -122,7 +121,7 @@ export const RIGHT_AXIS_SIGNALS = Object.freeze(['model_indoor_temperature', 'ga
 const basic = [
   ['power', 'Power', 'Electricity', ['property_power', 'auxiliary_power', 'charger_power', 'charger2_power'], 'kW', 'Calculated'],
   ['temperatures', 'Home and garage temperatures', 'Home temperatures', ['indoor_temperature', 'bedroom_temperature', 'downstairs_temperature', 'garage_temperature', 'garage_temperature_2'], '°C', 'Recorded'],
-  ['phases', 'Phase currents / interval estimates', 'Electricity', ['property_current_l1', 'property_current_l2', 'property_current_l3', 'ev1_current_l1', 'ev1_current_l2', 'ev1_current_l3'], 'A', 'Calculated'],
+  ['phases', 'Phase currents / interval estimates', 'Electricity', ['property', 'ev1', 'ev2'].flatMap(prefix => [1, 2, 3].map(phase => `${prefix}_current_l${phase}`)), 'A', 'Calculated'],
   ['phase_energy', 'Phase energy per interval', 'Electricity', PHASE_ENERGY_SIGNALS, 'kWh', 'Recorded'],
   ['solar_radiation', 'Solar radiation', 'Weather', ['solar_radiation', 'solar_forecast'], 'W/m²', 'Forecast'],
   ['outdoor_forecast', 'Outdoor forecast from now', 'Weather', ['outdoor_forecast'], '°C', 'Forecast'],

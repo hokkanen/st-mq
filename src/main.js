@@ -147,7 +147,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
       for (const acquisition of acquisitions.splice(0)) await attempt(() => acquisition.close({ restore }));
       for (const error of await Promise.all(revoked)) if (error) errors.push(error);
       await attempt(() => learning?.close()); learning = null;
-      await attempt(() => engine?.recorder.flush(clock()));
+      await attempt(() => engine?.recorder.flush(clock(), { force: true }));
       commandTransport = null;
       if (errors.length) throw new AggregateError(errors, 'Runtime cleanup completed with errors; required restoration may remain pending.');
     })();

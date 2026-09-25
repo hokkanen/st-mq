@@ -1,23 +1,29 @@
+import { createHash } from 'node:crypto';
 import { H66_MAX_AGE_MS, OUTDOOR_MAX_AGE_MS } from '../domain/reading-freshness.js';
 import { INDOOR_SIGNALS, HELD_TEMPERATURE_SIGNALS, INDOOR_ATTENTION_MS } from '../domain/indoor-sensors.js';
 import { temperatureReportMaxAge } from '../domain/temperature-reports.js';
 import { isRecordedDataset } from './recorded-datasets.js';
+import { validEnergyQuality } from './energy-history.js';
+import { recordingPolicy, recordingStreamKey as keyOf } from '../domain/recording-policy.js';
 
 const MINUTE = 60_000, HOUR = 60 * MINUTE, DAY = 24 * HOUR, YEAR = 365.25 * DAY;
-const VERSION = 'adaptive-recorder-v1';
-const GLOBAL_KEY = 'recorder:global:v1';
+export const RECORDING_VERSION = 'recording-contract-v2';
+const VERSION = RECORDING_VERSION;
+const GLOBAL_KEY = 'recorder:global:v2';
 const DISABLED_H66 = new Set(['discharge_temperature', 'brine_pump_active']);
-const EXACT = /(?:_active$|_routing$|_mode$|_code$|_setting$|_hours$|^room_influence$|^heating_curve$|^heating_setpoint$|^auxiliary_output$)/;
 const clamp = (n, low, high) => Math.max(low, Math.min(high, n));
 const flags = quality => [...new Set(quality ?? [])].sort();
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
-const keyOf = o => JSON.stringify([o.source, o.device, o.signal]);
 const stateKey = key => `recorder:signal:${key}`;
 const finiteTime = at => Number.isSafeInteger(at) && Math.abs(at) <= 8640000000000000;
+// Correlated contact replies use the host receipt clock. Two ordered replies
+// can legitimately share a millisecond; observation IDs preserve their order.
+const hostContactReport = o => o.source === 'floor-override' && o.unit === 'state'
+  && o.raw?.timeBasis === 'request-readback' && o.sourceTime === o.receivedAt;
 const numericalFloor = (a,b) => Math.max(1,Math.abs(a??0),Math.abs(b??0))*Number.EPSILON*32;
 const semanticQuality = raw => Object.fromEntries(['usableForControl','verified','retained','cached','installationVerified',
   'verification','diagnosticAvailable','accuracyVerified','contractVersion','supported','timeBasis','publicationMayUseGatewayCache','basis','reportIntervalMs','reportGraceMs','eventOnly','temperatureRouteSignature'].filter(key=>raw?.[key]!==undefined).map(key=>[key,raw[key]]));
-// Source validity is independent of the recording budget/maximum spacing.
+// Source validity is independent of the recording budget.
 // Increasing storage compression must never make old measurements fresher.
 // Room and garage readings remain the last reported measurement until replaced.
 // Their source clock still controls ordering, recording and measurement lineage.
@@ -80,13 +86,13 @@ export class Recorder {
   }
 
   configure(config = {}) {
+    for (const key of Object.keys(config)) if (key !== 'annualBudgetBytes')
+      throw new TypeError(`Unsupported recording setting: ${key}`);
     this.config = {
-      maxIntervalMs: config.maxIntervalMs ?? 5 * MINUTE,
       annualBudgetBytes: config.annualBudgetBytes ?? 10_000_000_000,
     };
-    if (!Number.isFinite(this.config.maxIntervalMs) || this.config.maxIntervalMs < 1000
-      || !Number.isFinite(this.config.annualBudgetBytes) || this.config.annualBudgetBytes <= 0)
-      throw new TypeError('Recorder interval and annual budget must be positive');
+    if (!Number.isFinite(this.config.annualBudgetBytes) || this.config.annualBudgetBytes <= 0)
+      throw new TypeError('Recorder annual budget must be positive');
   }
 
   global(now) {
@@ -105,7 +111,8 @@ export class Recorder {
       const step = clamp(Math.log(Math.max(ratio, 0.05)) * Math.min(elapsed / DAY, 0.125), -0.12, 0.12);
       g.tolerance = clamp(g.tolerance * Math.exp(step), 1e-6, 10);
       g.measuredHours += elapsed / HOUR; g.measuredAt = now; g.measuredBytes = bytes;
-      this.store.db.prepare('DELETE FROM recorder_metrics WHERE bucket<?').run(Math.floor(now/HOUR)*HOUR-7*DAY);
+      g.metricsPrunedBefore = Math.floor(now/HOUR)*HOUR-7*DAY;
+      this.store.db.prepare('DELETE FROM recorder_metrics WHERE bucket<?').run(g.metricsPrunedBefore);
     }
     return g;
   }
@@ -193,7 +200,8 @@ export class Recorder {
         ...(recoverConnection ? { transportRecoveredAt: at, temperatureRouteSignature: routeSignature } : { reportPolicyChangedAt: at }), originalReportReceivedAt: receivedAt,
         originalReportSourceTime: sourceTime,
         originalReportTimeBasis: previousRaw.originalReportTimeBasis ?? previousRaw.timeBasis });
-      raw.recorder = { version: VERSION, reason: recoverConnection ? 'mqtt-transport-recovery' : 'report-policy-change', status: fresh ? 'fresh' : 'unavailable',
+      raw.recorder = { version: VERSION, policy: recordingPolicy({ ...reading, raw }).id,
+        reason: recoverConnection ? 'mqtt-transport-recovery' : 'report-policy-change', status: fresh ? 'fresh' : 'unavailable',
         originalSourceTime: sourceTime, temporalBasis: recoverConnection ? 'transport-recovery' : 'policy-change' };
       const observation = { source: reading.source, device: reading.device, signal: reading.signal,
         value: fresh ? value : null, unit, sourceTime: fresh ? sourceTime : null, receivedAt: at, quality: q, raw };
@@ -202,6 +210,7 @@ export class Recorder {
       s.last = { id, value: observation.value, sourceTime: observation.sourceTime, receivedAt: at,
         quality: q, semanticQuality: semanticQuality(raw) };
       s.unit = unit; s.reportPolicy = { ...policy }; s.status = fresh ? 'fresh' : 'unavailable';
+      s.recordingPolicy = raw.recorder.policy;
       s.coverageId = Number(this.store.db.prepare(`INSERT INTO recorder_coverage
         (source,device,signal,status,start_at,end_at,source_time,observation_id,samples) VALUES(?,?,?,?,?,?,?,?,0)`)
         .run(reading.source, reading.device, reading.signal, s.status, at, at, fresh ? sourceTime : null, id).lastInsertRowid);
@@ -215,16 +224,17 @@ export class Recorder {
 
   classify(o, state) {
     const q = flags(o.quality);
+    const contact = hostContactReport(o);
     if (q.some(x => /failed|disconnected|fetch-error|acquisition-failed|provider[-_]error/.test(x))) return 'failed';
     if (o.value === null || !Number.isFinite(o.sourceTime) || q.some(x => /missing|invalid|retained|unavailable/.test(x))) return 'unavailable';
     if (q.some(x => /stale|out-of-order/.test(x)) || o.sourceTime > o.receivedAt
       || (temperatureReportMaxAge(o) !== null
         ? o.receivedAt - o.sourceTime >= sourceAge(o) : o.receivedAt - o.sourceTime > sourceAge(o))
       || temperatureReportMaxAge(o) !== null && state.status && state.status !== 'fresh'
-        && o.sourceTime <= state.lastSourceTime
+        && (o.sourceTime < state.lastSourceTime || !contact && o.sourceTime === state.lastSourceTime)
       || temperatureReportMaxAge(o) !== null && state.reportUnavailableSince != null
         && o.sourceTime < state.reportUnavailableSince
-      || temperatureReportMaxAge(o) !== null && o.sourceTime === state.lastSourceTime
+      || !contact && temperatureReportMaxAge(o) !== null && o.sourceTime === state.lastSourceTime
         && o.value !== state.previousValue
       || state.lastSourceTime != null && o.sourceTime < state.lastSourceTime) return 'stale';
     return 'fresh';
@@ -248,11 +258,15 @@ export class Recorder {
     const hour = Math.floor(now / HOUR) * HOUR;
     const errorTime = Number.isFinite(error) && elapsed>0 ? elapsed : 0;
     this.store.db.prepare(`INSERT INTO recorder_metrics
-      (key,bucket,polls,records,bytes,error_squared_time,error_time,stale,failed,unavailable) VALUES(?,?,?,?,?,?,?,?,?,?)
+      (key,bucket,polls,records,first_saved_at,last_saved_at,bytes,error_squared_time,error_time,stale,failed,unavailable) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(key,bucket) DO UPDATE SET polls=polls+excluded.polls,records=records+excluded.records,bytes=bytes+excluded.bytes,
+      first_saved_at=CASE WHEN excluded.first_saved_at IS NULL THEN first_saved_at
+        WHEN first_saved_at IS NULL THEN excluded.first_saved_at ELSE MIN(first_saved_at,excluded.first_saved_at) END,
+      last_saved_at=CASE WHEN excluded.last_saved_at IS NULL THEN last_saved_at
+        WHEN last_saved_at IS NULL THEN excluded.last_saved_at ELSE MAX(last_saved_at,excluded.last_saved_at) END,
       error_squared_time=error_squared_time+excluded.error_squared_time,error_time=error_time+excluded.error_time,
       stale=stale+excluded.stale,failed=failed+excluded.failed,unavailable=unavailable+excluded.unavailable`)
-      .run(state.key,hour,polls,Number(saved),bytes,errorTime ? error*error*errorTime : 0,errorTime,
+      .run(state.key,hour,polls,Number(saved),saved ? now : null,saved ? now : null,bytes,errorTime ? error*error*errorTime : 0,errorTime,
         polls*Number(state.status==='stale'),polls*Number(state.status==='failed'),polls*Number(state.status==='unavailable'));
   }
 
@@ -287,6 +301,7 @@ export class Recorder {
   record(observation, { force = false, kind } = {}) {
     const o = { ...observation, receivedAt: observation.receivedAt ?? this.clock(), sourceTime: observation.sourceTime ?? null,
       quality: flags(observation.quality), raw: observation.raw ?? null };
+    o.recordingPolicy = recordingPolicy(o, { kind }).id;
     if (!finiteTime(o.receivedAt)) throw new TypeError('Invalid recorder receipt timestamp');
     if (!isRecordedDataset(o) || o.raw?.acquisitionOnly || o.raw?.auditOnly || o.source === 'husdata-h66' && DISABLED_H66.has(o.signal))
       return { saved: false, reason: 'not-in-recorded-dataset', observation: null };
@@ -316,10 +331,12 @@ export class Recorder {
             || s.reportUnavailableSince!=null && (o.sourceTime<s.reportUnavailableSince || o.sourceTime<=s.lastSourceTime))))
         o.quality = flags([...o.quality, 'out-of-order-source-time']);
       const status = this.classify(o,s), fresh = status === 'fresh';
-      const freshUpdate = fresh && (s.lastSourceTime === null || o.sourceTime > s.lastSourceTime
+      const freshUpdate = fresh && (hostContactReport(o) || s.lastSourceTime === null || o.sourceTime > s.lastSourceTime
         || o.sourceTime === s.lastSourceTime && s.previousValue !== o.value);
       if (freshUpdate) this.scale(s,o.value,o.sourceTime);
-      const exact = periodic || kind === 'state' || ['state','code'].includes(o.unit) || EXACT.test(o.signal);
+      const policy = recordingPolicy(o, { kind });
+      const exact = !policy.adaptive;
+      s.recordingPolicy = policy.id;
       const changed = s.last === null || o.value !== s.last.value;
       const transition = s.last && (status !== s.status || !same(o.quality,s.last.quality)
         || o.unit!==s.unit || !same(semanticQuality(o.raw),s.last.semanticQuality??{}));
@@ -327,7 +344,6 @@ export class Recorder {
       const threshold = Math.max(s.scale * g.tolerance,numericalFloor(o.value,s.last?.value));
       let reason = !s.last ? 'initial' : transition ? 'quality-or-availability' : force ? 'forced'
         : freshUpdate && (crossingZero || exact && changed) ? 'state-change'
-        : !periodic && freshUpdate && o.sourceTime - s.last.sourceTime >= this.config.maxIntervalMs ? 'maximum-interval'
         : freshUpdate && changed && Math.abs(o.value - s.last.value) > threshold ? 'learned-change' : null;
       // Repeated unavailable/stale polls compact into coverage, never fake data.
       if (!fresh && s.last && !transition && !force) reason = null;
@@ -335,7 +351,7 @@ export class Recorder {
       let committed = null;
       if (reason) {
         const raw = compactRaw(o.raw);
-        raw.recorder = { version: VERSION, reason, threshold: exact ? null : threshold,
+        raw.recorder = { version: VERSION, policy: policy.id, reason, threshold: exact ? null : threshold,
           originalSourceTime: o.sourceTime, status, temporalBasis: 'source-observation' };
         committed = { ...o, raw, quality: fresh ? o.quality : flags([...o.quality,status]) };
         committed.id = this.store.observation(committed);
@@ -345,10 +361,10 @@ export class Recorder {
       }
       this.coverage(s,o,status,freshUpdate);
       if (periodic) s.reportUnavailableSince = fresh ? null : s.reportUnavailableSince ?? o.receivedAt;
-      const elapsed = s.lastPollAt === null ? 0 : Math.min(o.receivedAt - s.lastPollAt,this.config.maxIntervalMs);
+      const elapsed = s.lastPollAt === null ? 0 : Math.min(o.receivedAt - s.lastPollAt,sourceAge(o));
       // Error is the held saved value at every acquisition, time weighted so
       // bursts of readings do not count as extra independent accuracy evidence.
-      const error = fresh && prior && s.scale > 0 ? Math.abs(o.value-prior.value)/s.scale : null;
+      const error = policy.adaptive && fresh && prior && s.scale > 0 ? Math.abs(o.value-prior.value)/s.scale : null;
       this.count(s,o.receivedAt,{saved:Boolean(reason),error,elapsed,bytes:committed ? Buffer.byteLength(JSON.stringify(committed)) : 0});
       s.lastPollAt = o.receivedAt;
       if (fresh) s.lastSourceTime = Math.max(s.lastSourceTime ?? o.sourceTime,o.sourceTime);
@@ -369,7 +385,7 @@ export class Recorder {
     const { source = 'easee', device, prefix, start, end, energies, powers, quality = [], receivedAt = end } = interval;
     const signals = energySignals(prefix);
     if (!signals || !finiteTime(start) || !finiteTime(end) || end <= start
-      || !finiteTime(receivedAt) || !Array.isArray(energies) || energies.length !== signals.length
+      || !finiteTime(receivedAt) || end > receivedAt || !Array.isArray(energies) || energies.length !== signals.length
       || energies.some(n => !Number.isFinite(n) || n < 0) || !Array.isArray(powers) || powers.length !== signals.length
       || powers.some(n => !Number.isFinite(n) || n < 0)) throw new TypeError('Invalid phase energy interval');
     return this.store.transaction(() => {
@@ -377,14 +393,43 @@ export class Recorder {
       const state = this.store.getState(checkpointKey) ?? { lastEnd:null,pending:null,lastPowers:null,scales:signals.map(()=>null),lastQuality:null };
       if (state.lastEnd !== null && end <= state.lastEnd) return { saved:false,reason:'duplicate-interval',observations:[] };
       if (state.lastEnd !== null && start < state.lastEnd) throw new Error('Overlapping energy integration intervals');
+      if (state.lastReceivedAt != null && receivedAt < state.lastReceivedAt)
+        throw new TypeError('Out-of-order energy receipt');
       const q = flags(quality), g = this.global(receivedAt), observations = [], previousPowers = state.lastPowers;
+      // Recovery preserves original donor evidence without replacing live
+      // acquisition cursors. A subsequent local interval can straddle that
+      // recovered history. Keep the recovered evidence, skip the indivisible
+      // local interval and advance normally, so retries cannot double count or
+      // permanently stall acquisition. Any uncovered remainder is a real gap.
+      let recoveredEnd = null;
+      for (const row of this.store.db.prepare(`SELECT o.source_time,o.received_at,o.quality,o.raw FROM observations o
+        WHERE o.signal IN (${signals.map(()=>'?').join(',')}) AND o.unit='kWh' AND o.value>=0
+          AND o.import_id IS NULL AND o.source_time>? AND o.source_time<=? AND o.received_at<=?
+          AND ${source === 'simulation' ? "o.source='simulation'" : "o.source<>'simulation'"}
+          AND json_valid(o.raw) AND json_extract(o.raw,'$.intervalStart')<?
+          AND EXISTS (SELECT 1 FROM recovery_provenance p WHERE p.table_name IN ('observations','recorder_pending_energy')
+            AND p.target_id=CAST(o.id AS TEXT) AND p.disposition='missing')`)
+        .iterate(...signals,start,receivedAt,receivedAt,end)) {
+        const raw = JSON.parse(row.raw);
+        let quality; try { quality = JSON.parse(row.quality); } catch { continue; }
+        if (raw.timeBasis === 'completed-hour' || raw.auditOnly || raw.acquisitionOnly || !validEnergyQuality(quality)
+          || !finiteTime(raw.intervalStart) || raw.intervalEnd !== row.source_time
+          || raw.intervalEnd <= raw.intervalStart || row.received_at < row.source_time) continue;
+        recoveredEnd = Math.max(recoveredEnd ?? -Infinity,raw.intervalEnd);
+      }
+      if (recoveredEnd !== null) {
+        observations.push(...this.commitEnergy(state,source,device,prefix,receivedAt,'recovery-boundary'));
+        state.lastEnd=end; state.lastReceivedAt=receivedAt; state.lastPowers=null; state.lastQuality=null;
+        this.store.setState(checkpointKey,state);
+        g.energyRevision=(g.energyRevision ?? 0)+1; this.store.setState(GLOBAL_KEY,g);
+        if (recoveredEnd<end) observations.push(...this.energyGap({source,device,prefix,start:Math.max(start,recoveredEnd),end,
+          receivedAt,quality:['recovery-overlap','missing']}));
+        return {saved:observations.length>0,reason:'recovered-interval-overlap',observations};
+      }
       // Close the previous valid interval before any gap or quality transition;
       // do not spread its energy over missing time or blend measurement bases.
       if (state.pending && (state.pending.end !== start || !same(state.pending.quality,q)))
         observations.push(...this.commitEnergy(state,source,device,prefix,receivedAt,'boundary'));
-      if (!state.pending) state.pending = {start,end,energies:signals.map(()=>0),quality:q};
-      for (let i=0;i<signals.length;i++) state.pending.energies[i] += energies[i];
-      state.pending.end = end; state.lastEnd = end;
       let changed = false;
       for (let i=0;i<signals.length;i++) {
         const s = state.scales[i] ?? {mean:null,variance:0,step:0,previousValue:null,lastFreshAt:null,scale:0};
@@ -393,14 +438,23 @@ export class Recorder {
           || Math.abs(powers[i]-state.lastPowers[i]) > Math.max(s.scale*g.tolerance,numericalFloor(powers[i],state.lastPowers[i])))) changed = true;
       }
       const reason = state.lastPowers === null ? 'initial' : !same(state.lastQuality,q) ? 'quality-or-availability'
-        : changed ? 'learned-change' : end-state.pending.start >= this.config.maxIntervalMs ? 'maximum-interval' : null;
+        : changed ? 'learned-change' : null;
+      // Keep a newly detected transition out of the preceding steady span. With
+      // no maximum duration, blending it backwards could distort days of history.
+      if (reason && state.pending)
+        observations.push(...this.commitEnergy(state,source,device,prefix,receivedAt,'power-boundary'));
+      if (!state.pending) state.pending = {start,end,receivedAt,energies:signals.map(()=>0),quality:q};
+      for (let i=0;i<signals.length;i++) state.pending.energies[i] += energies[i];
+      state.pending.end = end; state.pending.receivedAt = receivedAt;
+      state.lastEnd = end; state.lastReceivedAt = receivedAt;
       if (reason) observations.push(...this.commitEnergy(state,source,device,prefix,receivedAt,reason));
       for (let i=0;i<signals.length;i++) {
         const s = this.signalState({source,device,signal:signals[i],unit:'kWh'},receivedAt);
-        s.scale = state.scales[i].scale; s.lastPollAt = receivedAt;
+        s.scale = state.scales[i].scale; s.lastPollAt = receivedAt; s.recordingPolicy = 'adaptive-energy';
         this.count(s,receivedAt,{elapsed:end-start,error:previousPowers && s.scale>0 ? Math.abs(powers[i]-previousPowers[i])/s.scale : null});
         this.store.setState(stateKey(s.key),s);
       }
+      g.energyRevision = (g.energyRevision ?? 0) + 1;
       this.store.setState(checkpointKey,state); this.store.setState(GLOBAL_KEY,g);
       return {saved:observations.length>0,reason:reason ?? 'within-threshold',observations};
     });
@@ -413,13 +467,14 @@ export class Recorder {
     const observations = p.energies.map((value,i) => {
       const o = {source,device,signal:signals[i],value,unit:'kWh',sourceTime:p.end,receivedAt,
         quality:p.quality,raw:{intervalStart:p.start,intervalEnd:p.end,durationMs:p.end-p.start,
-          basis:prefix==='caravan'?'meter-counter-delta':prefix==='ev2'?'native-meter-counter-delta':'integrated-power-phase-allocation',
-          ...(prefix==='caravan'?{learningRole:'history-only'}:{}),recorder:{version:VERSION,reason,group:prefix}}};
+          basis:prefix==='caravan'?'meter-counter-delta':prefix==='ev2'?'native-meter-counter-delta'
+            :prefix==='ev2-phase'?'native-meter-counter-phase-allocation':'integrated-power-phase-allocation',
+          ...(prefix==='caravan'?{learningRole:'history-only'}:{}),recorder:{version:VERSION,policy:'adaptive-energy',reason,group:prefix}}};
       o.id = this.store.observation(o);
       const s = this.signalState(o,receivedAt);
       const previous = s.last;
       s.last = {id:o.id,value,sourceTime:p.end,receivedAt,quality:p.quality};
-      s.lastPollAt = receivedAt; s.lastSourceTime = p.end;
+      s.lastPollAt = receivedAt; s.lastSourceTime = p.end; s.unit = 'kWh'; s.recordingPolicy = 'adaptive-energy';
       s.scale = state.scales[i]?.scale ?? 0;
       this.coverage(s,o,'fresh');
       this.count(s,receivedAt,{saved:true,polls:0,elapsed:previous ? p.end-previous.sourceTime : 0,bytes:Buffer.byteLength(JSON.stringify(o))});
@@ -434,17 +489,19 @@ export class Recorder {
     return observations;
   }
 
-  energyGap({ source = 'easee', device, prefix, start, end, quality = ['acquisition-failed'] }) {
+  energyGap({ source = 'easee', device, prefix, start, end, receivedAt = end, quality = ['acquisition-failed'] }) {
     const signals = energySignals(prefix);
-    if (!signals || !finiteTime(start) || !finiteTime(end) || end < start)
+    if (!signals || !finiteTime(start) || !finiteTime(end) || end < start || !finiteTime(receivedAt) || receivedAt < end)
       throw new TypeError('Invalid phase energy gap');
     return this.store.transaction(() => {
       const key = `recorder:energy:${JSON.stringify([source,device,prefix])}`, state = this.store.getState(key);
-      const observations = state ? this.commitEnergy(state,source,device,prefix,end,'availability-boundary') : [];
-      if (state) { state.lastPowers = null; state.lastQuality = null; this.store.setState(key,state); }
+      if (state?.lastReceivedAt != null && receivedAt < state.lastReceivedAt)
+        throw new TypeError('Out-of-order energy gap receipt');
+      const observations = state ? this.commitEnergy(state,source,device,prefix,receivedAt,'availability-boundary') : [];
+      if (state) { state.lastPowers = null; state.lastQuality = null; state.lastReceivedAt = receivedAt; this.store.setState(key,state); }
       for (const signal of signals) {
         const result = this.record({source,device,signal,value:null,unit:'kWh',
-          sourceTime:end,receivedAt:end,quality:flags([...quality,'missing']),
+          sourceTime:end,receivedAt,quality:flags([...quality,'missing']),
           raw:{basis:'availability-gap',intervalStart:start,intervalEnd:end,durationMs:end-start}});
         if (result.saved) observations.push(result.observation);
       }
@@ -452,17 +509,24 @@ export class Recorder {
     });
   }
 
-  /** Flush only completed acquisition intervals; never extrapolate through an
-   * outage. Normal callers need not force writes; shutdown may finalize pending.
+  /** Only an explicit boundary finalizes pending energy. Routine ticks maintain
+   * storage statistics, never manufacture time-based history. The durable open
+   * interval remains readable and survives restart without extrapolation.
    */
-  flush(now = this.clock(), { force = false } = {}) {
+  flush(now = this.clock(), { force = false, source, device, prefix } = {}) {
+    if (!finiteTime(now)) throw new TypeError('Invalid energy flush timestamp');
+    const selected = prefix === undefined ? null : Array.isArray(prefix) ? prefix : [prefix];
+    if (selected?.some(value=>!energySignals(value))) throw new TypeError('Invalid energy flush group');
     return this.store.transaction(() => {
       const observations = [];
       for (const row of this.store.db.prepare("SELECT key,value FROM state WHERE key LIKE 'recorder:energy:%'").all()) {
         const s = JSON.parse(row.value), p = s.pending;
-        if (!p || !force && now-p.start < this.config.maxIntervalMs) continue;
-        const [source,device,prefix] = JSON.parse(row.key.slice('recorder:energy:'.length));
-        observations.push(...this.commitEnergy(s,source,device,prefix,now,force ? 'flush' : 'maximum-interval'));
+        if (!p || !force) continue;
+        const [recordSource,recordDevice,recordPrefix] = JSON.parse(row.key.slice('recorder:energy:'.length));
+        if (source !== undefined && source !== recordSource || device !== undefined && device !== recordDevice
+          || selected && !selected.includes(recordPrefix)) continue;
+        if (p.end > now || p.receivedAt > now) throw new TypeError('Cannot finalize energy before it was received');
+        observations.push(...this.commitEnergy(s,recordSource,recordDevice,recordPrefix,now,'flush'));
         this.store.setState(row.key,s);
       }
       this.store.setState(GLOBAL_KEY,this.global(now));
@@ -507,40 +571,73 @@ export class Recorder {
       (SELECT MAX(id) FROM provider_snapshot_fetches) snapshots,(SELECT MAX(id) FROM recorder_coverage) coverage`).get();
     const rows = this.store.db.prepare("SELECT value FROM state WHERE key LIKE 'recorder:signal:%'").all();
     const states = rows.map(row=>JSON.parse(row.value)).filter(isRecordedDataset);
+    const openEnergy = new Map();
+    for (const row of this.store.db.prepare("SELECT key,value FROM state WHERE key LIKE 'recorder:energy:%'").all()) {
+      const [source,device,prefix] = JSON.parse(row.key.slice('recorder:energy:'.length));
+      const pending = JSON.parse(row.value).pending;
+      if (!pending || pending.end > now || pending.receivedAt > now) continue;
+      for (const [i,signal] of (energySignals(prefix) ?? []).entries())
+        openEnergy.set(keyOf({source,device,signal,unit:'kWh'}), { start:pending.start,end:pending.end,
+          receivedAt:pending.receivedAt,kwh:pending.energies[i] });
+    }
     // Constant temperatures extend existing coverage rows. Give their report
     // deadlines a separate revision so long plots can refresh without following
     // every fast power acquisition. Device identifiers stay out of the revision.
     const temperatureReportRevision = JSON.stringify(states.filter(s=>s.reportPolicy)
       .map(s=>[s.signal,s.lastSourceTime,s.coverageId,s.status]).sort((a,b)=>a[0].localeCompare(b[0])||a[2]-b[2]));
     const latestCoverage = this.store.db.prepare('SELECT source_time FROM recorder_coverage WHERE id=?');
+    // Complete hours already have exact counts and timestamp extrema. Only the
+    // four rolling-window edges require reading observation index entries;
+    // increasing archive density must not turn each control tick into a week scan.
+    const currentHour = Math.floor(now/HOUR)*HOUR;
+    const savedEdge = this.store.db.prepare(`SELECT COUNT(*) records,MIN(received_at) first_saved_at,MAX(received_at) last_saved_at
+      FROM observations INDEXED BY observations_stream_receipt
+      WHERE source=? AND device=? AND signal=? AND unit=?
+        AND json_extract(CASE WHEN json_valid(raw) THEN raw ELSE '{}' END,'$.recorder.policy')=?
+        AND import_id IS NULL AND received_at>=? AND received_at<?`);
+    const metrics = this.store.db.prepare('SELECT * FROM recorder_metrics WHERE key=? AND bucket>=? AND bucket<=? ORDER BY bucket');
     const parameters = states.map(s => {
       const stats = {};
-      const history = this.store.db.prepare('SELECT * FROM recorder_metrics WHERE key=? AND bucket>=? ORDER BY bucket')
-        .all(s.key,now-7*DAY-HOUR);
+      const stream = [s.source,s.device,s.signal,s.unit,s.recordingPolicy];
+      const current = savedEdge.get(...stream,currentHour,now+1);
+      const history = metrics.all(s.key,now-7*DAY-HOUR,currentHour);
       for (const [label,span] of [['hour',HOUR],['day',DAY],['week',7*DAY]]) {
-        const buckets = history.filter(b => b.bucket+HOUR > now-span);
-        const records = buckets.reduce((n,b)=>n+b.records,0), polls = buckets.reduce((n,b)=>n+b.polls,0);
-        const duration = Math.min(span,Math.max(0,now-s.startedAt)), errorTime = buckets.reduce((n,b)=>n+b.error_time,0);
-        stats[label] = {records,polls,averageIntervalMs:records>1 ? duration/(records-1) : null,
+        const from = now-span, completeFrom = Math.max(Math.ceil(from/HOUR)*HOUR,g.metricsPrunedBefore ?? -Infinity);
+        const buckets = history.filter(b => b.bucket+HOUR > from);
+        const complete = buckets.filter(b => b.bucket>=completeFrom && b.bucket<currentHour);
+        // An explicitly historical request can predate retained metric hours.
+        // Only that pruned portion falls back to archive rows; live status does not.
+        const edgeEnd = Math.min(completeFrom,currentHour);
+        const saved = [current,...complete,...(from<edgeEnd ? [savedEdge.get(...stream,from,edgeEnd)] : [])];
+        const records = saved.reduce((n,b)=>n+b.records,0), polls = buckets.reduce((n,b)=>n+b.polls,0);
+        const first = Math.min(...saved.filter(b=>b.records>0).map(b=>b.first_saved_at));
+        const last = Math.max(...saved.filter(b=>b.records>0).map(b=>b.last_saved_at));
+        const errorTime = buckets.reduce((n,b)=>n+b.error_time,0);
+        stats[label] = {records,polls,averageIntervalMs:records>1 ? (last-first)/(records-1) : null,
           normalizedRmsChange:errorTime ? Math.sqrt(buckets.reduce((n,b)=>n+b.error_squared_time,0)/errorTime) : null,
           estimatedBytes:buckets.reduce((n,b)=>n+b.bytes,0)};
       }
-      const grouped = /_energy_l[123]$/.test(s.signal), totalEnergy = ['ev2_energy','caravan_energy'].includes(s.signal), exact = Boolean(s.reportPolicy) || ['state','code'].includes(s.unit) || EXACT.test(s.signal);
+      const grouped = /_energy_l[123]$/.test(s.signal), totalEnergy = ['ev2_energy','caravan_energy'].includes(s.signal);
+      const policy = recordingPolicy(s), exact = !policy.adaptive;
       return {signal:s.signal,source:s.source,unit:s.unit,status:s.status,lastSavedAt:s.last?.receivedAt ?? null,
+        streamId:createHash('sha256').update(s.key).digest('hex').slice(0,12),
+        policy:policy.id,openInterval:openEnergy.get(s.key) ?? null,
         lastSourceTime:s.lastSourceTime,lastPollAt:s.lastPollAt,scale:s.scale,
         freshness:recordingFreshness(s,s.coverageId ? latestCoverage.get(s.coverageId) : null,now),
         threshold:exact ? null : s.scale*g.tolerance,thresholdUnit:grouped || totalEnergy ? 'kW' : s.unit,
         optimizedQuantity:grouped ? 'phase-power' : totalEnergy ? 'total-power' : 'value',grouped,...stats};
     }).sort((a,b)=>a.signal.localeCompare(b.signal));
-    return {version:VERSION,...this.config,historyRevision:JSON.stringify(revision),temperatureReportRevision,normalizedTolerance:g.tolerance,measuredDatabaseBytes:this.store.databaseBytes(),
+    return {version:VERSION,...this.config,historyRevision:JSON.stringify({...revision,energy:g.energyRevision ?? 0}),temperatureReportRevision,normalizedTolerance:g.tolerance,measuredDatabaseBytes:this.store.databaseBytes(),
       bytesPerDay:g.bytesPerDay,bytesPerDay7d:g.bytesPerDay7d,projectedAnnualBytes:g.bytesPerDay7d*YEAR/DAY,
-      measurementHours:g.measuredHours,budgetBasis:'soft-rolling-growth',parameters};
+      measurementHours:g.measuredHours,budgetBasis:'soft-rolling-growth',
+      parameters:parameters.filter(row=>row.policy.startsWith('adaptive-')),
+      exactParameters:parameters.filter(row=>!row.policy.startsWith('adaptive-'))};
   }
 }
 
 function energySignals(prefix) {
   return ['ev2','caravan'].includes(prefix) ? [`${prefix}_energy`] : ['ev1','property'].includes(prefix)
-    ? [1,2,3].map(phase=>`${prefix}_energy_l${phase}`) : null;
+    ? [1,2,3].map(phase=>`${prefix}_energy_l${phase}`) : prefix === 'ev2-phase' ? [1,2,3].map(phase=>`ev2_energy_l${phase}`) : null;
 }
 
 function compactRaw(raw) {

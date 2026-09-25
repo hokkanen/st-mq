@@ -83,10 +83,10 @@ configuration:
   recording:
     name: Historical recording
     description: >-
-      max_interval_minutes is the maximum interval between fresh-data records
-      (default 5). annual_budget_gb is a soft rolling database-growth target in
+      annual_budget_gb is a soft rolling database-growth target in
       decimal GB/year (default 10), not a calendar-year quota. The independent
-      recorder automatically adjusts a shared normalized accuracy target.
+      recorder adjusts continuous measurement thresholds. States and settings
+      retain exact changes; unchanged values have no forced recording interval.
       Source outages remain missing; no timer creates new measurements.
   acquisition:
     name: Provider acquisition intervals

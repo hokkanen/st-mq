@@ -7,7 +7,7 @@ import { createEquipmentCapture } from '../src/acquisition/equipment.js';
 import { getChartData } from '../src/app/chart-data.js';
 import { getDatabaseOverview } from '../src/app/database-overview.js';
 import { isRecordedDataset } from '../src/storage/recorded-datasets.js';
-import { CARAVAN_RUNNING_STATES, HISTORY_AXES } from '../src/domain/history-series.js';
+import { CARAVAN_RUNNING_STATES, HISTORY_AXES, SIGNAL_INFO } from '../src/domain/history-series.js';
 import { INDOOR_SIGNALS, GARAGE_TEMPERATURE_SIGNALS, indoorWeights } from '../src/domain/indoor-sensors.js';
 import { historyDatasets, historySeriesAt, historyValueLabel } from '../chart/history-model.js';
 import { historyTooltipLabel, historyValueScales } from '../chart/history-chart.js';
@@ -29,9 +29,10 @@ test('caravan catalogue exists without manufacturing telemetry and never joins h
   const store = new Store(':memory:'); t.after(() => store.close());
   for (const signal of signals) {
     assert(HISTORY_AXES.some(axis => axis.key === signal && axis.group === 'Caravan'));
-    const row = recordingRows().find(row => row.signal === signal);
+    const row = SIGNAL_INFO[signal];
     assert.equal(row.role, 'History only');
     assert.equal(row.status, undefined);
+    assert(!recordingRows().some(row => row.signal === signal), 'The active recorder table does not invent a recorded stream');
     assert.deepEqual(chart(store, signal).series[signal], []);
     assert(!INDOOR_SIGNALS.includes(signal));
     assert(!GARAGE_TEMPERATURE_SIGNALS.includes(signal));
@@ -52,9 +53,10 @@ test('only caravan air, interval energy and running state record; battery and li
     assert.equal(recorder.record(report(signal, value)).saved, true);
   assert.equal(recorder.record({ ...report('caravan_energy', 0.42), unit: 'kWh' }).saved, true);
   assert.deepEqual(new Set(store.db.prepare('SELECT signal FROM observations').all().map(row => row.signal)), new Set([...signals, 'caravan_energy']));
-  assert.deepEqual(new Set(recorder.status(start).parameters.map(row => row.signal)), new Set([...signals, 'caravan_energy']));
+  const recording = recorder.status(start);
+  assert.deepEqual(new Set([...recording.parameters, ...recording.exactParameters].map(row => row.signal)), new Set([...signals, 'caravan_energy']));
   const adaptive = getDatabaseOverview({ store, now: start }).groups.flatMap(group => group.items).find(row => row.id === 'adaptive-observations');
-  assert.equal(adaptive.count, 4, 'The database inventory includes all caravan recorded channels');
+  assert.equal(adaptive.count, 3, 'Running state has its separate exact-change dataset');
   assert.equal(store.db.prepare('SELECT COUNT(*) n FROM observations').get().n, 4);
 });
 
@@ -116,20 +118,20 @@ test('non-enum dehumidifier samples are gaps and never interpreted as fractional
 
 test('caravan meter energy uses adaptive total-power recording with measured lineage and exact increments', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
-  const recorder = new Recorder(store, { clock: () => start, config: { maxIntervalMs: 300_000 } });
+  const recorder = new Recorder(store, { clock: () => start });
   const interval = (index, power = 1.2) => ({ source: 'mqtt-equipment', device: 'caravan', prefix: 'caravan',
     start: start + index * 15_000, end: start + (index + 1) * 15_000,
     energies: [power * 15_000 / 3_600_000], powers: [power] });
   for (let i = 0; i < 24; i++) recorder.recordEnergy(interval(i));
   let observations = store.observations().filter(row => row.signal === 'caravan_energy');
-  assert.equal(observations.length, 2, 'Constant consumption compacts into adaptive intervals');
+  assert.equal(observations.length, 1, 'Constant consumption continues in the durable interval without heartbeat records');
   const resumed = new Recorder(store, { clock: () => start + 360_000 });
   assert.equal(resumed.recordEnergy(interval(23)).reason, 'duplicate-interval');
   assert.equal(resumed.flush(start + 360_000, { force: true }).length, 1);
   observations = store.observations().filter(row => row.signal === 'caravan_energy');
   assert(Math.abs(observations.reduce((sum, row) => sum + row.value, 0) - 0.12) < 1e-12);
   assert(observations.every(row => row.raw.basis === 'meter-counter-delta' && row.raw.learningRole === 'history-only'));
-  assert.deepEqual(observations.map(row => row.raw.durationMs), [15_000, 300_000, 45_000]);
+  assert.deepEqual(observations.map(row => row.raw.durationMs), [15_000, 345_000]);
   const status = resumed.status(start + 360_000).parameters.find(row => row.signal === 'caravan_energy');
   assert.equal(status.thresholdUnit, 'kW');
   assert.equal(status.optimizedQuantity, 'total-power');
@@ -152,9 +154,9 @@ test('adaptive caravan energy closes pending intervals at gaps and never covers 
     start: start + 30_000, end: start + 90_000, quality: ['missing-report'] });
   record(90_000, 105_000);
   const points = chart(store, 'caravan_energy').series.caravan_energy;
-  assert(points.some(point => point.x === start + 30_000 && point.y === null));
-  assert(!points.some(point => point.x >= start + 30_000 && point.x < start + 90_000 && Number.isFinite(point.y)));
-  assert(points.some(point => point.x === start + 90_000 && point.y === 0.005));
+  assert(points.some(point => point.x === start + 30_000 && point.y === 0.005));
+  assert(!points.some(point => point.x > start + 30_000 && point.x <= start + 90_000 && Number.isFinite(point.y)));
+  assert(points.some(point => point.x === start + 105_000 && point.y === 0.005));
 });
 
 test('MQTT caravan air and dehumidifier reports reach the recorder with their real expiry policy and live-only diagnostics', async t => {

@@ -346,7 +346,7 @@ kW, A and energy today in live monitoring. Of these plug readings, only measured
 energy increments are recorded. Consecutive cumulative meter readings supply kWh
 intervals to the same adaptive recorder used for property and charging energy.
 Steady consumption compacts into longer intervals; load changes shorten them,
-subject to the shared recording settings and maximum interval. Each recorded
+subject to the shared adaptive tolerance, with no maximum recording interval. Each recorded
 interval preserves its measured energy and actual time bounds. Pending increments
 are checkpointed atomically and survive restart. Daily totals update at acquisition
 cadence in Europe/Helsinki, including daylight-saving boundaries. Outages,
@@ -363,10 +363,12 @@ The chart includes the home/garage protection probes through **All home
 temperatures**, door states and Caravan interval energy. The separate **Caravan**
 group adds its air temperature, humidity and combined dehumidifier running state
 (Off, Low, Medium, High or Auto). Unknown state remains a gap. These caravan
-measurements are excluded from house and garage learning. Tariff status already comes
-from heating control; duplicate relay-state datasets are not recorded. The
-[garage adapter](garage-adapter.md) keeps optional native temperatures live-only,
-records qualified dedicated electrical intervals, and retains used learning inputs
+measurements are excluded from house and garage learning. Actual tariff relay feedback is recorded on changes, separately from requested
+heating control. All four floor override outputs likewise retain exact changes. The
+[garage adapter](garage-adapter.md) records interpreted indoor temperature and
+compressor frequency adaptively, compressor/defrost states on exact changes and
+external-feed abnormalities as events. It records qualified dedicated electrical
+intervals and retains used learning inputs
 in its current journal. Incompatible development databases require a deliberate
 fresh start; startup never deletes or repairs their data.
 

@@ -64,7 +64,7 @@ test('missing or unverified readbacks expire promptly and never fall back to a s
 test('fresh saved coverage supports longer recorder intervals and a failure breaks it at acquisition time', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   recordHeatPumpConfiguration(store, 'mqtt', config, start);
-  const recorder = new Recorder(store, { config: { maxIntervalMs: HOUR } });
+  const recorder = new Recorder(store, { });
   for (let minute = 0; minute <= 10; minute++) for (const signal of ['compressor_active', 'auxiliary_output'])
     recorder.record(observation(signal, signal === 'compressor_active' ? 1 : 0, start + minute * MINUTE));
   assert.equal(store.db.prepare('SELECT count(*) n FROM observations').get().n, 2);
@@ -82,7 +82,7 @@ test('fresh saved coverage supports longer recorder intervals and a failure brea
 test('a cached unchanged source clock cannot extend heat-pump coverage indefinitely', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   recordHeatPumpConfiguration(store, 'mqtt', config, start);
-  const recorder = new Recorder(store, { config: { maxIntervalMs: HOUR } });
+  const recorder = new Recorder(store, { });
   for (const minute of [0, 4, 6, 10]) for (const signal of ['compressor_active', 'auxiliary_output'])
     recorder.record(observation(signal, signal === 'compressor_active' ? 1 : 0, start, { receivedAt: start + minute * MINUTE }));
   const result = intervals(store, start + 12 * MINUTE);
@@ -93,7 +93,7 @@ test('a cached unchanged source clock cannot extend heat-pump coverage indefinit
 test('future coverage confirmations cannot renew the inputs of an earlier chart query', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   recordHeatPumpConfiguration(store, 'mqtt', config, start);
-  const recorder = new Recorder(store, { config: { maxIntervalMs: HOUR } });
+  const recorder = new Recorder(store, { });
   for (let minute = 0; minute <= 10; minute++) for (const signal of ['compressor_active', 'auxiliary_output'])
     recorder.record(observation(signal, signal === 'compressor_active' ? 1 : 0, start + minute * MINUTE));
   const result = intervals(store, start + 8 * MINUTE);
@@ -104,7 +104,7 @@ test('future coverage confirmations cannot renew the inputs of an earlier chart 
 test('a silent acquisition gap remains a gap even when unchanged values share one saved observation', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   recordHeatPumpConfiguration(store, 'mqtt', config, start);
-  const recorder = new Recorder(store, { config: { maxIntervalMs: HOUR } });
+  const recorder = new Recorder(store, { });
   for (const minute of [0, 10]) for (const signal of ['compressor_active', 'auxiliary_output'])
     recorder.record(observation(signal, signal === 'compressor_active' ? 1 : 0, start + minute * MINUTE));
   assert.equal(store.db.prepare('SELECT count(*) n FROM observations').get().n, 2, 'No change to value selection or thresholds');
@@ -118,7 +118,7 @@ test('a silent acquisition gap remains a gap even when unchanged values share on
 test('a delayed fresh arrival retains the information gap before its receipt', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   recordHeatPumpConfiguration(store, 'mqtt', config, start);
-  const recorder = new Recorder(store, { config: { maxIntervalMs: HOUR } });
+  const recorder = new Recorder(store, { });
   for (const [sourceMinute, receivedMinute] of [[0, 0], [4, 6]]) for (const signal of ['compressor_active', 'auxiliary_output'])
     recorder.record(observation(signal, signal === 'compressor_active' ? 1 : 0, start + sourceMinute * MINUTE,
       { receivedAt: start + receivedMinute * MINUTE }));

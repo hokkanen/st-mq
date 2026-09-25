@@ -360,7 +360,7 @@ test('invalid newer packets cannot clear an outage barrier or poison recovery wi
   }
 });
 
-test('new unverified electrical readings cannot suppress a later disconnect gap', () => {
+test('live unverified electrical readings retain disconnect fencing without power history', () => {
   const f = fixture(); let sequence = 0;
   const report = (at, measuredAt = at, decodeVerified = false) => {
     f.at(at);
@@ -373,18 +373,18 @@ test('new unverified electrical readings cannot suppress a later disconnect gap'
   report(BASE);
   f.at(BASE + 1000); f.adapter.setConnected(false); f.adapter.setConnected(true);
   report(BASE + 2000);
-  assert.equal(f.observations.at(-1).value, 400, 'Raw electrical diagnostic still records its reported value');
+  assert.equal(f.adapter.status().telemetry.power.value, 400, 'Raw electrical diagnostic remains live');
   assert.equal(f.adapter.status().telemetry.power.usable, false);
   f.at(BASE + 3000); f.adapter.setConnected(false);
-  assert.equal(f.observations.at(-1).value, null, 'The second disconnect ends the new diagnostic report');
-  assert.equal(f.observations.at(-1).receivedAt, BASE + 3000);
-  assert.deepEqual(f.observations.at(-1).quality, ['unavailable', 'mqtt-disconnected']);
+  assert.equal(f.adapter.status().telemetry.power.diagnosticAvailable, false);
+  assert(f.adapter.status().telemetry.power.quality.includes('mqtt-disconnected'));
   f.adapter.setConnected(true);
   report(BASE + 4000, BASE + 2000, true);
   assert.equal(f.adapter.status().telemetry.power.diagnosticAvailable, false,
     'The latest outage, not the first outage, fences recovery of cached measurements');
-  assert.ok(f.observations.at(-1).quality.includes('out-of-order-source-time'));
+  assert.ok(f.adapter.status().telemetry.power.quality.includes('out-of-order-source-time'));
   report(BASE + 5000, BASE + 5000, true);
   assert.equal(f.adapter.status().telemetry.power.diagnosticAvailable, true);
   assert.equal(f.adapter.status().telemetry.power.usable, false);
+  assert(!f.observations.some(row => row.signal === 'garage_power'), 'Live acquisition never archives standalone power');
 });

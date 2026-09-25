@@ -90,7 +90,7 @@ export function providerSeries(job, health = {}) {
   if (job === 'shelly-evse') {
     return [
       seriesRow(phaseSignals('ev2_current'), 'Charger 2 phase currents L1–L3', 'A',
-        'Measured current on each phase, using the configured phase mapping and original charger measurement time.', 'Shelly EVSE'),
+        'Latest measured phase currents in installation order. Historical chart currents are interval estimates reconstructed from saved phase energy.', 'Shelly EVSE'),
       seriesRow(phaseSignals('ev2_voltage'), 'Charger 2 phase voltages L1–L3', 'V',
         'Measured voltage on each phase, using the configured phase mapping and original charger measurement time.', 'Shelly EVSE'),
       seriesRow(phaseSignals('ev2_active_power'), 'Charger 2 phase active power L1–L3', 'kW',
@@ -101,6 +101,8 @@ export function providerSeries(job, health = {}) {
         'Native cumulative total energy. The charger reports a total counter, without separate phase energy counters.', 'Shelly EVSE'),
       seriesRow(['ev2_energy'], 'Charger 2 total energy', 'kWh',
         'Native physical charger meter differences. Resets, gaps and invalid source clocks are excluded.', 'Shelly EVSE'),
+      seriesRow(phaseSignals('ev2_energy'), 'Charger 2 phase energy L1–L3', 'kWh',
+        'Native total meter increments allocated using measured phase-power shares. Estimated phase distribution; the native total remains the sole consumption total.', 'Calculated from Shelly EVSE'),
       seriesRow(['ev2_session_energy'], 'Charger 2 session energy', 'kWh',
         'Energy reported by the charger for its current charging session, with its own measurement time.', 'Shelly EVSE'),
       seriesRow(['shelly_session_energy_check'], 'Charger 2 session check', 'kWh',
@@ -222,7 +224,7 @@ function electricityDisplay(entries, options) {
       let display = current ? describeProvider(key, { ...health, currentReadings: { [scope]: current },
         error: current.error, status: current.error ? 'error' : health.status === 'error' ? 'ok' : health.status,
         qualityIssues: current.qualityIssues ?? [] }, options) : displays[index];
-      if (key === 'shelly-evse' && row.signals.every(signal => signal !== 'ev2_energy' && signal !== 'shelly_session_energy_check')
+      if (key === 'shelly-evse' && row.signals.every(signal => !/^ev2_energy(?:_l[123])?$/.test(signal) && signal !== 'shelly_session_energy_check')
         && !inactiveStates.includes(display.state)) {
         const readings = row.signals.map(signal => health?.readings?.[signal]);
         const now = options?.now ?? Date.now();

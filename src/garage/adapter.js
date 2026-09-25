@@ -17,8 +17,8 @@ export function createGarageSimulationTransport(send) {
 }
 const CAPABILITIES = ['boundedPause', 'localExpiry', 'offlineStartupRestore', 'restorePersistence',
   'nativeConfirmation', 'challenge', 'preserveNativeBaseline'];
-const RECORDED_TELEMETRY = new Set(['garage_power', 'garage_native_energy', 'garage_native_indoor_temperature',
-  'garage_compressor_frequency', 'garage_compressor_active']);
+const RECORDED_TELEMETRY = new Set(['garage_native_energy', 'garage_native_indoor_temperature',
+  'garage_compressor_frequency', 'garage_compressor_active', 'garage_native_defrost']);
 const RESULT_STATUSES = ['accepted', 'native-confirmed', 'rejected', 'uncertain', 'superseded', 'failed'];
 const identity = value => typeof value === 'string' && value.length > 0 && value.length <= 128;
 const cleanField = field => field && finiteTime(field.measuredAt) ? { value: field.value, measuredAt: field.measuredAt } : null;
@@ -54,7 +54,8 @@ function cleanExternalState(value) {
 }
 
 export function createGarageAdapter({ settings: input = {}, clock = Date.now, canControl = () => true,
-  onObservation = () => {}, onEnergy = () => {}, onState = () => {}, persisted = null,
+  onObservation = () => {}, onEnergy = () => {}, onState = () => {}, onDiagnostic = () => {},
+  onEquipmentDiagnostic = () => {}, persisted = null,
   simulationTransport = null, productionTransport = null, hostSession = randomUUID() } = {}) {
   const settings = garageAdapterSettings(input);
   const production = settings.driver === 'shelly-cn105';
@@ -71,7 +72,10 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
   let externalCommand = persisted?.lastExternalCommand ? { ...persisted.lastExternalCommand,
     ...(NATIVE_PENDING.includes(persisted.lastExternalCommand.status) ? { status: 'uncertain', reason: 'host-restarted' } : {}) } : null;
   let externalNeedsClear = persisted?.externalNeedsClear === true;
-  let lastExternalSample = null, manualPermissionObserved = false, recordedExternal = null;
+  let lastExternalSample = null, manualPermissionObserved = false;
+  let externalDiagnostic = persisted?.externalDiagnostic ?? null;
+  let acknowledgedExternal = null;
+  let observedDefrost = persisted?.observedDefrost === true, faultDiagnostic = persisted?.faultDiagnostic ?? null;
   let sequence = 0, telemetrySequence = -1, telemetryBoot = null, telemetryDevice = null;
   const usedChallenges = new Map();
   let lastTick = null, latest = {}, lastEvent = null;
@@ -110,7 +114,8 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
       restorationRequestedAt, episode: episode ? structuredClone(episode) : null, recoveryLockedUntil,
       lastCommand: commandSummary(lastCommand), commandHistory: commands.map(commandSummary),
       lastNativeCommand: nativeCommandSummary(nativeCommand),
-      lastExternalCommand: externalCommandSummary(externalCommand), externalNeedsClear,
+      lastExternalCommand: externalCommandSummary(externalCommand), externalNeedsClear, externalDiagnostic,
+      observedDefrost, faultDiagnostic,
       acceptedEvidence: state ? { observedAt: state.observedAt, receivedAt: state.receivedAt,
         retained: state.retained, nativePower: state.native.power, restorationPending: state.restorationPending,
         mode: state.mode, health: state.health } : null,
@@ -374,38 +379,58 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
       sourceEpoch: state ? createHash('sha256').update(JSON.stringify([state.deviceId, state.bootId, state.sessionId])).digest('hex') : null,
       expiresInMs: lifecycle ? Math.max(0, lifecycle.expiresInMs - Math.max(0, now - state.observedAt)) : 0 };
   }
-  function recordExternalTemperature(now = clock()) {
+  function recordExternalDiagnostic(now = clock()) {
+    if (stopped) return false;
     const feed = state?.externalTemperature;
     const expiresAt = feed ? Math.min(state.observedAt + feed.expiresInMs, (feed.measuredAt ?? 0) + 90_000) : 0;
-    const epoch = state ? JSON.stringify([state.deviceId, state.bootId, state.sessionId]) : null;
-    const active = connected && reconciled && feed?.phase === 'active' && feed.acknowledged
-      && feed.enabled && feed.restorationPending && !feed.rearmRequired && expiresAt > now
-      && finiteTime(feed.measuredAt) && feed.measuredAt <= now;
-    // Accepting a numeric renewal resets the driver's ACK for the new sample,
-    // but does not clear the pump's previously acknowledged input. Keep that
-    // bounded observation until the new ACK, without extending its deadline or
-    // recording the unconfirmed replacement value.
-    const renewing = !active && recordedExternal?.epoch === epoch && recordedExternal.expiresAt > now
-      && connected && reconciled && feed?.phase === 'active' && feed.enabled
-      && feed.restorationPending && !feed.rearmRequired && expiresAt > now
-      && state.authority.ownerSession === hostSession && externalPending(now)
-      && externalCommand.bootId === state.bootId && externalCommand.sessionId === state.sessionId
-      && state.sequence > externalCommand.stateSequence && state.observedAt >= externalCommand.requestedAt
-      && feed.temperatureC === externalCommand.temperatureC && feed.measuredAt === externalCommand.measuredAt;
-    if (renewing) return;
-    if (!active && !recordedExternal) return;
-    if (active && recordedExternal?.epoch === epoch && recordedExternal.measuredAt === feed.measuredAt && recordedExternal.expiresAt === expiresAt
-      && recordedExternal?.temperatureC === feed.temperatureC) return;
-    // The line starts at device acknowledgement; the original sensor clock
-    // remains provenance, and coverage ends at the device/source deadline.
-    const at = active ? state.observedAt : now;
-    onObservation({ source: 'garage-adapter', device: 'garage-heat-pump', signal: 'garage_external_temperature',
-      value: active ? feed.temperatureC : null, unit: 'degC', sourceTime: at, receivedAt: now,
-      quality: active ? [] : ['inactive'], raw: { usableForControl: false, contractVersion,
-        timeBasis: active ? 'device-acknowledged' : 'availability-transition',
-        measuredAt: active ? feed.measuredAt : null, expiresAt: active ? expiresAt : now,
-        reportIntervalMs: active ? Math.max(1, expiresAt - at) : 90_000, reportGraceMs: 0 } });
-    recordedExternal = active ? { measuredAt: feed.measuredAt, expiresAt, temperatureC: feed.temperatureC, epoch } : null;
+    const expected = Boolean(externalNeedsClear || externalCommand && externalCommand.temperatureC !== null);
+    if (!expected && !externalDiagnostic) return false;
+    let reason = null, recovered = false;
+    if (!connected) reason = expected ? 'mqtt-disconnected' : null;
+    // Reconnection and restart are not recovery evidence; await a genuine reply.
+    else if (!reconciled || !state || state.retained) return false;
+    else if (state.invalidExternalTemperature) reason = 'invalid-external-state';
+    else if (expected && now - state.observedAt >= settings.maxAgeMs) reason = 'missing-adapter-report';
+    else if (expected && !health(now).pumpCommunicating) reason = 'pump-communication-unavailable';
+    else if (externalCommand && ['failed', 'rejected', 'uncertain', 'superseded'].includes(externalCommand.status))
+      reason = externalCommand.reason ?? `external-${externalCommand.status}`;
+    else if (externalCommand && NATIVE_PENDING.includes(externalCommand.status) && !externalPending(now)) reason = 'external-result-timeout';
+    else if (feed?.rearmRequired || feed?.phase === 'unresolved') reason = feed.reason ?? 'external-rearm-required';
+    else if (expected && feed?.phase === 'active' && state.authority.ownerSession !== hostSession) reason = 'external-owner-changed';
+    else if (expected && feed?.phase === 'active' && externalCommand && externalCommand.temperatureC !== null
+      && (feed.temperatureC !== externalCommand.temperatureC || feed.measuredAt !== externalCommand.measuredAt)
+      && !(externalPending(now) && acknowledgedExternal?.temperatureC === feed.temperatureC
+        && acknowledgedExternal?.measuredAt === feed.measuredAt)) reason = 'external-feed-mismatch';
+    else if (feed?.phase === 'active' && expiresAt <= now) reason = feed.reason ?? 'external-feed-expired';
+    else if (externalPending(now) && externalCommand.temperatureC !== null && acknowledgedExternal?.expiresAt <= now) reason = 'external-feed-expired';
+    else if (externalPending(now)) return false;
+    else if (feed?.phase === 'active' && feed.acknowledged && feed.enabled && feed.restorationPending && expiresAt > now) {
+      recovered = true;
+      acknowledgedExternal = { temperatureC: feed.temperatureC, measuredAt: feed.measuredAt, expiresAt };
+    }
+    else if (feed?.phase === 'internal' && !feed.restorationPending) {
+      // Explicit clear and ordinary power/mode choices are normal operation.
+      if (!expected || externalCommand?.temperatureC === null || state.native.power?.value !== 'on' || state.native.mode?.value !== 'heat') {
+        recovered = true; acknowledgedExternal = null;
+      }
+      else reason = feed.reason ?? 'external-feed-ended';
+    }
+    if (!reason && !recovered || reason === externalDiagnostic?.reason || !reason && !externalDiagnostic) return false;
+    const previous = externalDiagnostic;
+    const diagnostic = reason ? { status: 'abnormal', reason, since: previous?.since ?? now }
+      : { status: 'recovered', reason: feed?.phase === 'active' ? 'external-feed-confirmed' : 'external-control-cleared',
+        previousReason: previous.reason, since: previous.since };
+    // Only committed diagnostics advance the deduplication state. Successful
+    // renewals produce neither numeric history nor success events.
+    const next = reason ? { reason, since: diagnostic.since } : null;
+    onDiagnostic(diagnostic, now, { ...snapshot(), externalDiagnostic: next });
+    externalDiagnostic = next;
+    return true;
+  }
+  function publishExternalDiagnostic(now) {
+    // Optional history failure cannot prevent publishing the current restoration
+    // obligation or queueing the safety review. The failed event remains retryable.
+    try { recordExternalDiagnostic(now); } finally { changed(); }
   }
   function processExternalResult(result, now) {
     if (!externalCommand || result?.action !== 'remote-temperature' || result.commandId !== externalCommand.commandId
@@ -500,7 +525,7 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
       await transport.send(Object.freeze(command));
       if (attempt.status === 'pending') attempt.status = 'published';
     } catch { if (['pending', 'published'].includes(attempt.status)) { attempt.status = 'uncertain'; attempt.reason = 'publication-uncertain'; } }
-    changed();
+    publishExternalDiagnostic(now);
     return externalCommandSummary(attempt);
   }
   async function claimAuthority(now) {
@@ -708,17 +733,27 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
         faults = [];
       }
     }
-    recordExternalTemperature(now);
-    changed();
+    publishExternalDiagnostic(now);
     if (state.authority.ownerSession === hostSession || claimPending?.commandId === value.result?.commandId) claimPending = null;
     // Acquisition receives synchronously; publication errors are contained in
     // the handshake. No renewals or OFF commands run from this callback.
     void claimAuthority(now);
   }
   function recordTelemetry(decoded, now, retained = false) {
+    if (decoded.signal === 'garage_native_fault_raw') {
+      if (retained || !decoded.diagnosticAvailable && !faultDiagnostic) return;
+      const diagnostic = { signal: decoded.signal, value: decoded.diagnosticAvailable ? decoded.value : null,
+        quality: [...new Set(decoded.quality)].sort(), status: decoded.diagnosticAvailable ? 'reported' : 'unavailable',
+        timeBasis: decoded.timeBasis };
+      if (JSON.stringify(diagnostic) === JSON.stringify(faultDiagnostic)) return;
+      onEquipmentDiagnostic({ ...diagnostic, sourceTime: decoded.sourceTime }, now, { ...snapshot(), faultDiagnostic: diagnostic });
+      faultDiagnostic = diagnostic;
+      return;
+    }
     if (!RECORDED_TELEMETRY.has(decoded.signal)) return;
+    if (decoded.signal === 'garage_native_defrost' && (retained || !decoded.diagnosticAvailable && !observedDefrost)) return;
     onObservation({ source: 'garage-adapter', device: 'garage-heat-pump', signal: decoded.signal,
-      value: !['garage_power', 'garage_native_energy'].includes(decoded.signal) && !decoded.diagnosticAvailable ? null
+      value: decoded.signal !== 'garage_native_energy' && !decoded.diagnosticAvailable ? null
         : typeof decoded.value === 'boolean' ? Number(decoded.value) : decoded.value,
       unit: decoded.unit === 'boolean' ? 'state' : decoded.unit, sourceTime: decoded.sourceTime, receivedAt: now,
       quality: decoded.quality, raw: { usableForControl: false, contractVersion,
@@ -726,6 +761,7 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
         diagnosticAvailable: decoded.diagnosticAvailable, supported: decoded.supported,
         timeBasis: decoded.timeBasis, retained, accuracyVerified: decoded.accuracyVerified,
         meterScope: decoded.meterScope, provisional: !production } });
+    if (decoded.signal === 'garage_native_defrost' && decoded.diagnosticAvailable) observedDefrost = true;
   }
   function invalidateTelemetry(reason, now) {
     for (const [signal, row] of Object.entries(latest)) {
@@ -835,11 +871,21 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
     return send('start', now, plan);
   }
   async function safetyTick({ now = clock(), valid = true, reason = 'protection-or-data-failure' } = {}) {
-    if (!restorePending) return { status: 'idle' };
+    let diagnosticError;
+    try { if (recordExternalDiagnostic(now)) changed(); } catch (error) { diagnosticError = error; }
+    if (!restorePending) {
+      if (diagnosticError) throw diagnosticError;
+      return { status: 'idle' };
+    }
     const unsafe = !valid || !episode || episode.invalidated || now >= episode.endpointAt
       || episode.leaseExpiresAt !== null && now >= episode.leaseExpiresAt
       || blockers(now).some(value => value !== 'fresh-challenge-required');
-    if (unsafe) return release({ reason, now });
+    if (unsafe) {
+      const result = await release({ reason, now });
+      if (diagnosticError) throw diagnosticError;
+      return result;
+    }
+    if (diagnosticError) throw diagnosticError;
     return { status: 'observing' };
   }
   function status(now = clock()) {
@@ -891,7 +937,6 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
       connected = Boolean(value); reconciled = false; claimPending = null;
       if (!connected) {
         invalidateTelemetry('mqtt-disconnected', clock());
-        recordExternalTemperature(clock());
         invalidate('mqtt-disconnected', clock()); electrical.reset('mqtt-disconnected');
         if (nativeCommand && NATIVE_PENDING.includes(nativeCommand.status)) {
           nativeCommand.status = 'uncertain'; nativeCommand.reason = 'mqtt-disconnected';
@@ -900,11 +945,12 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
           externalCommand.status = 'uncertain'; externalCommand.reason = 'mqtt-disconnected';
         }
       }
-      changed();
+      publishExternalDiagnostic(clock());
     },
     subscriptionFailed() {
       reconciled = false; invalidateTelemetry('adapter-subscription-failed', clock());
-      fault('adapter-subscription-failed'); electrical.reset('adapter-subscription-failed'); changed();
+      fault('adapter-subscription-failed'); electrical.reset('adapter-subscription-failed');
+      publishExternalDiagnostic(clock());
     },
     recordHeatResponse({ at, useful } = {}) {
       if (!useful || !finiteTime(at) || at > clock() || lastCommand?.action !== 'release'

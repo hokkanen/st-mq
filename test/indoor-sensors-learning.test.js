@@ -108,7 +108,7 @@ test('age-only stale publications remain genuine inputs while invalid measuremen
 
 test('Recorded out-of-order input cannot replace a newer compressed room update', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
-  const recorder = new Recorder(store, { config: { maxIntervalMs: 60 * 60_000 } });
+  const recorder = new Recorder(store, { });
   const signal = 'bedroom_temperature';
   const observation = (value, sourceSecond, receiptSecond = sourceSecond) => ({ source: 'mqtt-temperature',
     device: 'invented-room', signal, value, unit: 'degC', sourceTime: start + sourceSecond * 1000,

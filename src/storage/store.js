@@ -4,6 +4,7 @@ import { dirname, resolve } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 
 import { CURRENT_SCHEMA, SCHEMA_VERSION } from './schema.js';
+import { recordedEnergyGroups } from './energy-history.js';
 export { SCHEMA_VERSION } from './schema.js';
 const MAX_LIMIT = 5000;
 
@@ -180,8 +181,10 @@ export class Store {
       .run(source,device,signal,sourceTime,receivedAt,value,json(quality),comparison === null ? null : json(comparison)).changes);
   }
 
-  energyAudits({ device, signal, from, to, after = 0, limit = 100, newestFirst = false } = {}) {
-    const clauses = ['id>?', "signal='property_import_energy_counter'"], params = [integer(after,'after')];
+  energyAudits({ device, signal, from, to, after = 0, limit = 100, newestFirst = false, now = Date.now() } = {}) {
+    instant(now, 'audit receipt cutoff');
+    const clauses = ['id>?', "signal='property_import_energy_counter'", 'source_time<=?', 'received_at<=?'],
+      params = [integer(after,'after'),now,now];
     if (device !== undefined) { clauses.push('device=?'); params.push(label(device,'device')); }
     if (signal !== undefined) { clauses.push('signal=?'); params.push(label(signal,'signal')); }
     if (from !== undefined) { clauses.push('source_time>=?'); params.push(instant(from,'from')); }
@@ -195,12 +198,13 @@ export class Store {
           comparison:row.comparison === null ? null : JSON.parse(row.comparison) };
         if (!result.comparison) {
           const previous = this.db.prepare(`SELECT * FROM energy_audits WHERE source=? AND device=? AND signal=? AND id<?
-            ORDER BY source_time DESC,id DESC LIMIT 1`).get(row.source,row.device,row.signal,row.id);
+            AND source_time<=? AND received_at<=? ORDER BY source_time DESC,id DESC LIMIT 1`)
+            .get(row.source,row.device,row.signal,row.id,now,now);
           if (previous) {
             if (row.source_time <= previous.source_time) result.quality.push('out-of-order-counter');
             else if (row.value < previous.value) result.quality.push('counter-reset');
             else {
-              result.comparison = this.compareEnergyAudit(row,previous);
+              result.comparison = this.compareEnergyAudit(row,previous,now);
               if (!result.comparison) result.quality.push('incomplete-estimated-coverage');
             }
           }
@@ -210,32 +214,26 @@ export class Store {
       });
   }
 
-  compareEnergyAudit(row,previous) {
+  compareEnergyAudit(row,previous,now = Date.now()) {
     if (row.signal !== 'property_import_energy_counter') return null;
     const start = previous.source_time, end = row.source_time;
-    const totals = []; let edgeEstimated = false;
-    for (let phase=1;phase<=3;phase++) {
-      const values = this.db.prepare(`SELECT value,raw,quality FROM observations WHERE device=? AND signal=?
-        AND source_time>? ORDER BY source_time,id`).iterate(row.device,`property_energy_l${phase}`,start);
-      let cursor = start, total = 0;
-      for (const value of values) {
-        const raw = value.raw ? JSON.parse(value.raw) : null, quality = JSON.parse(value.quality);
-        if (!raw || !Number.isSafeInteger(raw.intervalStart) || !Number.isSafeInteger(raw.intervalEnd)
-          || raw.intervalStart > cursor || raw.intervalStart < cursor && cursor !== start || raw.intervalEnd <= cursor
-          || !Number.isFinite(value.value) || value.value < 0
-          || quality.some(q => /missing|stale|unavailable|gap|failed/.test(q))) return null;
-        const until = Math.min(raw.intervalEnd,end);
-        edgeEstimated ||= cursor !== raw.intervalStart || until !== raw.intervalEnd;
-        total += value.value*(until-cursor)/(raw.intervalEnd-raw.intervalStart); cursor = until;
-        if (cursor === end) break;
-      }
-      if (cursor !== end) return null;
-      totals.push(total);
+    let cursor = start, estimatedKwh = 0, edgeEstimated = false, includesOpenInterval = false;
+    for (const group of recordedEnergyGroups(this,{from:start,to:end,now,input:'providers',prefix:'property',source:row.source,device:row.device})) {
+      if (group.source !== row.source || group.device !== row.device) continue;
+      if (group.conflict || group.start > cursor || group.start < cursor && cursor !== start || group.end <= cursor
+        || group.values.length !== 3 || !group.values.every(Number.isFinite)) return null;
+      const until = Math.min(group.end,end);
+      edgeEstimated ||= cursor !== group.start || until !== group.end;
+      includesOpenInterval ||= group.pending;
+      estimatedKwh += group.values.reduce((sum,value)=>sum+value,0)*(until-cursor)/(group.end-group.start);
+      cursor = until;
+      if (cursor === end) break;
     }
-    const estimatedKwh = totals.reduce((n,v)=>n+v,0), meteredKwh = row.value-previous.value;
+    if (cursor !== end) return null;
+    const meteredKwh = row.value-previous.value;
     return {start,end,estimatedKwh,meteredKwh,differenceKwh:estimatedKwh-meteredKwh,
       differencePercent:meteredKwh>0 ? (estimatedKwh-meteredKwh)/meteredKwh*100 : null,
-      edgeEstimated,basis:edgeEstimated ? 'diagnostic-only-complete-coverage-with-average-power-at-edges'
+      edgeEstimated,includesOpenInterval,basis:edgeEstimated ? 'diagnostic-only-complete-coverage-with-average-power-at-edges'
         : 'diagnostic-only-matching-complete-intervals'};
   }
 

@@ -5,6 +5,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Store } from '../src/storage/store.js';
+import { Recorder } from '../src/storage/recorder.js';
 import { GarageRuntime } from '../src/garage/runtime.js';
 import { appendGarageEntry, applyGarageEntry, replayGarageJournal, garageCorrectionContext, garageInput,
   garageCheckpointDigest, garageJournalHead } from '../src/garage/learning.js';
@@ -102,6 +103,29 @@ test('Garage EV2 confounders use physical charger evidence independently of vehi
   assert.equal(f.runtime.read().ev2Active, null, 'unavailable charger evidence stays unknown');
   healthy = true; f.at(START + 3 * MINUTE);
   assert.equal(f.runtime.read().ev2Active, null, 'expired physical evidence cannot prove idle');
+});
+
+test('garage charger inputs use long durable energy tails without flushing or extending source freshness', t => {
+  const f = setup(t), recorder = new Recorder(f.store);
+  for (const [prefix, source, powers] of [['ev1', 'easee', [1, 2, 0]], ['ev2', 'shelly-evse', [4]]]) {
+    for (let minute = 0; minute < 60; minute++) recorder.recordEnergy({ source, device: `synthetic-${prefix}`, prefix,
+      start: START + minute * MINUTE, end: START + (minute + 1) * MINUTE,
+      powers, energies: powers.map(power => power / 60) });
+  }
+  const count = f.store.db.prepare('SELECT count(*) n FROM observations').get().n;
+  assert.equal(count, 4, 'only the first interval needs observations; unchanged power remains in the bounded tail');
+  f.at(START + 60 * MINUTE);
+  const row = f.runtime.read();
+  assert(Math.abs(row.ev1Kw - 3) < 1e-10);
+  assert(Math.abs(row.ev2Kw - 4) < 1e-10);
+  assert.equal(row.provenance.ev1.pendingEnergy, true);
+  assert.equal(row.provenance.ev2.pendingEnergy, true);
+  assert.equal(f.store.db.prepare('SELECT count(*) n FROM observations').get().n, count);
+  f.at(START + 30 * MINUTE);
+  assert.equal(f.runtime.read().ev1Kw, null, 'a later receipt cannot fill an earlier learning input');
+  f.at(START + 66 * MINUTE);
+  assert.equal(f.runtime.read().ev1Kw, null);
+  assert.equal(f.runtime.read().ev2Kw, null, 'source expiry remains five minutes even when storage has no maximum interval');
 });
 
 test('thermal reserve survives restart and missing time consumes each location independently', async t => {

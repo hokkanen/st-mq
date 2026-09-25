@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createGarageAdapter } from '../src/garage/adapter.js';
 import { createShellyCn105Transport } from '../src/garage/shelly-cn105.js';
+import { Store } from '../src/storage/store.js';
 
 const TEMPLATE = JSON.parse(readFileSync(new URL('./fixtures/garage-pill-state.json', import.meta.url)));
 const BASE = TEMPLATE.observedAt;
@@ -13,7 +14,7 @@ function fixture(t, options = {}) {
   let now = BASE, sequence = 0;
   const published = [];
   const adapter = createGarageAdapter({ settings: SETTINGS, hostSession: 'owner', clock: () => now, persisted: options.persisted,
-    onObservation: options.onObservation,
+    onObservation: options.onObservation, onDiagnostic: options.onDiagnostic,
     productionTransport: createShellyCn105Transport({ settings: SETTINGS, publish: async (topic, payload, options) => {
       published.push({ topic, command: JSON.parse(payload), options });
     } }) });
@@ -42,59 +43,93 @@ function fixture(t, options = {}) {
       result: { action: command.action, ownerSession: command.ownerSession, commandId: command.commandId,
         sequence: command.sequence, status, reason: status, ...resultPatch }, ...patch });
   }
-  state();
+  if (options.initialState !== false) state();
   t.after(() => adapter.close({ restore: false }));
   return { adapter, published, state, result, now: () => now, advance(ms = 1000) { now += ms; },
     sample: (extra = {}) => ({ temperatureC: 21, measuredAt: now, requestedExpiryAt: now + 90_000, ...extra }) };
 }
 
-test('a failed external history write cannot suppress the next live acknowledged report', async t => {
-  let fail = true;
-  const rows = [];
-  const f = fixture(t, { onObservation: row => {
-    if (fail) throw new Error('synthetic recording failure');
-    rows.push(row);
-  } });
-  await f.adapter.setExternalTemperature(f.sample());
-  f.advance(); assert.throws(() => f.result('acknowledged'), /synthetic recording failure/);
-  assert.equal(rows.length, 0);
-  fail = false; f.advance(); f.result('acknowledged');
-  assert.equal(rows.length, 1);
-  assert.equal(rows[0].value, 21);
-  assert.equal(rows[0].raw.expiresAt, BASE + 90_000);
-  f.advance(); f.result('acknowledged');
-  assert.equal(rows.length, 1, 'Only a successfully recorded sample is deduplicated');
-});
-
-test('initial acceptance records no external feed, while renewal preserves the prior acknowledged sample until its own ACK', async t => {
-  const rows = [], f = fixture(t, { onObservation: row => rows.push(row) });
+test('successful external samples and renewals produce no numeric history or diagnostic events', async t => {
+  const rows = [], events = [], f = fixture(t, { onObservation: row => rows.push(row), onDiagnostic: row => events.push(row) });
   await f.adapter.setExternalTemperature(f.sample());
   f.advance(); f.result('accepted');
-  assert.equal(rows.length, 0, 'the first numeric sample still needs a protocol acknowledgement');
   f.advance(); f.result('acknowledged');
-  assert.equal(rows.length, 1);
-  const previous = structuredClone(rows[0]);
-
   f.advance(28_000); f.result('acknowledged');
   await f.adapter.setExternalTemperature(f.sample({ temperatureC: 22 }));
   f.advance(); f.result('accepted');
-  assert.deepEqual(rows, [previous], 'accepting a renewal does not report an internal-sensor transition');
-  const external = f.adapter.externalTemperature();
-  assert.equal(external.phase, 'active');
-  assert.equal(external.pending, true);
-  assert.equal(external.acknowledged, false, 'the new sample remains explicitly unacknowledged');
-  assert.equal(external.temperatureC, 22);
-  assert.equal(external.result.status, 'accepted');
-  assert.equal(rows[0].value, 21, 'history retains the previously acknowledged value');
-  assert.equal(rows[0].raw.measuredAt, BASE);
-  assert.equal(rows[0].raw.expiresAt, BASE + 90_000);
-
+  assert.equal(f.adapter.externalTemperature().pending, true);
+  assert.equal(f.adapter.externalTemperature().acknowledged, false);
   f.advance(2000); f.result('acknowledged');
-  assert.deepEqual(rows.map(row => row.value), [21, 22]);
-  assert.equal(rows[1].sourceTime, f.now(), 'the new value begins only at its acknowledgement');
-  assert.equal(rows[1].raw.measuredAt, BASE + 30_000);
-  assert.equal(rows[1].raw.expiresAt, BASE + 120_000);
-  assert.equal(f.published.length, 2, 'normal renewal sends no clear or extra command');
+  assert.deepEqual(rows, []);
+  assert.deepEqual(events, []);
+  assert.equal(f.published.length, 2, 'recording adds no control commands');
+});
+
+test('external diagnostics record abnormal onset, changed reason and recovery once, surviving restart', async t => {
+  const events = [], f = fixture(t, { onDiagnostic: (row, at) => events.push({ ...row, at }) });
+  await f.adapter.setExternalTemperature(f.sample());
+  f.advance(); f.result('acknowledged');
+  f.advance(); f.adapter.setConnected(false);
+  await f.adapter.safetyTick();
+  assert.equal(events.length, 1);
+  assert.equal(events[0].reason, 'mqtt-disconnected');
+  const persisted = f.adapter.snapshot();
+  const resumedEvents = [], resumed = fixture(t, { persisted, initialState: false, onDiagnostic: row => resumedEvents.push(row) });
+  resumed.adapter.setConnected(false);
+  assert.deepEqual(resumedEvents, [], 'an unresolved persisted problem is not logged again after restart');
+  f.adapter.setConnected(true);
+  f.advance(); f.result('acknowledged');
+  assert.deepEqual(events.map(row => row.status), ['abnormal', 'recovered']);
+  f.advance(); f.result('acknowledged');
+  assert.equal(events.length, 2);
+  f.advance(29_000); f.result('acknowledged');
+  await f.adapter.setExternalTemperature(f.sample());
+  f.advance(); f.result('uncertain', {}, { reason: 'external-write-uncertain' });
+  f.advance(); f.result('uncertain', {}, { reason: 'external-write-uncertain' });
+  assert.equal(events.length, 3);
+  f.advance(); f.result('uncertain', {}, { reason: 'serial-disconnected' });
+  assert.equal(events.length, 4);
+  assert.equal(events[3].reason, 'serial-disconnected');
+});
+
+test('a failed diagnostic write remains retryable without suppressing the fault', async t => {
+  let fail = true;
+  const events = [], f = fixture(t, { onDiagnostic: row => {
+    if (fail) throw new Error('synthetic recording failure');
+    events.push(row);
+  } });
+  await f.adapter.setExternalTemperature(f.sample());
+  f.advance(); f.result('acknowledged');
+  assert.throws(() => f.adapter.setConnected(false), /synthetic recording failure/);
+  assert.equal(f.adapter.snapshot().externalDiagnostic, null);
+  fail = false;
+  await f.adapter.safetyTick();
+  await f.adapter.safetyTick();
+  assert.equal(events.length, 1);
+  assert.equal(events[0].reason, 'mqtt-disconnected');
+});
+
+test('external fault event and deduplication checkpoint commit atomically', async t => {
+  const store = new Store(':memory:');
+  t.after(() => store.close());
+  let fail = true;
+  const f = fixture(t, { onDiagnostic: (event, at, snapshot) => store.transaction(() => {
+    store.event('garage-external-temperature-diagnostic', event, at);
+    store.setState('garage:adapter:mqtt', snapshot);
+    if (fail) throw new Error('synthetic checkpoint failure');
+  }) });
+  await f.adapter.setExternalTemperature(f.sample());
+  f.advance(); f.result('acknowledged');
+  assert.throws(() => f.adapter.setConnected(false), /synthetic checkpoint failure/);
+  assert.deepEqual(store.events(), []);
+  assert.equal(store.getState('garage:adapter:mqtt'), null);
+  fail = false;
+  await f.adapter.safetyTick();
+  assert.equal(store.events().length, 1);
+  assert.deepEqual(store.getState('garage:adapter:mqtt').externalDiagnostic, f.adapter.snapshot().externalDiagnostic);
+  const resumed = fixture(t, { persisted: store.getState('garage:adapter:mqtt'), initialState: false,
+    onDiagnostic: () => assert.fail('The committed unresolved fault must not repeat') });
+  resumed.adapter.setConnected(false);
 });
 
 test('pending external input waits for acknowledgement without asking for uncertain-request cleanup', async t => {
@@ -165,63 +200,60 @@ test('a published renewal cannot be retired without fresh fenced evidence of its
   });
 });
 
-test('an accepted renewal cannot extend the prior acknowledged source deadline', async t => {
-  const rows = [], f = fixture(t, { onObservation: row => rows.push(row) });
+test('accepted renewal cannot hide expiration of the prior acknowledged sample', async t => {
+  const events = [], f = fixture(t, { onDiagnostic: (row, at) => events.push({ ...row, at }) });
   await f.adapter.setExternalTemperature(f.sample());
   f.advance(); f.result('acknowledged');
   f.advance(69_000); f.result('acknowledged');
   await f.adapter.setExternalTemperature(f.sample({ temperatureC: 22 }));
   f.advance(); f.result('accepted');
-  assert.equal(rows.length, 1);
-  assert.equal(rows[0].raw.expiresAt, BASE + 90_000);
   f.advance(18_999); f.result('accepted');
-  assert.equal(rows.length, 1, 'the old sample remains valid immediately before its deadline');
+  assert.deepEqual(events, []);
   f.advance(1); f.result('accepted');
-  assert.equal(f.adapter.externalTemperature().pending, true, 'the replacement command has not timed out');
-  assert.equal(f.adapter.externalTemperature().expiresInMs, 70_000, 'the replacement source has its own later deadline');
-  assert.deepEqual(rows.map(row => row.value), [21, null]);
-  assert.equal(rows[1].sourceTime, BASE + 90_000);
-  assert.deepEqual(rows[1].quality, ['inactive']);
+  assert.equal(f.adapter.externalTemperature().pending, true);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].reason, 'external-feed-expired');
+  assert.equal(events[0].at, BASE + 90_000);
+  f.advance(); f.result('acknowledged');
+  assert.deepEqual(events.map(row => row.status), ['abnormal', 'recovered']);
 });
 
-test('clear, lost connection, changed driver session, foreign or mismatched feed and failed renewal end acknowledged feed coverage', async t => {
+test('ordinary clear is silent while expired, mismatched, foreign and failed feeds are diagnostic', async t => {
   for (const scenario of ['clear', 'disconnect', 'boot', 'session', 'foreign-owner', 'different-temperature',
-    'different-measurement', 'uncertain', 'driver-clear']) {
-    await t.test(scenario, async t => {
-      const rows = [], f = fixture(t, { onObservation: row => rows.push(row) });
-      await f.adapter.setExternalTemperature(f.sample());
+    'different-measurement', 'uncertain', 'driver-clear']) await t.test(scenario, async t => {
+    const rows = [], events = [], f = fixture(t, { onObservation: row => rows.push(row), onDiagnostic: row => events.push(row) });
+    await f.adapter.setExternalTemperature(f.sample());
+    f.advance(); f.result('acknowledged');
+    if (scenario === 'clear') {
+      await f.adapter.setExternalTemperature({ temperatureC: null });
+      f.advance(); f.result('accepted');
       f.advance(); f.result('acknowledged');
-      if (scenario === 'clear') {
-        await f.adapter.setExternalTemperature({ temperatureC: null });
-        f.advance(); f.result('accepted');
-      } else {
-        f.advance(29_000); f.result('acknowledged');
-        await f.adapter.setExternalTemperature(f.sample({ temperatureC: 22 }));
-        f.advance(); f.result('accepted');
-        assert.equal(rows.length, 1, 'accepted renewal retains the acknowledged coverage');
-        f.advance();
-        if (scenario === 'disconnect') f.adapter.setConnected(false);
-        else if (scenario === 'boot') f.result('accepted', { bootId: 'different-boot' });
-        else if (scenario === 'session') f.result('accepted', { sessionId: 'different-session' });
-        else if (scenario === 'foreign-owner') f.result('accepted', {
-          authority: { ownerSession: 'another-owner', controlAllowed: false, manualControlAllowed: false },
-        }, { ownerSession: 'another-owner' });
-        else if (scenario === 'different-temperature' || scenario === 'different-measurement') {
-          const command = f.published.at(-1).command;
-          f.result('accepted', { externalTemperature: { ...INTERNAL, phase: 'active', restorationPending: true,
-            temperatureC: command.temperatureC + (scenario === 'different-temperature' ? .5 : 0),
-            measuredAt: command.measuredAt + (scenario === 'different-measurement' ? 1 : 0),
-            expiresInMs: command.measuredAt + 90_000 - f.now(), acknowledged: false } });
-        }
-        else if (scenario === 'uncertain') f.result('uncertain');
-        else f.result('accepted', { externalTemperature: { ...INTERNAL, phase: 'unresolved',
-          restorationPending: true, rearmRequired: true, reason: 'external-write-uncertain' } });
-      }
-      assert.deepEqual(rows.map(row => row.value), [21, null]);
-      assert.equal(rows[1].sourceTime, f.now());
-      assert.deepEqual(rows[1].quality, ['inactive']);
-    });
-  }
+    } else {
+      f.advance(29_000); f.result('acknowledged');
+      await f.adapter.setExternalTemperature(f.sample({ temperatureC: 22 }));
+      f.advance(); f.result('accepted');
+      assert.equal(events.length, 0);
+      f.advance();
+      if (scenario === 'disconnect') f.adapter.setConnected(false);
+      else if (scenario === 'boot') f.result('accepted', { bootId: 'different-boot' });
+      else if (scenario === 'session') f.result('accepted', { sessionId: 'different-session' });
+      else if (scenario === 'foreign-owner') f.result('accepted', {
+        authority: { ownerSession: 'another-owner', controlAllowed: false, manualControlAllowed: false },
+      }, { ownerSession: 'another-owner' });
+      else if (scenario === 'different-temperature' || scenario === 'different-measurement') {
+        const command = f.published.at(-1).command;
+        f.result('accepted', { externalTemperature: { ...INTERNAL, phase: 'active', restorationPending: true,
+          temperatureC: command.temperatureC + (scenario === 'different-temperature' ? .5 : 0),
+          measuredAt: command.measuredAt + (scenario === 'different-measurement' ? 1 : 0),
+          expiresInMs: command.measuredAt + 90_000 - f.now(), acknowledged: false } });
+      } else if (scenario === 'uncertain') f.result('uncertain');
+      else f.result('accepted', { externalTemperature: { ...INTERNAL, phase: 'unresolved',
+        restorationPending: true, rearmRequired: true, reason: 'external-write-uncertain' } });
+    }
+    assert.deepEqual(rows, []);
+    assert.equal(events.length, scenario === 'clear' ? 0 : 1);
+    if (scenario !== 'clear') assert.equal(events[0].status, 'abnormal');
+  });
 });
 
 test('external sample preserves source clock, shares the envelope, and requires correlated ACK lifecycle', async t => {

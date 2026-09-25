@@ -355,6 +355,14 @@ Recovery is initiated on the master:
    master snapshot makes the other database match the master, and normal
    one-way synchronization resumes.
 
+The checked snapshot includes durable energy still in an open recorder interval.
+Recovery can retain this as immutable measured history without copying the other
+computer's accumulator or control state. Existing master intervals, including
+its open energy, win overlaps. Phase cohorts are accepted atomically, and repeated
+recovery does not add their energy again. If resumed live integration straddles a
+recovered interval, that local interval is skipped without prorating; any
+uncovered remainder stays unknown and later readings resume normally.
+
 Recovery is optional after a successful check. To keep the master's history
 and model as they are, choose **Skip recovery and resume mirroring** after reviewing the preview
 and confirm that the other computer's unrecovered history may be discarded.
@@ -372,6 +380,17 @@ the work. The selected learning epoch and complete, caught-up checkpoint are
 published together. The master's original journal epoch remains available for
 reconstructing its original model; recovery does not rewrite it as a new
 learning algorithm.
+
+Frozen donor energy accumulators also contain measured history. Recovery saves
+each valid open interval as immutable energy observations with the donor snapshot
+provenance, preserving its original receipt time, phase values and interval
+boundaries. All phases are accepted or rejected together. Existing master energy,
+including its current open interval, wins overlaps; totals are never prorated to
+fill partial gaps. The donor file and the master's live acquisition cursors,
+adaptive thresholds and control state stay unchanged. A retried recovery neither
+duplicates accepted energy nor recreates an accepted phase deliberately removed
+from the master. Local saved-record statistics include accepted history without
+copying donor poll statistics.
 
 Reconstructed epochs reuse existing immutable journal payloads through direct
 references. Only newly accepted inputs and compact ordering records add storage;

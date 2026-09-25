@@ -18,7 +18,7 @@ test('calendar controls use Finnish dates across UTC midnight, leap days and bot
 
 test('left axis groups remain exclusive while average indoor, garage, outdoor and prices survive every choice', () => {
   const shared = ['model_indoor_temperature', 'garage_temperature', 'outdoor_temperature', 'outdoor_forecast', 'all_in_price', 'spot_price'];
-  for (const [left, expected] of [['power', ['property_power', 'auxiliary_power', 'charger_power', 'charger2_power']], ['phases', ['property_current_l1', 'property_current_l2', 'property_current_l3', 'ev1_current_l1', 'ev1_current_l2', 'ev1_current_l3']], ['integral', ['heating_integral']],
+  for (const [left, expected] of [['power', ['property_power', 'auxiliary_power', 'charger_power', 'charger2_power']], ['phases', ['property', 'ev1', 'ev2'].flatMap(prefix => [1,2,3].map(phase => `${prefix}_current_l${phase}`))], ['integral', ['heating_integral']],
     ...['learning_profit','learning_aux_profit','learning_recovery_error','learning_indoor_temperature'].map(name => [name, [name]]), ['solar_radiation', ['solar_radiation', 'solar_forecast']]]) {
     const datasets = historyDatasets({}, left);
     assert.deepEqual(datasets.filter(dataset => dataset.yAxisID === 'left').map(dataset => dataset.key), expected);

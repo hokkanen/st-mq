@@ -28,7 +28,7 @@ test('a quiet door seeds historical and detail charts with its original report t
     assert.equal(points[0].x, extra.viewFrom ?? start);
     assert.equal(points.at(-1).x, extra.viewTo ?? start + 20 * HOUR);
   }
-  const row = recorder.status(start + 20 * HOUR).parameters.find(row => row.signal === 'garage_door1_open');
+  const row = recorder.status(start + 20 * HOUR).exactParameters.find(row => row.signal === 'garage_door1_open');
   assert.equal(row.freshness.status, 'last-reported');
   assert.equal(row.freshness.ageBasis, 'event-only');
   assert.equal(row.freshness.maxAgeMs, null);
@@ -79,7 +79,7 @@ test('Caravan adaptive energy plots native and explicitly mapped MQTT meter inte
       const result = getChartData({ store, input: 'mqtt', startDate: date, endDate: date, now: start + 2 * HOUR,
         left: 'caravan_energy', ...view });
       const points = result.series.caravan_energy.filter(point => Number.isFinite(point.y));
-      assert(points.length >= 2);
+      assert.equal(points.length, view.viewTo ? 0 : 1, 'One marker at the actual interval endpoint; a clipped viewport cannot invent another energy point');
       assert(points.every(point => Math.abs(point.y - 0.02) < 1e-9));
       assert(points.every(point => point.intervalStart === start + HOUR - 30_000 && point.intervalEnd === start + HOUR + 30_000));
       assert(points.every(point => point.basis === 'meter-counter-delta' && point.learningRole === 'history-only'));

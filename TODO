@@ -367,3 +367,32 @@ Completed 2026-09-24 — Mitsubishi capitalization and room-target ownership che
   compatibility paths or migrations added. Updated existing browser expectations.
 - Validation: 61 focused runtime/integration and UI tests passed, plus a fresh-build
   synthetic Mitsubishi Chromium smoke check. No full suite or live-device probes.
+
+Completed 2026-09-25 — Comprehensive recording contract and inventory audit
+- Remove maximum-interval recording and reject the retired setting. Unchanged
+  scalar reports extend coverage; steady energy remains in durable accumulators
+  visible to history readers without repeated observations. Preserve energy
+  across restarts, source gaps and scoped session closure; close the preceding
+  steady interval before introducing a newly detected power step.
+- Centralize adaptive, exact-change, every-report and direct/event writer policy.
+  Keep room/protection temperatures, states, settings and counters exact. Retain
+  every hot-water circulation feedback report. Remove garage power history and
+  numeric external-feed history; retain abnormal feed/recovery events. Record all
+  four floor override contacts and actual tariff feedback with explicit unknowns.
+- Retain Charger 1 data and give Charger 2 equivalent phase energy/current history
+  using native phase-power weights. Its native total remains authoritative and
+  phase allocation remains estimated; missing shares stay unknown. Standardize
+  Caravan energy presentation and preserve measured meter increments.
+- Make the adaptive list describe observed adaptive streams only, including open
+  energy, independent freshness and true recording statistics. Preserve historical
+  unit/policy streams and distinguish devices without exposing private IDs. List
+  all other writers and all 18 tables, three views, event types, state families,
+  journals and provenance with saving rules and retention. Surface unknown writers.
+- Reviewed producers, consumers, schema/state, config, UI, tests and documentation.
+  Schema 15 starts fresh and rejects incompatible databases before mutation;
+  no migration, backfill, reset, retired-setting alias or old recorder interpreter.
+  Preserve supported read-only v0.7.5 imports, same-version restart/backup/restore,
+  journal replay, current corrections and physical restoration obligations.
+- Validation and final UI evidence: docs/audit/RECORDING-CONTRACT-2026-09.md.
+  Synthetic fixtures only; no household configuration, database or device used.
+  The owner authorized merging after validation; no deployment or push.

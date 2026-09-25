@@ -266,8 +266,8 @@ requested room temperature.
 
 ## Electrical accounting
 
-Native indoor temperature, compressor frequency and compressor activity have
-independent compact chart histories. The current Pill MQTT publisher sends
+Native indoor temperature, compressor frequency, compressor activity and observed defrost have
+independent compact recorded histories. The current Pill MQTT publisher sends
 actual boolean values with `unit:"boolean"`; `unit:null` accompanies an absent
 boolean value. The CN105 parser’s internal dimensionless unit is not the MQTT
 wire format. Compressor activity is recorded as numeric 1/0, with missing or
@@ -290,15 +290,23 @@ and false values. Never-observed or unsupported placeholders are omitted; fields
 already observed in the open dashboard remain visible as unavailable during
 temporary data loss. Detailed source clocks and quality remain in value popovers.
 
-The external temperature chart begins at acknowledged activation and carries
-the original sensor timestamp separately. Its coverage expires at the earlier
-device deadline or original sample plus 90 seconds. Internal-sensor handover and
-disconnect close the line; repeated cached state cannot extend it.
-While a matching numeric renewal awaits acknowledgement, the chart retains the
-previous acknowledged value only until its original deadline. It records the new
-value at its acknowledgement; accepting a renewal alone is not an internal-sensor
-handover. Pending requests display an acknowledgement wait, while
-uncertain requests still require cleanup.
+The supplied external temperature and native electrical power are live-only
+diagnostics. External control records compact abnormal-onset, reason-change and
+recovery events; ordinary activation, clear and successful renewals create no
+events or numeric history. An accepted renewal cannot conceal expiry of the
+previous acknowledged sample. Missing replies, disconnected transport, failed
+commands and mismatched or expired device evidence remain distinguishable.
+The last unresolved diagnostic is checkpointed to avoid repeating it after a
+restart. Pending requests still display an acknowledgement wait, while uncertain
+requests still require cleanup. The pump's interpreted indoor temperature remains
+recorded, but cannot independently prove external-feed acknowledgement.
+
+Once the pump has actually reported defrost, its exact Boolean changes and loss
+of availability are retained. Native raw diagnostic bytes are separate compact
+change events, preserving their hexadecimal text and quality; they are not a
+decoded fault diagnosis. Neither channel creates unsupported placeholders.
+Removing standalone electrical-power history does not remove live qualified
+power from garage learning or the selected electrical integration below.
 
 Electrical scale and scope must be explicit. `accuracyVerified:false` preserves
 the distinction between correctly decoded units and unverified absolute meter

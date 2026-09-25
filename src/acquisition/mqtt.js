@@ -167,7 +167,8 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     } catch { finish(new Error('MQTT subscription failed')); }
   })));
   const floorOverride = createFloorOverride({ store, publish: (topic, payload, options) => publish(topic, payload, { ...options, noReplay: true }),
-    settings: config.floorPreheat ?? floorOverrideConfiguration(), clock: () => engine.clock(), canControl, brokerIdentity: { address, username } });
+    settings: config.floorPreheat ?? floorOverrideConfiguration(), clock: () => engine.clock(), canControl, brokerIdentity: { address, username },
+    onObservation: observation => engine.ingest(observation) });
   engine.floorOverride = floorOverride;
   if (engine.executor) engine.executor.floorOverride = floorOverride;
   const equipment = equipmentSettings ? createEquipmentCapture({ engine, store, settings: equipmentSettings, publish, canControl,
@@ -184,6 +185,14 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     persisted: store.getState?.(`garage:adapter:${config.input}`),
     onObservation: observation => engine.ingest(observation),
     onEnergy: observation => engine.ingestEnergy?.(observation),
+    onDiagnostic: (diagnostic, at, snapshot) => store.transaction(() => {
+      store.event('garage-external-temperature-diagnostic', diagnostic, at);
+      store.setState(`garage:adapter:${config.input}`, snapshot);
+    }),
+    onEquipmentDiagnostic: (diagnostic, at, snapshot) => store.transaction(() => {
+      store.event('garage-pump-diagnostic', diagnostic, at);
+      store.setState(`garage:adapter:${config.input}`, snapshot);
+    }),
     onState: snapshot => engine.garage?.adapterChanged?.(snapshot),
   }) : null;
   if (garage) {

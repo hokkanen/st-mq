@@ -373,7 +373,7 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
             for (const audit of sampled.audits) store.energyAudit?.(audit);
             for (const gap of sampled.gaps) engine.recorder?.energyGap?.(gap);
             recordEaseeSessionChecks({ store, rows: result, now: clock(),
-              flush: () => engine.recorder?.flush?.(clock(), { force: true }) });
+              flush: device => engine.recorder?.flush?.(clock(), { force: true, source: 'easee', device, prefix: 'ev1' }) });
             store.setState('electricity:acquisition', electricity.checkpoint());
           }
           for (const observation of result) {

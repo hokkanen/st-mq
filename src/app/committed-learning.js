@@ -9,6 +9,7 @@ import { lastIndoorReading, indoorReportCoverage } from './indoor-readings.js';
 import { sensorBoundaries, affectsThermalLearning, sensorLearningContext } from './sensor-inputs.js';
 import { withSensorMeasurements } from './sensor-samples.js';
 import { estimateHeatPumpPerformance } from '../domain/heat-pump-performance.js';
+import { recordedEnergyGroups } from '../storage/energy-history.js';
 
 export const LEARNING_ALGORITHM = 'committed-house-v13-scoped-sensor-changes';
 export const LEARNING_WINDOW_MS = 15 * 60_000;
@@ -138,26 +139,26 @@ function weatherAt(store, from, to) {
       solar: sources } };
 }
 
-function electricalContext(store, from, to) {
+function electricalContext(store, from, to, input) {
   const result = {};
-  for (const prefix of ['property', 'ev1']) {
-    const phases = [1, 2, 3].map(phase => {
-      let kwh = 0, coveredMs = 0;
-      const ids = [];
-      for (const row of store.db.prepare(`SELECT id,value,unit,raw FROM observations WHERE signal=?
-        AND source_time>=? AND source_time<=? AND received_at<=? ORDER BY source_time,id`)
-        .iterate(`${prefix}_energy_l${phase}`, from, to, to)) {
-        const raw = row.raw ? JSON.parse(row.raw) : null;
-        if (row.unit !== 'kWh' || !Number.isFinite(row.value) || raw?.auditOnly || raw?.acquisitionOnly
-          || !Number.isFinite(raw?.intervalStart) || raw.intervalEnd > to
-          || raw.intervalEnd <= raw.intervalStart) continue;
-        const overlap = Math.max(0, raw.intervalEnd - Math.max(from, raw.intervalStart));
-        if (!overlap) continue;
-        kwh += row.value * overlap / (raw.intervalEnd - raw.intervalStart); coveredMs += overlap; ids.push(row.id);
+  for (const [scope,prefix] of [['property','property'],['ev1','ev1'],['ev2','ev2-phase']]) {
+    const phases = [0,1,2].map(()=>({kwh:null,coveredMs:0,observations:[],openIntervals:[]}));
+    for (const group of recordedEnergyGroups(store,{from,to,now:to,input,prefix})) {
+      if (group.conflict || group.values.length !== 3) continue;
+      const overlap = Math.min(to,group.end)-Math.max(from,group.start);
+      if (overlap <= 0) continue;
+      for (let i=0;i<3;i++) {
+        if (!Number.isFinite(group.values[i])) continue;
+        const phase = phases[i], kwh = group.values[i]*overlap/(group.end-group.start);
+        phase.kwh = (phase.kwh ?? 0)+kwh; phase.coveredMs += overlap;
+        if (Number.isSafeInteger(group.observationIds?.[i])) phase.observations.push(group.observationIds[i]);
+        // Freeze the resolved open-interval context in this journal sample.
+        // Later accumulator updates must never reinterpret an earlier sample.
+        if (group.pending) phase.openIntervals.push({start:group.start,end:group.end,
+          receivedAt:group.receivedAt,kwh,basis:group.basis});
       }
-      return { kwh: coveredMs ? kwh : null, coveredMs, observations: ids };
-    });
-    result[prefix] = { phases, complete: phases.every(phase => phase.coveredMs === to - from) };
+    }
+    result[scope] = { phases, complete: phases.every(phase => phase.coveredMs === to - from) };
   }
   return result;
 }
@@ -333,7 +334,7 @@ export function committedLearningSample({ store, input, at, config = {}, windowM
     compressorActivityObserved: Number.isFinite(duty), auxiliaryObserved: Number.isFinite(auxKw), auxiliaryRouteKnown: routed,
     actualModeKnown: Number.isFinite(mode.mean), energyBasis: 'estimated',
     integral: integral.value, supplyShortfallC: Number.isFinite(supply.value) && Number.isFinite(setpoint.value) ? setpoint.value - supply.value : null,
-    episodeId: oneValue(inputSegments, 'episodeId'), electricalContext: electricalContext(store, from, at),
+    episodeId: oneValue(inputSegments, 'episodeId'), electricalContext: electricalContext(store, from, at, input),
     heating: { verified: Number.isFinite(thermalCompressorDuty), compressorActive: thermalCompressorDuty > 0,
       compressorDuty: thermalCompressorDuty, route: Number.isFinite(thermalCompressorDuty) ? 'space-heating' : 'unknown', quality: [] },
     provenance: { basis: 'committed-history', intervalContract: 1, from, to: at, lineage, forecastVersion: radiation.version,

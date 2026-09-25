@@ -6,7 +6,7 @@ import { isRecordedDataset } from '../src/storage/recorded-datasets.js';
 import { getChartData } from '../src/app/chart-data.js';
 
 const now = Date.parse('2026-09-14T10:00:00Z');
-const retired = ['caravan_power', 'caravan_current', 'caravan_active', 'heat_savings_active',
+const retired = ['caravan_power', 'caravan_current', 'caravan_active', 'garage_power', 'garage_external_temperature',
   'garage_relay_active', 'garage_temperature_ha', 'garage_heat_pump_temperature', 'garage_heat_pump_energy'];
 const observation = (signal, source = 'shelly-mqtt') => ({ source, device: 'synthetic-device', signal,
   value: 21, unit: 'degC', sourceTime: now, receivedAt: now, quality: [], raw: {} });

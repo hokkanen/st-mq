@@ -26,6 +26,7 @@ function fixture(t, { initialNativeTargetC = 17 } = {}) {
     config: { input: 'mqtt', garage: { enabled: false, adapter: SETTINGS } }, clock: () => now });
   const adapter = createGarageAdapter({ settings: SETTINGS, hostSession: 'invented-room-owner', clock: () => now,
     onObservation: row => observations.push(row),
+    onDiagnostic: (row, at) => store.event('garage-external-temperature-diagnostic', row, at),
     onState: snapshot => runtime.adapterChanged(snapshot),
     productionTransport: createShellyCn105Transport({ settings: SETTINGS, publish: async (topic, payload, options) => {
       published.push({ topic, command: JSON.parse(payload), options });
@@ -287,20 +288,15 @@ test('foreign ownership disables every setting including a saved low room target
   assert.equal(f.store.getState(f.runtime.keys.roomTemperature).targetC, 7);
 });
 
-test('external temperature history begins only after device acknowledgement and ends at its actual deadline', async t => {
+test('external temperature control retains fault history without numeric feed samples', async t => {
   const f = fixture(t); await f.start();
-  const feed = f.observations.filter(row => row.signal === 'garage_external_temperature');
-  assert.equal(feed.length, 1);
-  assert.equal(feed[0].value, 17);
-  assert.equal(feed[0].sourceTime, f.now(), 'Do not draw a temperature feed before the acknowledgement');
-  assert.equal(feed[0].raw.measuredAt, f.published[2].command.measuredAt);
-  assert.equal(feed[0].raw.expiresAt, feed[0].raw.measuredAt + 90_000);
-  assert.equal(feed[0].sourceTime + feed[0].raw.reportIntervalMs, feed[0].raw.expiresAt);
+  assert.equal(f.observations.filter(row => row.signal === 'garage_external_temperature').length, 0);
+  assert.equal(f.store.db.prepare("SELECT count(*) n FROM events WHERE type='garage-external-temperature-diagnostic'").get().n, 0);
   f.advance(); f.state();
-  assert.equal(f.observations.length, 1, 'Republished state cannot extend the original sample');
   f.adapter.setConnected(false);
-  assert.equal(f.observations.at(-1).value, null);
-  assert.equal(f.observations.at(-1).raw.timeBasis, 'availability-transition');
+  const event = f.store.db.prepare("SELECT * FROM events WHERE type='garage-external-temperature-diagnostic'").get();
+  assert(event);
+  assert.equal(f.observations.length, 0);
 });
 
 test('real runtime and Pill adapter select5 through clearACK, forced native17 confirmation and room+12', async t => {
@@ -373,13 +369,14 @@ test('a dropped external renewal retries on a new challenge without clearing or 
   assert.notEqual(retry.commandId, dropped.commandId);
   assert.notEqual(retry.challenge, dropped.challenge);
   assert.ok(f.published.slice(2).every(({ command }) => command.action === 'remote-temperature' && command.temperatureC !== null));
-  assert.deepEqual(f.observations.map(row => row.value), [17], 'the acknowledged original feed stays continuous');
+  assert.equal(f.adapter.externalTemperature().temperatureC, 17, 'the acknowledged original feed stays active');
 
   await f.advanceReport('acknowledged');
   assert.equal(f.runtime.status().roomTemperature.phase, 'active');
   assert.equal(f.runtime.status().roomTemperature.acknowledged, true);
-  assert.deepEqual(f.observations.map(row => row.value), [17, 16]);
-  assert.equal(f.observations.at(-1).raw.expiresAt, source.sourceTime + 90_000);
+  assert.equal(f.adapter.externalTemperature().temperatureC, 16);
+  assert.equal(f.now() + f.adapter.externalTemperature().expiresInMs, source.sourceTime + 90_000);
+  assert.deepEqual(f.observations, []);
 });
 
 test('repeated lost renewals recover with fresh envelopes while preserving continuous acknowledged coverage', async t => {
@@ -398,18 +395,20 @@ test('repeated lost renewals recover with fresh envelopes while preserving conti
       assert.equal(retry.requestedExpiryAt, first.requestedExpiryAt);
       assert.notEqual(retry.commandId, previous.commandId);
       assert.notEqual(retry.challenge, previous.challenge);
-      assert.ok(f.observations.every(row => row.value !== null), 'lost renewals do not trigger an internal-sensor handover');
+      assert.equal(f.adapter.externalTemperature().phase, 'active', 'lost renewals do not trigger an internal-sensor handover');
     }
     await f.advanceReport('acknowledged');
     assert.equal(f.runtime.status().roomTemperature.phase, 'active');
-    assert.equal(f.observations.at(-1).raw.measuredAt, first.measuredAt);
-    assert.equal(f.observations.at(-1).raw.expiresAt, first.requestedExpiryAt);
+    assert.equal(f.adapter.externalTemperature().measuredAt, first.measuredAt);
+    assert.equal(f.now() + f.adapter.externalTemperature().expiresInMs, first.requestedExpiryAt);
   }
   const renewals = f.published.slice(3).map(row => row.command);
   assert.equal(renewals.length, 12);
   assert.ok(renewals.every(command => command.action === 'remote-temperature' && command.temperatureC !== null));
   assert.equal(new Set(f.published.map(row => row.command.challenge)).size, f.published.length);
-  assert.equal(f.observations.length, 5, 'only acknowledged measurements enter history');
+  assert.deepEqual(f.observations, [], 'numeric feed values never enter history');
+  const events = f.store.db.prepare("SELECT payload FROM events WHERE type='garage-external-temperature-diagnostic' ORDER BY id").all().map(row => JSON.parse(row.payload));
+  assert.deepEqual(events.map(row => row.status), Array.from({ length: 4 }, () => ['abnormal', 'recovered']).flat());
   assert.equal(f.store.getState(f.runtime.keys.roomTemperature).targetC, 5);
 });
 
