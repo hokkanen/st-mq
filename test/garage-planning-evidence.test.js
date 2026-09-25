@@ -64,10 +64,16 @@ test('recovery and failed-trial cooldown prevent starting a new experiment', () 
   assert.equal(garagePlanningEvidence(value, garageModelSummary(value), { observation, now: now + 6 * HOUR }).eligible, true);
 });
 
-test('unknown baseline or charging prevents prior-only eligibility; owner assumption is explicit', () => {
+test('baseline and native operation govern prior-only eligibility independently of charging', () => {
   const value = model(); value.validation.episodes = [];
-  for (const patch of [{ ev1Active: true }, { ev2Kw: 5 }, { baselineVerified: false }, { available: false }]) {
+  for (const patch of [{ baselineVerified: false }, { available: false }]) {
     assert.equal(garagePlanningEvidence(value, garageModelSummary(value), { observation: { ...observation, ...patch } }).eligible, false);
+  }
+  const ordinary = garagePlanningEvidence(value, garageModelSummary(value), { observation });
+  assert.equal(ordinary.eligible, true);
+  for (const patch of [{ ev1Active: true }, { ev2Kw: 5 },
+    { ev1Kw: null, ev2Kw: null, ev1Active: null, ev2Active: null, evEvidenceRequired: { ev1: true, ev2: true } }]) {
+    assert.deepEqual(garagePlanningEvidence(value, garageModelSummary(value), { observation: { ...observation, ...patch } }), ordinary);
   }
   const assumed = { ...observation, baselineVerified: false, baselineAccepted: true };
   assert.equal(garagePlanningEvidence(value, garageModelSummary(value), { observation: assumed }).eligible, true);

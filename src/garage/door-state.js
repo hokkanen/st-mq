@@ -3,16 +3,15 @@ export const GARAGE_DOOR_SIGNALS = Object.freeze(['garage_door1_open', 'garage_d
 export const isGarageDoorSignal = signal => GARAGE_DOOR_SIGNALS.includes(signal);
 export const GARAGE_COLD_DOOR_LIMIT_C = 2;
 
-/** Admission only. An opening during OFF invokes normal pipe reassessment;
- * it does not impose an unrelated air-temperature cutoff or reset reserve. */
+/** Admission only. Open and unknown configured doors share the cold-weather
+ * limit. During OFF, either invokes ordinary pipe reassessment, not an air cutoff. */
 export function garagePauseStartReason(observation) {
   if (!finite(observation?.outdoorC)) return 'outdoor-temperature-unavailable';
   const doors = Object.values(observation?.doors ?? {}).filter(door => door.required === true);
-  if (doors.some(door => typeof door.open !== 'boolean')
-    || observation?.doorEvidenceRequired === true && typeof observation.doorFront !== 'boolean')
-    return 'garage-door-state-unknown';
-  if (observation.outdoorC < GARAGE_COLD_DOOR_LIMIT_C
-    && (doors.some(door => door.open) || observation?.doorFront === true)) return 'garage-door-open-below-2c';
+  const notClosed = doors.some(door => door.open !== false) || observation?.doorFront === true
+    || observation?.doorEvidenceRequired === true && observation.doorFront !== false;
+  if (observation.outdoorC < GARAGE_COLD_DOOR_LIMIT_C && notClosed)
+    return 'garage-door-open-or-unknown-below-2c';
   return null;
 }
 

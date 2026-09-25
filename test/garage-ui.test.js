@@ -104,6 +104,18 @@ test('Garage heating, equipment and learning have independent closed disclosures
   assert.match(policy, /href="#garage-learning-details" data-policy-model-link/);
   assert.match(policy, /Freeze protection can restore heating sooner, including after a manual off selection/);
   assert.match(policy, /its original endpoint cannot move later/);
+  assert.match(policy, /open or unknown configured door.*only below 2 °C.*at 2 °C or above/);
+  assert.match(policy, /Charging does not restrict pauses or add forecast warmth/);
+});
+
+test('Garage decision explanations describe charging independence and the shared cold-door rule', () => {
+  const display = garageDisplay({ settings: garageSettings(),
+    plan: { reason: 'garage-door-open-or-unknown-below-2c' } });
+  const rows = Object.fromEntries(display.planningDetails.map(row => [row.key, row]));
+  assert.match(rows['current-opportunity'].value, /open or unknown door.*below 2/i);
+  assert.match(rows['door-policy'].detail, /At 2°C or above.*Outdoor temperature must be known/);
+  assert.equal(rows['charging-policy'].value, 'No pause restriction or forecast credit');
+  assert.match(rows['charging-policy'].detail, /status and power do not affect pause admission or the planned window/);
 });
 
 test('heat-pump metric rows stay visible once in their summaries while controls and explanations stay inside', () => {

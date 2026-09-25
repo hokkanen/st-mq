@@ -22,16 +22,16 @@ bulk temperature reaches zero.
 | Heat transfer | 20 W/m²·K | Initial estimate of heat exchange with the adjacent air. |
 | Safety factor | 2, fixed | Counts heat loss twice as fast and credits heat gain half as fast. |
 
-The configured normal-heating baseline defaults to 10°C and savings preference
-to 50. Every preference retains the same protection requirements. Automatic operation is
+The configured normal-heating baseline defaults to 10°C and savings strategy
+to Balanced. Every strategy retains the same protection requirements. Automatic operation is
 disabled and the protection policy is unapproved by default. The heat-transfer
 coefficient and safety factor are engineering assumptions, not values learned
 from the garage or an installed safety certificate.
 
 The old air-temperature hard limit, fixed degree-minute allowance, recovery
 temperature, recovery dwell and constant refill rate are removed. A new pause
-requires known configured door states and outside temperature; an open door
-blocks a new pause below 2°C. Door openings or outages during an existing pause
+requires known outside temperature; open and unknown configured doors both
+block a new pause below 2°C and both pass this rule at 2°C or above. Door openings or outages during an existing pause
 trigger ordinary temperature/reserve reassessment rather than unconditional
 cancellation. Door disturbances also exclude affected intervals from ordinary
 thermal fitting, baseline qualification and clean validation evidence.

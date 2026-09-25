@@ -43,8 +43,8 @@ function setup(t, { expensiveHours = 2, totalHours = 12, forecastOutdoorC = 0 } 
     simulationTransport: createGarageSimulationTransport(async command => { commands.push(command); }) });
   runtime.setAdapter(adapter);
   runtime.exposure = knownGarageReserve(runtime.settings, { at: BASE });
-  function temperatures(rear = 7, front = 6.7) {
-    for (const [signal, value] of [['garage_temperature', rear], ['garage_temperature_2', front], ['outdoor_temperature', 0]])
+  function temperatures(rear = 7, front = 6.7, outdoor = 0) {
+    for (const [signal, value] of [['garage_temperature', rear], ['garage_temperature_2', front], ['outdoor_temperature', outdoor]])
       engine.latest[signal] = { signal, value, unit: 'degC', sourceTime: now, receivedAt: now, quality: [],
         source: signal === 'outdoor_temperature' ? 'fmi' : 'mqtt-temperature', device: signal };
   }
@@ -95,6 +95,43 @@ test('runtime planner starts and renews the real fixture consumer with one froze
   assert.ok(f.runtime.checkpoint.model.at > frozen.at);
 });
 
+test('runtime dispatch uses the same 2 C rule for open and unknown doors, even while charging', async t => {
+  for (const outdoor of [1.99, 2, 2.01]) for (const open of [true, null]) {
+    await t.test(`${outdoor} C, door ${open === null ? 'unknown' : 'open'}`, async t => {
+      const f = setup(t, { forecastOutdoorC: outdoor }), signal = 'garage_door1_open';
+      f.runtime.config.connections = { equipment: { devices: [{ enabled: true, ownedSignals: [signal] }] } };
+      const reports = () => {
+        f.temperatures(7, 6.7, outdoor);
+        if (open !== null) f.engine.latest[signal] = { signal, source: 'mqtt-equipment', device: 'invented-door', value: 1,
+          sourceTime: f.now(), receivedAt: f.now(), quality: [], raw: { availabilityConfirmed: true, confirmedAt: f.now() } };
+        for (const phase of [1, 2, 3]) {
+          const name = `ev1_current_l${phase}`;
+          f.engine.latest[name] = { signal: name, source: 'easee', device: 'invented-charger', value: 16,
+            sourceTime: f.now(), receivedAt: f.now(), quality: [] };
+        }
+      };
+      reports(); await f.tick();
+      assert.equal(f.runtime.read().ev1Active, true);
+      assert.equal(f.runtime.read().doorFront, open);
+      if (outdoor < 2) {
+        assert.equal(f.runtime.plan.reason, 'garage-door-open-or-unknown-below-2c');
+        assert.equal(f.commands.length, 0);
+        return;
+      }
+      assert.equal(f.runtime.plan.nextAction, 'pause');
+      assert.equal(f.commands.at(-1).action, 'start');
+      const endpoint = f.commands.at(-1).endpointAt;
+      f.at(BASE + MINUTE); reports(); f.accepted(); await f.tick();
+      assert.equal(f.commands.at(-1).action, 'renew');
+      assert.equal(f.commands.at(-1).endpointAt, endpoint);
+      f.at(BASE + MINUTE + 1000); reports();
+      f.engine.latest.garage_temperature_2.value = null;
+      f.accepted(); await flush();
+      assert.equal(f.commands.at(-1).action, 'release', 'Charging and warm weather never replace required probe evidence');
+    });
+  }
+});
+
 test('exact external sensor expiry releases an active lease; native ON and health cannot replace front evidence', async t => {
   const f = setup(t); await f.tick();
   f.at(BASE + MINUTE); f.temperatures(); f.accepted(); await f.tick();
@@ -115,13 +152,13 @@ test('exact external sensor expiry releases an active lease; native ON and healt
   assert.equal(f.commands.length, count);
 });
 
-test('missing HA door feedback preserves normal heating and a later outage still obeys independent probe protection', async t => {
+test('missing HA door feedback blocks a cold start and a later outage still obeys independent probe protection', async t => {
   const f = setup(t), signal = 'garage_door1_open';
   f.runtime.config.connections = { equipment: { devices: [{ enabled: true, ownedSignals: [signal] }] } };
   await f.tick();
   assert.equal(f.runtime.read().doorFront, null);
   assert.equal(f.runtime.read().available, true);
-  assert.equal(f.runtime.plan.reason, 'garage-door-state-unknown');
+  assert.equal(f.runtime.plan.reason, 'garage-door-open-or-unknown-below-2c');
   assert.equal(f.commands.length, 0, 'A replacement host missing HA status keeps normal heating available');
 
   f.engine.latest[signal] = { signal, source: 'mqtt-equipment', device: 'invented-door', value: 0,

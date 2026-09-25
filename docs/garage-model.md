@@ -40,9 +40,11 @@ external observations and pipe reserves for that decision.
 - Qualifying charger heat is fixed at 7.5% of charger electricity. An 11 kW input
   therefore gives a displayed 0.825 kW heat assumption. No coefficient translates
   that number into future room warming. Future charger heat receives no safety
-  credit; current charging suppresses new economic starts.
-- Door state affects evidence and admission. Below 2°C outside, any open configured
-  door blocks a start; unknown door/outdoor also blocks. Openings during a pause
+  credit. Current, unknown and forecast charging do not gate pause admission or
+  alter the planned window; actual warmth is reflected in the measured temperatures.
+- Door state affects evidence and admission. Below 2°C outside, any open or unknown
+  configured door blocks a start. At 2°C or above, both pass the door admission rule.
+  Unknown outdoor temperature still blocks a start. Door changes during a pause
   invoke fresh protection assessment. No air exchange is inferred from area alone.
 - Native electrical power is a qualified observed mean after enough normal data,
   otherwise explicitly assumed 0.5 kW. Activity/frequency stays dimensionless.

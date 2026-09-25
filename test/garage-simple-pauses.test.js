@@ -43,17 +43,40 @@ test('minor and flat price differences preserve normal heating', () => {
   }
 });
 
-test('open cold door is an admission rule at strictly below 2 C; unknown state cannot admit', () => {
-  for (const [outdoorC, open, reason] of [[1.99, true, 'garage-door-open-below-2c'], [2, true, null],
-    [-10, false, null], [4, null, 'garage-door-state-unknown'], [null, false, 'outdoor-temperature-unavailable']]) {
-    assert.equal(garagePauseStartReason({ outdoorC, doors: { first: { required: true, open } } }), reason);
+test('open and unknown configured doors share the strictly below 2 C admission limit', () => {
+  for (const outdoorC of [-10, 1.99, 2, 2.01, 4, null, undefined, NaN]) {
+    for (const open of [false, true, null, undefined, 'closed']) {
+      const reason = !Number.isFinite(outdoorC) ? 'outdoor-temperature-unavailable'
+        : outdoorC < 2 && open !== false ? 'garage-door-open-or-unknown-below-2c' : null;
+      assert.equal(garagePauseStartReason({ outdoorC, doors: {
+        first: { required: true, open }, second: { required: true, open: false },
+      } }), reason);
+      assert.equal(garagePauseStartReason({ outdoorC, doorEvidenceRequired: true, doorFront: open }), reason);
+    }
   }
+  assert.equal(garagePauseStartReason({ outdoorC: -10, doors: { unused: { required: false, open: null } } }), null);
   const args = candidate(); args.observation.doorFront = true;
-  assert.equal(planGarage(args).reason, 'garage-door-open-below-2c');
+  assert.equal(planGarage(args).reason, 'garage-door-open-or-unknown-below-2c');
   args.activeEpisode = { state: 'paused', pauseUntil: NOW + 2 * HOUR };
   assert.equal(planGarage(args).nextAction, 'renew', 'opening reassesses actual protection without unconditional cancellation');
+  Object.assign(args.observation, { doorEvidenceRequired: true, doorFront: null });
+  assert.equal(planGarage(args).nextAction, 'renew', 'unknown doors receive the same ongoing protection treatment');
   args.observation.frontC = null;
   assert.equal(planGarage(args).nextAction, 'available', 'ongoing permission never overrides missing protection evidence');
+});
+
+test('warm unknown doors allow a worthwhile plan, and a scheduled plan rechecks the cold boundary', () => {
+  const args = candidate();
+  Object.assign(args.observation, { outdoorC: 2, doorEvidenceRequired: true, doorFront: null,
+    doors: { first: { required: true, open: null } } });
+  args.forecast = args.forecast.map(row => ({ ...row, outdoorC: 2 }));
+  const plan = planGarage(args);
+  assert.equal(plan.nextAction, 'pause');
+  args.scheduledOpportunity = plan;
+  args.observation.outdoorC = 1.99;
+  assert.equal(planGarage(args).reason, 'garage-door-open-or-unknown-below-2c');
+  args.observation.outdoorC = null;
+  assert.equal(planGarage(args).reason, 'outdoor-temperature-unavailable');
 });
 
 test('ongoing pause cannot extend the original endpoint across drifting planner ticks', () => {
@@ -67,12 +90,23 @@ test('ongoing pause cannot extend the original endpoint across drifting planner 
   assert.equal(plan.pauseUntil, endpoint);
 });
 
-test('future charging does not lengthen safe OFF and present charging suppresses a new opportunity', () => {
-  const args = candidate(), original = planGarage(args);
-  args.forecast = args.forecast.map(row => ({ ...row, ev1Kw: 22, ev2Kw: 22, powerKw: 99 }));
-  assert.deepEqual(planGarage(args), original);
-  args.observation.ev1Active = true;
-  assert.equal(planGarage(args).reason, 'charging-heat-opportunity-uncertain');
+test('current, unknown and forecast charging do not affect new, scheduled or continuing pauses', () => {
+  for (const phase of ['new', 'scheduled', 'continuing']) {
+    const args = candidate(), initial = planGarage(args);
+    if (phase === 'scheduled') args.scheduledOpportunity = initial;
+    if (phase === 'continuing') args.activeEpisode = { state: 'paused', pauseUntil: initial.pauseUntil };
+    const original = planGarage(args);
+    for (const charging of [
+      { ev1Active: true, ev1Kw: 11, ev2Active: true, ev2Kw: 22 },
+      { ev1Active: false, ev1Kw: 0, ev2Active: false, ev2Kw: 0 },
+      { ev1Active: null, ev1Kw: null, ev2Active: null, ev2Kw: null,
+        evEvidenceRequired: { ev1: true, ev2: true } },
+    ]) {
+      Object.assign(args.observation, charging);
+      args.forecast = args.forecast.map(row => ({ ...row, ev1Kw: 22, ev2Kw: 22, powerKw: 99 }));
+      assert.deepEqual(planGarage(args), original, phase);
+    }
+  }
 });
 
 test('forecast must cover the pause and useful-heating delay', () => {

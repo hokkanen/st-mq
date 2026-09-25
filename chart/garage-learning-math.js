@@ -41,7 +41,7 @@ export function garageLearningCalculation(key) {
   if (/local-allowance|protection-policy/.test(key)) return pipe;
   if (/charger-\d-input|charger-heat-fraction/.test(key)) return calculation([
     ['estimated charger heat = recorded electrical power × 0.075', 'Each charger is assessed separately in kW. This fixed assumption is not measured vehicle heat.'],
-  ], ['Charging excludes cooling fitting and new savings pauses. Future charging contributes no warmth to the safe-pause forecast; missing charger power is unknown rather than zero.']);
+  ], ['Charging-disturbed intervals cannot fit clean cooling rates, but charging does not block savings pauses. Charging status and power do not change the planned window or add forecast warmth; actual warmth is reflected in measured temperatures. Missing charger power remains unknown in recorded learning inputs.']);
   if (/reconstruction|model-version/.test(key)) return record;
   if (/temperature|heating-availability|doors-and-local/.test(key)) return measurements;
   return decisions;

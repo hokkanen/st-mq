@@ -2,6 +2,26 @@
 -Implement support for local mqtt-based temperature receives (eg, from shelly or HASS through Meteorologisk Institute); just store last received temp values and time stamps (maybe in storage class, see below) when received (and accept if received within 1h)
 -Chart dataset control buttons don't work when datasets are manually hidden/unhidden from legend, how to fix?
 
+Completed 2026-09-25 — Garage charging and door admission
+- Remove charging gates from savings planning and evidence eligibility. Current,
+  unknown and forecast charger status/power do not change pause selection,
+  scheduled admission or renewal. Actual warmth still enters through measured
+  temperatures; future charging receives no assumed heat credit.
+- Apply the same outdoor boundary to open and unknown configured doors: both
+  prevent a new pause below 2°C and pass the door rule at exactly 2°C or above.
+  Unknown outdoor temperature still prevents a start. Ongoing pauses retain
+  independent probe checks, pipe protection and their original endpoint.
+- Reviewed input producers, planner/evidence consumers, runtime/adapter dispatch,
+  current state/configuration, UI, tests and docs. Remove retired admission
+  reasons and stale charging-block explanations without aliases or migrations.
+  Clean thermal learning, comparable savings evidence and restoration duties
+  remain supported; no learning algorithm, saved format or configuration change.
+- Validation: all 401 Garage regression tests and the production UI build pass.
+  Coverage includes open/unknown doors on both sides of 2°C, charging-independent
+  new/scheduled/continuing plans, real fixture adapter admission and renewal,
+  and probe-loss restoration. Synthetic offline fixtures only; no private data,
+  database reset, controller restart or household equipment commands.
+
 Completed 2026-09-25 — Home and Garage heating strategy redesign
 - Rebuild the paired Heating strategy & comfort / Heating strategy & protection
   sections around savings strategy, independent boundaries, decision sequence and

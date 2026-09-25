@@ -70,9 +70,7 @@ export function planGarage({ now, model, exposure, observation, settings = {}, p
     || !validTime(scheduled.pauseFrom) || !validTime(scheduled.plannedPauseUntil)
     || scheduled.plannedPauseUntil <= scheduled.pauseFrom))
     throw new Error('Unsupported Garage scheduled opportunity');
-  const admission = !active && (garagePauseStartReason(observation)
-    || ([1, 2].some(id => observation?.[`ev${id}Kw`] > .1 || observation?.[`ev${id}Active`] === true)
-      ? 'charging-heat-opportunity-uncertain' : null));
+  const admission = !active && garagePauseStartReason(observation);
   if (admission) return stop(admission);
   if (!finite(observation?.rearC) || !finite(observation?.frontC)) return stop('thermal-state-unavailable');
   const summary = garageModelSummary(model), evidence = garagePlanningEvidence(model, summary, { now, observation, activeEpisode });

@@ -127,16 +127,17 @@ source timestamps and the pump's own room sensor cannot replace them. Configured
 MQTT door contacts retain a confirmed state until an event or availability loss;
 confirmation and original source time remain distinct.
 
-A new savings pause is blocked when any configured door is open and fresh outside
-temperature is **below 2°C**. Unknown configured door state or outdoor temperature
-also blocks a start. Opening during an existing pause triggers the ordinary
-protection reassessment; it is not an unconditional cancellation. Door area alone
+A new savings pause is blocked when any configured door is open **or unknown**
+and fresh outside temperature is **below 2°C**. At exactly 2°C or above, either
+door state passes this rule. Unknown outdoor temperature still blocks a start.
+Door changes during an existing pause trigger the ordinary protection
+reassessment; they are not an unconditional cancellation. Door area alone
 does not establish air exchange: wind, open duration and mixing are missing.
 There is no fitted door coefficient or invented heat-loss calculation. Affected
 intervals are excluded from clean cooling/reference/validation evidence.
 
-When HA or its door bridge is unavailable, normal heating remains available and
-new savings pauses wait for live door confirmation. An existing pause can continue
+When HA or its door bridge is unavailable, unknown doors use the same 2°C rule
+as open doors. An existing pause can continue
 with fresh independent probes and sufficient reserve. Losing either required
 probe revokes OFF permission; a working command connection requests restoration.
 If the host or MQTT broker fails, the commissioned Pill must restore ON at its
@@ -168,9 +169,11 @@ inputs and restart retain restoration obligations; restart never resumes OFF.
 `committed-garage-v6-source-clocks` learns only two effective cooling coefficients,
 from clean OFF intervals. Charger heat is **7.5% of qualifying charger energy**
 (or power), shown separately. It never schedules charging for warmth or credits
-future charging when judging safe OFF time. Current charging suppresses a new
-opportunity because it may already suppress heat-pump demand. Unknown configured
-charger input cannot train clean cooling/reference data.
+future charging when judging safe OFF time. Current, unknown and forecast charging
+status and power do not restrict savings pauses or alter the planned window.
+Actual warmth is reflected in measured temperatures. Charging-disturbed or unknown
+configured charger input still cannot train clean cooling/reference data or
+establish comparable savings; those evidence rules do not block pause admission.
 
 Normal electricity uses a qualified observed mean when available, otherwise an
 explicit **0.5 kW assumption**. Compressor activity/frequency is never converted
