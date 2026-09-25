@@ -6,8 +6,8 @@ export const DEFAULT_CHARGING_DEFAULTS = Object.freeze({
 });
 const chargerDefaults = Object.freeze({ enabled: false, ...DEFAULT_CHARGING_DEFAULTS });
 
-// Validated runtime values derived from configuration, never a separate saved
-// preference source. Both unidentified charging points use the same defaults.
+// Runtime values combine configured charging defaults with persistent UI
+// control choices. Both unidentified charging points use the same defaults.
 export const DEFAULT_CHARGING_SETTINGS = Object.freeze({ priority: 'balanced', vehicles: Object.freeze({
   tesla: Object.freeze({ ...DEFAULT_CHARGING_DEFAULTS, capacityKwh: 57 }),
   bmw: Object.freeze({ ...DEFAULT_CHARGING_DEFAULTS, capacityKwh: 74 }),
@@ -33,16 +33,16 @@ export function chargingDefaults(input = {}, { partial = false } = {}) {
   return value;
 }
 
-/** Resolve the config-owned baseline. Vehicle identity and session overrides
- * are applied by the runtime, with observations retaining their provenance. */
-export function chargingSettingsFromConfiguration(configuration) {
+/** Combine configured battery/deadline defaults with validated UI controls.
+ * Vehicle identity and session overrides retain their separate provenance. */
+export function chargingSettingsFromConfiguration(configuration, controls = {}) {
   const defaults = chargingDefaults(configuration.defaults);
   return chargingSettings({
-    priority: configuration.priority,
+    priority: controls.priority ?? 'balanced',
     vehicles: Object.fromEntries(Object.entries(configuration.vehicles).map(([id, vehicle]) =>
       [id, { ...defaults, ...vehicle.defaults }])),
-    chargers: Object.fromEntries(Object.entries(configuration.chargers).map(([id, charger]) =>
-      [id, { enabled: charger.schedulingEnabled, ...defaults }])),
+    chargers: Object.fromEntries(Object.keys(configuration.chargers).map(id =>
+      [id, { enabled: controls.chargers?.[id]?.enabled ?? false, ...defaults }])),
   });
 }
 

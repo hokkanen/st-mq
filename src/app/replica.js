@@ -79,7 +79,8 @@ function chargingSnapshot(snapshot) {
       mqtt: reception(recorded?.mqtt), vehicleMqtt: recorded?.vehicleMqtt ? reception(recorded.vehicleMqtt) : null,
       error: null };
   });
-  return { readOnly: true, recorded: true, snapshotAt, timezone: TIME_ZONE, settings, chargers,
+  return { readOnly: true, recorded: true, snapshotAt, timezone: TIME_ZONE,
+    controls: saved.view.controls, settings, chargers,
     vehicleFeeds: (saved.view?.vehicleFeeds ?? []).map(feed => ({ ...feed, reception: reception(feed.reception) })),
     coordination: saved.view?.coordination ?? null, error: null };
 }

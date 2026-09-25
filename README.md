@@ -566,13 +566,14 @@ fill missing intervals or make cached device values fresh. Provider diagnostics
 name the live stream and REST backup while retaining reading-quality warnings.
 Charger voltage terminal mapping requires explicit verification before voltage
 weights are used. Easee acquisition can refresh authentication tokens. Separately
-enabling `charging.chargers.charger1.schedulingEnabled` in configuration permits
+enabling **Automatic charging** in the dashboard permits
 automatic scheduling writes, including while heating is in monitoring or shadow
-mode; it is off by default. The dashboard shows automatic scheduling permission
-and priority read-only. Shared and vehicle defaults are configuration-owned;
-**Save for this session** cannot replace them. The prominent **Charge Now**
-button releases economic scheduling for the current connection while preserving
-native device and vehicle constraints.
+mode; it is off by default. Automatic charging and shared charger priority are
+saved UI choices, retained across restart and unplugging for the same equipment.
+The four shared and vehicle-specific ready-by and battery defaults are
+configuration-owned; **Save for this session** cannot replace them. **Charge now**
+releases economic scheduling for the current connection even with Automatic
+charging OFF, while preserving native device and vehicle constraints.
 Cloud delayed starts and native OCPP control are exclusive. Native OCPP setup is
 managed by ST-MQ, with a stable shared address in paired mode. Opt-in
 `plug-and-charge` authorization supports RFID-free starts; economic pauses use

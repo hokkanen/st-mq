@@ -996,3 +996,17 @@ test('fresh readback cannot certify an economic pause using older mode and reaso
   h.restart();const result=await h.update({plan});
   assert.equal(result.phase,'pause-unconfirmed');assert.equal(result.execution.pauseConfirmedThrough??0,0);await h.controller.close();
 });
+
+
+test('Charge Now releases an owned Easee delay with automatic OFF and retains native manual restrictions', async () => {
+  const h = harness(); await h.update();
+  const connectedAt = h.controller.status().session.connectedAt;
+  let result = await h.update({ enabled: false, chargeNow: { connectedAt } });
+  assert.equal(result.phase, 'released'); assert.equal(result.enabled, false);
+  assert.equal(h.schedules.enabled, 'none'); assert.equal(h.writes.length, 2);
+  h.now += 1000; h.schedules = normalizeScheduleState({ enabled: 'daily', daily: { timezone: 'UTC',
+    periods: [{ startTime: '22:00', stopTime: '23:00', maximumAmps: 16 }] } });
+  result = await h.update({ enabled: false, chargeNow: { connectedAt } });
+  assert.equal(result.phase, 'yielded'); assert.equal(h.schedules.enabled, 'daily'); assert.equal(h.writes.length, 2);
+  h.controller.close();
+});

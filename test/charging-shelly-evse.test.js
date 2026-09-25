@@ -312,7 +312,7 @@ test('Charge Now releases a Shelly economic pause for this session and Use autom
   assert.equal(f.fields.start_charging, false); assert.equal(controller.status().ownedPause, true);
   const connectedAt = f.adapter.snapshot().session.connectedAt;
   f.setNow(NOW + f.adapter.config.dwellMs + 1000);
-  await controller.update({ enabled: true, plan: future, chargeNow: { connectedAt }, allocation: {} });
+  await controller.update({ enabled: false, plan: future, chargeNow: { connectedAt }, allocation: {} });
   assert.equal(f.fields.start_charging, true); assert.equal(controller.status().ownedPause, false);
   assert.equal(controller.status().reason, 'charge-now');
   assert.equal(f.writes.filter(row => row.method === 'Boolean.Set' && row.params.value === true).length, 1);
@@ -327,7 +327,7 @@ test('Shelly Charge Now preserves a native stop, native schedule and vehicle sta
     if (mode === 'schedule') f.schedules.jobs = [{ id: 1, enable: true }];
     await f.ready();
     const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true }); t.after(() => controller.close());
-    await controller.update({ enabled: true, chargeNow: { connectedAt: f.adapter.snapshot().session.connectedAt },
+    await controller.update({ enabled: false, chargeNow: { connectedAt: f.adapter.snapshot().session.connectedAt },
       allocation: mode === 'vehicle-start' ? { notBefore: NOW + 3600000 } : {} });
     assert.equal(controller.status().reason, mode === 'stop' ? 'manual-stop' : mode === 'schedule' ? 'native-schedule' : 'vehicle-not-before');
     assert.equal(f.writes.some(row => row.method === 'Boolean.Set'), false, `${mode} cannot be overridden by Charge Now`);
@@ -344,7 +344,7 @@ test('Shelly Charge Now still pauses for the property fuse limit and rejects a p
   };
   const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true }); t.after(() => controller.close());
   const connectedAt = f.adapter.snapshot().session.connectedAt;
-  await controller.update({ enabled: true, chargeNow: { connectedAt }, allocation: { property: reading([44, 30, 32]), easee: reading([12, 12, 12]) } });
+  await controller.update({ enabled: false, chargeNow: { connectedAt }, allocation: { property: reading([44, 30, 32]), easee: reading([12, 12, 12]) } });
   assert.equal(controller.status().limiter.currentA, 0); assert.equal(f.fields.start_charging, false);
   f.setNow(f.now() + 1000); f.notify('work_state', 'free');
   f.setNow(f.now() + f.adapter.config.dwellMs + 1000); f.notify('work_state', 'connected');

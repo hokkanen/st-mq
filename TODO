@@ -2,6 +2,34 @@
 -Implement support for local mqtt-based temperature receives (eg, from shelly or HASS through Meteorologisk Institute); just store last received temp values and time stamps (maybe in storage class, see below) when received (and accept if received within 1h)
 -Chart dataset control buttons don't work when datasets are manually hidden/unhidden from legend, how to fix?
 
+Completed 2026-09-25 — Charging controls owned by the dashboard
+- Keep only ready-by time, starting charge, target charge and usable battery
+  capacity as shared/vehicle configuration defaults. Restore persistent UI
+  Automatic charging and shared priority choices, scoped to equipment identity.
+  Preserve those choices across restart and vehicle unplugging; keep changes to
+  the four charging inputs scoped to the current session.
+- Make Charge now independent of Automatic charging across Easee cloud, native
+  OCPP and Shelly control. Preserve native restrictions, session/revision checks,
+  current permissions and confirmed instruction ownership. Keep requested
+  charging distinct from physical confirmation and blocked native schedules.
+- Restyle Charge now as a compact secondary action and separate persistent
+  Charging controls from Session settings. Update help, documentation and the
+  repository rule to express those lifetimes consistently.
+- Reviewed producers, API consumers, saved state, configuration, UI and tests.
+  Remove configuration priority/scheduling switches and reject retired durable
+  default preferences. Current schema 14/charging state 6 gain optional control
+  choices; absence defaults to OFF/Balanced and never promotes recorded display
+  into control permission. No migration, state repair or database reset needed.
+  Preserve current session, snapshot/replica and native restoration behavior.
+- Validation: all 3,175 offline tests and the production build pass. Focused
+  checks cover all three charging backends, configuration reload, restart,
+  absent new control state, stale-device/session/revision rejection, failed
+  storage and readback, native restrictions and explicit return to automatic.
+  Isolated Chromium checks pass 22 charging states in both themes from 320 to
+  1920 px, including Charge now with Automatic OFF, sequential Use automatic,
+  shared priority edits, stable focus/drafts and balanced card layouts.
+  All validation used synthetic services and temporary databases.
+
 Completed 2026-09-25 — Persistent heat-pump settings and room intent
 - Ordinary Home pump parameters remain until explicitly changed; readback owns
   their current values and later automatic control restores the accepted device

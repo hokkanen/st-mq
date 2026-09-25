@@ -140,13 +140,8 @@
         "minimumSoc": 80,
         "capacityKwh": 74
       },
-      "priority": "balanced",
       "chargers": {
-        "charger1": {
-          "schedulingEnabled": false
-        },
         "charger2": {
-          "schedulingEnabled": false,
           "enabled": false,
           "profile": "top-ac-portable",
           "deviceId": "",
@@ -627,13 +622,8 @@
         "minimumSoc": "float(0,100)",
         "capacityKwh": "float(1,300)"
       },
-      "priority": "list(balanced|charger1|charger2)",
       "chargers": {
-        "charger1": {
-          "schedulingEnabled": "bool"
-        },
         "charger2": {
-          "schedulingEnabled": "bool",
           "enabled": "bool",
           "profile": "str?",
           "deviceId": "str?",

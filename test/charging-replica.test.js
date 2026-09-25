@@ -43,12 +43,13 @@ test('read-only replica shows saved charging preferences, SoC and ownership at t
   const owned = { planId: 'snapshot-plan', startAt: plan.startAt, confirmedAt: snapshotAt - 10_000, fingerprint: 'invented-fingerprint' };
   const ownership = { version: 5, phase: 'waiting', owned,
     released: false, manual: null, reason: 'Native delayed start confirmed.' };
-  const view = { settings, chargers: CHARGER_DEFINITIONS.map(definition => {
+  const view = { settings, controls: { priority: 'balanced', revision: 2 }, chargers: CHARGER_DEFINITIONS.map(definition => {
     const first = definition.id === 'charger1';
     return { ...buildCharger({ definition, settings: settings.chargers[definition.id], now: snapshotAt,
       timezone: 'Europe/Helsinki', automaticSoc: first ? automaticSoc : null,
       configuration: { efficiency: .925 }, control: first ? ownership : { phase: 'off', released: false },
       telemetry: first ? {} : { soc: { value: 67, source: 'teslamate', measuredAt: null, receivedAt: snapshotAt - 5000 } } }),
+      controls: { enabled: settings.chargers[definition.id].enabled, revision: 3 },
       automaticSoc: first ? automaticSoc : null, plan: first ? plan : null,
       forecast: null, mqtt: { connected: true, subscribed: true, reason: null }, error: null };
   }), coordination: null, error: null };
@@ -69,7 +70,9 @@ test('read-only replica shows saved charging preferences, SoC and ownership at t
   assert.equal(status.charging.readOnly, true);
   assert.equal(status.charging.snapshotAt, snapshotAt);
   assert.deepEqual(status.charging.settings, settings);
+  assert.deepEqual(status.charging.controls, view.controls);
   const [charger1, charger2] = status.charging.chargers;
+  assert.deepEqual(charger1.controls, { enabled: true, revision: 3 });
   assert.deepEqual(charger1.plan, plan);
   assert.deepEqual(charger1.control.owned, owned);
   assert.equal(charger1.control.phase, 'waiting');
@@ -134,7 +137,7 @@ test('replica preserves independent vehicle identification, selected values and 
 });
 
 test('replica rejects unsupported development charging payloads', async t => {
-  const { app } = await fixture(t, { version: 1, settings: chargingSettings(), chargers: {} });
+  const { app } = await fixture(t, { version: 5, settings: chargingSettings(), chargers: {} });
   assert.throws(() => app.status(), /Unsupported charging snapshot/);
 });
 

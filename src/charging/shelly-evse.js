@@ -305,9 +305,9 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
 export function createShellyController({ adapter, initialState, saveState = () => {}, clock = Date.now, canControl = () => false } = {}) {
   if (initialState && (initialState.version !== 1 || initialState.association !== adapter.association)) throw fail('unsupported-shelly-ownership');
   let state = initialState ? copy(initialState) : { version: 1, association: adapter.association, phase: 'off', manual: null, ownedPause: false, pending: null };
-  let closed = false, revision = 0, queue = Promise.resolve();
+  let closed = false, revision = 0, planningRevision = null, queue = Promise.resolve();
   const persist = () => saveState(copy(state));
-  const status = () => ({ ...copy(state), manual: state.manual ?? (adapter.snapshot().nativeScheduleActive ? { kind: 'native-schedule' } : null),
+  const status = () => ({ ...copy(state), planningRevision, manual: state.manual ?? (adapter.snapshot().nativeScheduleActive ? { kind: 'native-schedule' } : null),
     snapshot: adapter.snapshot(), session: adapter.snapshot().session,
     handoverConfirmed: !state.pending, confirmed: state.executionStage === 'physical-effect' });
   return { status, invalidate() { revision++; }, close() { closed = true; revision++; },
@@ -315,6 +315,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
       const intentRevision = ++revision;
       queue = queue.catch(() => {}).then(async () => {
         if (closed || intentRevision !== revision) return;
+        if (input.replan === true) { await persist(); planningRevision = input.controlsRevision ?? null; }
         await adapter.refresh();
         const snapshot = adapter.snapshot(), sessionId = snapshot.session?.sessionId;
         if (state.sessionId !== sessionId) {
@@ -355,9 +356,10 @@ export function createShellyController({ adapter, initialState, saveState = () =
         const context = input.allocation ?? {}, limitation = shellyCurrentLimit({ config: adapter.config,
           ...context, nativeCurrentA: state.manualCurrentA, shelly: adapter.liveCurrents(), now: clock() });
         state.limiter = limitation;
-        const chargeNow = input.enabled && input.chargeNow?.connectedAt === snapshot.session?.connectedAt;
+        const chargeNow = Number.isSafeInteger(input.chargeNow?.connectedAt)
+          && input.chargeNow.connectedAt === snapshot.session?.connectedAt;
         const plan = input.plan, windows = chargeNow ? [{ startAt: clock(), endAt: null }] : plan?.periods ?? [];
-        const economic = input.enabled && !state.manual && !snapshot.nativeScheduleActive && windows.length > 0;
+        const economic = (input.enabled || chargeNow) && !state.manual && !snapshot.nativeScheduleActive && windows.length > 0;
         const inWindow = windows.some(period => period.startAt <= clock() && (period.endAt === null || period.endAt > clock()));
         const nativeBlocked = finite(context.notBefore) && context.notBefore > clock();
         const restrict = adapter.config.limiterEnabled || economic;
@@ -407,7 +409,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
           const actual = adapter.liveCurrents();
           if (state.executionStage === 'read-back' && actual.healthy && actual.times.every(at => at >= (state.commandAt ?? Infinity))
             && (pause ? actual.currents.every(v => v < .5) : actual.currents.every(v => v <= cap + 1))) state.executionStage = 'physical-effect';
-          state.phase = state.manual ? 'manual' : pause ? 'waiting' : input.enabled ? 'released' : 'off';
+          state.phase = state.manual ? 'manual' : pause ? 'waiting' : input.enabled || chargeNow ? 'released' : 'off';
           state.reason = state.manual ? `manual-${state.manual.kind}` : snapshot.nativeScheduleActive ? 'native-schedule' : nativeBlocked ? 'vehicle-not-before' : pause && economic && !inWindow ? 'economic-wait' : chargeNow && !pause ? 'charge-now' : limitation.reason;
         } catch (cause) { state.phase = 'uncertain'; state.reason = cause.code ?? 'command-unconfirmed'; }
         await persist();

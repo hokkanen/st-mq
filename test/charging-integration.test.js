@@ -23,7 +23,7 @@ function fixture(t, charging) {
 
 const chargerView = (runtime, id = 'charger1') => runtime.status().chargers.find(item => item.id === id);
 
-test('charging API rejects permanent preference writes and authenticates scoped session edits', async t => {
+test('charging API saves fenced dashboard controls separately from defaults and scoped session edits', async t => {
   const { store, engine, config } = fixture(t, { defaults: { capacityKwh: 79, readyBy: '07:15', manualSoc: 43 } });
   const item = engine.charging.chargers.charger1, connectedAt = engine.clock();
   item.adapter = { normalize: () => ({ connected: { value: true, available: true },
@@ -40,8 +40,8 @@ test('charging API rejects permanent preference writes and authenticates scoped 
   const post = (path, body, authenticated = true) => fetch(`${base}/api/charging/${path}`, { method: 'POST',
     headers: { 'content-type': 'application/json', ...(authenticated ? { authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify(body) });
   assert.equal((await post('chargers/charger1/settings', { enabled: true }, false)).status, 401);
-  assert.equal((await post('settings', { priority: 'charger2' })).status, 405);
-  assert.equal((await post('settings', { chargers: { charger1: { capacityKwh: 50 } } })).status, 405);
+  assert.equal((await post('settings', { priority: 'charger2' })).status, 400);
+  assert.equal((await post('settings', { chargers: { charger1: { capacityKwh: 50 } } })).status, 400);
   assert.equal((await post('chargers/charger1/settings', { manualSoc: 44 })).status, 400);
   const displayed = chargerView(engine.charging);
   const request = { scope: 'session', association: displayed.association, sessionId: displayed.request.sessionId,
@@ -57,20 +57,33 @@ test('charging API rejects permanent preference writes and authenticates scoped 
   assert.equal(status.charging.timezone, 'Europe/Helsinki');
   assert.equal((await post('chargers/charger1/settings', request)).status, 400);
   assert.equal((await post('chargers/missing/settings', request)).status, 400);
+  const current = chargerView(engine.charging);
+  const automatic = { association: current.association, revision: current.controls.revision, enabled: true };
+  const priority = { associations: Object.fromEntries(engine.charging.status().chargers.map(row => [row.id, row.association])),
+    revision: engine.charging.status().controls.revision, priority: 'charger2' };
+  assert.equal((await post('chargers/charger1/control', automatic, false)).status, 401);
+  assert.equal((await post('settings', priority, false)).status, 401);
+  primary = false;
+  assert.equal((await post('chargers/charger1/control', automatic)).status, 409);
+  assert.equal((await post('settings', priority)).status, 409);
+  primary = true;
+  assert.equal((await post('chargers/charger1/control', automatic)).status, 200);
+  assert.equal((await post('settings', priority)).status, 200);
+  assert.equal((await post('chargers/charger1/control', automatic)).status, 400);
+  assert.equal((await post('settings', priority)).status, 400);
   const restarted = new Engine({ store, config, clock: engine.clock });
-  assert.equal(restarted.charging.settings.chargers.charger1.enabled, false);
+  assert.equal(restarted.charging.settings.chargers.charger1.enabled, true);
   assert.equal(restarted.charging.settings.chargers.charger1.capacityKwh, 79);
   assert.equal(restarted.charging.settings.chargers.charger2.capacityKwh, 79);
   assert.equal(restarted.charging.settings.chargers.charger1.manualSoc, 43);
-  assert.equal(restarted.charging.settings.priority, 'balanced');
+  assert.equal(restarted.charging.settings.priority, 'charger2');
   assert.equal(Object.hasOwn(store.getState('charging:mqtt') ?? {}, 'settings'), false);
   await restarted.charging.close();
 });
 
-test('Charge Now API authenticates, rejects stale scope and requires configured scheduling permission', async t => {
-  for (const schedulingEnabled of [true, false]) await t.test(`configured scheduling ${schedulingEnabled ? 'on' : 'off'}`, async t => {
-    const { store, engine, config, advance } = fixture(t, { defaults: { readyBy: '07:15' },
-      chargers: { charger1: { schedulingEnabled } } });
+test('Charge Now API authenticates and rejects stale scope with automatic charging on or off', async t => {
+  for (const automaticEnabled of [true, false]) await t.test(`automatic charging ${automaticEnabled ? 'on' : 'off'}`, async t => {
+    const { store, engine, config, advance } = fixture(t, { defaults: { readyBy: '07:15' } });
     const runtime = engine.charging, item = runtime.chargers.charger1, connectedAt = engine.clock(), updates = [];
     let sessionAt = connectedAt, primary = true;
     item.adapter = { normalize: () => ({ connected: { value: true, available: true },
@@ -87,6 +100,8 @@ test('Charge Now API authenticates, rejects stale scope and requires configured 
     const post = (body, authenticated = true) => fetch(url, { method: 'POST',
       headers: { 'content-type': 'application/json', ...(authenticated ? { authorization: `Bearer ${token}` } : {}) },
       body: JSON.stringify(body) });
+    const before = chargerView(runtime);
+    await runtime.setControl('charger1', { association: before.association, revision: before.controls.revision, enabled: automaticEnabled });
     const initial = chargerView(runtime), settings = structuredClone(runtime.settings), configured = structuredClone(config.charging);
     const request = { association: initial.association, sessionId: initial.request.sessionId, revision: initial.request.revision };
     assert.equal((await post(request, false)).status, 401);
@@ -99,8 +114,8 @@ test('Charge Now API authenticates, rejects stale scope and requires configured 
     assert.equal((await post({ ...request, association: 'different-physical-charger' })).status, 400);
     assert.equal(chargerView(runtime).request.chargeNow, undefined);
     const response = await post(request);
-    assert.equal(response.status, schedulingEnabled ? 200 : 400);
-    if (schedulingEnabled) {
+    assert.equal(response.status, 200);
+    {
       const accepted = (await response.json()).charging.chargers.find(row => row.id === 'charger1');
       assert.equal(accepted.request.chargeNow, true);
       assert.equal(accepted.request.sessionId, request.sessionId);
@@ -111,10 +126,6 @@ test('Charge Now API authenticates, rejects stale scope and requires configured 
       advance(60_000); sessionAt = engine.clock();
       assert.equal((await post({ ...request, revision: accepted.request.revision })).status, 400);
       assert.equal(chargerView(runtime).request.chargeNow, undefined, 'a replacement connection does not inherit Charge Now');
-    } else {
-      assert.match((await response.json()).error, /configured automatic charging/);
-      assert.equal(chargerView(runtime).request.chargeNow, undefined);
-      assert.equal(updates.some(update => update.chargeNow), false);
     }
     assert.deepEqual(runtime.settings, settings);
     assert.deepEqual(config.charging, configured);

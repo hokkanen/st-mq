@@ -25,10 +25,9 @@ test('installation safety inputs, disjoint working states and concrete routes ar
   assert.throws(() => chargingConfiguration({vehicles:{bmw:{mqttTopic:'cars/#'}}}));
 });
 test('configuration owns shared unidentified defaults and sparse vehicle defaults independently of the charging point', () => {
-  const config = chargingConfiguration({ defaults: { readyBy: '07:15', minimumSoc: 85, capacityKwh: 65 }, priority: 'charger2',
-    chargers: { charger1: { schedulingEnabled: true } },
+  const config = chargingConfiguration({ defaults: { readyBy: '07:15', minimumSoc: 85, capacityKwh: 65 },
     vehicles: { tesla: { defaults: { capacityKwh: 61, manualSoc: 30 } }, bmw: { defaults: { minimumSoc: 90 } } } });
-  const settings = chargingSettingsFromConfiguration(config);
+  const settings = chargingSettingsFromConfiguration(config, { priority: 'charger2', chargers: { charger1: { enabled: true } } });
   assert.equal(settings.priority, 'charger2');
   assert.deepEqual(settings.chargers.charger1, { enabled: true, readyBy: '07:15', manualSoc: 20, minimumSoc: 85, capacityKwh: 65 });
   assert.deepEqual(settings.chargers.charger2, { ...settings.chargers.charger1, enabled: false });
@@ -36,6 +35,8 @@ test('configuration owns shared unidentified defaults and sparse vehicle default
   assert.deepEqual(settings.vehicles.bmw, { readyBy: '07:15', manualSoc: 20, minimumSoc: 90, capacityKwh: 74 });
   assert.equal(config.chargers.charger2.enabled, false);
   assert.deepEqual(chargingConfiguration(config), config);
+  assert.equal(chargingSettingsFromConfiguration(config).priority, 'balanced');
+  assert.equal(chargingSettingsFromConfiguration(config).chargers.charger1.enabled, false);
 });
 test('charging default paths validate values and reject retired durable preference fields', () => {
   for (const defaults of [{ readyBy: '24:01' }, { readyBy: 600 }, { manualSoc: -1 }, { minimumSoc: 101 },
@@ -43,7 +44,8 @@ test('charging default paths validate values and reject retired durable preferen
     assert.throws(() => chargingConfiguration({ defaults }));
     assert.throws(() => chargingConfiguration({ vehicles: { tesla: { defaults } } }));
   }
-  for (const invalid of [{ priority: 'tesla' }, { chargers: { charger1: { enabled: true } } },
-    { chargers: { charger2: { schedulingEnabled: 'yes' } } }, { vehicles: { tesla: { capacityKwh: 61 } } }])
+  for (const invalid of [{ priority: 'balanced' }, { priority: 'tesla' }, { chargers: { charger1: { enabled: true } } },
+    { chargers: { charger1: { schedulingEnabled: false } } }, { chargers: { charger2: { schedulingEnabled: true } } },
+    { vehicles: { tesla: { capacityKwh: 61 } } }])
     assert.throws(() => chargingConfiguration(invalid));
 });

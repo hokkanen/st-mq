@@ -187,7 +187,7 @@ See [docs/secret-handling.md](docs/secret-handling.md) for historical audit scop
 
 ## Configuration ownership and dashboard controls
 
-- Permanent controller defaults belong exclusively to configuration. Dashboard
+- Configured controller defaults belong exclusively to configuration. Dashboard
   edits must never rewrite those defaults or create persistent database
   preferences that replace them. Reloading or restarting must derive defaults
   from the current configuration, not from an earlier dashboard preference.
@@ -196,9 +196,15 @@ See [docs/secret-handling.md](docs/secret-handling.md) for historical audit scop
   persist only the remaining valid scope across restart. Validate session and
   device identity before accepting an edit; a new connection inherits no old
   override. Live device observations retain separate provenance and authority.
-- Charging uses shared unidentified-vehicle defaults, configured vehicle-specific
-  defaults, then explicit session overrides. Scheduling enablement and priority
-  are configuration-only; no permanent dashboard save action is permitted.
+- Charging configuration owns only the shared and vehicle-specific defaults for
+  ready-by time, starting charge, target charge and usable battery capacity.
+  Session edits of those four values do not replace configuration defaults.
+  Automatic charging and shared charger priority are persistent dashboard
+  control choices, not configuration fields. Bind them to current equipment
+  identity; preserve them across restart and unplugging for that equipment.
+  Charge now is a session action independent of the Automatic charging switch.
+  It still respects live control authority, device readiness and native limits.
+  Integration setup, commissioning and electrical limits remain configured.
 - Explicit configuration import/application and clearly labeled native-device
   setup/commands are separate from controller-default edits. Keep their actual
   effect visible. Historical records, restoration obligations, commissioning and

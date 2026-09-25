@@ -6,9 +6,9 @@ const strict = (value, allowed, label) => {
 };
 const topic = value => value === '' || value === null || typeof value === 'string' && value.length <= 256 && !/[+#\u0000-\u0020]/.test(value);
 export const DEFAULT_CHARGING_CONFIGURATION = Object.freeze({
-  defaults: DEFAULT_CHARGING_DEFAULTS, priority: 'balanced',
-  chargers: { charger1: { schedulingEnabled: false }, charger2: {
-    schedulingEnabled: false, enabled: false, profile: 'top-ac-portable', deviceId: '', model: '', firmware: '', topicPrefix: '',
+  defaults: DEFAULT_CHARGING_DEFAULTS,
+  chargers: { charger1: {}, charger2: {
+    enabled: false, profile: 'top-ac-portable', deviceId: '', model: '', firmware: '', topicPrefix: '',
     associationVersion: 1, verified: false, serviceId: 0, minimumCurrentA: 6, maximumCurrentA: 16, currentStepA: 1,
     limiterEnabled: false, fallbackCurrentA: 12, mainFuseA: [25, 25, 25], marginA: [1, 1, 1],
     phaseMap: [0, 1, 2], additiveCurrentVerified: false, maxAgeMs: 15000, maxSkewMs: 5000,
@@ -20,18 +20,15 @@ export const DEFAULT_CHARGING_CONFIGURATION = Object.freeze({
   },
 });
 export function chargingConfiguration(input = {}) {
-  strict(input, ['defaults', 'priority', 'chargers', 'vehicles'], 'charging configuration');
+  strict(input, ['defaults', 'chargers', 'vehicles'], 'charging configuration');
   const generalDefaults = chargingDefaults(input.defaults);
-  const priority = input.priority ?? DEFAULT_CHARGING_CONFIGURATION.priority;
-  if (!['balanced', 'charger1', 'charger2'].includes(priority)) throw new Error('Invalid charging priority');
   strict(input.chargers ?? {}, ['charger1', 'charger2'], 'chargers');
-  strict(input.chargers?.charger1 ?? {}, ['schedulingEnabled'], 'Easee configuration');
+  strict(input.chargers?.charger1 ?? {}, [], 'Easee configuration');
   const c1 = { ...DEFAULT_CHARGING_CONFIGURATION.chargers.charger1, ...input.chargers?.charger1 };
-  if (typeof c1.schedulingEnabled !== 'boolean') throw new Error('Invalid Easee schedulingEnabled');
   const defaults = DEFAULT_CHARGING_CONFIGURATION.chargers.charger2, supplied = input.chargers?.charger2 ?? {};
   strict(supplied, Object.keys(defaults), 'Shelly EVSE configuration');
   const c2 = { ...structuredClone(defaults), ...supplied };
-  for (const key of ['schedulingEnabled', 'enabled', 'verified', 'limiterEnabled', 'additiveCurrentVerified']) if (typeof c2[key] !== 'boolean') throw new Error(`Invalid EVSE ${key}`);
+  for (const key of ['enabled', 'verified', 'limiterEnabled', 'additiveCurrentVerified']) if (typeof c2[key] !== 'boolean') throw new Error(`Invalid EVSE ${key}`);
   if (c2.profile !== 'top-ac-portable' || !topic(c2.topicPrefix) || !topic(c2.deviceId)) throw new Error('Unsupported EVSE profile or topic');
   for (const key of ['model', 'firmware']) if (typeof c2[key] !== 'string' || c2[key].length > 100 || /[\u0000-\u001f]/.test(c2[key])) throw new Error(`Invalid EVSE ${key}`);
   for (const key of ['associationVersion', 'serviceId', 'minimumCurrentA', 'maximumCurrentA', 'currentStepA', 'fallbackCurrentA', 'maxAgeMs', 'maxSkewMs', 'dwellMs', 'rampA'])
@@ -66,5 +63,5 @@ export function chargingConfiguration(input = {}) {
     }
     vehicles[id] = vehicle;
   }
-  return { defaults: generalDefaults, priority, chargers: { charger1: c1, charger2: c2 }, vehicles };
+  return { defaults: generalDefaults, chargers: { charger1: c1, charger2: c2 }, vehicles };
 }

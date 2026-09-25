@@ -5,7 +5,7 @@ import { ChargingRuntime } from '../src/charging/runtime.js';
 import { normalizeScheduleState, scheduleFingerprint, delayedScheduleFor, easeeChargerTelemetry } from '../src/charging/easee.js';
 
 const HOUR = 3_600_000, initialNow = Date.parse('2026-01-15T00:00:00Z');
-function fixture(charging = {}, saved = {}) {
+function fixture(charging = {}, saved = {}, automatic = {}) {
   let now = initialNow;
   const association = createHash('sha256').update(JSON.stringify(['easee', undefined, undefined])).digest('hex');
   for (const [key, value] of Object.entries(saved)) if (key === 'charging:mqtt') { value.version = 6; for (const record of Object.values(value.chargers ?? {})) record.association = association; }
@@ -20,7 +20,12 @@ function fixture(charging = {}, saved = {}) {
   const engine = {};
   const options = { engine, store, config: { input: 'mqtt', charging }, clock: () => now, canControl: () => true };
   const create = () => {
-    const runtime = new ChargingRuntime(options); runtime.setMqttStatus({connected:true,subscribed:true},'bmw');
+    const runtime = new ChargingRuntime(options);
+    if (!values.has('charging:mqtt')) {
+      for (const [id, enabled] of Object.entries(automatic)) runtime.chargers[id].controls.enabled = enabled;
+      runtime.refreshSettings();
+    }
+    runtime.setMqttStatus({connected:true,subscribed:true},'bmw');
     runtime.teslaCapture = { snapshot: () => ({ connected: true, pluggedIn: false, assignment: 'bmw' }) };
     return runtime;
   };
@@ -62,7 +67,7 @@ function fakeAdapter(clock) {
     },
   };
 }
-const preferences = { defaults: { capacityKwh: 20 }, chargers: { charger1: { schedulingEnabled: true } } };
+const preferences = { defaults: { capacityKwh: 20 } };
 const prices = [20, 1, 1, 20].map((price, index) => ({ start: initialNow + index * HOUR, end: initialNow + (index + 1) * HOUR, price }));
 const chargerView = (runtime, id = 'charger1') => runtime.status().chargers.find(item => item.id === id);
 const editSession = (runtime, id, changes) => {
@@ -75,7 +80,7 @@ const packet = (soc, at, readingId = 'reading-1', extra = {}) => JSON.stringify(
 const priceOutlook = values => values.map((price, index) => ({ start: initialNow + index * HOUR,
   end: initialNow + (index + 1) * HOUR, price }));
 async function activePriceFixture(t, values = [5, 50, 10, 50], elapsedMinutes = 30) {
-  const f = fixture(preferences), runtime = f.create(), adapter = fakeAdapter(f.clock);
+  const f = fixture(preferences, {}, { charger1: true }), runtime = f.create(), adapter = fakeAdapter(f.clock);
   t.after(() => runtime.close());
   await runtime.setAdapter('charger1', adapter); await runtime.reconcile();
   runtime.tick({ prices: priceOutlook(values) }); await runtime.reconcile();
@@ -458,7 +463,7 @@ test('failed persistence rolls session overrides and automatic readings back', a
 });
 
 test('adapter startup reads ownership before an outlook and does not release a waiting session from an empty startup price array', async t => {
-  const f = fixture(preferences), runtime = f.create(), adapter = fakeAdapter(f.clock);
+  const f = fixture(preferences, {}, { charger1: true }), runtime = f.create(), adapter = fakeAdapter(f.clock);
   t.after(() => runtime.close());
   runtime.setAdapter('charger1', adapter);
   await runtime.reconcile();
@@ -473,13 +478,15 @@ test('adapter startup reads ownership before an outlook and does not release a w
   assert.equal(runtime.chargers.charger1.plan.startAt, initialNow + HOUR);
 });
 
-test('configured OFF relinquishes the owned schedule after reload even when forecast work fails', async t => {
-  const f = fixture(structuredClone(preferences)), runtime = f.create(), adapter = fakeAdapter(f.clock);
+test('dashboard OFF relinquishes the owned schedule even when forecast work fails and persists after reload', async t => {
+  const f = fixture(structuredClone(preferences), {}, { charger1: true }), runtime = f.create(), adapter = fakeAdapter(f.clock);
   t.after(() => runtime.close());
   await runtime.setAdapter('charger1', adapter); runtime.tick({ prices }); await runtime.reconcile();
   assert.equal(chargerView(runtime).control.phase, 'waiting');
+  runtime.updatePlan = () => { throw new Error('forecast history temporarily unavailable'); };
+  const displayed = chargerView(runtime);
+  await runtime.setControl('charger1', { association: displayed.association, revision: displayed.controls.revision, enabled: false });
   await runtime.close();
-  f.config.charging.chargers.charger1.schedulingEnabled = false;
   const restarted = f.create(); t.after(() => restarted.close());
   restarted.updatePlan = () => { throw new Error('forecast history temporarily unavailable'); };
   await restarted.setAdapter('charger1', adapter); await restarted.reconcile();
@@ -489,7 +496,7 @@ test('configured OFF relinquishes the owned schedule after reload even when fore
 });
 
 test('forecast failure cannot block confirmed release times or independent charger readback', async t => {
-  const f = fixture(preferences), runtime = f.create(), adapter = fakeAdapter(f.clock);
+  const f = fixture(preferences, {}, { charger1: true }), runtime = f.create(), adapter = fakeAdapter(f.clock);
   t.after(() => runtime.close());
   await runtime.setAdapter('charger1', adapter); await runtime.reconcile();
   runtime.tick({ prices }); await runtime.reconcile();
@@ -512,7 +519,7 @@ test('forecast failure cannot block confirmed release times or independent charg
 });
 
 test('a released connected session retains its actual plan through new SoC, deadline edits and temporary zero power', async t => {
-  const f = fixture(preferences), runtime = f.create(), adapter = fakeAdapter(f.clock);
+  const f = fixture(preferences, {}, { charger1: true }), runtime = f.create(), adapter = fakeAdapter(f.clock);
   t.after(() => runtime.close());
   runtime.setAdapter('charger1', adapter);
   await runtime.reconcile();
@@ -533,14 +540,14 @@ test('a released connected session retains its actual plan through new SoC, dead
 });
 
 test('configured control reports off or unavailable before an adapter is attached', async t => {
-  const off = fixture().create(), enabled = fixture(preferences).create();
+  const off = fixture().create(), enabled = fixture(preferences, {}, { charger1: true }).create();
   t.after(async () => { await off.close(); await enabled.close(); });
   assert.equal(chargerView(off).control.phase, 'off');
   assert.equal(chargerView(enabled).control.phase, 'unavailable');
 });
 
 test('plan identity survives pending replans and runtime restart, and changes after an explicit new deadline', async t => {
-  const f = fixture(preferences), runtime = f.create(), adapter = fakeAdapter(f.clock);
+  const f = fixture(preferences, {}, { charger1: true }), runtime = f.create(), adapter = fakeAdapter(f.clock);
   t.after(() => runtime.close());
   await runtime.setAdapter('charger1', adapter); await runtime.reconcile();
   runtime.tick({ prices }); await runtime.reconcile();
@@ -556,7 +563,7 @@ test('plan identity survives pending replans and runtime restart, and changes af
 
 test('manual window handback replans from newer SoC before issuing a release based on the old start', async t => {
   const settings = { ...preferences, defaults: { capacityKwh: 30, manualSoc: 0 } };
-  const f = fixture(settings), runtime = f.create(), adapter = fakeAdapter(f.clock);
+  const f = fixture(settings, {}, { charger1: true }), runtime = f.create(), adapter = fakeAdapter(f.clock);
   t.after(() => runtime.close());
   await runtime.setAdapter('charger1', adapter); await runtime.reconcile();
   const outlook = [20, 3, 20, 1].map((price, index) => ({ start: initialNow + index * HOUR, end: initialNow + (index + 1) * HOUR, price }));
@@ -578,7 +585,7 @@ test('manual window handback replans from newer SoC before issuing a release bas
 });
 
 test('adapter replacement waits for an in-flight confirmed write before loading ownership', async t => {
-  const f = fixture(preferences), runtime = f.create(), adapter = fakeAdapter(f.clock);
+  const f = fixture(preferences, {}, { charger1: true }), runtime = f.create(), adapter = fakeAdapter(f.clock);
   t.after(() => runtime.close());
   await runtime.setAdapter('charger1', adapter); await runtime.reconcile();
   let release, started;
@@ -616,7 +623,7 @@ test('runtime close drains an outstanding adapter replacement without creating a
 });
 
 test('a disconnected charger has no schedule and a later plug-in uses the new readiness deadline', async t => {
-  const f = fixture(preferences), runtime = f.create(), adapter = fakeAdapter(f.clock);
+  const f = fixture(preferences, {}, { charger1: true }), runtime = f.create(), adapter = fakeAdapter(f.clock);
   t.after(() => runtime.close());
   adapter.setObservation({ pluggedIn: false, mode: 1 });
   await runtime.setAdapter('charger1', adapter); await runtime.reconcile();
@@ -644,19 +651,19 @@ test('OFF with current association ownership reports unconfirmed handover', asyn
 });
 
 test('session API rejects permanent settings, connections and efficiency', async t => {
-  const f = fixture(preferences), runtime = f.create(), adapter = fakeAdapter(f.clock);
+  const f = fixture(preferences, {}, { charger1: true }), runtime = f.create(), adapter = fakeAdapter(f.clock);
   t.after(() => runtime.close());
   await runtime.setAdapter('charger1', adapter); await runtime.reconcile();
   for (const patch of [{ enabled: false }, { mqtt: { topic: 'stmq/test/new' } }, { efficiency: .8 }, { priority: 'charger2' }]) {
     await assert.rejects(editSession(runtime, 'charger1', patch), /Invalid session field/);
     await assert.rejects(runtime.setChargerSettings('charger1', patch), /configuration/);
   }
-  assert.equal(runtime.setSettings, undefined);
+  assert.equal(typeof runtime.setSettings, 'function');
   assert.equal(runtime.settings.chargers.charger1.enabled, true);
 });
 
 test('unconfigured connections and invalid charger identifiers cannot accept session edits', async t => {
-  const f = fixture({ chargers: { charger2: { schedulingEnabled: true } } }), runtime = f.create(); t.after(() => runtime.close());
+  const f = fixture({}, {}, { charger2: true }), runtime = f.create(); t.after(() => runtime.close());
   assert.equal(chargerView(runtime,'charger2').control.phase,'unavailable');
   await assert.rejects(editSession(runtime, 'charger2', { manualSoc: 56 }), /connection changed/);
   await assert.rejects(runtime.setChargerSettings('missing', { scope: 'session', changes: {} }), /Unknown charger/);
@@ -666,7 +673,7 @@ test('unconfigured connections and invalid charger identifiers cannot accept ses
 });
 
 test('first adapter attachment uses freshly read fixed limits when prices are already available', async t => {
-  const f = fixture({ ...preferences, defaults: { capacityKwh: 20, manualSoc: 40 } }), runtime = f.create(), adapter = fakeAdapter(f.clock);
+  const f = fixture({ ...preferences, defaults: { capacityKwh: 20, manualSoc: 40 } }, {}, { charger1: true }), runtime = f.create(), adapter = fakeAdapter(f.clock);
   t.after(() => runtime.close());
   adapter.setLimits({ chargerA: 14, cableA: 20, equalizerAvailableA: [6, 8, 7] });
   runtime.tick({ prices });
@@ -689,7 +696,7 @@ test('offline Easee state cannot revive its last raw connection through a legacy
 });
 
 test('a future second controller has independent plans and ownership while Equalizer keeps current authority', async t => {
-  const f = fixture({ defaults: { capacityKwh: 20 }, chargers: { charger1: { schedulingEnabled: true }, charger2: { schedulingEnabled: true } } }), runtime = f.create(), firstAdapter = fakeAdapter(f.clock), secondAdapter = fakeAdapter(f.clock);
+  const f = fixture({ defaults: { capacityKwh: 20 } }, {}, { charger1: true, charger2: true }), runtime = f.create(), firstAdapter = fakeAdapter(f.clock), secondAdapter = fakeAdapter(f.clock);
   t.after(() => runtime.close());
   const currentCommands = [], secondDecisions = [];
   firstAdapter.setCurrent = async currentA => currentCommands.push({ id: 'charger1', currentA });
@@ -748,7 +755,7 @@ test('a future second controller has independent plans and ownership while Equal
 });
 
 test('an uncertain second connection with no reported schedule creates no competing reservation', async t => {
-  const f = fixture(preferences), runtime = f.create(), adapter = fakeAdapter(f.clock);
+  const f = fixture(preferences, {}, { charger1: true }), runtime = f.create(), adapter = fakeAdapter(f.clock);
   t.after(() => runtime.close());
   runtime.teslaCapture = { snapshot: () => ({ connected: true, assignment: 'auto', pluggedIn: null, atHome: true }) };
   await runtime.setAdapter('charger1', adapter); await runtime.reconcile();
@@ -776,7 +783,7 @@ test('disabling a configured MQTT source retains configured defaults without old
 });
 
 test('inactive Easee schedule caches cannot move the owned delayed occurrence to tomorrow', async t => {
-  const f = fixture(preferences), runtime = f.create(), adapter = fakeAdapter(f.clock);
+  const f = fixture(preferences, {}, { charger1: true }), runtime = f.create(), adapter = fakeAdapter(f.clock);
   t.after(() => runtime.close());
   await runtime.setAdapter('charger1', adapter); await runtime.reconcile(); runtime.tick({ prices }); await runtime.reconcile();
   const owned = structuredClone(chargerView(runtime).control.owned);
@@ -798,7 +805,7 @@ test('new installations use common 20% defaults and reject retired saved prefere
 });
 
 test('measured energy lowers the remaining requirement once and survives restart without crediting the outage', async t => {
-  const f = fixture(preferences), runtime = f.create(), adapter = fakeAdapter(f.clock);
+  const f = fixture(preferences, {}, { charger1: true }), runtime = f.create(), adapter = fakeAdapter(f.clock);
   t.after(() => runtime.close());
   adapter.setObservation({ powerKw: 6, powerMeasuredAt: initialNow, mode: 3 });
   await runtime.setAdapter('charger1', adapter); await runtime.reconcile();
@@ -822,7 +829,7 @@ test('measured energy lowers the remaining requirement once and survives restart
 });
 
 test('native periods pause at their boundary, preserve the active period through a ready-by edit and leave the final release open', async t => {
-  const f = fixture(preferences), runtime = f.create(), adapter = fakeAdapter(f.clock);
+  const f = fixture(preferences, {}, { charger1: true }), runtime = f.create(), adapter = fakeAdapter(f.clock);
   t.after(() => runtime.close());
   await runtime.setAdapter('charger1', adapter); await runtime.reconcile();
   const outlook = [1, 50, 2, 50, 50].map((price, index) => ({ start: initialNow + index * HOUR,
@@ -859,7 +866,7 @@ test('native periods pause at their boundary, preserve the active period through
 });
 
 test('manual handback crossing ready-by preserves the original overdue connection deadline', async t => {
-  const f = fixture(preferences), runtime = f.create(), adapter = fakeAdapter(f.clock);
+  const f = fixture(preferences, {}, { charger1: true }), runtime = f.create(), adapter = fakeAdapter(f.clock);
   t.after(() => runtime.close());
   await runtime.setAdapter('charger1', adapter); await runtime.reconcile();
   runtime.tick({ prices: [...prices, ...prices.map(row => ({ ...row, start: row.start + 24 * HOUR, end: row.end + 24 * HOUR }))] });
@@ -881,7 +888,7 @@ test('manual handback crossing ready-by preserves the original overdue connectio
 });
 
 test('a connection first seen after restart replaces the saved disconnected deadline', async t => {
-  const f = fixture(preferences), runtime = f.create(), adapter = fakeAdapter(f.clock);
+  const f = fixture(preferences, {}, { charger1: true }), runtime = f.create(), adapter = fakeAdapter(f.clock);
   t.after(() => runtime.close());
   adapter.setObservation({ pluggedIn: false, mode: 1 });
   await runtime.setAdapter('charger1', adapter); await runtime.reconcile();
@@ -895,7 +902,7 @@ test('a connection first seen after restart replaces the saved disconnected dead
 });
 
 test('a fully observed zero-power period replans remaining energy once at the gap', async t => {
-  const f = fixture(preferences), runtime = f.create(), adapter = fakeAdapter(f.clock);
+  const f = fixture(preferences, {}, { charger1: true }), runtime = f.create(), adapter = fakeAdapter(f.clock);
   t.after(() => runtime.close());
   adapter.setObservation({ powerKw: 0, powerMeasuredAt: initialNow });
   await runtime.setAdapter('charger1', adapter); await runtime.reconcile();
@@ -920,7 +927,7 @@ test('a fully observed zero-power period replans remaining energy once at the ga
 });
 
 test('vehicle timer changes during a pause revise the remaining confirmed periods without waiting for new prices or energy', async t => {
-  const f = fixture(preferences), runtime = f.create(), adapter = fakeAdapter(f.clock);
+  const f = fixture(preferences, {}, { charger1: true }), runtime = f.create(), adapter = fakeAdapter(f.clock);
   t.after(() => runtime.close());
   const timer = { value: null, available: false };
   adapter.normalize = snapshot => ({ ...easeeChargerTelemetry(snapshot, { now: f.clock() }), vehicleNotBefore: { ...timer } });
@@ -955,7 +962,7 @@ test('vehicle timer changes during a pause revise the remaining confirmed period
 });
 
 test('the next wakeup includes an earlier proposed start while its native update is pending', async t => {
-  const f = fixture(preferences), runtime = f.create(), adapter = fakeAdapter(f.clock);
+  const f = fixture(preferences, {}, { charger1: true }), runtime = f.create(), adapter = fakeAdapter(f.clock);
   t.after(() => runtime.close());
   await runtime.setAdapter('charger1', adapter); await runtime.reconcile();
   runtime.tick({ prices }); await runtime.reconcile();
@@ -969,7 +976,7 @@ test('the next wakeup includes an earlier proposed start while its native update
 });
 
 test('archive preparation is nonblocking, permits only provisional charging and then installs the ready forecast', async t => {
-  const f = fixture(preferences), runtime = f.create(), adapter = fakeAdapter(f.clock);
+  const f = fixture(preferences, {}, { charger1: true }), runtime = f.create(), adapter = fakeAdapter(f.clock);
   const finishes = [];
   runtime.historyService = { request: () => new Promise(resolve => { finishes.push(resolve); }), close() {} };
   t.after(() => runtime.close());
@@ -987,7 +994,7 @@ test('archive preparation is nonblocking, permits only provisional charging and 
 });
 
 test('restarting with a confirmed delayed start does not briefly release it while archive history warms', async t => {
-  const f = fixture(preferences), original = f.create(), adapter = fakeAdapter(f.clock);
+  const f = fixture(preferences, {}, { charger1: true }), original = f.create(), adapter = fakeAdapter(f.clock);
   await original.setAdapter('charger1', adapter); original.tick({ prices }); await original.reconcile();
   const ownedStart = chargerView(original).control.owned.startAt;
   await original.close();
@@ -1015,7 +1022,7 @@ test('temporary incomplete charger connection readings preserve the physical con
 });
 
 test('a matched BMW quick unplug ends the old schedule even when every Easee poll remains connected', async t => {
-  const f = fixture({ defaults: { capacityKwh: 20, manualSoc: 60, minimumSoc: 85 }, chargers: { charger1: { schedulingEnabled: true } } }), runtime = f.create(), adapter = fakeAdapter(f.clock);
+  const f = fixture({ defaults: { capacityKwh: 20, manualSoc: 60, minimumSoc: 85 } }, {}, { charger1: true }), runtime = f.create(), adapter = fakeAdapter(f.clock);
   t.after(() => runtime.close());
   runtime.setMqttStatus({ connected: true, subscribed: true }, 'bmw');
   const topic = runtime.configuration.vehicles.bmw.mqttTopic;
@@ -1076,7 +1083,7 @@ test('a matched BMW quick unplug ends the old schedule even when every Easee pol
 const requestScope = view => ({ association: view.association, sessionId: view.request.sessionId, revision: view.request.revision });
 
 test('Charge Now removes the automatic delay immediately and Use automatic restores scheduling', async t => {
-  const f = fixture(preferences), runtime = f.create(), adapter = fakeAdapter(f.clock);
+  const f = fixture(preferences, {}, { charger1: true }), runtime = f.create(), adapter = fakeAdapter(f.clock);
   t.after(() => runtime.close());
   await runtime.setAdapter('charger1', adapter); runtime.tick({ prices }); await runtime.reconcile();
   assert.equal(chargerView(runtime).control.phase, 'waiting');
@@ -1097,7 +1104,7 @@ test('Charge Now removes the automatic delay immediately and Use automatic resto
 });
 
 test('Charge Now and value overrides survive only the same physical connection across restart', async t => {
-  const f = fixture(preferences), runtime = f.create(), adapter = fakeAdapter(f.clock);
+  const f = fixture(preferences, {}, { charger1: true }), runtime = f.create(), adapter = fakeAdapter(f.clock);
   t.after(() => runtime.close());
   await runtime.setAdapter('charger1', adapter); runtime.tick({ prices }); await runtime.reconcile();
   await editSession(runtime, 'charger1', { capacityKwh: 31, manualSoc: 37, minimumSoc: 90, readyBy: '07:00' });
@@ -1118,7 +1125,7 @@ test('Charge Now and value overrides survive only the same physical connection a
 });
 
 test('Charge Now rejects stale edits and failed persistence before issuing a command', async t => {
-  const f = fixture(preferences), runtime = f.create(), adapter = fakeAdapter(f.clock);
+  const f = fixture(preferences, {}, { charger1: true }), runtime = f.create(), adapter = fakeAdapter(f.clock);
   t.after(() => runtime.close());
   await runtime.setAdapter('charger1', adapter); runtime.tick({ prices }); await runtime.reconcile();
   const old = requestScope(chargerView(runtime));
@@ -1136,7 +1143,7 @@ test('Charge Now rejects stale edits and failed persistence before issuing a com
 
 test('Charge Now works without forecasts while preserving native stops and faults', async t => {
   for (const blocked of [null, 'stop', 'fault']) await t.test(blocked ?? 'forecast unavailable', async t => {
-    const f = fixture(preferences), runtime = f.create(), adapter = fakeAdapter(f.clock);
+    const f = fixture(preferences, {}, { charger1: true }), runtime = f.create(), adapter = fakeAdapter(f.clock);
     t.after(() => runtime.close());
     await runtime.setAdapter('charger1', adapter); runtime.tick({ prices }); await runtime.reconcile();
     runtime.updatePlan = () => { throw new Error('history unavailable'); };
@@ -1150,7 +1157,7 @@ test('Charge Now works without forecasts while preserving native stops and fault
 });
 
 test('saved sessions cannot smuggle permanent settings over configuration on restart', async t => {
-  const f = fixture(preferences), runtime = f.create(); t.after(() => runtime.close());
+  const f = fixture(preferences, {}, { charger1: true }), runtime = f.create(); t.after(() => runtime.close());
   await runtime.setAdapter('charger1', fakeAdapter(f.clock)); await runtime.reconcile();
   const saved = structuredClone(f.values.get('charging:mqtt'));
   for (const overrides of [{ enabled: false }, { priority: 'charger2' }, { capacityProfile: 'tesla' }]) {
@@ -1162,11 +1169,195 @@ test('saved sessions cannot smuggle permanent settings over configuration on res
 });
 
 test('new native manual windows use the effective session ready-by without rewriting defaults', async t => {
-  const f = fixture(preferences), runtime = f.create(), adapter = fakeAdapter(f.clock);
+  const f = fixture(preferences, {}, { charger1: true }), runtime = f.create(), adapter = fakeAdapter(f.clock);
   t.after(() => runtime.close());
   await runtime.setAdapter('charger1', adapter); runtime.tick({ prices }); await runtime.reconcile();
   await editSession(runtime, 'charger1', { readyBy: '08:00' });
   adapter.setObservation({ enabled: false, stopped: true }); await runtime.reconcile();
   assert.equal(chargerView(runtime).control.manual.cycleEndsAt, initialNow + 6 * HOUR);
   assert.equal(runtime.settings.chargers.charger1.readyBy, '06:00');
+});
+
+
+const automaticScope = (runtime, id = 'charger1', enabled = true) => {
+  const view = chargerView(runtime, id);
+  return { association: view.association, revision: view.controls.revision, enabled };
+};
+const priorityScope = (runtime, priority = 'charger2') => ({ priority, revision: runtime.status().controls.revision,
+  associations: Object.fromEntries(runtime.status().chargers.map(view => [view.id, view.association])) });
+
+test('automatic charging and shared priority persist independently of configured four-value defaults', async t => {
+  const f = fixture({ defaults: { manualSoc: 30, minimumSoc: 75, capacityKwh: 55, readyBy: '07:00' } });
+  const runtime = f.create(); t.after(() => runtime.close());
+  const configured = structuredClone(f.config.charging);
+  await runtime.setControl('charger1', automaticScope(runtime));
+  await runtime.setSettings(priorityScope(runtime));
+  assert.equal(runtime.settings.chargers.charger1.enabled, true);
+  assert.equal(runtime.settings.priority, 'charger2');
+  assert.deepEqual(f.config.charging, configured);
+  await runtime.close();
+  f.config.charging.defaults.manualSoc = 45;
+  const restarted = f.create(); t.after(() => restarted.close());
+  assert.equal(restarted.settings.chargers.charger1.enabled, true);
+  assert.equal(restarted.settings.chargers.charger2.enabled, false);
+  assert.equal(restarted.settings.priority, 'charger2');
+  assert.equal(restarted.settings.chargers.charger1.manualSoc, 45);
+  assert.deepEqual(Object.keys(f.values.get('charging:mqtt').chargers.charger1.controls).sort(), ['enabled', 'revision']);
+});
+
+test('a replacement charger inherits neither automatic enablement nor shared priority authority', async t => {
+  const f = fixture(), runtime = f.create(); t.after(() => runtime.close());
+  await runtime.setControl('charger1', automaticScope(runtime));
+  await runtime.setSettings(priorityScope(runtime));
+  const oldAutomatic = automaticScope(runtime), oldPriority = priorityScope(runtime);
+  await runtime.close();
+  f.config.connections = { easee: { charger_id: 'different-synthetic-charger' } };
+  const replaced = f.create(); t.after(() => replaced.close());
+  assert.equal(replaced.settings.chargers.charger1.enabled, false);
+  assert.equal(replaced.settings.priority, 'balanced');
+  await assert.rejects(replaced.setControl('charger1', oldAutomatic), /controls changed/);
+  await assert.rejects(replaced.setSettings(oldPriority), /controls changed/);
+});
+
+test('dashboard control changes reject stale revisions and roll back failed durable writes', async t => {
+  const f = fixture(), runtime = f.create(); t.after(() => runtime.close());
+  const initial = automaticScope(runtime);
+  await runtime.setControl('charger1', initial);
+  await assert.rejects(runtime.setControl('charger1', initial), /controls changed/);
+  const priority = priorityScope(runtime); await runtime.setSettings(priority);
+  await assert.rejects(runtime.setSettings(priority), /controls changed/);
+  const before = structuredClone(runtime.settings), automatic = automaticScope(runtime, 'charger1', false), shared = priorityScope(runtime, 'charger1');
+  f.store.fail = true;
+  await assert.rejects(runtime.setControl('charger1', automatic), /locked/);
+  await assert.rejects(runtime.setSettings(shared), /locked/);
+  f.store.fail = false;
+  assert.deepEqual(runtime.settings, before);
+  assert.equal(chargerView(runtime).controls.revision, automatic.revision);
+  assert.equal(runtime.status().controls.revision, shared.revision);
+  for (const input of [{ ...automatic, manualSoc: 42 }, { ...automatic, enabled: 'yes' }])
+    await assert.rejects(runtime.setControl('charger1', input), /Invalid automatic/);
+  await assert.rejects(runtime.setSettings({ ...shared, defaults: {} }), /Only charging priority/);
+});
+
+test('malformed current dashboard controls and retired charging state fail before mutation', async t => {
+  const f = fixture(), runtime = f.create(); t.after(() => runtime.close());
+  await runtime.setControl('charger1', automaticScope(runtime));
+  const saved = structuredClone(f.values.get('charging:mqtt'));
+  const cases = [
+    { ...saved, version: 5 }, { ...saved, settings: {} }, { ...saved, mystery: true },
+    { ...saved, controls: { ...saved.controls, enabled: true } },
+    { ...saved, controls: { ...saved.controls, priority: 'unknown' } },
+    { ...saved, controls: { ...saved.controls, revision: -1 } },
+    { ...saved, chargers: { ...saved.chargers, charger1: { ...saved.chargers.charger1, controls: { enabled: true, revision: 0, minimumSoc: 100 } } } },
+  ];
+  for (const state of cases) {
+    f.values.set('charging:mqtt', state); const writes = f.writes.length;
+    assert.throws(() => f.create(), /Unsupported (saved charging controls|charging state)/);
+    assert.equal(f.writes.length, writes);
+  }
+});
+
+test('Charge Now works with automatic OFF across restart without enabling automatic or requiring forecast inputs', async t => {
+  const f = fixture(preferences), runtime = f.create(), adapter = fakeAdapter(f.clock); t.after(() => runtime.close());
+  await runtime.setAdapter('charger1', adapter); await runtime.reconcile();
+  assert.equal(chargerView(runtime).control.phase, 'off');
+  runtime.updatePlan = () => { throw new Error('forecast unavailable'); };
+  await runtime.chargeNow('charger1', requestScope(chargerView(runtime)));
+  assert.equal(runtime.settings.chargers.charger1.enabled, false);
+  assert.equal(chargerView(runtime).control.phase, 'released');
+  assert.equal(runtime.hasAutomaticControl(), true);
+  await runtime.close();
+  const restarted = f.create(); t.after(() => restarted.close());
+  await restarted.setAdapter('charger1', adapter); await restarted.reconcile();
+  assert.equal(chargerView(restarted).request.chargeNow, true);
+  assert.equal(chargerView(restarted).control.phase, 'released');
+  assert.equal(restarted.settings.chargers.charger1.enabled, false);
+  restarted.tick({ prices }); await restarted.reconcile();
+  await restarted.setControl('charger1', automaticScope(restarted));
+  assert.equal(chargerView(restarted).request.chargeNow, undefined);
+  assert.equal(restarted.settings.chargers.charger1.enabled, true);
+  assert.equal(chargerView(restarted).control.phase, 'waiting');
+  assert.equal(chargerView(restarted).control.released, false);
+});
+
+
+test('enabling automatic replans a previous release while preserving native manual schedules', async t => {
+  for (const native of [false, true]) await t.test(native ? 'native schedule' : 'previous release', async t => {
+    const f = fixture(preferences), runtime = f.create(), adapter = fakeAdapter(f.clock); t.after(() => runtime.close());
+    await runtime.setAdapter('charger1', adapter); await runtime.reconcile();
+    if (native) {
+      adapter.setSchedule({ enabled: 'daily', daily: { timezone: 'UTC',
+        periods: [{ startTime: '03:00', stopTime: '04:00', maximumAmps: 16 }] } });
+      await runtime.reconcile();
+    } else {
+      await runtime.chargeNow('charger1', requestScope(chargerView(runtime)));
+      await runtime.setControl('charger1', automaticScope(runtime, 'charger1', false));
+    }
+    runtime.tick({ prices }); await runtime.reconcile();
+    const writes = adapter.calls.filter(row => row.kind !== 'read').length;
+    await runtime.setControl('charger1', automaticScope(runtime));
+    if (native) {
+      assert.equal(chargerView(runtime).control.phase, 'yielded');
+      assert.equal(chargerView(runtime).control.snapshot.schedule.enabled, 'daily');
+      assert.equal(adapter.calls.filter(row => row.kind !== 'read').length, writes);
+    } else assert.equal(chargerView(runtime).control.phase, 'waiting');
+  });
+});
+
+
+test('accepted automatic replan survives an unavailable first read and restart', async t => {
+  const f = fixture(preferences), runtime = f.create(), adapter = fakeAdapter(f.clock); t.after(() => runtime.close());
+  await runtime.setAdapter('charger1', adapter); await runtime.reconcile();
+  await runtime.chargeNow('charger1', requestScope(chargerView(runtime)));
+  const read = adapter.read;
+  adapter.read = async () => { throw new Error('temporarily offline'); };
+  await runtime.setControl('charger1', automaticScope(runtime));
+  assert.equal(runtime.settings.chargers.charger1.enabled, true);
+  assert.equal(chargerView(runtime).control.released, false);
+  await runtime.close(); adapter.read = read;
+  const restarted = f.create(); t.after(() => restarted.close());
+  restarted.tick({ prices });
+  await restarted.setAdapter('charger1', adapter); await restarted.reconcile();
+  assert.equal(chargerView(restarted).control.phase, 'waiting');
+  assert.equal(chargerView(restarted).control.released, false);
+});
+
+test('a pending durable automatic replan survives interruption before controller admission', async t => {
+  const f = fixture(preferences), runtime = f.create(), adapter = fakeAdapter(f.clock); t.after(() => runtime.close());
+  await runtime.setAdapter('charger1', adapter); await runtime.reconcile();
+  await runtime.chargeNow('charger1', requestScope(chargerView(runtime)));
+  runtime.reconcile = async () => {};
+  await runtime.setControl('charger1', automaticScope(runtime));
+  assert.equal(f.values.get('charging:mqtt').chargers.charger1.replan, true);
+  await runtime.close();
+  const restarted = f.create(); t.after(() => restarted.close());
+  restarted.tick({ prices });
+  await restarted.setAdapter('charger1', adapter); await restarted.reconcile();
+  assert.equal(chargerView(restarted).control.phase, 'waiting');
+  assert.equal(f.values.get('charging:mqtt').chargers.charger1.replan, false);
+});
+
+
+test('absent new controls in current state default OFF and Balanced without importing old display preferences or losing native cleanup', async t => {
+  const f = fixture(preferences, {}, { charger1: true }), runtime = f.create(), adapter = fakeAdapter(f.clock); t.after(() => runtime.close());
+  await runtime.setAdapter('charger1', adapter); runtime.tick({ prices }); await runtime.reconcile();
+  await editSession(runtime, 'charger1', { minimumSoc: 90 });
+  const original = chargerView(runtime);
+  assert.equal(original.control.phase, 'waiting'); assert(original.control.owned);
+  await runtime.close();
+  const saved = structuredClone(f.values.get('charging:mqtt'));
+  delete saved.controls;
+  for (const item of Object.values(saved.chargers)) { delete item.controls; delete item.replan; }
+  saved.view.settings.priority = 'charger2'; saved.view.settings.chargers.charger1.enabled = true;
+  f.values.set('charging:mqtt', saved);
+  const restarted = f.create(); t.after(() => restarted.close());
+  assert.equal(restarted.settings.chargers.charger1.enabled, false);
+  assert.equal(restarted.settings.priority, 'balanced');
+  assert.equal(restarted.chargers.charger1.request.overrides.minimumSoc, 90);
+  await restarted.setAdapter('charger1', adapter); await restarted.reconcile();
+  assert.equal(chargerView(restarted).control.phase, 'off');
+  assert.equal(chargerView(restarted).control.handoverConfirmed, true);
+  assert.equal(chargerView(restarted).request.sessionId, original.request.sessionId);
+  assert.equal(chargerView(restarted).settings.minimumSoc, 90);
+  assert.equal(adapter.calls.filter(row => row.kind === 'clear').length, 1);
 });

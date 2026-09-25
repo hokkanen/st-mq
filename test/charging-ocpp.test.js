@@ -360,7 +360,7 @@ test('Charge Now clears only this session’s owned pause, preserves foreign pro
   await f.controller.update({ enabled: true, plan: future });
   const ownId = f.stored.owned.profileId, connectedAt = f.controller.status().session.connectedAt;
   f.profiles.set(999999999, { transactionId: 7, validFrom: new Date(START).toISOString(), validTo: new Date(START + 60 * MINUTE).toISOString() });
-  let view = await f.controller.update({ enabled: true, plan: future, chargeNow: { connectedAt } });
+  let view = await f.controller.update({ enabled: false, plan: future, chargeNow: { connectedAt } });
   assert.equal(view.phase, 'released'); assert.equal(view.execution, null);
   assert.deepEqual(writes(f).at(-1), { action: 'ClearChargingProfile', payload: { id: ownId } });
   assert(f.profiles.has(999999999), 'Native restrictions remain in the charger');
@@ -377,7 +377,7 @@ test('Charge Now preserves a confirmed native OCPP stop and never sends a remote
   const f = fixture(); await f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
   const connectedAt = f.controller.status().session.connectedAt;
   f.advance(1000); f.manual({ id: 'native-stop', kind: 'stop', at: f.now, transactionId: 7 });
-  const view = await f.controller.update({ enabled: true, chargeNow: { connectedAt } });
+  const view = await f.controller.update({ enabled: false, chargeNow: { connectedAt } });
   assert.equal(view.phase, 'yielded'); assert.equal(view.manual.kind, 'stop');
   assert.equal(f.profiles.size, 0, 'Only the controller’s earlier restriction is removed');
   assert(!writes(f).some(row => /RemoteStart|RemoteStop/.test(row.action)));
