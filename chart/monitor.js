@@ -1,3 +1,4 @@
+import { createSelectDismissal } from './select-dismissal.js';
 import { createDashboardReset } from './dashboard-reset.js';
 import { confirmAction } from './confirmation.js';
 import { renderLearningRows } from './learning-rows.js';
@@ -31,6 +32,7 @@ import { createPageFullscreen } from './page-fullscreen.js';
 import { heatingRequestResult, h66RequestResult, circulationStopPending } from './manual-control-status.js';
 
 const $ = id => document.getElementById(id);
+createSelectDismissal(document);
 $('floor-preheat-guide').href = floorGuideUrl;
 $('floor-preheat-script').href = floorScriptUrl;
 createDashboardReset({ document, button: $('dashboard-reset') });

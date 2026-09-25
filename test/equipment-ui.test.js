@@ -301,11 +301,18 @@ function equipmentDocument() {
 const descendants = node => node.children.flatMap(child => [child, ...descendants(child)]);
 const deviceNode = (document, rootId, id) => document.getElementById(rootId).children.find(node => node.dataset.deviceId === id);
 
-test('temperature-only equipment exposes every reading without an empty fold and updates existing rows in place', () => {
+test('temperature and tariff equipment expose readings without an empty fold and update existing rows in place', () => {
   const document = equipmentDocument(), panel = createEquipmentPanel({ document, request: async () => {} });
   const upstairs = { id: 'upstairs', label: 'Upstairs', area: 'home', kind: 'temperature', source: 'MQTT', available: false,
     readings: { indoor_temperature: { label: 'Temperature', unit: 'degC', value: null, stale: true } } };
-  const initial = status({ equipment: { devices: [upstairs, plug] } }); panel.update(initial);
+  const tariff = { id: 'tariff', label: 'Tariff control', area: 'home', kind: 'switch', source: 'Shelly', available: true,
+    controls: { switch: true, tariff: true },
+    readings: { tariff_active: { label: 'Switch', unit: 'state', value: 0, stale: false, observedAt: now } } };
+  const initial = status({ equipment: { devices: [upstairs, plug, tariff] } }); panel.update(initial);
+  const tariffRow = deviceNode(document, 'home-equipment-readings', 'tariff');
+  assert.equal(tariffRow.tagName, 'SECTION'); assert.equal(tariffRow.querySelector('summary'), null);
+  assert.equal(tariffRow.querySelector('.status-detail-label').textContent, 'Off');
+  assert.equal(tariffRow.querySelector('.equipment-inline-controls'), null);
   const row = deviceNode(document, 'home-equipment-readings', 'upstairs');
   assert.equal(row.tagName, 'SECTION'); assert(row.classList.contains('equipment-device-static'));
   assert.equal(row.children[0].tagName, 'DIV');

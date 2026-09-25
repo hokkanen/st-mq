@@ -602,8 +602,8 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
   function renderReadingList(root, devices, snapshot) {
     const { status, busy, message, error, actionKind, actionDeviceId } = snapshot;
     for (const [index, device] of devices.entries()) {
-      const staticReadings = device.kind === 'temperature' && !device.controls?.switch
-        && !Object.values(device.controls?.cover ?? {}).some(Boolean);
+      const staticReadings = (device.kind === 'temperature' && !device.controls?.switch
+        || device.controls?.tariff === true) && !Object.values(device.controls?.cover ?? {}).some(Boolean);
       let node = readingNodes.get(device.id);
       if (node && node.staticReadings !== staticReadings) {
         node.section.remove(); readingNodes.delete(device.id); node = null;

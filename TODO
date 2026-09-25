@@ -2,6 +2,24 @@
 -Implement support for local mqtt-based temperature receives (eg, from shelly or HASS through Meteorologisk Institute); just store last received temp values and time stamps (maybe in storage class, see below) when received (and accept if received within 1h)
 -Chart dataset control buttons don't work when datasets are manually hidden/unhidden from legend, how to fix?
 
+Completed 2026-09-25 — Tariff display and dropdown dismissal
+- Show tariff equipment readings directly without an expandable device fold.
+  Keep reading provenance and controller-owned tariff commands intact.
+- Finish pointer selections for every single-choice dropdown through a shared
+  document handler, including chart axes, pump values and dynamically added
+  controls. Preserve keyboard navigation and the pump setting-to-editor focus
+  transfer; ignore focus leaving the previously active field as a picker opens.
+- Reviewed equipment producers, UI consumers, selection state, configuration,
+  tests and related documentation. No obsolete compatibility paths were needed
+  or added; configuration, persisted state and equipment authority are unchanged.
+  Updated stale browser assertions for current temporary room-setting wording.
+- Validation: all eight targeted test files pass, including dropdown interaction,
+  equipment, Mitsubishi, Garage, chart, sensor and charging coverage. Production
+  build and the isolated Chromium Mitsubishi smoke check pass, including native
+  menu dismissal for chart/pump/dynamic selectors, keyboard focus, both themes
+  and 320/390/1440 px layouts. Mouse opens real native menus; touch selection
+  events are simulated. No household services or device commands were used.
+
 Completed 2026-09-25 — Configuration ownership and temporary dashboard overrides
 - Keep permanent charging defaults, identified vehicle defaults, scheduling
   enablement, shared priority and Garage room target in configuration. Remove

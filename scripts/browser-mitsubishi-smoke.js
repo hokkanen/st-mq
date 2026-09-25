@@ -113,6 +113,21 @@ try {
     await until(`document.activeElement.id===${JSON.stringify(editor)}`);
     assert.equal(await evaluate("document.getElementById('garage-native-setting').matches(':open')"),false,`${pointerType} setting choice closes the menu and focuses its value editor`);
   }
+  // Exercise the shared dismissal with real open native menus, including a dynamic control.
+  await evaluate("document.getElementById('garage-native-setting').value='fan';document.getElementById('garage-native-setting').dispatchEvent(new Event('change'));const select=document.createElement('select');select.id='dynamic-select-smoke';select.innerHTML='<option>First</option><option>Second</option>';document.body.append(select)");
+  for(const id of ['left-axis','garage-native-value','dynamic-select-smoke']) {
+    for(const pointerType of ['mouse','touch']) {
+      await trustedClick(`#${id}`);
+      assert.equal(await evaluate(`document.getElementById('${id}').matches(':open')`),true,`${id} menu opens`);
+      await evaluate(`(()=>{const select=document.getElementById('${id}');if('${pointerType}'==='touch')select.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,pointerType:'touch'}));select.selectedIndex=select.selectedIndex===1?2:1;if(select.selectedIndex<0)select.selectedIndex=0;select.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+      assert.equal(await evaluate(`document.getElementById('${id}').matches(':open')`),false,`${id} ${pointerType} selection closes menu`);
+      assert.notEqual(await evaluate('document.activeElement.id'),id);
+    }
+    await evaluate(`document.getElementById('${id}').focus()`);
+    await pressKey('ArrowDown');
+    assert.equal(await evaluate('document.activeElement.id'),id,`${id} keyboard navigation retains focus`);
+  }
+  await evaluate("document.getElementById('dynamic-select-smoke').remove()");
   for(const [setting,value] of [['power','off'],['mode','cool'],['fan',2],['vane','swing'],['wideVane','left'],['targetC',22.5]]){
     await evaluate(`document.getElementById('garage-native-setting').value=${JSON.stringify(setting)};document.getElementById('garage-native-setting').dispatchEvent(new Event('change'));`);
     if(setting==='targetC')await evaluate(`document.getElementById('garage-native-temperature').value='22.5';document.getElementById('garage-native-temperature').dispatchEvent(new Event('input'))`);
@@ -176,7 +191,7 @@ try {
   await evaluate("document.querySelector('#garage-native-temperature-details .status-detail-trigger').click()");
   const controlHelp=await evaluate("document.getElementById('status-detail-popover').textContent");
   assert.match(controlHelp,/Below 16 °C.*Garage rear.*17 °C.*offset/s);
-  assert.match(controlHelp,/16 °C or higher use normal pump control/);
+  assert.match(controlHelp,/16 °C or higher change the pump directly/);
   assert.match(controlHelp,/fresh sensor readings.*power on, heating mode and 17 °C/s);
   assert.match(controlHelp,/checks fail.*renewals stop.*internal sensor/s);
   assert.doesNotMatch(controlHelp,/ST-MQ/i);
@@ -191,10 +206,10 @@ try {
   assert.match(await evaluate("document.getElementById('garage-room-temperature-status').textContent"),/Room setting 10 °C.*Garage rear control is active/);
   await evaluate("document.querySelector('#garage-native-temperature-details .status-detail-trigger').click()");
   const activeHelp=await evaluate("document.getElementById('status-detail-popover').textContent");
-  assert.match(activeHelp,/Saved room setting: 10 °C.*native pump target of 17 °C.*adds 7 °C/s);
+  assert.match(activeHelp,/Room setting: 10 °C.*native pump target of 17 °C.*adds 7 °C/s);
   assert.match(activeHelp,/Garage rear: 10 °C.*Supplied temperature: 17 °C/s);
   assert.match(activeHelp,/fresh pump readings show ON, HEAT and 17 °C.*check fails.*renewals stop/s);
-  assert.match(activeHelp,/16 °C or higher.*ends external temperature control/s);
+  assert.match(activeHelp,/16 °C or higher.*suspends configured external temperature control for two hours/s);
   assert.doesNotMatch(activeHelp,/ST-MQ/i);
   await evaluate("document.querySelector('.status-detail-close').click()");
   assert.doesNotMatch(await evaluate("document.body.innerText"),/ST-MQ/i);
@@ -241,7 +256,7 @@ try {
   await until("document.getElementById('garage-native-status').textContent.includes('read-only')");
   assert.equal(await evaluate("document.getElementById('garage-native-submit').disabled"),true);
   assert.deepEqual(errors,[]);
-  console.log(JSON.stringify({result:'mitsubishi-browser-smoke-passed',artifacts,checks:['readings in their own fold','native room selection closes menu','pointer and touch setting changes close the menu and focus the value editor','all six typed controls','accepted versus native confirmation','dirty edit and focus preserved','compressor running idle and unknown states','supported readings retained through temporary data loss','concise temperature and low-target popup help','active room sensor and offset details','freshness and quality details','never-observed unsupported fields and empty groups omitted','new real zero readings appear and remain through later loss','320/390/1440px both themes','unavailable values remain on one line','offline and read-only gating','no browser exceptions']}));
+  console.log(JSON.stringify({result:'mitsubishi-browser-smoke-passed',artifacts,checks:['chart axis, pump values and dynamic dropdowns close after mouse/touch selection and retain keyboard focus','readings in their own fold','native room selection closes menu','pointer and touch setting changes close the menu and focus the value editor','all six typed controls','accepted versus native confirmation','dirty edit and focus preserved','compressor running idle and unknown states','supported readings retained through temporary data loss','concise temperature and low-target popup help','active room sensor and offset details','freshness and quality details','never-observed unsupported fields and empty groups omitted','new real zero readings appear and remain through later loss','320/390/1440px both themes','unavailable values remain on one line','offline and read-only gating','no browser exceptions']}));
   await send('Page.close');
 }finally{
   socket?.close();for(const task of pending.values())clearTimeout(task.timer);
