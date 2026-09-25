@@ -456,7 +456,7 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     const chargeNow = make('button', 'Charge now', 'charging-charge-now secondary-button', `${id}-charge-now`); chargeNow.type = 'button';
     chargeNow.setAttribute('aria-pressed', 'false');
     const resume = make('button', 'Use automatic', 'charging-use-automatic secondary-button', `${id}-resume`); resume.type = 'button';
-    actions.append(chargeNow, resume); heading.append(identity, actions); summary.append(heading);
+    actions.append(chargeNow); heading.append(identity, actions); summary.append(heading);
     const controlMessage = make('p', '', 'temporary-status charging-control-message', `${id}-control-message`); controlMessage.setAttribute('role', 'status');
     const overview = make('div', '', 'charging-overview', `${id}-overview`), metrics = {};
     const charge = make('div', '', 'equipment-value charging-charge');
@@ -518,7 +518,7 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     const controlDetail = make('p', '', 'muted charging-form-help', `${id}-control-detail`);
     const preferences = make('section', '', 'charging-detail-section');
     const scopeNote = make('p', 'Changes apply until unplugging. General and vehicle defaults are changed only in configuration.', 'charging-form-help');
-    preferences.append(make('h5', 'Charging controls'), master, controlDetail, sharedPriority.createEntry(id)); body.append(preferences);
+    preferences.append(make('h5', 'Charging controls'), master, controlDetail, resume, sharedPriority.createEntry(id)); body.append(preferences);
     const sessionPreferences = make('section', '', 'charging-detail-section');
     sessionPreferences.append(make('h5', 'Session settings'), scopeNote); body.append(sessionPreferences);
     const form = make('form', '', 'charging-settings-form', `${id}-settings-form`), primaryFields = make('div', '', 'charging-fields');
@@ -548,27 +548,30 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
       event.preventDefault(); event.stopPropagation();
       if (chargeNow.disabled) return;
       const current = device.charger;
+      if (current.request?.chargeNow === true) return resumeAutomatic();
       return mutate(`${prefix}/charge-now`, { association: current.association,
-        sessionId: current.request.sessionId, revision: current.request.revision }, controlMessage,
-      'Charge now requested until unplugging. Check the charging status below.');
+        sessionId: current.request.sessionId, revision: current.request.revision }, controlMessage);
     });
     bind(resume, 'click', event => {
       event.preventDefault(); event.stopPropagation();
       if (resume.disabled) return;
+      return resumeAutomatic();
+    });
+    function resumeAutomatic() {
       const current = device.charger;
       return current.settings.enabled
-        ? mutate(`${prefix}/resume`, {}, controlMessage, 'Automatic charging requested.')
+        ? mutate(`${prefix}/resume`, {}, controlMessage)
         : mutate(`${prefix}/control`, { association: current.association, revision: current.controls.revision, enabled: true },
-          controlMessage, 'Automatic charging enabled and requested. This preference stays in effect until changed.', undefined, async () => {
+          controlMessage, '', undefined, async () => {
             const latest = device.charger;
             if (devices.get(id) !== device || latest.association !== current.association
               || latest.request?.sessionId !== current.request?.sessionId || !latest.settings.enabled)
-              throw new Error('The charging connection or preference changed. Review it before choosing Use automatic again.');
+              throw new Error('The charging connection or preference changed. Review it before trying again.');
             if (!writable() || latest.readOnly) throw new Error('Control authority changed before automatic handover. Review the current status.');
             try { return await request(`${prefix}/resume`, {}); }
-            catch (error) { throw new Error(`Automatic charging is on, but handover could not be completed. ${error.message ?? 'Try Use automatic again.'}`); }
+            catch (error) { throw new Error(`Automatic charging is on, but handover could not be completed. ${error.message ?? 'Try again.'}`); }
           });
-    });
+    }
     bind(targetToggle, 'click', () => {
       if (targetToggle.disabled || !device.targetAction) return;
       const action = { ...device.targetAction };
@@ -577,9 +580,9 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     });
     devices.set(id, device); return device;
   }
-  async function mutate(path, payload, message, success, saved = () => {}, followup) {
+  async function mutate(path, payload, message, success = '', saved = () => {}, followup) {
     if (busy || !writable()) return false;
-    busy = true; message.textContent = 'Saving…'; message.classList.remove('form-error'); refreshControls();
+    busy = true; message.textContent = success ? 'Saving…' : ''; message.classList.remove('form-error'); refreshControls();
     try {
       beforeRequest(); const result = await request(path, payload); saved(); update(result); onStatus(result);
       if (followup) { const next = await followup(); update(next); onStatus(next); }
@@ -625,11 +628,11 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
       device.chargeNow.textContent = 'Charge now';
       device.chargeNow.setAttribute('aria-pressed', String(chargeNowActive));
       device.chargeNow.disabled = locked || charger.readOnly === true || !supported
-        || !connectedSession(charger) || chargeNowActive;
+        || !connectedSession(charger);
       device.chargeNow.title = !supported ? 'Monitoring only' : !writable() || charger.readOnly ? 'View only'
         : !connectedSession(charger) ? 'Connect a vehicle'
-          : chargeNowActive ? 'Selected until unplugging' : 'Until unplugging';
-      device.resume.hidden = !supported || !(chargeNowActive || view.yielded);
+          : chargeNowActive ? 'Selected until unplugging. Click again to use automatic charging.' : 'Until unplugging';
+      device.resume.hidden = !supported || !view.yielded;
       device.resume.disabled = locked || charger.readOnly === true || device.resume.hidden;
       device.targetToggle.disabled = locked || charger.readOnly === true || !device.targetAction;
     }

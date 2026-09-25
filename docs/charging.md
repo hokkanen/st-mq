@@ -46,10 +46,14 @@ Change permanent defaults in configuration and choose **Apply configuration**.
 **Charge now** is immediately visible at the top right of each charger card.
 It releases the controller's automatic scheduling delay for the current session
 without changing the Automatic charging choice. It works with Automatic
-charging OFF. **Use automatic** ends the override and enables automatic charging
-if it was OFF; unplugging also ends the override. Native vehicle timers, targets, user stops, faults,
-charger limits and authorization still apply, and unavailable or uncommissioned
-hardware cannot be started through this action.
+charging OFF. The button stays highlighted while selected; click **Charge now**
+again to end the override and use automatic charging (enabling it if it was OFF).
+The card keeps its height while saving and after either action, without an extra
+confirmation message. Unplugging also ends the override. **Use automatic** remains
+in Details & settings when an external charger instruction has manual priority.
+Native vehicle timers, targets, user stops, faults, charger limits and authorization
+still apply, and unavailable or uncommissioned hardware cannot be started through
+this action.
 
 A manual SoC is a one-time anchor. A newer applicable vehicle reading supersedes it using the provider's source clock, or explicitly labeled receipt time when no measurement clock exists. A pinned capacity outranks the provider capacity. An explicit requested minimum remains distinct from the vehicle's actual ceiling; requesting 95% while the vehicle reports an 80% ceiling is constrained rather than silently rewritten. Vehicle current limits and native not-before times constrain either charging point.
 

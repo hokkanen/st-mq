@@ -63,10 +63,11 @@ export async function checkChargingPriority({ send, evaluate, until, artifacts }
         const path = new URL(input.url ?? String(input), location.href).pathname;
         if (path === '/api/status') return syntheticChargingStatus();
         if ((path.startsWith('/api/charging/chargers/charger1/') || path === '/api/charging/settings') && options?.method === 'POST') {
+          if (globalThis.chargingActionSmokeDelay) await new Promise(resolve => { globalThis.chargingActionSmokeFinish = resolve; });
           const payload = JSON.parse(options.body);
           globalThis.chargingActionSmokeWrites.push([path, payload]);
           if (path === '/api/charging/settings') globalThis.chargingActionSmokePriority = payload.priority;
-          else globalThis.chargingActionSmokeSelected = path.endsWith('/charge-now');
+          else if (path.endsWith('/charge-now') || path.endsWith('/resume')) globalThis.chargingActionSmokeSelected = path.endsWith('/charge-now');
           if (path.endsWith('/control')) globalThis.chargingActionSmokeAutomatic = payload.enabled;
           if (path.endsWith('/control') || path === '/api/charging/settings') globalThis.chargingActionSmokeRevision += 1;
           return syntheticChargingStatus();
@@ -76,29 +77,49 @@ export async function checkChargingPriority({ send, evaluate, until, artifacts }
       globalThis.refreshLearningSmokeStatus()`);
     await until("document.getElementById('charger1-charge-now').disabled === false");
     assert.equal(await evaluate("document.getElementById('charger1-enabled').getAttribute('aria-checked')"), 'false', 'Charge now is available with automatic charging OFF');
-    await evaluate("document.getElementById('charger1-charge-now').click()");
-    await until("document.getElementById('charger1-charge-now').getAttribute('aria-pressed') === 'true'");
+    const actionLayout = async (width, theme) => {
+      await send('Emulation.setDeviceMetricsOverride', { width, height: 1100, deviceScaleFactor: 1, mobile: false });
+      await evaluate(`window.homeEnergyTheme.setTheme('${theme}'); document.getElementById('charger1-device').scrollIntoView({block: 'center'})`);
+      return evaluate(`(() => {
+        const summary = document.getElementById('charger1-device-summary'), box = summary.getBoundingClientRect();
+        const button = document.getElementById('charger1-charge-now'), bounds = button.getBoundingClientRect();
+        return { height: box.height, buttonHeight: bounds.height, buttonWidth: bounds.width,
+          background: getComputedStyle(button).backgroundColor,
+          fits: bounds.left >= box.left && bounds.right <= box.right && bounds.top >= box.top && bounds.bottom <= box.bottom,
+          hasSecondAction: summary.contains(document.getElementById('charger1-resume')),
+          hasMessage: document.getElementById('charger1-control-message').checkVisibility() };
+      })()`);
+    };
+    const layouts = new Map();
+    for (const width of [320, 390, 1440]) for (const theme of ['dark', 'light'])
+      layouts.set(`${width}:${theme}`, await actionLayout(width, theme));
+    await evaluate("globalThis.chargingActionSmokeDelay = true; document.getElementById('charger1-charge-now').click()");
+    await until("typeof globalThis.chargingActionSmokeFinish === 'function'");
+    assert.equal(await evaluate("document.getElementById('charger1-charge-now').disabled"), true);
+    for (const width of [320, 390, 1440]) for (const theme of ['dark', 'light'])
+      assert.deepEqual(await actionLayout(width, theme), layouts.get(`${width}:${theme}`), 'Saving keeps the card layout unchanged');
+    await evaluate("globalThis.chargingActionSmokeDelay = false; globalThis.chargingActionSmokeFinish()");
+    await until("document.getElementById('charger1-charge-now').getAttribute('aria-pressed') === 'true' && !document.getElementById('charger1-charge-now').disabled");
     assert.deepEqual(await evaluate('globalThis.chargingActionSmokeWrites'), [
       ['/api/charging/chargers/charger1/charge-now', { association: 'synthetic-browser-charger', sessionId: 'synthetic-browser-session', revision: 1 }],
     ], 'One click requests immediate charging for exactly the displayed connection');
     assert.equal(await evaluate("document.getElementById('charger1-device').open"), false, 'Charge now does not open the settings fold');
-    assert.equal(await evaluate("document.getElementById('charger1-charge-now').title"), 'Selected until unplugging');
-    for (const width of [320, 390, 1440]) {
-      await send('Emulation.setDeviceMetricsOverride', { width, height: 1100, deviceScaleFactor: 1, mobile: false });
-      await evaluate("document.getElementById('charger1-device').scrollIntoView({block: 'center'})");
-      assert.equal(await evaluate(`(() => {
-        const summary = document.getElementById('charger1-device-summary').getBoundingClientRect();
-        return ['charger1-charge-now', 'charger1-resume', 'charger1-control-message'].every(id => {
-          const element = document.getElementById(id), box = element.getBoundingClientRect();
-          return element.checkVisibility() && box.left >= summary.left && box.right <= summary.right
-            && box.top >= summary.top && box.bottom <= summary.bottom;
-        });
-      })()`), true, `${width}px keeps the selected action, return to automatic and request status visible`);
+    assert.equal(await evaluate("document.getElementById('charger1-charge-now').title"), 'Selected until unplugging. Click again to use automatic charging.');
+    for (const width of [320, 390, 1440]) for (const theme of ['dark', 'light']) {
+      const layout = await actionLayout(width, theme), before = layouts.get(`${width}:${theme}`);
+      assert(layout.fits && !layout.hasSecondAction && !layout.hasMessage, `${width}px ${theme}: only the toggle occupies the action area`);
+      assert.notEqual(layout.background, before.background, 'Selected Charge now has a distinct fill');
+      assert.deepEqual({ ...layout, background: before.background }, before, 'Selected Charge now keeps the card and button dimensions');
       const screenshot = await send('Page.captureScreenshot', { format: 'png' });
-      writeFileSync(join(artifacts, `charging-selected-${width}.png`), Buffer.from(screenshot.data, 'base64'));
+      writeFileSync(join(artifacts, `charging-selected-${width}-${theme}.png`), Buffer.from(screenshot.data, 'base64'));
     }
-    await evaluate("document.getElementById('charger1-resume').click()");
+    await evaluate("document.getElementById('charger1-charge-now').focus()");
+    await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r' });
+    await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
     await until("document.getElementById('charger1-charge-now').getAttribute('aria-pressed') === 'false' && globalThis.chargingActionSmokeWrites.length === 3 && !document.getElementById('charger1-charge-now').disabled");
+    assert.equal(await evaluate("document.getElementById('charger1-device').open"), false, 'Keyboard toggling keeps details closed');
+    for (const width of [320, 390, 1440]) for (const theme of ['dark', 'light'])
+      assert.deepEqual(await actionLayout(width, theme), layouts.get(`${width}:${theme}`), 'Returning to automatic restores the original button and card layout');
     assert.deepEqual(await evaluate('globalThis.chargingActionSmokeWrites[1]'), ['/api/charging/chargers/charger1/control', { association: 'synthetic-browser-charger', revision: 0, enabled: true }]);
     assert.deepEqual(await evaluate('globalThis.chargingActionSmokeWrites[2]'), ['/api/charging/chargers/charger1/resume', {}]);
     assert.equal(await evaluate("document.getElementById('charger1-enabled').getAttribute('aria-checked')"), 'true');

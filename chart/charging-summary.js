@@ -89,7 +89,7 @@ export function chargerSummary(charger, view, { now = Date.now(), formatTime = v
         : chargeNow ? 'The immediate charging instruction is awaiting confirmation.' : 'The charger’s current automatic instruction is awaiting confirmation.');
   } else if (chargeNow && !yielded) {
     roleLabel = 'Charge now'; roleState = 'manual';
-    roleDetail = `Charging is requested until unplugging. Automatic charging remains ${enabled ? 'on' : 'off'}. Choose “Use automatic” to end this request and use automatic charging.`;
+    roleDetail = `Charging is requested until unplugging. Automatic charging remains ${enabled ? 'on' : 'off'}. Click “Charge now” again to end this request and use automatic charging.`;
   } else if (yielded) {
     roleLabel = 'Manual override'; roleState = 'manual';
     roleDetail = view.priority || 'An external charger change has priority over automatic charging.';

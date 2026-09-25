@@ -2,6 +2,21 @@
 -Implement support for local mqtt-based temperature receives (eg, from shelly or HASS through Meteorologisk Institute); just store last received temp values and time stamps (maybe in storage class, see below) when received (and accept if received within 1h)
 -Chart dataset control buttons don't work when datasets are manually hidden/unhidden from legend, how to fix?
 
+Completed 2026-09-25 — Compact Charge now toggle
+- Use one visibly selected Charge now button; clicking it again performs the
+  existing return to automatic charging, including enabling Automatic when OFF.
+- Remove saving/success rows for both actions and the stacked summary-button
+  styling. Keep request errors visible and external manual handover inside
+  Details & settings. Preserve session scope, authority, request serialization,
+  native restrictions and existing API/state/configuration contracts.
+- Reviewed charging producers, consumers, state, configuration, UI and docs;
+  no compatibility paths or persisted formats are added.
+- Validation: 101 focused charging UI/summary tests and production build pass.
+  Synthetic Chromium toggle checks cover unchanged card/button dimensions while
+  saving, selected and returned to automatic, keyboard operation and both themes
+  at 320, 390 and 1440px. The broader dashboard checks pass 22 charging states
+  across 320–1920px. Mobile/desktop screenshots were visually reviewed.
+
 Completed 2026-09-25 — Garage door window
 - Open the Doors summary in a centered native dialog matching Fireplace. Retain
   the illustrated door cards, reported positions and context-sensitive actions.
