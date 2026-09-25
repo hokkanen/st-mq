@@ -22,6 +22,20 @@ Completed 2026-09-25 — Shared vehicle identification across cloud and OCPP
   delayed or repeated evidence, source replacement and ambiguity cases.
   Tests use synthetic feeds, transports and temporary databases only.
 
+Completed 2026-09-25 — Explicit Charge now state
+- Add a visible ON/OFF switch indicator inside the existing 44px Charge now
+  button. Keep its label stable and use text, knob position and selected fill
+  together. Turning it OFF returns to automatic charging as before.
+- ON represents the session request; actual charging, waiting and blocked
+  activity remain separately reported. Preserve card height, request locking,
+  error handling, permissions and existing API/state/configuration contracts.
+- Reviewed current producers and consumers; no compatibility paths are added.
+- Validation: focused charging UI/summary suites and the production build pass.
+  Synthetic Chromium checks pass mouse/keyboard toggling, visible state and
+  unchanged button/card dimensions in both themes. The full dashboard runner
+  passes 22 charging states across 320–1920px, preserving 364px mobile and 324px
+  compact summaries. Mobile and desktop screenshots were visually reviewed.
+
 Completed 2026-09-25 — Compact Charge now toggle
 - Use one visibly selected Charge now button; clicking it again performs the
   existing return to automatic charging, including enabling Automatic when OFF.

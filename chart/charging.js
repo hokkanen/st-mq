@@ -453,8 +453,11 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     const identity = make('div', '', 'charging-identity'), vehicle = make('span', '', 'charging-vehicle', `${id}-vehicle`); identity.append(title, vehicle);
     const state = make('span', '', 'equipment-device-status', `${id}-state`);
     const actions = make('div', '', 'charging-actions');
-    const chargeNow = make('button', 'Charge now', 'charging-charge-now secondary-button', `${id}-charge-now`); chargeNow.type = 'button';
-    chargeNow.setAttribute('aria-pressed', 'false');
+    const chargeNow = make('button', '', 'charging-charge-now secondary-button', `${id}-charge-now`); chargeNow.type = 'button';
+    chargeNow.setAttribute('aria-label', 'Charge now'); chargeNow.setAttribute('aria-pressed', 'false');
+    const chargeNowState = make('span', 'OFF', 'charging-charge-now-state', `${id}-charge-now-state`);
+    chargeNowState.setAttribute('aria-hidden', 'true');
+    chargeNow.append(make('span', 'Charge now'), chargeNowState);
     const resume = make('button', 'Use automatic', 'charging-use-automatic secondary-button', `${id}-resume`); resume.type = 'button';
     actions.append(chargeNow); heading.append(identity, actions); summary.append(heading);
     const controlMessage = make('p', '', 'temporary-status charging-control-message', `${id}-control-message`); controlMessage.setAttribute('role', 'status');
@@ -537,7 +540,7 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     explanationFold.append(make('summary', 'How charging works'));
     const explanations = make('dl', '', 'equipment-readings', `${id}-explanations`); explanationFold.append(explanations); body.append(explanationFold);
     section.append(summary, body); $('charging-devices')?.append(section);
-    const device = { id, chargeNow, controlMessage, section, title, vehicle, state, event, eventLabel, eventValue, overview, sources, metrics, chargeLabel, targetLabel, targetSource, targetNotice, targetControls, targetHelp, targetToggle, targetMessage, completionLabel, completion, readiness, priority, readingTime, deadline, deadlineGroup, facts, deliveredLabel, deliveredValue, remaining, energyLabel, energyValue, costLabel, cost, costMetric, scheduleInfo, scheduleHeading, periodCount, periods, problem, explanations, readings, notes, settings, enabledValue, resume, controlDetail, charger, notice, footerHint, sessionStatus };
+    const device = { id, chargeNow, chargeNowState, controlMessage, section, title, vehicle, state, event, eventLabel, eventValue, overview, sources, metrics, chargeLabel, targetLabel, targetSource, targetNotice, targetControls, targetHelp, targetToggle, targetMessage, completionLabel, completion, readiness, priority, readingTime, deadline, deadlineGroup, facts, deliveredLabel, deliveredValue, remaining, energyLabel, energyValue, costLabel, cost, costMetric, scheduleInfo, scheduleHeading, periodCount, periods, problem, explanations, readings, notes, settings, enabledValue, resume, controlDetail, charger, notice, footerHint, sessionStatus };
     bind(enabledValue, 'click', () => {
       if (enabledValue.disabled) return;
       const current = device.charger;
@@ -625,13 +628,13 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
       device.enabledValue.disabled = locked || charger.readOnly === true || !supported || !charger.controls;
       const chargeNowActive = charger.request?.chargeNow === true, view = chargerDisplay(charger);
       device.chargeNow.hidden = !supported;
-      device.chargeNow.textContent = 'Charge now';
+      device.chargeNowState.textContent = chargeNowActive ? 'ON' : 'OFF';
       device.chargeNow.setAttribute('aria-pressed', String(chargeNowActive));
       device.chargeNow.disabled = locked || charger.readOnly === true || !supported
         || !connectedSession(charger);
       device.chargeNow.title = !supported ? 'Monitoring only' : !writable() || charger.readOnly ? 'View only'
         : !connectedSession(charger) ? 'Connect a vehicle'
-          : chargeNowActive ? 'Selected until unplugging. Click again to use automatic charging.' : 'Until unplugging';
+          : chargeNowActive ? 'Charge now is on until unplugging. Turn off to use automatic charging.' : 'Turn on immediate charging until unplugging.';
       device.resume.hidden = !supported || !view.yielded;
       device.resume.disabled = locked || charger.readOnly === true || device.resume.hidden;
       device.targetToggle.disabled = locked || charger.readOnly === true || !device.targetAction;

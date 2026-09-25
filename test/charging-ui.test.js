@@ -1191,22 +1191,28 @@ test('Charge now toggles the current session without adding confirmation message
     calls.push([path, payload]); return status({ ...item, request: { ...item.request, chargeNow: path.endsWith('/charge-now') } });
   } });
   panel.update(status(item));
-  const button = $('charger1-charge-now'), summary = $('charger1-device-summary');
+  const button = $('charger1-charge-now'), indicator = $('charger1-charge-now-state'), summary = $('charger1-device-summary');
   assert(summary.contains(button)); assert(!summary.contains($('charger1-state')));
-  assert.equal(button.textContent, 'Charge now'); assert.equal(button.disabled, false);
+  assert.equal(button.textContent, 'Charge nowOFF'); assert.equal(button.disabled, false);
+  assert.equal(button.getAttribute('aria-label'), 'Charge now'); assert.equal(indicator.getAttribute('aria-hidden'), 'true');
+  assert.equal(button.title, 'Turn on immediate charging until unplugging.');
   assert.equal(button.getAttribute('aria-pressed'), 'false'); assert($('charger1-resume').hidden);
   await clickAction(button);
   assert.deepEqual(calls[0], ['/api/charging/chargers/charger1/charge-now', { association: item.association, sessionId: item.request.sessionId, revision: 1 }]);
-  assert.equal(button.textContent, 'Charge now'); assert.equal(button.getAttribute('aria-pressed'), 'true');
-  assert.equal(button.title, 'Selected until unplugging. Click again to use automatic charging.');
+  assert.equal(button.textContent, 'Charge nowON'); assert.equal(button.getAttribute('aria-pressed'), 'true');
+  assert.equal(button.getAttribute('aria-label'), 'Charge now', 'The accessible toggle name stays stable');
+  assert.equal(button.title, 'Charge now is on until unplugging. Turn off to use automatic charging.');
   assert(!button.disabled); assert($('charger1-resume').hidden); assert(!summary.contains($('charger1-resume')));
   assert.equal($('charger1-control-message').textContent, '');
   assert.equal($('charger1-soc').textContent, '20 %');
-  panel.update(status({ ...item, request: { ...item.request, chargeNow: true } }));
-  assert.equal(button.getAttribute('aria-pressed'), 'true', 'Polling retains the selected toggle');
+  for (const charging of [false, true, null]) {
+    panel.update(status({ ...item, request: { ...item.request, chargeNow: true }, values: { ...item.values, charging: reading(charging) } }));
+    assert.equal(button.getAttribute('aria-pressed'), 'true', 'Polling retains the selected toggle');
+    assert.equal(indicator.textContent, 'ON', 'ON describes the request independently of physical charging');
+  }
   await clickAction(button);
   assert.deepEqual(calls[1], ['/api/charging/chargers/charger1/resume', {}]);
-  assert.equal(button.textContent, 'Charge now'); assert.equal(button.disabled, false); assert($('charger1-resume').hidden);
+  assert.equal(button.textContent, 'Charge nowOFF'); assert.equal(button.disabled, false); assert($('charger1-resume').hidden);
   assert.equal(button.getAttribute('aria-pressed'), 'false');
   assert.equal($('charger1-control-message').textContent, '');
   panel.update(status({ ...item, control: { phase: 'yielded', manual: { kind: 'stop' } } }));
@@ -1222,10 +1228,12 @@ test('Charge now serializes requests, leaves details closed, and reports failure
   const panel = createChargingPanel({ document, request: (...args) => { calls.push(args); return new Promise((resolve, fail) => { reject = fail; }); } });
   panel.update(status(active())); const button = $('charger1-charge-now');
   const pending = clickAction(button); assert(button.disabled); assert($('charger1-setting-readyBy').disabled);
+  assert.equal($('charger1-charge-now-state').textContent, 'OFF', 'A pending request is not shown as accepted');
   assert.equal($('charger1-control-message').textContent, '', 'Saving does not add a row');
   await clickAction(button); assert.equal(calls.length, 1); assert(!$('charger1-device').open);
   reject(new Error('The charger could not confirm the instruction.')); await pending;
   assert.equal(button.disabled, false); assert.equal(button.getAttribute('aria-pressed'), 'false');
+  assert.equal($('charger1-charge-now-state').textContent, 'OFF');
   assert.match($('charger1-control-message').textContent, /could not confirm/);
   assert($('charger1-control-message').matches('.form-error')); panel.close();
 });
