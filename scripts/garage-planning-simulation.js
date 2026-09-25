@@ -3,6 +3,7 @@ import { writeFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { performance } from 'node:perf_hooks';
 import { planGarage } from '../src/garage/planner.js';
+import { HEATING_STRATEGIES } from '../src/domain/heating-strategy.js';
 import { garageSettings } from '../src/garage/settings.js';
 import { createGarageModel, updateGarageModel, garageModelSummary } from '../src/garage/model.js';
 import { createGarageExposure, updateGarageExposure } from '../src/garage/protection.js';
@@ -28,8 +29,8 @@ export function runPlanningAudit({ days = 43, cadenceMinutes = 5, parameters = {
   const forecast = Array.from({ length: 24 }, (_, i) => ({ start: now + i * HOUR, end: now + (i + 1) * HOUR,
     outdoorC: outdoorAt(hour + i, plant.parameters), issuedAt: now }));
   const rows = [];
-  for (const tariff of PRICES) for (const aggressiveness of [0, 25, 50, 75, 100]) {
-    const settings = garageSettings({ enabled: true, aggressiveness, protection: { approved: true } });
+  for (const tariff of PRICES) for (const { id: savingsStrategy } of HEATING_STRATEGIES) {
+    const settings = garageSettings({ enabled: true, savingsStrategy, protection: { approved: true } });
     // This frozen comparison starts with explicitly warm synthetic reference
     // objects. It does not infer installed pipe warmth from one air report.
     const exposure = knownGarageReserve(settings, { at: now, rearC: plant.state.rearC, frontC: plant.state.frontC,
@@ -60,7 +61,7 @@ export function runPlanningAudit({ days = 43, cadenceMinutes = 5, parameters = {
     }
     const endDebtC = Object.fromEntries(['rearC', 'frontC', 'coreC', 'slabC']
       .map(key => [key, round(reference.state[key] - candidate.state[key])]));
-    rows.push({ tariff: tariff.name, aggressiveness, reason: planned.reason, learningTrial: planned.learningTrial ?? false,
+    rows.push({ tariff: tariff.name, savingsStrategy, reason: planned.reason, learningTrial: planned.learningTrial ?? false,
       modeledTimingBenefitEur: round(planned.timingBenefitEur), modeledBenefitEur: round(planned.modelBenefitEur),
       simulatedBillDifferenceEur: round(totals.referenceCostEur - totals.candidateCostEur),
       ...Object.fromEntries(Object.entries(totals).map(([key, value]) => [key, round(value)])), horizonDebtC, endDebtC });
@@ -81,7 +82,7 @@ export function runBootstrapAudit({ days = 42, cadenceMinutes = 5, parameters = 
   // Extra protection reports must not consume the learner's existing noise
   // sequence. Both consumers use the same report at each learning boundary.
   const protectionRandom = randomSource(seed);
-  const settings = garageSettings({ enabled: true, aggressiveness: 50,
+  const settings = garageSettings({ enabled: true, savingsStrategy: 'balanced',
     maxSensorAgeMs: Math.max(120_000, cadenceMinutes * 120_000), protection: { approved: true } });
   let model = createGarageModel({ seedAt: AUDIT_START }), exposure = createGarageExposure(settings), planned = null;
   let previousAvailable = true, availableChangedAt = AUDIT_START, totalOffHours = 0;

@@ -14,7 +14,7 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
 function setup(t, { live = false, approved = true } = {}) {
   let now = BASE, sequence = 0, owner = true;
   const store = new Store(':memory:');
-  const config = { input: 'mqtt', garage: { enabled: true, aggressiveness: 0, minOnMs: 0,
+  const config = { input: 'mqtt', garage: { enabled: true, savingsStrategy: 'gentle', minOnMs: 0,
     protection: { approved }, adapter: { stateTopic: 'fixture/garage/state' } } };
   const engine = { latest: {}, lastKnownTemperatures: {}, settings: { mode: 'active' } };
   const runtime = new GarageRuntime({ store, engine, config, clock: () => now, canControl: () => owner });

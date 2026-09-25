@@ -253,28 +253,32 @@ Automatic floor-preheat candidates require a configured slab within the reserve
 capacity budget; a deliberate manual override uses commissioned device authority
 without pretending its thermal behavior is already validated.
 
-Home **Savings preference** is a configured 0–100 preference. It changes the
-economic hurdle and continuous comfort cost, including duration within an allowed
-band. It does not relax hard occupied-room upper/lower bounds. The planner checks
-each participating room conservatively; a warm floor downstairs does not prove
-that an occupied bedroom can coast safely. This is a conservative room-offset
-proxy, not an identified zonal model: each room follows the projected change in
-the house average while retaining its current offset, plus its recent trend for
-at most the first hour. The common temperature allowance applies to each room,
-and individual live readings also guard active control. Configuration changes use the existing
-**Apply configuration** workflow; the displayed preference is not a live slider.
-It does not mean a percentage of annual savings or guarantee any annual saving.
+Home's **Heating strategy & comfort** separates the decision policy from the
+**Home heat model**. **Savings strategy** offers **Gentle**, **Balanced** (default)
+and **More savings**. These choices change the economic hurdle and continuous
+comfort cost, including duration within an allowed band. They do not relax hard
+occupied-room upper/lower bounds. The planner checks each participating room
+conservatively; a warm floor downstairs does not prove that an occupied bedroom
+can coast safely. This is a conservative room-offset proxy, not an identified
+zonal model: each room follows the projected change in the house average while
+retaining its current offset, plus its recent trend for at most the first hour.
+The common temperature allowance applies to each room, and individual live
+readings also guard active control. Configuration changes use **Apply
+configuration**. No strategy promises an annual savings percentage.
 
-For preference fraction `a = aggressiveness/100`, a new cycle needs conservative
-benefit greater than `50 − 40a` cents, plus `30 − 25a` cents per weighted hot/cold
+A new cycle's conservative benefit must exceed the strategy's minimum of 50,
+30 or 10 cents respectively, plus 30, 17.5 or 5 cents per weighted hot/cold
 °C²-hour, 2 cents per extra active hour and 2 cents to start. Continuation excludes
 the already committed start hurdle. Among admitted choices, the mildest retaining
-at least `0.6 + 0.4a` of the best positive conservative benefit is selected. Zero
-is the most conservative preference; qualifying automatic cycles remain possible.
-Use **Pause price control** to suspend economic control. Garage uses the same
-0–100 presentation and zero semantics, with a benefit threshold and preference for
-shorter OFF windows suited to its separate model; see
+at least 60%, 80% or 100% of the best positive conservative benefit is selected.
+Gentle can still start a sufficiently worthwhile cycle. Use **Pause price
+control** to suspend economic control. Garage shares the same named strategies,
+with its own economic threshold and preference for shorter OFF windows; see
 [Garage selection](garage-model.md#one-opportunity-at-a-time).
+
+These decision rules consume the heat model's thermal predictions, uncertainty
+and action evidence. They are not fitted model coefficients: choosing another
+strategy does not alter the learning process or create missing evidence.
 
 Selection, dispatch and continuation share paired stress scenarios for action and
 reference: heat response and loss ±15%, initial reserve/slab ±0.5 °C, compressor

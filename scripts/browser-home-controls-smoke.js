@@ -86,7 +86,7 @@ try {
   // Exercise the production fetch/render/polling path. Only the presentation of
   // synthetic status is varied, and every mutating browser request is blocked.
   await send('Page.addScriptToEvaluateOnNewDocument', { source: `
-    globalThis.homeFixture = { paused: false, aggressiveness: 50, reads: 0, mutations: [],
+    globalThis.homeFixture = { paused: false, savingsStrategy: 'balanced', reads: 0, mutations: [],
       garageReading: 'unseen', mode: 'active', garageAvailable: true, garagePaused: false, garageExternal: false };
     const nativeFetch = globalThis.fetch.bind(globalThis);
     globalThis.fetch = async (input, options = {}) => {
@@ -100,7 +100,7 @@ try {
       const status = await response.json();
       homeFixture.reads++;
       status.mode = homeFixture.mode;
-      status.settings.savingsAggressiveness = homeFixture.aggressiveness;
+      status.settings.savingsStrategy = homeFixture.savingsStrategy;
       status.settings.preheatRoomBoostC = 5;
       status.settings.comfort.maxDropC = 1.5;
       status.settings.comfort.maxRiseC = 1.5;
@@ -109,7 +109,7 @@ try {
         { id: 'office', label: 'Office', referenceC: 21, referenceSource: 'overall', minC: 19.5, maxC: 22.5, limitsApply: true },
       ];
       status.garage.settings.enabled = true;
-      status.garage.settings.aggressiveness = homeFixture.aggressiveness;
+      status.garage.settings.savingsStrategy = homeFixture.savingsStrategy;
       status.garage.heatingControls = { available: homeFixture.garageAvailable, normalAvailable: homeFixture.garageAvailable,
         offAvailable: homeFixture.garageAvailable, confirmed: homeFixture.garageReading === 'fresh',
         requestedMode: 'normal', reason: homeFixture.garageAvailable ? null : 'Temporary heating overrides require Active mode.' };
@@ -146,7 +146,7 @@ try {
   ` });
   await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 1100, deviceScaleFactor: 1, mobile: false });
   await send('Page.navigate', { url: `http://127.0.0.1:${app.server.address().port}/` });
-  await until(`globalThis.homeFixture?.poll && document.getElementById('home-aggressiveness')?.textContent === '50 / 100'`);
+  await until(`globalThis.homeFixture?.poll && document.getElementById('home-savings-strategy')?.textContent === 'Balanced'`);
   await evaluate(`document.getElementById('home-heat-pump-details').open = true`);
   assert.equal(await evaluate(`document.getElementById('home-preferences-details').open`), false,
     'Permanent preferences start folded');
@@ -156,7 +156,7 @@ try {
       const element = document.getElementById(id);
       return !preferences.contains(element) && element.checkVisibility() && element.textContent.trim() !== '—';
     }) && document.querySelector('[data-h66-summary="mode"]').checkVisibility()
-      && !document.getElementById('home-aggressiveness').checkVisibility();
+      && !document.getElementById('home-savings-strategy').checkVisibility();
   })()`), true, 'Current heat-pump, tariff and circulation states remain visible outside folded preferences');
   assert.match(await evaluate(`document.getElementById('heating-test-help').textContent`), /next controller update.*1 minute.*Pause price control/);
   assert.equal(await evaluate(`document.getElementById('home-comfort-limits').textContent`), '−1.5 / +1.5 °C');
@@ -185,11 +185,11 @@ try {
   assert.equal(await evaluate(`document.getElementById('home-preferences-details').open`), true,
     'Enter opens native preferences disclosure');
   await evaluate(`globalThis.savedPreferences = { fold: document.getElementById('home-preferences-details'),
-    summary: document.activeElement, value: document.getElementById('home-aggressiveness') };
-    homeFixture.aggressiveness = 65; await homeFixture.poll()`);
+    summary: document.activeElement, value: document.getElementById('home-savings-strategy') };
+    homeFixture.savingsStrategy = 'savings'; await homeFixture.poll()`);
   assert.equal(await evaluate(`savedPreferences.fold.open && document.activeElement === savedPreferences.summary
-    && savedPreferences.value === document.getElementById('home-aggressiveness')
-    && savedPreferences.value.textContent === '65 / 100'`), true,
+    && savedPreferences.value === document.getElementById('home-savings-strategy')
+    && savedPreferences.value.textContent === 'More savings'`), true,
     'Status refresh updates preference values without replacing the fold or losing keyboard focus');
   await keyPress(' ');
   assert.equal(await evaluate(`document.getElementById('home-preferences-details').open`), false,
@@ -248,9 +248,27 @@ try {
       return help.clientWidth >= row.clientWidth * .95 && label.clientWidth >= row.clientWidth * .4;
     })`), true, 'Garage descriptions span the row and long values cannot squeeze their labels');
     assert.match(await evaluate(`document.getElementById('home-room-references').textContent`), /Bedroom20 °C · Learned room reference.*18.5 °C – 21.5 °C.*Office21 °C · Overall reference/);
-    assert.match(await evaluate(`document.getElementById('garage-heating-settings').textContent`), /Savings preference.*65 \/ 100.*Minimum estimated benefit.*More than €0.425.*Benefit retained.*86%/);
+    assert.match(await evaluate(`document.getElementById('garage-settings-details').textContent`), /More savings/);
     await screenshot(`${width === 360 ? 'mobile' : 'desktop'}-${theme}-preferences`);
     await screenshot(`${width === 360 ? 'mobile' : 'desktop'}-${theme}-garage-preferences`, 'garage-control');
+  }
+  for (const [policyId, modelId] of [
+    ['home-preferences-details', 'learning-panel-details'],
+    ['garage-settings-details', 'garage-learning-details'],
+  ]) {
+    assert.equal(await evaluate(`(() => {
+      const policy = document.getElementById('${policyId}');
+      const choices = [...policy.querySelectorAll('.heating-strategy-option')];
+      return choices.length === 3 && choices.filter(choice => choice.dataset.selected === 'true').length === 1
+        && choices.find(choice => choice.dataset.selected === 'true').textContent.includes('More savings');
+    })()`), true, 'Both sections show the three strategies and identify the configured choice');
+    await evaluate(`document.getElementById('${modelId}').open = false;
+      document.querySelector('#${policyId} [data-policy-model-link]').focus()`);
+    await keyPress('Enter');
+    assert.equal(await evaluate(`document.getElementById('${modelId}').open
+      && document.activeElement === document.querySelector('#${modelId} > summary')`), true,
+    'The heat-model reference opens the separate fold and transfers keyboard focus');
+    await evaluate(`document.getElementById('${modelId}').open = false`);
   }
   console.log(`Home controls screenshots available: ${artifacts}`);
   await evaluate(`homeFixture.paused = true; homeFixture.garagePaused = true; await homeFixture.poll()`);

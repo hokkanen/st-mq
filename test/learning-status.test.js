@@ -320,8 +320,8 @@ test('combined hydronic parameter explains the source conversion and separates f
   const model = initialAdaptiveModel({ floorThermalPriors: { enabled: true, capacityKwhPerC: 2.4,
     exchangeKwPerC: 0.2, groundLossKwPerC: 0.01, groundC: 9, openAllocationFraction: 0.3,
     closedAllocationFraction: 0.04 } });
-  const display = learningDisplay({ adaptive: { model } }, { settings: {
-    savingsAggressiveness: 50, preheatRoomBoostC: 5, recoveryHoldMinutes: 60,
+  const display = learningDisplay({ adaptive: { model }, parameters: { recoveryHoldMinutes: 60 } }, { settings: {
+    savingsStrategy: 'balanced', preheatRoomBoostC: 5,
     comfort: { maxDropC: 1.5, maxRiseC: 1.5 } }, preheatValves: {} });
   const combined = display.coefficients.find(row => row.key === 'hydronicCPerKwh');
   assert.equal(combined.value, '0.0798 °C/kWh thermal');
@@ -367,7 +367,7 @@ test('Home separates outcomes, model equations and planning without repeating gr
   const model = initialAdaptiveModel({});
   const display = learningDisplay({ adaptive: { model, health: { usableSamples: 96 } },
     readiness: { thermalValidated: false, actionValidated: false }, outcomes: { attempted: 2, completed: 0 },
-  }, { settings: { savingsAggressiveness: 0 }, preheatValves: {} });
+  }, { settings: { savingsStrategy: 'gentle' }, preheatValves: {} });
   const groups = [display.metrics, display.inputs, display.coefficients, display.evidenceRows,
     display.coefficientEvidenceRows, display.policyRows];
   for (const rows of groups) {
@@ -385,5 +385,15 @@ test('Home separates outcomes, model equations and planning without repeating gr
   const economics = display.policyRows.find(row => row.key === 'Worthwhile cycle threshold');
   assert.match(economics.value, /50 ct/);
   assert.match(economics.calculation.paragraphs.join(' '), /not an off switch/);
-  assert.doesNotMatch(JSON.stringify(display), /Zero preference disables/);
+  assert.doesNotMatch(JSON.stringify(display), /savings preference \/ 100|50 − 40a|0–100/);
+  assert.equal(display.policyRows.find(row => row.key === 'Savings strategy').value, 'Gentle');
+  assert.match(economics.calculation.equations.find(row => row.label === 'Starting hurdle').legend, /minimum_benefit = 50 ct.*discomfort_weight = 30 ct/);
+});
+
+
+test('Recovery policy uses the configured control duration and preserves an unknown duration', () => {
+  const row = learning => learningDisplay(learning, { settings: { savingsStrategy: 'balanced' } })
+    .policyRows.find(item => item.key === 'Recovery hold');
+  assert.equal(row({ parameters: { recoveryHoldMinutes: 35 } }).value, '35 min shared deadline');
+  assert.equal(row({}).value, 'Duration unavailable');
 });

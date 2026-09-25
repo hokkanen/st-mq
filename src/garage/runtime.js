@@ -56,6 +56,11 @@ export class GarageRuntime {
     this.engine = engine; this.store = store; this.config = config; this.clock = clock; this.canControl = canControl;
     const { adapter: _adapter, ...owner } = config.garage ?? {};
     this.settings = garageSettings(owner); this.input = config.input;
+    const settingsKey = `garage:configuration:${this.input}`, previous = store.getState(settingsKey);
+    if (previous !== null && previous !== undefined) {
+      try { garageSettings(previous); }
+      catch { throw new Error('Unsupported saved Garage settings; start a fresh development database'); }
+    }
     this.keys = Object.fromEntries(['checkpoint', 'exposure', 'episode', 'adapter', 'temporary', 'manual', 'roomTemperature'].map(name => [name, `garage:${name}:${this.input}`]));
     this.context = garageCorrectionContext(store, this.input);
     const readState = key => {
@@ -107,7 +112,6 @@ export class GarageRuntime {
     this.learningStatus = 'current'; this.plan = null; this.lastPlannerAt = null; this.closed = false;
     const head = garageJournalHead(store, this.input);
     if (head && this.checkpoint?.cursor !== head) this.startRebuild();
-    const settingsKey = `garage:configuration:${this.input}`, previous = store.getState(settingsKey);
     if (garageDigest(previous) !== garageDigest(this.settings)) {
       this.append('context', { configurationChanged: garageDigest(previous) !== garageDigest(this.settings),
         baselineChanged: previous != null && previous.baselineC !== this.settings.baselineC },

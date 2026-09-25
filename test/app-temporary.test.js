@@ -51,11 +51,11 @@ test('away and pause are atomic, persistent, independent and expire without rest
   assert.equal(store.events().filter(e => e.type === 'override-expired').length, 1);
 });
 
-test('cancel one temporary control preserves the other and an expired legacy absence is reconciled on startup', t => {
+test('cancel one temporary control preserves the other and an expired saved absence is reconciled on startup', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   const now = Date.parse('2026-09-07T12:00Z');
   const config = { input: 'offline', settings: validateSettings() };
-  store.setState('settings:offline', { mode: 'shadow', occupancy: { mode: 'away', returnAt: '2026-09-07T11:00Z' } });
+  store.setState('occupancy:offline', { mode: 'away', returnAt: '2026-09-07T11:00Z' });
   const engine = new Engine({ store, config, clock: () => now });
   assert.equal(engine.tick().settings.occupancy.mode, 'occupied');
   engine.setTemporary({ awayUntilLocal: '2026-09-08T12:00', pauseUntilLocal: '2026-09-08T12:00' });

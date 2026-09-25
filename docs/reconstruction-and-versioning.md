@@ -171,10 +171,10 @@ interval even if it recovers before the next temperature report. Such intervals
 do not train or qualify clean thermal validation. Door state does not replace
 either independent near-pipe temperature or authorize extra thermal reserve.
 
-Planning uses `garage-savings-preference-v3`: the configured 0–100 preference
-changes the new-start benefit hurdle and selects the shortest safe window
-retaining the required fraction of the best benefit. Zero remains a conservative
-preference, not disabled savings. This planning-semantic change leaves
+Planning uses `garage-savings-strategy-v1`: the configured Gentle, Balanced or
+More savings strategy changes the new-start benefit hurdle and selects the
+shortest safe window retaining the required fraction of the best benefit.
+Gentle still permits sufficiently worthwhile pauses. This planning-semantic change leaves
 `committed-garage-v6-source-clocks` learning and `garage-thermal-reserve-v1`
 protection unchanged. Persisted episode plans with an incompatible preference
 version are rejected with fresh-development-database guidance; no old-policy

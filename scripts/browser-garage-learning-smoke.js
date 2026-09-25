@@ -141,7 +141,7 @@ try {
       && Boolean(settings.compareDocumentPosition(learning) & Node.DOCUMENT_POSITION_FOLLOWING)
       && !settings.closest('.learning-model-details');
   })()`), true, 'Temporary control and permanent preferences precede learning, matching Home');
-  await evaluate("document.getElementById('garage-heating-details').open=true; document.getElementById('garage-learning-details').open=true");
+  await evaluate("document.getElementById('garage-heating-details').open=true; document.getElementById('garage-settings-details').open=true; document.getElementById('garage-learning-details').open=true");
   const sections = ['outcomes', 'inputs', 'coefficients', 'planning'];
   for (const name of sections) {
     const id = `garage-${name}-details`, root = `garage-learning-${name}`;
@@ -226,7 +226,7 @@ try {
   assert.equal(await evaluate("document.activeElement.id"), 'dashboard-reset');
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ result: 'garage-learning-browser-smoke-passed', artifacts,
-    checks: ['four matching Home/Garage learning sections', 'configuration before learning', 'keyboard entry and section controls',
+    checks: ['three matching Home/Garage model sections with decisions in strategy', 'configuration before learning', 'keyboard entry and section controls',
       'polling preserves focus and open rows', 'missing versus zero inputs', 'two cooling rates and explicit assumptions',
       '5°C target via existing setting form', 'external active/preparing/fallback with actual17 visible', 'read-only setting gate',
       '320,390,1440px layouts in both themes', 'no browser exceptions'] }));

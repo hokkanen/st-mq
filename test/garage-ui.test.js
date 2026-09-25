@@ -67,7 +67,7 @@ test('current qualified Garage intervals remain available while the Home rendere
 
 test('Garage automatic details show independent budgets, health and unresolved recovery without duplicate native readings', () => {
   const omittedCredential = randomUUID();
-  const status = { settings: { baselineC: 10, aggressiveness: 50, frontRequired: true, protection: { approved: true, marginC: 1 } },
+  const status = { settings: { baselineC: 10, savingsStrategy: 'balanced', protection: { approved: true, marginC: 1 } },
     observations: { rear: { value: 5.7 }, front: { value: 6.2, stale: true } },
     protection: { limitingLocation: 'front', locations: { rear: { remainingKjPerM: 6.3, estimatedC: 5.5 }, front: { remainingKjPerM: 2.1, estimatedC: 2.5, uncertain: true } } },
     adapter: { contractVersion: 'stmq-garage-fixture/v1', contractStatus: 'provisional-fixture-only', liveControlSupported: false,
@@ -96,8 +96,14 @@ test('Garage heating, equipment and learning have independent closed disclosures
     const tag = html.match(new RegExp(`<details[^>]+id="${id}"[^>]*>`))[0];
     assert(!/\sopen(?:\s|>|=)/.test(tag));
   }
-  assert.match(html, /Learning outcomes<\/span><small[^>]*> · Calculated/); assert.match(html, /Savings &amp; protection/);
-  assert.match(html, /Edit permanent preferences in configuration, then use Apply configuration/);
+  assert.match(html, /Learning outcomes<\/span><small[^>]*> · Calculated/); assert.match(html, /Heating strategy &amp; protection/);
+  assert.match(html, /Edit the savings strategy in configuration, then use Apply configuration/);
+  const policy = html.slice(html.indexOf('<details id="garage-settings-details"'), html.indexOf('<details id="garage-learning-details"'));
+  for (const title of ['Savings strategy', 'Protection boundaries', 'How decisions are made', 'Control choices']) assert(policy.includes(`>${title}</h5>`));
+  assert(policy.includes('id="garage-planning-details"'), 'Decision policies belong with the strategy, outside heat learning');
+  assert.match(policy, /href="#garage-learning-details" data-policy-model-link/);
+  assert.match(policy, /Freeze protection can restore heating sooner, including after a manual off selection/);
+  assert.match(policy, /its original endpoint cannot move later/);
 });
 
 test('heat-pump metric rows stay visible once in their summaries while controls and explanations stay inside', () => {
@@ -174,15 +180,15 @@ test('permanent Mitsubishi summary values remain plain text and stop claiming st
 });
 
 test('Garage settings keep configured values separate from descriptions and live exposure', () => {
-  const settings = garageSettings({ aggressiveness: 0, baselineC: 16 });
+  const settings = garageSettings({ savingsStrategy: 'gentle', baselineC: 16 });
   const garage = { settings, protection: { locations: { rear: { remainingKjPerM: 0 }, front: { remainingKjPerM: 12 } } } };
   const before = structuredClone(garage), display = garageDisplay(garage);
   const groups = Object.fromEntries(Object.entries(display.settingGroups).map(([key, rows]) => [key, Object.fromEntries(rows)]));
-  assert.deepEqual(groups.heating, { 'Normal room setting': '16 °C', 'Savings preference': '0 / 100',
-    'Minimum estimated benefit': 'More than €0.75', 'Benefit retained': '60% of best opportunity',
-    'Minimum planned off time': '1 h', 'Normal heating between pauses': '3 h minimum', 'Maximum pauses per day': '1' });
-  assert.deepEqual(groups.protection, { 'Protection margin': '1 °C', 'Reference pipe diameter': '21 mm', 'Assumed wall thickness': '1 mm', 'Heat transfer': '20 W/m²K', 'Safety factor': '2×' });
-  assert.deepEqual(groups.recovery, { 'Cold allowance': 'Calculated · kJ/m', 'Recovery': 'Continuous' });
+  assert.equal(display.strategy.label, 'Gentle');
+  assert.deepEqual(groups.economics, { 'Minimum estimated benefit': 'More than €0.75', 'Benefit retained': '60% of best opportunity' });
+  assert.deepEqual(groups.heating, { 'Minimum planned off time': '1 h', 'Normal heating between pauses': '3 h minimum', 'Maximum pauses per day': '1' });
+  assert.deepEqual(groups.protection, { 'Normal room setting': '16 °C configured', 'Protection margin': '1 °C' });
+  assert.deepEqual(groups.recovery, { 'Reference pipe diameter': '21 mm', 'Assumed wall thickness': '1 mm', 'Heat transfer': '20 W/m²K', 'Safety factor': '2×', 'Cold allowance': 'Calculated · kJ/m', 'Recovery': 'Continuous' });
   for (const rows of Object.values(display.settingGroups)) for (const [, value, description] of rows) {
     assert(description.length > 30); assert(value.length < 30);
   }
@@ -190,24 +196,54 @@ test('Garage settings keep configured values separate from descriptions and live
   assert.deepEqual(garageDisplay({ settings, protection: {} }).settingGroups, display.settingGroups);
   const missing = garageDisplay().settingGroups;
   assert(missing.heating.every(([, value]) => value === 'Unavailable'));
-  assert(missing.protection.filter(([label]) => label !== 'Safety factor').every(([, value]) => value === 'Unavailable'));
+  assert(missing.protection.every(([, value]) => value === 'Unavailable'));
+  assert(missing.economics.every(([, value]) => value === 'Unavailable'));
+  assert.equal(garageDisplay().strategy, null, 'A missing configuration must not claim Balanced is active');
   const html = readFileSync(new URL('../chart/index.html', import.meta.url), 'utf8');
-  assert.match(html, /pipes and stored liquids.*water-filled copper pipe/);
+  assert.match(html, /water-filled copper reference pipe/);
   assert(!html.includes('garage-settings-budget-rear-meter'));
 });
 
 test('Garage preference displays effective thresholds for the same policy the planner uses', () => {
-  for (const [aggressiveness, minimum, retained] of [[0, .75, 60], [50, .5, 80], [100, .25, 100]]) {
-    const display = garageDisplay({ settings: garageSettings({ aggressiveness }) });
-    const rows = Object.fromEntries(display.settingGroups.heating);
-    assert.equal(rows['Savings preference'], `${aggressiveness} / 100`);
+  for (const [savingsStrategy, label, minimum, retained] of [['gentle', 'Gentle', .75, 60], ['balanced', 'Balanced', .5, 80], ['savings', 'More savings', .25, 100]]) {
+    const display = garageDisplay({ settings: garageSettings({ savingsStrategy }) });
+    const rows = Object.fromEntries(display.settingGroups.economics);
+    assert.equal(display.strategy.label, label);
     assert.equal(rows['Minimum estimated benefit'], `More than €${minimum}`);
     assert.equal(rows['Benefit retained'], `${retained}% of best opportunity`);
     assert.equal(display.planningDetails.find(row => row.key === 'minimum-savings').value, `€${minimum}`);
-    assert.match(display.settingGroups.heating.find(([label]) => label === 'Savings preference')[2], /0 is most conservative.*Pause price control/);
   }
-  const configured = Object.fromEntries(garageDisplay({ settings: garageSettings({ aggressiveness: 100, minSavingsEur: 2 }) }).settingGroups.heating);
+  const configured = Object.fromEntries(garageDisplay({ settings: garageSettings({ savingsStrategy: 'savings', minSavingsEur: 2 }) }).settingGroups.economics);
   assert.equal(configured['Minimum estimated benefit'], 'More than €1');
+});
+
+test('Garage strategy selection updates the active label without inventing a default for missing status', () => {
+  const nodes = new Map(['garage-strategy-overview', ...['gentle', 'balanced', 'savings'].flatMap(id => [`garage-strategy-${id}`, `garage-strategy-${id}-current`])]
+    .map(id => [id, { textContent: '', dataset: {}, hidden: false }]));
+  const document = { getElementById: id => nodes.get(id) };
+  for (const savingsStrategy of ['gentle', 'balanced', 'savings', undefined]) {
+    renderGarage(document, { garage: { settings: savingsStrategy ? garageSettings({ savingsStrategy }) : {} } });
+    for (const id of ['gentle', 'balanced', 'savings']) {
+      assert.equal(nodes.get(`garage-strategy-${id}`).dataset.selected, String(id === savingsStrategy));
+      assert.equal(nodes.get(`garage-strategy-${id}-current`).hidden, id !== savingsStrategy);
+    }
+    if (!savingsStrategy) assert.equal(nodes.get('garage-strategy-overview').textContent, 'Strategy unavailable');
+  }
+});
+
+test('Garage policy distinguishes automatic planning from paused, disabled and monitoring control', () => {
+  const context = { textContent: '' }, document = { getElementById: id => id === 'garage-policy-context' ? context : null };
+  for (const [status, expected] of [
+    [{ mode: 'shadow', garage: { settings: { enabled: true } } }, /Shadow mode: automatic decisions do not command/],
+    [{ mode: 'active', garage: { settings: { enabled: false } } }, /Automatic price control is disabled/],
+    [{ mode: 'active', input: 'offline', garage: { settings: { enabled: true } } }, /Offline input/],
+    [{ mode: 'active', garage: { settings: { enabled: true }, temporary: { pauseActive: true } } }, /Price control is paused.*Freeze protection/],
+    [{ mode: 'active', garage: { settings: { enabled: true } } }, /subject to equipment and protection checks/],
+    [{}, /Current operating mode is unavailable/],
+  ]) {
+    renderGarage(document, status);
+    assert.match(context.textContent, expected);
+  }
 });
 
 test('Garage pause summary reports current pause, disabled, unavailable and operating mode truthfully', () => {
@@ -437,8 +473,9 @@ test('validated OFF evidence is distinct from the planned minimum and has no pau
   assert.equal(evidence.value, '1.5 h');
   assert.match(evidence.detail, /does not impose a maximum pause/);
   const minimum = display.planningDetails.find(row => row.key === 'pause-duration-limits');
-  assert.equal(minimum.title, 'Minimum planned OFF time');
-  assert.equal(minimum.value, '1 h');
+  assert.equal(minimum.title, 'Pause endpoint');
+  assert.equal(minimum.value, 'Forecast and protection limited');
+  assert.equal(Object.fromEntries(display.settingGroups.heating)['Minimum planned off time'], '1 h');
   assert.match(minimum.detail, /no fixed maximum pause/);
   assert.match(minimum.detail, /Protection can always end a pause before the planned minimum/);
   assert.notEqual(display.planningDetails.find(row => row.key === 'pause-window').value, 'None');

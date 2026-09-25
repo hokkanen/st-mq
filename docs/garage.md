@@ -9,33 +9,30 @@ Home heating, charging schedules and their savings accounting remain separate.
 ## Configuration and everyday controls
 
 The Garage card opens Heating configuration. Home and Garage use the same order:
-current state, **Temporary heating override**, **Pause price control**,
-preferences, then learning. Home calls its preferences **Savings & comfort**;
-Garage uses **Savings & protection**. Garage's current state shows heat-pump
-mode, heating control and the saved room setting, distinguishing current device
-feedback from a requested state and external-control availability.
-Both show a configured **Savings preference** from 0 to 100; changes use the
-existing **Apply configuration** workflow. Zero is the most conservative
-preference, not an off switch. Use **Pause price control** to suspend savings.
-Garage's preferences show the effective minimum saving, benefit retained,
-minimum planned OFF time, minimum normal-heating interval and daily pause limit
-beside protection settings.
-The learning disclosure has four sections:
+current state, **Temporary heating override**, **Pause price control**, strategy
+and limits, then the separate heat model. Home calls its decision section
+**Heating strategy & comfort**; Garage uses **Heating strategy & protection**.
+Garage's current state shows heat-pump mode, heating control and the saved room
+setting, distinguishing current device feedback from a requested state and
+external-control availability.
 
-- **Learning outcomes · Calculated:** validated cooling evidence, prediction
-  errors, normal rear/front warmth and electricity estimate basis.
-- **Model inputs · Recorded & modeled:** external temperatures, native availability,
-  reported electricity/activity, door evidence and fixed charger heat attribution.
-- **Model coefficients · Current values:** rear/front cooling rates and the few
-  fixed electricity/recovery assumptions, with their evidence.
-- **Planning & safeguards · Decisions & limits:** current opportunity, minimum
-  saving, minimum OFF time, pause spacing, daily count and independent protection.
+Both offer **Gentle**, **Balanced** and **More savings**, with Balanced as the
+default. Changes use **Apply configuration**. All three can select worthwhile
+cycles; **Pause price control** suspends automatic savings. The decision sections
+explain what the controller can do, what makes a cycle worthwhile, the limits
+that always apply, and how predictions from the separate heat model guide
+selection and ongoing checks. Garage shows its effective minimum benefit,
+minimum planned OFF time, minimum normal-heating interval and daily start limit
+alongside the independent pipe protection assumptions. Both rear and front
+readings are required. The **Garage heat model** below explains recorded inputs,
+learning evidence and model coefficients, keeping those distinct from owner
+policy.
 
 Permanent installation choices use sparse private overrides and **Apply
 configuration**; shared engineering defaults and standard MQTT topics stay in
 `config.json.options.garage`. See the [configuration guide](configuration.md) for
 a minimal override. Public defaults are `enabled:false`,
-`protection.approved:false`, `aggressiveness:50`, `minSavingsEur:0.50`, `minOffMs:3600000` (one hour),
+`protection.approved:false`, `savingsStrategy:"balanced"`, `minSavingsEur:0.50`, `minOffMs:3600000` (one hour),
 `minOnMs:10800000` (three hours) and `maxPausesPerDay:1`.
 
 `enabled` opts the installation into automatic Garage control.
@@ -57,17 +54,17 @@ The daily limit counts starts in the Finnish calendar day, including unsuccessfu
 attempts. A new process must observe the normal-heating dwell again. A reporting
 interruption or OFF state resets that dwell.
 
-For preference fraction `a = aggressiveness / 100`, the minimum saving to start
-is `minSavingsEur * (1.5 - a)`. The default baseline therefore requires more than
-€0.75 at 0, €0.50 at 50 or €0.25 at 100, after estimated recovery and uncertainty.
-Among qualifying safe windows, the planner chooses the shortest retaining at
-least `0.6 + 0.4a` of the best net benefit. Equal durations prefer greater benefit,
-then an earlier start. At 100 this chooses the greatest benefit, with shorter
-duration breaking ties. Lower settings favour shorter pauses even when a longer
-pause could save slightly more. These are configured engineering preferences,
-not learned optimal values or percentages of annual savings. Temperature
-protection, uncertainty, minimum OFF/recovery requirements and daily limits apply
-at every preference. See [the selection model](garage-model.md#one-opportunity-at-a-time).
+Gentle, Balanced and More savings require net benefit greater than 1.5, 1 or 0.5
+times `minSavingsEur`. With the default €0.50 baseline, that is more than €0.75,
+€0.50 or €0.25 after estimated recovery and uncertainty. Among qualifying safe
+windows, the planner chooses the shortest retaining at least 60%, 80% or 100% of
+the best net benefit respectively. Equal durations prefer greater benefit, then
+an earlier start. More savings therefore pursues the greatest benefit, with
+shorter duration breaking ties. Gentle favours shorter pauses even when a longer
+pause could save slightly more. These are configured decision policies, not
+learned optimal values or annual savings percentages. Temperature protection,
+uncertainty, minimum OFF/recovery requirements and daily limits apply at every
+strategy. See [the selection model](garage-model.md#one-opportunity-at-a-time).
 
 **Room setting** in Heat-pump settings accepts a permanent target down to **5°C**
 when the installed Pill supports external temperature control and its local

@@ -16,6 +16,7 @@ const construct = store => new GarageRuntime({ store, engine: { latest: {}, sett
 test('unsupported Garage saved exposure and algorithms fail before source mutation', () => {
   const currentModel = createGarageModel({ seedAt: START });
   for (const [key, value] of [
+    ['configuration', { aggressiveness: 50 }], ['configuration', { savingsStrategy: 'unknown' }],
     ['exposure', {}], ['exposure', 0], ['exposure', { version: 'garage-exposure-v1' }],
     ['exposure', { version: 'garage-exposure-v2' }],
     ['checkpoint', { algorithmVersion: 'committed-garage-v4-simple-off' }],

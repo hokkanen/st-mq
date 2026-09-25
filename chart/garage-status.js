@@ -11,6 +11,7 @@ import { finnishDateTime, priceControlState } from './home-controls.js';
 import { garageHeatingWarning } from './heating-warning.js';
 import { GARAGE_HEAT_TRANSFER_SAFETY_FACTOR, garageSavingsPreference } from '../src/garage/settings.js';
 import { renderLearningRows } from './learning-rows.js';
+import { HEATING_STRATEGIES, heatingStrategy } from '../src/domain/heating-strategy.js';
 const finite = Number.isFinite;
 const text = value => typeof value === 'string' ? value.replace(/([a-z])([A-Z])/g, '$1 $2').replaceAll(/[_-]/g, ' ') : 'Unknown';
 const number = (value, unit = '') => finite(value) ? `${new Intl.NumberFormat('en-GB', { maximumFractionDigits: 2 }).format(value)}${unit ? ` ${unit}` : ''}` : 'Unavailable';
@@ -84,8 +85,7 @@ function garageCoefficientRows(learning) {
 }
 
 function garageLearningRows(garage, policy) {
-  const learning = garage.learning ?? {}, validation = learning.validation, plan = garage.plan ?? {};
-  const planReason = plan.reason ?? plan.reasons?.[0] ?? garage.reason;
+  const learning = garage.learning ?? {}, validation = learning.validation;
   const reference = learning.normalReference;
   const thermal = learning.thermalReady, electrical = learning.electricalReady;
   const duration = finite(learning.validatedOffHours) && learning.validatedOffHours > 0 ? number(learning.validatedOffHours, 'h')
@@ -148,17 +148,28 @@ function garageLearningRows(garage, policy) {
       'Door size and indoor/outdoor temperatures do not fully determine air exchange. The model excludes disturbed cooling intervals; fresh local readings and the reference-pipe reserve capture actual cooling. Door events trigger a protection reassessment.'),
     learningRow('local-allowance-recovery', 'Pipe reference reserve', finite(policy.marginC) ? 'Rear and front independently' : 'Unavailable', 'Protection context', 'Calculated',
       'A water-filled copper reference follows each local air temperature continuously. It estimates pipe warmth rather than measuring it; cooling and warming use fixed conservative heat-transfer assumptions.'));
+  return { outcomeRows: outcomes.map(row => [row.title, `${row.value}. ${row.detail}`]), inputRows: inputDetails.map(row => [row.title, row.detail]),
+    outcomeDetails: outcomes, evidenceDetails, inputDetails,
+    outcomeContext: 'Two cooling rates describe how the garage cools with heating off. Complete cooling and recovery checks measure forecast accuracy. Temperatures and the pipe reserve limit each pause, with extra margins beyond observed evidence.',
+    inputContext: 'Recorded temperatures, door events and pump state support the model. Charging heat and unmetered electricity remain explicit assumptions. Missing readings remain unknown.',
+    coefficientContext: 'Only the rear and front cooling rates are fitted. The electricity and recovery estimates below stay visible as separate assumptions.' };
+}
+
+function garagePolicyRows(garage, policy) {
   const settings = garage.settings ?? {};
   const preference = garageSavingsPreference(settings);
+  const configuredStrategy = settings.savingsStrategy == null ? null : heatingStrategy(settings.savingsStrategy);
+  const plan = garage.plan ?? {};
+  const planReason = plan.reason ?? plan.reasons?.[0] ?? garage.reason;
   const planningDetails = [
-    learningRow('current-opportunity', 'Current decision', opportunitySummary(planReason), 'Decision', 'Current plan', opportunity(planReason)),
-    learningRow('pause-window', 'Planned OFF window', finite(plan.pauseFrom) && finite(plan.plannedPauseUntil ?? plan.pauseUntil) ? `${clock(plan.pauseFrom)} – ${clock(plan.plannedPauseUntil ?? plan.pauseUntil)}` : 'None',
+    learningRow('current-opportunity', 'Current decision', planReason ? opportunitySummary(planReason) : 'Unavailable', 'Decision', 'Current plan', planReason ? opportunity(planReason) : 'Waiting for a current planning assessment.'),
+    learningRow('pause-window', 'Planned OFF window', finite(plan.pauseFrom) && finite(plan.plannedPauseUntil ?? plan.pauseUntil) ? `${clock(plan.pauseFrom)} – ${clock(plan.plannedPauseUntil ?? plan.pauseUntil)}` : garage.plan ? 'None' : 'Unavailable',
       'Decision', 'Current plan', 'One worthwhile price period is selected. Heating stays at its existing setting beforehand and returns to normal afterward; no preheating is requested.'),
     learningRow('door-policy', 'Door opening', 'Reassess local pipe reserve', 'Pause limits', 'Fixed policy',
       'An opening rechecks protection using the local readings. Unknown configured doors or outdoor temperature block a new pause, as does an open door below 2°C outdoors.'),
-    learningRow('minimum-savings', 'Minimum estimated benefit', finite(settings.aggressiveness) && finite(settings.minSavingsEur) ? `€${benefit(preference.minimumBenefitEur)}` : 'Unavailable',
-      'Pause limits', 'Savings preference', 'A pause must exceed this benefit after recovery electricity and prediction uncertainty allowances. The savings preference adjusts this threshold around the configured minimum at 50 / 100.'),
-    learningRow('pause-duration-limits', 'Minimum planned OFF time', number(finite(settings.minOffMs) ? settings.minOffMs / 3_600_000 : null, 'h'),
+    learningRow('minimum-savings', 'Minimum estimated benefit', configuredStrategy && finite(settings.minSavingsEur) ? `€${benefit(preference.minimumBenefitEur)}` : 'Unavailable',
+      'Pause limits', 'Savings preference', 'A pause must exceed this benefit after recovery electricity and prediction uncertainty allowances. Gentle requires 1.5 times the configured baseline benefit, Balanced uses that baseline and More savings requires half.'),
+    learningRow('pause-duration-limits', 'Pause endpoint', 'Forecast and protection limited',
       'Pause limits', 'Configured', 'There is no fixed maximum pause. Temperatures, forecast pipe reserve, uncertainty, available price and weather data, and remaining savings determine the endpoint. Protection can always end a pause before the planned minimum.'),
     learningRow('daily-pause-limit', 'Maximum pauses per day', number(settings.maxPausesPerDay), 'Pause limits', 'Configured',
       'This cap limits additional pump starts independently of the savings preference.',
@@ -173,11 +184,7 @@ function garageLearningRows(garage, policy) {
     learningRow('restore-policy', 'Return to normal heat', 'Short local lease + recovery check', 'Safeguards', 'Device + observed temperatures',
       'The adapter restores native ON when its short renewable OFF permission expires. Renewals can maintain one continuous pause of any thermally permitted duration; this communication safeguard does not cap its total length. ON readback and useful warmth are separate checks. A failed adapter or serial path can prevent restoration.'),
   ];
-  return { outcomeRows: outcomes.map(row => [row.title, `${row.value}. ${row.detail}`]), inputRows: inputDetails.map(row => [row.title, row.detail]),
-    outcomeDetails: outcomes, evidenceDetails, inputDetails, planningDetails,
-    outcomeContext: 'Two cooling rates describe how the garage cools with heating off. Complete cooling and recovery checks measure forecast accuracy. Temperatures and the pipe reserve limit each pause, with extra margins beyond observed evidence.',
-    inputContext: 'Recorded temperatures, door events and pump state support the model. Charging heat and unmetered electricity remain explicit assumptions. Missing readings remain unknown.',
-    coefficientContext: 'Only the rear and front cooling rates are fitted. The electricity and recovery estimates below stay visible as separate assumptions.' };
+  return planningDetails;
 }
 
 export function garageColdBudget(garage = {}, location) {
@@ -245,26 +252,28 @@ export function garageDisplay(garage = {}, now = Date.now()) {
     ['Plan', text(plan.reason ?? garage.reason)], ['Planned pause endpoint', finite(plan.plannedPauseUntil ?? plan.pauseUntil) ? clock(plan.plannedPauseUntil ?? plan.pauseUntil) : 'No pause planned']);
   const policy = settings.protection ?? {};
   const preference = garageSavingsPreference(settings);
+  const configuredStrategy = settings.savingsStrategy == null ? null : heatingStrategy(settings.savingsStrategy);
   const settingGroups = {
+    economics: [
+      ['Minimum estimated benefit', configuredStrategy && finite(settings.minSavingsEur) ? `More than €${benefit(preference.minimumBenefitEur)}` : 'Unavailable', 'A new pause must clear this threshold after estimated recovery electricity and prediction uncertainty. Gentle uses 1.5 times the configured baseline, Balanced uses the baseline, and More savings uses half.'],
+      ['Benefit retained', configuredStrategy ? `${number(preference.retainedBenefitFraction * 100)}% of best opportunity` : 'Unavailable', 'Choose the shortest qualifying safe window retaining at least this share of the greatest estimated benefit. Equal lengths favour greater benefit, then an earlier start.'],
+    ],
     heating: [
-      ['Normal room setting', room ? `${room.value} saved · ${room.basis}` : number(settings.baselineC, '°C'), 'Change the permanent room setting in Mitsubishi Heat-pump settings. Below 16 °C uses the Garage rear sensor with a native 17 °C target.'],
-      ['Savings preference', finite(settings.aggressiveness) ? `${number(settings.aggressiveness)} / 100` : 'Unavailable', '0 is most conservative and 100 most savings-oriented. Higher values accept smaller benefits and more off time for additional savings. Use Pause price control to suspend automatic savings.'],
-      ['Minimum estimated benefit', finite(settings.aggressiveness) && finite(settings.minSavingsEur) ? `More than €${benefit(preference.minimumBenefitEur)}` : 'Unavailable', 'Effective threshold after recovery electricity and prediction uncertainty. The configured minimum applies at 50 / 100; preference 0 requires 1.5 times that amount and 100 requires half.'],
-      ['Benefit retained', finite(settings.aggressiveness) ? `${number(preference.retainedBenefitFraction * 100)}% of best opportunity` : 'Unavailable', 'Choose the shortest qualifying safe window retaining at least this share of the best estimated benefit. Equal lengths favour greater benefit, then an earlier start.'],
       ['Minimum planned off time', number(finite(settings.minOffMs) ? settings.minOffMs / 3_600_000 : null, 'h'), 'A selected pause must be planned for at least this long. Protection can restore heating sooner; there is no fixed maximum duration.'],
-      ['Normal heating between pauses', number(finite(settings.minOnMs) ? settings.minOnMs / 3_600_000 : null, 'h minimum'), 'Fresh normal-heating evidence is required for at least this long. Both locations and their pipe reserves must also recover. Savings preference does not relax these checks.'],
-      ['Maximum pauses per day', number(settings.maxPausesPerDay), 'This cap limits additional pump starts independently of savings preference. Pause starts count even if device confirmation is missing.'],
+      ['Normal heating between pauses', number(finite(settings.minOnMs) ? settings.minOnMs / 3_600_000 : null, 'h minimum'), 'Fresh normal-heating evidence is required for at least this long. Both locations and their pipe reserves must also recover. The strategy does not relax these checks.'],
+      ['Maximum pauses per day', number(settings.maxPausesPerDay), 'This cap limits additional pump starts independently of the strategy. Pause starts count even if device confirmation is missing; the count uses the Finnish calendar day.'],
     ],
     protection: [
-      ['Protection margin', number(policy.marginC, '°C'), 'Heat reserve is calculated above this temperature. Heating is requested early to allow time for warming.'],
-      ['Reference pipe diameter', number(policy.pipeOutsideDiameterMm, 'mm'), 'Outside diameter of the bare, water-filled copper pipe used as the protection reference.'],
-      ['Assumed wall thickness', number(policy.pipeWallMm, 'mm'), 'The copper wall thickness used to calculate the reference’s capacity to store warmth.'],
-      ['Heat transfer', number(policy.heatTransferWPerM2K, 'W/m²K'), 'Initial estimate of how readily the reference exchanges heat with the surrounding air.'],
-      ['Safety factor', `${GARAGE_HEAT_TRANSFER_SAFETY_FACTOR}×`, 'Counts cooling twice as quickly and warming half as quickly.'],
+      ['Normal room setting', room ? `${room.value} saved · ${room.basis}` : finite(settings.baselineC) ? `${number(settings.baselineC, '°C')} configured` : 'Unavailable', 'Shows the saved room setting when available, otherwise the configured native baseline. It is not a minimum air temperature during savings. Change the room setting in Mitsubishi Heat-pump settings; below 16 °C uses the Garage rear sensor with a native 17 °C target.'],
+      ['Protection margin', number(policy.marginC, '°C'), 'The reference pipe must stay above this temperature, including the delay until useful heat returns. This is an estimated pipe-temperature boundary, not the pump thermostat or an air-temperature switch.'],
     ],
     recovery: [
-      ['Cold allowance', 'Calculated · kJ/m', 'The reference’s stored warmth determines each location’s allowance. A warmer starting point provides more reserve.'],
-      ['Recovery', 'Continuous', 'Local air warms the reference and restores allowance gradually. A greater temperature difference restores it faster.'],
+      ['Reference pipe diameter', number(policy.pipeOutsideDiameterMm, 'mm'), 'Outside diameter of the bare, water-filled copper pipe used as the protection reference.'],
+      ['Assumed wall thickness', number(policy.pipeWallMm, 'mm'), 'The copper wall thickness used to calculate the reference’s capacity to store warmth.'],
+      ['Heat transfer', number(policy.heatTransferWPerM2K, 'W/m²K'), 'Fixed assumption for how readily the reference exchanges heat with the surrounding air. This value is not learned from the cooling forecast.'],
+      ['Safety factor', `${GARAGE_HEAT_TRANSFER_SAFETY_FACTOR}×`, 'Counts cooling twice as quickly and warming half as quickly. Changing the savings strategy never changes this factor.'],
+      ['Cold allowance', 'Calculated · kJ/m', 'The reference’s stored warmth above the protection margin determines each location’s allowance. A warmer starting point provides more reserve.'],
+      ['Recovery', 'Continuous', 'Local air restores warmth gradually at each location. A warmer air reading alone does not refill its reserve; missing temperature history must first be resolved by fresh evidence.'],
     ],
   };
   const coefficients = garageCoefficientRows(learning);
@@ -272,6 +281,7 @@ export function garageDisplay(garage = {}, now = Date.now()) {
   return { status: text(garage.status ?? (settings.enabled ? 'commissioning' : 'monitoring')),
     reason: text(garage.reason ?? 'Automatic control awaits the implemented adapter contract and installed commissioning')
       .trim().replace(/^./, value => value.toUpperCase()),
+    strategy: configuredStrategy, planningDetails: garagePolicyRows(garage, policy),
     rows, settingGroups, coefficients: coefficients.rows, coefficientDetails: coefficients.details, ...learningRows, limitations: learning.limitations ?? [] };
 }
 
@@ -453,6 +463,26 @@ export function renderGarage(document, status) {
   set('garage-controller-reason', display.reason);
   renderMitsubishiReadings(document, status);
   list('garage-controller-readings', display.rows);
+  set('garage-strategy-overview', display.strategy?.label ?? 'Strategy unavailable');
+  for (const strategy of HEATING_STRATEGIES) {
+    const selected = strategy.id === display.strategy?.id;
+    const option = document.getElementById(`garage-strategy-${strategy.id}`);
+    if (option) option.dataset.selected = String(selected);
+    const marker = document.getElementById(`garage-strategy-${strategy.id}-current`);
+    if (marker) marker.hidden = !selected;
+  }
+  set('garage-policy-decision', display.planningDetails.find(row => row.key === 'current-opportunity')?.value ?? 'Unavailable');
+  set('garage-policy-window', display.planningDetails.find(row => row.key === 'pause-window')?.value ?? 'Unavailable');
+  const controlState = priceControlState(status, { enabled: garage.settings?.enabled ?? null, paused: Boolean(garage.temporary?.pauseActive) });
+  set('garage-policy-context', status?.readOnly === true || isReadOnlyReplica(status)
+    ? 'Read-only view: these settings and estimates do not authorize equipment control.'
+    : controlState.state === 'paused'
+    ? 'Price control is paused; the heating selection above applies. Freeze protection still limits off permission.'
+    : controlState.label === 'Disabled' ? 'Automatic price control is disabled.'
+      : controlState.label === 'Offline' ? 'Offline input: automatic equipment control is unavailable.'
+        : status?.mode && status.mode !== 'active' ? `${controlState.label} mode: automatic decisions do not command the equipment.`
+          : controlState.state === 'active' ? 'The plan remains subject to equipment and protection checks. Heating control above shows the current request and device feedback.'
+            : 'Current operating mode is unavailable.');
   const approved = garage.settings?.protection?.approved;
   set('garage-protection-approval', approved === true ? 'Owner-approved' : approved === false ? 'Not approved' : 'Approval unknown');
   for (const [group, rows] of Object.entries(display.settingGroups)) {
@@ -461,8 +491,8 @@ export function renderGarage(document, status) {
     for (const [label, value, description] of rows) {
       const row = document.createElement('div'), dt = document.createElement('dt'), dd = document.createElement('dd');
       const help = document.createElement('dd');
-      row.className = 'garage-setting';
-      dt.textContent = label; help.textContent = description; help.className = 'garage-setting-help';
+      row.className = 'garage-setting heating-policy-setting';
+      dt.textContent = label; help.textContent = description; help.className = 'garage-setting-help heating-policy-setting-help';
       dd.textContent = value; row.append(dt, dd, help); fragment.append(row);
     }
     root.replaceChildren(fragment);

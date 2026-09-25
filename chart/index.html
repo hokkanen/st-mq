@@ -107,7 +107,7 @@
                       <label for="away-until">Away until</label>
                       <div class="temporary-input-row"><input id="away-until" type="datetime-local" step="60" aria-describedby="away-status away-help"><button id="home-now" class="secondary-button" type="button" disabled>Home now</button></div>
                       <p id="away-status" class="temporary-status">At home.</p>
-                      <p id="away-help" class="muted">Allow longer price-based reductions while away. The temperature-drop limit does not apply until your return; planning includes reheating costs.</p>
+                      <p id="away-help" class="muted">Allow longer price-based reductions while away. The occupied temperature-drop and rise limits do not apply until your return; planning includes reheating costs.</p>
                     </div>
                     <div class="temporary-field">
                       <label for="pause-until">Pause until</label>
@@ -119,31 +119,75 @@
                     <p id="override-scope" class="muted">Changes are recorded without sending equipment commands.</p>
                   </form>
                 </details>
-                <details id="home-preferences-details" class="equipment-fold home-preferences">
-                  <summary><span>Savings &amp; comfort</span><small id="home-comfort-limits">Configured limits</small></summary>
-                  <div class="home-preferences-body">
-                    <dl class="home-policy-values">
-                      <div class="home-comfort-reference"><dt>Overall comfort reference</dt><dd><strong id="reference">—</strong><small id="reference-source">Learning normal temperature</small></dd></div>
-                      <div><dt>Maximum drop</dt><dd><strong id="drop">—</strong><small id="drop-note">When you are home</small></dd></div>
-                      <div><dt>Maximum rise</dt><dd><strong id="home-maximum-rise">—</strong><small id="rise-note">When you are home</small></dd></div>
-                      <div><dt>Savings preference</dt><dd><strong id="home-aggressiveness">—</strong></dd></div>
-                      <div><dt>Preheat request</dt><dd><strong id="home-preheat-setting">—</strong></dd></div>
-                    </dl>
-                    <p class="muted">While you are home, the same maximum temperature drop and rise apply to every monitored room, relative to its learned normal temperature. Rooms without a learned reference use the overall reference.</p>
-                    <details id="home-room-references-details" class="equipment-fold home-room-references">
-                      <summary><span>Room references &amp; limits</span><small id="home-room-limits-status">When you are home</small></summary>
-                      <dl id="home-room-references" class="home-room-reference-list"></dl>
-                    </details>
-                    <p class="muted">Higher savings preference favours savings within these limits; it does not widen them. 0 is most conservative and 100 most savings-oriented. Use Pause price control to suspend automatic savings.</p>
-                    <p class="muted">ROOM increases heat-pump demand; it is not a room-air target.</p>
-                    <p class="muted home-preferences-edit">Edit permanent preferences in configuration, then use Apply configuration in Data &amp; settings.</p>
+                <details id="home-preferences-details" class="equipment-fold home-preferences heating-policy">
+                  <summary><span>Heating strategy &amp; comfort</span><small id="home-comfort-limits">Configured limits</small></summary>
+                  <div class="home-preferences-body heating-policy-body">
+                    <p class="heating-policy-intro">Shift heating to lower-cost times when the expected benefit justifies the change. Your comfort limits constrain the plan; the heat model estimates how the house will respond.</p>
+                    <section class="heating-policy-section" aria-labelledby="home-strategy-title">
+                      <h5 id="home-strategy-title">Savings strategy <span id="home-savings-strategy" class="heating-policy-current">Unavailable</span></h5>
+                      <p>The strategy sets how much benefit is needed and how much temperature variation is worth accepting within your limits. It does not change those limits or turn price control off.</p>
+                      <ul class="heating-strategy-options" aria-label="Home savings strategies">
+                        <li id="home-strategy-gentle" class="heating-strategy-option" data-selected="false"><strong>Gentle <span id="home-strategy-gentle-current" class="heating-strategy-current" hidden>Current</span></strong><p>Require a larger benefit and favour smaller temperature changes, even if that gives up some savings.</p></li>
+                        <li id="home-strategy-balanced" class="heating-strategy-option" data-selected="false"><strong>Balanced <span id="home-strategy-balanced-current" class="heating-strategy-current" hidden>Current</span></strong><p>Weigh worthwhile savings against temperature changes and the length of the intervention.</p></li>
+                        <li id="home-strategy-savings" class="heating-strategy-option" data-selected="false"><strong>More savings <span id="home-strategy-savings-current" class="heating-strategy-current" hidden>Current</span></strong><p>Accept smaller benefits and more temperature variation to retain the greatest qualifying savings.</p></li>
+                      </ul>
+                      <p class="heating-policy-note">These are saved configuration choices. Edit the Home savings strategy in configuration, then use Apply configuration in Data &amp; settings. Away &amp; pause above provides temporary changes.</p>
+                    </section>
+                    <section class="heating-policy-section" aria-labelledby="home-comfort-title">
+                      <h5 id="home-comfort-title">Comfort boundaries</h5>
+                      <dl class="home-policy-values heating-policy-values">
+                        <div class="home-comfort-reference"><dt>Overall comfort reference</dt><dd><strong id="reference">—</strong><small id="reference-source">Learning normal temperature</small></dd></div>
+                        <div><dt>Maximum drop</dt><dd><strong id="drop">—</strong><small id="drop-note">When you are home</small></dd></div>
+                        <div><dt>Maximum rise</dt><dd><strong id="home-maximum-rise">—</strong><small id="rise-note">When you are home</small></dd></div>
+                      </dl>
+                      <p>Each monitored room is checked against its own learned normal temperature, using the overall reference until a room reference is available. The same drop and rise allowances apply to every room. A warm room cannot cancel out a cold one.</p>
+                      <p class="heating-policy-note">Both limits constrain occupied-room forecasts, including a temperature uncertainty allowance. Away mode lifts these occupied limits until your return; the plan includes reheating costs and checks the limits again from the return time.</p>
+                      <details id="home-room-references-details" class="equipment-fold home-room-references heating-policy-details">
+                        <summary><span>Room references &amp; limits</span><small id="home-room-limits-status">When you are home</small></summary>
+                        <dl id="home-room-references" class="home-room-reference-list"></dl>
+                      </details>
+                    </section>
+                    <section class="heating-policy-section" aria-labelledby="home-decision-process-title">
+                      <h5 id="home-decision-process-title">How decisions are made</h5>
+                      <ol class="heating-policy-steps">
+                        <li><strong>Compare complete heating cycles.</strong> Forecast normal heating alongside possible reductions, with optional preheating. Use current temperatures, stored heat, weather and all-in electricity prices; include recovery, auxiliary heat and the estimated cost of any heat still owed at the end.</li>
+                        <li><strong>Check comfort and available control.</strong> Reject forecasts outside room limits or supported equipment and duration limits. Recheck the chosen plan before it starts and while it runs. Missing required readings, lost forecast coverage or failed checks prevent or end automatic savings.</li>
+                        <li><strong>Choose a worthwhile change.</strong> Reduce the estimated benefit by an uncertainty allowance, then require it to cover the strategy’s starting, discomfort and duration allowances. Prefer the mildest qualifying cycle that retains enough of the best benefit. Otherwise leave normal heating in charge.</li>
+                      </ol>
+                      <p class="heating-policy-note">The <a class="heating-policy-link" href="#learning-panel-details" data-policy-model-link="learning-panel-details">Home heat model</a> supplies temperature, heat-reserve and equipment-response estimates. Validation determines which actions and durations those estimates can support; it does not itself authorize a heating command.</p>
+                      <p class="heating-policy-note">Savings estimates cover space heating, including recovery. They compare modelled alternatives; changes in hot-water service prevent a whole-house savings claim.</p>
+                      <details class="equipment-fold heating-policy-details">
+                        <summary>Learning trials &amp; forecast limits</summary>
+                        <p id="home-policy-trials" class="heating-policy-note">Learning-trial settings are unavailable.</p>
+                        <p class="heating-policy-note">An enabled learning trial can run before normal savings checks are established, within a separate cost budget and stricter cold and delayed-overheating checks. A trial gathers evidence and may cost money; it is not an accepted savings forecast.</p>
+                        <p class="heating-policy-note">Room forecasts follow the common house forecast while preserving each room’s current offset and any available short-term trend. The model does not separately predict how heat travels to each room. Forecast allowances and live checks reduce risk; they cannot guarantee exact room temperatures.</p>
+                      </details>
+                    </section>
+                    <section class="heating-policy-section" aria-labelledby="home-control-choices-title">
+                      <h5 id="home-control-choices-title">Control choices</h5>
+                      <p>Automatic heating uses the following phases when their equipment and prediction checks pass.</p>
+                      <dl class="heating-policy-values heating-policy-actions">
+                        <div><dt>Normal heating</dt><dd>Release price-based changes and use the heat pump’s saved settings. The heat pump decides when heat is needed.</dd></div>
+                        <div><dt>Preheat</dt><dd>Raise the saved ROOM demand setting by up to <strong id="home-preheat-setting">—</strong>, subject to device limits. Commissioned floor overrides may open the configured circuits together. ROOM is a demand setting, not a room-air target.</dd></div>
+                        <div><dt>Reduced heating</dt><dd>Request tariff reduction. With native heat-pump control available, also lower hot-water settings and restrict auxiliary heating. Automatic hot-water circulation is held back. A reduction request does not prove that the compressor stopped.</dd></div>
+                        <div><dt>Recovery</dt><dd>Release tariff reduction and restore normal ROOM demand. A timed hold can retain reduced hot-water settings and restrict auxiliary heat; cold-room protection can release the auxiliary restriction early. Saved settings and normal circulation eligibility return at the hold deadline.</dd></div>
+                      </dl>
+                      <p id="home-policy-durations" class="heating-policy-note">Configured duration limits are unavailable.</p>
+                      <p class="heating-policy-note">The override buttons above request a mode directly, bypassing automatic savings and forecast-comfort selection. Manual Reduced heating changes the tariff request only; it does not apply the automatic hot-water, auxiliary or circulation changes. Overrides normally reset on the next controller update. Pause price control to hold a manual choice. Equipment availability and restoration checks still apply.</p>
+                      <div class="heating-policy-decision" role="status"><strong id="home-policy-current-title">Waiting for a decision</strong><p id="home-policy-current-detail"></p><p id="home-policy-economics" class="heating-policy-note"></p></div>
+                      <details id="home-policy-details" class="equipment-fold heating-policy-details">
+                        <summary>Decision thresholds &amp; safeguards</summary>
+                        <p class="heating-policy-note">Current economic rules, control assumptions and restoration limits. Expand a row for its calculation or evidence.</p>
+                        <div id="home-policy-content"></div>
+                      </details>
+                    </section>
                   </div>
                 </details>
               </div>
               <details id="learning-panel-details" class="dashboard-disclosure learning-groups learning-model-details">
                 <summary>
                   <div class="learning-model-overview" aria-labelledby="home-learning-label">
-                    <h3 id="home-learning-label" class="learning-model-label">Home learning</h3>
+                    <h3 id="home-learning-label" class="learning-model-label">Home heat model</h3>
                     <p id="learning-title" class="model-headline">Collecting observations</p>
                     <p id="learning-overview" class="muted"></p>
                     <div id="learning-progress" class="learning-progress"></div>
@@ -229,13 +273,7 @@
                     <details class="learning-support"><summary>Heat balance, calibration &amp; history</summary><p id="coefficient-context" class="learning-note"></p><div id="coefficient-evidence"></div></details>
                   </div>
                 </details>
-                <details id="learning-policy-details" class="learning-section section-fold">
-                  <summary><span class="learning-section-title">Planning &amp; safeguards</span><small class="learning-section-kind"> · Decisions &amp; limits</small></summary>
-                  <div class="learning-section-body">
-                    <p class="learning-intro">How forecasts become heating decisions: economic thresholds, room comfort, equipment limits and the scope of reported savings.</p>
-                    <div id="learning-policy-content"></div>
-                  </div>
-                </details>
+
               </details>
             </section>
           </div>
@@ -495,34 +533,72 @@
                   <div class="temporary-actions"><button id="garage-pause-submit" type="submit" disabled>Apply changes</button><p id="garage-pause-message" class="muted" role="status" aria-live="polite"></p></div>
                 </form>
               </details>
-              <details id="garage-settings-details" class="equipment-fold garage-settings"><summary><span>Savings &amp; protection</span><small>Configured limits</small></summary>
-                <p class="muted garage-settings-intro">Current configuration. Edit permanent preferences in configuration, then use Apply configuration in Data &amp; settings.</p>
-                <section class="garage-settings-group" aria-labelledby="garage-preferences-title">
-                  <h5 id="garage-preferences-title">Heating preferences</h5>
-                  <dl id="garage-heating-settings" class="garage-setting-list"></dl>
-                </section>
-                <section class="garage-settings-group" aria-labelledby="garage-protection-title">
-                  <div class="garage-settings-heading"><h5 id="garage-protection-title">Freezing protection</h5><span id="garage-protection-approval" class="garage-policy-status">Approval unknown</span></div>
-                  <p class="garage-settings-help">Protects pipes and stored liquids using local temperature history, with a water-filled copper pipe as the reference. Rear and front are assessed independently.</p>
-                  <dl id="garage-protection-settings" class="garage-setting-list"></dl>
-                  <details id="garage-recovery-details" class="equipment-fold garage-recovery"><summary>Allowance &amp; recovery<small>Continuous</small></summary>
-                    <p class="muted">The allowance follows stored warmth through cooling and recovery. Each location keeps its own history.</p>
-                    <dl id="garage-recovery-settings" class="garage-setting-list"></dl>
-                  </details>
-                </section>
-                <section id="garage-live-budgets" class="garage-live-budgets" aria-labelledby="garage-live-budgets-title">
-                  <div class="garage-settings-heading"><h5 id="garage-live-budgets-title">Cold allowance remaining</h5><span class="garage-live-label">Live estimate</span></div>
-                  <div class="garage-budget-grid">
-                    <div class="garage-budget-location"><span>Rear · near pipe</span><strong id="garage-settings-budget-rear">—</strong><small id="garage-settings-budget-rear-remaining">Assessment unavailable</small></div>
-                    <div class="garage-budget-location"><span>Front · near door</span><strong id="garage-settings-budget-front">—</strong><small id="garage-settings-budget-front-remaining">Assessment unavailable</small></div>
-                  </div>
-                  <p class="garage-settings-help">Estimated warmth per metre of the reference pipe. Heating resumes with enough reserve to restore useful heat; select a value for details.</p>
-                </section>
+              <details id="garage-settings-details" class="equipment-fold garage-settings heating-policy">
+                <summary><span>Heating strategy &amp; protection</span><small id="garage-strategy-overview">Strategy unavailable</small></summary>
+                <div class="heating-policy-body">
+                  <p class="heating-policy-note">Normal heating is the starting point. The controller can pause the pump during a worthwhile price period, then restore its usual heating. Every strategy keeps the same freezing-protection and recovery requirements.</p>
+                  <section class="heating-policy-section" aria-labelledby="garage-strategy-title">
+                    <h5 id="garage-strategy-title">Savings strategy</h5>
+                    <p class="heating-policy-note">Choose how much opportunity is worth taking. A stronger savings preference accepts smaller estimated benefits and may keep heating off longer.</p>
+                    <ul class="heating-strategy-options" aria-label="Available savings strategies">
+                      <li id="garage-strategy-gentle" class="heating-strategy-option" data-selected="false"><strong>Gentle <span id="garage-strategy-gentle-current" class="heating-strategy-current" hidden>Current</span></strong><p>Require a larger benefit and favour shorter pauses, leaving more time for normal heating.</p></li>
+                      <li id="garage-strategy-balanced" class="heating-strategy-option" data-selected="false"><strong>Balanced <span id="garage-strategy-balanced-current" class="heating-strategy-current" hidden>Current</span></strong><p>Keep most of the estimated benefit while avoiding extra off time for small gains.</p></li>
+                      <li id="garage-strategy-savings" class="heating-strategy-option" data-selected="false"><strong>More savings <span id="garage-strategy-savings-current" class="heating-strategy-current" hidden>Current</span></strong><p>Accept smaller worthwhile opportunities and choose the greatest estimated benefit within the same limits.</p></li>
+                    </ul>
+                    <p class="heating-policy-note">Edit the savings strategy in configuration, then use Apply configuration in Data &amp; settings. Use Pause price control above to suspend automatic savings.</p>
+                    <details class="equipment-fold heating-policy-details"><summary>How the strategy weighs savings</summary><dl id="garage-economics-settings" class="heating-policy-values garage-setting-list"></dl></details>
+                  </section>
+                  <section class="heating-policy-section" aria-labelledby="garage-protection-title">
+                    <div class="garage-settings-heading"><h5 id="garage-protection-title">Protection boundaries</h5><span id="garage-protection-approval" class="garage-policy-status">Approval unknown</span></div>
+                    <p class="heating-policy-note">Protection estimates warmth in a water-filled copper reference pipe beside each temperature sensor. Rear and front are checked independently; whichever needs heat first limits the pause. This estimate guides protection of pipes and stored liquids, but does not measure their actual temperatures.</p>
+                    <dl id="garage-protection-settings" class="heating-policy-values garage-setting-list"></dl>
+                    <section id="garage-live-budgets" class="garage-live-budgets" aria-labelledby="garage-live-budgets-title">
+                      <div class="garage-settings-heading"><h5 id="garage-live-budgets-title">Warmth available above the protection margin</h5><span class="garage-live-label">Live estimate</span></div>
+                      <div class="garage-budget-grid">
+                        <div class="garage-budget-location"><span>Rear · near pipe</span><strong id="garage-settings-budget-rear">—</strong><small id="garage-settings-budget-rear-remaining">Assessment unavailable</small></div>
+                        <div class="garage-budget-location"><span>Front · near door</span><strong id="garage-settings-budget-front">—</strong><small id="garage-settings-budget-front-remaining">Assessment unavailable</small></div>
+                      </div>
+                      <p class="heating-policy-note">Stored warmth per metre of the reference pipe, not a countdown. Heating resumes while enough reserve remains for the pump to restore useful heat. Select a value for its evidence.</p>
+                    </section>
+                    <details id="garage-recovery-details" class="equipment-fold heating-policy-details"><summary>Reference &amp; recovery details</summary>
+                      <p class="heating-policy-note">These fixed protection assumptions are separate from the learned cooling forecast. Owner approval records acceptance of this reference for the installation; it does not verify the equipment or the temperatures of everything stored inside.</p>
+                      <dl id="garage-recovery-settings" class="heating-policy-values garage-setting-list"></dl>
+                    </details>
+                  </section>
+                  <section class="heating-policy-section" aria-labelledby="garage-decision-title">
+                    <h5 id="garage-decision-title">How decisions are made</h5>
+                    <ol class="heating-policy-steps">
+                      <li><strong>Forecast cooling and recovery.</strong> Fresh rear and front temperatures, the outdoor forecast and the <a class="heating-policy-link" href="#garage-learning-details" data-policy-model-link="garage-learning-details">Garage heat model</a> estimate how the space would cool during a pause. Less proven forecasts receive larger uncertainty margins.</li>
+                      <li><strong>Keep protection ahead of savings.</strong> Only windows that leave enough reserve at both locations through the delay before useful heat returns can qualify. Expected charging warmth never extends the safe window.</li>
+                      <li><strong>Choose a worthwhile pause and keep checking.</strong> Compare electricity avoided at current prices with later recovery electricity and an uncertainty allowance. Choose the shortest qualifying window that keeps the strategy’s share of the best benefit. Reassess as readings and forecasts change; a started pause can end early, but its original endpoint cannot move later.</li>
+                    </ol>
+                    <p class="heating-policy-note">Flat prices or an insufficient benefit leave normal heating available. There is no fixed maximum off time: protection, forecast coverage and remaining benefit determine the endpoint. Estimated savings depend on the model’s electricity assumptions; they are not measured savings.</p>
+                  </section>
+                  <section class="heating-policy-section" aria-labelledby="garage-choices-title">
+                    <h5 id="garage-choices-title">Control choices</h5>
+                    <dl class="heating-policy-values">
+                      <div class="heating-policy-setting"><dt>Normal heating</dt><dd>Usual room setting</dd><dd class="heating-policy-setting-help">The pump’s thermostat decides when to heat. Automatic savings never raise the room setting or preheat the garage.</dd></div>
+                      <div class="heating-policy-setting"><dt>Heating off</dt><dd>Protected pause</dd><dd class="heating-policy-setting-help">Available only with approved protection, fresh temperatures and a ready adapter that can restore heating locally when its short off permission expires. Automatic pauses also need a verified normal-heating setup.</dd></div>
+                    </dl>
+                    <p class="heating-policy-note">New savings pauses wait for settled normal-heating evidence, recovery at both locations, and the configured spacing and daily limit. Charging, unknown door or outdoor conditions, or an open door below 2 °C outdoors also block a new pause. A door opening during a pause triggers a protection reassessment.</p>
+                    <p class="heating-policy-note">Missing temperature evidence or inadequate reserve ends off permission and requests normal heating. Afterward, both local temperatures and pipe reserves must recover. A confirmed ON state alone does not establish recovery.</p>
+                    <p class="heating-policy-note">Temporary heating selections above last until the next controller update, normally within 1 minute. Pause price control holds them until its deadline. Freeze protection can restore heating sooner, including after a manual off selection.</p>
+                    <dl class="heating-policy-values">
+                      <div class="heating-policy-setting"><dt>Current plan</dt><dd id="garage-policy-decision">Unavailable</dd></div>
+                      <div class="heating-policy-setting"><dt>Planned off window</dt><dd id="garage-policy-window">Unavailable</dd></div>
+                    </dl>
+                    <p id="garage-policy-context" class="heating-policy-note">Current operating mode is unavailable.</p>
+                    <details id="garage-planning-details" class="equipment-fold heating-policy-details"><summary>Timing limits &amp; current decision details</summary>
+                      <dl id="garage-heating-settings" class="heating-policy-values garage-setting-list"></dl>
+                      <div id="garage-learning-planning"></div>
+                    </details>
+                  </section>
+                </div>
               </details>
               <details id="garage-learning-details" class="dashboard-disclosure learning-groups learning-model-details">
                 <summary>
                   <div class="learning-model-overview" aria-labelledby="garage-learning-label">
-                    <h3 id="garage-learning-label" class="learning-model-label">Garage learning</h3>
+                    <h3 id="garage-learning-label" class="learning-model-label">Garage heat model</h3>
                     <p id="garage-learning-title" class="model-headline">Collecting observations</p>
                     <p id="garage-learning-overview" class="muted"></p>
                     <div id="garage-learning-progress" class="learning-progress"></div>
@@ -549,13 +625,6 @@
                 <details id="garage-coefficients-details" class="learning-section section-fold">
                   <summary><span class="learning-section-title">Model coefficients</span><small class="learning-section-kind"> · Current values</small></summary>
                   <div class="learning-section-body"><p id="garage-coefficient-context" class="learning-intro"></p><div id="garage-learning-coefficients"></div></div>
-                </details>
-                <details id="garage-planning-details" class="learning-section section-fold">
-                  <summary><span class="learning-section-title">Planning &amp; safeguards</span><small class="learning-section-kind"> · Decisions &amp; limits</small></summary>
-                  <div class="learning-section-body">
-                    <p class="learning-intro">One worthwhile pause, followed by normal heating and recovery. The copper-pipe reserve is the limiting factor; the thermostat is never raised for preheating.</p>
-                    <div id="garage-learning-planning"></div>
-                  </div>
                 </details>
               </details>
             </section>

@@ -508,11 +508,14 @@ try {
     ['learning-metrics', 'home-outcomes'], ['model-inputs-content', 'home-inputs'],
     ['model-coefficients-content', 'home-coefficients'], ['garage-learning-outcomes', 'garage-outcomes'],
     ['garage-learning-inputs', 'garage-inputs'], ['garage-learning-coefficients', 'garage-coefficients'],
-    ['learning-policy-content', 'home-planning'], ['garage-learning-planning', 'garage-planning'],
+    ['home-policy-content', 'home-planning'], ['garage-learning-planning', 'garage-planning'],
   ];
   for (const [id, name] of learningSections) {
     assert.equal(await evaluate(`(() => {
-      const root = document.getElementById('${id}'), section = root.closest('.learning-section');
+      const root = document.getElementById('${id}');
+      if ('${name}'.endsWith('-planning')) return Boolean(root.closest('.heating-policy-details')
+        && root.closest('.heating-policy') && !root.closest('.learning-model-details'));
+      const section = root.closest('.learning-section, .heating-policy-details');
       return Boolean(section?.querySelector(':scope > summary > .learning-section-title')
         && section.querySelector(':scope > summary > .learning-section-kind')
         && section.querySelector(':scope > .learning-section-body')?.contains(root));
@@ -539,14 +542,14 @@ try {
     assert.equal(await evaluate(`document.querySelector('#${id} > details.learning-entry').open`), false,
       `${name} row closes with Space`);
     await evaluate(`(() => {
-      const section = document.getElementById('${id}').closest('.learning-section');
+      const section = document.getElementById('${id}').closest('.learning-section, .heating-policy-details');
       section.querySelector(':scope > summary').focus();
     })()`);
     await keyPress('Enter');
-    assert.equal(await evaluate(`document.getElementById('${id}').closest('.learning-section').open`), false,
+    assert.equal(await evaluate(`document.getElementById('${id}').closest('.learning-section, .heating-policy-details').open`), false,
       `${name} section closes with Enter`);
     await keyPress(' ');
-    assert.equal(await evaluate(`document.getElementById('${id}').closest('.learning-section').open`), true,
+    assert.equal(await evaluate(`document.getElementById('${id}').closest('.learning-section, .heating-policy-details').open`), true,
       `${name} section opens with Space`);
   }
   // Every list keeps its row mounted across polling, including Home's static input controls.
@@ -673,7 +676,7 @@ try {
 
   const prepareLearningShot = async (id, expanded) => evaluate(`(async () => {
     document.querySelectorAll('.learning-model-details, .learning-model-details details').forEach(fold => fold.open = false);
-    const root = document.getElementById('${id}'), section = root.closest('.learning-section');
+    const root = document.getElementById('${id}'), section = root.closest('.learning-section, .heating-policy-details');
     for (let parent = section; parent; parent = parent.parentElement)
       if (parent.tagName === 'DETAILS') parent.open = true;
     if (${expanded}) root.querySelector(':scope > details.learning-entry').open = true;

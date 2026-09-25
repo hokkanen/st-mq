@@ -1,5 +1,6 @@
 import { initialAdaptiveModel, THERMAL_PARAMETER_BOUNDS, predictThermalStep, predictEquipmentDuty, thermalEvidenceReady, actionEvidenceReady, thermalUncertaintyC, fireplaceEvidenceReady, fireplaceGainUncertainty } from './adaptive-learning.js';
 import { estimateHeatPumpPerformance, hydronicGain } from '../domain/heat-pump-performance.js';
+import { heatingStrategy } from '../domain/heating-strategy.js';
 import { CONTROL_DEFAULTS } from '../app/config.js';
 import { fireplaceInfluence, fireplaceRate } from '../domain/fireplace.js';
 
@@ -286,7 +287,7 @@ export function evaluateCycle({ schedule = null, intervals, model, initialState,
 /** Shared selection, pending-plan and continuation comparison. Scenarios use
  * the same physical error on both independently simulated action paths. */
 export function economicAdmission({ prediction, referencePrediction, args, schedule, reference = null, settings = {}, continuing = false }) {
-  const a = clamp((settings.savingsAggressiveness ?? 50) / 100, 0, 1);
+  const strategy = heatingStrategy(settings.savingsStrategy);
   const benefitCents = referencePrediction.costCents - prediction.costCents;
   let lowerBenefitCents = benefitCents;
   let unsafe = prediction.severe;
@@ -312,8 +313,8 @@ export function economicAdmission({ prediction, referencePrediction, args, sched
     sum + Math.max(0, value - (referencePrediction.roomDiscomfort?.[room] ?? 0)), 0);
   const activeHours = plan => plan ? Math.max(0, plan.reductionEnd - Math.max(args.intervals[0].start, plan.preheatStart)) / HOUR : 0;
   const extraHours = Math.max(0, activeHours(schedule) - activeHours(reference));
-  const minimumCents = continuing ? 0 : 50 - 40 * a;
-  const discomfortCents = discomfort * (30 - 25 * a);
+  const minimumCents = continuing ? 0 : strategy.minimumHomeBenefitCents;
+  const discomfortCents = discomfort * strategy.homeDiscomfortCentsPerDegreeSquaredHour;
   const burdenCents = 2 * extraHours + (!continuing && schedule && !reference ? 2 : 0);
   const hurdleCents = minimumCents + discomfortCents + burdenCents;
   return { admitted: !unsafe && lowerBenefitCents > hurdleCents, benefitCents, lowerBenefitCents,
@@ -585,14 +586,14 @@ export function chooseCycle({ now, observations, prices, forecast, checkpoint, s
     && (o.schedule.preheatEnd === o.schedule.preheatStart || actionEvidenceReady(model, 'preheat',
       (o.schedule.preheatEnd - o.schedule.preheatStart) / HOUR, o.schedule.treatmentKey)))
     .sort((a,b) => b.benefit - a.benefit);
-  // The same bounded shortlist is used for every slider setting.
+  // The same bounded shortlist is used for every savings strategy.
   const assessed = qualified.slice(0, 16).map(option => {
     option.economics = economicAdmission({ prediction: option.result, referencePrediction: baseline, args, schedule: option.schedule, settings });
     option.risk = option.economics.uncertaintyCents;
     return option;
   }).filter(option => option.economics.admitted);
   const best = Math.max(0, ...assessed.map(o => o.economics.lowerBenefitCents));
-  const retainedFraction = .6 + .4 * clamp((settings.savingsAggressiveness ?? 50) / 100, 0, 1);
+  const retainedFraction = heatingStrategy(settings.savingsStrategy).retainedBenefitFraction;
   let chosen = assessed.filter(o => o.economics.lowerBenefitCents >= best * retainedFraction)
     .sort((a,b) => a.economics.discomfortCents - b.economics.discomfortCents
       || (a.duration + (a.schedule.preheatEnd-a.schedule.preheatStart)/HOUR)

@@ -29,7 +29,7 @@ function syntheticSeed(settings) {
 }
 function setup(t, { expensiveHours = 2, totalHours = 12, forecastOutdoorC = 0 } = {}) {
   let now = BASE, owner = true, stateSequence = 0;
-  const settings = garageSettings({ enabled: true, minOnMs: 0, frontRequired: true, aggressiveness: 100, protection: { approved: true } });
+  const settings = garageSettings({ enabled: true, minOnMs: 0, savingsStrategy: 'savings', protection: { approved: true } });
   const store = new Store(':memory:');
   appendGarageEntry(store, 'mqtt', 'context', {}, settings, BASE - 1, { key: 'explicit-synthetic-fixture-seed', seed: syntheticSeed(settings) });
   const config = { input: 'mqtt', garage: { ...settings, adapter: { stateTopic: 'fixture/garage/state' } } };

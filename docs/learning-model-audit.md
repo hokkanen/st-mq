@@ -129,8 +129,8 @@ trend around the aggregate forecast; they are conservative proxies, not fitted
 zonal heat-transfer models. Automatic preheat requires observed and projected
 source-map supply inside the provisional 30–50 °C range; B0 reference data do not
 make a missing live brine reading known. The fixed future-supply assumption is
-3 °C per degree of ROOM increase. Savings aggressiveness is a preference over
-admitted cycle choices, not an annual savings percentage or guarantee. Room-air
+3 °C per degree of ROOM increase. Named savings strategies select among
+admitted cycle choices; they do not predict or guarantee annual savings. Room-air
 limits default to ±1.5 °C. The common 60-minute recovery hold is a provisional
 engineering setting, not a measured optimum. The model assigns zero room heat to
 DHW tank, use and recirculation losses; whole-home savings and matched tank service

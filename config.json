@@ -46,7 +46,7 @@
 
       "max_drop_c": 1.5,
       "max_rise_c": 1.5,
-      "savings_aggressiveness": 50,
+      "savings_strategy": "balanced",
       "preheat_room_boost_c": 5,
       "indoor_sensor_weights": {},
 
@@ -104,7 +104,7 @@
 
     "garage": {
       "enabled": false,
-      "aggressiveness": 50,
+      "savingsStrategy": "balanced",
       "baselineC": 10,
 
       "minSavingsEur": 0.5,
@@ -113,7 +113,6 @@
       "minOffMs": 3600000,
       "stepMinutes": 15,
 
-      "frontRequired": true,
       "maxSensorAgeMs": 120000,
 
       "protection": {
@@ -511,7 +510,7 @@
 
       "max_drop_c": "float(0,2)",
       "max_rise_c": "float(0.25,2)",
-      "savings_aggressiveness": "int(0,100)",
+      "savings_strategy": "list(gentle|balanced|savings)",
       "preheat_room_boost_c": "int(1,5)",
       "indoor_sensor_weights": {
         "indoor_temperature": "float(0,)?",
@@ -573,7 +572,7 @@
 
     "garage": {
       "enabled": "bool",
-      "aggressiveness": "float(0,100)",
+      "savingsStrategy": "list(gentle|balanced|savings)",
       "baselineC": "float(8,16)",
 
       "minSavingsEur": "float(0,100)",
@@ -582,7 +581,6 @@
       "minOffMs": "int(0,10800000)",
       "stepMinutes": "float(5,30)",
 
-      "frontRequired": "bool",
       "maxSensorAgeMs": "int(30000,14400000)",
 
       "protection": {

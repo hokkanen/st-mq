@@ -10,8 +10,8 @@ import { assignGaragePlanningEvidence } from './helpers/garage-model-fixture.js'
 import { knownGarageReserve } from './helpers/garage-reserve-fixture.js';
 
 const HOUR = 3_600_000, MINUTE = 60_000, NOW = Date.parse('2026-01-01T10:00:00Z');
-function candidate(aggressiveness = 50, values = [200, 200, 200, 200, ...Array(16).fill(5)]) {
-  const settings = garageSettings({ enabled: true, aggressiveness, protection: { approved: true } });
+function candidate(savingsStrategy = 'balanced', values = [200, 200, 200, 200, ...Array(16).fill(5)]) {
+  const settings = garageSettings({ enabled: true, savingsStrategy, protection: { approved: true } });
   const model = assignGaragePlanningEvidence(createGarageModel({ seedAt: NOW }));
   model.normalReference.interceptC = 10; model.normalReference.frontC = 9;
   return { now: NOW, settings, model,
@@ -28,59 +28,58 @@ function advance(args, at) {
   args.exposure = knownGarageReserve(args.settings, { at, rearC: 10, frontC: 9 });
 }
 
-test('the shared preference scales economics smoothly around the configured midpoint without changing protection', () => {
-  for (const [aggressiveness, minimumBenefitEur, retainedBenefitFraction] of [
-    [0, .75, .6], [25, .625, .7], [50, .5, .8], [75, .375, .9], [100, .25, 1],
+test('named strategies share explicit economic rules and never change protection', () => {
+  for (const [savingsStrategy, minimumBenefitEur, retainedBenefitFraction] of [
+    ['gentle', .75, .6], ['balanced', .5, .8], ['savings', .25, 1],
   ]) {
-    const settings = garageSettings({ aggressiveness });
+    const settings = garageSettings({ savingsStrategy });
     assert.deepEqual(garageSavingsPreference(settings), { minimumBenefitEur, retainedBenefitFraction });
     assert.deepEqual(settings.protection, garageSettings().protection);
   }
-  assert.equal(garageSavingsPreference({ minSavingsEur: 2, aggressiveness: 25 }).minimumBenefitEur, 2.5);
+  assert.equal(garageSavingsPreference({ minSavingsEur: 2, savingsStrategy: 'gentle' }).minimumBenefitEur, 3);
 });
 
-test('zero, balanced and maximum preference select progressively longer worthwhile windows', () => {
-  const plans = [0, 50, 100].map(value => planGarage(candidate(value)));
+test('gentle, balanced and more-savings strategies select progressively longer worthwhile windows', () => {
+  const plans = ['gentle', 'balanced', 'savings'].map(value => planGarage(candidate(value)));
   assert.deepEqual(plans.map(hours), [2.5, 3.25, 4]);
   assert.deepEqual(plans.map(plan => (plan.pauseFrom - NOW) / HOUR), [1.5, .75, 0]);
-  for (const [index, preference] of [0, 50, 100].entries()) {
-    const policy = garageSavingsPreference({ aggressiveness: preference });
+  for (const [index, preference] of ['gentle', 'balanced', 'savings'].entries()) {
+    const policy = garageSavingsPreference({ savingsStrategy: preference });
     assert.ok(plans[index].scoreEur >= plans[2].scoreEur * policy.retainedBenefitFraction);
     assert.ok(plans[index].scoreEur > policy.minimumBenefitEur);
     assert.equal(plans[index].preferenceVersion, GARAGE_PREFERENCE_VERSION);
   }
-  assert.ok(hours(planGarage(candidate(25))) < hours(planGarage(candidate(75))), 'Positive settings have distinct behavior');
 });
 
-test('the monetary hurdle admits smaller opportunities only at higher preferences; zero still starts sufficiently valuable pauses', () => {
+test('the monetary hurdle admits smaller opportunities only at higher preferences; gentle still starts sufficiently valuable pauses', () => {
   for (const [price, expected] of [[100, ['available', 'available', 'pause']],
     [150, ['available', 'pause', 'pause']], [200, ['pause', 'pause', 'pause']]]) {
-    assert.deepEqual([0, 50, 100].map(value => planGarage(candidate(value, [price, ...Array(12).fill(5)])).nextAction), expected);
+    assert.deepEqual(['gentle', 'balanced', 'savings'].map(value => planGarage(candidate(value, [price, ...Array(12).fill(5)])).nextAction), expected);
   }
 });
 
 test('equal-length qualifying windows prefer greater benefit, then the earlier start', () => {
-  const equal = planGarage(candidate(0, [200, ...Array(10).fill(5), 200, ...Array(16).fill(5)]));
+  const equal = planGarage(candidate('gentle', [200, ...Array(10).fill(5), 200, ...Array(16).fill(5)]));
   assert.equal(hours(equal), 1); assert.equal(equal.pauseFrom, NOW);
-  const later = planGarage(candidate(50, [150, ...Array(10).fill(5), 200, ...Array(16).fill(5)]));
+  const later = planGarage(candidate('balanced', [150, ...Array(10).fill(5), 200, ...Array(16).fill(5)]));
   assert.equal(hours(later), 1); assert.equal(later.pauseFrom, NOW + 11 * HOUR);
 });
 
-test('even maximum preference retains minimum OFF time, forecast coverage, fresh pipes and explicit protection approval', () => {
-  for (const change of [
+test('every strategy retains minimum OFF time, forecast coverage, fresh pipes and explicit protection approval', () => {
+  for (const savingsStrategy of ['gentle', 'balanced', 'savings']) for (const change of [
     args => { args.forecast[0].end = NOW + args.settings.minOffMs - MINUTE; },
     args => { args.forecast = []; },
     args => { args.observation.frontC = null; },
     args => { args.settings.protection.approved = false; },
     args => { args.restorationDelayMs = null; },
   ]) {
-    const args = candidate(100); change(args);
+    const args = candidate(savingsStrategy); change(args);
     assert.equal(planGarage(args).nextAction, 'available');
   }
 });
 
 test('scheduled windows stay fixed until admission and renewals do not repeatedly shorten their remaining duration', () => {
-  for (const preference of [0, 50]) {
+  for (const preference of ['gentle', 'balanced']) {
     const args = candidate(preference), planned = planGarage(args);
     args.scheduledOpportunity = planned;
     for (let at = NOW + 7 * MINUTE; at < planned.pauseFrom; at += 7 * MINUTE) {
@@ -102,8 +101,8 @@ test('scheduled windows stay fixed until admission and renewals do not repeatedl
   }
 });
 
-function runtimeFixture(t, aggressiveness = 50) {
-  const args = candidate(aggressiveness), store = new Store(':memory:'); let now = NOW;
+function runtimeFixture(t, savingsStrategy = 'balanced') {
+  const args = candidate(savingsStrategy), store = new Store(':memory:'); let now = NOW;
   const settings = garageSettings({ ...args.settings, minOnMs: 0 });
   appendGarageEntry(store, 'mqtt', 'context', {}, settings, NOW - 1, { key: 'test-planning-seed', seed: args.model });
   const engine = { latest: {}, lastKnownTemperatures: {}, settings: { mode: 'active' } };
@@ -134,8 +133,8 @@ function runtimeFixture(t, aggressiveness = 50) {
   return { runtime, store, engine, commands, safety, report, tick };
 }
 
-test('runtime preserves a waiting opportunity and starts at its selected time even at zero preference', async t => {
-  const f = runtimeFixture(t, 0);
+test('runtime preserves a waiting opportunity and starts at its selected time even at gentle strategy', async t => {
+  const f = runtimeFixture(t, 'gentle');
   await f.tick(NOW);
   const selected = structuredClone(f.runtime.plan);
   assert.equal(selected.state, 'waiting'); assert.equal(f.runtime.episode, null);
@@ -146,7 +145,7 @@ test('runtime preserves a waiting opportunity and starts at its selected time ev
   assert.equal(f.runtime.plan.nextAction, 'pause'); assert.equal(f.commands.at(-1).valid, true);
   assert.equal(f.runtime.episode.pauseUntil, selected.plannedPauseUntil);
   f.report(selected.pauseFrom + MINUTE); f.runtime.safetyTick();
-  assert.equal(f.safety.at(-1).valid, true, 'Zero preference retains automatic safety-loop permission');
+  assert.equal(f.safety.at(-1).valid, true, 'Gentle strategy retains automatic safety-loop permission');
   await f.tick(selected.pauseFrom + MINUTE);
   assert.equal(f.runtime.plan.nextAction, 'renew'); assert.equal(f.runtime.plan.pauseUntil, selected.plannedPauseUntil);
 });
@@ -159,7 +158,7 @@ test('runtime cancels waiting windows when protection fails, settings change or 
   f.runtime.tick({ now: NOW, prices: candidate().prices, forecast: candidate().forecast }); await f.runtime.dispatch;
   assert.equal(f.runtime.scheduledOpportunity, null); assert.equal(f.commands.at(-1).valid, false);
   await f.tick(NOW);
-  f.runtime.settings.aggressiveness = 100;
+  f.runtime.settings.savingsStrategy = 'savings';
   await f.tick(NOW);
   assert.equal(f.runtime.plan.nextAction, 'pause', 'A changed preference selects again instead of inheriting the waiting window');
   const paused = runtimeFixture(t);
@@ -169,8 +168,8 @@ test('runtime cancels waiting windows when protection fails, settings change or 
   assert.equal(paused.runtime.scheduledOpportunity, null); assert.equal(paused.commands.at(-1).valid, false);
 });
 
-test('daily starts and minimum normal-heating time still block opportunities at maximum preference', async t => {
-  const f = runtimeFixture(t, 100);
+test('daily starts and minimum normal-heating time still block opportunities at more-savings strategy', async t => {
+  const f = runtimeFixture(t, 'savings');
   f.runtime.settings.minOnMs = 3 * HOUR;
   await f.tick(NOW);
   assert.equal(f.runtime.plan.reason, 'minimum-normal-heating-time'); assert.equal(f.commands.at(-1).valid, false);

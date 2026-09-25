@@ -141,11 +141,14 @@ test('replica exposes both saved models without sample histories, live readiness
   assert.equal(garageDisplayValue.coefficientDetails.length, 6);
   assert.equal(garageDisplayValue.evidenceDetails.find(row => row.key === 'recorded-history-reconstruction').value, 'Recorded primary snapshot');
   assert.match(garageDisplayValue.planningDetails.find(row => row.key === 'current-opportunity').value, /Read.only replica/);
-  assert.equal(garageDisplayValue.planningDetails.find(row => row.key === 'pause-window').value, 'None');
-  const target = { textContent: '', classList: { toggle() {} } }, basis = { textContent: '', hidden: true };
-  renderGarage({ getElementById: id => ({ 'garage-native-target': target, 'garage-native-target-basis': basis })[id] }, status);
+  assert.equal(garageDisplayValue.planningDetails.find(row => row.key === 'pause-window').value, 'Unavailable',
+    'A missing live plan cannot establish that no pause is planned');
+  const target = { textContent: '', classList: { toggle() {} } }, basis = { textContent: '', hidden: true }, context = { textContent: '' };
+  renderGarage({ getElementById: id => ({ 'garage-native-target': target, 'garage-native-target-basis': basis,
+    'garage-policy-context': context })[id] }, status);
   assert.equal(target.textContent, '—', 'Missing native readback cannot invent a room setting');
   assert.equal(basis.hidden, true);
+  assert.match(context.textContent, /Read-only view.*do not authorize equipment control/);
   for (const path of ['/api/garage/native', '/api/garage/heating', '/api/garage/release', '/api/garage/temporary'])
     assert.equal((await request(path, { method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ setting: 'targetC', value: 5 }) })).status, 405, `${path} remains read-only`);

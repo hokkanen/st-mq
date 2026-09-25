@@ -6,7 +6,7 @@ import { createMitsubishiControls } from './mitsubishi.js';
 import { createChargingPanel } from './charging.js';
 import { createHistoryChart } from './history-chart.js';
 import { dashboardProviders, outdoorSourceLabel, providerName, providerSeries, temperatureReadingStatus } from './provider-status.js';
-import { activeRates, rateRows, temporaryValues, priceControlState, homePolicyValues, renderHomeRoomReferences } from './home-controls.js';
+import { activeRates, rateRows, temporaryValues, priceControlState, renderHomePolicy, renderHomeRoomReferences } from './home-controls.js';
 import { learningDisplay, h66Control, h66HomeSummary, h66EquipmentSummary, h66ReadingStatus, h66ReadingValue, h66Registers, h66ReadingGroups, renderModelInputs } from './learning-status.js';
 import { renderRecording, renderEnergyAudits, recordingOverviewRefresh } from './recording.js';
 import { bindDatabaseExport } from './database-export.js';
@@ -42,6 +42,19 @@ for (const summary of document.querySelectorAll('.zone-summary')) {
       event.preventDefault();
       event.stopPropagation();
     }
+  });
+}
+// Model references open their separate disclosure and place keyboard focus on it.
+for (const link of document.querySelectorAll('[data-policy-model-link]')) {
+  link.addEventListener('click', event => {
+    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    const target = $(link.dataset.policyModelLink);
+    if (!target || target.tagName !== 'DETAILS') return;
+    event.preventDefault();
+    for (let fold = target; fold; fold = fold.parentElement?.closest('details')) fold.open = true;
+    const summary = target.querySelector(':scope > summary');
+    summary?.focus({ preventScroll: true });
+    target.scrollIntoView({ block: 'start' });
   });
 }
 const ingress = usesHomeAssistantLogin();
@@ -478,7 +491,7 @@ function renderLearning(s) {
     detail: 'Current model coefficients have not been received yet.',
   }]);
   renderLearningRows($('coefficient-evidence'), display.coefficientEvidenceRows);
-  renderLearningRows($('learning-policy-content'), display.policyRows);
+  renderLearningRows($('home-policy-content'), display.policyRows);
   $('savings').textContent = s.savings?.explanation ?? 'Cycle profit is a model comparison after recovery; electricity bills alone cannot isolate what normal heating would have cost.';
 }
 function updateH66Selector({ useReadback = false } = {}) {
@@ -681,11 +694,9 @@ function render(s) {
   $('reference').textContent = s.demoComfortTargetC ? `${s.demoComfortTargetC} °C` : Number.isFinite(reference) ? `${Number(reference).toFixed(1)} °C` : 'Learning';
   $('reference').dataset.empty = !s.demoComfortTargetC && !Number.isFinite(reference);
   $('reference-source').textContent = s.demoComfortTargetC ? 'Demo reference only' : Number.isFinite(reference) ? `${referenceSource === 'learned' ? 'Learned' : 'Configured'} normal temperature` : 'Normal temperature not established';
-  const homePolicy = homePolicyValues(s);
-  $('home-aggressiveness').textContent = homePolicy.aggressiveness;
-  $('home-preheat-setting').textContent = homePolicy.preheat;
-  $('home-maximum-rise').textContent = homePolicy.maximumRise;
-  $('home-comfort-limits').textContent = s.decision.comfort?.maxDropApplies === false ? 'Away · limits inactive' : homePolicy.limits;
+  renderHomePolicy(document, s);
+  $('home-policy-current-title').textContent = `${manualHold ? 'Held request' : 'Current plan'} · ${label(manualHold?.phase ?? s.decision.phase ?? s.decision.action)}`;
+  $('home-policy-current-detail').textContent = [controlMode, decisionReasons, recoveryDetail].filter(Boolean).join(' · ');
   $('drop').textContent = `${s.settings.comfort.maxDropC} °C`;
   $('drop-note').textContent = s.decision.comfort?.maxDropApplies === false ? 'Inactive while you are away' : 'When you are home';
   $('rise-note').textContent = $('drop-note').textContent;

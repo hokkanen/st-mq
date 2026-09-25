@@ -3,21 +3,75 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { validateSettings, controlConfiguration, loadConfig } from '../src/app/config.js';
+import { validateSettings, controlConfiguration, loadConfig, configurationSource } from '../src/app/config.js';
+import { HEATING_STRATEGIES, heatingStrategy } from '../src/domain/heating-strategy.js';
+import { garageSettings } from '../src/garage/settings.js';
+import { Store } from '../src/storage/store.js';
+import { Engine } from '../src/app/engine.js';
 import { floorOverrideConfiguration } from '../src/control/floor-override.js';
 import { initialAdaptiveModel } from '../src/control/adaptive-learning.js';
 
 const floorMapping = { storage: { topic_prefix: 'invented-floor-storage' }, living: { topic_prefix: 'invented-floor-living' } };
 
+test('home and garage default to balanced and reject numeric or unknown strategy contracts', () => {
+  assert.equal(validateSettings().savingsStrategy, 'balanced');
+  assert.equal(garageSettings().savingsStrategy, 'balanced');
+  assert.equal(heatingStrategy().id, 'balanced');
+  for (const { id } of HEATING_STRATEGIES) assert.equal(garageSettings({ savingsStrategy: id }).savingsStrategy, id);
+  for (const value of [0, 50, 100, 'conservative', 'Balanced', '', null, false, {}]) {
+    assert.throws(() => garageSettings({ savingsStrategy: value }));
+    assert.throws(() => heatingStrategy(value));
+  }
+  assert.throws(() => validateSettings({ savingsAggressiveness: 50 }), /Unknown heating setting/);
+  assert.throws(() => validateSettings({ savingsStrategy: 'balanced', savingsAggressiveness: 50 }), /Unknown heating setting/);
+  assert.throws(() => garageSettings({ aggressiveness: 50 }), /Unknown garage setting/);
+  assert.throws(() => garageSettings({ frontRequired: false }), /Unknown garage setting/);
+  assert.throws(() => controlConfiguration({ savings_aggressiveness: 50 }), /Unknown controller setting/);
+});
+
+test('configuration startup and reload accept named strategies and reject retired fields without rewriting sources', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-heating-strategy-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const path = join(directory, 'fixture.json');
+  const write = value => writeFileSync(path, JSON.stringify(value), { mode: 0o600 });
+  write({ controller: { savings_strategy: 'gentle' }, garage: { savingsStrategy: 'savings' } });
+  const config = loadConfig({ STMQ_CONFIG: path }, directory);
+  assert.equal(config.settings.savingsStrategy, 'gentle');
+  assert.equal(config.garage.savingsStrategy, 'savings');
+  const source = configurationSource(config);
+  write({ controller: { savings_strategy: 'savings' }, garage: { savingsStrategy: 'gentle' } });
+  const prepared = await source.prepare();
+  assert.equal(prepared.config.settings.savingsStrategy, 'savings');
+  assert.equal(prepared.config.garage.savingsStrategy, 'gentle');
+  for (const value of [
+    { controller: { savings_aggressiveness: 50 } }, { garage: { aggressiveness: 50 } },
+    { controller: { savings_strategy: 50 } }, { garage: { savingsStrategy: 'unknown' } },
+  ]) {
+    write(value);
+    const original = readFileSync(path, 'utf8');
+    assert.throws(() => loadConfig({ STMQ_CONFIG: path }, directory), /configuration field/);
+    await assert.rejects(source.prepare(), /configuration field/);
+    assert.equal(readFileSync(path, 'utf8'), original);
+  }
+});
+
+test('retired persisted home settings are rejected before any database mutation', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  store.setState('settings:offline', { mode: 'shadow', savingsAggressiveness: 50 });
+  const before = store.db.prepare('SELECT * FROM state ORDER BY key').all();
+  assert.throws(() => new Engine({ store, config: { input: 'offline', settings: validateSettings() } }), /saved heating settings.*fresh development database/);
+  assert.deepEqual(store.db.prepare('SELECT * FROM state ORDER BY key').all(), before);
+});
+
 test('heating preference boundaries preserve hard temperature limits and baseline-relative ROOM units', () => {
-  for (const savingsAggressiveness of [0, 50, 100]) {
-    const value = validateSettings({ savingsAggressiveness });
-    assert.equal(value.savingsAggressiveness, savingsAggressiveness);
+  for (const savingsStrategy of ['gentle', 'balanced', 'savings']) {
+    const value = validateSettings({ savingsStrategy });
+    assert.equal(value.savingsStrategy, savingsStrategy);
     assert.equal(value.comfort.maxRiseC, 1.5);
     assert.equal(value.comfort.maxDropC, 1.5);
     assert.equal(value.preheatRoomBoostC, 5);
   }
-  for (const value of [-1, 101, '50', NaN, Infinity]) assert.throws(() => validateSettings({ savingsAggressiveness: value }));
+  for (const value of [0, 50, 100, 'conservative', 'Balanced', '', null, false, {}, NaN, Infinity]) assert.throws(() => validateSettings({ savingsStrategy: value }));
   for (const maxRiseC of [0.25, 1, 2]) assert.equal(validateSettings({ comfort: { maxRiseC } }).comfort.maxRiseC, maxRiseC);
   for (const maxRiseC of [0, 0.24, 2.01, '1', Infinity]) assert.throws(() => validateSettings({ comfort: { maxRiseC } }));
   for (const preheatRoomBoostC of [1, 3, 5]) {
@@ -83,7 +137,7 @@ test('private thermal priors load into physical model assumptions without silent
   const directory = mkdtempSync(join(tmpdir(), 'stmq-thermal-prior-config-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const path = join(directory, 'fixture.json');
-  const options = { controller: { input: 'simulated', savings_aggressiveness: 0, max_rise_c: 0.5,
+  const options = { controller: { input: 'simulated', savings_strategy: 'gentle', max_rise_c: 0.5,
     preheat_room_boost_c: 4, heat_pump_model_confirmed: true,
     floor_thermal_priors: { capacity_kwh_per_c: 2.4, native_capacity_kwh_per_c: 6,
       exchange_kw_per_c: 0.2, ground_loss_kw_per_c: 0.03, ground_c: 9,
@@ -92,7 +146,7 @@ test('private thermal priors load into physical model assumptions without silent
   } };
   const original = JSON.stringify(options); writeFileSync(path, original, { mode: 0o600 });
   const config = loadConfig({ STMQ_CONFIG: path }, directory);
-  assert.equal(config.settings.savingsAggressiveness, 0);
+  assert.equal(config.settings.savingsStrategy, 'gentle');
   assert.equal(config.settings.comfort.maxRiseC, 0.5);
   assert.equal(config.control.preheatRoomBoostC, 4);
   assert.equal(config.control.heatPumpModelConfirmed, true);

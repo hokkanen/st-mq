@@ -13,7 +13,7 @@ import { knownGarageReserve } from './helpers/garage-reserve-fixture.js';
 
 const HOUR = 3_600_000, MINUTE = 60_000, NOW = Date.parse('2026-01-01T10:00:00Z');
 function candidate(extra = {}) {
-  const settings = garageSettings({ enabled: true, aggressiveness: 100, protection: { approved: true } });
+  const settings = garageSettings({ enabled: true, savingsStrategy: 'savings', protection: { approved: true } });
   const model = assignGaragePlanningEvidence(createGarageModel({ seedAt: NOW }));
   model.normalReference.interceptC = 10; model.normalReference.frontC = 9;
   const observation = { at: NOW, rearAt: NOW, frontAt: NOW, rearC: 10, frontC: 9,
@@ -83,7 +83,7 @@ test('forecast must cover the pause and useful-heating delay', () => {
 function runtimeFixture(t, extra = {}, seed = null) {
   const store = new Store(':memory:'); let now = NOW, owner = true;
   const engine = { latest: {}, lastKnownTemperatures: {}, settings: { mode: 'active' } };
-  const config = { input: 'mqtt', garage: garageSettings({ enabled: true, aggressiveness: 100, protection: { approved: true }, ...extra }) };
+  const config = { input: 'mqtt', garage: garageSettings({ enabled: true, savingsStrategy: 'savings', protection: { approved: true }, ...extra }) };
   if (seed) appendGarageEntry(store, 'mqtt', 'context', {}, config.garage, NOW - 1, { key: 'explicit-test-seed', seed });
   const runtime = new GarageRuntime({ store, engine, config, clock: () => now, canControl: () => owner });
   const calls = [], native = { automaticControl: false, health: { pumpCommunicating: true },

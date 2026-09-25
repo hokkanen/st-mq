@@ -22,10 +22,10 @@ function fixture({ price = 1, hours = 24, indoorC = 21 } = {}) {
   return { args, schedule, prediction: evaluateCycle({ ...args, schedule }), referencePrediction: evaluateCycle(args) };
 }
 
-test('tiny opportunities fail the monetary hurdle at every aggressiveness setting', () => {
+test('tiny opportunities fail the monetary hurdle at every savings strategy', () => {
   const input = fixture({ price: 1.1 });
-  for (const savingsAggressiveness of [0, 50, 100]) {
-    const admission = economicAdmission({ ...input, settings: { savingsAggressiveness } });
+  for (const savingsStrategy of ['gentle', 'balanced', 'savings']) {
+    const admission = economicAdmission({ ...input, settings: { savingsStrategy } });
     assert.equal(admission.admitted, false);
     assert.ok(admission.minimumCents >= 10);
     assert.ok(admission.lowerBenefitCents <= admission.hurdleCents);
@@ -34,12 +34,24 @@ test('tiny opportunities fail the monetary hurdle at every aggressiveness settin
 
 test('a large price spike can clear conservative paired costs without negative discomfort credits', () => {
   const input = fixture({ price: 5000 });
-  const admission = economicAdmission({ ...input, settings: { savingsAggressiveness: 50 } });
+  const admission = economicAdmission({ ...input, settings: { savingsStrategy: 'balanced' } });
   assert.ok(admission.benefitCents > 100);
   assert.ok(admission.lowerBenefitCents <= admission.benefitCents - 5);
   assert.ok(admission.discomfortCents >= 0);
   assert.ok(admission.burdenCents > 0);
   assert.equal(admission.admitted, true);
+});
+
+test('named strategies change economic admission while sharing predictions and the balanced default', () => {
+  for (const [price, expected] of [[50, [false, false, true]], [100, [false, true, true]], [200, [true, true, true]]]) {
+    const input = fixture({ price });
+    const admissions = ['gentle', 'balanced', 'savings'].map(savingsStrategy =>
+      economicAdmission({ ...input, settings: { savingsStrategy } }));
+    assert.deepEqual(admissions.map(row => row.admitted), expected);
+    assert.deepEqual(admissions.map(row => row.minimumCents), [50, 30, 10]);
+    assert.equal(new Set(admissions.map(row => row.lowerBenefitCents)).size, 1, 'Policy cannot change the physical forecast');
+    assert.deepEqual(economicAdmission(input), admissions[1]);
+  }
 });
 
 test('already hot or individually hot occupied rooms reject preheat even at negative prices', () => {
@@ -48,6 +60,12 @@ test('already hot or individually hot occupied rooms reject preheat even at nega
     reductionEnd: now + 2 * HOUR, roomBoostC: 4, roomSettingC: 25 };
   const hot = evaluateCycle({ ...args, schedule: preheat });
   assert.equal(hot.severe, true);
+  for (const savingsStrategy of ['gentle', 'balanced', 'savings']) {
+    const admission = economicAdmission({ args, schedule: preheat, prediction: hot,
+      referencePrediction: evaluateCycle(args), settings: { savingsStrategy } });
+    assert.equal(admission.unsafe, true);
+    assert.equal(admission.admitted, false, `${savingsStrategy} must preserve the room upper bound`);
+  }
   const mixed = evaluateCycle({ ...args, initialState: { indoorC: 21, reserveC: 21 }, schedule: preheat,
     equipment: { ...args.equipment, rooms: [{ id: 'cool-store', value: 19, targetC: 19, weight: 1 },
       { id: 'bedroom', value: 25, targetC: 21, weight: 1 }] } });
@@ -60,21 +78,21 @@ test('paired scenarios remain valid at legal coefficient bounds', () => {
     Object.assign(input.args.model.parameters, { lossPerHour, hydronicCPerKwh });
     input.prediction = evaluateCycle({ ...input.args, schedule: input.schedule });
     input.referencePrediction = evaluateCycle(input.args);
-    assert.doesNotThrow(() => economicAdmission({ ...input, settings: { savingsAggressiveness: 50 } }));
+    assert.doesNotThrow(() => economicAdmission({ ...input, settings: { savingsStrategy: 'balanced' } }));
   }
   assert.equal(THERMAL_PARAMETER_BOUNDS.hydronicCPerKwh[1], 0.6);
 });
 
-test('slider preference never changes candidate physical search or hard comfort limits', () => {
+test('savings strategy never changes candidate physical search or hard comfort limits', () => {
   const { args } = fixture({ price: 1.1, hours: 6 });
   const common = { now, observations: { indoor: { value: 21, observedAt: now } },
     prices: args.intervals.map(row => ({ ...row, allInCentsPerKWh: row.price })),
     forecast: args.intervals.map(row => ({ ...row, issuedAt: now })),
     checkpoint: { model: args.model, baselineC: 21 }, config: { learningTrials: false },
     equipment: { ...args.equipment, h66Available: true }, thermalState: args.initialState };
-  const result = value => chooseCycle({ ...common, settings: { savingsAggressiveness: value,
+  const result = value => chooseCycle({ ...common, settings: { savingsStrategy: value,
     comfort: { targetC: 21, maxDropC: 2, maxRiseC: 2 }, occupancy: { mode: 'occupied' } } });
-  const conservative = result(0), aggressive = result(100);
+  const conservative = result('gentle'), aggressive = result('savings');
   assert.equal(conservative.plan, null); assert.equal(aggressive.plan, null);
   assert.deepEqual(conservative.evaluation.search, aggressive.evaluation.search);
 });

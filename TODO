@@ -2,6 +2,32 @@
 -Implement support for local mqtt-based temperature receives (eg, from shelly or HASS through Meteorologisk Institute); just store last received temp values and time stamps (maybe in storage class, see below) when received (and accept if received within 1h)
 -Chart dataset control buttons don't work when datasets are manually hidden/unhidden from legend, how to fix?
 
+Completed 2026-09-25 — Home and Garage heating strategy redesign
+- Rebuild the paired Heating strategy & comfort / Heating strategy & protection
+  sections around savings strategy, independent boundaries, decision sequence and
+  control choices. Keep forecasts and learning evidence in separate heat-model
+  folds, reached by accessible links. Move detailed planning rules into strategy
+  disclosures; show current plan, operating mode and configuration truthfully.
+- Replace numeric aggressiveness with Gentle, Balanced and More savings, backed
+  by one shared policy definition. Balanced preserves default economics; strategies
+  change admission and selection without weakening comfort, protection, recovery
+  or equipment checks. Explain automatic versus manual Home commands, Garage
+  restoration, model uncertainty and the scope of estimated savings. Correct Home
+  recovery-hold detail to report the actual configured duration.
+- Review producers, consumers, persisted settings, configuration, UI, tests and
+  docs. Reject retired numeric fields and remove the ineffective frontRequired
+  flag and old settings-to-occupancy fallback. No aliases, migrations or private
+  configuration changes. Unsupported saved development settings require an
+  intentional fresh start; current occupancy and reconstruction remain supported.
+  Learning and protection algorithms are unchanged; version the Garage decision
+  preference independently.
+- Validation: all 3,064 offline regression tests pass, production build passes,
+  and paired Home/Garage browser checks pass across desktop/mobile and light/dark
+  themes, with keyboard access, model links and stable polling. Garage model
+  browser checks pass at 320, 390 and 1440 px; the broader dashboard visual checks
+  pass from 320 to 1920 px, and policy-calculation browser checks pass. Synthetic
+  fixtures only; no household equipment commands or running-controller restart.
+
 Completed 2026-09-25 — Mitsubishi external-temperature renewal reliability
 - Reproduced a real interruption using read-only controller status: a numeric
   renewal remained published for 45 seconds while sensor, native settings and

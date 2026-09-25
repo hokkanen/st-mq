@@ -87,17 +87,17 @@ test('independent noisy journal replay and repeated simulation are deterministic
 test('savings preference changes selected duration and monetary admission without removing thermal protection', () => {
   const report = runPlanningAudit({ days: 43, cadenceMinutes: 15 });
   for (const row of report.rows.filter(row => ['flat', 'mild-peak'].includes(row.tariff)
-    || row.tariff !== 'exceptional-peak' && row.aggressiveness <= 50)) {
+    || row.tariff !== 'exceptional-peak' && row.savingsStrategy !== 'savings')) {
     assert.equal(row.offHours, 0); assert.equal(row.simulatedBillDifferenceEur, 0);
   }
-  const selected = report.rows.find(row => row.tariff === 'exceptional-peak' && row.aggressiveness === 50);
+  const selected = report.rows.find(row => row.tariff === 'exceptional-peak' && row.savingsStrategy === 'balanced');
   assert.ok(selected.offHours > 2, 'The four-hour tariff opportunity is not capped by the old two-hour policy');
   assert.ok(selected.simulatedBillDifferenceEur > .5);
   assert.ok(selected.minimumFrontC > 3 && selected.minimumRearC > 3);
   assert.ok(selected.endDebtC.coreC < .2 && selected.endDebtC.slabC < .2);
   const preferences = report.rows.filter(row => row.tariff === 'exceptional-peak');
-  assert.deepEqual(preferences.map(row => row.offHours), [2.5, 3, 3.25, 3.75, 4]);
+  assert.deepEqual(preferences.map(row => row.offHours), [2.5, 3.25, 4]);
   assert.ok(preferences.every(row => row.minimumFrontC > 3 && row.minimumRearC > 3));
-  assert.ok(report.rows.find(row => row.tariff === 'ordinary-peak' && row.aggressiveness === 100).offHours > 0,
+  assert.ok(report.rows.find(row => row.tariff === 'ordinary-peak' && row.savingsStrategy === 'savings').offHours > 0,
     'Highest preference accepts a smaller opportunity that fails the balanced monetary hurdle');
 });

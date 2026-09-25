@@ -96,25 +96,26 @@ The planner enumerates contiguous windows within the available price/weather
 coverage, at 15-minute steps by default. There is no fixed maximum OFF duration
 or artificial planning-horizon cutoff. For each safe candidate it calculates
 conservative net benefit as avoided electricity cost minus recovery electricity
-cost and the uncertainty allowance. The preference fraction
-`a = aggressiveness / 100` sets two rules for a new pause:
+cost and the uncertainty allowance. The named **Savings strategy** sets two
+rules for a new pause:
 
-1. Net benefit must exceed `minSavingsEur * (1.5 - a)`. `minSavingsEur` is the
-   configured baseline at preference 50, not the effective threshold at every
-   preference.
-2. Choose the shortest qualifying window retaining at least `0.6 + 0.4a` of the
-   greatest qualifying net benefit. Equal durations prefer greater benefit, then
-   an earlier start.
+| Strategy | Required net benefit | Benefit retained |
+| --- | --- | --- |
+| Gentle | More than 1.5 × `minSavingsEur` | At least 60% of the best qualifying opportunity |
+| Balanced | More than `minSavingsEur` | At least 80% |
+| More savings | More than 0.5 × `minSavingsEur` | Greatest qualifying benefit |
 
-With the default `minSavingsEur:0.50`, preference 0 requires more than €0.75 and
-retains at least 60% of the best benefit; 50 requires more than €0.50 and retains
-80%; 100 requires more than €0.25 and chooses the greatest benefit. Zero is the
-most conservative setting. Use **Pause price control** to suspend economic control.
+The planner chooses the shortest qualifying window retaining the required
+benefit. Equal durations prefer greater benefit, then an earlier start.
+`minSavingsEur` is the configured baseline at Balanced; with the default €0.50,
+the effective thresholds are €0.75, €0.50 and €0.25 respectively. Gentle still
+allows valuable pauses. Use **Pause price control** to suspend economic control.
 
 For example, if a two-hour pause offers €0.90 and a four-hour pause €1.00, both
-qualify at the default baseline. Preferences 0 and 50 choose two hours; 100
-chooses four. These thresholds and retention fractions are explicit engineering
-policy, not learned optima or predicted annual saving percentages.
+qualify at the default baseline. Gentle and Balanced choose two hours; More
+savings chooses four. These thresholds and retention fractions are explicit
+decision policy, not learned optima or predicted annual saving percentages.
+Changing strategy leaves the thermal learner, uncertainty and protection intact.
 
 Defaults independently require one hour minimum planned OFF, three hours normal
 operation and one start per Finnish day. Temperature forecasts, the independent

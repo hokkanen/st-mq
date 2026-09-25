@@ -1,3 +1,5 @@
+import { HEATING_STRATEGIES } from '../src/domain/heating-strategy.js';
+
 // Presentation of implemented calculations. Symbols are defined beside each
 // equation; these descriptions do not participate in prediction or control.
 // Keep these disclosures aligned with adaptive-learning.js (thermal balance,
@@ -144,17 +146,18 @@ export function dutyCalculation() {
   ], ['Fresh native demand can replace this estimate for a short step of at most one hour. Current-state thermal fitting instead uses observed routed duty whenever available.']);
 }
 
-export function economicCalculation() {
+export function economicCalculation(strategyId) {
+  const strategy = HEATING_STRATEGIES.find(option => option.id === strategyId);
   return calculation([
     equation('Electrical energy and cost', 'E = Σ(P_space × Δt);  C = Σ(P_space × Δt × price) + C_tail',
       'P_space is electrical kW; Δt is hours; price is cents/kWh. E is kWh and C is cents. C_tail prices any remaining thermal deficit against the normal reference.'),
     equation('Conservative benefit', 'B_low = B_nominal − max(5, B_nominal − min(B_nominal, B_stress−, B_stress+))',
       'Benefits are reference cost minus action cost in cents. The same two physical stress directions are applied to both paths; a residual 5-cent allowance remains.'),
-    equation('Starting hurdle', 'hurdle = (50 − 40a) + (30 − 25a) × D + 2 × extra_hours + 2 × start',
-      'a is savings preference / 100. D is the positive additional weighted hot/cold discomfort in °C²·h, summed separately by room and direction. start is 1 for a new intervention against normal operation.'),
-    equation('Admission and preference', 'admit if B_low > hurdle;  retained_fraction = 0.6 + 0.4a',
-      'Physical limits and evidence checks must also pass. From a bounded shortlist, prefer the mildest admitted plan retaining this fraction of the best positive conservative benefit.'),
-  ], ['During continuation the start hurdle and start charge are omitted; remaining discomfort and duration still count. Preference 0 is the most comfort-favoring setting, not an off switch. Pause or operating mode controls whether optimization runs.',
+    equation('Starting hurdle', 'hurdle = minimum_benefit + discomfort_weight × D + 2 × extra_hours + 2 × start',
+      `${strategy ? `${strategy.label}: minimum_benefit = ${strategy.minimumHomeBenefitCents} ct and discomfort_weight = ${strategy.homeDiscomfortCentsPerDegreeSquaredHour} ct/(°C²·h). ` : ''}D is the positive additional weighted hot/cold discomfort in °C²·h, summed separately by room and direction. start is 1 for a new intervention against normal operation. These are decision allowances, not actual electricity charges.`),
+    equation('Admission and preference', 'admit if B_low > hurdle;  retain B_low ≥ best_B_low × retained_fraction',
+      `Physical limits and evidence checks must also pass. From a bounded shortlist, prefer the mildest admitted plan retaining ${strategy ? `${strategy.retainedBenefitFraction * 100}%` : 'the strategy’s required share'} of the best positive conservative benefit. Temperature variation is compared first, then active duration.`),
+  ], ['During continuation the starting minimum and start allowance are omitted; remaining discomfort and duration still count. Gentle is not an off switch. Pause or operating mode controls whether optimization runs.',
     'The stress directions vary heat response and loss by 15%, initial reserve/slab by 0.5 °C, duty by 0.08, source electricity by its operating-point allowance, and AUX exposure by 50%. These cases are engineering allowances, not calibrated probabilities or a guarantee of annual savings.']);
 }
 

@@ -64,10 +64,41 @@ test('rate table applies VAT once to new ex-VAT and legacy VAT-inclusive transfe
 });
 
 
-test('Home policy displays saved fixed settings without creating defaults for missing snapshots', () => {
-  assert.deepEqual(homePolicyValues({ settings: { savingsAggressiveness: 0, preheatRoomBoostC: 5,
-    comfort: { maxDropC: 1, maxRiseC: 1.5 } } }), { aggressiveness: '0 / 100', preheat: 'ROOM +5 °C', maximumRise: '1.5 °C', limits: '−1 / +1.5 °C' });
-  assert.deepEqual(homePolicyValues({}), { aggressiveness: 'Unavailable', preheat: 'Unavailable', maximumRise: 'Unavailable', limits: 'Limits unavailable' });
+test('Home policy displays named strategies and saved bounds without inventing missing settings', () => {
+  const common = { preheatRoomBoostC: 5, comfort: { maxDropC: 1, maxRiseC: 1.5 } };
+  for (const [id, label] of [['gentle', 'Gentle'], ['balanced', 'Balanced'], ['savings', 'More savings']]) {
+    const values = homePolicyValues({ settings: { ...common, savingsStrategy: id } });
+    assert.equal(values.strategy, label);
+    assert.equal(values.strategyId, id);
+    assert.equal(values.preheat, '5 °C');
+    assert.equal(values.maximumRise, '1.5 °C');
+    assert.equal(values.limits, '−1 / +1.5 °C');
+  }
+  const missing = homePolicyValues({});
+  assert.equal(missing.strategy, 'Unavailable');
+  assert.equal(missing.strategyId, null);
+  assert.equal(missing.preheat, 'Unavailable');
+  assert.equal(missing.maximumRise, 'Unavailable');
+  assert.equal(missing.limits, 'Limits unavailable');
+  assert.equal(homePolicyValues({ settings: { savingsStrategy: 'unknown' } }).strategyId, null);
+  assert.equal(missing.benefit, '');
+});
+
+test('Home decision summaries distinguish trial budgets, configured ceilings and accepted economics', () => {
+  const status = { settings: { savingsStrategy: 'balanced' }, learning: { parameters: {
+    learningTrials: true, maxTrialCostCents: 25, trialBudgetCentsPerDay: 100,
+    maxPreheatHours: 2, maxReductionHours: 4, maxAwayReductionHours: 12, maxUnobservedReductionHours: 0.5,
+  } }, decision: { plan: { economics: { lowerBenefitCents: 45, hurdleCents: 38 } } } };
+  const values = homePolicyValues(status);
+  assert.match(values.trialBudget, /€0.25 per trial and €1 per day.*remaining budget/);
+  assert.match(values.durations, /preheat 2 h; reduction 4 h at home or 12 h away.*0.5 h.*can shorten/);
+  assert.match(values.benefit, /€0.45 conservative space-heating benefit.*€0.38 required benefit.*estimates/);
+  const trial = structuredClone(status);
+  trial.decision.plan.trial = true;
+  assert.match(homePolicyValues(trial).benefit, /bounded learning trial/);
+  assert.doesNotMatch(homePolicyValues(trial).benefit, /€0.45/);
+  trial.learning.parameters.learningTrials = false;
+  assert.equal(homePolicyValues(trial).trialBudget, 'Learning trials are disabled in configuration.');
 });
 
 test('Room preferences distinguish learned and overall references, occupied bounds and unknown values', () => {

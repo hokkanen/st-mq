@@ -222,8 +222,8 @@ test('numeric settings changes cannot manufacture usable joules or erase frozen 
   const unknown = createGarageExposure(settings), changed = { protection: { pipeOutsideDiameterMm: 30 } };
   const next = reconcileGarageExposure(unknown, changed), p = reserveProperties(changed);
   assert.ok(next.locations.rear.energyJPerM <= -p.latentJPerM);
-  const slider = reconcileGarageExposure(before, { ...settings, aggressiveness: 100 });
-  assert.deepEqual(slider.locations, before.locations);
+  const strategy = reconcileGarageExposure(before, { ...settings, savingsStrategy: 'savings' });
+  assert.deepEqual(strategy.locations, before.locations);
 });
 
 test('retired protection policies and exposure representations are rejected', () => {

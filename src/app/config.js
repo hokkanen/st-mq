@@ -1,4 +1,5 @@
 import { equipmentConfiguration } from '../acquisition/equipment-config.js';
+import { heatingStrategy } from '../domain/heating-strategy.js';
 import { H66_MAX_AGE_MS } from '../domain/reading-freshness.js';
 import { isAbsolute, resolve } from 'node:path';
 import { configuredPriceSettings } from './contract.js';
@@ -18,9 +19,14 @@ export function configurationReader(config) { return configurationReaders.get(co
 export function configurationSource(config) { return configurationSources.get(config) ?? null; }
 
 export function validateSettings(input = {}) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Heating settings must be an object');
+  const fields = ['mode', 'savingsStrategy', 'preheatRoomBoostC', 'comfort', 'occupancy', 'recoveryHoldMinutes'];
+  for (const key of Object.keys(input)) if (!fields.includes(key)) throw new Error(`Unknown heating setting: ${key}`);
+  if (input.recoveryHoldMinutes !== undefined && (!Number.isInteger(input.recoveryHoldMinutes)
+    || input.recoveryHoldMinutes < 1 || input.recoveryHoldMinutes > 240)) throw new Error('Invalid recovery hold');
   const settings = {
     mode: input.mode ?? 'shadow',
-    savingsAggressiveness: input.savingsAggressiveness ?? 50,
+    savingsStrategy: heatingStrategy(input.savingsStrategy).id,
     preheatRoomBoostC: input.preheatRoomBoostC ?? 5,
     comfort: { targetC: null, maxDropC: 1.5, maxRiseC: 1.5, severeDropC: 2, ...(input.comfort ?? {}) },
     occupancy: input.occupancy ?? { mode: 'occupied' },
@@ -30,7 +36,6 @@ export function validateSettings(input = {}) {
   if (targetC !== null && (!Number.isFinite(targetC) || targetC < 15 || targetC > 26)) throw new Error('Comfort target must be 15–26 °C or unset');
   if (!Number.isFinite(maxDropC) || maxDropC < 0 || maxDropC > 2) throw new Error('Preferred drop must be 0–2 °C');
   if (!Number.isFinite(maxRiseC) || maxRiseC < 0.25 || maxRiseC > 2) throw new Error('Preferred rise must be 0.25–2 °C');
-  if (!Number.isFinite(settings.savingsAggressiveness) || settings.savingsAggressiveness < 0 || settings.savingsAggressiveness > 100) throw new Error('Savings preference must be 0–100');
   if (!Number.isInteger(settings.preheatRoomBoostC) || settings.preheatRoomBoostC < 1 || settings.preheatRoomBoostC > 5) throw new Error('Preheat ROOM increase must be 1–5 °C');
   if (!['occupied', 'away'].includes(settings.occupancy.mode)) throw new Error('Invalid occupancy mode');
   if (settings.occupancy.returnAt != null && !Number.isFinite(Date.parse(settings.occupancy.returnAt))) throw new Error('Invalid return time');
@@ -135,6 +140,8 @@ export function teslamateConfiguration(input = {}) {
 }
 
 export function controlConfiguration(input = {}) {
+  if (Object.hasOwn(input, 'savings_aggressiveness')) throw new Error('Unknown controller setting: savings_aggressiveness. Use savings_strategy.');
+  if (Object.hasOwn(input, 'savings_strategy')) heatingStrategy(input.savings_strategy);
   const map = { aux_integral_a2: 'auxIntegralA2', aux_hysteresis_c: 'auxHysteresisC',
     compressor_integral_a1: 'compressorIntegralA1', compressor_hysteresis_c: 'compressorHysteresisC',
     a2_basis: 'a2Basis', heat_pump_compressor_kw: 'heatPumpCompressorKw', auxiliary_rated_kw: 'auxRatedKw',
@@ -285,7 +292,7 @@ function buildConfiguration(options, env, cwd, configuration, source, { bootstra
       maxAgeMs: H66_MAX_AGE_MS, readbackTimeoutMs: 10000, snapshotIntervalMs: 60000,
       auxRatedKw: options.controller?.auxiliary_rated_kw ?? 9, compressorOnlyMode: 2 },
     h66Verification: !replica && verification ? resolve(addon ? '/config' : cwd, verification) : undefined,
-    settings: validateSettings({ savingsAggressiveness: options.controller?.savings_aggressiveness ?? 50,
+    settings: validateSettings({ savingsStrategy: options.controller?.savings_strategy,
       preheatRoomBoostC: options.controller?.preheat_room_boost_c ?? 5, mode: replica ? 'monitoring' : env.STMQ_MODE ?? options.controller?.mode ?? 'shadow',
       comfort: { targetC: null, maxRiseC: options.controller?.max_rise_c ?? 1.5, maxDropC: env.STMQ_MAX_DROP_C == null ? options.controller?.max_drop_c ?? 1.5 : Number(env.STMQ_MAX_DROP_C) } }) };
   config.pairing = pairingConfiguration(options.pairing, env, config);

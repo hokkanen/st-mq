@@ -353,6 +353,11 @@ export class Engine {
   }
   async closeFireplace() { await this.fireplaceRebuild?.close(); }
   constructor({ store, config, clock = Date.now, commandTransport = null, canControl = () => true }) {
+    const previousSettings = store.getState(`settings:${config.input}`);
+    if (previousSettings !== null && previousSettings !== undefined) {
+      try { validateSettings(previousSettings); }
+      catch { throw new Error('Unsupported saved heating settings; start a fresh development database'); }
+    }
     this.store = store;
     this.config = config;
     this.clock = clock;
@@ -374,10 +379,9 @@ export class Engine {
         }
       });
     }
-    const previousSettings = store.getState(`settings:${config.input}`);
-    const occupancy = store.getState(`occupancy:${config.input}`) ?? previousSettings?.occupancy ?? config.settings?.occupancy;
-    // Permanent settings belong to options/config; only temporary occupancy comes
-    // from persisted UI state. Old browser settings must not override a restart.
+    const occupancy = store.getState(`occupancy:${config.input}`) ?? config.settings?.occupancy;
+    // Permanent settings belong to configuration; only current temporary occupancy
+    // is restored from its dedicated persisted state.
     this.settings = validateSettings({ ...config.settings, ...(occupancy ? { occupancy } : {}) });
     this.control = { ...CONTROL_DEFAULTS, ...config.control };
     this.settings.preheatRoomBoostC = this.control.preheatRoomBoostC;

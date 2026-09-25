@@ -56,14 +56,14 @@ by their combined elapsed time; it does not imply that the same hours were
 observed in both systems. Missing periods are never scaled up.
 
 The Garage heating configuration follows Home's current-state, temporary-control,
-pause, preferences and learning structure. **Savings & protection** shows the
-configured 0–100 preference, effective minimum benefit, benefit retained, minimum
-planned OFF time, normal-heating dwell, daily limit and reference-pipe assumptions.
-Garage learning
-has four matching sections: **Learning outcomes · Calculated**, **Model inputs ·
-Recorded & modeled**, **Model coefficients · Current values**, and **Planning &
-safeguards · Decisions & limits**. Rows distinguish learned cooling, observed normal
-power, fixed assumptions and unavailable readings without a completion percentage.
+price-control pause, strategy-and-limits and separate heat-model structure.
+**Heating strategy & protection** shows Gentle, Balanced or More savings,
+effective minimum benefit, benefit retained, minimum planned OFF time,
+normal-heating dwell, daily limit and independent reference-pipe assumptions.
+**Garage heat model** explains recorded/modelled inputs, learned cooling,
+observed normal power, fixed assumptions and the evidence from later outcomes.
+It keeps decision rules in the strategy section and does not imply a completion
+percentage or validated savings from temperature accuracy alone.
 There are two adjustable thermal coefficients, rear/front cooling per hour.
 **Validated OFF evidence** reports the duration covered by clean episode checks.
 It is never labeled a maximum pause: longer forecasts receive extra uncertainty

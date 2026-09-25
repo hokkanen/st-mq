@@ -1,3 +1,5 @@
+import { HEATING_STRATEGIES } from '../src/domain/heating-strategy.js';
+
 const finnishInput = new Intl.DateTimeFormat('en-GB', {
   timeZone: 'Europe/Helsinki', year: 'numeric', month: '2-digit', day: '2-digit',
   hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
@@ -53,16 +55,55 @@ export function rateRows(period) {
   return rows;
 }
 
-/** Read-only policy summaries follow the existing configuration/reload workflow. */
+/** Policy summaries use the current snapshot, never inventing missing settings. */
 export function homePolicyValues(status = {}) {
   const settings = status.settings ?? {}, comfort = settings.comfort ?? {};
+  const strategy = HEATING_STRATEGIES.find(option => option.id === settings.savingsStrategy);
+  const parameters = status.learning?.parameters ?? {};
+  const amount = value => new Intl.NumberFormat('en-GB', { maximumFractionDigits: 2 }).format(value);
+  const money = value => `€${amount(value / 100)}`;
+  const trialBudget = parameters.learningTrials === false ? 'Learning trials are disabled in configuration.'
+    : parameters.learningTrials === true && Number.isFinite(parameters.trialBudgetCentsPerDay) && Number.isFinite(parameters.maxTrialCostCents)
+      ? `Learning trials are enabled, with estimated exposure capped at ${money(parameters.maxTrialCostCents)} per trial and ${money(parameters.trialBudgetCentsPerDay)} per day. Current evidence and remaining budget still determine whether a trial can run.`
+      : 'Learning-trial settings are unavailable.';
+  const economics = status.decision?.plan?.economics;
+  const benefit = status.decision?.plan?.trial === true
+    ? 'This is a bounded learning trial, not a cycle admitted for predicted savings.'
+    : Number.isFinite(economics?.lowerBenefitCents) && Number.isFinite(economics?.hurdleCents)
+      ? `Latest cycle comparison: ${money(economics.lowerBenefitCents)} conservative space-heating benefit against a ${money(economics.hurdleCents)} required benefit. Both are estimates; the current checks still determine execution.` : '';
+  const durations = ['maxPreheatHours', 'maxReductionHours', 'maxAwayReductionHours', 'maxUnobservedReductionHours']
+    .every(key => Number.isFinite(parameters[key]))
+    ? `Configured ceilings: preheat ${amount(parameters.maxPreheatHours)} h; reduction ${amount(parameters.maxReductionHours)} h at home or ${amount(parameters.maxAwayReductionHours)} h away. Without native heat-pump observations, reduction is capped at ${amount(parameters.maxUnobservedReductionHours)} h. Demonstrated response, comfort and forecast coverage can shorten these limits.`
+    : 'Configured duration limits are unavailable.';
   return {
-    aggressiveness: Number.isFinite(settings.savingsAggressiveness) ? `${settings.savingsAggressiveness} / 100` : 'Unavailable',
-    preheat: Number.isFinite(settings.preheatRoomBoostC) ? `ROOM +${settings.preheatRoomBoostC} °C` : 'Unavailable',
-    maximumRise: Number.isFinite(comfort.maxRiseC) ? `${comfort.maxRiseC} °C` : 'Unavailable',
+    strategy: strategy?.label ?? 'Unavailable', strategyId: strategy?.id ?? null,
+    preheat: Number.isFinite(settings.preheatRoomBoostC) ? `${amount(settings.preheatRoomBoostC)} °C` : 'Unavailable',
+    maximumRise: Number.isFinite(comfort.maxRiseC) ? `${amount(comfort.maxRiseC)} °C` : 'Unavailable',
     limits: Number.isFinite(comfort.maxDropC) && Number.isFinite(comfort.maxRiseC)
-      ? `−${comfort.maxDropC} / +${comfort.maxRiseC} °C` : 'Limits unavailable',
+      ? `−${amount(comfort.maxDropC)} / +${amount(comfort.maxRiseC)} °C` : 'Limits unavailable',
+    trialBudget, benefit, durations,
   };
+}
+
+/** Keep native disclosures and selection summaries stable through status polling. */
+export function renderHomePolicy(document, status) {
+  const policy = homePolicyValues(status);
+  for (const [id, value] of Object.entries({
+    'home-savings-strategy': policy.strategy, 'home-preheat-setting': policy.preheat,
+    'home-maximum-rise': policy.maximumRise, 'home-policy-trials': policy.trialBudget,
+    'home-policy-durations': policy.durations, 'home-policy-economics': policy.benefit,
+    'home-comfort-limits': status.decision?.comfort?.maxDropApplies === false ? 'Away · limits inactive' : policy.limits,
+  })) {
+    const node = document.getElementById(id);
+    if (node) node.textContent = value;
+  }
+  for (const strategy of HEATING_STRATEGIES) {
+    const selected = strategy.id === policy.strategyId;
+    const option = document.getElementById(`home-strategy-${strategy.id}`);
+    if (option) option.dataset.selected = String(selected);
+    const current = document.getElementById(`home-strategy-${strategy.id}-current`);
+    if (current) current.hidden = !selected;
+  }
 }
 
 /** The backend resolves individual learned references and shared occupied bounds. */
