@@ -86,6 +86,10 @@ requirement. A failed native check stops renewals and lets the existing lease
 expire, without new checks or native writes between renewals. The Pill driver is
 unchanged. Missing or stale source evidence ends the feed. The pump's internal
 sensor then controls using its current native settings, HEAT at 17°C if unchanged.
+If a published renewal is lost, a newer live acknowledgement of the previous
+sample and a fresh device challenge permit a retry after 10 seconds, while that
+previous sample remains valid. Retries retain the original sensor clock and all
+native-setting checks; accepted or ambiguous writes still require cleanup.
 The saved room setting resumes after a host restart only once fresh source
 evidence and native setup are established again. The override is cleared through
 the serial path before ordinary native settings or a managed pause can proceed.

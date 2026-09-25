@@ -190,6 +190,90 @@ test('fresh independent room measurements renew through active externalBusy and 
   await f.settle(); assert.equal(f.published.length, 5);
 });
 
+test('a dropped external renewal retries on a new challenge without clearing or changing the original sensor deadline', async t => {
+  const f = fixture(t); await f.start();
+  f.advance(20_000); f.measure(4); f.state(); await f.settle();
+  assert.equal(f.published.length, 4);
+  const dropped = f.published.at(-1).command;
+  const source = structuredClone(f.engine.latest.garage_temperature);
+  assert.equal(f.adapter.externalTemperature().result.status, 'published');
+
+  // The broker drops the numeric request: the driver keeps reporting the
+  // previous acknowledged sample and issues fresh, unused challenges.
+  f.advance(9999); f.state(); await f.settle();
+  assert.equal(f.published.length, 4, 'fresh state alone cannot cause immediate repeated publication');
+  f.advance(1); f.state();
+  assert.equal(f.adapter.externalTemperature().result.status, 'rejected');
+  assert.equal(f.adapter.externalTemperature().result.reason, 'external-renewal-not-admitted');
+  await f.settle();
+  assert.equal(f.published.length, 5);
+  const retry = f.published.at(-1).command;
+  assert.equal(retry.action, 'remote-temperature');
+  assert.equal(retry.temperatureC, dropped.temperatureC);
+  assert.equal(retry.measuredAt, dropped.measuredAt);
+  assert.equal(retry.requestedExpiryAt, dropped.requestedExpiryAt);
+  assert.deepEqual(f.engine.latest.garage_temperature, source, 'retry does not manufacture another sensor report');
+  assert.equal(retry.issuedAt, f.now());
+  assert.equal(retry.sequence, dropped.sequence + 1);
+  assert.notEqual(retry.commandId, dropped.commandId);
+  assert.notEqual(retry.challenge, dropped.challenge);
+  assert.ok(f.published.slice(2).every(({ command }) => command.action === 'remote-temperature' && command.temperatureC !== null));
+  assert.deepEqual(f.observations.map(row => row.value), [17], 'the acknowledged original feed stays continuous');
+
+  await f.advanceReport('acknowledged');
+  assert.equal(f.runtime.status().roomTemperature.phase, 'active');
+  assert.equal(f.runtime.status().roomTemperature.acknowledged, true);
+  assert.deepEqual(f.observations.map(row => row.value), [17, 16]);
+  assert.equal(f.observations.at(-1).raw.expiresAt, source.sourceTime + 90_000);
+});
+
+test('repeated lost renewals recover with fresh envelopes while preserving continuous acknowledged coverage', async t => {
+  const f = fixture(t); await f.start();
+  for (let cycle = 0; cycle < 4; cycle++) {
+    f.advance(20_000); f.measure(4 + cycle / 2); f.state(); await f.settle();
+    const first = f.published.at(-1).command;
+    for (let loss = 0; loss < 2; loss++) {
+      const count = f.published.length, previous = f.published.at(-1).command;
+      f.advance(10_000); f.state(); await f.settle();
+      assert.equal(f.published.length, count + 1, 'a fenced dropped request permits one replacement');
+      const retry = f.published.at(-1).command;
+      assert.equal(retry.action, 'remote-temperature');
+      assert.equal(retry.temperatureC, first.temperatureC);
+      assert.equal(retry.measuredAt, first.measuredAt);
+      assert.equal(retry.requestedExpiryAt, first.requestedExpiryAt);
+      assert.notEqual(retry.commandId, previous.commandId);
+      assert.notEqual(retry.challenge, previous.challenge);
+      assert.ok(f.observations.every(row => row.value !== null), 'lost renewals do not trigger an internal-sensor handover');
+    }
+    await f.advanceReport('acknowledged');
+    assert.equal(f.runtime.status().roomTemperature.phase, 'active');
+    assert.equal(f.observations.at(-1).raw.measuredAt, first.measuredAt);
+    assert.equal(f.observations.at(-1).raw.expiresAt, first.requestedExpiryAt);
+  }
+  const renewals = f.published.slice(3).map(row => row.command);
+  assert.equal(renewals.length, 12);
+  assert.ok(renewals.every(command => command.action === 'remote-temperature' && command.temperatureC !== null));
+  assert.equal(new Set(f.published.map(row => row.command.challenge)).size, f.published.length);
+  assert.equal(f.observations.length, 5, 'only acknowledged measurements enter history');
+  assert.equal(f.store.getState(f.runtime.keys.roomTemperature).targetC, 5);
+});
+
+test('an accepted external renewal waits for its acknowledgement without being classified as a dropped publication', async t => {
+  const f = fixture(t); await f.start();
+  f.advance(20_000); f.measure(4); f.state(); await f.settle();
+  await f.advanceReport('accepted');
+  const commands = structuredClone(f.published);
+  for (let report = 0; report < 3; report++) {
+    f.advance(10_000); f.state(); await f.settle();
+    assert.deepEqual(f.published, commands, 'fresh unused challenges cannot replace an admitted numeric request');
+    assert.equal(f.adapter.externalTemperature().result.status, 'accepted');
+  }
+  await f.advanceReport('acknowledged');
+  assert.equal(f.runtime.status().roomTemperature.phase, 'active');
+  assert.equal(f.adapter.externalTemperature().result.status, 'acknowledged');
+  assert.deepEqual(f.published, commands);
+});
+
 test('device setting reports between renewals do not issue commands or invalidate the current room sample', async t => {
   const f = fixture(t); await f.start(); const commands = structuredClone(f.published);
   for (const values of [{ targetC: 16 }, { power: 'off' }, { mode: 'cool' }, { targetC: null }]) {

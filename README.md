@@ -482,7 +482,9 @@ using the independent Garage rear sensor and the Pill's external temperature
 feature: ST-MQ selects native 17°C heating and the reported external value adds
 `17 − room setting` (+12°C for a 5°C target). Each enable or renewal requires
 fresh ON, HEAT and 17°C readbacks; a failed check stops renewals and the existing
-lease expires. Source evidence expires 90 seconds after measurement. Driver
+lease expires. Lost, unaccepted renewals retry when fresh driver evidence and a
+new challenge prove the earlier request can no longer take effect; the original
+90-second sensor deadline remains unchanged. Driver
 capability and its local feature flag are required; economic pauses still need
 independently verified baseline and restoration evidence. Provider input in shadow mode observes
 and plans; active mode can use a configured command transport.

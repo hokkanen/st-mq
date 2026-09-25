@@ -2,6 +2,29 @@
 -Implement support for local mqtt-based temperature receives (eg, from shelly or HASS through Meteorologisk Institute); just store last received temp values and time stamps (maybe in storage class, see below) when received (and accept if received within 1h)
 -Chart dataset control buttons don't work when datasets are manually hidden/unhidden from legend, how to fix?
 
+Completed 2026-09-25 — Mitsubishi external-temperature renewal reliability
+- Reproduced a real interruption using read-only controller status: a numeric
+  renewal remained published for 45 seconds while sensor, native settings and
+  communication were fresh. Uncertain-result cleanup explicitly cleared the feed
+  before ordinary control recovered. A new unused driver challenge and fresh
+  acknowledgement of the exact previous unexpired sample now allow an unaccepted
+  renewal to retry after 10 seconds through the existing admission checks.
+  Preserve original source deadlines; accepted or ambiguous writes still clear.
+- Remove false chart gaps at normal renewal acceptance: retain only the previous
+  acknowledged sample until its own deadline, replacing it only on the new ACK.
+  Pending commands no longer display the uncertain-request cleanup instruction.
+- Reviewed source polling, runtime, adapter, separate Pill publisher, status/UI,
+  configuration, persistence, tests and docs. No firmware, wire-format, persisted
+  schema, compatibility alias or migration changes. Existing expiry, ownership,
+  native-setting checks and restoration duties remain. Historical observations
+  are unchanged; read-only diagnostics printed no credentials or device IDs.
+- Validation: all 3,056 offline regression tests passed, including repeated
+  dropped renewals, 22 retry-refusal cases and bounded chart continuity. Syntax
+  and whitespace checks passed. Fixed the Shelly integration fixture teardown
+  to close engine workers before removing its SQLite directory after the full
+  suite exposed a cleanup race. No controller restart or equipment commands
+  were issued; applying the code still requires a controller restart.
+
 Completed 2026-09-25 — Vehicle identification through charger startup
 - Preserve the current connection's saved vehicle match, conflict evidence,
   session request and BMW target choice while the charger backend initializes or

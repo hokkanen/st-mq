@@ -66,6 +66,164 @@ test('a failed external history write cannot suppress the next live acknowledged
   assert.equal(rows.length, 1, 'Only a successfully recorded sample is deduplicated');
 });
 
+test('initial acceptance records no external feed, while renewal preserves the prior acknowledged sample until its own ACK', async t => {
+  const rows = [], f = fixture(t, { onObservation: row => rows.push(row) });
+  await f.adapter.setExternalTemperature(f.sample());
+  f.advance(); f.result('accepted');
+  assert.equal(rows.length, 0, 'the first numeric sample still needs a protocol acknowledgement');
+  f.advance(); f.result('acknowledged');
+  assert.equal(rows.length, 1);
+  const previous = structuredClone(rows[0]);
+
+  f.advance(28_000); f.result('acknowledged');
+  await f.adapter.setExternalTemperature(f.sample({ temperatureC: 22 }));
+  f.advance(); f.result('accepted');
+  assert.deepEqual(rows, [previous], 'accepting a renewal does not report an internal-sensor transition');
+  const external = f.adapter.externalTemperature();
+  assert.equal(external.phase, 'active');
+  assert.equal(external.pending, true);
+  assert.equal(external.acknowledged, false, 'the new sample remains explicitly unacknowledged');
+  assert.equal(external.temperatureC, 22);
+  assert.equal(external.result.status, 'accepted');
+  assert.equal(rows[0].value, 21, 'history retains the previously acknowledged value');
+  assert.equal(rows[0].raw.measuredAt, BASE);
+  assert.equal(rows[0].raw.expiresAt, BASE + 90_000);
+
+  f.advance(2000); f.result('acknowledged');
+  assert.deepEqual(rows.map(row => row.value), [21, 22]);
+  assert.equal(rows[1].sourceTime, f.now(), 'the new value begins only at its acknowledgement');
+  assert.equal(rows[1].raw.measuredAt, BASE + 30_000);
+  assert.equal(rows[1].raw.expiresAt, BASE + 120_000);
+  assert.equal(f.published.length, 2, 'normal renewal sends no clear or extra command');
+});
+
+test('pending external input waits for acknowledgement without asking for uncertain-request cleanup', async t => {
+  const f = fixture(t);
+  await f.adapter.setExternalTemperature(f.sample());
+  for (const status of ['published', 'accepted']) {
+    if (status === 'accepted') { f.advance(); f.result(status); }
+    const external = f.adapter.externalTemperature();
+    assert.equal(external.pending, true);
+    assert.equal(external.available, false);
+    assert.equal(external.reason, 'Wait for the current device command to finish.');
+  }
+  f.advance(45_000);
+  assert.equal(f.adapter.externalTemperature().pending, false);
+  assert.equal(f.adapter.externalTemperature().reason, 'Clear the uncertain external temperature request.');
+});
+
+test('a published renewal cannot be retired without fresh fenced evidence of its unexpired predecessor', async t => {
+  const cases = [
+    { name: 'before ten seconds', delay: 9999 },
+    { name: 'state observed before ten seconds', patch: c => ({ observedAt: c.command.issuedAt + 9999 }) },
+    { name: 'pre-request state sequence', patch: c => ({ sequence: c.prior.sequence }) },
+    { name: 'pre-request observation', patch: c => ({ observedAt: c.command.issuedAt - 1 }) },
+    { name: 'retained state', packet: { retain: true } },
+    { name: 'same challenge as renewal', patch: c => ({ challenge: { value: c.command.challenge, expiresAt: c.f.now() + 30_000 } }) },
+    { name: 'challenge used for earlier sample', patch: c => ({ challenge: { value: c.firstCommand.challenge, expiresAt: c.f.now() + 30_000 } }) },
+    { name: 'expired challenge', patch: c => ({ challenge: { value: 'unused-expired', expiresAt: c.f.now() } }) },
+    { name: 'missing challenge', patch: () => ({ challenge: null }) },
+    { name: 'foreign owner', patch: () => ({ authority: { ownerSession: 'another-owner', controlAllowed: false, manualControlAllowed: false } }) },
+    { name: 'unclaimed ownership', patch: () => ({ authority: { ownerSession: null, controlAllowed: false, manualControlAllowed: false } }) },
+    { name: 'changed boot', patch: () => ({ bootId: 'another-boot' }), expected: 'uncertain' },
+    { name: 'changed session', patch: () => ({ sessionId: 'another-session' }), expected: 'uncertain' },
+    { name: 'accepted renewal', accepted: true, expected: 'accepted' },
+    { name: 'replacement sample awaits acknowledgement', feed: c => ({ temperatureC: c.command.temperatureC,
+      measuredAt: c.command.measuredAt, acknowledged: false }) },
+    { name: 'previous sample lacks acknowledgement', feed: () => ({ acknowledged: false }) },
+    { name: 'different previous temperature', feed: () => ({ temperatureC: 20.5 }) },
+    { name: 'different previous source timestamp', feed: c => ({ measuredAt: c.first.measuredAt + 1 }) },
+    { name: 'previous device permission expired', feed: () => ({ expiresInMs: 0 }) },
+    { name: 'previous requested deadline expired', shortExpiry: true },
+    { name: 'previous source deadline expired', delay: 89_000 },
+    { name: 'no preceding sample', noPrevious: true },
+  ];
+  for (const scenario of cases) await t.test(scenario.name, async t => {
+    const f = fixture(t), first = f.sample(scenario.shortExpiry ? { requestedExpiryAt: BASE + 11_000 } : {});
+    let prior;
+    if (!scenario.noPrevious) {
+      await f.adapter.setExternalTemperature(first);
+      f.advance(); prior = f.result('acknowledged');
+    }
+    await f.adapter.setExternalTemperature(f.sample({ temperatureC: 22 }));
+    const command = f.published.at(-1).command, firstCommand = f.published[0].command;
+    f.advance(scenario.delay ?? 10_000);
+    const context = { f, first, prior, command, firstCommand };
+    const patch = { authority: { ownerSession: 'owner', controlAllowed: false, manualControlAllowed: false },
+      externalTemperature: { ...INTERNAL, phase: 'active', restorationPending: true, acknowledged: true,
+        temperatureC: first.temperatureC, measuredAt: first.measuredAt,
+        // An overstated device expiry must not override the original requested/source deadline.
+        expiresInMs: Math.max(1, first.measuredAt + 90_000 - f.now()), ...scenario.feed?.(context) },
+      ...scenario.patch?.(context) };
+    if (scenario.accepted) f.result('accepted', patch);
+    else f.state(patch, scenario.packet);
+    const outcome = f.adapter.snapshot().lastExternalCommand;
+    assert.equal(outcome.status, scenario.expected ?? 'published');
+    assert.notEqual(outcome.reason, 'external-renewal-not-admitted');
+    assert.equal(f.adapter.externalTemperature().available, false, 'ambiguous delivery never opens another numeric admission');
+    assert.equal(f.published.length, scenario.noPrevious ? 1 : 2, 'reconciliation itself sends no command');
+  });
+});
+
+test('an accepted renewal cannot extend the prior acknowledged source deadline', async t => {
+  const rows = [], f = fixture(t, { onObservation: row => rows.push(row) });
+  await f.adapter.setExternalTemperature(f.sample());
+  f.advance(); f.result('acknowledged');
+  f.advance(69_000); f.result('acknowledged');
+  await f.adapter.setExternalTemperature(f.sample({ temperatureC: 22 }));
+  f.advance(); f.result('accepted');
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].raw.expiresAt, BASE + 90_000);
+  f.advance(18_999); f.result('accepted');
+  assert.equal(rows.length, 1, 'the old sample remains valid immediately before its deadline');
+  f.advance(1); f.result('accepted');
+  assert.equal(f.adapter.externalTemperature().pending, true, 'the replacement command has not timed out');
+  assert.equal(f.adapter.externalTemperature().expiresInMs, 70_000, 'the replacement source has its own later deadline');
+  assert.deepEqual(rows.map(row => row.value), [21, null]);
+  assert.equal(rows[1].sourceTime, BASE + 90_000);
+  assert.deepEqual(rows[1].quality, ['inactive']);
+});
+
+test('clear, lost connection, changed driver session, foreign or mismatched feed and failed renewal end acknowledged feed coverage', async t => {
+  for (const scenario of ['clear', 'disconnect', 'boot', 'session', 'foreign-owner', 'different-temperature',
+    'different-measurement', 'uncertain', 'driver-clear']) {
+    await t.test(scenario, async t => {
+      const rows = [], f = fixture(t, { onObservation: row => rows.push(row) });
+      await f.adapter.setExternalTemperature(f.sample());
+      f.advance(); f.result('acknowledged');
+      if (scenario === 'clear') {
+        await f.adapter.setExternalTemperature({ temperatureC: null });
+        f.advance(); f.result('accepted');
+      } else {
+        f.advance(29_000); f.result('acknowledged');
+        await f.adapter.setExternalTemperature(f.sample({ temperatureC: 22 }));
+        f.advance(); f.result('accepted');
+        assert.equal(rows.length, 1, 'accepted renewal retains the acknowledged coverage');
+        f.advance();
+        if (scenario === 'disconnect') f.adapter.setConnected(false);
+        else if (scenario === 'boot') f.result('accepted', { bootId: 'different-boot' });
+        else if (scenario === 'session') f.result('accepted', { sessionId: 'different-session' });
+        else if (scenario === 'foreign-owner') f.result('accepted', {
+          authority: { ownerSession: 'another-owner', controlAllowed: false, manualControlAllowed: false },
+        }, { ownerSession: 'another-owner' });
+        else if (scenario === 'different-temperature' || scenario === 'different-measurement') {
+          const command = f.published.at(-1).command;
+          f.result('accepted', { externalTemperature: { ...INTERNAL, phase: 'active', restorationPending: true,
+            temperatureC: command.temperatureC + (scenario === 'different-temperature' ? .5 : 0),
+            measuredAt: command.measuredAt + (scenario === 'different-measurement' ? 1 : 0),
+            expiresInMs: command.measuredAt + 90_000 - f.now(), acknowledged: false } });
+        }
+        else if (scenario === 'uncertain') f.result('uncertain');
+        else f.result('accepted', { externalTemperature: { ...INTERNAL, phase: 'unresolved',
+          restorationPending: true, rearmRequired: true, reason: 'external-write-uncertain' } });
+      }
+      assert.deepEqual(rows.map(row => row.value), [21, null]);
+      assert.equal(rows[1].sourceTime, f.now());
+      assert.deepEqual(rows[1].quality, ['inactive']);
+    });
+  }
+});
+
 test('external sample preserves source clock, shares the envelope, and requires correlated ACK lifecycle', async t => {
   const f = fixture(t);
   const sample = f.sample({ measuredAt: BASE - 12_000, requestedExpiryAt: BASE + 30_000 });

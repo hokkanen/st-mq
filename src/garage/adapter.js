@@ -337,7 +337,8 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
       if (!configure) {
         if (external?.rearmRequired) reasons.push('Clear external temperature control before rearming.');
         if (['clearing', 'unresolved'].includes(external?.phase)) reasons.push('Wait for external temperature cleanup.');
-        if (externalNeedsClear && !['acknowledged', 'rejected'].includes(externalCommand?.status)) reasons.push('Clear the uncertain external temperature request.');
+        if (externalNeedsClear && !externalPending(now)
+          && !['acknowledged', 'rejected'].includes(externalCommand?.status)) reasons.push('Clear the uncertain external temperature request.');
         const power = state?.native.power;
         if (power?.value !== 'on' || state?.native.mode?.value !== 'heat'
           || !['power', 'mode', 'targetC', 'fan', 'vane'].every(key => freshField(state?.native[key], now, 30_001)
@@ -375,11 +376,24 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
   function recordExternalTemperature(now = clock()) {
     const feed = state?.externalTemperature;
     const expiresAt = feed ? Math.min(state.observedAt + feed.expiresInMs, (feed.measuredAt ?? 0) + 90_000) : 0;
+    const epoch = state ? JSON.stringify([state.deviceId, state.bootId, state.sessionId]) : null;
     const active = connected && reconciled && feed?.phase === 'active' && feed.acknowledged
       && feed.enabled && feed.restorationPending && !feed.rearmRequired && expiresAt > now
       && finiteTime(feed.measuredAt) && feed.measuredAt <= now;
+    // Accepting a numeric renewal resets the driver's ACK for the new sample,
+    // but does not clear the pump's previously acknowledged input. Keep that
+    // bounded observation until the new ACK, without extending its deadline or
+    // recording the unconfirmed replacement value.
+    const renewing = !active && recordedExternal?.epoch === epoch && recordedExternal.expiresAt > now
+      && connected && reconciled && feed?.phase === 'active' && feed.enabled
+      && feed.restorationPending && !feed.rearmRequired && expiresAt > now
+      && state.authority.ownerSession === hostSession && externalPending(now)
+      && externalCommand.bootId === state.bootId && externalCommand.sessionId === state.sessionId
+      && state.sequence > externalCommand.stateSequence && state.observedAt >= externalCommand.requestedAt
+      && feed.temperatureC === externalCommand.temperatureC && feed.measuredAt === externalCommand.measuredAt;
+    if (renewing) return;
     if (!active && !recordedExternal) return;
-    if (active && recordedExternal?.measuredAt === feed.measuredAt && recordedExternal?.expiresAt === expiresAt
+    if (active && recordedExternal?.epoch === epoch && recordedExternal.measuredAt === feed.measuredAt && recordedExternal.expiresAt === expiresAt
       && recordedExternal?.temperatureC === feed.temperatureC) return;
     // The line starts at device acknowledgement; the original sensor clock
     // remains provenance, and coverage ends at the device/source deadline.
@@ -390,7 +404,7 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
         timeBasis: active ? 'device-acknowledged' : 'availability-transition',
         measuredAt: active ? feed.measuredAt : null, expiresAt: active ? expiresAt : now,
         reportIntervalMs: active ? Math.max(1, expiresAt - at) : 90_000, reportGraceMs: 0 } });
-    recordedExternal = active ? { measuredAt: feed.measuredAt, expiresAt, temperatureC: feed.temperatureC } : null;
+    recordedExternal = active ? { measuredAt: feed.measuredAt, expiresAt, temperatureC: feed.temperatureC, epoch } : null;
   }
   function processExternalResult(result, now) {
     if (!externalCommand || result?.action !== 'remote-temperature' || result.commandId !== externalCommand.commandId
@@ -420,6 +434,29 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
         if (externalCommand.temperatureC === null) externalNeedsClear = false;
       }
     }
+  }
+  function reconcileExternalPublication(now) {
+    const attempt = externalCommand, previous = attempt?.previousSample, feed = state?.externalTemperature;
+    // QoS 0 publication can be lost without a broker error. A new unused
+    // challenge fences the old envelope; a later live state still acknowledging
+    // the exact previous sample proves that the replacement was not admitted.
+    // Let the ordinary admission path retry, preserving all source/native gates.
+    // Accepted or ambiguous writes still require the existing cleanup path.
+    if (!connected || !reconciled || !canControl() || state?.retained
+      || attempt?.status !== 'published' || !previous || attempt.temperatureC === null
+      || attempt.measuredAt <= previous.measuredAt || now - attempt.requestedAt < 10_000
+      || state.bootId !== attempt.bootId || state.sessionId !== attempt.sessionId
+      || state.authority.ownerSession !== hostSession || state.sequence <= attempt.stateSequence
+      || state.observedAt < attempt.requestedAt + 10_000 || state.observedAt > now
+      || now - state.observedAt >= settings.maxAgeMs
+      || feed?.phase !== 'active' || !feed.acknowledged || !feed.enabled || !feed.restorationPending || feed.rearmRequired
+      || feed.temperatureC !== previous.temperatureC || feed.measuredAt !== previous.measuredAt
+      || state.observedAt + feed.expiresInMs <= now
+      || Math.min(previous.requestedExpiryAt, previous.measuredAt + 90_000) <= now
+      || !identity(state.challenge?.value) || !finiteTime(state.challenge?.expiresAt) || state.challenge.expiresAt <= now
+      || usedChallenges.has(`${state.bootId}:${state.sessionId}:${state.challenge.value}`)) return;
+    attempt.status = 'rejected'; attempt.reason = 'external-renewal-not-admitted';
+    lastExternalSample = previous;
   }
   async function setExternalTemperature(input, now = clock()) {
     const clear = input?.temperatureC === null;
@@ -614,6 +651,7 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
       }
       processNativeResult(value.result, now);
       processExternalResult(value.result, now);
+      reconcileExternalPublication(now);
       if (externalCommand?.temperatureC !== null && ['acknowledged', 'rejected'].includes(externalCommand?.status)
         && state.externalTemperature?.phase === 'internal' && !state.externalTemperature.restorationPending
         && state.observedAt > (externalCommand.acknowledgedAt ?? externalCommand.requestedAt)) externalNeedsClear = false;

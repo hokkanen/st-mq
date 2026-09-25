@@ -231,6 +231,16 @@ settings; when unchanged from setup, that is HEAT at 17°C. This relies on the
 driver enforcing its local expiry and on a working Pill and serial path. The
 90-second source lifetime is unchanged; no additional lease timer is introduced.
 
+A numeric renewal that remains published without acceptance can be retried after
+10 seconds when a newer live report still acknowledges the exact previous sample
+and supplies a fresh unused challenge. The challenge fences the earlier envelope;
+the previous sample must still be within its original permission. The retry goes
+through the normal ownership, native-setting and source-freshness checks and uses
+the sensor's original timestamp. This prevents a lost QoS 0 renewal from needlessly
+reaching the 45-second uncertain-result cleanup and switching to internal sensing.
+Accepted writes, missing or conflicting evidence, and expired permissions still
+use the existing cleanup path. No Pill firmware change is required.
+
 The room target is durable intent. Restart does not replay a cached remote
 temperature: the host must obtain fresh source evidence and reestablish native
 setup before resuming. Native changes and managed pauses wait for serial clearing
@@ -277,6 +287,11 @@ The external temperature chart begins at acknowledged activation and carries
 the original sensor timestamp separately. Its coverage expires at the earlier
 device deadline or original sample plus 90 seconds. Internal-sensor handover and
 disconnect close the line; repeated cached state cannot extend it.
+While a matching numeric renewal awaits acknowledgement, the chart retains the
+previous acknowledged value only until its original deadline. It records the new
+value at its acknowledgement; accepting a renewal alone is not an internal-sensor
+handover. Pending requests display an acknowledgement wait, while
+uncertain requests still require cleanup.
 
 Electrical scale and scope must be explicit. `accuracyVerified:false` preserves
 the distinction between correctly decoded units and unverified absolute meter

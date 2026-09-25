@@ -55,6 +55,11 @@ readbacks under the existing 30-second freshness requirement. A failed native
 check stops host renewals and lets the existing lease expire, with no additional
 host checks or native writes between renewals. This guard requires no Pill driver
 changes or new lease limits; existing local cleanup behavior remains intact.
+Lost, unaccepted numeric renewals can be retried after 10 seconds only when fresh
+same-session state still acknowledges the exact previous, unexpired sample and
+provides a new unused challenge that fences the earlier envelope. The retry uses
+ordinary admission checks and original source timestamps; accepted writes are
+never reclassified this way. This requires no firmware or wire-format change.
 Missing or stale source evidence ends the feed; internal-sensor control uses
 current native settings, HEAT at 17°C if unchanged. A saved target resumes after host restart
 only with fresh independent source evidence and native setup. Serial clearing

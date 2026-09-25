@@ -199,7 +199,12 @@ test('Selected native garage ignores unselected MQTT topics and never creates an
   client.publish = (topic, payload, options, done) => done();
   client.end = (force, options, done) => done();
   const acquisition = await startMqtt({ engine, store, config, connect: () => client });
-  t.after(async () => { await acquisition.close(); store.close(); rmSync(directory, { recursive: true, force: true }); });
+  t.after(async () => {
+    await acquisition.close();
+    await engine.garage.close({ restore: false }); await engine.charging.close();
+    await engine.closeFireplace(); await engine.executor.close({ restore: false });
+    store.close(); rmSync(directory, { recursive: true, force: true });
+  });
   client.emit('connect');
   client.emit('message', 'invented-direct-garage/status/temperature:100', Buffer.from('{"id":100,"tC":11}'));
   client.emit('message', 'invented-ha/garage', Buffer.from('18.5'));
