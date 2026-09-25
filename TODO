@@ -2,6 +2,19 @@
 -Implement support for local mqtt-based temperature receives (eg, from shelly or HASS through Meteorologisk Institute); just store last received temp values and time stamps (maybe in storage class, see below) when received (and accept if received within 1h)
 -Chart dataset control buttons don't work when datasets are manually hidden/unhidden from legend, how to fix?
 
+Completed 2026-09-25 — Chart inspection toolbar
+- Align dates, the left-axis selector and Exit in one row from 800 px, below
+  the title so window controls have space above the actions. Show the existing
+  date presets and day arrows between dates and axis actions from 1120 px.
+  Preserve the narrow stacked layout with Exit at the top right.
+- Reuse the current controls and date handlers; update the existing browser
+  layout assertions. Reviewed chart markup, styles, navigation, range state,
+  consumers and checks: no compatibility paths or persisted/config changes.
+- Validation: production build and the four focused chart/fullscreen test files
+  pass. Synthetic Chromium checks pass at 12 viewport sizes in both themes,
+  including real clicks on all five date shortcuts; existing fullscreen browser
+  checks pass for entry/exit, external changes and unavailable/denied requests.
+
 Completed 2026-09-25 — Garage charging and door admission
 - Remove charging gates from savings planning and evidence eligibility. Current,
   unknown and forecast charger status/power do not change pause selection,

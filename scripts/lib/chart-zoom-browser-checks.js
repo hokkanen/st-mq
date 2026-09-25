@@ -48,8 +48,20 @@ export async function checkChartZoomBrowser({ evaluate, command, context, until 
     assert.equal(await evaluate(`(() => {
       const heading = document.querySelector('.chart-heading').getBoundingClientRect();
       const dates = ['date-start', 'date-end'].map(id => document.getElementById(id).getBoundingClientRect());
-      return heading.height <= 70 && dates.every(rect => rect.width > 90 && rect.height >= 32
-        && rect.left >= 0 && rect.right <= innerWidth && rect.top >= heading.bottom - 1)
+      const exit = document.getElementById('chart-fullscreen').getBoundingClientRect();
+      const shortcuts = document.querySelector('.range-shortcuts');
+      const wide = innerWidth >= 800;
+      return dates.every(rect => rect.width > 90 && rect.height >= 32
+        && rect.left >= 0 && rect.right <= innerWidth
+        && (wide ? Math.abs(rect.top + rect.height / 2 - exit.top - exit.height / 2) <= 2
+          : rect.top >= heading.bottom - 1))
+        && (wide ? exit.top >= 28 : heading.height <= 70 && exit.right >= innerWidth - 20)
+        && shortcuts.checkVisibility() === (innerWidth >= 1120)
+        && (!shortcuts.checkVisibility() || [...shortcuts.children].every(button => {
+          const rect = button.getBoundingClientRect();
+          return rect.left >= dates[1].right && rect.right <= document.querySelector('.chart-axis-actions').getBoundingClientRect().left
+            && Math.abs(rect.top + rect.height / 2 - exit.top - exit.height / 2) <= 2;
+        }))
         && !document.querySelector('.chart-explorer-controls');
     })()`), true, `${description}: compact inspection controls keep both date pickers usable`);
   };

@@ -700,41 +700,43 @@
     </section>
 
     <section class="panel history-panel" aria-labelledby="history-title" data-snapshot-content>
-      <div class="section-top chart-heading">
-        <div class="chart-heading-copy"><h2 id="history-title">History &amp; outlook</h2><p class="muted">Finnish local time · Europe/Helsinki</p></div>
-        <div class="chart-axis-actions">
-          <label class="axis-control">Left axis
-            <select id="left-axis">
-              <option value="power">Power</option>
-              <option value="phases">Phase currents</option>
-              <option value="integral">Heating integral</option>
-              <optgroup label="Learning">
-                <option value="learning_profit">Space-heating benefit after recovery</option>
-                <option value="learning_aux_profit">Space-heating benefit with auxiliary recovery</option>
-                <option value="learning_recovery_error">Space-heating recovery-cost prediction error</option>
-                <option value="learning_indoor_temperature">Learned normal temperature</option>
-              </optgroup>
-              <option value="solar_radiation">Solar radiation forecast</option>
-            </select>
-          </label>
-          <button id="chart-fullscreen" class="chart-shortcut secondary-button" type="button" data-chart-view="false" aria-label="Open chart view" title="Open chart view" aria-expanded="false" aria-controls="history">
-            <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4v16h16M7 14l4-5 4 3 5-7"/></svg>
-            <span>Exit</span>
-          </button>
+      <div class="chart-toolbar">
+        <div class="section-top chart-heading">
+          <div class="chart-heading-copy"><h2 id="history-title">History &amp; outlook</h2><p class="muted">Finnish local time · Europe/Helsinki</p></div>
+          <div class="chart-axis-actions">
+            <label class="axis-control">Left axis
+              <select id="left-axis">
+                <option value="power">Power</option>
+                <option value="phases">Phase currents</option>
+                <option value="integral">Heating integral</option>
+                <optgroup label="Learning">
+                  <option value="learning_profit">Space-heating benefit after recovery</option>
+                  <option value="learning_aux_profit">Space-heating benefit with auxiliary recovery</option>
+                  <option value="learning_recovery_error">Space-heating recovery-cost prediction error</option>
+                  <option value="learning_indoor_temperature">Learned normal temperature</option>
+                </optgroup>
+                <option value="solar_radiation">Solar radiation forecast</option>
+              </select>
+            </label>
+            <button id="chart-fullscreen" class="chart-shortcut secondary-button" type="button" data-chart-view="false" aria-label="Open chart view" title="Open chart view" aria-expanded="false" aria-controls="history">
+              <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4v16h16M7 14l4-5 4 3 5-7"/></svg>
+              <span>Exit</span>
+            </button>
+          </div>
         </div>
-      </div>
-      <div class="chart-range-controls">
-        <form id="chart-range-form" class="date-range" aria-label="Chart dates">
-          <input id="date-start" type="date" aria-label="Start date; selecting a date shows that day" title="Show this day" required>
-          <span aria-hidden="true">to</span>
-          <input id="date-end" type="date" aria-label="End date; extend the selected range" title="Extend the date range" required>
-        </form>
-        <div class="range-shortcuts" role="group" aria-label="Quick date ranges">
-          <button id="range-back" class="range-step" type="button" aria-label="Move shown dates back one day" title="Move shown dates back one day"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 6-6 6 6 6"/></svg></button>
-          <button id="range-yesterday" type="button" aria-pressed="false">Yesterday – today</button>
-          <button id="range-today" type="button" aria-pressed="true">Today</button>
-          <button id="range-tomorrow" type="button" aria-pressed="false">Today – tomorrow</button>
-          <button id="range-forward" class="range-step" type="button" aria-label="Move shown dates forward one day" title="Move shown dates forward one day"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg></button>
+        <div class="chart-range-controls">
+          <form id="chart-range-form" class="date-range" aria-label="Chart dates">
+            <input id="date-start" type="date" aria-label="Start date; selecting a date shows that day" title="Show this day" required>
+            <span aria-hidden="true">to</span>
+            <input id="date-end" type="date" aria-label="End date; extend the selected range" title="Extend the date range" required>
+          </form>
+          <div class="range-shortcuts" role="group" aria-label="Quick date ranges">
+            <button id="range-back" class="range-step" type="button" aria-label="Move shown dates back one day" title="Move shown dates back one day"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 6-6 6 6 6"/></svg></button>
+            <button id="range-yesterday" type="button" aria-pressed="false">Yesterday – today</button>
+            <button id="range-today" type="button" aria-pressed="true">Today</button>
+            <button id="range-tomorrow" type="button" aria-pressed="false">Today – tomorrow</button>
+            <button id="range-forward" class="range-step" type="button" aria-label="Move shown dates forward one day" title="Move shown dates forward one day"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg></button>
+          </div>
         </div>
       </div>
       <p id="chart-status" class="chart-status muted" role="status">Loading selected dates…</p>
