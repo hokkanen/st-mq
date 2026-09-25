@@ -16,7 +16,7 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
 // This saved, explicit synthetic seed exercises planner/consumer integration.
 // Its deliberately assigned validation statistics are not installed evidence.
 function syntheticSeed(settings) {
-  let model = createGarageModel({ seedAt: BASE - 96 * HOUR });
+  let model = createGarageModel({ seedAt: BASE - 96 * HOUR, roomTargetC: 10 });
   for (let i = 0; i < 384; i++) model = updateGarageModel(model, { at: BASE - 96 * HOUR + i * HOUR / 4,
     rearC: 7, frontC: 6.7, outdoorC: 0, available: true, baselineVerified: true,
     powerKw: .3, powerQuality: 'provisional', ev1Kw: 0, ev2Kw: 0 }, settings);
@@ -32,6 +32,7 @@ function setup(t, { expensiveHours = 2, totalHours = 12, forecastOutdoorC = 0 } 
   const settings = garageSettings({ enabled: true, minOnMs: 0, savingsStrategy: 'savings', protection: { approved: true } });
   const store = new Store(':memory:');
   appendGarageEntry(store, 'mqtt', 'context', {}, settings, BASE - 1, { key: 'explicit-synthetic-fixture-seed', seed: syntheticSeed(settings) });
+  store.setState('garage:configuration:mqtt', settings);
   const config = { input: 'mqtt', garage: { ...settings, adapter: { stateTopic: 'fixture/garage/state' } } };
   const engine = { latest: {}, lastKnownTemperatures: {}, settings: { mode: 'active' } };
   const runtime = new GarageRuntime({ store, engine, config, clock: () => now, canControl: () => owner });

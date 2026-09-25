@@ -5,7 +5,7 @@ const START = Date.parse('2026-01-01T00:00:00Z'), MINUTE = 60_000, HOUR = 60 * M
 const settings = { maxSensorAgeMs: 3 * MINUTE };
 
 function experiment({ rearStep = MINUTE, frontStep = 2 * MINUTE, offset = 0, jitter = false, disturb = false, metering = 'zero' } = {}) {
-  const seed = createGarageModel({ seedAt: START }), entries = [];
+  const seed = createGarageModel({ seedAt: START, roomTargetC: 10 }), entries = [];
   let model = seed, frontAt = START - offset, nextFront = START + frontStep - offset;
   const temperature = (at, rate) => at <= START + HOUR ? 10 * Math.exp(-rate * (at - START) / HOUR)
     : 10 - (10 - 10 * Math.exp(-rate)) * Math.exp(-(at - START - HOUR) / HOUR);
@@ -57,7 +57,7 @@ test('phase-offset front prediction uses ambient changes on its own supported in
   const step = START + 20 * MINUTE;
   const temperature = (at, rate) => at < step ? 10 * Math.exp(-rate * (at - START) / HOUR)
     : -5 + (10 * Math.exp(-rate / 3) + 5) * Math.exp(-rate * (at - step) / HOUR);
-  let model = createGarageModel({ seedAt: START }), frontAt = START - 15_000;
+  let model = createGarageModel({ seedAt: START, roomTargetC: 10 }), frontAt = START - 15_000;
   for (let minute = 0; minute <= 60; minute++) {
     const at = START + minute * MINUTE;
     if (minute && minute % 2 === 0) frontAt = at - 15_000;
@@ -71,7 +71,7 @@ test('phase-offset front prediction uses ambient changes on its own supported in
 });
 
 test('held, out-of-order and missing source clocks do not add front evidence', () => {
-  const row = at => ({ at, rearAt: at, frontAt: at, rearC: 10, frontC: 10, outdoorC: 0, available: false });
+  const row = at => ({ at, rearAt: at, frontAt: at, rearC: 10, frontC: 10, outdoorC: 0, available: false, roomTargetC: 10 });
   let model = updateGarageModel(null, row(START), settings);
   model = updateGarageModel(model, row(START + MINUTE), settings);
   const hours = model.front.hours;

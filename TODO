@@ -2,6 +2,33 @@
 -Implement support for local mqtt-based temperature receives (eg, from shelly or HASS through Meteorologisk Institute); just store last received temp values and time stamps (maybe in storage class, see below) when received (and accept if received within 1h)
 -Chart dataset control buttons don't work when datasets are manually hidden/unhidden from legend, how to fix?
 
+Completed 2026-09-25 — Persistent heat-pump settings and room intent
+- Ordinary Home pump parameters remain until explicitly changed; readback owns
+  their current values and later automatic control restores the accepted device
+  baseline. Keep Heat control Normal, Reduction and Preheat and explicit tests
+  temporary, with their existing deadline and restoration behavior.
+- Remove Garage's configured room default and two-hour dashboard override.
+  Seed a fresh installation from unambiguous pump evidence and retain explicit
+  room choices as device-bound state. Fan/vane edits preserve the lower target;
+  OFF and non-heating modes cannot cause the controller to force heating on.
+  Keep sensor freshness, serial handover and short control permissions separate
+  from the lifetime of the room choice.
+- Clarify the repository ownership rule and all affected UI/documentation.
+  Retain the five configured H66 integral/hysteresis assumptions because their
+  native values cannot be read. Charging configuration and session controls stay
+  scoped to controller defaults and the current physical connection.
+- Review producers, consumers, state, configuration, UI, tests and documentation;
+  reject retired timed Garage state and room-default fields without aliases or
+  migrations. Preserve current restoration obligations and journal replay.
+- Validation: all 3,148 offline tests and the production build pass. Coverage
+  includes restart, native readback ownership, failed storage/publication,
+  pending temporary restoration, late confirmation, fan/vane handover, OFF and
+  cooling, changed physical settings and journal reconstruction. Four isolated
+  Chromium checks pass for learning, Home controls, Mitsubishi controls and
+  Garage learning, including a native edit retained after Pause expires,
+  current help text, keyboard/focus behavior and responsive layouts in both
+  themes. No household services, private configuration or databases were changed.
+
 Completed 2026-09-25 — Tariff display and dropdown dismissal
 - Show tariff equipment readings directly without an expandable device fold.
   Keep reading provenance and controller-owned tariff commands intact.
@@ -44,6 +71,28 @@ Completed 2026-09-25 — Configuration ownership and temporary dashboard overrid
   ready-by handling. Browser smoke passes 22 charging states in both themes at
   widths from 320 to 1920 pixels, including one-click Charge Now and return to
   automatic control, without overlaps, overflow or browser errors.
+
+Completed 2026-09-25 — Garage normal warmth follows the room setting
+- Remove garage.baselineC from public defaults, configuration schema and current
+  runtime/model callers. Seed both normal-warmth estimates from the chosen room
+  setting, including external low-temperature control, or a fresh unambiguous
+  pump setting. Unknown room settings leave estimates unavailable. Keep initial
+  values at that setting until qualified observations establish achieved warmth.
+- Persist and journal ordinary and external room selections. Changing the target
+  resets normal-temperature/electricity evidence and whole-cycle validation while
+  retaining learned OFF cooling rates; reapplying the same target preserves it.
+  No per-setting reference cache is introduced. Keep device commissioning and
+  pause restoration independent, using the reported verified low-heat profile.
+- Review producers, consumers, state, configuration, UI, tests and docs. Version
+  learning as committed-garage-v7-room-reference; reject retired configuration
+  and algorithms without aliases or checkpoint migration. Current-version
+  restart, sensor correction and deterministic journal replay remain supported.
+- Validation: all 3,101 offline tests, production build and synthetic Chromium
+  checks pass. Cover target changes, unknown/stale/ambiguous pump settings,
+  native confirmation, reference reset/preservation, replay and restoration.
+  Disk-backed worker regressions cover current room intent during background
+  reconstruction, duplicate-reset prevention and transactional rollback.
+  No household services, equipment commands or database reset were used.
 
 Completed 2026-09-25 — Home and Garage model explanation polish
 - Review both main folds against the current thermal learners, forecasting,

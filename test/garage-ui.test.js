@@ -67,7 +67,7 @@ test('current qualified Garage intervals remain available while the Home rendere
 
 test('Garage automatic details show independent budgets, health and unresolved recovery without duplicate native readings', () => {
   const omittedCredential = randomUUID();
-  const status = { settings: { baselineC: 10, savingsStrategy: 'balanced', protection: { approved: true, marginC: 1 } },
+  const status = { settings: { savingsStrategy: 'balanced', protection: { approved: true, marginC: 1 } },
     observations: { rear: { value: 5.7 }, front: { value: 6.2, stale: true } },
     protection: { limitingLocation: 'front', locations: { rear: { remainingKjPerM: 6.3, estimatedC: 5.5 }, front: { remainingKjPerM: 2.1, estimatedC: 2.5, uncertain: true } } },
     adapter: { contractVersion: 'stmq-garage-fixture/v1', contractStatus: 'provisional-fixture-only', liveControlSupported: false,
@@ -192,14 +192,14 @@ test('permanent Mitsubishi summary values remain plain text and stop claiming st
 });
 
 test('Garage settings keep configured values separate from descriptions and live exposure', () => {
-  const settings = garageSettings({ savingsStrategy: 'gentle', baselineC: 16 });
+  const settings = garageSettings({ savingsStrategy: 'gentle' });
   const garage = { settings, protection: { locations: { rear: { remainingKjPerM: 0 }, front: { remainingKjPerM: 12 } } } };
   const before = structuredClone(garage), display = garageDisplay(garage);
   const groups = Object.fromEntries(Object.entries(display.settingGroups).map(([key, rows]) => [key, Object.fromEntries(rows)]));
   assert.equal(display.strategy.label, 'Gentle');
   assert.deepEqual(groups.economics, { 'Minimum estimated benefit': 'More than €0.75', 'Benefit retained': '60% of best opportunity' });
   assert.deepEqual(groups.heating, { 'Minimum planned off time': '1 h', 'Normal heating between pauses': '3 h minimum', 'Maximum pauses per day': '1' });
-  assert.deepEqual(groups.protection, { 'Normal room setting': '16 °C configured', 'Protection margin': '1 °C' });
+  assert.deepEqual(groups.protection, { 'Normal room setting': 'Unavailable', 'Protection margin': '1 °C' });
   assert.deepEqual(groups.recovery, { 'Reference pipe diameter': '21 mm', 'Assumed wall thickness': '1 mm', 'Heat transfer': '20 W/m²K', 'Safety factor': '2×', 'Cold allowance': 'Calculated · kJ/m', 'Recovery': 'Continuous' });
   for (const rows of Object.values(display.settingGroups)) for (const [, value, description] of rows) {
     assert(description.length > 30); assert(value.length < 30);
@@ -505,13 +505,28 @@ test('Garage rendering fills the learning contexts and keeps reconstruction insi
   assert.equal(garageDisplay({ learning: { reconstruction: 'snapshot' } }).evidenceDetails.find(row => row.key === 'recorded-history-reconstruction').value, 'Recorded primary snapshot');
 });
 
+test('Garage strategy uses the model room setting during pending commands, reporting gaps and ambiguous native reports', () => {
+  for (const [roomTargetC, nativeTargetC, expected] of [[20, 17, '20 °C'], [22, null, '22 °C'], [null, 16, 'Unavailable']]) {
+    const display = garageDisplay({ learning: garageModelSummary(createGarageModel({ roomTargetC })),
+      adapter: { connected: true, health: { deviceOnline: true, pumpCommunicating: true },
+        native: { targetC: nativeTargetC, readbacks: { targetC: { measuredAt: now } } } } }, now);
+    assert.equal(display.settingGroups.protection.find(row => row[0] === 'Normal room setting')[1], expected);
+  }
+});
+
 test('Garage model distinguishes source evidence, initial references and fitted values still awaiting validation', () => {
-  const model = createGarageModel({ baselineC: 10 });
+  const model = createGarageModel({ roomTargetC: 7 });
   const initial = garageDisplay({ learning: garageModelSummary(model) }, now);
   const initialReference = initial.outcomeDetails.find(row => row.key === 'normal-rear-warmth');
-  assert.equal(initialReference.value, '10 °C');
-  assert.equal(initialReference.provenance, 'Initial estimate');
-  assert.match(initialReference.detail, /Starting estimate from the configured baseline/);
+  assert.equal(initialReference.value, '7 °C');
+  assert.equal(initialReference.provenance, 'From room setting');
+  assert.match(initialReference.detail, /Starting estimate from the 7 °C room setting/);
+  const unknown = garageDisplay({ learning: garageModelSummary(createGarageModel()) }, now);
+  for (const row of unknown.outcomeDetails.filter(row => row.key.endsWith('-warmth'))) {
+    assert.equal(row.value, 'Unavailable');
+    assert.equal(row.provenance, 'Room setting unavailable');
+    assert.equal(row.available, false);
+  }
   assert.equal(initial.inputDetails.find(row => row.key === 'heat-pump-input').value, '0 h qualified');
   model.rear.active[0] = true; model.rear.values[0] = .02;
   model.native.active[0] = true; model.native.values[0] = .4; model.native.hours = 3;

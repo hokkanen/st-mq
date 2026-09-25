@@ -159,7 +159,7 @@ sensors, tariff relays and native Shelly devices. The Caravan fold groups air
 temperature and humidity, energy and dehumidifier controls. Native Mitsubishi
 temperatures remain in the heat-pump detail view.
 Held changes during Pause show an amber notice even when the sections are closed;
-changing a paused heating setting opens a confirmation explaining its lifetime.
+changing a paused Heat control selection opens a confirmation explaining its lifetime.
 With live `providers` or `mqtt` input and configured controls, Normal and Reduced
 send tariff requests through the controller's executor. **Max preheating** requests
 normal tariff operation and circulation, and raises the selected ROOM setting
@@ -169,7 +169,7 @@ further boosts. Leaving Max preheating removes that boost while retaining other
 manual parameter choices.
 Circulation uses MQTT switch ON/OFF and its own configured run duration whether
 paused or not. Clicking Start again starts a full new run; Stop ends it immediately.
-Ending Pause or restoring manual heating parameters does not shorten the run.
+Ending Pause or restoring a temporary Heat control action does not shorten the run.
 A successful MQTT request confirms broker acknowledgement,
 not equipment response. Manual actions are logged, do not change Away/Pause or
 enable automatic control, and are unavailable in simulation/offline mode.
@@ -477,8 +477,8 @@ still restores heating on communication loss without limiting the total pause. S
 [protection parameters](docs/garage-protection-defaults.md) for assumptions and
 reporting/restoration deadlines.
 The `shelly-cn105` Pill integration supports native controls and commissioned
-selective pause leases. Permanent low-temperature targets belong in
-`garage.roomTargetC`; **Room setting** applies a two-hour override down to 5°C
+selective pause leases. **Room setting** retains your chosen target down to 5°C
+until you change it, including after restart,
 using the independent Garage rear sensor and the Pill's external temperature
 feature: ST-MQ selects native 17°C heating and the reported external value adds
 `17 − room setting` (+12°C for a 5°C target). Each enable or renewal requires

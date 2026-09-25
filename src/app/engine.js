@@ -810,10 +810,7 @@ export class Engine {
       throw new Error('Wait for the current heating operation to finish before changing a native setting.');
     this.heatingTestBusy = true;
     try {
-      const now = this.clock(), override = this.expireTemporary(now);
-      await this.h66.setSetting({ register: input.register, value: input.value, now,
-        ...(override ? { expiresAt: override.expiresAt, pauseId: pauseIdentity(override) }
-          : { expiresAt: this.executor.status().manualTemporary?.expiresAt ?? now + 60_000 }) });
+      await this.h66.setSetting({ register: input.register, value: input.value, now: this.clock() });
       if (this.executor.reconcileManualPreheat(this.clock())) {
         await this.floorOverride?.release({ reason: 'manual-room-supersession', now: this.clock() });
         this.recordManualHeating('normal', this.clock());

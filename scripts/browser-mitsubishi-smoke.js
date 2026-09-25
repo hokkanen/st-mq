@@ -191,7 +191,9 @@ try {
   await evaluate("document.querySelector('#garage-native-temperature-details .status-detail-trigger').click()");
   const controlHelp=await evaluate("document.getElementById('status-detail-popover').textContent");
   assert.match(controlHelp,/Below 16 °C.*Garage rear.*17 °C.*offset/s);
-  assert.match(controlHelp,/16 °C or higher change the pump directly/);
+  assert.match(controlHelp,/16 °C or higher replace the lower target and use normal pump control/);
+  assert.match(controlHelp,/stays in effect until changed, including after restart/);
+  assert.match(controlHelp,/Fan and vane changes preserve it/);
   assert.match(controlHelp,/fresh sensor readings.*power on, heating mode and 17 °C/s);
   assert.match(controlHelp,/checks fail.*renewals stop.*internal sensor/s);
   assert.doesNotMatch(controlHelp,/ST-MQ/i);
@@ -209,7 +211,8 @@ try {
   assert.match(activeHelp,/Room setting: 10 °C.*native pump target of 17 °C.*adds 7 °C/s);
   assert.match(activeHelp,/Garage rear: 10 °C.*Supplied temperature: 17 °C/s);
   assert.match(activeHelp,/fresh pump readings show ON, HEAT and 17 °C.*check fails.*renewals stop/s);
-  assert.match(activeHelp,/16 °C or higher.*suspends configured external temperature control for two hours/s);
+  assert.match(activeHelp,/16 °C or higher.*replaces the lower target/s);
+  assert.doesNotMatch(activeHelp,/Temporary until|two hours|configured room target/);
   assert.doesNotMatch(activeHelp,/ST-MQ/i);
   await evaluate("document.querySelector('.status-detail-close').click()");
   assert.doesNotMatch(await evaluate("document.body.innerText"),/ST-MQ/i);

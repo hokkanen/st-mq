@@ -111,7 +111,7 @@ export function reconstructGarageHistory(store, options = {}) {
   const hash = createHash('sha256');
   let model = null, samples = 0, firstAt = null, lastAt = null, rearOnly = 0;
   for (const observation of garageHistoricalObservations(store, config)) {
-    model ??= createGarageModel({ seedAt: observation.at, baselineC: settings.baselineC });
+    model ??= createGarageModel({ seedAt: observation.at });
     model = updateGarageModel(model, observation, settings);
     hash.update(JSON.stringify(observation)); hash.update('\n');
     samples++; firstAt ??= observation.at; lastAt = observation.at;

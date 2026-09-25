@@ -37,10 +37,14 @@ production driver and a state topic; it does not arm the device. The default
 `driver: "fixture"` rejects command topics.
 The electrical selection is `none`, `native-counter` or `native-power`; the two
 energy paths cannot both contribute. Broker connection and credentials use the
-existing private MQTT settings. The normal owner baseline is read from
-`garage.baselineC` and compared with native evidence; automatic price control
-never writes a new thermostat target. Explicit ordinary setting changes use the
-separate manual interface below.
+existing private MQTT settings. The automatic-pause baseline comes from the
+device's fresh, verified low-heat profile (8–16°C), and reported native settings
+must match that profile. There is no separately configured host temperature.
+A changed baseline invalidates an outstanding pause and requires restoration;
+automatic price control never writes a new thermostat target. The room setting
+selected in the UI supplies the heat model's initial warmth reference separately
+from this device commissioning evidence. Explicit ordinary setting changes use
+the separate manual interface below.
 
 The fixture-only example is
 [`test/fixtures/garage-provisional-state.json`](../test/fixtures/garage-provisional-state.json).
@@ -241,10 +245,11 @@ reaching the 45-second uncertain-result cleanup and switching to internal sensin
 Accepted writes, missing or conflicting evidence, and expired permissions still
 use the existing cleanup path. No Pill firmware change is required.
 
-The permanent room target comes from `garage.roomTargetC`. Dashboard overrides
-last two hours and retain only their original deadline on restart. Expiry resumes
-the configured target or restores native control and its prior target. Restart
-does not replay a cached remote temperature: the host must obtain fresh source evidence and reestablish native
+The room target is durable device-bound intent, outside configuration and
+without expiry. Fan and vane commands retain it while any required serial
+clear/write/confirm/re-enable sequence completes. Power or mode edits never
+authorize forcing ON/HEAT. Restart does not replay a cached remote temperature:
+the host must obtain fresh source evidence and reestablish native
 setup before resuming. Native changes and managed pauses wait for serial clearing
 of the external override; MQTT publication alone does not prove it cleared.
 External control does not establish physical frost protection, low-heat

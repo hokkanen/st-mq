@@ -84,7 +84,7 @@ export function runBootstrapAudit({ days = 42, cadenceMinutes = 5, parameters = 
   const protectionRandom = randomSource(seed);
   const settings = garageSettings({ enabled: true, savingsStrategy: 'balanced',
     maxSensorAgeMs: Math.max(120_000, cadenceMinutes * 120_000), protection: { approved: true } });
-  let model = createGarageModel({ seedAt: AUDIT_START }), exposure = createGarageExposure(settings), planned = null;
+  let model = createGarageModel({ seedAt: AUDIT_START, roomTargetC: 7 }), exposure = createGarageExposure(settings), planned = null;
   let previousAvailable = true, availableChangedAt = AUDIT_START, totalOffHours = 0;
   const opportunities = [];
   for (let minute = 0; minute <= days * 1440; minute++) {

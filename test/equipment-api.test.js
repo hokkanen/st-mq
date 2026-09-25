@@ -136,7 +136,7 @@ test('manual switch HTTP controls change and confirm state without scheduling a 
   assert.equal(f.engine.status().equipmentControls.lastResult.sent, true);
 });
 
-test('manual H66 HTTP changes validate native settings, confirm readback and restore after one minute', async t => {
+test('native H66 HTTP changes confirm readback and remain permanent across the former expiry', async t => {
   const f = await serverFixture(t), sent = [], deviceId = 'synthetic-h66';
   const decoder = createH66Decoder({ deviceId });
   let h66;
@@ -158,15 +158,15 @@ test('manual H66 HTTP changes validate native settings, confirm readback and res
   assert.equal(changed.status, 200);
   assert.equal(changed.body.h66.lastManual.confirmed, true);
   assert.equal(changed.body.h66.readings['0203'].value, 21);
-  assert.equal(changed.body.h66.expiresAt, INITIAL + 60_000);
-  assert.equal(changed.body.h66.obligations['0203'].baseline, 20);
+  assert.equal(changed.body.h66.expiresAt, null);
+  assert.deepEqual(changed.body.h66.obligations, {});
   assert.equal(sent.length, 1);
   f.advance(60_000); await h66.reconcile();
   const restored = await (await fetch(`${f.base}/api/status`, { headers: f.headers })).json();
-  assert.equal(restored.h66.readings['0203'].value, 20);
+  assert.equal(restored.h66.readings['0203'].value, 21);
   assert.equal(restored.h66.expiresAt, null);
   assert.deepEqual(restored.h66.obligations, {});
-  assert.deepEqual(sent.map(({ payload }) => payload), ['21', '20']);
+  assert.deepEqual(sent.map(({ payload }) => payload), ['21']);
 });
 
 test('an unconfirmed HTTP switch command leaves a visible durable restoration obligation', async t => {

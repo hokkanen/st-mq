@@ -514,9 +514,7 @@ function updateH66Selector({ useReadback = false } = {}) {
     label: health.usable ? h66ReadingValue(register, reading) : 'Unavailable', detail: health.detail });
   $('h66-manual-state').classList.toggle('stale', !health.usable);
   $('h66-test-status').textContent = control.available
-    ? lastStatus?.override?.expiresAt > lastStatus?.now
-      ? `${control.label}. Changes are held until ${time(lastStatus.override.expiresAt)} or Resume now, then the previous setting is restored.`
-      : `${control.label}. This is a temporary change. If not paused, the previous setting returns on the controller’s next update, normally within 1 minute.`
+    ? `${control.label}. Remains as the pump’s setting until changed again. Automatic heating adjustments return to this setting when they end.`
     : control.reason;
   updateTemporaryButtons();
 }
@@ -529,9 +527,7 @@ function showH66Test(result) {
     result.readback != null ? `readback ${result.readback}` : '',
     result.previousValue != null ? `previously ${result.previousValue}` : '',
     result.confirmed === true ? 'device confirmed' : result.sent ? 'awaiting device confirmation' : '', result.error ?? result.reason ?? label(result.code ?? '')].filter(Boolean).join(' · ') : '';
-  if (result?.sent && !failure) $('h66-test-message').textContent += lastStatus?.override?.expiresAt > lastStatus?.now
-    ? ` · Held until ${time(result.expiresAt ?? lastStatus.override.expiresAt)} or Resume now, then the previous setting is restored.`
-    : ' · Temporary change. If not paused, the previous setting returns on the controller’s next update, normally within 1 minute. Automatic price control then resumes if enabled.';
+  if (result?.sent && !failure) $('h66-test-message').textContent += ' · Remains as the pump’s setting until changed again.';
 }
 function renderH66TestResult(s) {
   if (h66TestBusy || !clearControlMessage('h66-test-message')) return;
@@ -669,11 +665,11 @@ function render(s) {
         ? manualHold ? 'Active · holding manual heating settings' : 'Active · applying the heating plan'
         : 'Shadow plan · no automatic commands';
   const decisionTitle = manualHold
-    ? manualHold.parameters ? 'Manual heating settings held' : 'Manual heating selection held'
+    ? 'Manual heating selection held'
     : ({ normal: 'Normal heating is available', preheat: 'Building heat reserve before the reduction', reduction: 'Reducing heating during the selected interval', recovery: 'Recovering the house’s heat reserve' })[s.decision.phase ?? s.decision.action] ?? 'Heating plan';
   const heldMode = ({ normal: 'Normal heating', preheat: 'Preheat', reduction: 'Reduced heating', recovery: 'Recovery heating' })[manualHold?.phase] ?? 'Your selected heating mode';
   const decisionReasons = manualHold
-    ? `Price control is paused. ${heldMode}${manualHold.parameters ? ' and manual parameter settings are' : ' is'} held until ${time(manualHold.until)} or Resume now, then the previous settings are restored. Automatic price control then resumes if enabled.`
+    ? `Price control is paused. ${heldMode} is held until ${time(manualHold.until)} or Resume now, then temporary heating changes are restored. Heat-pump parameter edits remain in effect. Automatic price control then resumes if enabled.`
     : (s.decision.reasons ?? []).map(r => (reasons[r] ?? label(typeof r === 'string' ? r : r.message ?? r.code))
       .trim().replace(/^./, value => value.toUpperCase())).join('. ');
   const recoveryDetail = !manualHold && s.decision.phase === 'recovery'
@@ -906,12 +902,8 @@ $('h66-test-register').addEventListener('change', () => updateH66Selector({ useR
 $('h66-test-form').addEventListener('submit', async event => {
   event.preventDefault();
   const register = $('h66-test-register').value;
-  if (temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy || equipmentBusy || !h66Control(lastStatus?.h66, register).available) return;
-  if (lastStatus.override?.expiresAt > lastStatus.now
-    && !await confirmAction({ document, title: 'Change a parameter while price control is paused?',
-      message: `This parameter will stay until ${time(lastStatus.override.expiresAt)} or Resume now. It can affect heating and hot water while automatic price control is paused. The previous value returns when the pause ends.`,
-      action: 'Apply parameter' })) return;
-  if (temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy || equipmentBusy || isReadOnlyReplica(lastStatus)) return;
+  if (temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy || equipmentBusy
+    || isReadOnlyReplica(lastStatus) || !h66Control(lastStatus?.h66, register).available) return;
   h66TestBusy = true; ++refreshSequence; updateTemporaryButtons();
   controlErrors.delete('h66-test-message');
   $('h66-test-form').setAttribute('aria-busy', 'true');

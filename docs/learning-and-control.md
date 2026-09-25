@@ -392,15 +392,25 @@ Under **Sensors & Equipment**, the **Ground-source heat pump** overview contains
 Readings are grouped into heating, ground loop, hot water, equipment states,
 settings and runtime counters. Each has a reported value and a short description;
 select a value for freshness, receipt time and any requested or original setting.
-Starting a price-control pause selects Normal heating;
-subsequent manual heating and parameter changes are held
-until the pause ends or the owner selects Resume now. Previous settings are then
-restored and the automatic schedule resumes if enabled. Outside Pause, these
-manual changes revert on the next controller update, normally within one minute,
-with a one-minute restoration deadline. Repeated edits preserve the original
-baseline. **Preheat** requests the configured increase above that ROOM baseline and the pooled
-floor-valve override, with normal tariff operation. It does not stack temperature
-boosts or start continuous DHWR.
+**Adjust heat-pump parameters** changes the pump's native ROOM, hot-water start,
+hot-water stop or operating mode until deliberately changed again. These device
+settings come from fresh pump readback, have no dashboard expiry, and remain the
+baseline for later automatic heating adjustments. Restarting reads the pump; it
+does not replay an old dashboard value or restore a previous native setting.
+Controller configuration remains separate from these native device settings.
+
+**Heat control** actions retain their temporary scope. Starting a price-control
+pause selects Normal heating; subsequent Normal, Reduction or Preheat actions are
+held until the pause ends or the owner selects Resume now. Outside Pause, they
+revert on the next controller update, normally within one minute, with a
+one-minute restoration deadline. **Preheat** requests the configured increase
+above the current native ROOM baseline and the pooled floor-valve override, with
+normal tariff operation. It does not stack temperature boosts or start continuous
+DHWR. A deliberate native ROOM edit supersedes an active manual preheat boost;
+changing a different native parameter leaves the boost's restoration duty intact.
+Automatic heating cycles must finish restoring before ordinary parameter edits
+can proceed. Unconfirmed native edits are not replayed or rolled back; the live
+pump reading establishes their actual result.
 A tariff request is verified from fresh configured relay readback received after
 the request. Native Shelly control uses Switch.Set followed by Switch.GetStatus;
 the command acknowledgement alone is insufficient. Missing, stale or mismatching

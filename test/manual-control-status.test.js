@@ -15,9 +15,9 @@ function heating(command = 'preheat', paused = true) {
 }
 function native() {
   const status = heating();
-  status.h66 = { phase: 'manual-pause', expiresAt: status.override.expiresAt, pauseId: 'pause-one',
-    requested: { '0203': 25 }, lastManual: { register: '0203', value: 25, previousValue: 20,
-      at, expiresAt: status.override.expiresAt, pauseId: 'pause-one', sent: true, confirmed: true, status: 'confirmed' } };
+  status.h66 = { phase: 'normal', expiresAt: null, pauseId: null, requested: {},
+    lastManual: { register: '0203', value: 25, previousValue: 20, scope: 'native-setting',
+      at, sent: true, confirmed: true, status: 'confirmed' } };
   return status;
 }
 
@@ -51,31 +51,27 @@ test('Resume, a replacement pause, superseding ROOM changes and restoration remo
   assert.equal(heatingRequestResult(temporary), null);
 });
 
-test('native results require current ownership of the same setting and pause', () => {
+test('native command receipts are recent readback-aware notices independent of Heat control pauses', () => {
   const status = native();
   assert.equal(h66RequestResult(status), status.h66.lastManual);
-  for (const patch of [s => { s.now = s.h66.expiresAt; },
-    s => { s.h66.phase = 'normal'; s.h66.requested = {}; },
-    s => { s.h66.requested = {}; },
-    s => { s.h66.requested['0203'] = 20; },
-    s => { s.override = null; },
-    s => { s.override.id = 'replacement-pause'; },
-    s => { s.h66.pauseId = 'replacement-pause'; },
-    s => { s.h66.lastManual.sent = false; s.h66.readings = { '0203': { available: true, stale: false, value: 20 } }; },
-    s => { s.h66.restorationPending = true; }]) {
+  status.override = null;
+  assert.equal(h66RequestResult(status), status.h66.lastManual, 'Pause ownership does not own the native setting');
+  for (const patch of [s => { s.now = at + 60_000; },
+    s => { s.h66.readings = { '0203': { available: true, stale: false, value: 20 } }; },
+    s => { s.h66.restorationPending = true; },
+    s => { s.h66.lastManual.scope = 'heat-control'; }]) {
     const changed = native(); patch(changed);
     assert.equal(h66RequestResult(changed), null);
   }
   assert.equal(h66RequestResult({ now: at + 5 * 86400_000, h66: { lastManual: status.h66.lastManual } }), null);
 });
 
-test('unpaused and unchanged native requests clear when their manual ownership ends', () => {
+test('unchanged permanent native edits still show their confirmation without a temporary owner', () => {
   const status = native();
   status.override = null;
-  status.h66.phase = 'manual-temporary'; status.h66.pauseId = null;
-  Object.assign(status.h66.lastManual, { pauseId: null, sent: false, previousValue: 25 });
+  Object.assign(status.h66.lastManual, { sent: false, previousValue: 25 });
   assert.ok(h66RequestResult(status));
-  status.h66.phase = 'normal'; status.h66.requested = {};
+  status.h66.lastManual.scope = 'heat-control';
   assert.equal(h66RequestResult(status), null);
 });
 

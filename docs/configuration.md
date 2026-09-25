@@ -103,12 +103,16 @@ scheduling enablement and priority are shown read-only in the dashboard. **Charg
 Now** releases automatic scheduling for the current connection, subject to
 native limits and device readiness. See [charging](charging.md).
 
-Garage's optional `garage.roomTargetC` sets its configured external-sensor room
-target from 5°C to 15.5°C in half-degree steps. Omit it to use native internal
-sensor control. A dashboard room override lasts two hours; expiry returns to
-this configured target or restores native control and the prior native target.
-Restart retains only the original deadline. Setting up the external sensor still
-requires the installed adapter capability and fresh native/sensor evidence.
+Heat-pump parameter edits remain in effect until deliberately changed. Native
+readback is authoritative; readable pump settings are not controller defaults.
+Garage initially reads a fresh unambiguous native setting. A chosen lower room
+target is retained as device-bound application state because external sensing
+uses a native 17°C target. It has no expiry or configured temperature fallback.
+Fresh native/sensor evidence is still required to activate the external feed.
+Home Heat control actions Normal, Reduction and Preheat retain their separate
+temporary behavior. The H66 assumptions `compressor_integral_a1`,
+`aux_integral_a2`, `compressor_hysteresis_c`, `aux_hysteresis_c` and `a2_basis`
+remain in configuration because the integration cannot read those settings.
 Native heat-pump and dehumidifier controls directly change the device's settings;
 local charger setup explicitly configures the device connection. Those actions
 are labeled separately and do not change controller configuration defaults.

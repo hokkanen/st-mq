@@ -1,6 +1,6 @@
 # Garage heating
 
-Garage supports a configured room target with temporary dashboard overrides and occasional worthwhile heat-pump OFF
+Garage supports a persistent room setting and occasional worthwhile heat-pump OFF
 periods. Economic control never preheats or raises the room setting. Two simple cooling rates predict the rear and front air;
 two independent copper-pipe reference temperatures limit the pause. After each
 pause, normal heating and observed recovery must complete before another starts.
@@ -66,7 +66,7 @@ learned optimal values or annual savings percentages. Temperature protection,
 uncertainty, minimum OFF/recovery requirements and daily limits apply at every
 strategy. See [the selection model](garage-model.md#one-opportunity-at-a-time).
 
-**Room setting** in Heat-pump settings accepts a two-hour override down to **5°C**
+**Room setting** in Heat-pump settings accepts a persistent target down to **5°C**
 when the installed Pill supports external temperature control and its local
 feature flag is enabled. Targets below 16°C use the independent Garage rear
 sensor, `garage_temperature`. The pump must already be ON in HEAT mode. ST-MQ
@@ -75,14 +75,12 @@ explicitly commands and confirms the native 17°C target and feeds the Pill
 12°C. The room setting and native 17°C readback are displayed separately. This
 does not use Mitsubishi i-save or assume that a special mode survives OFF/ON.
 
-The permanent low-temperature target is `garage.roomTargetC` (5–15.5°C in
-half-degree steps). Omit it for native internal-sensor control. Dashboard
-changes show their two-hour deadline and never overwrite that configuration.
-Expiry restores the configured target, or the prior native target when there
-is no configured room target. Restart preserves only the remaining time.
-A temporary low target requires a restorable native 16–31°C target when no
-configured low target exists. Native setting changes suspend the configured
-external target for two hours before it can resume with fresh ON/HEAT evidence.
+An empty database starts from a fresh unambiguous pump setting. Subsequent room
+choices are retained as device-bound application state, outside configuration
+and without expiry. Fan and vane adjustments preserve the target through any
+required clear/write/confirm/re-enable sequence. Power off and non-heating modes
+retain the choice without forcing heating back on. Choosing a room temperature
+of 16°C or higher replaces the lower target and selects native internal sensing.
 
 Remote temperature values use the driver's 8–39.5°C range and 0.5°C steps. Only
 original, usable sensor reports less than 90 seconds old can renew the feed;
@@ -96,8 +94,7 @@ If a published renewal is lost, a newer live acknowledgement of the previous
 sample and a fresh device challenge permit a retry after 10 seconds, while that
 previous sample remains valid. Retries retain the original sensor clock and all
 native-setting checks; accepted or ambiguous writes still require cleanup.
-The configured room target, or a still-unexpired override, resumes after a host
-restart only once fresh source
+The retained room target resumes after a host restart only once fresh source
 evidence and native setup are established again. The override is cleared through
 the serial path before ordinary native settings or a managed pause can proceed.
 This control path does not establish physical frost protection or qualify the
@@ -176,7 +173,7 @@ inputs and restart retain restoration obligations; restart never resumes OFF.
 
 ## Learning, recovery and reporting
 
-`committed-garage-v6-source-clocks` learns only two effective cooling coefficients,
+`committed-garage-v7-room-reference` learns only two effective cooling coefficients,
 from clean OFF intervals. Charger heat is **7.5% of qualifying charger energy**
 (or power), shown separately. It never schedules charging for warmth or credits
 future charging when judging safe OFF time. Current, unknown and forecast charging

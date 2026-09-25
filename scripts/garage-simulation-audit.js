@@ -35,10 +35,12 @@ export function runScenario(options = {}, api = currentModel) {
   const { name = 'nominal', cadenceMinutes = 5, days = 42, frequency = 'three-weekly', parameters = {}, seed = 731,
     offDurations = [1, 2], includeSnapshot = false } = options;
   const started = performance.now(), plant = createPlant(parameters), random = randomSource(seed);
-  let model = api.createGarageModel({ seedAt: AUDIT_START });
+  // The independent plant explicitly uses a 7°C room setting, with weather
+  // response modeled separately by its physical simulation.
+  let model = api.createGarageModel({ seedAt: AUDIT_START, roomTargetC: 7 });
   let observedRows = 0, priorRow = null, offEpisodes = 0, wasAvailable = true;
   const simple = { rearXY: 0, rearXX: 0, frontXY: 0, frontXX: 0 };
-  const settings = { baselineC: 10, maxSensorAgeMs: 4 * HOUR };
+  const settings = { maxSensorAgeMs: 4 * HOUR };
   for (let minute = 0; minute <= days * 1440; minute++) {
     const hour = minute / 60, schedule = frequency === 'never' ? { available: true } : pauseSchedule(hour, frequency);
     const input = { ...plantInputs(plant, hour, schedule), ...schedule };
@@ -60,7 +62,7 @@ export function runScenario(options = {}, api = currentModel) {
     if (minute < days * 1440) stepPlant(plant, input);
   }
   const summary = api.garageModelSummary(model), endHour = days * 24;
-  const prior = api.createGarageModel({ seedAt: AUDIT_START });
+  const prior = api.createGarageModel({ seedAt: AUDIT_START, roomTargetC: 7 });
   prior.normalReference = structuredClone(model.normalReference);
   const initial = { ...model.state, rearC: priorRow.rearC, frontC: priorRow.frontC,
     differenceC: priorRow.frontC - priorRow.rearC };

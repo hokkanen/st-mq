@@ -50,7 +50,7 @@ test('H66 readback confirms only after durable commit and rollback retains physi
   const f = await fixture(t);
   f.send('0203', 20, { qos: 1, messageId: 20 });
   f.at(START + 1000);
-  const pending = f.reader.h66.setSetting({ register: '0203', value: 21 }); let confirmed = false;
+  const pending = f.reader.h66.writeSettings({ '0203': 21 }); let confirmed = false;
   pending.then(() => { confirmed = true; }); await flush();
   const before = f.reader.h66.ingestionCheckpoint(), packet = { qos: 1, messageId: 21, dup: true };
   failCommit(f.store); f.send('0203', 21, packet); await flush();
@@ -69,4 +69,23 @@ test('H66 readback confirms only after durable commit and rollback retains physi
   f.send('0203', 22, external);
   assert.equal(f.reader.h66.status().readings['0203'].value, 22);
   assert.equal(f.reader.h66.status().obligations['0203'], undefined, 'committed external change preserves the owner setting');
+});
+
+test('a permanent native edit waits for committed readback without acquiring restoration ownership', async t => {
+  const f = await fixture(t);
+  f.send('0203', 20, { qos: 1, messageId: 30 });
+  f.at(START + 1000);
+  const pending = f.reader.h66.setSetting({ register: '0203', value: 21 }); let confirmed = false;
+  pending.then(() => { confirmed = true; }); await flush();
+  assert.deepEqual(f.reader.h66.status().obligations, {});
+  failCommit(f.store);
+  const packet = { qos: 1, messageId: 31, dup: true };
+  f.send('0203', 21, packet); await flush();
+  assert.equal(confirmed, false);
+  assert.equal(f.reader.h66.status().readings['0203'].value, 20);
+  assert.equal(f.reader.h66.status().lastManual.status, 'pending');
+  f.send('0203', 21, packet); await pending;
+  assert.equal(confirmed, true);
+  assert.equal(f.reader.h66.status().lastManual.readback, 21);
+  assert.deepEqual(f.reader.h66.status().obligations, {});
 });

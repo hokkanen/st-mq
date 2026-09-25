@@ -295,7 +295,7 @@ test('front sensor accepts negative Celsius and remains distinct from Home avera
 });
 
 test('frozen episode accounting preserves negative savings, rejects gaps and cannot complete with front debt', () => {
-  const model = createGarageModel({ seedAt: START });
+  const model = createGarageModel({ seedAt: START, roomTargetC: 10 });
   model.state = { rearC: 8, frontC: 7.5, coreC: 8, differenceC: -.5 };
   const first = { at: START, rearC: 8, frontC: 7.5, outdoorC: 0, available: true, ev1Kw: 0, ev2Kw: 0 };
   let account = startGarageAssessment(model, first);

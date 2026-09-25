@@ -284,12 +284,59 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
       && timestamp(state.expiresAt) > now) return restoreRequired;
     return restoreRequired || Object.keys(state.obligations).length > 0 || !['normal', 'recovery'].includes(state.phase);
   }
-  /** Manual native changes retain their original baseline until the next automatic
-   * update, bounded by one minute. An active price-control pause instead holds
-   * them until its deadline. Repeated edits share the original restoration owner. */
+  /** Ordinary device edits establish the pump's native settings. They have no
+   * restoration deadline and are never replayed from saved intent. Later thermal
+   * overrides capture their own baseline from fresh pump readback. */
   async function setSetting(options = {}) {
-    return setManualSetting(options);
+    if (!options || typeof options !== 'object' || Array.isArray(options)
+      || Object.keys(options).some(key => !['register', 'value', 'now'].includes(key)))
+      throw failure('H66_SETTINGS_INVALID', 'Choose an H66 register and value.');
+    const { register, value, now = clock() } = options;
+    validateValues({ [register]: value });
+    if (manualConflict(state.pauseId ?? undefined))
+      throw failure('H66_MANUAL_CONFLICT', 'Wait for the current controller override or restoration before changing a native setting.');
+    return exclusive(async () => {
+      requireConnection(clock());
+      const previous = current(register, clock());
+      if (!previous) throw failure('H66_BASELINE_UNAVAILABLE', 'A fresh native-setting reading is required.');
+      const before = { ...state, baseline: { ...state.baseline }, obligations: { ...state.obligations }, requested: { ...state.requested } };
+      const changed = !equal(previous.value, value);
+      const supersede = () => {
+        delete state.obligations[register]; delete state.baseline[register]; delete state.requested[register];
+        if (register === '0203') state.manualPreheat = null;
+        if (!Object.keys(state.obligations).length) {
+          state.phase = 'normal'; state.baseline = {}; state.requested = {};
+          state.expiresAt = null; state.pauseId = null; restoreRequired = false;
+        }
+      };
+      // An existing temporary boost keeps its restoration duty until the new
+      // native value is confirmed. Failed delivery must not strand that boost.
+      // Reasserting the current value deliberately promotes it immediately.
+      if (!changed) supersede();
+      const requested = { register, value, previousValue: previous.value, at: now, scope: 'native-setting',
+        status: 'pending', confirmed: false, sent: changed ? null : false };
+      state.lastManual = requested;
+      try { persist(); }
+      catch (error) { state = before; throw error; }
+      armExpiry();
+      try {
+        const readback = changed ? await publishAndReadback(register, value, clock()) : previous;
+        supersede();
+        state.lastManual = { ...requested, status: 'confirmed', confirmed: true, sent: changed,
+          readback: readback.value, confirmedAt: clock() };
+        noteResult({ status: 'confirmed', reason: 'native-setting', register, value, confirmed: true, sent: changed });
+        event('h66-native-setting-confirmed', { register, value, previousValue: previous.value, sent: changed });
+        return copy(state.lastManual);
+      } catch (error) {
+        const code = ['H66_READBACK_TIMEOUT', 'H66_WRITE_FAILED', 'H66_DISCONNECTED', 'H66_CLOSED'].includes(error?.code)
+          ? error.code : 'H66_WRITE_FAILED';
+        state.lastManual = { ...state.lastManual, status: 'unconfirmed', confirmed: false, code };
+        persist();
+        throw failure(code, 'The native setting change was not confirmed. Check its live value before trying again.');
+      }
+    });
   }
+  // Heat control's explicit Preheat action retains its bounded restoration duty.
   async function setManualSetting({ register, value, now = clock(), expiresAt, pauseId } = {}, preheatChange) {
     validateValues({ [register]: value });
     const paused = pauseId != null;
@@ -313,7 +360,7 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
       // edits preserve it, and disabling the boost restores only its base ROOM.
       if (register === '0203') state.manualPreheat = preheatChange
         ? { ...preheatChange, pauseId: state.pauseId, expiresAt: end, confirmed: false } : null;
-      const requested = { register, value, previousValue: previous.value, at: now,
+      const requested = { register, value, previousValue: previous.value, at: now, scope: 'heat-control',
         pauseId: state.pauseId, expiresAt: end,
         status: 'pending', confirmed: false, sent: false };
       state.lastManual = requested;
@@ -479,7 +526,7 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
             : active ? 'A setting transition is in progress.' : null,
         unit: H66_REGISTERS[index].unit, min: LIMITS[index][0], max: LIMITS[index][1] }])),
       documentation: H66_DOCUMENTATION,
-      limitation: 'Setting readback confirms a published register value, not compressor operation. Manual settings revert on the next automatic update, normally within one minute, if price control is not paused. During a pause they remain selected until it ends. Restoration requires the application and MQTT connection.' };
+      limitation: 'Setting readback confirms a published register value, not compressor operation. Heat-pump parameter edits remain as native settings. Temporary Heat control actions restore their captured native settings when they end; restoration requires the application and MQTT connection.' };
   }
   async function test({ register, value, durationSeconds = 60, now = clock(), expiresAt } = {}) {
     if (!Number.isFinite(durationSeconds) || durationSeconds < 1 || durationSeconds > 900)

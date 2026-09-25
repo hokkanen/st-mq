@@ -100,10 +100,12 @@ function garageLearningRows(garage, now) {
   ];
   for (const location of ['rear', 'front']) if (reference) outcomes.push(learningRow(`normal-${location}-warmth`,
     `Normal ${location} warmth`, number(reference[`${location}C`], '°C'), 'Normal-heating references',
-    reference.initialized === true ? 'Learned' : reference.initialized === false ? 'Initial estimate' : 'Unknown basis',
+    reference.initialized === true ? 'Learned' : finite(reference[`${location}C`]) ? 'From room setting' : 'Room setting unavailable',
     reference.initialized === true
       ? 'Air temperature learned from settled normal heating. It anchors the recovery forecast and helps the planner judge heating demand and recovery; it is separate from the pump thermostat setting.'
-      : 'Starting estimate from the configured baseline, updated as settled normal-heating observations arrive. Enough qualified observations must establish this reference before a new automatic pause is eligible.',
+      : finite(reference.roomTargetC)
+        ? `Starting estimate from the ${number(reference.roomTargetC, '°C')} room setting. Both locations start here until enough settled normal-heating observations establish their own achieved temperatures. Changing the room setting restarts this reference learning; an initial estimate does not qualify a new automatic pause.`
+        : 'Choose a room setting in Heat-pump settings, or wait for a fresh pump setting. Without a known setting there is no initial normal-warmth estimate. Settled observations must establish both references before a new automatic pause is eligible.',
     `${number(reference.qualifiedHours, 'h')} qualified normal-heating observations.`));
   const reconstruction = ({ current: 'Up to date', snapshot: 'Recorded primary snapshot', rebuilding: 'Rebuilding from recorded history', failed: 'Reconstruction unavailable' })[learning.reconstruction] ?? 'Unavailable';
   const evidenceDetails = [];
@@ -266,7 +268,7 @@ export function garageDisplay(garage = {}, now = Date.now()) {
       ['Maximum pauses per day', number(settings.maxPausesPerDay), 'This cap limits additional pump starts independently of the strategy. Pause starts count even if device confirmation is missing; the count uses the Finnish calendar day.'],
     ],
     protection: [
-      ['Normal room setting', room ? `${room.value} · ${room.basis}` : finite(settings.baselineC) ? `${number(settings.baselineC, '°C')} configured` : 'Unavailable', 'Shows the saved room setting when available, otherwise the configured native baseline. It is not a minimum air temperature during savings. Change the room setting in Mitsubishi Heat-pump settings; below 16 °C uses the Garage rear sensor with a native 17 °C target.'],
+      ['Normal room setting', room ? `${room.value} · ${room.basis}` : number(learning.normalReference?.roomTargetC, '°C'), 'Room setting used by the heat model, from your selection or an unambiguous pump report. It supplies the initial normal-warmth estimate; settled observations later establish each location’s achieved temperature. A new selection applies here while the pump command is pending; the last known setting remains during a reporting gap. Change it in Mitsubishi Heat-pump settings. Below 16 °C uses Garage rear with a native 17 °C target.'],
       ['Protection margin', number(policy.marginC, '°C'), 'The reference pipe must stay above this temperature, including the delay until useful heat returns. This is an estimated pipe-temperature boundary, not the pump thermostat or an air-temperature switch.'],
     ],
     recovery: [

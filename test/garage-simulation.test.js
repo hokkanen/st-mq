@@ -67,7 +67,7 @@ test('long OFF audit branches price the full recovery allowance over a proportio
 
 test('independent noisy journal replay and repeated simulation are deterministic', () => {
   const plant = createPlant({ ev: true, doors: true }), random = randomSource(47), entries = [];
-  const seed = createGarageModel({ seedAt: AUDIT_START });
+  const seed = createGarageModel({ seedAt: AUDIT_START, roomTargetC: 7 });
   let online = seed;
   for (let minute = 0; minute <= 3 * 1440; minute++) {
     const hour = minute / 60, input = { ...plantInputs(plant, hour, pauseSchedule(hour)), ...pauseSchedule(hour) };

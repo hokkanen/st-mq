@@ -113,7 +113,7 @@
                       <label for="pause-until">Pause until</label>
                       <div class="temporary-input-row"><input id="pause-until" type="datetime-local" step="60" aria-describedby="override-status pause-help"><button id="resume-now" class="secondary-button" type="button" disabled>Resume now</button></div>
                       <p id="override-status" class="temporary-status">Price control is not paused.</p>
-                      <p id="pause-help" class="muted">Starting a pause requests Normal heating. Heating and parameter changes made afterwards stay until the pause ends or you select Resume now, then the previous settings are restored. Automatic price control then resumes if enabled; monitoring and learning continue throughout.</p>
+                      <p id="pause-help" class="muted">Starting a pause requests Normal heating. Normal, Reduction and Preheat selections made afterwards stay until the pause ends or you select Resume now, then the previous heating state is restored. Heat-pump parameter edits remain in effect. Automatic price control then resumes if enabled; monitoring and learning continue throughout.</p>
                     </div>
                     <div class="temporary-actions"><button id="temporary-submit" type="submit" disabled>Apply changes</button><p id="temporary-message" class="muted" role="status"></p></div>
                     <p id="override-scope" class="muted">Changes are recorded without sending equipment commands.</p>
@@ -305,7 +305,7 @@
                     <p id="h66-context" class="muted" role="status" hidden></p>
                     <details id="h66-test-details" class="equipment-fold">
                       <summary>Adjust heat-pump parameters</summary>
-                      <form id="h66-test-form" class="h66-test-form" aria-describedby="heating-test-help home-hold-warning h66-test-status">
+                      <form id="h66-test-form" class="h66-test-form" aria-describedby="h66-test-status">
                         <label>Setting<select id="h66-test-register">
                           <option value="0203">Room setting</option><option value="0212">Hot water start</option>
                           <option value="0208">Hot water stop</option><option value="2201">Operating mode</option>

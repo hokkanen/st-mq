@@ -336,13 +336,18 @@ try {
   assert.equal(await evaluate("window.savedProviderFold === document.querySelector('#providers .provider-fold') && window.savedProviderFold.open"), true, 'Provider folds stay mounted and open across refreshes');
   assert.equal(await evaluate("document.activeElement === document.querySelector('#providers summary')"), true, 'Provider summary keeps keyboard focus');
   assert.equal(await evaluate("document.querySelector('#providers .provider-series').children.length > 0"), true);
+  app.engine.setOverride(1);
+  await send('Page.reload');
+  await until("document.getElementById('history')?.dataset.ready === 'true'");
+  assert.match(await evaluate("document.getElementById('h66-test-status').textContent"), /Remains as the pump’s setting until changed again/);
   await evaluate("document.getElementById('home-equipment-details').open=true; document.getElementById('home-pump-device').open=true; document.getElementById('h66-test-details').open=true; document.getElementById('h66-readings-details').open=true; window.savedH66Row=document.querySelector('#h66-readings tr[data-register=\"0208\"]'); window.savedH66Trigger=window.savedH66Row.querySelector('.status-detail-trigger'); document.getElementById('h66-test-register').value='0208'; document.getElementById('h66-test-register').dispatchEvent(new Event('change')); document.getElementById('h66-test-value').value='50'; document.getElementById('h66-test-form').requestSubmit()");
   await until("document.getElementById('h66-test-message').textContent.includes('confirmed')");
   assert.equal(publications.length, 1); assert.equal(publications[0].value, '50');
-  assert.equal(h66.status().readings['0208'].baseline, 55);
+  assert.equal(h66.status().readings['0208'].baseline, null);
   assert.equal(h66.status().lastManual.previousValue, 55);
   assert.equal(h66.status().lastManual.readback, 50);
-  assert.equal(h66.status().expiresAt, now + 60_000);
+  assert.equal(h66.status().expiresAt, null);
+  assert.equal(h66.status().lastManual.scope, 'native-setting');
   assert.equal(await evaluate("document.getElementById('h66-test-message').textContent.includes('previously 55')"), true);
   assert.equal(await evaluate("document.getElementById('h66-manual-state').textContent.includes('50 °C')"), true);
   assert.equal(await evaluate("document.getElementById('h66-readings-details').open && window.savedH66Row === document.querySelector('#h66-readings tr[data-register=\"0208\"]') && window.savedH66Trigger === window.savedH66Row.querySelector('.status-detail-trigger')"), true,
@@ -350,20 +355,20 @@ try {
   await evaluate("document.getElementById('h66-readings-details').open=true; document.querySelector('#h66-readings tr[data-register=\"0208\"] .status-detail-trigger').click();true");
   const settingDetails = await evaluate("document.querySelector('#status-detail-popover .status-detail-body').textContent");
   assert.match(settingDetails, /Received/);
-  assert.match(settingDetails, /requested.*50 °C/i);
-  assert.match(settingDetails, /original.*55 °C/i);
+  assert.equal(await evaluate("window.savedH66Trigger.textContent"), '50 °C');
+  assert.doesNotMatch(settingDetails, /Requested by this controller|Original setting/i);
   await evaluate("document.querySelector('#status-detail-popover .status-detail-close').click();true");
   now += 61_000; await h66.reconcile({ now }); app.engine.tick();
-  assert.deepEqual(publications.map(item => item.value), ['50', '55'], 'The elapsed manual command restores its original value');
+  assert.deepEqual(publications.map(item => item.value), ['50'], 'An ordinary pump setting remains after Pause expires');
   await send('Page.reload');
   await until("document.getElementById('history')?.dataset.ready === 'true'");
-  assert.deepEqual(publications.map(item => item.value), ['50', '55'], 'An unpaused manual setting restores its previous value and page reload does not replay it');
-  assert.equal(h66.status().readings['0208'].value, 55);
+  assert.deepEqual(publications.map(item => item.value), ['50'], 'The pump retains the setting and page reload does not replay it');
+  assert.equal(h66.status().readings['0208'].value, 50);
   await evaluate("document.getElementById('h66-test-register').value='0208'; document.getElementById('h66-test-register').dispatchEvent(new Event('change'))");
-  assert.equal(await evaluate("document.getElementById('h66-manual-state').textContent.includes('55 °C')"), true);
+  assert.equal(await evaluate("document.getElementById('h66-manual-state').textContent.includes('50 °C')"), true);
   assert.equal(h66.status().restorationPending, false);
   assert.deepEqual(errors, []);
-  console.log(JSON.stringify({ result: 'learning-ui-smoke-passed', checks: ['real chart pixels', 'four learning axes', 'solar axis', 'immutable model input axes', 'empty selected axis', 'all catalogued input source folds', 'separate action readiness', 'mode strip', 'saved visibility', 'Home and Garage card structure', 'independent expanded dashboard cards', 'Home equipment and learning nesting', 'preserved nested disclosures', 'chart disclosure markers and keyboard controls', 'provider folds preserve focus', 'visible settings reload scope', 'settings reload preserves drafts and nested disclosures', 'current coefficients', 'H66 home summary', 'grouped H66 readings and inline descriptions', 'H66 disclosure keyboard controls', 'stable H66 readings across refreshes', 'actual Engine parameters', 'unavailable H66 controls', 'desktop and mobile layout', 'temporary manual H66 API setting, readback and restoration with synthetic transport'] }));
+  console.log(JSON.stringify({ result: 'learning-ui-smoke-passed', checks: ['real chart pixels', 'four learning axes', 'solar axis', 'immutable model input axes', 'empty selected axis', 'all catalogued input source folds', 'separate action readiness', 'mode strip', 'saved visibility', 'Home and Garage card structure', 'independent expanded dashboard cards', 'Home equipment and learning nesting', 'preserved nested disclosures', 'chart disclosure markers and keyboard controls', 'provider folds preserve focus', 'visible settings reload scope', 'settings reload preserves drafts and nested disclosures', 'current coefficients', 'H66 home summary', 'grouped H66 readings and inline descriptions', 'H66 disclosure keyboard controls', 'stable H66 readings across refreshes', 'actual Engine parameters', 'unavailable H66 controls', 'desktop and mobile layout', 'persistent native H66 API setting and readback with synthetic transport'] }));
   await send('Page.close');
 } finally {
   socket?.close(); for (const task of pending.values()) clearTimeout(task.timer);

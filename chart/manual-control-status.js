@@ -29,13 +29,11 @@ export function heatingRequestResult(status = {}, result = status.heatingTests?.
 
 export function h66RequestResult(status = {}) {
   const h66 = status.h66 ?? {}, result = h66.lastManual, now = status.now ?? Date.now();
-  if (!result) return null;
+  if (!result || result.scope !== 'native-setting') return null;
   if (failed(result)) return recent(result, now) ? result : null;
-  if (h66.restorationPending || !(h66.expiresAt > now) || !(result.expiresAt > now)
-    || !['manual-pause', 'manual-temporary'].includes(h66.phase)
-    || h66.requested?.[result.register] !== result.value) return null;
-  if (result.pauseId != null && (h66.pauseId !== result.pauseId || !(status.override?.expiresAt > now)
-    || status.override.id !== result.pauseId)) return null;
+  // This is a recent command receipt, not an expiry of the native setting. The
+  // permanent current value is shown by the separate live pump reading.
+  if (!recent(result, now) || h66.restorationPending) return null;
   const reading = h66.readings?.[result.register];
   if (reading?.available === true && reading.stale === false && reading.value !== result.value) return null;
   return result;

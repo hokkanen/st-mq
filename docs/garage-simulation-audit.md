@@ -1,15 +1,18 @@
 # Garage simple OFF simulation audit
 
-The current audit tests `committed-garage-v6-source-clocks` against an independent
+The current audit harness tests `committed-garage-v7-room-reference` against an independent
 simulated garage. It checks short cooling forecasts, deterministic learning,
 conservative opportunity selection and separation of thermal evidence from
 measured electricity. These are software experiments, not installed garage
 measurements, Mitsubishi metering verification, pipe-safety validation or realized
 savings.
 
-The recorded planning results below predate the `garage-savings-preference-v3`
-selection policy. The two-rate thermal learning algorithm is unchanged, but these
-results do not establish the behavior of the new preference-dependent selection.
+The recorded results below were produced with `committed-garage-v6-source-clocks`.
+The current harness explicitly supplies the independent plant's room setting;
+it no longer seeds normal warmth from a separate configured baseline. The
+recorded planning results also predate the current `garage-savings-strategy-v1`
+selection policy. The two-rate cooling equations are unchanged, but these
+results do not establish the behavior of the current strategy-dependent selection.
 Current policy is documented in [Garage model](garage-model.md#one-opportunity-at-a-time);
 rerun the planning commands below for results under that policy.
 
@@ -75,7 +78,7 @@ mild, ordinary, exceptional and repeated-peak tariffs. It compares one contiguou
 OFF opportunity against unchanged native heating, without preheating or a second
 shutdown. The audited policy used a default €0.50 minimum saving after recovery
 and uncertainty allowances; removing duration ceilings did not remove that
-economic threshold. The current preference 50 retains the €0.50 threshold and
+economic threshold. The current Balanced strategy retains the €0.50 threshold and
 also prefers a shorter window retaining at least 80% of the best benefit.
 Exceptional tariffs are stress inputs, not representative or forecast prices.
 

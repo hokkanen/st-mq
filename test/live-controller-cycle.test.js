@@ -73,7 +73,7 @@ test('native setting tests remain active for their bounded interval across contr
   assert.equal(native.values['0212'],47);r.engine.tick();await r.settle();assert.deepEqual(r.commands.at(-1),['normal']);
 });
 
-test('direct native settings outside Pause restore on the next controller update with a one-minute deadline', async t => {
+test('direct native settings survive automatic controller updates without an expiry', async t => {
   const r = setup(t, { mode: 'shadow' }), native = r.native();
   r.engine.tick(); await r.settle();
   await assert.rejects(r.engine.setH66Setting({ register: '0203', value: 20, durationMinutes: 2 }), /Choose an H66/);
@@ -81,15 +81,31 @@ test('direct native settings outside Pause restore on the next controller update
   assert.equal(changed.h66.lastManual.confirmed, true);
   assert.equal(native.values['0203'], 20);
   assert.equal(r.engine.heatingTestBusy, false);
-  assert.equal(changed.h66.expiresAt, r.now + 60_000);
-  assert.equal(changed.h66.obligations['0203'].baseline, 19);
+  assert.equal(changed.h66.expiresAt, null);
+  assert.deepEqual(changed.h66.obligations, {});
   r.advance(1000); r.engine.tick(); await r.settle();
-  assert.equal(native.values['0203'], 19);
+  assert.equal(native.values['0203'], 20);
+  r.advance(60_000); r.engine.tick(); await r.settle();
+  assert.equal(native.values['0203'], 20);
   assert.equal(native.h66.status().expiresAt, null);
   assert.deepEqual(native.h66.status().obligations, {});
   r.engine.dispatchPending = Promise.resolve();
   await assert.rejects(r.engine.setH66Setting({ register: '0203', value: 21 }), /current heating operation/);
   r.engine.dispatchPending = null;
+});
+
+test('ending a price-control pause preserves permanent native edits made during it', async t => {
+  const r = setup(t, { mode: 'shadow' }), native = r.native();
+  r.engine.setOverride(15); await r.settle();
+  await r.engine.setH66Setting({ register: '0212', value: 46 });
+  assert.equal(native.values['0212'], 46);
+  assert.equal(native.h66.status().pauseId, null);
+  r.advance(15 * 60_000);
+  for (const [register, value] of Object.entries(native.values)) native.receive(register, value);
+  r.engine.tick(); await r.settle();
+  assert.equal(r.engine.status().override, null);
+  assert.equal(native.values['0212'], 46);
+  assert.deepEqual(native.h66.status().obligations, {});
 });
 
 test('a restarted interrupted live cycle is incomplete while relay restoration remains durable',async t=>{

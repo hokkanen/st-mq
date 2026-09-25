@@ -80,20 +80,26 @@ H66 normally supplies no measurement timestamp, so ST-MQ labels freshness using
 receipt time. A successful MQTT connection alone does not establish heat-pump
 communication or a matching register profile.
 
-## Verify setting changes and restoration
+## Verify native settings and temporary heating restoration
 
-Once the readings agree, use **Adjust heat-pump parameters** for a small,
-bounded ROOM change. Record the original setting, choose a nearby valid value,
-and confirm both the gateway and ST-MQ report the changed value. Outside a
-price-control pause, the manual change reverts on the next controller update,
-with a one-minute restoration deadline. Confirm the original value returns in
-both interfaces before testing another setting. During Pause, manual changes
-are held until its deadline or **Resume now**; finish an existing pause first
-when testing the short restoration path.
+Once the readings agree, **Adjust heat-pump parameters** makes an ordinary native
+device edit. Record the original setting, choose a nearby valid value, and confirm
+both the gateway and dashboard report the changed value. It stays in effect until
+deliberately changed again, including across controller updates, pause expiry and
+application restart. Change it back explicitly after a commissioning check.
 
-Broker delivery is separate from matching native readback. ST-MQ saves pending
-restoration and retries after reconnect or restart, but restoration requires the
-application and gateway connection; H66 has no documented device-side expiry.
+The separate **Heat control** Normal, Reduction and Preheat actions remain
+temporary. Outside a price-control pause they revert on the next controller
+update, with a one-minute restoration deadline. During Pause they are held until
+its deadline or **Resume now**. Automatic heating adjustments also restore their
+captured native baseline, including any permanent parameter edit made before
+the adjustment started.
+
+Broker delivery is separate from matching native readback. A permanent native
+edit is never replayed or rolled back after uncertain delivery; fresh pump
+readings establish its actual result. Temporary overrides retain their persisted
+restoration duty after reconnect or restart. Restoration requires the application
+and gateway connection; H66 has no documented device-side expiry.
 Resolve failed readback or pending restoration before enabling automatic control.
 The supported controls and their roles are documented in
 [learning and control](learning-and-control.md#h66-readbacks-and-commands).

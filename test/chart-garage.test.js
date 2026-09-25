@@ -192,7 +192,7 @@ test('all Garage input and coefficient axes are selectable without adding them t
     assert.equal(result.meta.garageHistory.basis, 'original-garage-inputs-and-versioned-read-only-replay');
   }
   assert.equal(Object.keys(GARAGE_COEFFICIENT_INFO).length, 3);
-  assert.equal(GARAGE_ALGORITHM_VERSION, 'committed-garage-v6-source-clocks');
+  assert.equal(GARAGE_ALGORITHM_VERSION, 'committed-garage-v7-room-reference');
 });
 
 test('native garage compressor shading and pump feed respect recorded report deadlines on every axis', t => {

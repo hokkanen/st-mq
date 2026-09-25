@@ -179,7 +179,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
   // The fixture remains read-only. The explicit production driver requires
   // installed commissioning evidence and a fresh device ownership handshake.
   const garage = engine.garage || config.garage?.adapter ? createGarageAdapter({
-    settings: config.garage?.adapter, baselineC: config.garage?.baselineC ?? 10, clock: () => engine.clock(), canControl,
+    settings: config.garage?.adapter, clock: () => engine.clock(), canControl,
     productionTransport: createShellyCn105Transport({ settings: config.garage?.adapter, publish }),
     persisted: store.getState?.(`garage:adapter:${config.input}`),
     onObservation: observation => engine.ingest(observation),

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { GarageRoomTemperature } from '../src/garage/room-temperature.js';
-import { GarageRuntime, GARAGE_ROOM_OVERRIDE_MS } from '../src/garage/runtime.js';
+import { GarageRuntime } from '../src/garage/runtime.js';
 import { garageSettings } from '../src/garage/settings.js';
 import { Store } from '../src/storage/store.js';
 
@@ -19,6 +19,8 @@ function fixture(targetC = 5) {
     targetC: { supported: true, usable: true, available: true, value: 17, min: 16, max: 31, step: 1 },
     power: { supported: true, usable: true, available: true, value: 'on', values: ['on', 'off'] },
     mode: { supported: true, usable: true, available: true, value: 'heat', values: ['heat', 'cool'] },
+    fan: { supported: true, usable: true, available: true, value: 'auto', values: ['auto', 1, 2, 3, 4] },
+    vane: { supported: true, usable: true, available: true, value: 3, values: [1, 2, 3, 4, 5] },
   } };
   const adapter = {
     externalTemperature: () => ({ ...external }),
@@ -161,7 +163,7 @@ test('native confirmation is checked again before the first numeric sample is ad
   f.advance(); f.measure(); f.readNative({ targetC: 16 }); await f.tick();
   assert.equal(f.sent.length, 2);
   assert.equal(f.controller.phase, 'waiting');
-  assert.equal(f.controller.prepared, true, 'command confirmation alone does not authorize external input');
+  assert.equal(f.controller.acknowledged, false, 'command confirmation alone does not authorize external input');
   f.advance(); f.readNative({ targetC: 17 }); f.measure(); await f.tick();
   assert.equal(f.sent.length, 3); assert.equal(f.sent.at(-1).temperatureC, 17);
 });
@@ -195,6 +197,21 @@ test('restart and driver session changes discard prior native setup and never re
   assert.equal(f.sent.at(-1).setting, 'targetC'); f.ack(); await f.tick();
   assert.equal(f.controller.phase, 'waiting');
   f.advance(); f.measure(); await f.tick(); assert.equal(f.sent.at(-1).temperatureC, 17);
+});
+
+test('a new driver session cannot overwrite a physical native target selected since external setup', async () => {
+  const f = fixture(); await f.start(); f.advance();
+  f.external.sourceEpoch = 'invented-replacement-session'; f.readNative({ targetC: 20 });
+  await f.tick(); assert.equal(f.sent.at(-1).temperatureC, null);
+  f.ack(); f.advance(); await f.tick();
+  const count = f.sent.length;
+  f.advance(); f.measure(); await f.tick();
+  assert.equal(f.sent.length, count); assert.equal(f.native.targetC, 20);
+  assert.equal(f.controller.targetC, 5); assert.equal(f.controller.phase, 'waiting');
+  assert.match(f.controller.reason, /room setting changed/i);
+  f.controller.select(7, f.now()); await f.tick(); f.ack(); f.advance(); await f.tick();
+  assert.equal(f.sent.at(-1).setting, 'targetC'); assert.equal(f.sent.at(-1).value, 17,
+    'An explicit new low room choice can deliberately establish external control');
 });
 
 test('unknown capability, disabled input and lost ownership never publish numeric input', async () => {
@@ -237,7 +254,7 @@ test('missing startup sensor data still establishes the native17 fallback withou
   assert.equal(f.sent.filter(command => Number.isFinite(command.temperatureC)).length, 0);
 });
 
-test('runtime persists only a bounded room override and removes it for ordinary settings', async t => {
+test('runtime persists device-bound room settings across restart and explicit native-range replacements', async t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   const f = fixture(null), engine = { latest: {}, settings: { mode: 'shadow' } };
   const options = { engine, store, config: { input: 'mqtt', garage: { enabled: false } }, clock: f.now };
@@ -245,8 +262,7 @@ test('runtime persists only a bounded room override and removes it for ordinary 
   t.after(() => runtime.close({ restore: false }));
   await runtime.setNativeSettings({ setting: 'targetC', value: 5 });
   await runtime.roomDispatch;
-  assert.deepEqual(store.getState(runtime.keys.roomTemperature), { targetC: 5, createdAt: BASE,
-    expiresAt: BASE + GARAGE_ROOM_OVERRIDE_MS, restoreTargetC: 17, adapterKey: runtime.roomAdapterKey });
+  assert.deepEqual(store.getState(runtime.keys.roomTemperature), { targetC: 5, adapterKey: runtime.roomAdapterKey });
   assert.equal(runtime.nativeControls().settings.targetC.value, 5);
   assert.equal(runtime.nativeControls().settings.targetC.min, 5);
   const restarted = new GarageRuntime(options); t.after(() => restarted.close({ restore: false }));
@@ -255,73 +271,72 @@ test('runtime persists only a bounded room override and removes it for ordinary 
   f.ack(); await runtime.roomTemperatureTick();
   await runtime.setNativeSettings({ setting: 'targetC', value: 18 });
   await runtime.roomDispatch;
-  assert.equal(store.getState(runtime.keys.roomTemperature), null);
+  assert.equal(store.getState(runtime.keys.roomTemperature).targetC, 18);
   assert.equal(runtime.roomTemperature.targetC, null);
+  assert.equal(runtime.status().learning.normalReference.rearC, 18);
+  assert.equal(runtime.status().learning.normalReference.frontC, 18);
+  const nativeRestart = new GarageRuntime(options); t.after(() => nativeRestart.close({ restore: false }));
+  assert.equal(nativeRestart.roomTemperature.targetC, null, 'Native-range intent does not restart external sensing');
+  assert.equal(nativeRestart.status().learning.normalReference.rearC, 18);
+  assert.equal(nativeRestart.status().learning.normalReference.frontC, 18);
 });
 
-test('configured room defaults resume at the original override deadline, including restart', async t => {
+test('room settings remain unchanged after two hours, the next day and restart', async t => {
   const store = new Store(':memory:'); t.after(() => store.close());
-  const f = fixture(null), engine = { latest: {}, settings: { mode: 'shadow' } };
-  const config = { input: 'mqtt', garage: { roomTargetC: 10 } };
-  const options = { engine, store, config, clock: f.now };
+  const f = fixture(null), options = { store, engine: { latest: {}, settings: { mode: 'shadow' } },
+    config: { input: 'mqtt', garage: {} }, clock: f.now };
   const runtime = new GarageRuntime(options); runtime.setAdapter(f.adapter);
   t.after(() => runtime.close({ restore: false }));
-  assert.equal(runtime.roomTemperature.targetC, 10);
   await runtime.setNativeSettings({ setting: 'targetC', value: 7 }); await runtime.roomDispatch;
-  assert.equal(runtime.roomTemperatureStatus().overrideUntil, BASE + GARAGE_ROOM_OVERRIDE_MS);
-  assert.equal(config.garage.roomTargetC, 10);
-  f.advance(GARAGE_ROOM_OVERRIDE_MS - 1000);
+  for (const elapsed of [2 * 3_600_000, 24 * 3_600_000]) {
+    f.advance(elapsed); runtime.expireControls(f.now());
+    assert.equal(runtime.roomTemperature.targetC, 7);
+    assert.equal(runtime.status().learning.normalReference.rearC, 7);
+    assert.deepEqual(store.getState(runtime.keys.roomTemperature), { targetC: 7, adapterKey: runtime.roomAdapterKey });
+    assert.equal(Object.hasOwn(runtime.roomTemperatureStatus(), 'overrideUntil'), false);
+  }
   const restarted = new GarageRuntime(options); t.after(() => restarted.close({ restore: false }));
   assert.equal(restarted.roomTemperature.targetC, 7);
-  assert.equal(restarted.roomTemperatureStatus().overrideUntil, BASE + GARAGE_ROOM_OVERRIDE_MS);
-  f.advance(1000); restarted.expireControls(f.now());
-  assert.equal(restarted.roomTemperature.targetC, 10);
-  assert.equal(restarted.roomTemperatureStatus().source, 'configuration');
-  assert.equal(store.getState(restarted.keys.roomTemperature), null);
-  assert.equal(store.getState(restarted.keys.roomRestoration), null);
+  assert.equal(restarted.status().learning.normalReference.rearC, 7);
+  assert.equal(restarted.roomTemperature.prepared, false, 'Persistent intent grants no cached native permission');
 });
 
-test('expired room overrides restore internal sensing and the previous native target across restart', async t => {
-  const store = new Store(':memory:'); t.after(() => store.close());
-  const f = fixture(null), engine = { latest: {}, settings: { mode: 'shadow' } };
-  f.native.targetC = 20;
-  const options = { engine, store, config: { input: 'mqtt', garage: {} }, clock: f.now };
-  const runtime = new GarageRuntime(options); runtime.setAdapter(f.adapter);
-  t.after(() => runtime.close({ restore: false }));
-  await runtime.setNativeSettings({ setting: 'targetC', value: 7 }); await runtime.roomDispatch;
-  f.advance(GARAGE_ROOM_OVERRIDE_MS);
-  const restarted = new GarageRuntime(options); restarted.setAdapter(f.adapter);
-  t.after(() => restarted.close({ restore: false }));
-  assert.equal(restarted.roomTemperature.targetC, null);
-  assert.equal(store.getState(restarted.keys.roomTemperature), null);
-  assert.deepEqual(store.getState(restarted.keys.roomRestoration), { targetC: 20, createdAt: f.now(), adapterKey: runtime.roomAdapterKey });
-  const again = new GarageRuntime(options); again.setAdapter(f.adapter);
-  t.after(() => again.close({ restore: false }));
-  f.ack(); await again.roomTemperatureTick();
-  assert.equal(f.sent.at(-1).temperatureC, null);
-  f.ack(); await again.roomTemperatureTick();
-  assert.deepEqual(f.sent.at(-1), { setting: 'targetC', value: 20, requestedAt: f.now() });
-  assert.ok(store.getState(again.keys.roomRestoration), 'publication does not complete restoration');
-  f.ack(); await again.roomTemperatureTick();
-  assert.equal(store.getState(again.keys.roomRestoration), null);
-  assert.equal(f.native.targetC, 20);
+test('fan and vane handovers retain the room target and await confirmation before rearming', async t => {
+  for (const request of [{ setting: 'fan', value: 3 }, { setting: 'vane', value: 2 }]) await t.test(request.setting, async () => {
+    const f = fixture(7); await f.start();
+    f.controller.handover(request, f.now()); await f.tick();
+    assert.equal(f.controller.targetC, 7);
+    assert.equal(f.sent.at(-1).temperatureC, null);
+    f.ack(); f.advance(); await f.tick();
+    assert.equal(f.sent.at(-1).setting, request.setting);
+    const count = f.sent.length; await f.tick(); assert.equal(f.sent.length, count);
+    f.ack(); f.advance(); await f.tick();
+    assert.deepEqual(f.sent.at(-1), { setting: 'targetC', value: 17, requestedAt: f.now() });
+    f.ack(); f.advance(); f.measure(6); await f.tick();
+    assert.equal(f.sent.at(-1).temperatureC, 16);
+    assert.equal(f.native[request.setting], request.value);
+    assert.equal(f.controller.targetC, 7);
+  });
 });
 
-test('ordinary device edits only suspend a configured room default for two hours', async t => {
-  const store = new Store(':memory:'); t.after(() => store.close());
-  const f = fixture(null), runtime = new GarageRuntime({ store, engine: { latest: {}, settings: { mode: 'shadow' } },
-    config: { input: 'mqtt', garage: { roomTargetC: 10 } }, clock: f.now });
-  runtime.setAdapter(f.adapter); t.after(() => runtime.close({ restore: false }));
-  await runtime.setNativeSettings({ setting: 'power', value: 'off' }); await runtime.roomDispatch;
-  assert.equal(runtime.roomTemperature.targetC, null);
-  assert.equal(runtime.roomTemperatureStatus().overrideUntil, BASE + GARAGE_ROOM_OVERRIDE_MS);
-  f.advance(GARAGE_ROOM_OVERRIDE_MS); runtime.expireControls(f.now());
-  assert.equal(runtime.roomTemperature.targetC, 10);
-  assert.equal(f.sent.some(row => row.setting === 'power' && row.value === 'on'), false,
-    'resuming configured intent never forces the pump back on');
+test('power OFF and cooling retain room intent without forcing ON or HEAT, then resume with compatible evidence', async t => {
+  for (const request of [{ setting: 'power', value: 'off' }, { setting: 'mode', value: 'cool' }]) await t.test(request.setting, async () => {
+    const f = fixture(7); await f.start(); f.controller.handover(request, f.now());
+    await f.tick(); f.ack(); f.advance(); await f.tick(); f.ack(); f.advance(); await f.tick();
+    const commands = structuredClone(f.sent);
+    for (let i = 0; i < 3; i++) { f.advance(90_000); f.measure(); await f.tick(); }
+    assert.deepEqual(f.sent, commands);
+    assert.equal(f.controller.targetC, 7); assert.equal(f.controller.phase, 'waiting');
+    f.readNative({ power: 'on', mode: 'heat' }); f.advance(); f.measure(); await f.tick();
+    assert.equal(f.sent.at(-1).setting, 'targetC'); assert.equal(f.sent.at(-1).value, 17);
+    f.ack(); f.advance(); f.measure(); await f.tick();
+    assert.equal(f.sent.at(-1).temperatureC, 15);
+    assert.equal(f.sent.some(command => command.setting === 'power' && command.value === 'on'
+      || command.setting === 'mode' && command.value === 'heat'), false);
+  });
 });
 
-test('saved room overrides cannot authorize a newly configured adapter', async t => {
+test('saved room settings cannot authorize a newly configured adapter', async t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   const f = fixture(null), options = { store, engine: { latest: {}, settings: { mode: 'shadow' } },
     config: { input: 'mqtt', garage: {} }, clock: f.now };
@@ -330,38 +345,41 @@ test('saved room overrides cannot authorize a newly configured adapter', async t
   await runtime.setNativeSettings({ setting: 'targetC', value: 7 }); await runtime.roomDispatch;
   assert.throws(() => new GarageRuntime({ ...options,
     config: { input: 'mqtt', garage: { adapter: { driver: 'shelly-cn105', commandTopic: 'invented/replacement/command' } } } }),
-  /Unsupported saved Garage room override/);
+  /Unsupported saved Garage room setting/);
   assert.equal(store.getState(runtime.keys.roomTemperature).targetC, 7);
 });
 
-test('failed expiry persistence cannot renew an expired room override', async t => {
+test('saved room intent cannot cross MQTT brokers or accounts, and credential rotation retains identity', async t => {
   const store = new Store(':memory:'); t.after(() => store.close());
-  const f = fixture(null), runtime = new GarageRuntime({ store, engine: { latest: {}, settings: { mode: 'shadow' } },
-    config: { input: 'mqtt', garage: {} }, clock: f.now });
-  runtime.setAdapter(f.adapter); t.after(() => runtime.close({ restore: false }));
+  const f = fixture(null), options = { store, engine: { latest: {}, settings: { mode: 'shadow' } },
+    config: { input: 'mqtt', garage: {}, connections: { mqtt: { address: 'mqtt://invented-first', user: 'invented-owner' } } }, clock: f.now };
+  const runtime = new GarageRuntime(options); runtime.setAdapter(f.adapter);
+  t.after(() => runtime.close({ restore: false }));
   await runtime.setNativeSettings({ setting: 'targetC', value: 7 }); await runtime.roomDispatch;
-  f.advance(GARAGE_ROOM_OVERRIDE_MS); const before = f.sent.length, original = store.setState.bind(store);
-  store.setState = (key, value) => { if (key === runtime.keys.roomTemperature) throw new Error('storage unavailable'); return original(key, value); };
-  await runtime.roomTemperatureTick();
-  assert.equal(f.sent.length, before);
-  assert.equal(runtime.roomTemperature.phase, 'blocked');
-  store.setState = original;
-  await runtime.roomTemperatureTick();
-  assert.equal(runtime.roomTemperature.targetC, null);
-  assert.equal(runtime.roomRestoration.targetC, 17);
+  for (const mqtt of [{ address: 'mqtt://invented-other', user: 'invented-owner' },
+    { address: 'mqtt://invented-first', user: 'invented-other' }]) {
+    const original = store.setState; store.setState = () => { throw new Error('unexpected mutation'); };
+    assert.throws(() => new GarageRuntime({ ...options, config: { ...options.config, connections: { mqtt } } }),
+      /Unsupported saved Garage room setting/);
+    store.setState = original;
+  }
+  const restarted = new GarageRuntime({ ...options, config: { ...options.config,
+    connections: { mqtt: { ...options.config.connections.mqtt, pw: 'synthetic-password-rotation' } } } });
+  t.after(() => restarted.close({ restore: false }));
+  assert.equal(restarted.roomTemperature.targetC, 7);
 });
 
-test('obsolete permanent preferences and malformed room overrides fail before database mutation', t => {
-  for (const saved of [{ targetC: 7 }, { targetC: 7, createdAt: BASE, expiresAt: BASE + 1, restoreTargetC: 17 }]) {
+test('retired timed overrides, unbound settings and room configuration fail before database mutation', t => {
+  for (const saved of [{ targetC: 7 }, { targetC: 7, createdAt: BASE, expiresAt: BASE + 7_200_000,
+    restoreTargetC: 17, adapterKey: 'invented-key' }]) {
     const store = new Store(':memory:'); t.after(() => store.close());
     store.setState('garage:roomTemperature:mqtt', saved);
     const original = store.setState; store.setState = () => { throw new Error('unexpected mutation'); };
     assert.throws(() => new GarageRuntime({ store, engine: { latest: {}, settings: { mode: 'shadow' } },
-      config: { input: 'mqtt', garage: {} }, clock: () => BASE }), /Unsupported saved Garage room override/);
+      config: { input: 'mqtt', garage: {} }, clock: () => BASE }), /Unsupported saved Garage room setting/);
     store.setState = original;
   }
-  for (const roomTargetC of [4, 16, 7.1, '10']) assert.throws(() => garageSettings({ roomTargetC }), /roomTargetC/);
-  assert.equal(garageSettings({ roomTargetC: 7.5 }).roomTargetC, 7.5);
+  for (const roomTargetC of [null, 7, 7.5, 10, 20]) assert.throws(() => garageSettings({ roomTargetC }), /Unknown garage setting: roomTargetC/);
 });
 
 test('runtime rejects stale preference API, unsupported low target, replicas and failed persistence', async t => {
@@ -376,8 +394,11 @@ test('runtime rejects stale preference API, unsupported low target, replicas and
   f.external.configurable = false; await assert.rejects(runtime.setNativeSettings({ setting: 'targetC', value: 5 }));
   f.external.configurable = true; owner = false;
   await assert.rejects(runtime.setNativeSettings({ setting: 'targetC', value: 5 })); owner = true;
+  const referenceBeforeFailure = structuredClone(runtime.status().learning.normalReference);
   const setState = store.setState.bind(store);
   store.setState = (key, value) => { if (key === runtime.keys.roomTemperature) throw new Error('storage failure'); return setState(key, value); };
   await assert.rejects(runtime.setNativeSettings({ setting: 'targetC', value: 5 }), /storage failure/);
   assert.equal(runtime.roomTemperature.targetC, null); assert.equal(f.sent.length, 0);
+  assert.deepEqual(runtime.status().learning.normalReference, referenceBeforeFailure,
+    'Failed persistence cannot publish model estimates for a room setting that was not saved');
 });

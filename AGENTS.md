@@ -185,13 +185,13 @@ See [docs/secret-handling.md](docs/secret-handling.md) for historical audit scop
   to their scenario instead of inheriting unrelated public device subscriptions.
   Keep separate coverage for intended public defaults and sparse override merging.
 
-## Configuration ownership and temporary dashboard controls
+## Configuration ownership and dashboard controls
 
 - Permanent controller defaults belong exclusively to configuration. Dashboard
   edits must never rewrite those defaults or create persistent database
   preferences that replace them. Reloading or restarting must derive defaults
   from the current configuration, not from an earlier dashboard preference.
-- Dashboard overrides require an explicit physical session or expiry. Display
+- Temporary controller overrides require an explicit physical session or expiry. Display
   that scope beside the action, restore configured behavior when it ends, and
   persist only the remaining valid scope across restart. Validate session and
   device identity before accepting an edit; a new connection inherits no old
@@ -204,6 +204,24 @@ See [docs/secret-handling.md](docs/secret-handling.md) for historical audit scop
   effect visible. Historical records, restoration obligations, commissioning and
   pairing state are not configuration defaults; preserve their appropriate
   persistence and safety duties.
+- Ordinary heat-pump parameter edits are persistent device commands. Read the
+  actual settings from the pump; do not impose an application expiry or mirror
+  readable native settings into controller configuration. Successful edits
+  establish the baseline for later automatic control. Home Heat control actions
+  Normal, Reduction and Preheat, and explicit timed tests, retain their bounded
+  behavior and restoration duties separately from parameter edits.
+- Garage's low-temperature room target is durable device-bound application
+  intent, because external sensing uses native 17°C and cannot expose the chosen
+  lower target through native readback. On an empty database use fresh,
+  unambiguous pump evidence; retain subsequent explicit room choices without
+  expiry or a configured room default. Unrelated fan/vane edits preserve the
+  target. Power/mode changes must not be undone to resume heating. Retaining a
+  target never authorizes stale external sensor data or cached control permission.
+- Keep the configured H66 assumptions `compressor_integral_a1`,
+  `aux_integral_a2`, `compressor_hysteresis_c`, `aux_hysteresis_c` and `a2_basis`:
+  the integration cannot read these from the pump. Treat them as declared model
+  assumptions, not observed settings or commands. Controller strategies,
+  comfort/protection limits and integration setup remain configuration-owned.
 
 ## UI wording
 
