@@ -2,6 +2,23 @@
 -Implement support for local mqtt-based temperature receives (eg, from shelly or HASS through Meteorologisk Institute); just store last received temp values and time stamps (maybe in storage class, see below) when received (and accept if received within 1h)
 -Chart dataset control buttons don't work when datasets are manually hidden/unhidden from legend, how to fix?
 
+Completed 2026-09-25 — Charger help and pause recovery
+- Move general pause recovery from Identification into each card's How charging
+  works fold. Retain live identification status, outstanding recovery and review
+  actions; remove the unused recovery element, ARIA reference and spacing rules.
+- Check help against cloud Easee, local OCPP and Shelly execution. Explain native
+  expiry versus application-driven resume, local authorization, native schedules,
+  current limiting with Automatic OFF and fallback limits. Restrict promises of
+  new-price interruptions and timed manual handback to supported backends.
+- Recognize local OCPP before its first snapshot. Help no longer depends on an
+  identification attempt. Reviewed status producers, UI consumers, configuration,
+  current controller state and documentation; no compatibility paths introduced.
+- Validation: charging UI/summary tests and production build pass; focused
+  Chromium checks pass 16 layouts in both themes at 320/390/768/1440px with cloud,
+  local and Shelly help. Existing equipment browser suite fails on its extra
+  Charger 2 phase-energy row; reproduced identically on unchanged HEAD 36a4890.
+  Synthetic fixtures only; no household commands or service restart.
+
 Completed 2026-09-25 — Access UI layout and interaction audit
 - Replace the full-width password row with a bounded sign-in card using existing
   theme tokens, an inline SVG eye, a 44 px touch target and clear password errors.

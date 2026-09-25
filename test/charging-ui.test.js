@@ -391,11 +391,21 @@ test('the explanation fold discloses operational assumptions without exposing ir
   assert.match(explanations['Household forecast'], /older cold-weather readings remain useful/);
   assert.match(explanations['Current reference'], /details are not available yet/);
   assert.match(explanations['Current allocation'], /Equalizer controls/);
-  assert.match(explanations['Period transitions'], /service and the Easee cloud/);
+  assert.match(explanations['Period transitions'], /application and the Easee cloud/);
+  assert.match(explanations['Pause recovery'], /one-off start.*scheduled time.*loses contact/);
   assert.match(explanations['Price planning'], /New prices can pause automatic charging.*costs less/);
-  assert.match(explanations['Price planning'], /Reaching the target or ready-by time does not stop charging/);
+  assert.match(explanations['Price planning'], /reaching the target or ready-by time does not stop charging/i);
   assert.match(explanations['Manual priority'], /complete window, including after ready-by/);
-  assert.match(explanations['Manual priority'], /until unplugging/);
+  assert.match(explanations['Automatic charging'], /until you turn it off or unplug/);
+  for (const backend of [{ control: { kind: 'ocpp-tx-pause', snapshot: null } },
+    { telemetry: { transport: 'ocpp' } }, { control: { snapshot: { transport: 'ocpp' } } }]) {
+    const local = Object.fromEntries(view({ ...item, ...backend }).explanations);
+    assert.match(local['Period transitions'], /local charger connection.*expiring zero-current restriction/);
+    assert.doesNotMatch(local['Period transitions'], /Easee cloud|one-off start/);
+    assert.match(local['Pause recovery'], /expires automatically.*loses contact.*authorization.*does not return.*cloud control/);
+    assert.match(local['Manual priority'], /manual Stop requires explicit resumption/);
+    assert.doesNotMatch(local['Manual instruction ownership'], /Manual windows/);
+  }
   assert(!JSON.stringify(result).includes('ST-MQ'));
   assert(Object.fromEntries(view(charger('charger2')).explanations)['Period transitions']);
 });
@@ -416,7 +426,15 @@ test('historical replicas describe the recorded energy assumption without rewrit
 
 test('physical Charger 2 explanations preserve native vehicle constraints and distinguish instructions from effects',()=>{
   const details=Object.fromEntries(view(charger('charger2')).explanations);
-  assert.match(details['Price planning'],/costs less/);assert.match(details['Period transitions'],/confirmed charger instructions.*Actual charging activity/);
+  assert.match(details['Price planning'],/economical charging periods.*at least 15 minutes/);
+  assert.doesNotMatch(details['Price planning'],/New prices can pause/);
+  assert.match(details['Period transitions'],/several charging periods.*pause and restart.*MQTT.*confirmed charger instructions.*Actual charging activity/);
+  assert.match(details['Pause recovery'],/do not expire.*loses contact with Shelly.*remain paused.*resume it in Shelly/);
+  assert.match(details['Manual priority'],/native schedule must be changed in Shelly/);
+  assert.doesNotMatch(details['Manual instruction ownership'],/Manual windows|schedule expiry/);
+  assert.match(details['Automatic charging'],/OFF stops price scheduling.*limiter can remain active.*pause charging/);
+  assert.match(details['Unavailable data'],/current limits, the configured fallback and native restrictions/);
+  assert.match(details['Charging current'],/adjusts Shelly’s current.*pauses.*below the charging minimum/);
   assert.match(details['Other charging'],/automatic scheduling off/);
   assert.match(details['Target & completion'],/does not change the vehicle’s own charge limit/);
   assert.doesNotMatch(details['Period transitions'],/Easee/);
@@ -1226,7 +1244,7 @@ test('identification remains pending while waiting and an inconclusive result st
   assert(!$('charger1-identify').disabled); panel.close();
 });
 
-test('identification summaries stay short while both charger sections explain the charging wait and their pause recovery', () => {
+test('identification keeps the charging wait while general pause recovery belongs in How charging works', () => {
   const document = documentFixture(), $ = id => document.getElementById(id);
   const panel = createChargingPanel({ document, request: async () => {} });
   const items = ['charger1', 'charger2'].map(id => ({ ...connected(id), identification: {
@@ -1237,12 +1255,20 @@ test('identification summaries stay short while both charger sections explain th
     assert.equal(view(item).event, 'Waiting for charging');
     assert.equal($(`${item.id}-identification-state`).textContent, 'Pending');
     assert.match($(`${item.id}-identification-status`).textContent, /vehicle to start charging.*timer/);
-    assert.equal($(`${item.id}-identify`).getAttribute('aria-describedby'), `${item.id}-identification-status ${item.id}-identification-recovery`);
+    assert.equal($(`${item.id}-identify`).getAttribute('aria-describedby'), `${item.id}-identification-status`);
+    assert.equal($(`${item.id}-identification-recovery`), null);
+    assert.doesNotMatch($(`${item.id}-identification`).textContent, /loses contact|expires automatically/);
+    assert($(`${item.id}-explanation-details`).textContent.includes('Pause recovery'));
   }
-  assert.match($('charger1-identification-recovery').textContent, /expires automatically/);
-  assert.match($('charger2-identification-recovery').textContent, /loses contact with Shelly.*remain paused.*resume it in Shelly/);
+  assert.match($('charger1-explanations').textContent, /one-off start.*scheduled time.*loses contact/);
+  assert.match($('charger2-explanations').textContent, /loses contact with Shelly.*remain paused.*resume it in Shelly/);
   const popup = openDetail($('charger2-event-value'));
   assert.match(popup.textContent, /Waiting for charging.*vehicle to start charging.*timer/s);
+  panel.update(status(...items.map(({ identification, ...item }) => item)));
+  assert.match($('charger2-explanations').textContent, /do not expire.*resume it in Shelly/);
+  panel.update(status({ ...items[0], control: { snapshot: { transport: 'ocpp' } } }, items[1]));
+  assert.match($('charger1-explanations').textContent, /local charger connection.*expires automatically/);
+  assert.doesNotMatch($('charger1-explanations').textContent, /one-off start/);
   panel.close();
 });
 

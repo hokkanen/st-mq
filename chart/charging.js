@@ -317,6 +317,16 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
       : provisional ? 'Charging is allowed for now. The forecast is being updated; economical periods can still be scheduled when it improves.'
       : 'Choose economical charging periods to reach the target by the ready-by time. This preference stays in effect until changed, including after unplugging and restart.';
   const provider = charger.provider ?? charger.telemetry?.provider;
+  const shelly = provider === 'shelly-evse', easee = provider === 'easee';
+  const localEasee = easee && (control.kind === 'ocpp-tx-pause'
+    || control.snapshot?.transport === 'ocpp' || charger.telemetry?.transport === 'ocpp');
+  const cloudEasee = easee && !localEasee;
+  const pauseRecovery = shelly
+    ? 'Pauses set by this application do not expire on the charger. If this application stops or loses contact with Shelly, charging may remain paused until control returns or you resume it in Shelly. Charging that is already running may continue past a planned pause.'
+    : localEasee
+      ? 'An installed pause expires automatically on the charger at its release time, even if this application loses contact. Charger, vehicle and Equalizer limits still apply. New charging sessions need this application for authorization; pause expiry does not return the charger to cloud control.'
+      : cloudEasee
+        ? 'An installed one-off start ends the pause at its scheduled time even if this application loses contact. Charger and vehicle limits still apply.' : null;
   const recorded = charger.readOnly === true && charger.recorded === true;
   const recordedEfficiency = charger.configuration?.efficiency;
   const energyAssumption = recorded
@@ -337,17 +347,28 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
   );
   if (supported) explanations.push(
     ['Ready-by time', 'The configured or session-specific local time is the deadline for reaching the target. The estimated target time shows the current forecast; readiness compares that forecast with the deadline. Ready-by is not a scheduled stop.'],
-    ['Price planning', 'New prices can pause automatic charging for cheaper periods if the target is still unmet, ready-by can still be met, and the remaining charge costs less. Charging runs at least 15 minutes before such a pause, and planned pauses last at least 15 minutes. Manual charging instructions keep priority. Reaching the target or ready-by time does not stop charging. Estimates cover reaching the requested target.'],
-    ['Period transitions', provider === 'easee'
-      ? 'Installing planned pauses and next starts requires this service and the Easee cloud. Easee shows the current instruction; this page shows all planned periods. An installed one-off start can run independently. If contact is lost, the last instruction remains in effect and an open period may continue past a planned pause. A confirmed schedule does not by itself confirm a physical pause. Missed or unconfirmed transitions are reported when contact resumes.'
-      : 'Proposed periods and confirmed charger instructions are kept separate. Unconfirmed updates do not replace the last known instruction. Actual charging activity is shown separately from schedule confirmation.'],
+    ['Price planning', `The planner chooses economical charging periods to reach the target by ready-by, with planned pauses of at least 15 minutes. ${easee ? 'New prices can pause automatic charging for cheaper periods if the target is still unmet, ready-by can still be met, and the remaining charge costs less. Charging runs at least 15 minutes before such a pause. ' : ''}Manual charging instructions keep priority. The final period stays open: reaching the target or ready-by time does not stop charging. Estimates cover reaching the requested target.`],
+    ['Period transitions', cloudEasee
+      ? 'Installing planned pauses and next starts requires this application and the Easee cloud. Easee shows the current instruction; this page shows all planned periods. If contact is lost, an open period may continue past a planned pause. A confirmed schedule does not by itself confirm a physical pause. Missed or unconfirmed transitions are reported when contact resumes.'
+      : localEasee
+        ? 'Each new pause needs this application and the local charger connection. The charger receives an expiring zero-current restriction for the current charging session. Later pauses may be missed if contact is lost. The page shows planned periods, confirmed restrictions and physical charging activity separately.'
+        : `${shelly ? 'Automatic charging can use several charging periods with pauses between them. Each pause and restart needs this application and a working MQTT connection to Shelly. ' : ''}Proposed periods and confirmed charger instructions are kept separate. Actual charging activity is shown separately from command confirmation.`],
+    ...(pauseRecovery ? [['Pause recovery', pauseRecovery]] : []),
     ['Household forecast', 'Property consumption is reduced by known charging, then matched to local hours and outdoor conditions. A couple of usable nights can begin the estimate. Recent similar nights carry more weight, while older cold-weather readings remain useful when those conditions return. Broader history is used when close matches are scarce; zero other load is assumed only when no usable reference exists.'],
     ['Current reference', householdReferenceText(assumptions.householdReference, now)],
     ['Other charging', 'A physically charging peer consumes capacity even with automatic scheduling off. Its continuing demand remains reserved when its stop is unknown. Household forecasting subtracts each physical charger once.'],
-    ['Manual priority', 'A simple manual schedule has priority through its complete window, including after ready-by. Charge now has priority until unplugging. Multiple periods or an unknown end require “Use automatic”; a later manual change takes priority again. A fresh charger read is required before handover.'],
-    ['Manual instruction ownership', 'An existing schedule with unknown ownership is preserved. Our own changes and normal schedule expiry do not count as manual changes. Manual windows survive reconnection and restart. Editing ready-by does not move a recorded window end.'],
-    ['Automatic charging', 'The dashboard remembers automatic charging and shared priority until you change them, including after unplugging and restart. Charge now works with automatic charging ON or OFF. OFF stops automatic scheduling and removes only a confirmed restriction owned by this service. Newer manual instructions are preserved. OFF does not stop physical charging. If the charger cannot confirm removal, the handover stays visibly unconfirmed.'],
-    ['Unavailable data', 'Without a reliable price or power forecast, or with too little time, charging is allowed immediately while planning continues. Economical periods can still be scheduled when the forecast improves. A disabled charger, fault or authorization requirement must be resolved first. Unconfirmed changes retain the last known instruction and are retried after another charger reading.'],
+    ['Manual priority', cloudEasee
+      ? 'A simple manual schedule has priority through its complete window, including after ready-by. Multiple periods or an unknown end require “Use automatic”; a later manual change takes priority again. A fresh charger read is required before handover.'
+      : shelly
+        ? 'Manual Start, Stop and active Shelly schedules take priority over automatic scheduling. “Use automatic” hands back manual Start, Stop and current choices, but an active native schedule must be changed in Shelly. Charge now still respects Manual Stop, native schedules and vehicle limits.'
+        : 'A confirmed manual Stop requires explicit resumption. A manual release keeps priority until unplugging or “Use automatic”. Charger and vehicle limits still apply.'],
+    ['Manual instruction ownership', cloudEasee
+      ? 'An existing schedule with unknown ownership is preserved. Our own changes and normal schedule expiry do not count as manual changes. Manual windows survive reconnection and restart. Editing ready-by does not move a recorded window end.'
+      : shelly
+        ? 'This application distinguishes its own pauses from manual Start and Stop commands. It does not edit Shelly’s native schedules. An uncertain pause command may need review before charging can resume.'
+        : 'This application removes only its own pause restriction. Other charger and vehicle restrictions remain in effect. An accepted command alone does not confirm a physical pause.'],
+    ['Automatic charging', `The dashboard remembers automatic charging and shared priority until you change them, including after unplugging and restart. Charge now works with automatic charging ON or OFF and lasts until you turn it off or unplug. OFF stops price scheduling; it does not send a manual Stop. ${shelly ? 'The configured current limiter can remain active and may still pause charging. Manual Stop and native schedules remain in effect.' : 'Only restrictions belonging to this application are removed; newer manual instructions are preserved. If the charger cannot confirm removal, the handover stays visibly unconfirmed.'}`],
+    ['Unavailable data', `Missing price or power forecasts, or too little time, do not add a price delay. ${shelly ? 'Charging remains subject to current limits, the configured fallback and native restrictions. ' : ''}A disabled charger, fault or authorization requirement must be resolved first. An unreachable charger cannot receive a release command. Failed or uncertain changes remain visible until reconciled.`],
   );
   if (charger.capabilities?.externalLoadBalancing) {
     const limiter = provider === 'easee' ? 'Equalizer' : 'the external load balancer';
@@ -359,7 +380,8 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
       unavailable: 'A usable supply estimate is still being established.',
     })[assumptions.supply] ?? 'The night forecast combines the available supply with expected household use; the last reported allowance describes current conditions.';
     explanations.push(['Current allocation', `${provider === 'easee' ? 'Equalizer' : 'The external load balancer'} controls the current and protects the property supply. The reported allowance, charger limit and actual draw are separate: a limit does not promise that current is available now. ${supported ? `${basis} ` : ''}The charging limit caps the forecast. Automatic charging does not change the external limits.`]);
-  } else explanations.push(['Charging current', `Selected current is the vehicle or charger’s requested current, capped by its reported maximum. Actual draw can be lower. Power is the measured charging rate; the target forecast uses available current and voltage.${charger.capabilities?.currentControl === true ? '' : ' This page does not change charging current.'}`]);
+  } else if (shelly && supported) explanations.push(['Charging current', 'This application adjusts Shelly’s current using the configured supply limits, available measurements and shared charger priority. It respects known vehicle and charger limits and pauses when the available current is below the charging minimum. Missing or stale measurements use the configured fallback; this is not a guarantee of property fuse protection. Actual draw can be lower than the selected current.']);
+  else explanations.push(['Charging current', `Selected current is the vehicle or charger’s requested current, capped by its reported maximum. Actual draw can be lower. Power is the measured charging rate; the target forecast uses available current and voltage.${charger.capabilities?.currentControl === true ? '' : ' This page does not change charging current.'}`]);
   const socSource = retainedVehicleReference ? `Estimated from last known vehicle charge${hasProgress ? ' + delivered energy' : ''}`
     : estimatedSoc ? automatic(soc) ? 'Estimated from vehicle charge + delivered energy' : 'Estimated from starting charge + delivered energy'
     : automatic(soc) ? sourceLabel(soc, charger.vehicle) : 'Starting charge';
@@ -580,9 +602,8 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     const identify = make('button', 'Identify', 'secondary-button', `${id}-identify`); identify.type = 'button';
     const identificationStatus = make('p', '', 'charging-form-help', `${id}-identification-status`);
     identificationStatus.setAttribute('role', 'status'); identify.setAttribute('aria-describedby', identificationStatus.id);
-    const identificationRecovery = make('p', '', 'charging-identification-recovery', `${id}-identification-recovery`);
     const identificationMessage = make('p', '', 'temporary-status', `${id}-identification-message`); identificationMessage.setAttribute('role', 'status');
-    identificationSection.append(identificationHeading, identificationStatus, identificationRecovery, identify, identificationMessage);
+    identificationSection.append(identificationHeading, identificationStatus, identify, identificationMessage);
     preferences.append(make('h5', 'Charging controls'), master, controlDetail, resume, sharedPriority.createEntry(id), identificationSection);
     const sessionPreferences = make('section', '', 'charging-detail-section', `${id}-session-settings`);
     sessionPreferences.append(make('h5', 'Session settings'), scopeNote); body.append(sessionPreferences);
@@ -603,7 +624,7 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     explanationFold.append(make('summary', 'How charging works'));
     const explanations = make('dl', '', 'equipment-readings', `${id}-explanations`); explanationFold.append(explanations); body.append(explanationFold);
     section.append(summary, body); $('charging-devices')?.append(section);
-    const device = { id, chargeNow, chargeNowState, controlMessage, identify, identificationSection, identificationState, identificationStatus, identificationRecovery, identificationMessage, section, title, vehicle, state, event, eventLabel, eventValue, overview, sources, metrics, chargeLabel, targetLabel, targetSource, targetNotice, targetControls, targetHelp, targetToggle, targetMessage, completionLabel, completion, readiness, priority, readingTime, deadline, deadlineGroup, facts, deliveredLabel, deliveredValue, remaining, energyLabel, energyValue, costLabel, cost, costMetric, scheduleInfo, scheduleHeading, periodCount, periods, problem, explanations, readings, notes, settings, enabledValue, resume, controlDetail, charger, notice, footerHint, sessionStatus };
+    const device = { id, chargeNow, chargeNowState, controlMessage, identify, identificationSection, identificationState, identificationStatus, identificationMessage, section, title, vehicle, state, event, eventLabel, eventValue, overview, sources, metrics, chargeLabel, targetLabel, targetSource, targetNotice, targetControls, targetHelp, targetToggle, targetMessage, completionLabel, completion, readiness, priority, readingTime, deadline, deadlineGroup, facts, deliveredLabel, deliveredValue, remaining, energyLabel, energyValue, costLabel, cost, costMetric, scheduleInfo, scheduleHeading, periodCount, periods, problem, explanations, readings, notes, settings, enabledValue, resume, controlDetail, charger, notice, footerHint, sessionStatus };
     bind(identify, 'click', () => {
       if (identify.disabled) return;
       const current = device.charger;
@@ -720,13 +741,6 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
         ?? (connected === false ? 'Connect a vehicle to identify it.' : !connectedSession(charger) ? 'Waiting for current charger readings before identification is available.'
           : charger.identification?.available !== true ? 'Identification is currently unavailable. Live vehicle matching continues.'
             : 'A short charging test can check this connection again and may briefly pause charging. Works with Automatic charging off and Charge now; Manual Stop keeps priority.');
-      const pauseRecovery = charger.identification?.pauseRecovery;
-      device.identificationRecovery.hidden = !['charger', 'controller'].includes(pauseRecovery);
-      device.identificationRecovery.textContent = pauseRecovery === 'controller'
-        ? 'Ending the pause needs this application. If it stops or loses contact with Shelly, charging may remain paused until control returns or you resume it in Shelly.'
-        : pauseRecovery === 'charger' ? 'The charger’s identification pause expires automatically if this application loses contact.' : '';
-      device.identify.setAttribute('aria-describedby', [device.identificationStatus.id,
-        !device.identificationRecovery.hidden && device.identificationRecovery.id].filter(Boolean).join(' '));
       device.resume.hidden = !supported || !view.yielded && charger.control?.reason !== 'identification-resume-required';
       device.resume.disabled = locked || charger.readOnly === true || device.resume.hidden;
       device.targetToggle.disabled = locked || charger.readOnly === true || !device.targetAction;

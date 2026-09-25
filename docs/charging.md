@@ -24,6 +24,13 @@ Charger 2 is disabled and unverified by default because the hardware has not arr
 
 Both charger cards show the physical connection, assigned vehicle or uncertainty, current request, measured/estimated progress, connection cost and control state. The Automatic charging switch governs economic scheduling. Vehicle identification and metering continue with automatic charging OFF. The separately configured Charger 2 limiter can remain active with economic scheduling OFF.
 
+Each card’s **How charging works** section explains its scheduling, current
+limits and pause recovery. Easee cloud delays and local OCPP pauses can release
+on the charger without a new command; Shelly pauses need a live application
+command to resume. Local OCPP pause expiry does not authorize a new charging
+session or restore cloud control. The Identification section keeps the current
+test status and any outstanding recovery or review action.
+
 Permanent defaults come only from configuration. Both unidentified charging
 points start with 20% charge, an 80% minimum, 06:00 ready-by and 74 kWh capacity
 from `charging.defaults`. Identified vehicles apply their sparse
