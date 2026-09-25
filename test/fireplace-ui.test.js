@@ -107,17 +107,28 @@ test('recent history uses Finnish time, preserves close entries, excludes remove
   assert(!failed.modelStatus.includes('private'));
 });
 
-function panelFixture(request = async () => view()) {
+function panelFixture(request = async () => view(), storage) {
   const ids = ['fireplace-kg', 'fireplace-amount', 'fireplace-form', 'fireplace-submit', 'fireplace-content',
     'fireplace-message', 'fireplace-retry', 'fireplace-model-status', 'fireplace-overview', 'fireplace-total',
-    'fireplace-empty', 'fireplace-entries', 'fireplace-details'];
+    'fireplace-empty', 'fireplace-entries', 'fireplace-dialog', 'fireplace-close', 'fireplace-shortcut'];
   const nodes = new Map();
   const document = { activeElement: null, getElementById: id => nodes.get(id), createElement: () => new Element() };
   class Element {
     constructor() { this.children = []; this.attributes = new Map(); this.events = new Map(); this.value = ''; this.classes = new Set();
+      this.open = false; this.disabled = false; this.hidden = false; this.isConnected = true; this.dataset = {};
       this.classList = { toggle: (name, state) => state ? this.classes.add(name) : this.classes.delete(name) }; }
     setAttribute(name, value) { this.attributes.set(name, value); }
+    getAttribute(name) { return this.attributes.get(name) ?? null; }
     addEventListener(name, handler) { this.events.set(name, handler); }
+    dispatch(name) {
+      const event = { target: this, defaultPrevented: false, propagationStopped: false,
+        preventDefault() { this.defaultPrevented = true; }, stopPropagation() { this.propagationStopped = true; } };
+      this.events.get(name)?.(event); return event;
+    }
+    click() { if (!this.disabled) return this.dispatch('click'); }
+    showModal() { assert.equal(this.open, false); this.open = true; }
+    close() { if (this.open) { this.open = false; this.dispatch('close'); } }
+    escape() { if (!this.dispatch('cancel').defaultPrevented) this.close(); }
     append(...children) { for (const child of children) { child.parent = this; this.children.push(child); } }
     insertBefore(child, sibling) { child.remove(); child.parent = this; const at = sibling ? this.children.indexOf(sibling) : this.children.length; this.children.splice(at, 0, child); }
     remove() { if (this.parent) this.parent.children.splice(this.parent.children.indexOf(this), 1); this.parent = null; }
@@ -125,19 +136,39 @@ function panelFixture(request = async () => view()) {
   }
   for (const id of ids) nodes.set(id, new Element());
   nodes.get('fireplace-kg').value = '8';
-  const panel = createFireplacePanel({ document, request });
+  const panel = createFireplacePanel({ document, request, storage });
   return { panel, document, $: id => nodes.get(id) };
 }
 
-test('refreshes preserve the open fold, selected kilograms, focus, and existing row controls', () => {
+test('the fireplace shortcut opens independently and Close or Escape returns focus', () => {
+  const { panel, document, $ } = panelFixture();
+  panel.update(view(), now);
+  assert.equal($('fireplace-dialog').open, false);
+  $('fireplace-shortcut').focus();
+  const event = $('fireplace-shortcut').click();
+  assert.equal(event.defaultPrevented, true, 'the Home summary does not toggle');
+  assert.equal(event.propagationStopped, true);
+  assert.equal($('fireplace-dialog').open, true);
+  assert.equal($('fireplace-shortcut').getAttribute('aria-expanded'), 'true');
+  assert.equal(document.activeElement, $('fireplace-kg'));
+  $('fireplace-close').click();
+  assert.equal($('fireplace-dialog').open, false);
+  assert.equal($('fireplace-shortcut').getAttribute('aria-expanded'), 'false');
+  assert.equal(document.activeElement, $('fireplace-shortcut'));
+  $('fireplace-shortcut').click(); $('fireplace-dialog').escape();
+  assert.equal($('fireplace-dialog').open, false);
+  assert.equal(document.activeElement, $('fireplace-shortcut'));
+});
+
+test('refreshes and reopening preserve selected kilograms, focus, and existing row controls', () => {
   const { panel, document, $ } = panelFixture();
   panel.update(view(1, [entry()]), now);
-  $('fireplace-details').open = true;
+  $('fireplace-shortcut').click();
   $('fireplace-kg').value = '6'; $('fireplace-kg').events.get('input')(); $('fireplace-kg').focus();
   const firstRow = $('fireplace-entries').children[0];
   panel.update(view(1, [entry()]), now);
   assert.equal($('fireplace-kg').value, '6'); assert.equal($('fireplace-amount').textContent, '6 kg');
-  assert.equal($('fireplace-details').open, true); assert.equal(document.activeElement, $('fireplace-kg'));
+  assert.equal($('fireplace-dialog').open, true); assert.equal(document.activeElement, $('fireplace-kg'));
   assert.equal($('fireplace-entries').children[0], firstRow);
   const remove = firstRow.children[1]; remove.focus();
   panel.update(view(2, [entry(2), entry()]), now);
@@ -145,6 +176,66 @@ test('refreshes preserve the open fold, selected kilograms, focus, and existing 
   assert.equal($('fireplace-entries').children[1], firstRow);
   panel.update(view(3, [entry(2)]), now);
   assert.equal(document.activeElement, $('fireplace-submit'), 'removing a focused row leaves focus at a useful control');
+  $('fireplace-close').click(); panel.update(view(3, [entry(2)]), now);
+  assert.equal($('fireplace-dialog').open, false, 'background updates leave the dialog closed');
+  $('fireplace-shortcut').click();
+  assert.equal($('fireplace-kg').value, '6');
+  assert.equal($('fireplace-amount').textContent, '6 kg');
+  assert.equal(document.activeElement, $('fireplace-kg'));
+});
+
+test('restored unconfirmed saves open once after availability and retry the original entry', async () => {
+  const storage = memoryStorage(), calls = [];
+  const pending = { path: '/api/fireplace', body: { requestId: 'recovered-request', kg: 4 } };
+  storage.setItem('stmq-fireplace-pending', JSON.stringify(pending));
+  const { panel, document, $ } = panelFixture(async (path, body) => {
+    calls.push({ path, body }); return view(1, [entry(1, now, 4)]);
+  }, storage);
+  assert.equal($('fireplace-dialog').open, false, 'initial status has not established availability');
+  panel.update({ ...view(), available: false }, now);
+  assert.equal($('fireplace-dialog').open, false);
+  panel.update(view(), now);
+  assert.equal($('fireplace-dialog').open, true);
+  assert.equal(document.activeElement, $('fireplace-retry'));
+  assert.equal($('fireplace-kg').value, '4');
+  assert.equal($('fireplace-submit').disabled, true);
+  assert.equal(calls.length, 0, 'recovering the dialog does not silently retry the write');
+  $('fireplace-close').click(); panel.update(view(), now);
+  assert.equal($('fireplace-dialog').open, false, 'a dismissed recovery stays closed on later polls');
+  $('fireplace-shortcut').click();
+  assert.equal(document.activeElement, $('fireplace-retry'));
+  $('fireplace-retry').click();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(calls, [pending]);
+  assert.equal(storage.getItem('stmq-fireplace-pending'), null);
+  assert.equal($('fireplace-retry').hidden, true);
+  assert.equal($('fireplace-submit').disabled, false);
+  assert.equal($('fireplace-entries').children.length, 1);
+});
+
+test('closing during recording keeps the pending save and its eventual result', async () => {
+  let finish;
+  const storage = memoryStorage(), calls = [];
+  const { panel, document, $ } = panelFixture((path, body) => {
+    calls.push({ path, body }); return new Promise(resolve => { finish = resolve; });
+  }, storage);
+  panel.update(view(), now); $('fireplace-shortcut').click();
+  $('fireplace-form').dispatch('submit');
+  assert.equal($('fireplace-content').getAttribute('aria-busy'), 'true');
+  assert.equal(calls.length, 1);
+  assert(storage.getItem('stmq-fireplace-pending'));
+  $('fireplace-close').click();
+  assert.equal($('fireplace-dialog').open, false);
+  assert.equal(document.activeElement, $('fireplace-shortcut'));
+  finish(view(1, [entry()]));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal($('fireplace-dialog').open, false);
+  assert.equal($('fireplace-content').getAttribute('aria-busy'), 'false');
+  assert.equal(storage.getItem('stmq-fireplace-pending'), null);
+  $('fireplace-shortcut').click();
+  assert.match($('fireplace-message').textContent, /8 kg recorded/);
+  assert.equal($('fireplace-entries').children.length, 1);
+  assert.equal(calls.length, 1);
 });
 
 test('rebuild requirement is shown on the affected row and recording works while the model rebuilds', () => {

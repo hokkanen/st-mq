@@ -253,7 +253,7 @@ try {
   assert.equal(await evaluate("document.getElementById('charger1-enabled').textContent"), 'OFF');
   assert.equal(await evaluate("document.getElementById('charger1-setting-readyBy').disabled"), true);
   assert.equal(await evaluate("document.getElementById('charger2-setting-readyBy').disabled"), true);
-  assert.equal(await evaluate("document.getElementById('charger2-enabled').tagName"), 'SPAN');
+  assert.equal(await evaluate("document.getElementById('charger2-enabled').tagName"), 'BUTTON');
   assert.notEqual(await evaluate("getComputedStyle(document.getElementById('charger2-setting-readyBy').closest('.charging-field')).display"), 'none',
     'Physical Charger 2 offers a ready-by setting');
   assert.notEqual(await evaluate("getComputedStyle(document.getElementById('charger2-enabled').parentElement).display"), 'none',
@@ -870,6 +870,9 @@ try {
         document.getElementById('home-control').scrollIntoView({block: 'start'})`);
       await checkDashboardLayout({ evaluate, width });
       await capture(`dashboard-${width}-${theme}`);
+      await evaluate("document.getElementById('fireplace-shortcut').click()");
+      await capture(`fireplace-${width}-${theme}`);
+      await evaluate("document.getElementById('fireplace-close').click()");
       await checkIndependentChargerFolds(`${width}-${theme}`, width === 1440);
       await evaluate("globalThis.chargingSmokeValues={charger1:'progress',charger2:'charging'}; globalThis.nativePumpSmokeValues=true; globalThis.refreshLearningSmokeStatus()");
       await until("['charger1','charger2'].every(id=>document.getElementById(id+'-device').dataset.state==='Charging')");
@@ -1038,14 +1041,15 @@ try {
       'disabled release without an owned episode', 'closed Garage disclosures', '320–1920px layouts including tablet and charger-pair boundaries',
       'equipment rows open with Enter and full-summary pointer clicks and preserve focus and expansion during refresh',
       'shared charger cards, energy-based percentage with source and original vehicle timestamp, 20% starting fallback, confirmed periods, current readiness, TeslaMate reception, seasonal history explanation',
-      'Charge Now in the summary, control-role details inside the fold, and shared charge, target, completion, delivered energy, remaining energy and cost metrics',
+      'Charge now in the summary, control-role details inside the fold, and shared charge, target, completion, delivered energy, remaining energy and cost metrics',
       'fixed matching charger summary heights across both themes, all viewports, connection, charging, planning, manual priority, risk and handover states, and open or closed folds',
       'equal desktop charger columns, narrow mobile stacking, independent folds without stretching the closed sibling, and active full-dashboard screenshots',
-      'shared priority stays configuration-owned and Charge Now stays visible at the top right at 320/390/1440px in both themes',
+      'persistent shared priority and automatic controls remain separate from session settings; Charge now works with automatic OFF and stays visible at 320/390/1440px in both themes',
       'unsaved charger settings and focus survive status polling and reflow between desktop and mobile',
       'summary bands remain separate without vertical overflow; disconnected and unknown readings retain the layout without stale percentages',
       'metric explanations open without toggling equipment, preserve focus during refresh, and return on Escape; form guidance and all charging periods remain inline',
-      'separate Home and Garage cards, independent keyboard disclosures, and both chart shortcuts preserve fold state and focus',
+      'separate Home and Garage cards, independent keyboard disclosures, and Fireplace and Garage chart shortcuts preserve fold state and focus',
+      'full-width Home equipment and a responsive Fireplace dialog with keyboard dismissal, focus restoration and retained firewood amount',
       'desktop column grouping and mobile Home, Garage, Data order',
       'matching Home and Garage learning headings', 'episode-based Garage progress',
       'shared learning rows and section structure', 'Enter and Space operate each learning section and entry',

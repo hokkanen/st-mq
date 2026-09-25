@@ -282,6 +282,10 @@ try {
   assert.match(await evaluate("document.querySelector('[data-dataset-id=garage_native_defrost]').textContent"),/Garage defrost state/);
   assert.match(await evaluate("document.querySelector('[data-dataset-id=events-garage-feed]').textContent"),/garage-external-temperature-diagnostic/);
   assert.match(await evaluate("document.querySelector('[data-dataset-id=adaptive-observations]').textContent"),/workshop_pressure.*bar.*Adaptive measurement/);
+  const chargingInventory=await evaluate("document.querySelector('[data-dataset-id=state-charging]').textContent");
+  assert.match(chargingInventory,/Charging choices, sessions and device state/);
+  assert.match(chargingInventory,/Automatic charging and shared priority.*survive restart and unplugging/);
+  assert.match(chargingInventory,/Session edits.*do not replace configured defaults/);
   assert.match(await evaluate("document.getElementById('recording-overview-message').textContent"),/Database snapshot:/);
   assert.equal(await evaluate("Boolean(document.querySelector('[data-dataset-id=heat_pump_power]'))"),false,'calculated heat-pump power is not a separate stored series');
   assert(await evaluate("document.querySelectorAll('.recording-storage-accounting tbody tr').length")>10,'physical table accounting is available separately');
@@ -647,8 +651,13 @@ try {
     await checkDateAlignment();
     await evaluate("true");
     await capture(`home-energy-dark-${viewport.width}`);
-    await evaluate("document.getElementById('fireplace-details').scrollIntoView({block:'start'}); true");
+    await evaluate("document.getElementById('fireplace-shortcut').click(); true");
+    assert.equal(await evaluate("document.getElementById('fireplace-dialog').matches(':modal') && document.getElementById('fireplace-form').checkVisibility()"), true,
+      'Home shortcut opens the fireplace window');
+    assert.equal(await evaluate("document.getElementById('fireplace-dialog').scrollWidth <= document.getElementById('fireplace-dialog').clientWidth && document.documentElement.scrollWidth <= innerWidth"), true,
+      'Fireplace window fits the mobile viewport without horizontal overflow');
     await capture(`home-energy-fireplace-${viewport.width}`);
+    await evaluate("document.getElementById('fireplace-close').click(); true");
     await evaluate("document.querySelector('.history-panel').scrollIntoView(); true");
     await capture(`home-energy-chart-${viewport.width}`);
     await evaluate('scrollTo(0, 0); true');
@@ -955,7 +964,7 @@ try {
   console.log(JSON.stringify(recordingOnly?{result:'recording-browser-smoke-passed',browserTimeZone,
     checked:['actual-adaptive-streams-only','opaque-duplicate-stream-identities','unit-distinction','all-four-floor-outputs',
       'every-report-circulation-feedback','observed-defrost','abnormal-feed-events','event-type-breakdown','saved-history-without-checkpoint','durable-open-energy','lazy-read-only-inventory',
-      'counts-and-dates','keyboard-and-refresh-preservation','dark-and-light','390-and-1440-layouts','physical-table-accounting']}:{ result: 'chart-browser-smoke-passed', browserTimeZone, timings,
+      'counts-and-dates','persistent-charging-choices-and-separate-session-edits','keyboard-and-refresh-preservation','dark-and-light','390-and-1440-layouts','physical-table-accounting']}:{ result: 'chart-browser-smoke-passed', browserTimeZone, timings,
     electricityConnections: ['combined-source-overview-and-connection', 'charger2-native-phase-readings-and-total-energy',
       'source-scoped-charger2-errors', 'keyboard-expansion', 'refresh-preserves-expansion'],
     chargingChecks:['charger2-visible-power-dark-and-light','charger2-visible-with-lower-loads-hidden-or-absent','charger2-no-invented-phases','exactly-two-charger-session-axes','property-latest-plus-charger-session-averages','session-counts-exclusions-and-energy-weighting'],

@@ -8,12 +8,13 @@ export async function checkChargingPriority({ send, evaluate, until, artifacts }
   await until("typeof globalThis.refreshLearningSmokeStatus === 'function'");
   assert.deepEqual(await evaluate(`${JSON.stringify(entryIds)}.map(id => {
     const entry = document.getElementById(id), device = entry.closest('#charging-devices > details');
-    return [entry.tagName, device?.id, !device.querySelector('summary').contains(entry), entry.querySelector('button, input') === null];
-  })`), [['DIV', 'charger1-device', true, true], ['DIV', 'charger2-device', true, true]],
-  'Configured priority is visible as read-only information in charger details');
-  assert.equal(await evaluate("document.getElementById('charging-priority-dialog')"), null);
-  assert.equal(await evaluate("document.getElementById('charging-priority-save')"), null);
-  assert.equal(await evaluate(`${JSON.stringify(entryIds)}.every(id => document.getElementById(id).textContent.includes('set in configuration'))`), true);
+    return [entry.tagName, device?.id, !device.querySelector('summary').contains(entry), entry.getAttribute('aria-haspopup')];
+  })`), [['BUTTON', 'charger1-device', true, 'dialog'], ['BUTTON', 'charger2-device', true, 'dialog']],
+  'Persistent shared priority is edited from either charger’s details');
+  await evaluate("document.getElementById('charger1-device').open = true; document.getElementById('charger1-shared-priority').click()");
+  assert.equal(await evaluate("document.getElementById('charging-priority-dialog').open"), true);
+  assert.match(await evaluate("document.getElementById('charging-priority-description').textContent"), /until you change it.*after unplugging/);
+  await evaluate("document.getElementById('charging-priority-cancel').click()");
   try {
     for (const width of [320, 390, 1440]) for (const theme of ['dark', 'light']) {
       await send('Emulation.setDeviceMetricsOverride', { width, height: width <= 390 ? 844 : 1100, deviceScaleFactor: 1, mobile: false });
@@ -29,8 +30,8 @@ export async function checkChargingPriority({ send, evaluate, until, artifacts }
           priorityHidden: !document.getElementById(id + '-shared-priority').checkVisibility() };
       })`);
       for (const action of actions) {
-        assert(action.visible && action.fits && action.rightAligned && action.priorityHidden, `${width}px ${theme}: ${action.id} exposes Charge Now at the top right: ${JSON.stringify(action)}`);
-        assert.equal(action.caption, 'Charge Now'); assert(action.height >= 44, 'The immediate-charge button has a generous touch target');
+        assert(action.visible && action.fits && action.rightAligned && action.priorityHidden, `${width}px ${theme}: ${action.id} exposes Charge now at the top right: ${JSON.stringify(action)}`);
+        assert.equal(action.caption, 'Charge now'); assert(action.height >= 44, 'The immediate-charge button has a generous touch target');
       }
       assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, `${width}px ${theme} has no horizontal overflow`);
       const screenshot = await send('Page.captureScreenshot', { format: 'png' });
@@ -40,11 +41,17 @@ export async function checkChargingPriority({ send, evaluate, until, artifacts }
     // behavior can be checked without authorizing any physical integration.
     await evaluate(`globalThis.chargingActionSmokeFetch = globalThis.fetch;
       globalThis.chargingActionSmokeSelected = false;
+      globalThis.chargingActionSmokeAutomatic = false;
+      globalThis.chargingActionSmokePriority = 'balanced';
+      globalThis.chargingActionSmokeRevision = 0;
       globalThis.chargingActionSmokeWrites = [];
       const syntheticChargingStatus = async () => {
         const status = await globalThis.chargingActionSmokeFetch('/api/status').then(response => response.json());
         const charger = status.charging.chargers.find(item => item.id === 'charger1');
-        charger.settings.enabled = true;
+        charger.settings.enabled = globalThis.chargingActionSmokeAutomatic;
+        charger.controls = { enabled: globalThis.chargingActionSmokeAutomatic, revision: globalThis.chargingActionSmokeRevision };
+        status.charging.settings.priority = globalThis.chargingActionSmokePriority;
+        status.charging.controls = { priority: globalThis.chargingActionSmokePriority, revision: globalThis.chargingActionSmokeRevision };
         charger.association = 'synthetic-browser-charger';
         charger.request = { sessionId: 'synthetic-browser-session', revision: 1, overrides: {}, chargeNow: globalThis.chargingActionSmokeSelected };
         charger.values.connected = { value: true, available: true };
@@ -55,22 +62,27 @@ export async function checkChargingPriority({ send, evaluate, until, artifacts }
       globalThis.fetch = async (input, options) => {
         const path = new URL(input.url ?? String(input), location.href).pathname;
         if (path === '/api/status') return syntheticChargingStatus();
-        if (path.startsWith('/api/charging/chargers/charger1/') && options?.method === 'POST') {
-          globalThis.chargingActionSmokeWrites.push([path, JSON.parse(options.body)]);
-          globalThis.chargingActionSmokeSelected = path.endsWith('/charge-now');
+        if ((path.startsWith('/api/charging/chargers/charger1/') || path === '/api/charging/settings') && options?.method === 'POST') {
+          const payload = JSON.parse(options.body);
+          globalThis.chargingActionSmokeWrites.push([path, payload]);
+          if (path === '/api/charging/settings') globalThis.chargingActionSmokePriority = payload.priority;
+          else globalThis.chargingActionSmokeSelected = path.endsWith('/charge-now');
+          if (path.endsWith('/control')) globalThis.chargingActionSmokeAutomatic = payload.enabled;
+          if (path.endsWith('/control') || path === '/api/charging/settings') globalThis.chargingActionSmokeRevision += 1;
           return syntheticChargingStatus();
         }
         return globalThis.chargingActionSmokeFetch(input, options);
       };
       globalThis.refreshLearningSmokeStatus()`);
     await until("document.getElementById('charger1-charge-now').disabled === false");
+    assert.equal(await evaluate("document.getElementById('charger1-enabled').getAttribute('aria-checked')"), 'false', 'Charge now is available with automatic charging OFF');
     await evaluate("document.getElementById('charger1-charge-now').click()");
     await until("document.getElementById('charger1-charge-now').getAttribute('aria-pressed') === 'true'");
     assert.deepEqual(await evaluate('globalThis.chargingActionSmokeWrites'), [
       ['/api/charging/chargers/charger1/charge-now', { association: 'synthetic-browser-charger', sessionId: 'synthetic-browser-session', revision: 1 }],
     ], 'One click requests immediate charging for exactly the displayed connection');
-    assert.equal(await evaluate("document.getElementById('charger1-device').open"), false, 'Charge Now does not open the settings fold');
-    assert.equal(await evaluate("document.getElementById('charger1-charge-now-hint').textContent"), 'Selected until unplugging');
+    assert.equal(await evaluate("document.getElementById('charger1-device').open"), false, 'Charge now does not open the settings fold');
+    assert.equal(await evaluate("document.getElementById('charger1-charge-now').title"), 'Selected until unplugging');
     for (const width of [320, 390, 1440]) {
       await send('Emulation.setDeviceMetricsOverride', { width, height: 1100, deviceScaleFactor: 1, mobile: false });
       await evaluate("document.getElementById('charger1-device').scrollIntoView({block: 'center'})");
@@ -86,8 +98,20 @@ export async function checkChargingPriority({ send, evaluate, until, artifacts }
       writeFileSync(join(artifacts, `charging-selected-${width}.png`), Buffer.from(screenshot.data, 'base64'));
     }
     await evaluate("document.getElementById('charger1-resume').click()");
-    await until("document.getElementById('charger1-charge-now').getAttribute('aria-pressed') === 'false'");
-    assert.deepEqual(await evaluate('globalThis.chargingActionSmokeWrites[1]'), ['/api/charging/chargers/charger1/resume', {}]);
+    await until("document.getElementById('charger1-charge-now').getAttribute('aria-pressed') === 'false' && globalThis.chargingActionSmokeWrites.length === 3 && !document.getElementById('charger1-charge-now').disabled");
+    assert.deepEqual(await evaluate('globalThis.chargingActionSmokeWrites[1]'), ['/api/charging/chargers/charger1/control', { association: 'synthetic-browser-charger', revision: 0, enabled: true }]);
+    assert.deepEqual(await evaluate('globalThis.chargingActionSmokeWrites[2]'), ['/api/charging/chargers/charger1/resume', {}]);
+    assert.equal(await evaluate("document.getElementById('charger1-enabled').getAttribute('aria-checked')"), 'true');
+    await evaluate("document.getElementById('charger1-device').open = true; document.getElementById('charger1-shared-priority').click(); document.getElementById('charging-priority-charger2').click(); document.getElementById('charging-priority-save').click()");
+    await until("!document.getElementById('charging-priority-dialog').open");
+    assert.deepEqual(await evaluate("['charger1', 'charger2'].map(id => document.getElementById(id + '-shared-priority-value').textContent)"), ['Charger 2', 'Charger 2']);
+    const priorityWrite = await evaluate('globalThis.chargingActionSmokeWrites[3]');
+    assert.equal(priorityWrite[0], '/api/charging/settings'); assert.equal(priorityWrite[1].priority, 'charger2');
+    assert.equal(priorityWrite[1].revision, 1); assert.equal(priorityWrite[1].associations.charger1, 'synthetic-browser-charger');
+    await evaluate("document.getElementById('charger1-enabled').click()");
+    await until("document.getElementById('charger1-enabled').getAttribute('aria-checked') === 'false'");
+    assert.equal(await evaluate("document.getElementById('charger1-charge-now').disabled"), false);
+
   } finally {
     await evaluate("if (globalThis.chargingActionSmokeFetch) globalThis.fetch = globalThis.chargingActionSmokeFetch; window.homeEnergyTheme.setTheme('dark'); window.scrollTo(0, 0)");
     await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1100, deviceScaleFactor: 1, mobile: false });

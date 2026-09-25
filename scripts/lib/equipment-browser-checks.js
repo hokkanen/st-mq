@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync } from 'node:fs';
+import { checkGarageDoorBrowser } from './garage-door-browser-checks.js';
 
 /** Commissioning navigation and downloads remain read-only, using the same fixture. */
 async function checkFloorPreheatingBrowser({ evaluate, command, context, refresh, settle }) {
@@ -155,6 +156,7 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until 
   })()`);
   try {
     await refresh();
+    await checkGarageDoorBrowser({ evaluate, command, context, refresh, settle, until });
     await checkFloorPreheatingBrowser({ evaluate, command, context, refresh, settle });
     assert.deepEqual(await evaluate("[...document.querySelectorAll('#providers > li')].map(row=>row.dataset.provider)"), ['electricity','market','vehicle-telemetry','main-temperatures']);
     assert.equal(await evaluate("document.querySelectorAll('.provider-local-summary').length"), 0);
@@ -353,7 +355,7 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until 
     assert.equal(await evaluate("document.getElementById('dhwr-message').textContent"), 'Stop sent. Waiting for a new device report to verify the request.');
     await evaluate('window.equipmentUiFixture.dhwr.confirmed=true;true'); await refresh();
     assert.equal(await evaluate("document.getElementById('dhwr-message').textContent"), '', 'Fresh OFF confirmation clears the circulation stop acknowledgement');
-    // Persisted manual receipts follow current ownership, including an early Resume.
+    // Heat-control receipts follow their temporary ownership, including an early Resume.
     await evaluate(`(() => {const f=window.equipmentUiFixture;
       f.beginManual=()=>{const at=++f.now,until=at+60000,pauseId='invented-ui-pause-'+at;
         f.heatingResult={command:'preheat',status:'mqtt',sent:true,at,expiresAt:until,holdUntil:until};
@@ -362,7 +364,7 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until 
           observations:{...f.base.observations,actual:{requestedPhase:'preheat',phase:'preheat',mode:'normal',verified:false,stale:false,observedAt:at}},
           h66:{...f.base.h66,enabled:true,connected:true,brokerConnected:true,phase:'manual-pause',pauseId,expiresAt:until,restorationPending:false,
             requested:{'0203':25},obligations:{'0203':{baseline:20,expected:25}},manualPreheat:{confirmed:true,baseValue:20},
-            lastManual:{register:'0203',value:25,previousValue:20,readback:25,at,expiresAt:until,pauseId,status:'confirmed',confirmed:true,sent:true},
+            lastManual:{register:'0203',value:25,previousValue:20,readback:25,at,scope:'heat-control',expiresAt:until,pauseId,status:'confirmed',confirmed:true,sent:true},
             readings:{...f.base.h66?.readings,'0203':{value:25,available:true,stale:false,receivedAt:at,observedAt:at}}}};};
       f.endManual=()=>{f.status.override=null;delete f.status.decision.manualHold;
         Object.assign(f.status.h66,{phase:'normal',pauseId:null,expiresAt:null,requested:{},obligations:{},manualPreheat:null});
@@ -370,16 +372,29 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until 
         Object.assign(f.status.observations.actual,{requestedPhase:'normal',phase:'normal',verified:true,observedAt:f.now});};
       f.beginManual();return true;})()`); await refresh();
     assert.match(await evaluate("document.getElementById('heating-test-message').textContent"), /Preheat sent.*held until/);
-    assert.match(await evaluate("document.getElementById('h66-test-message').textContent"), /requested 25.*readback 25.*Held until/);
+    assert.equal(await evaluate("document.getElementById('h66-test-message').textContent"), '', 'A temporary preheat request is not an ordinary native-setting receipt');
     await evaluate('window.equipmentUiFixture.now=window.equipmentUiFixture.status.override.expiresAt;window.equipmentUiFixture.endManual();true'); await refresh();
     assert.equal(await evaluate("document.getElementById('heating-test-message').textContent"), '', 'Expired preheat receipts disappear after restoration');
-    assert.equal(await evaluate("document.getElementById('h66-test-message').textContent"), '', 'Expired native-setting receipts disappear after restoration');
+    assert.equal(await evaluate("document.getElementById('h66-test-message').textContent"), '', 'Restored preheat does not create a native-setting receipt');
     await refresh();
     assert.equal(await evaluate("document.getElementById('heating-test-message').textContent+document.getElementById('h66-test-message').textContent"), '', 'Polling the same stored results cannot bring ended changes back');
     await evaluate('window.equipmentUiFixture.beginManual();true'); await refresh();
     assert.match(await evaluate("document.getElementById('heating-test-message').textContent"), /held until/);
     await evaluate('window.equipmentUiFixture.now++;window.equipmentUiFixture.endManual();true'); await refresh();
-    assert.equal(await evaluate("document.getElementById('heating-test-message').textContent+document.getElementById('h66-test-message').textContent"), '', 'Resume removes both receipts before their original deadline');
+    assert.equal(await evaluate("document.getElementById('heating-test-message').textContent+document.getElementById('h66-test-message').textContent"), '', 'Resume removes the temporary heating receipt before its original deadline');
+    // Ordinary native changes persist on the pump; only their recent command notice expires.
+    await evaluate(`(() => {const f=window.equipmentUiFixture,at=++f.now;
+      f.status.h66.lastManual={register:'0203',value:25,previousValue:20,readback:25,at,confirmedAt:at,
+        scope:'native-setting',status:'confirmed',confirmed:true,sent:true};
+      Object.assign(f.status.h66.readings['0203'],{value:25,receivedAt:at,observedAt:at});return true;})()`); await refresh();
+    assert.match(await evaluate("document.getElementById('h66-test-message').textContent"), /requested 25.*readback 25.*device confirmed.*Remains as the pump’s setting until changed again/);
+    assert.doesNotMatch(await evaluate("document.getElementById('h66-test-message').textContent"), /Held until|Resume now|restored/i);
+    assert.equal(await evaluate("document.querySelector('#h66-manual-state .status-detail-label').textContent"), '25 °C');
+    await evaluate("(() => {const f=window.equipmentUiFixture;f.now+=60000;Object.assign(f.status.h66.readings['0203'],{receivedAt:f.now,observedAt:f.now});return true;})()"); await refresh();
+    assert.equal(await evaluate("document.getElementById('h66-test-message').textContent"), '', 'The native receipt expires after one minute');
+    assert.equal(await evaluate("document.querySelector('#h66-manual-state .status-detail-label').textContent"), '25 °C', 'The current reported native setting remains after its receipt expires');
+    await refresh();
+    assert.equal(await evaluate("document.getElementById('h66-test-message').textContent"), '', 'Polling cannot revive an expired native-setting receipt');
     await evaluate('window.equipmentUiFixture.status={};window.equipmentUiFixture.heatingResult=null;true'); await refresh();
     // Cover operations remain separate from the contact state and from other device results.
     const door1 = '#garage-equipment-readings [data-device-id=door1]', door2 = '#garage-equipment-readings [data-device-id=door2]';

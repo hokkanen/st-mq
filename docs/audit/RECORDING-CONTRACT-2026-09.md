@@ -136,7 +136,7 @@ commands or from the fact that the controller is running.
 
 ## Validation
 
-The final backend passed all **3,181 standard tests without skips** (`npm test`). Focused
+The integrated result passed all **3,255 standard tests without skips** (`npm test`). Focused
 regressions cover multi-day unchanged readings, long energy intervals and sudden
 steps, pending energy restart, causal cutoffs, overlap rejection, atomic phase
 records, scoped session finalization, exact/every-report policies, all four floor
@@ -161,7 +161,18 @@ Two synthetic performance checks ran on an AMD Ryzen 5 1600 with Node 26.8.2:
   cache state and CPU contention were not controlled. Large archive queries
   remain substantial and belong in the existing cancellable worker/cache path.
 
-Final UI validation is recorded below after the browser review.
+The final UI review used the combined recording changes and current `H66` work,
+including the existing charging choices, fireplace dialog and garage-door popup.
+Production build passed with `npm run build -- --configLoader native`; Vite's
+existing large-chunk advisory remains. Inventory/UI/catalogue tests passed
+18/18. Synthetic Firefox checks passed in both themes at 390px and 1440px;
+screenshots were visually reviewed without layout overflow. Assertions compare
+rendered adaptive stream IDs directly with backend status and cover distinct
+units/devices, durable open Caravan energy, recovered history without a
+checkpoint, all four floor outputs, every-report circulation, diagnostic events,
+physical accounting, persistent charging choices and separate session edits.
+Lazy inventory requests, keyboard interaction and refresh/focus preservation
+were also verified. These are synthetic browser checks, not device commissioning.
 
 The synthetic storage benchmark and SQLite contention check are operational
 measurements, not physical commissioning or a real-time guarantee. The benchmark

@@ -120,6 +120,37 @@ test('uncontrolled chargers forecast selected current even when actual power is 
   assert.equal(run([charger]).plans.observed.state, 'observing');
 });
 
+test('Charge Now forecasts require confirmed release and preserve native or vehicle start limits with automatic charging on or off', () => {
+  for (const enabled of [false, true]) {
+    const charger = make('immediate', { preferences: { enabled }, telemetry: { charging: false } });
+    charger.request = { chargeNow: true };
+    const forecast = () => forecastCharger({ now, deadlineAt: now + 6 * HOUR, charger });
+    assert.equal(forecast().startAt, null, 'A saved request alone cannot predict immediate charging');
+    charger.values.scheduledStartAt = { value: now + HOUR, available: true };
+    assert.equal(forecast().startAt, now + HOUR, 'A pending release preserves the current native schedule');
+    charger.control = { phase: 'yielded', released: true, manual: { kind: 'window', resumeAt: now + 2 * HOUR } };
+    assert.equal(forecast().startAt, now + HOUR, 'An external schedule retains its actual future start');
+    assert.equal(forecast().charging, false);
+    charger.control = { phase: 'released', released: true };
+    assert.equal(forecast().startAt, now + HOUR, 'Newer native start evidence still constrains a prior release');
+    charger.values.scheduledStartAt = { value: null, available: false };
+    assert.equal(forecast().startAt, now);
+    assert.ok(forecast().finishAt > now);
+    charger.values.vehicleNotBefore = { value: now + 2 * HOUR, available: true };
+    assert.equal(forecast().startAt, now + 2 * HOUR);
+    assert.equal(forecast().charging, false);
+    charger.values.vehicleNotBefore = { value: null, available: false };
+    charger.control = { phase: 'unavailable', released: true, errorCode: 'charger-fault' };
+    assert.equal(forecast().startAt, null, 'A previous release cannot hide a failed current instruction');
+    charger.control = { phase: 'yielded', manual: { kind: 'stop' } };
+    assert.equal(forecast().reason, 'manual-stop');
+    charger.control = { phase: 'released', released: true };
+    charger.values.scheduledStartAt = { value: now + HOUR, available: true };
+    charger.values.charging = { value: true, available: true };
+    assert.equal(forecast().startAt, now, 'Measured ongoing charging remains a present load');
+  }
+});
+
 test('unknown uncontrolled connection or current creates no phantom load and cannot block the other charger', () => {
   const observed = make('observed', { capabilities: { scheduling: false, externalLoadBalancing: false },
     telemetry: { connected: null, scheduledStartAt: now - HOUR } });

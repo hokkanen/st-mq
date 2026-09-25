@@ -53,9 +53,13 @@ export function forecastCharger({ now, deadlineAt, charger, supply = {} } = {}) 
     return { ...base, reason: 'manual-stop' };
   if (charger.requiredGridKwh <= EPS && targetKnown(charger) && value(charger, 'charging') !== true && !(value(charger, 'actualCurrentA') > 0))
     return { ...base, reason: 'vehicle-target-already-reached' };
-  const charging = value(charger, 'charging') === true
-    || (released(charger) || charger.request?.chargeNow) && !(value(charger, 'vehicleNotBefore') > now);
   const chargerStart = value(charger, 'scheduledStartAt'), vehicleStart = value(charger, 'vehicleNotBefore');
+  // A dashboard request is not native confirmation. Until Charge Now releases
+  // our restriction, keep any observed schedule and manual limits in the forecast.
+  const immediateRelease = released(charger) && (charger.request?.chargeNow !== true
+    || value(charger, 'connected') === true && ['released', 'charging'].includes(charger.control?.phase)
+      && !charger.control?.errorCode && !manualActive(charger, now) && !(chargerStart > now));
+  const charging = value(charger, 'charging') === true || immediateRelease && !(vehicleStart > now);
   const starts = [chargerStart, vehicleStart].filter(finite);
   const schedule = starts.length ? Math.max(...starts) : null;
   const nativeEnd = value(charger, 'scheduledEndAt');

@@ -78,12 +78,12 @@ identified vehicle. Their public capacity defaults are 74 kWh and 57 kWh;
 other values inherit the shared defaults. Capacity and starting charge are
 planning assumptions when no applicable live reading exists.
 
-The permanent automatic scheduling switches are
-`charging.chargers.charger1.schedulingEnabled` and
-`charging.chargers.charger2.schedulingEnabled`, both false by default.
-Charger 2's separate `enabled` field controls its physical integration and does
-not grant scheduling or commissioning permission. `charging.priority` is
-`balanced`, `charger1` or `charger2`, initially `balanced`.
+Automatic charging and shared charger priority are persistent dashboard
+choices. Automatic charging starts OFF and priority starts Balanced on a fresh
+installation. They survive restart and unplugging for the same equipment;
+changing equipment identity clears its control choices. These are not
+configuration fields. Charger 2's configured `enabled` field controls its
+physical integration and does not grant scheduling or commissioning permission.
 
 For example, merge only these intentional choices into your configuration:
 
@@ -91,17 +91,16 @@ For example, merge only these intentional choices into your configuration:
 {
   "charging": {
     "defaults": { "readyBy": "07:00" },
-    "chargers": { "charger1": { "schedulingEnabled": true } },
     "vehicles": { "tesla": { "defaults": { "minimumSoc": 90 } } }
   }
 }
 ```
 
 **Save for this session** cannot change these defaults. Its scope ends with the
-physical connection; restart preserves only the same ongoing session. Automatic
-scheduling enablement and priority are shown read-only in the dashboard. **Charge
-Now** releases automatic scheduling for the current connection, subject to
-native limits and device readiness. See [charging](charging.md).
+physical connection; restart preserves only the same ongoing session. **Charge
+now** releases automatic scheduling for the current connection even with
+Automatic charging OFF, subject to native limits and device readiness.
+See [charging](charging.md).
 
 Heat-pump parameter edits remain in effect until deliberately changed. Native
 readback is authoritative; readable pump settings are not controller defaults.

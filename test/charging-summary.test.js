@@ -290,3 +290,33 @@ test('an enforced native stop before target invalidates target cost rather than 
   const sufficientWindow = { ...earlyStop, values: { ...earlyStop.values, scheduledEndAt: reading(finishAt) } };
   assert.equal(cost(sufficientWindow, prices).value, '€3.00');
 });
+
+test('Charge now remains an explicit request while automatic is OFF, with activity and confirmation separate', () => {
+  const item = charger({ settings: { enabled: false }, request: { chargeNow: true }, control: { phase: 'released' } });
+  const displayed = summary(item);
+  assert.equal(displayed.roleLabel, 'Charge now'); assert.equal(displayed.roleState, 'manual');
+  assert.match(displayed.roleDetail, /Automatic charging remains off/);
+  assert.match(displayed.activity, /Charging requested until unplugging/);
+  assert.doesNotMatch(displayed.activity, /^Charging ·/);
+  assert.equal(notice(item).label, 'Charge now selected until unplugging');
+  const failed = { ...item, control: { phase: 'unconfirmed', confirmed: false, reason: 'Waiting for native confirmation.' } };
+  assert.equal(summary(failed).roleState, 'uncertain'); assert.equal(summary(failed).completion.value, 'Checking');
+  assert.equal(notice(failed).label, 'Charger needs attention'); assert.match(notice(failed).detail, /native confirmation/);
+  const charging = { ...item, values: { ...item.values, charging: reading(true), powerKw: reading(7.4) } };
+  assert.match(summary(charging).activity, /^Charging · 7.4 kW/);
+});
+
+test('native stop and future manual windows stay visible ahead of a retained Charge now choice', () => {
+  for (const manual of [
+    { kind: 'stop', reason: 'Charging was stopped at the charger.' },
+    { kind: 'window', startsAt: startAt, windowEndAt: finishAt, reason: 'A native charging schedule has priority.' },
+  ]) {
+    const item = charger({ settings: { enabled: false }, request: { chargeNow: true }, control: { phase: 'yielded', manual } });
+    const display = chargerDisplay(item, { now }), result = summary(item);
+    assert.equal(display.yielded, true); assert.equal(result.roleLabel, 'Manual override');
+    assert.doesNotMatch(result.activity, /Charging requested/);
+    assert.match(result.activity, manual.kind === 'stop' ? /stopped at the charger/ : /Manual window/);
+    assert.equal(notice(item).state, 'manual');
+    assert.doesNotMatch(notice(item).detail, /Automatic control resumes/);
+  }
+});

@@ -2,6 +2,77 @@
 -Implement support for local mqtt-based temperature receives (eg, from shelly or HASS through Meteorologisk Institute); just store last received temp values and time stamps (maybe in storage class, see below) when received (and accept if received within 1h)
 -Chart dataset control buttons don't work when datasets are manually hidden/unhidden from legend, how to fix?
 
+Completed 2026-09-25 — Restore compact charging cards
+- Restore the pre-Charge-now summary heights: 364px on mobile and 324px
+  for compact/paired cards, with the original 56/54px heading band.
+- Remove the text beneath Charge now, retaining its context as a button tooltip.
+  Keep Use automatic beside the charger identity in the compact action column.
+- Remove the unused hint element and styling. Charging actions, session scope,
+  permissions, configuration and persisted state stay unchanged; no compatibility
+  paths are introduced.
+- Validation: 101 focused charging UI/summary tests and the production build pass.
+  Synthetic Chromium checks pass for 22 charging states in both themes at
+  320–1920px, confirming the restored heights with no overlapping summary bands.
+
+Completed 2026-09-25 — Charging controls owned by the dashboard
+- Keep only ready-by time, starting charge, target charge and usable battery
+  capacity as shared/vehicle configuration defaults. Restore persistent UI
+  Automatic charging and shared priority choices, scoped to equipment identity.
+  Preserve those choices across restart and vehicle unplugging; keep changes to
+  the four charging inputs scoped to the current session.
+- Make Charge now independent of Automatic charging across Easee cloud, native
+  OCPP and Shelly control. Preserve native restrictions, session/revision checks,
+  current permissions and confirmed instruction ownership. Keep requested
+  charging distinct from physical confirmation and blocked native schedules.
+- Restyle Charge now as a compact secondary action and separate persistent
+  Charging controls from Session settings. Update help, documentation and the
+  repository rule to express those lifetimes consistently.
+- Reviewed producers, API consumers, saved state, configuration, UI and tests.
+  Remove configuration priority/scheduling switches and reject retired durable
+  default preferences. Current schema 14/charging state 6 gain optional control
+  choices; absence defaults to OFF/Balanced and never promotes recorded display
+  into control permission. No migration, state repair or database reset needed.
+  Preserve current session, snapshot/replica and native restoration behavior.
+- Validation: all 3,175 offline tests and the production build pass. Focused
+  checks cover all three charging backends, configuration reload, restart,
+  absent new control state, stale-device/session/revision rejection, failed
+  storage and readback, native restrictions and explicit return to automatic.
+  Isolated Chromium checks pass 22 charging states in both themes from 320 to
+  1920 px, including Charge now with Automatic OFF, sequential Use automatic,
+  shared priority edits, stable focus/drafts and balanced card layouts.
+  All validation used synthetic services and temporary databases.
+
+Completed 2026-09-25 — Home fireplace window
+- Replace Home's chart shortcut with a fireplace icon and a window matching the
+  charger-priority dialog from commit 3ae0e1b. Keep the existing firewood amount,
+  recording, recent history, corrections and unconfirmed-save retry behavior.
+- Remove the Fireplace fold, obsolete Home chart wiring and split support layout.
+  Sensors & Equipment spans the Home card; Data & settings stays unchanged.
+  Close and Escape restore focus, polling retains draft values, and a switch to
+  a read-only replica closes the window. No data/API/settings compatibility path
+  or migration is introduced; update current UI consumers and documentation.
+- Validation: 122 focused Node tests and the production build pass. The isolated
+  Chromium dashboard suite passes keyboard/focus, state retention and responsive
+  layout checks in both themes, including full-width equipment and the dialog.
+
+Completed 2026-09-25 — Garage door popup controls
+- The Garage Doors status opens compact, themed door rows with an illustrated
+  reported position and one context-sensitive Open, Close or supported Stop
+  action. Pending delivery, unconfirmed positions and failures stay per door;
+  polling preserves the popup and keyboard focus. Both themes fit 320px screens.
+- Reuse current equipment commands, capabilities, authority and busy state.
+  Unknown or invalid contact evidence cannot choose an action. Role and pairing
+  updates disable an already-open popup immediately. Retain the detailed
+  equipment controls, event-driven contact health and physical readback semantics.
+- Reviewed acquisition producers, cover API, configuration, state, UI, tests and
+  documentation. No compatibility aliases, new settings or persisted formats
+  were introduced. Replace the browser fixture's retired native-parameter hold
+  expectations with current persistent device-setting expectations.
+- Validation: full offline suite (3,149 tests), 14 new door-control tests, shared
+  popup tests and production build pass. Isolated Chromium checks cover mocked
+  requests, keyboard activation, focus, read-only transitions and both themes at
+  1440, 390 and 320px. All commands use disposable synthetic fixtures.
+
 Completed 2026-09-25 — Persistent heat-pump settings and room intent
 - Ordinary Home pump parameters remain until explicitly changed; readback owns
   their current values and later automatic control restores the accepted device
@@ -393,6 +464,9 @@ Completed 2026-09-25 — Comprehensive recording contract and inventory audit
   no migration, backfill, reset, retired-setting alias or old recorder interpreter.
   Preserve supported read-only v0.7.5 imports, same-version restart/backup/restore,
   journal replay, current corrections and physical restoration obligations.
-- Validation and final UI evidence: docs/audit/RECORDING-CONTRACT-2026-09.md.
+- Validation: all 3,255 integrated standard tests passed without skips, plus
+  the extended SQLite contention check, production build and final synthetic
+  Firefox review in both themes at 390/1440px. Recovery tails independently
+  passed 26 tests. Evidence: docs/audit/RECORDING-CONTRACT-2026-09.md.
   Synthetic fixtures only; no household configuration, database or device used.
   The owner authorized merging after validation; no deployment or push.

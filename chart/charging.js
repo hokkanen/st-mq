@@ -102,12 +102,13 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
   const time = value => chargingTime(value, timezone, now);
   const connected = values.connected?.value, charging = connected === true && values.charging?.value === true;
   const supported = charger.capabilities?.scheduling === true, enabled = supported && settings.enabled === true;
-  const phase = control.phase ?? '', manual = enabled ? control.manual ?? control.manualOverride : null;
-  const uncertain = enabled && (['uncertain', 'ownership-uncertain', 'unavailable', 'pause-unconfirmed'].includes(phase) || Boolean(control.errorCode));
-  const yielded = enabled && (['yielded', 'manual'].includes(phase) || Boolean(manual));
+  const chargeNow = connected === true && charger.request?.chargeNow === true;
+  const phase = control.phase ?? '', manual = enabled || chargeNow ? control.manual ?? control.manualOverride : null;
+  const uncertain = (enabled || chargeNow) && (['uncertain', 'ownership-uncertain', 'unavailable', 'pause-unconfirmed'].includes(phase) || chargeNow && (phase === 'unconfirmed' || control.confirmed === false) || Boolean(control.errorCode));
+  const yielded = (enabled || chargeNow) && (['yielded', 'manual'].includes(phase) || Boolean(manual));
   const activeManual = yielded && manual?.kind !== 'unknown';
   const handoverUnconfirmed = !enabled && control.handoverConfirmed === false;
-  const released = enabled && ['released', 'charging'].includes(phase);
+  const released = (enabled || chargeNow) && ['released', 'charging'].includes(phase);
   const provisional = enabled && phase === 'provisional';
   const owned = enabled && !yielded && control.confirmed !== false ? control.owned : null;
   const execution = enabled && !yielded ? control.execution : null;
@@ -146,16 +147,20 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
     const endTime = dateKey(start, timezone) === dateKey(end, timezone) ? time(end).match(/\d{2}:\d{2}$/)?.[0] : time(end);
     return `${time(start)}–${endTime}`;
   };
-  const resumption = validTime(resumeAt) ? Number(resumeAt) <= now ? 'Manual priority expired; automatic handover awaiting confirmation.'
-    : `Automatic control resumes ${time(resumeAt)}${cycleCapped ? ' at the ready-by boundary' : ''}.` : '';
+  const resumption = !validTime(resumeAt) ? '' : !enabled
+    ? `${Number(resumeAt) <= now ? 'Manual priority ended; waiting for charger confirmation' : `Manual window ends ${time(resumeAt)}`}. Automatic charging remains off.`
+    : Number(resumeAt) <= now ? 'Manual priority expired; automatic handover awaiting confirmation.'
+      : `Automatic control resumes ${time(resumeAt)}${cycleCapped ? ' at the ready-by boundary' : ''}.`;
   let state = connected === false ? 'Not connected' : connected === true ? 'Connected' : 'Connection unknown';
   let event = '', eventAt = null, eventKind = null;
   if (connected !== true) {
     event = activeManual && resumption ? resumption : enabled ? connected === false ? 'Automatic charging is ready for the next connection' : 'Waiting for charger readings'
       : supported ? 'Automatic charging OFF' : 'Monitoring';
+  } else if (chargeNow && !charging && !uncertain && !yielded) {
+    state = 'Charge now selected'; event = 'Charging requested until unplugging'; eventKind = 'manual';
   } else if (activeManual && validTime(resumeAt) && Number(resumeAt) <= now) {
     state = charging ? 'Charging' : 'Handover pending';
-    event = charging && finite(values.powerKw?.value) ? `${number(values.powerKw.value, 'kW')} now` : 'Automatic handover pending';
+    event = charging && finite(values.powerKw?.value) ? `${number(values.powerKw.value, 'kW')} now` : enabled ? 'Automatic handover pending' : 'Charger handover pending';
   } else if (activeManual) {
     state = charging ? hasManualWindow ? 'Charging · manual schedule' : 'Charging · manual control' : hasManualWindow ? 'Manual schedule' : 'Manual control';
     event = `${charging && finite(values.powerKw?.value) ? `${number(values.powerKw.value, 'kW')} now · ` : ''}${hasManualWindow
@@ -260,7 +265,7 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
   const controlDetail = !supported ? 'This integration supports monitoring only.'
     : activeManual ? 'Choose “Use automatic” to end manual priority early. A later manual change takes priority again.'
       : provisional ? 'Charging is allowed for now. The forecast is being updated; economical periods can still be scheduled when it improves.'
-      : 'Choose economical charging periods to reach the target by the ready-by time.';
+      : 'Choose economical charging periods to reach the target by the ready-by time. This preference stays in effect until changed, including after unplugging and restart.';
   const provider = charger.provider ?? charger.telemetry?.provider;
   const recorded = charger.readOnly === true && charger.recorded === true;
   const recordedEfficiency = charger.configuration?.efficiency;
@@ -291,7 +296,7 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
     ['Other charging', 'A physically charging peer consumes capacity even with automatic scheduling off. Its continuing demand remains reserved when its stop is unknown. Household forecasting subtracts each physical charger once.'],
     ['Manual priority', 'A simple manual schedule has priority through its complete window, including after ready-by. Charge now has priority until unplugging. Multiple periods or an unknown end require “Use automatic”; a later manual change takes priority again. A fresh charger read is required before handover.'],
     ['Manual instruction ownership', 'An existing schedule with unknown ownership is preserved. Our own changes and normal schedule expiry do not count as manual changes. Manual windows survive reconnection and restart. Editing ready-by does not move a recorded window end.'],
-    ['Configured automatic charging', 'Automatic charging is enabled or disabled in configuration. OFF stops automatic scheduling and removes only a confirmed restriction owned by this service. Newer manual instructions are preserved. OFF does not stop physical charging. If the charger cannot confirm removal, the handover stays visibly unconfirmed.'],
+    ['Automatic charging', 'The dashboard remembers automatic charging and shared priority until you change them, including after unplugging and restart. Charge now works with automatic charging ON or OFF. OFF stops automatic scheduling and removes only a confirmed restriction owned by this service. Newer manual instructions are preserved. OFF does not stop physical charging. If the charger cannot confirm removal, the handover stays visibly unconfirmed.'],
     ['Unavailable data', 'Without a reliable price or power forecast, or with too little time, charging is allowed immediately while planning continues. Economical periods can still be scheduled when the forecast improves. A disabled charger, fault or authorization requirement must be resolved first. Unconfirmed changes retain the last known instruction and are retried after another charger reading.'],
   );
   if (charger.capabilities?.externalLoadBalancing) {
@@ -357,7 +362,11 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
   };
   const bind = (node, event, action) => { if (!node) return; node.addEventListener(event, action); listeners.push(() => node.removeEventListener(event, action)); };
   const writable = () => Boolean(status?.charging && status.readOnly !== true && status.charging.readOnly !== true && !isReadOnlyReplica(status));
-  const sharedPriority = createChargingPriority({ document });
+  const sharedPriority = createChargingPriority({ document,
+    save: (priority, message) => mutate('/api/charging/settings', {
+      associations: Object.fromEntries((status.charging.chargers ?? []).map(charger => [charger.id, charger.association])),
+      revision: status.charging.controls.revision, priority,
+    }, message, 'Priority saved. It stays in effect until changed.') });
   const set = (id, text) => { if ($(id)) $(id).textContent = text; };
   const rowNodes = new WeakMap();
   const energyNodes = new WeakMap();
@@ -444,11 +453,10 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     const identity = make('div', '', 'charging-identity'), vehicle = make('span', '', 'charging-vehicle', `${id}-vehicle`); identity.append(title, vehicle);
     const state = make('span', '', 'equipment-device-status', `${id}-state`);
     const actions = make('div', '', 'charging-actions');
-    const chargeNow = make('button', 'Charge Now', 'charging-charge-now', `${id}-charge-now`); chargeNow.type = 'button';
-    chargeNow.setAttribute('aria-pressed', 'false'); chargeNow.setAttribute('aria-describedby', `${id}-charge-now-hint`);
-    const chargeNowHint = make('small', '', 'charging-charge-now-hint', `${id}-charge-now-hint`);
+    const chargeNow = make('button', 'Charge now', 'charging-charge-now secondary-button', `${id}-charge-now`); chargeNow.type = 'button';
+    chargeNow.setAttribute('aria-pressed', 'false');
     const resume = make('button', 'Use automatic', 'charging-use-automatic secondary-button', `${id}-resume`); resume.type = 'button';
-    actions.append(chargeNow, chargeNowHint); identity.append(resume); heading.append(identity, actions); summary.append(heading);
+    actions.append(chargeNow, resume); heading.append(identity, actions); summary.append(heading);
     const controlMessage = make('p', '', 'temporary-status charging-control-message', `${id}-control-message`); controlMessage.setAttribute('role', 'status');
     const overview = make('div', '', 'charging-overview', `${id}-overview`), metrics = {};
     const charge = make('div', '', 'equipment-value charging-charge');
@@ -503,16 +511,20 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     const sessionStatus = make('p', '', 'charging-session-status', `${id}-session-status`);
     session.append(make('h5', 'Schedule & readings'), state, sessionStatus, problem, priority, readiness, readingTime, scheduleHeading, periods, readings, notes);
     body.append(session);
-    const master = make('div', '', 'charging-master'), masterLabel = make('span', 'Automatic charging · configuration', '', `${id}-enabled-label`);
-    const enabledValue = make('span', '', '', `${id}-enabled`); master.append(masterLabel, enabledValue);
+    const master = make('div', '', 'charging-master'), masterLabel = make('span', 'Automatic charging', '', `${id}-enabled-label`);
+    const enabledValue = make('button', 'OFF', '', `${id}-enabled`); enabledValue.type = 'button';
+    enabledValue.setAttribute('role', 'switch'); enabledValue.setAttribute('aria-checked', 'false');
+    enabledValue.setAttribute('aria-labelledby', masterLabel.id); master.append(masterLabel, enabledValue);
     const controlDetail = make('p', '', 'muted charging-form-help', `${id}-control-detail`);
     const preferences = make('section', '', 'charging-detail-section');
     const scopeNote = make('p', 'Changes apply until unplugging. General and vehicle defaults are changed only in configuration.', 'charging-form-help');
-    preferences.append(make('h5', 'Session settings'), scopeNote, master, controlDetail); body.append(preferences);
+    preferences.append(make('h5', 'Charging controls'), master, controlDetail, sharedPriority.createEntry(id)); body.append(preferences);
+    const sessionPreferences = make('section', '', 'charging-detail-section');
+    sessionPreferences.append(make('h5', 'Session settings'), scopeNote); body.append(sessionPreferences);
     const form = make('form', '', 'charging-settings-form', `${id}-settings-form`), primaryFields = make('div', '', 'charging-fields');
     const save = make('button', 'Save for this session', 'secondary-button', `${id}-settings-save`); save.type = 'submit';
     const message = make('p', '', 'temporary-status', `${id}-settings-message`); message.setAttribute('role', 'status');
-    form.append(primaryFields, save); preferences.append(form, message);
+    form.append(primaryFields, save); sessionPreferences.append(form, message);
     const settings = group(id, chargingFields, () => primaryFields, form, save, message, `${prefix}/settings`);
     const targetControls = make('div', '', '', `${id}-target-controls`);
     const targetHelp = make('p', '', 'charging-form-help', `${id}-target-help`);
@@ -520,25 +532,42 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     targetToggle.setAttribute('aria-describedby', targetHelp.id);
     targetControls.append(targetHelp, targetToggle); settings.fields.get('minimumSoc').label.append(targetControls);
     const targetMessage = make('p', '', 'temporary-status', `${id}-target-message`); targetMessage.setAttribute('role', 'status');
-    preferences.append(targetMessage);
-    preferences.append(sharedPriority.createEntry(id));
+    sessionPreferences.append(targetMessage);
     const explanationFold = make('details', '', 'equipment-fold charging-explanations', `${id}-explanation-details`);
     explanationFold.append(make('summary', 'How charging works'));
     const explanations = make('dl', '', 'equipment-readings', `${id}-explanations`); explanationFold.append(explanations); body.append(explanationFold);
     section.append(summary, body); $('charging-devices')?.append(section);
-    const device = { id, chargeNow, chargeNowHint, controlMessage, section, title, vehicle, state, event, eventLabel, eventValue, overview, sources, metrics, chargeLabel, targetLabel, targetSource, targetNotice, targetControls, targetHelp, targetToggle, targetMessage, completionLabel, completion, readiness, priority, readingTime, deadline, deadlineGroup, facts, deliveredLabel, deliveredValue, remaining, energyLabel, energyValue, costLabel, cost, costMetric, scheduleInfo, scheduleHeading, periodCount, periods, problem, explanations, readings, notes, settings, enabledValue, resume, controlDetail, charger, notice, footerHint, sessionStatus };
+    const device = { id, chargeNow, controlMessage, section, title, vehicle, state, event, eventLabel, eventValue, overview, sources, metrics, chargeLabel, targetLabel, targetSource, targetNotice, targetControls, targetHelp, targetToggle, targetMessage, completionLabel, completion, readiness, priority, readingTime, deadline, deadlineGroup, facts, deliveredLabel, deliveredValue, remaining, energyLabel, energyValue, costLabel, cost, costMetric, scheduleInfo, scheduleHeading, periodCount, periods, problem, explanations, readings, notes, settings, enabledValue, resume, controlDetail, charger, notice, footerHint, sessionStatus };
+    bind(enabledValue, 'click', () => {
+      if (enabledValue.disabled) return;
+      const current = device.charger;
+      return mutate(`${prefix}/control`, { association: current.association, revision: current.controls.revision,
+        enabled: !current.settings.enabled }, controlMessage, 'Automatic charging preference saved. It stays in effect until changed.');
+    });
     bind(chargeNow, 'click', event => {
       event.preventDefault(); event.stopPropagation();
       if (chargeNow.disabled) return;
       const current = device.charger;
       return mutate(`${prefix}/charge-now`, { association: current.association,
         sessionId: current.request.sessionId, revision: current.request.revision }, controlMessage,
-      'Charge Now requested until unplugging. Check the charging status below.');
+      'Charge now requested until unplugging. Check the charging status below.');
     });
     bind(resume, 'click', event => {
       event.preventDefault(); event.stopPropagation();
       if (resume.disabled) return;
-      return mutate(`${prefix}/resume`, {}, controlMessage, 'Automatic charging requested.');
+      const current = device.charger;
+      return current.settings.enabled
+        ? mutate(`${prefix}/resume`, {}, controlMessage, 'Automatic charging requested.')
+        : mutate(`${prefix}/control`, { association: current.association, revision: current.controls.revision, enabled: true },
+          controlMessage, 'Automatic charging enabled and requested. This preference stays in effect until changed.', undefined, async () => {
+            const latest = device.charger;
+            if (devices.get(id) !== device || latest.association !== current.association
+              || latest.request?.sessionId !== current.request?.sessionId || !latest.settings.enabled)
+              throw new Error('The charging connection or preference changed. Review it before choosing Use automatic again.');
+            if (!writable() || latest.readOnly) throw new Error('Control authority changed before automatic handover. Review the current status.');
+            try { return await request(`${prefix}/resume`, {}); }
+            catch (error) { throw new Error(`Automatic charging is on, but handover could not be completed. ${error.message ?? 'Try Use automatic again.'}`); }
+          });
     });
     bind(targetToggle, 'click', () => {
       if (targetToggle.disabled || !device.targetAction) return;
@@ -548,11 +577,13 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     });
     devices.set(id, device); return device;
   }
-  async function mutate(path, payload, message, success, saved = () => {}) {
+  async function mutate(path, payload, message, success, saved = () => {}, followup) {
     if (busy || !writable()) return false;
     busy = true; message.textContent = 'Saving…'; message.classList.remove('form-error'); refreshControls();
     try {
-      beforeRequest(); const result = await request(path, payload); saved(); update(result); onStatus(result); message.textContent = typeof success === 'function' ? success() : success;
+      beforeRequest(); const result = await request(path, payload); saved(); update(result); onStatus(result);
+      if (followup) { const next = await followup(); update(next); onStatus(next); }
+      message.textContent = typeof success === 'function' ? success() : success;
       return true;
     } catch (error) { message.textContent = error.message ?? 'Could not save charging settings.'; message.classList.add('form-error'); return false; }
     finally { busy = false; refreshControls(); afterRequest(); }
@@ -577,7 +608,7 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
   }
   function refreshControls() {
     const locked = busy || !writable();
-    sharedPriority.update(status?.charging);
+    sharedPriority.update(status?.charging, { busy, writable: writable() });
     for (const device of devices.values()) {
       const { charger, settings } = device, supported = charger.capabilities?.scheduling === true;
       for (const [key, { field, input, label }] of settings.fields) {
@@ -588,16 +619,17 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
       settings.save.disabled = locked || !connectedSession(charger) || settings.draftSession !== settings.currentSession
         || ![...settings.fields].some(([key, { input }]) => settings.dirty.has(key) && !input.disabled);
       device.enabledValue.parentElement.hidden = !supported;
+      device.enabledValue.disabled = locked || charger.readOnly === true || !supported || !charger.controls;
       const chargeNowActive = charger.request?.chargeNow === true, view = chargerDisplay(charger);
       device.chargeNow.hidden = !supported;
-      device.chargeNow.textContent = 'Charge Now';
+      device.chargeNow.textContent = 'Charge now';
       device.chargeNow.setAttribute('aria-pressed', String(chargeNowActive));
-      device.chargeNow.disabled = locked || charger.readOnly === true || !supported || !charger.settings.enabled
+      device.chargeNow.disabled = locked || charger.readOnly === true || !supported
         || !connectedSession(charger) || chargeNowActive;
-      device.chargeNowHint.textContent = !supported ? 'Monitoring only' : !writable() || charger.readOnly ? 'View only'
-        : !charger.settings.enabled ? 'Disabled in configuration' : !connectedSession(charger) ? 'Connect a vehicle'
+      device.chargeNow.title = !supported ? 'Monitoring only' : !writable() || charger.readOnly ? 'View only'
+        : !connectedSession(charger) ? 'Connect a vehicle'
           : chargeNowActive ? 'Selected until unplugging' : 'Until unplugging';
-      device.resume.hidden = !supported || !charger.settings.enabled || !(chargeNowActive || view.yielded);
+      device.resume.hidden = !supported || !(chargeNowActive || view.yielded);
       device.resume.disabled = locked || charger.readOnly === true || device.resume.hidden;
       device.targetToggle.disabled = locked || charger.readOnly === true || !device.targetAction;
     }
@@ -706,6 +738,7 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
       device.notes.replaceChildren(...view.notes.map(note => make('li', note))); device.notes.hidden = !view.notes.length;
       device.controlDetail.textContent = presentation.roleState === 'uncertain' ? presentation.roleDetail : view.controlDetail;
       device.enabledValue.textContent = charger.settings.enabled === true ? 'ON' : 'OFF';
+      device.enabledValue.setAttribute('aria-checked', String(charger.settings.enabled === true));
       updateFields(device.settings, charger.settings, charger);
     }
     for (const [id, device] of devices) if (!currentIds.has(id)) { device.section.remove(); devices.delete(id); sharedPriority.removeEntry(id); }

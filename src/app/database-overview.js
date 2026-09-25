@@ -274,7 +274,7 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
     ['equipment-doors', "key LIKE 'equipment:door:%'", 'Last reported door contacts', 'Latest event-only contact state and route identity retained across reconnects; original changes are recorded separately.'],
     ['equipment-energy', "key LIKE 'shelly:%energy:%' OR key LIKE 'mqtt:equipment-energy:%'", 'Equipment meter accumulation', 'Current counter baseline, reset/gap evidence and pending caravan or other metered-equipment accumulation.'],
     ['charging-ownership', "key LIKE 'charging:%:ownership' OR key LIKE 'charging:%:ownership:ocpp'", 'Charger ownership and restoration', 'Device-bound control permission, native baseline and unfinished current-limit restoration.'],
-    ['charging', "key LIKE 'charging:%' OR key LIKE 'shelly-evse:%'", 'Charging sessions and device state', 'Current physical connections, energy baselines, vehicle observations, session overrides, schedules and charger-controller state.'],
+    ['charging', "key LIKE 'charging:%' OR key LIKE 'shelly-evse:%'", 'Charging choices, sessions and device state', 'Device-bound Automatic charging and shared priority choices survive restart and unplugging. Physical connections, energy baselines, vehicle observations, session edits, schedules and charger-controller state are also retained. Battery and ready-by defaults remain configured.'],
     ['easee-ocpp', "key LIKE 'easee:ocpp%'", 'Charger 1 OCPP setup', 'Current native OCPP setup verification, saved restoration baseline and control readiness.'],
     ['garage', "key LIKE 'garage:%'", 'Garage control and learning state', 'Current model checkpoint, protection exposure, active episode, adapter restoration, temporary price-control pause and device-bound room target.'],
     ['pairing', "key='pairing-lineage'", 'Paired database lineage', 'Current pairing lineage used to identify a published database and fence replica ownership; private identifiers are omitted.'],
@@ -290,7 +290,11 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
         ['Operating settings', 'Controller mode, comfort target and permitted temperature drop.'],
         ['Occupancy', 'Occupied/away mode and planned return time.'],
         ['Temporary overrides', 'Override action and expiry; cleared state may remain as an explicit null entry.'],
-        ['Last update', 'When each current settings document was last changed.']) } : {}) })),
+        ['Last update', 'When each current settings document was last changed.']) } : id === 'charging' ? { fields: fields(
+        ['Persistent charging choices', 'Automatic charging and shared priority, bound to the current equipment identity.'],
+        ['Session edits', 'Ready-by time, starting charge, target charge and usable battery capacity for the physical session; these do not replace configured defaults.'],
+        ['Session and device state', 'Connection, measured energy, vehicle observations, native readiness, schedule and current execution state.'],
+        ['Last update', 'When the current state changed; private device identifiers and payload values are not exposed.']) } : {}) })),
       ...(state.get('other')?.count ? [item('state-other', 'Unrecognized current-state entries', 'Each unrecognized entry is identified below by an opaque reference to avoid exposing private device identifiers. No current writer description is available.', state.get('other'), currentOptions)] : [])]);
   if (state.get('other')?.count) {
     inventoryIssues.push('Current-state entries without a registered writer description are present.');

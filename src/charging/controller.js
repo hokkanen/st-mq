@@ -36,8 +36,13 @@ export function createChargingController({ adapter, initialState = null, saveSta
     disconnected: false, execution: null, handoverConfirmed: true, reason: 'Automatic charging is off.',
     ...previous, version: 5, session: previous.session ?? null, errorCode: null };
   let desired = { enabled: false, plan: null, readyBy: '06:00', timezone: TIME_ZONE }, snapshot = null, closed = false, generation = 0, queue = Promise.resolve();
+  let planningRevision = null;
   const permitted = () => !closed && canControl() === true;
-  const status = () => ({ ...copy(state), enabled: desired.enabled === true, snapshot: snapshot ? copy(snapshot) : null });
+  const chargeNowActive = () => desired.chargeNow?.connectedAt === state.session?.connectedAt
+    && Number.isSafeInteger(desired.chargeNow?.connectedAt) && snapshot?.pluggedIn === true
+    && !state.vehicleDisconnect?.awaitingConnection;
+  const controlRequested = () => desired.enabled === true || chargeNowActive();
+  const status = () => ({ ...copy(state), enabled: desired.enabled === true, planningRevision, snapshot: snapshot ? copy(snapshot) : null });
   const currentFingerprint = () => activeFingerprint(snapshot.schedule);
   const ownsCurrent = () => state.owned && ownedFingerprint(state.owned) === currentFingerprint();
   async function persist() { await saveState(copy(state)); }
@@ -280,7 +285,7 @@ export function createChargingController({ adapter, initialState = null, saveSta
       previousActiveFingerprint: currentFingerprint(), startedAt: clock() };
     await persist();
     snapshot = await adapter.clear({ kind, expectedFingerprint, expectedControlFingerprint,
-      canMutate: () => permitted() && generation === expectedGeneration && (cleanup || desired.enabled === true) });
+      canMutate: () => permitted() && generation === expectedGeneration && (cleanup || controlRequested()) });
     state.lastReadAt = snapshot.readAt;
     if (snapshot.schedule.enabled !== 'none') throw Object.assign(new Error('Schedule handover mismatch'), { code: 'readback-mismatch' });
     state.pending = null; state.owned = null;
@@ -295,6 +300,10 @@ export function createChargingController({ adapter, initialState = null, saveSta
       return status();
     }
     try {
+      if (desired.replan === true) {
+        state.released = false; state.execution = null; state.provisional = false; state.phase = 'unavailable';
+        await persist(); planningRevision = desired.controlsRevision ?? null; desired.replan = false;
+      }
       await observeVehicleDisconnect(now);
       if (expectedGeneration !== generation || closed) return status();
       snapshot = await adapter.read(); now = clock(); state.lastReadAt = snapshot.readAt;
@@ -339,7 +348,7 @@ export function createChargingController({ adapter, initialState = null, saveSta
         if (normalExpiry(now) && (!state.execution || now >= state.execution.finalStartAt)) state.released = snapshot.pluggedIn === true;
         state.owned = null;
       }
-      if (desired.enabled !== true) {
+      if (!controlRequested()) {
         if (snapshot.online === true && isTime(state.manual?.resumeAt) && now >= state.manual.resumeAt) {
           state.lastManualResume = { at: now, deadlineAt: state.manual.cycleEndsAt, reason: state.manual.resumeReason };
           state.manual = null; state.released = false;
@@ -366,15 +375,6 @@ export function createChargingController({ adapter, initialState = null, saveSta
         desired.resume = false;
         await phase(state.manual?.kind === 'stop' ? 'yielded' : 'unavailable', state.manual?.kind === 'stop' ? STOP_REASON
           : 'Enable or resume the charger in Easee before automatic charging can schedule it.', state.manual?.kind === 'stop' ? null : 'charger-stopped');
-        return status();
-      }
-      if (desired.chargeNow && desired.chargeNow.connectedAt === state.session?.connectedAt
-        && snapshot.pluggedIn === true && !state.vehicleDisconnect?.awaitingConnection && !state.manual) {
-        // A session override releases only our own restriction. External native
-        // instructions and all device protections continue to take precedence.
-        if (ownsCurrent()) { operation = 'command-failed'; await clearCurrent(snapshot.schedule.enabled, expectedGeneration); }
-        state.execution = null; state.released = true; state.provisional = false;
-        await phase('released', 'Charge Now is active for this connection. Charger and vehicle limits still apply.');
         return status();
       }
       if (desired.resume === true && !state.manual) {
@@ -405,6 +405,15 @@ export function createChargingController({ adapter, initialState = null, saveSta
           state.released = false;
         } else { await phase('yielded', prior.reason); return status(); }
       }
+      if (chargeNowActive() && !state.manual) {
+        // A session override releases only our own restriction. External native
+        // instructions and all device protections continue to take precedence.
+        if (ownsCurrent()) { operation = 'command-failed'; await clearCurrent(snapshot.schedule.enabled, expectedGeneration); }
+        state.execution = null; state.released = true; state.provisional = false;
+        await phase('released', 'Charge Now is active for this connection. Charger and vehicle limits still apply.');
+        return status();
+      }
+      if (!desired.enabled) { await phase('off', 'Automatic charging is off.'); return status(); }
       if (state.vehicleDisconnect?.cleanupPending) {
         if (ownsCurrent()) {
           operation = 'command-failed'; await clearCurrent('delayed', expectedGeneration);
@@ -534,7 +543,7 @@ export function createChargingController({ adapter, initialState = null, saveSta
         state.pending = null;
         if (!refreshed && !closed && expectedGeneration === generation) return reconcile(expectedGeneration, true);
       }
-      if (desired.enabled !== true) {
+      if (!controlRequested()) {
         state.handoverConfirmed = false;
         await phase('off', 'Control is off; charger handover is unconfirmed.', errorCode);
       } else {

@@ -9,6 +9,8 @@ export function chargingNotice(charger, view, summary) {
   const detail = [view.problem, view.priority, view.readiness, ...view.notes].filter(Boolean).join('\n\n');
   if (view.problem || summary.roleState === 'uncertain') return { label: 'Charger needs attention',
     detail: [...new Set([view.problem, summary.roleDetail, view.priority, ...view.notes].filter(Boolean))].join('\n\n'), state: 'attention' };
+  if (charger.request?.chargeNow === true && view.showMetrics && !view.yielded) return { label: 'Charge now selected until unplugging',
+    detail: `${summary.roleDetail} The activity above shows whether the vehicle is actually charging.`, state: 'manual' };
   if (view.risk) return { label: 'Target may be late', detail, state: 'attention' };
   if (view.yielded) {
     const priority = view.priority || (!view.showMetrics ? view.event : '');
@@ -67,12 +69,13 @@ export function chargerSummary(charger, view, { now = Date.now(), formatTime = v
   const values = charger.values ?? {}, control = charger.control ?? {}, plan = charger.plan ?? {}, forecast = charger.forecast;
   const supported = charger.capabilities?.scheduling === true, enabled = supported && charger.settings?.enabled === true;
   const connected = values.connected?.value === true, charging = connected && values.charging?.value === true;
-  const phase = control.phase ?? '', manual = enabled ? control.manual ?? control.manualOverride : null;
-  const yielded = enabled && (['yielded', 'manual'].includes(phase) || Boolean(manual));
+  const chargeNow = connected && charger.request?.chargeNow === true;
+  const phase = control.phase ?? '', manual = enabled || chargeNow ? control.manual ?? control.manualOverride : null;
+  const yielded = (enabled || chargeNow) && (['yielded', 'manual'].includes(phase) || Boolean(manual));
   const resumeAt = timestamp(manual?.resumeAt ?? manual?.expiresAt ?? manual?.windowEndAt ?? manual?.endsAt ?? manual?.endAt);
   const handoverPending = yielded && manual?.kind !== 'unknown' && resumeAt !== null && resumeAt <= now;
   const handoverUnconfirmed = supported && !enabled && control.handoverConfirmed === false;
-  const uncertain = enabled && (['uncertain', 'ownership-uncertain', 'unavailable', 'pause-unconfirmed', 'unconfirmed'].includes(phase)
+  const uncertain = (enabled || chargeNow) && (['uncertain', 'ownership-uncertain', 'unavailable', 'pause-unconfirmed', 'unconfirmed'].includes(phase)
     || control.confirmed === false || Boolean(control.errorCode) || manual?.kind === 'unknown'
     || /update awaiting confirmation/.test(view.event ?? ''));
   let roleLabel = enabled ? 'Controlled' : 'Observed', roleState = enabled ? 'controlled' : 'observed';
@@ -82,8 +85,11 @@ export function chargerSummary(charger, view, { now = Date.now(), formatTime = v
     roleLabel = handoverUnconfirmed ? 'Handover unconfirmed' : handoverPending ? 'Handover pending' : 'Control unconfirmed';
     roleState = 'uncertain';
     roleDetail = control.reason || (handoverUnconfirmed ? 'Automatic charging is off, but the charger has not confirmed the handover.'
-      : handoverPending ? 'Manual priority has ended. Automatic control is waiting for confirmation.'
-        : 'The charger’s current automatic instruction is awaiting confirmation.');
+      : handoverPending ? `Manual priority has ended. Waiting for charger confirmation.${enabled ? '' : ' Automatic charging remains off.'}`
+        : chargeNow ? 'The immediate charging instruction is awaiting confirmation.' : 'The charger’s current automatic instruction is awaiting confirmation.');
+  } else if (chargeNow && !yielded) {
+    roleLabel = 'Charge now'; roleState = 'manual';
+    roleDetail = `Charging is requested until unplugging. Automatic charging remains ${enabled ? 'on' : 'off'}. Choose “Use automatic” to end this request and use automatic charging.`;
   } else if (yielded) {
     roleLabel = 'Manual override'; roleState = 'manual';
     roleDetail = view.priority || 'An external charger change has priority over automatic charging.';

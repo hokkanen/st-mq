@@ -9,7 +9,7 @@ const tickClock = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki'
  * after movement settles, independently of network refinement. */
 export function createChartNavigation({ canvas, getChart, onSettle }) {
   const $ = id => document.getElementById(id), panel = canvas.closest('.history-panel');
-  const shortcuts = ['chart-shortcut', 'garage-chart-shortcut'].map($).filter(Boolean);
+  const shortcuts = ['garage-chart-shortcut'].map($).filter(Boolean);
   const pointers = new Map(), listeners = [], inertNodes = [];
   let bounds, view, zoom = 1, fullscreen = false, closed = false, timer, frame, moving = false;
   let snapshot, preview, originalView, tracks = [], gesture, savedFocus, oldOverflow, oldRole, oldModal, fullscreenView, pageFullscreenAtEntry = false, suppressClick = false;

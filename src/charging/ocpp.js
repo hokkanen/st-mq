@@ -203,8 +203,13 @@ export function createOcppChargingController({ adapter, initialState = null, sav
   let state = initialState ? clone(initialState) : initialOcppControllerState(adapter.scope);
   let snapshot = null, desired = { enabled: false, plan: null }, closed = false, generation = 0, queue = Promise.resolve(), abort = null;
   let phase = 'off', reason = 'Automatic charging is off.', errorCode = null, ownsInstruction = false, pauseConfirmed = false, handoverConfirmed = true;
+  let planningRevision = null;
+  const chargeNowActive = () => Number.isSafeInteger(desired.chargeNow?.connectedAt)
+    && desired.chargeNow.connectedAt === state.session?.connectedAt && snapshot?.pluggedIn === true
+    && snapshot.transactionConfirmed && !state.vehicleDisconnect?.awaitingConnection;
+  const controlRequested = () => desired.enabled === true || chargeNowActive();
   const status = () => ({ ...clone(state), phase, reason, errorCode, enabled: desired.enabled === true,
-    ownsInstruction, pauseConfirmed, handoverConfirmed,
+    ownsInstruction, pauseConfirmed, handoverConfirmed, planningRevision,
     snapshot: snapshot ? { ...clone(snapshot), nativeInstruction: ownsInstruction ? clone(state.owned) : null } : null });
   const display = (next, message, code = null) => { phase = next; reason = message; errorCode = code; return status(); };
   async function commit(changes) {
@@ -250,6 +255,11 @@ export function createOcppChargingController({ adapter, initialState = null, sav
     const signal = abort.signal;
     ownsInstruction = pauseConfirmed = false;
     try {
+      if (desired.replan === true) {
+        await commit({ released: false, execution: null, provisional: false });
+        planningRevision = desired.controlsRevision ?? null; desired.replan = false;
+        phase = 'unavailable';
+      }
       const boundary = desired.vehicleDisconnect;
       if (boundary && text(boundary.readingId) && ['easee-stream', 'bmw-cardata'].includes(boundary.source)
         && [boundary.endedConnectedAt, boundary.measuredAt, boundary.receivedAt].every(time)
@@ -286,13 +296,13 @@ export function createOcppChargingController({ adapter, initialState = null, sav
       }
       const instruction = state.pending?.instruction ?? state.owned;
       const wrongSession = instruction && snapshot.transactionConfirmed && instruction.transactionId !== snapshot.transactionId;
-      const release = desired.enabled !== true || state.manual || disconnected || awaiting || wrongSession;
+      const release = !controlRequested() || state.manual || disconnected || awaiting || wrongSession;
       if (release && instruction) {
         handoverConfirmed = false;
         if (!await clearInstruction(instruction, current, signal)) return display('unconfirmed', 'Native profile release is waiting for its bounded retry.');
         handoverConfirmed = true;
       }
-      if (desired.enabled !== true) { await commit({ execution: null }); handoverConfirmed = !state.pending && !state.owned; return display('off', 'Automatic charging is off; external charger restrictions are preserved.'); }
+      if (!controlRequested()) { await commit({ execution: null }); handoverConfirmed = !state.pending && !state.owned; return display('off', 'Automatic charging is off; external charger restrictions are preserved.'); }
       if (state.manual) return display('yielded', state.manual.kind === 'stop' ? 'A confirmed native stop has priority. Explicitly resume automatic charging when ready.'
         : 'A confirmed native release has priority until unplug or explicit resumption.');
       if (disconnected || awaiting) return display('disconnected', 'Waiting for a confirmed new charger transaction.');
@@ -300,7 +310,7 @@ export function createOcppChargingController({ adapter, initialState = null, sav
       if (['Unavailable', 'Faulted', 'Reserved'].includes(snapshot.connectorStatus)) return display('unavailable', 'The charger is unavailable for automatic native scheduling.');
       if (!snapshot.transactionConfirmed || snapshot.transactionId === null || snapshot.pluggedIn !== true)
         return display('unavailable', 'Waiting for a current transaction confirmed on this connection.', 'transaction-unconfirmed');
-      if (desired.chargeNow?.connectedAt === state.session.connectedAt) {
+      if (chargeNowActive()) {
         const restriction = state.pending?.instruction ?? state.owned;
         if (restriction && !await clearInstruction(restriction, current, signal)) return display('unconfirmed', 'Charge Now is waiting for the native profile release.');
         await commit({ execution: null, released: true, provisional: false });
@@ -388,9 +398,9 @@ export function createOcppChargingController({ adapter, initialState = null, sav
         : 'The native pause envelope is confirmed; fresh physical pause evidence is still pending.');
     } catch (error) {
       if (closed || current !== generation) return status();
-      handoverConfirmed = desired.enabled !== true ? false : null;
+      handoverConfirmed = !controlRequested() ? false : null;
       const code = REASONS[error?.code] ? error.code : error?.code === 'readback-mismatch' ? 'readback-mismatch' : 'command-failed';
-      return display(state.pending ? 'unconfirmed' : desired.enabled ? 'unavailable' : 'off',
+      return display(state.pending ? 'unconfirmed' : controlRequested() ? 'unavailable' : 'off',
         REASONS[code] ?? 'The native effective schedule did not confirm the requested pause.', code);
     }
   }
