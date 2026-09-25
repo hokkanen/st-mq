@@ -2,7 +2,7 @@ import { acceptSocReading, socMeasurementTime } from './soc.js';
 
 const facts = ['pluggedIn', 'charging', 'atHome'];
 const MINUTE = 60_000;
-const time = Number.isSafeInteger;
+const time = value => Number.isSafeInteger(value) && value >= 0;
 
 // A charger connection is dated when polling first sees it. Source events and
 // MQTT delivery can precede that poll; a known disconnect bounds the tolerance.
@@ -14,17 +14,23 @@ export function connectionEvidenceStart(connectedAt, lastDisconnectedAt) {
 /** TeslaMate publishes power only when it changes. Match the independent live
  * charging start as well as the ramp, so polling delay and a stable final power
  * do not permanently lose identification. Retained starts never supply an edge. */
-export function matchTeslaSession(tesla, { physical, connectedAt, lastDisconnectedAt, chargingAt = [], now = Date.now() } = {}) {
+export function matchTeslaSession(tesla, { physical, connectedAt, lastDisconnectedAt, chargingAt = [], consumedPowerAt, now = Date.now() } = {}) {
   const physicalPower = physical?.powerKw, power = tesla?.fields?.charger_power, plug = tesla?.fields?.plugged_in;
-  const evidenceStart = connectionEvidenceStart(connectedAt, lastDisconnectedAt);
+  const departure = (tesla?.boundaries ?? []).filter(edge => edge.association === tesla.association
+    && (edge.field === 'plugged_in' && edge.value === false
+      || edge.field === 'geofence' && edge.value !== tesla.fields?.geofence?.value)
+    && time(edge.at) && edge.at <= now).reduce((at, edge) => Math.max(at, edge.at), lastDisconnectedAt ?? -1);
+  const evidenceStart = connectionEvidenceStart(connectedAt, departure);
+  const physicalAt = physicalPower?.measuredAt;
   if (!time(connectedAt) || connectedAt > now || tesla?.healthy !== true || tesla.pluggedIn !== true
     || tesla.atHome !== true || tesla.charging !== true || physical?.charging?.value !== true
     || physicalPower?.available !== true || !(physicalPower.value > .5)
-    || !Number.isFinite(tesla.actualPowerKw) || Math.abs(physicalPower.value - tesla.actualPowerKw) > .75
-    || power?.retained !== false || !time(power.receivedAt) || power.receivedAt < evidenceStart || power.receivedAt > now) return false;
+    || !time(physicalAt) || physicalAt < evidenceStart || physicalAt > now || now - physicalAt > MINUTE
+    || !Number.isFinite(tesla.actualPowerKw) || tesla.actualPowerKw <= 0 || Math.abs(physicalPower.value - tesla.actualPowerKw) > .75
+    || power?.retained !== false || !time(power.receivedAt) || power.receivedAt < evidenceStart || power.receivedAt > now
+    || time(consumedPowerAt) && power.receivedAt <= consumedPowerAt) return false;
   const starts = (Array.isArray(chargingAt) ? chargingAt : [chargingAt])
     .filter(at => time(at) && at >= evidenceStart && at <= now && now - at < 15 * MINUTE);
-  const physicalAt = physicalPower.measuredAt;
   const freshPower = now - power.receivedAt <= 30_000;
   const sameRamp = time(physicalAt) && physicalAt <= now && freshPower && Math.abs(physicalAt - power.receivedAt) <= 10_000
     && starts.some(at => Math.abs(at - power.receivedAt) <= 15_000);
@@ -84,8 +90,8 @@ export function acceptVehicleReading(previous, payload, { now = Date.now(), asso
     const prior = same ? previous?.fields?.[key] : null;
     const lastKnown = prior && (typeof previous[key] === 'boolean'
       ? { value: previous[key], measuredAt: prior.measuredAt, readingId: prior.readingId,
-        receivedAt: prior.receivedAt, retained: prior.retained, event: prior.event ?? null,
-        positiveEvent: prior.positiveEvent ?? prior.event ?? null, negativeEvent: prior.negativeEvent ?? null }
+        receivedAt: prior.receivedAt, retained: prior.retained,
+        positiveEvent: prior.positiveEvent ?? null, negativeEvent: prior.negativeEvent ?? null }
       : prior.lastKnown ?? null);
     if (same && previous[key] !== undefined) { reading[key] = previous[key]; if (prior) reading.fields[key] = prior; }
     if (!Object.hasOwn(value, key)) continue;
@@ -113,8 +119,7 @@ export function acceptVehicleReading(previous, payload, { now = Date.now(), asso
     const observed = { measuredAt: at, readingId: meta.readingId, receivedAt: now, retained };
     const positiveEvent = value[key] === true && lastKnown?.value !== true ? observed : lastKnown?.positiveEvent ?? null;
     const negativeEvent = value[key] === false && lastKnown?.value === true ? observed : lastKnown?.negativeEvent ?? null;
-    const event = value[key] === true ? positiveEvent : null;
-    reading.fields[key] = { ...observed, event, positiveEvent, negativeEvent,
+    reading.fields[key] = { ...observed, positiveEvent, negativeEvent,
       ...(value[key] === null && lastKnown ? { lastKnown } : {}) };
     changed = true;
   }
@@ -161,12 +166,18 @@ export function bmwReconnectEvent(boundary, reading, { now = Date.now() } = {}) 
 
 // A possible BMW session and a confirmed one share the same live connection,
 // home and charging-start evidence. Only confirmation requires a matching stop.
-function bmwSessionEvidence(reading, { connectedAt, lastDisconnectedAt, chargingAt, stoppedAt, now = Date.now(), consumedPlugId } = {}) {
+function bmwEvidenceStart(reading, connectedAt, lastDisconnectedAt) {
+  const departure = ['pluggedIn', 'atHome'].map(key => reading?.fields?.[key]?.negativeEvent?.measuredAt)
+    .filter(time).reduce((at, value) => Math.max(at, value), lastDisconnectedAt ?? -1);
+  return connectionEvidenceStart(connectedAt, departure);
+}
+
+function bmwSessionEvidence(reading, { connectedAt, lastDisconnectedAt, chargingAt, stoppedAt, now = Date.now(), consumedPlugId, consumedChargingId } = {}) {
   const field = key => reading?.fields?.[key];
   const plug = field('pluggedIn')?.positiveEvent;
   const start = field('charging')?.positiveEvent;
   const stop = field('charging')?.negativeEvent;
-  const evidenceStart = connectionEvidenceStart(connectedAt, lastDisconnectedAt);
+  const evidenceStart = bmwEvidenceStart(reading, connectedAt, lastDisconnectedAt);
   const event = observed => observed?.retained === false
     && time(observed.measuredAt) && time(observed.receivedAt)
     && observed.measuredAt >= evidenceStart
@@ -174,14 +185,14 @@ function bmwSessionEvidence(reading, { connectedAt, lastDisconnectedAt, charging
     && observed.measuredAt <= now && now - observed.measuredAt <= 15 * MINUTE;
   const chargingTimes = Array.isArray(chargingAt) ? chargingAt : [chargingAt];
   const stoppedTimes = Array.isArray(stoppedAt) ? stoppedAt : [stoppedAt];
-  if (!time(connectedAt) || reading?.provider !== 'bmw-cardata' || typeof reading.charging !== 'boolean') return null;
+  if (!time(now) || !time(connectedAt) || connectedAt > now || reading?.provider !== 'bmw-cardata' || typeof reading.charging !== 'boolean') return null;
   const home = field('atHome');
   if (reading.atHome !== true || reading.pluggedIn !== true || !time(home?.measuredAt) || home.measuredAt > now
     || now - home.measuredAt > 24 * 60 * MINUTE
     || plug?.retained !== false || !time(plug.measuredAt) || !time(plug.receivedAt)
     || plug.measuredAt < evidenceStart || plug.measuredAt > connectedAt + 10 * MINUTE
     || plug.measuredAt > now || plug.receivedAt < evidenceStart || plug.receivedAt > now || !event(start)
-    || plug.readingId === consumedPlugId) return null;
+    || plug.readingId === consumedPlugId || start.readingId === consumedChargingId) return null;
   const starts = chargingTimes.filter(at => time(at) && at >= evidenceStart && at <= now
     && Math.abs(start.measuredAt - at) <= 2 * MINUTE);
   return starts.length ? { connectedAt, now, start, stop: event(stop) ? stop : null, starts, stoppedTimes } : null;
@@ -214,7 +225,7 @@ const CONTROLLED_EDGE_TOLERANCE = 30_000;
 // current-session evidence for both a pending hint and a controlled-pause match.
 function controlledBmwStart(reading, { connectedAt, lastDisconnectedAt, chargingAt, stoppedAt,
   now = Date.now(), consumedChargingId } = {}) {
-  const evidenceStart = connectionEvidenceStart(connectedAt, lastDisconnectedAt);
+  const evidenceStart = bmwEvidenceStart(reading, connectedAt, lastDisconnectedAt);
   const sourceTime = at => time(at) && at >= evidenceStart && at <= now
     && now - at <= 15 * MINUTE;
   const event = observed => observed?.retained === false && eventId(observed.readingId)
@@ -239,27 +250,26 @@ function controlledBmwStart(reading, { connectedAt, lastDisconnectedAt, charging
 function controlledPauseMatch(reading, evidence, pause) {
   if (!evidence || reading.charging !== false) return null;
   const { connectedAt, now, start, stop, starts, stoppedTimes, sourceTime, event } = evidence;
-  if (pause?.ownedCurrent !== true || pause.manual !== false || pause.charging !== false || pause.reason !== 54
+  if (pause?.connectedAt !== connectedAt
     || !time(pause.confirmedAt) || pause.confirmedAt < connectedAt || pause.confirmedAt > now
-    || !time(pause.startAt) || pause.startAt <= now || !sourceTime(pause.reasonAt)) return null;
-  // The optional witness is persisted at the guarded pre-write check. Older
-  // ownership without it must bracket the response using confirmation itself.
-  const boundary = pause.requestedAt ?? pause.confirmedAt;
-  if (!time(boundary) || boundary < connectedAt || boundary > pause.confirmedAt || pause.reasonAt <= boundary
+    || !time(pause.startAt) || pause.startAt <= now || !sourceTime(pause.stoppedAt)) return null;
+  // Both transports provide the same verified current-session pause. Its saved
+  // request time must bracket both independently observed charging transitions.
+  const boundary = pause.requestedAt;
+  if (!time(boundary) || boundary < connectedAt || boundary > pause.confirmedAt || pause.stoppedAt <= boundary
     || !event(stop) || start.measuredAt >= boundary || stop.measuredAt <= boundary
     || stop.receivedAt < start.receivedAt) return null;
   const matched = starts.some(at => at < boundary
     && stoppedTimes.some(end => sourceTime(end) && end > boundary
       && Math.abs(stop.measuredAt - end) <= CONTROLLED_EDGE_TOLERANCE
-      && Math.abs(pause.reasonAt - end) <= CONTROLLED_EDGE_TOLERANCE));
+      && Math.abs(pause.stoppedAt - end) <= CONTROLLED_EDGE_TOLERANCE));
   return matched ? { chargingReadingId: start.readingId, stopReadingId: stop.readingId,
     confirmedAt: pause.confirmedAt } : null;
 }
 
 /** A confirmed native pause can correlate charging even when the vehicle's
- * inlet state did not change. A guarded request witness, or confirmation when
- * no witness exists, brackets the observed response without inventing a send
- * time. Existing ownership and raw charger facts come from the runtime. */
+ * inlet state did not change. Transport-specific ownership and physical pause
+ * checks run at the charger boundary; vehicle correlation has no backend branch. */
 export function matchBmwControlledPause(reading, options = {}) {
   return controlledPauseMatch(reading, controlledBmwStart(reading, options), options.pause);
 }

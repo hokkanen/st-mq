@@ -2,6 +2,26 @@
 -Implement support for local mqtt-based temperature receives (eg, from shelly or HASS through Meteorologisk Institute); just store last received temp values and time stamps (maybe in storage class, see below) when received (and accept if received within 1h)
 -Chart dataset control buttons don't work when datasets are manually hidden/unhidden from legend, how to fix?
 
+Completed 2026-09-25 — Shared vehicle identification across cloud and OCPP
+- Normalize confirmed native pause evidence once and use the same BMW/Tesla
+  matching, pending status, conflict handling and bounded initial observation
+  in cloud and OCPP. OCPP requires a guarded charging witness and rechecks
+  unchanged physical status when a queued pause is actually sent.
+- Bind assignments to vehicle sources and physical sessions. Consume both BMW
+  plug/start events and Tesla power evidence; reject stale physical power,
+  unknown stops, reused episodes and replacement-source assignments. Preserve
+  change-only Tesla clocks and retained provenance through unknown gaps.
+- Remove the redundant BMW event alias, cloud-only fallback branch and
+  confirmation-time substitute for a witnessed pause request. Retain native
+  cleanup obligations, manual restrictions, Charge now, supported restart
+  recovery and current state formats with optional evidence absent by default.
+  No configuration translator, migration or household reset is introduced.
+- Audit and regression coverage: docs/audit/VEHICLE-IDENTIFICATION-2026-09.md.
+  Validation: all 3,355 offline tests and the production build pass. Includes
+  real controller and queued OCPP transport simulations, reconnect/restart,
+  delayed or repeated evidence, source replacement and ambiguity cases.
+  Tests use synthetic feeds, transports and temporary databases only.
+
 Completed 2026-09-25 — Compact Charge now toggle
 - Use one visibly selected Charge now button; clicking it again performs the
   existing return to automatic charging, including enabling Automatic when OFF.

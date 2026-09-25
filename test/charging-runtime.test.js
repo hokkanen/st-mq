@@ -574,7 +574,7 @@ test('manual window handback replans from newer SoC before issuing a release bas
   f.setNow(initialNow + HOUR / 2); await runtime.reconcile();
   adapter.setObservation({ mode: 3 }); await runtime.reconcile();
   assert.equal(chargerView(runtime).control.phase, 'yielded');
-  runtime.chargers.charger1.vehicleMatch = { id: 'bmw', scope: runtime.chargers.charger1.request.scope, association: runtime.chargers.charger1.association, connectedAt: chargerView(runtime).control.session.connectedAt, matchedAt: f.clock() };
+  runtime.chargers.charger1.vehicleMatch = { id: 'bmw', vehicleAssociation: runtime.vehicleFeeds.bmw.association, scope: runtime.chargers.charger1.request.scope, association: runtime.chargers.charger1.association, connectedAt: chargerView(runtime).control.session.connectedAt, matchedAt: f.clock() };
   runtime.receiveSoc(runtime.configuration.vehicles.bmw.mqttTopic, packet(85, f.clock(), 'manual-window-result'));
   assert.equal(runtime.chargers.charger1.plan.startAt, originalStart, 'The active manual session keeps its original plan context');
   f.setNow(initialNow + 2 * HOUR); adapter.setObservation({ mode: 2 });
@@ -731,6 +731,7 @@ test('a future second controller has independent plans and ownership while Equal
   await runtime.setAdapter('charger2', secondAdapter);
   await runtime.reconcile();
   await editSession(runtime, 'charger2', { capacityKwh: 10, readyBy: '05:00' });
+  f.setNow(initialNow + 3 * 60_000);
   runtime.tick({ prices }); await runtime.reconcile();
   const first = chargerView(runtime), second = chargerView(runtime, 'charger2');
   assert.equal(first.plan.state, 'waiting');
@@ -759,6 +760,7 @@ test('an uncertain second connection with no reported schedule creates no compet
   t.after(() => runtime.close());
   runtime.teslaCapture = { snapshot: () => ({ connected: true, assignment: 'auto', pluggedIn: null, atHome: true }) };
   await runtime.setAdapter('charger1', adapter); await runtime.reconcile();
+  f.setNow(initialNow + 3 * 60_000);
   runtime.tick({ prices }); await runtime.reconcile();
   const first = chargerView(runtime), second = chargerView(runtime, 'charger2');
   assert.equal(second.values.connected.available, false);
@@ -1058,9 +1060,8 @@ test('a matched BMW quick unplug ends the old schedule even when every Easee pol
   fact('pluggedIn', true, replugAt); await runtime.reconcile();
   const replugged = chargerView(runtime);
   assert.equal(replugged.control.session.connectedAt, replugAt);
-  assert.equal(replugged.control.phase, 'waiting');
-  assert.ok(replugged.control.owned, 'Fallback planning may schedule the new connection before vehicle identification');
-  assert.notEqual(replugged.control.owned.planId, old.control.owned.planId);
+  assert.equal(replugged.control.phase, 'identifying');
+  assert.equal(replugged.control.owned, null, 'The new connection gets its bounded observation before economic scheduling');
   assert.equal(replugged.vehicle.id, null, 'A new connection must still identify its vehicle');
   assert.equal(runtime.chargers.charger1.targetState, null);
 

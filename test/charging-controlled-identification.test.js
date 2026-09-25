@@ -13,8 +13,8 @@ function fixture() {
       charging: { ...stop, positiveEvent: start, negativeEvent: stop } } };
   const options = { connectedAt: START, lastDisconnectedAt: START - 86_000, chargingAt: START - 4000,
     stoppedAt: START + 3 * MINUTE + 14_000, now: START + 4 * MINUTE,
-    pause: { ownedCurrent: true, confirmedAt: START + 3 * MINUTE + 1000, startAt: START + 60 * MINUTE,
-      manual: false, charging: false, reason: 54, reasonAt: START + 3 * MINUTE + 14_000 } };
+    pause: { connectedAt: START, requestedAt: START + 3 * MINUTE, confirmedAt: START + 3 * MINUTE + 1000,
+      startAt: START + 60 * MINUTE, stoppedAt: START + 3 * MINUTE + 14_000 } };
   return { reading, options };
 }
 
@@ -57,10 +57,9 @@ test('home and inlet context may be retained but must be currently true with val
   }
 });
 
-test('natural, Equalizer, foreign, manual, unconfirmed, and already-released pauses do not identify BMW', () => {
-  for (const override of [{ ownedCurrent: false }, { ownedCurrent: undefined }, { manual: true }, { manual: undefined },
-    { charging: true }, { charging: null }, { reason: 0 }, { reason: 50 }, { reason: null },
-    { reasonAt: null }, { reasonAt: START + 5 * MINUTE }, { confirmedAt: null },
+test('missing, unconfirmed, foreign-session, and already-released pause witnesses do not identify BMW', () => {
+  for (const override of [{ connectedAt: null }, { connectedAt: START - 1 }, { requestedAt: null },
+    { stoppedAt: null }, { stoppedAt: START + 5 * MINUTE }, { confirmedAt: null },
     { startAt: START + 4 * MINUTE }, { startAt: null }]) {
     const { reading, options } = fixture();
     assert.equal(matchBmwControlledPause(reading, { ...options, pause: { ...options.pause, ...override } }), null,
@@ -72,18 +71,17 @@ test('natural, Equalizer, foreign, manual, unconfirmed, and already-released pau
 
 test('ownership confirmation must bracket both starts and stops within the physical connection', () => {
   const { reading, options } = fixture();
-  for (const confirmedAt of [START - 1, options.chargingAt, reading.fields.charging.positiveEvent.measuredAt,
-    options.stoppedAt, reading.fields.charging.negativeEvent.measuredAt, options.now + 1])
+  for (const confirmedAt of [START - 1, options.chargingAt, reading.fields.charging.positiveEvent.measuredAt, options.now + 1])
     assert.equal(matchBmwControlledPause(reading, { ...options, pause: { ...options.pause, confirmedAt } }), null);
   assert.equal(matchBmwControlledPause(reading, { ...options, connectedAt: null }), null);
   assert.equal(matchBmwControlledPause(reading, { ...options, connectedAt: options.now + 1 }), null);
 });
 
-test('a later schedule confirmation or replan cannot retrospectively claim the earlier stop', () => {
+test('a later replan request cannot retrospectively claim the earlier stop', () => {
   const { reading, options } = fixture();
   assert.ok(matchBmwControlledPause(reading, options));
   assert.equal(matchBmwControlledPause(reading, { ...options,
-    pause: { ...options.pause, confirmedAt: START + 5 * MINUTE }, now: START + 6 * MINUTE }), null);
+    pause: { ...options.pause, requestedAt: START + 5 * MINUTE, confirmedAt: START + 5 * MINUTE }, now: START + 6 * MINUTE }), null);
 });
 
 test('an explicit guarded request witness permits the response before delayed confirmation without inventing a send time', () => {
@@ -96,7 +94,7 @@ test('an explicit guarded request witness permits the response before delayed co
   assert.equal(pendingBmwControlledPause(reading, { ...options, pause }), false);
   for (const requestedAt of [undefined, null])
     assert.equal(matchBmwControlledPause(reading, { ...options, pause: { ...pause, requestedAt } }), null,
-      'Without a request witness, the strict confirmation bracket still applies');
+      'Without a request witness, a confirmation time cannot substitute for request evidence');
 });
 
 test('the guarded request witness stays inside the connection and before confirmation and both stop edges', () => {
@@ -107,7 +105,7 @@ test('the guarded request witness stays inside the connection and before confirm
     reading.fields.charging.negativeEvent.measuredAt])
     assert.equal(matchBmwControlledPause(reading, { ...options, pause: { ...pause, requestedAt } }), null);
   assert.equal(matchBmwControlledPause(reading, { ...options,
-    pause: { ...pause, reasonAt: pause.requestedAt } }), null,
+    pause: { ...pause, stoppedAt: pause.requestedAt } }), null,
   'Even a nearby schedule reason cannot precede or equal the guarded request');
   assert.equal(matchBmwControlledPause(reading, { ...options,
     pause: { ...pause, requestedAt: START + 5 * MINUTE, confirmedAt: START + 5 * MINUTE + 1000 },
@@ -120,11 +118,11 @@ test('each source edge pair and the scheduling reason must independently agree w
   const start = reading.fields.charging.positiveEvent.measuredAt;
   const stop = reading.fields.charging.negativeEvent.measuredAt;
   assert.ok(matchBmwControlledPause(reading, { ...options, chargingAt: start + 30_000,
-    stoppedAt: stop + 30_000, pause: { ...options.pause, reasonAt: stop + 30_000 } }));
+    stoppedAt: stop + 30_000, pause: { ...options.pause, stoppedAt: stop + 30_000 } }));
   assert.equal(matchBmwControlledPause(reading, { ...options, chargingAt: start + 30_001 }), null);
   assert.equal(matchBmwControlledPause(reading, { ...options, stoppedAt: stop + 30_001 }), null);
   assert.equal(matchBmwControlledPause(reading, { ...options,
-    pause: { ...options.pause, reasonAt: options.stoppedAt + 30_001 } }), null);
+    pause: { ...options.pause, stoppedAt: options.stoppedAt + 30_001 } }), null);
   assert.ok(matchBmwControlledPause(reading, { ...options,
     chargingAt: [null, start + 31_000, options.chargingAt], stoppedAt: [null, options.stoppedAt] }));
 });
@@ -144,7 +142,7 @@ test('late stops remain attributable while their current-session source evidence
   const lateStop = START + 10 * MINUTE + 1;
   reading.fields.charging.negativeEvent = event('late-stop', lateStop);
   assert.ok(matchBmwControlledPause(reading, { ...options, stoppedAt: lateStop, now: START + 11 * MINUTE,
-    pause: { ...options.pause, reasonAt: lateStop } }));
+    pause: { ...options.pause, stoppedAt: lateStop } }));
   assert.equal(matchBmwControlledPause(reading, { ...options, now: START + 17 * MINUTE }), null);
 });
 
@@ -204,4 +202,28 @@ test('pending requires the same thirty-second start pairing as final controlled 
     assert.equal(pendingBmwControlledPause(reading, { ...candidate, chargingAt }), false);
   assert.equal(pendingBmwControlledPause(reading, { ...candidate,
     chargingAt: [null, startAt + 30_001, options.chargingAt] }), true);
+});
+
+test('a consumed charging start cannot be reused by switching to the fresh-plug matching path', () => {
+  const { reading, options } = fixture();
+  reading.fields.pluggedIn = { ...event('new-plug', START), positiveEvent: event('new-plug', START) };
+  assert.equal(matchBmwSession(reading, options), true);
+  assert.ok(matchBmwControlledPause(reading, options));
+  const consumed = { ...options, consumedChargingId: reading.fields.charging.positiveEvent.readingId };
+  assert.equal(matchBmwSession(reading, consumed), false);
+  assert.equal(matchBmwControlledPause(reading, consumed), null);
+});
+
+test('a vehicle departure fences both BMW paths even when charger polling misses the unplug', () => {
+  for (const key of ['pluggedIn', 'atHome']) {
+    const { reading, options } = fixture();
+    reading.fields.pluggedIn = { ...event('new-plug', START + 2000), positiveEvent: event('new-plug', START + 2000) };
+    reading.fields[key].negativeEvent = event('vehicle-departure', START + 1000);
+    assert.equal(matchBmwSession(reading, options), false, key);
+    assert.equal(matchBmwControlledPause(reading, options), null, key);
+    // Independently observed charging after the departure restores eligibility.
+    const fresh = { ...options, chargingAt: START + 3000 };
+    assert.equal(matchBmwSession(reading, fresh), true, key);
+    assert.ok(matchBmwControlledPause(reading, fresh), key);
+  }
 });

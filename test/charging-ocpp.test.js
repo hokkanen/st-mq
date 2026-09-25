@@ -7,7 +7,7 @@ const START = Date.parse('2026-09-24T09:00:00Z'), MINUTE = 60_000, scope = 'a'.r
 const plan = (startAt, extra = {}) => ({ id: 'synthetic-plan', startAt, feasible: true, periods: [{ startAt, endAt: null }], ...extra });
 function fixture({ initialState = null } = {}) {
   let now = START, authority = true, connected = true, confirmed = true, transactionId = 7, connectionId = 'synthetic-socket', physicalPause = true;
-  let stored = null, saveError = false, interceptor = null, manualEvent = null, snapshotChanges = {};
+  let stored = null, saveError = false, witnessSaveError = false, interceptor = null, manualEvent = null, snapshotChanges = {};
   const profiles = new Map(), calls = [], saves = [];
   const isPausing = () => [...profiles.values()].some(row => row.transactionId === transactionId
     && Date.parse(row.validFrom) <= now && Date.parse(row.validTo) > now);
@@ -19,6 +19,7 @@ function fixture({ initialState = null } = {}) {
     assert.equal(options.guard(), true, 'wire mutation/query requires current authority');
     calls.push({ action, payload: structuredClone(payload) });
     const result = () => {
+      assert.equal(options.beforeSend?.() ?? true, true, 'wire send must retain its pre-write status witness');
       if (action === 'SetChargingProfile') { profiles.set(payload.csChargingProfiles.chargingProfileId, structuredClone(payload.csChargingProfiles)); return { status: 'Accepted' }; }
       if (action === 'ClearChargingProfile') return { status: profiles.delete(payload.id) ? 'Accepted' : 'Unknown' };
       const ends = [...profiles.values()].filter(row => row.transactionId === transactionId
@@ -31,13 +32,19 @@ function fixture({ initialState = null } = {}) {
     return interceptor ? interceptor(action, payload, options, result) : result();
   };
   const adapter = createOcppScheduleAdapter({ scope, readSnapshot, request, clock: () => now, canControl: () => authority,
-    isCurrent: value => connected && value.connectionId === connectionId && value.transactionId === transactionId });
+    isCurrent: (value, { unchangedStatus = false } = {}) => connected && value.connectionId === connectionId
+      && value.transactionId === transactionId && (!unchangedStatus || value.connectorStatus === readSnapshot().connectorStatus
+        && value.statusAt === readSnapshot().statusAt) });
   const controller = adapter.createController({ initialState, clock: () => now, canControl: () => authority,
-    saveState: state => { if (saveError) throw Error('synthetic disk error'); stored = structuredClone(state); saves.push(stored); } });
+    saveState: state => {
+      if (saveError || witnessSaveError && state.pending?.instruction.pauseRequestedAt !== undefined) throw Error('synthetic disk error');
+      stored = structuredClone(state); saves.push(stored);
+    } });
   return { controller, adapter, calls, saves, profiles, get stored() { return stored; }, get now() { return now; },
     advance: ms => { now += ms; }, authority: value => { authority = value; }, connected: value => { connected = value; },
     confirmed: value => { confirmed = value; }, transaction: value => { transactionId = value; },
     physicalPause: value => { physicalPause = value; }, saveError: value => { saveError = value; },
+    witnessSaveError: value => { witnessSaveError = value; },
     intercept: value => { interceptor = value; }, manual: value => { manualEvent = value; },
     snapshot: value => { snapshotChanges = value; },
     reconnect: () => { connectionId += '-new'; confirmed = false; } };
@@ -223,6 +230,121 @@ test('queued command is fenced if the confirmed transaction changes before wire 
   });
   const view = await f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
   assert.equal(view.pending.instruction.transactionId, 7); assert.equal(f.profiles.size, 0);
+});
+
+test('identity pause witness is saved from the final Charging read before the native wire write', async () => {
+  const f = fixture();
+  f.intercept((action, payload, options, result) => {
+    if (action === 'SetChargingProfile') {
+      assert.equal(f.stored.pending.instruction.pauseRequestedAt, START);
+      assert.equal(options.beforeSend(), true);
+    }
+    return result();
+  });
+  const control = await f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+  assert.equal(control.owned.requestedAt, START);
+  assert.equal(control.owned.pauseRequestedAt, START);
+  assert.equal(control.pauseConfirmed, true);
+});
+
+test('installing a native pause over an already-stopped transaction grants no identity witness', async () => {
+  const f = fixture(); f.snapshot({ connectorStatus: 'SuspendedEVSE', powerKw: 0 });
+  const control = await f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+  assert.equal(control.owned.requestedAt, START);
+  assert.equal(control.owned.pauseRequestedAt, undefined);
+  assert.equal(control.pauseConfirmed, true, 'Ordinary native scheduling retains its existing physical confirmation');
+});
+
+test('the fresh native pre-write read, rather than the earlier planning read, decides the identity witness', async () => {
+  const f = fixture(), read = f.adapter.read; let reads = 0;
+  f.adapter.read = async options => {
+    if (++reads === 2) f.snapshot({ connectorStatus: 'SuspendedEVSE', powerKw: 0 });
+    return read(options);
+  };
+  const control = await f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+  assert.equal(control.owned.pauseRequestedAt, undefined);
+  assert.equal(control.pauseConfirmed, true);
+});
+
+test('a stop while the native request is queued revokes its witness and a stopped retry cannot reuse it', async () => {
+  const f = fixture();
+  f.intercept((action, payload, options, result) => {
+    if (action === 'SetChargingProfile') {
+      f.advance(1000); f.snapshot({ connectorStatus: 'SuspendedEVSE', statusAt: START + 1000, powerKw: 0 });
+      assert.equal(options.guard(), true, 'Transaction authority remains current');
+      assert.equal(options.beforeSend(), false, 'The independent natural stop invalidates causal write evidence');
+      throw Error('synthetic queued stop');
+    }
+    return result();
+  });
+  let control = await f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+  assert.equal(control.owned, null); assert.equal(f.profiles.size, 0);
+  assert.equal(control.pending.instruction.pauseRequestedAt, START);
+  f.advance(31_000); f.intercept(null);
+  control = await f.controller.update({ enabled: true });
+  assert.equal(control.owned.pauseRequestedAt, undefined);
+  assert.equal(control.pauseConfirmed, true);
+});
+
+test('successful native pause response may follow its physical stop without losing transaction authority', async () => {
+  const f = fixture();
+  f.intercept((action, payload, options, result) => {
+    const response = result();
+    if (action === 'SetChargingProfile') {
+      assert.equal(options.beforeSend(), false, 'The command has now caused the expected status change');
+      assert.equal(options.guard(), true, 'Response delivery must not require the old Charging state');
+    }
+    return response;
+  });
+  const control = await f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+  assert.equal(control.pauseConfirmed, true); assert.equal(control.owned.pauseRequestedAt, START);
+});
+
+test('identity witness persistence failure prevents the native write', async () => {
+  const f = fixture(); f.witnessSaveError(true);
+  const control = await f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+  assert.equal(control.errorCode, 'storage-failed'); assert.equal(writes(f).length, 0);
+  assert.equal(f.stored.pending.instruction.pauseRequestedAt, undefined);
+});
+
+test('accepted native installation preserves its witness through readback recovery without resending', async () => {
+  const f = fixture(); let fail = true;
+  f.intercept((action, payload, options, result) => {
+    if (action === 'GetCompositeSchedule' && fail) throw Error('synthetic lost readback');
+    return result();
+  });
+  let control = await f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+  assert.equal(control.pending.accepted, true); assert.equal(control.pending.instruction.pauseRequestedAt, START);
+  fail = false; f.advance(1000);
+  control = await f.controller.update({ enabled: true });
+  assert.equal(control.owned.pauseRequestedAt, START); assert.equal(writes(f).length, 1);
+});
+
+test('restart preserves an accepted native pause witness and does not promote unwitnessed current ownership', async () => {
+  const f = fixture();
+  f.intercept((action, payload, options, result) => {
+    if (action === 'GetCompositeSchedule') throw Error('synthetic lost readback');
+    return result();
+  });
+  await f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+  assert.equal(f.stored.pending.accepted, true);
+  const resumed = fixture({ initialState: f.stored });
+  for (const [id, profile] of f.profiles) resumed.profiles.set(id, structuredClone(profile));
+  resumed.advance(1000);
+  const recovered = await resumed.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+  assert.equal(recovered.owned.pauseRequestedAt, START); assert.equal(writes(resumed).length, 0);
+
+  const unwitnessed = structuredClone(resumed.stored); delete unwitnessed.owned.pauseRequestedAt;
+  const current = fixture({ initialState: unwitnessed });
+  for (const [id, profile] of f.profiles) current.profiles.set(id, structuredClone(profile));
+  current.advance(2000);
+  const retained = await current.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+  assert.equal(retained.ownsInstruction, true); assert.equal(retained.owned.pauseRequestedAt, undefined);
+  assert.equal(writes(current).length, 0, 'Current finite cleanup/scheduling duty is restored without inventing a witness');
+  for (const pauseRequestedAt of [null, -1, START - 1, recovered.owned.confirmedAt + 1]) {
+    const invalid = structuredClone(resumed.stored); invalid.owned.pauseRequestedAt = pauseRequestedAt;
+    assert.throws(() => fixture({ initialState: invalid }), /Unsupported native charging ownership/);
+  }
 });
 
 test('change-reported old status stays valid with fresh connection and fresh zero power', async () => {

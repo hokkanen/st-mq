@@ -550,11 +550,12 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
   const nativeScheduleControl = ocppInstallation ? createOcppScheduleAdapter({ scope: ocppInstallation.scope, clock,
     canControl: () => !closed && canControl() && controlBackend === 'native',
     request: (...args) => local.request(...args),
-    isCurrent: (snapshot, { requireTransaction = true } = {}) => {
+    isCurrent: (snapshot, { requireTransaction = true, unchangedStatus = false } = {}) => {
       const current = local.controlSnapshot?.();
       return Boolean(current && current.connectionId === snapshot.connectionId && (!requireTransaction
         || (current.transaction?.id ?? null) === snapshot.transactionId
-          && (snapshot.transactionId === null || current.transaction?.confirmed)));
+          && (snapshot.transactionId === null || current.transaction?.confirmed))
+        && (!unchangedStatus || current.connectorStatus === snapshot.connectorStatus && current.timestamp === snapshot.statusAt));
     },
     readSnapshot: async () => {
       refreshNativeCloudTelemetry();

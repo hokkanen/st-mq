@@ -34,14 +34,14 @@ function fixture(t) {
   const engine = {};
   h.create = (chargerId = 'synthetic-charger') => {
     const runtime = new ChargingRuntime({ engine, store, config: { input: 'mqtt', connections: { easee: { charger_id: chargerId } } }, clock: () => h.now });
-    runtime.teslaCapture = { snapshot: () => ({ connected: true, pluggedIn: true, atHome: true, assignment: 'auto', batteryLevel: 60 }),
+    runtime.teslaCapture = { snapshot: () => ({ association: 'synthetic-tesla-source', connected: true, pluggedIn: true, atHome: true, assignment: 'auto', batteryLevel: 60 }),
       reception: () => ({ connected: true }) };
     t.after(() => runtime.close());
     return runtime;
   };
   h.start = async runtime => { await runtime.setAdapter('charger1', h.adapter); await runtime.reconcile('charger1');
     const item=runtime.chargers.charger1, at=view(runtime).control.session.connectedAt;
-    if(at===START) item.vehicleMatch={id:'tesla',scope:`${item.association}:${at}`,matchedAt:at}; };
+    if(at===START) item.vehicleMatch={id:'tesla',vehicleAssociation:'synthetic-tesla-source',scope:`${item.association}:${at}`,matchedAt:at}; };
   h.event = (runtime, id, value, previousValue, measuredAt, previousMeasuredAt = START) => {
     h.now = Math.max(h.now, measuredAt + 1);
     return runtime.receiveEaseeObservation({ id, value, measuredAt, receivedAt: h.now, previousValue, previousMeasuredAt });

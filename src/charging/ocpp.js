@@ -1,4 +1,5 @@
 import { createHash, randomInt } from 'node:crypto';
+import { IDENTIFYING_REASON } from './identity-evidence.js';
 
 const KIND = 'ocpp-tx-pause', MAX_PAUSE_MS = 48 * 3600_000, MIN_PAUSE_MS = 15 * 60_000;
 const MAX_ATTEMPTS = 3, MAX_AGE_MS = 60_000;
@@ -82,11 +83,23 @@ export function createOcppScheduleAdapter({ request, readSnapshot, isCurrent = (
       if (!isCurrent(snapshot) || !guard()) throw fail('control-revoked');
       return normalizeOcppComposite(reply, { now, duration });
     },
-    async install(instruction, snapshot, { signal, guard = () => true } = {}) {
+    async install(instruction, snapshot, { signal, guard = () => true, beforeWrite = () => {} } = {}) {
       const allowed = () => canControl() && guard() && isCurrent(snapshot) && snapshot.transactionConfirmed
         && snapshot.transactionId === instruction.transactionId && instruction.startAt - clock() >= MIN_PAUSE_MS;
       if (!allowed()) throw fail('control-revoked');
-      const reply = await request('SetChargingProfile', clone(instruction.payload), { signal, guard: allowed });
+      const before = await adapter.read({ signal });
+      if (!allowed() || !before.online || !fresh(before.readAt, clock())
+        || before.connectionId !== snapshot.connectionId || !before.transactionConfirmed
+        || before.transactionId !== instruction.transactionId || before.pluggedIn !== true
+        || ['Unavailable', 'Faulted', 'Reserved'].includes(before.connectorStatus)
+        || before.manualEvent?.id !== snapshot.manualEvent?.id) throw fail('control-revoked');
+      await beforeWrite(before);
+      const beforeSend = () => allowed() && isCurrent(before, { unchangedStatus: true });
+      if (!beforeSend()) throw fail('control-revoked');
+      // A natural stop while queued cannot become our identity response. This
+      // extra guard runs only before send: a successful command is expected to
+      // change Charging to SuspendedEVSE before its acknowledgement can arrive.
+      const reply = await request('SetChargingProfile', clone(instruction.payload), { signal, guard: allowed, beforeSend });
       if (reply?.status !== 'Accepted') throw fail('profile-rejected');
     },
     async clear(instruction, snapshot, { signal, guard = () => true } = {}) {
@@ -128,11 +141,14 @@ export function initialOcppControllerState(scope) {
     manual: null, lastManualEvent: null, execution: null, session: null, released: false, provisional: false, vehicleDisconnect: null };
 }
 function validInstruction(value) {
-  if (!fields(value, ['profileId', 'transactionId', 'startAt', 'validFrom', 'payload', 'fingerprint', 'confirmedAt', 'requestedAt'])) return false;
+  if (!fields(value, ['profileId', 'transactionId', 'startAt', 'validFrom', 'payload', 'fingerprint', 'confirmedAt', 'requestedAt', 'pauseRequestedAt'])) return false;
   try {
     const expected = ocppPauseInstruction({ ...value, now: value.validFrom });
     return value.fingerprint === expected.fingerprint && JSON.stringify(value.payload) === JSON.stringify(expected.payload)
-      && (value.confirmedAt === undefined || time(value.confirmedAt)) && (value.requestedAt === undefined || time(value.requestedAt));
+      && (value.confirmedAt === undefined || time(value.confirmedAt)) && (value.requestedAt === undefined || time(value.requestedAt))
+      && (value.pauseRequestedAt === undefined || time(value.pauseRequestedAt) && time(value.requestedAt)
+        && value.pauseRequestedAt >= value.requestedAt
+        && (value.confirmedAt === undefined || value.pauseRequestedAt <= value.confirmedAt));
   } catch { return false; }
 }
 function executionFor(plan) {
@@ -225,7 +241,7 @@ export function createOcppChargingController({ adapter, initialState = null, sav
     return dispatch(current, signal);
   }
   async function dispatch(current, signal) {
-    const pending = state.pending;
+    let pending = state.pending;
     if (!pending || !canWrite(current)) throw fail('control-revoked');
     if (pending.nextAttemptAt > clock()) return false;
     if (!pending.accepted) {
@@ -234,10 +250,20 @@ export function createOcppChargingController({ adapter, initialState = null, sav
       await commit({ pending: { ...pending, attempts, nextAttemptAt: clock() + (attempts === 1 ? 30_000 : 120_000) } });
       if (!canWrite(current)) throw fail('control-revoked');
       const options = { signal, guard: () => canWrite(current) };
-      if (pending.action === 'install') await adapter.install(pending.instruction, snapshot, options);
+      if (pending.action === 'install') await adapter.install(pending.instruction, snapshot, { ...options,
+        beforeWrite: async before => {
+          if (!canWrite(current)) throw fail('control-revoked');
+          const { pauseRequestedAt: _priorWitness, ...instruction } = state.pending.instruction;
+          // Installation intent exists even when already stopped. Only a fresh
+          // guarded Charging observation may witness a causal identity pause.
+          // Retry from a stopped state drops the earlier uncertain witness.
+          await commit({ pending: { ...state.pending, instruction: { ...instruction,
+            ...(before.connectorStatus === 'Charging' ? { pauseRequestedAt: clock() } : {}) } } });
+        } });
       else await adapter.clear(pending.instruction, snapshot, options);
       if (!canWrite(current)) throw fail('control-revoked');
       await commit({ pending: { ...state.pending, accepted: true, nextAttemptAt: 0 } });
+      pending = state.pending;
     }
     if (pending.action === 'clear') {
       // Accepted/Unknown addresses this exact ID. Another zero profile may still
@@ -328,7 +354,7 @@ export function createOcppChargingController({ adapter, initialState = null, sav
       }
       let plan = typeof getPlan === 'function' ? await getPlan(clone(snapshot)) : desired.plan;
       if (!canWrite(current)) throw fail('control-revoked');
-      if (plan?.state === 'identifying') return display('identifying', 'Waiting for vehicle identification; any existing bounded instruction is retained.');
+      if (plan?.state === 'identifying') return display('identifying', IDENTIFYING_REASON);
       const priceRevision = revisedExecution(plan, state.execution, clock());
       if (plan?.priceRevision && !priceRevision) plan = null;
       const candidate = executionFor(plan);

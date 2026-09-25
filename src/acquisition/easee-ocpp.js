@@ -207,7 +207,8 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
   function sendNextCall() {
     if (pendingCalls.size || !callQueue.length || socket?.readyState !== 1 || !canControl()) return;
     const call = callQueue.shift(), { action, payload, transition } = call, id = `stmq-${++callId}`;
-    if (call.resolve && (call.settled || call.connection !== socket || !transportFresh() || !permittedBy(call.guard))) {
+    if (call.resolve && (call.settled || call.connection !== socket || !transportFresh()
+      || !permittedBy(call.guard) || !permittedBy(call.beforeSend))) {
       finishRequest(call, 'ocpp-request-revoked'); sendNextCall(); return;
     }
     if (action === 'RemoteStartTransaction') {
@@ -538,20 +539,21 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       persist(active && !active.modeDisableIntent ? { ...ledger, transactions: ledger.transactions.map(row => row.id === active.id
         ? { ...row, modeDisableIntent } : row) } : ledger);
     },
-    request(action, payload, { signal, guard = () => true } = {}) {
+    request(action, payload, { signal, guard = () => true, beforeSend = () => true } = {}) {
       if (!REQUEST_ACTIONS.has(action)) return Promise.reject(requestError('ocpp-action-not-allowed'));
       let encoded;
       try { encoded = JSON.stringify(payload); } catch { return Promise.reject(requestError('ocpp-invalid-payload')); }
       if (!payload || typeof payload !== 'object' || Array.isArray(payload) || !encoded || encoded.length > 16_384)
         return Promise.reject(requestError('ocpp-invalid-payload'));
-      if (typeof guard !== 'function' || signal && (typeof signal.addEventListener !== 'function' || typeof signal.removeEventListener !== 'function'))
+      if (typeof guard !== 'function' || typeof beforeSend !== 'function'
+        || signal && (typeof signal.addEventListener !== 'function' || typeof signal.removeEventListener !== 'function'))
         return Promise.reject(requestError('ocpp-invalid-request'));
       if (signal?.aborted) return Promise.reject(requestError('ocpp-request-aborted'));
       if (!refreshAuthority() || !transportFresh()) return Promise.reject(requestError('ocpp-unavailable'));
       if (!permittedBy(guard)) return Promise.reject(requestError('ocpp-request-revoked'));
       if (callQueue.filter(call => call.resolve).length >= 8) return Promise.reject(requestError('ocpp-queue-full'));
       return new Promise((resolve, reject) => {
-        const call = { action, payload: JSON.parse(encoded), connection: socket, queuedAt: clock(), signal, guard, resolve, reject };
+        const call = { action, payload: JSON.parse(encoded), connection: socket, queuedAt: clock(), signal, guard, beforeSend, resolve, reject };
         call.abort = () => {
           const index = callQueue.indexOf(call);
           if (index >= 0) callQueue.splice(index, 1);

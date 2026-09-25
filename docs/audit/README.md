@@ -28,6 +28,10 @@ The [recording contract review](RECORDING-CONTRACT-2026-09.md) records the compl
 adaptive/exact/event audit, removal of timed duplicate history, Charger 2 phase
 parity, durable open energy and the complete database inventory.
 
+The [vehicle identification review](VEHICLE-IDENTIFICATION-2026-09.md) records
+shared BMW/Tesla behavior across cloud and OCPP, guarded pause evidence,
+source/session binding and the synthetic reconnect/restart regression coverage.
+
 | Scope | Implementation and evidence |
 | --- | --- |
 | A01 charging | [Physical Charger 2, identity, energy, scheduling and controls](A01.md); [acceptance tracker](A01-tracker.json) |

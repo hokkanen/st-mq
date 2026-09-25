@@ -88,24 +88,33 @@ to charge elsewhere at home is insufficient on its own. Without the
 matching stop, Charger 1 continues to use manual battery values. Matching live
 start evidence with valid home and plug context can show **BMW identification pending**
 while awaiting stop confirmation, even if the plug report is unchanged, for at
-most ten minutes from the connection. Missing or
+most ten minutes from the observed charging start. Missing or
 conflicting evidence then leaves it **Vehicle unidentified**.
-Initial unrestricted charging can be observed briefly when a BMW at-home candidate
-is available; manual priority and existing native restrictions are preserved.
+Initial unrestricted charging can be observed for up to three minutes from the
+connection when a BMW or Tesla at-home candidate is available. Both cloud and OCPP
+use this same bounded window; manual priority and native restrictions are preserved.
 Identification does not command an additional stop; it observes a pause or stop
 that occurs as part of ordinary charging control.
 
 BMW can also keep reporting `CONNECTED` without a new vehicle plug transition.
 An alternative match uses home and plugged-in context no older than 24 hours,
-plus a planned pause already controlled by ST-MQ. Fresh live BMW charging-start
-and stop events must each match Easee within 30 seconds. Both starts must precede
-the pause boundary; both stops and Easee's fresh scheduling-stop reason (54) must
-follow it. When available, the boundary is the durable request-intent time saved
-after control checks pass, immediately before requesting the schedule, while Easee
-was observed charging. This records intent without claiming an exact dispatch
-time. Without that evidence, the stricter schedule-confirmation time applies.
-In either case, the schedule must be confirmed, still exactly match ST-MQ's owned
-delay and have its start in the future; reason 54 must also match the stop time.
+plus a planned pause already controlled by ST-MQ. Live BMW charging-start
+and stop events no older than fifteen minutes must each match Easee within
+30 seconds. Both starts must precede
+the pause boundary; both stops must follow it. The boundary is a durable request
+witness saved after a guarded charging observation immediately before requesting
+the normal economic pause. Missing request evidence cannot be replaced by a later
+acknowledgement. The owned restriction must be confirmed for the same current
+connection and expire in the future.
+
+The charger boundary supplies one common pause proof to the BMW matcher. Cloud
+control verifies its exact delayed schedule and scheduling-stop reason (54), with
+the reason and physical stop clocks agreeing. OCPP verifies its current transaction,
+owned zero-current profile, `SuspendedEVSE` status and fresh zero power. Its guarded
+charging witness is distinct from the general install-intent time. A status change
+observed while queued prevents dispatch from reusing the earlier charging witness.
+Identity timing, pending
+status, event consumption and conflict handling are shared between both modes.
 Manual priority or conflicting Tesla evidence prevents this match. This path
 adds no charger commands or identification probe, and its charging-start event
 cannot be reused for another connection.
@@ -128,7 +137,8 @@ and target choice while the charger adapter initializes. Until its session and
 readback are available, the vehicle remains unidentified in the live view and
 session edits are unavailable. The same connection restores the match without
 reusing a plug event; a different connection or confirmed departure clears it.
-Consumed plug or charging-start events cannot identify the next car. Available
+Both plug and charging-start events are consumed on either successful match, so
+changing evidence paths cannot identify the next car using an earlier episode. Available
 automatic battery fields take precedence individually without
 overwriting saved generic defaults. Missing fields remain editable. Tesla on
 Easee appears in Charger 1, while Charger 2 indicates that association instead of

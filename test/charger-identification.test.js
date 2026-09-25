@@ -6,7 +6,7 @@ function fixture(t) {
   let now=NOW;const saved=new Map(),physical={charger1:{connected:true,charging:false,at:NOW,power:0,session:NOW},charger2:{connected:false,charging:false,at:NOW,power:0,session:null}};
   const store={getState:key=>structuredClone(saved.get(key)),setState:(key,value)=>saved.set(key,structuredClone(value))};
   const runtime=new ChargingRuntime({engine:{},store,config:{input:'mqtt',connections:{easee:{charger_id:'synthetic'}}},clock:()=>now});
-  const tesla={connected:true,healthy:true,pluggedIn:true,atHome:true,charging:false,batteryLevel:40,chargeLimitSoc:90,requestedCurrentA:6,maxCurrentA:16,actualPowerKw:0,fields:{healthy:{receivedAt:NOW,retained:false},plugged_in:{receivedAt:NOW,retained:false},battery_level:{receivedAt:NOW,retained:false},charge_limit_soc:{receivedAt:NOW,retained:false},charge_current_request:{receivedAt:NOW,retained:false}},boundaries:[]};
+  const tesla={association:"synthetic-tesla-source",connected:true,healthy:true,pluggedIn:true,atHome:true,charging:false,batteryLevel:40,chargeLimitSoc:90,requestedCurrentA:6,maxCurrentA:16,actualPowerKw:0,fields:{healthy:{receivedAt:NOW,retained:false},plugged_in:{receivedAt:NOW,retained:false},battery_level:{receivedAt:NOW,retained:false},charge_limit_soc:{receivedAt:NOW,retained:false},charge_current_request:{receivedAt:NOW,retained:false}},boundaries:[]};
   runtime.teslaCapture={snapshot:()=>structuredClone(tesla)};
   for(const id of Object.keys(physical)) {
     runtime.chargers[id].controller={status:()=>({phase:'off',session:{connected:physical[id].connected,connectedAt:physical[id].session,lastDisconnectedAt:physical[id].lastDisconnectedAt},snapshot:{}}),close(){},async update(){}};

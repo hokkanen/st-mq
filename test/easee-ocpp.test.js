@@ -461,6 +461,38 @@ test('native request allowlist serializes calls, snapshots payloads and checks t
   respond(client, client.calls.at(-1), schedule); assert.deepEqual(await second, schedule);
 });
 
+test('native send-only guard rejects a queued natural stop but accepts a stop after the command was sent', async t => {
+  const { f, client } = await readyRequests(t);
+  await assert.rejects(f.local.request('SetChargingProfile', {}, { beforeSend: true }), { code: 'ocpp-invalid-request' });
+  await client.call('StatusNotification', { ...preparing, status: 'Charging' });
+  const chargingAt = f.local.controlSnapshot().timestamp;
+  const stillCharging = () => f.local.controlSnapshot()?.connectorStatus === 'Charging'
+    && f.local.controlSnapshot().timestamp === chargingAt;
+  let next = once(client.ws, 'message');
+  const first = f.local.request('GetConfiguration', {}); await next;
+  const occupied = client.calls.at(-1);
+  const queued = resultOf(f.local.request('SetChargingProfile', { connectorId: 1 }, { beforeSend: stillCharging }));
+  f.now = at + 1000;
+  await client.call('StatusNotification', { ...preparing, status: 'SuspendedEVSE', timestamp: new Date(at + 1000).toISOString() });
+  respond(client, occupied, { configurationKey: [] }); await first;
+  assert.deepEqual(await queued, { code: 'ocpp-request-revoked' });
+  assert.equal(client.calls.some(call => call[2] === 'SetChargingProfile'), false);
+
+  f.now = at + 2000;
+  await client.call('StatusNotification', { ...preparing, status: 'Charging', timestamp: new Date(at + 2000).toISOString() });
+  let sendChecks = 0;
+  next = once(client.ws, 'message');
+  const sent = f.local.request('SetChargingProfile', { connectorId: 1 }, { beforeSend: () => {
+    sendChecks++; return f.local.controlSnapshot()?.connectorStatus === 'Charging';
+  } });
+  await next; const instruction = client.calls.at(-1);
+  f.now = at + 3000;
+  await client.call('StatusNotification', { ...preparing, status: 'SuspendedEVSE', timestamp: new Date(at + 3000).toISOString() });
+  respond(client, instruction, { status: 'Accepted' });
+  assert.deepEqual(await sent, { status: 'Accepted' });
+  assert.equal(sendChecks, 1, 'Status proof is checked at wire send, never after its expected physical effect');
+});
+
 test('aborting an in-flight native request rejects the caller but retains wire serialization until its reply', async t => {
   const { f, client } = await readyRequests(t), controller = new AbortController();
   let next = once(client.ws, 'message');

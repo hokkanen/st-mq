@@ -109,9 +109,27 @@ The ready-by time becomes one concrete occurrence when the physical connection s
 
 The observer evaluates both charging points together, including while automatic charging is OFF and hours after connection. Assignment requires positive corroboration: applicable vehicle home/plug/start evidence and physical charging behavior. Similar powers on two charging points can remain ambiguous. A negative Tesla match never identifies BMW or the other charger by elimination.
 
-Assignments carry the physical association and plug epoch. Genuine disconnect/reconnect events are retained even between planner ticks or MQTT subscription admission and invalidate the old scope. Pause/resume within a connected work state remains one session. Explicit conflicting evidence withdraws certainty. A remembered identity alone cannot authorize a new connection, and current vehicle fields are withdrawn when the upstream feed is unhealthy.
+Assignments carry the physical association, plug epoch and vehicle-feed identity. Changing the configured Tesla car, broker, topic namespace or home-zone configuration cannot lend a replacement source’s readings to a saved match. Genuine disconnect/reconnect events are retained even between planner ticks or MQTT subscription admission and invalidate the old scope. Pause/resume within a connected work state remains one session. Explicit conflicting evidence withdraws certainty. A remembered identity alone cannot authorize a new connection, and current vehicle fields are withdrawn when the upstream feed is unhealthy.
 
-TeslaMate has transport, subscription, live logger-health and per-field evidence checks. Sleeping while healthy is distinct from unhealthy. A reconnect requires a new live healthy pulse. TeslaMate publishes most values only when they change; its current-limit and next-start settings remain available while the logger is healthy, preserving their original receipt times and retained provenance. Fresh physical charging takes precedence over a reported future timer. Retained or last-known values alone cannot identify a car. A live charging-state start within 30 seconds of a physical charging start can corroborate matching power after the normal ramp delay, for up to fifteen minutes, while physical power remains fresh. Retained starts and power cannot supply that evidence. BMW source timestamps, home scope and consumed plug/start events serve the same separation. Neither feed's remote voltage or power fills missing household electrical measurements.
+TeslaMate has transport, subscription, live logger-health and per-field evidence checks. Sleeping while healthy is distinct from unhealthy. A reconnect requires a new live healthy pulse. TeslaMate publishes most values only when they change; its current-limit and next-start settings remain available while the logger is healthy, preserving their original receipt times and retained provenance. Fresh physical charging takes precedence over a reported future timer. Retained or last-known values alone cannot identify a car. A live charging-state start within 30 seconds of a physical charging start can corroborate matching power after the normal ramp delay, for up to fifteen minutes, while physical power remains fresh. Retained starts and power cannot supply that evidence. Repeated identical publications and same-value recovery after an unknown gap preserve their original provenance. Every Tesla match requires positive vehicle power and physical power measured within the current session and the last minute; a consumed power observation cannot identify another connection. BMW source timestamps, home scope and consumed plug/start events serve the same separation. Neither feed's remote voltage or power fills missing household electrical measurements.
+
+Cloud scheduling and local OCPP use the same vehicle matcher, pending status,
+consumed-evidence checks and session boundaries. Their native adapters normalize
+ownership and physical pause evidence before it reaches identification. A cloud
+schedule or an OCPP acknowledgement alone cannot identify BMW. Its unchanged-inlet
+fallback requires both live vehicle transitions to match the charger transitions
+around a verified pause request; fresh-plug matching can use a natural stop.
+Unknown charger state never counts as a stop.
+
+For a new unrestricted connection with plausible at-home vehicle context,
+automatic scheduling observes the initial charge for at most three minutes.
+A Tesla match can end this wait early; BMW can then use a stop caused by ordinary
+economic scheduling. Restart preserves the original connection deadline for this
+observation. It sends no identification probes, clears no existing restrictions,
+and leaves Charge now, manual priority, native faults and automatic OFF intact.
+Retained home context can justify this bounded observation but cannot establish
+identity. If no suitable charging transition occurs (for example, a full battery
+or a vehicle-side timer), the vehicle stays unidentified and uses manual inputs.
 
 ## Planning and Equalizer
 

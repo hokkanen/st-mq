@@ -1,5 +1,6 @@
 import { resolveChargingDeadline } from './settings.js';
 import { TIME_ZONE } from '../domain/prices.js';
+import { IDENTIFYING_REASON } from './identity-evidence.js';
 import { delayedScheduleFor, effectiveScheduleFingerprint, manualScheduleWindow, nextLocalOccurrence, scheduleFingerprint } from './easee.js';
 
 const copy = value => structuredClone(value);
@@ -442,7 +443,7 @@ export function createChargingController({ adapter, initialState = null, saveSta
         await phase('released', RELEASE_REASON); return status();
       }
       if (plan?.state === 'identifying') {
-        await phase('identifying', 'Identifying the connected vehicle from its initial charging telemetry. Automatic scheduling follows when identified or after the three-minute observation limit.');
+        await phase('identifying', IDENTIFYING_REASON);
         return status();
       }
       let execution = priceExecution ?? (state.execution && now >= state.execution.periods[0].startAt

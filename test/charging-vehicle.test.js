@@ -123,7 +123,7 @@ test('BMW pre-poll evidence is bounded and remains subject to disconnect and rep
 
 function fixture(chargingConfig = {}) {
   let now = START, connected = true, charging = true, sessionAt = START, verdict = null, identifiedAt = null;
-  const tesla = { connected: true, pluggedIn: true, atHome: true, assignment: 'auto', batteryLevel: 75, chargeLimitSoc: 90 };
+  const tesla = { association: 'synthetic-tesla-feed', connected: true, pluggedIn: true, atHome: true, assignment: 'auto', batteryLevel: 75, chargeLimitSoc: 90 };
   const values = new Map(), store = { getState: key => structuredClone(values.get(key)),
     setState: (key, value) => { if (store.fail) throw new Error('database unavailable'); values.set(key, structuredClone(value)); } };
   const engine = {};
@@ -261,7 +261,7 @@ test('new timestamps on unchanged plugged/charging states cannot turn a parked B
   const old = accepted(facts(START - 60 * MINUTE), null, true).reading;
   const updated = accepted(facts(), old, false).reading;
   assert.equal(updated.fields.pluggedIn.measuredAt, START);
-  assert.equal(updated.fields.pluggedIn.event.measuredAt, START - 60 * MINUTE);
+  assert.equal(updated.fields.pluggedIn.positiveEvent.measuredAt, START - 60 * MINUTE);
   assert.equal(matchBmwSession(updated, { connectedAt: START, chargingAt: START, now: START }), false);
   const unplugged = accepted(facts(START + MINUTE, { pluggedIn: false, charging: false }), updated, false, START + MINUTE).reading;
   const replugged = accepted(facts(START + 2 * MINUTE), unplugged, false, START + 2 * MINUTE).reading;
@@ -314,8 +314,8 @@ test('unknown gaps cannot promote retained or unchanged source facts into new li
   for (const at of [START, START + 20_000]) {
     const replay = accepted(facts(at), unknown, false, START + 20_000).reading;
     assert.equal(replay.pluggedIn, true);
-    assert.equal(replay.fields.pluggedIn.event.retained, true);
-    assert.equal(replay.fields.pluggedIn.event.measuredAt, START);
+    assert.equal(replay.fields.pluggedIn.positiveEvent.retained, true);
+    assert.equal(replay.fields.pluggedIn.positiveEvent.measuredAt, START);
     assert.equal(matchBmwSession(replay, { connectedAt: START, chargingAt: START, now: START + 20_000 }), false);
   }
 });

@@ -4,6 +4,8 @@ const NUMERIC = { battery_level: 100, charge_limit_soc: 100, charge_current_requ
   charge_current_request_max: 100, charger_actual_current: 100, charger_phases: 3, charger_voltage: 500,
   charger_power: 350, charge_energy_added: 1000 };
 const FIELDS = new Set([...Object.keys(NUMERIC), 'healthy', 'scheduled_charging_start_time', 'plugged_in', 'geofence', 'charging_state', 'state']);
+const IDENTITY_FIELDS = new Set(['plugged_in', 'geofence', 'charging_state', 'state', 'charger_power']);
+const CHANGE_ONLY_FIELDS = new Set([...IDENTITY_FIELDS, 'battery_level', 'charge_limit_soc']);
 export function decodeChargingTeslaField(field, payload) {
   if (!FIELDS.has(field)) return undefined;
   const text = String(payload ?? '').trim();
@@ -66,12 +68,22 @@ export function createChargingTeslaCapture({ settings = {}, clock = Date.now, in
       try {
         lastMessageAt = now;
         if (packet.retain) lastRetainedAt = now; else { lastLiveAt = now; liveFields.add(field); }
-        const previous = fields[field];
-        // Change-only values keep their original clock; a healthy pulse renews health only.
-        if (previous?.value === value && (packet.retain || ['battery_level', 'charge_limit_soc'].includes(field))) return true;
-        fields[field] = { value, receivedAt: now, measuredAt: null, retained: packet.retain === true,
-          timeBasis: 'receipt-only', sequence: ++sequence };
-        if (!packet.retain && (field === 'plugged_in' && value !== previous?.value || field === 'geofence' && value !== previous?.value)) {
+        const previous = fields[field], identity = IDENTITY_FIELDS.has(field);
+        const lastKnown = identity && previous?.value === null ? previous.lastKnown : previous;
+        // An unchanged publication is not another plug, charging start or power
+        // ramp. Keep its original delivery provenance, including retained data.
+        // Only healthy pulses renew health. Unknown gaps also cannot turn the
+        // same last-known value into a new edge when the value becomes available.
+        if (previous?.value === value && (packet.retain || CHANGE_ONLY_FIELDS.has(field))) return true;
+        if (identity && value !== null && lastKnown?.value === value) {
+          fields[field] = structuredClone(lastKnown);
+        } else {
+          fields[field] = { value, receivedAt: now, measuredAt: null, retained: packet.retain === true,
+            timeBasis: 'receipt-only', sequence: ++sequence,
+            ...(identity && value === null && lastKnown ? { lastKnown: structuredClone(lastKnown) } : {}) };
+        }
+        if (!packet.retain && (field === 'plugged_in' && value !== null && value !== lastKnown?.value
+          || field === 'geofence' && value !== lastKnown?.value)) {
           boundary = { field, value, at: now, sequence, association: signature };
           boundaries = [...boundaries, boundary].slice(-64);
         }
