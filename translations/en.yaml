@@ -2,11 +2,16 @@ configuration:
   controller:
     name: Home controller
     description: >-
-      Start with simulated input and shadow mode. Home Assistant ingress uses
-      your HA login. Leave web_token empty to keep direct port 1234 disabled, or
-      set a private token of at least 24 characters to enable direct access.
-      Save options, then choose Apply configuration in ST-MQ. Token changes apply
-      immediately; clearing the token disables direct access while ingress stays
+      Start with simulated input and shadow mode. Home Assistant ingress grants
+      admin access through your HA login. Leave web_token and web_family_token
+      empty to keep direct port 1234 disabled, or set web_token to an admin
+      password of at least 24 characters. Optionally set web_family_token to a
+      different password of at least 24 characters for family access. Family can
+      view all pages and operate firewood, DHWR, temporary heating, Away/Pause,
+      garage doors and EV card controls. Other writes, exports and downloads
+      require admin. Save options, then choose Apply configuration in the
+      application. Password changes apply immediately; clearing both passwords
+      disables direct access while ingress stays
       available. Input changes require restarting the add-on. Providers input reads online
       sensors, electricity prices and weather. MQTT input adds read-only H66
       readings and needs the exact installed H66 device prefix. An optional

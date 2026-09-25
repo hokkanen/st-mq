@@ -26,6 +26,7 @@ RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=build /st-mq/dist ./dist
 COPY src/ ./src/
 COPY scripts/ ./scripts/
+COPY docs/floor-preheat.md ./docs/floor-preheat.md
 COPY test/live/ ./test/live/
 COPY config.json ./
 RUN install -m 0755 /st-mq/scripts/pair-vip-addon /usr/local/bin/st-mq-vip

@@ -621,6 +621,7 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
         buttons.setAttribute('role', 'group');
         const on = button('Turn on', () => { if (!blocked()) void actions.switch(device.id, true); });
         const off = button('Turn off', () => { if (!blocked()) void actions.switch(device.id, false); });
+        buttons.setAttribute('data-admin-only', '');
         const help = make('p', '', 'muted'), result = make('p', '', 'equipment-control-result');
         result.setAttribute('role', 'status'); result.setAttribute('aria-live', 'polite');
         buttons.append(on, off); controls.append(buttons, help, result);
@@ -735,6 +736,8 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
       node.coverControls.hidden = !hasCoverControls;
       node.coverButtons.setAttribute('aria-label', `${device.label ?? 'Door'} operation`);
       for (const [action, control] of Object.entries(node.coverActions)) {
+        if (device.area !== 'garage' || device.kind !== 'door') control.setAttribute('data-admin-only', '');
+        else control.removeAttribute('data-admin-only');
         control.hidden = device.controls?.cover?.[action] !== true;
         control.disabled = !equipmentCoverAllowed(status, device, action, busy || blocked());
         control.setAttribute('aria-label', `${action[0].toUpperCase() + action.slice(1)} ${device.label ?? 'door'}`);
@@ -799,6 +802,7 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
       let restore = restoreNodes.get(area);
       if (!restore) {
         restore = button('Restore previous state', () => { if (!blocked()) void actions.restore(); });
+        restore.setAttribute('data-admin-only', '');
         restore.classList.add('equipment-restore'); restoreNodes.set(area, restore); $(`${area}-test-notice`).append(restore);
       }
       restore.hidden = activeNode.hidden; restore.disabled = activeNode.hidden || readOnly || locked;

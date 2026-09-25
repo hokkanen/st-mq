@@ -69,7 +69,7 @@ try {
     }
     throw new Error(`UI did not settle: ${expression}`);
   };
-  const refresh = () => evaluate("document.getElementById('auth').dispatchEvent(new Event('submit', { cancelable: true })); true");
+  const refresh = () => evaluate("window.dispatchEvent(new Event('online')); true");
   const local = '[data-provider=electricity] .provider-local-connection';
   const button = `${local} .provider-local-adopt`;
   const setupLabel = `${local} [data-local-connection=setup]`;

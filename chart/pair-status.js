@@ -225,7 +225,7 @@ export function createPairActions({ request, storage, confirm = message => confi
       error = true;
       if (failure.status >= 400 && failure.status < 500 && ![408, 429].includes(failure.status)) {
         pending = null; persist();
-        message = failure.status === 401 ? 'Reconnect with your access token, then try again.'
+        message = failure.status === 401 ? 'Reconnect with your password, then try again.'
           : failure.status === 409 ? 'The role, recovery preview or readiness changed. Refresh the status and check again.'
             : 'The operation was not accepted. Check this computer’s role and readiness before retrying.';
       } else message = 'Operation not confirmed. After this computer reconnects, recheck the same request to avoid starting it twice.';

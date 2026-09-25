@@ -10,7 +10,7 @@
   <link rel="stylesheet" href="./monitor.css">
   <link rel="stylesheet" href="./timing-benefit.css">
 </head>
-<body>
+<body data-authenticated="false">
   <header>
     <span id="instance-role" class="instance-role" role="status" hidden></span>
     <div id="connection" role="status">Connecting…</div>
@@ -41,8 +41,9 @@
     </section>
     <p id="context" class="context">Loading controller state…</p>
     <form id="auth" class="panel" hidden>
-      <label>Access token <input id="token" type="password" autocomplete="off" required></label>
-      <button>Connect</button><p>Kept in this browser tab only.</p>
+      <label for="token">Password</label>
+      <div class="password-entry"><input id="token" type="password" autocomplete="current-password" required><button id="password-visibility" type="button" class="secondary-button" aria-controls="token" aria-pressed="false">Show password</button></div>
+      <button type="submit">Connect</button><p>Use your admin or family password. Kept in this browser tab only.</p>
     </form>
     <p id="error" role="alert" hidden></p>
     <section class="controller-panels" aria-label="Home and garage controller" data-snapshot-content>
@@ -228,17 +229,17 @@
                       <summary><span>Sensor changes</span><small id="sensor-change-overview">Replacement, move or calibration</small></summary>
                       <div id="sensor-change-content">
                         <p id="sensor-change-help" class="muted">Record a replacement, new location or calibration when it happens. You will review its effect on learning before saving. Revert a mistaken entry to relearn from recorded history.</p>
-                        <form id="sensor-change-form" class="sensor-change-form" aria-describedby="sensor-change-help sensor-change-reason-help">
+                        <form id="sensor-change-form" data-admin-only class="sensor-change-form" aria-describedby="sensor-change-help sensor-change-reason-help">
                           <label for="sensor-change-signal">Sensor<select id="sensor-change-signal" required disabled><option value="">Loading sensors…</option></select></label>
                           <label for="sensor-change-reason">Reason<select id="sensor-change-reason" disabled><option value="replacement">Replacement</option><option value="moved">New location</option><option value="calibration">Calibration</option><option value="other">Other</option></select></label>
                           <button id="sensor-change-submit" type="submit" disabled>Record change now…</button>
                         </form>
                         <p id="sensor-change-reason-help" class="muted">The reason is kept in history. All reasons have the same effect on learning.</p>
                         <p id="sensor-change-message" class="temporary-status sensor-change-status" role="status" aria-live="polite"></p>
-                        <button id="sensor-change-retry" class="secondary-button" type="button" hidden>Retry saving</button>
+                        <button id="sensor-change-retry" data-admin-only class="secondary-button" type="button" hidden>Retry saving</button>
                         <p id="sensor-change-availability" class="muted sensor-change-status" role="status"></p>
                         <p id="sensor-change-rebuild" class="muted sensor-change-status" role="status" aria-live="polite"></p>
-                        <button id="sensor-change-retry-rebuild" class="secondary-button" type="button" hidden>Retry relearning</button>
+                        <button id="sensor-change-retry-rebuild" data-admin-only class="secondary-button" type="button" hidden>Retry relearning</button>
                         <div class="sensor-change-history-heading"><h3>Change history</h3><button id="sensor-change-refresh" class="secondary-button" type="button">Refresh</button></div>
                         <p class="muted form-timezone">Finnish local time · Europe/Helsinki</p>
                         <ul id="sensor-change-entries" class="sensor-change-entries" aria-label="Indoor sensor changes"></ul>
@@ -250,17 +251,17 @@
                       <summary><span>Sensor changes</span><small id="outdoor-sensor-change-overview">Replacement, move or calibration</small></summary>
                       <div id="outdoor-sensor-change-content">
                         <p id="outdoor-sensor-change-help" class="muted">Record a replacement, new location or calibration when it happens. You will review its effect on learning before saving. Revert a mistaken entry to relearn from recorded history.</p>
-                        <form id="outdoor-sensor-change-form" class="sensor-change-form" aria-describedby="outdoor-sensor-change-help outdoor-sensor-change-reason-help">
+                        <form id="outdoor-sensor-change-form" data-admin-only class="sensor-change-form" aria-describedby="outdoor-sensor-change-help outdoor-sensor-change-reason-help">
                           <label for="outdoor-sensor-change-signal">Sensor<select id="outdoor-sensor-change-signal" required disabled><option value="">Loading sensors…</option></select></label>
                           <label for="outdoor-sensor-change-reason">Reason<select id="outdoor-sensor-change-reason" disabled><option value="replacement">Replacement</option><option value="moved">New location</option><option value="calibration">Calibration</option><option value="other">Other</option></select></label>
                           <button id="outdoor-sensor-change-submit" type="submit" disabled>Record change now…</button>
                         </form>
                         <p id="outdoor-sensor-change-reason-help" class="muted">The reason is kept in history. All reasons have the same effect on learning.</p>
                         <p id="outdoor-sensor-change-message" class="temporary-status sensor-change-status" role="status" aria-live="polite"></p>
-                        <button id="outdoor-sensor-change-retry" class="secondary-button" type="button" hidden>Retry saving</button>
+                        <button id="outdoor-sensor-change-retry" data-admin-only class="secondary-button" type="button" hidden>Retry saving</button>
                         <p id="outdoor-sensor-change-availability" class="muted sensor-change-status" role="status"></p>
                         <p id="outdoor-sensor-change-rebuild" class="muted sensor-change-status" role="status" aria-live="polite"></p>
-                        <button id="outdoor-sensor-change-retry-rebuild" class="secondary-button" type="button" hidden>Retry relearning</button>
+                        <button id="outdoor-sensor-change-retry-rebuild" data-admin-only class="secondary-button" type="button" hidden>Retry relearning</button>
                         <div class="sensor-change-history-heading"><h3>Change history</h3><button id="outdoor-sensor-change-refresh" class="secondary-button" type="button">Refresh</button></div>
                         <p class="muted form-timezone">Finnish local time · Europe/Helsinki</p>
                         <ul id="outdoor-sensor-change-entries" class="sensor-change-entries" aria-label="Outdoor sensor changes"></ul>
@@ -310,10 +311,10 @@
                           <option value="0203">Room setting</option><option value="0212">Hot water start</option>
                           <option value="0208">Hot water stop</option><option value="2201">Operating mode</option>
                         </select></label>
-                        <label id="h66-test-temperature-field">Temperature · °C<input id="h66-test-value" type="number" min="10" max="30" step="1" value="20" required></label>
-                        <label id="h66-test-mode-field" hidden>Operating mode<select id="h66-test-mode"><option value="1">Auto</option><option value="2">Compressor only</option><option value="4">Hot water only</option></select></label>
+                        <label id="h66-test-temperature-field" data-admin-only>Temperature · °C<input id="h66-test-value" type="number" min="10" max="30" step="1" value="20" required></label>
+                        <label id="h66-test-mode-field" data-admin-only hidden>Operating mode<select id="h66-test-mode"><option value="1">Auto</option><option value="2">Compressor only</option><option value="4">Hot water only</option></select></label>
                         <p class="equipment-control-state"><span>Reported now</span><strong id="h66-manual-state">Unavailable</strong></p>
-                        <button id="h66-test-submit" class="secondary-button" type="submit" disabled>Apply setting</button>
+                        <button id="h66-test-submit" data-admin-only class="secondary-button" type="submit" disabled>Apply setting</button>
                       </form>
                       <p id="h66-test-status" class="muted">H66 is not connected.</p>
                       <p id="h66-test-message" class="temporary-status" role="status" aria-live="polite"></p>
@@ -397,9 +398,10 @@
                         <summary><span>Install &amp; commission</span><small>Before enabling control</small></summary>
                         <p class="muted">Keep floor control disabled until every physical check passes. Recording commissioning in configuration does not perform these checks.</p>
                         <div class="floor-preheat-downloads">
-                          <a id="floor-preheat-guide" download="floor-preheat.md">Download full guide (.md)</a>
-                          <a id="floor-preheat-script" download="floor-lease.js">Download Shelly script (.js)</a>
+                          <button id="floor-preheat-guide" data-admin-only class="secondary-button" type="button">Download full guide (.md)</button>
+                          <button id="floor-preheat-script" data-admin-only class="secondary-button" type="button">Download Shelly script (.js)</button>
                         </div>
+                        <p id="floor-download-message" class="muted" role="status"></p>
                         <ol class="floor-commissioning-steps">
                           <li><h4>Verify wiring and mapping</h4><p>Follow Commissioning in the full guide. Check Living and Storage outputs 0 and 1, including every connected loop. Each OFF state must restore ordinary thermostat control independently of the host, network and device power.</p></li>
                           <li><h4>Prepare both Shellys</h4><p>Verify model and firmware support for the supplied script. Set both outputs on each device as follows; the script checks these settings before accepting an override.</p>
@@ -428,6 +430,7 @@
                   <details id="controls-details" class="section-fold controller-fold">
                     <summary><span>Configuration</span><small> · File &amp; settings</small></summary>
                     <div class="section-fold-body">
+                      <div class="web-access-session"><p id="web-access-role" role="status">Not signed in</p><button id="web-logout" class="secondary-button" type="button" hidden>Logout</button></div>
                       <section class="configuration-location" aria-labelledby="settings-location-title">
                         <h3 id="settings-location-title">Configuration file location</h3>
                         <dl id="settings-location"></dl>
@@ -436,14 +439,15 @@
                       <ol id="settings-configuration-steps" class="muted"></ol>
                       <details id="settings-format-example" class="configuration-example">
                         <summary>JSON file example</summary>
-                        <p class="muted">Include only fields you want to change, with no outer <code>options</code> wrapper. Replace these example values with your own. A private <code>web_token</code> needs at least 24 characters.</p>
+                        <p class="muted">Include only fields you want to change, with no outer <code>options</code> wrapper. Replace these example values with your own. The admin <code>web_token</code> and optional <code>web_family_token</code> passwords must differ and each need at least 24 characters.</p>
                         <pre><code>{
         "easee": {
           "user": "your-easee-username",
           "pw": "your-easee-password"
         },
         "controller": {
-          "web_token": "replace-with-your-private-token"
+          "web_token": "replace-with-your-admin-password",
+          "web_family_token": "replace-with-your-family-password"
         }
       }</code></pre>
                       </details>
@@ -452,7 +456,7 @@
                       <div id="settings-reload-scope" class="reload-scope"></div>
                       <p id="settings-reload-help" class="muted"></p>
                       <div class="settings-actions">
-                        <button id="settings-reload" class="secondary-button" type="button" disabled>Apply configuration</button>
+                        <button id="settings-reload" data-admin-only class="secondary-button" type="button" disabled>Apply configuration</button>
                         <p id="settings-reload-message" class="muted" role="status" aria-live="polite"></p>
                       </div>
                     </div>
@@ -651,10 +655,10 @@
                         <option value="targetC">Room setting</option><option value="fan">Fan setting</option>
                         <option value="vane">Vertical vane</option><option value="wideVane">Horizontal vane</option>
                       </select></label>
-                      <label id="garage-native-value-field">Value<select id="garage-native-value" required disabled><option value="">Select a value</option></select></label>
-                      <label id="garage-native-temperature-field" hidden>Temperature · °C<input id="garage-native-temperature" type="number" required disabled aria-describedby="garage-native-temperature-help"></label>
+                      <label id="garage-native-value-field" data-admin-only>Value<select id="garage-native-value" required disabled><option value="">Select a value</option></select></label>
+                      <label id="garage-native-temperature-field" data-admin-only hidden>Temperature · °C<input id="garage-native-temperature" type="number" required disabled aria-describedby="garage-native-temperature-help"></label>
                       <p class="equipment-control-state"><span>Reported pump setting</span><strong id="garage-native-reported">Unavailable</strong></p>
-                      <button id="garage-native-submit" class="secondary-button" type="submit" disabled>Apply setting</button>
+                      <button id="garage-native-submit" data-admin-only class="secondary-button" type="submit" disabled>Apply setting</button>
                     </form>
                     <p id="garage-native-temperature-help" class="muted" hidden>Below 16 °C, Garage rear guides heating while the pump is set to 17 °C. <span id="garage-native-temperature-details">How it works</span></p>
                     <p id="garage-native-status" class="muted">Waiting for a supported native control connection.</p>
@@ -774,11 +778,11 @@
           <p class="muted">Export a complete copy of the recorded history and saved state. Recording continues during export. Filenames include the export date and time in UTC.</p>
           <div class="database-export-actions">
             <div>
-              <button id="database-export-save" type="button" class="secondary-button" aria-describedby="database-export-save-help">Save local copy</button>
+              <button id="database-export-save" data-admin-only type="button" class="secondary-button" aria-describedby="database-export-save-help">Save local copy</button>
               <p id="database-export-save-help" class="muted">Save on the server in its configured export folder, which defaults to the server account’s home folder.</p>
             </div>
             <div>
-              <button id="database-export-download" type="button" class="secondary-button" aria-describedby="database-export-download-help">Download database</button>
+              <button id="database-export-download" data-admin-only type="button" class="secondary-button" aria-describedby="database-export-download-help">Download database</button>
               <p id="database-export-download-help" class="muted">Save to this device. Choose a location when prompted, or use your browser’s download folder.</p>
             </div>
           </div>
@@ -809,24 +813,24 @@
             <ol class="pairing-steps">
               <li>
                 <div class="pairing-step-copy"><h4>Check what can be recovered</h4><p>Compare a snapshot from the other computer with this master. This check changes no history. Review the missing period, counts and skipped entries below before continuing.</p></div>
-                <button id="pairing-check-recovery" type="button" aria-describedby="pairing-check-help" disabled>Check other computer for missing data</button>
+                <button id="pairing-check-recovery" data-admin-only type="button" aria-describedby="pairing-check-help" disabled>Check other computer for missing data</button>
                 <p id="pairing-check-help" class="muted pairing-step-help"></p>
                 <div id="pairing-preview" class="pairing-preview" hidden></div>
               </li>
               <li>
                 <div class="pairing-step-copy"><h4>Recover the checked gaps</h4><p>Import the gaps from that checked snapshot. Conflicting or unsupported entries are skipped. The current model stays available for home control while the rebuilt model catches up and is published.</p></div>
-                <button id="pairing-recover" type="button" aria-describedby="pairing-recover-help" disabled>Recover gaps and rebuild model</button>
+                <button id="pairing-recover" data-admin-only type="button" aria-describedby="pairing-recover-help" disabled>Recover gaps and rebuild model</button>
                 <p id="pairing-recover-help" class="muted pairing-step-help"></p>
               </li>
               <li>
                 <div class="pairing-step-copy"><h4>Make the slave match the master</h4><p>Replace the other computer’s database with a verified copy of this master and resume mirroring. Normally, recover the gaps first. You may instead skip recovery after reviewing the check: all unmatched history, including recoverable gaps, will be discarded. No separate archive is kept.</p></div>
-                <button id="pairing-rejoin" class="secondary-button" type="button" aria-describedby="pairing-rejoin-help" disabled>Resume mirroring</button>
+                <button id="pairing-rejoin" data-admin-only class="secondary-button" type="button" aria-describedby="pairing-rejoin-help" disabled>Resume mirroring</button>
                 <p id="pairing-rejoin-help" class="muted pairing-step-help"></p>
               </li>
             </ol>
             <div class="pairing-role-action">
               <div><h3>Move the master role</h3><p>When both computers are available and the slave is ready, hand over deliberately. This master finishes control and transfers a final verified snapshot before the other computer starts. The MQTT address moves with the role; devices reconnect and some measurements may be missed.</p></div>
-              <button id="pairing-handover" class="secondary-button" type="button" aria-describedby="pairing-handover-help" disabled>Hand over to the other computer</button>
+              <button id="pairing-handover" data-admin-only class="secondary-button" type="button" aria-describedby="pairing-handover-help" disabled>Hand over to the other computer</button>
               <p id="pairing-handover-help" class="muted pairing-step-help"></p>
             </div>
           </section>
@@ -836,12 +840,12 @@
             <p>If the other computer is still available, use <strong>Hand over to the other computer</strong> in its master UI. If it has failed, you can promote this computer yourself using the history available here. It never takes over automatically.</p>
             <div class="pairing-role-action">
               <div><h3>Take over after a failure</h3><p>Before force promotion, stop or isolate the old master so it cannot control equipment or keep the MQTT address. Being unreachable alone does not prove it has stopped. Measurements after this computer’s last snapshot may be missing.</p></div>
-              <button id="pairing-promote" class="secondary-button" type="button" aria-describedby="pairing-promote-help" disabled hidden>Force promote this computer</button>
+              <button id="pairing-promote" data-admin-only class="secondary-button" type="button" aria-describedby="pairing-promote-help" disabled hidden>Force promote this computer</button>
               <p id="pairing-promote-help" class="muted pairing-step-help"></p>
             </div>
           </section>
           <p id="pairing-message" role="status" aria-live="polite"></p>
-          <button id="pairing-retry" class="secondary-button" type="button" disabled hidden>Recheck the same request</button>
+          <button id="pairing-retry" data-admin-only class="secondary-button" type="button" disabled hidden>Recheck the same request</button>
         </div>
       </details>
       <p id="pairing-attention" class="pairing-attention" role="status" aria-live="polite" hidden></p>
@@ -876,6 +880,7 @@
       <p class="muted fireplace-timezone">Finnish local time · Europe/Helsinki</p>
       <ul id="fireplace-entries" class="fireplace-entries" aria-label="Firewood recorded in the past 48 hours"></ul>
       <p id="fireplace-empty" class="muted">No firewood recorded in the past 48 hours.</p>
+      <p id="fireplace-family-help" class="muted" hidden>Family access can remove any entry within 15 minutes of recording it.</p>
       <p class="muted fireplace-correction-help">Remove only mistaken entries. Saved entries and their corrections stay in history. Leave real fires recorded after they go out.</p>
     </div>
     <div class="confirmation-actions"><button id="fireplace-close" class="secondary-button" type="button">Close</button></div>

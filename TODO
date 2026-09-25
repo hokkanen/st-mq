@@ -2,6 +2,30 @@
 -Implement support for local mqtt-based temperature receives (eg, from shelly or HASS through Meteorologisk Institute); just store last received temp values and time stamps (maybe in storage class, see below) when received (and accept if received within 1h)
 -Chart dataset control buttons don't work when datasets are manually hidden/unhidden from legend, how to fix?
 
+Completed 2026-09-25 — Admin and family web access
+- Retain controller.web_token / STMQ_API_TOKEN as the admin credential and add
+  optional controller.web_family_token / STMQ_FAMILY_API_TOKEN. Require distinct
+  credentials and validate network password lengths; apply rotations through the
+  existing configuration transaction. Keep credentials private.
+- Family reads all application data and may record/remove recent firewood within
+  15 minutes, operate DHWR, temporary Home/Garage heat, Away/Pause, garage doors
+  and all EV card controls. Deny all other writes, exports and downloads on the
+  server. HA ingress grants full admin through Home Assistant authentication.
+- Add password visibility, role display and direct-login logout. Keep existing
+  equipment authority, current-session validation, temporary-control restoration,
+  freeze protection, replica fencing and add-on ingress behavior intact.
+- Reviewed configuration producers, shared defaults/schema, readers, reloads,
+  UI/API consumers, tests and documentation. No credential aliases, configuration
+  migrations, persisted role preferences or old permission contracts are added.
+- Remove public commissioning-download assets and development download routes;
+  serve the maintained guide and device script through authenticated admin APIs.
+- Validation: all 3,412 offline tests, production build and isolated Chromium
+  access checks pass, including expired credentials with an open reading popover.
+  Equipment browser checks pass garage controls and authenticated commissioning
+  downloads/layouts, then hit an unrelated stale Charger 2 phase-energy assertion;
+  the identical failure was verified on unchanged HEAD f4025f5. No household
+  configuration or hardware was used, and no charging expectations were changed.
+
 Completed 2026-09-25 — Shared vehicle identification across cloud and OCPP
 - Normalize confirmed native pause evidence once and use the same BMW/Tesla
   matching, pending status, conflict handling and bounded initial observation

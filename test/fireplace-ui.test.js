@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createFireplaceActions, createFireplacePanel, fireplaceTime, fireplaceView } from '../chart/fireplace.js';
+import { createFireplaceActions, createFireplacePanel, fireplaceTime, fireplaceView, fireplaceRemovalAllowed } from '../chart/fireplace.js';
 
 const now = Date.parse('2026-09-09T15:00:00Z');
-const entry = (id = 1, at = now, kg = 8) => ({ id, at, kg, removedAt: null, requiresRebuild: false });
+const entry = (id = 1, at = now, kg = 8) => ({ id, at, kg, removedAt: null, requiresRebuild: false, canRemove: true });
 const view = (revision = 0, entries = []) => ({ available: true, revision, entries, lastAt: entries[0]?.at ?? null, rebuild: { status: 'idle' } });
 function memoryStorage() {
   const values = new Map();
@@ -246,4 +246,32 @@ test('rebuild requirement is shown on the affected row and recording works while
   assert.match($('fireplace-entries').children[0].children[0].children[2].textContent, /background/);
   panel.update({ ...view(2), available: false }, now);
   assert.equal($('fireplace-submit').disabled, true);
+});
+
+test('family removal expires after fifteen minutes even when a status response still permits it', async () => {
+  const removalUntil = now + 15 * 60_000;
+  const recent = { ...entry(), canRemove: true, removalUntil };
+  assert.equal(fireplaceRemovalAllowed(recent, removalUntil - 1), true);
+  assert.equal(fireplaceRemovalAllowed(recent, removalUntil), true);
+  assert.equal(fireplaceRemovalAllowed(recent, removalUntil + 1), false);
+  assert.equal(fireplaceRemovalAllowed({ ...recent, canRemove: false }, now), false);
+  assert.equal(fireplaceRemovalAllowed({ ...recent, canRemove: undefined }, now), false);
+  assert.equal(fireplaceRemovalAllowed(entry(2, now - 24 * 3600_000), now), true, 'admin entries have no removal deadline');
+  let current = removalUntil + 1, called = false;
+  const actions = createFireplaceActions({ clock: () => current, request: async () => { called = true; return view(2); } });
+  actions.update(view(1, [recent]));
+  assert.equal(await actions.remove(recent.id), false);
+  assert.equal(called, false);
+  current = removalUntil - 1;
+  assert.equal(await actions.remove(recent.id), true);
+});
+
+test('family firewood history remains readable while old removal buttons explain admin access', () => {
+  const { panel, $ } = panelFixture();
+  panel.update(view(1, [{ ...entry(), canRemove: false, removalUntil: now }]), now);
+  const row = $('fireplace-entries').children[0];
+  assert.equal(row.children[1].disabled, true);
+  assert.equal(row.children[1].textContent, 'Admin required');
+  assert.match(row.children[0].children[2].textContent, /15 minutes/);
+  assert.equal($('fireplace-submit').disabled, false);
 });

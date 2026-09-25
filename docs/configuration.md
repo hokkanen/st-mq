@@ -68,6 +68,28 @@ successful import and application. Omitting a key from a later import preserves
 its saved value. See [permanent configuration](../README.md#permanent-configuration-and-prices)
 for exact paths, reload behavior and restart requirements.
 
+## Admin and family web access
+
+`controller.web_token` is the admin password for direct access.
+`controller.web_family_token` is an optional family password, empty by default.
+Set both in the existing private configuration or saved add-on options; family
+access requires a nonempty admin password and the two must differ. On network
+listeners each configured password must have at least 24 characters. Environment
+variables `STMQ_API_TOKEN` and `STMQ_FAMILY_API_TOKEN` override their respective
+fields, including explicit empty values.
+
+Choose **Apply configuration** as admin to rotate or clear passwords without
+restarting. Clearing the family password disables family login; clearing both
+disables direct add-on access. Home Assistant ingress retains full admin access
+through Home Assistant authentication, independently of these passwords.
+
+Family reads all application data with credentials concealed, and may record
+firewood, remove entries within 15 minutes, operate DHWR, Away/Pause and temporary
+heating, garage doors and all EV card controls. Every other write, export and
+download requires admin. These permissions do not change equipment authority,
+restoration or freeze protection. The role is not configurable; see the
+[complete access policy](../README.md#connections-and-access).
+
 ## Database export destination
 
 In **Export database**, **Save local copy** writes to the server directory in
@@ -182,7 +204,7 @@ larger sections without adding another configuration format.
 
 | Sections, in file order | Settings they own |
 | --- | --- |
-| `controller`, `garage`, `charging`, `electricity` | Home operation and heating, Garage policy/adapter, charger/vehicle sources and permanent charging defaults, electricity tariffs. |
+| `controller`, `garage`, `charging`, `electricity` | Home operation/heating and web access passwords, Garage policy/adapter, charger/vehicle sources and permanent charging defaults, electricity tariffs. |
 | `geoloc`, `mqtt`, `entsoe`, `easee`, `teslamate` | Location, broker access and provider connections. `easee.local_ocpp` contains the authenticated local charger listener and explicit authorization tags; see [Easee setup](charging-easee.md#direct-local-ocpp-telemetry-firmware-344-or-later). |
 | `equipment` | The current MQTT/Shelly equipment inventory and device mappings. |
 | `acquisition`, `recording` | Provider polling/freshness and recording/storage settings. |

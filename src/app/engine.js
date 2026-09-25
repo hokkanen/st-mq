@@ -315,10 +315,10 @@ export class Engine {
       }
     }
   }
-  changeFireplace(payload, removing = false) {
+  changeFireplace(payload, removing = false, removalAccess = {}) {
     const now = this.clock(), input = this.config.input;
     this.readAdaptive(now);
-    const result = removing ? removeFireplace(this.store, input, payload, now) : addFireplace(this.store, input, payload, now);
+    const result = removing ? removeFireplace(this.store, input, payload, now, removalAccess) : addFireplace(this.store, input, payload, now);
     try {
       this.pendingPlan = null;
       this.store.setState(`pending-plan:${input}`, null);

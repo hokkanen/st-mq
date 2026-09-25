@@ -275,16 +275,24 @@ function buildConfiguration(options, env, cwd, configuration, source, { bootstra
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('Invalid STMQ_PORT');
   const host = env.STMQ_HOST ?? (addon ? '0.0.0.0' : '127.0.0.1');
   const token = env.STMQ_API_TOKEN ?? options.controller?.web_token ?? '';
+  const familyToken = env.STMQ_FAMILY_API_TOKEN ?? options.controller?.web_family_token ?? '';
   if (typeof token !== 'string') throw new Error('The web token must be a string.');
+  if (typeof familyToken !== 'string') throw new Error('The family web token must be a string.');
   if (!bootstrap && (addon ? token !== '' && token.length < 24 : !['127.0.0.1', '::1', 'localhost'].includes(host) && token.length < 24))
     throw new Error('Network access requires a web token with at least 24 characters.');
+  if (!bootstrap && familyToken) {
+    if (!token) throw new Error('Family access requires an admin web token.');
+    if (familyToken === token) throw new Error('Admin and family web tokens must be different.');
+    if ((addon || !['127.0.0.1', '::1', 'localhost'].includes(host)) && familyToken.length < 24)
+      throw new Error('Network family access requires a web token with at least 24 characters.');
+  }
   const ingressPort = Number(env.STMQ_INGRESS_PORT ?? 8099);
   if (!Number.isInteger(ingressPort) || ingressPort < 0 || ingressPort > 65535 || addon && ingressPort !== 0 && ingressPort === port)
     throw new Error('The ingress port must be valid and different from the direct port.');
   const databaseName = input === 'simulated' ? 'simulation.sqlite' : 'st-mq.sqlite';
   const verification = env.STMQ_H66_VERIFICATION ?? options.controller?.h66_verification_file;
   const config = { addon, role, input, dataDir, databaseDir, dbPath: resolve(databaseDir, databaseName),
-    host, port, token, ingressPort, ingressHost: env.STMQ_INGRESS_HOST ?? '0.0.0.0', configuration,
+    host, port, token, familyToken, ingressPort, ingressHost: env.STMQ_INGRESS_HOST ?? '0.0.0.0', configuration,
     connections, priceSettings: configuredPriceSettings(options.electricity),
     charging: chargingConfiguration(options.charging),
     garage: { ...garageSettings(Object.fromEntries(Object.entries(options.garage ?? {}).filter(([key]) => key !== 'adapter'))),

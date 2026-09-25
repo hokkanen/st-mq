@@ -68,7 +68,7 @@ export function addFireplace(store, input, payload, now = Date.now()) {
   });
 }
 
-export function removeFireplace(store, input, payload, now = Date.now()) {
+export function removeFireplace(store, input, payload, now = Date.now(), { maxAgeMs = Infinity } = {}) {
   validInput(input); request(payload, ['requestId', 'id']); instant(now);
   if (!Number.isSafeInteger(payload.id) || payload.id <= 0) throw new TypeError('Invalid fireplace load ID');
   return store.transaction(() => {
@@ -80,6 +80,10 @@ export function removeFireplace(store, input, payload, now = Date.now()) {
     }
     const target = store.db.prepare("SELECT * FROM fireplace_events WHERE input=? AND id=? AND kind='load'").get(input, payload.id);
     if (!target) throw new TypeError('Fireplace load was not found for this input');
+    // Check against the original server timestamp inside the write transaction.
+    // An already committed request above remains retryable without another write.
+    if (maxAgeMs !== Infinity && (target.at > now || now - target.at > maxAgeMs))
+      throw Object.assign(new Error('Admin access is required to remove firewood recorded more than 15 minutes ago.'), { statusCode: 403 });
     const first = store.db.prepare("SELECT at FROM fireplace_events WHERE input=? AND target_id=? AND kind='remove' ORDER BY id LIMIT 1")
       .get(input, payload.id);
     const revision = Number(store.db.prepare(`INSERT INTO fireplace_events(input,request_id,at,kind,kg,target_id)

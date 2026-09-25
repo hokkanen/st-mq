@@ -165,7 +165,7 @@ try {
   assert.ok(configurationInstructions.includes(actualStatus.settingsReload.configuration.privatePath), 'Configuration instructions show the actual isolated private file');
   assert.ok(configurationInstructions.includes(actualStatus.settingsReload.configuration.defaultsPath), 'Configuration instructions show the actual defaults file');
   assert.match(configurationInstructions, /stays in place/);
-  assert.match(await evaluate("document.getElementById('settings-access').textContent"), /Loopback access works without a token/);
+  assert.match(await evaluate("document.getElementById('settings-access').textContent"), /Loopback access works without a password/);
   assert.equal(await evaluate("document.getElementById('settings-import-warning').hidden"), true);
   assert.equal(await evaluate("document.getElementById('settings-reload').textContent"), 'Apply configuration');
   assert.match(await evaluate("document.getElementById('settings-reload-scope').textContent"), /Applies without restart.*Electricity rates.*Requires restart.*Input mode.*Environment variables/s);

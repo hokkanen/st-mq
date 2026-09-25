@@ -31,7 +31,7 @@ test('ingress login errors direct users back to Home Assistant without requestin
   for (const path of ['/', '/index.html', '/api/status', '/api/hassio_ingress/']) assert.equal(usesHomeAssistantLogin(path), false);
   assert.match(authenticationMessage(true), /Reopen this application from the host dashboard/);
   assert.doesNotMatch(authenticationMessage(true), /access token/);
-  assert.match(authenticationMessage(false), /access token/);
+  assert.match(authenticationMessage(false), /password/);
 });
 
 test('slow status reads survive repeated timer polls without accumulating requests', async () => {

@@ -123,7 +123,7 @@ test('reload scope distinguishes live provider configuration from startup and en
   assert(live.reloadable.some(item => /Price-control mode/.test(item)));
   assert(live.reloadable.some(item => /Electricity rates/.test(item)));
   assert(live.restartRequired.some(item => /Input mode/.test(item)));
-  assert(live.reloadable.some(item => /Access token/.test(item)));
+  assert(live.reloadable.some(item => /Admin and family passwords/.test(item)));
   assert(!live.restartRequired.some(item => /access token/i.test(item)));
   assert(live.restartRequired.some(item => /Web address and port/.test(item)));
   assert(live.restartRequired.some(item => /database/.test(item)));
@@ -145,7 +145,7 @@ test('configuration instructions use the actual standalone private path and pres
   assert.match(scope.instructions.join(' '), /\/opt\/example\/config.json/);
   assert.match(scope.instructions.join(' '), /stays in place/);
   assert.match(scope.instructions.join(' '), /omitted settings use the defaults/);
-  assert.match(scope.access.join(' '), /Loopback access works without a token/);
+  assert.match(scope.access.join(' '), /Loopback access works without a password/);
   assert.doesNotMatch(scope.instructions.join(' '), /upload|removes|Home Assistant/i);
   assert.deepEqual(scope.location.rows, [
     { label: 'Folder', value: '/etc/example' }, { label: 'File name', value: 'secrets.json' },
@@ -173,7 +173,7 @@ test('Home Assistant configuration instructions distinguish sparse import, saved
   ]);
   assert.equal(scope.location.message, '');
   reload.access.direct.enabled = true;
-  assert.match(settingsReloadScope({ settingsReload: reload }).access.join(' '), /Clear controller.web_token and apply to disable/);
+  assert.match(settingsReloadScope({ settingsReload: reload }).access.join(' '), /Clear both controller.web_token and controller.web_family_token and apply to disable/);
   reload.configuration.externalImportPath = null;
   const missingSlug = settingsReloadScope({ settingsReload: reload });
   assert.doesNotMatch(missingSlug.instructions.join(' '), /<.*slug|undefined|null/);

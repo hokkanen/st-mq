@@ -97,7 +97,7 @@ export function createSensorChangeActions({ request, storage, makeRequestId = re
       error = true;
       if (failure.status >= 400 && failure.status < 500 && ![408, 429].includes(failure.status)) {
         pending = null; persist();
-        message = failure.status === 401 ? 'Enter your access token, then try again.'
+        message = failure.status === 401 ? 'Enter your password, then try again.'
           : failure.status === 403 ? 'Sensor changes must be managed on the active primary computer.'
             : failure.status === 409 ? 'The change cannot be applied to the current history. Refresh to check its status.'
               : 'The change could not be saved. Refresh the sensors and try again.';
@@ -193,6 +193,7 @@ export function createSensorChangePanel({ document, request, storage, confirm, b
           if (!reverted) {
             if (event.canRevert || !event.unsupportedReason) {
               const button = document.createElement('button'); button.type = 'button'; button.className = 'secondary-button';
+              button.setAttribute('data-admin-only', '');
               button.textContent = event.affectsLearning === false ? 'Revert change' : 'Revert and relearn';
               button.setAttribute('aria-label', `${button.textContent}: ${labels[event.signal]}, ${dateFormat.format(event.at)}`);
               button.addEventListener('click', () => { void actions.revert(event.id); });

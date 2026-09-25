@@ -7,13 +7,15 @@ for the algorithm, native-setting restoration and equipment testing limits.
 
 1. Build/install ST-MQ through the repository's existing add-on mechanism on
    `aarch64` (Raspberry Pi 5) or `amd64`.
-2. Leave `controller.web_token` empty to use Home Assistant ingress with your
-   existing Home Assistant login. Set a private token of at least 24 characters
-   only if you also want direct access on the mapped port 1234. Leave
+2. Leave `controller.web_token` and `controller.web_family_token` empty to use
+   Home Assistant ingress with full admin access through your existing Home
+   Assistant login. Set an admin password of at least 24 characters in `web_token`
+   for direct access on the mapped port 1234. Optionally set a different family
+   password of at least 24 characters in `web_family_token`. Leave
    `controller.input: simulated` and `controller.mode: shadow` for initial review.
 3. Start the add-on and choose **Open Web UI** in Home Assistant. Ingress needs no
-   separate ST-MQ token. Direct access, when enabled, asks for the configured
-   token. The **Home Energy** UI clearly labels simulation.
+   separate application password. Direct access, when enabled, asks for either
+   configured password and selects its role. The **Home Energy** UI clearly labels simulation.
    The header button switches between dark and light themes. The browser remembers
    the last choice across page loads, with green dark as the initial default.
 4. The working database is under `/config/st-mq/`, in Home Assistant's public
@@ -110,11 +112,20 @@ the UI reports successful application and asks you to delete the upload. Importe
 values persist in Home Assistant after the file is removed.
 
 The **Configuration** section also reports live access status. Setting a valid
-`controller.web_token` and applying enables direct access on port 1234. Changing
-the token applies immediately; direct-access tabs must use the new token.
-Clearing it and applying disables direct access while Home Assistant ingress
-remains available. If `STMQ_API_TOKEN` overrides the option, change that environment
-override and restart to change access. Edit Supervisor-owned options through Home
+`controller.web_token` and applying enables direct admin access on port 1234.
+`controller.web_family_token` optionally enables family access with a different
+password. Family can read all pages, operate firewood (removal within 15 minutes),
+DHWR, temporary heating including Away/Pause, garage doors and all EV card
+controls. Other writes, exports/downloads and settings administration require
+admin; see [web access](README.md#connections-and-access).
+
+Changing a password applies immediately; affected direct-access tabs must use
+the new password. Clearing both and applying disables direct access while Home
+Assistant ingress remains available as admin. Direct login includes password
+visibility and **Logout** under **Configuration**. Logging out clears that tab's
+login without interrupting requested device operations. Ingress logout belongs
+to Home Assistant. If `STMQ_API_TOKEN` or `STMQ_FAMILY_API_TOKEN` overrides an
+option, change that environment override and restart to change it. Edit Supervisor-owned options through Home
 Assistant or the import above; do not edit its exported `/data/options.json`
 inside the running container.
 

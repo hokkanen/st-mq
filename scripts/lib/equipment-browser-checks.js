@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { checkGarageDoorBrowser } from './garage-door-browser-checks.js';
 
-/** Commissioning navigation and downloads remain read-only, using the same fixture. */
+/** Commissioning navigation and admin downloads use the same offline fixture. */
 async function checkFloorPreheatingBrowser({ evaluate, command, context, refresh, settle }) {
   await evaluate(`(() => {const f=window.equipmentUiFixture;f.savedFloorUi={
     present:Object.hasOwn(f.status,'preheatValves'),status:f.status.preheatValves,
@@ -55,10 +55,15 @@ async function checkFloorPreheatingBrowser({ evaluate, command, context, refresh
     await refresh();
     assert.match(await evaluate("document.getElementById('floor-preheat-state').textContent"), /waiting|unavailable|readback/i);
     assert.doesNotMatch(await evaluate("document.getElementById('floor-preheat-commissioning-status').textContent"), /not recorded|needs commissioning|not commissioned/i, 'Losing readback does not erase the commissioning record');
-    for (const [id, source] of [['floor-preheat-guide','../../docs/floor-preheat.md'],['floor-preheat-script','../../scripts/shelly/floor-lease.js']]) {
-      const download = await evaluate(`(async()=>{const link=document.getElementById('${id}'),response=await window.equipmentUiFixture.fetch(link.href);return {
-        offered:link.hasAttribute('download'),ok:response.ok,type:response.headers.get('content-type'),body:await response.text()};})()`);
-      assert.equal(download.offered, true, 'Setup resources are offered as downloads');
+    for (const [id, route, source] of [
+      ['floor-preheat-guide','floor-preheat-guide','../../docs/floor-preheat.md'],
+      ['floor-preheat-script','floor-lease-script','../../scripts/shelly/floor-lease.js'],
+    ]) {
+      const download = await evaluate(`(async()=>{const button=document.getElementById('${id}'),token=sessionStorage.getItem('stmq-token')??'';
+        const response=await window.equipmentUiFixture.fetch(new URL('api/downloads/${route}',location.href),
+          {headers:token?{Authorization:'Bearer '+token}:{}});return {
+        offered:button.tagName==='BUTTON'&&!button.disabled,ok:response.ok,type:response.headers.get('content-type'),body:await response.text()};})()`);
+      assert.equal(download.offered, true, 'Setup resources are offered through authenticated download buttons');
       assert.equal(download.ok, true, 'The built application serves each setup resource');
       assert.doesNotMatch(download.type ?? '', /text\/html/i, 'A setup download cannot silently return the dashboard');
       assert.equal(download.body, readFileSync(new URL(source, import.meta.url), 'utf8'), 'The download matches the maintained source');
@@ -69,7 +74,7 @@ async function checkFloorPreheatingBrowser({ evaluate, command, context, refresh
         await command('browsingContext.setViewport',{context,viewport:{width,height:1100},devicePixelRatio:1}); await settle();
         await evaluate("document.getElementById('floor-preheat-details').scrollIntoView({block:'start'});true"); await settle();
         assert.equal(await evaluate('document.documentElement.scrollWidth<=innerWidth'), true, `Floor commissioning fits at ${width}px in ${theme} theme`);
-        assert.equal(await evaluate("(() => {const panel=document.getElementById('floor-preheat-details').getBoundingClientRect();return [...document.querySelectorAll('#floor-preheat-details a, #floor-preheat-details table')].filter(node=>node.checkVisibility()).every(node=>[...node.getClientRects()].every(box=>box.left>=panel.left-1&&box.right<=panel.right+1));})()"), true, 'Commissioning links and settings stay inside the panel');
+        assert.equal(await evaluate("(() => {const panel=document.getElementById('floor-preheat-details').getBoundingClientRect();return [...document.querySelectorAll('#floor-preheat-details a, #floor-preheat-details button, #floor-preheat-details table')].filter(node=>node.checkVisibility()).every(node=>[...node.getClientRects()].every(box=>box.left>=panel.left-1&&box.right<=panel.right+1));})()"), true, 'Commissioning controls and settings stay inside the panel');
         const screenshot=await command('browsingContext.captureScreenshot',{context,origin:'viewport'});
         writeFileSync(`var/floor-preheating-${theme}-${width}.png`,Buffer.from(screenshot.data,'base64'));
       }
@@ -90,7 +95,7 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until,
   const settle = () => evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve(true))))');
   const refresh = async () => {
     const count = await evaluate('window.equipmentUiFixture.responses');
-    await evaluate("document.getElementById('auth').dispatchEvent(new Event('submit',{cancelable:true}));true");
+    await evaluate("window.dispatchEvent(new Event('online'));true");
     await until(`window.equipmentUiFixture.responses > ${count}`); await settle();
   };
   await evaluate(`(() => {
@@ -508,7 +513,7 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until,
     assert.equal(await evaluate("document.querySelector('#equipment-connections [data-device-id=\"connection:temperatures:home\"] code').textContent"), 'invented/home/upstairs/temperature', 'Configured feeds remain after equipment removal');
     assert.doesNotMatch(await evaluate("document.getElementById('equipment-check-message').textContent"), /No MQTT devices configured/, 'Other configured MQTT feeds prevent a false empty state');
   } finally {
-    await evaluate("document.querySelector('#status-detail-popover .status-detail-close')?.click();window.fetch=window.equipmentUiFixture.fetch;history.replaceState(null,'',location.pathname+location.search+window.equipmentUiFixture.originalHash);for(const d of document.querySelectorAll('.controller-panels details'))d.open=window.equipmentUiFixture.openDetails.includes(d.id);delete window.equipmentUiFixture;document.getElementById('auth').dispatchEvent(new Event('submit',{cancelable:true}));true");
+    await evaluate("document.querySelector('#status-detail-popover .status-detail-close')?.click();window.fetch=window.equipmentUiFixture.fetch;history.replaceState(null,'',location.pathname+location.search+window.equipmentUiFixture.originalHash);for(const d of document.querySelectorAll('.controller-panels details'))d.open=window.equipmentUiFixture.openDetails.includes(d.id);delete window.equipmentUiFixture;window.dispatchEvent(new Event('online'));true");
     await command('browsingContext.setViewport',{context,viewport:{width:1440,height:1100},devicePixelRatio:1});
   }
 }

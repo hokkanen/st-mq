@@ -138,6 +138,7 @@ function createDetails(document) {
   window?.visualViewport?.addEventListener('scroll', position);
 
   return {
+    close,
     update(root, options) {
       const entry = {
         label: String(options.label ?? ''), title: String(options.title || 'Status details'),
@@ -185,4 +186,9 @@ export function setStatusDetail(root, options = {}) {
     documents.set(document, details);
   }
   return details.update(root, options);
+}
+
+/** Dismiss installation details when the authenticated session ends. */
+export function closeStatusDetails(document) {
+  documents.get(document)?.close();
 }

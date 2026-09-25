@@ -428,21 +428,51 @@ node scripts/benchmark-history.js var/st-mq.sqlite
 | `STMQ_DATABASE_DIR` | Same as data directory on Linux; `/config/st-mq` in HA |
 | `STMQ_PORT` | `1234` |
 | `STMQ_HOST` | `127.0.0.1` on standalone; optional add-on direct access listens on `0.0.0.0` |
-| `STMQ_API_TOKEN` | Overrides `controller.web_token`; at least 24 characters for direct network access |
+| `STMQ_API_TOKEN` | Admin password; overrides `controller.web_token`; at least 24 characters for direct network access |
+| `STMQ_FAMILY_API_TOKEN` | Optional family password; overrides `controller.web_family_token`; distinct from admin and at least 24 characters for direct network access |
 | `STMQ_CONFIG` | Standalone private override JSON; defaults to `$XDG_CONFIG_HOME/st-mq/secrets.json`, or `~/.config/st-mq/secrets.json`. In the add-on, overrides only the initial/fallback Supervisor export path. |
 | `STMQ_MAX_DROP_C` | Occupied preferred drop; overrides `controller.max_drop_c` (default 1.5°C) |
 | `STMQ_H66_DEVICE` | Exact H66 topic prefix; enables H66 alongside a configured MQTT broker |
 | `STMQ_H66_VERIFICATION` | Optional JSON path with verified register scaling/evidence |
 
-Home Assistant ingress uses the existing Home Assistant login. Optional direct
+Home Assistant ingress grants full admin access using the existing Home Assistant
+login. Optional direct
 add-on access on port 1234 is enabled only with a valid `controller.web_token`;
-clearing that token and applying configuration disables direct access while
-ingress remains available. Standalone loopback access permits an empty token;
-listening beyond loopback requires a token of at least 24 characters. Use a
+clearing both web tokens and applying configuration disables direct access while
+ingress remains available. Standalone loopback access permits an empty admin
+token when family access is disabled; listening beyond loopback requires a token
+of at least 24 characters. Family access requires a separate admin password. Use a
 trusted local network or an authenticated HTTPS reverse proxy for remote direct
 access. Credentials are never returned in API responses. A direct-access browser
-keeps its entered token in session storage for its tab. The **Configuration**
-section shows the current access state.
+keeps its entered password in session storage for its tab. The password prompt
+includes **Show password**. The **Configuration** section shows the current role
+and provides **Logout** for password-based access. Logging out returns to the
+password prompt without stopping device operations already requested. Ingress
+shows admin access through Home Assistant; use Home Assistant to log out there.
+
+Set the optional `controller.web_family_token` in the existing private
+configuration to enable the family login, for example on a shared fridge screen.
+One password field accepts either credential and selects its role. Family can
+read every page, setting, chart and diagnostic, with credentials still concealed.
+Family can perform only these writes:
+
+- Record firewood and remove any entry within 15 minutes of its being recorded.
+- Start and stop DHWR circulation.
+- Set, change or cancel Away and home/garage Pause, and use temporary Home
+  Normal/Reduction/Preheat and Garage Normal/protected Off controls, including
+  while Away or Pause is active. Existing expiry, restoration and freeze
+  protection rules still apply; Garage freeze protection can override Off while
+  paused.
+- Open, close and stop configured garage doors where supported.
+- Use all EV charging card controls, including persistent automatic charging and
+  charger priority choices and changes scoped to the current physical session.
+
+All other writes, exports and downloads require admin. This includes native
+heat-pump parameters, the durable Garage temperature target, device tests,
+maintenance, pairing and configuration application. EV installation settings,
+commissioning, integration credentials and electrical limits remain admin-only.
+The server enforces the split for API calls as well as dashboard buttons; newly
+added write actions are admin-only unless explicitly permitted for family.
 
 MQTT reuses the existing broker address/user/password and subscribes to
 `<device>/HP/#` and configured indoor/garage temperature topics alongside online providers. Supported active control and
@@ -661,7 +691,8 @@ Objects merge recursively. Missing keys retain the lower layer's value, arrays
 replace the lower layer's whole array, and explicit empty values clear fields
 where that field permits an empty value. For example, omitting a saved MQTT
 password preserves it during an HA import; providing `"pw": ""` clears it. To
-disable direct add-on access, set `"controller": { "web_token": "" }` and apply.
+disable direct add-on access, set
+`"controller": { "web_token": "", "web_family_token": "" }` and apply.
 On Ubuntu, removing a key from the permanent file restores the public default
 on the next application. Invalid values reject the change; no private values are
 included in validation errors or status responses.

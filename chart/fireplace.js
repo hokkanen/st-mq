@@ -7,6 +7,11 @@ const dayFormat = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Helsinki'
 const clockFormat = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', hour: '2-digit', minute: '2-digit', second: '2-digit' });
 const validKg = kg => Number.isInteger(kg) && kg >= 2 && kg <= 10;
 
+export function fireplaceRemovalAllowed(entry, now = Date.now()) {
+  return entry?.canRemove === true && entry.removedAt == null
+    && (entry.removalUntil == null || Number.isFinite(entry.removalUntil) && now <= entry.removalUntil);
+}
+
 export function fireplaceTime(at, now = Date.now()) {
   if (!Number.isFinite(at)) return 'Time unavailable';
   return dayFormat.format(at) === dayFormat.format(now) ? `Today, ${clockFormat.format(at)}` : dateFormat.format(at);
@@ -48,7 +53,7 @@ function restorePending(storage) {
 
 /** A failed transport keeps the exact submission until its outcome is confirmed. */
 export function createFireplaceActions({ request, onChange = () => {}, makeRequestId = requestId, storage,
-  beforeMutation = () => {}, afterMutation = () => {} }) {
+  beforeMutation = () => {}, afterMutation = () => {}, clock = Date.now }) {
   let pending = restorePending(storage);
   let view, busy = false, message = pending ? 'A previous save was not confirmed. Retry to check it without adding a duplicate.' : '', error = !!pending;
   const snapshot = () => ({ view, busy, pending, message, error });
@@ -81,7 +86,7 @@ export function createFireplaceActions({ request, onChange = () => {}, makeReque
       error = true;
       if (failure.status >= 400 && failure.status < 500 && ![408, 429].includes(failure.status)) {
         pending = null; persist();
-        message = failure.status === 401 ? 'Enter your access token, then try again.' : 'The entry could not be saved. Refresh the list and try again.';
+        message = failure.status === 401 ? 'Enter your password, then try again.' : 'The entry could not be saved. Refresh the list and try again.';
       } else message = 'Save not confirmed. Retry to check the same entry without adding a duplicate.';
     } finally { busy = false; notify(); }
     if (saved) await afterMutation();
@@ -89,7 +94,7 @@ export function createFireplaceActions({ request, onChange = () => {}, makeReque
   }
   return { update, snapshot, retry: () => send(),
     add: kg => validKg(kg) ? send({ path: '/api/fireplace', body: { requestId: makeRequestId(), kg } }) : Promise.resolve(false),
-    remove: id => Number.isSafeInteger(id) && id > 0
+    remove: id => Number.isSafeInteger(id) && id > 0 && fireplaceRemovalAllowed(view?.entries?.find(entry => entry.id === id), clock())
       ? send({ path: '/api/fireplace/remove', body: { requestId: makeRequestId(), id } }) : Promise.resolve(false) };
 }
 
@@ -97,12 +102,13 @@ export function createFireplacePanel({ document, request, storage, beforeMutatio
   const $ = id => document.getElementById(id);
   const slider = $('fireplace-kg'), rows = new Map();
   const dialog = $('fireplace-dialog'), shortcut = $('fireplace-shortcut'), closeButton = $('fireplace-close');
-  let now = Date.now(), rendered;
+  let now = Date.now(), receivedAt = Date.now(), rendered;
+  const currentTime = () => now + Math.max(0, Date.now() - receivedAt);
   const showAmount = () => {
     $('fireplace-amount').textContent = `${slider.value} kg`;
     slider.setAttribute('aria-valuetext', `${slider.value} kilograms of dry firewood`);
   };
-  const actions = createFireplaceActions({ request, storage, beforeMutation, afterMutation, onChange: render });
+  const actions = createFireplaceActions({ request, storage, beforeMutation, afterMutation, clock: currentTime, onChange: render });
   let showPending = !!actions.snapshot().pending;
   function open() {
     if (dialog.open || dialog.hidden || shortcut.hidden || shortcut.disabled) return;
@@ -147,9 +153,12 @@ export function createFireplacePanel({ document, request, storage, beforeMutatio
       }
       row.at.dateTime = new Date(entry.at).toISOString(); row.at.textContent = fireplaceTime(entry.at, now);
       row.amount.textContent = `${entry.kg} kg`;
-      row.note.textContent = entry.requiresRebuild ? 'Removal updates the model in the background.' : '';
-      row.note.hidden = !entry.requiresRebuild;
-      row.button.disabled = state.busy || !!state.pending || !available;
+      const canRemove = fireplaceRemovalAllowed(entry, currentTime());
+      row.note.textContent = !canRemove ? 'Admin required to remove this entry. Family removal ends 15 minutes after recording.'
+        : entry.requiresRebuild ? 'Removal updates the model in the background.' : '';
+      row.note.hidden = !row.note.textContent;
+      row.button.textContent = canRemove ? 'Remove mistaken entry' : 'Admin required';
+      row.button.disabled = state.busy || !!state.pending || !available || !canRemove;
       row.button.setAttribute('aria-label', `Remove mistaken ${entry.kg} kg entry recorded ${fireplaceTime(entry.at, now)}`);
       if ($('fireplace-entries').children[index] !== row.item) $('fireplace-entries').insertBefore(row.item, $('fireplace-entries').children[index] ?? null);
     }
@@ -170,13 +179,14 @@ export function createFireplacePanel({ document, request, storage, beforeMutatio
   render(actions.snapshot());
   return {
     update(view, at) {
-      now = Number.isFinite(at) ? at : Date.now();
+      now = Number.isFinite(at) ? at : Date.now(); receivedAt = Date.now();
       actions.update(view);
       if (rendered?.view && !view) render(rendered);
       if (showPending && view?.available && !dialog.hidden && !shortcut.hidden && !shortcut.disabled) {
         showPending = false; open();
       }
     },
+    tick() { if (rendered && dialog.open) render(rendered); },
     close,
   };
 }

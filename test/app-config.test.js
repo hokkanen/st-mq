@@ -162,6 +162,61 @@ test('network binding requires authentication and add-on persistent path is inde
   assert.equal(Object.hasOwn(cfg,'legacyDbPath'),false);
   assert.equal(cfg.addon, true);
 });
+test('family credentials are optional, distinct from admin and validated for network access', () => {
+  const admin = 'synthetic-admin-password-at-least-24';
+  const family = 'synthetic-family-password-at-least-24';
+  assert.equal(loadConfig({}, '/missing-repository').familyToken, '');
+  assert.equal(loadConfig({ STMQ_API_TOKEN: admin, STMQ_FAMILY_API_TOKEN: family }, '/missing-repository').familyToken, family);
+  assert.throws(() => loadConfig({ STMQ_FAMILY_API_TOKEN: family }, '/missing-repository'), /requires an admin/);
+  assert.throws(() => loadConfig({ STMQ_API_TOKEN: admin, STMQ_FAMILY_API_TOKEN: admin }, '/missing-repository'), /must be different/);
+  assert.throws(() => loadConfig({ STMQ_API_TOKEN: admin, STMQ_FAMILY_API_TOKEN: 42 }, '/missing-repository'), /must be a string/);
+  assert.throws(() => loadConfig({ STMQ_HOST: '0.0.0.0', STMQ_API_TOKEN: admin,
+    STMQ_FAMILY_API_TOKEN: 'synthetic-short' }, '/missing-repository'), /family.*at least 24/);
+  const local = loadConfig({ STMQ_API_TOKEN: 'synthetic-admin', STMQ_FAMILY_API_TOKEN: 'synthetic-family' }, '/missing-repository');
+  assert.equal(local.familyToken, 'synthetic-family');
+});
+test('sparse family credentials load and reload without changing their private source', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-family-config-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const path = join(directory, 'fixture.json');
+  const controller = { web_token: 'synthetic-admin-password-at-least-24', web_family_token: 'synthetic-family-password-at-least-24' };
+  const source = JSON.stringify({ controller });
+  writeFileSync(path, source, { mode: 0o600 });
+  const config = loadConfig({ STMQ_CONFIG: path, STMQ_HOST: '0.0.0.0' }, directory);
+  assert.equal(config.token, controller.web_token);
+  assert.equal(config.familyToken, controller.web_family_token);
+  assert.equal(readFileSync(path, 'utf8'), source);
+  const overridden = loadConfig({ STMQ_CONFIG: path, STMQ_API_TOKEN: 'synthetic-environment-admin-password',
+    STMQ_FAMILY_API_TOKEN: 'synthetic-environment-family-password' }, directory);
+  assert.equal(overridden.token, 'synthetic-environment-admin-password');
+  assert.equal(overridden.familyToken, 'synthetic-environment-family-password');
+  assert.equal(loadConfig({ STMQ_CONFIG: path, STMQ_FAMILY_API_TOKEN: '' }, directory).familyToken, '');
+  writeFileSync(path, JSON.stringify({ controller: { ...controller, web_family_token: '' } }), { mode: 0o600 });
+  const cleared = await configurationSource(config).prepare();
+  assert.equal(cleared.config.familyToken, '');
+  assert.equal(cleared.config.token, controller.web_token);
+  for (const invalid of [{ web_token: '', web_family_token: controller.web_family_token },
+    { ...controller, web_family_token: controller.web_token }, { ...controller, web_family_token: 'synthetic-short' }]) {
+    writeFileSync(path, JSON.stringify({ controller: invalid }), { mode: 0o600 });
+    await assert.rejects(configurationSource(config).prepare(), error => /web token/.test(error.message)
+      && !Object.values(invalid).filter(Boolean).some(value => error.message.includes(value)));
+  }
+});
+test('add-on family credentials are validated after authoritative configuration is prepared', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-family-addon-config-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const path = join(directory, 'fixture.json');
+  const admin = 'synthetic-admin-password-at-least-24';
+  for (const controller of [{ web_family_token: 'synthetic-family-password-at-least-24' },
+    { web_token: admin, web_family_token: admin }, { web_token: admin, web_family_token: 'synthetic-short' }]) {
+    writeFileSync(path, JSON.stringify({ controller }), { mode: 0o600 });
+    const config = loadConfig({ STMQ_ADDON: '1', STMQ_CONFIG: path }, directory);
+    await assert.rejects(configurationSource(config).prepare({ startup: true }), /web token/);
+  }
+  const addon = JSON.parse(readFileSync(new URL('../config.json', import.meta.url), 'utf8'));
+  assert.equal(addon.options.controller.web_family_token, '');
+  assert.equal(addon.schema.controller.web_family_token, 'password');
+});
 test('settings reject invalid target, mode, drop and occupancy', () => {
   for (const input of [{ mode: 'auto' }, { comfort: { targetC: 0 } }, { comfort: { maxDropC: 5 } }, { occupancy: { mode: 'inferred-away' } }]) {
     assert.throws(() => validateSettings(input));

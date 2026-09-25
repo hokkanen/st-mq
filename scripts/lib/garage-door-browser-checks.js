@@ -36,6 +36,7 @@ export async function checkGarageDoorBrowser({ evaluate, command, context, refre
     assert.equal(await evaluate("document.activeElement.id"), 'garage-doors-back', 'Initial focus leaves movement an explicit choice');
     await press('\uE007');
     await until(`!document.querySelector('${panel}').open`);
+    await until(`document.activeElement===document.querySelector('${trigger}')`);
     assert.equal(await evaluate(`document.activeElement===document.querySelector('${trigger}')`), true, 'Go back returns focus to the Doors summary');
     await press('\uE007');
     await until(`document.querySelector('${panel}').matches(':modal')`);
@@ -69,7 +70,7 @@ export async function checkGarageDoorBrowser({ evaluate, command, context, refre
     assert.equal((await buttonState('door1')).disabled, true, 'Reopening retains the pending command');
     assert.equal(await evaluate('window.equipmentUiFixture.calls.length'), 1, 'Going back and reopening never repeat a command');
     const heldResponses = await evaluate('window.equipmentUiFixture.responses');
-    await evaluate("document.getElementById('auth').dispatchEvent(new Event('submit',{cancelable:true}));true");
+    await evaluate("window.dispatchEvent(new Event('online'));true");
     await settle();
     assert.equal(await evaluate('window.equipmentUiFixture.responses'), heldResponses, 'Status polling stays paused while a command is being delivered');
     assert.equal(await evaluate('window.equipmentUiFixture.calls.length'), 1, 'A refresh request never repeats the pending command');

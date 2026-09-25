@@ -5,6 +5,12 @@ const directEnabled = config => !config.addon || config.token.length >= 24;
 
 function validate(config) {
   if (typeof config.token !== 'string') throw new Error('Web access token must be text.');
+  const family = config.familyToken === undefined ? '' : config.familyToken;
+  if (typeof family !== 'string') throw new Error('Family web access token must be text.');
+  if (family && !config.token) throw new Error('Family access requires an admin web token.');
+  if (family && family === config.token) throw new Error('Admin and family web tokens must be different.');
+  if (family && family.length < 24 && (config.addon || !loopback(config.host)))
+    throw new Error('Family network access requires a web token with at least 24 characters.');
   if (config.token && config.token.length < 24 && (config.addon || !loopback(config.host)))
     throw new Error('Direct network access requires a web token with at least 24 characters.');
   if (!config.addon && !loopback(config.host) && !config.token)
@@ -92,8 +98,9 @@ export function createWebAccess({ config: initialConfig, ...serverOptions }) {
           direct ??= candidate;
           // Preserve state identity for unrelated reloads; changing it revokes
           // authorization already accepted by an unfinished request body.
-          if (!direct.state.enabled || direct.state.token !== next.token)
-            direct.state = { enabled: true, token: next.token, tokenRequired: Boolean(next.addon || next.token) };
+          if (!direct.state.enabled || direct.state.token !== next.token || direct.state.familyToken !== (next.familyToken ?? ''))
+            direct.state = { enabled: true, token: next.token, familyToken: next.familyToken ?? '',
+              tokenRequired: Boolean(next.addon || next.token) };
         } else if (direct) {
           const previous = direct;
           previous.state = { enabled: false, token: '', tokenRequired: true };

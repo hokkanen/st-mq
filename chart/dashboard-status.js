@@ -100,7 +100,7 @@ export function settingsReloadScope(status = {}) {
     'Price-control mode, comfort limits and learning settings',
     'Electricity rates',
     'Recording interval and storage budget',
-    'Access token and direct-access availability',
+    'Admin and family passwords and direct-access availability',
   ];
   if (['mqtt', 'providers'].includes(status?.input)) {
     reloadable.push('Provider connections, location, sensor topics and polling intervals',
@@ -129,15 +129,15 @@ export function settingsReloadScope(status = {}) {
     instructions.push('Choose Apply configuration. A successful import saves its values in the host dashboard and removes the uploaded file; a failed import keeps the file for correction.');
     if (reload.access?.ingress?.enabled === true) access.push('Host dashboard access is enabled and uses your host login.');
     if (reload.access?.direct?.enabled === false) access.push('Direct access is disabled. Set controller.web_token to at least 24 characters and apply to enable it.');
-    else if (reload.access?.direct?.enabled === true) access.push('Direct access is enabled and requires your access token. Clear controller.web_token and apply to disable it.');
+    else if (reload.access?.direct?.enabled === true) access.push('Direct access is enabled and requires your admin or family password. Clear both controller.web_token and controller.web_family_token and apply to disable it.');
   } else if (configuration?.environment === 'ubuntu') {
     if (isFilePath(configuration.privatePath)) instructions.push(`Edit the permanent private JSON file at ${configuration.privatePath}.`
       + (isFilePath(configuration.defaultsPath) ? ` It overrides the options defaults in ${configuration.defaultsPath}.` : ''));
     instructions.push('Use a plain JSON options object without an outer options wrapper. Include the settings you want to override; omitted settings use the defaults.');
     instructions.push('Save the file, then choose Apply configuration. The private file stays in place for future starts and changes.');
     if (reload.access?.direct?.enabled === true) access.push(reload.access.direct.tokenRequired
-      ? 'Direct access is enabled and requires your access token.'
-      : 'Local access is enabled. Loopback access works without a token.');
+      ? 'Direct access is enabled and requires your admin or family password.'
+      : 'Local access is enabled. Loopback access works without a password.');
   }
   return { available, message, reloadable, restartRequired, instructions, access, location };
 }

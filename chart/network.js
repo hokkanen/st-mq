@@ -12,7 +12,7 @@ export function usesHomeAssistantLogin(pathname = location.pathname) {
 export function authenticationMessage(ingress) {
   return ingress
     ? 'Your host session needs attention. Reopen this application from the host dashboard.'
-    : 'Enter your access token to view this installation.';
+    : 'Enter your password to view this installation.';
 }
 
 export const READ_TIMEOUT_MS = 20_000;

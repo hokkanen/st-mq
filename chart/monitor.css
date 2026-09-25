@@ -1578,3 +1578,15 @@ button.garage-door-action:disabled { opacity: .55; cursor: default; }
 
 #dashboard-reset { all: unset; font: inherit; color: inherit; cursor: default; }
 #dashboard-reset:focus-visible { outline: 2px solid var(--focus); outline-offset: 5px; border-radius: 2px; }
+
+/* Keep all installation data off the password screen, including open dialogs. */
+body[data-authenticated="false"] main > :not(#auth):not(#error),
+body[data-authenticated="false"] > dialog,
+body[data-authenticated="false"] #status-detail-popover,
+body[data-authenticated="false"] #instance-role { display: none !important; }
+.password-entry { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; }
+.password-entry input { flex: 1; min-width: 10rem; }
+.web-access-session { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 1rem; }
+[data-access-locked="true"]::after { content: 'Admin required'; display: block; font-size: .75rem; font-weight: normal; opacity: .8; }
+button[data-access-locked="true"]::after { margin-top: .2rem; }
+[data-access-locked="true"] { cursor: default; }

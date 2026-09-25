@@ -905,7 +905,7 @@ try {
     'The combined electricity connection opens with the keyboard');
   await checkProviderColors(false);
   charger2Status = { ...charger2Status, status: 'degraded', reason: 'commissioning-required' };
-  await evaluate("document.getElementById('auth').dispatchEvent(new Event('submit', { cancelable: true })); true");
+  await evaluate("window.dispatchEvent(new Event('online')); true");
   await until("document.querySelector('[data-provider=electricity] .provider-category-state').textContent === 'Needs attention'");
   assert.deepEqual(JSON.parse(await electricityOverview()), { title: 'Electricity consumption',
     source: 'Easee, Shelly EVSE', state: 'Needs attention', attention: true }, 'Charger 2 commissioning needs reach the closed source overview');
@@ -917,7 +917,7 @@ try {
   assert.equal(await evaluate("document.querySelector('[data-provider=electricity] details').open"), true,
     'Updating capture health preserves the expanded connection');
   charger2Status = { ...charger2Status, status: 'ok', reason: 'physical-meter' };
-  await evaluate("document.getElementById('auth').dispatchEvent(new Event('submit', { cancelable: true })); true");
+  await evaluate("window.dispatchEvent(new Event('online')); true");
   await until("document.querySelector('[data-provider=electricity] .provider-category-state').textContent === 'Available'");
   assert.equal(await evaluate("document.querySelector('#providers > :last-child').dataset.provider"), 'main-temperatures', 'Temperature and weather feeds form the final category');
   assert.equal(await evaluate("document.querySelector('#provider-overview #providers > :last-child .provider-category-title').textContent"), 'Main temperatures & Weather', 'The combined temperature and weather category is last in the source overview');

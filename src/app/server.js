@@ -8,12 +8,20 @@ import { simulatedOutlook } from './simulator.js';
 import { createChartService } from './chart-service.js';
 import { chargingSessionCheckSummaries } from './charging-session-checks.js';
 import { createDatabaseExport } from './database-export.js';
+import { familyRouteAllowed, familyActionAllowed, fireplaceAccess, FAMILY_FIREWOOD_REMOVAL_MS } from './web-permissions.js';
 
 function authorized(req, token) {
-  if (!token) return true;
+  if (!token) return false;
   const supplied = req.headers.authorization?.replace(/^Bearer /, '') ?? '';
   const a = Buffer.from(supplied), b = Buffer.from(token);
   return a.length === b.length && timingSafeEqual(a, b);
+}
+function webIdentity(req, access, ingress) {
+  if (ingress) return { role: 'admin', source: 'ingress' };
+  if (authorized(req, access.token)) return { role: 'admin', source: 'password' };
+  if (access.token && authorized(req, access.familyToken)) return { role: 'family', source: 'password' };
+  if (!access.token && !access.familyToken && !access.tokenRequired) return { role: 'admin', source: 'local' };
+  return null;
 }
 const ingressProxy = address => address === '172.30.32.2' || address === '::ffff:172.30.32.2';
 
@@ -46,17 +54,19 @@ function optionalTimestampParam(url, key) {
   return Number(value);
 }
 
-export function createAppServer({ engine, getEngine = () => engine, store, chartService, token = '',
+export function createAppServer({ engine, getEngine = () => engine, store, chartService, token = '', familyToken = '',
   getAccess, ingress = false, role = 'primary', getReadContext, replicationStatus,
   pairContext, controlAuthority, getDatabaseExportDirectory = homedir,
   reloadSettings, settingsReloadStatus = () => ({ available: false, busy: false,
     reason: 'This instance has no reloadable configuration source.' }), staticDir = resolve('dist') }) {
   const overviewService = getReadContext ? null : chartService?.overview ? chartService : createChartService({ store });
-  const fixedAccess = { enabled: true, token, tokenRequired: false };
+  if (typeof familyToken !== 'string' || familyToken && (!token || token === familyToken))
+    throw new Error('Family access requires a separate admin web token.');
+  const fixedAccess = { enabled: true, token, familyToken, tokenRequired: false };
   const access = getAccess ?? (() => fixedAccess);
   const exportDatabase = createDatabaseExport({ getDirectory: getDatabaseExportDirectory });
   const server = createServer(async (req, res) => {
-    let acceptedAccess, completingReload = false, readContext;
+    let acceptedAccess, completingReload = false, readContext, webAccess;
     const json = (code, value) => {
       // Revocation also covers reads that were awaiting chart/database work.
       // An already authenticated reload may finish its own success response.
@@ -86,11 +96,28 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
         const stillAuthorized = () => {
           const current = access();
           if (!current.enabled) { json(503, { error: 'Direct web access is disabled' }); return false; }
-          if (!ingress && (current !== acceptedAccess || (current.tokenRequired && !current.token)
-            || !authorized(req, current.token))) { json(401, { error: 'Authentication required' }); return false; }
+          const identity = webIdentity(req, current, ingress);
+          if (!identity || !ingress && current !== acceptedAccess) {
+            json(401, { error: 'Authentication required' }); return false;
+          }
+          webAccess = identity;
           return true;
         };
         if (!stillAuthorized()) return;
+        if (webAccess.role === 'family' && !familyRouteAllowed(req.method, url.pathname))
+          return json(403, { error: 'Admin access is required for this action.' });
+        const downloads = {
+          '/api/downloads/floor-preheat-guide': ['../../docs/floor-preheat.md', 'floor-preheat.md', 'text/markdown'],
+          '/api/downloads/floor-lease-script': ['../../scripts/shelly/floor-lease.js', 'floor-lease.js', 'text/javascript'],
+        };
+        if (req.method === 'GET' && downloads[url.pathname]) {
+          const [source, filename, type] = downloads[url.pathname];
+          const data = await readFile(new URL(source, import.meta.url));
+          if (!stillAuthorized()) return;
+          res.writeHead(200, { 'content-type': type, 'content-disposition': `attachment; filename="${filename}"`,
+            'cache-control': 'no-store', 'content-length': data.length });
+          return res.end(data);
+        }
         if (url.pathname === '/api/pairing' && req.method === 'GET')
           return json(200, pairContext?.status() ?? { enabled: false });
         if (url.pathname === '/api/pairing/action' && req.method === 'POST') {
@@ -131,7 +158,9 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
         const status = () => {
           const replication = replicationStatus?.();
           const current = (readContext ? engine : getEngine()).status();
-          return { ...current, ...(current.sensorChanges ? { sensorChanges: sensorChangesStatus(current.sensorChanges) } : {}), settingsReload: settingsReloadStatus(),
+          return { ...current, webAccess,
+            ...(current.fireplace ? { fireplace: fireplaceAccess(current.fireplace, webAccess, current.now ?? engine.clock()) } : {}),
+            ...(current.sensorChanges ? { sensorChanges: sensorChangesStatus(current.sensorChanges) } : {}), settingsReload: settingsReloadStatus(),
             ...(replication ? { replication } : {}), ...(controlAuthority ? { controlAuthority: controlAuthority.status(),
               ...(!controlAuthority.canControl() ? { readOnly: true, liveWrites: false } : {}) } : {}),
             ...(pairContext ? { pairing: pairContext.status(),
@@ -153,7 +182,10 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
           if (pairContext?.recovering() && ['/api/fireplace', '/api/fireplace/remove', '/api/sensor-changes',
             '/api/sensor-changes/revert', '/api/sensor-changes/retry-rebuild', '/api/settings/reload', '/api/charging/ocpp-setup'].includes(url.pathname))
             return json(409, { error: 'Historical recovery is running. Wait before changing source corrections or configuration.' });
-          return action(getEngine(), input);
+          const current = getEngine();
+          if (webAccess.role === 'family' && !familyActionAllowed(url.pathname, input, current))
+            return json(403, { error: 'Admin access is required for this action.' });
+          return action(current, input);
         };
         if (req.method === 'GET' && url.pathname === '/api/status') return json(200, status());
         if (readContext && !readContext.store) return json(503, { error: 'Waiting for a verified primary snapshot.' });
@@ -185,7 +217,8 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
               return json(error.statusCode ?? 503, { error: message });
             }
           });
-        if (req.method === 'GET' && url.pathname === '/api/fireplace') return json(200, engine.fireplaceStatus());
+        if (req.method === 'GET' && url.pathname === '/api/fireplace')
+          return json(200, fireplaceAccess(engine.fireplaceStatus(), webAccess, engine.clock()));
         if (req.method === 'GET' && url.pathname === '/api/sensor-changes') return json(200, sensorChangesStatus());
         if (req.method === 'POST' && url.pathname === '/api/sensor-changes')
           return await mutate((current, input) => json(200, current.changeSensor(input)));
@@ -194,9 +227,10 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
         if (req.method === 'POST' && url.pathname === '/api/sensor-changes/retry-rebuild')
           return await mutate((current, input) => json(200, current.retrySensorRebuild(input)));
         if (req.method === 'POST' && url.pathname === '/api/fireplace')
-          return await mutate((current, input) => json(200, current.changeFireplace(input)));
+          return await mutate((current, input) => json(200, fireplaceAccess(current.changeFireplace(input), webAccess, current.clock())));
         if (req.method === 'POST' && url.pathname === '/api/fireplace/remove')
-          return await mutate((current, input) => json(200, current.changeFireplace(input, true)));
+          return await mutate((current, input) => json(200, fireplaceAccess(current.changeFireplace(input, true,
+            webAccess.role === 'family' ? { maxAgeMs: FAMILY_FIREWOOD_REMOVAL_MS } : {}), webAccess, current.clock())));
         if (req.method === 'POST' && url.pathname === '/api/settings/reload') {
           return await mutate(async (_engine, input) => {
             if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length)
@@ -280,7 +314,11 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
         }
         if (req.method === 'GET' && url.pathname === '/api/contract') return json(200, engine.contract());
         if (req.method === 'POST' && ['/api/contract', '/api/settings'].includes(url.pathname)) return json(405, { error: 'Permanent settings and electricity rates come from configuration. Use Apply configuration after editing them.' });
-        if (req.method === 'POST' && url.pathname === '/api/temporary') return await mutate((current, input) => json(200, current.setTemporary(input)));
+        if (req.method === 'POST' && url.pathname === '/api/temporary') return await mutate((current, input) => {
+          const result = current.setTemporary(input);
+          return json(200, { ...result, webAccess, ...(result.fireplace
+            ? { fireplace: fireplaceAccess(result.fireplace, webAccess, current.clock()) } : {}) });
+        });
         if (req.method === 'POST' && url.pathname === '/api/test/h66') return await mutate(async (current, input) => json(200, await current.testH66(input)));
         if (req.method === 'POST' && url.pathname === '/api/heating-test') return await mutate(async (current, input) => json(200, await current.testHeating(input)));
         if (req.method === 'GET' && url.pathname === '/api/events') return json(200, readerStore.events({ after: numberParam(url, 'after', 0, Number.MAX_SAFE_INTEGER), limit: numberParam(url, 'limit', 100, 500) }));
@@ -293,7 +331,11 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
           if (!/^[a-z0-9_]{1,64}$/.test(signal)) throw new Error('Invalid signal');
           return json(200, readerStore.observations({ signal, from, to, limit: numberParam(url, 'limit', 1000, 5000) }));
         }
-        if (req.method === 'POST' && url.pathname === '/api/override') return await mutate((current, input) => json(200, current.setOverride(input.minutes)));
+        if (req.method === 'POST' && url.pathname === '/api/override') return await mutate((current, input) => {
+          const result = current.setOverride(input.minutes);
+          return json(200, { ...result, webAccess, ...(result.fireplace
+            ? { fireplace: fireplaceAccess(result.fireplace, webAccess, current.clock()) } : {}) });
+        });
         return json(404, { error: 'Unknown endpoint' });
       }
       if (req.method !== 'GET' && req.method !== 'HEAD') return json(405, { error: 'Method not allowed' });

@@ -1,5 +1,10 @@
 # 0.9.0
 
+- Add separate admin and family passwords for direct access, a password visibility
+  toggle and logout. Family retains full viewing and household firewood, DHWR,
+  temporary heating including Away/Pause, garage door and EV card controls;
+  all other writes, exports and downloads require admin. Home Assistant ingress
+  retains full admin access. Existing heating and freeze protections remain active.
 - Validate development on Node 22 and 24 with real SQLite/SSH replication,
   browser, live-provider, Garage simulation and native add-on container checks;
   document commands and limits in [development validation](docs/development-validation.md).

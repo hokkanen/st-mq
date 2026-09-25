@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { setStatusDetail } from '../chart/status-details.js';
+import { setStatusDetail, closeStatusDetails } from '../chart/status-details.js';
 
 function fixture({ native = true, failPopover = false, width = 390, height = 640 } = {}) {
   const frames = [];
@@ -234,4 +234,20 @@ test('browser dismissal clears expanded state and missing explanations become pl
   assert.equal(root.textContent, '20.4 °C');
   assert.equal(root.children.length, 0);
   assert.equal(popup().hidden, true);
+});
+
+
+test('ending a session dismisses visible details with native and fallback popovers', () => {
+  for (const native of [true, false]) {
+    const { root, popup, document } = fixture({ native });
+    const trigger = setStatusDetail(root, unavailable);
+    trigger.dispatch('click');
+    assert.equal(popup().hidden, false);
+    closeStatusDetails(document);
+    assert.equal(popup().hidden, true);
+    assert.equal(trigger.getAttribute('aria-expanded'), 'false');
+    if (native) assert.equal(popup().popoverOpen, false);
+    setStatusDetail(root, { ...unavailable, detail: 'A late response' });
+    assert.equal(popup().hidden, true);
+  }
 });

@@ -35,6 +35,7 @@ function equipmentDocument() {
     remove() { const parent = this.parentElement; if (parent) parent.children.splice(parent.children.indexOf(this), 1); this.parentElement = null; }
     replaceChildren(...children) { for (const child of [...this.children]) child.remove(); this.append(...children); }
     setAttribute(name, value) { this.attributes.set(name, String(value)); }
+    removeAttribute(name) { this.attributes.delete(name); }
     getAttribute(name) { return this.attributes.get(name) ?? null; }
     hasAttribute(name) { return this.attributes.has(name); }
     addEventListener(name, callback) { this.listeners.set(name, callback); }

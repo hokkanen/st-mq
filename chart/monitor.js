@@ -21,9 +21,8 @@ import { createPairPanel, isPairManagementRequest } from './pair-status.js';
 import { createEquipmentPanel, dhwrReadingSummary } from './equipment.js';
 import { createGarageDoorPanel } from './garage-doors.js';
 import { renderFloorPreheat } from './floor-preheat.js';
-import floorGuideUrl from '../docs/floor-preheat.md?url';
-import floorScriptUrl from '../scripts/shelly/floor-lease.js?url';
-import { setStatusDetail } from './status-details.js';
+import { assertWebRequest, createWebSession, createAccessControls, bindPasswordVisibility } from './web-access.js';
+import { setStatusDetail, closeStatusDetails } from './status-details.js';
 import { priceStatuses, renderCurrentPrice } from './current-price.js';
 import { homeHeatingConfirmation, setHeatingStatusDetail } from './heating-status.js';
 import { homeHeatingWarning, garageHeatingWarning } from './heating-warning.js';
@@ -34,8 +33,6 @@ import { heatingRequestResult, h66RequestResult, circulationStopPending } from '
 
 const $ = id => document.getElementById(id);
 createSelectDismissal(document);
-$('floor-preheat-guide').href = floorGuideUrl;
-$('floor-preheat-script').href = floorScriptUrl;
 createDashboardReset({ document, button: $('dashboard-reset') });
 createPageFullscreen({ document, button: $('fullscreen-toggle') });
 createDashboardLayout(document.querySelector('.controller-panels'));
@@ -61,7 +58,10 @@ for (const link of document.querySelectorAll('[data-policy-model-link]')) {
   });
 }
 const ingress = usesHomeAssistantLogin();
-let token = ingress ? '' : sessionStorage.getItem('stmq-token') ?? '';
+const session = createWebSession({ storage: sessionStorage, ingress });
+const accessControls = createAccessControls({ document });
+const passwordVisibility = bindPasswordVisibility({ input: $('token'), button: $('password-visibility') });
+let webAccess;
 let lastStatus;
 let historyChart;
 let temporaryBusy = false;
@@ -100,15 +100,32 @@ const reasons = {
   'sensor-measurement-changed': 'Re-establishing temperature learning after a sensor change',
   'continuous-normal-preferred': 'Continuous normal operation is preferred',
 };
+function lockScreen() {
+  session.logout(); ++refreshSequence; lastStatus = undefined; webAccess = undefined;
+  document.body.dataset.authenticated = 'false';
+  closeStatusDetails(document);
+  for (const dialog of document.querySelectorAll('dialog[open]')) dialog.close();
+  $('auth').hidden = ingress; $('connection').textContent = 'Signed out';
+  $('token').value = ''; passwordVisibility.hide();
+  $('token').focus();
+}
 async function api(path, data, options = {}) {
+  if (session.locked) throw Object.assign(new Error(authenticationMessage(ingress)), { status: 401 });
+  assertWebRequest(webAccess, path, data, lastStatus);
   if (data !== undefined && (!lastStatus || isReadOnlyReplica(lastStatus)) && !isPairManagementRequest(path, data, lastStatus)) {
     const error = new Error(lastStatus ? 'This replica is read-only. Make changes on the primary computer.' : 'Wait for the installation status before making changes.');
     error.status = 403; throw error;
   }
-  const { response,result } = await fetchJsonResponse(applicationUrl(path), { signal:options.signal, method: data === undefined ? 'GET' : 'POST', headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(data === undefined ? {} : { 'Content-Type': 'application/json' }) }, ...(data === undefined ? {} : { body: JSON.stringify(data) }) });
-  if (response.status === 401) { $('auth').hidden = ingress; const error = new Error(authenticationMessage(ingress)); error.status = response.status; throw error; }
+  const { response,result } = await session.run(({ headers, signal }) => fetchJsonResponse(applicationUrl(path), {
+    signal, method: data === undefined ? 'GET' : 'POST',
+    headers: { ...headers, ...(data === undefined ? {} : { 'Content-Type': 'application/json' }) },
+    ...(data === undefined ? {} : { body: JSON.stringify(data) }),
+  }), options);
+  if (response.status === 401) {
+    lockScreen();
+    const error = new Error(authenticationMessage(ingress)); error.status = response.status; throw error;
+  }
   if (!response.ok) { const error = new Error(result.error ?? 'Request failed'); error.status = response.status; throw error; }
-  $('auth').hidden = true;
   return result;
 }
 function showError(error) { $('error').textContent = error.message; $('error').hidden = false; $('connection').textContent = 'Connection needs attention'; }
@@ -382,7 +399,7 @@ function renderProviders(s) {
       const localHelp = document.createElement('p'); localHelp.className = 'provider-local-help';
       const localBackup = document.createElement('p'); localBackup.className = 'provider-local-backup';
       const localOutage = document.createElement('p'); localOutage.className = 'provider-local-outage';
-      const adopt = document.createElement('button'); adopt.type = 'button'; adopt.className = 'secondary-button provider-local-adopt';
+      const adopt = document.createElement('button'); adopt.type = 'button'; adopt.setAttribute('data-admin-only', ''); adopt.className = 'secondary-button provider-local-adopt';
       adopt.textContent = 'Set up local connection'; adopt.addEventListener('click', adoptOcppSetup);
       const localMessage = document.createElement('p'); localMessage.className = 'provider-local-message';
       localMessage.setAttribute('role', 'status'); localMessage.setAttribute('aria-live', 'polite');
@@ -630,6 +647,12 @@ function renderH66(s) {
   renderH66TestResult(s);
 }
 function render(s) {
+  if (session.locked) return;
+  webAccess = s.webAccess ?? webAccess;
+  accessControls.update(webAccess);
+  document.body.dataset.authenticated = 'true';
+  $('auth').hidden = true;
+  $('fireplace-family-help').hidden = webAccess?.role !== 'family';
   lastStatus = s;
   garageControls.update(s);
   mitsubishiControls.update(s);
@@ -753,11 +776,13 @@ const events = () => eventStream.poll();
 const communication = createCommunicationWatch();
 const requestStatus = createPollingRequest(options => api('/api/status',undefined,options));
 function checkCommunication() {
+  if (session.locked) return;
   const state = communication.status();
   $('connection').title = `Last successful status response: ${state.available ? `${Math.floor(state.ageMs/1000)} seconds ago` : 'not yet received'}.`;
   if (state.stale) $('connection').textContent = 'Monitoring is stale. Waiting for an installation status response.';
 }
 async function refresh({ forceChart = false, background = false } = {}) {
+  if (session.locked) return;
   if (temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy || equipmentBusy) return;
   const request = requestStatus({ background });
   if (!request) return;
@@ -819,7 +844,16 @@ $('settings-reload').addEventListener('click', async () => {
   }
   await refresh({ forceChart: true });
 });
-$('auth').addEventListener('submit', event => { event.preventDefault(); token = $('token').value; sessionStorage.setItem('stmq-token', token); $('token').value = ''; refresh(); });
+$('auth').addEventListener('submit', event => {
+  event.preventDefault();
+  session.login($('token').value); $('token').value = ''; passwordVisibility.hide();
+  // A fresh document discards any previous login's pending forms and responses.
+  window.location.reload();
+});
+$('web-logout').addEventListener('click', () => {
+  lockScreen();
+  window.location.reload();
+});
 for (const [field, id] of Object.entries(temporaryFields)) {
   const changed = () => {
     if ($(id).value === (lastStatus ? temporaryValues(lastStatus)[field] : '')) dirtyTemporary.delete(field);
@@ -937,9 +971,35 @@ const refreshRecordingOverview=recordingOverviewRefresh({request:api,root:$('rec
   details:$('recording-overview-details'),parent:$('recording-details'),message:$('recording-overview-message'),button:$('recording-overview-refresh')});
 bindDatabaseExport({ saveButton: $('database-export-save'), downloadButton: $('database-export-download'),
   message: $('database-export-message'), window, document,
-  request: method => fetch(applicationUrl('/api/database-export'), { method,
-    headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(method === 'POST' ? { 'Content-Type': 'application/json' } : {}) },
-    ...(method === 'POST' ? { body: '{}' } : {}) }) });
+  request: method => {
+    assertWebRequest(webAccess, '/api/database-export', method === 'POST' ? {} : undefined, lastStatus);
+    return session.run(async ({ headers, signal }) => {
+      const response = await fetch(applicationUrl('/api/database-export'), { method, signal,
+        headers: { ...headers, ...(method === 'POST' ? { 'Content-Type': 'application/json' } : {}) },
+        ...(method === 'POST' ? { body: '{}' } : {}) });
+      if (response.status === 401) { lockScreen(); throw new Error(authenticationMessage(ingress)); }
+      return response;
+    });
+  } });
+for (const [id, path, filename] of [
+  ['floor-preheat-guide', '/api/downloads/floor-preheat-guide', 'floor-preheat.md'],
+  ['floor-preheat-script', '/api/downloads/floor-lease-script', 'floor-lease.js'],
+]) $(id).addEventListener('click', async () => {
+  try {
+    assertWebRequest(webAccess, path, undefined, lastStatus);
+    const blob = await session.run(async ({ headers, signal }) => {
+      const response = await fetch(applicationUrl(path), { headers, signal });
+      if (response.status === 401) { lockScreen(); throw new Error(authenticationMessage(ingress)); }
+      if (!response.ok) throw new Error(response.status === 403 ? 'Admin required for downloads.' : 'Download failed. Please try again.');
+      return response.blob();
+    });
+    const url = URL.createObjectURL(blob), link = document.createElement('a');
+    link.href = url; link.download = filename;
+    document.body.append(link); link.click(); link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    $('floor-download-message').textContent = 'Download ready.';
+  } catch (error) { $('floor-download-message').textContent = error.message; }
+});
 $('recording-overview-details').addEventListener('toggle',()=>void refreshRecordingOverview());
 $('recording-overview-refresh').addEventListener('click',()=>void refreshRecordingOverview({force:true}));
 setInterval(refreshRecordingOverview,60_000);
@@ -960,7 +1020,8 @@ historyChart = createHistoryChart({ api: (path, options) => api(path, undefined,
 document.addEventListener('themechange', event => historyChart.updateTheme(event.detail.theme));
 setInterval(() => refresh({ background: true }), 15_000);
 setInterval(refreshPairing, 3_000);
-setInterval(checkCommunication, 1000);
+setInterval(() => { checkCommunication(); if (!session.locked) fireplacePanel.tick(); }, 1000);
 window.addEventListener('online', () => void refresh());
 document.addEventListener('visibilitychange', () => { checkCommunication(); if (!document.hidden) void refresh(); });
-void refresh();
+if (session.locked) { $('auth').hidden = ingress; $('connection').textContent = 'Signed out'; }
+else void refresh();
