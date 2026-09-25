@@ -1352,11 +1352,11 @@ button.garage-door-action:disabled { opacity: .55; cursor: default; }
   --charging-gap: 8px;
   --charging-value-size: clamp(17px, 5cqw, calc(25px - var(--charging-compact, 0) * 4px));
   /* Compact = 1 for desktop or paired cards, 0 for the original mobile spacing. */
-  height: calc(396px - var(--charging-compact, 0) * 40px);
-  min-height: calc(396px - var(--charging-compact, 0) * 40px);
+  height: calc(364px - var(--charging-compact, 0) * 40px);
+  min-height: calc(364px - var(--charging-compact, 0) * 40px);
   padding: calc(16px - var(--charging-compact, 0) * 4px) 14px;
   grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: calc(88px - var(--charging-compact, 0) * 2px) 48px
+  grid-template-rows: calc(56px - var(--charging-compact, 0) * 2px) 48px
     calc(76px - var(--charging-compact, 0) * 6px) calc(70px - var(--charging-compact, 0) * 10px)
     42px calc(20px - var(--charging-compact, 0) * 4px);
   gap: calc(4px - var(--charging-compact, 0) * 2px);
@@ -1365,7 +1365,7 @@ button.garage-door-action:disabled { opacity: .55; cursor: default; }
 }
 .charging-device > .equipment-device-summary::after { display: none; }
 .charging-device > .equipment-device-summary:has(> .charging-target-notice:not([hidden])) {
-  grid-template-rows: calc(88px - var(--charging-compact, 0) * 2px) 48px
+  grid-template-rows: calc(56px - var(--charging-compact, 0) * 2px) 48px
     calc(76px - var(--charging-compact, 0) * 6px) auto calc(70px - var(--charging-compact, 0) * 10px)
     42px calc(20px - var(--charging-compact, 0) * 4px);
 }
@@ -1468,11 +1468,11 @@ button.garage-door-action:disabled { opacity: .55; cursor: default; }
   .charging-priority-dialog { padding: 18px; }
   .charging-priority-option { padding: 12px; }
 }
-.charging-actions { display: flex; flex: 0 0 auto; flex-direction: column; align-items: flex-end; gap: 5px; }
+.charging-actions { display: flex; flex: 0 0 auto; flex-direction: column; align-items: flex-end; gap: 2px; }
 .charging-actions .charging-charge-now { min-height: 44px; margin: 0; padding: 8px 12px; border-radius: 6px; font-size: 12px; font-weight: 500; white-space: nowrap; }
 .charging-actions .charging-charge-now[aria-pressed="true"] { opacity: 1; border-color: var(--accent); color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--surface)); }
-.charging-charge-now-hint { max-width: 140px; color: var(--muted); font-size: 10px; line-height: 1.3; text-align: right; }
-.charging-device .charging-use-automatic { min-height: 36px; margin: 0; padding: 6px 8px; font-size: 10px; white-space: nowrap; }
+.charging-actions:has(.charging-use-automatic:not([hidden])) .charging-charge-now { min-height: 28px; padding-block: 4px; }
+.charging-device .charging-use-automatic { min-height: 24px; margin: 0; padding: 3px 8px; font-size: 10px; white-space: nowrap; }
 .charging-device > .equipment-device-summary:has(> .charging-control-message:not(:empty)) { height: auto; }
 .charging-control-message { margin: 8px 0 0; font-size: 11px; line-height: 1.5; }
 .charging-detail-section > .equipment-device-status { display: inline-block; margin-bottom: 10px; }

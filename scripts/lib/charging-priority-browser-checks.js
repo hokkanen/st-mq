@@ -82,7 +82,7 @@ export async function checkChargingPriority({ send, evaluate, until, artifacts }
       ['/api/charging/chargers/charger1/charge-now', { association: 'synthetic-browser-charger', sessionId: 'synthetic-browser-session', revision: 1 }],
     ], 'One click requests immediate charging for exactly the displayed connection');
     assert.equal(await evaluate("document.getElementById('charger1-device').open"), false, 'Charge now does not open the settings fold');
-    assert.equal(await evaluate("document.getElementById('charger1-charge-now-hint').textContent"), 'Selected until unplugging');
+    assert.equal(await evaluate("document.getElementById('charger1-charge-now').title"), 'Selected until unplugging');
     for (const width of [320, 390, 1440]) {
       await send('Emulation.setDeviceMetricsOverride', { width, height: 1100, deviceScaleFactor: 1, mobile: false });
       await evaluate("document.getElementById('charger1-device').scrollIntoView({block: 'center'})");

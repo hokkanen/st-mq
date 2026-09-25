@@ -2,6 +2,18 @@
 -Implement support for local mqtt-based temperature receives (eg, from shelly or HASS through Meteorologisk Institute); just store last received temp values and time stamps (maybe in storage class, see below) when received (and accept if received within 1h)
 -Chart dataset control buttons don't work when datasets are manually hidden/unhidden from legend, how to fix?
 
+Completed 2026-09-25 — Restore compact charging cards
+- Restore the pre-Charge-now summary heights: 364px on mobile and 324px
+  for compact/paired cards, with the original 56/54px heading band.
+- Remove the text beneath Charge now, retaining its context as a button tooltip.
+  Keep Use automatic beside the charger identity in the compact action column.
+- Remove the unused hint element and styling. Charging actions, session scope,
+  permissions, configuration and persisted state stay unchanged; no compatibility
+  paths are introduced.
+- Validation: 101 focused charging UI/summary tests and the production build pass.
+  Synthetic Chromium checks pass for 22 charging states in both themes at
+  320–1920px, confirming the restored heights with no overlapping summary bands.
+
 Completed 2026-09-25 — Charging controls owned by the dashboard
 - Keep only ready-by time, starting charge, target charge and usable battery
   capacity as shared/vehicle configuration defaults. Restore persistent UI

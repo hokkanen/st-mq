@@ -454,10 +454,9 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     const state = make('span', '', 'equipment-device-status', `${id}-state`);
     const actions = make('div', '', 'charging-actions');
     const chargeNow = make('button', 'Charge now', 'charging-charge-now secondary-button', `${id}-charge-now`); chargeNow.type = 'button';
-    chargeNow.setAttribute('aria-pressed', 'false'); chargeNow.setAttribute('aria-describedby', `${id}-charge-now-hint`);
-    const chargeNowHint = make('small', '', 'charging-charge-now-hint', `${id}-charge-now-hint`);
+    chargeNow.setAttribute('aria-pressed', 'false');
     const resume = make('button', 'Use automatic', 'charging-use-automatic secondary-button', `${id}-resume`); resume.type = 'button';
-    actions.append(chargeNow, chargeNowHint); identity.append(resume); heading.append(identity, actions); summary.append(heading);
+    actions.append(chargeNow, resume); heading.append(identity, actions); summary.append(heading);
     const controlMessage = make('p', '', 'temporary-status charging-control-message', `${id}-control-message`); controlMessage.setAttribute('role', 'status');
     const overview = make('div', '', 'charging-overview', `${id}-overview`), metrics = {};
     const charge = make('div', '', 'equipment-value charging-charge');
@@ -538,7 +537,7 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     explanationFold.append(make('summary', 'How charging works'));
     const explanations = make('dl', '', 'equipment-readings', `${id}-explanations`); explanationFold.append(explanations); body.append(explanationFold);
     section.append(summary, body); $('charging-devices')?.append(section);
-    const device = { id, chargeNow, chargeNowHint, controlMessage, section, title, vehicle, state, event, eventLabel, eventValue, overview, sources, metrics, chargeLabel, targetLabel, targetSource, targetNotice, targetControls, targetHelp, targetToggle, targetMessage, completionLabel, completion, readiness, priority, readingTime, deadline, deadlineGroup, facts, deliveredLabel, deliveredValue, remaining, energyLabel, energyValue, costLabel, cost, costMetric, scheduleInfo, scheduleHeading, periodCount, periods, problem, explanations, readings, notes, settings, enabledValue, resume, controlDetail, charger, notice, footerHint, sessionStatus };
+    const device = { id, chargeNow, controlMessage, section, title, vehicle, state, event, eventLabel, eventValue, overview, sources, metrics, chargeLabel, targetLabel, targetSource, targetNotice, targetControls, targetHelp, targetToggle, targetMessage, completionLabel, completion, readiness, priority, readingTime, deadline, deadlineGroup, facts, deliveredLabel, deliveredValue, remaining, energyLabel, energyValue, costLabel, cost, costMetric, scheduleInfo, scheduleHeading, periodCount, periods, problem, explanations, readings, notes, settings, enabledValue, resume, controlDetail, charger, notice, footerHint, sessionStatus };
     bind(enabledValue, 'click', () => {
       if (enabledValue.disabled) return;
       const current = device.charger;
@@ -627,7 +626,7 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
       device.chargeNow.setAttribute('aria-pressed', String(chargeNowActive));
       device.chargeNow.disabled = locked || charger.readOnly === true || !supported
         || !connectedSession(charger) || chargeNowActive;
-      device.chargeNowHint.textContent = !supported ? 'Monitoring only' : !writable() || charger.readOnly ? 'View only'
+      device.chargeNow.title = !supported ? 'Monitoring only' : !writable() || charger.readOnly ? 'View only'
         : !connectedSession(charger) ? 'Connect a vehicle'
           : chargeNowActive ? 'Selected until unplugging' : 'Until unplugging';
       device.resume.hidden = !supported || !(chargeNowActive || view.yielded);

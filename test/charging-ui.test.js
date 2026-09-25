@@ -1197,7 +1197,7 @@ test('Charge now is immediately visible and requests only the current session, w
   await clickAction(button);
   assert.deepEqual(calls[0], ['/api/charging/chargers/charger1/charge-now', { association: item.association, sessionId: item.request.sessionId, revision: 1 }]);
   assert.equal(button.textContent, 'Charge now'); assert.equal(button.getAttribute('aria-pressed'), 'true');
-  assert.equal($('charger1-charge-now-hint').textContent, 'Selected until unplugging');
+  assert.equal(button.title, 'Selected until unplugging');
   assert(button.disabled); assert(!$('charger1-resume').hidden); assert(summary.contains($('charger1-resume')));
   assert(summary.contains($('charger1-control-message'))); assert.match($('charger1-control-message').textContent, /requested/);
   assert.equal($('charger1-soc').textContent, '20 %');
