@@ -294,7 +294,9 @@ export function createMitsubishiControls({ document, request, onStatus = () => {
   const change = () => {
     const focusEditor = pointerSelection; pointerSelection = false;
     edited = false; requestError = null; render({ useReadback: true });
-    if (focusEditor) {
+    if (focusEditor && document.body.dataset.accessRole === 'admin') {
+      // Family users browse settings without moving focus into an editor that
+      // the access observer will disable at the end of this event.
       // Finish the native picker interaction before editing, including Samsung Internet on DeX.
       const editor = setting.value === 'targetC' ? input : select;
       if (!editor.disabled && !form.hidden) editor.focus({ preventScroll: true });

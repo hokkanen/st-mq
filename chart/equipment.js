@@ -623,8 +623,9 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
         const off = button('Turn off', () => { if (!blocked()) void actions.switch(device.id, false); });
         buttons.setAttribute('data-admin-only', '');
         const help = make('p', '', 'muted'), result = make('p', '', 'equipment-control-result');
+        const switchAccess = make('p', 'Admin access is required to switch this device on or off.', 'family-access-note');
         result.setAttribute('role', 'status'); result.setAttribute('aria-live', 'polite');
-        buttons.append(on, off); controls.append(buttons, help, result);
+        buttons.append(on, off); controls.append(buttons, switchAccess, help, result);
         const coverControls = make('div', '', 'equipment-inline-controls equipment-cover-controls');
         const coverButtons = make('div', '', 'equipment-cover-buttons'), coverActions = {};
         coverButtons.setAttribute('role', 'group');
@@ -637,9 +638,10 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
           control.append(icon, make('span', text)); coverButtons.append(control); coverActions[action] = control;
         }
         const coverHelp = make('p', '', 'muted'), coverResult = make('p', '', 'equipment-control-result');
+        const coverAccess = make('p', 'Admin access is required to operate doors outside the garage.', 'family-access-note');
         coverHelp.id = `equipment-cover-${device.id}-help`;
         coverResult.setAttribute('role', 'status'); coverResult.setAttribute('aria-live', 'polite');
-        coverControls.append(coverButtons, coverHelp, coverResult);
+        coverControls.append(coverButtons, coverAccess, coverHelp, coverResult);
         const caravan = device.id === 'caravan' ? createCaravanContents({ document, actions, blocked,
           readingsFor: equipmentReadingRows, summaryFor: equipmentConnectionSummary }) : null;
         const energyTitle = make('h5', 'Energy', 'caravan-energy-title');
@@ -655,7 +657,7 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
           section.append(summary, body);
         }
         node = { section, staticReadings, title, metadata, preview, source, recent, list, empty, controls, buttons, on, off, help, result,
-          coverControls, coverButtons, coverActions, coverHelp, coverResult, caravan, energyTitle, rows: new Map() }; readingNodes.set(device.id, node);
+          coverControls, coverButtons, coverActions, coverHelp, coverResult, coverAccess, caravan, energyTitle, rows: new Map() }; readingNodes.set(device.id, node);
       }
       if (root.children[index] !== node.section) {
         // Moving a details element preserves its open state. Keep keyboard focus
@@ -735,6 +737,7 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
       const hasCoverControls = device.kind === 'door' && ['open', 'close', 'stop'].some(action => device.controls?.cover?.[action] === true);
       node.coverControls.hidden = !hasCoverControls;
       node.coverButtons.setAttribute('aria-label', `${device.label ?? 'Door'} operation`);
+      node.coverAccess.hidden = device.area === 'garage' && device.kind === 'door';
       for (const [action, control] of Object.entries(node.coverActions)) {
         if (device.area !== 'garage' || device.kind !== 'door') control.setAttribute('data-admin-only', '');
         else control.removeAttribute('data-admin-only');
@@ -803,7 +806,8 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
       if (!restore) {
         restore = button('Restore previous state', () => { if (!blocked()) void actions.restore(); });
         restore.setAttribute('data-admin-only', '');
-        restore.classList.add('equipment-restore'); restoreNodes.set(area, restore); $(`${area}-test-notice`).append(restore);
+        const access = make('p', 'Admin access is required to restore an equipment test.', 'family-access-note');
+        restore.classList.add('equipment-restore'); restoreNodes.set(area, restore); $(`${area}-test-notice`).append(restore, access);
       }
       restore.hidden = activeNode.hidden; restore.disabled = activeNode.hidden || readOnly || locked;
       const result = $(`${area}-equipment-result`);

@@ -146,6 +146,7 @@ export function createFireplacePanel({ document, request, storage, beforeMutatio
         const item = document.createElement('li'), info = document.createElement('div'), at = document.createElement('time');
         const amount = document.createElement('strong'), note = document.createElement('small'), button = document.createElement('button');
         item.className = 'fireplace-entry'; info.className = 'fireplace-entry-info'; note.className = 'muted';
+        note.id = `fireplace-removal-help-${entry.id}`;
         button.type = 'button'; button.className = 'secondary-button fireplace-remove'; button.textContent = 'Remove mistaken entry';
         button.addEventListener('click', () => { void actions.remove(entry.id); });
         info.append(at, amount, note); item.append(info, button);
@@ -154,10 +155,11 @@ export function createFireplacePanel({ document, request, storage, beforeMutatio
       row.at.dateTime = new Date(entry.at).toISOString(); row.at.textContent = fireplaceTime(entry.at, now);
       row.amount.textContent = `${entry.kg} kg`;
       const canRemove = fireplaceRemovalAllowed(entry, currentTime());
-      row.note.textContent = !canRemove ? 'Admin required to remove this entry. Family removal ends 15 minutes after recording.'
+      row.note.textContent = !canRemove ? 'Admin required after 15 minutes.'
         : entry.requiresRebuild ? 'Removal updates the model in the background.' : '';
       row.note.hidden = !row.note.textContent;
-      row.button.textContent = canRemove ? 'Remove mistaken entry' : 'Admin required';
+      if (row.note.hidden) row.button.removeAttribute('aria-describedby');
+      else row.button.setAttribute('aria-describedby', row.note.id);
       row.button.disabled = state.busy || !!state.pending || !available || !canRemove;
       row.button.setAttribute('aria-label', `Remove mistaken ${entry.kg} kg entry recorded ${fireplaceTime(entry.at, now)}`);
       if ($('fireplace-entries').children[index] !== row.item) $('fireplace-entries').insertBefore(row.item, $('fireplace-entries').children[index] ?? null);

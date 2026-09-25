@@ -40,10 +40,20 @@
       <p id="replica-verification" class="muted"></p>
     </section>
     <p id="context" class="context">Loading controller state…</p>
-    <form id="auth" class="panel" hidden>
+    <form id="auth" class="panel" aria-labelledby="auth-title" hidden>
+      <h2 id="auth-title">Sign in</h2>
+      <p class="auth-intro">Enter your admin or family password.</p>
       <label for="token">Password</label>
-      <div class="password-entry"><input id="token" type="password" autocomplete="current-password" required><button id="password-visibility" type="button" class="secondary-button" aria-controls="token" aria-pressed="false">Show password</button></div>
-      <button type="submit">Connect</button><p>Use your admin or family password. Kept in this browser tab only.</p>
+      <div class="password-entry">
+        <input id="token" name="password" type="password" autocomplete="current-password" autocapitalize="none" spellcheck="false" aria-describedby="auth-help auth-error" required>
+        <button id="password-visibility" type="button" aria-label="Show password" title="Show password" aria-controls="token" aria-pressed="false">
+          <svg data-password-show viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>
+          <svg data-password-hide viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="m3 3 18 18M10.6 5.1 12 5c6.5 0 10 7 10 7a19 19 0 0 1-3.1 3.9M6.1 6.1A20 20 0 0 0 2 12s3.5 7 10 7a11 11 0 0 0 5.9-1.9M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>
+        </button>
+      </div>
+      <p id="auth-error" class="form-error" role="alert" hidden></p>
+      <button class="auth-submit" type="submit">Sign in</button>
+      <p id="auth-help" class="muted">Your password stays in this browser tab.</p>
     </form>
     <p id="error" role="alert" hidden></p>
     <section class="controller-panels" aria-label="Home and garage controller" data-snapshot-content>
@@ -229,6 +239,7 @@
                       <summary><span>Sensor changes</span><small id="sensor-change-overview">Replacement, move or calibration</small></summary>
                       <div id="sensor-change-content">
                         <p id="sensor-change-help" class="muted">Record a replacement, new location or calibration when it happens. You will review its effect on learning before saving. Revert a mistaken entry to relearn from recorded history.</p>
+                        <p class="family-access-note">Admin access is required to record or revert sensor changes.</p>
                         <form id="sensor-change-form" data-admin-only class="sensor-change-form" aria-describedby="sensor-change-help sensor-change-reason-help">
                           <label for="sensor-change-signal">Sensor<select id="sensor-change-signal" required disabled><option value="">Loading sensors…</option></select></label>
                           <label for="sensor-change-reason">Reason<select id="sensor-change-reason" disabled><option value="replacement">Replacement</option><option value="moved">New location</option><option value="calibration">Calibration</option><option value="other">Other</option></select></label>
@@ -251,6 +262,7 @@
                       <summary><span>Sensor changes</span><small id="outdoor-sensor-change-overview">Replacement, move or calibration</small></summary>
                       <div id="outdoor-sensor-change-content">
                         <p id="outdoor-sensor-change-help" class="muted">Record a replacement, new location or calibration when it happens. You will review its effect on learning before saving. Revert a mistaken entry to relearn from recorded history.</p>
+                        <p class="family-access-note">Admin access is required to record or revert sensor changes.</p>
                         <form id="outdoor-sensor-change-form" data-admin-only class="sensor-change-form" aria-describedby="outdoor-sensor-change-help outdoor-sensor-change-reason-help">
                           <label for="outdoor-sensor-change-signal">Sensor<select id="outdoor-sensor-change-signal" required disabled><option value="">Loading sensors…</option></select></label>
                           <label for="outdoor-sensor-change-reason">Reason<select id="outdoor-sensor-change-reason" disabled><option value="replacement">Replacement</option><option value="moved">New location</option><option value="calibration">Calibration</option><option value="other">Other</option></select></label>
@@ -306,6 +318,7 @@
                     <p id="h66-context" class="muted" role="status" hidden></p>
                     <details id="h66-test-details" class="equipment-fold">
                       <summary>Adjust heat-pump parameters</summary>
+                      <p class="family-access-note">You can browse reported settings. Admin access is required to change them.</p>
                       <form id="h66-test-form" class="h66-test-form" aria-describedby="h66-test-status">
                         <label>Setting<select id="h66-test-register">
                           <option value="0203">Room setting</option><option value="0212">Hot water start</option>
@@ -397,6 +410,7 @@
                       <details id="floor-commissioning-details" class="equipment-fold">
                         <summary><span>Install &amp; commission</span><small>Before enabling control</small></summary>
                         <p class="muted">Keep floor control disabled until every physical check passes. Recording commissioning in configuration does not perform these checks.</p>
+                        <p class="family-access-note">Admin access is required to download the guide or script.</p>
                         <div class="floor-preheat-downloads">
                           <button id="floor-preheat-guide" data-admin-only class="secondary-button" type="button">Download full guide (.md)</button>
                           <button id="floor-preheat-script" data-admin-only class="secondary-button" type="button">Download Shelly script (.js)</button>
@@ -430,7 +444,8 @@
                   <details id="controls-details" class="section-fold controller-fold">
                     <summary><span>Configuration</span><small> · File &amp; settings</small></summary>
                     <div class="section-fold-body">
-                      <div class="web-access-session"><p id="web-access-role" role="status">Not signed in</p><button id="web-logout" class="secondary-button" type="button" hidden>Logout</button></div>
+                      <div class="web-access-session"><p id="web-access-role" role="status">Not signed in</p><button id="web-logout" class="secondary-button" type="button" hidden>Log out</button></div>
+                      <p class="family-access-note">Admin access is required to apply configuration changes.</p>
                       <section class="configuration-location" aria-labelledby="settings-location-title">
                         <h3 id="settings-location-title">Configuration file location</h3>
                         <dl id="settings-location"></dl>
@@ -441,15 +456,15 @@
                         <summary>JSON file example</summary>
                         <p class="muted">Include only fields you want to change, with no outer <code>options</code> wrapper. Replace these example values with your own. The admin <code>web_token</code> and optional <code>web_family_token</code> passwords must differ and each need at least 24 characters.</p>
                         <pre><code>{
-        "easee": {
-          "user": "your-easee-username",
-          "pw": "your-easee-password"
-        },
-        "controller": {
-          "web_token": "replace-with-your-admin-password",
-          "web_family_token": "replace-with-your-family-password"
-        }
-      }</code></pre>
+  "easee": {
+    "user": "your-easee-username",
+    "pw": "your-easee-password"
+  },
+  "controller": {
+    "web_token": "replace-with-your-admin-password",
+    "web_family_token": "replace-with-your-family-password"
+  }
+}</code></pre>
                       </details>
                       <p id="settings-access" class="muted" role="status"></p>
                       <p id="settings-import-warning" class="form-error" role="alert" hidden></p>
@@ -649,6 +664,7 @@
                   <details id="garage-native-control-details" class="equipment-fold" hidden>
                     <summary>Heat-pump settings</summary>
                     <p id="garage-room-temperature-status" class="muted" role="status" hidden></p>
+                    <p class="family-access-note">You can browse reported settings. Admin access is required to change them.</p>
                     <form id="garage-native-form" class="h66-test-form mitsubishi-test-form" aria-describedby="garage-native-status garage-native-message">
                       <label>Setting<select id="garage-native-setting">
                         <option value="power">Power</option><option value="mode">Operating mode</option>
@@ -776,6 +792,7 @@
         <details id="database-export-details">
           <summary>Export database</summary>
           <p class="muted">Export a complete copy of the recorded history and saved state. Recording continues during export. Filenames include the export date and time in UTC.</p>
+          <p class="family-access-note">Admin access is required to save or download a database copy.</p>
           <div class="database-export-actions">
             <div>
               <button id="database-export-save" data-admin-only type="button" class="secondary-button" aria-describedby="database-export-save-help">Save local copy</button>
@@ -807,6 +824,7 @@
           <p class="muted">Mirroring copies the master’s database to the slave, including changes and deletions. After an outage, the slave catches up and verifies the copied snapshot before showing it. A verified snapshot matches the master at the time it was taken; newer measurements can still be waiting to sync.</p>
           <p id="pairing-phase" class="pairing-progress" role="status" aria-live="polite"></p>
           <p id="pairing-recovery" class="pairing-progress" role="status" aria-live="polite"></p>
+          <p class="family-access-note">Admin access is required to manage paired computers.</p>
           <section id="pairing-master-controls" class="pairing-management" aria-labelledby="pairing-recovery-title" hidden>
             <h3 id="pairing-recovery-title">Recover missing history</h3>
             <p>Use this when the other computer recorded history while this master was offline. Recovery is manual. The master keeps its existing history wherever the two computers disagree, imports compatible missing entries, and rebuilds the learned model from the combined history.</p>

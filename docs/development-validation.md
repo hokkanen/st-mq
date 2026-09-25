@@ -79,11 +79,18 @@ Never point them at a household application.
 These scripts start their own disposable Chrome processes:
 
 ```sh
+node scripts/browser-access-smoke.js
 node scripts/browser-equipment-smoke.js
 node scripts/browser-home-controls-smoke.js
 node scripts/browser-garage-smoke.js
 node scripts/browser-fullscreen-smoke.js
 ```
+
+The access suite checks password entry, keyboard and touch visibility controls,
+family/admin permissions, logout and credential revocation. It audits responsive
+layouts in both themes, including narrow and short login viewports. To retain
+synthetic screenshots and the geometry report, set
+`STMQ_ACCESS_SCREENSHOT_DIR=/tmp/access-layout` when running the script.
 
 The fullscreen suite checks the page controls, chart entry/exit restoration,
 external fullscreen changes and fallback behavior with synthetic data.

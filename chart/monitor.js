@@ -100,14 +100,25 @@ const reasons = {
   'sensor-measurement-changed': 'Re-establishing temperature learning after a sensor change',
   'continuous-normal-preferred': 'Continuous normal operation is preferred',
 };
-function lockScreen() {
+function lockScreen({ authenticationFailed = false } = {}) {
+  const hadPassword = Boolean(session.token), hadStatus = Boolean(lastStatus);
   session.logout(); ++refreshSequence; lastStatus = undefined; webAccess = undefined;
   document.body.dataset.authenticated = 'false';
   closeStatusDetails(document);
   for (const dialog of document.querySelectorAll('dialog[open]')) dialog.close();
   $('auth').hidden = ingress; $('connection').textContent = 'Signed out';
   $('token').value = ''; passwordVisibility.hide();
-  $('token').focus();
+  $('token').removeAttribute('aria-invalid');
+  $('auth-error').textContent = '';
+  $('auth-error').hidden = true;
+  $('error').hidden = true;
+  if (authenticationFailed && ingress) showError(new Error(authenticationMessage(true)));
+  else if (authenticationFailed && hadPassword) {
+    $('auth-error').textContent = hadStatus ? 'Your session ended. Sign in again.' : 'Password not recognised. Try again.';
+    $('auth-error').hidden = false;
+    if (!hadStatus) $('token').setAttribute('aria-invalid', 'true');
+  }
+  if (!ingress) $('token').focus();
 }
 async function api(path, data, options = {}) {
   if (session.locked) throw Object.assign(new Error(authenticationMessage(ingress)), { status: 401 });
@@ -122,7 +133,7 @@ async function api(path, data, options = {}) {
     ...(data === undefined ? {} : { body: JSON.stringify(data) }),
   }), options);
   if (response.status === 401) {
-    lockScreen();
+    lockScreen({ authenticationFailed: true });
     const error = new Error(authenticationMessage(ingress)); error.status = response.status; throw error;
   }
   if (!response.ok) { const error = new Error(result.error ?? 'Request failed'); error.status = response.status; throw error; }
@@ -401,9 +412,11 @@ function renderProviders(s) {
       const localOutage = document.createElement('p'); localOutage.className = 'provider-local-outage';
       const adopt = document.createElement('button'); adopt.type = 'button'; adopt.setAttribute('data-admin-only', ''); adopt.className = 'secondary-button provider-local-adopt';
       adopt.textContent = 'Set up local connection'; adopt.addEventListener('click', adoptOcppSetup);
+      const accessNote = document.createElement('p'); accessNote.className = 'family-access-note';
+      accessNote.textContent = 'Admin access is required to set up the local connection.';
       const localMessage = document.createElement('p'); localMessage.className = 'provider-local-message';
       localMessage.setAttribute('role', 'status'); localMessage.setAttribute('aria-live', 'polite');
-      local.append(localTitle, localRows, endpoint, localHelp, localBackup, localOutage, adopt, localMessage);
+      local.append(localTitle, localRows, endpoint, localHelp, localBackup, localOutage, adopt, accessNote, localMessage);
       const readings = document.createElement('div'); readings.className = 'provider-series-content';
       const sections = document.createElement('div'); sections.className = 'provider-source-sections';
       body.append(introduction, detail, sections);
@@ -454,6 +467,7 @@ function renderProviders(s) {
       }
       const adopt = local.querySelector('.provider-local-adopt');
       adopt.hidden = ocppSetupRevision(s) === null;
+      local.querySelector('.family-access-note').hidden = adopt.hidden;
       adopt.disabled = adopt.hidden || temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy || equipmentBusy;
     }
     const sections = row.querySelector('.provider-source-sections');
@@ -846,9 +860,16 @@ $('settings-reload').addEventListener('click', async () => {
 });
 $('auth').addEventListener('submit', event => {
   event.preventDefault();
+  $('auth').setAttribute('aria-busy', 'true');
+  $('auth').querySelector('[type="submit"]').disabled = true;
   session.login($('token').value); $('token').value = ''; passwordVisibility.hide();
   // A fresh document discards any previous login's pending forms and responses.
   window.location.reload();
+});
+$('token').addEventListener('input', () => {
+  $('token').removeAttribute('aria-invalid');
+  $('auth-error').textContent = '';
+  $('auth-error').hidden = true;
 });
 $('web-logout').addEventListener('click', () => {
   lockScreen();
@@ -977,7 +998,7 @@ bindDatabaseExport({ saveButton: $('database-export-save'), downloadButton: $('d
       const response = await fetch(applicationUrl('/api/database-export'), { method, signal,
         headers: { ...headers, ...(method === 'POST' ? { 'Content-Type': 'application/json' } : {}) },
         ...(method === 'POST' ? { body: '{}' } : {}) });
-      if (response.status === 401) { lockScreen(); throw new Error(authenticationMessage(ingress)); }
+      if (response.status === 401) { lockScreen({ authenticationFailed: true }); throw new Error(authenticationMessage(ingress)); }
       return response;
     });
   } });
@@ -989,7 +1010,7 @@ for (const [id, path, filename] of [
     assertWebRequest(webAccess, path, undefined, lastStatus);
     const blob = await session.run(async ({ headers, signal }) => {
       const response = await fetch(applicationUrl(path), { headers, signal });
-      if (response.status === 401) { lockScreen(); throw new Error(authenticationMessage(ingress)); }
+      if (response.status === 401) { lockScreen({ authenticationFailed: true }); throw new Error(authenticationMessage(ingress)); }
       if (!response.ok) throw new Error(response.status === 403 ? 'Admin required for downloads.' : 'Download failed. Please try again.');
       return response.blob();
     });
@@ -1023,5 +1044,5 @@ setInterval(refreshPairing, 3_000);
 setInterval(() => { checkCommunication(); if (!session.locked) fireplacePanel.tick(); }, 1000);
 window.addEventListener('online', () => void refresh());
 document.addEventListener('visibilitychange', () => { checkCommunication(); if (!document.hidden) void refresh(); });
-if (session.locked) { $('auth').hidden = ingress; $('connection').textContent = 'Signed out'; }
+if (session.locked) { $('auth').hidden = ingress; $('connection').textContent = 'Signed out'; if (!ingress) $('token').focus(); }
 else void refresh();

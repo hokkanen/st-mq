@@ -445,8 +445,9 @@ of at least 24 characters. Family access requires a separate admin password. Use
 trusted local network or an authenticated HTTPS reverse proxy for remote direct
 access. Credentials are never returned in API responses. A direct-access browser
 keeps its entered password in session storage for its tab. The password prompt
-includes **Show password**. The **Configuration** section shows the current role
-and provides **Logout** for password-based access. Logging out returns to the
+includes an eye button inside the password field to show or hide the entry.
+The **Configuration** section shows the current role and provides **Log out**
+for password-based access. Logging out returns to the
 password prompt without stopping device operations already requested. Ingress
 shows admin access through Home Assistant; use Home Assistant to log out there.
 

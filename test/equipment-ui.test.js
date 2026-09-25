@@ -282,6 +282,7 @@ function equipmentDocument() {
     replaceChildren(...children) { for (const child of [...this.children]) child.remove(); this.append(...children); }
     setAttribute(name, value) { this.attributes.set(name, String(value)); }
     getAttribute(name) { return this.attributes.get(name) ?? null; }
+    removeAttribute(name) { this.attributes.delete(name); }
     hasAttribute(name) { return this.attributes.has(name); }
     addEventListener(name, callback) { this.listeners.set(name, callback); }
     contains(target) { return this === target || this.children.some(child => child.contains(target)); }
@@ -513,4 +514,35 @@ test('equipment readings honor categorical state labels and never coerce unknown
   reading.value = 2; reading.stale = true;
   assert.equal(equipmentReadingRows(device)[0].value, 'Unknown');
   assert.match(equipmentReadingRows(device)[0].detail, /Last reported Medium/);
+});
+
+
+test('permission explanations stay outside equipment control rows and follow a door changing area', () => {
+  const document = equipmentDocument(), panel = createEquipmentPanel({ document, request: async () => {} });
+  const door = { id: 'door', label: 'Door', kind: 'door', area: 'home', available: true,
+    controls: { cover: { open: true, close: true } }, cover: { available: true, state: 'closed' },
+    readings: { door_open: { value: 0, unit: 'state', observedAt: now, stale: false } } };
+  const current = status({ equipment: { devices: [structuredClone(plug), caravanAir(), dehumidifier(true), door] } });
+  panel.update(current);
+  const caravan = deviceNode(document, 'garage-equipment-readings', 'caravan');
+  const switches = caravan.querySelector('.equipment-switch-buttons');
+  assert.deepEqual(switches.children.map(node => node.tagName), ['BUTTON', 'BUTTON']);
+  const switchNote = switches.parentElement.querySelector('.family-access-note');
+  assert.equal(switchNote.parentElement, switches.parentElement);
+  assert.equal(switches.children[0].getAttribute('aria-describedby'), null);
+  const appliance = caravan.querySelector('.caravan-dehumidifier');
+  const controls = appliance.querySelector('.caravan-dehumidifier-controls');
+  const applianceNote = appliance.querySelector('.family-access-note');
+  assert.equal(applianceNote.parentElement, controls.parentElement);
+  assert.equal(controls.children.length, 5, 'permission text does not occupy a dehumidifier grid cell');
+  const homeDoor = deviceNode(document, 'home-equipment-readings', 'door');
+  const coverNote = homeDoor.querySelector('.equipment-cover-controls').querySelector('.family-access-note');
+  const coverButtons = homeDoor.querySelector('.equipment-cover-buttons');
+  assert.equal(coverNote.hidden, false);
+  assert.equal(coverNote.parentElement, coverButtons.parentElement);
+  assert(coverButtons.children.every(button => button.getAttribute('aria-describedby') === 'equipment-cover-door-help'));
+  door.area = 'garage'; panel.update(current);
+  assert.equal(deviceNode(document, 'garage-equipment-readings', 'door'), homeDoor);
+  assert.equal(coverNote.hidden, true);
+  assert(coverButtons.children.every(button => button.getAttribute('aria-describedby') === 'equipment-cover-door-help'));
 });

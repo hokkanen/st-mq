@@ -50,6 +50,7 @@ export function createCaravanContents({ document, actions, blocked, readingsFor,
   const power = make('div', '', 'caravan-setting caravan-power'), powerButtons = make('div', '', 'caravan-power-buttons');
   controls.setAttribute('data-admin-only', '');
   help.id = 'caravan-dehumidifier-help';
+  const access = make('p', 'Admin access is required to change dehumidifier settings.', 'family-access-note');
   dehumidifier.dataset.deviceId = 'caravan_dehumidifier';
   powerButtons.setAttribute('role', 'group'); powerButtons.setAttribute('aria-label', 'Dehumidifier power');
   powerButtons.setAttribute('aria-describedby', help.id);
@@ -76,7 +77,7 @@ export function createCaravanContents({ document, actions, blocked, readingsFor,
     field.append(make('span', settingLabels[setting], 'caravan-setting-label'), select); controls.append(field); selects.set(setting, select);
   }
   result.setAttribute('role', 'status'); result.setAttribute('aria-live', 'polite');
-  dehumidifier.append(heading('Dehumidifier', model), state, controls, help, result);
+  dehumidifier.append(heading('Dehumidifier', model), state, controls, access, help, result);
 
   function airReadings(root, rows, nodes, primary) {
     for (const row of rows) {

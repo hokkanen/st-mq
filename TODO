@@ -2,6 +2,22 @@
 -Implement support for local mqtt-based temperature receives (eg, from shelly or HASS through Meteorologisk Institute); just store last received temp values and time stamps (maybe in storage class, see below) when received (and accept if received within 1h)
 -Chart dataset control buttons don't work when datasets are manually hidden/unhidden from legend, how to fix?
 
+Completed 2026-09-25 — Access UI layout and interaction audit
+- Replace the full-width password row with a bounded sign-in card using existing
+  theme tokens, an inline SVG eye, a 44 px touch target and clear password errors.
+  Preserve typing focus and selection on reveal; clear stale error descriptions.
+- Remove generated permission text from buttons, field labels and form grids.
+  Explain restrictions beside control groups; retain native-reading navigation,
+  stable firewood action labels, server permissions and existing device controls.
+- Align configuration/logout, download and door actions; keep narrow button labels
+  intact and avoid focusing disabled editors during Family browsing.
+- Reviewed current producers, renderers, session handling and access consumers.
+  No compatibility aliases, migrations or alternative permission contracts added.
+- Validation: 304 UI/access regression tests and production build pass. Isolated
+  Chromium checks pass 199 layouts in both themes, including dynamic equipment,
+  charging, short login viewports, password input, logout and revocation. Use the access browser suite
+  in docs/development-validation.md to repeat the audit with synthetic data.
+
 Completed 2026-09-25 — Active vehicle identification per connection
 - Replace the passive three-minute scheduling observation with a durable
   identification attempt. Easee cloud and OCPP can release their own economic

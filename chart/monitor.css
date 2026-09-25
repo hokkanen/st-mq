@@ -619,7 +619,7 @@ details details { margin-inline-start: 24px; }
 .sensor-change-status:empty { display: none; }
 .sensor-change-history-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border); }
 .sensor-change-history-heading h3 { font-size: 13px; font-weight: 550; margin: 0; }
-.sensor-change-history-heading button { margin: 0; font-size: 11px; }
+.sensor-change-history-heading button { flex: none; margin: 0; padding-inline: 12px; font-size: 11px; white-space: nowrap; }
 .sensor-change-entries { list-style: none; padding: 0; margin: 0; }
 .sensor-change-entries li { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 12px; padding: 10px 0; border-bottom: 1px solid var(--border); font-size: 11px; }
 .sensor-change-entry-status { color: var(--muted); }
@@ -1022,7 +1022,7 @@ button.garage-door-action:disabled { opacity: .55; cursor: default; }
   .caravan-dehumidifier-controls { grid-template-columns: minmax(0, 1fr); }
 }
 .equipment-cover-buttons { display: flex; flex-wrap: wrap; gap: 6px; max-width: 300px; }
-.equipment-cover-buttons > button { position: relative; display: inline-flex; align-items: center; justify-content: center; flex: 1; min-width: 0; min-height: 36px; margin: 0; padding: 6px 24px; font-size: 12px; }
+.equipment-cover-buttons > button { position: relative; display: inline-flex; align-items: center; justify-content: center; flex: 1; min-width: 84px; min-height: 36px; margin: 0; padding: 6px 24px; font-size: 12px; white-space: nowrap; }
 .equipment-cover-buttons > button[hidden] { display: none; }
 .equipment-cover-buttons svg { position: absolute; left: 7px; width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .equipment-cover-controls > p { font-size: 10px; line-height: 1.5; }
@@ -1150,7 +1150,8 @@ button.garage-door-action:disabled { opacity: .55; cursor: default; }
 .floor-preheat-facts dt { color: var(--muted); }
 .floor-preheat-facts dd { margin: 0; }
 .floor-preheat-limit { padding-left: 12px; border-left: 2px solid var(--border); }
-.floor-preheat-downloads { display: flex; flex-wrap: wrap; gap: 8px 20px; margin: 16px 0; }
+.floor-preheat-downloads { display: flex; flex-wrap: wrap; align-items: stretch; gap: 8px; margin: 16px 0; }
+.floor-preheat-downloads button { margin: 0; max-width: 100%; font-size: 12px; }
 .floor-preheat-panel a, .floor-setup-link a { color: var(--accent); text-underline-offset: 3px; }
 .floor-setup-link { margin: 12px 0; font-size: 11px; line-height: 1.6; }
 .floor-commissioning-steps { margin: 16px 0 0; padding-left: 22px; }
@@ -1582,11 +1583,36 @@ button.garage-door-action:disabled { opacity: .55; cursor: default; }
 /* Keep all installation data off the password screen, including open dialogs. */
 body[data-authenticated="false"] main > :not(#auth):not(#error),
 body[data-authenticated="false"] > dialog,
+body[data-authenticated="false"] > footer,
 body[data-authenticated="false"] #status-detail-popover,
 body[data-authenticated="false"] #instance-role { display: none !important; }
-.password-entry { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; }
-.password-entry input { flex: 1; min-width: 10rem; }
-.web-access-session { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 1rem; }
-[data-access-locked="true"]::after { content: 'Admin required'; display: block; font-size: .75rem; font-weight: normal; opacity: .8; }
-button[data-access-locked="true"]::after { margin-top: .2rem; }
-[data-access-locked="true"] { cursor: default; }
+body[data-authenticated="false"] header { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "title actions"; }
+body[data-authenticated="false"] #connection { display: none; }
+#auth { width: 100%; max-width: 420px; margin: clamp(24px, 8vh, 80px) auto 24px; padding: 28px; }
+#auth h2 { margin: 0 0 8px; }
+#auth .auth-intro { margin: 0 0 24px; color: var(--muted); font-size: 13px; }
+#auth > label { margin: 0 0 8px; }
+.password-entry { position: relative; }
+.password-entry input { display: block; width: 100%; height: 48px; padding: 11px 52px 11px 12px; font-size: 16px; }
+.password-entry input::-ms-reveal { display: none; }
+#password-visibility { position: absolute; top: 2px; right: 2px; display: grid; place-items: center; width: 44px; height: 44px; min-height: 44px; margin: 0; padding: 11px; color: var(--muted); background: transparent; border: 0; border-radius: 4px; }
+#password-visibility:hover { color: var(--accent); background: var(--surface-soft); }
+#password-visibility:focus-visible { outline-offset: -3px; }
+#password-visibility svg { display: block; width: 22px; height: 22px; }
+#password-visibility [data-password-hide], #password-visibility[aria-pressed="true"] [data-password-show] { display: none; }
+#password-visibility[aria-pressed="true"] [data-password-hide] { display: block; }
+#auth .auth-submit { width: 100%; min-height: 44px; margin: 20px 0 0; }
+#auth-help { margin: 16px 0 0; font-size: 11px; }
+#auth-error { margin: 10px 0 0; font-size: 12px; }
+#token[aria-invalid="true"] { border-color: var(--error-text); }
+body[data-authenticated="false"] #error { max-width: 420px; margin: 24px auto; }
+.web-access-session { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 16px; margin-bottom: 16px; padding-bottom: 16px; border-bottom: 1px solid var(--border); }
+.web-access-session p { min-width: 0; margin: 0; font-size: 12px; }
+.web-access-session button { flex: none; margin: 0; white-space: nowrap; }
+.family-access-note { display: none; }
+body[data-access-role="family"] .family-access-note { display: block; margin: 12px 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
+[data-access-locked="true"], [data-access-locked="true"] :disabled { cursor: default; }
+@media (max-width: 480px) {
+  #auth { padding: 24px 20px; }
+  .floor-preheat-downloads button { width: 100%; }
+}

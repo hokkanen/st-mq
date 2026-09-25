@@ -67,13 +67,26 @@ export function createWebSession({ storage, ingress = false }) {
 }
 
 export function bindPasswordVisibility({ input, button }) {
-  const hide = () => { input.type = 'password'; button.textContent = 'Show password'; button.setAttribute('aria-pressed', 'false'); };
-  button.addEventListener('click', () => {
-    const shown = input.type === 'password';
+  const setShown = shown => {
+    const start = input.selectionStart, end = input.selectionEnd, direction = input.selectionDirection;
     input.type = shown ? 'text' : 'password';
-    button.textContent = `${shown ? 'Hide' : 'Show'} password`;
+    if (start != null && end != null) {
+      // Chrome rebuilds the input's inner editor on a type change. Complete that
+      // layout before restoring the selection so it does not reset afterwards.
+      void input.offsetWidth;
+      input.setSelectionRange(start, end, direction);
+    }
+    const label = `${shown ? 'Hide' : 'Show'} password`;
+    button.setAttribute('aria-label', label);
+    button.setAttribute('title', label);
     button.setAttribute('aria-pressed', String(shown));
+  };
+  const hide = () => setShown(false);
+  // Keep typing focus (and the touch keyboard) when revealing the current entry.
+  button.addEventListener('pointerdown', event => {
+    if (event.button === 0 && input.ownerDocument.activeElement === input) event.preventDefault();
   });
+  button.addEventListener('click', () => setShown(input.type === 'password'));
   hide();
   return { hide };
 }

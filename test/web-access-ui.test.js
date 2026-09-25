@@ -86,12 +86,14 @@ test('a cancelled request cannot begin later with the previous password', async 
 test('password visibility is explicit and resets to hidden', () => {
   const events = {}, attributes = {};
   const input = { type: 'password', value: 'invented-browser-password' };
-  const button = { addEventListener: (event, handler) => { events[event] = handler; }, setAttribute: (name, value) => { attributes[name] = value; } };
+  const button = { textContent: 'eye icon', addEventListener: (event, handler) => { events[event] = handler; }, setAttribute: (name, value) => { attributes[name] = value; } };
   const toggle = bindPasswordVisibility({ input, button });
-  assert.equal(button.textContent, 'Show password');
-  events.click(); assert.equal(input.type, 'text'); assert.equal(button.textContent, 'Hide password'); assert.equal(attributes['aria-pressed'], 'true');
+  assert.equal(attributes['aria-label'], 'Show password');
+  events.click(); assert.equal(input.type, 'text'); assert.equal(attributes['aria-label'], 'Hide password'); assert.equal(attributes['aria-pressed'], 'true');
   events.click(); assert.equal(input.type, 'password');
   events.click(); toggle.hide(); assert.equal(input.type, 'password'); assert.equal(attributes['aria-pressed'], 'false');
+  assert.equal(attributes['aria-label'], 'Show password'); assert.equal(attributes.title, 'Show password');
+  assert.equal(button.textContent, 'eye icon', 'toggling keeps the SVG content intact');
   assert.equal(input.value, 'invented-browser-password');
 });
 

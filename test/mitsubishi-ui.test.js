@@ -90,7 +90,7 @@ function panelFixture() {
   nodes.set('garage-room-temperature-status', new Node());
   const setting=nodes.get('garage-native-setting');setting.value='power';
   for(const field of ['power','mode','targetC','fan','vane','wideVane']){const option=new Node();option.value=field;setting.append(option);}
-  const document={getElementById:id=>nodes.get(id),createElement:()=>new Node()};
+  const document={body:{dataset:{accessRole:'admin'}},getElementById:id=>nodes.get(id),createElement:()=>new Node()};
   const calls=[],busy=[],status=fixture();let reply=status;
   const panel=createMitsubishiControls({document,request:async(path,input)=>{calls.push([path,input]);return typeof reply==='function'?reply():reply;},onBusy:value=>busy.push(value)});
   panel.update(status);
@@ -353,4 +353,19 @@ test('external room targets remain visible but cannot be submitted from read-onl
   const html = readFileSync(new URL('../chart/index.html', import.meta.url), 'utf8');
   assert.doesNotMatch(html, /assume-isave|Assume i-save|Assumes i-save|controller’s assumption/);
   assert.match(html, /Garage rear guides heating while the pump is set to 17 °C/);
+});
+
+
+test('family pointer selection keeps focus on Setting while exposing the selected native reading', () => {
+  const f = panelFixture(), setting = f.nodes.get('garage-native-setting');
+  f.document.body.dataset.accessRole = 'family';
+  for (const field of ['targetC', 'fan', 'mode', 'power', 'vane', 'wideVane']) {
+    setting.focus(); setting.listeners.get('pointerdown')(); f.change(field);
+    assert.equal(f.document.activeElement, setting, `${field} does not focus a restricted value editor`);
+    assert.equal(setting.disabled, false);
+    assert.equal(f.nodes.get('garage-native-form').hidden, false);
+    if (field === 'targetC') assert.equal(f.nodes.get('garage-native-temperature').value, '22');
+    else assert.equal(f.nodes.get('garage-native-value').value, JSON.stringify(f.status.garage.nativeControls.settings[field].value));
+  }
+  assert.equal(f.calls.length, 0);
 });

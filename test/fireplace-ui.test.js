@@ -119,6 +119,7 @@ function panelFixture(request = async () => view(), storage) {
       this.classList = { toggle: (name, state) => state ? this.classes.add(name) : this.classes.delete(name) }; }
     setAttribute(name, value) { this.attributes.set(name, value); }
     getAttribute(name) { return this.attributes.get(name) ?? null; }
+    removeAttribute(name) { this.attributes.delete(name); }
     addEventListener(name, handler) { this.events.set(name, handler); }
     dispatch(name) {
       const event = { target: this, defaultPrevented: false, propagationStopped: false,
@@ -271,7 +272,31 @@ test('family firewood history remains readable while old removal buttons explain
   panel.update(view(1, [{ ...entry(), canRemove: false, removalUntil: now }]), now);
   const row = $('fireplace-entries').children[0];
   assert.equal(row.children[1].disabled, true);
-  assert.equal(row.children[1].textContent, 'Admin required');
-  assert.match(row.children[0].children[2].textContent, /15 minutes/);
+  assert.equal(row.children[1].textContent, 'Remove mistaken entry');
+  assert.equal(row.children[0].children[2].textContent, 'Admin required after 15 minutes.');
+  assert.equal(row.children[1].getAttribute('aria-describedby'), row.children[0].children[2].id);
   assert.equal($('fireplace-submit').disabled, false);
+});
+
+
+test('firewood action labels and note identities stay stable as permissions and explanations change', () => {
+  const { panel, $ } = panelFixture();
+  panel.update(view(1, [entry()]), now);
+  const row = $('fireplace-entries').children[0], button = row.children[1], note = row.children[0].children[2];
+  const noteId = note.id;
+  assert(noteId);
+  assert.equal(button.getAttribute('aria-describedby'), null);
+  assert.equal(button.textContent, 'Remove mistaken entry');
+  panel.update(view(1, [{ ...entry(), canRemove: false, removalUntil: now }]), now);
+  assert.equal(button.disabled, true);
+  assert.equal(button.textContent, 'Remove mistaken entry');
+  assert.equal(note.id, noteId);
+  assert.equal(button.getAttribute('aria-describedby'), noteId);
+  panel.update(view(1, [{ ...entry(), requiresRebuild: true }]), now);
+  assert.equal(button.disabled, false);
+  assert.equal(button.getAttribute('aria-describedby'), noteId);
+  assert.match(note.textContent, /background/);
+  panel.update(view(1, [entry()]), now);
+  assert.equal(button.getAttribute('aria-describedby'), null);
+  assert.equal(note.hidden, true);
 });
