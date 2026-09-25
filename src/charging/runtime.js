@@ -243,6 +243,7 @@ export class ChargingRuntime {
       && snapshot?.online === true && Number.isSafeInteger(snapshot.readAt)
       && snapshot.readAt <= now && now - snapshot.readAt <= MINUTE
       && control.session?.connected === true && snapshot.pluggedIn === true
+      && (snapshot.transport !== 'shelly-evse' || snapshot.identificationReady === true && !snapshot.nativeScheduleActive)
       && !control.manual && !snapshot.manualStop && !snapshot.stopped && snapshot.enabled !== false
       && !snapshot.faulted && !snapshot.authorizationBlocked
       && !['Faulted', 'Unavailable', 'Reserved'].includes(snapshot.connectorStatus)
@@ -667,8 +668,12 @@ export class ChargingRuntime {
       const progress = updateChargingProgress(item.progress, charger, now, this.readEnergy);
       const feed = this.vehicleFeeds[telemetry[id]?.vehicle?.id];
       const reception = feed ? vehicleReception(feed, now) : null;
+      const identificationPauseOutstanding = control.owned?.purpose === 'identification'
+        || control.pending?.owned?.purpose === 'identification';
       return { ...charger, defaults, association: item.association, controls: { ...item.controls },
         identification: { ...item.identification,
+          pauseRecovery: item.definition.provider === 'shelly-evse' ? 'controller' : 'charger',
+          pauseOutstanding: identificationPauseOutstanding,
           reason: item.identification?.reason ?? (!item.controller?.supportsIdentification ? 'unsupported'
             : control.manual || control.snapshot?.manualStop || control.snapshot?.stopped ? 'manual-stop'
               : !this.identificationAvailable(item, now) ? 'charger-unavailable'
@@ -676,7 +681,8 @@ export class ChargingRuntime {
                 : !this.identificationFeedReady(now) ? 'telemetry-unavailable'
                   : item.identification?.phase === 'pausing' ? 'awaiting-stop-confirmation'
                     : item.identification?.phase === 'charging' ? 'observing-charge' : 'waiting-for-charging'),
-          available: this.identificationAvailable(item, now) && this.identificationFeedReady(now) && this.identificationTurn(item),
+          available: !identificationPauseOutstanding && this.identificationAvailable(item, now)
+            && this.identificationFeedReady(now) && this.identificationTurn(item),
           active: ['waiting', 'charging', 'pausing'].includes(item.identification?.phase),
           attempted: Boolean(item.identification?.chargingStartedAt) },
         request: telemetry[id]?.vehicle?.sessionId ? item.request : null, vehicle: telemetry[id]?.vehicle ?? null,

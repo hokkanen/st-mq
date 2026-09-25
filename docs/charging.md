@@ -116,17 +116,17 @@ Assignments carry the physical association, plug epoch and vehicle-feed identity
 
 TeslaMate has transport, subscription, live logger-health and per-field evidence checks. Sleeping while healthy is distinct from unhealthy. A reconnect requires a new live healthy pulse. TeslaMate publishes most values only when they change; its current-limit and next-start settings remain available while the logger is healthy, preserving their original receipt times and retained provenance. Fresh physical charging takes precedence over a reported future timer. Retained or last-known values alone cannot identify a car. A live charging-state start within 30 seconds of a physical charging start can corroborate matching power after the normal ramp delay, for up to fifteen minutes, while physical power remains fresh. Retained starts and power cannot supply that evidence. Repeated identical publications and same-value recovery after an unknown gap preserve their original provenance. Every Tesla match requires positive vehicle power and physical power measured within the current session and the last minute; a consumed power observation cannot identify another connection. BMW source timestamps, home scope and consumed plug/start events serve the same separation. Neither feed's remote voltage or power fills missing household electrical measurements.
 
-Cloud scheduling and local OCPP use the same vehicle matcher, pending status,
-consumed-evidence checks and session boundaries. Their native adapters normalize
-ownership and physical pause evidence before it reaches identification. A cloud
-schedule or an OCPP acknowledgement alone cannot identify BMW. Its unchanged-inlet
-fallback requires both live vehicle transitions to match the charger transitions
+Easee cloud scheduling, local OCPP and the commissioned Shelly EVSE use the same
+vehicle matcher, pending status, consumed-evidence checks and session boundaries.
+Their adapters normalize ownership and physical pause evidence before it reaches
+identification. A schedule, RPC reply or OCPP acknowledgement alone cannot identify
+BMW. Its unchanged-inlet fallback requires both live vehicle transitions to match the charger transitions
 around a verified pause request; fresh-plug matching can use a natural stop.
 Unknown charger state never counts as a stop.
 
 Identification is an explicit connection phase before economic scheduling.
-Easee cloud and local OCPP support one automatic active attempt per physical
-connection, including when Automatic charging is OFF or Charge now is selected.
+Easee cloud, local OCPP and Shelly EVSE support one automatic active attempt per
+physical connection, including when Automatic charging is OFF or Charge now is selected.
 An already confirmed passive match skips the test. Otherwise, live charger
 readiness and plausible at-home vehicle context allow the controller to release
 its own economic delay and observe charging. Native electrical limits, faults,
@@ -140,17 +140,19 @@ BMW charging baseline instead triggers a brief, confirmed pause as soon as it
 is available. Startup can use live ongoing BMW charging without inventing a
 missing historical start edge. Matching charger and vehicle stop evidence is
 still required; an accepted pause command alone is insufficient. Active tests
-are serialized across charging points. The current Shelly EVSE adapter has no
-native expiring pause contract, so it uses passive matching and its Identify
-button remains unavailable.
+are serialized across charging points. Shelly requires commissioned control,
+fresh physical readings and available MQTT, and retains its electrical limiter
+and native restrictions throughout the test.
 
 The test observes charging for at most 60 seconds or 0.15 kWh, whichever is
 observed first, then ends inconclusively if no usable match or pause candidate
 arrived. These are controller decision limits; telemetry and actuator response
-delays can add physical charging. A requested identification pause expires after
-90 seconds rounded up to the next whole second, giving a 90–91 second maximum
-wait shared by cloud and OCPP. A confirmed identity ends the temporary test
-immediately and applies the current charging choice. An expired or interrupted
+delays can add physical charging. A requested identification pause has a deadline
+90 seconds later, rounded up to the next whole second. Easee cloud and OCPP
+enforce that expiry at the charger. Shelly's pause uses its start permission and
+is released by the application; its outage behavior is described below. A
+confirmed identity ends the temporary test immediately and applies the current
+charging choice. An expired or interrupted
 test becomes **Identification inconclusive** and returns to normal charging
 control with session/default battery inputs. Passive matching continues; late
 BMW stop evidence can still confirm the same witnessed pause for up to fifteen
@@ -160,8 +162,19 @@ The attempt, absolute deadlines and physical evidence survive a current-version
 restart. A known connection resumes its pending attempt or completed outcome;
 restart does not renew its budget. An already connected charger with no saved
 connection starts one attempt when fresh readings permit it. Unplugging cancels
-the attempt and clears its scope. Native pause expiry prevents a stopped process
-from leaving an identification-only pause indefinitely.
+the attempt and clears its scope. Easee native pause expiry prevents a stopped
+process from leaving an identification-only pause indefinitely.
+
+Shelly has no charger-side expiry for this test. The controller saves its pause
+and restoration obligation before sending the stop. If the application or MQTT
+connection fails, the temporary stop can last beyond the 90–91 second deadline.
+On recovery, fresh native readings must confirm the same equipment and physical
+connection before the controller resolves its saved command and returns to the
+current charging choice. An unconfirmed stop that cannot be distinguished from
+a manual instruction stays uncertain until explicitly resumed. Restarting does not create another attempt or extend
+the test deadline. An explicit manual Stop, an active native schedule or an
+electrical restriction still prevents starting; an old identification pause
+cannot authorize starting a different connection.
 
 Each card places **Charging controls** below **Session settings**, with
 **Identify** at the end of the controls. It requests another attempt for the

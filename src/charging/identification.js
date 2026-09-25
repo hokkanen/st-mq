@@ -123,8 +123,8 @@ export function advanceIdentification(previous, { connectedAt, now, connected = 
       && candidate.capturedAt >= state.startedAt && candidate.capturedAt <= now
       && now - candidate.capturedAt <= MINUTE && candidate.measuredAt < now) {
       state.candidate = structuredClone(candidate); state.phase = 'pausing';
-      // Both native transports accept whole seconds. Keep the same absolute
-      // recovery deadline across them, less than one second above the wait.
+      // Easee native expiry uses whole seconds. Shelly enforces the same
+      // absolute deadline in the application, without a device-side timer.
       state.pauseUntil = Math.ceil((now + IDENTIFICATION_PAUSE_WAIT_MS) / 1000) * 1000;
     }
   }

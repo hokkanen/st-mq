@@ -79,6 +79,19 @@ test('identification keeps progress visible with automatic OFF without reviving 
   assert.equal(unconfirmed.roleLabel, 'Control unconfirmed');
 });
 
+test('identification activity distinguishes requested pauses, observed stops and outstanding recovery without stale completion', () => {
+  const item = charger({ provider: 'shelly-evse', settings: { enabled: false }, control: { phase: 'identifying' },
+    identification: { phase: 'pausing', reason: 'awaiting-stop-confirmation', active: true, pauseOutstanding: true, pauseRecovery: 'controller' } });
+  assert.equal(summary({ ...item, values: { ...item.values, charging: reading(true) } }).activity, 'Charging · Pause requested');
+  assert.equal(summary({ ...item, values: { ...item.values, charging: reading(false) } }).activity, 'Confirming vehicle');
+  const completed = { ...item, vehicle: { state: 'identified', id: 'tesla', label: 'Tesla' },
+    identification: { ...item.identification, phase: 'completed', active: false } };
+  const result = summary(completed);
+  assert.equal(result.activity, 'Pause recovery pending'); assert.equal(result.roleState, 'uncertain');
+  assert.equal(result.completion.at, null); assert.equal(notice(completed).label, 'Pause recovery pending');
+  assert.doesNotMatch(result.roleDetail, /has resumed|now applies/);
+});
+
 test('live activity keeps charging and pause status while the ETA moves to its own column', () => {
   const item = charger(), values = { ...item.values, charging: reading(true), powerKw: reading(8.2) };
   const charging = summary({ ...item, values, control: { phase: 'released' }, forecast: { finishAt } });

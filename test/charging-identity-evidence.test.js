@@ -20,6 +20,13 @@ function fixture(transport) {
     Object.assign(control.snapshot, { transport, connectionId: 'synthetic-connection', transactionId: 17,
       transactionConfirmed: true, transactionStartedAt: expected.connectedAt,
       connectorStatus: 'SuspendedEVSE', statusAt: stoppedAt, powerKw: 0, powerAt: NOW - 1000 });
+  } else if (transport === 'shelly-evse') {
+    Object.assign(control, { ownsInstruction: true, pauseConfirmed: true });
+    control.session.sessionId = 'synthetic-shelly-session';
+    Object.assign(control.owned, { purpose: 'identification', identificationId: 'synthetic-identification',
+      identificationConnectedAt: expected.connectedAt, sessionId: control.session.sessionId });
+    Object.assign(control.snapshot, { transport, controlReady: true, nativeScheduleActive: false,
+      charging: false, statusAt: stoppedAt, powerKw: 0, powerAt: NOW - 1000 });
   } else {
     const schedule = { enabled: 'delayed', delayed: { startTime: '09:30:00', timezone: 'UTC', maximumAmps: 16 } };
     control.owned.activeFingerprint = effectiveScheduleFingerprint(schedule);
@@ -29,12 +36,40 @@ function fixture(transport) {
   return control;
 }
 
-test('cloud and OCPP prove the exact same transport-independent pause', () => {
-  for (const transport of ['cloud', 'ocpp']) {
+test('cloud, OCPP and Shelly prove the exact same transport-independent pause', () => {
+  for (const transport of ['cloud', 'ocpp', 'shelly-evse']) {
     const control = fixture(transport), before = structuredClone(control);
     assert.deepEqual(confirmedIdentityPause(control, NOW), expected, transport);
     assert.deepEqual(control, before, 'normalizing must not mutate controller evidence');
   }
+});
+
+test('Shelly identity requires current owned pause, physical stop and fresh zero power', () => {
+  const invalid = [
+    ...commonInvalid.filter(([name]) => name !== 'disabled automatic control'),
+    ['unowned setting', c => { c.ownsInstruction = false; }],
+    ['unconfirmed physical effect', c => { c.pauseConfirmed = false; }],
+    ['ordinary economic pause', c => { c.owned.purpose = 'economic'; }],
+    ['different connection', c => { c.owned.identificationConnectedAt++; }],
+    ['different session', c => { c.owned.sessionId = 'synthetic-other-session'; }],
+    ['missing session ID', c => { delete c.session.sessionId; delete c.owned.sessionId; }],
+    ['native control blocked', c => { c.snapshot.controlReady = false; }],
+    ['native schedule', c => { c.snapshot.nativeScheduleActive = true; }],
+    ['still charging', c => { c.snapshot.charging = true; }],
+    ['unknown work state', c => { c.snapshot.charging = null; }],
+    ['stop before request', c => { c.snapshot.statusAt = expected.requestedAt - 1; }],
+    ['future stop', c => { c.snapshot.statusAt = NOW + 1; }],
+    ['unknown power', c => { c.snapshot.powerKw = null; }],
+    ['nonzero power', c => { c.snapshot.powerKw = 0.05; }],
+    ['zero before request', c => { c.snapshot.powerAt = expected.requestedAt - 1; }],
+    ['future power', c => { c.snapshot.powerAt = NOW + 1; }],
+  ];
+  for (const [name, change] of invalid) {
+    const control = fixture('shelly-evse'); change(control);
+    assert.equal(confirmedIdentityPause(control, NOW), null, name);
+  }
+  const off = fixture('shelly-evse'); off.enabled = false;
+  assert.deepEqual(confirmedIdentityPause(off, NOW), expected, 'Automatic OFF does not disable identification');
 });
 
 const commonInvalid = [

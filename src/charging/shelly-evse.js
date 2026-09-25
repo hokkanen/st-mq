@@ -263,7 +263,22 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
   function disconnect() { connected = admitted = online = discovered = controlReady = false; subscriptionStatus = 'disconnected'; generation++; buffer = []; rejectPending('evse-offline'); }
   client.on('connect', connect); client.on('message', receive); client.on('offline', disconnect); client.on('close', disconnect);
   const timer = setInterval(() => { void refresh().then(() => engine.charging?.tick({ force: true })); }, 5000); timer.unref?.();
-  const snapshot = () => ({ association, online: connected && admitted && online, controlReady: ready(),
+  const settingFresh = role => {
+    const field = state.fields[role];
+    return field && !field.retained && field.measuredAt > 0 && field.measuredAt <= clock()
+      && field.receivedAt <= clock() && clock() - field.receivedAt <= config.maxAgeMs;
+  };
+  const knownWorkState = () => settingFresh('work_state')
+    && [...config.connectedStates, ...config.chargingStates, ...config.disconnectedStates].includes(state.fields.work_state.value);
+  const snapshot = () => ({ association, transport: 'shelly-evse', online: connected && admitted && online, controlReady: ready(),
+    identificationReady: Boolean(connected && admitted && online && ready() && knownWorkState()
+      && settingFresh('start_charging') && settingFresh('current_limit')),
+    pluggedIn: knownWorkState() ? state.connection?.connected ?? null : null,
+    charging: knownWorkState()
+      ? config.chargingStates.includes(state.fields.work_state.value) : null,
+    statusAt: state.fields.work_state?.measuredAt ?? null,
+    powerKw: finite(state.fields.phase_info?.value?.total_power) ? state.fields.phase_info.value.total_power / 1000 : null,
+    powerAt: state.fields.phase_info?.measuredAt ?? null,
     mqtt: { brokerConnected: connected, subscribed: admitted, subscriptionStatus, lastLiveAt }, topics: copy(topics),
     readAt: clock(), nativeScheduleActive: Boolean(nativeSchedules?.jobs.some(job => job.enable)), fields: copy(state.fields), session: copy(state.connection), error, generation,
     commissioning: { verified: config.verified, identityMatched: discovered, controlReady: ready(), controllerLossFallback: 'unverified',
@@ -321,98 +336,233 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
   return adapter;
 }
 
-/** The single serialized writer owns current limits and scoped internal pauses. */
-export function createShellyController({ adapter, initialState, saveState = () => {}, clock = Date.now, canControl = () => false } = {}) {
-  if (initialState && (initialState.version !== 1 || initialState.association !== adapter.association)) throw fail('unsupported-shelly-ownership');
+const identificationKeys = ['purpose', 'identificationId', 'identificationConnectedAt', 'sessionId',
+  'requestedAt', 'confirmedAt', 'permissionAt', 'startAt', 'witnessedCharging'];
+const time = value => Number.isSafeInteger(value) && value >= 0;
+const token = value => typeof value === 'string' && value.length > 0 && value.length <= 256;
+function validIdentificationPause(value) {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    && Object.keys(value).length === identificationKeys.length && Object.keys(value).every(key => identificationKeys.includes(key))
+    && value.purpose === 'identification' && token(value.identificationId) && value.identificationId.length <= 128
+    && token(value.sessionId) && time(value.identificationConnectedAt) && time(value.requestedAt)
+    && value.requestedAt >= value.identificationConnectedAt && time(value.startAt)
+    && value.startAt > value.requestedAt && value.startAt - value.requestedAt <= 5 * 60_000
+    && (value.confirmedAt === null || time(value.confirmedAt) && value.confirmedAt >= value.requestedAt)
+    && (value.permissionAt === null ? value.confirmedAt === null
+      : time(value.permissionAt) && value.permissionAt >= value.requestedAt
+        && time(value.confirmedAt) && value.permissionAt <= value.confirmedAt)
+    && typeof value.witnessedCharging === 'boolean';
+}
+
+/** The single serialized writer owns current limits and scoped internal pauses.
+ * Identification restoration is an application obligation, never a native timer. */
+export function createShellyController({ adapter, initialState, saveState = () => {}, clock = Date.now,
+  canControl = () => false, getIdentification, getPlan } = {}) {
+  if (initialState && (initialState.version !== 1 || initialState.association !== adapter.association
+    || initialState.owned != null && !validIdentificationPause(initialState.owned)
+    || initialState.pending?.owned != null && (!validIdentificationPause(initialState.pending.owned)
+      || initialState.pending.role !== 'start_charging' || initialState.pending.value !== false))) throw fail('unsupported-shelly-ownership');
   let state = initialState ? copy(initialState) : { version: 1, association: adapter.association, phase: 'off', manual: null, ownedPause: false, pending: null };
-  let closed = false, revision = 0, planningRevision = null, queue = Promise.resolve();
+  let closed = false, revision = 0, planningRevision = null, identification = null, enabled = false, queue = Promise.resolve();
   const persist = () => saveState(copy(state));
-  const status = () => ({ ...copy(state), planningRevision, manual: state.manual ?? (adapter.snapshot().nativeScheduleActive ? { kind: 'native-schedule' } : null),
-    snapshot: adapter.snapshot(), session: adapter.snapshot().session,
-    handoverConfirmed: !state.pending, confirmed: state.executionStage === 'physical-effect' });
-  return { status, invalidate() { revision++; }, close() { closed = true; revision++; },
-    update(input) {
+  const fresh = field => field?.measuredAt > 0 && field.measuredAt <= clock() && field.receivedAt <= clock()
+    && clock() - field.receivedAt <= adapter.config.maxAgeMs && !field.retained;
+  const physicalFresh = field => fresh(field) && clock() - field.measuredAt <= adapter.config.maxAgeMs;
+  const ownSetting = snapshot => state.owned && state.owned.sessionId === snapshot.session?.sessionId
+    && state.owned.identificationConnectedAt === snapshot.session?.connectedAt
+    && state.owned.confirmedAt !== null && fresh(snapshot.fields.start_charging)
+    && snapshot.fields.start_charging.value === false
+    && snapshot.fields.start_charging.measuredAt === state.owned.permissionAt && state.lastStart === false && state.ownedPause;
+  const status = () => {
+    const snapshot = adapter.snapshot(), owned = state.owned ?? null;
+    const ownsInstruction = Boolean(snapshot.online && snapshot.controlReady && !state.manual && !state.pending && ownSetting(snapshot));
+    const physical = snapshot.fields.phase_info, work = snapshot.fields.work_state;
+    const pauseConfirmed = ownsInstruction && owned.witnessedCharging && !snapshot.nativeScheduleActive
+      && physicalFresh(physical) && physicalFresh(work)
+      && physical.measuredAt >= owned.requestedAt && work.measuredAt >= owned.requestedAt
+      && adapter.config.connectedStates.includes(work.value) && !adapter.config.chargingStates.includes(work.value)
+      && physical.value.total_power === 0 && PHASE_KEYS.every(key => physical.value[key]?.current < .5);
+    const manual = state.manual ?? (snapshot.nativeScheduleActive ? { kind: 'native-schedule' } : null);
+    const stopped = manual?.kind === 'stop' || snapshot.fields.start_charging?.value === false
+      && !state.ownedPause && !state.pending?.owned;
+    return { ...copy(state), owned: owned ? copy(owned) : null, planningRevision, enabled, manual,
+      identification: identification ? copy(identification) : null, ownsInstruction, pauseConfirmed, nativeExpiry: false,
+      snapshot: { ...snapshot, stopped, manualStop: stopped }, session: snapshot.session,
+      handoverConfirmed: !state.pending && !owned, confirmed: state.executionStage === 'physical-effect' };
+  };
+  async function refreshIdentification(snapshot) {
+    const request = typeof getIdentification === 'function' ? await getIdentification(copy(snapshot)) : null, now = clock();
+    if (request != null && (!request || typeof request !== 'object' || Array.isArray(request)
+      || Object.keys(request).some(key => !['id', 'connectedAt', 'phase', 'pauseUntil'].includes(key))
+      || !token(request.id) || request.id.length > 128 || !time(request.connectedAt) || request.connectedAt > now
+      || !['waiting', 'charging', 'pausing'].includes(request.phase)
+      || request.phase === 'pausing' && (!time(request.pauseUntil) || request.pauseUntil - now > 5 * 60_000)
+      || request.phase !== 'pausing' && request.pauseUntil !== undefined)) throw fail('invalid-identification-request');
+    identification = request && request.connectedAt === snapshot.session?.connectedAt && snapshot.session?.connected === true
+      && (request.phase !== 'pausing' || request.pauseUntil > now) ? copy(request) : null;
+  }
+  return { status, supportsIdentification: true, invalidate() { revision++; },
+    close() { closed = true; revision++; return queue.catch(() => {}); },
+    update(input = {}) {
       const intentRevision = ++revision;
       queue = queue.catch(() => {}).then(async () => {
         if (closed || intentRevision !== revision) return;
+        enabled = input.enabled === true;
         if (input.replan === true) { await persist(); planningRevision = input.controlsRevision ?? null; }
         await adapter.refresh();
-        const snapshot = adapter.snapshot(), sessionId = snapshot.session?.sessionId;
+        let snapshot = adapter.snapshot();
+        const sessionId = snapshot.session?.sessionId;
         if (state.sessionId !== sessionId) {
-          state.manual = null; state.manualCurrentA = null; state.ownedPause = false; state.sessionId = sessionId; state.pending = null;
-          // A new vehicle connection has its own native baseline. Commands from
-          // the previous connection cannot establish manual activity here.
+          state.manual = null; state.manualCurrentA = null; state.ownedPause = false; state.sessionId = sessionId;
+          // An old connection's stop remains visible as a restoration obligation,
+          // but never grants permission to start a newly connected vehicle.
+          if (state.pending?.owned) state.owned ??= copy(state.pending.owned);
+          state.pending = null;
           delete state.lastStart; delete state.lastCurrent;
         }
-        const fresh = field => field?.measuredAt > 0 && field.measuredAt <= clock() && field.receivedAt <= clock() && clock() - field.receivedAt <= adapter.config.maxAgeMs && !field.retained;
-        const start = snapshot.fields.start_charging, current = snapshot.fields.current_limit;
-        const workState = snapshot.fields.work_state;
+        const start = snapshot.fields.start_charging, current = snapshot.fields.current_limit, workState = snapshot.fields.work_state;
         const permittedState = [...adapter.config.connectedStates, ...adapter.config.chargingStates].includes(workState?.value);
         if (!snapshot.online || !snapshot.controlReady || !fresh(start) || !fresh(current) || !fresh(workState) || !permittedState || !sessionId) {
+          identification = null;
           state.phase = 'unavailable'; state.reason = snapshot.error ?? 'provider-offline'; await persist(); return;
         }
         // A publish timeout/restart is an uncertain physical outcome. Reconcile
-        // the same native setting before accepting another intent; never replay it.
+        // its exact native setting before accepting another intent; never replay it.
         if (state.pending) {
           const pending = state.pending, readback = snapshot.fields[pending.role];
           if (pending.stage === 'proposed') state.pending = null;
+          else if (pending.owned && fresh(readback) && readback.value === false
+            && (pending.stage !== 'accepted' || !time(pending.acceptedAt) || readback.measuredAt > pending.acceptedAt)) {
+            // A lost reply cannot attribute an arbitrary later false event to
+            // this application: it could be an explicit native Stop instead.
+            state.owned ??= copy(pending.owned);
+            if (!input.resume) {
+              state.manual = { kind: 'stop', detectedAt: readback.measuredAt };
+              state.phase = 'uncertain'; state.reason = 'identification-resume-required'; await persist(); return;
+            }
+            state.pending = null; state.lastStart = false; state.ownedPause = true;
+          }
           else if (fresh(readback) && readback.value === pending.value && readback.measuredAt >= pending.dispatchedAt) {
             state.executionStage = 'read-back';
             if (pending.role === 'start_charging') {
-              state.lastStart = pending.value;
-              state.ownedPause = pending.value === false;
+              state.lastStart = pending.value; state.ownedPause = pending.value === false;
+              if (pending.owned) state.owned = { ...pending.owned, confirmedAt: clock(), permissionAt: readback.measuredAt };
+              else if (pending.value === true) state.owned = null;
             } else state.lastCurrent = pending.value;
             state.pending = null;
+          } else if (pending.owned && fresh(readback) && readback.value === true && readback.measuredAt > pending.dispatchedAt) {
+            // A newer explicit native start supersedes our uncertain stop.
+            state.pending = null; state.owned = null; state.ownedPause = false;
+            state.manual = { kind: 'start', detectedAt: readback.measuredAt }; state.lastStart = true;
           } else if (input.resume) state.pending = null;
           else { state.phase = 'uncertain'; state.reason = 'evse-command-unconfirmed'; await persist(); return; }
         }
-        // Readback mismatch is an external instruction, including across restart.
         if (state.lastStart !== undefined && start.value !== state.lastStart && start.measuredAt > (state.commandAt ?? 0))
           state.manual = { kind: start.value ? 'start' : 'stop', detectedAt: start.measuredAt };
         if (state.lastStart === undefined && start.value === false) state.manual ??= { kind: 'stop', detectedAt: start.measuredAt };
+        // A new source event for an unchanged false setting is still an explicit
+        // native Stop. Correlated reads with the old source clock are harmless.
+        if (state.owned?.sessionId === sessionId && time(state.owned.permissionAt) && start.value === false
+          && start.measuredAt > state.owned.permissionAt) state.manual = { kind: 'stop', detectedAt: start.measuredAt };
+        if (state.owned && start.value === true && start.measuredAt >= state.owned.requestedAt) {
+          state.owned = null; state.ownedPause = false;
+        }
         if (current.value !== state.lastCurrent && current.measuredAt > (state.commandAt ?? 0))
           state.manualCurrentA = current.value < adapter.config.maximumCurrentA ? current.value : null;
         if (input.resume) { state.manual = null; state.manualCurrentA = null; }
-        const context = input.allocation ?? {}, limitation = shellyCurrentLimit({ config: adapter.config,
-          ...context, nativeCurrentA: state.manualCurrentA, shelly: adapter.liveCurrents(), now: clock() });
-        state.limiter = limitation;
+        await refreshIdentification(snapshot);
+        if (closed || intentRevision !== revision) return;
+        if (state.manual || snapshot.nativeScheduleActive) identification = null;
         const chargeNow = Number.isSafeInteger(input.chargeNow?.connectedAt)
           && input.chargeNow.connectedAt === snapshot.session?.connectedAt;
-        const plan = input.plan, windows = chargeNow ? [{ startAt: clock(), endAt: null }] : plan?.periods ?? [];
-        const economic = (input.enabled || chargeNow) && !state.manual && !snapshot.nativeScheduleActive && windows.length > 0;
+        const restoringUnscheduled = state.owned?.sessionId === sessionId && (!input.enabled || chargeNow);
+        const context = input.allocation ?? {}, limitation = shellyCurrentLimit({ config: adapter.config,
+          ...context, ...(identification || restoringUnscheduled ? { allocationA: null } : {}),
+          nativeCurrentA: state.manualCurrentA, shelly: adapter.liveCurrents(), now: clock() });
+        state.limiter = limitation;
+        const plan = !identification && typeof getPlan === 'function' ? await getPlan(copy(snapshot)) : input.plan;
+        const windows = chargeNow ? [{ startAt: clock(), endAt: null }] : plan?.periods ?? [];
+        const economic = !identification && (input.enabled || chargeNow) && !state.manual && !snapshot.nativeScheduleActive && windows.length > 0;
         const inWindow = windows.some(period => period.startAt <= clock() && (period.endAt === null || period.endAt > clock()));
         const nativeBlocked = finite(context.notBefore) && context.notBefore > clock();
-        const restrict = adapter.config.limiterEnabled || economic;
+        const restrict = adapter.config.limiterEnabled || economic || identification !== null || state.owned?.sessionId === sessionId;
         const cap = restrict ? limitation.currentA : current.value;
-        const pause = restrict && cap < adapter.config.minimumCurrentA || economic && !inWindow;
-        const allowStart = economic && inWindow && !nativeBlocked && state.manual?.kind !== 'stop'
-          || state.ownedPause && !pause && !nativeBlocked && state.manual?.kind !== 'stop';
+        const identificationPause = identification?.phase === 'pausing';
+        const pause = restrict && cap < adapter.config.minimumCurrentA || economic && !inWindow || identificationPause;
+        const recovery = state.owned?.sessionId === sessionId && !identificationPause;
+        const allowStart = (economic && inWindow || identification && !identificationPause || state.ownedPause && !pause)
+          && !nativeBlocked && state.manual?.kind !== 'stop';
         const shouldStart = !pause && allowStart && !snapshot.nativeScheduleActive;
         const guard = () => !closed && intentRevision === revision && canControl() && adapter.snapshot().session?.sessionId === sessionId
           && adapter.snapshot().association === state.association;
-        const command = async (role, value, reason) => {
+        const command = async (role, value, reason, owned = null) => {
           const expiresAt = clock() + 10000;
-          state.pending = { association: state.association, sessionId, revision: intentRevision, expiresAt, role, value, reason, stage: 'proposed' };
+          state.pending = { association: state.association, sessionId, revision: intentRevision, expiresAt, role, value, reason,
+            stage: 'proposed', ...(owned ? { owned: copy(owned) } : {}) };
           await persist();
           if (!guard() || clock() >= expiresAt) { state.pending = null; await persist(); return false; }
-          state.pending.stage = 'dispatched'; state.commandAt = state.pending.dispatchedAt = clock(); await persist();
+          if (!owned) {
+            const prior = copy(state.pending);
+            state.pending.stage = 'dispatched'; state.commandAt = state.pending.dispatchedAt = clock();
+            try { await persist(); } catch (cause) { state.pending = prior; throw cause; }
+          }
           await adapter.rpc(role === 'current_limit' ? 'Number.Set' : 'Boolean.Set', { owner: `service:${adapter.config.serviceId}`, role, value },
             { mutation: true, guard: () => guard() && clock() < expiresAt
-              && (role !== 'start_charging' || value === false && limitation.pause || !adapter.snapshot().nativeScheduleActive) });
+              && (role !== 'start_charging' || value === false && limitation.pause || !adapter.snapshot().nativeScheduleActive)
+              && (role !== 'start_charging' || value === false
+                || adapter.snapshot().fields.start_charging?.measuredAt === start.measuredAt
+                  && adapter.snapshot().fields.start_charging?.value === start.value)
+              && (!owned || clock() < owned.startAt),
+              beforePublish: async () => {
+                if (!owned) return;
+                const before = adapter.snapshot(), work = before.fields.work_state, physical = before.fields.phase_info;
+                if (!guard() || clock() >= owned.startAt || before.fields.start_charging.value !== true
+                  || before.nativeScheduleActive || !fresh(work) || !physicalFresh(physical)
+                  || !adapter.config.chargingStates.includes(work.value) || !(physical.value.total_power > 0)) {
+                  state.pending.stage = 'proposed'; await persist(); throw fail('evse-command-revoked');
+                }
+                const witnessed = { ...owned, requestedAt: clock(), witnessedCharging: true };
+                const prior = copy(state.pending), priorCommandAt = state.commandAt;
+                state.pending.owned = witnessed; state.pending.stage = 'dispatched';
+                state.pending.dispatchedAt = state.commandAt = clock();
+                try { await persist(); } catch (cause) {
+                  state.pending = prior;
+                  if (priorCommandAt === undefined) delete state.commandAt;
+                  else state.commandAt = priorCommandAt;
+                  throw cause;
+                }
+              } });
           if (!guard()) return false;
-          state.pending.stage = 'accepted'; await persist();
+          state.pending.stage = 'accepted'; state.pending.acceptedAt = clock(); await persist();
           await adapter.refresh();
           const readback = adapter.snapshot().fields[role];
           if (!fresh(readback) || readback.value !== value || readback.measuredAt < state.commandAt) throw fail('evse-command-unconfirmed');
-          state.executionStage = 'read-back'; state.pending = null;
-          if (role === 'start_charging') state.lastStart = value;
-          else state.lastCurrent = value;
+          if (state.pending.owned && readback.measuredAt > state.pending.acceptedAt) {
+            state.owned ??= copy(state.pending.owned);
+            state.manual = { kind: 'stop', detectedAt: readback.measuredAt };
+            throw fail('identification-resume-required');
+          }
+          state.executionStage = 'read-back';
+          if (role === 'start_charging') {
+            state.lastStart = value; state.ownedPause = value === false;
+            if (state.pending.owned) state.owned = { ...state.pending.owned, confirmedAt: clock(), permissionAt: readback.measuredAt };
+            else if (value === true) state.owned = null;
+          } else state.lastCurrent = value;
+          state.pending = null;
           await persist(); return true;
         };
         if (!guard()) return;
         try {
+          // Adopting an already-paused test into a real economic/fuse pause keeps
+          // the setting untouched and ends only its temporary restoration duty.
+          if (state.owned && !identificationPause && (economic && !inWindow || restrict && limitation.pause)
+            && state.owned.sessionId === sessionId && ownSetting(snapshot)) state.owned = null;
           if (pause && start.value && state.manual?.kind !== 'stop') {
-            if (await command('start_charging', false, economic && !inWindow ? 'economic-wait' : limitation.reason)) { state.ownedPause = true; state.lastPauseAt = clock(); }
+            const owned = identificationPause ? { purpose: 'identification', identificationId: identification.id,
+              identificationConnectedAt: identification.connectedAt, sessionId, requestedAt: clock(), confirmedAt: null,
+              permissionAt: null, startAt: identification.pauseUntil, witnessedCharging: false } : null;
+            if (await command('start_charging', false, identificationPause ? 'identification-pause'
+              : economic && !inWindow ? 'economic-wait' : limitation.reason, owned)) state.lastPauseAt = clock();
           }
           if (restrict && cap >= adapter.config.minimumCurrentA && cap !== current.value) {
             const decreasing = cap < current.value;
@@ -422,19 +572,24 @@ export function createShellyController({ adapter, initialState, saveState = () =
               if (await command('current_limit', target, limitation.reason)) state.lastCurrentAt = clock();
             }
           }
-          if (shouldStart && !start.value && !state.manual && clock() - (state.lastPauseAt ?? 0) >= adapter.config.dwellMs
+          if (shouldStart && !adapter.snapshot().fields.start_charging.value && !state.manual
+            && (identification || recovery || clock() - (state.lastPauseAt ?? 0) >= adapter.config.dwellMs)
             && adapter.snapshot().fields.current_limit?.value <= cap) {
-            if (await command('start_charging', true, 'economic-window')) state.ownedPause = false;
+            await command('start_charging', true, recovery ? 'identification-resume' : identification ? 'identification-charge' : 'economic-window');
           }
           const actual = adapter.liveCurrents();
           if (state.executionStage === 'read-back' && actual.healthy && actual.times.every(at => at >= (state.commandAt ?? Infinity))
             && (pause ? actual.currents.every(v => v < .5) : actual.currents.every(v => v <= cap + 1))) state.executionStage = 'physical-effect';
-          state.phase = state.manual ? 'manual' : pause ? 'waiting' : input.enabled || chargeNow ? 'released' : 'off';
-          state.reason = state.manual ? `manual-${state.manual.kind}` : snapshot.nativeScheduleActive ? 'native-schedule' : nativeBlocked ? 'vehicle-not-before' : pause && economic && !inWindow ? 'economic-wait' : chargeNow && !pause ? 'charge-now' : limitation.reason;
+          state.released = !pause && !identification && Boolean(input.enabled || chargeNow);
+          state.phase = state.manual ? 'manual' : identification ? 'identifying' : pause ? 'waiting' : input.enabled || chargeNow ? 'released' : 'off';
+          state.reason = state.manual ? `manual-${state.manual.kind}` : snapshot.nativeScheduleActive ? 'native-schedule'
+            : nativeBlocked ? 'vehicle-not-before' : identificationPause ? 'identification-pause'
+              : identification ? identification.phase === 'waiting' ? 'identification-waiting' : 'identification-charging'
+                : pause && economic && !inWindow ? 'economic-wait' : chargeNow && !pause ? 'charge-now' : limitation.reason;
         } catch (cause) { state.phase = 'uncertain'; state.reason = cause.code ?? 'command-unconfirmed'; }
         await persist();
       });
-      return queue;
+      return queue.then(() => status());
     },
   };
 }

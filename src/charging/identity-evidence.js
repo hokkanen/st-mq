@@ -48,6 +48,17 @@ export function confirmedIdentityPause(control, now) {
       || !fresh(snapshot.powerAt, now) || snapshot.powerAt > snapshot.readAt
       || snapshot.powerAt < requestedAt || snapshot.powerKw !== 0) return null;
     stoppedAt = snapshot.statusAt;
+  } else if (snapshot.transport === 'shelly-evse') {
+    // The restore time belongs to the application, not to a native device
+    // timer. Identity still requires the witnessed, owned physical response.
+    if (owned.purpose !== 'identification' || owned.identificationConnectedAt !== connectedAt
+      || typeof session.sessionId !== 'string' || owned.sessionId !== session.sessionId
+      || control.ownsInstruction !== true || control.pauseConfirmed !== true
+      || snapshot.controlReady !== true || snapshot.nativeScheduleActive
+      || snapshot.charging !== false || snapshot.powerKw !== 0
+      || !fresh(snapshot.powerAt, now) || snapshot.powerAt > snapshot.readAt
+      || snapshot.powerAt < requestedAt) return null;
+    stoppedAt = snapshot.statusAt;
   } else if (snapshot.transport === undefined) {
     // Cloud snapshots deliberately retain their native schedule observations.
     // Inactive cached schedules do not affect ownership of the enabled delay.

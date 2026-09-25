@@ -1193,14 +1193,18 @@ test('Identify follows session settings, supports an identified vehicle with aut
   const controls = $('charger1-charging-controls'), body = $('charger1-settings-details'), button = $('charger1-identify');
   assert(body.children.indexOf($('charger1-session-settings')) < body.children.indexOf(controls));
   assert.equal(descendants(controls).filter(node => node.tagName === 'BUTTON').at(-1), button);
+  assert.equal(controls.children.at(-1), $('charger1-identification'));
+  assert.equal($('charger1-identification-title').textContent, 'Identification');
+  assert.equal($('charger1-identification').getAttribute('aria-labelledby'), 'charger1-identification-title');
   assert.equal(button.textContent, 'Identify'); assert.equal(button.disabled, false);
-  assert.match($('charger1-identification-status').textContent, /short charging test.*automatic charging off.*Manual Stop/s);
+  assert.match($('charger1-identification-status').textContent, /short charging test.*Automatic charging off.*Manual Stop/s);
   const pending = clickAction(button);
   assert.deepEqual(calls, [['/api/charging/chargers/charger1/identify', { association: item.association, sessionId: item.request.sessionId, revision: 1 }]]);
   assert(button.disabled); assert($('charger1-charge-now').disabled); assert($('charger1-settings-save').disabled);
   await clickAction(button); assert.equal(calls.length, 1);
   finish(status({ ...item, identification: { phase: 'pausing', available: true, active: true, attempted: true } })); await pending;
-  assert(button.disabled); assert.match($('charger1-vehicle').textContent, /BMW identified · identifying vehicle/);
+  assert(button.disabled); assert.equal($('charger1-vehicle').textContent, 'Easee · BMW identified');
+  assert.equal($('charger1-identification-state').textContent, 'Confirming');
   assert.match($('charger1-identification-status').textContent, /brief pause.*matching charger and vehicle readings/);
   assert.match($('charger1-state').textContent, /Identifying/);
   panel.close(); assert(!button.listeners.has('click'));
@@ -1218,8 +1222,58 @@ test('identification remains pending while waiting and an inconclusive result st
   panel.update(status({ ...item, identification: { phase: 'inconclusive', active: false, available: true, attempted: true } }));
   assert.match($('charger1-vehicle').textContent, /Identification inconclusive/);
   assert.equal($('charger1-notice').textContent, 'Identification inconclusive');
-  assert.match($('charger1-identification-status').textContent, /Normal charging control has resumed/);
+  assert.match($('charger1-identification-status').textContent, /current charging choice now applies/);
   assert(!$('charger1-identify').disabled); panel.close();
+});
+
+test('identification summaries stay short while both charger sections explain the charging wait and their pause recovery', () => {
+  const document = documentFixture(), $ = id => document.getElementById(id);
+  const panel = createChargingPanel({ document, request: async () => {} });
+  const items = ['charger1', 'charger2'].map(id => ({ ...connected(id), identification: {
+    phase: 'waiting', reason: 'waiting-for-charging', active: true, available: true,
+    pauseRecovery: id === 'charger1' ? 'charger' : 'controller', pauseOutstanding: false } }));
+  panel.update(status(...items));
+  for (const item of items) {
+    assert.equal(view(item).event, 'Waiting for charging');
+    assert.equal($(`${item.id}-identification-state`).textContent, 'Pending');
+    assert.match($(`${item.id}-identification-status`).textContent, /vehicle to start charging.*timer/);
+    assert.equal($(`${item.id}-identify`).getAttribute('aria-describedby'), `${item.id}-identification-status ${item.id}-identification-recovery`);
+  }
+  assert.match($('charger1-identification-recovery').textContent, /expires automatically/);
+  assert.match($('charger2-identification-recovery').textContent, /loses contact with Shelly.*remain paused.*resume it in Shelly/);
+  const popup = openDetail($('charger2-event-value'));
+  assert.match(popup.textContent, /Waiting for charging.*vehicle to start charging.*timer/s);
+  panel.close();
+});
+
+test('Shelly pause recovery remains explicit after identification completes or times out and while connectivity is unknown', () => {
+  const document = documentFixture(), $ = id => document.getElementById(id);
+  const panel = createChargingPanel({ document, request: async () => {} });
+  for (const phase of ['completed', 'inconclusive']) for (const connectedValue of [true, null]) {
+    const item = { ...connected('charger2'), vehicle: { state: 'identified', id: 'tesla', label: 'Tesla' },
+      identification: { phase, active: false, available: true, pauseOutstanding: true, pauseRecovery: 'controller', reason: 'charger-unavailable' },
+      control: { phase: 'unavailable' } };
+    item.values.connected = reading(connectedValue);
+    panel.update(status(item));
+    assert.equal($('charger2-identification-state').textContent, 'Recovery pending');
+    assert.equal($('charger2-notice').textContent, 'Pause recovery pending');
+    assert.match($('charger2-identification-status').textContent, /release is unconfirmed.*when the charger is reachable/);
+    assert.doesNotMatch($('charger2-identification-status').textContent, /has resumed|now applies|Connect a vehicle/);
+    assert($('charger2-identify').disabled);
+  }
+  const ready = { ...connected('charger2'), identification: { phase: 'completed', active: false, available: true,
+    pauseOutstanding: false, pauseRecovery: 'controller' } };
+  panel.update(status(ready)); assert(!$('charger2-identify').disabled);
+  assert.equal($('charger2-identification-state').textContent, 'Ready');
+  panel.update(status({ ...ready, identification: { ...ready.identification, pauseOutstanding: true },
+    control: { phase: 'uncertain', reason: 'identification-resume-required' } }));
+  assert.equal($('charger2-identification-state').textContent, 'Review required');
+  assert.equal($('charger2-notice').textContent, 'Review charger pause');
+  assert.match($('charger2-identification-status').textContent, /manual Stop may be active.*Review the charger.*Use automatic/);
+  assert.doesNotMatch($('charger2-identification-status').textContent, /will restore|has resumed/);
+  assert(!$('charger2-resume').hidden); assert(!$('charger2-resume').disabled);
+  assert($('charger2-identify').disabled);
+  panel.close();
 });
 
 test('Identify respects availability, ongoing work, read-only authority and the connected session', async () => {

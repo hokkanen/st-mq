@@ -18,6 +18,32 @@ Completed 2026-09-25 — Access UI layout and interaction audit
   charging, short login viewports, password input, logout and revocation. Use the access browser suite
   in docs/development-validation.md to repeat the audit with synthetic data.
 
+Completed 2026-09-25 — Shelly identification and charging card refinement
+- Give the commissioned Shelly EVSE the same bounded, one-attempt identification
+  lifecycle as Easee, including Automatic OFF, Charge now, vehicle timers,
+  startup without connection history, manual rechecks and session-scoped restart.
+  Ignore its own economic zero allocation during the test while retaining native,
+  vehicle, peer-reservation and installation current restrictions.
+- Persist the owned stop and application restore deadline before dispatch. Use
+  fresh physical stop and vehicle evidence for identity, resume a known owned
+  stop after reconnect, and never renew the attempt or its budget after restart.
+  Same-value manual Stop events retain priority. Ambiguous command delivery
+  requires explicit review/resume rather than assuming permission to start.
+- Shorten charger summary activity text. Place a divided Identification block
+  below charger priority, with concise state, details and the Identify action.
+  Explain the Shelly outage limitation in that block and distinguish outstanding
+  pause recovery from an inconclusive result. Keep compact summaries balanced.
+- Remove the former Shelly passive-only exclusion from the runtime-facing docs
+  and audit dispositions. Retain same-version restoration and source provenance;
+  add no old-format translator, database migration or unverified native timer.
+- Validation: 54 focused Shelly tests, 109 charging UI/summary tests and 110
+  Chromium cases pass. Reviewed both themes at 320/390/768/1280/1440px, including
+  summary clipping, paired action alignment, Identify/Use automatic keyboard
+  actions and popover focus. Production build passes. Synthetic fixtures only;
+  no household device commands or running-service restart.
+- Final integrated regression run: all 3,503 standard tests passed, with no
+  skipped tests, against the completed sources and freshly built dashboard.
+
 Completed 2026-09-25 — Active vehicle identification per connection
 - Replace the passive three-minute scheduling observation with a durable
   identification attempt. Easee cloud and OCPP can release their own economic

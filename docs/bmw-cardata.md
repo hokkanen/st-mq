@@ -69,23 +69,23 @@ the original GPS measurement time. Replayed retained values cannot reverse that
 revision, and it does not create a plug or charging event. Only `atHome` and its
 clock go to MQTT, never coordinates or private zone/device identifiers.
 
-## Association with Charger 1
+## Association with a charging point
 
-Charger 1 stays generic and uses editable manual battery values until BMW or Tesla
-is positively associated with its current plug-in session. Receiving BMW battery
+Each charging point stays generic and uses editable manual battery values until
+BMW or Tesla is positively associated with its current plug-in session. Receiving BMW battery
 data does not establish that association. The Tesla diagnostic's negative result
 means only that Tesla charges elsewhere.
 
 The usual BMW match combines timestamped home context with a live plug event and a
-charging start followed by a stop near the current Easee connection. Both charging
-transitions must correspond to charging and stopping observed at Easee. Source
-events and live MQTT delivery may precede the first connected Easee poll by up to
-90 seconds, but must follow the last source-reported disconnect. Repeated polls
+charging start followed by a stop near the current physical charger connection.
+Both transitions must correspond to charging and stopping observed at that
+charger. Source events and live MQTT delivery may precede the first connected
+charger observation by up to 90 seconds, but must follow the last source-reported disconnect. Repeated polls
 of that disconnected state preserve its source time; a missing source clock uses
 the receipt time conservatively. This permits ordinary polling delay without
 reusing evidence from an earlier connection. A BMW starting
 to charge elsewhere at home is insufficient on its own. Without the
-matching stop, Charger 1 continues to use manual battery values. Matching live
+matching stop, that charging point continues to use manual battery values. Matching live
 start evidence with valid home and plug context can show **BMW identification pending**
 while awaiting stop confirmation, even if the plug report is unchanged.
 Identification now has its own durable attempt: it remains pending while a
@@ -93,16 +93,20 @@ vehicle timer or limit prevents charging, then obtains a usable live charging
 baseline and requests a short pause as soon as possible. The label does not
 silently expire after ten minutes. Missing evidence after the bounded active test
 produces **Identification inconclusive**; conflicting evidence cannot identify
-the vehicle. Both Easee cloud and OCPP use the same lifecycle, including with
-automatic economic charging OFF or Charge now selected. Manual Stop and native
+the vehicle. Easee cloud, local OCPP and commissioned Shelly EVSE control use the
+same lifecycle, including with automatic economic charging OFF or Charge now selected. Manual Stop and native
 restrictions retain priority.
 
 The charging observation is limited to 60 seconds or 0.15 kWh. A usable baseline
 can trigger the pause earlier; a match can finish the test without a pause. The
-native pause expires after 90 seconds rounded up to the next second, at most
-91 seconds, and ends earlier after successful identification. Normal charging
-control then takes over. Telemetry and actuator response can delay physical
-changes beyond a controller decision. An already connected charger at startup
+pause deadline is 90 seconds rounded up to the next second, at most 91 seconds,
+and successful identification ends the test earlier. Easee cloud and OCPP have
+native expiry. Shelly's application-managed start-permission pause can last
+longer if the application or MQTT is unavailable; its saved restoration
+obligation is resolved after fresh readback of the same connection. Manual Stop,
+native schedules and electrical limits retain priority during that recovery.
+Normal charging control then takes over. Telemetry and actuator response can
+delay physical changes beyond a controller decision. An already connected charger at startup
 with no saved connection can use fresh ongoing vehicle charging as its baseline;
 this does not manufacture a missing charging-start event. Its subsequent stop
 must match the current witnessed physical pause within 30 seconds. Retained
@@ -111,7 +115,7 @@ charging reports cannot provide that baseline or stop proof.
 BMW can also keep reporting `CONNECTED` without a new vehicle plug transition.
 An alternative match uses home and plugged-in context no older than 24 hours,
 plus a planned pause already controlled by ST-MQ. Live BMW charging-start
-and stop events no older than fifteen minutes must each match Easee within
+and stop events no older than fifteen minutes must each match the physical charger within
 30 seconds. Both starts must precede
 the pause boundary; both stops must follow it. The boundary is a durable request
 witness saved after a guarded charging observation immediately before requesting
@@ -122,11 +126,14 @@ connection and expire in the future.
 The charger boundary supplies one common pause proof to the BMW matcher. Cloud
 control verifies its exact delayed schedule and scheduling-stop reason (54), with
 the reason and physical stop clocks agreeing. OCPP verifies its current transaction,
-owned zero-current profile, `SuspendedEVSE` status and fresh zero power. Its guarded
-charging witness is distinct from the general install-intent time. A status change
+owned zero-current profile, `SuspendedEVSE` status and fresh zero power. Shelly
+verifies the saved identification stop against live start-permission readback,
+its commissioned noncharging work state and fresh zero physical power for the
+same connection. The guarded charging witness is distinct from the general
+install-intent time. A status change
 observed while queued prevents dispatch from reusing the earlier charging witness.
 Identity timing, pending
-status, event consumption and conflict handling are shared between both modes.
+status, event consumption and conflict handling are shared between these backends.
 Manual priority or conflicting Tesla evidence prevents this match. The active
 identification pause uses this same charger proof; its additional ongoing-charge
 baseline is separately bound to the saved attempt and vehicle feed. Charging
@@ -152,8 +159,9 @@ and target choice while the charger adapter initializes. Until its session and
 readback are available, the vehicle remains unidentified in the live view and
 session edits are unavailable. The same connection restores the match without
 reusing a plug event; a different connection or confirmed departure clears it.
-Both plug and charging-start events are consumed on either successful match, so
-changing evidence paths cannot identify the next car using an earlier episode. Available
+Used plug and charging evidence, including an active test's ongoing-charge
+baseline, is consumed on a successful match, so changing evidence paths cannot
+identify the next car using an earlier episode. Available
 automatic battery fields take precedence individually without
 overwriting saved generic defaults. Missing fields remain editable. Tesla on
 Easee appears in Charger 1, while Charger 2 indicates that association instead of

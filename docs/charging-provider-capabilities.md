@@ -7,6 +7,8 @@
 | Live active power | Reported total; phase energy is estimated | Native phase power and total power | Never used as charger meter readings |
 | Connection lifecycle | Timestamped Easee state | Commissioned physical work-state mapping | Corroborating vehicle edges |
 | Economic control | Exclusive cloud delayed starts or native OCPP expiring 0 A transaction pauses | EVSE start/stop over MQTT RPC | No vehicle writes |
+| Active vehicle identification | One bounded attempt per physical connection; native expiring pause | Same attempt lifecycle; application-managed start-permission pause | Independent live vehicle evidence |
+| Identification pause recovery | Charger-side expiry after 90–91 seconds | Persisted restoration obligation; an application/MQTT outage can extend the stop until safe recovery | No charger control |
 | Current changes by ST-MQ | Native OCPP may impose an expiring 0 A pause; no positive-current setpoint | Verified common current | Read native limits only |
 | SoC/capacity/target | Assigned vehicle or explicit fallback | Assigned vehicle or explicit fallback | Applicable vehicle evidence |
 | Supply voltage | Physical installation evidence | Physical installation evidence | Never used for home supply |
@@ -56,6 +58,26 @@ The [MQTT channel](https://shelly-api-docs.shelly.cloud/gen2/ComponentsAndServic
 Only `Number.Set` for `current_limit` and `Boolean.Set` for `start_charging` are mutation methods. Neither relay writes, service configuration writes, vehicle writes nor native-schedule edits are permitted. Commands use QoS 0, `retain:false`, no offline queue and no automatic application retry. Durable intent records association, session, revision and absolute expiry; authority and scope are rechecked after awaits immediately before publication.
 
 Status distinguishes proposed, dispatched, accepted, read-back and physical-effect stages. A successful RPC response alone proves no current reduction. A possible dispatch followed by timeout/restart remains uncertain until a compatible fresh native reading reconciles it. Manual changes survive priority changes and current-format restart within their connection scope.
+
+Vehicle identification uses the same one-attempt lifecycle as Easee, including
+when Automatic charging is OFF or Charge now is selected. Waiting for the
+vehicle to allow charging consumes no test budget. Once charging begins, the
+observation is limited to 60 seconds or 0.15 kWh; suitable BMW evidence permits
+an earlier pause. The stop and its restoration obligation are saved before
+dispatch and remain scoped to the equipment, physical connection and attempt.
+Identification requires fresh physical noncharging evidence and the independent
+vehicle response, in addition to native start-permission readback.
+
+The Shelly identification pause has a 90–91 second application deadline and no
+charger-side expiry. If the application or broker connection is unavailable,
+the stop can last longer. Recovery reconciles the saved command against fresh
+readings before returning to normal control for that same connection. An
+unconfirmed stop that cannot be attributed to the saved command requires
+explicit resume. Manual
+Stop, active native schedules and electrical limits retain priority; a saved
+test cannot authorize starting a replacement connection. **Identify** permits
+an explicit retry or recheck when control is available and no test is ongoing.
+It never renews an uncertain command or repeats an expired attempt automatically.
 
 ## Hardware verification still required
 

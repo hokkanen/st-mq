@@ -7,9 +7,10 @@ const nativeForecast = forecast => ['forecast', 'uncertain'].includes(forecast?.
 /** A bounded summary notice; its full explanation remains available on demand. */
 export function chargingNotice(charger, view, summary) {
   const detail = [view.problem, view.priority, view.readiness, ...view.notes].filter(Boolean).join('\n\n');
+  if (view.identification?.recovery) return { label: view.identification.label, detail: view.identification.detail, state: 'attention' };
   if (view.problem || summary.roleState === 'uncertain') return { label: 'Charger needs attention',
     detail: [...new Set([view.problem, summary.roleDetail, view.priority, ...view.notes].filter(Boolean))].join('\n\n'), state: 'attention' };
-  if (charger.identification?.active && view.showMetrics) return { label: view.vehicle.label,
+  if (charger.identification?.active && view.showMetrics) return { label: view.identification?.label ?? view.vehicle.label,
     detail: view.vehicle.detail, state: 'quiet' };
   if (charger.identification?.phase === 'inconclusive' && view.showMetrics) return { label: 'Identification inconclusive',
     detail: view.vehicle.detail, state: 'attention' };
@@ -86,7 +87,9 @@ export function chargerSummary(charger, view, { now = Date.now(), formatTime = v
   let roleLabel = enabled ? 'Controlled' : 'Observed', roleState = enabled ? 'controlled' : 'observed';
   let roleDetail = enabled ? 'Automatic charging chooses charging periods for the ready-by time.'
     : supported ? 'Automatic charging is off. The charger’s own activity is observed.' : 'Charging is observed; this integration cannot set its schedule.';
-  if (handoverUnconfirmed || handoverPending || uncertain) {
+  if (view.identification?.recovery) {
+    roleLabel = view.identification.label; roleState = 'uncertain'; roleDetail = view.identification.detail;
+  } else if (handoverUnconfirmed || handoverPending || uncertain) {
     roleLabel = handoverUnconfirmed ? 'Handover unconfirmed' : handoverPending ? 'Handover pending' : 'Control unconfirmed';
     roleState = 'uncertain';
     roleDetail = control.reason || (handoverUnconfirmed ? 'Automatic charging is off, but the charger has not confirmed the handover.'
