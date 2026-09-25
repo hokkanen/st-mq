@@ -7,7 +7,7 @@ import { startGarageAssessment, updateGarageAssessment, completeGarageAssessment
 const HOUR = 3_600_000, start = Date.parse('2026-01-01T00:00:00Z');
 const settings = garageSettings({ enabled: true, maxSensorAgeMs: 4 * HOUR, protection: { approved: true } });
 const observation = (hour, extra = {}) => ({ at: start + hour * HOUR, rearC: 7, frontC: 6.7, outdoorC: 0,
-  available: true, baselineVerified: true, powerKw: .3, powerQuality: 'provisional', ev1Kw: 0, ev2Kw: 0, ...extra });
+  roomTargetC: 7, available: true, baselineVerified: true, powerKw: .3, powerQuality: 'provisional', ev1Kw: 0, ev2Kw: 0, ...extra });
 function steady(hours = 48, extra = {}) {
   let model = createGarageModel({ seedAt: start });
   for (let i = 0; i <= hours * 4; i++) model = updateGarageModel(model, observation(i / 4, extra), settings);
@@ -221,7 +221,7 @@ test('finite contiguous forecasts continue beyond 600 observations without a dur
 });
 
 test('a long pause cannot repay all recovery electricity inside a short cheap window or double-charge recorded input', () => {
-  const model = createGarageModel({ seedAt: start });
+  const model = createGarageModel({ seedAt: start, roomTargetC: 10 });
   const initial = { at: start, rearC: 10, frontC: 10, outdoorC: 10, available: false };
   assert.equal(garageRecoveryHours(1), 3);
   assert.equal(garageRecoveryHours(24), 30);

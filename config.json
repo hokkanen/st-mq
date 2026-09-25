@@ -105,7 +105,6 @@
     "garage": {
       "enabled": false,
       "savingsStrategy": "balanced",
-      "baselineC": 10,
 
       "minSavingsEur": 0.5,
       "maxPausesPerDay": 1,
@@ -573,7 +572,6 @@
     "garage": {
       "enabled": "bool",
       "savingsStrategy": "list(gentle|balanced|savings)",
-      "baselineC": "float(8,16)",
 
       "minSavingsEur": "float(0,100)",
       "maxPausesPerDay": "int(1,4)",

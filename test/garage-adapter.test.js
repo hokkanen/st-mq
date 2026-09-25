@@ -251,11 +251,14 @@ test('an existing restore obligation can request ON despite failed persistence, 
   assert.equal(f.sent.length, 2);
 });
 
-test('configured baseline is a readback check; unexpected native settings block without thermostat writes', async () => {
-  const f = fixture({ baselineC: 12, initialState: { baseline: { ...TEMPLATE.baseline, targetC: 12 },
+test('device-verified baseline supplies the readback check without a configured temperature or thermostat writes', async () => {
+  const f = fixture({ initialState: { baseline: { ...TEMPLATE.baseline, targetC: 12 },
     native: { power: { value: 'on', measuredAt: BASE }, mode: { value: 'heat', measuredAt: BASE },
       targetC: { value: 12, measuredAt: BASE }, fan: { value: 'auto', measuredAt: BASE }, vanes: { value: 'fixed', measuredAt: BASE } } } });
-  assert.equal(f.adapter.status().configuredBaselineC, 12);
+  assert.equal(Object.hasOwn(f.adapter.status(), 'configuredBaselineC'), false);
+  assert.deepEqual(f.adapter.status().normalHeating, {
+    targetC: 12, source: 'device-verified', verified: true, nativeTargetC: 12,
+  });
   assert.equal(f.adapter.status().native.targetC, 12);
   await f.start();
   assert.equal(f.sent[0].action, 'start');
@@ -263,6 +266,39 @@ test('configured baseline is a readback check; unexpected native settings block 
   const changed = fixture({ initialState: { native: { power: { value: 'on', measuredAt: BASE },
     mode: { value: 'cool', measuredAt: BASE } } } });
   assert.ok((await changed.start()).reasons.includes('native-settings-changed'));
+  const mismatched = fixture({ initialState: { baseline: { ...TEMPLATE.baseline, targetC: 12 },
+    native: { power: { value: 'on', measuredAt: BASE }, targetC: { value: 10, measuredAt: BASE } } } });
+  assert.ok((await mismatched.start()).reasons.includes('native-settings-changed'));
+  assert.equal(mismatched.sent.length, 0);
+});
+
+test('missing, stale, unverified or unsupported device baseline never supplies a default target or OFF authority', async () => {
+  for (const baseline of [null, { ...TEMPLATE.baseline, verified: false },
+    { ...TEMPLATE.baseline, measuredAt: BASE - 120_000 },
+    ...[null, 7, 17, '10'].map(targetC => ({ ...TEMPLATE.baseline, targetC }))]) {
+    const f = fixture({ initialState: { baseline } });
+    assert.deepEqual(f.adapter.status().normalHeating, {
+      targetC: null, source: 'unavailable', verified: false, nativeTargetC: null,
+    });
+    assert.ok((await f.start()).reasons.includes('native-baseline-unverified'));
+    assert.equal(f.sent.length, 0);
+  }
+});
+
+test('a verified target change during an outstanding pause requires restoration', async () => {
+  const f = fixture(); await f.start();
+  f.at(BASE + 1000); f.accepted();
+  f.at(BASE + 1500); f.state({ baseline: { ...TEMPLATE.baseline, targetC: 12, measuredAt: f.now() } }, { retain: true });
+  f.at(BASE + 2000); f.accepted(f.sent[0], {
+    baseline: { ...TEMPLATE.baseline, targetC: 12, measuredAt: f.now() },
+    native: { power: { value: 'off', measuredAt: f.now() }, targetC: { value: 12, measuredAt: f.now() } },
+  });
+  assert.equal(f.adapter.status().normalHeating.targetC, 12);
+  assert.equal(f.adapter.status().phase, 'restoring');
+  assert.ok(f.adapter.status().faults.includes('native-baseline-changed'));
+  await f.start();
+  assert.equal(f.sent.at(-1).action, 'release');
+  assert.equal(f.adapter.status().restorePending, true);
 });
 
 test('adapter source epoch changes at reboot and never exposes native identities', () => {

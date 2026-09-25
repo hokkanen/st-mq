@@ -55,9 +55,8 @@ function cleanExternalState(value) {
 
 export function createGarageAdapter({ settings: input = {}, clock = Date.now, canControl = () => true,
   onObservation = () => {}, onEnergy = () => {}, onState = () => {}, persisted = null,
-  simulationTransport = null, productionTransport = null, hostSession = randomUUID(), baselineC = 10 } = {}) {
+  simulationTransport = null, productionTransport = null, hostSession = randomUUID() } = {}) {
   const settings = garageAdapterSettings(input);
-  if (!Number.isFinite(baselineC) || baselineC < 8 || baselineC > 16) throw new RangeError('Garage native baseline must be between 8 and 16 degrees Celsius');
   const production = settings.driver === 'shelly-cn105';
   const simulated = !production && simulationTransports.has(simulationTransport);
   const live = production && isShellyCn105Transport(productionTransport);
@@ -135,13 +134,15 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
     return { deviceOnline: check('device'), driverProgressing: check('driver'), pumpCommunicating: check('pump') };
   }
   function baselineAssessment(now) {
+    const targetC = state?.baseline.targetC;
     const profileFresh = connected && reconciled && !state?.retained
       && freshField(state?.baseline, now, settings.maxAgeMs)
       && state.baseline.profile === 'existing-low-heat'
+      && Number.isFinite(targetC) && targetC >= 8 && targetC <= 16
       && state.baseline.fan === 'auto' && state.baseline.vanes === 'fixed';
-    const verified = profileFresh && state.baseline.verified === true && state.baseline.targetC === baselineC;
+    const verified = profileFresh && state.baseline.verified === true;
     return { verified: Boolean(verified), accepted: Boolean(verified),
-      targetC: baselineC, source: verified ? 'device-verified' : 'configured',
+      targetC: verified ? targetC : null, source: verified ? 'device-verified' : 'unavailable',
       nativeTargetC: state?.native.targetC?.value ?? null };
   }
   function blockers(now, { forRelease = false } = {}) {
@@ -170,7 +171,7 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
       if (!CAPABILITIES.every(name => state?.capabilities[name] === true))
         reasons.push('essential-capability-unverified');
       if (!baseline.accepted) reasons.push('native-baseline-unverified');
-      if (state && [['mode', 'heat'], ['targetC', baselineC],
+      if (state && [['mode', 'heat'], ['targetC', baseline.targetC],
         ['fan', 'auto'], ['vanes', 'fixed']].some(([key, expected]) =>
         state.native[key]?.value !== null && state.native[key]?.value !== undefined
         && freshField(state.native[key], now, settings.maxAgeMs) && state.native[key].value !== expected))
@@ -641,6 +642,10 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
     }
     if (finiteTime(value.recoveryLockedUntil)) recoveryLockedUntil = Math.max(recoveryLockedUntil, value.recoveryLockedUntil);
     if (reconciled && !packet.retain) {
+      // A newly verified native profile may qualify a future plan. It cannot
+      // change the heating assumption of an already outstanding pause.
+      if (episode && !episode.invalidated && state.baseline.targetC !== episode.baselineTargetC)
+        invalidate('native-baseline-changed', now);
       if (state.authority.manualControlAllowed) manualPermissionObserved = true;
       const event = value.event;
       if (['manual-on', 'watchdog-recovery'].includes(event?.type) && finiteTime(event.at) && event.at <= now
@@ -824,7 +829,8 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
     if (state?.native.power?.value !== 'on' || !freshField(state?.native.power, now, settings.maxAgeMs)) reasons.push('native-on-unconfirmed');
     if (state?.lease !== null) reasons.push('foreign-or-unresolved-episode');
     if (reasons.length) return { status: 'blocked', reasons: [...new Set(reasons)] };
-    episode = { id: plan.id, endpointAt: plan.pauseUntil, leaseExpiresAt: null, status: 'starting', invalidated: false };
+    episode = { id: plan.id, endpointAt: plan.pauseUntil, leaseExpiresAt: null, status: 'starting', invalidated: false,
+      baselineTargetC: baselineAssessment(now).targetC };
     restorePending = true; obligationAt = now; restorationRequestedAt = null;
     return send('start', now, plan);
   }
@@ -868,7 +874,6 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
         ...(telemetry.defrost?.usable ? { defrost: telemetry.defrost.value } : {}) },
       limits: state?.limits ? { maxLeaseMs: state.limits.maximumMs, renewAfterMs: state.limits.renewAfterMs,
         minimumOnMs: state.limits.minimumOnMs, restorationDelayMs: state.limits.restorationDelayMs } : null,
-      configuredBaselineC: baselineC,
       outstandingPermissionExpiresAt: outstandingPermissionExpiresAt(),
       observedHeatingDelayMs,
       restorePending, episode: episode ? { id: episode.id, endpointAt: episode.endpointAt,

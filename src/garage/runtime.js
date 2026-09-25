@@ -73,9 +73,14 @@ export class GarageRuntime {
       }
     };
     const room = readState(this.keys.roomTemperature);
+    if (room != null && (typeof room !== 'object' || Array.isArray(room)
+      || Object.keys(room).some(key => key !== 'targetC')
+      || room.targetC !== null && (!finite(room.targetC) || room.targetC < GARAGE_ROOM_MIN_C
+        || room.targetC > GARAGE_NATIVE_SETTINGS.targetC.max || !Number.isInteger(room.targetC * 2))))
+      throw new Error('Invalid saved Garage room setting');
+    this.selectedRoomTargetC = room?.targetC ?? null;
     this.roomTemperature = new GarageRoomTemperature({ now: clock(), targetC:
-      finite(room?.targetC) && room.targetC >= GARAGE_ROOM_MIN_C && room.targetC < 16
-        && Number.isInteger(room.targetC * 2) ? room.targetC : null });
+      this.selectedRoomTargetC !== null && this.selectedRoomTargetC < 16 ? this.selectedRoomTargetC : null });
     const savedExposure = readState(this.keys.exposure);
     if (savedExposure != null && (typeof savedExposure !== 'object' || Array.isArray(savedExposure)))
       throw new Error('Invalid saved Garage exposure; start a fresh development database');
@@ -96,6 +101,18 @@ export class GarageRuntime {
     if (store.db.prepare('SELECT 1 FROM learning_journal WHERE input=? AND algorithm_version<>? LIMIT 1')
       .get(garageInput(this.input), GARAGE_ALGORITHM_VERSION))
       throw new Error('Unsupported Garage journal algorithm; start a fresh development database');
+    // A rebuilding checkpoint can lag current room intent. Retain only the
+    // latest committed source value, not another model or a per-setting cache.
+    const roomSource = store.db.prepare(`SELECT payload FROM learning_journal
+      WHERE input=? AND algorithm_version=? AND (json_type(payload,'$.value.roomTargetC') IS NOT NULL
+        OR json_type(payload,'$.seed.normalReference.roomTargetC') IS NOT NULL)
+      ORDER BY id DESC LIMIT 1`).get(garageInput(this.input), GARAGE_ALGORITHM_VERSION);
+    if (roomSource) {
+      const payload = JSON.parse(roomSource.payload);
+      this.journalRoomTargetC = Object.hasOwn(payload.value, 'roomTargetC')
+        ? payload.value.roomTargetC : payload.seed.normalReference.roomTargetC;
+      createGarageModel({ roomTargetC: this.journalRoomTargetC });
+    }
     this.temporary = readState(this.keys.temporary);
     if (!finite(this.temporary?.expiresAt) || this.temporary.expiresAt <= clock()) this.temporary = null;
     // Restarts retain price-control pauses, but never resume an OFF permission.
@@ -113,13 +130,10 @@ export class GarageRuntime {
     const head = garageJournalHead(store, this.input);
     if (head && this.checkpoint?.cursor !== head) this.startRebuild();
     if (garageDigest(previous) !== garageDigest(this.settings)) {
-      this.append('context', { configurationChanged: garageDigest(previous) !== garageDigest(this.settings),
-        baselineChanged: previous != null && previous.baselineC !== this.settings.baselineC },
+      this.append('context', { configurationChanged: true,
+        ...(!head ? { roomTargetC: this.selectedRoomTargetC } : {}) },
         `configuration:${clock()}:${garageDigest(this.settings)}`);
       store.setState(settingsKey, this.settings);
-      if (this.episode?.accounting && previous?.baselineC !== this.settings.baselineC) {
-        this.episode.accounting.qualified = false; this.saveEpisode();
-      }
     }
     this.armControlDeadline();
   }
@@ -258,9 +272,12 @@ export class GarageRuntime {
         this.roomTemperature.select(request.value, now);
       } else if (this.roomTemperature.targetC !== null || this.roomTemperature.mustClear
         || external?.restorationPending || external?.phase && external.phase !== 'internal') {
-        this.saveRoomTarget(null, now);
+        this.saveRoomTarget(request.setting === 'targetC' ? request.value : null, now);
         this.roomTemperature.cancel(request, now);
-      } else await this.adapter.setNativeSetting(request, now);
+      } else {
+        if (request.setting === 'targetC') this.saveRoomTarget(request.value, now);
+        await this.adapter.setNativeSetting(request, now);
+      }
       return this.status();
     } finally { this.manualBusy = false; void this.roomTemperatureTick(); }
   }
@@ -331,7 +348,46 @@ export class GarageRuntime {
       return this.status();
     } finally { this.manualBusy = false; }
   }
-  setAdapter(adapter) { this.adapter = adapter; }
+  setAdapter(adapter) { this.adapter = adapter; this.syncRoomReference(this.clock()); }
+  roomReferenceTarget(now = this.clock()) {
+    if (this.roomTemperature.targetC !== null) return this.roomTemperature.targetC;
+    if (this.roomTemperature.ordinary?.setting === 'targetC') return this.roomTemperature.ordinary.value;
+    if (this.roomTemperature.mustClear || this.roomTemperature.ordinary) return null;
+    const result = this.adapter?.nativeControls?.(now)?.result;
+    // The old readback must not replace a new choice while its command is pending.
+    if (this.roomTargetRequestedAt != null && (!result || result.requestedAt < this.roomTargetRequestedAt
+      || result.setting === 'targetC' && result.value === this.selectedRoomTargetC
+        && ['pending', 'published', 'accepted'].includes(result.status))) return this.selectedRoomTargetC;
+    const adapter = this.adapter?.status(now), reading = adapter?.native?.readbacks?.targetC;
+    const external = adapter?.externalTemperature ?? this.adapter?.externalTemperature?.(now);
+    if (external?.phase && external.phase !== 'internal' || external?.restorationPending) return null;
+    const quality = Array.isArray(reading?.quality) ? reading.quality : reading?.quality ? [reading.quality] : [];
+    const fresh = adapter?.connected === true && adapter.health?.pumpCommunicating === true
+      && adapter.health?.deviceOnline !== false && reading?.supported !== false && reading?.usable !== false
+      && reading?.available !== false && reading?.stale !== true && finite(reading?.measuredAt)
+      && reading.measuredAt <= now && now - reading.measuredAt < (this.config.garage?.adapter?.maxAgeMs ?? 2 * MINUTE)
+      && !quality.some(value => /retained|stale|invalid|unavailable|unsupported|unknown/i.test(value));
+    const targetC = adapter?.native?.targetC;
+    if (fresh && finite(targetC) && targetC >= 8 && targetC <= GARAGE_NATIVE_SETTINGS.targetC.max
+      && Number.isInteger(targetC * 2)) {
+      // A reported 16°C can also represent the pump's i-save mode. An explicit
+      // owner selection or verified low-heat profile resolves that ambiguity.
+      if (targetC === 16 && this.selectedRoomTargetC !== 16)
+        return adapter.normalHeating?.verified === true && finite(adapter.normalHeating.targetC)
+          ? adapter.normalHeating.targetC : null;
+      return targetC;
+    }
+    return this.journalRoomTargetC !== undefined ? this.journalRoomTargetC : this.selectedRoomTargetC;
+  }
+  syncRoomReference(now) {
+    const roomTargetC = this.roomReferenceTarget(now);
+    if (roomTargetC === (this.journalRoomTargetC ?? null)) return;
+    this.append('context', { normalReferenceReset: true, roomTargetC }, `room-reference:${randomUUID()}`, now);
+    this.plan = null; this.scheduledOpportunity = null;
+    if (this.episode?.accounting) {
+      this.episode.accounting.qualified = false; this.saveEpisode();
+    }
+  }
   roomTemperatureStatus(now = this.clock()) {
     const observation = this.engine.latest.garage_temperature;
     const status = this.roomTemperature.status(observation);
@@ -359,14 +415,16 @@ export class GarageRuntime {
     return this.roomDispatch;
   }
   saveRoomTarget(targetC, now) {
-    const checkpoint = this.checkpoint;
+    const checkpoint = this.checkpoint, journalRoomTargetC = this.journalRoomTargetC;
     try {
       this.store.transaction(() => {
         this.store.setState(this.keys.roomTemperature, { targetC });
-        this.append('context', { normalReferenceReset: true, roomTargetC: targetC }, `room-target:${randomUUID()}`, now);
+        this.append('context', { normalReferenceReset: targetC !== this.journalRoomTargetC,
+          roomTargetC: targetC }, `room-target:${randomUUID()}`, now);
         this.store.event('garage-room-target-changed', { targetC }, now);
       });
-    } catch (error) { this.checkpoint = checkpoint; throw error; }
+      this.selectedRoomTargetC = targetC; this.roomTargetRequestedAt = targetC === null ? null : now;
+    } catch (error) { this.checkpoint = checkpoint; this.journalRoomTargetC = journalRoomTargetC; throw error; }
   }
   pauseStartsToday(now = this.clock()) {
     const day = moment.tz(now, 'Europe/Helsinki').startOf('day');
@@ -397,6 +455,8 @@ export class GarageRuntime {
       return entry;
     });
     this.checkpoint = checkpoint;
+    if (Object.hasOwn(entry.payload.value, 'roomTargetC')) this.journalRoomTargetC = entry.payload.value.roomTargetC;
+    else if (entry.payload.seed) this.journalRoomTargetC = entry.payload.seed.normalReference.roomTargetC;
     return entry;
   }
   startRebuild() {
@@ -440,7 +500,7 @@ export class GarageRuntime {
   syncCorrections() {
     const next = garageCorrectionContext(this.store, this.input);
     if (next.revision === this.context.revision) return;
-    const previous = this.context, checkpoint = this.checkpoint; this.context = next;
+    const previous = this.context, checkpoint = this.checkpoint, journalRoomTargetC = this.journalRoomTargetC; this.context = next;
     try {
       this.store.transaction(() => {
         for (const change of next.changes.filter(row => !previous.changes.some(old => old.id === row.id)))
@@ -448,7 +508,7 @@ export class GarageRuntime {
       });
     } catch (error) {
       // All newly discovered boundaries must remain retryable as a group.
-      this.context = previous; this.checkpoint = checkpoint; throw error;
+      this.context = previous; this.checkpoint = checkpoint; this.journalRoomTargetC = journalRoomTargetC; throw error;
     }
     if (next.changes.some(change => change.revertedAt !== null
       && previous.changes.find(old => old.id === change.id)?.revertedAt !== change.revertedAt)) {
@@ -481,7 +541,8 @@ export class GarageRuntime {
       baselineVerified: native?.baselineVerified === true,
       baselineAccepted: native?.baselineAccepted === true || native?.baselineVerified === true,
       baselineBasis: native?.baselineVerified === true ? 'verified' : 'unavailable',
-      sourceEpoch: garageDigest({ adapter: native?.sourceEpoch ?? null, roomTargetC: this.roomTemperature.targetC,
+      roomTargetC: this.roomReferenceTarget(now),
+      sourceEpoch: garageDigest({ adapter: native?.sourceEpoch ?? null, roomTargetC: this.roomReferenceTarget(now),
         rear: [rear?.source ?? null, rear?.device ?? null, rear?.raw?.temperatureRouteSignature ?? null],
         front: [front?.source ?? null, front?.device ?? null, front?.raw?.temperatureRouteSignature ?? null], outdoor: outdoor?.source ?? null }),
       managedPause: Boolean(native?.episode && native.phase === 'paused'),
@@ -595,6 +656,7 @@ export class GarageRuntime {
     const now = this.clock();
     void this.roomTemperatureTick();
     try {
+      this.syncRoomReference(now);
       const observation = this.read(now);
       // Retain short disturbances seen by the safety loop until the next
       // committed temperature interval. Replay needs only this eligibility bit,
@@ -709,7 +771,7 @@ export class GarageRuntime {
         authorizedEndAt: Math.min(this.episode.pauseUntil, adapterStatus.episode?.endpointAt ?? Infinity) } : null;
     const ongoingRecovery = this.episode && !activePause;
     const planningModel = this.episode ? { ...this.episode.frozenModel, state: this.episode.accounting.actualState }
-      : this.checkpoint?.model ?? createGarageModel({ seedAt: now, baselineC: this.settings.baselineC });
+      : this.checkpoint?.model ?? createGarageModel({ seedAt: now, roomTargetC: observation.roomTargetC });
     const admissionReason = !activePause && (garagePauseStartReason(observation)
       || (this.pauseStartsToday(now) >= this.settings.maxPausesPerDay ? 'daily-pause-limit' : null)
       || (this.settings.minOnMs > 0 && (!finite(this.normalHeatingSince)
@@ -748,7 +810,8 @@ export class GarageRuntime {
     const adapterPlan = { id, pauseFrom: now, pauseUntil: this.plan.pauseUntil, ...this.permissionFields(now, observation) };
     this.dispatch = Promise.resolve(this.adapter?.plannerTick({ now, valid: valid && recoveryReady, plan: adapterPlan,
       recoveryReady: this.protection?.safeToPause === true && recoveryReady,
-      demand: finite(observation.rearC) && observation.rearC < this.settings.baselineC - 1 })).then(result => {
+      demand: finite(observation.rearC) && finite(planningModel.normalReference.interceptC)
+        && observation.rearC < planningModel.normalReference.interceptC - 1 })).then(result => {
         if (result?.status === 'blocked' && this.episode?.startedAt === now && !this.adapter?.status().restorePending)
           this.finishEpisode('incomplete', 'pause-request-not-applied');
       }).catch(() => {})
@@ -864,7 +927,7 @@ export class GarageRuntime {
   finishEpisode(status, reason, assessment = null, { resetNormalReference = false } = {}) {
     if (!this.episode) return;
     const completed = { ...this.episode, status, endedAt: this.clock(), reason, assessment };
-    const checkpoint = this.checkpoint;
+    const checkpoint = this.checkpoint, journalRoomTargetC = this.journalRoomTargetC;
     try {
       this.store.transaction(() => {
         if (resetNormalReference) this.append('context', { normalReferenceReset: true, reason },
@@ -872,7 +935,7 @@ export class GarageRuntime {
         this.store.cycle(garageInput(this.input), completed);
         this.store.setState(this.keys.episode, null);
       });
-    } catch (error) { this.checkpoint = checkpoint; throw error; }
+    } catch (error) { this.checkpoint = checkpoint; this.journalRoomTargetC = journalRoomTargetC; throw error; }
     this.episode = null;
   }
   async release(reason = 'owner-cancelled', { preserveManual = false } = {}) {
@@ -914,7 +977,7 @@ export class GarageRuntime {
           known: finite(input[`${id}Kw`]), required: input.evEvidenceRequired[id],
         }])) },
       exposure: structuredClone(this.exposure), protection: structuredClone(this.protection ?? null),
-      learning: { ...garageModelSummary(this.checkpoint?.model ?? createGarageModel({ seedAt: now, baselineC: this.settings.baselineC })),
+      learning: { ...garageModelSummary(this.checkpoint?.model ?? createGarageModel({ seedAt: now, roomTargetC: input.roomTargetC })),
         reconstruction: this.learningStatus, journalCursor: this.checkpoint?.cursor ?? 0, algorithmVersion: GARAGE_ALGORITHM_VERSION },
       adapter: adapter ?? { phase: 'unavailable', contractStatus: 'missing', liveControlSupported: false,
         restorePending: Boolean(this.store.getState(this.keys.adapter)?.restorePending), blockedReasons: ['Adapter contract is not installed'] },

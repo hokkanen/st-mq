@@ -14,7 +14,7 @@ import { knownGarageReserve } from './helpers/garage-reserve-fixture.js';
 const HOUR = 3_600_000, MINUTE = 60_000, NOW = Date.parse('2026-01-01T10:00:00Z');
 function candidate(extra = {}) {
   const settings = garageSettings({ enabled: true, savingsStrategy: 'savings', protection: { approved: true } });
-  const model = assignGaragePlanningEvidence(createGarageModel({ seedAt: NOW }));
+  const model = assignGaragePlanningEvidence(createGarageModel({ seedAt: NOW, roomTargetC: 10 }));
   model.normalReference.interceptC = 10; model.normalReference.frontC = 9;
   const observation = { at: NOW, rearAt: NOW, frontAt: NOW, rearC: 10, frontC: 9,
     outdoorC: -5, available: true, baselineVerified: true, doorFront: false };
@@ -118,7 +118,10 @@ function runtimeFixture(t, extra = {}, seed = null) {
   const store = new Store(':memory:'); let now = NOW, owner = true;
   const engine = { latest: {}, lastKnownTemperatures: {}, settings: { mode: 'active' } };
   const config = { input: 'mqtt', garage: garageSettings({ enabled: true, savingsStrategy: 'savings', protection: { approved: true }, ...extra }) };
-  if (seed) appendGarageEntry(store, 'mqtt', 'context', {}, config.garage, NOW - 1, { key: 'explicit-test-seed', seed });
+  if (seed) {
+    appendGarageEntry(store, 'mqtt', 'context', {}, config.garage, NOW - 1, { key: 'explicit-test-seed', seed });
+    store.setState('garage:configuration:mqtt', config.garage);
+  }
   const runtime = new GarageRuntime({ store, engine, config, clock: () => now, canControl: () => owner });
   const calls = [], native = { automaticControl: false, health: { pumpCommunicating: true },
     native: { power: 'on', powerAt: now }, baselineAccepted: true, limits: { restorationDelayMs: MINUTE } };
@@ -154,7 +157,7 @@ test('daily limit counts every attempted episode by its Finnish start day, inclu
 
 test('unmetered completed savings pay the full recovery energy; metered recovery is not charged twice', () => {
   for (const metered of [false, true]) {
-    const model = createGarageModel({ seedAt: NOW });
+    const model = createGarageModel({ seedAt: NOW, roomTargetC: 10 });
     const first = { at: NOW, rearC: 10, frontC: 10, outdoorC: 0, available: false };
     let account = startGarageAssessment(model, first);
     for (let minute = 1; minute <= 240; minute++) {
@@ -172,7 +175,7 @@ test('unmetered completed savings pay the full recovery energy; metered recovery
 });
 
 test('charging, unknown configured charging, baseline loss and source changes retain costs but withhold savings', () => {
-  const model = createGarageModel({ seedAt: NOW });
+  const model = createGarageModel({ seedAt: NOW, roomTargetC: 10 });
   const first = { at: NOW, rearC: 10, frontC: 9, outdoorC: 0, available: false,
     baselineAccepted: true, sourceEpoch: 'first' };
   for (const change of [{ ev1Kw: 11 }, { ev2Active: true }, { inputDisturbed: true },
@@ -185,7 +188,7 @@ test('charging, unknown configured charging, baseline loss and source changes re
 });
 
 test('invalid observed electricity cannot evade unmetered recovery allowance', () => {
-  const model = createGarageModel({ seedAt: NOW });
+  const model = createGarageModel({ seedAt: NOW, roomTargetC: 10 });
   for (const powerKw of [-1, 9, NaN]) {
     let account = startGarageAssessment(model, { at: NOW, rearC: 10, frontC: 10, outdoorC: 0, available: false });
     for (let minute = 1; minute <= 240; minute++) account = updateGarageAssessment(account, model,

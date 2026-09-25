@@ -236,7 +236,7 @@ test('missing startup sensor data still establishes the native17 fallback withou
   assert.equal(f.sent.filter(command => Number.isFinite(command.temperatureC)).length, 0);
 });
 
-test('runtime persists room intent atomically, restores only the intent, and removes it for ordinary settings', async t => {
+test('runtime persists room intent atomically and keeps ordinary room selections without external control on restart', async t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   const f = fixture(null), engine = { latest: {}, settings: { mode: 'shadow' } };
   const options = { engine, store, config: { input: 'mqtt', garage: { enabled: false } }, clock: f.now };
@@ -253,8 +253,14 @@ test('runtime persists room intent atomically, restores only the intent, and rem
   f.ack(); await runtime.roomTemperatureTick();
   await runtime.setNativeSettings({ setting: 'targetC', value: 18 });
   await runtime.roomDispatch;
-  assert.deepEqual(store.getState(runtime.keys.roomTemperature), { targetC: null });
+  assert.deepEqual(store.getState(runtime.keys.roomTemperature), { targetC: 18 });
   assert.equal(runtime.roomTemperature.targetC, null);
+  assert.equal(runtime.status().learning.normalReference.rearC, 18);
+  assert.equal(runtime.status().learning.normalReference.frontC, 18);
+  const nativeRestart = new GarageRuntime(options); t.after(() => nativeRestart.close({ restore: false }));
+  assert.equal(nativeRestart.roomTemperature.targetC, null, 'Native-range intent does not restart external sensing');
+  assert.equal(nativeRestart.status().learning.normalReference.rearC, 18);
+  assert.equal(nativeRestart.status().learning.normalReference.frontC, 18);
 });
 
 test('runtime rejects stale preference API, unsupported low target, replicas and failed persistence', async t => {
@@ -269,8 +275,11 @@ test('runtime rejects stale preference API, unsupported low target, replicas and
   f.external.configurable = false; await assert.rejects(runtime.setNativeSettings({ setting: 'targetC', value: 5 }));
   f.external.configurable = true; owner = false;
   await assert.rejects(runtime.setNativeSettings({ setting: 'targetC', value: 5 })); owner = true;
+  const referenceBeforeFailure = structuredClone(runtime.status().learning.normalReference);
   const setState = store.setState.bind(store);
   store.setState = (key, value) => { if (key === runtime.keys.roomTemperature) throw new Error('storage failure'); return setState(key, value); };
   await assert.rejects(runtime.setNativeSettings({ setting: 'targetC', value: 5 }), /storage failure/);
   assert.equal(runtime.roomTemperature.targetC, null); assert.equal(f.sent.length, 0);
+  assert.deepEqual(runtime.status().learning.normalReference, referenceBeforeFailure,
+    'Failed persistence cannot publish model estimates for a room setting that was not saved');
 });

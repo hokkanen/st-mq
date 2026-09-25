@@ -6,6 +6,11 @@ export function assignGaragePlanningEvidence(model, { at = model.at ?? 0, hours 
   model.rear.active[0] = true;
   model.front.active[0] = true; model.native.active[0] = true;
   model.native.hours = Math.max(24, model.native.hours);
+  // This fixture declares observed normal service explicitly. Production
+  // seeds remain unknown until a current room setting is selected.
+  model.normalReference.roomTargetC ??= 10;
+  model.normalReference.interceptC ??= model.normalReference.roomTargetC;
+  model.normalReference.frontC ??= model.normalReference.roomTargetC;
   model.normalReference.initialized = true;
   for (const metrics of Object.values(model.heldOut)) Object.assign(metrics,
     { n: 30, hours: 8, absolute: .4, square: .04, signed: 0 });

@@ -142,7 +142,7 @@ model; it is separate from a forecast saved before execution or measured savings
 
 ## Separate Garage learning
 
-`committed-garage-v6-source-clocks` uses Garage's saved seed and current
+`committed-garage-v7-room-reference` uses Garage's saved seed and current
 `garage:<input>` journal. The same ordered update function drives live learning,
 checkpoint continuation, source corrections and worker reconstruction. Front and
 rear keep their original report clocks. Fresh held reports wait for a joined
@@ -150,6 +150,14 @@ interval; each location uses its own elapsed duration and matching observed
 ambient/native support. Held reports never add thermal evidence. Frozen validation
 uses those same source intervals. Whole-cycle electrical qualification requires
 qualified measurements during both OFF and recovery, including measured zero.
+
+Room-setting changes are committed source context. Initial rear/front normal
+references use that setting; unknown settings remain unknown. A change clears
+normal-temperature and electricity evidence and validation without replacing
+the cooling rates. Replay retains the selected target through sensor corrections
+and reference resets. Initial estimates remain at the selected setting until the
+required observation period establishes achieved rear/front temperatures. Older
+development algorithms are rejected rather than reinterpreted with these seeds.
 
 Only this current algorithm and `garage-thermal-reserve-v1` state are accepted.
 Retired settings, exposure shapes, algorithm seeds and frozen episodes are
@@ -175,7 +183,7 @@ Planning uses `garage-savings-strategy-v1`: the configured Gentle, Balanced or
 More savings strategy changes the new-start benefit hurdle and selects the
 shortest safe window retaining the required fraction of the best benefit.
 Gentle still permits sufficiently worthwhile pauses. This planning-semantic change leaves
-`committed-garage-v6-source-clocks` learning and `garage-thermal-reserve-v1`
+`committed-garage-v7-room-reference` learning and `garage-thermal-reserve-v1`
 protection unchanged. Persisted episode plans with an incompatible preference
 version are rejected with fresh-development-database guidance; no old-policy
 interpreter or plan migration is retained.

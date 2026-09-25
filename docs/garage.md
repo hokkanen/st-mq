@@ -166,7 +166,7 @@ inputs and restart retain restoration obligations; restart never resumes OFF.
 
 ## Learning, recovery and reporting
 
-`committed-garage-v6-source-clocks` learns only two effective cooling coefficients,
+`committed-garage-v7-room-reference` learns only two effective cooling coefficients,
 from clean OFF intervals. Charger heat is **7.5% of qualifying charger energy**
 (or power), shown separately. It never schedules charging for warmth or credits
 future charging when judging safe OFF time. Current, unknown and forecast charging

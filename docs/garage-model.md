@@ -1,7 +1,7 @@
 # Simple garage pause model
 
-The current algorithm is `committed-garage-v6-source-clocks`, with planning preference
-`garage-savings-preference-v3`. Its purpose is occasional worthwhile OFF opportunities
+The current algorithm is `committed-garage-v7-room-reference`, with planning strategy
+`garage-savings-strategy-v1`. Its purpose is occasional worthwhile OFF opportunities
 under independent pipe protection. It has no preheat, hidden core, learned pump
 heat response, door heat coefficient or multi-pause optimizer.
 
@@ -22,13 +22,25 @@ sensors and held-out intervals cannot supply clean fit evidence. Local plunges
 still update actual air and protection immediately.
 
 Only observed rear/front temperatures form the state. Missing front remains
-missing. A normal reference is learned from both locations after at least eight
+missing. Initial normal-warmth estimates use the chosen room setting, including
+the lower Garage rear target used with external sensing rather than its native
+17°C setting. Without a chosen setting, an unambiguous fresh pump setting may
+supply the reference; otherwise it remains unavailable. There is no separate
+configured baseline temperature or default 10°C.
+
+A normal reference is learned from both locations after at least eight
 uninterrupted hours of eligible normal heating and two qualified observation
 hours with a settled rear temperature, without pause, recovery, door or charger
 disturbance. The rear settling check uses a two-hour smoothing time scale. The native baseline
 must be accepted by the current control checks or independently verified. A sensor
 boundary or changed baseline has a documented new seed/context; source changes
-interrupt continuity. The saved room
+interrupt continuity. Initial estimates remain at the room setting until two
+qualified hours establish distinct observed rear and front means. Changing the
+room setting clears normal-temperature and electrical evidence and validation,
+while retaining learned OFF cooling rates and their prediction-error evidence.
+Returning to an earlier setting starts fresh normal-reference learning; there is
+no separate cache for each setting. Reapplying the same setting preserves that
+evidence. The saved room
 target, native thermostat readback and measured local temperatures remain
 distinct; an external temperature offset does not verify a low-heat baseline.
 
@@ -159,8 +171,9 @@ savings. There is no fabricated slow-core recovery or measured thermal kWh.
 
 Protection and recovery obligations are separate from replayable learning.
 `garage-thermal-reserve-v1` retains its copper-pipe assumptions and permission
-rules. Learning version 6 identifies independent source-clock support and
-complete-cycle metering qualification; preference version 3 identifies the current
+rules. Learning version 7 adds room-setting-based initial references and journaled
+reference changes to independent source-clock support and complete-cycle metering
+qualification. The separate `garage-savings-strategy-v1` identifier describes
 pause-selection semantics without changing learned cooling coefficients.
 Incompatible development models, settings and episodes
 are rejected; initialize a fresh development database explicitly. Current-version

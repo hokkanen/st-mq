@@ -6,16 +6,16 @@ import { createGarageRegression, fitGarageRegression } from '../src/garage/model
 import { createPlant, plantInputs, stepPlant, observedPlant, randomSource, AUDIT_START, HOUR } from './helpers/garage-plant.js';
 const settings = { maxSensorAgeMs: 4 * HOUR };
 const row = (hour, extra = {}) => ({ at: AUDIT_START + hour * HOUR, rearC: 7, frontC: 6.7, outdoorC: 0,
-  available: true, baselineVerified: true, powerKw: .3, powerQuality: 'verified', ev1Kw: 0, ev2Kw: 0, ...extra });
+  roomTargetC: 7, available: true, baselineVerified: true, powerKw: .3, powerQuality: 'verified', ev1Kw: 0, ev2Kw: 0, ...extra });
 function steady(cadenceMinutes, hours = 48) {
-  let model = createGarageModel({ seedAt: AUDIT_START });
+  let model = createGarageModel({ seedAt: AUDIT_START, roomTargetC: 7 });
   for (let minute = 0; minute <= hours * 60; minute += cadenceMinutes)
     model = updateGarageModel(model, row(minute / 60), settings);
   return model;
 }
 function experiment({ cadenceMinutes = 5, days = 8, offHours = .5, activityOnly = false, door = false } = {}) {
   const plant = createPlant({ activityOnly }), random = randomSource(41), entries = [];
-  let model = createGarageModel({ seedAt: AUDIT_START });
+  let model = createGarageModel({ seedAt: AUDIT_START, roomTargetC: 7 });
   for (let minute = 0; minute <= days * 1440; minute++) {
     const hour = minute / 60;
     const available = hour < 40 || (hour - 40) % 40 >= offHours;
@@ -32,7 +32,8 @@ function experiment({ cadenceMinutes = 5, days = 8, offHours = .5, activityOnly 
 }
 
 test('simple OFF learning has an explicit epoch and refuse previous learning semantics', () => {
-  assert.equal(GARAGE_ALGORITHM_VERSION, 'committed-garage-v6-source-clocks');
+  assert.equal(GARAGE_ALGORITHM_VERSION, 'committed-garage-v7-room-reference');
+  assert.throws(() => updateGarageModel({ ...createGarageModel(), algorithm: 'committed-garage-v6-source-clocks' }, row(1)), /Unsupported/);
   assert.throws(() => updateGarageModel({ ...createGarageModel(), algorithm: 'committed-garage-v4-simple-off' }, row(1)), /Unsupported/);
   assert.throws(() => updateGarageModel({ ...createGarageModel(), algorithm: 'committed-garage-v3-event-doors' }, row(1)), /Unsupported/);
   assert.throws(() => updateGarageModel({ ...createGarageModel(), algorithm: 'committed-garage-v1-coupled' }, row(1)), /Unsupported/);
@@ -91,7 +92,7 @@ test('whole later episodes record validated duration evidence with exact determi
   assert.equal(summary.thermalReady, true);
   assert.ok(summary.validatedOffHours > .49 && summary.validatedOffHours < .51);
   assert.deepEqual(model.validation.episodes.slice(0, 3).map(e => e.role), ['training', 'training', 'validation']);
-  assert.deepEqual(replayGarageModel(createGarageModel({ seedAt: AUDIT_START }), entries), model);
+  assert.deepEqual(replayGarageModel(createGarageModel({ seedAt: AUDIT_START, roomTargetC: 7 }), entries), model);
   assert.ok(JSON.stringify(model).length < 32_000);
 });
 
@@ -172,7 +173,7 @@ test('advance forecast margins continue growing beyond six hours without future-
 
 
 test('observed boolean activity predicts dimensionless duty independently of modeled watts', () => {
-  let model = createGarageModel({ seedAt: AUDIT_START });
+  let model = createGarageModel({ seedAt: AUDIT_START, roomTargetC: 7 });
   for (let i = 0; i <= 48 * 12; i++) model = updateGarageModel(model,
     row(i / 12, { powerKw: null, activity: true }), settings);
   assert.ok(model.nativeActivity.hours > 12); assert.ok(model.nativeActivity.mean > .95);
@@ -199,7 +200,7 @@ test('a long continuously observed OFF period stays one frozen episode beyond 48
 });
 
 test('a 60-hour holdout stays frozen through 75 hours of recovery with bounded state and exact replay', () => {
-  const seed = createGarageModel({ seedAt: AUDIT_START });
+  const seed = createGarageModel({ seedAt: AUDIT_START, roomTargetC: 7 });
   seed.validation.nextId = 2;
   const entries = [];
   let model = seed, frozen, activeBytes;
@@ -228,7 +229,7 @@ test('a 60-hour holdout stays frozen through 75 hours of recovery with bounded s
 });
 
 test('failed short-pause recovery times out only after observed normal heating', () => {
-  let model = createGarageModel({ seedAt: AUDIT_START });
+  let model = createGarageModel({ seedAt: AUDIT_START, roomTargetC: 7 });
   for (let i = 0; i <= 13 * 4; i++) {
     const hours = i / 4;
     model = updateGarageModel(model, row(hours, { available: hours >= 1,

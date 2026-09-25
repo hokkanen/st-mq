@@ -17,10 +17,12 @@ test('unsupported Garage saved exposure and algorithms fail before source mutati
   const currentModel = createGarageModel({ seedAt: START });
   for (const [key, value] of [
     ['configuration', { aggressiveness: 50 }], ['configuration', { savingsStrategy: 'unknown' }],
+    ['configuration', { baselineC: 10 }],
     ['exposure', {}], ['exposure', 0], ['exposure', { version: 'garage-exposure-v1' }],
     ['exposure', { version: 'garage-exposure-v2' }],
     ['checkpoint', { algorithmVersion: 'committed-garage-v4-simple-off' }],
     ['checkpoint', { algorithmVersion: 'committed-garage-v5-protection-limited' }],
+    ['checkpoint', { algorithmVersion: 'committed-garage-v6-source-clocks' }],
     ['episode', { algorithmVersion: GARAGE_ALGORITHM_VERSION, frozenModel: { algorithm: 'old' } }],
     ['episode', { algorithmVersion: GARAGE_ALGORITHM_VERSION, frozenModel: currentModel, accounting: { algorithmVersion: 'old' } }],
   ]) {

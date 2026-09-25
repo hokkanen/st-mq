@@ -22,8 +22,10 @@ bulk temperature reaches zero.
 | Heat transfer | 20 W/m²·K | Initial estimate of heat exchange with the adjacent air. |
 | Safety factor | 2, fixed | Counts heat loss twice as fast and credits heat gain half as fast. |
 
-The configured normal-heating baseline defaults to 10°C and savings strategy
-to Balanced. Every strategy retains the same protection requirements. Automatic operation is
+The room setting selected through the UI supplies initial normal-warmth estimates;
+there is no separate configured normal-heating temperature. Without a selected
+setting, an unambiguous fresh pump setting can supply the reference. Savings
+strategy defaults to Balanced. Every strategy retains the same protection requirements. Automatic operation is
 disabled and the protection policy is unapproved by default. The heat-transfer
 coefficient and safety factor are engineering assumptions, not values learned
 from the garage or an installed safety certificate.

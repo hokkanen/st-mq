@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { createGarageModel, updateGarageModel, GARAGE_ALGORITHM_VERSION } from './model.js';
+import { createGarageModel, updateGarageModel, resetGarageNormalReference, GARAGE_ALGORITHM_VERSION } from './model.js';
 import { garageSettings } from './settings.js';
 import { sensorChangeEvents } from '../app/sensor-inputs.js';
 
@@ -49,23 +49,13 @@ export function applyGarageEntry(checkpoint, entry, context = { changes: [], rev
     }
     model = updateGarageModel(model, observation, settings);
   } else if (entry.kind === 'context') {
+    if (Object.hasOwn(value, 'baselineChanged')) throw new Error('Unsupported Garage baseline context; start a fresh development database');
+    const roomTargetC = Object.hasOwn(value, 'roomTargetC') ? value.roomTargetC : model.normalReference.roomTargetC;
     const change = context.changes.find(change => change.id === value.sensorChangeId);
-    if (change && change.revertedAt === null || value.baselineChanged === true)
-      model = createGarageModel({ seedAt: entry.at, baselineC: settings.baselineC });
-    else if (value.normalReferenceReset === true) {
-      const fresh = createGarageModel({ seedAt: entry.at, baselineC: settings.baselineC });
-      model.normalReference = fresh.normalReference;
-      model.native = fresh.native; model.nativeActivity = fresh.nativeActivity;
-      model.heldOut.native = fresh.heldOut.native;
-      model.previous = null; model.intervalDisturbed = false;
-      const active = model.validation.active;
-      if (active) model.validation.episodes = [...model.validation.episodes, {
-        id: active.id, role: active.role, startedAt: active.startedAt, endedAt: entry.at,
-        offHours: active.offHours, recoveryHours: active.recoveryHours, complete: false,
-        clean: false, metered: active.metered, reason: 'normal-reference-reset',
-      }].slice(-24);
-      model.validation.active = null; model.validation.previousAvailable = null;
-    }
+    if (change && change.revertedAt === null)
+      model = createGarageModel({ seedAt: entry.at, roomTargetC });
+    else if (value.normalReferenceReset === true || roomTargetC !== model.normalReference.roomTargetC)
+      resetGarageNormalReference(model, { at: entry.at, roomTargetC });
   }
   const next = { algorithmVersion: GARAGE_ALGORITHM_VERSION, model, cursor: entry.id,
     configVersion: entry.configVersion, correctionRevision: context.revision,
@@ -80,7 +70,7 @@ export function appendGarageEntry(store, input, kind, value, settings, at, { key
   const first = !garageJournalHead(store, input);
   const id = store.appendLearningJournal(garageInput(input), { kind, at, key,
     algorithmVersion: GARAGE_ALGORITHM_VERSION, configVersion: garageDigest(configuration),
-    payload: { settings: configuration, value, ...(first ? { seed: seed ?? createGarageModel({ seedAt: at, baselineC: configuration.baselineC }) } : {}) } });
+    payload: { settings: configuration, value, ...(first ? { seed: seed ?? createGarageModel({ seedAt: at, roomTargetC: value.roomTargetC ?? null }) } : {}) } });
   return store.learningJournal({ input: garageInput(input), after: id - 1, limit: 1, algorithmVersion: GARAGE_ALGORITHM_VERSION })[0];
 }
 

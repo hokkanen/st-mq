@@ -1,6 +1,7 @@
 import { GARAGE_MODEL_ASSUMPTIONS, garageRecoveryHours } from './model-assumptions.js';
 const metric = () => ({ hours: 0, square: 0, signed: 0, maximum: 0 });
 function add(metric, residual, hours) {
+  if (!Number.isFinite(residual)) return;
   metric.hours += hours; metric.square += residual ** 2 * hours; metric.signed += residual * hours;
   metric.maximum = Math.max(metric.maximum, Math.abs(residual));
 }
@@ -32,7 +33,8 @@ export function advanceGarageValidation(model, { state, prior, current, hours, f
     // An irrational rotation avoids assigning every fixed-length recurring
     // schedule (for example alternating short/long pauses) to the same side.
     validation.active = { id, role: Math.floor((id + 1) * .38196601125) > Math.floor(id * .38196601125) ? 'validation' : 'training', startedAt: prior.at,
-      offEndedAt: null, offHours: 0, recoveryHours: 0, clean: frontKnown, metered: true,
+      offEndedAt: null, offHours: 0, recoveryHours: 0,
+      clean: frontKnown && Number.isFinite(model.normalReference.interceptC) && Number.isFinite(model.normalReference.frontC), metered: true,
       initialRearC: state.rearC, initialFrontC: state.frontC, initialOutdoorC: prior.outdoorC,
       minimumRearC: state.rearC, minimumFrontC: state.frontC, rearDropC: 0, frontDropC: 0,
       forecast: freezeModel(model), state: { ...state }, observedKwh: 0, predictedKwh: 0, recoveryAllowanceKwh: 0, recoveryAccountedKwh: 0,
@@ -77,11 +79,11 @@ export function advanceGarageValidation(model, { state, prior, current, hours, f
   }
   if (metered) episode.observedKwh += prior.powerKw * hours;
   else episode.metered = false;
-  add(episode.rear, current.rearC - forecast.rearC, hours);
-  if (frontKnown) add(episode.front, current.frontC - frontForecast.frontC, frontHours);
+  if (Number.isFinite(forecast.rearC)) add(episode.rear, current.rearC - forecast.rearC, hours);
+  if (frontKnown && Number.isFinite(frontForecast.frontC)) add(episode.front, current.frontC - frontForecast.frontC, frontHours);
   if (prior.available === false) {
-    add(episode.offRear, current.rearC - forecast.rearC, hours);
-    if (frontKnown) add(episode.offFront, current.frontC - frontForecast.frontC, frontHours);
+    if (Number.isFinite(forecast.rearC)) add(episode.offRear, current.rearC - forecast.rearC, hours);
+    if (frontKnown && Number.isFinite(frontForecast.frontC)) add(episode.offFront, current.frontC - frontForecast.frontC, frontHours);
   }
   episode.minimumRearC = Math.min(episode.minimumRearC, current.rearC);
   if (frontKnown) episode.minimumFrontC = Math.min(episode.minimumFrontC, current.frontC);

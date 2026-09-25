@@ -12,7 +12,7 @@ import { knownGarageReserve } from './helpers/garage-reserve-fixture.js';
 const HOUR = 3_600_000, MINUTE = 60_000, NOW = Date.parse('2026-01-01T10:00:00Z');
 function candidate(savingsStrategy = 'balanced', values = [200, 200, 200, 200, ...Array(16).fill(5)]) {
   const settings = garageSettings({ enabled: true, savingsStrategy, protection: { approved: true } });
-  const model = assignGaragePlanningEvidence(createGarageModel({ seedAt: NOW }));
+  const model = assignGaragePlanningEvidence(createGarageModel({ seedAt: NOW, roomTargetC: 10 }));
   model.normalReference.interceptC = 10; model.normalReference.frontC = 9;
   return { now: NOW, settings, model,
     observation: { at: NOW, rearAt: NOW, frontAt: NOW, rearC: 10, frontC: 9,
@@ -105,6 +105,7 @@ function runtimeFixture(t, savingsStrategy = 'balanced') {
   const args = candidate(savingsStrategy), store = new Store(':memory:'); let now = NOW;
   const settings = garageSettings({ ...args.settings, minOnMs: 0 });
   appendGarageEntry(store, 'mqtt', 'context', {}, settings, NOW - 1, { key: 'test-planning-seed', seed: args.model });
+  store.setState('garage:configuration:mqtt', settings);
   const engine = { latest: {}, lastKnownTemperatures: {}, settings: { mode: 'active' } };
   const runtime = new GarageRuntime({ store, engine, config: { input: 'mqtt', garage: settings }, clock: () => now });
   const commands = [], safety = [], native = { automaticControl: true, liveControlSupported: true, phase: 'ready', episode: null,

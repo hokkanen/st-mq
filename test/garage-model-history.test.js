@@ -32,6 +32,8 @@ test('imported rear/outdoor reconstruction remains separate and cannot invent fr
     assert.equal(result.model.state.rearC, 6.77);
     assert.equal(result.model.evidence.offIntervals, 0); assert.equal(result.model.native.samples, 0);
     assert.equal(result.model.normalReference.samples, 0); assert.equal(result.model.rear.samples, 0);
+    assert.equal(result.summary.normalReference.roomTargetC, null);
+    assert.equal(result.summary.normalReference.rearC, null); assert.equal(result.summary.normalReference.frontC, null);
     assert.equal(result.summary.ready, false); assert.equal(result.summary.heldOut.rear.n, 0);
     assert.equal(store.db.prepare('SELECT COUNT(*) n FROM observations').get().n, before);
     assert.equal(store.db.prepare('SELECT COUNT(*) n FROM learning_journal').get().n, 0);

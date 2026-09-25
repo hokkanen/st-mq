@@ -4,11 +4,13 @@ import { createGarageRegression, fitGarageRegression } from './model-fit.js';
 import { createGarageValidation, advanceGarageValidation, interruptGarageValidation, summarizeGarageValidation } from './model-validation.js';
 import { garageDoorIntervalUnknown } from './door-state.js';
 import { GARAGE_MODEL_ASSUMPTIONS } from './model-assumptions.js';
+import { GARAGE_NATIVE_SETTINGS } from './native-settings.js';
+import { GARAGE_ROOM_MIN_C } from './room-temperature.js';
 export { GARAGE_MODEL_ASSUMPTIONS, garageRecoveryHours } from './model-assumptions.js';
 const HOUR = 3_600_000, finite = Number.isFinite;
 const clamp = (x, lo, hi) => Math.min(hi, Math.max(lo, x));
 const clone = value => structuredClone(value);
-export const GARAGE_ALGORITHM_VERSION = 'committed-garage-v6-source-clocks';
+export const GARAGE_ALGORITHM_VERSION = 'committed-garage-v7-room-reference';
 const REAR = [['coolingPerHour', .03, .001, .3, '1/h']];
 const FRONT = [['coolingPerHour', .04, .001, .4, '1/h']];
 const errorState = () => ({ n: 0, hours: 0, absolute: 0, square: 0, signed: 0 });
@@ -20,6 +22,8 @@ function errors(metrics) { const weight = metrics.hours || metrics.n;
   return { n: metrics.n, hours: metrics.hours, mae: weight ? metrics.absolute / weight : null,
     rmse: weight ? Math.sqrt(metrics.square / weight) : null, bias: weight ? metrics.signed / weight : null }; }
 function validC(value) { return finite(value) && value >= -60 && value <= 65; }
+function validRoomTarget(value) { return value === null || finite(value) && value >= GARAGE_ROOM_MIN_C
+  && value <= GARAGE_NATIVE_SETTINGS.targetC.max && Number.isInteger(value * 2); }
 export function qualifiedGaragePower(input) { return finite(input.powerKw) && input.powerKw >= 0 && input.powerKw <= 8
   && ['verified', 'provisional', 'simulated'].includes(input.powerQuality); }
 function activity(input) { return typeof input.activity === 'boolean' ? Number(input.activity)
@@ -38,21 +42,38 @@ export function garageAssumedEvHeat(input = {}) {
   return [1, 2].map(id => ({ id, heatKw: finite(input[`ev${id}Kw`]) && input[`ev${id}Kw`] >= 0 && input[`ev${id}Kw`] <= 50
     ? input[`ev${id}Kw`] * GARAGE_MODEL_ASSUMPTIONS.evHeatFraction : null, basis: 'fixed-7.5-percent-of-charger-electricity' }));
 }
-export function createGarageModel({ seedAt = 0, baselineC = 10 } = {}) {
-  if (!finite(seedAt) || !finite(baselineC)) throw new Error('Garage seed requires numeric UTC time and baseline');
+export function createGarageModel(options = {}) {
+  for (const key of Object.keys(options)) if (!['seedAt', 'roomTargetC'].includes(key)) throw new Error(`Unknown Garage seed option: ${key}`);
+  const { seedAt = 0 } = options;
+  const roomTargetC = Object.hasOwn(options, 'roomTargetC') ? options.roomTargetC : null;
+  if (!finite(seedAt) || !validRoomTarget(roomTargetC))
+    throw new Error('Garage seed requires numeric UTC time and a valid selected room setting or null');
   return { algorithm: GARAGE_ALGORITHM_VERSION, seedAt, at: null, updates: 0, trainedIntervals: 0,
     rear: createGarageRegression(REAR), front: createGarageRegression(FRONT),
     native: { values: [GARAGE_MODEL_ASSUMPTIONS.normalPowerKw], active: [false], samples: 0, hours: 0 },
     nativeActivity: { mean: null, samples: 0, hours: 0 },
     state: { rearC: null, frontC: null, differenceC: null }, previous: null,
-    normalReference: { interceptC: baselineC, frontC: baselineC, outdoorSlope: 0, baselineC, samples: 0,
-      availableSince: null, lastPauseAt: null, initialized: false, outdoorC: 0, qualifiedHours: 0, settledC: null },
+    normalReference: { interceptC: roomTargetC, frontC: roomTargetC, outdoorSlope: 0, roomTargetC, samples: 0,
+      availableSince: null, lastPauseAt: null, initialized: false, outdoorC: null, qualifiedHours: 0, settledC: null,
+      pendingRearC: null, pendingFrontC: null },
     validation: createGarageValidation(),
     heldOut: Object.fromEntries(['rear', 'front', 'native', 'advanceRear', 'advanceFront', 'offRear', 'offFront'].map(key => [key, errorState()])),
     evidence: { offIntervals: 0, powerIntervals: 0, activityIntervals: 0, rearOnlyIntervals: 0,
       offHours: 0, powerHours: 0, activityHours: 0,
       ev: [{ powerIntervals: 0, activityIntervals: 0, independentIntervals: 0 }, { powerIntervals: 0, activityIntervals: 0, independentIntervals: 0 }] },
     lastError: null, sourceEpoch: null, support: [], intervalDisturbed: false, intervalAvailability: null, intervalTransitions: 0 };
+}
+/** A new room setting changes normal service and its electricity evidence, but
+ * the measured OFF cooling response still belongs to the same building. */
+export function resetGarageNormalReference(model, { at, roomTargetC }) {
+  const fresh = createGarageModel({ seedAt: at, roomTargetC });
+  model.normalReference = fresh.normalReference;
+  model.native = fresh.native; model.nativeActivity = fresh.nativeActivity;
+  model.heldOut.native = fresh.heldOut.native;
+  model.validation = fresh.validation;
+  model.previous = null; model.support = [];
+  model.intervalDisturbed = false; model.intervalAvailability = null; model.intervalTransitions = 0;
+  return model;
 }
 export function normalGarageTemperature(model) { return model.normalReference.interceptC; }
 export function predictGarageNative(model, state, input = {}) {
@@ -68,7 +89,7 @@ export function predictGarageNative(model, state, input = {}) {
  * Charger heat is disclosed but does not create an assumed temperature rise. */
 export function predictGarageStep(model, state, input = {}, durationHours, { conditional = false } = {}) {
   if (model?.algorithm !== GARAGE_ALGORITHM_VERSION) throw new Error('Unsupported garage model algorithm');
-  if (!finite(durationHours) || durationHours <= 0 || durationHours > 4 || !validC(state?.rearC) || !validC(input.outdoorC))
+  if (!finite(durationHours) || durationHours <= 0 || durationHours > 4 || state?.rearC !== null && !validC(state?.rearC) || !validC(input.outdoorC))
     throw new Error('Garage prediction requires temperature, outdoor and a bounded interval');
   const off = input.available === false, native = predictGarageNative(model, state, input);
   const next = {};
@@ -76,10 +97,11 @@ export function predictGarageStep(model, state, input = {}, durationHours, { con
     const value = state[`${location}C`];
     if (!validC(value)) { next[`${location}C`] = null; continue; }
     const target = off ? input.outdoorC : location === 'rear' ? normalGarageTemperature(model) : model.normalReference.frontC;
+    if (!validC(target)) { next[`${location}C`] = null; continue; }
     const rate = off ? model[location].values[0] : 1 / GARAGE_MODEL_ASSUMPTIONS.recoveryTimeHours;
     next[`${location}C`] = clamp(target + (value - target) * Math.exp(-rate * durationHours), -60, 65);
   }
-  next.differenceC = validC(next.frontC) ? next.frontC - next.rearC : null;
+  next.differenceC = validC(next.frontC) && validC(next.rearC) ? next.frontC - next.rearC : null;
   const metered = conditional && qualifiedGaragePower(input), powerKw = metered ? input.powerKw : native.powerKw;
   return { state: next, ...next, electricityKwh: powerKw * durationHours,
     uncertaintyKwh: metered ? 0 : native.uncertaintyKw * durationHours,
@@ -90,7 +112,7 @@ export function predictGarageStep(model, state, input = {}, durationHours, { con
 }
 function learnReference(model, current, prior, hours, allowFit) {
   const reference = model.normalReference;
-  const disturbed = current.inputDisturbed === true || !validC(current.frontC) || !validC(prior.frontC) || model.intervalDisturbed || current.managedPause === true || current.recovering === true || current.available !== true || (current.baselineAccepted !== true && current.baselineVerified !== true)
+  const disturbed = reference.roomTargetC === null || current.inputDisturbed === true || !validC(current.frontC) || !validC(prior.frontC) || model.intervalDisturbed || current.managedPause === true || current.recovering === true || current.available !== true || (current.baselineAccepted !== true && current.baselineVerified !== true)
     || current.doorFront === true || current.doorRear === true || prior.doorFront === true || prior.doorRear === true
     || garageDoorIntervalUnknown(current, prior) || !garageChargingClean(current) || !garageChargingClean(prior);
   if (current.managedPause || current.recovering || current.available === false) reference.lastPauseAt = current.at;
@@ -102,10 +124,23 @@ function learnReference(model, current, prior, hours, allowFit) {
     || Math.abs(current.rearC - reference.settledC) / 2 > .25) return;
   if (reference.initialized && current.rearC < reference.interceptC - .5) return;
   const weight = reference.initialized ? 1 - Math.exp(-hours / 80) : hours / (reference.qualifiedHours + hours);
-  reference.interceptC += weight * (current.rearC - reference.interceptC);
-  if (validC(current.frontC)) reference.frontC += weight * (current.frontC - reference.frontC);
-  reference.outdoorC = current.outdoorC; reference.samples++; reference.qualifiedHours += hours;
-  reference.initialized = reference.qualifiedHours >= 2;
+  if (reference.initialized) {
+    reference.interceptC += weight * (current.rearC - reference.interceptC);
+    reference.frontC += weight * (current.frontC - reference.frontC);
+  } else {
+    reference.pendingRearC = (reference.pendingRearC ?? current.rearC) + weight * (current.rearC - (reference.pendingRearC ?? current.rearC));
+    reference.pendingFrontC = (reference.pendingFrontC ?? current.frontC) + weight * (current.frontC - (reference.pendingFrontC ?? current.frontC));
+  }
+  reference.samples++; reference.qualifiedHours += hours;
+  if (reference.qualifiedHours >= 2) {
+    // Until the measured reference qualifies, the initial estimate remains
+    // exactly the selected setting at both locations.
+    if (!reference.initialized) {
+      reference.interceptC = reference.pendingRearC; reference.frontC = reference.pendingFrontC;
+      reference.pendingRearC = null; reference.pendingFrontC = null;
+    }
+    reference.initialized = true; reference.outdoorC = current.outdoorC;
+  }
 }
 // Piecewise observed ambient/native context is joined to each sensor's own
 // interval. The retained prefix is bounded by the oldest pending source report.
@@ -118,11 +153,15 @@ function sourceInterval(support, from, to) {
 /** The same ordered function drives live learning and saved-journal replay. */
 export function updateGarageModel(previous, observation, settings = {}) {
   const config = garageSettings(settings);
-  const model = clone(previous ?? createGarageModel({ seedAt: observation?.at, baselineC: config.baselineC }));
+  const model = clone(previous ?? createGarageModel({ seedAt: observation?.at, roomTargetC: observation?.roomTargetC ?? null }));
   if (model.algorithm !== GARAGE_ALGORITHM_VERSION) throw new Error('Unsupported garage model algorithm; start a fresh development database');
   if (!finite(observation?.at)) throw new Error('Garage learning requires numeric UTC time');
   if (finite(model.at) && observation.at <= model.at) return model;
   const current = clone(observation);
+  if (Object.hasOwn(current, 'roomTargetC') && !validRoomTarget(current.roomTargetC))
+    throw new Error('Garage learning requires a valid selected room setting or null');
+  if (Object.hasOwn(current, 'roomTargetC') && current.roomTargetC !== model.normalReference.roomTargetC)
+    resetGarageNormalReference(model, { at: current.at, roomTargetC: current.roomTargetC });
   model.at = current.at; model.updates++;
   if (current.sourceEpoch != null && model.sourceEpoch !== null && current.sourceEpoch !== model.sourceEpoch) {
     model.previous = null; model.support = []; model.normalReference.availableSince = null;
@@ -270,7 +309,7 @@ export function forecastGarage(model, { now, initial = model.state, steps = [], 
     if (finite(step.priceCtPerKwh)) costEur += next.electricityKwh * step.priceCtPerKwh / 100;
     const margins = garagePlanningMargins(summary, (end - now) / HOUR);
     points.push({ start, end, outdoorC: step.outdoorC, available: step.available !== false, priceCtPerKwh: step.priceCtPerKwh, at: end, ...next,
-      rearLowerC: next.rearC - margins.rearC, frontLowerC: next.frontC === null ? null : next.frontC - margins.frontC });
+      rearLowerC: next.rearC === null ? null : next.rearC - margins.rearC, frontLowerC: next.frontC === null ? null : next.frontC - margins.frontC });
     cursor = end;
   }
   return { points, state, electricityKwh, costEur, uncertaintyKwh,
@@ -295,8 +334,10 @@ export function garageModelSummary(model) {
     electricity: { normalPowerKw: predictGarageNative(model).powerKw, hours: model.native.hours,
       basis: model.native.active[0] ? 'observed-normal-power' : 'fixed-power-assumption' },
     normalReference: { rearC: normalGarageTemperature(model), frontC: model.normalReference.frontC, outdoorC: model.normalReference.outdoorC,
+      roomTargetC: model.normalReference.roomTargetC,
       initialized: model.normalReference.initialized, outdoorSlope: 0,
-      basis: model.normalReference.initialized ? 'continuously-available-achieved-reference' : 'setting-prior-not-measured-temperature',
+      basis: model.normalReference.initialized ? 'continuously-available-achieved-reference'
+        : model.normalReference.roomTargetC === null ? 'room-setting-unavailable' : 'selected-room-setting-not-measured-temperature',
       samples: model.normalReference.samples, qualifiedHours: model.normalReference.qualifiedHours },
     ev: { heatFraction: GARAGE_MODEL_ASSUMPTIONS.evHeatFraction,
       chargers: model.evidence.ev.map((e, i) => ({ id: i + 1, ...e, basis: 'fixed-7.5-percent-heat-assumption' })) },

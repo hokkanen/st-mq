@@ -37,10 +37,14 @@ production driver and a state topic; it does not arm the device. The default
 `driver: "fixture"` rejects command topics.
 The electrical selection is `none`, `native-counter` or `native-power`; the two
 energy paths cannot both contribute. Broker connection and credentials use the
-existing private MQTT settings. The normal owner baseline is read from
-`garage.baselineC` and compared with native evidence; automatic price control
-never writes a new thermostat target. Explicit ordinary setting changes use the
-separate manual interface below.
+existing private MQTT settings. The automatic-pause baseline comes from the
+device's fresh, verified low-heat profile (8–16°C), and reported native settings
+must match that profile. There is no separately configured host temperature.
+A changed baseline invalidates an outstanding pause and requires restoration;
+automatic price control never writes a new thermostat target. The room setting
+selected in the UI supplies the heat model's initial warmth reference separately
+from this device commissioning evidence. Explicit ordinary setting changes use
+the separate manual interface below.
 
 The fixture-only example is
 [`test/fixtures/garage-provisional-state.json`](../test/fixtures/garage-provisional-state.json).
