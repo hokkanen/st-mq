@@ -197,16 +197,19 @@ for native restrictions, backend availability and startup/recovery behavior.
 
 ## Conflicting charge targets
 
-BMW can alternate its selected target with 100%. ST-MQ confirms a conflict only
-when three live, ordered target changes form **X → 100% → X** within fifteen
-minutes of source time during one charger connection. X must be below 100%.
-A single change to 100% remains valid. Retained messages, duplicates, old readings
-and repeated polling of the same value cannot establish a conflict.
+BMW can alternate its selected target with 100%. The controller activates the
+filter after one live, ordered **100% → X** transition during the current
+charger connection, where X is below 100%. This can happen at any point in the
+session, with no time limit between the observations. Each observation must be
+no more than fifteen minutes old when received and belong to this connection.
+Retained messages, duplicates, old readings and repeated polling of the same
+value cannot activate the filter. Until it activates, a change to 100% remains valid.
 
 After confirmation, planning holds the latest reported target below 100% for that
-connection. A new lower-than-100% setting replaces the held value immediately;
-it need not be lower than the previous setting. The card shows the selected
-planning target and the unmodified raw BMW report, with their separate original
+connection, ignoring subsequent 100% reports. A new live lower-than-100% setting
+replaces the held value immediately; it need not be lower than the previous
+setting. Unverified reports cannot replace the held value. The card shows the
+selected planning target and the unmodified raw BMW report, with their separate original
 measurement times. Filtering changes neither battery percentage nor the target
 configured in the car.
 

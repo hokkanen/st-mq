@@ -2,6 +2,22 @@
 -Implement support for local mqtt-based temperature receives (eg, from shelly or HASS through Meteorologisk Institute); just store last received temp values and time stamps (maybe in storage class, see below) when received (and accept if received within 1h)
 -Chart dataset control buttons don't work when datasets are manually hidden/unhidden from legend, how to fix?
 
+Completed 2026-09-26 — BMW target hold after one 100% to X transition
+- Replace the X-to-100-to-X cycle and fifteen-minute transition window with one
+  live 100%-to-X transition anywhere in the current connection. Hold the latest
+  valid target below 100%, including a different higher or lower setting, while
+  ignoring later 100% reports. Unverified readings cannot replace the hold.
+- Preserve original raw values and field clocks, source freshness and replay
+  checks, same-session restart, unplug/new-connection reset, explicit full-charge
+  planning and persistence rollback. Update dashboard help and BMW documentation.
+- Review ingestion, runtime/planner consumers, stored state, UI, configuration
+  and tests. Remove the old cycle interpretation; no configuration additions,
+  stored-format translations, migration or alternate interpreters are introduced.
+- Validation: all 3,539 tests, 143 focused target/vehicle/UI tests and the
+  production build pass. Coverage includes late transitions, replacement
+  targets, stale/retained evidence, restart, disconnect and explicit planning
+  choices. Synthetic fixtures only; no household commands or service restart.
+
 Completed 2026-09-26 — Appliance browser request cancellation
 - Remove the dashboard session's AbortSignal.any dependency so appliance browsers
   with AbortController can load status and charts. Forward session and caller

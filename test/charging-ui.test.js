@@ -818,6 +818,7 @@ test('BMW target conflict is visible beside the target with raw measurement deta
   const popup = openDetail($('charger1-target-label'));
   assert.match(popup.textContent, /Selected planning target: 95 %, measured 15 Sept 2026, 20:59/);
   assert.match(popup.textContent, /Latest BMW target report: 100 %, measured 15 Sept 2026, 21:00/);
+  assert.match(popup.textContent, /change from 100% to a lower target.*holds the latest target below 100%.*ignores later 100% reports/);
   assert.match(popup.textContent, /changes planning only.*set 100% in the car/s);
   assert.match(view(item).minimumSource, /held after conflicting reports/);
   panel.update(status(bmwTarget({ mode: 'full' })));
@@ -826,7 +827,7 @@ test('BMW target conflict is visible beside the target with raw measurement deta
   assert.match($('charger1-setting-minimumSoc-help').textContent, /^Session planning choice supplies/);
   assert.match($('charger1-target-notice').textContent, /reports conflict.*Planning for 100 %/);
   assert.match(view(bmwTarget({ mode: 'full' })).targetDetail, /Planning choice: 100%, chosen 15 Sept 2026, 21:00/);
-  assert.match(view(bmwTarget({ mode: 'full' })).targetDetail, /In automatic mode, planning uses/);
+  assert.match(view(bmwTarget({ mode: 'full' })).targetDetail, /automatic planning holds/);
   panel.close();
 });
 

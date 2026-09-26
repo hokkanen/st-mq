@@ -338,7 +338,7 @@ test('BMW target can change independently from 100 to 95 without rebasing its 85
   f.setNow(START + 2 * MINUTE);
   publish(runtime, { ...packet, chargeLimitSoc: 95,
     fields: { ...packet.fields, chargeLimitSoc: { measuredAt: START + 2 * MINUTE, readingId: 'target-95' } } });
-  assert.equal(view(runtime).values.minimumSoc.value, 95); assert.equal(view(runtime).values.minimumSoc.source, 'bmw-cardata');
+  assert.equal(view(runtime).values.minimumSoc.value, 95); assert.equal(view(runtime).values.minimumSoc.source, 'bmw-target-filter');
   assert.equal(view(runtime).values.soc.value, 85);
   assert.deepEqual({ measuredAt: view(runtime).values.soc.measuredAt, receivedAt: view(runtime).values.soc.receivedAt }, anchor);
   assert.equal(view(runtime).referenceGridKwh, 72 * .1 / .925);
@@ -475,12 +475,11 @@ const publishTarget = (runtime, value, at, packet) => publish(runtime, {
   fields: { chargeLimitSoc: { measuredAt: at, readingId: `target-${at}` } },
 }, packet);
 
-test('BMW target conflicts use the latest lower target without altering raw telemetry or its clocks', async t => {
+test('one BMW 100 to X transition holds the latest lower target across restart without altering raw telemetry', async t => {
   const f = fixture(), runtime = f.create(); t.after(() => runtime.close());
-  publish(runtime, facts(START, { chargeLimitSoc: 85 })); pauseBmw(runtime, f);
+  publish(runtime, facts(START, { chargeLimitSoc: 100 })); pauseBmw(runtime, f);
   assert.equal(view(runtime).targetSelection.conflict, false);
-  f.setNow(START + 2 * MINUTE); publishTarget(runtime, 100, START + 2 * MINUTE);
-  assert.equal(view(runtime).values.minimumSoc.value, 100, 'A single change to full remains legitimate');
+  assert.equal(view(runtime).values.minimumSoc.value, 100);
   f.setNow(START + 3 * MINUTE); publishTarget(runtime, 85, START + 3 * MINUTE);
   const confirmed = view(runtime);
   assert.equal(confirmed.targetSelection.conflict, true);
@@ -556,7 +555,7 @@ test('failed target persistence rolls back evidence and explicit session choices
   f.store.fail = false;
 });
 
-test('a retained target cycle cannot activate the conflict filter through views or later live republication', async t => {
+test('a retained target transition cannot activate the conflict filter through views or later live republication', async t => {
   const f = fixture(), runtime = f.create(); t.after(() => runtime.close());
   publish(runtime, facts(START, { chargeLimitSoc: 85 })); pauseBmw(runtime, f);
   f.setNow(START + 2 * MINUTE); publishTarget(runtime, 100, START + 2 * MINUTE, { retain: true });

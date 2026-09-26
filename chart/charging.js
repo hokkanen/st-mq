@@ -414,7 +414,7 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
     `Latest BMW target report: ${number(targetSelection.raw?.value, '%')}${validTime(targetSelection.raw?.measuredAt)
       ? `, measured ${chargingReadingTime(targetSelection.raw.measuredAt, timezone)}`
       : validTime(targetSelection.raw?.receivedAt) ? `, received ${chargingReadingTime(targetSelection.raw.receivedAt, timezone)}; measurement time unknown` : '; measurement time unknown'}.`,
-    targetSelection.conflict ? 'In automatic mode, planning uses the latest BMW target below 100% after repeated conflicting reports.' : '',
+    targetSelection.conflict ? 'After BMW reports a change from 100% to a lower target, automatic planning holds the latest target below 100% for this connection and ignores later 100% reports.' : '',
     'This choice changes planning only. For a full charge, also set 100% in the car. Unplugging restores automatic target selection.',
   ].filter(Boolean).join('\n\n') : '';
   const vehicle = vehiclePresentation(charger, { now, timezone });

@@ -1,4 +1,4 @@
-const WINDOW = 15 * 60_000;
+const MAX_OBSERVATION_AGE = 15 * 60_000;
 const time = value => Number.isSafeInteger(value) && value >= 0;
 const target = value => Number.isFinite(value) && value >= 0 && value <= 100;
 
@@ -20,9 +20,9 @@ function newer(fact, previous) {
     || fact.receivedAt !== previous.receivedAt;
 }
 
-/** Observe accepted source readings without changing them. A single move to 100
- * can be intentional; only a live X -> 100 -> X cycle confirms the conflict.
- * Its transition clocks stay fixed when the same value is reported again. */
+/** A live 100 -> X transition holds the latest target below 100 for this
+ * connection. The transition can happen at any point in the session; each
+ * observation must be fresh when received. Raw source readings stay intact. */
 export function updateTargetState(previous, { connectedAt, reading, now = Date.now(), live = true,
   evidenceStart = connectedAt } = {}) {
   if (!time(connectedAt)) return null;
@@ -30,23 +30,22 @@ export function updateTargetState(previous, { connectedAt, reading, now = Date.n
     : { connectedAt, history: [], conflict: false, lower: null, override: null, last: null };
   const fact = targetFact(reading);
   if (!fact || !newer(fact, state.last)) return state;
-  const next = { ...state, last: fact, history: [...state.history],
-    lower: fact.value < 100 ? fact : state.lower };
+  const next = { ...state, last: fact, history: [...state.history] };
   const eligible = live && reading.fields?.chargeLimitSoc?.retained !== true
     && fact.readingId !== null && time(evidenceStart) && time(now)
     && time(fact.measuredAt) && time(fact.receivedAt)
     && fact.measuredAt >= evidenceStart && fact.receivedAt >= evidenceStart
-    && fact.measuredAt <= now && fact.receivedAt <= now && now - fact.measuredAt <= WINDOW;
+    && fact.measuredAt <= now && fact.receivedAt <= now && now - fact.measuredAt <= MAX_OBSERVATION_AGE;
   if (!eligible) {
     // An unverified change cannot bridge otherwise valid observations. Keep the
     // watermark so repeating the same retained/cached fact live adds no evidence.
     next.history = [];
     return next;
   }
-  if (next.history.at(-1)?.value !== fact.value) next.history = [...next.history, fact].slice(-3);
-  const [first, middle, last] = next.history;
-  if (next.history.length === 3 && first.value < 100 && middle.value === 100
-    && last.value === first.value && last.measuredAt - first.measuredAt <= WINDOW) next.conflict = true;
+  if (fact.value < 100) next.lower = fact;
+  if (next.history.at(-1)?.value !== fact.value) next.history = [...next.history, fact].slice(-2);
+  const [first, last] = next.history;
+  if (first?.value === 100 && last?.value < 100) next.conflict = true;
   return next;
 }
 
