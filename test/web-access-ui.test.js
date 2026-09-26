@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { getEventListeners } from 'node:events';
 import { assertWebRequest, webRequestAllowed, createWebSession, bindPasswordVisibility, createAccessControls } from '../chart/web-access.js';
+import { createPollingRequest, fetchJsonResponse } from '../chart/network.js';
 
 const admin = { role: 'admin', source: 'password' }, family = { role: 'family', source: 'password' };
 const status = { equipment: { devices: [{ id: 'door', kind: 'door', area: 'garage', controls: { cover: { open: true, close: true, stop: false } } },
@@ -36,6 +38,87 @@ function storageFixture() {
   const values = new Map();
   return { values, getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key) };
 }
+
+test('session requests work in appliance browsers without AbortSignal.any', async t => {
+  const descriptor = Object.getOwnPropertyDescriptor(AbortSignal, 'any');
+  Object.defineProperty(AbortSignal, 'any', { configurable: true, value: undefined });
+  t.after(() => Object.defineProperty(AbortSignal, 'any', descriptor));
+
+  await t.test('status polling loads and retries through the dashboard request chain', async () => {
+    const session = createWebSession({ storage: storageFixture() });
+    session.login('invented-browser-password');
+    let calls = 0;
+    const poll = createPollingRequest(options => session.run(({ headers, signal }) =>
+      fetchJsonResponse('/api/status', { headers, signal }, { fetchImpl: async (_url, request) => {
+        calls++;
+        assert.equal(request.headers.Authorization, 'Bearer invented-browser-password');
+        assert.equal(request.signal.aborted, false);
+        return { json: async () => ({ ready: true }) };
+      } }), options));
+    assert.deepEqual((await poll()).result, { ready: true });
+    assert.deepEqual((await poll({ background: true })).result, { ready: true });
+    assert.equal(calls, 2);
+  });
+
+  await t.test('caller cancellation before or during a request preserves its reason', async () => {
+    for (const timing of ['before', 'queued', 'running']) {
+      const session = createWebSession({ storage: storageFixture() });
+      const caller = new AbortController(), reason = new Error('fixture cancellation');
+      let calls = 0, requestSignal;
+      if (timing === 'before') caller.abort(reason);
+      const pending = session.run(({ signal }) => {
+        calls++; requestSignal = signal;
+        return new Promise(() => {});
+      }, { signal: caller.signal });
+      if (timing === 'running') await Promise.resolve();
+      caller.abort(reason);
+      await assert.rejects(pending, error => error === reason);
+      assert.equal(calls, timing === 'running' ? 1 : 0);
+      if (requestSignal) assert.equal(requestSignal.aborted, true);
+      assert.equal(getEventListeners(caller.signal, 'abort').length, 0);
+    }
+  });
+
+  await t.test('logout and replacement login cancel caller-bound requests and fence late results', async () => {
+    for (const action of ['logout', 'login']) {
+      const session = createWebSession({ storage: storageFixture() });
+      const caller = new AbortController();
+      let complete, requestSignal;
+      const pending = session.run(({ signal }) => {
+        requestSignal = signal;
+        return new Promise(resolve => { complete = resolve; });
+      }, { signal: caller.signal });
+      await Promise.resolve();
+      session[action]('invented-next-browser-password');
+      await assert.rejects(pending, { status: 401 });
+      assert.equal(requestSignal.aborted, true);
+      assert.equal(caller.signal.aborted, false);
+      assert.equal(getEventListeners(caller.signal, 'abort').length, 0);
+      complete('obsolete');
+      await assert.rejects(pending, { status: 401 });
+    }
+  });
+
+  await t.test('success, failure and cancellation release all source listeners', async t => {
+    const observed = new Set(), add = AbortSignal.prototype.addEventListener;
+    t.mock.method(AbortSignal.prototype, 'addEventListener', function (...args) {
+      observed.add(this);
+      return add.apply(this, args);
+    });
+    const session = createWebSession({ storage: storageFixture() });
+    const caller = new AbortController();
+    assert.equal(await session.run(() => 12, { signal: caller.signal }), 12);
+    for (const signal of observed) assert.equal(getEventListeners(signal, 'abort').length, 0);
+    await assert.rejects(session.run(() => { throw Error('fixture failure'); }, { signal: caller.signal }), /fixture failure/);
+    for (const signal of observed) assert.equal(getEventListeners(signal, 'abort').length, 0);
+    const pending = session.run(() => new Promise(() => {}), { signal: caller.signal });
+    await Promise.resolve();
+    caller.abort();
+    await assert.rejects(pending, { name: 'AbortError' });
+    assert.equal(observed.size, 2);
+    for (const signal of observed) assert.equal(getEventListeners(signal, 'abort').length, 0);
+  });
+});
 
 test('logout removes credentials and pending actions, aborts requests, and prevents late responses and automatic reconnection', async () => {
   const storage = storageFixture(), session = createWebSession({ storage });

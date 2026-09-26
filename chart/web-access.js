@@ -47,20 +47,36 @@ export function createWebSession({ storage, ingress = false }) {
     run(operation, { signal } = {}) {
       if (locked) return Promise.reject(signedOut());
       const current = cancellation;
-      const combined = signal ? AbortSignal.any([current.signal, signal]) : current.signal;
+      // Appliance browsers may support AbortController but not AbortSignal.any.
+      const controller = new AbortController();
       const headers = token ? { Authorization: `Bearer ${token}` } : {};
       return new Promise((resolve, reject) => {
-        const cancel = () => reject(locked || current !== cancellation ? signedOut()
-          : combined.reason ?? new DOMException('Request cancelled', 'AbortError'));
-        if (combined.aborted) { cancel(); return; }
-        combined.addEventListener('abort', cancel, { once: true });
+        let settled = false;
+        const finish = (callback, value) => {
+          if (settled) return;
+          settled = true;
+          current.signal.removeEventListener('abort', cancelSession);
+          signal?.removeEventListener('abort', cancelCaller);
+          callback(value);
+        };
+        const cancel = source => {
+          controller.abort(source.reason);
+          finish(reject, source === current.signal || locked || current !== cancellation ? signedOut()
+            : controller.signal.reason ?? new DOMException('Request cancelled', 'AbortError'));
+        };
+        const cancelSession = () => cancel(current.signal);
+        const cancelCaller = () => cancel(signal);
+        if (current.signal.aborted) { cancelSession(); return; }
+        if (signal?.aborted) { cancelCaller(); return; }
+        current.signal.addEventListener('abort', cancelSession, { once: true });
+        signal?.addEventListener('abort', cancelCaller, { once: true });
         Promise.resolve().then(() => {
-          if (combined.aborted || locked || current !== cancellation) throw signedOut();
-          return operation({ headers, signal: combined });
+          if (settled) return;
+          return operation({ headers, signal: controller.signal });
         }).then(result => {
-          if (combined.aborted || locked || current !== cancellation) cancel();
-          else resolve(result);
-        }, reject).finally(() => combined.removeEventListener('abort', cancel));
+          if (locked || current !== cancellation) cancelSession();
+          else finish(resolve, result);
+        }, error => finish(reject, error));
       });
     },
   };

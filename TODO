@@ -2,6 +2,19 @@
 -Implement support for local mqtt-based temperature receives (eg, from shelly or HASS through Meteorologisk Institute); just store last received temp values and time stamps (maybe in storage class, see below) when received (and accept if received within 1h)
 -Chart dataset control buttons don't work when datasets are manually hidden/unhidden from legend, how to fix?
 
+Completed 2026-09-26 — Appliance browser request cancellation
+- Remove the dashboard session's AbortSignal.any dependency so appliance browsers
+  with AbortController can load status and charts. Forward session and caller
+  cancellation explicitly, releasing listeners on completion or cancellation.
+- Preserve request deadlines, password headers, sign-out and replacement-login
+  fencing, and rejection of late responses. Review dashboard callers, network
+  helpers, session state and access tests; no configuration or stored-contract
+  changes, obsolete internal formats or global browser polyfills are introduced.
+- Validation: 53 focused access/network tests and the production build pass.
+  Regression coverage disables AbortSignal.any and checks polling, cancellation
+  before/during execution, session changes and listener cleanup. Synthetic tests
+  only; the physical Samsung fridge browser has not been tested.
+
 Completed 2026-09-26 — BMW identification tolerates temporary unknown location
 - Use the last confirmed BMW home observation for at most two hours when current
   location is explicitly unknown. Preserve its source clock, MQTT provenance and
