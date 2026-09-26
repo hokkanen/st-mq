@@ -31,6 +31,15 @@ command to resume. Local OCPP pause expiry does not authorize a new charging
 session or restore cloud control. The Identification section keeps the current
 test status and any outstanding recovery or review action.
 
+An open charging period can show **Charging is allowed** while the connected
+vehicle draws no power. A later planned period does not mean the current one
+has paused. **Paused between periods** requires the controller to confirm the
+pause; a pending transition is shown as unconfirmed, with the next planned
+period kept separate from that confirmation. **Reported allowance** is the
+Equalizer's current allowance, not actual draw or proof that a scheduling pause
+has taken effect. Vehicle timers, limits and other native restrictions still
+apply during an open period.
+
 Permanent defaults come only from configuration. Both unidentified charging
 points start with 20% charge, an 80% minimum, 06:00 ready-by and 74 kWh capacity
 from `charging.defaults`. Identified vehicles apply their sparse

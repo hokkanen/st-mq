@@ -83,7 +83,7 @@ export function chargerSummary(charger, view, { now = Date.now(), formatTime = v
   const handoverUnconfirmed = supported && !enabled && control.handoverConfirmed === false;
   const uncertain = (enabled || chargeNow || identificationActive) && (['uncertain', 'ownership-uncertain', 'unavailable', 'pause-unconfirmed', 'unconfirmed'].includes(phase)
     || control.confirmed === false || Boolean(control.errorCode) || manual?.kind === 'unknown'
-    || /update awaiting confirmation/.test(view.event ?? ''));
+    || view.state === 'Pause unconfirmed' || /update awaiting confirmation/.test(view.event ?? ''));
   let roleLabel = enabled ? 'Controlled' : 'Observed', roleState = enabled ? 'controlled' : 'observed';
   let roleDetail = enabled ? 'Automatic charging chooses charging periods for the ready-by time.'
     : supported ? 'Automatic charging is off. The charger’s own activity is observed.' : 'Charging is observed; this integration cannot set its schedule.';
@@ -92,7 +92,7 @@ export function chargerSummary(charger, view, { now = Date.now(), formatTime = v
   } else if (handoverUnconfirmed || handoverPending || uncertain) {
     roleLabel = handoverUnconfirmed ? 'Handover unconfirmed' : handoverPending ? 'Handover pending' : 'Control unconfirmed';
     roleState = 'uncertain';
-    roleDetail = control.reason || (handoverUnconfirmed ? 'Automatic charging is off, but the charger has not confirmed the handover.'
+    roleDetail = (view.state === 'Pause unconfirmed' ? view.problem : control.reason) || (handoverUnconfirmed ? 'Automatic charging is off, but the charger has not confirmed the handover.'
       : handoverPending ? `Manual priority has ended. Waiting for charger confirmation.${enabled ? '' : ' Automatic charging remains off.'}`
         : chargeNow ? 'The immediate charging instruction is awaiting confirmation.' : 'The charger’s current automatic instruction is awaiting confirmation.');
   } else if (identificationActive && !yielded) {

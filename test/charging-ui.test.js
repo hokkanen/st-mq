@@ -168,11 +168,125 @@ test('confirmed periods describe the next pause or resumption and keep the final
   assert.equal(current.event, '8.2 kW now · pauses 21:30'); assert.equal(current.periodCount, '2 charging periods');
   assert.deepEqual(current.periodRows, [['Period 1', '20:00–21:30'], ['Period 2', '23:00 onwards · vehicle finishes naturally']]);
   const pausedPeriods = [{ startAt: now - 3600_000, endAt: now - 1800_000 }, { startAt, endAt: null }];
-  const paused = view({ ...item, plan: { ...item.plan, periods: pausedPeriods }, control: { phase: 'paused', owned: { startAt: pausedPeriods[0].startAt, periods: pausedPeriods } } });
+  const paused = view({ ...item, plan: { ...item.plan, periods: pausedPeriods }, control: { phase: 'paused', owned: { startAt, periods: pausedPeriods } } });
   assert.equal(paused.state, 'Paused between periods'); assert.equal(paused.event, 'Resumes 23:00');
   assert.equal(paused.deadline, 'Ready by tomorrow 06:00');
   const released = view({ ...item, control: { phase: 'released' }, values: { ...item.values, charging: reading(true), powerKw: reading(8.2) } });
   assert(!released.event.includes('pauses')); assert.equal(released.periodRows.length, 0);
+});
+
+test('an idle vehicle stays allowed throughout each confirmed charging period, including its start boundary', () => {
+  const at = clock => Date.parse(`2026-09-26T${clock}+03:00`);
+  const periods = [{ startAt: at('01:00'), endAt: at('02:30') }, { startAt: at('03:30'), endAt: at('04:00') },
+    { startAt: at('04:20'), endAt: null }];
+  const item = active(), plan = { id: 'confirmed-periods', periods, deadlineAt: at('06:00') };
+  const control = { confirmed: true, owned: { startAt: periods[0].startAt }, execution: { planId: plan.id, periods } };
+  const expectedPeriods = [['Period 1', '01:00–02:30'], ['Period 2', '03:30–04:00'], ['Period 3', '04:20 onwards · vehicle finishes naturally']];
+  for (const [clock, phase, state, event] of [
+    ['00:59:59.999', 'waiting', 'Scheduled', 'Starts 01:00'],
+    ['01:00', 'active', 'Connected', 'Charging is allowed'],
+    ['02:15', 'active', 'Connected', 'Charging is allowed'],
+    ['02:29:59.999', 'active', 'Connected', 'Charging is allowed'],
+    ['02:30', 'paused', 'Paused between periods', 'Resumes 03:30'],
+    ['03:29:59.999', 'paused', 'Paused between periods', 'Resumes 03:30'],
+    ['03:30', 'active', 'Connected', 'Charging is allowed'],
+    ['03:45', 'active', 'Connected', 'Charging is allowed'],
+    ['03:59:59.999', 'active', 'Connected', 'Charging is allowed'],
+    ['04:00', 'paused', 'Paused between periods', 'Resumes 04:20'],
+    ['04:19:59.999', 'paused', 'Paused between periods', 'Resumes 04:20'],
+    ['04:20', 'active', 'Connected', 'Charging is allowed'],
+  ]) for (const charging of [false, null]) {
+    const owned = phase === 'paused' ? { startAt: periods.find(period => period.startAt > at(clock)).startAt } : control.owned;
+    const result = chargerDisplay({ ...item, plan, control: { ...control, owned, phase },
+      values: { ...item.values, charging: reading(charging), minimumSoc: reading(100),
+        soc: reading(45, 'mqtt', { measuredAt: Date.parse('2026-09-25T19:43:00+03:00') }) },
+      forecast: { feasible: false, reason: 'insufficient-time', finishAt: null } }, { now: at(clock) });
+    assert.equal(result.state, state, `${clock}, charging=${charging}`);
+    assert.equal(result.event, event, `${clock}, charging=${charging}`);
+    assert.deepEqual(result.periodRows, expectedPeriods);
+    assert.equal(result.readiness, '100 % by ready-by is at risk');
+    assert.equal(result.readingTime, 'Charge measured 25 Sept 2026, 19:43');
+    if (phase === 'active') assert.equal(result.eventAt, null);
+  }
+});
+
+test('an active period never hides unconfirmed control behind charging permission or a later period', () => {
+  const item = active(), periods = [{ startAt: now - 3600_000, endAt: now + 1800_000 }, { startAt, endAt: null }];
+  const control = { owned: { startAt: periods[0].startAt }, execution: { periods } };
+  for (const patch of [
+    ...['unconfirmed', 'uncertain', 'ownership-uncertain', 'unavailable', 'pause-unconfirmed'].map(phase => ({ phase })),
+    { phase: 'active', confirmed: false },
+  ]) {
+    const result = view({ ...item, plan: { ...item.plan, periods }, control: { ...control, ...patch },
+      values: { ...item.values, charging: reading(false) } });
+    assert.equal(result.state, 'Control unavailable', JSON.stringify(patch));
+    assert.equal(result.event, 'Waiting for a confirmed charger instruction.');
+    assert.equal(result.eventAt, null);
+    assert.doesNotMatch(result.readiness, /Expected on time/);
+  }
+});
+
+test('a planned gap only claims a pause after the controller confirms it', () => {
+  const item = active(), periods = [{ startAt: now - 3600_000, endAt: now - 1800_000 }, { startAt, endAt: null }];
+  const control = { owned: { startAt: periods[0].startAt }, execution: { periods } };
+  for (const phase of ['active', 'waiting']) {
+    const result = view({ ...item, plan: { ...item.plan, periods, feasible: true }, control: { ...control, phase },
+      values: { ...item.values, charging: reading(false) } });
+    assert.equal(result.state, 'Pause unconfirmed');
+    assert.equal(result.event, 'Next period 23:00 · pause awaiting confirmation');
+    assert.match(result.problem, /pause between charging periods has not been confirmed/);
+    assert.equal(result.readiness, 'Readiness being checked');
+  }
+  for (const patch of [{ phase: 'unconfirmed' }, { phase: 'paused', confirmed: false }]) {
+    const result = view({ ...item, plan: { ...item.plan, periods }, control: { ...control, owned: { startAt }, ...patch } });
+    assert.equal(result.state, 'Update unconfirmed');
+    assert.equal(result.event, 'Last confirmed resume 23:00');
+  }
+  const live = view({ ...item, plan: { ...item.plan, periods }, control: { ...control, phase: 'active' },
+    values: { ...item.values, charging: reading(true), powerKw: reading(8.2) } });
+  assert.equal(live.state, 'Charging'); assert.match(live.event, /^8.2 kW now/);
+});
+
+test('manual control and Charge now retain priority during an idle scheduled period', () => {
+  const item = active(), periods = [{ startAt: now - 3600_000, endAt: now + 1800_000 }, { startAt, endAt: null }];
+  const control = { phase: 'active', owned: { startAt: periods[0].startAt }, execution: { periods } };
+  const scheduled = { ...item, plan: { ...item.plan, periods }, control, values: { ...item.values, charging: reading(false) } };
+  const manual = view({ ...scheduled, control: { ...control, phase: 'yielded', manual: { kind: 'stop', reason: 'Manual Stop is active.' } } });
+  assert.equal(manual.state, 'Manual control'); assert.equal(manual.event, 'Manual Stop is active.');
+  const immediate = view({ ...scheduled, request: { ...item.request, chargeNow: true } });
+  assert.equal(immediate.state, 'Charge now selected'); assert.equal(immediate.event, 'Charging requested until unplugging');
+});
+
+test('a retained paused phase cannot override native confirmation cleared during a fresh read', () => {
+  const item = active(), periods = [{ startAt: now - 3600_000, endAt: now - 1800_000 }, { startAt, endAt: null }];
+  const control = { phase: 'paused', owned: { startAt }, execution: { periods },
+    pauseConfirmed: true, ownsInstruction: true };
+  for (const flags of [{ pauseConfirmed: false }, { ownsInstruction: false }, { pauseConfirmed: false, ownsInstruction: false }]) {
+    const result = view({ ...item, plan: { ...item.plan, periods, feasible: true }, control: { ...control, ...flags },
+      values: { ...item.values, charging: reading(false) } });
+    assert.equal(result.state, 'Pause unconfirmed');
+    assert.equal(result.event, 'Next period 23:00 · pause awaiting confirmation');
+    assert.equal(result.readiness, 'Readiness being checked');
+  }
+  const confirmed = view({ ...item, plan: { ...item.plan, periods }, control });
+  assert.equal(confirmed.state, 'Paused between periods'); assert.equal(confirmed.event, 'Resumes 23:00');
+});
+
+test('a pause confirmed for an earlier gap cannot confirm the next gap', () => {
+  const at = clock => Date.parse(`2026-09-26T${clock}+03:00`), currentTime = at('04:05');
+  const periods = [{ startAt: at('01:00'), endAt: at('02:30') }, { startAt: at('03:30'), endAt: at('04:00') },
+    { startAt: at('04:20'), endAt: null }];
+  const item = active(), control = { phase: 'paused', pauseConfirmed: true, ownsInstruction: true,
+    execution: { planId: 'accepted', periods } };
+  const planned = { ...item, plan: { id: 'accepted', periods, deadlineAt: at('06:00'), finishAt: at('05:00'), feasible: true } };
+  for (const owned of [{ startAt: at('03:30') }, null]) {
+    const result = chargerDisplay({ ...planned, control: { ...control, owned } }, { now: currentTime });
+    assert.equal(result.state, 'Pause unconfirmed');
+    assert.equal(result.event, 'Next period 04:20 · pause awaiting confirmation');
+    assert.equal(result.readiness, 'Readiness being checked');
+  }
+  const current = chargerDisplay({ ...planned, control: { ...control, owned: { startAt: at('04:20') } } }, { now: currentTime });
+  assert.equal(current.state, 'Paused between periods'); assert.equal(current.event, 'Resumes 04:20');
 });
 
 test('a confirmed revised plan does not appear pending because execution retains completed periods', () => {

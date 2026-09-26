@@ -149,7 +149,9 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
   const chargeNow = connected === true && charger.request?.chargeNow === true;
   const identificationActive = connected === true && charger.identification?.active === true;
   const phase = control.phase ?? '', manual = enabled || chargeNow || identificationActive ? control.manual ?? control.manualOverride : null;
-  const uncertain = (enabled || chargeNow || identificationActive) && (['uncertain', 'ownership-uncertain', 'unavailable', 'pause-unconfirmed'].includes(phase) || (chargeNow || identificationActive) && (phase === 'unconfirmed' || control.confirmed === false) || Boolean(control.errorCode));
+  const uncertain = (enabled || chargeNow || identificationActive) && (['uncertain', 'ownership-uncertain', 'unavailable', 'pause-unconfirmed'].includes(phase)
+    || control.confirmed === false || phase === 'unconfirmed' && (chargeNow || identificationActive || control.owned || control.execution)
+    || Boolean(control.errorCode));
   const yielded = (enabled || chargeNow || identificationActive) && (['yielded', 'manual'].includes(phase) || Boolean(manual));
   const activeManual = yielded && manual?.kind !== 'unknown';
   const handoverUnconfirmed = !enabled && control.handoverConfirmed === false;
@@ -163,6 +165,7 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
     : !yielded && !uncertain ? (plan.periods ?? []).filter(period => validTime(period.startAt)) : [];
   const currentPeriod = periods.find(period => Number(period.startAt) <= now && (!validTime(period.endAt) || Number(period.endAt) > now));
   const nextPeriod = periods.find(period => Number(period.startAt) > now);
+  const betweenPeriods = !currentPeriod && nextPeriod && periods.some(period => Number(period.startAt) <= now);
   const confirmedRevision = Boolean(execution?.planId) && execution.planId === plan.id;
   const revisionPending = !confirmedRevision && ownedStart != null && (ownedPeriods.length > 0 && Array.isArray(plan.periods)
     ? JSON.stringify(ownedPeriods.map(p => [p.startAt, p.endAt])) !== JSON.stringify(plan.periods.map(p => [p.startAt, p.endAt]))
@@ -199,6 +202,7 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
   const identification = identificationPresentation(charger);
   let state = connected === false ? 'Not connected' : connected === true ? 'Connected' : 'Connection unknown';
   let event = '', eventAt = null, eventKind = null;
+  let pauseUnconfirmed = false;
   if (connected !== true) {
     event = activeManual && resumption ? resumption : enabled ? connected === false ? 'Automatic charging is ready for the next connection' : 'Waiting for charger readings'
       : supported ? 'Automatic charging OFF' : 'Monitoring';
@@ -224,11 +228,15 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
     else if (!enabled && nativeStops && validTime(nativeEnd) && Number(nativeEnd) > now) event += ` · scheduled until ${time(nativeEnd)}`;
     else if (finite(requiredGridKwh) && requiredGridKwh <= 0) event += ' · target reached';
     else if (currentFinish) event += ` · ${number(minimum, '%')} estimated ${time(finishAt)}`;
-  } else if (ownedStart != null && nextPeriod) {
-    const resuming = periods.some(period => Number(period.startAt) <= now);
-    state = uncertain ? 'Update unconfirmed' : resuming ? 'Paused between periods' : 'Scheduled';
-    eventAt = nextPeriod.startAt; eventKind = 'confirmed';
-    event = `${uncertain ? 'Last confirmed ' : ''}${resuming ? uncertain ? 'resume' : 'Resumes' : uncertain ? 'start' : 'Starts'} ${time(eventAt)}${revisionPending && !uncertain ? ' · update awaiting confirmation' : ''}`;
+  } else if (ownedStart != null && nextPeriod && !currentPeriod && !released && !provisional) {
+    // A planned gap and an idle vehicle do not confirm the charger's pause.
+    pauseUnconfirmed = betweenPeriods && !uncertain
+      && (phase !== 'paused' || control.pauseConfirmed === false || control.ownsInstruction === false
+        || Number(owned?.startAt) !== Number(nextPeriod.startAt));
+    state = pauseUnconfirmed ? 'Pause unconfirmed' : uncertain ? 'Update unconfirmed' : betweenPeriods ? 'Paused between periods' : 'Scheduled';
+    eventAt = nextPeriod.startAt; eventKind = pauseUnconfirmed ? 'proposed' : 'confirmed';
+    event = pauseUnconfirmed ? `Next period ${time(eventAt)} · pause awaiting confirmation`
+      : `${uncertain ? 'Last confirmed ' : ''}${betweenPeriods ? uncertain ? 'resume' : 'Resumes' : uncertain ? 'start' : 'Starts'} ${time(eventAt)}${revisionPending && !uncertain ? ' · update awaiting confirmation' : ''}`;
   } else if (handoverUnconfirmed) {
     state = 'Handover unconfirmed'; event = 'Waiting for the charger to confirm the handover.';
   } else if (uncertain || enabled && manual?.kind === 'unknown') {
@@ -254,7 +262,7 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
   const deadline = showMetrics && enabled && !yielded && validTime(deadlineAt) ? `Ready by ${time(deadlineAt)}` : '';
   const readiness = !deadline ? '' : targetReached ? 'Target reached'
     : risk ? `${number(minimum, '%')} by ready-by is at risk`
-      : currentForecast.feasible === true && currentFinish && !uncertain && !revisionPending && !identificationActive
+      : currentForecast.feasible === true && currentFinish && !uncertain && !pauseUnconfirmed && !revisionPending && !identificationActive
         ? 'Expected on time' : 'Readiness being checked';
   const readingTime = showMetrics && automatic(referenceSoc) ? validTime(referenceSoc.measuredAt) ? `Charge measured ${chargingReadingTime(referenceSoc.measuredAt, timezone)}`
     : validTime(referenceSoc.receivedAt) ? `Charge received ${chargingReadingTime(referenceSoc.receivedAt, timezone)} · measurement time unknown` : 'Charge measurement time unknown' : '';
@@ -299,6 +307,7 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
       && !(currentForecast !== plan && currentForecast.feasible !== false && /cannot deliver|insufficient.*time|target at risk/i.test(note))) : [];
   if (shortfallNote && !uncertain) notes.push(shortfallNote);
   let problem = uncertain || handoverUnconfirmed || enabled && manual?.kind === 'unknown' ? control.reason || 'The charger instruction could not be confirmed. Another reading will be requested.' : '';
+  if (pauseUnconfirmed) problem = 'The pause between charging periods has not been confirmed. Waiting for a fresh charger instruction and reading.';
   if (control.reason === 'identification-resume-required') problem = 'Review the charger pause under Identification below.';
   if (charger.error) problem ||= ({ 'charging-adapter-unavailable': supported
     ? 'The charger connection is unavailable. Automatic control is waiting for a connection.'

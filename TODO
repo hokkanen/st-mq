@@ -2,6 +2,24 @@
 -Implement support for local mqtt-based temperature receives (eg, from shelly or HASS through Meteorologisk Institute); just store last received temp values and time stamps (maybe in storage class, see below) when received (and accept if received within 1h)
 -Chart dataset control buttons don't work when datasets are manually hidden/unhidden from legend, how to fix?
 
+Completed 2026-09-26 — Charging period status follows confirmed control
+- Keep an open period visible as charging allowed when the connected vehicle
+  draws no power, even when the execution contains later charging periods.
+  Remove the assumption that a future period makes an idle vehicle paused.
+- Require confirmed control before reporting a pause between periods. Show a
+  pending transition as unconfirmed in the activity, role, readiness and notice;
+  retain live charging, manual priority, Charge now and separate target warnings.
+  Recheck native confirmation flags and the owned pause's release time so an
+  in-progress refresh or an earlier gap cannot supply current confirmation.
+- Review cloud, local OCPP and Shelly producers, saved execution, UI consumers,
+  configuration and help. Preserve current ownership and physical confirmation;
+  no configuration, persistence format or compatibility paths are introduced.
+- Add synthetic coverage for active idle periods, exact schedule boundaries,
+  uncertain transitions and OCPP gap enforcement while the vehicle is idle.
+  Validation: 119 UI/summary tests and 168 cloud, OCPP and Shelly controller
+  tests pass. Production build and staged secret checks complete before commit.
+  No household commands or running-service restart.
+
 Completed 2026-09-25 — Charger help and pause recovery
 - Move general pause recovery from Identification into each card's How charging
   works fold. Retain live identification status, outstanding recovery and review

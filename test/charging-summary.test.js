@@ -101,8 +101,69 @@ test('live activity keeps charging and pause status while the ETA moves to its o
   const paused = summary({ ...item, values, plan: { ...item.plan, periods }, control: { phase: 'waiting', owned: { periods } } });
   assert.equal(paused.activity, 'Charging · 8.2 kW now · pauses 22:00');
   const between = summary({ ...item, plan: { ...item.plan, periods: [{ startAt: now - 2 * hour, endAt: now - hour }, periods[1]] },
-    control: { phase: 'paused', owned: { periods: [{ startAt: now - 2 * hour, endAt: now - hour }, periods[1]] } } });
+    control: { phase: 'paused', owned: { startAt, periods: [{ startAt: now - 2 * hour, endAt: now - hour }, periods[1]] } } });
   assert.equal(between.activity, 'Paused between periods · Resumes 23:00');
+});
+
+test('an idle vehicle in an active period keeps permission separate from its target warning', () => {
+  const at = clock => Date.parse(`2026-09-26T${clock}+03:00`), currentTime = at('02:15');
+  const periods = [{ startAt: at('01:00'), endAt: at('02:30') }, { startAt: at('03:30'), endAt: at('04:00') },
+    { startAt: at('04:20'), endAt: null }];
+  const item = charger({ control: { phase: 'active', owned: { startAt: periods[0].startAt }, execution: { planId: 'accepted', periods } },
+    values: { connected: reading(true), charging: reading(false), soc: reading(45), minimumSoc: reading(100) },
+    plan: { id: 'accepted', periods, deadlineAt: at('06:00') },
+    forecast: { finishAt: null, feasible: false, reason: 'insufficient-time' } });
+  const display = chargerDisplay(item, { now: currentTime }), result = chargerSummary(item, display, { now: currentTime });
+  assert.equal(result.activity, 'Charging is allowed');
+  assert.equal(result.compactSummary, 'Controlled · Charging is allowed');
+  assert.equal(result.completion.detail, 'Target at risk');
+  assert.equal(chargingNotice(item, display, result).label, 'Target may be late');
+});
+
+test('a planned gap without a confirmed pause stays uncertain throughout the summary', () => {
+  const periods = [{ startAt: now - 2 * hour, endAt: now - hour }, { startAt, endAt: null }];
+  const item = charger({ control: { phase: 'active', reason: 'The current planned charging period is open.',
+    owned: { startAt: periods[0].startAt }, execution: { planId: 'accepted', periods } },
+    plan: { id: 'accepted', periods, startAt: periods[0].startAt, deadlineAt, finishAt, feasible: true } });
+  const result = summary(item), display = chargerDisplay(item, { now });
+  assert.equal(result.activity, 'Next period 23:00 · pause awaiting confirmation');
+  assert.equal(result.roleLabel, 'Control unconfirmed'); assert.equal(result.roleState, 'uncertain');
+  assert.match(result.roleDetail, /pause between charging periods has not been confirmed/);
+  assert.doesNotMatch(result.roleDetail, /period is open/);
+  assert.equal(result.completion.value, 'Checking'); assert.equal(result.completion.at, null);
+  assert.equal(chargingNotice(item, display, result).label, 'Charger needs attention');
+  for (const patch of [{ phase: 'unconfirmed' }, { phase: 'paused', confirmed: false }]) {
+    const pending = summary({ ...item, control: { ...item.control, owned: { startAt }, ...patch } });
+    assert.equal(pending.roleState, 'uncertain');
+    assert.doesNotMatch(pending.activity, /^Paused|^Resumes/);
+  }
+});
+
+test('native confirmation cleared during reconciliation invalidates a retained paused summary', () => {
+  const periods = [{ startAt: now - 2 * hour, endAt: now - hour }, { startAt, endAt: null }];
+  const item = charger({ control: { phase: 'paused', reason: 'The pause is confirmed.', ownsInstruction: false, pauseConfirmed: false,
+    owned: { startAt }, execution: { planId: 'accepted', periods } },
+    plan: { id: 'accepted', periods, startAt: periods[0].startAt, deadlineAt, finishAt, feasible: true } });
+  const result = summary(item), display = chargerDisplay(item, { now });
+  assert.equal(result.roleState, 'uncertain'); assert.equal(result.completion.at, null);
+  assert.equal(result.activity, 'Next period 23:00 · pause awaiting confirmation');
+  assert.match(result.roleDetail, /pause between charging periods has not been confirmed/);
+  const warning = chargingNotice(item, display, result);
+  assert.equal(warning.label, 'Charger needs attention');
+  assert.doesNotMatch(warning.detail, /The pause is confirmed/);
+});
+
+test('confirmation of an expired earlier gap cannot give the current gap a healthy summary', () => {
+  const periods = [{ startAt: now - 4 * hour, endAt: now - 3 * hour },
+    { startAt: now - 2 * hour, endAt: now - hour }, { startAt, endAt: null }];
+  const item = charger({ control: { phase: 'paused', reason: 'The pause is confirmed.', ownsInstruction: true, pauseConfirmed: true,
+    owned: { startAt: periods[1].startAt }, execution: { planId: 'accepted', periods } },
+    plan: { id: 'accepted', periods, deadlineAt, finishAt, feasible: true } });
+  const result = summary(item), display = chargerDisplay(item, { now });
+  assert.equal(result.roleState, 'uncertain'); assert.equal(result.completion.at, null);
+  assert.equal(result.activity, 'Next period 23:00 · pause awaiting confirmation');
+  assert.match(result.roleDetail, /pause between charging periods has not been confirmed/);
+  assert.equal(chargingNotice(item, display, result).label, 'Charger needs attention');
 });
 
 test('manual priority preserves its window and uses only a current native estimate inside that window', () => {

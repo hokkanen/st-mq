@@ -150,6 +150,33 @@ test('sequential planned gaps use expiring profiles while open periods remain un
   assert.equal(view.phase, 'released'); assert.equal(f.profiles.size, 0);
 });
 
+test('a vehicle-side suspension retains period timing and needs charger-side gap confirmation', async () => {
+  const f = fixture(), periods = [{ startAt: START, endAt: START + 20 * MINUTE }, { startAt: START + 50 * MINUTE, endAt: null }];
+  f.snapshot({ connectorStatus: 'SuspendedEV', powerKw: 0 });
+  let view = await f.controller.update({ enabled: true, plan: plan(START, { periods }) });
+  assert.equal(view.phase, 'active'); assert.equal(writes(f).length, 0);
+  assert.equal(f.adapter.normalize(view.snapshot).charging.value, false);
+
+  f.advance(20 * MINUTE); view = await f.controller.update({ enabled: true });
+  assert.equal(view.phase, 'pause-unconfirmed'); assert.equal(view.ownsInstruction, true); assert.equal(view.pauseConfirmed, false);
+  assert.equal(writes(f).length, 1); assert.equal(writes(f)[0].action, 'SetChargingProfile');
+  assert.deepEqual(writes(f)[0].payload.csChargingProfiles.chargingSchedule.chargingSchedulePeriod, [{ startPeriod: 0, limit: 0 }]);
+  assert.equal(f.stored.owned.startAt, periods[1].startAt);
+
+  f.advance(MINUTE); f.snapshot({ connectorStatus: 'SuspendedEVSE', powerKw: 0 });
+  view = await f.controller.update({ enabled: true });
+  assert.equal(view.phase, 'paused'); assert.equal(view.pauseConfirmed, true); assert.equal(writes(f).length, 1);
+
+  const profileId = f.stored.owned.profileId;
+  f.advance(29 * MINUTE); f.snapshot({ connectorStatus: 'SuspendedEV', powerKw: 0 });
+  view = await f.controller.update({ enabled: true });
+  assert.equal(view.phase, 'released'); assert.equal(view.released, true); assert.equal(view.pauseConfirmed, false);
+  assert.equal(f.adapter.normalize(view.snapshot).charging.value, false);
+  assert.equal(f.profiles.size, 0);
+  assert.equal(writes(f).length, 2);
+  assert.deepEqual(writes(f).at(-1), { action: 'ClearChargingProfile', payload: { id: profileId } });
+});
+
 test('only explicit current-transaction native events establish manual priority', async () => {
   const f = fixture(); await f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
   f.advance(1000); f.manual({ id: 'native-release', kind: 'release', at: f.now, transactionId: 7 });
