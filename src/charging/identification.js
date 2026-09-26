@@ -1,4 +1,4 @@
-import { connectionEvidenceStart } from './vehicle.js';
+import { connectionEvidenceStart, bmwIdentityContextValid } from './vehicle.js';
 
 const MINUTE = 60_000;
 export const IDENTIFICATION_CHARGE_LIMIT_MS = MINUTE;
@@ -140,21 +140,13 @@ function departureAt(reading, lastDisconnectedAt) {
     .filter(time).reduce((latest, at) => Math.max(latest, at), time(lastDisconnectedAt) ? lastDisconnectedAt : -1);
 }
 
-function contextValid(reading, now) {
-  return time(now) && reading?.provider === 'bmw-cardata'
-    && ['atHome', 'pluggedIn'].every(key => reading[key] === true
-      && time(reading.fields?.[key]?.measuredAt) && reading.fields[key].measuredAt <= now
-      && now - reading.fields[key].measuredAt <= 24 * 60 * MINUTE
-      && (!time(reading.fields[key].receivedAt) || reading.fields[key].receivedAt <= now));
-}
-
 /** A current live charging fact is also usable when startup did not observe its
  * original start. It is saved as a baseline, never manufactured into a start
  * edge. Identity still requires an independently observed response to our stop.
  * Retained delivery and unchanged old source timestamps cannot renew freshness. */
 export function prepareActiveBmwCandidate(reading, { connectedAt, lastDisconnectedAt, chargingAt = [],
   physicalAt, now, consumedChargingId } = {}) {
-  if (!contextValid(reading, now) || reading.charging !== true || !time(connectedAt) || connectedAt > now
+  if (!bmwIdentityContextValid(reading, now) || reading.charging !== true || !time(connectedAt) || connectedAt > now
     || !time(physicalAt) || physicalAt > now || now - physicalAt > MINUTE) return null;
   const departure = departureAt(reading, lastDisconnectedAt);
   const boundary = connectionEvidenceStart(connectedAt, departure);
@@ -181,7 +173,7 @@ export function prepareActiveBmwCandidate(reading, { connectedAt, lastDisconnect
  * connection changes, departures, consumed observations, and retained stops
  * fence it out. A controller request/ack alone never supplies physical proof. */
 export function matchActiveBmwPause(reading, { state, now, lastDisconnectedAt, consumedChargingId } = {}) {
-  if (!state || !contextValid(reading, now) || reading.charging !== false) return null;
+  if (!state || !bmwIdentityContextValid(reading, now) || reading.charging !== false) return null;
   const { candidate, pause, connectedAt } = state;
   if (!validCandidate(candidate) || !validPause(pause) || candidate.connectedAt !== connectedAt
     || pause.connectedAt !== connectedAt || pause.startAt !== state.pauseUntil

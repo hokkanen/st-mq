@@ -151,6 +151,16 @@ identification has no ten-minute label expiry: a vehicle timer or full battery
 can leave it waiting until charging starts. Missing vehicle context leaves it
 pending without repeatedly starting a test.
 
+BMW location can become unknown when GPS is unavailable or its coordinate
+updates have different source times. A last confirmed home observation can
+support identification for up to two hours from its original measurement time,
+while the current location remains explicitly unknown. Repeats and restart do
+not extend this bound. Away reports and subsequent BMW unplug evidence invalidate
+that fallback; fresh vehicle and physical charger correlation is still required.
+The charger details show the remembered home observation separately. See
+[BMW location context](bmw-cardata.md#home-location). Missing context before a
+test leaves its budget unused; loss during an active test never renews its limits.
+
 Once charging starts, a fresh Tesla power match can finish immediately. A usable
 BMW charging baseline instead triggers a brief, confirmed pause as soon as it
 is available. Startup can use live ongoing BMW charging without inventing a

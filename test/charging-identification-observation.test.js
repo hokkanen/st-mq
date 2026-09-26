@@ -9,7 +9,7 @@ const START = Date.parse('2026-09-25T09:00:00Z'), MINUTE = 60_000, FUTURE = STAR
 // Real runtime planning callback, vehicle ingestion, normalization and native
 // controllers. Only device IO and the already-computed economic plan are fake;
 // all command counts include every request the real controllers dispatch.
-async function fixture(t, transport, vehicle = 'bmw', { retainedOnly = false, healthyTesla = true, charging = true } = {}) {
+async function fixture(t, transport, vehicle = 'bmw', { retainedOnly = false, healthyTesla = true, charging = true, atHome = true } = {}) {
   let now = START, runtime, failPersistence = false;
   const states = new Map(), writes = [], profiles = new Map();
   const store = { getState: key => structuredClone(states.get(key)),
@@ -113,7 +113,7 @@ async function fixture(t, transport, vehicle = 'bmw', { retainedOnly = false, he
     runtime.setMqttStatus({ connected: true, subscribed: true }, 'bmw');
     if (vehicle === 'bmw') {
       if (!runtime.vehicleFeeds.bmw.reading)
-        publish({ atHome: true, pluggedIn: true, charging: retainedOnly }, retainedOnly ? START : START - 60 * MINUTE, true);
+        publish({ atHome, pluggedIn: true, charging: retainedOnly }, retainedOnly ? START : START - 60 * MINUTE, true);
       if (!retainedOnly) publish({ charging }, START);
     }
     await runtime.setAdapter('charger1', transport === 'cloud' ? cloud : native);
@@ -168,6 +168,84 @@ for (const transport of ['cloud', 'ocpp']) {
     assert.equal(attempt(f).phase, 'completed');
     assert.equal(f.runtime.chargers.charger1.controller.status().owned.startAt, FUTURE);
     assert.equal(f.runtime.vehicleFeeds.bmw.reading.fields.pluggedIn.positiveEvent.retained, true);
+  });
+
+  test(`${transport}: unknown GPS uses recent confirmed home context with a live charging response`, async t => {
+    const f = await fixture(t, transport);
+    f.publish({ atHome: true }, START - 35 * MINUTE);
+    const knownHome = structuredClone(f.runtime.vehicleFeeds.bmw.reading.fields.atHome);
+    f.publish({ atHome: null }, null);
+    const unavailableHome = structuredClone(f.runtime.vehicleFeeds.bmw.reading.fields.atHome);
+    assert.equal(unavailableHome.measuredAt, null);
+    assert.equal(unavailableHome.lastKnown.measuredAt, knownHome.measuredAt);
+    assert.equal(unavailableHome.lastKnown.receivedAt, knownHome.receivedAt);
+    f.setNow(START + 1000); await f.update();
+    assert.equal(attempt(f).phase, 'pausing'); assert.equal(installs(f).length, 1);
+    assert.equal(f.view().id, null, 'Recent home context and a pause acknowledgement do not identify a vehicle');
+    const stoppedAt = f.physical.at;
+    f.setNow(stoppedAt + 4000); f.publish({ charging: false }, stoppedAt + 2000); await f.update();
+    assert.equal(f.view().id, 'bmw'); assert.equal(attempt(f).phase, 'completed');
+    assert.equal(f.runtime.vehicleFeeds.bmw.reading.atHome, null);
+    assert.deepEqual(f.runtime.vehicleFeeds.bmw.reading.fields.atHome, unavailableHome,
+      'Using home context must preserve the unavailable reading and its original observation clocks');
+  });
+
+  for (const home of ['missing', 'expired']) {
+    test(`${transport}: ${home} home context waits without spending the identification budget`, async t => {
+      const f = await fixture(t, transport, 'bmw', { atHome: home === 'missing' ? null : true });
+      f.runtime.chargers.charger1.controls.enabled = false; f.runtime.refreshSettings();
+      if (home === 'expired') {
+        f.publish({ atHome: null }, null);
+        f.setNow(START + 61 * MINUTE);
+      }
+      Object.assign(f.physical, { charging: true, at: f.now });
+      f.setNow(f.now + 1000); f.publish({ charging: true }, f.now - 500);
+      await f.update({ enabled: false });
+      assert.equal(attempt(f).phase, 'waiting');
+      const initial = structuredClone(attempt(f));
+      f.setNow(f.now + 5 * MINUTE);
+      Object.assign(f.physical, { charging: true, at: f.now });
+      f.publish({ charging: true }, f.now - 500); await f.update({ enabled: false });
+      assert.equal(attempt(f).phase, 'waiting'); assert.equal(attempt(f).id, initial.id);
+      assert.equal(attempt(f).chargeDeadlineAt, null); assert.equal(attempt(f).chargingStartedAt, null);
+      assert.equal(attempt(f).chargeUsedKwh, 0); assert.equal(f.writes.length, 0);
+      const readyAt = f.now;
+      f.publish({ atHome: true }, f.now - 500); await f.update({ enabled: false });
+      assert.equal(attempt(f).id, initial.id); assert.equal(attempt(f).attempt, 1);
+      assert.equal(attempt(f).phase, 'pausing'); assert.equal(installs(f).length, 1);
+      assert.equal(attempt(f).chargeDeadlineAt, readyAt + MINUTE);
+    });
+  }
+
+  test(`${transport}: restart preserves unknown home context and cannot renew its source age`, async t => {
+    const f = await fixture(t, transport, 'bmw', { charging: false });
+    f.publish({ atHome: true }, START - 35 * MINUTE); f.publish({ atHome: null }, null);
+    await f.update();
+    const home = structuredClone(f.runtime.vehicleFeeds.bmw.reading.fields.atHome);
+    const initial = structuredClone(attempt(f));
+    f.setNow(START + 86 * MINUTE); await f.restart();
+    assert.equal(f.runtime.vehicleFeeds.bmw.reading.atHome, null);
+    assert.deepEqual(f.runtime.vehicleFeeds.bmw.reading.fields.atHome, home);
+    Object.assign(f.physical, { charging: true, at: f.now });
+    f.publish({ charging: true }, f.now - 500); await f.update();
+    assert.equal(attempt(f).id, initial.id); assert.equal(attempt(f).phase, 'waiting');
+    assert.equal(attempt(f).chargeDeadlineAt, null); assert.equal(f.writes.length, 0);
+    assert.equal(f.view().id, null);
+  });
+
+  test(`${transport}: an explicit away report invalidates home context during the identification pause`, async t => {
+    const f = await fixture(t, transport);
+    f.runtime.chargers.charger1.controls.enabled = false; f.runtime.refreshSettings();
+    f.publish({ atHome: true }, START - 35 * MINUTE); f.publish({ atHome: null }, null);
+    f.setNow(START + 1000); await f.update({ enabled: false });
+    assert.equal(attempt(f).phase, 'pausing');
+    const stoppedAt = f.physical.at;
+    f.setNow(stoppedAt + 4000);
+    f.publish({ atHome: false }, stoppedAt + 1000); f.publish({ atHome: null }, null);
+    f.publish({ charging: false }, stoppedAt + 2000); await f.update({ enabled: false });
+    assert.equal(f.runtime.vehicleFeeds.bmw.reading.fields.atHome.lastKnown.value, false);
+    assert.equal(f.view().id, null); assert.notEqual(attempt(f).phase, 'completed');
+    assert.equal(installs(f).length, 1);
   });
 
   test(`${transport}: a vehicle timer waits beyond ten minutes and testing begins when charging starts`, async t => {

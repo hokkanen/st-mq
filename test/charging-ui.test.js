@@ -919,13 +919,29 @@ test('a rejected target action reports the connection race without applying its 
   panel.close();
 });
 
+test('BMW unknown location distinguishes recent home context from a current location reading', () => {
+  const item = connected(), measuredAt = now - 35 * 60_000;
+  item.vehicle = { state: 'identifying', id: null, homeContext: { source: 'last-known', measuredAt } };
+  item.identification = { phase: 'pausing', active: true, available: true };
+  const pending = view(item);
+  assert.match(pending.vehicle.detail, /BMW location is currently unknown/);
+  assert.ok(pending.vehicle.detail.includes(chargingTime(measuredAt, 'Europe/Helsinki', now)));
+  assert.match(pending.vehicle.detail, /two hours from that observation.*matching live charging/);
+  assert.match(pending.vehicle.label, /Identifying/);
+  item.vehicle = { ...item.vehicle, state: 'identified', id: 'bmw', label: 'BMW' };
+  item.identification = { phase: 'completed', active: false, available: true };
+  assert.match(view(item).vehicle.detail, /currently unknown/);
+  item.vehicle.homeContext = null;
+  assert.doesNotMatch(view(item).vehicle.detail, /last confirmed home position/);
+});
+
 test('BMW awaiting-stop identification explains the pending evidence while leaving saved target editable', () => {
   const document = documentFixture(), $ = id => document.getElementById(id);
   const panel = createChargingPanel({ document, request: async () => status() });
   panel.update(status({ ...active(), vehicle: { state: 'unidentified', reason: 'awaiting-stop-confirmation' } }));
   assert.match($('charger1-vehicle').textContent, /BMW identification pending/);
   const popup = openDetail($('charger1-vehicle'));
-  assert.match(popup.textContent, /matching charging-stop readings from BMW and Easee.*Configured vehicle defaults remain in use/s);
+  assert.match(popup.textContent, /matching charging-stop readings from BMW and the charger.*Configured vehicle defaults remain in use/s);
   assert.equal($('charger1-setting-minimumSoc').disabled, false);
   assert.equal($('charger1-target-controls').hidden, true); panel.close();
 });

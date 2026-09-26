@@ -3,6 +3,45 @@ import { acceptSocReading, socMeasurementTime } from './soc.js';
 const facts = ['pluggedIn', 'charging', 'atHome'];
 const MINUTE = 60_000;
 const time = value => Number.isSafeInteger(value) && value >= 0;
+const eventId = value => typeof value === 'string' && value.length > 0 && value.length <= 128;
+const CONTEXT_MAX_AGE_MS = 24 * 60 * MINUTE;
+export const BMW_LAST_HOME_MAX_AGE_MS = 2 * 60 * MINUTE;
+
+const currentContext = (field, now, maxAge) => time(field?.measuredAt) && field.measuredAt <= now
+  && now - field.measuredAt <= maxAge
+  && (field.receivedAt == null || time(field.receivedAt) && field.receivedAt <= now);
+
+/** Location context is distinct from the current reported fact. A GPS gap may
+ * use the last confirmed home position briefly, without making null true or
+ * renewing its clocks. Only live charging/charger correlation proves identity.
+ * BMW departure events fence this fallback; a charger reconnect alone does not
+ * mean the vehicle left home, and has its own charging-evidence boundary. */
+export function bmwHomeContext(reading, now) {
+  if (!time(now) || reading?.provider !== 'bmw-cardata') return null;
+  const field = reading.fields?.atHome;
+  const remembered = reading.atHome === null;
+  const home = remembered ? field?.lastKnown : field;
+  if (remembered ? home?.value !== true : reading.atHome !== true) return null;
+  if (!currentContext(home, now, remembered ? BMW_LAST_HOME_MAX_AGE_MS : CONTEXT_MAX_AGE_MS)) return null;
+  if (remembered && (!time(home.receivedAt) || !eventId(home.readingId)
+    || typeof home.retained !== 'boolean'
+    || ['atHome', 'pluggedIn'].some(key => {
+      const departure = reading.fields?.[key]?.negativeEvent;
+      // A live home-zone correction can supersede an away calculation at the
+      // same GPS time. Its original receipt order proves which revision won;
+      // this exception never applies to a vehicle unplug event.
+      const correctedHome = key === 'atHome' && departure?.measuredAt === home.measuredAt
+        && home.retained === false && time(departure.receivedAt) && departure.receivedAt < home.receivedAt;
+      return time(departure?.measuredAt) && departure.measuredAt >= home.measuredAt && !correctedHome;
+    }))) return null;
+  return { source: remembered ? 'last-known' : 'observed', measuredAt: home.measuredAt,
+    receivedAt: home.receivedAt ?? null, readingId: home.readingId ?? null };
+}
+
+export function bmwIdentityContextValid(reading, now) {
+  return Boolean(bmwHomeContext(reading, now) && reading.pluggedIn === true
+    && currentContext(reading.fields?.pluggedIn, now, CONTEXT_MAX_AGE_MS));
+}
 
 // A charger connection is dated when polling first sees it. Source events and
 // MQTT delivery can precede that poll; a known disconnect bounds the tolerance.
@@ -126,7 +165,6 @@ export function acceptVehicleReading(previous, payload, { now = Date.now(), asso
   return changed ? { accepted: true, reading, reason: null } : reject(battery.reason ?? 'duplicate-reading');
 }
 
-const eventId = value => typeof value === 'string' && value.length > 0 && value.length <= 128;
 function freshBoundaryEvent(event, now) {
   return time(now) && eventId(event?.readingId) && time(event.measuredAt) && event.measuredAt >= 0
     && time(event.receivedAt) && event.receivedAt >= 0 && event.measuredAt <= now && event.receivedAt <= now
@@ -186,9 +224,7 @@ function bmwSessionEvidence(reading, { connectedAt, lastDisconnectedAt, charging
   const chargingTimes = Array.isArray(chargingAt) ? chargingAt : [chargingAt];
   const stoppedTimes = Array.isArray(stoppedAt) ? stoppedAt : [stoppedAt];
   if (!time(now) || !time(connectedAt) || connectedAt > now || reading?.provider !== 'bmw-cardata' || typeof reading.charging !== 'boolean') return null;
-  const home = field('atHome');
-  if (reading.atHome !== true || reading.pluggedIn !== true || !time(home?.measuredAt) || home.measuredAt > now
-    || now - home.measuredAt > 24 * 60 * MINUTE
+  if (!bmwHomeContext(reading, now) || reading.pluggedIn !== true
     || plug?.retained !== false || !time(plug.measuredAt) || !time(plug.receivedAt)
     || plug.measuredAt < evidenceStart || plug.measuredAt > connectedAt + 10 * MINUTE
     || plug.measuredAt > now || plug.receivedAt < evidenceStart || plug.receivedAt > now || !event(start)
@@ -232,12 +268,9 @@ function controlledBmwStart(reading, { connectedAt, lastDisconnectedAt, charging
     && sourceTime(observed.measuredAt) && time(observed.receivedAt)
     && observed.receivedAt >= evidenceStart && observed.receivedAt <= now
     && now - observed.receivedAt <= 15 * MINUTE;
-  const context = key => reading?.[key] === true && time(reading.fields?.[key]?.measuredAt)
-    && reading.fields[key].measuredAt >= 0 && reading.fields[key].measuredAt <= now
-    && now - reading.fields[key].measuredAt <= 24 * 60 * MINUTE;
   if (!time(now) || !time(connectedAt) || connectedAt < 0 || connectedAt > now
     || reading?.provider !== 'bmw-cardata' || typeof reading.charging !== 'boolean'
-    || !context('atHome') || !context('pluggedIn')) return null;
+    || !bmwIdentityContextValid(reading, now)) return null;
   const start = reading.fields?.charging?.positiveEvent, stop = reading.fields?.charging?.negativeEvent;
   if (!event(start) || start.readingId === consumedChargingId) return null;
   const chargingTimes = Array.isArray(chargingAt) ? chargingAt : [chargingAt];

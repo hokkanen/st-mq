@@ -79,23 +79,26 @@ function identificationPresentation(charger) {
     })[identification.reason] ?? 'The identification attempt ended without a conclusive match.'} The current charging choice now applies. Live readings can still confirm the vehicle, or choose Identify to try again when available.` };
   return null;
 }
-function vehiclePresentation(charger) {
+function vehiclePresentation(charger, { now, timezone } = {}) {
   const vehicle = charger.vehicle;
   const identification = identificationPresentation(charger);
+  const home = vehicle?.homeContext;
+  const homeDetail = home?.source === 'last-known'
+    ? ` BMW location is currently unknown. Its last confirmed home position (${chargingTime(home.measuredAt, timezone, now)}) can support identification for up to two hours from that observation, together with matching live charging readings.` : '';
   if (vehicle?.state === 'conflict') return { label: 'Vehicle evidence conflicts',
     detail: `Both connections remain separately metered. Use the charger fallback request until the evidence resolves.${identification ? ` ${identification.detail}` : ''}` };
   if (identification) return { label: vehicle?.state === 'identified'
     ? `${vehicle.label} identified`
     : identification.label,
-    detail: `${identification.detail}${vehicle?.state === 'identified' ? ` The confirmed ${vehicle.label} association remains available while this connection is checked.` : ' Session battery settings remain available below.'}` };
+    detail: `${identification.detail}${vehicle?.state === 'identified' ? ` The confirmed ${vehicle.label} association remains available while this connection is checked.` : ' Session battery settings remain available below.'}${homeDetail}` };
   if (vehicle?.state === 'identified') return { label: `${vehicle.label} identified`,
-    detail: `${vehicle.label} is associated with this physical charger for the current connection. Vehicle readings carry their own source and quality.` };
+    detail: `${vehicle.label} is associated with this physical charger for the current connection. Vehicle readings carry their own source and quality.${homeDetail}` };
   if (vehicle?.reason === 'awaiting-stop-confirmation' && charger.values?.connected?.value === true)
-    return { label: 'BMW identification pending', detail: 'BMW is a candidate for this connection. Waiting for matching charging-stop readings from BMW and Easee before confirming it. Configured vehicle defaults remain in use.' };
+    return { label: 'BMW identification pending', detail: `BMW is a candidate for this connection. Waiting for matching charging-stop readings from BMW and the charger before confirming it. Configured vehicle defaults remain in use.${homeDetail}` };
   if (vehicle?.state === 'identifying') return { label: 'Identifying vehicle',
-    detail: 'Checking which vehicle is connected. You can edit starting charge, target and usable battery capacity for this session below.' };
+    detail: `Checking which vehicle is connected. You can edit starting charge, target and usable battery capacity for this session below.${homeDetail}` };
   if (charger.values?.connected?.value === true) return { label: 'Vehicle unidentified',
-    detail: 'Configured defaults cover unidentified vehicles, including visitors. You can change starting charge, target and usable battery capacity for this session below. BMW or Tesla readings take over only after identification.' };
+    detail: `Configured defaults cover unidentified vehicles, including visitors. You can change starting charge, target and usable battery capacity for this session below. BMW or Tesla readings take over only after identification.${homeDetail}` };
   return { label: 'Any vehicle', detail: 'This charger accepts any vehicle. Configured defaults are available for visitors; BMW and Tesla readings are used only after identification.' };
 }
 const notices = value => (Array.isArray(value) ? value : value ? [value] : []).map(item => human(item?.message ?? item?.reason ?? item));
@@ -344,7 +347,7 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
       : 'The original charging-loss assumption is unavailable in this recorded snapshot. Its energy and cost estimates are shown as recorded, without recalculation.'
     : `Charging loss is fixed at ${number(CHARGING_LOSS_FRACTION * 100, '%')} of grid energy (${number(CHARGING_EFFICIENCY * 100, '%')} reaches the battery). Grid energy and cost estimates include these losses.`;
   const explanations = [
-    ['Vehicle identification', vehiclePresentation(charger).detail],
+    ['Vehicle identification', vehiclePresentation(charger, { now, timezone }).detail],
     ['Readings & fallbacks', 'Only an identified vehicle’s charge, target and usable capacity take priority, separately for each available field. Otherwise, configured starting charge, target and capacity are used. Explicit session edits take priority for this connection; a newer vehicle charge reading can replace the starting-charge reference. Unplugging restores configured defaults. Automatic readings never erase configured values. The original reading time stays visible as it ages; a receipt time is labeled separately when measurement time is unknown.'],
     ['Target & completion', 'The displayed target comes from the vehicle when available. The requested target is used for estimates and does not change the vehicle’s own charge limit. The estimated target time is a forecast, not a command to stop charging. Estimated cost includes all energy delivered since plugging in plus the energy still needed to reach the target. It stays visible after reaching the target and grows with any further charging.'],
     ['Charging progress', 'Delivered charging energy raises the estimated charge from the starting value, allowing for charging losses and usable capacity. Added energy shows recorded grid energy since plugging in and stays until disconnection. A new vehicle reading updates only the battery estimate reference. The original vehicle reading stays separate; missing energy is not invented. The estimate can keep rising beyond the requested target. Disconnecting clears connection progress; the starting charge should be updated for each session after driving when no vehicle reading is available.'],
@@ -414,7 +417,7 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
     targetSelection.conflict ? 'In automatic mode, planning uses the latest BMW target below 100% after repeated conflicting reports.' : '',
     'This choice changes planning only. For a full charge, also set 100% in the car. Unplugging restores automatic target selection.',
   ].filter(Boolean).join('\n\n') : '';
-  const vehicle = vehiclePresentation(charger);
+  const vehicle = vehiclePresentation(charger, { now, timezone });
   return { id: charger.id, label: charger.label, state, event, eventAt, eventKind, summary: `${state} · ${event}`, risk, showMetrics, vehicle, identification,
     soc: estimatedSoc ? `≈${Math.round(progress.estimatedSoc)} %` : socKnown ? number(soc.value, '%') : 'Unknown', socSource, minimum: number(minimum, '%'),
     minimumSource: targetSource, sources: socSource, targetSelection, targetNotice, targetDetail,

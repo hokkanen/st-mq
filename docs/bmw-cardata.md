@@ -48,8 +48,8 @@ retain independent clocks. The top-level provider is `bmw-cardata`.
 
 The original BMW `timestamp` attribute supplies the clock, never automation time.
 Identity can be published and accepted even when SoC is unavailable. Unknown
-identity facts clear previous facts; they do not become false or silently preserve
-an earlier true. Sparse battery fields retain the last accepted measurement and
+identity facts clear current facts; they do not become false or turn an earlier
+true into a current reading. Sparse battery fields retain the last accepted measurement and
 its age. Malformed, future or older observations cannot manufacture fresh evidence.
 
 ## Home location
@@ -68,6 +68,25 @@ different. A home-zone correction can revise the live `atHome` fact while keepin
 the original GPS measurement time. Replayed retained values cannot reverse that
 revision, and it does not create a plug or charging event. Only `atHome` and its
 clock go to MQTT, never coordinates or private zone/device identifiers.
+
+The controller tolerates temporary GPS gaps, including coordinate updates that
+arrive independently. When the current `atHome` fact is explicitly unknown, its
+last confirmed true observation may supply identification context for at most
+two hours from the original BMW measurement time. The current fact stays unknown;
+the charger details show that distinction and the original home-observation time.
+Repeated publications and restart do not renew the observation. This needs no
+publisher change and does not claim to diagnose GPS reception.
+
+An explicit away report, a BMW unplug event at or after that home observation,
+expiry, or replacement of the configured vehicle feed prevents the fallback.
+A later live home-zone correction can supersede an away calculation while
+keeping the original GPS clock. A charger reconnect alone does not mean the
+vehicle left the property; its separate connection boundaries still fence all
+charging evidence. Unknown plug or charging facts have no last-known fallback.
+Fresh matching vehicle and physical charger responses remain mandatory. Missing
+usable context leaves a new attempt waiting; once a test has begun, loss of
+context cannot reset its time or energy limits. An already inconclusive attempt
+still requires **Identify** or a new physical connection to start another test.
 
 ## Association with a charging point
 
@@ -113,7 +132,8 @@ must match the current witnessed physical pause within 30 seconds. Retained
 charging reports cannot provide that baseline or stop proof.
 
 BMW can also keep reporting `CONNECTED` without a new vehicle plug transition.
-An alternative match uses home and plugged-in context no older than 24 hours,
+An alternative match uses reported home and plugged-in context no older than
+24 hours (or the two-hour last-confirmed-home context during a GPS gap),
 plus a planned pause already controlled by ST-MQ. Live BMW charging-start
 and stop events no older than fifteen minutes must each match the physical charger within
 30 seconds. Both starts must precede

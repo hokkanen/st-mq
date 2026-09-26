@@ -2,6 +2,25 @@
 -Implement support for local mqtt-based temperature receives (eg, from shelly or HASS through Meteorologisk Institute); just store last received temp values and time stamps (maybe in storage class, see below) when received (and accept if received within 1h)
 -Chart dataset control buttons don't work when datasets are manually hidden/unhidden from legend, how to fix?
 
+Completed 2026-09-26 — BMW identification tolerates temporary unknown location
+- Use the last confirmed BMW home observation for at most two hours when current
+  location is explicitly unknown. Preserve its source clock, MQTT provenance and
+  raw unknown value; show the distinction and original observation in the UI.
+- Share location context across active, natural-stop and controlled-pause matching
+  and attempt readiness. Remove the duplicated home predicates. Keep explicit
+  away/unplug, feed identity, expiry, live charging and physical response fences.
+  Preserve current same-clock home-zone corrections and same-session restart.
+- Missing context leaves a new attempt waiting without a charge allowance;
+  running test deadlines and one-attempt behavior remain bounded. Existing
+  inconclusive attempts still require Identify or a new physical connection.
+- Review the Home Assistant publisher, ingestion, saved state, all charger
+  backends, UI, configuration and help. No publisher/configuration changes,
+  state translations, schema migrations or compatibility paths are introduced.
+- Add synthetic home-context, cloud/OCPP lifecycle and UI regressions for GPS
+  gaps, restart, expiry, unknown/away/unplug reports and replay/retained fences.
+- Validation: all 3,532 tests and the production build pass. Staged secret checks
+  run before commit. No household commands or running-service restart.
+
 Completed 2026-09-26 — Charging period status follows confirmed control
 - Keep an open period visible as charging allowed when the connected vehicle
   draws no power, even when the execution contains later charging periods.

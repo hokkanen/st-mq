@@ -1,5 +1,5 @@
 import { chargingDefaults, mergeChargingSettings, chargingSettingsFromConfiguration, resolveChargingDeadline } from './settings.js';
-import { acceptVehicleReading, connectionEvidenceStart, matchTeslaSession, matchBmwSession, matchBmwControlledPause, pendingBmwControlledPause, pendingBmwSession, bmwDisconnectEvent, bmwReconnectEvent } from './vehicle.js';
+import { acceptVehicleReading, bmwHomeContext, bmwIdentityContextValid, connectionEvidenceStart, matchTeslaSession, matchBmwSession, matchBmwControlledPause, pendingBmwControlledPause, pendingBmwSession, bmwDisconnectEvent, bmwReconnectEvent } from './vehicle.js';
 import { chargingConfiguration } from './config.js';
 import { TIME_ZONE } from '../domain/prices.js';
 import { CHARGER_DEFINITIONS, buildCharger } from './model.js';
@@ -251,9 +251,7 @@ export class ChargingRuntime {
   }
   identificationFeedReady(now) {
     const bmw = this.vehicleFeeds.bmw, reading = bmw?.reading, tesla = this.teslaCapture?.snapshot();
-    const bmwContext = bmw?.mqtt.connected && bmw.mqtt.subscribed && ['atHome', 'pluggedIn'].every(key => reading?.[key] === true
-      && Number.isSafeInteger(reading.fields?.[key]?.measuredAt) && reading.fields[key].measuredAt <= now
-      && now - reading.fields[key].measuredAt <= 24 * 60 * MINUTE);
+    const bmwContext = bmw?.mqtt.connected && bmw.mqtt.subscribed && bmwIdentityContextValid(reading, now);
     return Boolean(bmwContext || tesla?.connected === true && tesla.healthy === true && tesla.atHome === true && tesla.pluggedIn === true);
   }
   identificationTurn(item) {
@@ -440,6 +438,7 @@ export class ChargingRuntime {
   telemetry(now) {
     const result = {}, candidates = {}, freshCandidates = {}, awaitingConnection = new Set(), tesla = this.teslaCapture?.snapshot() ?? {}, bmw = this.vehicleFeeds.bmw;
     const bmwAvailable = vehicleFeedAvailable(bmw, now);
+    const homeContext = bmwAvailable ? bmwHomeContext(bmw.reading, now) : null;
     const vehicleAssociations = { bmw: bmw.association, tesla: tesla.association };
     for (const [id, item] of Object.entries(this.chargers)) {
       const control = item.controller?.status(), snapshot = control?.snapshot;
@@ -592,6 +591,7 @@ export class ChargingRuntime {
       result[id].vehicle = { state: connected === false ? 'disconnected' : conflict ? 'conflict' : vehicleId ? 'identified' : pendingIdentification ? 'identifying' : 'unidentified',
         id: vehicleId, label: vehicleId === 'tesla' ? 'Tesla' : vehicleId === 'bmw' ? bmw.label : null,
         source: vehicleId === 'tesla' ? 'teslamate' : vehicleId === 'bmw' ? 'bmw-cardata' : null,
+        homeContext: connected === false || conflict || vehicleId === 'tesla' ? null : homeContext,
         reason: conflict ? 'conflicting-vehicle-evidence' : vehicleId ? vehicleId === 'bmw' ? item.vehicleEvidence?.bmwReason ?? 'matched-physical-session' : 'matched-physical-session'
           : pendingIdentification ? item.identification?.reason ?? 'awaiting-stop-confirmation'
             : item.identification?.phase === 'inconclusive' ? 'identification-inconclusive' : 'assignment-unresolved',
