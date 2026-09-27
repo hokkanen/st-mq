@@ -203,7 +203,8 @@ Both buttons have tooltips and accessible labels. The chart is directly below
 the current readings.
 
 - **Dates:** the default is today, midnight to midnight in **Europe/Helsinki**.
-  The first date picker shows that day immediately and resets the end to match.
+  The first date picker changes the start while keeping the end date, unless
+  the new start is after the end; then the end moves to match the start.
   The second picker extends the inclusive range immediately; it cannot precede
   the first date. Its subdued single-day appearance remains clickable.
   **Yesterday – today**, **Today** and **Today – tomorrow** provide quick navigation.
@@ -241,7 +242,8 @@ the current readings.
   is not every database field: arbitrary JSON, configuration and current-state
   snapshots are not historical measurements.
 - **Legend and axes:** each view remembers its own series and activity-row
-  choices in this browser. **Reset view** restores its initial comparisons.
+  choices in this browser. **Save view** explicitly saves the selected view and
+  visibility choices; **Reset view** restores its initial comparisons.
   Temperature-led views need no left scale; operational views have one declared
   left unit and relevant temperatures on the right. Both electricity prices are
   available in every view; their visibility is remembered globally, including

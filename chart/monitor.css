@@ -330,8 +330,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .chart-legend-panel[open] > summary::before { transform: rotate(45deg); }
 .chart-legend-panel > summary:hover, .chart-legend-panel > summary:focus-visible { color: var(--text); }
 .chart-legend-content { display: flex; flex-direction: column; min-height: 0; max-height: min(42dvh, 420px); }
-.chart-legend-actions { flex: none; display: flex; justify-content: flex-end; padding: 6px 0; border-top: 1px solid var(--border); }
-.chart-legend-reset { margin: 0; padding: 5px 8px; min-height: 32px; background: transparent; color: var(--muted); border: 1px solid var(--border); font-size: 10px; }
+.chart-legend-actions { flex: none; display: flex; justify-content: flex-end; gap: 8px; padding: 6px 0; border-top: 1px solid var(--border); }
+.chart-legend-reset, .chart-legend-save { margin: 0; padding: 5px 8px; min-height: 32px; background: transparent; color: var(--muted); border: 1px solid var(--border); font-size: 10px; }
 .chart-notes-disclosure { margin-top: 10px; }
 .chart-notes-disclosure > summary { padding: 8px 0; font-size: 11px; color: var(--muted); }
 .chart-notes { font-size: 11px; line-height: 1.7; }

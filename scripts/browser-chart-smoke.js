@@ -632,19 +632,19 @@ try {
     };
     return true;
   })()`);
-  // Both native pickers apply immediately; the first always resets to one day.
+  // Both native pickers apply immediately; changing the start preserves a valid end.
   await evaluate("document.getElementById('date-start').value='2024-09-07'; document.getElementById('date-start').dispatchEvent(new Event('change')); true");
-  await checkRange('2024-09-07');
+  await checkRange('2024-09-07', '2026-09-07');
   assert.equal(await evaluate("document.getElementById('date-end').disabled"), false);
   await evaluate("document.getElementById('date-end').value='2024-09-09'; document.getElementById('date-end').dispatchEvent(new Event('change')); true");
   await checkRange('2024-09-07', '2024-09-09');
   await evaluate("document.getElementById('date-start').value='2024-09-06'; document.getElementById('date-start').dispatchEvent(new Event('change')); true");
-  await checkRange('2024-09-06');
+  await checkRange('2024-09-06', '2024-09-09');
   const beforeInvalid = await evaluate('window.dateFixture.requests');
   await evaluate("document.getElementById('date-end').value='2024-09-05'; document.getElementById('date-end').dispatchEvent(new Event('change')); true");
   assert.equal(await evaluate("document.getElementById('chart-range-form').checkValidity()"), false);
   assert.equal(await evaluate('window.dateFixture.requests'), beforeInvalid);
-  await checkRange('2024-09-06');
+  await checkRange('2024-09-06', '2024-09-09');
   await evaluate("document.getElementById('date-start').value='2024-09-12'; document.getElementById('date-start').dispatchEvent(new Event('change')); true");
   await checkRange('2024-09-12');
   await evaluate("document.getElementById('date-end').value='2024-09-21'; document.getElementById('date-end').dispatchEvent(new Event('change')); true");
@@ -660,6 +660,7 @@ try {
     ['2026-03-30', '2026-03-29'], ['2026-10-26', '2026-10-25'],
   ]) {
     await evaluate(`document.getElementById('date-start').value=${JSON.stringify(start)}; document.getElementById('date-start').dispatchEvent(new Event('change')); true`);
+    await evaluate(`document.getElementById('date-end').value=${JSON.stringify(start)}; document.getElementById('date-end').dispatchEvent(new Event('change')); true`);
     await checkRange(start);
     await evaluate("document.getElementById('range-back').click(); true");
     await checkRange(previous);

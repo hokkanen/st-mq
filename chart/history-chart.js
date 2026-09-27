@@ -167,7 +167,13 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     const styles = getComputedStyle(document.documentElement);
     palette = Object.fromEntries(Object.entries(paletteVariables).map(([key, variable]) => [key, styles.getPropertyValue(variable).trim() || defaultPalette[key]]));
   }
-  function savePreferences() { try { storage?.setItem(CHART_PREFERENCES_KEY, JSON.stringify(preferences)); } catch { /* Charts remain usable when storage is unavailable. */ } }
+  function savePreferences() {
+    try {
+      if (!storage) return false;
+      storage.setItem(CHART_PREFERENCES_KEY, JSON.stringify(preferences));
+      return true;
+    } catch { return false; /* Charts remain usable when storage is unavailable. */ }
+  }
   function renderLegend(datasets, view, visibility) {
     const groups = ['left', 'right', 'activity'].map(axis => {
       const group = document.createElement('div'); group.className = 'chart-legend-group'; group.dataset.axis = axis;
@@ -200,8 +206,11 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     const reset = document.createElement('button'); reset.type = 'button'; reset.className = 'chart-legend-reset'; reset.textContent = 'Reset view';
     reset.title = 'Restore this view’s default series and activity rows; keep your price choices';
     reset.addEventListener('click', () => { delete preferences.views[view.key]; savePreferences(); renderChart(); $('chart-legend-actions').querySelector('.chart-legend-reset')?.focus({ preventScroll: true }); });
+    const save = document.createElement('button'); save.type = 'button'; save.className = 'chart-legend-save'; save.textContent = 'Save view';
+    save.title = 'Save the selected view, series visibility and price choices in this browser';
+    save.addEventListener('click', () => { save.textContent = savePreferences() ? 'View saved' : 'Could not save'; });
     $('chart-legend').replaceChildren(...groups.filter(group => group.children.length > 1));
-    $('chart-legend-actions').replaceChildren(reset);
+    $('chart-legend-actions').replaceChildren(reset, save);
   }
   function renderTiming() {
     timing.render(overview);

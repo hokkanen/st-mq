@@ -454,9 +454,15 @@ test('old readings can start a live day, while missing, historical and future re
   assert.equal(historySeriesAt(payload, NaN), payload.series);
 });
 
-test('date picking immediately selects one day or extends it with a valid end', () => {
+test('start date changes preserve the end unless they move past it', () => {
   const selection = { startDate: '2026-09-08', endDate: '2026-09-15' };
-  assert.deepEqual(dateSelection(selection, 'start', '2026-09-02'), { startDate: '2026-09-02', endDate: '2026-09-02' });
+  for (const startDate of ['2026-08-08', '2026-09-08', '2026-09-12', '2026-09-15']) {
+    assert.deepEqual(dateSelection(selection, 'start', startDate), { startDate, endDate: selection.endDate });
+  }
+  assert.deepEqual(dateSelection(selection, 'start', '2026-09-16'), { startDate: '2026-09-16', endDate: '2026-09-16' });
+  assert.deepEqual(dateSelection({ startDate: '2026-09-08', endDate: '2026-09-08' }, 'start', '2026-08-08'),
+    { startDate: '2026-08-08', endDate: '2026-09-08' });
+  for (const value of ['', '2026-02-30']) assert.equal(dateSelection(selection, 'start', value), null);
   assert.deepEqual(dateSelection(selection, 'end', '2026-09-08'), { startDate: '2026-09-08', endDate: '2026-09-08' });
   assert.deepEqual(dateSelection(selection, 'end', '2026-09-20'), { startDate: '2026-09-08', endDate: '2026-09-20' });
   for (const value of ['2026-09-07', '', '2026-02-30']) assert.equal(dateSelection(selection, 'end', value), null);

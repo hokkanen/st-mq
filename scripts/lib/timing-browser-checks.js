@@ -94,6 +94,7 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
   const summary = '#timing-details > summary';
   const chooseDate = async date => {
     await evaluate(`document.getElementById('date-start').value=${JSON.stringify(date)}; document.getElementById('date-start').dispatchEvent(new Event('change')); true`);
+    await evaluate(`document.getElementById('date-end').value=${JSON.stringify(date)}; document.getElementById('date-end').dispatchEvent(new Event('change')); true`);
     await until(`document.getElementById('history').dataset.ready === 'true' && document.getElementById('history').dataset.rangeStart === ${JSON.stringify(date)} && document.getElementById('history').dataset.rangeEnd === ${JSON.stringify(date)}`);
   };
   const key = value => command('input.performActions', { context, actions: [{ type: 'key', id: 'timing-keyboard',

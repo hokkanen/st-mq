@@ -1,6 +1,20 @@
 -Make README.md better and more descriptive of the app, especially the beginning of it
 -Implement support for local mqtt-based temperature receives (eg, from shelly or HASS through Meteorologisk Institute); just store last received temp values and time stamps (maybe in storage class, see below) when received (and accept if received within 1h)
 
+Completed 2026-09-27 — Save chart view and preserve selected end dates
+- Add Save view beside Reset view in the legend footer, persisting the current
+  browser chart preferences with success/failure feedback. Retain automatic
+  preference saving, per-view visibility and shared price choices.
+- Preserve the end date when changing the start to an earlier or equal date;
+  move the end to the start only when the new start passes it. Remove the old
+  unconditional single-day reset and update picker wording, guide and fixtures.
+  No alternate preference format or compatibility path is introduced.
+- Validation: 60 focused tests and production build pass (existing bundle-size
+  warning). Isolated Chrome checks pass 43 views and 124 explorer choices,
+  date-range boundaries, keyboard save, reload persistence, unavailable storage,
+  and desktop/mobile/fullscreen layouts. Mobile legend screenshot reviewed.
+  Updated Firefox fixture helpers pass syntax checks; Firefox was not run.
+
 Completed 2026-09-27 — Clear recorded energy checks
 - Replace Meter accuracy checks with Recorded energy checks in Recording details.
   Lead each device row with a plain-language result, total recorded/metered energy

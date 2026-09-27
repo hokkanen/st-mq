@@ -302,6 +302,19 @@ try {
     assert.equal(await shown('property_power'), !original, `${label}: a keyboard legend toggle changes the series`);
     assert.equal(await evaluate("document.getElementById('chart-legend-panel').open"), true,
       `${label}: changing a series keeps the legend open`);
+    await evaluate("localStorage.removeItem('home-energy-chart-views'); document.querySelector('.chart-legend-save').focus(); true");
+    await pressKey('Enter');
+    assert.equal(await evaluate("document.querySelector('.chart-legend-save').textContent"), 'View saved');
+    assert.equal(await evaluate("JSON.parse(localStorage.getItem('home-energy-chart-views')).views.power.property_power"), !original,
+      `${label}: Save view persists the current visibility choices`);
+    assert.equal(await evaluate("document.activeElement.classList.contains('chart-legend-save')"), true,
+      `${label}: saving retains keyboard focus`);
+    assert.equal(await evaluate("document.getElementById('chart-legend-panel').open"), true,
+      `${label}: saving keeps the legend open`);
+    assert.equal(await evaluate(`(() => {
+      const save = document.querySelector('.chart-legend-save'), r = save.getBoundingClientRect();
+      return document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2) === save;
+    })()`), true, `${label}: Save view is reachable in the legend footer`);
     await evaluate("document.querySelector('.chart-legend-reset').focus(); true"); await pressKey('Enter');
     assert.equal(await shown('property_power'), true, `${label}: Reset view restores the default series`);
     assert.equal(await evaluate("document.activeElement.classList.contains('chart-legend-reset')"), true,
@@ -420,6 +433,19 @@ try {
   await send('Page.navigate', { url: `http://127.0.0.1:${app.server.address().port}/` });
   await until("document.getElementById('history')?.dataset.ready === 'true'");
   assert.equal(await evaluate("document.getElementById('history').dataset.view"), 'power');
+  for (const [start, end] of [['2026-08-07', '2026-09-07'], ['2026-08-20', '2026-09-07'],
+    ['2026-09-07', '2026-09-07'], ['2026-09-08', '2026-09-08']]) {
+    await evaluate(`document.getElementById('date-start').value=${JSON.stringify(start)};
+      document.getElementById('date-start').dispatchEvent(new Event('change')); true`);
+    await until(`document.getElementById('history').dataset.ready === 'true'
+      && document.getElementById('history').dataset.rangeStart === ${JSON.stringify(start)}
+      && document.getElementById('history').dataset.rangeEnd === ${JSON.stringify(end)}`);
+    assert.equal(await evaluate("document.getElementById('date-end').value"), end,
+      `${start}: the end moves only when the start passes it`);
+  }
+  await evaluate("document.getElementById('range-today').click(); true");
+  await until(`document.getElementById('history').dataset.ready === 'true' && document.getElementById('history').dataset.rangeStart === '2026-09-07'
+    && document.getElementById('history').dataset.rangeEnd === '2026-09-07'`);
   assert.equal(await evaluate("document.getElementById('chart-legend-panel').tagName"), 'DETAILS',
     'Legend uses a native disclosure on every screen size');
   assert.equal(await evaluate("document.getElementById('chart-legend-toggle').tagName"), 'SUMMARY');
@@ -522,6 +548,19 @@ try {
   assert.equal(await shown('spot_price'), false, 'Price visibility is shared across views');
   await choose('view', 'power');
   assert.equal(await shown('outdoor_temperature'), false, 'Returning restores that view’s deliberate choices');
+  await evaluate("document.querySelector('.chart-legend-save').click(); true");
+  await send('Page.reload');
+  await until("document.getElementById('history')?.dataset.ready === 'true'");
+  assert.equal(await shown('outdoor_temperature'), false, 'Reload restores the saved view visibility');
+  assert.equal(await shown('spot_price'), false, 'Reload restores saved shared price choices');
+  assert.equal(await evaluate(`(() => {
+    const original = Storage.prototype.setItem;
+    try {
+      Storage.prototype.setItem = () => { throw new Error('Storage unavailable'); };
+      document.querySelector('.chart-legend-save').click();
+      return document.querySelector('.chart-legend-save').textContent;
+    } finally { Storage.prototype.setItem = original; }
+  })()`), 'Could not save', 'Failed storage does not claim that the view was saved');
   await evaluate("document.querySelector('.chart-legend-reset').click(); true"); await settle();
   assert.equal(await shown('outdoor_temperature'), true);
   assert.equal(await shown('spot_price'), false, 'Reset view preserves shared price choices');
