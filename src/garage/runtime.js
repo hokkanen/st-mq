@@ -5,7 +5,7 @@ import { temporaryUpdate } from '../app/temporary.js';
 import { pendingEnergyObservations } from '../storage/pending-energy.js';
 import { garageSettings, GARAGE_POLICY_VERSION, GARAGE_PREFERENCE_VERSION } from './settings.js';
 import { GARAGE_NATIVE_SETTINGS, validateGarageNativeSetting } from './native-settings.js';
-import { GarageRoomTemperature, GARAGE_ROOM_MIN_C, GARAGE_EXTERNAL_SOURCE_MAX_AGE_MS } from './room-temperature.js';
+import { GarageRoomTemperature, GARAGE_ROOM_MIN_C, GARAGE_EXTERNAL_SOURCE_MAX_AGE_MS, validateGarageRoomState } from './room-temperature.js';
 import { garagePausePermission, GARAGE_REVALIDATE_MS, GARAGE_TEMPERATURE_MAX_AGE_MS } from './permission.js';
 import { GARAGE_ALGORITHM_VERSION, GARAGE_MODEL_ASSUMPTIONS, garageRecoveryHours, createGarageModel, garageModelSummary } from './model.js';
 import { confirmedGarageDoor, garagePauseStartReason } from './door-state.js';
@@ -17,14 +17,6 @@ import { appendGarageEntry, applyGarageEntry, garageInput, garageDigest, garageC
 
 const MINUTE = 60_000, HOUR = 60 * MINUTE;
 const finite = Number.isFinite;
-const validRoomTarget = value => value === null || finite(value) && value >= GARAGE_ROOM_MIN_C
-  && value <= 31 && Number.isInteger(value * 2);
-function validateRoomState(value, adapterKey) {
-  if (value == null) return;
-  if (typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length !== 2
-    || !Object.hasOwn(value, 'targetC') || value.adapterKey !== adapterKey || !validRoomTarget(value.targetC))
-    throw new Error('Unsupported saved Garage room setting; start a fresh development database');
-}
 const instant = value => typeof value === 'number' ? value : Date.parse(value);
 const allowed = new Set(['good', 'simulated', 'historical', 'converted_fahrenheit']);
 const usable = (row, now, maxAge) => row && finite(row.value) && finite(row.sourceTime) && row.sourceTime <= now
@@ -84,10 +76,14 @@ export class GarageRuntime {
     const roomState = readState(this.keys.roomTemperature);
     this.roomAdapterKey = garageDigest({ adapter: config.garage?.adapter ?? null,
       broker: { address: config.connections?.mqtt?.address ?? null, user: config.connections?.mqtt?.user ?? null } });
-    validateRoomState(roomState, this.roomAdapterKey);
+    validateGarageRoomState(roomState);
+    // A current-format setting bound to another route is valid history, not a
+    // corrupt database. Keep its record, but never apply its intent to newly
+    // configured equipment or let it seed that equipment's normal reference.
+    const roomBindingChanged = roomState != null && roomState.adapterKey !== this.roomAdapterKey;
     if (readState(`garage:roomRestoration:${this.input}`) != null)
       throw new Error('Unsupported saved Garage room restoration; start a fresh development database');
-    this.selectedRoomTargetC = roomState?.targetC ?? null;
+    this.selectedRoomTargetC = roomBindingChanged ? null : roomState?.targetC ?? null;
     this.roomTemperature = new GarageRoomTemperature({ now: clock(), targetC:
       this.selectedRoomTargetC !== null && this.selectedRoomTargetC < 16 ? this.selectedRoomTargetC : null });
     const savedExposure = readState(this.keys.exposure);
@@ -122,7 +118,8 @@ export class GarageRuntime {
         ? payload.value.roomTargetC : payload.seed.normalReference.roomTargetC;
       createGarageModel({ roomTargetC: this.journalRoomTargetC });
     }
-    this.selectedRoomTargetC = this.roomTemperature.targetC ?? this.journalRoomTargetC ?? this.selectedRoomTargetC;
+    this.selectedRoomTargetC = roomBindingChanged ? null
+      : this.roomTemperature.targetC ?? this.journalRoomTargetC ?? this.selectedRoomTargetC;
     this.temporary = readState(this.keys.temporary);
     if (!finite(this.temporary?.expiresAt) || this.temporary.expiresAt <= clock()) this.temporary = null;
     // Restarts retain price-control pauses, but never resume an OFF permission.
@@ -139,6 +136,12 @@ export class GarageRuntime {
     this.learningStatus = 'current'; this.plan = null; this.lastPlannerAt = null; this.closed = false;
     const head = garageJournalHead(store, this.input);
     if (head && this.checkpoint?.cursor !== head) this.startRebuild();
+    if (roomBindingChanged && this.journalRoomTargetC != null) {
+      // Append the current boundary without rewriting observations, learned
+      // history, exposure, or outstanding physical restoration obligations.
+      this.append('context', { normalReferenceReset: true, roomTargetC: null },
+        `room-association:${randomUUID()}`);
+    }
     if (garageDigest(previous) !== garageDigest(this.settings)) {
       this.append('context', { configurationChanged: true,
         ...(this.selectedRoomTargetC !== null || !head ? { roomTargetC: this.selectedRoomTargetC } : {}) },

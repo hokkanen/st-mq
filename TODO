@@ -1,6 +1,37 @@
 -Make README.md better and more descriptive of the app, especially the beginning of it
 -Implement support for local mqtt-based temperature receives (eg, from shelly or HASS through Meteorologisk Institute); just store last received temp values and time stamps (maybe in storage class, see below) when received (and accept if received within 1h)
 
+Completed 2026-09-27 — Protected pairing recovery and complete read-only dashboards
+- Treat a valid saved Garage room setting bound to a different MQTT/device
+  identity as inactive historical intent instead of aborting controller startup.
+  Journal the reference boundary, require fresh evidence or an explicit new
+  target, and retain recorded history, freeze exposure and restoration duties.
+- Keep replica/protected cards, settings, equipment evidence and recorder details
+  visible. Distinguish saved evidence from local defaults and unavailable live
+  state; retain valid zero/false readings. Reject malformed or retired saved
+  sections without interpreting them or hiding unrelated readable history.
+- Fence dashboard mutations in both UI and API, including configuration reload,
+  historical corrections, server-side database copies and requests that lose
+  authority while pending. Preserve read navigation and verified downloads;
+  explicit pairing actions retain their own confirmation and authority checks.
+- Persist sanitized startup diagnoses and keep protected management readable
+  when the address helper fails. Explain local setup failures separately from
+  divergent history, without requiring an online slave or automatic promotion.
+  Verify accepted snapshot identity before promotion and use that publication
+  for protected viewing. Center the role badge and polish responsive guidance.
+- Reviewed producers, consumers, state, configuration, UI and documentation.
+  Removed the stale Home-model-version check and replica server-copy exception;
+  retained current replay, physical restoration, standalone SSH replication and
+  supported CSV imports. Added no migrations, old-format decoders, aliases or
+  automatic history reset/replacement. Preserved the existing H66 chart changes.
+- Validation: all 3,792 standard tests and all 9 extended tests pass; production
+  build passes with the existing bundle-size warning. Synthetic Firefox checks
+  pass at 1440/390/320 px in both themes, including actual immutable replica
+  snapshots, missing/malformed sections, mutation fencing, downloads and role
+  transitions. Desktop/mobile screenshots reviewed; staged checks pass.
+  All fixtures use synthetic data; no household services, configuration or
+  databases were changed, and no live promotion was attempted.
+
 Completed 2026-09-27 — Independent comparison periods and chart fold hierarchy
 - Give Energy cost comparisons its own start/end calendars using the chart's
   current picker and single-day/explicit-end behavior. Default to today; add

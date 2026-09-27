@@ -73,7 +73,8 @@ test('missing and invalid plans and read-only history cannot advertise a future 
   assert.equal(homePlannedChange(status).at, null);
   for (const patch of [{ role: 'replica' }, { controlAuthority: { state: 'protected' } }]) {
     const display = homePlannedChange({ ...scheduled(), ...patch });
-    assert.equal(display.value, 'Current plan unavailable');
+    assert.equal(display.label, 'Recorded plan');
+    assert.equal(display.value, 'Normal heating');
     assert.equal(display.at, null);
   }
   assert.equal(homePlannedChange({ ...scheduled(), input: 'offline' }).value, 'Recorded history only');
@@ -85,6 +86,7 @@ test('the Home info row replaces a previous live schedule on transition to repli
   renderHomePlannedChange(document, scheduled());
   assert.equal(nodes.get('home-plan-value').textContent, 'Preheat at 16:00');
   renderHomePlannedChange(document, { ...scheduled(), role: 'replica' });
-  assert.equal(nodes.get('home-plan-value').textContent, 'Current plan unavailable');
-  assert.match(nodes.get('home-planned-change').title, /Recorded history/);
+  assert.equal(nodes.get('home-plan-label').textContent, 'Recorded plan');
+  assert.equal(nodes.get('home-plan-value').textContent, 'Normal heating');
+  assert.match(nodes.get('home-planned-change').title, /Saved decision/);
 });

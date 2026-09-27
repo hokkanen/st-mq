@@ -83,7 +83,7 @@ export function createGarageDoorPanel({ document, onAction, blocked = () => fals
     state.id = `garage-door-${device.id}-state`;
     state.setAttribute('aria-live', 'polite');
     description.append(name, state);
-    const action = make('button', 'garage-door-action secondary-button'); action.type = 'button';
+    const action = make('button', 'garage-door-action secondary-button'); action.type = 'button'; action.setAttribute('data-write-control', '');
     const arrow = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     arrow.setAttribute('viewBox', '0 0 24 24'); arrow.setAttribute('aria-hidden', 'true'); arrow.setAttribute('focusable', 'false');
     const shape = document.createElementNS('http://www.w3.org/2000/svg', 'path'); arrow.append(shape);

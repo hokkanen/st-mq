@@ -16,6 +16,14 @@ Garage's current state shows heat-pump mode, heating control and the saved room
 setting, distinguishing current device feedback from a requested state and
 external-control availability.
 
+Saved room intent is bound to the configured device, MQTT address and account.
+Changing that binding leaves the earlier record and history intact but does not
+apply its target to the new connection or prevent controller startup. Fresh
+native evidence can establish the new room setting; select a low-temperature
+target explicitly again when needed. A journaled reference boundary prevents
+the old target from being restored indirectly through learned state. Existing
+freeze exposure and physical restoration obligations remain protected.
+
 Both offer **Gentle**, **Balanced** and **More savings**, with Balanced as the
 default. Changes use **Apply configuration**. All three can select worthwhile
 cycles; **Pause price control** suspends automatic savings. The decision sections

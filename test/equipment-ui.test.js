@@ -547,3 +547,17 @@ test('permission explanations stay outside equipment control rows and follow a d
   assert.equal(coverNote.hidden, true);
   assert(coverButtons.children.every(button => button.getAttribute('aria-describedby') === 'equipment-cover-door-help'));
 });
+
+test('recorded equipment values stay visible with provenance while live device authority remains unavailable', () => {
+  const device = { kind: 'metered_switch', readOnly: true, available: false, readings: {
+    synthetic_active: { value: 0, unit: 'state', observedAt: now - 60000, readOnly: true, stale: true },
+    synthetic_power: { value: 0, unit: 'W', observedAt: now - 60000, readOnly: true, stale: true },
+    synthetic_invalid: { value: 999, unit: 'W', observedAt: now - 60000, readOnly: true, stale: true, quality: ['invalid'] },
+  } };
+  const rows = equipmentReadingRows(device);
+  assert.equal(rows[0].value, 'Off');
+  assert.equal(rows[1].value, '0 W');
+  assert(rows.slice(0, 2).every(row => row.qualifier === 'Recorded' && row.stale));
+  assert.equal(rows[2].value, 'Unavailable');
+  assert.equal(equipmentControlAllowed({ role: 'replica' }, device, false), false);
+});

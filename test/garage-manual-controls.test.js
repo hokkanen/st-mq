@@ -174,6 +174,40 @@ test('garage pause survives restart but manual Off permission does not', async t
   assert.equal(f.store.getState(restarted.keys.adapter).restorePending, true);
 });
 
+test('a broker change retains freeze exposure and restoration duties without reviving saved room or Off permission', async t => {
+  const f = setup(t);
+  f.runtime.saveRoomTarget(7, BASE);
+  f.store.setState(f.runtime.keys.exposure, f.runtime.exposure);
+  await f.runtime.setTemporary({ pauseUntil: new Date(BASE + 30 * MINUTE).toISOString() });
+  await f.runtime.setHeating({ mode: 'off' });
+  const saved = f.store.getState(f.runtime.keys.adapter);
+  const room = f.store.getState(f.runtime.keys.roomTemperature);
+  const exposure = f.store.getState(f.runtime.keys.exposure);
+  assert.equal(saved.restorePending, true);
+  await f.runtime.close({ restore: false });
+  const commands = f.commands.length;
+  const config = { ...f.config, connections: { mqtt: { address: 'mqtt://127.0.0.1' } } };
+  const restarted = new GarageRuntime({ store: f.store, engine: f.engine, config, clock: f.now });
+  t.after(() => restarted.close({ restore: false }));
+  assert.equal(restarted.roomTemperature.targetC, null);
+  assert.equal(restarted.read().roomTargetC, null);
+  assert.equal(restarted.activeManual(), null);
+  assert.equal(f.store.getState(restarted.keys.manual), null);
+  assert.equal(restarted.status().temporary.pauseActive, true, 'Suspending automatic control grants no actuator permission');
+  assert.deepEqual(restarted.exposure, exposure);
+  assert.deepEqual(f.store.getState(restarted.keys.adapter), saved);
+  assert.deepEqual(f.store.getState(restarted.keys.roomTemperature), room);
+  const adapter = createGarageAdapter({ settings: config.garage.adapter, clock: f.now, persisted: saved,
+    simulationTransport: createGarageSimulationTransport(async command => f.commands.push(command)) });
+  t.after(() => adapter.close({ restore: false }));
+  restarted.setAdapter(adapter);
+  assert.equal(adapter.snapshot().restorePending, true);
+  assert.equal(adapter.snapshot().episode.invalidated, true);
+  assert.equal(adapter.snapshot().episode.status, 'restoring');
+  assert.equal(adapter.status().automaticControl, false);
+  assert.equal(f.commands.length, commands, 'Restart requires fresh device reconciliation before any restoration');
+});
+
 test('garage HTTP controls use the runtime owner and reject unsupported selections', async t => {
   const f = setup(t);
   const server = createAppServer({ engine: { garage: f.runtime, status: () => ({ garage: f.runtime.status() }) },

@@ -1652,3 +1652,13 @@ test('ready-by chooser discards open drafts when session, capability or write au
   }
   panel.close();
 });
+
+test('a lower-revision replica snapshot revokes previously writable charger settings', () => {
+  const document = documentFixture(), panel = createChargingPanel({ document, request: async () => { throw new Error('No mutation allowed'); } });
+  const current = status(); current.charging.revision = 20; panel.update(current);
+  const recorded = status(); recorded.charging.revision = 1; recorded.role = 'replica'; recorded.readOnly = true;
+  recorded.replication = { generation: 'synthetic-next-snapshot' }; panel.update(recorded);
+  for (const id of ['charger1-charge-now', 'charger1-setting-manualSoc', 'charger1-setting-capacityKwh'])
+    assert.equal(document.getElementById(id).disabled, true, id);
+  panel.close();
+});

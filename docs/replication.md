@@ -7,6 +7,14 @@ machine-local configuration; copied primary settings cannot activate a controlle
 This is one-way replication. There is no automatic control takeover or reverse
 database recovery.
 
+The viewer keeps the dashboard cards visible with recorded values and explicit
+snapshot age. Database edits, settings changes and device commands are disabled
+in both the dashboard and API. History navigation and downloading a verified
+database copy remain available. Saving a new database copy on the server is a
+write action and requires the active primary. Missing live device state is shown
+as unavailable, and any local configuration defaults are labeled separately
+from settings recorded by the primary.
+
 Both computers should run the same ST-MQ release. The viewer checks the database
 schema without migrating it. If a new snapshot cannot be opened, an already
 running viewer keeps its previous readable generation and reports the problem.

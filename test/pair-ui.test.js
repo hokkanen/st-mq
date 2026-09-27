@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createPairActions, createPairPanel, isPairManagementRequest, pairActionAllowed, pairAllowsControl,
-  pairConfirmation, pairDisplay, renderRecoveryReport, pairActionHelp } from '../chart/pair-status.js';
+  pairConfirmation, pairDisplay, pairIssueHelp, renderRecoveryReport, pairActionHelp } from '../chart/pair-status.js';
 import { isReadOnlyReplica, replicaDisplay, chartObservationTime } from '../chart/replica-status.js';
 
 const now = Date.parse('2026-09-12T12:00:00Z');
@@ -64,7 +64,7 @@ test('pair display distinguishes protected history, peer outages, broker readine
     peer: { reachable: false, lastSeenAt: now - 120000, url: 'private peer URL' }, vip: { error: 'private broker diagnostic' } });
   const display = pairDisplay(protectedView, { now });
   assert.equal(display.state, 'protected');
-  assert.match(display.summary, /history is protected/);
+  assert.match(display.summary, /history is preserved/);
   assert.match(display.sync, /blocked/);
   assert.match(display.peer, /Last seen/);
   assert.match(display.broker, /needs attention/);
@@ -361,4 +361,41 @@ test('recovery reports render aggregate counts and periods while omitting donor 
   renderRecoveryReport(document, root, null);
   assert.equal(root.hidden, true);
   assert.equal(root.children.length, 0);
+});
+
+
+test('startup failures explain the local fix without implying divergent or lost history', () => {
+  for (const [error, expected] of [
+    ['vip_policy_mismatch', /same address, network interface and prefix/],
+    ['vip_interface_missing', /ip route show default/],
+    ['vip_helper_unavailable', /socket service/],
+    ['vip_helper_permission', /group membership/],
+    ['vip_policy_invalid', /root ownership and permissions/],
+    ['vip_command_failed', /interface is up/],
+    ['vip_announce_failed', /announcement tool/],
+    ['vip_release_failed', /other controller stopped/],
+    ['mqtt_local_required', /mqtt:\/\/127.0.0.1/],
+    ['mqtt_resolution_failed', /could not be resolved/],
+    ['runtime_failed', /terminal or service log/],
+  ]) {
+    const view = standby({ role: 'protected', reason: 'activation_failed', error });
+    const display = pairDisplay(view, { now });
+    assert.match(display.summary, expected, error);
+    assert.match(display.summary, /history is preserved/);
+    assert.match(display.summary, /other computer can stay offline/);
+    assert.doesNotMatch(display.summary, /discard|Garage|garage/);
+    assert.match(pairActionHelp(view).promote, /No online slave is required/);
+  }
+  assert.equal(pairIssueHelp({ error: 'private exception with invented credentials' }), '');
+});
+
+
+test('a failed protected VIP release explains uncertain ownership before retrying promotion', () => {
+  const view = standby({ role: 'protected', reason: 'vip_release_failed', error: 'vip_release_failed' });
+  const display = pairDisplay(view, { now });
+  assert.match(display.summary, /virtual IP could not be released/);
+  assert.match(display.summary, /Keep the other controller stopped/);
+  assert.match(display.summary, /history is preserved/);
+  assert.match(pairActionHelp(view).promote, /Correct the setup/);
+  assert.doesNotMatch(display.syncDetail, /Identity verified/);
 });

@@ -26,7 +26,7 @@ export function fireplaceView(view, now = Date.now()) {
     overview: Number.isFinite(view?.lastAt) ? `Last ${fireplaceTime(view.lastAt, now).replace('Today, ', '')}` : 'Add firewood',
     modelStatus: ['pending', 'running'].includes(view?.rebuild?.status) ? 'Updating model · heating control continues'
       : view?.rebuild?.status === 'failed' ? 'Model update failed. Heating control continues with the previous model; the correction remains saved.'
-        : view?.available === false ? 'Firewood recording is unavailable in this installation.' : '' };
+        : view?.readOnly === true ? 'Recorded firewood history. Adding and removing entries is disabled in this view.' : view?.available === false ? 'Firewood recording is unavailable in this installation.' : '' };
 }
 
 // This is an idempotency identifier, not a credential. getRandomValues also works
@@ -60,7 +60,7 @@ export function createFireplaceActions({ request, onChange = () => {}, makeReque
   const notify = () => onChange(snapshot());
   const persist = () => { try { if (pending) storage?.setItem(pendingKey, JSON.stringify(pending)); else storage?.removeItem(pendingKey); } catch {} };
   function update(next) {
-    if (busy || !next || (Number.isFinite(view?.revision) && next.revision < view.revision)) return;
+    if (busy || !next || (Number.isFinite(view?.revision) && next.revision < view.revision && next.readOnly !== true && view.readOnly !== true)) return;
     const finished = ['pending', 'running'].includes(view?.rebuild?.status) && next.rebuild?.status === 'idle';
     view = next;
     if (finished && !pending && !error) message = message.startsWith('Entry removed') ? 'Entry removed · model updated.' : 'Model updated.';
@@ -147,6 +147,7 @@ export function createFireplacePanel({ document, request, storage, beforeMutatio
         const amount = document.createElement('strong'), note = document.createElement('small'), button = document.createElement('button');
         item.className = 'fireplace-entry'; info.className = 'fireplace-entry-info'; note.className = 'muted';
         note.id = `fireplace-removal-help-${entry.id}`;
+        button.setAttribute('data-write-control', '');
         button.type = 'button'; button.className = 'secondary-button fireplace-remove'; button.textContent = 'Remove mistaken entry';
         button.addEventListener('click', () => { void actions.remove(entry.id); });
         info.append(at, amount, note); item.append(info, button);

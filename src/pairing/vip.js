@@ -3,6 +3,13 @@ import { isIP } from 'node:net';
 import { createConnection } from 'node:net';
 import { pairError } from './state.js';
 
+export const VIP_ERRORS = new Set(['vip_failed', 'vip_helper_unavailable', 'vip_helper_permission',
+  'vip_policy_invalid', 'vip_policy_mismatch', 'vip_interface_missing', 'vip_command_failed',
+  'vip_announce_failed', 'vip_release_failed']);
+const vipError = error => VIP_ERRORS.has(error?.code) ? error.code : 'vip_failed';
+const replyError = reply => VIP_ERRORS.has(reply.trim().replace(/^error:/, ''))
+  ? reply.trim().replace(/^error:/, '') : 'vip_failed';
+
 export function validateVip(value) {
   if (!value || !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,14}$/.test(value.interface ?? '') ||
       isIP(value.address) !== 4 || !Number.isInteger(value.prefixLength) || value.prefixLength < 1 || value.prefixLength > 32 ||
@@ -20,7 +27,7 @@ export function runVipCommand(command, args, { spawnProcess = spawn, timeoutMs =
     });
     const timer = setTimeout(() => { child.kill('SIGKILL'); reject(pairError('vip_failed')); }, timeoutMs);
     child.once('error', () => { clearTimeout(timer); reject(pairError('vip_failed')); });
-    child.once('close', status => { clearTimeout(timer); status === 0 ? accept(output) : reject(pairError('vip_failed')); });
+    child.once('close', status => { clearTimeout(timer); status === 0 ? accept(output) : reject(pairError(replyError(output))); });
   });
 }
 
@@ -35,10 +42,11 @@ export function requestVipSocket(socketPath, args) {
       if (buffer.length > 256) socket.destroy(pairError('vip_failed'));
       else if (buffer.includes('\n')) {
         socket.end();
-        if (buffer.trim() === 'ok') accept(); else reject(pairError('vip_failed'));
+        if (buffer.trim() === 'ok') accept(); else reject(pairError(replyError(buffer)));
       }
     });
-    socket.once('error', () => reject(pairError('vip_failed')));
+    socket.once('error', error => reject(pairError(['EACCES', 'EPERM'].includes(error.code) ? 'vip_helper_permission'
+      : ['ENOENT', 'ECONNREFUSED'].includes(error.code) ? 'vip_helper_unavailable' : vipError(error))));
     socket.once('close', () => { if (!buffer.includes('\n')) reject(pairError('vip_failed')); });
   });
 }
@@ -65,7 +73,7 @@ export class VirtualIP {
       else await this.run(this.config.helperPath, args);
       this.owned = action === 'acquire';
       this.error = null;
-    } catch { this.error = 'vip_failed'; throw pairError('vip_failed'); }
+    } catch (error) { this.error = vipError(error); throw pairError(this.error); }
   }
   acquire() { return this.change('acquire'); }
   release() { return this.change('release'); }

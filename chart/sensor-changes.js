@@ -55,7 +55,7 @@ export function createSensorChangeActions({ request, storage, makeRequestId = re
   const notify = () => onChange(snapshot());
   const persist = () => { try { if (pending) storage?.setItem(pendingKey, JSON.stringify(pending)); else storage?.removeItem(pendingKey); } catch {} };
   function update(next) {
-    if (sending || !next || Number.isFinite(view?.revision) && next.revision < view.revision) return;
+    if (sending || !next || Number.isFinite(view?.revision) && next.revision < view.revision && next.readOnly !== true && view.readOnly !== true) return;
     view = next; notify();
   }
   async function refresh() {
@@ -192,7 +192,7 @@ export function createSensorChangePanel({ document, request, storage, confirm, b
           row.append(description, at, status);
           if (!reverted) {
             if (event.canRevert || !event.unsupportedReason) {
-              const button = document.createElement('button'); button.type = 'button'; button.className = 'secondary-button';
+              const button = document.createElement('button'); button.setAttribute('data-write-control', ''); button.type = 'button'; button.className = 'secondary-button';
               button.setAttribute('data-admin-only', '');
               button.textContent = event.affectsLearning === false ? 'Revert change' : 'Revert and relearn';
               button.setAttribute('aria-label', `${button.textContent}: ${labels[event.signal]}, ${dateFormat.format(event.at)}`);

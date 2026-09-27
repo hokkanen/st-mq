@@ -66,6 +66,9 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
   const fixedAccess = { enabled: true, token, familyToken, tokenRequired: false };
   const access = getAccess ?? (() => fixedAccess);
   const exportDatabase = createDatabaseExport({ getDirectory: getDatabaseExportDirectory });
+  const writesBlocked = () => role === 'replica' || Boolean(pairContext && !pairContext.canControl())
+    || Boolean(controlAuthority && !controlAuthority.canControl());
+  const readOnlyMessage = 'This computer is read-only. Database edits, settings changes and device commands require the active master.';
   const server = createServer(async (req, res) => {
     let acceptedAccess, completingReload = false, readContext, webAccess;
     const json = (code, value) => {
@@ -129,10 +132,11 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
           return json(202, pairContext.requestAction(input));
         }
         const saveDatabase = req.method === 'POST' && url.pathname === '/api/database-export';
-        // Saving a verified database snapshot grants no device-control authority
-        // and is also available on replicas.
-        if (role === 'replica' && !['GET', 'HEAD'].includes(req.method) && !saveDatabase)
-          return json(405, { error: 'This replica is read-only. Make changes on the primary instance.' });
+        // Pair management above is the sole write exception on a standby. Even
+        // saving a new database file on this host requires the active master;
+        // downloading existing history remains available through GET.
+        if (writesBlocked() && !['GET', 'HEAD'].includes(req.method))
+          return json(role === 'replica' ? 405 : 409, { error: readOnlyMessage });
         const unavailable = () => {
           const state = settingsReloadStatus();
           if (state.unavailable) return state.reason;
@@ -156,17 +160,19 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
           return readOnly ? { ...view, available: false, readOnly: true, canRetryRebuild: false,
             events: view.events.map(event => ({ ...event, canRevert: false })) } : view;
         };
+        const fireplaceStatus = (view, now) => fireplaceAccess(writesBlocked() || pairContext?.recovering()
+          ? { ...view, available: false, readOnly: true } : view, webAccess, now);
         const status = () => {
           const replication = replicationStatus?.();
           const current = (readContext ? engine : getEngine()).status();
           return { ...current, webAccess,
-            ...(current.fireplace ? { fireplace: fireplaceAccess(current.fireplace, webAccess, current.now ?? engine.clock()) } : {}),
+            ...(current.fireplace ? { fireplace: fireplaceStatus(current.fireplace, current.now ?? engine.clock()) } : {}),
             ...(current.sensorChanges ? { sensorChanges: sensorChangesStatus(current.sensorChanges) } : {}), settingsReload: settingsReloadStatus(),
             ...(replication ? { replication } : {}), ...(controlAuthority ? { controlAuthority: controlAuthority.status(),
               ...(!controlAuthority.canControl() ? { readOnly: true, liveWrites: false } : {}) } : {}),
             ...(pairContext ? { pairing: pairContext.status(),
               liveWrites: pairContext.canControl() && Boolean((readContext ? engine : getEngine()).status().liveWrites),
-              readOnly: !pairContext.canControl() } : {}) };
+              readOnly: writesBlocked() } : {}) };
         };
         const mutate = async action => {
           const input = await body(req);
@@ -176,10 +182,7 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
           // A slow JSON body can span a complete reload. Resolve the engine only
           // after parsing, and never dispatch while a replacement is in progress.
           if (unavailable()) return json(503, { error: unavailable() });
-          if (pairContext && !pairContext.canControl())
-            return json(409, { error: 'This instance does not own device control.' });
-          if (controlAuthority && !controlAuthority.canControl())
-            return json(409, { error: 'Another controller owns device control. This instance is protected.' });
+          if (writesBlocked()) return json(409, { error: readOnlyMessage });
           if (pairContext?.recovering() && ['/api/fireplace', '/api/fireplace/remove', '/api/sensor-changes',
             '/api/sensor-changes/revert', '/api/sensor-changes/retry-rebuild', '/api/settings/reload', '/api/charging/ocpp-setup'].includes(url.pathname))
             return json(409, { error: 'Historical recovery is running. Wait before changing source corrections or configuration.' });
@@ -193,8 +196,13 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
         if (req.method === 'GET' && url.pathname === '/api/database-export')
           return await exportDatabase({ store: readerStore, response: res, authorized: stillAuthorized });
         if (saveDatabase) {
+          if (writesBlocked()) return json(409, { error: readOnlyMessage });
           try {
-            const result = await exportDatabase({ store: readerStore, response: res, authorized: stillAuthorized, save: true });
+            const result = await exportDatabase({ store: readerStore, response: res, authorized: () => {
+              if (!stillAuthorized()) return false;
+              if (writesBlocked()) { json(409, { error: readOnlyMessage }); return false; }
+              return true;
+            }, save: true });
             if (result) return json(200, result);
           } catch (error) {
             if (error.statusCode === 409) throw error;
@@ -219,7 +227,7 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
             }
           });
         if (req.method === 'GET' && url.pathname === '/api/fireplace')
-          return json(200, fireplaceAccess(engine.fireplaceStatus(), webAccess, engine.clock()));
+          return json(200, fireplaceStatus(engine.fireplaceStatus(), engine.clock()));
         if (req.method === 'GET' && url.pathname === '/api/sensor-changes') return json(200, sensorChangesStatus());
         if (req.method === 'POST' && url.pathname === '/api/sensor-changes')
           return await mutate((current, input) => json(200, current.changeSensor(input)));

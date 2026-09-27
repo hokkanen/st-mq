@@ -4,7 +4,9 @@
 // Run `npm run build`, then provide an isolated Firefox BiDi listener as argv[2].
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { startReplica } from '../src/app/replica.js';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { start } from '../src/main.js';
@@ -26,7 +28,8 @@ const checked = () => master({ recovery: { state: 'ready', preview },
 const standby = role => ({ ...master(), role, canControl: false, vip: { owned: false, ready: true },
   peer: { reachable: true, role: 'primary', lastSeenAt: now }, actions: { promote: true },
   sync: { state: 'ready', sourceAt: now - 60_000, verifiedAt: now - 30_000, bytes: 2e6 } });
-let pairing = master(), app, proxy, socket, command, ownsBrowser = false, requestId = 0;
+let sectionUnavailable = false;
+let pairing = master(), app, viewer, proxy, socket, command, ownsBrowser = false, requestId = 0;
 
 try {
   const privatePath = join(directory, 'secrets.json');
@@ -36,6 +39,13 @@ try {
   app = await start({ config, clock: () => now });
   seedChartFixture(app.store, now);
   const upstream = `http://127.0.0.1:${app.server.address().port}`;
+  const dbPath = await app.store.backup(join(directory, 'replica.sqlite'));
+  const bytes = readFileSync(dbPath);
+  const publication = { dbPath, generation: 'synthetic-pair-snapshot', sourceAt: now,
+    verifiedAt: now, sourceStartedAt: now - 1000, digest: createHash('sha256').update(bytes).digest('hex'), bytes: bytes.length };
+  viewer = await startReplica({ config: { ...config, role: 'replica', replication: { directory } }, clock: () => now,
+    readPublication: () => publication, installSignalHandlers: false });
+  let readOnlyUpstream = `http://127.0.0.1:${viewer.server.address().port}`;
   proxy = createServer(async (request, response) => {
     const json = (status, value) => { response.writeHead(status, { 'Content-Type': 'application/json' }); response.end(JSON.stringify(value)); };
     try {
@@ -51,19 +61,19 @@ try {
         return json(202, { status: pairing });
       }
       assert.equal(request.method, 'GET', 'No other fixture mutations are allowed');
-      const result = await fetch(`${upstream}${request.url}`, { signal: AbortSignal.timeout(10_000) });
+      const result = await fetch(`${pairing.role === 'primary' ? upstream : readOnlyUpstream}${request.url}`, { signal: AbortSignal.timeout(10_000) });
       const headers = Object.fromEntries([...result.headers].filter(([key]) =>
         !['content-length', 'content-encoding', 'transfer-encoding', 'connection'].includes(key)));
       if (request.url === '/api/status') {
         const status = await result.json(); status.pairing = pairing;
-        // This projection exercises the live observation label without opening
-        // providers: the underlying app and all its stored data stay simulated.
-        status.input = 'providers'; status.mode = 'monitoring'; status.liveWrites = false;
-        if (pairing.role !== 'primary') {
-          status.role = 'replica'; status.instance = { role: 'replica', readOnly: true };
-          status.replication = { state: 'ready', generation: 'synthetic-pair-snapshot',
-            snapshotAt: now - 60_000, verifiedAt: now - 30_000, lastSuccessAt: now - 30_000, bytes: 2e6 };
+        if (sectionUnavailable && pairing.role !== 'primary') {
+          status.charging = { available: false, readOnly: true, settings: null, controls: null, chargers: [], vehicleFeeds: [], error: 'Saved charging data unavailable' };
+          status.readView.settingsError = 'Saved Home settings unavailable';
+          status.readView.configurationMessage = 'Saved Home settings unavailable. Shown defaults come from this computer.';
+          status.garage.errors = [{ section: 'roomTemperature', message: 'Saved Garage room setting unavailable' }];
+          status.garage.error = 'Some saved Garage data is unavailable. Other recorded data remains readable.';
         }
+        if (pairing.role === 'primary') { status.input = 'providers'; status.mode = 'monitoring'; status.liveWrites = false; }
         response.writeHead(result.status, headers); response.end(JSON.stringify(status));
       } else { response.writeHead(result.status, headers); response.end(Buffer.from(await result.arrayBuffer())); }
     } catch { if (!response.headersSent) json(500, { error: 'Synthetic browser fixture failure' }); else response.end(); }
@@ -119,18 +129,16 @@ try {
     assert(height <= (width >= 1000 ? 90 : 125), `Closed pairing block stays compact: ${height}px at ${width}px`);
     assert.equal(await evaluate(`${$('pairing-check-recovery')}.checkVisibility()`), false, 'Closed disclosure hides controls');
   };
-  const capture = async (name, header = false) => {
-    await evaluate(header ? 'scrollTo(0, 0); true' : `${$('pairing-panel')}.scrollIntoView({ block: 'start' }); true`);
+  const capture = async (name, header = false, element = null) => {
+    await evaluate(header ? 'scrollTo(0, 0); true' : `${$(element ?? 'pairing-panel')}.scrollIntoView({ block: 'start' }); true`);
     const image = await command('browsingContext.captureScreenshot', { context, origin: 'viewport', format: { type: 'image/png' } });
     writeFileSync(join(screenshots, `${name}.png`), Buffer.from(image.data, 'base64'), { mode: 0o600 });
   };
   const confirmAction = async (button, accept) => {
-    const before = prompts.length;
-    await evaluate(`setTimeout(() => ${$(button)}.click(), 0); true`);
-    for (let attempt = 0; prompts.length === before && attempt < 200; attempt++) await new Promise(resolve => setTimeout(resolve, 20));
-    assert(prompts.length > before, `${button} requests explicit confirmation`);
-    const message = prompts.at(-1).message;
-    await command('browsingContext.handleUserPrompt', { context, accept });
+    await evaluate(`${$(button)}.click(); true`);
+    await until("document.querySelector('.confirmation-dialog[open]') !== null");
+    const message = await evaluate("document.getElementById('confirmation-description').textContent");
+    await evaluate(`document.querySelector('.confirmation-dialog .confirmation-actions button:${accept ? 'last' : 'first'}-child').click(); true`);
     return message;
   };
 
@@ -140,7 +148,7 @@ try {
   assert.equal(await evaluate(`${$('connection')}.textContent`), 'LIVE OBSERVATION · MONITORING');
   assert.equal(await evaluate(`${$('pairing-details')}.open`), false, 'Pairing starts folded');
   assert.equal(await evaluate(`${$('error')}.hidden`), true);
-  for (const width of [1440, 390]) for (const theme of ['dark', 'light']) await checkLayout(width, theme);
+  for (const width of [1440, 390, 320]) for (const theme of ['dark', 'light']) await checkLayout(width, theme);
   await capture('mobile-closed');
   await capture('mobile-header', true);
 
@@ -201,6 +209,7 @@ try {
   for (const role of ['replica', 'protected']) {
     pairing = role === 'replica' ? { ...standby(role), sync: { state: 'waiting' } } : standby(role);
     await until(`${$('instance-role')}.textContent === '${role === 'replica' ? 'SLAVE' : 'PROTECTED'}'`);
+    await until(`${$('read-only-help')}.hidden === false && ${$('home-pump-health')}.textContent === 'Recorded snapshot'`);
     await open();
     if (role === 'replica') {
       await until(`${$('pairing-syncDetail')}.textContent.includes('Identity verified')`);
@@ -216,9 +225,61 @@ try {
     assert.doesNotMatch(await evaluate(`${$('connection')}.textContent`), /LIVE CONTROL|LIVE OBSERVATION/);
     await command('browsingContext.setViewport', { context, viewport: { width: 390, height: 1000 }, devicePixelRatio: 1 });
     assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, 'Expanded slave controls fit mobile width');
+    for (const id of ['providers-controls', 'garage']) {
+      const selector = id === 'garage' ? $('garage-control') : $(id);
+      assert.equal(await evaluate(`${selector}.checkVisibility()`), true, `${role} keeps ${id} visible`);
+    }
+    assert.equal(await evaluate("[...document.querySelectorAll('[data-write-control]')].flatMap(node => node.matches('button,input,select,textarea') ? [node] : [...node.querySelectorAll('button,input,select,textarea')]).every(node => node.disabled)"), true, `${role} disables every mutation control`);
+    await evaluate("document.getElementById('connections-details').open = true; document.getElementById('controls-details').open = true; document.getElementById('recording-details').open = true; document.getElementById('database-export-details').open = true; true");
+    assert.equal(await evaluate(`${$('settings-reload')}.disabled`), true);
+    assert.equal(await evaluate(`${$('database-export-save')}.disabled`), true);
+    assert.equal(await evaluate(`${$('database-export-download')}.disabled`), false, 'Read-only database download stays available');
+    assert.equal(await evaluate(`${$('range-today')}.disabled`), false, 'Chart navigation stays usable');
+    const requestsBefore = actions.length;
+    await evaluate(`${$('settings-reload')}.dispatchEvent(new MouseEvent('click', { bubbles: true })); ${$('temporary-form')}.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })); ${$('database-export-save')}.dispatchEvent(new MouseEvent('click', { bubbles: true })); true`);
+    assert.equal(actions.length, requestsBefore, 'Synthetic events cannot bypass read-only controls');
+    assert.equal(await evaluate(`${$('error')}.hidden`), true, 'Complete replica projection renders without an application error');
+    if (role === 'protected') {
+      assert.equal(await evaluate(`(() => { const node = ${$('instance-role')}, box = node.getBoundingClientRect(), range = document.createRange(); range.selectNodeContents(node); const text = range.getBoundingClientRect(); return Math.abs((box.top + box.bottom) / 2 - (text.top + text.bottom) / 2) <= 1 && Math.abs((box.left + box.right) / 2 - (text.left + text.right) / 2) <= 1; })()`), true, 'Protected badge text is centered on both axes');
+      await capture('protected-dashboard-mobile', true);
+      await evaluate("document.getElementById('garage-heating-details').open = true; document.getElementById('home-heat-pump-details').open = true; true");
+      await capture('protected-garage-mobile', false, 'garage-control');
+      await capture('protected-settings-mobile', false, 'providers-controls');
+      await command('browsingContext.setViewport', { context, viewport: { width: 1440, height: 1100 }, devicePixelRatio: 1 });
+      await capture('protected-dashboard-desktop', true);
+      await capture('protected-settings-desktop', false, 'providers-controls');
+      await command('browsingContext.setViewport', { context, viewport: { width: 320, height: 1000 }, devicePixelRatio: 1 });
+      assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, 'Expanded protected dashboard fits 320px');
+      await capture('protected-dashboard-320', true);
+
+      pairing = { ...standby('protected'), reason: 'activation_failed', error: 'vip_policy_mismatch', peer: { reachable: false } };
+      await until(`${$('pairing-summary')}.textContent.includes('same address, network interface and prefix')`);
+      assert.match(await evaluate(`${$('pairing-summary')}.textContent`), /other computer can stay offline/);
+      await capture('protected-setup-guidance');
+    }
     await close();
     if (role === 'protected') assert.equal(await evaluate(`${$('pairing-attention')}.checkVisibility()`), true);
   }
+  sectionUnavailable = true;
+  await command('browsingContext.navigate', { context, url: `http://127.0.0.1:${proxy.address().port}`, wait: 'complete' });
+  await until(`${$('charging-status')}.textContent.includes('unavailable')`);
+  assert.equal(await evaluate(`${$('error')}.hidden`), true, 'Unavailable settings and charging do not break the dashboard');
+  assert.equal(await evaluate(`${$('pairing-panel')}.checkVisibility()`), true);
+  assert.match(await evaluate(`${$('settings-read-only-source')}.textContent`), /Saved Home settings unavailable/);
+  assert.match(await evaluate(`${$('garage-controller-reason')}.textContent`), /Some saved Garage data is unavailable/);
+  sectionUnavailable = false;
+  await viewer.close();
+  viewer = await startReplica({ config: { ...config, role: 'replica', replication: { directory } }, clock: () => now,
+    readPublication: () => null, installSignalHandlers: false });
+  readOnlyUpstream = `http://127.0.0.1:${viewer.server.address().port}`;
+  pairing = { ...standby('replica'), sync: { state: 'waiting' } };
+  await command('browsingContext.navigate', { context, url: `http://127.0.0.1:${proxy.address().port}`, wait: 'complete' });
+  await until(`${$('connection')}.textContent.includes('WAITING FOR SNAPSHOT') && !${$('read-only-help')}.hidden`);
+  assert.equal(await evaluate(`${$('error')}.hidden`), true, 'The empty viewer renders before its first snapshot');
+  for (const id of ['providers-controls', 'garage-control', 'home-control'])
+    assert.equal(await evaluate(`${$(id)}.checkVisibility()`), true, `No first snapshot does not hide ${id}`);
+  assert.equal(await evaluate(`${$('settings-reload')}.disabled`), true);
+  assert.match(await evaluate(`${$('settings-read-only-source')}.textContent`), /this computer/);
   pairing = master({ transition: { kind: 'handover', phase: 'quiescing' }, canControl: false });
   await until(`${$('instance-role')}.textContent === 'ROLE CHANGE'`);
   assert.equal(await evaluate(`${$('pairing-attention')}.checkVisibility()`), true, 'Role-change progress remains visible when folded');
@@ -227,11 +288,13 @@ try {
     checked: ['actual built dashboard', 'role beside operating mode', 'compact desktop/mobile dark/light layout',
       'placement above events', 'keyboard disclosure', 'poll preserves disclosure', 'failed/running checks never enable recovery',
       'successful preview unlocks recovery', 'skip recovery requires explicit discard confirmation',
-      'recovery sends checked identity', 'closed progress and failures', 'matching protected/slave layout without master controls'] }));
+      'recovery sends checked identity', 'closed progress and failures', 'matching protected/slave layout without master controls', 'actual immutable ReplicaViewer projection',
+      'visible Data and settings plus Garage', 'mutation event fencing', 'read-only downloads and navigation', 'centered protected badge', '320px protected layout and startup guidance', 'all cards readable before the first snapshot', 'unavailable settings and charging preserve dashboard access'] }));
   await command('browser.close'); ownsBrowser = false;
 } finally {
   if (ownsBrowser) { try { await command('browser.close'); } catch {} }
   socket?.close(); for (const task of pending.values()) clearTimeout(task.timer);
   if (proxy) await new Promise(resolve => { proxy.close(resolve); proxy.closeAllConnections(); });
+  await viewer?.close();
   await app?.close(); rmSync(directory, { recursive: true, force: true });
 }

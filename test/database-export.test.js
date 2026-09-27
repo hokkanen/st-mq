@@ -178,7 +178,7 @@ test('an export holds a replica snapshot until streaming finishes', async t => {
   assert.equal(released, 1);
 });
 
-test('saving a verified replica snapshot requires no device control and holds the snapshot through publication', async t => {
+test('saving a database file on a replica is rejected before accessing its snapshot', async t => {
   let released = 0;
   const { store, url } = await fixture(t, {
     role: 'replica', controlAuthority: { canControl: () => false },
@@ -186,15 +186,11 @@ test('saving a verified replica snapshot requires no device control and holds th
     getReadContext: async () => ({ store, engine: {}, release: () => { released++; } }),
   });
   store.setState('replica-export', 11);
-  const original = store.backup.bind(store);
-  store.backup = async path => { assert.equal(released, 0); await original(path); assert.equal(released, 0); };
+  store.backup = async () => { assert.fail('Read-only requests cannot save a database file'); };
   const response = await saveCopy(url);
-  assert.equal(response.status, 200);
-  const { path } = await response.json();
-  assert.equal(released, 1);
-  const copy = new DatabaseSync(path, { readOnly: true });
-  try { assert.equal(JSON.parse(copy.prepare("SELECT value FROM state WHERE key='replica-export'").get().value), 11); }
-  finally { copy.close(); }
+  assert.equal(response.status, 405);
+  assert.match((await response.json()).error, /read-only/);
+  assert.equal(released, 0);
 });
 
 test('neither export action uses an unverified replica database', async t => {
@@ -204,13 +200,12 @@ test('neither export action uses an unverified replica database', async t => {
   });
   let backups = 0;
   store.backup = async () => { backups++; };
-  for (const send of [fetch, saveCopy]) {
-    const response = await send(url);
-    assert.equal(response.status, 503);
-    assert.match((await response.json()).error, /verified primary snapshot/);
-  }
+  const response = await fetch(url);
+  assert.equal(response.status, 503);
+  assert.match((await response.json()).error, /verified primary snapshot/);
+  assert.equal((await saveCopy(url)).status, 405);
   assert.equal(backups, 0);
-  assert.equal(released, 2);
+  assert.equal(released, 1);
   assert.equal(existsSync(exportDirectory), false);
 });
 

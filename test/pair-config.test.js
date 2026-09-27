@@ -51,4 +51,9 @@ test('local broker verification accepts only local interfaces or the Supervisor 
   await assert.rejects(requireLocalBroker({ address: 'mqtt://name:synthetic-password@localhost' }, { interfaces }), /separately/);
   await assert.rejects(requireLocalBroker({ address: 'mqtt://local.invalid' }, { interfaces,
     resolveHost: async () => [{ address: '127.0.0.1' }, { address: '192.0.2.2' }] }), /this machine/);
+  await assert.rejects(requireLocalBroker({ address: 'mqtt://floating.invalid' }, {
+    interfaces: () => ({ eth0: [{ address: '192.0.2.100' }] }), vipAddress: '192.0.2.100',
+    resolveHost: async () => [{ address: '192.0.2.100' }] }), { code: 'mqtt_local_required' });
+  await assert.rejects(requireLocalBroker({ address: 'mqtt://missing.invalid' }, {
+    resolveHost: async () => { throw Error('private resolver output'); } }), { code: 'mqtt_resolution_failed' });
 });

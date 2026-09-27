@@ -9,8 +9,11 @@ const plannedTime = (at, now) => day.format(at) === day.format(now) ? clock.form
 export function homePlannedChange(status = {}) {
   const { now, decision = {} } = status;
   const display = (label, value, detail, at = null) => ({ label, value, detail, at });
-  if (isReadOnlyReplica(status)) return display('Heating plan', 'Current plan unavailable',
-    'Recorded history cannot establish the primary controller’s current plan.');
+  if (isReadOnlyReplica(status)) {
+    const saved = status.lastDecision?.payload ?? status.lastDecision ?? decision;
+    const phase = { normal: 'Normal heating', reduction: 'Reduced heating', preheat: 'Preheat', recovery: 'Recovery' }[saved.phase ?? saved.action];
+    return display('Recorded plan', phase ?? 'Unavailable', 'Saved decision from local history. This cannot establish the master’s current plan or the equipment’s current state.');
+  }
   if (status.input === 'offline') return display('Heating plan', 'Recorded history only',
     'No live device connection is open.');
   if (!Number.isFinite(now) || !decision.phase) return display('Heating plan', 'Waiting for a plan',

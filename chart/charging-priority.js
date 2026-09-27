@@ -72,7 +72,7 @@ export function createChargingPriority({ document, save }) {
     message = make('p', '', 'temporary-status', 'charging-priority-message'); message.setAttribute('role', 'status');
     const actions = make('div', '', 'confirmation-actions');
     cancel = make('button', 'Close', 'secondary-button', 'charging-priority-cancel'); cancel.type = 'button';
-    apply = make('button', 'Save priority', '', 'charging-priority-save'); apply.type = 'submit';
+    apply = make('button', 'Save priority', '', 'charging-priority-save'); apply.type = 'submit'; apply.setAttribute('data-write-control', '');
     actions.append(cancel, apply); form.append(fieldset, note, message, actions);
     dialog.append(title, description, current, form); document.body.append(dialog);
     bind(cancel, 'click', () => { if (!saving) dialog.close(); });

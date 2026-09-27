@@ -369,3 +369,24 @@ test('family pointer selection keeps focus on Setting while exposing the selecte
   }
   assert.equal(f.calls.length, 0);
 });
+
+test('read-only Garage exposes recorded zero and false measurements without granting live readiness', () => {
+  const garage = { readOnly: true, adapter: { connected: null, telemetry: {
+    power: { value: 0, unit: 'W', measuredAt: now - 60000, supported: true, readOnly: true, usable: false, stale: true },
+    compressorActive: { value: false, measuredAt: now - 60000, supported: true, readOnly: true, usable: false, stale: true },
+    indoorTemperature: { value: 99, measuredAt: now - 60000, supported: true, readOnly: true, quality: ['invalid'] },
+  } } };
+  const rows = mitsubishiReadings(garage, now);
+  assert.equal(rows.find(row => row.key === 'telemetry-power').value, '0 W');
+  assert.equal(rows.find(row => row.key === 'telemetry-compressorActive').value, 'Idle');
+  assert(rows.every(row => row.qualifier === 'Recorded' && row.available === false));
+  assert(!rows.some(row => row.key === 'telemetry-indoorTemperature'));
+  assert.match(mitsubishiCompressor(garage, now).value, /recorded/);
+  for (const targetC of [8, 22]) {
+    const room = mitsubishiRoomTemperature({ readOnly: true, roomTemperature: { targetC, readOnly: true } });
+    assert.equal(room.basis, 'Recorded room setting');
+    assert.equal(room.active, false);
+    assert.match(room.detail, /not confirmation/);
+    assert.doesNotMatch(room.detail, /17 °C|Fallback|Active/);
+  }
+});

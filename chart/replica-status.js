@@ -1,9 +1,10 @@
 import { outdoorSourceLabel, providerName, temperatureReadingStatus } from './provider-status.js';
 import { durationText } from './reading-status.js';
 import { pairAllowsControl } from './pair-status.js';
+import { renderCurrentPrice } from './current-price.js';
 import { setStatusDetail } from './status-details.js';
 
-export const isReadOnlyReplica = status => ['replica', 'protected', 'transition'].includes(status?.role)
+export const isReadOnlyReplica = status => status?.readOnly === true || ['replica', 'protected', 'transition'].includes(status?.role)
   || status?.instance?.role === 'replica' || status?.controlAuthority?.state === 'protected' || !pairAllowsControl(status);
 const timestamp = value => Number.isFinite(value) && value > 0 ? value : null;
 
@@ -155,16 +156,6 @@ export function renderReplicaStatus(document, status, { formatTime = at => new D
     $('primary-replication-detail').textContent = outgoing.detail;
   }
   $('replica-notice').hidden = !replica || paired;
-  for (const node of document.querySelectorAll('[data-controller-only]')) {
-    node.hidden = replica;
-    for (const control of node.querySelectorAll('button, input, select, textarea')) {
-      if (replica && !control.dataset.replicaDisabled) {
-        control.dataset.replicaDisabled = control.disabled ? 'already' : 'viewer'; control.disabled = true;
-      } else if (!replica && control.dataset.replicaDisabled) {
-        control.disabled = control.dataset.replicaDisabled === 'already'; delete control.dataset.replicaDisabled;
-      }
-    }
-  }
   if (!replica) {
     for (const node of document.querySelectorAll('[data-snapshot-content]')) node.hidden = false;
     $('requested-label').textContent = 'HEATING REQUEST';
@@ -184,10 +175,10 @@ export function renderReplicaStatus(document, status, { formatTime = at => new D
     : status.pairing?.transition ? 'ROLE CHANGE · WAITING FOR CONFIRMATION'
       : `${paired ? 'READ-ONLY HISTORY' : 'READ-ONLY REPLICA'} · ${display.state === 'ready' ? 'HISTORY AVAILABLE' : display.state === 'waiting' ? 'WAITING FOR SNAPSHOT' : 'SYNC NEEDS ATTENTION'}`;
   $('context').textContent = stoppedController ? 'Another controller owns control. This computer preserves its local history and remains read-only until its history is explicitly recovered.'
-    : paired && status.pairing.role === 'protected' ? 'Local history is protected for recovery. This computer does not record measurements or control devices. Use the master’s Paired computers section to check this history, then recover its gaps or explicitly discard them before resuming mirroring.'
+    : paired && status.pairing.role === 'protected' ? 'Local history is protected. Open Paired computers below to resolve startup or choose the next role.'
     : 'Recorded history from the primary computer. This viewer does not connect to devices or control the home. The primary’s current operating state is unknown.';
-  for (const node of document.querySelectorAll('[data-snapshot-content]')) node.hidden = !display.available;
-  $('recording-adaptive-details').hidden = true;
+  for (const node of document.querySelectorAll('[data-snapshot-content]')) node.hidden = false;
+  $('recording-adaptive-details').hidden = false;
   for (const key of ['indoor', 'outdoor']) {
     const observation = status.observations?.[key] ?? {};
     const at = timestamp(observation.observedAt ?? observation.sourceTime ?? observation.receivedAt);
@@ -211,11 +202,13 @@ export function renderReplicaStatus(document, status, { formatTime = at => new D
   $('requested').dataset.state = 'muted';
   requestTrigger?.setAttribute('aria-label', `Recorded home heating request: ${recordedRequest}. Current home state unknown. Show details`);
   $('requested-label').textContent = 'RECORDED HEATING REQUEST';
-  const bytes = status.replication?.bytes;
-  setStatusDetail($('price'), { key: 'metric-price',
-    label: Number.isFinite(bytes) && bytes >= 0 ? new Intl.NumberFormat('en-GB', { maximumFractionDigits: 1 }).format(bytes / 1e6) : '—', detail: '' });
-  $('price-label').textContent = stoppedController ? 'LOCAL HISTORY DATABASE' : 'COPIED DATABASE';
-  $('price-unit').textContent = 'MB · recorded history and saved models';
+  const recordedStatus = { ...status, readOnly: true, now: chartObservationTime(status, status.now) };
+  renderCurrentPrice(document, recordedStatus);
+  renderCurrentPrice(document, recordedStatus, 'garage-');
+  for (const id of ['control-price', 'garage-control-price']) {
+    const node = $(id);
+    if (node) { node.textContent = 'View only'; if (node.parentElement) node.parentElement.dataset.state = 'muted'; }
+  }
   $('updated').textContent = display.snapshotAt === null ? stoppedController ? 'Local history preserved' : 'Waiting for a snapshot'
     : `${stoppedController ? 'Local history' : 'Primary snapshot'} ${formatTime(display.snapshotAt)}`;
   return display;

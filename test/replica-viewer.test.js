@@ -71,7 +71,7 @@ async function viewer(t, directory, readPublication, extra = {}) {
   return { app, request };
 }
 
-function recordLearningModels(publication, { recordedAt = publication.sourceAt, matching = true, homeModelVersion = 3 } = {}) {
+function recordLearningModels(publication, { recordedAt = publication.sourceAt, matching = true, homeModelVersion = 4 } = {}) {
   const store = new Store(publication.dbPath), seed = restoreAdaptiveCheckpoint(null);
   seed.model.parameters.lossPerHour = .031;
   seed.baselineC = 21.4;
@@ -104,7 +104,7 @@ test('replica exposes both saved models without sample histories, live readiness
   const { app, request } = await viewer(t, directory, async () => publication, { clock: () => now });
   const status = (await request('/api/status')).body;
   assert.equal(status.learning.adaptive.model.parameters.lossPerHour, .031);
-  assert.equal(status.learning.adaptive.model.version, 3);
+  assert.equal(status.learning.adaptive.model.version, 4);
   assert(Number.isFinite(status.learning.adaptive.model.parameters.hydronicCPerKwh));
   assert.equal(status.learning.adaptive.model.performance.version, 'dhp-h10-b0-v1');
   assert.equal(status.learning.adaptive.baselineC, 21.4);
@@ -192,7 +192,7 @@ test('replica does not substitute priors for missing, unsupported or post-public
   assert.equal(missing.garage.learning.status, 'unavailable');
   for (const [generation, options] of [
     ['unsupported-models', { matching: false }], ['future-models', { recordedAt: at + 60_000 }],
-    ['archived-home-shape', { homeModelVersion: 2 }],
+    ['archived-home-shape', { homeModelVersion: 3 }],
   ]) {
     publication = snapshot(directory, generation);
     recordLearningModels(publication, options);
@@ -200,7 +200,7 @@ test('replica does not substitute priors for missing, unsupported or post-public
     assert.equal(status.learning.status, 'unavailable');
     assert.equal(status.learning.adaptive, null);
     assert.equal(status.learning.recordedAt, null);
-    if (options.homeModelVersion === 2) {
+    if (options.homeModelVersion === 3) {
       assert.equal(status.garage.learning.recordedAt, at, 'An unsupported Home shape does not conceal a compatible Garage model');
     } else {
       assert.equal(status.garage.learning.status, 'unavailable');
@@ -211,7 +211,7 @@ test('replica does not substitute priors for missing, unsupported or post-public
   }
 });
 
-test('replica saves a separate local copy in its configured directory without changing the verified snapshot', async t => {
+test('replica refuses server-side database saves without changing the verified snapshot', async t => {
   const directory = fixture(t), publication = snapshot(directory, 'export-source');
   const exportDirectory = join(directory, 'local-copies');
   const { request } = await viewer(t, directory, async () => publication, {
@@ -220,11 +220,36 @@ test('replica saves a separate local copy in its configured directory without ch
   const result = await request('/api/database-export', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
   });
-  assert.equal(result.status, 200);
-  assert.equal(result.body.path, join(exportDirectory, result.body.filename));
-  const copy = new Store(result.body.path, { readOnly: true });
-  try { assert.equal(copy.getState('settings:mqtt').mode, 'active'); }
-  finally { copy.close(); }
+  assert.equal(result.status, 405);
+  assert.equal(existsSync(exportDirectory), false);
+  assert.equal(digest(publication.dbPath), publication.digest);
+});
+
+test('malformed saved Garage sections do not hide independent protected dashboard evidence', async t => {
+  const directory = fixture(t), publication = snapshot(directory, 'invalid-garage-sections');
+  const source = new Store(publication.dbPath);
+  const sections = ['configuration', 'exposure', 'adapter', 'temporary', 'episode', 'checkpoint', 'roomTemperature'];
+  for (const key of [...sections.map(section => `garage:${section}:mqtt`), 'adaptive:mqtt']) {
+    source.setState(key, null);
+    source.db.prepare('UPDATE state SET value=? WHERE key=?').run('{invalid', key);
+  }
+  source.close();
+  const raw = new DatabaseSync(publication.dbPath); raw.exec('PRAGMA journal_mode=DELETE'); raw.close();
+  publication.digest = digest(publication.dbPath); publication.bytes = readFileSync(publication.dbPath).length;
+  const { request } = await viewer(t, directory, async () => publication);
+  const response = await request('/api/status'), status = response.body;
+  assert.equal(response.status, 200);
+  assert.equal(status.observations.upstairs.value, 21);
+  assert.equal(status.readOnly, true);
+  assert.equal(status.garage.adapter.restorePending, null, 'Malformed obligations remain unknown, never cleared');
+  assert.equal(status.garage.roomTemperature.targetC, null);
+  assert.equal(status.garage.exposure, null);
+  assert.deepEqual(status.garage.settings, {});
+  for (const section of ['configuration', 'exposure', 'adapter', 'temporary', 'episode'])
+    assert(status.garage.errors.some(error => error.section === section));
+  assert.match(status.garage.learning.error, /unavailable/);
+  assert.match(status.learning.error, /unavailable/);
+  assert.equal((await request('/api/recording-overview')).status, 200);
   assert.equal(digest(publication.dbPath), publication.digest);
 });
 

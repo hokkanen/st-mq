@@ -69,12 +69,13 @@ export function pairingConfiguration(input = {}, env = {}, config = {}) {
 /** Resolve once before opening a controlling runtime; never trust a label alone. */
 export async function requireLocalBroker(connection, { addon = false, resolveHost = lookup,
   interfaces = networkInterfaces, vipAddress } = {}) {
+  const failure = (code, message) => Object.assign(new Error(message), { code });
   let broker;
-  try { broker = new URL(connection?.address); } catch { throw new Error('A local MQTT broker address is required'); }
+  try { broker = new URL(connection?.address); } catch { throw failure('mqtt_local_required', 'A local MQTT broker address is required'); }
   if (!['mqtt:', 'mqtts:', 'ws:', 'wss:'].includes(broker.protocol) || broker.username || broker.password)
-    throw new Error('Configure local MQTT credentials separately from its address');
+    throw failure('mqtt_local_required', 'Configure local MQTT credentials separately from its address');
   const hostname = broker.hostname.replace(/^\[|\]$/g, '');
-  if (hostname === vipAddress) throw new Error('The controller must connect to its local broker; devices use the virtual IP');
+  if (hostname === vipAddress) throw failure('mqtt_local_required', 'The controller must connect to its local broker; devices use the virtual IP');
   // Supervisor provisions this sibling add-on alias on the same HA host.
   if (addon && hostname === 'core-mosquitto') return;
   let addresses, timer;
@@ -82,9 +83,11 @@ export async function requireLocalBroker(connection, { addon = false, resolveHos
     resolveHost(hostname, { all: true }),
     new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('resolution_timeout')), 5000); }),
   ]); }
-  catch { throw new Error('The configured local MQTT broker could not be resolved'); }
+  catch { throw failure('mqtt_resolution_failed', 'The configured local MQTT broker could not be resolved'); }
   finally { clearTimeout(timer); }
+  if (addresses.some(value => value.address === vipAddress))
+    throw failure('mqtt_local_required', 'The controller must connect to its local broker; devices use the virtual IP');
   const local = new Set(['127.0.0.1', '::1', ...Object.values(interfaces()).flat().filter(Boolean).map(value => value.address)]);
   if (!addresses.length || addresses.some(value => !local.has(value.address)))
-    throw new Error('Paired control requires MQTT on this machine (loopback, a local interface, or the Home Assistant Mosquitto add-on)');
+    throw failure('mqtt_local_required', 'Paired control requires MQTT on this machine (loopback, a local interface, or the Home Assistant Mosquitto add-on)');
 }

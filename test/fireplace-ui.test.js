@@ -300,3 +300,15 @@ test('firewood action labels and note identities stay stable as permissions and 
   assert.equal(button.getAttribute('aria-describedby'), null);
   assert.equal(note.hidden, true);
 });
+
+test('a lower-revision read-only snapshot replaces former primary firewood state and cannot write', async () => {
+  const calls = [], actions = createFireplaceActions({ request: async (...args) => calls.push(args) });
+  actions.update(view(20, [entry(2)]));
+  actions.update({ ...view(1, [entry(1)]), available: false, readOnly: true });
+  assert.equal(actions.snapshot().view.revision, 1);
+  assert.equal(actions.snapshot().view.entries[0].id, 1);
+  assert.equal(await actions.add(8), false);
+  assert.deepEqual(calls, []);
+  actions.update({ ...view(0), available: false, readOnly: true });
+  assert.equal(actions.snapshot().view.entries.length, 0, 'a replacement snapshot owns its own history revision');
+});

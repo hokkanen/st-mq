@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { isReadOnlyReplica } from '../chart/replica-status.js';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { heatingRequestResult, h66RequestResult, circulationStopPending } from '../chart/manual-control-status.js';
@@ -144,14 +145,14 @@ test('polling removes identical old notices, updates circulation feedback and pr
       classList: { toggle() {}, remove() {}, add() {} }, setAttribute() {}, querySelector() { return {}; } });
     return nodes.get(id);
   };
-  const renderer = new Function('$', 'heatingRequestResult', 'circulationStopPending', `
+  const renderer = new Function('$', 'heatingRequestResult', 'circulationStopPending', 'isReadOnlyReplica', `
     let lastStatus, heatingTestBusy = false, circulationStopAt;
     const controlErrors = new Map(), heatingResults = new Map(), time = value => String(value), decimal = String;
     const heatingCommandLabel = command => command, homeHeatingWarning = () => '', garageHeatingWarning = () => '';
     const setStatusDetail = () => {};
     ${functions}
     return (status, busy = false) => { lastStatus = status; heatingTestBusy = busy; renderHeatingTests(status); };
-  `)($, heatingRequestResult, circulationStopPending);
+  `)($, heatingRequestResult, circulationStopPending, isReadOnlyReplica);
   const status = heating();
   renderer(status);
   assert.match($('heating-test-message').textContent, /held until/);

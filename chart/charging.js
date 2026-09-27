@@ -1,4 +1,4 @@
-import { isReadOnlyReplica } from './replica-status.js';
+import { isReadOnlyReplica, replicaSnapshotKey } from './replica-status.js';
 import { setStatusDetail } from './status-details.js';
 import { chargerSummary, chargingCost, chargingNotice } from './charging-summary.js';
 import { createChargingPriority } from './charging-priority.js';
@@ -620,6 +620,7 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     const save = make('button', 'Save for this session', 'secondary-button', `${id}-settings-save`); save.type = 'submit';
     const message = make('p', '', 'temporary-status', `${id}-settings-message`); message.setAttribute('role', 'status');
     form.append(primaryFields, save); sessionPreferences.append(form, message);
+    for (const control of [chargeNow, resume, identify, enabledValue, form]) control.setAttribute('data-write-control', '');
     const settings = group(id, chargingFields, () => primaryFields, form, save, message, `${prefix}/settings`);
     body.append(preferences);
     const explanationFold = make('details', '', 'equipment-fold charging-explanations', `${id}-explanation-details`);
@@ -743,7 +744,9 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     }
   }
   function update(next) {
-    if (Number.isSafeInteger(next?.charging?.revision) && Number.isSafeInteger(status?.charging?.revision) && next.charging.revision < status.charging.revision) return;
+    if (Number.isSafeInteger(next?.charging?.revision) && Number.isSafeInteger(status?.charging?.revision) && next.charging.revision < status.charging.revision
+      && isReadOnlyReplica(next) === isReadOnlyReplica(status) && next.charging.readOnly === status.charging.readOnly
+      && replicaSnapshotKey(next) === replicaSnapshotKey(status)) return;
     status = next;
     const charging = next?.charging;
     const globalError = ({ 'charging-planning-unavailable': 'The charging plan could not be updated. The last charger instructions remain in effect.',

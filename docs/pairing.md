@@ -330,6 +330,43 @@ the local broker or virtual-IP setup, then explicitly retry promotion. An
 unreadable donor remains protected and reports an error; its damaged file is
 not replaced merely because a comparison could not finish.
 
+The slave does not need to be online for the master to start or continue running.
+An initial startup failure is a local setup problem, not a request to discard or
+recover history. The panel keeps its setup diagnosis through restart. Restarting
+does not clear protection or promote the computer automatically.
+
+| Reported problem | Next step |
+| --- | --- |
+| Address helper unavailable | Install the helper for this release and enable `st-mq-vip.socket` on standalone Linux. |
+| Address helper permission denied | Give the application user access to the helper socket's configured group, then start a fresh login/session. |
+| Address policy invalid | Check `/etc/st-mq-vip/policy.json`, root ownership and permissions using the setup instructions above. |
+| Address policy mismatch | Match its interface, address and prefix to this computer's pairing settings. |
+| Network interface missing | Use the actual LAN interface on this computer; the other computer can use a different interface name. |
+| Address assignment or announcement failed | Check the helper's network capabilities and the installed `iproute2` / `iputils-arping` tools. |
+| Address release failed | Keep this computer protected. Check the helper and address ownership before promoting either computer. |
+| MQTT broker must be local | Point this controller at its local broker, such as `mqtt://127.0.0.1`, with credentials in the separate MQTT fields. Devices use the virtual IP. |
+| MQTT name cannot be resolved | Check the local broker hostname; `core-mosquitto` is the Home Assistant add-on alias. |
+
+Fix saved configuration outside the dashboard, restart when configuration changed,
+then explicitly retry promotion after confirming that no other controller owns
+control or the virtual IP. Do not delete pairing state or overwrite a database
+to clear protection. A failed address release also keeps the protected management
+page available; the page does not grant device control.
+
+Replica and protected dashboards keep the same cards, history, recorded settings
+and available device evidence visible. Snapshot time and provenance distinguish
+recorded values from live state. Missing live readings remain unavailable;
+viewing the page never connects to devices or starts the controller. Local
+configuration defaults and equipment mappings are identified separately from
+values saved by the source computer.
+
+All dashboard database edits, settings changes, configuration application and
+device commands are disabled, with the same restriction enforced by the API.
+Downloading a verified database copy remains available; saving a new database
+file on the server requires the active master. Explicit pairing actions retain
+their own confirmation and authority checks. Internal snapshot publication and
+pair-state persistence remain necessary and do not grant dashboard editing rights.
+
 The header shows this computer's role alongside its operating mode: owning
 the master role does not mean automatic control is enabled. Open **Paired
 computers**, just above **Event log**, for connection and snapshot details,

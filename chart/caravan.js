@@ -48,7 +48,7 @@ export function createCaravanContents({ document, actions, blocked, readingsFor,
   const state = make('p', '', 'caravan-section-status'), controls = make('div', '', 'caravan-dehumidifier-controls');
   const help = make('p', '', 'muted caravan-control-help'), result = make('p', '', 'equipment-control-result');
   const power = make('div', '', 'caravan-setting caravan-power'), powerButtons = make('div', '', 'caravan-power-buttons');
-  controls.setAttribute('data-admin-only', '');
+  controls.setAttribute('data-admin-only', ''); controls.setAttribute('data-write-control', '');
   help.id = 'caravan-dehumidifier-help';
   const access = make('p', 'Admin access is required to change dehumidifier settings.', 'family-access-note');
   dehumidifier.dataset.deviceId = 'caravan_dehumidifier';

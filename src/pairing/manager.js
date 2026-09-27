@@ -3,20 +3,37 @@ import { DatabaseSync } from 'node:sqlite';
 import { isDeepStrictEqual } from 'node:util';
 import { join } from 'node:path';
 import { lstat, open, rm } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
 import { acceptsLineage, compareAuthority, NODE_PATTERN, PairState, pairError, validClaim } from './state.js';
 import { PairPeer, publicPairError } from './peer.js';
 import { receiveSnapshot, SnapshotRepository, validateSnapshot, verifySnapshot } from './snapshots.js';
-import { VirtualIP } from './vip.js';
+import { VirtualIP, VIP_ERRORS } from './vip.js';
 import { createControllerAnnouncements } from './announcements.js';
 import { copySnapshot, ownedDirectory, readReplicaPublication, syncDirectory } from '../replication/publication.js';
 
 const ACTIONS = new Set(['handover', 'promote', 'check-recovery', 'recover', 'rejoin']);
+const sourceRoot = fileURLToPath(new URL('../', import.meta.url));
+
+/** Exceptions may contain credentials or provider payloads. Report only the
+ * closed public code and a repository source location, never raw error text. */
+export function startupFailureDiagnostic(error, code) {
+  const location = typeof error?.stack === 'string' ? error.stack.split('\n').slice(1).flatMap(line => {
+    if (!/^\s+at /.test(line)) return [];
+    const path = line.match(/(?:\(|\s)(?:file:\/\/)?(\/[^()\n]+\.js:\d+:\d+)\)?$/)?.[1];
+    const relative = path?.startsWith(sourceRoot) ? path.slice(sourceRoot.length) : null;
+    return relative && /^[a-zA-Z0-9_/-]+\.js:\d+:\d+$/.test(relative) ? [relative] : [];
+  })[0] : null;
+  return { event: 'paired-startup-failed', reason: publicPairError({ code }),
+    ...(location ? { location: `src/${location}` } : {}) };
+}
 
 /** Node-local authority is deliberately never part of the mirrored application DB. */
 export class PairManager {
-  constructor({ config, hooks = {}, clock = Date.now, vip, peer, state, snapshots, announcements }) {
+  constructor({ config, hooks = {}, clock = Date.now, vip, peer, state, snapshots, announcements,
+    reportStartupFailure = diagnostic => console.error(JSON.stringify(diagnostic)) }) {
     this.config = config;
     this.hooks = hooks;
+    this.reportStartupFailure = reportStartupFailure;
     this.clock = clock;
     this.state = state ?? new PairState({ ...config, clock });
     this.vip = vip ?? new VirtualIP(config.vip);
@@ -83,12 +100,21 @@ export class PairManager {
 
   async start() {
     const startingEpoch = this.state.value.epoch;
+    const previousError = this.state.value.activationError;
+    if (previousError) this.error = publicPairError({ code: previousError });
     await this.peer.start();
     try {
       if (this.state.value.role === 'primary' && !this.state.value.transition) await this.startPrimary();
       else {
         if (this.state.value.role === 'primary') await this.state.update({ role: 'protected', reason: 'interrupted_handover' });
-        await this.vip.release();
+        try { await this.vip.release(); }
+        catch (error) {
+          // A broken address helper must not make protected history and setup
+          // diagnostics inaccessible. No controller is started on this path.
+          this.error = VIP_ERRORS.has(error?.code) ? error.code : 'vip_failed';
+          this.reportFailure(error, this.error);
+          await this.state.update({ role: 'protected', reason: 'vip_release_failed', activationError: this.error });
+        }
         await this.startReplica();
       }
     } catch (error) {
@@ -109,6 +135,11 @@ export class PairManager {
   }
 
   canControl() { return !this.closed && this.activeAllowed && this.state.value?.role === 'primary'; }
+
+  reportFailure(error, code) {
+    try { void Promise.resolve(this.reportStartupFailure(startupFailureDiagnostic(error, code))).catch(() => {}); }
+    catch { /* Diagnostic sinks cannot prevent protection or history access. */ }
+  }
 
   serialized(action) {
     const task = this.lock.then(action);
@@ -140,12 +171,15 @@ export class PairManager {
       if (!this.canControl() || !ownsActivation()) throw pairError('authority_changed');
       await this.state.update(value => {
         if (value.epoch !== activationEpoch || value.role !== 'primary') throw pairError('authority_changed');
-        return { bootstrapPending: false };
+        return { bootstrapPending: false, activationError: null };
       });
+      this.error = null;
     } catch (error) {
       if (!ownsActivation()) throw pairError('authority_changed');
       this.activeAllowed = false;
-      await this.vip.release().catch(() => {});
+      if (VIP_ERRORS.has(error?.code) || ['mqtt_local_required', 'mqtt_resolution_failed'].includes(error?.code)) code = error.code;
+      try { await this.vip.release(); }
+      catch (releaseError) { code = VIP_ERRORS.has(releaseError?.code) ? releaseError.code : 'vip_release_failed'; }
       if (this.stopping || this.closed) throw pairError('stopped');
       if (!ownsActivation()) throw pairError('authority_changed');
       if (this.demoting) {
@@ -153,9 +187,10 @@ export class PairManager {
         this.activationFallbackReady = true;
         throw pairError(code);
       }
+      this.reportFailure(error, code);
       await this.serialized(() => this.state.update(value => {
         if (value.epoch !== activationEpoch) throw pairError('authority_changed');
-        return { role: 'protected', reason: 'activation_failed', transition: null, release: null };
+        return { role: 'protected', reason: 'activation_failed', activationError: code, transition: null, release: null };
       }));
       this.error = code;
       await this.hooks.stopControl?.({ restore: false });
@@ -192,7 +227,8 @@ export class PairManager {
       recovery, recentActions: local.actions.map(({ requestId, name, state, error, startedAt, finishedAt }) =>
         ({ requestId, name, state, error, startedAt, finishedAt })),
       actions: { handover: free && primary && this.peerState.reachable && this.peerState.role === 'replica',
-        promote: free && (local.role === 'replica' && !!local.accepted || local.role === 'protected' && local.everWritten && !!local.activeDbPath),
+        promote: free && (['replica', 'protected'].includes(local.role) && !!local.accepted
+          || local.role === 'protected' && local.everWritten && !!local.activeDbPath),
         'check-recovery': free && primary && this.peerState.reachable && this.peerState.role !== 'primary',
         recover: free && primary && recovery.state === 'ready',
         rejoin: free && primary && ['ready', 'complete'].includes(recovery.state) && this.peerState.reachable } };
@@ -455,9 +491,12 @@ export class PairManager {
       await this.startPrimary();
       return;
     }
-    if (this.state.value.role !== 'replica' || !this.state.value.accepted) throw pairError('protected_history');
+    if (!['replica', 'protected'].includes(this.state.value.role) || !this.state.value.accepted) throw pairError('protected_history');
     const publication = await readReplicaPublication(this.config.replicaDirectory);
-    if (!publication || publication.generation !== this.state.value.accepted.generation) throw pairError('verification_failed');
+    const accepted = this.state.value.accepted;
+    if (!publication || publication.generation !== accepted.generation || publication.digest !== accepted.digest
+      || publication.claim?.epoch !== accepted.epoch || publication.claim?.nodeId !== accepted.nodeId
+      || publication.sequence !== accepted.sequence) throw pairError('verification_failed');
     await verifySnapshot(publication.dbPath, publication, this.abort.signal);
     await this.hooks.closeReplica?.();
     const epoch = randomUUID(), destination = join(this.config.directory, `primary-${epoch}.sqlite`);
@@ -670,7 +709,8 @@ export class PairManager {
         await this.hooks.closeReplica?.();
         const oldPath = this.state.value.activeDbPath;
         await this.state.update({ role: 'replica', reason: null, release: null, transition: null, everWritten: false,
-          activeDbPath: null, recovery: null, releaseReceipt: { requestId: body.requestId, identity } });
+          activeDbPath: null, recovery: null, activationError: null, releaseReceipt: { requestId: body.requestId, identity } });
+        this.error = null;
         await this.startReplica(result);
         // Only our dedicated former primary files are owned for deletion. The
         // initially configured path may be user-owned and is never reopened.

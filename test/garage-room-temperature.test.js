@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { GarageRoomTemperature } from '../src/garage/room-temperature.js';
 import { GarageRuntime } from '../src/garage/runtime.js';
 import { garageSettings } from '../src/garage/settings.js';
+import { replayGarageJournal } from '../src/garage/learning.js';
 import { Store } from '../src/storage/store.js';
 
 const BASE = 1_800_000_000_000;
@@ -336,32 +337,51 @@ test('power OFF and cooling retain room intent without forcing ON or HEAT, then 
   });
 });
 
-test('saved room settings cannot authorize a newly configured adapter', async t => {
+test('a changed adapter starts without applying old room intent or changing its historical record', async t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   const f = fixture(null), options = { store, engine: { latest: {}, settings: { mode: 'shadow' } },
     config: { input: 'mqtt', garage: {} }, clock: f.now };
   const runtime = new GarageRuntime(options); runtime.setAdapter(f.adapter);
   t.after(() => runtime.close({ restore: false }));
   await runtime.setNativeSettings({ setting: 'targetC', value: 7 }); await runtime.roomDispatch;
-  assert.throws(() => new GarageRuntime({ ...options,
-    config: { input: 'mqtt', garage: { adapter: { driver: 'shelly-cn105', commandTopic: 'invented/replacement/command' } } } }),
-  /Unsupported saved Garage room setting/);
-  assert.equal(store.getState(runtime.keys.roomTemperature).targetC, 7);
+  await runtime.close({ restore: false });
+  const before = store.getState(runtime.keys.roomTemperature);
+  const history = store.learningJournal({ input: 'garage:mqtt' });
+  const restarted = new GarageRuntime({ ...options,
+    config: { input: 'mqtt', garage: { adapter: { driver: 'shelly-cn105',
+      stateTopic: 'invented/replacement/state', commandTopic: 'invented/replacement/command' } } } });
+  t.after(() => restarted.close({ restore: false }));
+  restarted.setAdapter(f.adapter);
+  const commands = f.sent.length;
+  await restarted.roomTemperatureTick();
+  assert.equal(f.sent.length, commands, 'The replacement must not receive the old room target');
+  assert.equal(restarted.roomTemperature.targetC, null);
+  assert.equal(restarted.selectedRoomTargetC, null);
+  assert.equal(restarted.read().roomTargetC, null, 'The old learning reference is not live intent');
+  assert.equal(restarted.status().learning.normalReference.roomTargetC, null);
+  assert.deepEqual(store.getState(runtime.keys.roomTemperature), before);
+  assert.deepEqual(store.learningJournal({ input: 'garage:mqtt' }).slice(0, history.length), history);
+  assert.deepEqual(replayGarageJournal(store, 'mqtt'), restarted.checkpoint,
+    'The association boundary must be exactly reconstructable');
 });
 
-test('saved room intent cannot cross MQTT brokers or accounts, and credential rotation retains identity', async t => {
+test('MQTT route changes start with inactive saved intent, while password rotation preserves the equipment binding', async t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   const f = fixture(null), options = { store, engine: { latest: {}, settings: { mode: 'shadow' } },
     config: { input: 'mqtt', garage: {}, connections: { mqtt: { address: 'mqtt://invented-first', user: 'invented-owner' } } }, clock: f.now };
   const runtime = new GarageRuntime(options); runtime.setAdapter(f.adapter);
   t.after(() => runtime.close({ restore: false }));
   await runtime.setNativeSettings({ setting: 'targetC', value: 7 }); await runtime.roomDispatch;
+  await runtime.close({ restore: false });
+  const before = store.getState(runtime.keys.roomTemperature);
   for (const mqtt of [{ address: 'mqtt://invented-other', user: 'invented-owner' },
     { address: 'mqtt://invented-first', user: 'invented-other' }]) {
-    const original = store.setState; store.setState = () => { throw new Error('unexpected mutation'); };
-    assert.throws(() => new GarageRuntime({ ...options, config: { ...options.config, connections: { mqtt } } }),
-      /Unsupported saved Garage room setting/);
-    store.setState = original;
+    const restarted = new GarageRuntime({ ...options, config: { ...options.config, connections: { mqtt } } });
+    assert.equal(restarted.roomTemperature.targetC, null);
+    assert.equal(restarted.read().roomTargetC, null);
+    assert.equal(restarted.status().learning.normalReference.roomTargetC, null);
+    assert.deepEqual(store.getState(runtime.keys.roomTemperature), before);
+    await restarted.close({ restore: false });
   }
   const restarted = new GarageRuntime({ ...options, config: { ...options.config,
     connections: { mqtt: { ...options.config.connections.mqtt, pw: 'synthetic-password-rotation' } } } });
@@ -369,8 +389,48 @@ test('saved room intent cannot cross MQTT brokers or accounts, and credential ro
   assert.equal(restarted.roomTemperature.targetC, 7);
 });
 
+test('paired providers can change to the local broker without replaying low or native-range intent', async t => {
+  for (const targetC of [7, 18]) await t.test(`${targetC} C`, async t => {
+    const store = new Store(':memory:'); t.after(() => store.close());
+    const f = fixture(null), options = { store, engine: { latest: {}, settings: { mode: 'shadow' } },
+      config: { input: 'providers', garage: {}, pairing: { enabled: true },
+        connections: { mqtt: { address: 'mqtt://invented-shared-broker', user: 'invented-owner' } } }, clock: f.now };
+    const runtime = new GarageRuntime(options); runtime.setAdapter(f.adapter);
+    runtime.saveRoomTarget(targetC, f.now());
+    await runtime.close({ restore: false });
+    const recorded = store.getState(runtime.keys.roomTemperature);
+    const config = { ...options.config, connections: { mqtt: { address: 'mqtt://127.0.0.1', user: 'invented-owner' } } };
+    const restarted = new GarageRuntime({ ...options, config });
+    t.after(() => restarted.close({ restore: false }));
+    restarted.setAdapter(f.adapter);
+    await restarted.roomTemperatureTick();
+    assert.deepEqual(f.sent, [], 'Bootstrap must issue no saved device choice over the new route');
+    assert.equal(restarted.selectedRoomTargetC, null);
+    assert.equal(restarted.roomTemperature.targetC, null);
+    assert.equal(restarted.read().roomTargetC, null);
+    assert.equal(restarted.status().learning.normalReference.roomTargetC, null);
+    assert.deepEqual(store.getState(runtime.keys.roomTemperature), recorded);
+    const journalLength = store.learningJournal({ input: 'garage:providers' }).length;
+    const again = new GarageRuntime({ ...options, config });
+    t.after(() => again.close({ restore: false }));
+    assert.equal(again.read().roomTargetC, null);
+    assert.equal(store.learningJournal({ input: 'garage:providers' }).length, journalLength,
+      'An already unknown reference needs no duplicate boundary on another restart');
+    f.adapter.status = () => ({ connected: true, health: { pumpCommunicating: true, deviceOnline: true },
+      native: { targetC: 21, readbacks: { targetC: { measuredAt: f.now(), supported: true, usable: true } } } });
+    restarted.syncRoomReference(f.now());
+    assert.equal(restarted.read().roomTargetC, 21, 'Only fresh native evidence establishes the new reference');
+    assert.equal(restarted.status().learning.normalReference.roomTargetC, 21);
+    assert.equal(restarted.roomTemperature.targetC, null);
+    assert.deepEqual(store.getState(runtime.keys.roomTemperature), recorded);
+    assert.deepEqual(replayGarageJournal(store, 'providers'), restarted.checkpoint);
+  });
+});
+
 test('retired timed overrides, unbound settings and room configuration fail before database mutation', t => {
-  for (const saved of [{ targetC: 7 }, { targetC: 7, createdAt: BASE, expiresAt: BASE + 7_200_000,
+  for (const saved of [{ targetC: 7 }, { targetC: 7, adapterKey: 'invented-key' },
+    { targetC: 7, adapterKey: 42 }, { targetC: 4, adapterKey: 'a'.repeat(64) },
+    { targetC: 7, adapterKey: 'a'.repeat(64), extra: true }, { targetC: 7, createdAt: BASE, expiresAt: BASE + 7_200_000,
     restoreTargetC: 17, adapterKey: 'invented-key' }]) {
     const store = new Store(':memory:'); t.after(() => store.close());
     store.setState('garage:roomTemperature:mqtt', saved);

@@ -138,13 +138,13 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
       const signal = replicaAbort.signal;
       runtimeStarting = (async () => {
         let directory = config.replication.directory;
-        if ((role ?? manager.status().role) === 'protected' && existsSync(dbPath ?? primaryPath)) {
+        if ((role ?? manager.status().role) === 'protected' && dbPath && existsSync(dbPath)) {
           let incoming;
           try {
             directory = join(config.pairing.directory, 'protected-view');
             await ownedDirectory(directory, '.st-mq-protected-view');
             const generation = randomUUID(); incoming = join(directory, `incoming-${generation}.sqlite`);
-            const snapshot = await snapshotSource({ dbPath: dbPath ?? primaryPath, destination: incoming, signal });
+            const snapshot = await snapshotSource({ dbPath, destination: incoming, signal });
             if (closed || closing || signal.aborted) return;
             await publishSnapshot(directory, incoming, { generation, ...snapshot, verifiedAt: clock() });
           } catch {
@@ -158,7 +158,9 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
         }
         if (closed || closing || signal.aborted) return;
         const started = await startReplica({ config: { ...config, role: 'replica', input: 'offline',
-          connections: {}, h66: { enabled: false, writeEnabled: false }, settings: { ...config.settings, mode: 'monitoring' },
+          // The read model needs local equipment mappings and defaults. The
+          // viewer never constructs acquisition or control from this config.
+          h66: { ...config.h66, enabled: false, writeEnabled: false }, settings: { ...config.settings, mode: 'monitoring' },
           replication: { ...config.replication, enabled: false, directory } }, clock, pairContext: context, installSignalHandlers: false });
         if (closed || closing || signal.aborted) await started.close(); else runtime = started;
       })();

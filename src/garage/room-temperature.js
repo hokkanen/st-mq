@@ -2,6 +2,15 @@ import { GARAGE_EXTERNAL_NATIVE_TARGET_C } from './native-settings.js';
 
 export const GARAGE_ROOM_MIN_C = 5;
 export const GARAGE_EXTERNAL_SOURCE_MAX_AGE_MS = 90_000;
+export function validateGarageRoomState(value) {
+  if (value == null) return;
+  const validTarget = value.targetC === null || Number.isFinite(value.targetC)
+    && value.targetC >= GARAGE_ROOM_MIN_C && value.targetC <= 31 && Number.isInteger(value.targetC * 2);
+  if (typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length !== 2
+    || !Object.hasOwn(value, 'targetC') || typeof value.adapterKey !== 'string'
+    || !/^[a-f0-9]{64}$/.test(value.adapterKey) || !validTarget)
+    throw new Error('Unsupported saved Garage room setting; start a fresh development database');
+}
 const pending = result => ['pending', 'published', 'accepted'].includes(result?.status);
 const failed = result => ['rejected', 'failed', 'uncertain', 'superseded'].includes(result?.status);
 

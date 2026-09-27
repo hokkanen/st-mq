@@ -141,12 +141,15 @@ export function equipmentReadingRows(device) {
     const state = isState(signal, reading), projected = reading.displayStatus;
     const fresh = projected ? projected.usable : reading.stale === false || (reading.stale === undefined && device.available);
     const last = valueText(signal, reading, device), known = !['Unknown', 'Unavailable'].includes(last);
+    const recorded = (device.readOnly === true || reading.readOnly === true) && known && Number.isFinite(reading.observedAt)
+      && !(reading.quality ?? []).some(flag => /invalid|unknown|unsupported|sentinel|units-unverified/i.test(flag));
     const motion = device.kind === 'door' && state && fresh && known && ['opening', 'closing'].includes(reading.coverState)
       ? reading.coverState : null;
     const observed = Number.isFinite(reading.observedAt) ? clock.format(reading.observedAt) : 'time unavailable';
     return { signal, label: device.kind === 'heat_pump' && /_active$/.test(signal) ? 'Power enabled'
       : `${reading.label ?? pretty(signal)}${reading.estimated ? ' (estimate)' : ''}`,
-      value: motion ? motion[0].toUpperCase() + motion.slice(1) : fresh ? last : state ? 'Unknown' : 'Unavailable', stale: !fresh,
+      value: motion ? motion[0].toUpperCase() + motion.slice(1) : fresh || recorded ? last : state ? 'Unknown' : 'Unavailable', stale: !fresh,
+      ...(recorded ? { qualifier: 'Recorded', recorded: true } : {}),
       ...(projected?.attention && fresh ? { qualifier: 'Needs attention' } : {}),
       detail: projected?.detail ?? (motion ? `Reported ${motion} · ${observed}`
         : known ? `${fresh ? 'Last reported' : `Last reported ${last}`} · ${observed}` : 'No usable reading received'),
@@ -569,7 +572,7 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
     const node = document.createElement(tag); node.textContent = text; node.className = className; return node;
   };
   const button = (text, action) => {
-    const node = make('button', text, 'secondary-button'); node.type = 'button'; node.addEventListener('click', action); return node;
+    const node = make('button', text, 'secondary-button'); node.setAttribute('data-write-control', ''); node.type = 'button'; node.addEventListener('click', action); return node;
   };
   const floorSetupLink = () => {
     const paragraph = make('p', '', 'floor-setup-link');
@@ -794,9 +797,9 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
       if (!members.length && area === 'garage') $(`${area}-equipment-readings`).append(make('p', 'No garage devices enabled.', 'muted equipment-empty'));
       const overview = $(`${area}-equipment-status`), unavailable = members.filter(device => !device.available || device.needsAttention).length;
       if (overview) {
-        overview.textContent = !members.length ? '' : unavailable ? `${unavailable} ${unavailable === 1 ? 'needs' : 'need'} attention`
+        overview.textContent = !members.length ? '' : isReadOnlyReplica(status) ? `${members.length} recorded` : unavailable ? `${unavailable} ${unavailable === 1 ? 'needs' : 'need'} attention`
           : `${members.length} available`;
-        overview.dataset.state = unavailable ? 'attention' : members.length ? 'available' : 'pending';
+        overview.dataset.state = isReadOnlyReplica(status) ? 'pending' : unavailable ? 'attention' : members.length ? 'available' : 'pending';
       }
       const activeNode = $(`${area}-active-test`), activeDevice = devices.find(device => device.id === active?.deviceId);
       activeNode.hidden = !active || (activeDevice?.area ?? 'garage') !== area;

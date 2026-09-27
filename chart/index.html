@@ -41,6 +41,7 @@
       <p id="replica-verification" class="muted"></p>
     </section>
     <p id="context" class="context">Loading controller state…</p>
+    <p id="read-only-help" class="read-only-help" role="status" hidden></p>
     <form id="auth" class="panel" aria-labelledby="auth-title" hidden>
       <h2 id="auth-title">Sign in</h2>
       <p class="auth-intro">Enter your admin or family password.</p>
@@ -65,8 +66,8 @@
             <div class="dashboard-heading">
               <h2 id="control-title">Home<span class="zone-expand" aria-hidden="true"></span></h2>
               <div class="home-heading-actions">
-                <span class="control-badge" data-controller-only><span>Heat control</span><strong id="control-price">—</strong></span>
-                <button id="fireplace-shortcut" class="fireplace-shortcut secondary-button" type="button" aria-label="Open fireplace" title="Open fireplace" aria-haspopup="dialog" aria-expanded="false" aria-controls="fireplace-dialog" data-controller-only>
+                <span class="control-badge"><span>Heat control</span><strong id="control-price">—</strong></span>
+                <button id="fireplace-shortcut" class="fireplace-shortcut secondary-button" type="button" aria-label="Open fireplace" title="Open fireplace" aria-haspopup="dialog" aria-expanded="false" aria-controls="fireplace-dialog">
                   <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21V7h16v14M3 7h18V4H3zM2 21h20M8 21v-7a4 4 0 0 1 8 0v7"/><path d="M12 20c-3 0-3-3-1-5 0 2 2 2 2-1 3 3 2 6-1 6Z"/></svg>
                 </button>
               </div>
@@ -96,7 +97,7 @@
               <span class="home-plan-copy"><span id="home-plan-label" class="home-plan-label">Heating plan</span> <span id="home-plan-value" class="home-plan-value">Waiting for a plan</span></span>
             </div>
           </summary>
-          <div class="zone-content equipment-area" data-controller-only>
+          <div class="zone-content equipment-area">
             <section id="home-manual-controls" class="zone-section zone-configuration" aria-labelledby="heating-configuration-title">
               <div id="heating-test-details">
                 <div class="zone-section-heading"><h4 id="heating-configuration-title">Heating control</h4><p id="heating-test-status" class="muted home-control-availability"></p></div>
@@ -108,16 +109,16 @@
                 <h5 id="home-temporary-heating-title" class="home-control-subtitle">Temporary heating override</h5>
                 <p id="heating-test-help" class="muted zone-control-help">Changes reset on the next controller update, normally within 1 minute. Pause price control to hold them longer.</p>
                 <div id="heating-test-buttons" class="heating-test-buttons heating-mode-buttons" role="group" aria-labelledby="home-temporary-heating-title" aria-describedby="heating-test-help home-hold-warning heating-test-status">
-                  <button id="test-normal" class="secondary-button" type="button" data-heating-command="normal" aria-pressed="false" disabled><span>Normal heating</span><span class="heating-button-state" aria-hidden="true"></span></button>
-                  <button id="test-preheat" class="secondary-button" type="button" data-heating-command="preheat" aria-pressed="false" aria-describedby="heating-preheat-help" disabled><span>Preheat</span><span class="heating-button-state" aria-hidden="true"></span></button>
-                  <button id="test-reduction" class="secondary-button" type="button" data-heating-command="reduction" aria-pressed="false" disabled><span>Reduced heating</span><span class="heating-button-state" aria-hidden="true"></span></button>
+                  <button id="test-normal" data-write-control class="secondary-button" type="button" data-heating-command="normal" aria-pressed="false" disabled><span>Normal heating</span><span class="heating-button-state" aria-hidden="true"></span></button>
+                  <button id="test-preheat" data-write-control class="secondary-button" type="button" data-heating-command="preheat" aria-pressed="false" aria-describedby="heating-preheat-help" disabled><span>Preheat</span><span class="heating-button-state" aria-hidden="true"></span></button>
+                  <button id="test-reduction" data-write-control class="secondary-button" type="button" data-heating-command="reduction" aria-pressed="false" disabled><span>Reduced heating</span><span class="heating-button-state" aria-hidden="true"></span></button>
                 </div>
                 <p id="home-hold-warning" class="heating-hold-warning" role="status" hidden></p>
                 <p id="heating-preheat-help" class="muted zone-control-help" hidden></p>
                 <p id="heating-test-message" class="temporary-status" role="status" aria-live="polite"></p>
                 <details id="temporary-details" class="equipment-fold temporary-panel">
                   <summary><span>Away &amp; pause</span><small id="temporary-overview">At home · price control active</small></summary>
-                  <form id="temporary-form" class="temporary-form">
+                  <form id="temporary-form" data-write-control class="temporary-form">
                     <p class="muted form-timezone">All dates and times below are in Finland · Europe/Helsinki.</p>
                     <div class="temporary-field">
                       <label for="away-until">Away until</label>
@@ -245,17 +246,17 @@
                       <div id="sensor-change-content">
                         <p id="sensor-change-help" class="muted">Record a replacement, new location or calibration when it happens. You will review its effect on learning before saving. Revert a mistaken entry to relearn from recorded history.</p>
                         <p class="family-access-note">Admin access is required to record or revert sensor changes.</p>
-                        <form id="sensor-change-form" data-admin-only class="sensor-change-form" aria-describedby="sensor-change-help sensor-change-reason-help">
+                        <form id="sensor-change-form" data-write-control data-admin-only class="sensor-change-form" aria-describedby="sensor-change-help sensor-change-reason-help">
                           <label for="sensor-change-signal">Sensor<select id="sensor-change-signal" required disabled><option value="">Loading sensors…</option></select></label>
                           <label for="sensor-change-reason">Reason<select id="sensor-change-reason" disabled><option value="replacement">Replacement</option><option value="moved">New location</option><option value="calibration">Calibration</option><option value="other">Other</option></select></label>
                           <button id="sensor-change-submit" type="submit" disabled>Record change now…</button>
                         </form>
                         <p id="sensor-change-reason-help" class="muted">The reason is kept in history. All reasons have the same effect on learning.</p>
                         <p id="sensor-change-message" class="temporary-status sensor-change-status" role="status" aria-live="polite"></p>
-                        <button id="sensor-change-retry" data-admin-only class="secondary-button" type="button" hidden>Retry saving</button>
+                        <button id="sensor-change-retry" data-write-control data-admin-only class="secondary-button" type="button" hidden>Retry saving</button>
                         <p id="sensor-change-availability" class="muted sensor-change-status" role="status"></p>
                         <p id="sensor-change-rebuild" class="muted sensor-change-status" role="status" aria-live="polite"></p>
-                        <button id="sensor-change-retry-rebuild" data-admin-only class="secondary-button" type="button" hidden>Retry relearning</button>
+                        <button id="sensor-change-retry-rebuild" data-write-control data-admin-only class="secondary-button" type="button" hidden>Retry relearning</button>
                         <div class="sensor-change-history-heading"><h3>Change history</h3><button id="sensor-change-refresh" class="secondary-button" type="button">Refresh</button></div>
                         <p class="muted form-timezone">Finnish local time · Europe/Helsinki</p>
                         <ul id="sensor-change-entries" class="sensor-change-entries" aria-label="Indoor sensor changes"></ul>
@@ -268,17 +269,17 @@
                       <div id="outdoor-sensor-change-content">
                         <p id="outdoor-sensor-change-help" class="muted">Record a replacement, new location or calibration when it happens. You will review its effect on learning before saving. Revert a mistaken entry to relearn from recorded history.</p>
                         <p class="family-access-note">Admin access is required to record or revert sensor changes.</p>
-                        <form id="outdoor-sensor-change-form" data-admin-only class="sensor-change-form" aria-describedby="outdoor-sensor-change-help outdoor-sensor-change-reason-help">
+                        <form id="outdoor-sensor-change-form" data-write-control data-admin-only class="sensor-change-form" aria-describedby="outdoor-sensor-change-help outdoor-sensor-change-reason-help">
                           <label for="outdoor-sensor-change-signal">Sensor<select id="outdoor-sensor-change-signal" required disabled><option value="">Loading sensors…</option></select></label>
                           <label for="outdoor-sensor-change-reason">Reason<select id="outdoor-sensor-change-reason" disabled><option value="replacement">Replacement</option><option value="moved">New location</option><option value="calibration">Calibration</option><option value="other">Other</option></select></label>
                           <button id="outdoor-sensor-change-submit" type="submit" disabled>Record change now…</button>
                         </form>
                         <p id="outdoor-sensor-change-reason-help" class="muted">The reason is kept in history. All reasons have the same effect on learning.</p>
                         <p id="outdoor-sensor-change-message" class="temporary-status sensor-change-status" role="status" aria-live="polite"></p>
-                        <button id="outdoor-sensor-change-retry" data-admin-only class="secondary-button" type="button" hidden>Retry saving</button>
+                        <button id="outdoor-sensor-change-retry" data-write-control data-admin-only class="secondary-button" type="button" hidden>Retry saving</button>
                         <p id="outdoor-sensor-change-availability" class="muted sensor-change-status" role="status"></p>
                         <p id="outdoor-sensor-change-rebuild" class="muted sensor-change-status" role="status" aria-live="polite"></p>
-                        <button id="outdoor-sensor-change-retry-rebuild" data-admin-only class="secondary-button" type="button" hidden>Retry relearning</button>
+                        <button id="outdoor-sensor-change-retry-rebuild" data-write-control data-admin-only class="secondary-button" type="button" hidden>Retry relearning</button>
                         <div class="sensor-change-history-heading"><h3>Change history</h3><button id="outdoor-sensor-change-refresh" class="secondary-button" type="button">Refresh</button></div>
                         <p class="muted form-timezone">Finnish local time · Europe/Helsinki</p>
                         <ul id="outdoor-sensor-change-entries" class="sensor-change-entries" aria-label="Outdoor sensor changes"></ul>
@@ -302,9 +303,9 @@
             </section>
           </div>
         </details>
-        <p id="heating-held-summary" class="heating-hold-warning" role="status" data-controller-only hidden></p>
-        <div class="home-support" data-controller-only>
-          <details id="home-equipment-details" class="dashboard-disclosure zone-equipment-fold" data-controller-only>
+        <p id="heating-held-summary" class="heating-hold-warning" role="status" hidden></p>
+        <div class="home-support">
+          <details id="home-equipment-details" class="dashboard-disclosure zone-equipment-fold">
             <summary><span id="home-equipment-title">Sensors &amp; Equipment</span><small id="home-equipment-status" class="equipment-device-status"></small></summary>
             <div class="zone-content equipment-area">
               <section id="home-equipment-section" class="zone-section zone-equipment" aria-labelledby="home-equipment-title">
@@ -329,10 +330,10 @@
                           <option value="0203">Room setting</option><option value="0212">Hot water start</option>
                           <option value="0208">Hot water stop</option><option value="2201">Operating mode</option>
                         </select></label>
-                        <label id="h66-test-temperature-field" data-admin-only>Temperature · °C<input id="h66-test-value" type="number" min="10" max="30" step="1" value="20" required></label>
-                        <label id="h66-test-mode-field" data-admin-only hidden>Operating mode<select id="h66-test-mode"><option value="1">Auto</option><option value="2">Compressor only</option><option value="4">Hot water only</option></select></label>
+                        <label id="h66-test-temperature-field" data-write-control data-admin-only>Temperature · °C<input id="h66-test-value" type="number" min="10" max="30" step="1" value="20" required></label>
+                        <label id="h66-test-mode-field" data-write-control data-admin-only hidden>Operating mode<select id="h66-test-mode"><option value="1">Auto</option><option value="2">Compressor only</option><option value="4">Hot water only</option></select></label>
                         <p class="equipment-control-state"><span>Reported now</span><strong id="h66-manual-state">Unavailable</strong></p>
-                        <button id="h66-test-submit" data-admin-only class="secondary-button" type="submit" disabled>Apply setting</button>
+                        <button id="h66-test-submit" data-write-control data-admin-only class="secondary-button" type="submit" disabled>Apply setting</button>
                       </form>
                       <p id="h66-test-status" class="muted">H66 is not connected.</p>
                       <p id="h66-test-message" class="temporary-status" role="status" aria-live="polite"></p>
@@ -356,8 +357,8 @@
                     <div id="dhwr-controls" class="equipment-inline-controls">
                       <p id="dhwr-request-state" class="muted"></p>
                       <div class="equipment-switch-buttons" role="group" aria-label="Hot-water circulation" aria-describedby="dhwr-control-help">
-                        <button id="test-circulation" class="secondary-button" type="button" data-heating-command="circulation" disabled>Start circulation</button>
-                        <button id="dhwr-stop" class="secondary-button" type="button" disabled>Stop</button>
+                        <button id="test-circulation" data-write-control class="secondary-button" type="button" data-heating-command="circulation" disabled>Start circulation</button>
+                        <button id="dhwr-stop" data-write-control class="secondary-button" type="button" disabled>Stop</button>
                       </div>
                       <p id="dhwr-message" class="temporary-status" role="status" aria-live="polite"></p>
                       <p id="dhwr-control-help" class="muted">Each click starts a full run for the configured duration, whether price control is paused or not. Stop ends it immediately.</p>
@@ -372,8 +373,9 @@
           </details>
         </div>
       </article>
-      <article id="providers-controls" class="panel providers-controls" aria-labelledby="providers-title" data-controller-only>
+      <article id="providers-controls" class="panel providers-controls" aria-labelledby="providers-title">
                 <div class="dashboard-heading"><h2 id="providers-title">Data &amp; settings</h2><span id="provider-overview-state" class="muted">Waiting for data</span></div>
+                <p id="settings-read-only-source" class="muted" hidden></p>
                 <div id="provider-overview" class="provider-overview">
                   <ul id="providers" class="provider-list"></ul>
                   <p id="provider-context" class="muted" hidden></p>
@@ -476,7 +478,7 @@
                       <div id="settings-reload-scope" class="reload-scope"></div>
                       <p id="settings-reload-help" class="muted"></p>
                       <div class="settings-actions">
-                        <button id="settings-reload" data-admin-only class="secondary-button" type="button" disabled>Apply configuration</button>
+                        <button id="settings-reload" data-write-control data-admin-only class="secondary-button" type="button" disabled>Apply configuration</button>
                         <p id="settings-reload-message" class="muted" role="status" aria-live="polite"></p>
                       </div>
                     </div>
@@ -484,14 +486,14 @@
                 </details>
               </article>
       </div>
-      <div class="controller-column" data-controller-only>
+      <div class="controller-column">
       <article id="garage-control" class="panel garage-control" aria-labelledby="garage-title">
         <details id="garage-heating-details" class="dashboard-disclosure heating-zone" aria-labelledby="garage-title">
           <summary class="zone-summary">
             <div class="dashboard-heading">
               <h2 id="garage-title">Garage<span class="zone-expand" aria-hidden="true"></span></h2>
               <div class="home-heading-actions">
-                <span class="control-badge" data-controller-only><span>Heat control</span><strong id="garage-control-price">—</strong></span>
+                <span class="control-badge"><span>Heat control</span><strong id="garage-control-price">—</strong></span>
                 <button id="garage-chart-shortcut" class="chart-shortcut secondary-button" type="button" aria-label="Open history chart in fullscreen" title="Open chart in fullscreen" aria-expanded="false" aria-controls="history">
                   <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4v16h16M7 14l4-5 4 3 5-7"/></svg>
                 </button>
@@ -525,14 +527,14 @@
               <h5 id="garage-temporary-heating-title" class="home-control-subtitle">Temporary heating override</h5>
               <p id="garage-heating-help" class="muted zone-control-help">Changes reset on the next controller update, normally within 1 minute. Pause price control to hold them longer. Freeze protection can restore heating sooner.</p>
               <div id="garage-heating-buttons" class="heating-mode-buttons heating-mode-buttons-two" role="group" aria-labelledby="garage-temporary-heating-title" aria-describedby="garage-heating-help garage-hold-warning garage-heating-status">
-                <button id="garage-mode-normal" class="secondary-button" type="button" data-garage-heating-mode="normal" aria-pressed="false" disabled><span>Normal heating</span><span class="heating-button-state" aria-hidden="true"></span></button>
-                <button id="garage-mode-off" class="secondary-button" type="button" data-garage-heating-mode="off" aria-pressed="false" disabled><span>Heating off</span><span class="heating-button-state" aria-hidden="true"></span></button>
+                <button id="garage-mode-normal" data-write-control class="secondary-button" type="button" data-garage-heating-mode="normal" aria-pressed="false" disabled><span>Normal heating</span><span class="heating-button-state" aria-hidden="true"></span></button>
+                <button id="garage-mode-off" data-write-control class="secondary-button" type="button" data-garage-heating-mode="off" aria-pressed="false" disabled><span>Heating off</span><span class="heating-button-state" aria-hidden="true"></span></button>
               </div>
               <p id="garage-hold-warning" class="heating-hold-warning heating-hold-warning-strong" role="status" hidden></p>
               <p id="garage-heating-message" class="temporary-status" role="status" aria-live="polite"></p>
               <details id="garage-pause-details" class="equipment-fold temporary-panel">
                 <summary><span>Pause price control</span><small id="garage-pause-overview">Status unavailable</small></summary>
-                <form id="garage-pause-form" class="temporary-form">
+                <form id="garage-pause-form" data-write-control class="temporary-form">
                   <p class="muted form-timezone">All dates and times below are in Finland · Europe/Helsinki.</p>
                   <div class="temporary-field">
                     <label for="garage-pause-until">Pause until</label>
@@ -676,10 +678,10 @@
                         <option value="targetC">Room setting</option><option value="fan">Fan setting</option>
                         <option value="vane">Vertical vane</option><option value="wideVane">Horizontal vane</option>
                       </select></label>
-                      <label id="garage-native-value-field" data-admin-only>Value<select id="garage-native-value" required disabled><option value="">Select a value</option></select></label>
-                      <label id="garage-native-temperature-field" data-admin-only hidden>Temperature · °C<input id="garage-native-temperature" type="number" required disabled aria-describedby="garage-native-temperature-help"></label>
+                      <label id="garage-native-value-field" data-write-control data-admin-only>Value<select id="garage-native-value" required disabled><option value="">Select a value</option></select></label>
+                      <label id="garage-native-temperature-field" data-write-control data-admin-only hidden>Temperature · °C<input id="garage-native-temperature" type="number" required disabled aria-describedby="garage-native-temperature-help"></label>
                       <p class="equipment-control-state"><span>Reported pump setting</span><strong id="garage-native-reported">Unavailable</strong></p>
-                      <button id="garage-native-submit" data-admin-only class="secondary-button" type="submit" disabled>Apply setting</button>
+                      <button id="garage-native-submit" data-write-control data-admin-only class="secondary-button" type="submit" disabled>Apply setting</button>
                     </form>
                     <p id="garage-native-temperature-help" class="muted" hidden>Below 16 °C, Garage rear guides heating while the pump is set to 17 °C. <span id="garage-native-temperature-details">How it works</span></p>
                     <p id="garage-native-status" class="muted">Waiting for a supported native control connection.</p>
@@ -696,7 +698,7 @@
                     <dl id="garage-controller-readings" class="equipment-readings"></dl>
                     <p class="muted">The two pipe-location sensors protect independently. Pump temperatures are separate equipment readings. Qualified native electricity remains provisional unless checked.</p>
                     <div class="equipment-inline-controls">
-                      <button id="garage-release" class="secondary-button" type="button" aria-describedby="garage-release-help" disabled>End automatic savings episode</button>
+                      <button id="garage-release" data-write-control class="secondary-button" type="button" aria-describedby="garage-release-help" disabled>End automatic savings episode</button>
                       <p id="garage-release-help" class="muted">Ends the current savings episode and waits for normal heating to resume.</p>
                       <p id="garage-release-message" class="temporary-status" role="status" aria-live="polite"></p>
                     </div>
@@ -836,7 +838,7 @@
           <p class="family-access-note">Admin access is required to save or download a database copy.</p>
           <div class="database-export-actions">
             <div>
-              <button id="database-export-save" data-admin-only type="button" class="secondary-button" aria-describedby="database-export-save-help">Save local copy</button>
+              <button id="database-export-save" data-write-control data-admin-only type="button" class="secondary-button" aria-describedby="database-export-save-help">Save local copy</button>
               <p id="database-export-save-help" class="muted">Save on the server in its configured export folder, which defaults to the server account’s home folder.</p>
             </div>
             <div>
@@ -894,12 +896,12 @@
             </div>
           </section>
           <section id="pairing-slave-controls" class="pairing-management" aria-labelledby="pairing-standby-title" hidden>
-            <h3 id="pairing-standby-title">A standby, with manual takeover</h3>
+            <h3 id="pairing-standby-title">Read-only until promoted</h3>
             <p id="pairing-standby-help"></p>
-            <p>If the other computer is still available, use <strong>Hand over to the other computer</strong> in its master UI. If it has failed, you can promote this computer yourself using the history available here. It never takes over automatically.</p>
+            <p>If a master is running, use <strong>Hand over to the other computer</strong> in its dashboard. For initial setup or after a failure, promote this computer below. The other computer does not need to be online.</p>
             <div class="pairing-role-action">
-              <div><h3>Take over after a failure</h3><p>Before force promotion, stop or isolate the old master so it cannot control equipment or keep the MQTT address. Being unreachable alone does not prove it has stopped. Measurements after this computer’s last snapshot may be missing.</p></div>
-              <button id="pairing-promote" data-admin-only class="secondary-button" type="button" aria-describedby="pairing-promote-help" disabled hidden>Force promote this computer</button>
+              <div><h3>Start this computer as master</h3><p>Before promotion, make sure no other master can control equipment or keep the virtual IP. Stop or isolate it first; being unreachable alone does not prove it has stopped. Measurements after this computer’s last snapshot may be missing.</p></div>
+              <button id="pairing-promote" data-admin-only class="secondary-button" type="button" aria-describedby="pairing-promote-help" disabled hidden>Promote this computer to master</button>
               <p id="pairing-promote-help" class="muted pairing-step-help"></p>
             </div>
           </section>
@@ -915,17 +917,17 @@
     </section>
   </main>
   <footer>Finnish local time · Europe/Helsinki · Weather: <a href="https://en.ilmatieteenlaitos.fi/open-data">FMI</a> / <a href="https://open-meteo.com/">Open-Meteo</a> (DWD ICON)</footer>
-  <dialog id="garage-doors-dialog" class="control-dialog garage-doors-dialog" aria-labelledby="garage-doors-title" aria-describedby="garage-doors-help" data-controller-only>
+  <dialog id="garage-doors-dialog" class="control-dialog garage-doors-dialog" aria-labelledby="garage-doors-title" aria-describedby="garage-doors-help">
     <h2 id="garage-doors-title">Garage doors</h2>
     <p id="garage-doors-help" class="muted">Choose a door to open or close. Its reported position is shown below.</p>
     <div id="garage-doors-content" class="garage-door-controls"></div>
     <div class="confirmation-actions"><button id="garage-doors-back" class="secondary-button" type="button" autofocus>Go back</button></div>
   </dialog>
-  <dialog id="fireplace-dialog" class="control-dialog fireplace-dialog" aria-labelledby="fireplace-title" aria-describedby="fireplace-help" data-controller-only>
+  <dialog id="fireplace-dialog" class="control-dialog fireplace-dialog" aria-labelledby="fireplace-title" aria-describedby="fireplace-help">
     <h2 id="fireplace-title">Fireplace</h2>
     <p id="fireplace-overview" class="muted">Add firewood</p>
     <div id="fireplace-content" class="fireplace-content">
-      <form id="fireplace-form">
+      <form id="fireplace-form" data-write-control>
         <div class="fireplace-amount"><label for="fireplace-kg">Dry firewood</label><output id="fireplace-amount" for="fireplace-kg">8 kg</output></div>
         <input id="fireplace-kg" type="range" min="2" max="10" step="1" value="8" aria-describedby="fireplace-help" disabled>
         <div class="fireplace-scale" aria-hidden="true"><span>2 kg</span><span>4</span><span>6</span><span>8</span><span>10 kg</span></div>
@@ -933,7 +935,7 @@
         <button id="fireplace-submit" type="submit" disabled>Record firewood now</button>
       </form>
       <p id="fireplace-message" class="temporary-status" role="status" aria-live="polite"></p>
-      <button id="fireplace-retry" class="secondary-button" type="button" hidden>Retry saving</button>
+      <button id="fireplace-retry" data-write-control class="secondary-button" type="button" hidden>Retry saving</button>
       <p id="fireplace-model-status" class="muted" role="status" aria-live="polite"></p>
       <div class="fireplace-history-heading"><h3>Past 48 hours</h3><span id="fireplace-total" class="muted">No entries</span></div>
       <p class="muted fireplace-timezone">Finnish local time · Europe/Helsinki</p>

@@ -54,6 +54,9 @@ export function mitsubishiValue(setting, value, unit = mitsubishiSettings[settin
 export function mitsubishiRoomTemperature(garage = {}) {
   const control = garage.roomTemperature;
   if (!Number.isFinite(control?.targetC)) return null;
+  if (garage.readOnly === true || control.readOnly === true) return { value: mitsubishiValue('targetC', control.targetC),
+    basis: 'Recorded room setting', active: false, progress: 'Live control is unavailable in this view.',
+    detail: `Saved room setting: ${mitsubishiValue('targetC', control.targetC)}. This is recorded application intent, not confirmation of the pump’s current target or operating state. Changes and external-temperature control are disabled here.` };
   const active = control.phase === 'active' && control.acknowledged === true;
   const basis = active ? 'Garage rear · Active'
     : control.phase === 'preparing' || control.phase === 'active' ? 'External sensor · Preparing'
@@ -94,7 +97,8 @@ function mitsubishiReadingCandidates(garage = {}, now = Date.now()) {
     const available = observed && fresh && !quality.includes('retained')
       && reading?.available !== false && (!nativeSetting || reading?.usable !== false);
     const last = mitsubishiValue(key, value, unit);
-    const qualifier = !supported ? 'Unsupported' : !scalar(value) ? 'No reading' : !valid ? 'Invalid reading'
+    const recorded = observed && (garage.readOnly === true || reading?.readOnly === true);
+    const qualifier = recorded ? 'Recorded' : !supported ? 'Unsupported' : !scalar(value) ? 'No reading' : !valid ? 'Invalid reading'
       : !fresh ? 'Stale or unavailable' : !available ? 'Unavailable' : nativeSetting ? 'Native readback'
         : reading?.accuracyVerified === true ? 'Verified' : 'Provisional';
     const detail = [description, !supported ? 'This reading is unsupported or its meaning is not established.' : '',
@@ -106,7 +110,7 @@ function mitsubishiReadingCandidates(garage = {}, now = Date.now()) {
       : 'Measurement accuracy has not been verified.' : '',
     reading?.usable === false ? 'Not qualified as control or metering evidence.' : ''].filter(Boolean).join('\n\n');
     rows.push({ key: `${nativeSetting ? 'native' : 'telemetry'}-${key}`, label, group, description,
-      value: available ? last : 'Unavailable', available, observed, qualifier, detail });
+      value: available || recorded ? last : 'Unavailable', available, observed, recorded, qualifier, detail });
   };
   for (const key of new Set([...Object.keys(mitsubishiSettings), ...Object.keys(readbacks)])) {
     const meta = mitsubishiSettings[key] ?? { label: words(key), description: 'Additional setting reported by the heat pump.' };
@@ -152,7 +156,7 @@ export function createMitsubishiReadingView() {
 
 export function mitsubishiCompressor(garage = {}, now = Date.now()) {
   const reading = mitsubishiReadingCandidates(garage, now).find(row => row.key === 'telemetry-compressorActive');
-  return { ...reading, value: reading.available ? reading.value : 'Unknown' };
+  return { ...reading, value: reading.available ? reading.value : reading.recorded ? `${reading.value} · recorded` : 'Unknown' };
 }
 
 const readingViews = new WeakMap();

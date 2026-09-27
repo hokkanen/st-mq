@@ -1,3 +1,4 @@
+import { createReadOnlyControls, assertDashboardWrite } from './dashboard-access.js';
 import { createSelectPickers } from './select-picker.js';
 import { createDatePicker } from './date-picker.js';
 import { createDashboardReset } from './dashboard-reset.js';
@@ -18,7 +19,7 @@ import { createSensorChangePanel } from './sensor-changes.js';
 import { applicationUrl, usesHomeAssistantLogin, authenticationMessage, createPollingRequest,
   fetchJsonResponse, createEventStream, createCommunicationWatch } from './network.js';
 import { isReadOnlyReplica, renderReplicaStatus, replicaSnapshotKey, renderInstanceRole, pairPanelView } from './replica-status.js';
-import { createPairPanel, isPairManagementRequest } from './pair-status.js';
+import { createPairPanel } from './pair-status.js';
 import { createEquipmentPanel, dhwrReadingSummary } from './equipment.js';
 import { createGarageDoorPanel } from './garage-doors.js';
 import { renderFloorPreheat } from './floor-preheat.js';
@@ -66,6 +67,7 @@ for (const link of document.querySelectorAll('[data-policy-model-link]')) {
 const ingress = usesHomeAssistantLogin();
 const session = createWebSession({ storage: sessionStorage, ingress });
 const accessControls = createAccessControls({ document });
+const readOnlyControls = createReadOnlyControls({ document });
 const passwordVisibility = bindPasswordVisibility({ input: $('token'), button: $('password-visibility') });
 let webAccess;
 let lastStatus;
@@ -131,10 +133,7 @@ function lockScreen({ authenticationFailed = false } = {}) {
 async function api(path, data, options = {}) {
   if (session.locked) throw Object.assign(new Error(authenticationMessage(ingress)), { status: 401 });
   assertWebRequest(webAccess, path, data, lastStatus);
-  if (data !== undefined && (!lastStatus || isReadOnlyReplica(lastStatus)) && !isPairManagementRequest(path, data, lastStatus)) {
-    const error = new Error(lastStatus ? 'This replica is read-only. Make changes on the primary computer.' : 'Wait for the installation status before making changes.');
-    error.status = 403; throw error;
-  }
+  assertDashboardWrite(path, data, lastStatus);
   const { response,result } = await session.run(({ headers, signal }) => fetchJsonResponse(applicationUrl(path), {
     signal, method: data === undefined ? 'GET' : 'POST',
     headers: { ...headers, ...(data === undefined ? {} : { 'Content-Type': 'application/json' }) },
@@ -252,11 +251,11 @@ function renderTemporary(s) {
   $('away-status').textContent = saved.awayUntilLocal ? `Away until ${time(s.settings.occupancy.returnAt)}.` : 'At home.';
   $('override-status').textContent = saved.pauseUntilLocal
     ? `Price control paused until ${time(s.override.expiresAt)}.` : 'Price control is not paused.';
-  $('temporary-overview').textContent = [saved.awayUntilLocal ? `Away until ${time(s.settings.occupancy.returnAt)}` : 'At home',
+  $('temporary-overview').textContent = (isReadOnlyReplica(s) ? 'Recorded · ' : '') + [saved.awayUntilLocal ? `Away until ${time(s.settings.occupancy.returnAt)}` : 'At home',
     saved.pauseUntilLocal ? `Paused until ${time(s.override.expiresAt)}`
       : s.input === 'offline' ? 'Unavailable offline'
         : s.mode === 'active' ? 'Not paused' : s.mode ? `${priceControlState(s).label} mode` : 'Status unavailable'].join(' · ');
-  $('override-scope').textContent = s.input === 'simulated'
+  $('override-scope').textContent = isReadOnlyReplica(s) ? 'Saved settings for inspection. Away and pause changes are disabled in this read-only view.' : s.input === 'simulated'
     ? 'These changes apply to the simulation only.'
     : s.liveWrites ? 'Away and pause update the active heating plan. Starting a pause requests Normal heating, then holds any changes you make until the pause ends.'
       : 'Away and pause update the controller’s plan. This operating mode sends no automatic commands.';
@@ -306,7 +305,7 @@ function renderHeatingTests(s) {
     button.dataset.modeState = state.toLowerCase();
     button.querySelector('.heating-button-state').textContent = state ? '✓' : '';
   }
-  $('heating-test-help').textContent = s.override?.expiresAt > s.now
+  $('heating-test-help').textContent = isReadOnlyReplica(s) ? 'Device commands are disabled. Recorded history cannot confirm the current heating state.' : s.override?.expiresAt > s.now
     ? `Changes are held until ${time(s.override.expiresAt)} or Resume now, then the previous settings return.`
     : 'Changes reset on the next controller update, normally within 1 minute. Pause price control to hold them longer.';
   $('heating-preheat-help').hidden = true;
@@ -500,12 +499,12 @@ function renderProviders(s) {
     readings.hidden = Boolean(entry.sections?.length);
     renderProviderSeries(readings, entry.sections?.length ? [] : entry.datasets ?? entry.series, { datasets: true });
   }
-  $('provider-overview-state').textContent = attentionCount ? `${attentionCount} ${attentionCount === 1 ? 'needs' : 'need'} attention`
+  $('provider-overview-state').textContent = isReadOnlyReplica(s) ? 'Recorded data · view only' : attentionCount ? `${attentionCount} ${attentionCount === 1 ? 'needs' : 'need'} attention`
     : backupCount ? `${backupCount} using backup` : entries.length ? `${entries.length} data feeds`
       : s.input === 'simulated' ? 'Simulation' : 'No live sources';
   $('provider-overview-state').classList.toggle('stale', attentionCount > 0 || backupCount > 0);
   const note = $('provider-context');
-  note.textContent = s.input === 'simulated' ? 'Example prices and weather are in use. Live providers are not polled.'
+  note.textContent = isReadOnlyReplica(s) ? 'Recorded provider information. Live connections are not opened by this computer.' : s.input === 'simulated' ? 'Example prices and weather are in use. Live providers are not polled.'
     : s.input === 'offline' ? 'Recorded history is available. Live providers are not polled.' : entries.length ? '' : 'Waiting for provider status.';
   note.hidden = !note.textContent;
 }
@@ -616,8 +615,8 @@ function renderH66(s) {
     if (!notice) { notice = document.createElement('p'); notice.className = 'equipment-alarm'; root.append(notice); }
     notice.textContent = 'Heat-pump alarm active';
   } else notice?.remove();
-  $('home-pump-health').textContent = h66.connected ? 'Connected' : h66.brokerConnected ? 'Awaiting readings' : 'Not connected';
-  $('home-pump-health').dataset.state = h66.connected ? 'available' : 'attention';
+  $('home-pump-health').textContent = isReadOnlyReplica(s) ? 'Recorded snapshot' : h66.connected ? 'Connected' : h66.brokerConnected ? 'Awaiting readings' : 'Not connected';
+  $('home-pump-health').dataset.state = isReadOnlyReplica(s) ? 'pending' : h66.connected ? 'available' : 'attention';
   $('h66-context').hidden = !h66.restorationPending;
   $('h66-context').textContent = h66.restorationPending
     ? 'Restoring previous H66 settings. Waiting for fresh values from the pump to confirm restoration.' : '';
@@ -652,7 +651,9 @@ function renderH66(s) {
       title.children[0].textContent = metadata.label;
       title.children[1].textContent = metadata.description;
       const availability = h66ReadingStatus(h66, reading, { now: s.now });
-      const valueLabel = availability.usable ? h66ReadingValue(register, reading) : 'Unavailable';
+      const recorded = isReadOnlyReplica(s) && Number.isFinite(reading?.value)
+        && !(reading.quality ?? []).some(flag => /invalid|unknown|unsupported|sentinel/i.test(flag));
+      const valueLabel = availability.usable ? h66ReadingValue(register, reading) : recorded ? `${h66ReadingValue(register, reading)} · recorded` : 'Unavailable';
       value.classList.toggle('stale', !availability.usable);
       const settingDetails = [];
       if (Number.isFinite(reading?.requested)) settingDetails.push(`Requested by this controller: ${h66ReadingValue(register, { ...reading, value: reading.requested })}.`);
@@ -676,6 +677,7 @@ function render(s) {
   $('auth').hidden = true;
   $('fireplace-family-help').hidden = webAccess?.role !== 'family';
   lastStatus = s;
+  readOnlyControls.update(s);
   garageControls.update(s);
   mitsubishiControls.update(s);
   chargingPanel.update(s);
@@ -684,20 +686,13 @@ function render(s) {
   const replica = renderReplicaStatus(document, s, { formatTime: time });
   renderHomePlannedChange(document, s);
   sensorChangePanel.update(isReadOnlyReplica(s) ? { ...s.sensorChanges, available: false, readOnly: true } : s.sensorChanges);
-  if (replica) {
-    fireplacePanel.close();
-    garageDoors.close();
-    garageDoors.update({ ...equipmentPanel.actions.snapshot(), status: s });
-    if (replica.available && s.recording && $('recording-details')?.open) renderRecording(s, $('recording-content'));
-    return replica;
-  }
-  $('connection').textContent = `${s.input === 'simulated' ? 'SIMULATION' : s.liveWrites ? 'LIVE CONTROL' : s.input !== 'offline' ? 'LIVE OBSERVATION' : 'READ-ONLY'} · ${s.mode.toUpperCase()}`;
+  $('connection').textContent = `${s.input === 'simulated' ? 'SIMULATION' : s.liveWrites ? 'LIVE CONTROL' : s.input !== 'offline' ? 'LIVE OBSERVATION' : 'READ-ONLY'} · ${(s.mode ?? 'monitoring').toUpperCase()}`;
   $('context').textContent = s.input === 'simulated' ? 'Simulated devices and example prices. This workspace sends no commands to your home.'
     : s.input === 'offline' ? 'Imported household history. No live device connection is open.'
       : s.liveWrites ? 'Learning from the house and controlling heating through preheating, reduction and recovery.'
         : 'Observing the house and planning heating. This operating mode sends no automatic commands.';
   for (const key of ['indoor', 'outdoor']) {
-    const obs = s.observations[key] ?? {};
+    const obs = s.observations?.[key] ?? {};
     const readingStatus = temperatureReadingStatus(obs, { now: s.now, formatTime: time, outdoor: key === 'outdoor' });
     const title = key === 'indoor' ? 'Indoor average' : 'Outdoor temperature';
     const source = key === 'outdoor' ? outdoorSourceLabel(obs.source) : providerName(obs.source);
@@ -713,7 +708,7 @@ function render(s) {
   const manualHold = s.decision.manualHold?.until > s.now ? s.decision.manualHold : null;
   const requested = label(manualHold?.phase ?? s.observations?.actual?.requestedPhase ?? s.decision.phase ?? (s.decision.action === 'normal' ? 'Normal' : 'Reduction')).replace(/^./, value => value.toUpperCase())
     + (manualHold ? ' · held' : '');
-  const controlMode = s.mode === 'monitoring' ? 'Monitoring · no automatic commands'
+  const controlMode = replica ? 'Recorded controller decision · current control state unavailable' : s.mode === 'monitoring' ? 'Monitoring · no automatic commands'
     : s.input === 'simulated' && s.mode === 'active' ? 'Simulation · applying this plan'
       : s.input === 'simulated' ? 'Simulation · shadow plan' : s.liveWrites
         ? manualHold ? 'Active · holding manual heating settings' : 'Active · applying the heating plan'
@@ -741,21 +736,23 @@ function render(s) {
   const dhwr = dhwrReadingSummary(s);
   $('dhwr').textContent = dhwr.summary;
   $('dhwr').classList.toggle('stale', dhwr.attention);
-  const reference = s.decision.comfort?.targetC ?? s.settings.comfort.targetC;
-  const referenceSource = s.decision.comfort?.source === 'explicit-setting' || s.settings.comfort.targetC != null ? 'configured' : 'learned';
-  $('reference').textContent = s.demoComfortTargetC ? `${s.demoComfortTargetC} °C` : Number.isFinite(reference) ? `${Number(reference).toFixed(1)} °C` : 'Learning';
+  const reference = s.decision.comfort?.targetC ?? s.settings?.comfort?.targetC;
+  const referenceSource = s.decision.comfort?.source === 'explicit-setting' || s.settings?.comfort?.targetC != null ? 'configured' : 'learned';
+  $('reference').textContent = s.demoComfortTargetC ? `${s.demoComfortTargetC} °C` : Number.isFinite(reference) ? `${Number(reference).toFixed(1)} °C` : replica ? 'Unavailable' : 'Learning';
   $('reference').dataset.empty = !s.demoComfortTargetC && !Number.isFinite(reference);
-  $('reference-source').textContent = s.demoComfortTargetC ? 'Demo reference only' : Number.isFinite(reference) ? `${referenceSource === 'learned' ? 'Learned' : 'Configured'} normal temperature` : 'Normal temperature not established';
+  $('reference-source').textContent = s.demoComfortTargetC ? 'Demo reference only' : Number.isFinite(reference) ? `${referenceSource === 'learned' ? 'Learned' : 'Configured'} normal temperature` : replica ? 'No recorded normal temperature' : 'Normal temperature not established';
   renderHomePolicy(document, s);
-  $('home-policy-current-title').textContent = `${manualHold ? 'Held request' : 'Current plan'} · ${label(manualHold?.phase ?? s.decision.phase ?? s.decision.action)}`;
+  $('home-policy-current-title').textContent = `${replica ? 'Recorded plan' : manualHold ? 'Held request' : 'Current plan'} · ${label(manualHold?.phase ?? s.decision.phase ?? s.decision.action ?? 'Unavailable')}`;
   $('home-policy-current-detail').textContent = [controlMode, decisionReasons, recoveryDetail].filter(Boolean).join(' · ');
-  $('drop').textContent = `${s.settings.comfort.maxDropC} °C`;
+  $('drop').textContent = `${s.settings?.comfort?.maxDropC} °C`;
   $('drop-note').textContent = s.decision.comfort?.maxDropApplies === false ? 'Inactive while you are away' : 'When you are home';
   $('rise-note').textContent = $('drop-note').textContent;
   renderHomeRoomReferences(document, s);
   renderLearning(s);
   const scope = settingsReloadScope(s);
-  $('settings-reload-help').textContent = scope.message;
+  $('settings-reload-help').textContent = replica ? 'Applying configuration is disabled in this read-only view.' : scope.message;
+  $('settings-read-only-source').hidden = !replica;
+  $('settings-read-only-source').textContent = s.readView?.configurationMessage ?? 'Settings are shown for inspection. Changes are disabled until this computer becomes master.';
   $('settings-location-title').textContent = scope.location.title;
   $('settings-location').replaceChildren();
   for (const { label, value } of scope.location.rows) {
@@ -781,8 +778,11 @@ function render(s) {
     group.append(heading, list); $('settings-reload-scope').append(group);
   }
   renderTemporary(s); renderHeatingTests(s);
-  fireplacePanel.update(s.fireplace, s.now);
+  fireplacePanel.update(replica ? { ...s.fireplace, available: false, readOnly: true } : s.fireplace, s.now);
   $('updated').textContent = `Updated ${time(s.now)}`;
+  readOnlyControls.refresh();
+  accessControls.refresh();
+  return renderReplicaStatus(document, s, { formatTime: time });
 }
 const eventStream = createEventStream({ request: (after,options) => api(`/api/events?after=${after}&limit=50`,undefined,options),
   reset: () => $('events').replaceChildren(), append: rows => {
@@ -835,6 +835,7 @@ async function refreshPairing() {
     const previous = lastStatus.pairing;
     const changed = pairing.role !== previous.role || pairing.canControl !== previous.canControl || Boolean(pairing.transition) !== Boolean(previous.transition);
     lastStatus = { ...lastStatus, pairing };
+    readOnlyControls.update(lastStatus);
     garageDoors.update({ ...equipmentPanel.actions.snapshot(), status: lastStatus });
     pairPanel.update(pairPanelView(lastStatus));
     renderInstanceRole(document, lastStatus);
@@ -847,7 +848,7 @@ async function refreshPairing() {
   finally { pairPollBusy = false; }
 }
 $('settings-reload').addEventListener('click', async () => {
-  if (temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy || equipmentBusy || !settingsReloadScope(lastStatus).available) return;
+  if (isReadOnlyReplica(lastStatus) || temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy || equipmentBusy || !settingsReloadScope(lastStatus).available) return;
   settingsReloadBusy = true; ++refreshSequence;
   updateTemporaryButtons();
   $('settings-reload').setAttribute('aria-busy', 'true');
@@ -1003,6 +1004,7 @@ bindDatabaseExport({ saveButton: $('database-export-save'), downloadButton: $('d
   message: $('database-export-message'), window, document,
   request: method => {
     assertWebRequest(webAccess, '/api/database-export', method === 'POST' ? {} : undefined, lastStatus);
+    assertDashboardWrite('/api/database-export', method === 'POST' ? {} : undefined, lastStatus);
     return session.run(async ({ headers, signal }) => {
       const response = await fetch(applicationUrl('/api/database-export'), { method, signal,
         headers: { ...headers, ...(method === 'POST' ? { 'Content-Type': 'application/json' } : {}) },

@@ -327,3 +327,12 @@ test('model input guide mounts each sensor-change fold in its own temperature in
     assert.equal(outdoor.open, true);
   } finally { globalThis.document = previous; }
 });
+
+test('a lower-revision read-only snapshot replaces former primary sensor-change history', () => {
+  const actions = createSensorChangeActions({ request: async () => { throw new Error('No mutation allowed'); } });
+  actions.update(view(20, [event(2)]));
+  actions.update({ ...view(1, [event(1)]), available: false, readOnly: true });
+  assert.equal(actions.snapshot().view.revision, 1);
+  assert.equal(actions.snapshot().view.events[0].id, 1);
+  assert.equal(actions.snapshot().view.available, false);
+});

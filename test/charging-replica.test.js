@@ -139,8 +139,17 @@ test('replica preserves independent vehicle identification, selected values and 
 });
 
 test('replica rejects unsupported development charging payloads', async t => {
-  const { app } = await fixture(t, { version: 5, settings: chargingSettings(), chargers: {} });
-  assert.throws(() => app.status(), /Unsupported charging snapshot/);
+  const { app, root, digest, originalDigest } = await fixture(t, { version: 5, settings: chargingSettings(), chargers: {} });
+  const status = app.status();
+  assert.equal(status.charging.available, false);
+  assert.equal(status.charging.settings, null);
+  assert.deepEqual(status.charging.chargers, []);
+  assert.match(status.charging.error, /saved charging data is unavailable/);
+  assert.equal(status.readOnly, true);
+  const response = await fetch(`${root}/api/status`);
+  assert.equal(response.status, 200, 'Invalid charging preferences do not break the protected dashboard');
+  assert.deepEqual((await response.json()).charging.chargers, []);
+  assert.equal(digest(), originalDigest);
 });
 
 test('replica rejects retired BMW target state and selection shapes without altering the snapshot', async t => {
@@ -155,16 +164,26 @@ test('replica rejects retired BMW target state and selection shapes without alte
     else chargers[0].targetSelection = { connectedAt: snapshotAt, conflict: false, lower: fact,
       raw: fact, selected: { ...fact, source: 'bmw-cardata' }, mode: 'automatic' };
     const { app, digest, originalDigest } = await fixture(t, state);
-    assert.throws(() => app.status(), /Unsupported saved charging target.*fresh development database/);
+    const status = app.status();
+    assert.equal(status.charging.available, false);
+    assert.equal(status.charging.settings, null);
+    assert.deepEqual(status.charging.chargers, []);
+    assert.match(status.charging.error, /saved charging data is unavailable/);
+    assert.equal(status.readOnly, true);
     assert.equal(digest(), originalDigest);
   });
 });
 
 test('replica rejects a current snapshot missing its recorded configuration instead of inventing defaults', async t => {
   const settings = chargingSettings();
-  const { app } = await fixture(t, { version: 6, chargers: {}, view: {
+  const { app, digest, originalDigest } = await fixture(t, { version: 6, chargers: {}, view: {
     chargers: CHARGER_DEFINITIONS.map(definition => buildCharger({ definition,
       settings: settings.chargers[definition.id], now: snapshotAt })),
   } });
-  assert.throws(() => app.status(), /Malformed current charging snapshot/);
+  const status = app.status();
+  assert.equal(status.charging.available, false);
+  assert.equal(status.charging.settings, null);
+  assert.deepEqual(status.charging.chargers, []);
+  assert.match(status.charging.error, /saved charging data is unavailable/);
+  assert.equal(digest(), originalDigest);
 });

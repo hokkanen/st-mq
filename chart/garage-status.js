@@ -421,7 +421,8 @@ export function renderGarage(document, status) {
     const last = value === null || value === undefined ? 'Unknown' : format(value);
     const id = `garage-native-${field === 'targetC' ? 'target' : field}`;
     const available = fresh && last !== 'Unknown';
-    set(id, available ? last : '—');
+    const recorded = garage.readOnly === true && finite(at) && last !== 'Unknown';
+    set(id, available ? last : recorded ? `${last} · recorded` : '—');
     const node = document.getElementById(id); node?.classList.toggle('stale', !available); node?.classList.toggle('muted', !available);
     return { value, fresh, detail: `${title}: ${last === 'Unknown' ? 'No usable native reading received.'
       : `Last reported ${last} · ${finite(at) ? clock(at) : 'freshness unknown'}${fresh ? '' : ' · current reading unavailable'}`}` };
@@ -448,9 +449,9 @@ export function renderGarage(document, status) {
   const controls = garage.heatingControls ?? {};
   const held = controls.paused && controls.holdUntil > now;
   const requested = garageHeatingRequest(garage);
-  set('garage-requested-label', 'HEATING REQUEST');
+  set('garage-requested-label', isReadOnlyReplica(status) ? 'RECORDED HEATING REQUEST' : 'HEATING REQUEST');
   setHeatingStatusDetail(document.getElementById('garage-requested'), { key: 'garage-requested',
-    label: `${requested}${held ? ' · held' : ''}`, title: 'Garage heating request',
+    label: isReadOnlyReplica(status) && requested === 'No request' ? 'Not recorded' : `${requested}${held ? ' · held' : ''}`, title: 'Garage heating request',
     confirmation: garageHeatingConfirmation(status, requested),
     detail: `${display.reason}.${held ? ` Manual heating selection is held until ${clock(controls.holdUntil)} or Resume now.` : ''} The request describes the heating plan.` });
   renderGarageHeatingState(document, status, requested);
@@ -466,10 +467,10 @@ export function renderGarage(document, status) {
     root.replaceChildren(fragment);
   };
   const connected = adapter.connected === true && adapter.health?.pumpCommunicating === true;
-  set('garage-controller-state', connected ? 'Connected' : adapter.connected ? 'Awaiting readings' : 'Not connected');
+  set('garage-controller-state', isReadOnlyReplica(status) ? 'Recorded snapshot' : connected ? 'Connected' : adapter.connected ? 'Awaiting readings' : 'Not connected');
   const connection = document.getElementById('garage-controller-state');
-  if (connection) connection.dataset.state = connected ? 'available' : 'attention';
-  set('garage-controller-reason', display.reason);
+  if (connection) connection.dataset.state = isReadOnlyReplica(status) ? 'pending' : connected ? 'available' : 'attention';
+  set('garage-controller-reason', [garage.error, display.reason].filter(Boolean).join(' '));
   renderMitsubishiReadings(document, status);
   list('garage-controller-readings', display.rows);
   set('garage-strategy-overview', display.strategy?.label ?? 'Strategy unavailable');
@@ -556,7 +557,8 @@ export function createGarageControls({ document, request, onStatus = () => {}, o
     if (until && !dirty) until.value = temporary.pauseUntilLocal ?? finnishDateTime(temporary.pauseUntil);
     if ($('garage-pause-status')) $('garage-pause-status').textContent = temporary.pauseActive
       ? `Price control paused until ${clock(temporary.pauseUntil)}.` : 'Price control is not paused.';
-    if ($('garage-heating-help')) $('garage-heating-help').textContent = `${temporary.pauseActive && temporary.pauseUntil > status?.now
+    if ($('garage-heating-help')) $('garage-heating-help').textContent = isReadOnlyReplica(status)
+      ? 'Device commands are disabled. Recorded history cannot confirm the current Garage heating state.' : `${temporary.pauseActive && temporary.pauseUntil > status?.now
       ? `Changes are held until ${clock(temporary.pauseUntil)} or Resume now, then normal heating returns.`
       : 'Changes reset on the next controller update, normally within 1 minute. Pause price control to hold them longer.'} Freeze protection can restore heating sooner.`;
     setStatusDetail($('garage-heating-status'), { key: 'garage-heating-availability', title: 'Garage heating control',

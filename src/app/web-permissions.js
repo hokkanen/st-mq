@@ -29,7 +29,7 @@ export function fireplaceAccess(view, webAccess, now) {
   if (!view) return view;
   return { ...view, entries: (view.entries ?? []).map(entry => {
     const removalUntil = entry.at + FAMILY_FIREWOOD_REMOVAL_MS;
-    return { ...entry, canRemove: entry.removedAt == null && (webAccess.role === 'admin'
+    return { ...entry, canRemove: view.readOnly !== true && entry.removedAt == null && (webAccess.role === 'admin'
       || Number.isSafeInteger(entry.at) && entry.at <= now && now <= removalUntil),
     ...(webAccess.role === 'family' ? { removalUntil } : {}) };
   }) };

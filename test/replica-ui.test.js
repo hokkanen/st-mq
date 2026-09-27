@@ -1,8 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { isReadOnlyReplica, replicaDisplay, primaryReplicationDisplay, replicaSnapshotKey, chartObservationTime,
-  renderReplicaStatus, instanceRoleDisplay, renderInstanceRole, pairPanelView } from '../chart/replica-status.js';
+  renderReplicaStatus as renderReplicaView, instanceRoleDisplay, renderInstanceRole, pairPanelView } from '../chart/replica-status.js';
+import { createReadOnlyControls, assertDashboardWrite } from '../chart/dashboard-access.js';
 import { historySeriesAt } from '../chart/history-model.js';
+
+const access = new WeakMap();
+function renderReplicaStatus(document, status, options) {
+  if (!access.has(document)) access.set(document, createReadOnlyControls({ document }));
+  access.get(document).update(status);
+  return renderReplicaView(document, status, options);
+}
 
 const now = Date.parse('2026-09-10T12:00:00Z');
 
@@ -89,6 +97,8 @@ function fixture() {
     replaceChildren(...children) { this.children = children; this.ownText = ''; }
     setAttribute(name, value) { this.attributes[name] = String(value); }
     getAttribute(name) { return this.attributes[name] ?? null; }
+    removeAttribute(name) { delete this.attributes[name]; }
+    matches() { return false; }
     addEventListener(name, callback) { this.listeners.set(name, [...this.listeners.get(name) ?? [], callback]); }
     click() { for (const callback of this.listeners.get('click') ?? []) callback({ target: this }); }
     focus() { document.activeElement = this; }
@@ -113,7 +123,7 @@ function fixture() {
   Object.assign(document, { documentElement: new Element(), body: new Element(), createElement: () => new Element(),
     defaultView: { innerWidth: 390, innerHeight: 844, addEventListener() {} }, addEventListener() {},
     getElementById: id => nodes.get(id) ?? document.body.querySelector(`#${id}`),
-    querySelectorAll: selector => selector === '[data-controller-only]' ? [controls] : sections });
+    querySelectorAll: selector => selector === '[data-write-control]' ? [controls] : sections });
   return { document, controls, sections, $: id => document.getElementById(id) };
 }
 
@@ -121,9 +131,9 @@ test('a replica renders without Engine status and never presents copied active f
   const { document, controls, sections, $ } = fixture();
   const waiting = renderReplicaStatus(document, { role: 'replica', now, replication: { state: 'waiting' } });
   assert.equal(waiting.available, false);
-  assert.equal(controls.hidden, true);
+  assert.equal(controls.hidden, false);
   assert(controls.controls.every(node => node.disabled));
-  assert(sections.every(node => node.hidden));
+  assert(sections.every(node => !node.hidden), 'cards stay visible before the first snapshot');
   assert.match($('connection').textContent, /WAITING FOR SNAPSHOT/);
   assert.equal($('requested').dataset.state, 'muted');
   const requestTrigger = $('requested').querySelector('.status-detail-trigger');
@@ -135,7 +145,7 @@ test('a replica renders without Engine status and never presents copied active f
     lastDecision: { phase: 'reduction' }, recording: { parameters: [] } };
   renderReplicaStatus(document, status);
   assert(sections.every(node => !node.hidden), 'history becomes available after initial publication');
-  assert.equal(controls.hidden, true);
+  assert.equal(controls.hidden, false);
   assert(controls.controls.every(node => node.disabled));
   assert.equal($('indoor').textContent, '21.3 °C');
   assert.equal($('outdoor').textContent, 'Unavailable');
@@ -145,7 +155,7 @@ test('a replica renders without Engine status and never presents copied active f
   assert.equal($('requested').dataset.state, 'muted');
   assert.match($('context').textContent, /primary’s current operating state is unknown/);
   assert.doesNotMatch($('connection').textContent, /LIVE CONTROL|LIVE OBSERVATION/);
-  assert.equal($('recording-adaptive-details').hidden, true);
+  assert.equal($('recording-adaptive-details').hidden, false);
   renderReplicaStatus(document, { ...status, now: now + 3 * 86400_000 });
   assert.equal($('replica-notice').dataset.state, 'stale');
   assert($('indoor').classes.has('stale'));
@@ -190,7 +200,7 @@ test('the primary keeps its dashboard and snapshot identity changes on replaceme
   assert.equal(controls.hidden, false);
   assert(controls.controls.every(node => !node.disabled));
   assert.equal(isReadOnlyReplica({ instance: { role: 'replica' } }), true);
-  assert.equal(isReadOnlyReplica({ role: 'primary', readOnly: true }), false);
+  assert.equal(isReadOnlyReplica({ role: 'primary', readOnly: true }), true);
   assert.equal(replicaSnapshotKey({ role: 'primary' }), null);
   assert.notEqual(replicaSnapshotKey(ready()), replicaSnapshotKey(ready({ generation: 'second-generation' })));
 });
@@ -239,11 +249,11 @@ test('paired slaves use the compact pair section while retaining snapshot and re
   assert.equal($('instance-role').textContent, 'SLAVE');
   assert.equal($('replica-notice').hidden, true, 'paired details replace the duplicate full-size replica notice');
   assert.match($('connection').textContent, /READ-ONLY HISTORY · HISTORY AVAILABLE/);
-  assert(controls.hidden && controls.controls.every(node => node.disabled));
+  assert(!controls.hidden && controls.controls.every(node => node.disabled));
   assert(sections.every(node => !node.hidden));
   renderReplicaStatus(document, { role: 'replica', now, pairing, replication: { state: 'waiting' } });
   assert.match($('connection').textContent, /WAITING FOR SNAPSHOT/);
-  assert(sections.every(node => node.hidden));
+  assert(sections.every(node => !node.hidden), 'cards stay visible before the first snapshot');
   renderReplicaStatus(document, { ...ready({ state: 'error' }), pairing });
   assert.match($('connection').textContent, /SYNC NEEDS ATTENTION/);
   assert(sections.every(node => !node.hidden), 'the last verified history stays visible after a failed catch-up');
@@ -257,18 +267,18 @@ test('fast role updates cannot present a stale promoted viewer as a ready master
   renderReplicaStatus(document, promoted);
   assert.equal($('instance-role').textContent, 'MASTER · WAITING');
   assert.equal($('instance-role').dataset.state, 'transition');
-  assert.equal(controls.hidden, true);
+  assert.equal(controls.hidden, false);
   assert.doesNotMatch($('connection').textContent, /LIVE CONTROL/);
   renderReplicaStatus(document, { pairing: promoted.pairing });
   assert.equal($('instance-role').textContent, 'MASTER');
   assert.equal(controls.hidden, false, 'a fresh primary runtime status releases the viewer guard');
   renderReplicaStatus(document, { pairing: { ...promoted.pairing, transition: { kind: 'handover' } } });
   assert.equal($('instance-role').textContent, 'ROLE CHANGE');
-  assert.equal(controls.hidden, true);
+  assert.equal(controls.hidden, false);
   renderReplicaStatus(document, { ...ready(), pairing: { enabled: true, role: 'protected', canControl: false } });
   assert.equal($('instance-role').textContent, 'PROTECTED');
   assert.match($('connection').textContent, /HOME CONTROL DISABLED/);
-  assert.match($('context').textContent, /Local history is protected for recovery/);
+  assert.match($('context').textContent, /Local history is protected/);
   assert.doesNotMatch($('context').textContent, /Recorded history from the primary/);
   assert.equal($('replica-notice').hidden, true);
 });
@@ -295,4 +305,21 @@ test('the compact slave panel preserves published verification across receiver r
     assert.equal(pairPanelView({ ...status, pairing }), pairing, 'an old receipt cannot verify the primary or protected local history');
   }
   assert.deepEqual(pairPanelView({}), { enabled: false });
+});
+
+
+test('read-only request guard blocks every mutation including saved exports but permits reads and explicit pair management', () => {
+  const mutationPaths = ['/api/settings/reload', '/api/database-export', '/api/fireplace', '/api/sensor-changes',
+    '/api/garage/native', '/api/equipment/switch', '/api/charging/settings', '/api/new-mutation'];
+  for (const status of [undefined, { role: 'replica' }, { readOnly: true },
+    { pairing: { enabled: true, role: 'protected', canControl: false } },
+    { pairing: { enabled: true, role: 'primary', canControl: false } }]) {
+    for (const path of mutationPaths) assert.throws(() => assertDashboardWrite(path, {}, status), { status: 403 });
+    for (const path of ['/api/status', '/api/chart', '/api/database-export']) assert.doesNotThrow(() => assertDashboardWrite(path, undefined, status));
+  }
+  const status = { role: 'replica', pairing: { enabled: true, role: 'protected' } };
+  assert.doesNotThrow(() => assertDashboardWrite('/api/pairing/action', {
+    action: 'promote', requestId: '11111111-1111-4111-8111-111111111111', confirmed: true }, status));
+  assert.throws(() => assertDashboardWrite('/api/pairing/action', { action: 'unknown' }, status), { status: 403 });
+  assert.doesNotThrow(() => assertDashboardWrite('/api/settings/reload', {}, { role: 'primary' }));
 });

@@ -670,6 +670,8 @@ function describeTeslaMate(health, { now, formatTime }) {
 
 /** Only known source names, failure codes and quality flags enter display text; provider bodies never do. */
 export function describeProvider(job, health, { now, formatTime }) {
+  if (health.readOnly === true || health.status === 'snapshot') return { title: jobs[job] ?? 'Data provider',
+    state: 'Recorded snapshot', attention: false, detail: `Saved provider information${Number.isFinite(health.snapshotAt) ? ` from ${formatTime(health.snapshotAt)}` : ''}. This computer does not open live provider connections.` };
   if (job === 'easee') return describeEasee(health, { now, formatTime });
   if (job === 'teslamate') return describeTeslaMate(health, { now, formatTime });
   if (job === 'shelly-evse') return { title: jobs[job], state: states[health.status] ?? 'Status pending', attention: health.status === 'degraded',
