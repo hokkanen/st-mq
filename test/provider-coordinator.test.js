@@ -54,6 +54,20 @@ function fixture(t) {
     devices: { temperatures: async () => temperature(), easee: async () => current() }, market, weather, outdoor, automatic: false };
   return { options, store, engine, engines, config, temperature, setTime(at) { now = at; } };
 }
+test('live OCPP dashboard address is absent from persisted provider health', async t => {
+  const f = fixture(t), endpoint = 'ws://192.0.2.10:9001/ocpp';
+  f.options.devices.localOcppStatus = ({ includeEndpoint = false } = {}) => ({
+    setup: { state: 'connecting', endpointSource: 'detected', ...(includeEndpoint ? { endpoint } : {}) },
+  });
+  const providers = startProviders(f.options);
+  try {
+    await providers.runDue();
+    assert.equal(f.engine.providerStatus().easee.localOcpp.setup.endpoint, endpoint);
+    assert.equal(f.store.getState('providers:health').easee.localOcpp.setup.endpointSource, 'detected');
+    assert.equal(f.store.getState('providers:health').easee.localOcpp.setup.endpoint, undefined);
+  } finally { await providers.close(); }
+});
+
 test('unchanged forecast downloads share content and preserve unknown-issuance age',async t=>{
   const f=fixture(t);f.config.acquisition.weatherIntervalMs=30*MINUTE;
   f.options.weather=async({now})=>({source:'openmeteo',fetchedAt:now,requestStartedAt:now-1000,issuedAt:null,

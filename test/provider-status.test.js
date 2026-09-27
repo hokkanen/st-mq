@@ -977,19 +977,80 @@ test('local setup readiness diagnostics distinguish storage and authorization fr
   }
 });
 
-test('standalone endpoint requirement directs configuration without exposing private setup data', () => {
+test('standalone endpoint ambiguity directs configuration without exposing private setup data', () => {
   const setup = { state: 'needs-endpoint', endpointSource: null, reason: 'synthetic-private-reason',
     endpoint: 'ws://synthetic-private-host:9001/ocpp', password: 'synthetic-private-password' };
   const display = easeeLocalConnectionDisplay({ localOcpp: { configured: false, setup } }, options);
   assert.equal(display.setup.label, 'Address needed');
-  assert.match(display.setup.detail, /standalone address that the charger can reach.*apply configuration/);
+  assert.match(display.setup.detail, /No unambiguous local address could be detected/);
+  assert.match(display.setup.detail, /easee\.local_ocpp\.server_url to an address the charger can reach.*apply configuration/);
   assert.match(display.setup.detail, /Paired installations use their shared virtual address automatically/);
+  assert.equal(display.endpoint, 'Address unavailable');
   assert.doesNotMatch(JSON.stringify(display), /synthetic-private/);
   for (const state of ['constructor', '__proto__', 'synthetic-private-state']) {
     setup.state = state;
     const unknown = easeeLocalConnectionDisplay({ localOcpp: { setup } }, options);
     assert.equal(unknown.setup.label, 'Checking setup');
     assert.doesNotMatch(JSON.stringify(unknown), /constructor|__proto__|synthetic-private/);
+  }
+});
+
+test('live local endpoint display distinguishes automatic detection, explicit settings and shared pair address', () => {
+  for (const [source, endpoint, expected] of [
+    ['detected', 'ws://192.0.2.10:9001/ocpp', 'Detected standalone address: ws://192.0.2.10:9001/ocpp'],
+    ['configured', 'wss://charger.example.invalid/ocpp', 'Configured standalone address: wss://charger.example.invalid/ocpp'],
+    ['pair-vip', 'ws://192.0.2.30:9001/ocpp', 'Paired virtual address: ws://192.0.2.30:9001/ocpp'],
+  ]) {
+    const display = easeeLocalConnectionDisplay({ localOcpp: {
+      setup: { state: 'connecting', endpointSource: source, endpoint },
+    } }, options);
+    assert.equal(display.endpoint, expected);
+    assert.equal(display.setup.label, 'Waiting for connection');
+    assert.equal(display.readings.label, 'Waiting for connection', 'Detecting an address does not confirm charger reachability');
+    if (source === 'detected') {
+      assert.match(display.detail, /cannot reach this address.*easee\.local_ocpp\.server_url.*apply configuration/);
+      assert.match(display.detail, /Apply configuration again to detect the address after a network change/);
+    } else if (source === 'configured') {
+      assert.match(display.detail, /Leave easee\.local_ocpp\.server_url empty.*detect a local address automatically/);
+    } else assert.match(display.detail, /shared address/);
+  }
+});
+
+test('local endpoint display rejects private metadata, malformed URLs and unknown sources', () => {
+  const forbidden = 'synthetic-private';
+  for (const endpoint of [
+    `ws://${forbidden}:secret@192.0.2.10:9001/ocpp`,
+    `ws://192.0.2.10:9001/ocpp/${forbidden}`,
+    `ws://192.0.2.10:9001/ocpp?token=${forbidden}`,
+    `ws://192.0.2.10:9001/ocpp#${forbidden}`,
+    `http://${forbidden}.invalid/ocpp`,
+    `WS://${forbidden}.invalid/ocpp`,
+    ` ws://${forbidden}.invalid/ocpp`,
+    `ws://${forbidden}.invalid:80/ocpp`,
+    `ws://${forbidden}.invalid/extra/../ocpp`,
+    `ws://${forbidden}.invalid/ocpp?`,
+    `ws://${forbidden}.invalid/ocpp#`,
+    forbidden, null, 1, { href: forbidden },
+  ]) {
+    const display = easeeLocalConnectionDisplay({ localOcpp: {
+      setup: { state: 'ready', endpointSource: 'configured', endpoint },
+    } }, options);
+    assert.equal(display.endpoint, 'Configured standalone address');
+    assert.doesNotMatch(JSON.stringify(display), /synthetic-private/);
+  }
+  for (const endpointSource of [null, 'constructor', '__proto__', forbidden]) {
+    const display = easeeLocalConnectionDisplay({ localOcpp: {
+      setup: { state: 'ready', endpointSource, endpoint: `ws://${forbidden}.invalid/ocpp` },
+    } }, options);
+    assert.equal(display.endpoint, 'Address unavailable');
+    assert.doesNotMatch(JSON.stringify(display), /synthetic-private|constructor|__proto__/);
+  }
+  for (const snapshot of [{ readOnly: true }, { status: 'snapshot' }]) {
+    const display = easeeLocalConnectionDisplay({ ...snapshot, localOcpp: {
+      setup: { state: 'ready', endpointSource: 'configured', endpoint: `ws://${forbidden}.invalid/ocpp` },
+    } }, options);
+    assert.equal(display.endpoint, 'Configured standalone address');
+    assert.doesNotMatch(JSON.stringify(display), /synthetic-private/);
   }
 });
 

@@ -735,7 +735,11 @@ configuration-owned; **Save for this session** cannot replace them. **Charge now
 releases economic scheduling for the current connection even with Automatic
 charging OFF, while preserving native device and vehicle constraints.
 Cloud delayed starts and native OCPP control are exclusive. Native OCPP setup is
-managed by ST-MQ, with a stable shared address in paired mode. Opt-in
+managed by ST-MQ. With `easee.local_ocpp.server_url` omitted or empty, standalone
+setup detects the LAN IPv4 address on startup and **Apply configuration**; paired
+setup uses the stable shared virtual IP. Set a standalone `server_url` override
+when detection does not provide an address the charger can reach. The live local
+connection status shows the effective base URL and its source. Opt-in
 `plug-and-charge` authorization supports RFID-free starts; economic pauses use
 only expiring 0 A transaction profiles and release to the existing charger and
 Equalizer limits. Cloud fallback supplies readings, not a second active

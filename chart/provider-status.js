@@ -496,9 +496,10 @@ const currentFlags = flags => Array.isArray(flags) ? [...new Set(flags.filter(fl
 
 const scopedCurrentFlags = flags => currentFlags(flags).filter(flag => flag !== 'stale');
 
+const localEndpointNeeded = 'No unambiguous local address could be detected. Set easee.local_ocpp.server_url to an address the charger can reach, then apply configuration. Paired installations use their shared virtual address automatically.';
 const localSetupStates = Object.freeze({
   disabled: ['Not enabled', 'Local connection setup is disabled.'],
-  'needs-endpoint': ['Address needed', 'Set a standalone address that the charger can reach, then apply configuration. Paired installations use their shared virtual address automatically.'],
+  'needs-endpoint': ['Address needed', localEndpointNeeded],
   'waiting-listener': ['Preparing connection', 'Waiting for this computer’s local charger listener before updating the charger.'],
   checking: ['Checking charger', 'Checking the charger’s local connection settings through Easee cloud.'],
   'waiting-charger': ['Waiting for charger', 'Waiting for the charger to become available for setup.'],
@@ -509,7 +510,7 @@ const localSetupStates = Object.freeze({
   retrying: ['Retrying setup', 'The cloud setup request did not complete. Setup will retry automatically.'],
 });
 const localSetupReasons = Object.freeze({
-  'endpoint-required': 'Set a standalone address that the charger can reach, then apply configuration. Paired installations use their shared virtual address automatically.',
+  'endpoint-required': localEndpointNeeded,
   'authorization-tags-required': 'RFID mode needs permitted authorization tags. Configure them, or select plug-and-charge for RFID-free starts, then apply configuration.',
   'native-control-unavailable': 'Waiting for native scheduling and plug-in authorization to be ready before activating local OCPP. The current charging control is preserved.',
   'cloud-schedule-active': 'An existing Easee cloud schedule owns charging. It is preserved while local OCPP waits to activate.',
@@ -538,9 +539,23 @@ const localPendingReasons = Object.freeze({
   'cloud-schedule-active': 'Waiting for cloud schedule',
   'control-transition-pending': 'Control handover pending',
 });
+const localEndpointSources = Object.freeze({
+  detected: 'Detected standalone address',
+  configured: 'Configured standalone address',
+  'pair-vip': 'Paired virtual address',
+});
 
-/** Setup and measurements have independent readiness. Public text never includes
- * endpoint addresses, credentials, charger identifiers or raw provider errors. */
+function localEndpointAddress(value) {
+  if (typeof value !== 'string' || value.length > 2048 || value.includes('?') || value.includes('#')) return null;
+  try {
+    const url = new URL(value);
+    return ['ws:', 'wss:'].includes(url.protocol) && url.hostname && url.pathname === '/ocpp'
+      && !url.username && !url.password && !url.search && !url.hash && url.href === value ? value : null;
+  } catch { return null; }
+}
+
+/** Setup and measurements have independent readiness. Only the validated live
+ * base endpoint is displayed; credentials, charger identities and raw errors are omitted. */
 export function easeeLocalConnectionDisplay(health, { now, formatTime } = {}) {
   const local = health?.localOcpp;
   if (!local || typeof local !== 'object') return null;
@@ -551,8 +566,11 @@ export function easeeLocalConnectionDisplay(health, { now, formatTime } = {}) {
   const label = controlPending ? localPendingReasons[setup.reason] : stateLabel;
   const explanation = Object.hasOwn(localSetupReasons, setup.reason) ? localSetupReasons[setup.reason] : stateExplanation;
   const setupAttention = !controlPending && ['needs-endpoint', 'blocked', 'retrying'].includes(setup.state);
-  const endpoint = setup.endpointSource === 'pair-vip' ? 'Paired virtual address'
-    : setup.endpointSource === 'configured' ? 'Configured standalone address' : 'Address not configured';
+  const endpointLabel = Object.hasOwn(localEndpointSources, setup.endpointSource)
+    ? localEndpointSources[setup.endpointSource] : null;
+  const endpointAddress = endpointLabel && health.readOnly !== true && health.status !== 'snapshot'
+    ? localEndpointAddress(setup.endpoint) : null;
+  const endpoint = endpointLabel ? `${endpointLabel}${endpointAddress ? `: ${endpointAddress}` : ''}` : 'Address unavailable';
   const timing = typeof formatTime === 'function' && Number.isFinite(now)
     && Number.isSafeInteger(setup.nextAttemptAt) && setup.nextAttemptAt > now
     ? ` ${setup.state === 'ready' ? 'Next connection check' : 'Next setup attempt'} ${formatTime(setup.nextAttemptAt)}.` : '';
@@ -572,7 +590,11 @@ export function easeeLocalConnectionDisplay(health, { now, formatTime } = {}) {
     outage: 'A normal shutdown requests a return to Easee cloud control; a paired handover keeps the local connection active. A failed handback, crash or power loss can leave charging and Easee app Start waiting for authorization. Restart the controller or disable Direct OCPP in Easee configuration. An expired pause does not restore cloud authorization.',
     detail: setup.endpointSource === 'pair-vip'
       ? 'Setup is automatic. OCPP handles charging authorization and schedules locally. During paired handover, the other computer must be ready to accept the charger at the shared address.'
-      : 'Setup is automatic. OCPP handles charging authorization and schedules locally.' };
+      : 'Setup is automatic. OCPP handles charging authorization and schedules locally.'
+        + (setup.endpointSource === 'detected'
+          ? ' If the charger cannot reach this address, set easee.local_ocpp.server_url and apply configuration. Apply configuration again to detect the address after a network change.'
+          : setup.endpointSource === 'configured'
+            ? ' The charger must be able to reach this address. Leave easee.local_ocpp.server_url empty and apply configuration to detect a local address automatically.' : '') };
 }
 
 function easeeStreamDetail(health) {

@@ -2,6 +2,7 @@ import { createHash, hkdfSync, randomBytes } from 'node:crypto';
 import { openSync, closeSync, fsyncSync, readFileSync, writeFileSync, mkdirSync, lstatSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { localOcppConfiguration } from './easee-ocpp.js';
+import { detectLocalOcppAddress } from './local-ocpp-address.js';
 
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const HASH = /^[a-f0-9]{64}$/;
@@ -12,7 +13,7 @@ const version = value => typeof value === 'string' && value.length > 0 && value.
 
 /** Secrets remain in private configuration/credential files. Paired installations
  * derive the same purpose-specific password without transferring it in history. */
-export function ocppInstallation(config, { createCredential = false } = {}) {
+export function ocppInstallation(config, { createCredential = false, detectAddress = detectLocalOcppAddress } = {}) {
   const easee = config.connections?.easee ?? {};
   const local = localOcppConfiguration(easee.local_ocpp);
   const identity = local.charge_point_id || easee.charger_id || '';
@@ -22,7 +23,11 @@ export function ocppInstallation(config, { createCredential = false } = {}) {
   if (paired && (local.server_url && local.server_url !== virtualEndpoint
     || !['0.0.0.0', config.pair.vip.address].includes(local.host)))
     throw fail('Paired OCPP must listen on the shared virtual IPv4 address or all IPv4 interfaces and use the virtual address endpoint.');
-  const endpoint = local.server_url || virtualEndpoint;
+  // Resolve once per provider lifetime. Applying configuration or restarting
+  // redetects the address; a route change must not reprogram a charger mid-poll.
+  const detectedAddress = !paired && !local.server_url ? detectAddress({ host: local.host }) : '';
+  const endpoint = paired ? virtualEndpoint : local.server_url
+    || (detectedAddress ? new URL(`ws://${detectedAddress}:${local.port}/ocpp`).href : '');
   let password = local.password;
   if (!password && paired) password = Buffer.from(hkdfSync('sha256', config.pair.token,
     scope, 'st-mq:easee-native-ocpp:basic-auth:v1', 15)).toString('base64url');
@@ -54,7 +59,7 @@ export function ocppInstallation(config, { createCredential = false } = {}) {
   const virtualTag = password ? Buffer.from(hkdfSync('sha256', password, scope,
     'st-mq:easee-native-ocpp:virtual-tag:v1', 12)).toString('hex').slice(0, 20) : '';
   return { ...local, password, virtualTag, endpoint, identity, chargerId: easee.charger_id ?? '', scope,
-    endpointSource: endpoint ? local.server_url ? 'configured' : 'pair-vip' : null };
+    endpointSource: endpoint ? paired ? 'pair-vip' : local.server_url ? 'configured' : 'detected' : null };
 }
 
 function validState(value, scope) {
@@ -242,7 +247,10 @@ export function createOcppSetup({ installation, state, api, listener, clock = Da
     await beforeDisable(); check();
     await call('apply', { version: verified.version });
     await commitControl('cloud'); check();
-    persist({ ownedFingerprint: null, appliedFingerprint: null, adoptionFingerprint: null, intent: null,
+    // Remember the settings we just disabled without retaining a restoration
+    // duty. A later configuration reload can recognize this exact inactive
+    // connection even when its newly detected address differs.
+    persist({ ownedFingerprint: null, appliedFingerprint: fingerprint, adoptionFingerprint: null, intent: null,
       nextAttemptAt: null, lastAppliedAt: clock(), failures: 0 });
     publish('disabled');
   }
@@ -255,7 +263,8 @@ export function createOcppSetup({ installation, state, api, listener, clock = Da
     let current = await remote(), fingerprint = connectionFingerprint(current);
     const ours = fingerprint === null || fingerprint === wanted || fingerprint === saved.ownedFingerprint
       || fingerprint === saved.adoptionFingerprint || saved.intent !== null && fingerprint === saved.intent.base
-      || current?.connectivityMode === 'OcppOff' && connectionFingerprint({ ...current, connectivityMode: 'DualProtocol' }) === wanted;
+      || current?.connectivityMode === 'OcppOff' && (fingerprint === saved.appliedFingerprint
+        || connectionFingerprint({ ...current, connectivityMode: 'DualProtocol' }) === wanted);
     if (!ours) {
       foreign = fingerprint; persist({ nextAttemptAt: clock() + 300_000 }); publish('blocked', 'foreign-configuration'); return;
     }
@@ -313,14 +322,17 @@ export function createOcppSetup({ installation, state, api, listener, clock = Da
     }
   }
   return {
-    status() {
+    status({ includeEndpoint = false } = {}) {
       const blocked = prerequisiteReason();
       // Live prerequisites must not overwrite the reconciliation result: a
       // temporary listener outage can recover before the next cloud check.
       if (!blocked && saved.appliedFingerprint === wanted && saved.intent === null
         && status.state === 'connecting' && listener.status().available) publish('ready');
       const current = blocked ? describeStatus(...blocked) : status;
-      return { ...current, canAdopt: current.canAdopt && active(), busy: flight !== null };
+      // Only live dashboard reads request the base address. Persisted health,
+      // setup history and adoption responses keep installation details out.
+      return { ...current, canAdopt: current.canAdopt && active(), busy: flight !== null,
+        ...(includeEndpoint ? { endpoint: installation.endpoint ? new URL(installation.endpoint).href : null } : {}) };
     },
     runDue() {
       if (!active() || flight || !changedConfiguration && saved.nextAttemptAt > clock()) return flight ?? Promise.resolve();

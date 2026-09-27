@@ -587,8 +587,8 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
         stream.snapshot(device.id, device.ids, { requiredIds: device.requiredIds }) !== null));
     },
     streamStatus() { return stream?.status() ?? null; },
-    localOcppStatus() { return { ...local.status(), controlTransport: controlBackend === 'native' ? 'ocpp' : controlBackend,
-      ...(setup ? { setup: setup.status() } : {}) }; },
+    localOcppStatus(options) { return { ...local.status(), controlTransport: controlBackend === 'native' ? 'ocpp' : controlBackend,
+      ...(setup ? { setup: setup.status(options) } : {}) }; },
     async reconcileOcpp() {
       local.refreshAuthority?.();
       await ensureLocalListener();

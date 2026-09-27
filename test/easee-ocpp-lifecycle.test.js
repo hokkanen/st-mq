@@ -108,6 +108,8 @@ test('provider activation drains cloud control before store, accepts native POST
   assert.deepEqual(writes(f), [], 'No charger-side mutation can overtake the old controller drain');
   drain.resolve(); await reconciling;
   assert.equal(provider.localOcppStatus().setup.state, 'connecting');
+  assert.equal(provider.localOcppStatus().setup.endpoint, undefined, 'Persistable health omits the address');
+  assert.equal(provider.localOcppStatus({ includeEndpoint: true }).setup.endpoint, 'ws://192.0.2.10:9001/ocpp');
   assert.equal(writes(f).length, 2);
   assert.equal(f.current.websocketConnectionArgs.url, `ws://192.0.2.10:9001/ocpp/${CHARGER}`);
   assert.equal(provider.chargerScheduleControl().ownershipNamespace, 'ocpp');

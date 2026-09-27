@@ -115,6 +115,18 @@ complete SQLite snapshot with the same timestamped filename format. See
 
 ## Charging defaults and dashboard overrides
 
+`easee.local_ocpp.server_url` is an optional connection override. When omitted or
+empty, standalone setup detects the computer's LAN IPv4 address and uses
+`ws://<detected address>:<local_ocpp.port>/ocpp` (port 9001 by default). A specific
+usable local IPv4 listener host takes precedence over default-route selection.
+Detection runs on startup and **Apply configuration**; it does not rewrite the
+configuration file. Supply `server_url` explicitly if detection is ambiguous or
+the charger needs a different reachable address or proxy. Paired operation uses
+the shared virtual IP; an explicit URL must exactly match that shared endpoint.
+The live **Charger 1 local connection** status shows the effective base URL and
+its source. See [Easee endpoint setup](charging-easee.md#endpoint-and-pairing) for
+detection limits, stable addressing and proxy requirements.
+
 `charging.defaults` supplies both charging points whenever the vehicle is
 unidentified: `readyBy: "06:00"`, `manualSoc: 20`, `minimumSoc: 80`, and
 `capacityKwh: 74`. `charging.vehicles.bmw.defaults` and

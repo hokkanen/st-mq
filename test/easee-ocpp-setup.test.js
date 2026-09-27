@@ -42,6 +42,103 @@ const foreign = () => ({ version: 'fixture-foreign-version', connectivityMode: '
   websocketConnectionArgs: { url: 'ws://192.0.2.99:9001/ocpp', caCertificate: null, caCertificateDomain: null },
   basicAuth: { username: 'fixture-foreign-charger', password: 'fixture-foreign-password' } });
 
+test('standalone omitted or empty URL detects a local address with the configured listener port', () => {
+  for (const omitted of [false, true]) {
+    const source = config({ server_url: '', port: 9012, host: '192.0.2.10' });
+    if (omitted) delete source.connections.easee.local_ocpp.server_url;
+    const before = structuredClone(source);
+    const installation = ocppInstallation(source, { detectAddress: ({ host }) => {
+      assert.equal(host, '192.0.2.10'); return '192.0.2.10';
+    } });
+    assert.equal(installation.endpoint, 'ws://192.0.2.10:9012/ocpp');
+    assert.equal(installation.endpointSource, 'detected');
+    assert.deepEqual(source, before, 'Detection is runtime state, not a configuration edit');
+  }
+  const defaultPort = ocppInstallation(config({ server_url: '' }), { detectAddress: () => '192.0.2.10' });
+  assert.equal(defaultPort.endpoint, 'ws://192.0.2.10:9001/ocpp');
+  const httpPort = ocppInstallation(config({ server_url: '', port: 80 }), { detectAddress: () => '192.0.2.10' });
+  assert.equal(httpPort.endpoint, 'ws://192.0.2.10/ocpp');
+});
+
+test('explicit standalone and paired virtual endpoints never depend on host detection', () => {
+  const detectAddress = () => assert.fail('Address detection must not run for explicit or paired endpoints');
+  const explicit = ocppInstallation(config(), { detectAddress });
+  assert.equal(explicit.endpoint, 'ws://192.0.2.10:9001/ocpp');
+  assert.equal(explicit.endpointSource, 'configured');
+  const paired = config({ server_url: '' });
+  paired.topology = 'pair'; paired.pair = { vip: { address: '192.0.2.30' } };
+  for (const server_url of ['', 'ws://192.0.2.30:9001/ocpp']) {
+    paired.connections.easee.local_ocpp.server_url = server_url;
+    const installation = ocppInstallation(paired, { detectAddress });
+    assert.equal(installation.endpoint, 'ws://192.0.2.30:9001/ocpp');
+    assert.equal(installation.endpointSource, 'pair-vip');
+  }
+  paired.connections.easee.local_ocpp.server_url = explicit.endpoint;
+  assert.throws(() => ocppInstallation(paired, { detectAddress }), /virtual/);
+});
+
+test('failed address detection prevents automatic setup without cloud operations', async () => {
+  const installation = ocppInstallation(config({ server_url: '' }), { detectAddress: () => '' });
+  const f = fixture({ installation }); await f.setup.runDue();
+  assert.equal(installation.endpointSource, null);
+  assert.equal(f.setup.status().reason, 'endpoint-required');
+  assert.equal(f.setup.status({ includeEndpoint: true }).endpoint, null);
+  assert.deepEqual(f.calls, []);
+});
+
+test('detected address remains stable until configuration is reapplied and owned setup follows the new address', async () => {
+  let address = '192.0.2.10', detections = 0;
+  const source = config({ server_url: '' });
+  const detectAddress = () => { detections++; return address; };
+  const f = fixture({ installation: ocppInstallation(source, { detectAddress }) });
+  await f.setup.runDue();
+  address = '192.0.2.20'; f.advance(300_001); await f.setup.runDue();
+  assert.equal(detections, 1);
+  assert.equal(f.current.websocketConnectionArgs.url, 'ws://192.0.2.10:9001/ocpp/fixture-charger');
+  // Apply configuration and orderly shutdown hand native control back first.
+  await f.setup.deactivate();
+  assert.equal(f.current.connectivityMode, 'OcppOff');
+  assert.equal(f.saved.ownedFingerprint, null);
+  const next = fixture({ installation: ocppInstallation(source, { detectAddress }), saved: f.saved, current: f.current });
+  await next.setup.runDue();
+  assert.equal(detections, 2);
+  assert.equal(next.current.websocketConnectionArgs.url, 'ws://192.0.2.20:9001/ocpp/fixture-charger');
+  assert.equal(next.setup.status({ includeEndpoint: true }).endpoint, 'ws://192.0.2.20:9001/ocpp');
+  assert.equal(next.setup.status().endpoint, undefined);
+  assert.doesNotMatch(JSON.stringify(next.saved), /192\.0\.2|fixture-charger|fixture-setup-pass/);
+});
+
+test('remembering an inactive connection neither authorizes external edits nor creates a disable obligation', async () => {
+  const f = fixture(); await f.setup.runDue(); await f.setup.deactivate();
+  const saved = structuredClone(f.saved);
+  assert.match(saved.appliedFingerprint, /^[a-f0-9]{64}$/);
+  const disabled = fixture({ installation: ocppInstallation(config({ enabled: false })), saved, current: f.current });
+  await disabled.setup.runDue();
+  assert.equal(disabled.setup.status().state, 'disabled');
+  assert.deepEqual(disabled.calls, []);
+  const installation = ocppInstallation(config({ server_url: '' }), { detectAddress: () => '192.0.2.20' });
+  for (const field of ['address', 'authentication', 'mode']) {
+    const current = structuredClone(f.current);
+    if (field === 'address') current.websocketConnectionArgs.url = 'ws://192.0.2.99:9001/ocpp/fixture-charger';
+    if (field === 'authentication') current.basicAuth.password = 'fixture-external-pass';
+    if (field === 'mode') current.connectivityMode = 'DualProtocol';
+    const restarted = fixture({ installation, saved, current });
+    await restarted.setup.runDue();
+    assert.equal(restarted.setup.status().reason, 'foreign-configuration', field);
+    assert.deepEqual(restarted.calls, ['get'], field);
+  }
+});
+
+test('a detected endpoint does not authorize replacing a foreign connection on retry', async () => {
+  const installation = ocppInstallation(config({ server_url: '' }), { detectAddress: () => '192.0.2.10' });
+  const f = fixture({ installation, current: foreign() });
+  await f.setup.runDue(); f.advance(300_001); await f.setup.runDue();
+  assert.equal(f.setup.status().reason, 'foreign-configuration');
+  assert(!f.calls.includes('store'));
+  await f.setup.adopt(f.setup.status().revision);
+  assert.equal(f.current.websocketConnectionArgs.url, 'ws://192.0.2.10:9001/ocpp/fixture-charger');
+});
+
 test('native setup stores and applies a version, waits for local readings, and avoids repeat writes on restart', async () => {
   const f = fixture(); await f.setup.runDue();
   assert.equal(f.setup.status().state, 'connecting');

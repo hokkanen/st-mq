@@ -1,3 +1,29 @@
+Completed 2026-09-27 — Automatic local OCPP server address
+- Treat omitted or empty easee.local_ocpp.server_url as automatic LAN IPv4
+  selection at startup and Apply configuration. Respect a usable explicit bind
+  address; otherwise prefer the lowest-metric eligible Linux LAN default route.
+  Exclude common tunnel/container interfaces and unusable addresses; ambiguous
+  detection requires an explicit URL. Keep the configured port, explicit proxy
+  overrides and paired virtual-IP endpoint requirements.
+- Show the effective base address and detected/configured/paired source in live
+  connection settings, with override and redetection guidance. Keep credentials,
+  charge-point identity and addresses out of persisted setup/provider history;
+  the existing non-secret address-source label remains in provider health.
+- Preserve the exact applied inactive-connection fingerprint after orderly cloud
+  handback, without retaining a restoration obligation. Reload may update that
+  known inactive connection to the newly detected address; external address,
+  authentication or mode edits still require reviewed adoption. Automatic address
+  selection does not establish charger reachability or grant control authority.
+- Reviewed producers, consumers, ownership, configuration, UI and documentation
+  against F1/F3/F4/F5/F7/F8. Removed the standalone mandatory-URL assumption;
+  retained current pairing, credential, revision, disable and restoration checks.
+  Added no configuration layer, migration, retired alias or compatibility path.
+- Validation: all 3,819 standard tests and 203 focused tests pass with no skips;
+  production build, synthetic Firefox desktop and 320 px setup/adoption checks,
+  screenshot review, 57 local documentation links, JavaScript syntax and diff
+  checks passed. Build retains the existing bundle-size warning. No live
+  charger, household configuration, deployment or external provider tests.
+
 Completed 2026-09-27 — Foundational decisions and informed conflict handling
 - Organize AGENTS.md around eight stable foundation IDs: pre-v1 compatibility,
   reconstructible learning, configuration/state ownership, evidence/provenance,

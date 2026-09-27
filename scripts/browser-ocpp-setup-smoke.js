@@ -73,13 +73,42 @@ try {
   const local = '[data-provider=electricity] .provider-local-connection';
   const button = `${local} .provider-local-adopt`;
   const setupLabel = `${local} [data-local-connection=setup]`;
+  const endpointText = `${local} .provider-local-endpoint`;
   await command('browsingContext.navigate', { context, url: `http://127.0.0.1:${app.server.address().port}`, wait: 'complete' });
   await until(`document.querySelector('${setupLabel}')?.textContent === 'Address needed'`);
   assert.equal(await evaluate("document.querySelector('[data-provider=electricity] .provider-category-state').textContent"), 'Available');
   assert.equal(await evaluate(`document.querySelector('${button}').hidden`), true);
   await evaluate("document.querySelector('[data-provider=electricity] details').open = true; true");
-  assert.match(await evaluate(`document.querySelector('${local}').textContent`), /standalone address.*apply configuration/);
-  assert.match(await evaluate(`document.querySelector('${local} .provider-local-outage').textContent`), /If the controller stops.*crash or power loss.*waiting for approval.*Restart the controller/);
+  await evaluate(`document.querySelector('${local}').open = true; true`);
+  assert.match(await evaluate(`document.querySelector('${local}').textContent`), /No unambiguous local address could be detected.*easee\.local_ocpp\.server_url.*apply configuration/);
+  assert.match(await evaluate(`document.querySelector('${local} .provider-local-outage').textContent`), /If the controller stops.*crash or power loss.*waiting for authorization.*Restart the controller/);
+  for (const [endpointSource, endpoint, label] of [
+    ['detected', 'ws://192.0.2.10:9001/ocpp', 'Detected standalone address'],
+    ['configured', 'wss://charger.example.invalid/ocpp', 'Configured standalone address'],
+    ['pair-vip', 'ws://192.0.2.30:9001/ocpp', 'Paired virtual address'],
+  ]) {
+    const fixture = { state: 'connecting', reason: 'waiting-connection', endpointSource, endpoint, canAdopt: false };
+    await evaluate(`window.setupFixture = ${JSON.stringify(fixture)}; true`);
+    await refresh(); await until(`document.querySelector('${endpointText}').textContent.startsWith(${JSON.stringify(`${label}: ${endpoint}.`)})`);
+    assert.equal(await evaluate(`document.querySelector('${local} [data-local-connection=readings]').textContent`), 'Waiting for connection');
+    assert.equal(await evaluate(`document.querySelector('${button}').hidden`), true);
+    if (endpointSource === 'detected') {
+      assert.match(await evaluate(`document.querySelector('${local} .provider-local-help').textContent`), /cannot reach this address.*easee\.local_ocpp\.server_url.*detect the address after a network change/);
+    }
+  }
+  for (const [endpointSource, endpoint, label] of [
+    ['configured', 'ws://synthetic-private:secret@192.0.2.10:9001/ocpp', 'Configured standalone address'],
+    ['detected', 'ws://192.0.2.10:9001/ocpp/synthetic-private', 'Detected standalone address'],
+    ['configured', 'wss://charger.example.invalid/ocpp?token=synthetic-private', 'Configured standalone address'],
+    ['pair-vip', 'ws://192.0.2.30:9001/ocpp#synthetic-private', 'Paired virtual address'],
+    ['synthetic-private', 'ws://synthetic-private.invalid/ocpp', 'Address unavailable'],
+  ]) {
+    // Each iteration changes the label so the wait confirms a completed refresh.
+    const fixture = { state: 'connecting', reason: 'waiting-connection', endpointSource, endpoint, canAdopt: false };
+    await evaluate(`window.setupFixture = ${JSON.stringify(fixture)}; true`);
+    await refresh(); await until(`document.querySelector('${endpointText}').textContent.startsWith(${JSON.stringify(`${label}.`)})`);
+    assert.doesNotMatch(await evaluate(`document.querySelector('${local}').textContent`), /synthetic-private|secret@/);
+  }
   for (const [reason, label] of [['native-control-unavailable', 'Activation pending'],
     ['cloud-schedule-active', 'Waiting for cloud schedule'], ['control-transition-pending', 'Control handover pending']]) {
     await evaluate(`window.setupFixture = {state:'blocked', reason:${JSON.stringify(reason)}, endpointSource:'pair-vip', canAdopt:false}; true`);
@@ -114,7 +143,7 @@ try {
   await evaluate('window.finishSetup(); true');
   await until(`document.querySelector('${setupLabel}').textContent === 'Waiting for connection'`);
   assert.equal(await evaluate(`document.querySelector('${button}').hidden`), true);
-  await evaluate("window.localAvailable = true; window.setupFixture = { state: 'ready', endpointSource: 'pair-vip' }; true");
+  await evaluate("window.localAvailable = true; window.setupFixture = { state: 'ready', endpointSource: 'detected', endpoint: 'ws://192.0.2.10:9001/ocpp' }; true");
   await refresh(); await until(`document.querySelector('${setupLabel}').textContent === 'Setup complete'`);
   assert.equal(await evaluate(`document.querySelector('${local} [data-local-connection=readings]').textContent`), 'Available');
   assert.equal(await evaluate(`document.querySelector('${local} .provider-local-message').textContent`), '', 'Confirmed setup replaces the earlier waiting notice');
@@ -136,7 +165,8 @@ try {
   assert.equal(await evaluate(`document.querySelector('${button}').hidden`), true, 'Read-only history cannot adopt a charger connection');
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ result: 'ocpp-setup-browser-smoke-passed', checks: [
-    'setup-and-reading-status-independent', 'endpoint-guidance', 'pending-native-and-cloud-handover', 'confirmation-cancel', 'revision-change-during-confirmation',
+    'setup-and-reading-status-independent', 'endpoint-ambiguity-guidance', 'detected-configured-and-pair-addresses', 'invalid-and-sensitive-endpoints-hidden',
+    'pending-native-and-cloud-handover', 'confirmation-cancel', 'revision-change-during-confirmation',
     'adoption-busy-and-actual-revision', 'confirmed-local-readings', 'desktop-and-320px', 'read-only-action-hidden' ] }));
   await command('browser.close', {}); ownsBrowser = false;
 } finally {

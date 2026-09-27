@@ -193,7 +193,7 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
     onChargerObservation: observation => engine.charging?.receiveEaseeObservation(observation),
     tokenStore: fileTokenStore(join(config.dataDir, 'easee-tokens.json'), connections.easee ?? {}) });
   engine.ocppSetup = {
-    status: () => devices.localOcppStatus?.() ?? null,
+    status: () => devices.localOcppStatus?.({ includeEndpoint: true }) ?? null,
     adopt: revision => devices.adoptOcpp?.(revision) ?? Promise.reject(Object.assign(new Error('Local charger setup is unavailable.'), { statusCode: 409 })),
   };
   if (connections.easee?.charger_id && devices.chargerScheduleControl)

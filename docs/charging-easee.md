@@ -345,13 +345,35 @@ availability report does not verify behavior under competing household loads.
 
 ### Endpoint and pairing
 
-In standalone operation, set `easee.local_ocpp.server_url` to a base WebSocket
-address that the charger can reach on the installation network, for example
-`ws://192.0.2.10:9001/ocpp` (an invented documentation address). ST-MQ cannot infer
-that address from a listener bound to `0.0.0.0` or from a browser URL. The default listener port is
-9001 and the base path is `/ocpp`; the charger appends its charge-point identity.
-For standalone `wss`, configure a TLS proxy plus `ca_certificate` and
+In standalone operation, omit `easee.local_ocpp.server_url` or leave it empty
+to detect the computer's LAN IPv4 address. ST-MQ builds
+`ws://<detected address>:<local_ocpp.port>/ocpp`; the default listener port is
+9001. For example, a detected documentation address of `192.0.2.10` produces
+`ws://192.0.2.10:9001/ocpp`. The charger appends its charge-point identity.
+
+Detection uses the computer's local interfaces and IPv4 default routes without
+contacting the charger or an external service. It prefers the usable LAN default
+route with the lowest metric and excludes loopback and link-local addresses and
+known VPN and container interfaces. A specific usable local IPv4 address in
+`local_ocpp.host` takes precedence over route selection. When routing information
+is unavailable, detection accepts a single usable LAN IPv4 candidate. If the
+route table is available but has no suitable default route, or selection is
+ambiguous, setup stays pending and asks for `server_url`. A detected address is a
+candidate for the connection; it does not establish that the charger can reach it.
+
+Set `easee.local_ocpp.server_url` explicitly when detection chooses an unsuitable
+address, or when using a proxy. An explicit standalone value takes precedence
+over detection and must be a base WebSocket address reachable from the charger.
+Detection sees the process's network interfaces; a container without host
+networking may need the host address and forwarded port supplied explicitly.
+Include the listener or proxy port: `ws://` without a port uses port 80. For
+standalone `wss`, configure a TLS proxy plus `ca_certificate` and
 `ca_certificate_domain`; the native listener accepts ordinary WebSocket traffic.
+Detection runs at provider startup and after **Apply configuration**, rather than
+changing the charger endpoint on each setup retry. After a network change,
+restart or use **Apply configuration** to detect again. A DHCP reservation helps
+keep the selected address stable.
+
 For paired operation, ST-MQ derives the base address from the configured pairing
 virtual IP and local OCPP port, so the charger reconnects to the same address
 after handover. A paired `server_url` must be empty or exactly that shared
@@ -374,8 +396,11 @@ waiting for the next cloud check or reapplying charger configuration. Outstandin
 cloud failures and retry deadlines remain in effect. Storage and authorization
 readiness failures are reported separately from listener network failures.
 Correct missing configuration and use **Apply configuration** to reconnect.
-Addresses, authentication secrets and authorization tags are not shown in this
-public status.
+The live setup status shows the effective base server URL and whether it was
+detected, explicitly configured or derived from the pairing virtual IP. It hides
+authentication secrets, authorization tags and the appended charge-point identity.
+The displayed endpoint comes from the current runtime; its URL is excluded from
+persisted setup status and provider history.
 
 An existing connection owned by another OCPP server is preserved. **Set up local
 connection** appears only when ST-MQ has inspected that configuration and this
@@ -384,6 +409,9 @@ OCPP server connection will be replaced and that native OCPP takes over charging
 authorization and schedules. The server rereads the inspected revision before replacement. A newer
 external edit requires another review and confirmation; it does not grant
 permission for recurring automatic overwrites.
+After an orderly shutdown or configuration reload, setup remembers the exact
+inactive connection it applied. It can update that connection to a newly detected
+address without another adoption; changed remote settings still require review.
 
 To turn off a local connection managed by this installation, set
 `easee.local_ocpp.enabled` to `false` and use **Apply configuration**. ST-MQ checks
