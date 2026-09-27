@@ -99,8 +99,9 @@ external fullscreen changes and fallback behavior with synthetic data.
 The chart-views suite exercises every named view, the complete supported series
 explorer, view-specific legend choices, global price visibility, reset behavior,
 garage pump interpretation, line/fill conventions and aligned activity rows.
-Explorer checks cover the compact selected-series label, searchable picker,
-selection/dismissal, keyboard navigation and mobile drawer. Chart style checks
+Explorer checks cover the shared selection button, searchable **Views** and
+**All series** modes, selection/dismissal, keyboard navigation and centered
+desktop, mobile and fullscreen layouts. Chart style checks
 include cubic temperature settings, dashed historical Solar estimate, dash-dot
 future Solar forecast and charger fills within each individual phase. It verifies
 Caravan interval-average power, original energy availability, hollow observation

@@ -1,6 +1,24 @@
 -Make README.md better and more descriptive of the app, especially the beginning of it
 -Implement support for local mqtt-based temperature receives (eg, from shelly or HASS through Meteorologisk Institute); just store last received temp values and time stamps (maybe in storage class, see below) when received (and accept if received within 1h)
 
+Completed 2026-09-27 — Unified chart explorer
+- Replace the View dropdown and separate selected-series row with one top-right
+  button showing the active view or individual series. Center the explorer like
+  the firewood dialog, including phone and fullscreen layouts.
+- Put searchable Views and All series catalogues in the same window. Browsing,
+  switching catalogues and dismissing leave the chart unchanged until a result
+  is selected. Retain each catalogue's search and restore focus to the opener.
+- Remove the obsolete dropdown population, change handler, anchored positioning
+  and phone drawer styles. Preserve current chart requests, date ranges, saved
+  selections, per-view visibility and shared price choices without adding aliases
+  or migrations. Update browser consumers and user documentation together.
+- Validation: 58 focused chart tests and production build pass (the existing
+  bundle-size warning remains). Chart browser checks pass for all 43 views and
+  124 series, unchanged selection while browsing, separate searches, keyboard,
+  focus and touch, both themes, 320/390 px fullscreen and a short phone viewport.
+  Fullscreen restoration/fallback checks pass; desktop and phone screenshots
+  reviewed. No household installation or private configuration accessed.
+
 Completed 2026-09-27 — Balanced dashboard columns
 - Replace bottom-only flex growth with small, measured spaces between sections
   and above footer labels. Keep the Home/Garage headings, outer padding and

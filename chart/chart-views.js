@@ -34,17 +34,6 @@ export function setChartVisibility(preferences, view, key, shown) {
   if (prices.includes(key)) preferences.prices[key] = shown;
   else (preferences.views[view.key] ??= {})[key] = shown;
 }
-export function populateChartViews(select) {
-  select.replaceChildren();
-  for (const name of new Set(CHART_VIEWS.map(view => view.group))) {
-    const group = document.createElement('optgroup'); group.label = name;
-    for (const view of CHART_VIEWS.filter(view => view.group === name)) {
-      const option = document.createElement('option'); option.value = view.key; option.textContent = view.label; group.append(option);
-    }
-    select.append(group);
-  }
-  const option = document.createElement('option'); option.value = 'explorer'; option.textContent = 'Series explorer…'; select.append(option);
-}
 export function chartSubjectAvailability(view, datasets, payload, preferences) {
   const subject = datasets.filter(dataset => !prices.includes(dataset.key) || view.leftSignals.includes(dataset.key));
   const enabled = subject.filter(dataset => !dataset.hidden);

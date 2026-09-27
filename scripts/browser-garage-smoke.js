@@ -1067,7 +1067,11 @@ try {
   }
   await evaluate("globalThis.chargingSmokeValues=null; globalThis.refreshLearningSmokeStatus()");
   for (const view of ['garage_temperatures', 'garage_cooling']) {
-    await evaluate(`document.getElementById('chart-view').value='${view}'; document.getElementById('chart-view').dispatchEvent(new Event('change'))`);
+    await evaluate(`document.getElementById('chart-series-toggle').click();
+      document.getElementById('chart-series-mode-views').click();
+      document.getElementById('chart-series-search').value='';
+      document.getElementById('chart-series-search').dispatchEvent(new Event('input'));
+      document.querySelector('#chart-series [data-view-key="${view}"]').click(); true`);
     await until(`document.getElementById('history').dataset.ready==='true' && document.getElementById('history').dataset.view==='${view}'`);
     assert.equal(await evaluate("document.getElementById('chart-status').textContent.includes('No recorded values')"), false, view);
   }

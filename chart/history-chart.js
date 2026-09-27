@@ -5,7 +5,7 @@ import { calendarTicks, chartQuery, createChartLoader, defaultPalette, finnishDa
 import { historyTooltipCallbacks, historyTooltipsEnabled, historyTooltipInteraction } from './history-tooltips.js';
 export { historyTooltipLabel, historyTooltipTitle } from './history-tooltips.js';
 import { createTimingBenefit } from './timing-benefit.js';
-import { populateChartViews, selectedChartView, chartSelectionKey, readChartPreferences, chartViewPreferences, setChartVisibility, chartSubjectAvailability, CHART_PREFERENCES_KEY } from './chart-views.js';
+import { selectedChartView, chartSelectionKey, readChartPreferences, chartViewPreferences, setChartVisibility, chartSubjectAvailability, CHART_PREFERENCES_KEY } from './chart-views.js';
 import { EXPLORER_SERIES_BY_KEY } from './series-explorer.js';
 import { createSeriesPicker } from './series-picker.js';
 import { createChartOverlays, activityTracks } from './chart-overlays.js';
@@ -60,7 +60,6 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
   const $ = id => document.getElementById(id);
   const canvas = $('history');
   const mobilePointer = window.matchMedia('(pointer: coarse)');
-  populateChartViews($('chart-view'));
   const loader = createChartLoader({ api });
   const timing = createTimingBenefit($('timing-benefit'));
   let storage; try { storage = localStorage; } catch { /* Optional browser persistence. */ }
@@ -94,12 +93,14 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     isMoving: () => navigation.moving,
     isTouchEnabled: () => navigation.fullscreen,
   });
-  const seriesPicker = createSeriesPicker({ getSelected: () => preferences.series, onOpen: () => overlays.clear(),
-    onSelect(key) {
-      preferences.series = key; savePreferences();
+  const seriesPicker = createSeriesPicker({ getSelected: () => preferences, onOpen: () => overlays.clear(),
+    onSelect(chosen) {
+      preferences.view = chosen.view;
+      if (chosen.series) preferences.series = chosen.series;
+      savePreferences();
       const { view, left, series, ...range } = selection;
-      selection = { ...range, ...selectionForView('explorer') };
-      overlays.clear(); refresh();
+      selection = { ...range, ...selectionForView(preferences.view) };
+      overlays.clear(); updateControls(); refresh();
     },
   });
   function selectionForView(key) {
@@ -155,8 +156,8 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
 
   function listen(node, event, handler) { node.addEventListener(event, handler); listeners.push(() => node.removeEventListener(event, handler)); }
   function updateControls() {
-    $('date-start').value = selection.startDate; $('date-end').value = selection.endDate; $('chart-view').value = selection.view ?? 'explorer';
-    $('chart-explorer').hidden = Boolean(selection.view);
+    $('date-start').value = selection.startDate; $('date-end').value = selection.endDate;
+    seriesPicker.update();
     $('date-end').dataset.singleDay = String(selection.startDate === selection.endDate);
     $('date-end').min = selection.startDate;
     for (const preset of ['today', 'yesterday', 'tomorrow']) $(`range-${preset}`).setAttribute('aria-pressed', String(activePreset === preset));
@@ -399,14 +400,6 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     button.setAttribute('aria-expanded', String(expanded));
     button.textContent = expanded ? 'Close legend' : 'Legend';
     canvas.closest('.history-panel').dataset.legendExpanded = String(expanded);
-  });
-  listen($('chart-view'), 'change', () => {
-    preferences.view = $('chart-view').value; savePreferences();
-    const { view, left, series, ...range } = selection;
-    selection = { ...range, ...selectionForView(preferences.view) };
-    overlays.clear(); updateControls(); refresh();
-    if (preferences.view === 'explorer') seriesPicker.open();
-    else seriesPicker.dismiss({ restoreFocus: false });
   });
   for (const preset of ['today', 'yesterday', 'tomorrow']) listen($(`range-${preset}`), 'click', () => choosePreset(preset));
   listen($('range-back'), 'click', () => shiftRange(-1));

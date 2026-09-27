@@ -37,10 +37,11 @@ shared. **Garage temperatures & compressor**
 also offers the pump's interpreted indoor temperature as a diagnostic, separately
 from the two protection probes. Its saved **Pump power readback** and **Managed
 pause** rows distinguish the native on/off report from a savings or timed-off
-control pause; a pause is not evidence of measured savings. Individual signals remain searchable in **Series
-explorer**. Its searchable picker closes after a selection and keeps the chosen
-series in a compact label; phones use a drawer. The summary above the chart shows
-Average indoor and Outdoor.
+control pause; a pause is not evidence of measured savings. The chart's top-right
+selection button opens a centered explorer with **Views** and **All series** modes.
+Individual signals remain searchable in **All series**; selecting a result closes
+the explorer and updates the button to show the chosen series. The summary above
+the chart shows Average indoor and Outdoor.
 
 By default, st-mq expects a genuine report on each dedicated indoor MQTT topic
 every 70 minutes, with five minutes allowed for delivery delay. This is an

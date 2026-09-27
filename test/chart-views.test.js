@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { CHART_VIEWS, CHART_VIEW_BY_KEY, populateChartViews, selectedChartView, chartSelectionKey,
+import { CHART_VIEWS, CHART_VIEW_BY_KEY, selectedChartView, chartSelectionKey,
   readChartPreferences, chartViewPreferences, setChartVisibility, chartSubjectAvailability } from '../chart/chart-views.js';
 import { HISTORY_AXES, MODEL_COEFFICIENT_INFO, SIGNAL_INFO, MODEL_INPUT_INFO, GARAGE_INPUT_INFO } from '../src/domain/history-series.js';
 import { EXPLORER_SERIES_BY_KEY, filterExplorerSeries } from '../chart/series-explorer.js';
@@ -27,17 +27,6 @@ test('view catalogue covers every original signal through a view or searchable e
   assert(filterExplorerSeries('interpreted pump').some(row => row.key === 'garage_native_indoor_temperature'));
   assert.deepEqual(CHART_VIEW_BY_KEY.temperatures.rightSignals.filter(key => ['indoor_temperature','bedroom_temperature','downstairs_temperature','garage_temperature','garage_temperature_2'].includes(key)).sort(),
     ['indoor_temperature','bedroom_temperature','downstairs_temperature','garage_temperature','garage_temperature_2'].sort());
-});
-
-test('view menu groups purposeful comparisons and offers the explorer as an explicit option', t => {
-  const node = () => ({ children: [], append(child) { this.children.push(child); }, replaceChildren() { this.children = []; } });
-  const previous = globalThis.document; globalThis.document = { createElement: node };
-  t.after(() => { if (previous === undefined) delete globalThis.document; else globalThis.document = previous; });
-  const select = node(); populateChartViews(select);
-  assert.equal(select.children[0].label, 'Electricity');
-  assert.deepEqual(select.children.find(group => group.label === 'Home coefficients').children.map(option => option.value), Object.keys(MODEL_COEFFICIENT_INFO));
-  assert.equal(select.children.at(-1).value, 'explorer');
-  assert.equal(select.children.flatMap(group => group.children).length, CHART_VIEWS.length);
 });
 
 test('series choices belong to each view and price visibility remains global across switches and resets', () => {

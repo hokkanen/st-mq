@@ -138,12 +138,19 @@ try {
     if (!await pickerOpen()) await evaluate("document.getElementById('chart-series-toggle').click(); true");
     await until("document.getElementById('chart-series-picker').open"); await settle();
   };
-  const searchSeries = async query => {
+  const pickerMode = async mode => {
     await openPicker();
+    await evaluate(`document.getElementById('chart-series-mode-${mode}').click(); true`);
+    await settle();
+  };
+  const searchCatalogue = async (query, mode) => {
+    await pickerMode(mode);
     await evaluate(`(() => { const input = document.getElementById('chart-series-search');
       input.value = ${JSON.stringify(query)}; input.dispatchEvent(new Event('input')); return true; })()`);
     await settle();
   };
+  const searchSeries = query => searchCatalogue(query, 'series');
+  const searchViews = query => searchCatalogue(query, 'views');
   const pressKey = async key => {
     const code = { Escape: 'Escape', ArrowDown: 'ArrowDown', ArrowUp: 'ArrowUp', Enter: 'Enter', Tab: 'Tab' }[key];
     const windowsVirtualKeyCode = { Escape: 27, ArrowDown: 40, ArrowUp: 38, Enter: 13, Tab: 9 }[key];
@@ -151,19 +158,12 @@ try {
       ...(key === 'Enter' ? { text: '\r', unmodifiedText: '\r' } : {}) });
     await send('Input.dispatchKeyEvent', { type: 'keyUp', key, code, windowsVirtualKeyCode, nativeVirtualKeyCode: windowsVirtualKeyCode }); await settle();
   };
-  const choose = async (id, value) => {
-    if (id === 'chart-series') {
-      await searchSeries('');
-      await evaluate(`document.querySelector('#chart-series [data-series-key="${value}"]').click(); true`);
-      await until("!document.getElementById('chart-series-picker').open");
-    } else {
-      // Native selects cannot be activated beneath a modal dialog.
-      if (await pickerOpen()) await pressKey('Escape');
-      await evaluate(`(() => { const input = document.getElementById(${JSON.stringify(id)});
-        input.value = ${JSON.stringify(value)}; input.dispatchEvent(new Event('change')); return true; })()`);
-    }
-    const expected = id === 'chart-view' ? `dataset.view === ${JSON.stringify(value)}` : `dataset.series === ${JSON.stringify(value)}`;
-    await until(`document.getElementById('history').dataset.ready === 'true' && document.getElementById('history').${expected}`);
+  const choose = async (kind, value) => {
+    await searchCatalogue('', kind === 'view' ? 'views' : 'series');
+    await evaluate(`document.querySelector('#chart-series [data-${kind}-key="${value}"]').click(); true`);
+    await until("!document.getElementById('chart-series-picker').open");
+    await until(`document.getElementById('history').dataset.ready === 'true'
+      && document.getElementById('history').dataset.${kind} === ${JSON.stringify(value)}`);
     await settle();
   };
   const toggle = async key => {
@@ -216,7 +216,7 @@ try {
     assert.equal(await evaluate(`(() => {
       const panel = document.querySelector('.history-panel'), bounds = panel.getBoundingClientRect();
       const canvas = document.getElementById('history').getBoundingClientRect();
-      const select = document.getElementById('chart-view').getBoundingClientRect();
+      const select = document.getElementById('chart-series-toggle').getBoundingClientRect();
       const exit = document.getElementById('chart-fullscreen').getBoundingClientRect();
       return document.documentElement.scrollWidth <= innerWidth + 1 && bounds.left >= -1 && bounds.right <= innerWidth + 1
         && select.width >= 80 && select.right <= exit.left + 1 && exit.right <= innerWidth + 1 && canvas.height >= 80
@@ -224,13 +224,38 @@ try {
     })()`), true, `${label}: chart controls and plot fit without horizontal overflow`);
   };
   const checkPickerFits = async label => {
-    assert.equal(await evaluate(`(() => {
-      const modal = document.getElementById('chart-series-picker').getBoundingClientRect();
-      const list = document.getElementById('chart-series'), rows = list.querySelectorAll('[role=option]');
-      return modal.left >= -1 && modal.top >= -1 && modal.right <= innerWidth + 1 && modal.bottom <= innerHeight + 1
-        && list.clientHeight >= 100 && rows.length > 0 && rows[0].getBoundingClientRect().height >= 40
-        && document.documentElement.scrollWidth <= innerWidth + 1;
-    })()`), true, `${label}: searchable picker stays inside the viewport with usable result targets`);
+    const layout = await evaluate(`(() => {
+      const dialog = document.getElementById('chart-series-picker');
+      const modal = dialog.getBoundingClientRect();
+      const list = document.getElementById('chart-series'), rows = [...list.querySelectorAll('[role=option]')];
+      const root = document.documentElement, style = getComputedStyle(dialog);
+      return {
+        modal: { left: modal.left, top: modal.top, right: modal.right, bottom: modal.bottom, width: modal.width, height: modal.height },
+        viewport: { width: innerWidth, height: innerHeight, clientWidth: root.clientWidth, clientHeight: root.clientHeight,
+          visualWidth: visualViewport?.width, visualHeight: visualViewport?.height,
+          visualOffsetLeft: visualViewport?.offsetLeft, visualOffsetTop: visualViewport?.offsetTop },
+        centerOffset: { x: modal.left + modal.width / 2 - innerWidth / 2,
+          y: modal.top + modal.height / 2 - innerHeight / 2,
+          clientX: modal.left + modal.width / 2 - root.clientWidth / 2 },
+        list: { height: list.clientHeight, rowCount: rows.length,
+          firstRowHeight: rows[0]?.getBoundingClientRect().height,
+          minRowHeight: rows.length ? Math.min(...rows.map(row => row.getBoundingClientRect().height)) : null },
+        document: { scrollWidth: root.scrollWidth, bodyScrollWidth: document.body.scrollWidth },
+        style: { position: style.position, top: style.top, right: style.right, bottom: style.bottom, left: style.left,
+          margin: style.margin, maxHeight: style.maxHeight, transform: style.transform },
+      };
+    })()`);
+    const { modal, viewport, centerOffset, list } = layout;
+    const evidence = `${label}: ${JSON.stringify(layout)}`;
+    assert(modal.left >= -1 && modal.top >= -1 && modal.right <= viewport.width + 1 && modal.bottom <= viewport.height + 1,
+      `Explorer fits inside the viewport. ${evidence}`);
+    // Native centered dialogs use the content viewport, excluding its scrollbar.
+    assert(Math.abs(centerOffset.clientX) <= 2 && Math.abs(centerOffset.y) <= 2,
+      `Explorer is centered in the viewport. ${evidence}`);
+    assert(list.height >= 100 && list.rowCount > 0 && list.firstRowHeight >= 40,
+      `Explorer has usable result targets. ${evidence}`);
+    assert(layout.document.scrollWidth <= viewport.width + 1,
+      `Explorer does not introduce horizontal document overflow. ${evidence}`);
   };
   await send('Runtime.enable'); await send('Page.enable');
   // Observe the real canvas drawing operations, without importing chart internals
@@ -265,30 +290,77 @@ try {
   await viewport(1280, 1100);
   await send('Page.navigate', { url: `http://127.0.0.1:${app.server.address().port}/` });
   await until("document.getElementById('history')?.dataset.ready === 'true'");
-  assert.equal(await evaluate("document.getElementById('chart-view').value"), 'power');
-  assert.deepEqual(await evaluate("[...document.querySelectorAll('#chart-view option')].map(option => option.value)"),
-    [...CHART_VIEWS.map(view => view.key), 'explorer']);
+  assert.equal(await evaluate("document.getElementById('history').dataset.view"), 'power');
+  assert.equal(await evaluate("document.getElementById('chart-series-toggle-label').textContent"), 'Selected view');
+  assert.match(await evaluate("document.getElementById('chart-series-selected').textContent"), /Electrical power/);
+  assert.equal(await evaluate("document.querySelectorAll('[aria-controls=chart-series-picker]').length"), 1,
+    'One chart selection button opens the explorer');
+  assert.equal(await evaluate("document.querySelector('#chart-view, #chart-explorer')"), null,
+    'The old dropdown and redundant selected-series row are removed');
+  const chartSelection = () => evaluate(`(() => {
+    const chart = document.getElementById('history');
+    return { view: chart.dataset.view, series: chart.dataset.series,
+      label: document.getElementById('chart-series-selected').textContent,
+      dates: ['date-start', 'date-end'].map(id => document.getElementById(id).value),
+      requests: performance.getEntriesByType('resource').filter(entry => entry.name.includes('/api/chart?')).length };
+  })()`);
+  const beforeBrowsing = await chartSelection();
+  await openPicker();
+  assert.equal(await evaluate("document.getElementById('chart-series-mode-views').getAttribute('aria-pressed')"), 'true',
+    'Opening a grouped view starts in Views');
+  assert.equal(await evaluate("Boolean(document.getElementById('chart-series-mode-views').closest('[role=group]')) && document.getElementById('chart-series-mode-views').closest('[role=group]') === document.getElementById('chart-series-mode-series').closest('[role=group]')"), true);
+  assert.equal(await evaluate("document.getElementById('chart-series').getAttribute('role')"), 'listbox');
+  assert.equal(await evaluate("document.activeElement.id"), 'chart-series-search');
+  assert.match(await evaluate("document.getElementById('chart-series-picker').textContent"), /Explore chart/);
+  assert.deepEqual(await evaluate("[...document.querySelectorAll('#chart-series [data-view-key]')].map(option => option.dataset.viewKey)"),
+    CHART_VIEWS.map(view => view.key));
+  await checkPickerFits('Desktop views');
+  await capture('picker-views-desktop-dark');
+  await searchViews('heating water');
+  assert.equal(await evaluate("Boolean(document.querySelector('#chart-series [data-view-key=heating_water]'))"), true,
+    'Views can be searched by their subject');
+  assert((await evaluate("document.querySelectorAll('#chart-series [role=option]').length")) < CHART_VIEWS.length);
+  await searchViews('no-synthetic-view-matches');
+  assert.equal(await evaluate("document.querySelectorAll('#chart-series [role=option]').length"), 0);
+  assert.match(await evaluate("document.getElementById('chart-series-picker').textContent"), /No matching views/);
+  await searchViews('heating water');
+  await searchSeries('pump interpreted');
+  assert.deepEqual(await evaluate("[...document.querySelectorAll('#chart-series [role=option]')].map(option => option.dataset.seriesKey)"),
+    ['garage_native_indoor_temperature']);
+  await pickerMode('views');
+  assert.equal(await evaluate("document.getElementById('chart-series-search').value"), 'heating water', 'Views keep their own search');
+  await pickerMode('series');
+  assert.equal(await evaluate("document.getElementById('chart-series-search').value"), 'pump interpreted', 'Series keep their own search');
+  assert.deepEqual(await chartSelection(), beforeBrowsing, 'Opening, filtering and switching catalogues never change the chart or request data');
+  await pressKey('Escape');
+  assert.deepEqual(await chartSelection(), beforeBrowsing, 'Dismissing exploration keeps the active selection');
+  await openPicker();
+  assert.equal(await evaluate("document.getElementById('chart-series-mode-views').getAttribute('aria-pressed')"), 'true',
+    'Reopening follows the active chart selection rather than the last browsed catalogue');
+  assert.equal(await evaluate("document.getElementById('chart-series-search').value"), 'heating water');
+  await pressKey('Escape');
   for (const view of CHART_VIEWS) {
-    await choose('chart-view', view.key);
+    await choose('view', view.key);
     assert.equal(await evaluate("document.getElementById('chart-view-description').textContent"), view.description);
     const legend = await evaluate("[...document.querySelectorAll('[data-chart-key]')].map(item => item.dataset.chartKey)");
     assert.equal(new Set(legend).size, legend.length, `${view.key}: each selectable series or activity row appears once`);
     for (const key of [...view.leftSignals, ...view.rightSignals, ...view.tracks, 'all_in_price', 'spot_price'])
       assert(legend.includes(key), `${view.key}: ${key} stays selectable`);
     assert.deepEqual(await evaluate("[...document.querySelectorAll('#chart-activity [data-activity-key]')].map(row => row.dataset.activityKey)"), view.tracks);
-    assert.equal(await evaluate("document.getElementById('chart-explorer').hidden"), true);
+    assert.equal(await evaluate("document.getElementById('chart-series-toggle-label').textContent"), 'Selected view');
+    assert.equal(await evaluate("document.getElementById('chart-series-selected').textContent"), view.label);
   }
-  await choose('chart-view', 'power');
+  await choose('view', 'power');
   for (const [key, pattern] of [['property_power', 'solid'], ['outdoor_temperature', 'dashed'], ['outdoor_forecast', 'dash-dot'], ['all_in_price', 'dotted']])
     assert.equal(await evaluate(`document.querySelector('[data-chart-key="${key}"] .chart-legend-swatch').dataset.pattern`), pattern);
   for (const key of ['charger_power', 'charger2_power']) assert.equal(await evaluate(`document.querySelector('[data-chart-key="${key}"] .chart-legend-swatch').dataset.kind`), 'fill');
   assert.notEqual(await evaluate("document.querySelector('[data-chart-key=auxiliary_power] .chart-legend-swatch').dataset.kind"), 'fill');
   await toggle('outdoor_temperature'); await toggle('spot_price');
   assert.equal(await shown('outdoor_temperature'), false); assert.equal(await shown('spot_price'), false);
-  await choose('chart-view', 'weather');
+  await choose('view', 'weather');
   assert.equal(await shown('outdoor_temperature'), true, 'Temperature visibility belongs to the selected view');
   assert.equal(await shown('spot_price'), false, 'Price visibility is shared across views');
-  await choose('chart-view', 'power');
+  await choose('view', 'power');
   assert.equal(await shown('outdoor_temperature'), false, 'Returning restores that view’s deliberate choices');
   await evaluate("document.querySelector('.chart-legend-reset').click(); true"); await settle();
   assert.equal(await shown('outdoor_temperature'), true);
@@ -297,10 +369,10 @@ try {
 
   for (const [view, temperatures] of [['temperatures', ['bedroom_temperature', 'downstairs_temperature']],
     ['heating_water', ['supply_temperature', 'return_temperature']]]) {
-    await choose('chart-view', view);
+    await choose('view', view);
     for (const key of temperatures) await checkTemperatureCurve(key);
   }
-  await choose('chart-view', 'home_power');
+  await choose('view', 'home_power');
   assert.deepEqual(await evaluate("[...document.querySelectorAll('[data-activity-key=compressorHome] .activity-key-item')].map(item=>item.textContent)"),
     ['Space heating', 'Hot water'], 'The combined Home compressor row explains its yellow and blue states beside the label');
   for (const [value, color] of [[1, '--chart-compressor-space'], [2, '--chart-compressor-dhw']]) {
@@ -320,7 +392,7 @@ try {
   await evaluate("document.querySelector('.history-panel').scrollIntoView({block:'start'}); true");
   await capture('home-compressor-mode-key-dark');
   await evaluate("document.querySelector('#operating-modes .activity-key summary').click(); true"); await settle();
-  await choose('chart-view', 'weather');
+  await choose('view', 'weather');
   assert.equal(await evaluate("document.querySelector('[data-chart-key=solar_radiation] .chart-legend-swatch').dataset.pattern"), 'dashed');
   const solarPaths = await drawnPaths('solar_radiation');
   assert(solarPaths.some(path => path.path.some(command => command.method === 'lineTo')), 'Solar estimate draws recorded forecast evidence');
@@ -328,7 +400,7 @@ try {
     'Solar estimate uses a dashed canvas stroke alongside the same-color future forecast');
   assert.equal(await evaluate("document.querySelector('[data-chart-key=solar_forecast] .chart-legend-swatch').dataset.pattern"), 'dash-dot',
     'Future solar forecast retains a distinct dash-dot stroke');
-  await choose('chart-view', 'phases');
+  await choose('view', 'phases');
   for (const prefix of ['property', 'ev1', 'ev2']) for (let phase = 1; phase <= 3; phase++) {
     const key = `${prefix}_current_l${phase}`;
     if (prefix !== 'property' && !await shown(key)) await toggle(key);
@@ -382,7 +454,7 @@ try {
   }
   await evaluate("document.querySelector('.history-panel').scrollIntoView({block:'start'}); true");
   await capture('phases-stacked-dark');
-  await choose('chart-view', 'runtime');
+  await choose('view', 'runtime');
   await evaluate("document.querySelector('.history-panel').scrollIntoView({block:'start'}); true"); await settle();
   const runtimePaths = await drawnPaths('compressor_hours');
   const runtimeMarkers = runtimePaths.flatMap(path => path.path.filter(command => command.method === 'arc' && command.args[2] >= 4));
@@ -398,18 +470,18 @@ try {
   assert.match(await evaluate("window.chartLabels.join(' ')"), /Compressor.*80[0-3]|80[0-3].*Compressor/i,
     'Hovering the visible marker presents the original recorded runtime value');
   await capture('runtime-markers-dark');
-  await choose('chart-view', 'caravan_power');
+  await choose('view', 'caravan_power');
   assert.equal(await evaluate("document.querySelector('[data-chart-key=caravan_power]').getAttribute('aria-pressed')"), 'true');
   assert((await drawnPaths('caravan_power')).some(path => path.path.some(command => command.method === 'lineTo')),
     'Caravan meter intervals draw their average power');
   assert.match(await evaluate("document.querySelector('[data-chart-key=caravan_power]').title"), /kW/);
   await evaluate("document.querySelector('.history-panel').scrollIntoView({block:'start'}); true");
   await capture('caravan-power-dark');
-  await choose('chart-view', 'explorer'); await choose('chart-series', 'caravan_energy');
+  await choose('series', 'caravan_energy');
   assert.equal(await evaluate("document.querySelector('[data-chart-key=caravan_energy] .chart-legend-swatch').dataset.kind"), 'interval-energy',
     'The explorer keeps the original Caravan energy intervals separately available');
 
-  await choose('chart-view', 'garage');
+  await choose('view', 'garage');
   for (const key of ['garage_model_available', 'garage_model_managed_pause']) {
     assert.equal(await shown(key), true, `${key}: garage operation context is visible by default`);
     assert.equal(await evaluate(`document.querySelector('[data-activity-key="${key}"] .mode-segment[data-value="0"]') !== null
@@ -423,10 +495,10 @@ try {
   assert.match(await evaluate("document.getElementById('chart-notes').textContent"), /native readback.*not an independent protection probe/);
   await evaluate("document.querySelector('.history-panel').scrollIntoView({block:'start'}); true");
   await capture('garage-dark');
-  await choose('chart-view', 'explorer');
-  assert.equal(await evaluate("document.getElementById('chart-explorer').hidden"), false);
-  assert.equal(await pickerOpen(), true, 'Choosing the explorer opens its searchable series picker immediately');
+  await pickerMode('series');
+  assert.equal(await pickerOpen(), true, 'The selection button opens the explorer and its catalogue switch keeps it open');
   assert.equal(await evaluate("document.activeElement.id"), 'chart-series-search', 'Search receives initial dialog focus');
+  await searchSeries('');
   assert.equal(await evaluate("document.querySelectorAll('#chart-series [role=option]').length"), EXPLORER_SERIES.length);
   await checkPickerFits('Desktop');
   await searchSeries('pump interpreted');
@@ -438,7 +510,10 @@ try {
   assert.equal(await pickerOpen(), false, 'Enter selects and closes the picker');
   assert.equal(await evaluate("document.activeElement.id"), 'chart-series-toggle', 'Selection restores focus to the compact series button');
   assert.match(await evaluate("document.getElementById('chart-view-description').textContent"), /Recorded temperature/);
+  assert.equal(await evaluate("document.getElementById('chart-series-toggle-label').textContent"), 'Selected series');
+  assert.match(await evaluate("document.getElementById('chart-series-selected').textContent"), /pump.*interpreted|interpreted.*pump/i);
   await openPicker();
+  assert.equal(await evaluate("document.getElementById('chart-series-mode-series').getAttribute('aria-pressed')"), 'true', 'An individual selection opens the series catalogue');
   assert.equal(await evaluate("document.getElementById('chart-series-search').value"), 'pump interpreted', 'Reopening keeps the useful search');
   await capture('picker-desktop-dark');
   await pressKey('Escape');
@@ -470,15 +545,15 @@ try {
   await send('Input.dispatchMouseEvent', { type: 'mouseReleased', button: 'left', clickCount: 1, ...outsidePoint }); await settle();
   assert.equal(await pickerOpen(), false, 'Clicking outside dismisses the modal');
   assert.equal(await evaluate("document.activeElement.id"), 'chart-series-toggle');
-  await choose('chart-series', 'garage_door1_open');
+  await choose('series', 'garage_door1_open');
   assert.equal(await evaluate("document.querySelector('#chart-activity [data-activity-key]').dataset.activityKey"), 'garage_door1_open');
   assert.equal(await evaluate("document.querySelectorAll('#chart-activity .mode-segment').length > 0"), true, 'Recorded state explorer has inspectable intervals');
-  await choose('chart-series', 'alarm_code');
+  await choose('series', 'alarm_code');
   assert.equal(await evaluate("document.querySelectorAll('#chart-activity .mode-segment[data-kind=point]').length"), 1,
     'An isolated state report remains visible as a point without inventing duration');
   assert.match(await evaluate("document.querySelector('#chart-activity .mode-segment').title"), /Value 13.*duration unknown/);
 
-  await choose('chart-view', 'power');
+  await choose('view', 'power');
   await evaluate("document.querySelector('.history-panel').scrollIntoView({block:'start'}); true"); await settle();
   const cursorPoint = await evaluate(`(() => {
     const canvas = document.getElementById('history').getBoundingClientRect();
@@ -528,9 +603,13 @@ try {
     await evaluate("document.getElementById('history').focus(); document.getElementById('history').dispatchEvent(new KeyboardEvent('keydown', {key:'+',bubbles:true})); true");
     assert.equal(await evaluate("document.querySelector('.chart-crosshair-extension').hidden"), true, 'Keyboard zoom clears the old time cursor before gesture capture');
     await until("document.querySelector('.chart-gesture-preview') === null");
-    await choose('chart-view', 'explorer');
+    await openPicker();
+    await searchViews('');
+    await checkPickerFits(`${width}px fullscreen views`);
     await searchSeries('');
-    await checkPickerFits(`${width}px fullscreen`);
+    assert.equal(await evaluate("document.getElementById('history').dataset.view"), 'power',
+      `${width}px fullscreen: changing catalogue keeps the active chart`);
+    await checkPickerFits(`${width}px fullscreen series`);
     await pressKey('Tab');
     assert.equal(await evaluate("document.getElementById('chart-series-picker').contains(document.activeElement)"), true,
       `${width}px fullscreen: the chart focus trap leaves keyboard navigation inside the series picker`);
@@ -543,7 +622,7 @@ try {
     await until("document.getElementById('history').dataset.ready === 'true'");
     await checkFits(`${width}px fullscreen explorer`);
     await capture(`explorer-${width}-dark`);
-    await choose('chart-view', 'power');
+    await choose('view', 'power');
     await evaluate("document.getElementById('chart-fullscreen').click(); true"); await settle();
   }
   for (const [width, height] of [[1280, 1100], [390, 844]]) {
@@ -552,8 +631,8 @@ try {
       if (await evaluate('document.documentElement.dataset.theme') !== theme)
         await evaluate("document.getElementById('theme-toggle').click(); true");
       for (const key of ['power', 'garage', 'heating_water', 'temperatures', 'explorer']) {
-        await choose('chart-view', key);
-        if (key === 'explorer') await choose('chart-series', 'garage_native_indoor_temperature');
+        if (key === 'explorer') await choose('series', 'garage_native_indoor_temperature');
+        else await choose('view', key);
         await evaluate("document.querySelector('.history-panel').scrollIntoView({block:'start'}); true");
         await checkFits(`${width}px ${theme} ${key}`);
         await capture(`${key}-${width}-${theme}`);
@@ -562,7 +641,7 @@ try {
           await capture(`picker-${width}-${theme}`); await pressKey('Escape');
         }
       }
-      await choose('chart-view', 'power');
+      await choose('view', 'power');
       await evaluate("document.getElementById('chart-fullscreen').click(); true"); await settle();
       await checkFits(`${width}px ${theme} fullscreen`);
       await capture(`fullscreen-${width}-${theme}`);
@@ -570,11 +649,11 @@ try {
     }
   }
   await viewport(390, 400, true);
-  await choose('chart-view', 'explorer'); await searchSeries('');
+  await searchSeries('');
   await checkPickerFits('Phone with a short available viewport');
   await capture('picker-short-phone'); await pressKey('Escape');
   assert.deepEqual(errors, [], 'All view selections and cursor interactions have no uncaught browser exceptions');
-  console.log(`Chart views browser checks passed: ${CHART_VIEWS.length} named views, ${EXPLORER_SERIES.length} searchable explorer choices, modal keyboard/touch/focus, periodic temperature Bézier geometry, solar estimate dash, charger phase fills, visibility isolation, garage readback, crosshair bounds and touch, dark/light themes, and 320/390px fullscreen layouts.`);
+  console.log(`Chart views browser checks passed: ${CHART_VIEWS.length} named views, ${EXPLORER_SERIES.length} searchable explorer choices, unified view/series browsing without chart changes, separate searches, centered modal keyboard/touch/focus, periodic temperature Bézier geometry, solar estimate dash, charger phase fills, visibility isolation, garage readback, crosshair bounds and touch, dark/light themes, and 320/390px fullscreen layouts.`);
   console.log(`Screenshots: ${screenshots.join(', ')}`);
 } finally {
   socket?.close(); for (const request of pending.values()) clearTimeout(request.timer);

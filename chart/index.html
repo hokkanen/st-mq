@@ -714,9 +714,10 @@
         <div class="section-top chart-heading">
           <div class="chart-heading-copy"><h2 id="history-title">History &amp; outlook</h2><p class="muted">Finnish local time · Europe/Helsinki</p></div>
           <div class="chart-axis-actions">
-            <label class="axis-control">View
-              <select id="chart-view" aria-describedby="chart-view-description"><option value="power">Electrical power</option></select>
-            </label>
+            <button id="chart-series-toggle" class="chart-series-toggle" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="chart-series-picker">
+              <span><span id="chart-series-toggle-label" class="chart-series-toggle-label">Selected view</span><span id="chart-series-selected">Electrical power</span></span>
+              <svg class="chart-series-toggle-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="m7 10 5 5 5-5"/></svg>
+            </button>
             <button id="chart-fullscreen" class="chart-shortcut secondary-button" type="button" data-chart-view="false" aria-label="Open chart view" title="Open chart view" aria-expanded="false" aria-controls="history">
               <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4v16h16M7 14l4-5 4 3 5-7"/></svg>
               <span>Exit</span>
@@ -738,27 +739,24 @@
           </div>
         </div>
       </div>
-      <div id="chart-explorer" class="chart-explorer" hidden>
-        <button id="chart-series-toggle" class="chart-series-toggle" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="chart-series-picker">
-          <span><span class="chart-series-toggle-label">Selected series</span><span id="chart-series-selected">Choose a series…</span></span>
-          <span class="chart-series-toggle-action" aria-hidden="true">Change <span>⌄</span></span>
-        </button>
-        <p class="chart-explorer-summary muted">Explore recorded measurements, equipment states and model history, including additional diagnostics outside the grouped views.</p>
-      </div>
       <p id="chart-view-description" class="chart-view-description muted"></p>
       <dialog id="chart-series-picker" class="chart-series-picker" aria-labelledby="chart-series-title" aria-describedby="chart-series-help">
         <div class="chart-series-picker-heading">
-          <h3 id="chart-series-title">Explore a series</h3>
-          <button id="chart-series-close" class="secondary-button" type="button" aria-label="Close series picker">Close</button>
+          <h3 id="chart-series-title">Explore chart</h3>
+          <button id="chart-series-close" class="secondary-button" type="button" aria-label="Close chart explorer">Close</button>
         </div>
-        <p id="chart-series-help" class="muted">Choose an individual measurement, state or calculation. This catalogue includes supported chart series, not every database field. Availability depends on what was recorded for the selected dates.</p>
-        <label for="chart-series-search">Find a series</label>
+        <div class="chart-series-modes" role="group" aria-label="Explore views or individual series">
+          <button id="chart-series-mode-views" type="button" aria-pressed="true" aria-controls="chart-series">Views</button>
+          <button id="chart-series-mode-series" type="button" aria-pressed="false" aria-controls="chart-series">All series</button>
+        </div>
+        <p id="chart-series-help" class="muted">Choose a ready-made view to compare related measurements and activity.</p>
+        <label id="chart-series-search-label" for="chart-series-search">Find a view</label>
         <div class="chart-series-search-field">
-          <input id="chart-series-search" type="search" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="chart-series" placeholder="Temperature, pump, energy…" autocomplete="off" spellcheck="false" autofocus>
+          <input id="chart-series-search" type="search" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="chart-series" placeholder="Heating, weather, charging…" autocomplete="off" spellcheck="false" autofocus>
           <button id="chart-series-clear" class="secondary-button" type="button" hidden>Clear</button>
         </div>
         <p id="chart-series-count" class="muted" role="status" aria-live="polite"></p>
-        <div id="chart-series" class="chart-series-results" role="listbox" aria-label="Matching series"></div>
+        <div id="chart-series" class="chart-series-results" role="listbox" aria-label="Matching views"></div>
       </dialog>
       <p id="chart-status" class="chart-status muted" role="status">Loading selected dates…</p>
       <div id="chart-overview" class="chart-overview">

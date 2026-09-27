@@ -202,24 +202,27 @@ try {
   assert.equal(await evaluate("document.getElementById('range-today').getAttribute('aria-pressed')"), 'true');
   assert.equal(await evaluate("Array.from(document.querySelectorAll('.range-shortcuts button')).map(button => button.id).join(',')"), 'range-back,range-yesterday,range-today,range-tomorrow,range-forward');
   await checkRangeSteps();
-  assert.equal(await evaluate("document.getElementById('chart-view').value"), 'power');
-  assert.deepEqual(await evaluate("[...document.querySelectorAll('#chart-view option')].map(option => option.value)"),
-    [...CHART_VIEWS.map(view => view.key), 'explorer'], 'Every named investigation and the series explorer is selectable');
-  await evaluate("document.getElementById('chart-view').value='explorer'; document.getElementById('chart-view').dispatchEvent(new Event('change')); true");
+  assert.equal(await evaluate("document.getElementById('history').dataset.view"), 'power');
+  await evaluate("document.getElementById('chart-series-toggle').click(); true");
+  assert.deepEqual(await evaluate("[...document.querySelectorAll('#chart-series [data-view-key]')].map(option => option.dataset.viewKey)"),
+    CHART_VIEWS.map(view => view.key), 'Every named investigation is available in the explorer');
+  assert.equal(await evaluate("Boolean(document.querySelector('#chart-series [data-view-key=firewood]'))"), true,
+    'The explorer includes Firewood additions');
+  await evaluate("document.getElementById('chart-series-search').value='Home coefficients'; document.getElementById('chart-series-search').dispatchEvent(new Event('input')); true");
+  assert.deepEqual(await evaluate("[...document.querySelectorAll('#chart-series [data-view-key]')].map(option => option.dataset.viewKey)"),
+    coefficientKeys, 'Only the four fitted Home coefficients have chart choices');
+  await evaluate("document.getElementById('chart-series-mode-series').click(); true");
   assert.deepEqual(await evaluate("[...document.querySelectorAll('#chart-series [role=option]')].map(option => option.dataset.seriesKey).sort()"),
     EXPLORER_SERIES.map(series => series.key).sort(), 'The explorer retains every supported numerical and state projection');
-  await evaluate("document.getElementById('chart-series-close').click(); document.getElementById('chart-view').value='power'; document.getElementById('chart-view').dispatchEvent(new Event('change')); true");
-  assert.equal(await evaluate("document.querySelector('#chart-view optgroup').label"), 'Electricity');
-  assert.deepEqual(await evaluate("[...document.querySelector('#chart-view optgroup[label=\"Home coefficients\"]').children].map(option => option.value)"),
-    coefficientKeys, 'Only the four fitted Home coefficients have chart choices');
+  await evaluate("document.getElementById('chart-series-close').click(); true");
+  assert.equal(await evaluate("document.getElementById('history').dataset.view"), 'power', 'Browsing the catalogues preserves the active chart');
   const selectChartSubject = async key => {
-    if (CHART_VIEW_BY_KEY[key]) await evaluate(`document.getElementById('chart-view').value=${JSON.stringify(key)};
-      document.getElementById('chart-view').dispatchEvent(new Event('change')); true`);
-    else await evaluate(`document.getElementById('chart-view').value='explorer';
-      document.getElementById('chart-view').dispatchEvent(new Event('change'));
+    const kind = CHART_VIEW_BY_KEY[key] ? 'view' : 'series';
+    await evaluate(`document.getElementById('chart-series-toggle').click();
+      document.getElementById('chart-series-mode-${kind === 'view' ? 'views' : 'series'}').click();
       document.getElementById('chart-series-search').value='';
       document.getElementById('chart-series-search').dispatchEvent(new Event('input'));
-      document.querySelector('#chart-series [data-series-key="${key === 'integral' ? 'heating_integral' : key}"]').click(); true`);
+      document.querySelector('#chart-series [data-${kind}-key="${key === 'integral' ? 'heating_integral' : key}"]').click(); true`);
   };
   assert.equal(await evaluate("performance.getEntriesByType('resource').some(entry=>entry.name.includes('/api/recording-overview'))"),false,'collapsed recording inventory does not fetch');
   await evaluate(`(() => {
@@ -454,7 +457,6 @@ try {
   assert.equal(await legendState('spot'), 'true');
   assert.equal(await legendState('dhwr'), 'true');
   assert.equal(await legendState('fireplace'), 'true');
-  assert.equal(await evaluate("document.querySelector('#chart-view option[value=firewood]').textContent"), 'Firewood additions');
   await checkActivityTracks();
   for (const key of ['dhwr', 'fireplace']) {
     assert.equal(await evaluate(`(async () => {

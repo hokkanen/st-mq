@@ -296,7 +296,7 @@ The **Charging session checks** view compares both chargers' final reference kWh
 as separate points at the session end, directly from existing session records.
 The **Property meter counter** view keeps its cumulative meaning separate, using
 individual readings without a connecting line.
-**Series explorer** can isolate either session check or a supported cumulative
+The explorer's **All series** mode can isolate either session check or a supported cumulative
 counter. No duplicate time-series rows are saved. Session readings use hollow
 points; a stronger outline identifies references eligible for comparison
 averages. Tooltips explain exclusions, identify the physical electricity meter
@@ -598,24 +598,28 @@ versions change for this presentation update.
 
 ## Chart exploration and fullscreen
 
-The **View** menu selects named comparisons. **Series explorer** opens a
-searchable picker for the 124 supported historical projections: recorded
+The button at the chart's top right shows the active view or series and opens a
+centered explorer. Its **Views** mode offers searchable, grouped named comparisons;
+**All series** offers the 124 supported historical projections: recorded
 measurements and states, interval energy, counters, saved learning inputs,
 replayed coefficients and supported calculations. It includes individual
 diagnostics beyond the named views and retains entries with no records in the
 current installation or date range. It is a catalogue of defined chart meanings,
 not access to every numeric database field or current-state JSON value.
 
-Search filters labels, units and canonical signal identifiers. Choosing a result
-closes the picker; its compact selected-series label reopens it with the search
-retained. Escape or clicking outside dismisses it, and arrow keys with Enter
-select a result. On phones it opens as a drawer. The explorer plots one selected
-series, plus the globally controlled electricity prices. Categorical series use
+Search filters labels, units and canonical signal identifiers. Switching modes
+or searching leaves the current chart unchanged; choosing a result applies it
+and closes the explorer. Reopening starts in the active chart's mode, with each
+mode's search retained separately. **Close**, Escape or clicking outside dismisses
+the window and returns focus to the selection button; arrow keys with Enter
+select a result. The window stays centered on phones and in fullscreen.
+An individual-series chart plots the selected series, plus the globally
+controlled electricity prices. Categorical series use
 an activity row; selecting a sparse series does not manufacture missing history.
 
-The chart icon button beside the **View** selector
-opens a view with both date pickers, gesture navigation and a selected-period navigator. The normal
-chart is fixed to the entire selected period, with no zoom controls or navigator.
+The chart icon button beside the selection button opens a view with both date
+pickers, gesture navigation and a selected-period navigator. The normal chart is
+fixed to the entire selected period, with no zoom controls or navigator.
 **Exit** restores that fixed chart. Reopening chart view
 resumes its previous zoom and position while the selected dates remain the same.
 The Garage chart shortcut opens the same view.
@@ -629,7 +633,7 @@ again determines whether fullscreen is kept. The header's fullscreen icon follow
 page fullscreen changes from any control. Browser-level fullscreen such as F11
 is separate and cannot be tracked or controlled consistently by the page.
 
-The chart view keeps its View selector, Exit button and two compact date pickers
+The chart view keeps its selection button, Exit button and two compact date pickers
 visible. Selecting the first date immediately shows that day; the second extends
 the inclusive range. On phones, **Legend** opens a bounded scrollable area and
 **Close legend** restores the navigator and activity strips and returns space to the plot. The legend separates quantitative series, temperature/price context and
@@ -928,8 +932,9 @@ the window was excluded from learning.
 Sensor replacements, moves and calibrations are recorded under **Home → Heating configuration → Home learning → Model inputs → Average indoor → Sensor changes**. See
 [sensor changes](temperature-sensors.md#replacing-moving-or-adjusting-a-sensor)
 for their learning boundary and descriptive reason field.
-The left drawer lists historical axes in temperature, heating, hot-water,
-ground-loop, settings, equipment, runtime, electricity, weather and learning groups.
+The explorer's **All series** mode groups historical signals into temperature,
+heating, hot-water, ground-loop, settings, equipment, runtime, electricity, weather
+and learning groups.
 Recorded and calculated roles are separate from model roles.
 
 **Recording details describes stored database contents.** The first fold,
@@ -1006,7 +1011,7 @@ and savings data are derived on demand without new telemetry or daily savings ro
 see [fireplace logging](fireplace.md#visibility-and-estimated-savings).
 
 The **Property meter counter** and **Charging session checks** views preserve
-these distinct quantities. **Series explorer** can isolate either charger's
+these distinct quantities. The explorer's **All series** mode can isolate either charger's
 session reference, independently of recorded interval energy.
 
 ## Synthetic year benchmark
@@ -1087,14 +1092,14 @@ metered energy increment divided by that interval's own duration; adaptive
 intervals need not have equal lengths. Gaps remain gaps, pending intervals keep
 their pending marker, and point inspection retains original boundaries and meter
 provenance. Live watt readings cannot supply this history. Original kWh increments
-remain available through **Recording-interval energy** and **Series explorer**.
+remain available through **Recording-interval energy** and the explorer's **All series** mode.
 This projection creates no new recordings and does not enter household demand,
 charger timing comparisons or heating learning.
 
 
 ## Chart and storage review (September 2026)
 
-The drawer separates everyday electricity, room, caravan and garage pump views
+The explorer separates everyday electricity, room, caravan and garage pump views
 from Home/Garage saved learning inputs, replayed coefficients and equipment
 diagnostics. Each choice states its unit and basis. A plot is not a promise of
 another database channel: power, phase-current estimates, indoor average,
@@ -1123,7 +1128,7 @@ automatic-only cause. These two saved-input rows keep reported power distinct
 from the recorded reason for a control pause. Native states follow their recorded
 availability deadlines; unknown periods remain unknown, never inferred off.
 The pump's interpreted indoor reading is available beside the front/rear probes
-and independently in **Series explorer**. It may incorporate its external feed
+and independently in the explorer's **All series** mode. It may incorporate its external feed
 and is not relabeled as a physical room sensor. Hot-water circulation requests
 and recorded electrical or switch feedback have separate rows; neither proves
 water flow. Floor override contacts describe electrical readback, not valve

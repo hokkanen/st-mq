@@ -211,7 +211,10 @@ the current readings.
   without changing its length. Both date pickers remain available in chart view.
   Forecasts and known electricity prices appear only
   inside the selected dates; they never extend the horizontal axis automatically.
-- **Views:** choose a purposeful comparison from the **View** menu. Electrical
+- **Views:** the button at the chart's top right shows the active view or series
+  and opens a centered explorer. Choose **Views** for searchable, grouped
+  comparisons or **All series** for individual signals. Switching modes or
+  searching leaves the chart unchanged until you choose a result. Electrical
   power compares property demand and both chargers, with heat-pump and auxiliary
   estimates available. Heating water combines supply, return and target with the
   integral; hot water uses tank temperature and its thresholds. Property
@@ -223,10 +226,12 @@ the current readings.
   Caravan power uses each measured energy interval's average kW, with its original
   duration and gaps preserved; recorded kWh remains available in interval energy
   and the explorer.
-- **Series explorer:** choose this final menu entry to open a searchable picker
-  for the 124 supported chart projections. Search by label, unit or canonical
-  signal name; selecting a result closes the picker and leaves a compact label
-  that reopens it. On phones, the picker opens as a drawer. It includes recorded
+- **All series:** this explorer mode offers the 124 supported chart projections.
+  Search by label, unit or canonical signal name; selecting a result closes the
+  explorer and updates the selection button. The centered window also works on
+  phones and in fullscreen. It opens in the active chart's mode and remembers
+  each mode's search separately. **Close**, Escape or clicking outside dismisses
+  it and returns focus to the selection button. It includes recorded
   measurements, states, energy, counters, saved learning inputs, replayed
   coefficients and supported calculations, including diagnostics beyond the named
   views. Entries stay discoverable when an installation or selected period has
@@ -446,7 +451,7 @@ backups on separate storage. Incompatible or malformed schemas are rejected
 before mutation; development databases require a deliberate fresh start. Raw observation queries are bounded to at most 5,000
 observations; `/api/history` limits a request to 31 days. The separate `/api/chart`
 endpoint accepts inclusive `start`/`end` calendar dates and either a named `view`
-from the shared view catalogue or a `left` projection key for Series explorer.
+from the shared view catalogue or a `left` projection key for an individual series.
 Supplying both selectors is rejected. A named view fetches its declared
 quantities, temperatures and recorded state rows together. The `points` resolution
 is 100–2,000 time buckets per series. It accepts at most
