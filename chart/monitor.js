@@ -25,6 +25,7 @@ import { assertWebRequest, createWebSession, createAccessControls, bindPasswordV
 import { setStatusDetail, closeStatusDetails } from './status-details.js';
 import { priceStatuses, renderCurrentPrice } from './current-price.js';
 import { homeHeatingConfirmation, setHeatingStatusDetail } from './heating-status.js';
+import { renderHomePlannedChange } from './heating-plan.js';
 import { homeHeatingWarning, garageHeatingWarning } from './heating-warning.js';
 import { createOcppSetupAction, ocppSetupRevision } from './ocpp-setup.js';
 import { createDashboardLayout } from './dashboard-layout.js';
@@ -674,6 +675,7 @@ function render(s) {
   $('error').hidden = true;
   pairPanel.update(pairPanelView(s));
   const replica = renderReplicaStatus(document, s, { formatTime: time });
+  renderHomePlannedChange(document, s);
   sensorChangePanel.update(isReadOnlyReplica(s) ? { ...s.sensorChanges, available: false, readOnly: true } : s.sensorChanges);
   if (replica) {
     fireplacePanel.close();

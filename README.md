@@ -386,7 +386,12 @@ Above the chart, separate **Home** and **Garage** cards show **Heat control**
 status. Home has a **Fireplace** button; Garage has a chart button.
 Home's upper summary shows the indoor average, outdoor
 temperature, heating request and all-in electricity price; Garage's shows its rear
-temperature, doors, heating request and the same price. Each upper summary opens
+temperature, doors, heating request and the same price. A compact row below Home's
+readings shows the next planned heating change and its Finnish local time, or the
+current pause, recovery or no-plan state. Shadow and simulated plans are labeled.
+The equipment and connections fold headers keep their height when toggled;
+small desktop column differences use spacing between sections, with larger
+differences retaining their natural height. Each upper summary opens
 **Heating configuration**, including manual heating and temporary controls.
 Home offers Away/Pause; Garage offers **Pause price control**. Home's **Fireplace**
 button opens a window for recording firewood and reviewing recent entries.

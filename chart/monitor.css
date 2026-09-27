@@ -136,17 +136,13 @@ p { font-size: 14px; line-height: 1.65; margin: 10px 0; }
 .controller-column { display: flex; flex-direction: column; gap: 24px; min-width: 0; }
 .controller-column > .panel { margin-bottom: 0; container: dashboard-card / inline-size; }
 @media (min-width: 801px) {
-  /* Share a bounded amount of breathing room between sections and above footer
-     labels, keeping both the top headings and bottom insets aligned. */
+  /* Balance with breathing room between sections; disclosure headers stay fixed. */
   .controller-column > .panel {
     display: flex;
     flex-direction: column;
     gap: var(--dashboard-balance-space, 0px);
   }
   .controller-column > .panel > * { flex-shrink: 0; }
-  .controller-column > .panel > :is(.home-support, .dashboard-disclosure:last-child) {
-    padding-top: var(--dashboard-balance-space, 0px);
-  }
 }
 .panel { --panel-padding: 24px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: var(--panel-padding); margin-bottom: 24px; min-width: 0; }
 .detail { display: flex; justify-content: space-between; border-bottom: 1px solid var(--border); padding: 12px 0; font-size: 13px; gap: 16px; }
@@ -673,6 +669,11 @@ details details { margin-inline-start: 24px; }
 .overview-home > .overview-reading:first-child .overview-temperature { color: var(--accent); }
 .overview-temperature .status-detail-label { white-space: nowrap; }
 .overview-note { display: block; margin-top: 5px; color: var(--muted); font-size: 10px; line-height: 1.5; }
+.home-planned-change { display: flex; align-items: baseline; gap: 9px; margin-top: 16px; padding: 10px 14px; border-radius: 6px; background: var(--surface-soft); font-size: 11px; line-height: 1.6; }
+.home-plan-icon { flex: none; align-self: center; width: 15px; height: 15px; color: var(--muted); }
+.home-plan-copy { display: flex; flex-wrap: wrap; gap: 2px 6px; min-width: 0; }
+.home-plan-label { color: var(--muted); }
+.home-plan-value { font-weight: 500; font-variant-numeric: tabular-nums; }
 .overview-request > strong, .overview-doors > strong { font-size: 18px; line-height: 1.4; font-weight: 500; }
 .overview-request > strong[data-state="confirmed"], .overview-doors > strong[data-state="confirmed"] { color: var(--chart-indoor); }
 .overview-request > strong[data-state="attention"], .overview-doors > strong[data-state="attention"] { color: var(--stale); }
@@ -757,7 +758,17 @@ details details { margin-inline-start: 24px; }
 .home-support > .dashboard-disclosure > summary > span { font-size: 12px; font-weight: 500; line-height: 1.5; }
 .home-support > .dashboard-disclosure > summary:hover > span { color: var(--accent); }
 .home-support > .dashboard-disclosure > summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
-.home-support > .dashboard-disclosure[open] > summary { padding-bottom: 16px; }
+/* Keep the same hit area and title baseline when a footer disclosure opens.
+   Its content owns the extra separation below the header. */
+:is(#home-equipment-details, #garage-equipment-details, #connections-details) > summary { min-height: 44px; padding: 14px 0 0; }
+#connections-details > summary + * { margin-top: 20px; }
+@container dashboard-card (max-width: 420px) {
+  :is(#home-equipment-details, #garage-equipment-details, #connections-details) > summary { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 3px 12px; }
+  :is(#home-equipment-details, #garage-equipment-details, #connections-details) > summary > span { grid-column: 1; grid-row: 1; }
+  /* Reserve a subtitle line while equipment status is loading. */
+  :is(#home-equipment-details, #garage-equipment-details, #connections-details) > summary > small { grid-column: 1; grid-row: 2; min-height: 1.5em; margin-left: 0; text-align: left; }
+  :is(#home-equipment-details, #garage-equipment-details, #connections-details) > summary::after { grid-column: 2; grid-row: 1 / 3; }
+}
 .control-dialog { width: min(460px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); padding: 24px; overflow-y: auto; border: 1px solid var(--border); border-radius: 12px; color: var(--text); background: var(--surface); box-shadow: 0 18px 60px #0006; }
 .control-dialog::backdrop { background: #0007; }
 .control-dialog h2 { margin: 0 0 10px; font-size: 19px; font-weight: 550; letter-spacing: -.2px; }
@@ -1326,7 +1337,7 @@ button.garage-door-action:disabled { opacity: .55; cursor: default; }
 .zone-content { display: grid; gap: 30px; margin-top: 24px; padding: 0 0 4px; border: 0; }
 .heating-zone > .zone-content { margin-top: 0; padding: 20px 0; border-top: 1px solid var(--border); }
 .zone-equipment-fold.dashboard-disclosure { margin-top: 0; border-top: 0; }
-.zone-equipment-fold > .zone-content { margin-top: 0; padding-bottom: 0; }
+.zone-equipment-fold > .zone-content { margin-top: 16px; padding-bottom: 0; }
 .garage-chargers.zone-content { margin-top: 0; padding: 0; gap: 0; container: charging-area / inline-size; }
 .garage-control > .zone-equipment-fold { border-top: 1px solid var(--border); }
 .zone-section { min-width: 0; padding: 0; border: 0; container-type: inline-size; }

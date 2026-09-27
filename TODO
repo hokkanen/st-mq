@@ -1,6 +1,27 @@
 -Make README.md better and more descriptive of the app, especially the beginning of it
 -Implement support for local mqtt-based temperature receives (eg, from shelly or HASS through Meteorologisk Institute); just store last received temp values and time stamps (maybe in storage class, see below) when received (and accept if received within 1h)
 
+Completed 2026-09-27 — Stable dashboard folds and next heating change
+- Remove column-balancing padding from equipment and connections folds. Keep
+  their title areas stable when opening and closing, and use bounded gaps between
+  card sections for small differences; larger differences keep natural heights.
+  Narrow cards place each subtitle below its title in a shared two-row layout.
+  Measure existing spacing without clearing it and apply fold changes before the
+  next paint, avoiding reset/reapply flicker and redundant style writes.
+- Add a compact Home row below the readings for the selected plan's next phase
+  and Finnish local time. Distinguish paused, shadow, simulated, monitoring and
+  read-only states; recovery has no invented completion time.
+- Reviewed the current plan producer, status consumers, configuration, UI and
+  tests. Preserve control behavior and plan authority; no persisted state, schema,
+  migration, decoder or compatibility alias is added.
+- Validation: 45 focused tests and production build pass (existing bundle-size
+  warning). Synthetic Chromium checks cover bounded growth/shrinkage, empty
+  chargers, first-frame rapid toggles, matching stable footer headers and 15
+  screen widths in both themes. Home-controls browser checks also pass;
+  screenshots reviewed.
+  A synthetic active plan renders Reduction at 17:00 through the status refresh.
+  No household services were used and the full suite was not run.
+
 Completed 2026-09-27 — Save chart view and preserve selected end dates
 - Add Save view beside Reset view in the legend footer, persisting the current
   browser chart preferences with success/failure feedback. Retain automatic

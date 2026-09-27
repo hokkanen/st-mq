@@ -1,4 +1,4 @@
-/** Balance desktop columns within a small spacing budget for each card. */
+/** Balance desktop columns with bounded gaps between sections, never inside folds. */
 export function createDashboardLayout(root) {
   const view = root?.ownerDocument.defaultView;
   if (!view?.ResizeObserver) return { close() {} };
@@ -8,31 +8,44 @@ export function createDashboardLayout(root) {
   let frame = null;
 
   function reset() {
-    root.classList.remove('columns-aligned');
-    for (const card of cards.flat()) card.style.removeProperty('--dashboard-balance-space');
+    apply(new Map(), false);
+  }
+  function apply(spacing, aligned) {
+    for (const card of cards.flat()) {
+      const value = spacing.get(card) || '';
+      if (card.style.getPropertyValue('--dashboard-balance-space') === value) continue;
+      if (value) card.style.setProperty('--dashboard-balance-space', value);
+      else card.style.removeProperty('--dashboard-balance-space');
+    }
+    if (root.classList.contains('columns-aligned') !== aligned) root.classList.toggle('columns-aligned', aligned);
   }
   function align() {
+    if (frame !== null) view.cancelAnimationFrame(frame);
     frame = null;
-    // Measure without added spacing, including after folds close or content shrinks.
-    reset();
-    if (!desktop.matches || columns.length !== 2) return;
+    if (!desktop.matches || columns.length !== 2) return reset();
     const bounds = columns.map(column => column.getBoundingClientRect());
-    if (bounds.some(bound => bound.width === 0)) return;
-    const shorter = bounds[0].height <= bounds[1].height ? 0 : 1;
-    const difference = Math.abs(bounds[0].height - bounds[1].height);
-    const budgets = cards[shorter].map(card => {
-      const height = card.getBoundingClientRect().height;
-      // One slot between each displayed section, plus space above the footer
-      // label. Fixed outer padding keeps headings and bottom insets aligned.
-      const slots = [...card.children].filter(node => node.getClientRects().length > 0).length;
-      return { card, slots, growth: Math.min(slots * 12, height * .1) };
-    });
+    if (bounds.some(bound => bound.width === 0)) return reset();
+    // Subtract existing gaps instead of temporarily removing them. This keeps
+    // measurements stable and avoids a reset/reapply loop on every resize.
+    const measurements = cards.map(column => column.map(card => {
+      const slots = Math.max(0, [...card.children].filter(node => node.getClientRects().length > 0).length - 1);
+      const added = (parseFloat(card.style.getPropertyValue('--dashboard-balance-space')) || 0) * slots;
+      const height = card.getBoundingClientRect().height - added;
+      return { card, slots, added, growth: Math.min(slots * 12, height * .1) };
+    }));
+    const heights = bounds.map((bound, index) => bound.height - measurements[index].reduce((total, card) => total + card.added, 0));
+    const shorter = heights[0] <= heights[1] ? 0 : 1;
+    const difference = Math.abs(heights[0] - heights[1]);
+    const budgets = measurements[shorter];
     const capacity = budgets.reduce((total, budget) => total + budget.growth, 0);
-    if (!capacity || difference > capacity) return;
+    if (!capacity || difference > capacity) return reset();
+    const spacing = new Map();
     for (const { card, slots, growth } of budgets) {
-      if (slots) card.style.setProperty('--dashboard-balance-space', `${difference * growth / capacity / slots}px`);
+      // Match browser layout precision so subpixel rounding cannot churn styles.
+      const gap = slots ? Math.floor(difference * growth / capacity / slots * 64) / 64 : 0;
+      if (gap) spacing.set(card, `${gap}px`);
     }
-    root.classList.add('columns-aligned');
+    apply(spacing, true);
   }
   function schedule() {
     if (frame === null) frame = view.requestAnimationFrame(align);
@@ -42,11 +55,16 @@ export function createDashboardLayout(root) {
   // Watch sections, including their padding, so shrinking the shorter column is
   // detected even when the overall dashboard height stays unchanged.
   for (const content of root.querySelectorAll('.controller-column > .panel > *')) observer.observe(content, { box: 'border-box' });
+  // A disclosure must open with its final spacing on the first painted frame.
+  // ResizeObserver alone would defer adjustment to the following animation frame.
+  const folds = new view.MutationObserver(align);
+  folds.observe(root, { subtree: true, attributes: true, attributeFilter: ['open'] });
   desktop.addEventListener('change', schedule);
   schedule();
 
   return { close() {
     observer.disconnect();
+    folds.disconnect();
     desktop.removeEventListener('change', schedule);
     if (frame !== null) view.cancelAnimationFrame(frame);
     reset();

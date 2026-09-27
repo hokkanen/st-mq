@@ -245,7 +245,12 @@ Above the chart, **Home** and **Garage** each open **Heating configuration**
 from their upper summary. **Sensors & Equipment** in Home and **Sensors & More
 equipment** in Garage contain readbacks and manual tests; Garage's chargers sit
 directly below its heating summary. Home's upper summary includes indoor and
-outdoor temperatures, heating request and all-in price. **Tariff control** appears
+outdoor temperatures, heating request and all-in price. Below those readings, a
+compact row shows the next selected heating-plan change in Finnish local time.
+It identifies paused, shadow, simulated and read-only states and does not assign
+a fixed end time to recovery. Equipment and connections headers retain their
+height when toggled; desktop balancing adds only bounded gaps between sections.
+**Tariff control** appears
 above **Recirculation** inside Home's heating configuration; an unverified request
 does not confirm the relay state. Garage's equivalent summary shows **Heat-pump
 mode**, **Heating control** and **Room setting**, with current native feedback

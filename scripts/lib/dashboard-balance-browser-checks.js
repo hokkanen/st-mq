@@ -52,7 +52,7 @@ export async function checkDashboardBalance({ evaluate, until }) {
     for (const sample of samples.slice(-4)) assert.deepEqual(sample, samples.at(-1),
       `${label}: column sizing settles without repeated style writes or changing heights`);
   };
-  const read = () => evaluate(`(() => {
+  const readExpression = `(() => {
     const state = globalThis.dashboardBalanceSmoke;
     const snapshot = () => ({
       columns: state.columns.map(node => { const box = node.getBoundingClientRect(); return { height: box.height, bottom: box.bottom }; }),
@@ -60,17 +60,24 @@ export async function checkDashboardBalance({ evaluate, until }) {
       cards: state.cards.map(node => {
         const box = node.getBoundingClientRect(), style = getComputedStyle(node);
         const footer = node.querySelector(':scope > .home-support, :scope > .dashboard-disclosure:last-child');
-        const summary = footer.querySelector('summary'), label = summary.querySelector(':scope > span');
+        const summary = footer.querySelector('summary');
         return { id: node.id, height: box.height, gap: parseFloat(style.rowGap),
+          column: state.columns.indexOf(node.parentElement),
+          slots: Math.max(0, [...node.children].filter(child => child.getClientRects().length > 0).length - 1),
           bottomPadding: parseFloat(style.paddingBottom), topPadding: parseFloat(style.paddingTop),
           footerPadding: parseFloat(getComputedStyle(footer).paddingTop),
-          footerInset: box.bottom - summary.getBoundingClientRect().bottom,
-          footerLabelBottom: label.getBoundingClientRect().bottom };
+          footerInset: box.bottom - summary.getBoundingClientRect().bottom };
+      }),
+      summaries: ['home-equipment-details', 'garage-equipment-details', 'connections-details'].map(id => {
+        const summary = document.querySelector('#' + id + ' > summary'), style = getComputedStyle(summary);
+        return { id, height: summary.getBoundingClientRect().height,
+          topPadding: parseFloat(style.paddingTop), bottomPadding: parseFloat(style.paddingBottom) };
       }),
     });
     const actual = snapshot(), natural = state.natural(snapshot);
     return { aligned: state.root.classList.contains('columns-aligned'), actual, natural };
-  })()`);
+  })()`;
+  const read = () => evaluate(readExpression);
   const checkBounds = (state, label) => {
     for (const [index, card] of state.actual.cards.entries()) {
       const natural = state.natural.cards[index], growth = card.height - natural.height;
@@ -79,8 +86,8 @@ export async function checkDashboardBalance({ evaluate, until }) {
       assert.ok(card.gap >= 0 && card.gap <= 12.1,
         `${label}: ${card.id} keeps its added section gaps within 12px`);
       assert.equal(card.bottomPadding, natural.bottomPadding, `${label}: ${card.id} preserves its bottom padding`);
-      assert.ok(card.footerPadding >= 0 && card.footerPadding <= 12.1,
-        `${label}: ${card.id} keeps added space above its footer within 12px`);
+      assert.equal(card.footerPadding, natural.footerPadding,
+        `${label}: ${card.id} does not stretch its footer`);
       assert.ok(Math.abs(card.footerInset - natural.footerInset) <= 1,
         `${label}: ${card.id} preserves its footer's bottom inset`);
       assert.equal(card.topPadding, natural.topPadding, `${label}: ${card.id} preserves its top padding`);
@@ -89,6 +96,31 @@ export async function checkDashboardBalance({ evaluate, until }) {
       `${label}: balancing preserves the Home and Garage heading positions`);
     assert.ok(Math.abs(state.actual.headings[0] - state.actual.headings[1]) <= 1,
       `${label}: the Home and Garage headings share a baseline`);
+    assert.deepEqual(state.actual.summaries, state.natural.summaries,
+      `${label}: balancing leaves footer title height and padding unchanged`);
+  };
+  const checkCapacity = (state, label) => {
+    checkBounds(state, label);
+    const heights = state.natural.columns.map(column => column.height);
+    const shorter = heights[0] <= heights[1] ? 0 : 1;
+    const capacity = state.natural.cards.filter(card => card.column === shorter)
+      .reduce((sum, card) => sum + Math.min(card.slots * 12, card.height * .1), 0);
+    const difference = Math.abs(heights[0] - heights[1]);
+    assert.equal(state.aligned, capacity > 0 && difference <= capacity,
+      `${label}: columns balance only within the available section-gap budget`);
+    if (state.aligned) assert.ok(Math.abs(state.actual.columns[0].bottom - state.actual.columns[1].bottom) <= 1,
+      `${label}: column bottoms align`);
+    else for (const [index, card] of state.actual.cards.entries()) {
+      assert.ok(Math.abs(card.height - state.natural.cards[index].height) <= 1,
+        `${label}: ${card.id} keeps its natural height`);
+      assert.equal(card.gap, state.natural.cards[index].gap,
+        `${label}: ${card.id} releases balancing space when the difference is too large`);
+    }
+    return state;
+  };
+  const naturalLayout = async label => {
+    await settle(label);
+    return checkCapacity(await read(), label);
   };
   const aligned = async (label, shorter) => {
     await until(`(() => {
@@ -123,10 +155,9 @@ export async function checkDashboardBalance({ evaluate, until }) {
   };
 
   try {
-    const entry = await aligned('Collapsed desktop entry');
-    const footerBottom = id => entry.actual.cards.find(card => card.id === id).footerLabelBottom;
-    assert.ok(Math.abs(footerBottom('providers-controls') - footerBottom('garage-control')) <= 1,
-      'The collapsed Data and Garage footer labels align above matching bottom insets');
+    const entry = await naturalLayout('Collapsed desktop entry');
+    assert.ok(entry.actual.summaries.every(summary => Math.abs(summary.height - entry.actual.summaries[0].height) <= 1),
+      'Home equipment, Garage equipment and Connections use matching title heights');
     for (const [difference, shorter, label] of [[24, 0, 'Home and Data grow'], [-24, 1, 'Garage grows']]) {
       await evaluate(`globalThis.dashboardBalanceSmoke.difference(${difference})`);
       await aligned(label, shorter);
@@ -151,11 +182,38 @@ export async function checkDashboardBalance({ evaluate, until }) {
       await unaligned(`Oversized ${difference > 0 ? 'Garage' : 'Home'} column`);
     }
     await evaluate('globalThis.dashboardBalanceSmoke.restorePads()');
-    await aligned('Natural entry is restored');
+    await naturalLayout('Natural entry is restored');
     await evaluate("document.getElementById('garage-heating-details').open = true");
     await unaligned('Garage heating fold opens');
     await evaluate("document.getElementById('garage-heating-details').open = false");
-    await aligned('Garage heating fold closes');
+    await naturalLayout('Garage heating fold closes');
+
+    for (const { id } of entry.actual.summaries) {
+      await evaluate(`document.getElementById('${id}').open = true`);
+      const opened = await naturalLayout(`${id} opens`);
+      assert.deepEqual(opened.actual.summaries, entry.actual.summaries,
+        `${id}: opening leaves every footer title height and padding unchanged`);
+      await evaluate(`document.getElementById('${id}').open = false`);
+      const closed = await naturalLayout(`${id} closes`);
+      assert.deepEqual(closed.actual.summaries, entry.actual.summaries,
+        `${id}: closing restores content without changing footer title height or padding`);
+    }
+
+    // Start with balancing active, then read the first paint after each toggle.
+    // An open fold must release old spacing before it can flash on screen.
+    await evaluate('globalThis.dashboardBalanceSmoke.difference(-24)');
+    await aligned('Before rapid footer toggles', 1);
+    for (let index = 0; index < 6; index++) {
+      const frame = await evaluate(`new Promise(resolve => {
+        document.getElementById('garage-equipment-details').open = ${index % 2 === 0};
+        requestAnimationFrame(() => resolve(${readExpression}));
+      })`);
+      const state = checkCapacity(frame, `Rapid footer toggle ${index + 1}`);
+      assert.deepEqual(state.actual.summaries, entry.actual.summaries,
+        'Footer titles retain their height and padding on the first frame after rapid toggles');
+    }
+    await settle('Rapid footer toggles finish');
+    await evaluate('globalThis.dashboardBalanceSmoke.restorePads()');
 
     // A displayed empty wrapper still occupies a flex-gap position.
     await evaluate(`globalThis.dashboardBalanceSmoke.chargers.replaceChildren();

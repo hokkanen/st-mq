@@ -271,7 +271,7 @@ try {
   assert.deepEqual(await evaluate("['control-title','garage-title'].map(id=>document.getElementById(id).textContent)"), ['Home', 'Garage']);
   if (dashboardOnly) {
     await checkDashboardBalance({ evaluate, until });
-    for (const width of [1920, 1440, 1366, 1280, 1252, 1251, 1024, 801, 800, 768, 540, 390, 320]) {
+    for (const width of [1920, 1440, 1366, 1280, 1252, 1251, 1024, 900, 820, 801, 800, 768, 540, 390, 320]) {
       await send('Emulation.setDeviceMetricsOverride', { width, height: width > 800 ? 1000 : 844, deviceScaleFactor: 1, mobile: false });
       for (const theme of ['dark', 'light']) {
         await evaluate(`window.homeEnergyTheme.setTheme('${theme}');
@@ -283,22 +283,49 @@ try {
         const layout = await evaluate(`(() => {
           const root = document.querySelector('.controller-panels');
           const cards = [...root.querySelectorAll('.controller-column > .panel')];
-          const chargers = [...document.querySelectorAll('#charging-devices > details')].map(node => node.getBoundingClientRect());
-          return { aligned: root.classList.contains('columns-aligned'),
-            paired: Math.abs(chargers[0].top - chargers[1].top) < 1,
-            bottoms: [...root.children].map(node => node.getBoundingClientRect().bottom),
+          const columns = [...root.children], spacing = cards.map(card => card.style.getPropertyValue('--dashboard-balance-space'));
+          const actual = { aligned: root.classList.contains('columns-aligned'),
+            bottoms: columns.map(node => node.getBoundingClientRect().bottom),
             spaces: cards.map(node => parseFloat(getComputedStyle(node).getPropertyValue('--dashboard-balance-space')) || 0) };
+          for (const card of cards) card.style.removeProperty('--dashboard-balance-space');
+          try {
+            const heights = columns.map(node => node.getBoundingClientRect().height);
+            const shorter = heights[0] <= heights[1] ? 0 : 1;
+            const capacity = cards.filter(card => card.parentElement === columns[shorter]).reduce((sum, card) => {
+              const slots = Math.max(0, [...card.children].filter(node => node.getClientRects().length > 0).length - 1);
+              return sum + Math.min(slots * 12, card.getBoundingClientRect().height * .1);
+            }, 0);
+            return { ...actual, naturalDifference: Math.abs(heights[0] - heights[1]), capacity };
+          } finally {
+            cards.forEach((card, index) => {
+              if (spacing[index]) card.style.setProperty('--dashboard-balance-space', spacing[index]);
+            });
+          }
         })()`);
-        assert.equal(layout.aligned, width > 800 && layout.paired, `${width}px ${theme} balances paired desktop chargers and releases stacked columns`);
+        assert.equal(layout.aligned, width > 800 && layout.capacity > 0 && layout.naturalDifference <= layout.capacity,
+          `${width}px ${theme} balances desktop columns only within the section-gap budget`);
         if (layout.aligned) assert.ok(Math.abs(layout.bottoms[0] - layout.bottoms[1]) < 1, `${width}px ${theme} aligns the column bottoms`);
         else assert.ok(layout.spaces.every(space => space === 0), `${width}px ${theme} retains natural spacing`);
+        const footerHeights = await evaluate(`['home-equipment-details', 'garage-equipment-details', 'connections-details']
+          .map(id => document.querySelector('#' + id + ' > summary').getBoundingClientRect().height)`);
+        assert.ok(footerHeights.every(height => Math.abs(height - footerHeights[0]) <= 1),
+          `${width}px ${theme} gives Home equipment, Garage equipment and Connections matching title heights`);
+        assert.equal(await evaluate(`['home-equipment-details', 'garage-equipment-details', 'connections-details'].every(id => {
+          const fold = document.getElementById(id), summary = fold.querySelector(':scope > summary');
+          const height = summary.getBoundingClientRect().height;
+          fold.open = true;
+          const openHeight = summary.getBoundingClientRect().height;
+          fold.open = false;
+          return Math.abs(height - openHeight) <= 1 && Math.abs(height - summary.getBoundingClientRect().height) <= 1;
+        })`), true, `${width}px ${theme} preserves footer title heights when opening and closing folds`);
         const shot = await send('Page.captureScreenshot', { format: 'png' });
         writeFileSync(join(artifacts, `dashboard-balance-${width}-${theme}.png`), Buffer.from(shot.data, 'base64'));
       }
     }
     assert.deepEqual(errors, []);
     console.log(JSON.stringify({ artifacts, checks: ['bounded dashboard spacing in both directions',
-      'content growth, shrinkage and empty chargers', 'responsive desktop and mobile layouts in both themes', 'no browser exceptions'] }));
+      'content growth, shrinkage and empty chargers', 'fixed footer titles and rapid disclosure toggles',
+      'responsive desktop and mobile layouts in both themes', 'no browser exceptions'] }));
   } else {
   await checkDashboardDisclosures({ evaluate, keyPress, until });
   assert.deepEqual(await evaluate("[...document.querySelectorAll('#charging-devices > .equipment-device')].map(node=>node.id)"), ['charger1-device', 'charger2-device']);

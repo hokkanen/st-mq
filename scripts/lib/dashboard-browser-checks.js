@@ -192,12 +192,16 @@ export async function checkDashboardLayout({ evaluate, width }) {
   assert.equal(await evaluate(`['home-equipment-details', 'garage-equipment-details', 'connections-details'].every(id => {
     const summary = document.querySelector('#' + id + ' > summary');
     const meta = summary.querySelector(':scope > small');
-    if (!meta?.textContent.trim()) return true;
+    const card = summary.closest('.panel'), cardStyle = getComputedStyle(card);
+    const contentWidth = card.clientWidth - parseFloat(cardStyle.paddingLeft) - parseFloat(cardStyle.paddingRight);
     const title = summary.querySelector(':scope > span').getBoundingClientRect();
     const bounds = summary.getBoundingClientRect(), box = meta.getBoundingClientRect();
+    if (contentWidth <= 420) return Math.abs(box.left - title.left) <= 1 && box.top >= title.bottom
+      && box.right <= bounds.right - 1 && box.height >= parseFloat(getComputedStyle(meta).lineHeight);
+    if (!meta.textContent.trim()) return true;
     return box.left >= title.right - 1 && box.right <= bounds.right - 1
       && box.top < title.bottom && title.top < box.bottom;
-  })`), true, `Equipment and Connections keep their supporting text beside the title at ${width}px`);
+  })`), true, `Equipment and Connections stack supporting text in narrow cards and keep it beside the title in wide cards at ${width}px`);
   await checkProviderLayout({ evaluate, width });
   for (const id of ['home-equipment-details']) {
     await evaluate(`document.querySelector('#${id} > summary').click()`);
