@@ -127,25 +127,37 @@ try {
     await evaluate("document.getElementById('learning-details').open = false; document.getElementById('home-heat-pump-details').open = false");
   };
   await checkIndependentCards();
-  for (const [section, content] of [['timing-details', 'timing-benefit'], ['recording-details', 'recording-adaptive-details']]) {
-    const marker = `getComputedStyle(document.querySelector('#${section} > summary'), '::after').content`;
-    assert.equal(await evaluate(`document.getElementById('${section}').open`), false);
-    assert.equal(await evaluate(marker), '"›"', `${section} shows an arrow when closed`);
-    assert.equal(await evaluate(`getComputedStyle(document.querySelector('#${section} > summary'), '::after').transform`), 'none');
+  assert.equal(await evaluate("document.getElementById('comparison-toggle').getAttribute('aria-controls')"), 'comparison-content');
+  for (const [section, content] of [['timing-details', 'comparison-content'], ['recording-details', 'recording-adaptive-details']]) {
+    const selector = section === 'timing-details' ? '#comparison-toggle' : `#${section} > summary`;
+    const isOpen = section === 'timing-details'
+      ? "document.getElementById('comparison-toggle').getAttribute('aria-expanded') === 'true'"
+      : `document.getElementById('${section}').open`;
+    const marker = section === 'timing-details'
+      ? `getComputedStyle(document.querySelector('${selector}'), '::before').content`
+      : `getComputedStyle(document.querySelector('${selector}')).listStyleType`;
+    const closedMarker = section === 'timing-details' ? '"▶"' : 'disclosure-closed';
+    const openMarker = section === 'timing-details' ? '"▼"' : 'disclosure-open';
+    assert.equal(await evaluate(isOpen), false);
+    assert.equal(await evaluate(marker), closedMarker, `${section} shows a leading arrow when closed`);
     assert.equal(await evaluate(`document.getElementById('${content}').checkVisibility()`), false, `${section} hides its content when closed`);
-    await evaluate(`document.querySelector('#${section} > summary').focus()`);
-    assert.equal(await evaluate(`document.activeElement === document.querySelector('#${section} > summary')`), true, `${section} accepts keyboard focus`);
+    await evaluate(`document.querySelector('${selector}').focus()`);
+    assert.equal(await evaluate(`document.activeElement === document.querySelector('${selector}')`), true, `${section} accepts keyboard focus`);
     await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13, text: '\r', unmodifiedText: '\r' });
     await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
-    assert.equal(await evaluate(`document.getElementById('${section}').open`), true, `${section} opens with Enter`);
-    assert.equal(await evaluate(marker), '"›"', `${section} keeps its arrow when open`);
-    assert.notEqual(await evaluate(`getComputedStyle(document.querySelector('#${section} > summary'), '::after').transform`), 'none', `${section} rotates its open arrow`);
+    assert.equal(await evaluate(isOpen), true, `${section} opens with Enter`);
+    assert.equal(await evaluate(marker), openMarker, `${section} points its open arrow down`);
     assert.equal(await evaluate(`document.getElementById('${content}').checkVisibility()`), true, `${section} reveals its content when open`);
+    assert.equal(await evaluate(`document.activeElement === document.querySelector('${selector}')`), true,
+      `${section} preserves focus while opening`);
+    const siblingOpen = section === 'timing-details'
+      ? "document.getElementById('recording-details').open"
+      : "document.getElementById('comparison-toggle').getAttribute('aria-expanded') === 'true'";
+    assert.equal(await evaluate(siblingOpen), false, `${section} expands independently of its neighboring fold`);
     await send('Input.dispatchKeyEvent', { type: 'keyDown', key: ' ', code: 'Space', windowsVirtualKeyCode: 32 });
     await send('Input.dispatchKeyEvent', { type: 'keyUp', key: ' ', code: 'Space', windowsVirtualKeyCode: 32 });
-    assert.equal(await evaluate(`document.getElementById('${section}').open`), false, `${section} closes with Space`);
-    assert.equal(await evaluate(marker), '"›"');
-    assert.equal(await evaluate(`getComputedStyle(document.querySelector('#${section} > summary'), '::after').transform`), 'none');
+    assert.equal(await evaluate(isOpen), false, `${section} closes with Space`);
+    assert.equal(await evaluate(marker), closedMarker);
     assert.equal(await evaluate(`document.getElementById('${content}').checkVisibility()`), false);
   }
   assert.equal(await evaluate("document.querySelectorAll('#model-coefficients-content > .learning-entry').length >= 6"), true);

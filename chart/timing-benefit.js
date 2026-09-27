@@ -5,10 +5,9 @@ import { heatingExplanations } from './heating-benefit.js';
 
 /** Keep native folds mounted while the chart refreshes their figures and notes. */
 export function createTimingBenefit(root) {
-  if (!root) return { render() {}, close() {} };
+  if (!root) return { render() {}, refreshLayout() {}, close() {} };
   const document = root.ownerDocument;
   const view = document.defaultView;
-  const disclosure = root.closest('details');
   let alignmentFrame = null;
   let lastFingerprint, closed = false, notes, notesContent, devices, overviewObserver, overviewHeight, selectionHeight;
   let latestPayload, modeStatus, heatingMode = 'model', heatingScope = 'home', chargingScope = 'total';
@@ -93,9 +92,8 @@ export function createTimingBenefit(root) {
     parent.append(section);
   }
   function alignOverviews() {
-    // Closed native details can report either stale boxes or zero boxes,
-    // depending on the browser. Neither describes the next visible layout.
-    if (closed || disclosure && !disclosure.open || root.getBoundingClientRect().width <= 0) return;
+    // Keep the last visible alignment while the comparison panel is hidden.
+    if (closed || root.closest('[hidden]') || root.getBoundingClientRect().width <= 0) return;
     // Match the control area before measuring the results. The inner content
     // keeps its natural height, so wrapping can both grow and shrink the row.
     const controlHeight = Math.ceil(Math.max(...[...cards.values()].map(card => card.selection.getBoundingClientRect().height)));
@@ -114,7 +112,7 @@ export function createTimingBenefit(root) {
   }
   function scheduleAlignment() {
     if (closed) return;
-    if (disclosure && !disclosure.open) {
+    if (root.closest('[hidden]')) {
       if (alignmentFrame !== null) view.cancelAnimationFrame(alignmentFrame);
       alignmentFrame = null;
       return;
@@ -209,10 +207,8 @@ export function createTimingBenefit(root) {
         overviewObserver.observe(card.selection);
       }
     }
-    // A native disclosure reopening is not guaranteed to notify ResizeObserver.
-    // Wait until its visible subtree is restored before measuring it again.
+    // The disclosure owner also requests layout when it reveals this panel.
     view.addEventListener('resize', scheduleAlignment);
-    disclosure?.addEventListener('toggle', scheduleAlignment);
   }
   function deviceOverview(display) {
     const overview = document.createDocumentFragment();
@@ -402,12 +398,12 @@ export function createTimingBenefit(root) {
   }
   return {
     render,
+    refreshLayout: scheduleAlignment,
     close() {
       closed = true; overviewObserver?.disconnect();
       if (alignmentFrame !== null) view.cancelAnimationFrame(alignmentFrame);
       alignmentFrame = null;
       view.removeEventListener('resize', scheduleAlignment);
-      disclosure?.removeEventListener('toggle', scheduleAlignment);
       for (const button of modeButtons) button.removeEventListener('click', chooseMode);
       for (const button of scopeButtons) button.removeEventListener('click', chooseScope);
       for (const button of chargingButtons) button.removeEventListener('click', chooseChargingScope);

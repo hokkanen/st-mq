@@ -575,7 +575,7 @@ try {
     'The compact Garage summary keeps thermal allowance inside the detailed settings');
   assert.equal(await evaluate("document.getElementById('garage-budget-rear') || document.getElementById('garage-budget-front')"), null);
   assert.equal(await evaluate("document.querySelector('[data-scope=home]').getAttribute('aria-pressed')"), 'true');
-  await evaluate("document.getElementById('timing-details').open=true; document.querySelector('[data-scope=garage]').click()");
+  await evaluate("if (document.getElementById('comparison-toggle').getAttribute('aria-expanded') !== 'true') document.getElementById('comparison-toggle').click(); document.querySelector('[data-scope=garage]').click()");
   assert.match(await evaluate("document.querySelector('.timing-device[data-device=heatPump]').textContent"), /-€1.00.*Provisional/);
   await evaluate("document.querySelector('[data-scope=total]').click()");
   assert.match(await evaluate("document.querySelector('.timing-device[data-device=heatPump]').textContent"), /€2.00/);
@@ -958,7 +958,7 @@ try {
       await checkIndependentChargerFolds(`${width}-${theme}`, width === 1440);
       await evaluate("globalThis.chargingSmokeValues={charger1:'progress',charger2:'charging'}; globalThis.nativePumpSmokeValues=true; globalThis.refreshLearningSmokeStatus()");
       await until("['charger1','charger2'].every(id=>document.getElementById(id+'-device').dataset.state==='Charging')");
-      await evaluate("document.querySelectorAll('details').forEach(fold=>fold.open=false); document.activeElement?.blur(); window.scrollTo(0,0)");
+      await evaluate("document.querySelectorAll('details').forEach(fold=>fold.open=false); if (document.getElementById('comparison-toggle').getAttribute('aria-expanded') === 'true') document.getElementById('comparison-toggle').click(); document.activeElement?.blur(); window.scrollTo(0,0)");
       await capture(`dashboard-active-${width}-${theme}`, { fullPage: true });
       await capture(`dashboard-active-overview-${width}-${theme}`);
       await checkIndependentChargerFolds(`active-${width}-${theme}`, width === 1440);
@@ -1087,7 +1087,11 @@ try {
     }
     // Preserve the equipment and savings layout checks from this smoke test.
     for (const [id, name] of [['timing-details', 'savings'], ['garage-controller-details', 'equipment'], ['charger1-device', 'charging']]) {
-      await evaluate(`(() => { const element = document.getElementById('${id}'); element.open = true;
+      await evaluate(`(() => { const element = document.getElementById('${id}');
+        if ('${id}' === 'timing-details') {
+          const button = document.getElementById('comparison-toggle');
+          if (button.getAttribute('aria-expanded') !== 'true') button.click();
+        } else element.open = true;
         for (let parent = element.parentElement; parent; parent = parent.parentElement)
           if (parent.tagName === 'DETAILS') parent.open = true;
         element.scrollIntoView({block: 'start'}); })()`);

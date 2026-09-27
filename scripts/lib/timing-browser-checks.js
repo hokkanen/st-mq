@@ -90,8 +90,8 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
   const detail = device => `.timing-device-detail[data-device="${device}"]`;
   const comparison = mode => `${card('heatPump')} .timing-comparison-option[data-mode="${mode}"]`;
   const text = css => evaluate(`document.querySelector(${JSON.stringify(css)})?.textContent ?? ''`);
-  const expanded = "document.getElementById('timing-details').open";
-  const summary = '#timing-details > summary';
+  const expanded = "(document.getElementById('comparison-toggle').getAttribute('aria-expanded') === 'true')";
+  const toggle = '#comparison-toggle';
   const waitComparison = (start, end = start) => until(`(() => {
     const range = document.getElementById('comparison-range-form').dataset;
     return range.state === 'ready' && range.startDate === ${JSON.stringify(start)} && range.endDate === ${JSON.stringify(end)};
@@ -156,17 +156,25 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
       return notes.left >= recording.left + 8;
     })()`), true, 'Comparison methodology remains visibly nested below the top-level sections');
     assert.equal(await evaluate(`(() => {
-      const sections = ['#timing-details > summary', '#recording-details > summary'].map(css => document.querySelector(css));
+      const sections = ['#comparison-toggle', '#recording-details > summary'].map(css => document.querySelector(css));
       const chartNotes = ['#chart-legend-panel > summary', '.chart-notes-disclosure > summary'].map(css => document.querySelector(css));
       const markers = chartNotes.map(node => getComputedStyle(node, '::before'));
-      return sections.every(node => getComputedStyle(node).display === 'list-item')
+      return getComputedStyle(sections[0]).display === 'flex'
+        && getComputedStyle(sections[1]).display === 'list-item'
+        && getComputedStyle(sections[0], '::before').content.includes('▼')
+        && parseFloat(getComputedStyle(sections[0], '::before').fontSize) > 0
+        && ['fontSize', 'fontWeight', 'lineHeight', 'color'].every(property => getComputedStyle(sections[0])[property] === getComputedStyle(sections[1])[property])
+        && Math.abs(sections[0].getBoundingClientRect().left - sections[1].getBoundingClientRect().left) < 1
         && chartNotes.every(node => node.getBoundingClientRect().left >= sections[0].getBoundingClientRect().left + 8)
         && ['content', 'width', 'height', 'borderRightWidth', 'borderBottomWidth'].every(property => markers[0][property] === markers[1][property]);
-    })()`), true, 'Main sections retain native triangles while both indented chart notes share one arrow style');
+    })()`), true, 'Main sections retain matching triangle markers, typography and alignment while indented chart notes share one arrow style');
   };
   const scrollTo = css => evaluate(`document.querySelector(${JSON.stringify(css)}).scrollIntoView({ block: 'start' }); true`);
-  const checkOpen = expected => evaluate(expanded).then(actual => assert.equal(actual, expected,
-    'Timing expansion follows the reader’s choice'));
+  const checkOpen = async expected => {
+    assert.equal(await evaluate(expanded), expected, 'Timing expansion follows the reader’s choice');
+    assert.equal(await evaluate("document.getElementById('comparison-content').hidden"), !expected,
+      'The controlled panel visibility agrees with the announced expansion');
+  };
   const checkDetailOpen = async (device, expected) => {
     assert.equal(await evaluate(`document.querySelector(${JSON.stringify(detail(device))}).open`), expected,
       `${device} details follow the reader’s choice independently`);
@@ -306,25 +314,29 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
     await chooseDate('2026-09-06');
   };
 
-  assert.equal(await evaluate("document.getElementById('timing-details').tagName"), 'DETAILS');
-  assert.equal((await text(summary)).trim(), 'Energy cost comparisons');
+  assert.equal(await evaluate("document.getElementById('timing-details').tagName"), 'SECTION');
+  assert.deepEqual(await evaluate(`(() => {
+    const button = document.getElementById('comparison-toggle');
+    return { tag: button.tagName, type: button.type, controls: button.getAttribute('aria-controls') };
+  })()`), { tag: 'BUTTON', type: 'button', controls: 'comparison-content' });
+  assert.equal((await text(toggle)).trim(), 'Energy cost comparisons');
   await checkOpen(false);
   await evaluate(`window.timingFoldFixture = {
-    details: document.getElementById('timing-details'), summary: document.querySelector(${JSON.stringify(summary)})
+    section: document.getElementById('timing-details'), button: document.querySelector(${JSON.stringify(toggle)})
   }; true`);
   await chooseDate('2026-09-06');
   await checkOpen(false);
-  await scrollTo(summary);
+  await scrollTo(toggle);
   await capture('home-energy-timing-folded-desktop');
-  await evaluate(`document.querySelector(${JSON.stringify(summary)}).focus(); true`);
+  await evaluate(`document.querySelector(${JSON.stringify(toggle)}).focus(); true`);
   await key('\uE007');
   await until(expanded);
   await key(' ');
   await until(`!${expanded}`);
   await key('\uE007');
   await until(expanded);
-  assert.equal(await evaluate('document.activeElement === window.timingFoldFixture.summary'), true,
-    'Native summary keeps keyboard focus while toggling');
+  assert.equal(await evaluate('document.activeElement === window.timingFoldFixture.button'), true,
+    'The native comparison button keeps keyboard focus through Enter and Space toggles');
   await checkDates();
   assert.equal(await evaluate("document.querySelectorAll('.timing-popover, #timing-benefit .timing-help, #timing-benefit button:not(.timing-comparison-option), #timing-benefit [role=dialog]').length"), 0,
     'Results use only the inline comparison selector and native details controls');
@@ -396,7 +408,7 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
   await checkClosedLayout();
   await checkContentOrder();
   await checkFits();
-  await scrollTo(summary);
+  await scrollTo(toggle);
   await capture('home-energy-timing-historical-desktop');
   await evaluate(`document.querySelector(${JSON.stringify(`${detail('charger')} > summary`)}).focus(); true`);
   await checkToggle('charger', true, () => key('\uE007'));
@@ -407,21 +419,21 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
   assert.equal(await evaluate('document.activeElement === window.timingFoldFixture.devices.charger.summary'), true,
     'Nested native summary keeps keyboard focus while toggling');
   await checkOpen(true);
-  await scrollTo(summary);
+  await scrollTo(toggle);
   await capture('home-energy-timing-one-detail-desktop');
 
   await command('browsingContext.setViewport', { context, viewport: { width: 844, height: 1100 }, devicePixelRatio: 1 });
   await checkToggle('charger', false);
   await checkClosedLayout();
   await checkFits();
-  await scrollTo(summary);
+  await scrollTo(toggle);
   await capture('home-energy-timing-unavailable-closed-844');
   await checkToggle('heatPump', true);
   await checkDetailOpen('charger', false);
   await checkToggle('heatPump', false);
   await checkToggle('charger', true);
   await checkFits();
-  await scrollTo(summary);
+  await scrollTo(toggle);
   await capture('home-energy-timing-unavailable-charging-open-844');
   await command('browsingContext.setViewport', { context, viewport: { width: 1440, height: 1100 }, devicePixelRatio: 1 });
   await switchComparison('model');
@@ -442,8 +454,8 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
     assert.equal(await evaluate(`document.querySelector(${JSON.stringify(comparison(mode))}) === window.timingFoldFixture.comparisons.${mode}`), true,
       'Changing dates preserves the comparison buttons and the selected mode');
   }
-  assert.equal(await evaluate("document.getElementById('timing-details') === window.timingFoldFixture.details && document.querySelector('#timing-details > summary') === window.timingFoldFixture.summary"), true,
-    'Changing dates updates the contents without replacing the fold or its summary');
+  assert.equal(await evaluate("document.getElementById('timing-details') === window.timingFoldFixture.section && document.getElementById('comparison-toggle') === window.timingFoldFixture.button"), true,
+    'Changing dates updates the contents without replacing the section or its toggle button');
   for (const device of ['heatPump', 'charger', 'firewood']) {
     assert.equal(await evaluate(`document.querySelector(${JSON.stringify(detail(device))}) === window.timingFoldFixture.devices.${device}.details
       && document.querySelector(${JSON.stringify(`${detail(device)} > summary`)}) === window.timingFoldFixture.devices.${device}.summary`), true,
@@ -495,11 +507,11 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
         assert.ok(positions[1].top >= positions[0].bottom && Math.abs(positions[0].left - positions[1].left) < 1,
           'Narrow screens stack the device cards in reading order');
       }
-      await scrollTo(summary);
+      await scrollTo(toggle);
       await capture(`home-energy-timing-${theme}-${viewport.width}`);
       await switchComparison('model');
       await checkFits();
-      await scrollTo(summary);
+      await scrollTo(toggle);
       await capture(`home-energy-model-${theme}-${viewport.width}`);
       await switchComparison('timing');
       await scrollTo(`${detail('charger')} .timing-source`);
@@ -508,25 +520,25 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
       await capture(`home-energy-timing-explanations-${theme}-${viewport.width}`);
       await checkToggle('charger', false);
       if (viewport.width > 800) await checkClosedLayout();
-      await scrollTo(summary);
+      await scrollTo(toggle);
       await capture(`home-energy-timing-closed-${theme}-${viewport.width}`);
       await checkToggle('heatPump', true);
       await checkDetailOpen('charger', false);
-      await scrollTo(summary);
+      await scrollTo(toggle);
       await capture(`home-energy-timing-heating-open-${theme}-${viewport.width}`);
       await checkToggle('charger', true);
       await checkDetailOpen('charger', true);
       await checkOpen(true);
       await checkFits();
       await checkContentOrder();
-      await scrollTo(summary);
+      await scrollTo(toggle);
       await capture(`home-energy-timing-both-details-${theme}-${viewport.width}`);
       await checkToggle('heatPump', false);
       await checkDetailOpen('charger', true);
-      await tap(summary);
+      await tap(toggle);
       await until(`!${expanded}`);
       await capture(`home-energy-timing-folded-${theme}-${viewport.width}`);
-      await tap(summary);
+      await tap(toggle);
       await until(expanded);
       await checkDetailOpen('heatPump', false);
       await checkDetailOpen('charger', true);
@@ -545,7 +557,7 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
   assert.match(await text(`${card('heatPump')} .timing-outcome`), /estimated extra cost/i,
     'Negative model savings clearly describe an estimated extra cost');
   await checkFits();
-  await scrollTo(summary);
+  await scrollTo(toggle);
   await capture('home-energy-model-negative-mobile');
   await command('browsingContext.setViewport', { context, viewport: { width: 1440, height: 1100 }, devicePixelRatio: 1 });
   await chooseDate('2026-09-04');
@@ -559,7 +571,7 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
   assert.match(await text(`${card('heatPump')} .timing-coverage`), /25% of time included/);
   assert.match(await text(`${detail('heatPump')} .timing-source[data-source="observed"]`), /100%/);
   assert.match(await text(detail('heatPump')), /reconstruct|recorded equipment/i);
-  await scrollTo(summary);
+  await scrollTo(toggle);
   await capture('home-energy-timing-reconstructed-desktop');
   await chooseDate('2026-09-03');
   await checkOpen(true);
@@ -577,13 +589,13 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
   await checkFits();
   await scrollTo('.timing-period-rates');
   await capture('home-energy-timing-period-rates-mobile');
-  await tap(summary);
+  await tap(toggle);
   await until(`!${expanded}`);
   await chooseDate('2026-09-07');
   await checkOpen(false);
   assert.equal(await evaluate("document.querySelector('.timing-period-rates') === null && document.querySelector('.timing-rate-explanation') === null"), true,
     'Known-rate dates remove obsolete explanations about assumed contract rates');
-  await tap(summary);
+  await tap(toggle);
   await until(expanded);
   await switchComparison('model');
   await evaluate(`document.querySelector(${JSON.stringify(`${detail('charger')} > summary`)}).focus(); true`);
@@ -601,8 +613,8 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
     await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))');
     await checkOpen(true);
     await checkComparison('model');
-    assert.equal(await evaluate("document.getElementById('timing-details') === window.timingFoldFixture.details"), true,
-      'Background polling preserves the native fold');
+    assert.equal(await evaluate("document.getElementById('timing-details') === window.timingFoldFixture.section"), true,
+      'Background polling preserves the comparison section');
     await checkDetailOpen('heatPump', false);
     await checkDetailOpen('charger', true);
     assert.equal(await evaluate(`document.querySelector(${JSON.stringify(detail('charger'))}) === window.timingFoldFixture.devices.charger.details
@@ -617,7 +629,7 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
   await waitComparison('2026-09-07');
   await checkComparison('model');
   await checkOpen(false);
-  await tap(summary);
+  await tap(toggle);
   await until(expanded);
   await checkFits();
   await switchComparison('timing');
@@ -658,7 +670,7 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
           const resultTops = await evaluate(`[...document.querySelectorAll('.timing-saving-result')].map(node => node.getBoundingClientRect().top)`);
           assert.ok(Math.max(...resultTops) - Math.min(...resultTops) < 1, 'All three desktop results align below their comparison controls');
         }
-        await scrollTo(summary);
+        await scrollTo(toggle);
         await capture(`energy-comparisons-populated-${theme}-${width}`);
         if (width < 801) {
           await scrollTo(card('firewood'));

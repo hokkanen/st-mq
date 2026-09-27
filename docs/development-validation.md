@@ -127,15 +127,18 @@ chart/date/detail/tooltips and related dashboard regression coverage.
 Date checks also cover preserving the inactive end-date suggestion, showing just
 the new start day, explicitly choosing the same or another end date, canceling
 without activating a range, and fitting the end calendar on small screens.
-The timing compatibility suite renders synthetic comparisons with native,
-missing and delayed `ResizeObserver` delivery, checking visible figures and
-controls above the folds, resizing, refresh, keyboard focus and unclipped content
-at five widths in both themes. Repeated outer-fold close/reopen checks include
-refreshes and viewport changes while closed, unchanged cached alignment until
-reopening, preserved inner folds, hit testing and painted-content comparisons.
-An explicit hidden-layout variant also exercises browsers that return zero
-geometry for a closed disclosure. These simulated cases do not certify a
-particular appliance's rendering engine.
+The timing compatibility suite uses the production comparison-section markup
+with native, missing and delayed `ResizeObserver` delivery. It checks visible
+figures and controls, resizing, refresh, keyboard focus and unclipped content at
+five widths in both themes. The comparison section uses an accessible button
+and an ordinary hidden panel, keeping native inner folds mounted without placing
+the cards inside a native outer disclosure. Enter/Space activation, expanded state
+and hidden layout must agree. Repeated close/reopen checks include refreshes and
+viewport changes while hidden, retained cached alignment until reopening,
+preserved inner folds, hit testing and identical painted-card captures.
+Use `STMQ_CHROME_BIN` to exercise an actual older Chromium executable; changing
+a modern browser's user agent does not reproduce an older rendering engine.
+These checks do not certify a particular appliance's browser.
 
 They default to `/opt/google/chrome/chrome`; set `STMQ_CHROME_BIN` if needed. The
 remaining Chrome checks expect a separately started browser with a disposable

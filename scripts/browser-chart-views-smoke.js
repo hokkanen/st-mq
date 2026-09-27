@@ -1179,15 +1179,19 @@ try {
     for (const theme of ['dark', 'light']) {
       if (await evaluate('document.documentElement.dataset.theme') !== theme)
         await evaluate("document.getElementById('theme-toggle').click(); true");
-      await evaluate("document.getElementById('timing-details').open=false; document.getElementById('recording-details').open=false; document.getElementById('timing-details').scrollIntoView({block:'center'}); true");
+      await evaluate("if (document.getElementById('comparison-toggle').getAttribute('aria-expanded') === 'true') document.getElementById('comparison-toggle').click(); document.getElementById('recording-details').open=false; document.getElementById('timing-details').scrollIntoView({block:'center'}); true");
       await settle();
       const geometry = id => evaluate(`(() => {
-        const summary = document.querySelector('#${id} > summary'), text = summary.querySelector('span');
-        const outer = summary.getBoundingClientRect(), inner = text.getBoundingClientRect();
-        const style = getComputedStyle(summary), marker = getComputedStyle(summary, '::marker');
+        const summary = document.querySelector('${id}' === 'timing-details' ? '#comparison-toggle' : '#${id} > summary');
+        const text = summary.querySelector('span');
+        // Measure rendered text: a flex item's element box includes line-height
+        // leading, whereas the native summary's inline span box does not.
+        const textRange = document.createRange(); textRange.selectNodeContents(text);
+        const outer = summary.getBoundingClientRect(), inner = textRange.getBoundingClientRect();
+        const style = getComputedStyle(summary), marker = getComputedStyle(summary, '${id}' === 'timing-details' ? '::before' : '::marker');
         return { height: outer.height, textInset: inner.left - outer.left,
           textCenter: inner.top + inner.height / 2 - outer.top, textHeight: inner.height,
-          arrow: { display: style.display, type: style.listStyleType, fontSize: marker.fontSize },
+          arrow: { display: style.display, type: style.listStyleType, fontSize: marker.fontSize, content: marker.content },
           leadingDecoration: getComputedStyle(summary, '::before').content,
           trailingDecoration: getComputedStyle(summary, '::after').content,
           fits: outer.left >= 0 && outer.right <= innerWidth };
@@ -1195,22 +1199,32 @@ try {
       const comparison = await geometry('timing-details'), recording = await geometry('recording-details');
       for (const key of ['height', 'textInset', 'textCenter', 'textHeight'])
         assert(Math.abs(comparison[key] - recording[key]) < 1, `${width}px ${theme}: footer ${key} aligns across the two closed folds`);
-      assert.deepEqual(comparison.arrow, recording.arrow, `${width}px ${theme}: both folds use the same native triangle`);
-      assert([comparison, recording].every(row => row.arrow.display === 'list-item'
-        && row.arrow.type === 'disclosure-closed' && row.textInset > 0),
-      `${width}px ${theme}: a native closed triangle precedes each footer title`);
-      assert([comparison, recording].every(row => row.leadingDecoration === 'none'
+      assert.equal(comparison.leadingDecoration, '"▶"', `${width}px ${theme}: the comparison button has a leading closed triangle`);
+      assert.equal(recording.arrow.type, 'disclosure-closed', `${width}px ${theme}: recording has a native closed triangle`);
+      assert([comparison, recording].every(row => row.textInset > 0 && parseFloat(row.arrow.fontSize) > 0
         && row.trailingDecoration === 'none' && row.fits),
-        `${width}px ${theme}: footer titles fit with only their native marker`);
+        `${width}px ${theme}: footer titles fit with a visible leading arrow`);
       await capture(`footer-folds-${width}-${theme}`);
       for (const [id, closed] of [['timing-details', comparison], ['recording-details', recording]]) {
-        await evaluate(`document.querySelector('#${id} > summary').click(); true`); await settle();
+        const selector = id === 'timing-details' ? '#comparison-toggle' : `#${id} > summary`;
+        const isOpen = id === 'timing-details'
+          ? "document.getElementById('comparison-toggle').getAttribute('aria-expanded') === 'true'"
+          : `document.getElementById('${id}').open`;
+        await evaluate(`document.querySelector('${selector}').focus(); true`);
+        await pressKey('Enter'); await settle();
         const open = await geometry(id);
         for (const key of ['height', 'textInset', 'textCenter', 'textHeight'])
           assert(Math.abs(open[key] - closed[key]) < 1, `${width}px ${theme}: opening ${id} preserves its header geometry`);
-        assert.deepEqual(open.arrow, { ...closed.arrow, type: 'disclosure-open' },
-          `${width}px ${theme}: opening ${id} changes only the native triangle direction`);
-        assert.equal(await evaluate(`document.getElementById('${id}').open`), true);
+        assert.equal(await evaluate(isOpen), true, `${id} opens with Enter`);
+        assert.equal(await evaluate(`document.activeElement === document.querySelector('${selector}')`), true,
+          `${id} keeps keyboard focus on its fold control`);
+        assert.equal(open.arrow.fontSize, closed.arrow.fontSize, `${id} preserves its arrow size`);
+        if (id === 'timing-details') {
+          assert.equal(open.leadingDecoration, '"▼"', 'The comparison arrow points down when expanded');
+          assert.equal(await evaluate("document.getElementById('comparison-content').hidden"), false);
+          assert.equal(await evaluate("document.getElementById('recording-details').open"), false,
+            'Opening comparisons leaves recording closed');
+        } else assert.equal(open.arrow.type, 'disclosure-open', 'The recording arrow points down when expanded');
         if (id === 'recording-details') {
           const nestedArrow = await evaluate(`(() => {
             const summary = document.querySelector('#recording-details > #recording-adaptive-details > summary');
@@ -1218,11 +1232,15 @@ try {
             return { display: style.display, type: style.listStyleType,
               fontSize: getComputedStyle(summary, '::marker').fontSize };
           })()`);
-          assert.deepEqual(nestedArrow, closed.arrow,
+          assert.deepEqual(nestedArrow, { display: closed.arrow.display, type: closed.arrow.type, fontSize: closed.arrow.fontSize },
             'The recording fold uses the same native triangle size as its independently expandable Adaptive measurements section');
+          assert.equal(await evaluate("document.getElementById('comparison-toggle').getAttribute('aria-expanded')"), 'false',
+            'Opening recording leaves comparisons closed');
         }
         await capture(`footer-${id}-open-${width}-${theme}`);
-        await evaluate(`document.querySelector('#${id} > summary').click(); true`); await settle();
+        await pressKey(' '); await settle();
+        assert.equal(await evaluate(isOpen), false, `${id} closes with Space`);
+        if (id === 'timing-details') assert.equal(await evaluate("document.getElementById('comparison-content').hidden"), true);
       }
     }
   }

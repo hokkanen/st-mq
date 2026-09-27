@@ -782,37 +782,39 @@
       </details>
       <p id="chart-gesture-help" class="muted chart-gesture-help">Chart view: pinch or wheel on the plot to zoom; drag the plot to move through time. Drag an indicator strip to inspect a time; open its title for colours and details. Keyboard on the plot: + / − to zoom, arrows to move, Home to reset.</p>
       <details class="chart-notes-disclosure"><summary>How to read this view</summary><p id="chart-notes" class="muted chart-notes"></p></details>
-      <details id="timing-details" class="timing-details">
-        <summary><span>Energy cost comparisons</span></summary>
-        <div class="timing-intro">
-          <p>Explore Heating by model estimate or timing cost. Charging shows timing cost; Fireplace shows a model estimate.</p>
-          <p class="timing-sign-guide">These comparisons have different baselines and are not added together. Positive amounts mean lower estimated cost; negative amounts mean higher cost.</p>
-        </div>
-        <div class="comparison-range-controls" aria-label="Comparison period">
-          <div class="comparison-range-heading">
-            <span id="comparison-range-label">Comparison period</span>
-            <span class="muted">Applies to all comparisons below</span>
+      <section id="timing-details" class="timing-details">
+        <h2 class="comparison-heading"><button id="comparison-toggle" type="button" aria-expanded="false" aria-controls="comparison-content"><span>Energy cost comparisons</span></button></h2>
+        <div id="comparison-content" hidden>
+          <div class="timing-intro">
+            <p>Explore Heating by model estimate or timing cost. Charging shows timing cost; Fireplace shows a model estimate.</p>
+            <p class="timing-sign-guide">These comparisons have different baselines and are not added together. Positive amounts mean lower estimated cost; negative amounts mean higher cost.</p>
           </div>
-          <div class="comparison-range-fields">
-            <form id="comparison-range-form" class="date-range" aria-labelledby="comparison-range-label" aria-describedby="comparison-range-status">
-              <input id="comparison-date-start" type="text" data-date-picker="date" aria-label="Comparison start date" title="Show this day; choose an end date to show a range" required>
-              <span aria-hidden="true">–</span>
-              <input id="comparison-date-end" type="text" data-date-picker="date" aria-label="Comparison end date; extend the selected range" title="Extend the comparison date range" required>
-            </form>
-            <div class="comparison-shortcuts" role="group" aria-label="Quick comparison periods">
-              <button id="comparison-period-week" type="button" aria-pressed="false">Last 7 days</button>
-              <button id="comparison-period-month" type="button" aria-pressed="false">Last month</button>
-              <button id="comparison-period-year" type="button" aria-pressed="false">This year</button>
-              <button id="comparison-period-previous-year" type="button" aria-pressed="false">Last year</button>
+          <div class="comparison-range-controls" aria-label="Comparison period">
+            <div class="comparison-range-heading">
+              <span id="comparison-range-label">Comparison period</span>
+              <span class="muted">Applies to all comparisons below</span>
+            </div>
+            <div class="comparison-range-fields">
+              <form id="comparison-range-form" class="date-range" aria-labelledby="comparison-range-label" aria-describedby="comparison-range-status">
+                <input id="comparison-date-start" type="text" data-date-picker="date" aria-label="Comparison start date" title="Show this day; choose an end date to show a range" required>
+                <span aria-hidden="true">–</span>
+                <input id="comparison-date-end" type="text" data-date-picker="date" aria-label="Comparison end date; extend the selected range" title="Extend the comparison date range" required>
+              </form>
+              <div class="comparison-shortcuts" role="group" aria-label="Quick comparison periods">
+                <button id="comparison-period-week" type="button" aria-pressed="false">Last 7 days</button>
+                <button id="comparison-period-month" type="button" aria-pressed="false">Last month</button>
+                <button id="comparison-period-year" type="button" aria-pressed="false">This year</button>
+                <button id="comparison-period-previous-year" type="button" aria-pressed="false">Last year</button>
+              </div>
+            </div>
+            <div class="comparison-range-feedback">
+              <p id="comparison-range-status" class="muted" role="status">Loading comparisons…</p>
+              <button id="comparison-range-retry" class="secondary-button" type="button" hidden>Retry</button>
             </div>
           </div>
-          <div class="comparison-range-feedback">
-            <p id="comparison-range-status" class="muted" role="status">Loading comparisons…</p>
-            <button id="comparison-range-retry" class="secondary-button" type="button" hidden>Retry</button>
-          </div>
+          <div id="timing-benefit" class="timing-benefit"></div>
         </div>
-        <div id="timing-benefit" class="timing-benefit"></div>
-      </details>
+      </section>
       <details id="recording-details" class="recording-details">
         <summary><span>Recording details</span></summary>
         <details id="recording-adaptive-details">

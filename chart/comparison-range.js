@@ -1,6 +1,7 @@
 import { createChartLoader, dateSelection, finnishDate, selectedRange, shiftDate } from './history-model.js';
 import { createDatePicker } from './date-picker.js';
 import { createTimingBenefit } from './timing-benefit.js';
+import { createComparisonDisclosure } from './comparison-disclosure.js';
 import { replicaSnapshotKey } from './replica-status.js';
 
 const presets = ['week', 'month', 'year', 'previous-year'];
@@ -27,6 +28,8 @@ export function createComparisonRange({ api, document = globalThis.document, now
   const root = $('timing-benefit');
   if (!root) return { refresh() {}, close() {} };
   const view = createTimingBenefit(root), loader = createChartLoader({ api, now });
+  const disclosure = createComparisonDisclosure({ button: $('comparison-toggle'), content: $('comparison-content'),
+    onOpen: () => view.refreshLayout() });
   const start = $('comparison-date-start'), end = $('comparison-date-end');
   const form = $('comparison-range-form'), message = $('comparison-range-status'), retry = $('comparison-range-retry');
   let selection = comparisonPeriod('today', now()), suggestedEndDate = selection.endDate;
@@ -107,7 +110,7 @@ export function createComparisonRange({ api, document = globalThis.document, now
   listen(retry, 'click', () => refresh(status, { force: true }));
   updateControls();
   return { refresh, close() {
-    closed = true; loader.close(); startPicker.close(); endPicker.close(); view.close();
+    closed = true; loader.close(); startPicker.close(); endPicker.close(); disclosure.close(); view.close();
     listeners.forEach(remove => remove());
   } };
 }

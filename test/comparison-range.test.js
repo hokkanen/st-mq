@@ -43,7 +43,7 @@ function fixture() {
   document.createDocumentFragment = () => document.createElement('fragment');
   document.body = document.createElement('body');
   const elements = new Map();
-  for (const id of ['timing-benefit', 'comparison-range-form', 'comparison-date-start', 'comparison-date-end',
+  for (const id of ['comparison-toggle', 'comparison-content', 'timing-benefit', 'comparison-range-form', 'comparison-date-start', 'comparison-date-end',
     'comparison-range-status', 'comparison-range-retry', ...['week', 'month', 'year', 'previous-year'].map(period => `comparison-period-${period}`)]) {
     const element = document.createElement(id.includes('date-') ? 'input' : 'div');
     element.id = id; element.required = true; elements.set(id, element); document.body.append(element);

@@ -1,3 +1,31 @@
+Completed 2026-09-27 — Bypass the comparison panel's native outer disclosure
+- Follow up the RF56M9540SR report after the previous layout workaround failed.
+  Closing and reopening does not remove headings or controls in application
+  code; all missing overview content sits outside the still-visible native inner
+  summaries. A device-specific native-disclosure paint failure remains inferred,
+  not reproduced or confirmed from the model's firmware status.
+- Replace only the comparison section's native outer details with a regular
+  button, expanded/controls accessibility state and an ordinary hidden wrapper.
+  Keep all three cards, periods, selected modes/scopes and native inner folds
+  mounted. Request fresh visible alignment after opening; retain hidden geometry
+  guards, keyboard operation, popup dismissal, Reset and chart fullscreen behavior.
+- Correct the comparison fixture to read actual dashboard markup; its earlier
+  flex-styled summary differed from production. Remove obsolete outer-details
+  selectors/listeners and cached-native-layout test cases. Preserve current
+  calculations and API/state ownership; no device detection, user-agent aliases,
+  data migration or alternative application contract. Reviewed F1/F4/F7/F8.
+- Validation: 61 focused unit tests, production build, synthetic Firefox energy
+  interaction/layout checks and Chromium 98/106/current comparison checks pass.
+  Chromium checks include three observer modes, five widths, both themes,
+  Enter/Space, repeated reopen, hidden refresh/resize, hit testing and matching
+  rendered-card captures. Screenshots reviewed. The original native fold also
+  passed desktop Chromium 106; Chrome 93 could run the rendering experiment only
+  with a temporary Intl formatting substitution outside the repository, which
+  likewise did not reproduce the symptom. No claim of Chrome 93 app support.
+  The full Chromium chart-view smoke also passes, including footer geometry,
+  Enter/Space and chart fullscreen layouts. No full standard Node suite run.
+  Actual fridge validation remains necessary. No household access or deployment.
+
 Completed 2026-09-27 — Automatic local OCPP server address
 - Treat omitted or empty easee.local_ocpp.server_url as automatic LAN IPv4
   selection at startup and Apply configuration. Respect a usable explicit bind

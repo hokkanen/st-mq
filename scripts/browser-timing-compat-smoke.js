@@ -18,9 +18,18 @@ function addModule(pathname) {
   }
 }
 addModule('/chart/timing-benefit.js');
+addModule('/chart/comparison-disclosure.js');
 for (const name of ['monitor.css', 'timing-benefit.css']) {
   assets.set(`/chart/${name}`, ['text/css', readFileSync(new URL(`../chart/${name}`, import.meta.url))]);
 }
+// Exercise the production fold button, introductory content and period controls.
+// Keep its real markup and styles so appliance rendering checks cover the same
+// layout path as the dashboard.
+const dashboard = readFileSync(new URL('../chart/index.html', import.meta.url), 'utf8');
+const comparisonStart = dashboard.indexOf('<section id="timing-details"');
+const comparisonEnd = dashboard.indexOf('<details id="recording-details"', comparisonStart);
+assert(comparisonStart >= 0 && comparisonEnd > comparisonStart, 'Production comparison markup is present');
+const comparisonMarkup = dashboard.slice(comparisonStart, comparisonEnd).trim();
 const from = Date.parse('2026-09-09T00:00:00+03:00'), hour = 3_600_000;
 const timing = (value, charger = false) => ({ value, energyKwh: charger ? 2 : 1,
   actualCostEuro: 5, uniformCostEuro: 5 + value, provisional: true, coverage: 1 / 12,
@@ -42,11 +51,11 @@ const payload = { now: from + 12 * hour,
       firstAt: from + hour, lastAt: from + 8 * hour }, assumptions: ['Synthetic browser fixture.'] } };
 const fixture = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
   <link rel="stylesheet" href="/chart/monitor.css"><link rel="stylesheet" href="/chart/timing-benefit.css">
-  <style>html[data-hidden-layout] #timing-details:not([open]) > div { display: none; }</style>
-  <title>Comparison browser fixture</title></head><body><main>
-  <details id="timing-details" class="timing-details dashboard-disclosure"><summary><span>Energy cost comparisons</span></summary><div id="timing-benefit" class="timing-benefit"></div></details>
-  </main><script type="module">
+  <title>Comparison browser fixture</title></head><body><main><section class="panel history-panel">
+  ${comparisonMarkup}
+  </section></main><script type="module">
     import { createTimingBenefit } from '/chart/timing-benefit.js';
+    import { createComparisonDisclosure } from '/chart/comparison-disclosure.js';
     const options = new URLSearchParams(location.search);
     if (options.has('without-observer')) window.ResizeObserver = undefined;
     if (options.has('delayed-observer')) {
@@ -59,13 +68,13 @@ const fixture = `<!doctype html><html><head><meta charset="utf-8"><meta name="vi
       };
       window.flushResizeDeliveries = () => pendingResizeDeliveries.splice(0).forEach(deliver => deliver());
     }
-    // Exercise engines that remove closed disclosure contents from layout.
-    // Current Chromium retains their old rects, so its native details alone
-    // does not cover zero-sized hidden measurements from appliance browsers.
-    if (options.has('hidden-layout')) document.documentElement.dataset.hiddenLayout = '';
     localStorage.clear();
     window.comparisonPayload = ${JSON.stringify(payload)};
     window.comparisonPanel = createTimingBenefit(document.getElementById('timing-benefit'));
+    window.comparisonDisclosure = createComparisonDisclosure({
+      button: document.getElementById('comparison-toggle'), content: document.getElementById('comparison-content'),
+      onOpen: () => comparisonPanel.refreshLayout(),
+    });
     comparisonPanel.render(comparisonPayload); window.ready = true;
   </script></body></html>`;
 const server = createServer((request, response) => {
@@ -152,10 +161,30 @@ try {
     return { selection: devices.style.getPropertyValue('--timing-selection-height'),
       overview: devices.style.getPropertyValue('--timing-overview-height') };
   })()`);
+  const checkOuter = async open => {
+    assert.deepEqual(await evaluate(`(() => {
+      const button = document.getElementById('comparison-toggle'), content = document.getElementById('comparison-content');
+      return { expanded: button.getAttribute('aria-expanded'), controls: button.getAttribute('aria-controls'),
+        hidden: content.hidden, visible: content.getBoundingClientRect().height > 0,
+        marker: getComputedStyle(button, '::before').content };
+    })()`), { expanded: String(open), controls: 'comparison-content', hidden: !open, visible: open,
+      marker: open ? '"▼"' : '"▶"' },
+    'The fold announces its state, updates its triangle and hides all collapsed contents');
+  };
   const toggleOuter = async open => {
-    await evaluate("document.querySelector('#timing-details > summary').click()");
+    await evaluate("document.getElementById('comparison-toggle').click()");
     await settle();
-    assert.equal(await evaluate("document.getElementById('timing-details').open"), open);
+    await checkOuter(open);
+  };
+  const keyboardToggle = async (key, open) => {
+    const code = key === ' ' ? 'Space' : 'Enter', keyCode = key === ' ' ? 32 : 13;
+    await send('Input.dispatchKeyEvent', { type: 'keyDown', key, code, windowsVirtualKeyCode: keyCode,
+      text: key === 'Enter' ? '\r' : key });
+    await send('Input.dispatchKeyEvent', { type: 'keyUp', key, code, windowsVirtualKeyCode: keyCode });
+    await settle();
+    await checkOuter(open);
+    assert.equal(await evaluate("document.activeElement.id"), 'comparison-toggle',
+      'The native button retains focus after keyboard activation');
   };
   const captureCards = async () => {
     const clip = await evaluate(`(() => {
@@ -168,18 +197,23 @@ try {
   };
   await send('Runtime.enable'); await send('Page.enable');
   await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
-  for (const hiddenLayout of [false, true]) for (const observerMode of ['native', 'missing', 'delayed']) {
+  // The explicit hidden panel always leaves layout while closed; there is no
+  // native-disclosure cached-layout branch left to simulate.
+  for (const observerMode of ['native', 'missing', 'delayed']) {
     const options = new URLSearchParams();
     const withoutObserver = observerMode === 'missing';
     if (withoutObserver) options.set('without-observer', '');
     if (observerMode === 'delayed') options.set('delayed-observer', '');
-    if (hiddenLayout) options.set('hidden-layout', '');
     await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1100, deviceScaleFactor: 1, mobile: false });
     await send('Page.navigate', { url: `http://127.0.0.1:${server.address().port}/?${options}` });
     for (let attempt = 0; attempt < 100 && !await evaluate('window.ready === true'); attempt++) await pause(30);
     assert.equal(await evaluate('window.ready'), true, `Comparison render completes; errors: ${errors.join(', ')}`);
     assert.equal(await evaluate('typeof ResizeObserver'), withoutObserver ? 'undefined' : 'function');
-    await toggleOuter(true);
+    await checkOuter(false);
+    await evaluate("document.getElementById('comparison-toggle').focus()");
+    await keyboardToggle('Enter', true);
+    await keyboardToggle(' ', false);
+    await keyboardToggle('Enter', true);
     for (const width of [1440, 1024, 844, 390, 320]) {
       await send('Emulation.setDeviceMetricsOverride', { width, height: 1100, deviceScaleFactor: 1, mobile: false });
       for (const theme of ['dark', 'light']) {
@@ -195,7 +229,7 @@ try {
       const visibleAlignment = await alignment();
       await toggleOuter(false);
       assert.deepEqual(await alignment(), visibleAlignment,
-        `Closing the outer fold does not replace visible alignment (${width}px, ${observerMode}, hidden layout ${hiddenLayout})`);
+        `Closing the outer fold does not replace visible alignment (${width}px, ${observerMode})`);
       await send('Emulation.setDeviceMetricsOverride', { width: width === 320 ? 1440 : 320,
         height: 1100, deviceScaleFactor: 1, mobile: false });
       await evaluate('comparisonPayload.firewoodBenefit.valueEuro = 2.25; comparisonPanel.render(comparisonPayload)');
@@ -235,11 +269,11 @@ try {
     await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1100, deviceScaleFactor: 1, mobile: false });
     await evaluate("document.querySelector('.timing-device-detail').open = false"); await settle();
     const shot = await send('Page.captureScreenshot', { format: 'png' });
-    writeFileSync(join(artifacts, `${hiddenLayout ? 'hidden-layout' : 'native-details'}-${observerMode}-resize-observer.png`), Buffer.from(shot.data, 'base64'));
+    writeFileSync(join(artifacts, `comparison-fold-${observerMode}-resize-observer.png`), Buffer.from(shot.data, 'base64'));
     await evaluate('comparisonPanel.close()');
   }
   assert.deepEqual(errors, []);
-  console.log(`Comparison browser checks passed through repeated disclosure, hidden refresh and resize cycles with native, missing and delayed ResizeObserver at five widths in both themes, using native and zero-sized hidden layout. Synthetic screenshots: ${artifacts}`);
+  console.log(`Comparison browser checks passed through repeated disclosure, hidden refresh and resize cycles with native, missing and delayed ResizeObserver at five widths in both themes, with native button keyboard activation and zero-sized hidden layout. Synthetic screenshots: ${artifacts}`);
 } finally {
   for (const task of pending.values()) clearTimeout(task.timer);
   socket?.close();

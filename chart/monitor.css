@@ -376,6 +376,7 @@ input[data-date-picker] { padding-right: 32px; background-image: url("data:image
 .history-panel[data-fullscreen="true"] #chart-status,
 .history-panel[data-fullscreen="true"] .chart-notes,
 .history-panel[data-fullscreen="true"] > details:not(.chart-legend-panel),
+.history-panel[data-fullscreen="true"] > .timing-details,
 .history-panel[data-fullscreen="true"] .chart-gesture-help { display: none; }
 .history-panel[data-fullscreen="true"] .chart-axis-actions { justify-self: end; align-items: center; max-width: 100%; }
 .history-panel[data-fullscreen="true"] #chart-fullscreen { min-height: 36px; height: 36px; }
@@ -467,14 +468,18 @@ input[data-date-picker] { padding-right: 32px; background-image: url("data:image
 .mode-track { height: 22px; position: relative; background: var(--surface-soft); border: 1px solid var(--border); overflow: hidden; touch-action: none; cursor: crosshair; user-select: none; }
 .mode-segment { position: absolute; height: 100%; background: var(--chart-outdoor); border-right: 1px solid var(--surface); }
 .chart-legend-swatch[data-kind="strip"], .mode-segment { background-image: repeating-linear-gradient(0deg, transparent 0 3px, var(--surface) 3px 4px); }
-/* Main history sections use the same native triangles as their nested folds. */
+/* The comparison panel uses an ordinary button and hidden wrapper: reopening
+   it must not depend on an appliance browser's native nested-details painting. */
 :is(#timing-details, #recording-details) { margin-top: 18px; border-top: 1px solid var(--border); padding: 0; }
-:is(#timing-details, #recording-details) > summary { min-height: 48px; padding: 14px 0; font-size: 14px; font-weight: 550; line-height: 1.5; }
-:is(#timing-details, #recording-details) > summary + * { margin-top: 0; }
-/* Use a normal display transition when the outer native fold reopens, so its
-   grid does not depend on a browser's cached disclosure layout. */
+#recording-details > summary, #comparison-toggle { min-height: 48px; padding: 14px 0; font-size: 14px; font-weight: 550; line-height: 1.5; }
+#recording-details > summary + * { margin-top: 0; }
+.comparison-heading { margin: 0; font: inherit; }
+#comparison-toggle { display: flex; align-items: center; width: 100%; margin: 0; border: 0; border-radius: 0; background: transparent; color: var(--text); text-align: left; }
+#comparison-toggle::before { content: '\25B6'; flex: 0 0 1em; margin-right: .4em; font-size: .75em; color: var(--muted); }
+#comparison-toggle[aria-expanded="true"]::before { content: '\25BC'; color: var(--accent); }
+#comparison-content[hidden] { display: none; }
+.timing-details details { margin-inline-start: 24px; }
 .timing-benefit { display: block; padding: 4px 0 8px; }
-#timing-details:not([open]) > .timing-benefit { display: none; }
 .timing-intro { margin: 0 auto 24px; text-align: center; }
 .timing-intro p { margin: 4px 0; }
 .timing-intro .timing-sign-guide { color: var(--muted); font-size: 13px; }
@@ -1002,6 +1007,7 @@ details.energy-check-details { margin: 8px 0 0; border: 0; font-size: 12px; line
 @media(max-width: 640px) {
   .energy-check { grid-template-columns: minmax(0, 1fr); gap: 8px; }
   details details { margin-inline-start: 16px; }
+  .timing-details details { margin-inline-start: 16px; }
   .recording-table { min-width: 720px; }
   .recording-metrics { grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; }
   .recording-metrics dd { font-size: 14px; }

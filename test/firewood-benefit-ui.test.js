@@ -3,6 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { firewoodDisplay, firewoodExplanations } from '../chart/firewood-benefit.js';
 import { createTimingBenefit } from '../chart/timing-benefit.js';
+import { createComparisonDisclosure } from '../chart/comparison-disclosure.js';
 import { historyDatasets, historyValueLabel, firewoodPointDetail } from '../chart/history-model.js';
 import { learningDisplay, modelCoefficientDescriptions } from '../chart/learning-status.js';
 
@@ -172,10 +173,11 @@ function dom(storage = new Map()) {
       this.children = []; this.append(...children);
     }
     closest(selector) {
-      for (let node = this; node; node = node.parentElement) if (node.tagName === selector) return node;
+      for (let node = this; node; node = node.parentElement) if (selector === '[hidden]' ? node.hidden : node.tagName === selector) return node;
       return null;
     }
     setAttribute(key, value) { this.attributes[key] = value; }
+    getAttribute(key) { return this.attributes[key] ?? null; }
     addEventListener(type, listener) { this.listeners.set(type, listener); }
     removeEventListener(type) { this.listeners.delete(type); }
     click() { this.listeners.get('click')?.({ currentTarget: this }); }
@@ -230,8 +232,7 @@ test('three cost cards retain their folds and focus across updates and keep the 
 test('comparison results and controls remain usable without ResizeObserver', () => {
   const { root, document, windowListeners, flushFrame } = dom();
   delete document.defaultView.ResizeObserver;
-  const disclosure = document.createElement('details');
-  disclosure.open = true; disclosure.append(root);
+  const wrapper = document.createElement('div'); wrapper.append(root);
   const panel = createTimingBenefit(root);
   const data = { ...payload, heatingBenefit: { status: 'estimated', valueEuro: 3.5, counts: { assessed: 2, completed: 2 } },
     firewoodBenefit: estimate, timingBenefit: { heatPump: timing(1), charger: timing(2, 'charger') } };
@@ -250,14 +251,13 @@ test('comparison results and controls remain usable without ResizeObserver', () 
 
   const content = heating.children[0].children[0];
   content.getBoundingClientRect = () => ({ height: 400 });
-  disclosure.listeners.get('toggle')(); flushFrame();
+  panel.refreshLayout(); flushFrame();
   assert.equal(devices.style['--timing-overview-height'], '400px', 'Opening the initially closed fold measures its visible content');
   content.getBoundingClientRect = () => ({ height: 300 });
   windowListeners.get('resize')(); flushFrame();
   assert.equal(devices.style['--timing-overview-height'], '300px', 'Resizing can shrink the shared overview height');
   panel.close();
   assert.equal(windowListeners.has('resize'), false);
-  assert.equal(disclosure.listeners.has('toggle'), false);
 });
 
 for (const observerAvailable of [true, false]) {
@@ -265,9 +265,10 @@ for (const observerAvailable of [true, false]) {
   test(`comparison fold measures only visible content and restores alignment on every reopen ${observerLabel}`, () => {
     const f = dom(), { root, document } = f;
     if (!observerAvailable) delete document.defaultView.ResizeObserver;
-    const disclosure = document.createElement('details'), wrapper = document.createElement('div');
-    disclosure.append(wrapper); wrapper.append(root); disclosure.open = false;
+    const button = document.createElement('button'), wrapper = document.createElement('div');
+    wrapper.append(root);
     const panel = createTimingBenefit(root);
+    const disclosure = createComparisonDisclosure({ button, content: wrapper, onOpen: () => panel.refreshLayout() });
     const data = { ...payload, firewoodBenefit: estimate,
       timingBenefit: { heatPump: timing(1), charger: timing(2, 'charger') } };
     panel.render(data); f.notifyResize(); f.flushFrame();
@@ -278,7 +279,7 @@ for (const observerAvailable of [true, false]) {
     assert.equal(f.styleWrites.length, 0, 'Hidden content must not replace alignment with zero heights');
     assert.match(heating.children[0].textContent, /Heating/);
 
-    disclosure.open = true; disclosure.listeners.get('toggle')();
+    button.click();
     assert.equal(f.frames.size, 1, 'Opening schedules layout even if ResizeObserver never notifies');
     assert.equal(f.styleWrites.length, 0, 'Disclosure layout waits until the next animation frame');
     f.flushFrame();
@@ -289,8 +290,8 @@ for (const observerAvailable of [true, false]) {
     timingButton.focus(); timingButton.click();
     const measurementsBeforeClose = f.measurements.length, writesBeforeClose = f.styleWrites.length;
     f.windowListeners.get('resize')(); assert.equal(f.frames.size, 1);
-    disclosure.open = false; disclosure.listeners.get('toggle')();
-    assert.equal(f.frames.size, 0, 'Closing the fold cancels layout queued while it was visible');
+    button.click(); f.flushFrame();
+    assert.equal(f.frames.size, 0, 'Layout queued before closing completes without measuring hidden content');
     panel.render({ ...data, firewoodBenefit: { ...estimate, valueEuro: 2.25 } });
     f.notifyResize(); f.windowListeners.get('resize')(); f.flushFrame();
     assert.equal(f.measurements.length, measurementsBeforeClose, 'Closed-fold refreshes and resize events must skip measurements');
@@ -299,7 +300,7 @@ for (const observerAvailable of [true, false]) {
     assert.match(devices.children[2].textContent, /€2.25/, 'Payload updates still populate hidden cards');
 
     overview.bounds.height = 360; selection.bounds.height = 220;
-    disclosure.open = true; disclosure.listeners.get('toggle')(); f.windowListeners.get('resize')();
+    button.click(); f.windowListeners.get('resize')();
     assert.equal(f.frames.size, 1, 'Several layout events share one animation frame');
     f.flushFrame();
     assert.equal(devices.style['--timing-overview-height'], '360px', 'Reopening recomputes heights without an observer notification');
@@ -309,14 +310,15 @@ for (const observerAvailable of [true, false]) {
     assert.equal(comparison.children[1], timingButton); assert.equal(timingButton.attributes['aria-pressed'], 'true');
     assert.equal(document.activeElement, timingButton);
     assert.match(heating.children[0].textContent, /Timing cost difference.*€1.00/);
-    panel.close();
-    assert.equal(f.windowListeners.has('resize'), false); assert.equal(disclosure.listeners.has('toggle'), false);
+    disclosure.close(); panel.close();
+    assert.equal(button.listeners.has('click'), false);
+    assert.equal(f.windowListeners.has('resize'), false);
   });
 
   test(`comparison layout skips hidden ancestors and cancels pending work on disposal ${observerLabel}`, () => {
     const f = dom(), { root, document } = f;
     if (!observerAvailable) delete document.defaultView.ResizeObserver;
-    const disclosure = document.createElement('details'); disclosure.open = true; disclosure.append(root);
+    const wrapper = document.createElement('div'); wrapper.append(root);
     root.bounds = { width: 0, height: 0 };
     const panel = createTimingBenefit(root); panel.render({ ...payload, firewoodBenefit: estimate });
     assert.equal(typeof f.windowListeners.get('resize'), 'function', 'Window resize remains wired when an observer is present');
@@ -333,7 +335,7 @@ for (const observerAvailable of [true, false]) {
     const measuredBeforeDisposal = f.measurements.length, writtenBeforeDisposal = f.styleWrites.length;
     panel.close();
     assert.equal(f.frames.size, 0, 'Disposal cancels the queued animation frame');
-    assert.equal(f.windowListeners.has('resize'), false); assert.equal(disclosure.listeners.has('toggle'), false);
+    assert.equal(f.windowListeners.has('resize'), false);
     if (observerAvailable) assert.equal(f.disconnected(), true);
     f.flushFrame(); f.notifyResize();
     assert.equal(f.measurements.length, measuredBeforeDisposal); assert.equal(f.styleWrites.length, writtenBeforeDisposal);
