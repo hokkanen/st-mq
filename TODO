@@ -1,6 +1,25 @@
 -Make README.md better and more descriptive of the app, especially the beginning of it
 -Implement support for local mqtt-based temperature receives (eg, from shelly or HASS through Meteorologisk Institute); just store last received temp values and time stamps (maybe in storage class, see below) when received (and accept if received within 1h)
 
+Completed 2026-09-27 — Balanced dashboard columns
+- Replace bottom-only flex growth with small, measured spaces between sections
+  and above footer labels. Keep the Home/Garage headings, outer padding and
+  Data/Garage footer labels aligned in the collapsed desktop entry view.
+- Limit added spacing to 12 px per location and 10% of each card's natural
+  height. Leave columns at natural heights when the difference exceeds that
+  budget, including stacked chargers and large open folds. Recalculate after
+  content, padding and viewport changes without observer feedback loops.
+- Preserve charger identity, independent folds, responsive card ordering and
+  current data/control contracts. Remove the fixed 48 px threshold and old
+  flex-grow path without adding compatibility code; use only offline fixtures.
+- Validation: 230 focused UI/status tests and the production build pass (the
+  existing bundle-size warning remains). Dashboard browser checks pass at 13
+  widths from 320 to 1920 px in both themes, including both balancing directions,
+  content shrinking, empty chargers and fold open/close behavior. Representative
+  desktop and mobile screenshots were reviewed. The full Garage browser suite
+  also passes across 22 charging states; update its stale wording assertions and
+  retired chart-axis selector to the current named views.
+
 Completed 2026-09-27 — Recorder idle storage and database audit
 - Keep every accepted charger energy increment while suppressing sub-10 W
   selection noise, ordinary held/fresh source metadata churn and native-counter

@@ -136,9 +136,17 @@ p { font-size: 14px; line-height: 1.65; margin: 10px 0; }
 .controller-column { display: flex; flex-direction: column; gap: 24px; min-width: 0; }
 .controller-column > .panel { margin-bottom: 0; container: dashboard-card / inline-size; }
 @media (min-width: 801px) {
-  /* Only small natural height differences are shared between the cards. */
-  .controller-panels.columns-aligned { align-items: stretch; }
-  .controller-panels.columns-aligned > .controller-column > .panel { flex-grow: 1; }
+  /* Share a bounded amount of breathing room between sections and above footer
+     labels, keeping both the top headings and bottom insets aligned. */
+  .controller-column > .panel {
+    display: flex;
+    flex-direction: column;
+    gap: var(--dashboard-balance-space, 0px);
+  }
+  .controller-column > .panel > * { flex-shrink: 0; }
+  .controller-column > .panel > :is(.home-support, .dashboard-disclosure:last-child) {
+    padding-top: var(--dashboard-balance-space, 0px);
+  }
 }
 .panel { --panel-padding: 24px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: var(--panel-padding); margin-bottom: 24px; min-width: 0; }
 .detail { display: flex; justify-content: space-between; border-bottom: 1px solid var(--border); padding: 12px 0; font-size: 13px; gap: 16px; }

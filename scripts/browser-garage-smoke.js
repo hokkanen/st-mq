@@ -12,7 +12,11 @@ import { appendGarageEntry } from '../src/garage/learning.js';
 import { garageSettings } from '../src/garage/settings.js';
 import { checkDashboardDisclosures, checkDashboardLayout } from './lib/dashboard-browser-checks.js';
 import { checkChargingPriority } from './lib/charging-priority-browser-checks.js';
+import { providerFixture } from './lib/provider-fixture.js';
+import { checkDashboardBalance } from './lib/dashboard-balance-browser-checks.js';
 
+// --dashboard-only exercises responsive column balancing with offline providers.
+const dashboardOnly = process.argv.includes('--dashboard-only');
 const directory = mkdtempSync(join(tmpdir(), 'stmq-garage-browser-'));
 const artifacts = mkdtempSync(join(tmpdir(), 'stmq-garage-screenshots-'));
 const profile = join(directory, 'chrome'); mkdirSync(profile);
@@ -22,7 +26,9 @@ let app, browser, socket, sequence = 0;
 const pending = new Map(), errors = [];
 try {
   const configPath = join(directory, 'synthetic.json'); writeFileSync(configPath, '{}');
-  const config = loadConfig({ STMQ_CONFIG: configPath, STMQ_DATA_DIR: directory, STMQ_PORT: '0', STMQ_INPUT: 'simulated' }, directory);
+  const config = loadConfig({ STMQ_CONFIG: configPath, STMQ_DATA_DIR: directory, STMQ_PORT: '0', STMQ_INPUT: dashboardOnly ? 'providers' : 'simulated' }, directory);
+  const fixture = dashboardOnly ? providerFixture(now) : null;
+  if (fixture) config.connections = fixture.connections;
   const store = new Store(config.dbPath);
   seedChartFixture(store, now);
   for (let index = 0; index < 30; index++) {
@@ -35,7 +41,7 @@ try {
     endedAt: now - 3_600_000, assessment: { basis: 'estimated-space-heating-execution-and-reference', profitCents: 300 } });
   store.cycle('garage:simulated', { id: 'synthetic-garage-browser-cycle', status: 'completed', startedAt: now - 7_200_000,
     endedAt: now - 3_600_000, assessment: { basis: 'garage-frozen-normal-reference', profitCents: -100, includesGarageOnly: true, provisional: true } });
-  store.close(); app = await start({ config, clock: () => now });
+  store.close(); app = await start({ config, clock: () => now, ...(fixture ? { providerOptions: fixture.providerOptions } : {}) });
   browser = spawn(process.env.STMQ_CHROME_BIN ?? '/opt/google/chrome/chrome', ['--headless', '--no-sandbox',
     '--disable-gpu', '--no-first-run', '--disable-background-networking', '--remote-debugging-address=127.0.0.1',
     '--remote-debugging-port=0', `--user-data-dir=${profile}`, 'about:blank'], { stdio: 'ignore' });
@@ -246,6 +252,37 @@ try {
   assert.equal(await evaluate("document.getElementById('error').hidden"), true);
   await until("document.getElementById('charger1-setting-capacityKwh') !== null");
   assert.deepEqual(await evaluate("['control-title','garage-title'].map(id=>document.getElementById(id).textContent)"), ['Home', 'Garage']);
+  if (dashboardOnly) {
+    await checkDashboardBalance({ evaluate, until });
+    for (const width of [1920, 1440, 1366, 1280, 1252, 1251, 1024, 801, 800, 768, 540, 390, 320]) {
+      await send('Emulation.setDeviceMetricsOverride', { width, height: width > 800 ? 1000 : 844, deviceScaleFactor: 1, mobile: false });
+      for (const theme of ['dark', 'light']) {
+        await evaluate(`window.homeEnergyTheme.setTheme('${theme}');
+          document.querySelectorAll('.controller-panels details').forEach(fold => fold.open = false);
+          window.scrollTo(0, 0)`);
+        await pause(100);
+        await checkDashboardLayout({ evaluate, width });
+        await pause(100);
+        const layout = await evaluate(`(() => {
+          const root = document.querySelector('.controller-panels');
+          const cards = [...root.querySelectorAll('.controller-column > .panel')];
+          const chargers = [...document.querySelectorAll('#charging-devices > details')].map(node => node.getBoundingClientRect());
+          return { aligned: root.classList.contains('columns-aligned'),
+            paired: Math.abs(chargers[0].top - chargers[1].top) < 1,
+            bottoms: [...root.children].map(node => node.getBoundingClientRect().bottom),
+            spaces: cards.map(node => parseFloat(getComputedStyle(node).getPropertyValue('--dashboard-balance-space')) || 0) };
+        })()`);
+        assert.equal(layout.aligned, width > 800 && layout.paired, `${width}px ${theme} balances paired desktop chargers and releases stacked columns`);
+        if (layout.aligned) assert.ok(Math.abs(layout.bottoms[0] - layout.bottoms[1]) < 1, `${width}px ${theme} aligns the column bottoms`);
+        else assert.ok(layout.spaces.every(space => space === 0), `${width}px ${theme} retains natural spacing`);
+        const shot = await send('Page.captureScreenshot', { format: 'png' });
+        writeFileSync(join(artifacts, `dashboard-balance-${width}-${theme}.png`), Buffer.from(shot.data, 'base64'));
+      }
+    }
+    assert.deepEqual(errors, []);
+    console.log(JSON.stringify({ artifacts, checks: ['bounded dashboard spacing in both directions',
+      'content growth, shrinkage and empty chargers', 'responsive desktop and mobile layouts in both themes', 'no browser exceptions'] }));
+  } else {
   await checkDashboardDisclosures({ evaluate, keyPress, until });
   assert.deepEqual(await evaluate("[...document.querySelectorAll('#charging-devices > .equipment-device')].map(node=>node.id)"), ['charger1-device', 'charger2-device']);
   assert.deepEqual(await evaluate("['charger1-setting-minimumSoc','charger1-setting-readyBy','charger1-setting-capacityKwh','charger2-setting-capacityKwh'].map(id=>document.getElementById(id).value)"), ['80', '06:00', '74', '74']);
@@ -360,7 +397,7 @@ try {
     assert.equal(await evaluate("document.getElementById('charger1-period-count').textContent"), '2 charging periods');
     assert.equal(await evaluate("document.getElementById('charger1-reading-time').hidden"), false);
     assert.match(await evaluate("document.getElementById('charger1-readings').textContent"), /Reported allowance16 A/);
-    assert.match(await evaluate("document.getElementById('charger1-explanations').textContent"), /service and the Easee cloud/);
+    assert.match(await evaluate("document.getElementById('charger1-explanations').textContent"), /application and the Easee cloud/);
   }
   assert.match(await evaluate("document.getElementById('charger1-event').textContent"), /^Last confirmed start/);
   assert.match(await evaluate("document.getElementById('charger1-problem').textContent"), /did not confirm.*last confirmed schedule.*another reading/);
@@ -391,7 +428,7 @@ try {
   await pause(60);
   await keyPress('Enter');
   assert.equal(await evaluate("assertChargingSmokeTrigger.getAttribute('aria-expanded')"), 'true');
-  assert.match(await evaluate("document.querySelector('#status-detail-popover .status-detail-body').textContent"), /Reaching the target or ready-by time does not stop charging/);
+  assert.match(await evaluate("document.querySelector('#status-detail-popover .status-detail-body').textContent"), /reaching the target or ready-by time does not stop charging/i);
   await evaluate('globalThis.refreshLearningSmokeStatus()');
   assert.equal(await evaluate("document.querySelector('#status-detail-popover').hidden"), false,
     'The charging schedule explanation stays open during status refresh');
@@ -1029,10 +1066,10 @@ try {
     }
   }
   await evaluate("globalThis.chargingSmokeValues=null; globalThis.refreshLearningSmokeStatus()");
-  for (const left of ['garage_model_front', 'garage_model_difference', 'garage_coefficient_rear_coolingPerHour']) {
-    await evaluate(`document.getElementById('left-axis').value='${left}'; document.getElementById('left-axis').dispatchEvent(new Event('change'))`);
-    await until(`document.getElementById('history').dataset.ready==='true' && document.getElementById('history').dataset.left==='${left}'`);
-    assert.equal(await evaluate("document.getElementById('chart-status').textContent.includes('No recorded values')"), false, left);
+  for (const view of ['garage_temperatures', 'garage_cooling']) {
+    await evaluate(`document.getElementById('chart-view').value='${view}'; document.getElementById('chart-view').dispatchEvent(new Event('change'))`);
+    await until(`document.getElementById('history').dataset.ready==='true' && document.getElementById('history').dataset.view==='${view}'`);
+    assert.equal(await evaluate("document.getElementById('chart-status').textContent.includes('No recorded values')"), false, view);
   }
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ result: 'garage-browser-smoke-passed', artifacts,
@@ -1061,6 +1098,7 @@ try {
       'Garage settings and live budgets fit desktop and mobile in both themes',
       'Home and Garage learning sections fit desktop and mobile in both themes, collapsed and expanded',
       'original input and replay coefficient charts', 'no browser exceptions'] }));
+  }
   await send('Page.close');
 } finally {
   socket?.close(); for (const task of pending.values()) clearTimeout(task.timer);
