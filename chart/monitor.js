@@ -1,4 +1,5 @@
-import { createSelectDismissal } from './select-dismissal.js';
+import { createSelectPickers } from './select-picker.js';
+import { createDatePicker } from './date-picker.js';
 import { createDashboardReset } from './dashboard-reset.js';
 import { confirmAction } from './confirmation.js';
 import { renderLearningRows } from './learning-rows.js';
@@ -33,7 +34,11 @@ import { createPageFullscreen } from './page-fullscreen.js';
 import { heatingRequestResult, h66RequestResult, circulationStopPending } from './manual-control-status.js';
 
 const $ = id => document.getElementById(id);
-createSelectDismissal(document);
+const selectPickers = createSelectPickers(document);
+const temporaryDatePickers = [];
+for (const input of document.querySelectorAll('[data-date-picker="datetime-local"]')) {
+  temporaryDatePickers.push(createDatePicker(input, { mode: 'datetime-local', label: input.labels?.[0]?.textContent.trim() || 'Choose date and time' }));
+}
 createDashboardReset({ document, button: $('dashboard-reset') });
 createPageFullscreen({ document, button: $('fullscreen-toggle') });
 createDashboardLayout(document.querySelector('.controller-panels'));
@@ -102,6 +107,8 @@ const reasons = {
   'continuous-normal-preferred': 'Continuous normal operation is preferred',
 };
 function lockScreen({ authenticationFailed = false } = {}) {
+  selectPickers.dismiss();
+  for (const picker of temporaryDatePickers) picker.dismiss();
   const hadPassword = Boolean(session.token), hadStatus = Boolean(lastStatus);
   session.logout(); ++refreshSequence; lastStatus = undefined; webAccess = undefined;
   document.body.dataset.authenticated = 'false';

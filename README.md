@@ -201,12 +201,18 @@ sun switches to light, moon switches to dark. The adjacent fullscreen button
 expands the whole dashboard without changing its layout or opening chart view.
 Both buttons have tooltips and accessible labels. The chart is directly below
 the current readings.
+Dropdowns and calendar popups use the application's theme, including controls
+inside drawers. Open them with a click, tap or keyboard; Escape cancels a choice.
+Temporary Away and Pause dates use the same calendar with hour/minute fields;
+**Set** confirms the draft and **Clear** empties it before saving the form.
 
 - **Dates:** the default is today, midnight to midnight in **Europe/Helsinki**.
   The first date picker shows that day immediately. The end date stays greyed
   out with its previous date preserved for quick selection. Choosing that date
   again or a different end date activates the inclusive range; the end cannot
   precede the start. Opening or dismissing the end picker leaves the chart alone.
+  Both dates use the same calendar. Keyboard entry accepts `YYYY-MM-DD`;
+  Space or Alt+Down opens the calendar, and arrow keys move between days.
   **Yesterday – today**, **Today** and **Today – tomorrow** provide quick navigation.
   The small arrows beside these shortcuts shift the window one calendar day
   without changing its length. Both date pickers remain available in chart view.

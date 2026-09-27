@@ -1,0 +1,21 @@
+/* The form select remains the authoritative value; only the application
+   combobox participates in layout, focus and assistive-technology navigation. */
+select.app-select-source { display: none !important; }
+button.app-select-trigger { display: flex; align-items: center; justify-content: space-between; gap: 12px; box-sizing: border-box; width: 100%; min-width: 0; min-height: 42px; margin: 0; padding: 11px 12px; border: 1px solid var(--border); border-radius: 6px; font: inherit; text-align: left; color: var(--text); background: var(--input); }
+button.app-select-trigger:hover, button.app-select-trigger[aria-expanded="true"] { border-color: var(--muted); background: var(--surface-soft); }
+button.app-select-trigger:disabled { cursor: default; opacity: .6; }
+button.app-select-trigger[hidden], .app-select-popup[hidden], .app-select-error[hidden] { display: none; }
+button.app-select-trigger[aria-invalid="true"] { border-color: var(--danger, #c74747); }
+.app-select-value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.app-select-arrow { flex: none; color: var(--muted); font-size: 17px; line-height: 1; }
+.app-select-popup { position: fixed; inset: auto; z-index: 1200; box-sizing: border-box; width: max-content; max-height: 320px; overflow: auto; overscroll-behavior: contain; margin: 0; padding: 5px; border: 1px solid var(--border); border-radius: 8px; color: var(--text); background: var(--surface); box-shadow: 0 8px 32px #0003; font: inherit; font-size: 13px; scrollbar-width: thin; }
+.app-select-option { box-sizing: border-box; position: relative; display: flex; align-items: center; min-height: 40px; padding: 9px 32px 9px 10px; border-radius: 4px; line-height: 1.35; cursor: pointer; overflow-wrap: anywhere; }
+.app-select-option:hover, .app-select-option[data-active="true"] { background: var(--surface-soft); outline: 1px solid var(--border); outline-offset: -1px; }
+.app-select-option[aria-selected="true"] { color: var(--accent); font-weight: 600; }
+.app-select-option[aria-selected="true"]::after { content: '✓'; position: absolute; right: 10px; }
+.app-select-option[aria-disabled="true"] { opacity: .45; cursor: default; background: transparent; outline: none; }
+.app-select-group { padding: 10px 10px 4px; color: var(--muted); font-size: 11px; font-weight: 600; }
+.app-select-error { color: var(--danger, #c74747); font-size: 12px; }
+.caravan-setting button.app-select-trigger { min-height: 36px; padding: 6px 8px; font-size: 12px; }
+.equipment-heat-pump .h66-test-form button.app-select-trigger { margin-top: 0; }
+@media (pointer: coarse) { .app-select-option { min-height: 44px; } }

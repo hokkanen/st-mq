@@ -26,6 +26,7 @@ function fixture(t) {
     removeAttribute(name) { this.attributes.delete(name); }
     remove() {}
     checkValidity() { return true; }
+    setCustomValidity() {}
     closest() { return this; }
   }
   const nodes = new Map();

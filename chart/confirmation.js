@@ -1,11 +1,10 @@
 const openDialogs = new WeakSet();
 
-/** Shared ST-MQ confirmation: Cancel first, focus restored, one modal at a time. */
+/** Shared app confirmation: Cancel first, focus restored, one modal at a time. */
 export function confirmAction({ document, title, message, action = 'Apply change' }) {
   if (!document) return Promise.resolve(false);
   if (openDialogs.has(document)) return Promise.resolve(false);
-  if (!document.defaultView?.HTMLDialogElement)
-    return Promise.resolve(document.defaultView?.confirm(`${title}\n\n${message}`) ?? false);
+  if (!document.defaultView?.HTMLDialogElement) return Promise.resolve(false);
   openDialogs.add(document);
   const previousFocus = document.activeElement;
   const dialog = document.createElement('dialog');

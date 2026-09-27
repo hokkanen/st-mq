@@ -332,7 +332,13 @@ function garageControlFixture() {
     heatingControls: { available: true, normalAvailable: true, offAvailable: true, requestedMode: null },
     temporary: { available: true, pauseActive: false } } };
   let response = initial;
-  const panel = createGarageControls({ document: { getElementById: id => nodes.get(id), defaultView: { confirm: () => true } },
+  const document = { getElementById: id => nodes.get(id), defaultView: { HTMLDialogElement: class {} },
+    body: { append() {} }, createElement() {
+      return Object.assign(new EventTarget(), { setAttribute() {}, append() {}, focus() {}, remove() {},
+        showModal() { queueMicrotask(() => this.close('apply')); },
+        close(value) { this.returnValue = value; this.dispatchEvent(new Event('close')); } });
+    } };
+  const panel = createGarageControls({ document,
     request: async () => { if (response instanceof Error) throw response; return response; } });
   panel.update(initial);
   return { panel, nodes, initial, reply(value) { response = value; },

@@ -2,7 +2,7 @@ import Chart from 'chart.js/auto';
 import { Interaction } from 'chart.js';
 import { color } from 'chart.js/helpers';
 import { calendarTicks, chartQuery, createChartLoader, defaultPalette, finnishDate, historyDatasets, historySeriesAt, selectedRange, shiftDate, dateSelection, visible } from './history-model.js';
-import { createEndDatePicker } from './end-date-picker.js';
+import { createDatePicker } from './date-picker.js';
 import { historyTooltipCallbacks, historyTooltipsEnabled, historyTooltipInteraction } from './history-tooltips.js';
 export { historyTooltipLabel, historyTooltipTitle } from './history-tooltips.js';
 import { createTimingBenefit } from './timing-benefit.js';
@@ -159,7 +159,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
 
   function listen(node, event, handler) { node.addEventListener(event, handler); listeners.push(() => node.removeEventListener(event, handler)); }
   function updateControls() {
-    endDatePicker.dismiss();
+    startDatePicker.dismiss(); endDatePicker.dismiss();
     $('date-start').value = selection.startDate; $('date-end').value = suggestedEndDate;
     seriesPicker.update();
     $('date-end').dataset.singleDay = String(!rangeActive);
@@ -421,11 +421,10 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     if (rangeActive) suggestedEndDate = dates.endDate;
     updateControls(); refresh();
   }
+  const startDatePicker = createDatePicker($('date-start'), { label: 'Choose start date', onSelect() { applyDate('start'); } });
+  const endDatePicker = createDatePicker($('date-end'), { label: 'Choose end date', onSelect() { applyDate('end'); } });
   listen($('date-start'), 'change', () => applyDate('start'));
   listen($('date-end'), 'change', () => applyDate('end'));
-  const endDatePicker = createEndDatePicker($('date-end'), { onSelect(date) {
-    $('date-end').value = date; applyDate('end');
-  } });
   listen($('chart-range-form'), 'submit', event => event.preventDefault());
   listen($('chart-legend-panel'), 'toggle', () => {
     overlays.clear(); graph?.resize();
@@ -442,5 +441,5 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
   listen(mobilePointer, 'change', () => renderChart());
   function updateTheme() { readPalette(); renderChart(); }
   readPalette(); updateControls();
-  return { refresh, updateTheme, close() { closed = true; endDatePicker.close(); seriesPicker.close(); overlays.close(); navigation.close(); detailLoader.close(); loader.close(); timing.close(); listeners.forEach(remove => remove()); graph?.destroy(); } };
+  return { refresh, updateTheme, close() { closed = true; startDatePicker.close(); endDatePicker.close(); seriesPicker.close(); overlays.close(); navigation.close(); detailLoader.close(); loader.close(); timing.close(); listeners.forEach(remove => remove()); graph?.destroy(); } };
 }

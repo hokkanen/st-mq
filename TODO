@@ -1,6 +1,33 @@
 -Make README.md better and more descriptive of the app, especially the beginning of it
 -Implement support for local mqtt-based temperature receives (eg, from shelly or HASS through Meteorologisk Institute); just store last received temp values and time stamps (maybe in storage class, see below) when received (and accept if received within 1h)
 
+Completed 2026-09-27 — Consistent application calendars and dropdowns
+- Replace the end-only calendar with one shared picker for chart start/end dates
+  and temporary Home/Garage deadlines. Keep explicit unchanged-end selection,
+  single-day/range semantics, typed-date validation, Finnish local times and
+  calendar keyboard navigation. Date/time edits remain drafts until Set; Clear
+  empties optional deadlines before the existing save action.
+- Replace visible browser select popups throughout the dashboard and drawers
+  with themed application listboxes. Preserve current form values/events,
+  dynamic equipment controls, polling updates, disabled states, required-field
+  validation, pointer/keyboard focus transfer, labels and typeahead. Bound popups
+  to the viewport and retain modal/fullscreen ownership.
+- Remove the browser-select dismissal workaround and browser-confirm fallback.
+  Existing application time dialogs, disclosures and confirmation dialogs remain;
+  unavailable confirmation UI cancels safely. Dismiss hidden/disabled controls
+  and body-level popups when signing out.
+- Reviewed current UI producers/consumers, form state, access controls, tests and
+  documentation. No configuration/API/schema changes, migrations, old-format
+  decoders or compatibility aliases were introduced.
+- Validation: 365 focused UI/consumer tests and production build pass (existing
+  bundle-size warning); 24 picker/refresh tests pass after the final observer
+  adjustment. Synthetic Chromium chart checks pass 44 views and 129 explorer
+  choices, including end-date confirmation, keyboard/touch and mobile bounds.
+  Dedicated selector smoke passes matching calendars, date/time draft/set/clear,
+  dynamic values/options, disabled states, labels, focus, modal ownership,
+  signed-out visibility, touch and desktop/mobile light/dark layouts. Mobile
+  screenshots reviewed. No household access or full standard suite run.
+
 Completed 2026-09-27 — Single-day chart selection and appliance comparison rendering
 - Correct the earlier end-date change: selecting a start date plots only that
   day and keeps the previous end date greyed out as an inactive suggestion.

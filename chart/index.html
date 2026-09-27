@@ -8,6 +8,7 @@
   <link rel="icon" type="image/png" sizes="128x128" href="../icon.png">
   <script vite-ignore src="./theme.js"></script>
   <link rel="stylesheet" href="./monitor.css">
+  <link rel="stylesheet" href="./select-picker.css">
   <link rel="stylesheet" href="./timing-benefit.css">
 </head>
 <body data-authenticated="false">
@@ -120,13 +121,13 @@
                     <p class="muted form-timezone">All dates and times below are in Finland · Europe/Helsinki.</p>
                     <div class="temporary-field">
                       <label for="away-until">Away until</label>
-                      <div class="temporary-input-row"><input id="away-until" type="datetime-local" step="60" aria-describedby="away-status away-help"><button id="home-now" class="secondary-button" type="button" disabled>Home now</button></div>
+                      <div class="temporary-input-row"><input id="away-until" type="text" data-date-picker="datetime-local" aria-describedby="away-status away-help"><button id="home-now" class="secondary-button" type="button" disabled>Home now</button></div>
                       <p id="away-status" class="temporary-status">At home.</p>
                       <p id="away-help" class="muted">Allow longer price-based reductions while away. The occupied temperature-drop and rise limits do not apply until your return; planning includes reheating costs.</p>
                     </div>
                     <div class="temporary-field">
                       <label for="pause-until">Pause until</label>
-                      <div class="temporary-input-row"><input id="pause-until" type="datetime-local" step="60" aria-describedby="override-status pause-help"><button id="resume-now" class="secondary-button" type="button" disabled>Resume now</button></div>
+                      <div class="temporary-input-row"><input id="pause-until" type="text" data-date-picker="datetime-local" aria-describedby="override-status pause-help"><button id="resume-now" class="secondary-button" type="button" disabled>Resume now</button></div>
                       <p id="override-status" class="temporary-status">Price control is not paused.</p>
                       <p id="pause-help" class="muted">Starting a pause requests Normal heating. Normal, Reduction and Preheat selections made afterwards stay until the pause ends or you select Resume now, then the previous heating state is restored. Heat-pump parameter edits remain in effect. Automatic price control then resumes if enabled; monitoring and learning continue throughout.</p>
                     </div>
@@ -535,7 +536,7 @@
                   <p class="muted form-timezone">All dates and times below are in Finland · Europe/Helsinki.</p>
                   <div class="temporary-field">
                     <label for="garage-pause-until">Pause until</label>
-                    <div class="temporary-input-row"><input id="garage-pause-until" type="datetime-local" step="60" aria-describedby="garage-pause-status garage-pause-help"><button id="garage-resume-now" class="secondary-button" type="button" disabled>Resume now</button></div>
+                    <div class="temporary-input-row"><input id="garage-pause-until" type="text" data-date-picker="datetime-local" aria-describedby="garage-pause-status garage-pause-help"><button id="garage-resume-now" class="secondary-button" type="button" disabled>Resume now</button></div>
                     <p id="garage-pause-status" class="temporary-status">Price control is not paused.</p>
                     <p id="garage-pause-help" class="muted">Starting a pause requests Normal heating. Any heating selection made afterwards stays until the pause ends or you select Resume now.</p>
                   </div>
@@ -730,9 +731,9 @@
         </div>
         <div class="chart-range-controls">
           <form id="chart-range-form" class="date-range" aria-label="Chart dates">
-            <input id="date-start" type="date" aria-label="Start date" title="Show this day; choose an end date to show a range" required>
+            <input id="date-start" type="text" data-date-picker="date" aria-label="Start date" title="Show this day; choose an end date to show a range" required>
             <span aria-hidden="true">to</span>
-            <input id="date-end" type="date" aria-label="End date; extend the selected range" title="Extend the date range" required>
+            <input id="date-end" type="text" data-date-picker="date" aria-label="End date; extend the selected range" title="Extend the date range" required>
           </form>
           <div class="range-shortcuts" role="group" aria-label="Quick date ranges">
             <button id="range-back" class="range-step" type="button" aria-label="Move shown dates back one day" title="Move shown dates back one day"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 6-6 6 6 6"/></svg></button>
