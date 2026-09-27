@@ -1,5 +1,9 @@
 # Recording contract review — 25 September 2026
 
+The circulation every-report policy described in this dated review was replaced
+by exact changes plus compact report coverage in the
+[27 September recorder audit](RECORDER-IDLE-2026-09-27.md).
+
 This review follows the complete path from acquisition through recording,
 restart, history readers, learning provenance and the database inventory. It
 uses synthetic observations and temporary SQLite databases; no installation,

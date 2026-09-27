@@ -146,7 +146,8 @@ test('recording inventory partitions every current observation writer without co
   for (const prefix of ['property', 'ev1', 'ev2', 'ev2-phase', 'caravan']) recorder.recordEnergy({ source: 'fixture-meter', device: 'private-meter',
     prefix, start: at - 60_000, end: at, powers: ['caravan', 'ev2'].includes(prefix) ? [1] : [1, 2, 3],
     energies: ['caravan', 'ev2'].includes(prefix) ? [1 / 60] : [1 / 60, 2 / 60, 3 / 60], receivedAt: at, quality: [] });
-  put(store, 'dhwr_active', 1); put(store, 'dhwr_active', 1, at + 1000);
+  for (const time of [at, at + 1000]) recorder.record({ source: 'mqtt-equipment', device: 'dhwr', signal: 'dhwr_active',
+    value: 1, unit: 'state', sourceTime: time, receivedAt: time, quality: [], raw: { eventOnly: true, basis: 'measured-power' } });
   put(store, 'garage_energy', 0.1, at, { unit: 'kWh', raw: { intervalStart: at - 60_000, intervalEnd: at } });
   put(store, 'workshop_energy', 1, at, { unit: 'kWh', raw: { intervalStart: at - 3_600_000, intervalEnd: at, timeBasis: 'completed-hour' } });
   put(store, 'ev2_energy', 1, at, { unit: 'kWh', raw: { intervalStart: at - 3_600_000, intervalEnd: at, timeBasis: 'completed-hour' } });
@@ -159,9 +160,9 @@ test('recording inventory partitions every current observation writer without co
     assert.equal(rows.get(signal).recordingPolicy, 'change-only', signal);
     assert(rows.get(signal).unit && rows.get(signal).writeBehavior && rows.get(signal).basis, signal);
   }
-  assert.equal(rows.get('dhwr_active').count, 2);
-  assert.equal(rows.get('dhwr_active').recordingPolicy, 'every-report');
-  assert.match(rows.get('dhwr_active').writeBehavior, /Every received.*including repeated/);
+  assert.equal(rows.get('dhwr_active').count, 1);
+  assert.equal(rows.get('dhwr_active').recordingPolicy, 'change-only');
+  assert.match(rows.get('dhwr_active').writeBehavior, /unchanged reports extend coverage/);
   assert.equal(rows.get('garage_energy').recordingPolicy, 'interval');
   assert.equal(rows.get('workshop_energy').recordingPolicy, 'hourly-energy');
   assert.equal(rows.get('ev2_energy').recordingPolicy, 'hourly-energy', 'A supported custom equipment ID cannot override its actual hourly writer policy');

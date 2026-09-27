@@ -72,7 +72,7 @@ export function renderRecording(status, root) {
     term.textContent=label;detail.textContent=String(value);group.append(term,detail);summary.append(group);
   }
   const description=document.createElement('p');description.className='muted';
-  description.textContent='These observed streams use learned change thresholds. Fresh unchanged readings extend availability coverage. Energy keeps accumulating in a saved open interval until power or quality changes close it. Exact sensor changes, states, settings, counters and every-report feedback are under Other recorded data.';
+  description.textContent='These observed streams use learned change thresholds. Fresh unchanged readings extend availability coverage. Energy keeps accumulating in a saved open interval until power or quality changes close it. Exact sensor changes, states, settings, counters and circulation feedback are under Other recorded data.';
   const note=document.createElement('p');note.className='muted';
   note.textContent='Mean spacing uses actual saved timestamps. Source details explain freshness separately. Payload sizes are approximate. The rolling target covers database growth; only adaptive streams use the learned threshold. Saved adaptive datasets, including recovered history without a current checkpoint, are listed under Other recorded data → Recording and storage support.';
   const table=document.createElement('table');table.className='recording-table recording-measurements';
@@ -154,7 +154,7 @@ export function renderRecordingOverview(overview,root) {
   const focusedKey=root.contains(focused)?focused.closest('[data-overview-key]')?.dataset.overviewKey:null;
   const nodes=[];
   const intro=document.createElement('p');intro.className='muted';
-  intro.textContent=overview.summary??'Exact measurements, equipment states, every-report feedback and the remaining stored datasets are listed here. Each row explains its saving rule, retained history or overwritten state, record count and dates. Matching scalar signals with the same unit and saving rule are combined across sources.';
+  intro.textContent=overview.summary??'Exact measurements, equipment states, circulation feedback and the remaining stored datasets are listed here. Each row explains its saving rule, retained history or overwritten state, record count and dates. Matching scalar signals with the same unit and saving rule are combined across sources.';
   nodes.push(intro);
   if (overview.inventoryIssues?.length) {
     const notice=document.createElement('p');notice.className='recording-inventory-notice';

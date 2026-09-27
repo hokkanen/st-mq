@@ -46,11 +46,11 @@ function fixture(t) {
 test('explicit chart refresh after a mutation cancels old work while recorder polls share it', async t => {
   const { chart, requests } = fixture(t);
   const status = { now: Date.parse('2026-09-20T12:00:00Z'), input: 'providers',
-    recording: { historyRevision: 1, temperatureReportRevision: 1 } };
+    recording: { historyRevision: 1, temperatureReportRevision: 1, sourceReportRevision: 1 } };
   const initial = chart.refresh(status);
   await Promise.resolve();
   assert.equal(requests.length, 1);
-  const updated = { ...status, recording: { ...status.recording, historyRevision: 2 } };
+  const updated = { ...status, recording: { ...status.recording, historyRevision: 2, sourceReportRevision: 2 } };
   const polled = chart.refresh(updated);
   await Promise.resolve();
   assert.equal(requests.length, 1, 'A new recorder revision must not restart the pending query');

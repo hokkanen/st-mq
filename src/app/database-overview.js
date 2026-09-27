@@ -93,7 +93,7 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
         ? { id: row.policyId, ...RECORDING_POLICIES[row.policyId] }
         : recordingPolicy({ ...row, raw: { timeBasis: row.timeBasis } });
     if (!imported && !RECORDING_POLICIES[row.policyId]
-      && !['event', 'every-report', 'interval', 'hourly-energy'].includes(policy.id)) {
+      && !['event', 'interval', 'hourly-energy'].includes(policy.id)) {
       inventoryIssues.push('Scalar observations without a registered current writer policy are present.');
       policy = { id: 'unclassified', adaptive: false, recorded: true, label: 'Unregistered writer',
         writeBehavior: 'No current recorder policy or recognized direct writer is recorded for this stream.',
@@ -134,7 +134,7 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
   for (const dataset of scalarItems) if (duplicateIds.get(dataset.id) > 1)
     dataset.id += `:${dataset.recordingPolicy}:${opaqueId(dataset.unit)}`;
   add('other_observations', 'Exact measurements, states and calculated history',
-    'Each observed non-adaptive stream is listed below. Exact changes, every-report feedback, direct energy intervals and controller events have separate saving rules.',
+    'Each observed non-adaptive stream is listed below. Exact changes, circulation feedback, direct energy intervals and controller events have separate saving rules.',
     scalarItems.sort((a, b) => a.label.localeCompare(b.label)));
 
   const imports = grouped('imports', "CASE WHEN kind IN ('stmq','easee') THEN kind ELSE 'other' END", 'started_at', 'COALESCE(completed_at,started_at)');

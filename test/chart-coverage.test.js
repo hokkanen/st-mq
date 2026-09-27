@@ -141,3 +141,91 @@ test('live long-view caches renew report deadlines promptly while ordinary measu
   assert.equal(recordingChangedForSelection({...selection,endDate:'2026-01-03'},date,previous,current),false);
   assert.equal(recordingChangedForSelection({...selection,startDate:'2026-01-20',endDate:'2026-01-30'},date,previous,current),false);
 });
+
+test('unchanged auxiliary zero and compressor shading survive compact multi-day source coverage',t=>{
+  const {store,date,start,put}=fixture(t),first=start-24*HOUR,last=start+24*HOUR;
+  for(let at=first;at<=last;at+=4*MINUTE) {
+    put('auxiliary_output',0,at,{unit:'%',raw:{verified:true,usableForControl:true,ratedPowerKw:9}});
+    put('auxiliary_power',0,at,{source:'controller-estimate',device:'mqtt',unit:'kW',quality:['estimated']});
+    put('compressor_active',0,at);
+    put('dhw_routing',0,at);
+    put('operating_mode',1,at,{unit:'state'});
+  }
+  assert.equal(store.observations().length,5,'Steady idle values require one observation per signal');
+  for(const options of [{startDate:date,endDate:date},
+    {startDate:'2026-01-01',endDate:date},
+    {startDate:date,endDate:date,viewFrom:start+5*HOUR,viewTo:start+5*HOUR+MINUTE}]) {
+    const result=getChartData({store,input:'mqtt',now:last+HOUR,left:'power',...options});
+    const rows=result.series.auxiliary_power;
+    assert.ok(rows.length>=2);
+    assert.ok(rows.every(row=>row.y===0));
+    assert.ok(rows.every(row=>row.sourceCoverage&&row.observedAt===first));
+    assert.deepEqual(result.shading.compressorHome,[{start:Math.max(first,result.range.from),end:result.range.to,value:0}]);
+    assert.deepEqual(result.operatingModes,[{start:Math.max(first,result.range.from),end:result.range.to,value:1}]);
+  }
+});
+
+test('source coverage preserves silent gaps, immediate failures, source expiry and unchanged recovery',t=>{
+  const {store,recorder,date,start,put}=fixture(t);
+  const record=at=>{
+    put('compressor_active',1,at);put('dhw_routing',0,at);
+    put('auxiliary_output',0,at,{unit:'%',raw:{verified:true,usableForControl:true,ratedPowerKw:9}});
+  };
+  record(start);record(start+4*MINUTE);record(start+12*MINUTE);
+  recorder.recordFailure({source:'husdata-h66',device:'synthetic-heatpump',signal:'compressor_active',unit:'state',at:start+13*MINUTE});
+  record(start+14*MINUTE);
+  const result=getChartData({store,input:'mqtt',startDate:date,endDate:date,now:start+22*MINUTE,left:'compressor_active'});
+  assert.deepEqual(result.shading.compressorHome,[
+    {start,end:start+9*MINUTE,value:1},
+    {start:start+12*MINUTE,end:start+13*MINUTE,value:1},
+    {start:start+14*MINUTE,end:start+19*MINUTE,value:1},
+  ]);
+  for(const minute of [9,13,19]) assert.ok(result.series.compressor_active.some(row=>row.x===start+minute*MINUTE&&row.y===null));
+  assert.ok(result.series.compressor_active.some(row=>row.x===start+14*MINUTE&&row.y===1));
+});
+
+test('as-of charts cannot borrow future compact source or periodic confirmations',t=>{
+  const {store,date,start,put}=fixture(t);
+  for(let minute=0;minute<=10;minute++) {
+    put('compressor_active',1,start+minute*MINUTE);put('dhw_routing',0,start+minute*MINUTE);
+    put('indoor_temperature',20,start+minute*MINUTE,{source:'mqtt-temperature',raw:{reportIntervalMs:5*MINUTE,reportGraceMs:0}});
+  }
+  const result=getChartData({store,input:'mqtt',startDate:date,endDate:date,now:start+8*MINUTE,left:'compressor_active'});
+  assert.deepEqual(result.shading.compressorHome,[{start,end:start+5*MINUTE,value:1}]);
+  for(const signal of ['compressor_active','indoor_temperature']) {
+    assert.ok(result.series[signal].some(row=>row.x===start+5*MINUTE&&row.y===null));
+    assert.ok(result.series[signal].every(row=>row.y===null||row.x<start+5*MINUTE));
+  }
+});
+
+test('unchanged equipment confirmation refreshes current short selections while long and past dates retain their TTL',t=>{
+  const {recorder,date,start,put}=fixture(t),selection={startDate:'2026-01-01',endDate:date,left:'power'};
+  put('compressor_active',0,start);
+  const before=recorder.status(start);
+  put('compressor_active',0,start+MINUTE);
+  const after=recorder.status(start+MINUTE);
+  assert.equal(before.historyRevision,after.historyRevision);
+  assert.notEqual(before.sourceReportRevision,after.sourceReportRevision);
+  assert.equal(recordingChangedForSelection({...selection,startDate:date},date,before,after),true);
+  assert.equal(recordingChangedForSelection(selection,date,before,after),false);
+  assert.equal(recordingChangedForSelection({...selection,endDate:'2026-01-03'},date,before,after),false);
+});
+
+test('compact circulation feedback keeps zero visible with its configured expiry and real recovery',t=>{
+  const {store,recorder,date,start,put}=fixture(t),first=start-6*HOUR;
+  const feedback={source:'mqtt-equipment',device:'synthetic-circulation',unit:'state',
+    raw:{maxAgeMs:2*MINUTE,reportIntervalMs:2*MINUTE,reportGraceMs:0,eventOnly:false,timeBasis:'mqtt-receipt'}};
+  for(let at=first;at<=start+HOUR;at+=MINUTE) put('dhwr_active',0,at,feedback);
+  assert.equal(store.observations({signal:'dhwr_active'}).length,1);
+  put('dhwr_active',0,start+HOUR+5*MINUTE,feedback);
+  recorder.recordFailure({source:feedback.source,device:feedback.device,signal:'dhwr_active',unit:'state',
+    at:start+HOUR+6*MINUTE,quality:['mqtt-disconnected']});
+  const result=getChartData({store,input:'mqtt',startDate:date,endDate:date,now:start+2*HOUR,view:'hot_water'});
+  const rows=result.series.dhwr_active;
+  assert.ok(rows.some(row=>row.x===start&&row.y===0&&row.observedAt===first));
+  assert.ok(rows.some(row=>row.x===start+HOUR+2*MINUTE&&row.y===null));
+  assert.ok(rows.some(row=>row.x===start+HOUR+5*MINUTE&&row.y===0));
+  assert.ok(rows.some(row=>row.x===start+HOUR+6*MINUTE&&row.y===null));
+  assert.ok(rows.every(row=>row.y===null||row.x<start+HOUR+2*MINUTE
+    ||row.x>=start+HOUR+5*MINUTE&&row.x<start+HOUR+6*MINUTE));
+});

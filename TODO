@@ -1,6 +1,39 @@
 -Make README.md better and more descriptive of the app, especially the beginning of it
 -Implement support for local mqtt-based temperature receives (eg, from shelly or HASS through Meteorologisk Institute); just store last received temp values and time stamps (maybe in storage class, see below) when received (and accept if received within 1h)
 
+Completed 2026-09-27 — Recorder idle storage and database audit
+- Keep every accepted charger energy increment while suppressing sub-10 W
+  selection noise, ordinary held/fresh source metadata churn and native-counter
+  versus instantaneous-power mismatch. Preserve phase cohorts, actual quality
+  boundaries, outages, session flushes, durable pending tails and restart/retry.
+  Synthetic idle scenarios fall from 720 to 3 rows/hour for Charger 1 and from
+  2,880 to 4 for Charger 2 at five-second acquisition; these are fixture counts,
+  not measured household database savings.
+- Replace circulation's direct every-report writer with exact state changes and
+  compact report coverage. Retain ON/OFF, unknown, recovery, periodic deadlines,
+  event-only semantics and independent live command confirmation. Preserve the
+  event-only/deadline metadata in saved observations and clear an obsolete
+  periodic deadline on current configuration changes.
+- Project compact auxiliary zeros and heat-pump operating coverage correctly in
+  charts, including long/zoomed periods and real gaps. Prevent future confirmation
+  leakage and refresh only affected pending-energy/source-coverage cache entries;
+  frequent device reports do not cancel long-running detail requests.
+- Publish backups atomically from private staging, preserving concurrent
+  destinations and removing failed partial copies. Fix schema validation's
+  sqlite_ prefix wildcard so malformed/unversioned databases are rejected before
+  mutation. Keep schema 15, current restart/recovery/replay and supported read-only
+  v0.7.5 CSV import; no migration, reset, backfill or history deletion.
+- Review producers, consumers, state, UI, configuration, tests and documentation.
+  Remove the unused energy force hint and every-report policy without aliases.
+  Document retained journal, Garage OFF-evidence, decision-event and index costs
+  in docs/audit/RECORDER-IDLE-2026-09-27.md; no household installation accessed.
+- Validation: all 3,635 routine tests pass without skips; production build passes
+  with the existing large-bundle warning. Regression coverage exercises real
+  synthetic adapters, energy/phase totals, restart and rollback, source deadlines,
+  multi-day charts and cache reuse, failed exports and malformed database guards.
+  The initial unbuilt-worktree dashboard 404 is resolved by building first; the
+  isolated authority test and final complete run both pass unchanged.
+
 Completed 2026-09-27 — Chart curves, series picker and operating evidence
 - Apply monotone cubic geometry to every temperature, including settings and
   targets. Remove artificial interval stair edges and retain bounded source

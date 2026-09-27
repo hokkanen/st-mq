@@ -16,14 +16,11 @@ export const RECORDING_POLICIES = Object.freeze({
     writeBehavior: 'Initial reading, learned change threshold, or quality/availability change; unchanged readings extend coverage without another value.',
     basis: 'Original observed value; the learned tolerance selects which changes are retained.' },
   'adaptive-energy': { label: 'Adaptive energy', adaptive: true, recorded: true, retention: 'history',
-    writeBehavior: 'Energy increments accumulate until power changes or an interval is closed; zero increments do not create repeated energy values.',
-    basis: 'Accumulated kWh over the recorded interval; adaptive selection uses power, not the growing energy total.' },
+    writeBehavior: 'Energy increments accumulate until a significant power change, measurement-basis change, gap or explicit closure. Charger idle noise uses a 10 W selection floor; all accepted energy is retained.',
+    basis: 'Accumulated kWh over the recorded interval; selection uses power. Charger native counters retain exact energy even when instantaneous power and counter increments differ.' },
   'change-only': { label: 'Every change', adaptive: false, recorded: true, retention: 'history',
     writeBehavior: 'Initial reading and every value, quality or availability change; unchanged reports extend coverage without repeating the value.',
     basis: 'Exact reported value or state, including explicit unknown periods; no learned change threshold.' },
-  'every-report': { label: 'Every report', adaptive: false, recorded: true, retention: 'history',
-    writeBehavior: 'Every received feedback report, including repeated values and unavailable reports.',
-    basis: 'Measured circulation-pump feedback: 1 when reported power is above zero, 0 when off, unknown when unavailable.' },
   event: { label: 'On event', adaptive: false, recorded: true, retention: 'history',
     writeBehavior: 'When the associated request, control coverage or calculated result changes.',
     basis: 'A controller request or saved calculation; not independent physical feedback.' },
@@ -51,7 +48,6 @@ export function recordingPolicy(observation = {}, { kind } = {}) {
   else if (observation.raw?.timeBasis === 'completed-hour' && unit === 'kWh') id = 'hourly-energy';
   else if (ENERGY_SIGNALS.includes(signal)) id = 'adaptive-energy';
   else if (signal === 'garage_energy') id = 'interval';
-  else if (signal === 'dhwr_active') id = 'every-report';
   else if (EVENT_SIGNALS.has(signal)) id = 'event';
   else if (kind === 'state' || observation.recordingPolicy === 'change-only' || ['state', 'code'].includes(unit)
     || EXACT.test(signal ?? '') || HELD_TEMPERATURE_SIGNALS.includes(signal) || signal === 'auxiliary_power') id = 'change-only';

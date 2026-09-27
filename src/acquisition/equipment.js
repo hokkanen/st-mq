@@ -7,6 +7,7 @@ import { equipmentSignature, equipmentMeterIdentity } from './equipment-config.j
 import { decodeMqttTemperature, temperatureRouteSignature } from './mqtt-temperature.js';
 import { INDOOR_SIGNALS } from '../domain/indoor-sensors.js';
 import { DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS, DEFAULT_TEMPERATURE_REPORT_GRACE_MS } from '../domain/temperature-reports.js';
+import { Recorder } from '../storage/recorder.js';
 
 const scalar = value => typeof value === 'number' && Number.isFinite(value);
 const property = (object, path) => path?.split('.').reduce((value, key) => value && typeof value === 'object' && Object.hasOwn(value, key) ? value[key] : undefined, object);
@@ -35,6 +36,8 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
   temperatureReportIntervalMs = DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS,
   temperatureReportGraceMs = DEFAULT_TEMPERATURE_REPORT_GRACE_MS, brokerIdentity = null, refreshSubscriptions = null, topicGroups = [] }) {
   const configured = settings.devices ?? [], enabled = configured.filter(row => row.enabled);
+  const feedbackRecorder = enabled.some(row => row.id === 'dhwr')
+    ? engine.recorder ?? new Recorder(store, { clock: engine.clock }) : null;
   const native = enabled.some(row => row.protocol === 'shelly') ? createShellyCapture({ engine, store,
     settings: { ...settings, devices: enabled.filter(row => row.protocol === 'shelly') }, publish, canControl, readbackTimeoutMs, brokerIdentity }) : null;
   let connected = false, closed = false, heatingBusy = false, sequence = 0;
@@ -113,9 +116,11 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     // compact state history even when the raw watts are configured live-only.
     const powerFeedback = device.kind === 'power' || device.mappings.some(row => row.signal === 'dhwr_power');
     if (device.id === 'dhwr' && definition.signal === (powerFeedback ? 'dhwr_power' : 'dhwr_active')) {
-      store.observation({ source: 'mqtt-equipment', device: 'dhwr', signal: 'dhwr_active',
+      feedbackRecorder.record({ source: 'mqtt-equipment', device: 'dhwr', signal: 'dhwr_active',
         value: value === null ? null : Number(value > 0), unit: 'state', sourceTime: at ?? receivedAt, receivedAt, quality,
         raw: { basis: powerFeedback ? 'measured-power' : 'reported-switch', eventOnly: device.maxAgeMs === 0,
+          timeBasis: observation.raw.timeBasis,
+          reportIntervalMs: device.maxAgeMs, reportGraceMs: 0,
           maxAgeMs: device.maxAgeMs, verified: value !== null } });
     }
     if (device.kind === 'door' && value !== null) store.setState?.(`equipment:door:v1:${device.id}`, {

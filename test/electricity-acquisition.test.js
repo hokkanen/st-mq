@@ -43,7 +43,8 @@ test('irregular polls use elapsed time and intermediate changes survive integrat
   const first = accumulator.sample(sample(initial + 10_000, { power: 6 }), initial + 10_000).intervals[0];
   const second = accumulator.sample(sample(initial + 40_000, { power: 0 }), initial + 40_000).intervals[0];
   near([...first.energies, ...second.energies].reduce((a, b) => a + b), 3 * 40 / 3600);
-  assert(first.force && second.force, 'zero transitions bypass numerical threshold');
+  near(first.powers.reduce((a, b) => a + b), 6);
+  near(second.powers.reduce((a, b) => a + b), 0);
 });
 
 test('freshness ages from source timestamps and stale or failed polls never fabricate zero energy', () => {

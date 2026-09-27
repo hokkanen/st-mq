@@ -119,7 +119,7 @@ export function equipmentConfiguration(input = {}) {
     const record = bool(row.record, id !== 'dhwr');
     if (!record && (protocol !== 'mqtt' || !['switch', 'power'].includes(kind)))
       throw new Error('Live-only equipment recording requires an MQTT switch or power sensor');
-    if (id === 'dhwr' && record) throw new Error('DHWR raw telemetry must stay live-only; every derived circulation feedback report is recorded separately');
+    if (id === 'dhwr' && record) throw new Error('DHWR raw telemetry must stay live-only; derived circulation feedback changes and availability are recorded separately');
     const reductionOn = bool(row.reduction_on, true), age = Math.round(number(row.max_age_seconds, ['door', 'power'].includes(kind) ? 0 : maxAgeMs / 1000, 0, 86400) * 1000);
     if (!(kind === 'door' || kind === 'power' && age === 0) && age < pollIntervalMs) throw new Error('Equipment maximum age must allow its poll interval');
     schema(row.mqtt ?? {}, MQTT_KEYS, 'equipment MQTT mapping');

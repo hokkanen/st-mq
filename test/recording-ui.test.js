@@ -108,7 +108,7 @@ test('adaptive inventory contains only observed adaptive streams, including cust
     { signal: 'workshop_pressure', unit: 'bar', policy: 'adaptive-value' },
     { signal: 'room_setting', unit: 'degC', policy: 'change-only' },
     { signal: 'floor_living_0_active', unit: 'state', policy: 'change-only' },
-    { signal: 'dhwr_active', unit: 'state', policy: 'every-report' },
+    { signal: 'dhwr_active', unit: 'state', policy: 'change-only' },
     ...['property', 'ev1', 'ev2'].flatMap(prefix => [1, 2, 3].map(phase => ({
       signal: `${prefix}_energy_l${phase}`, unit: 'kWh', grouped: true, policy: 'adaptive-energy',
     }))),

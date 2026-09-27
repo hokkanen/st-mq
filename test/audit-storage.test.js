@@ -111,14 +111,17 @@ test('A08-006 real SQLite FULL remains the primary error through nested rollback
   assert.equal(store.getState('aborted'),null);assert.equal(store.getState('continued'),1);
 });
 
-for (const shape of ['unversioned','wrong-structure','dangling-content']) test(`B12 unsupported database is rejected before mutation: ${shape}`,async t=>{
+for (const shape of ['unversioned','unversioned-sqlite-lookalike','current-sqlite-lookalike','wrong-structure','dangling-content']) test(`B12 unsupported database is rejected before mutation: ${shape}`,async t=>{
   const {dir}=fixture(t),path=join(dir,'unsupported.sqlite'),destination=join(dir,'restore.sqlite');
   if(shape==='dangling-content') {const db=new Store(path);db.snapshot({kind:'weather',source:'synthetic',fetchedAt:1000,payload:{}});db.close();}
+  if(shape==='current-sqlite-lookalike') {const db=new Store(path);db.close();}
   const raw=new DatabaseSync(path);
   if(shape==='unversioned')raw.exec('CREATE TABLE unrelated(value TEXT)');
+  if(shape.endsWith('sqlite-lookalike'))raw.exec("CREATE TABLE sqliteXcustom(value TEXT); INSERT INTO sqliteXcustom VALUES ('preserve me')");
   if(shape==='wrong-structure')raw.exec(`CREATE TABLE state(key TEXT);PRAGMA user_version=${SCHEMA_VERSION}`);
   if(shape==='dangling-content')raw.exec('PRAGMA foreign_keys=OFF;DELETE FROM provider_snapshot_contents');
   raw.close();const before=readFileSync(path);
   assert.throws(()=>new Store(path),/Unsupported|Malformed|dangling/);assert.deepEqual(readFileSync(path),before);
+  assert.throws(()=>new Store(path,{readOnly:true}),/Unsupported|Malformed|dangling/);assert.deepEqual(readFileSync(path),before);
   await assert.rejects(Store.restore(path,destination),/Unsupported|Malformed|dangling/);assert(!existsSync(destination));assert.deepEqual(readFileSync(path),before);
 });

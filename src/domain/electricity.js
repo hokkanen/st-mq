@@ -78,8 +78,7 @@ export class ElectricityAccumulator {
         const quality = [...new Set([...previous.quality, ...snapshot.quality,
           ...(previous.sourceTime === snapshot.sourceTime ? ['held_source_values'] : [])])];
         intervals.push({ source: 'easee', device: group.device, prefix: group.prefix, start: previous.at, end: now,
-          energies, powers: snapshot.powers, receivedAt: now, sourceTime: snapshot.sourceTime, telemetryAt: snapshot.telemetryAt, quality,
-          force: snapshot.powers.some((power, index) => (power === 0) !== (previous.powers[index] === 0)) });
+          energies, powers: snapshot.powers, receivedAt: now, sourceTime: snapshot.sourceTime, telemetryAt: snapshot.telemetryAt, quality });
       } else if (previous && now !== previous.at) {
         gaps.push({ device: group.device, prefix: group.prefix, start: Math.min(previous.at, now), end: Math.max(previous.at, now),
           quality: [now < previous.at ? 'clock_rollback' : sourceRolledBack ? 'source_time_rollback' : 'electricity_gap'] });

@@ -51,8 +51,8 @@ export function recordingChangedForSelection(selection,today,previous,current) {
   if (selection.startDate<=today && selection.endDate>=today && previous.temperatureReportRevision!==undefined
     && previous.temperatureReportRevision!==current.temperatureReportRevision) return true;
   const longRange=Date.parse(selection.endDate)-Date.parse(selection.startDate)>=7*86400000;
-  return !longRange && selection.endDate>=today && previous.historyRevision!==undefined
-    && previous.historyRevision!==current.historyRevision;
+  return !longRange && selection.endDate>=today
+    && ['historyRevision','sourceReportRevision'].some(key=>previous[key]!==undefined&&previous[key]!==current[key]);
 }
 
 /** The chart owns only its controls and fetches; the monitor owns authentication. */
@@ -342,7 +342,8 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     lastInput = status.input;
     // Ordinary recorder progress expires through the detail TTL. Aborting on
     // every poll would repeatedly kill slow queries for historical viewports.
-    const recording={historyRevision:liveRevision,temperatureReportRevision:status.recording?.temperatureReportRevision};
+    const recording={historyRevision:liveRevision,temperatureReportRevision:status.recording?.temperatureReportRevision,
+      sourceReportRevision:status.recording?.sourceReportRevision};
     if (recordingChangedForSelection(selection,today,lastRecording,recording)) {
       force = true;
       if (lastRecording?.temperatureReportRevision!==recording.temperatureReportRevision) invalidateDetail();

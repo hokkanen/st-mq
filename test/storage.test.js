@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -142,6 +142,39 @@ test('transactions roll back and WAL backups restore complete state to a new des
   const copy = new Store(restored);
   try { assert.deepEqual(copy.getState('checkpoint'), { cursor: 42 }); assert.equal(copy.events().length, 1); }
   finally { copy.close(); }
+});
+
+test('backups publish complete private files and clean failed staging', async t => {
+  const { store, dir } = fixture(t);
+  store.setState('checkpoint', { cursor: 42 });
+  const destination = join(dir, 'backup.sqlite');
+  const copying = store.backup(destination);
+  assert.equal(existsSync(destination), false, 'in-progress backup has no final filename');
+  await copying;
+  assert.equal(statSync(destination).mode & 0o777, 0o600);
+  assert.equal(readdirSync(dir).some(name => name.includes('.backup-')), false);
+  store.close();
+  const failed = join(dir, 'failed.sqlite');
+  await assert.rejects(store.backup(failed));
+  assert.equal(existsSync(failed), false);
+  assert.equal(readdirSync(dir).some(name => name.includes('.backup-')), false);
+});
+
+test('backup refuses stale companions and concurrent destination creation without overwriting', async t => {
+  const { store, dir } = fixture(t);
+  for (const suffix of ['-wal', '-shm']) {
+    const destination = join(dir, `companion${suffix}.sqlite`);
+    writeFileSync(`${destination}${suffix}`, 'synthetic companion');
+    await assert.rejects(store.backup(destination), /new file/);
+    assert.equal(existsSync(destination), false);
+    assert.equal(readFileSync(`${destination}${suffix}`, 'utf8'), 'synthetic companion');
+  }
+  const destination = join(dir, 'concurrent.sqlite');
+  const copying = store.backup(destination);
+  writeFileSync(destination, 'concurrent owner');
+  await assert.rejects(copying, /new file|EEXIST/);
+  assert.equal(readFileSync(destination, 'utf8'), 'concurrent owner');
+  assert.equal(readdirSync(dir).some(name => name.includes('.backup-')), false);
 });
 
 test('CSV export is bounded, preserves quality/unknowns and refuses overwriting files', async t => {

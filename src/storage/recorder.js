@@ -16,11 +16,37 @@ const flags = quality => [...new Set(quality ?? [])].sort();
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const stateKey = key => `recorder:signal:${key}`;
 const finiteTime = at => Number.isSafeInteger(at) && Math.abs(at) <= 8640000000000000;
-// Correlated contact replies use the host receipt clock. Two ordered replies
-// can legitimately share a millisecond; observation IDs preserve their order.
-const hostContactReport = o => o.source === 'floor-override' && o.unit === 'state'
-  && o.raw?.timeBasis === 'request-readback' && o.sourceTime === o.receivedAt;
+// Correlated contact replies and live timestamp-free MQTT contact reports use
+// the host receipt clock. Ordered replies can share a millisecond; observation
+// IDs preserve their order. A device's repeated measurement clock cannot do so.
+const hostContactReport = o => o.unit === 'state' && o.sourceTime === o.receivedAt
+  && (o.source === 'floor-override' && o.raw?.timeBasis === 'request-readback'
+    || o.source === 'mqtt-equipment' && o.signal === 'dhwr_active' && o.raw?.timeBasis === 'mqtt-received');
 const numericalFloor = (a,b) => Math.max(1,Math.abs(a??0),Math.abs(b??0))*Number.EPSILON*32;
+// This is a history-selection floor, never a power/energy clamp. Every accepted
+// Wh remains in the durable interval, including a charger's real standby load.
+const CHARGER_POWER_FLOOR_KW = 0.010;
+const chargerEnergy = prefix => ['ev1','ev2','ev2-phase'].includes(prefix);
+const nativeChargerEnergy = prefix => ['ev2','ev2-phase'].includes(prefix);
+// These flags describe ordinary source-clock bookkeeping within otherwise
+// usable integration. Keep a conservative union in the span, without making
+// each fresh/held poll a new historical cohort. All other quality changes,
+// including stale power/phase weights and a different measurement basis, split.
+const ENERGY_BOOKKEEPING = new Set(['held_source_values','last_reported_observations']);
+const energyQuality = quality => flags(quality).filter(flag=>!ENERGY_BOOKKEEPING.has(flag));
+const PHASE_WEIGHT_QUALITY = new Set(['voltage_current_phase_weights','current_phase_weights',
+  'last_reported_zero_phase_weights','last_reported_phase_weights','asynchronous_snapshot']);
+function sameEnergyQuality(a,b,{ zeroA = false,zeroB = false } = {}) {
+  let left = energyQuality(a), right = energyQuality(b);
+  // A reported exact zero needs no phase weights. Their absence is neutral;
+  // comparing two actual allocation methods still creates a boundary. Preserve
+  // the union in the span so any used/held weights remain explicit provenance.
+  if (left.includes('reported_active_power') && right.includes('reported_active_power')) {
+    if (zeroA && !left.some(flag=>PHASE_WEIGHT_QUALITY.has(flag))) right = right.filter(flag=>!PHASE_WEIGHT_QUALITY.has(flag));
+    if (zeroB && !right.some(flag=>PHASE_WEIGHT_QUALITY.has(flag))) left = left.filter(flag=>!PHASE_WEIGHT_QUALITY.has(flag));
+  }
+  return same(left,right);
+}
 const semanticQuality = raw => Object.fromEntries(['usableForControl','verified','retained','cached','installationVerified',
   'verification','diagnosticAvailable','accuracyVerified','contractVersion','supported','timeBasis','publicationMayUseGatewayCache','basis','reportIntervalMs','reportGraceMs','eventOnly','temperatureRouteSignature'].filter(key=>raw?.[key]!==undefined).map(key=>[key,raw[key]]));
 // Source validity is independent of the recording budget.
@@ -395,7 +421,10 @@ export class Recorder {
       if (state.lastEnd !== null && start < state.lastEnd) throw new Error('Overlapping energy integration intervals');
       if (state.lastReceivedAt != null && receivedAt < state.lastReceivedAt)
         throw new TypeError('Out-of-order energy receipt');
-      const q = flags(quality), g = this.global(receivedAt), observations = [], previousPowers = state.lastPowers;
+      const q = flags(quality), g = this.global(receivedAt), observations = [];
+      const native = nativeChargerEnergy(prefix), powerFloor = chargerEnergy(prefix) ? CHARGER_POWER_FLOOR_KW : 0;
+      const previousPowers = native ? state.lastSelectionPowers ?? null : state.lastPowers;
+      const zero = powers.every(value=>value===0) && energies.every(value=>value===0);
       // Recovery preserves original donor evidence without replacing live
       // acquisition cursors. A subsequent local interval can straddle that
       // recovered history. Keep the recovered evidence, skip the indivisible
@@ -420,6 +449,7 @@ export class Recorder {
       if (recoveredEnd !== null) {
         observations.push(...this.commitEnergy(state,source,device,prefix,receivedAt,'recovery-boundary'));
         state.lastEnd=end; state.lastReceivedAt=receivedAt; state.lastPowers=null; state.lastQuality=null;
+        state.lastSelectionPowers=null;
         this.store.setState(checkpointKey,state);
         g.energyRevision=(g.energyRevision ?? 0)+1; this.store.setState(GLOBAL_KEY,g);
         if (recoveredEnd<end) observations.push(...this.energyGap({source,device,prefix,start:Math.max(start,recoveredEnd),end,
@@ -428,16 +458,23 @@ export class Recorder {
       }
       // Close the previous valid interval before any gap or quality transition;
       // do not spread its energy over missing time or blend measurement bases.
-      if (state.pending && (state.pending.end !== start || !same(state.pending.quality,q)))
+      if (state.pending && (state.pending.end !== start || !sameEnergyQuality(state.pending.quality,q,
+        {zeroA:state.pending.energies.every(value=>value===0),zeroB:zero})))
         observations.push(...this.commitEnergy(state,source,device,prefix,receivedAt,'boundary'));
+      // A native counter may hold its value between quantized increments while
+      // reporting positive instantaneous power. Compare like with like for
+      // selection; reconstructible interval power still describes its energy.
+      const selectionPowers = native ? state.lastSelectionPowers ?? null : state.lastPowers;
       let changed = false;
       for (let i=0;i<signals.length;i++) {
         const s = state.scales[i] ?? {mean:null,variance:0,step:0,previousValue:null,lastFreshAt:null,scale:0};
         this.scale(s,powers[i],end); state.scales[i] = s;
-        if (state.lastPowers && ((powers[i] === 0) !== (state.lastPowers[i] === 0)
-          || Math.abs(powers[i]-state.lastPowers[i]) > Math.max(s.scale*g.tolerance,numericalFloor(powers[i],state.lastPowers[i])))) changed = true;
+        if (selectionPowers && (((powers[i] === 0) !== (selectionPowers[i] === 0)
+            && Math.max(powers[i],selectionPowers[i]) > powerFloor)
+          || Math.abs(powers[i]-selectionPowers[i]) > Math.max(powerFloor,s.scale*g.tolerance,numericalFloor(powers[i],selectionPowers[i])))) changed = true;
       }
-      const reason = state.lastPowers === null ? 'initial' : !same(state.lastQuality,q) ? 'quality-or-availability'
+      const reason = selectionPowers === null ? 'initial' : !sameEnergyQuality(state.lastQuality,q,
+        {zeroA:state.lastPowers?.every(value=>value===0),zeroB:zero}) ? 'quality-or-availability'
         : changed ? 'learned-change' : null;
       // Keep a newly detected transition out of the preceding steady span. With
       // no maximum duration, blending it backwards could distort days of history.
@@ -445,6 +482,8 @@ export class Recorder {
         observations.push(...this.commitEnergy(state,source,device,prefix,receivedAt,'power-boundary'));
       if (!state.pending) state.pending = {start,end,receivedAt,energies:signals.map(()=>0),quality:q};
       for (let i=0;i<signals.length;i++) state.pending.energies[i] += energies[i];
+      state.pending.quality = flags([...state.pending.quality,...q]);
+      if (native) state.pending.selectionPowers = [...powers];
       state.pending.end = end; state.pending.receivedAt = receivedAt;
       state.lastEnd = end; state.lastReceivedAt = receivedAt;
       if (reason) observations.push(...this.commitEnergy(state,source,device,prefix,receivedAt,reason));
@@ -484,6 +523,7 @@ export class Recorder {
     // This is exactly reconstructible from the recorded energy and duration.
     // The last acquisition endpoint alone is not the recorded approximation.
     state.lastPowers = p.energies.map(value=>value*HOUR/(p.end-p.start));
+    if (nativeChargerEnergy(prefix)) state.lastSelectionPowers = p.selectionPowers ?? null;
     state.lastQuality = p.quality;
     state.pending = null;
     return observations;
@@ -498,7 +538,10 @@ export class Recorder {
       if (state?.lastReceivedAt != null && receivedAt < state.lastReceivedAt)
         throw new TypeError('Out-of-order energy gap receipt');
       const observations = state ? this.commitEnergy(state,source,device,prefix,receivedAt,'availability-boundary') : [];
-      if (state) { state.lastPowers = null; state.lastQuality = null; state.lastReceivedAt = receivedAt; this.store.setState(key,state); }
+      if (state) {
+        state.lastPowers = null; state.lastSelectionPowers = null; state.lastQuality = null;
+        state.lastReceivedAt = receivedAt; this.store.setState(key,state);
+      }
       for (const signal of signals) {
         const result = this.record({source,device,signal,value:null,unit:'kWh',
           sourceTime:end,receivedAt,quality:flags([...quality,'missing']),
@@ -583,8 +626,14 @@ export class Recorder {
     // Constant temperatures extend existing coverage rows. Give their report
     // deadlines a separate revision so long plots can refresh without following
     // every fast power acquisition. Device identifiers stay out of the revision.
-    const temperatureReportRevision = JSON.stringify(states.filter(s=>s.reportPolicy)
+    const temperatureReportRevision = JSON.stringify(states.filter(s=>s.reportPolicy && s.signal!=='dhwr_active')
       .map(s=>[s.signal,s.lastSourceTime,s.coverageId,s.status]).sort((a,b)=>a[0].localeCompare(b[0])||a[2]-b[2]));
+    const sourceReportRevision = JSON.stringify(states.filter(s=>
+      ['husdata-h66','simulation'].includes(s.source) && ['compressor_active','dhw_routing','operating_mode','auxiliary_output'].includes(s.signal)
+      || ['controller-estimate','simulation'].includes(s.source) && s.signal==='auxiliary_power'
+      || ['mqtt-equipment','simulation'].includes(s.source) && s.signal==='dhwr_active')
+      .map(s=>[s.source,s.signal,s.lastSourceTime,s.coverageId,s.status])
+      .sort((a,b)=>a[0].localeCompare(b[0])||a[1].localeCompare(b[1])||a[3]-b[3]));
     const latestCoverage = this.store.db.prepare('SELECT source_time FROM recorder_coverage WHERE id=?');
     // Complete hours already have exact counts and timestamp extrema. Only the
     // four rolling-window edges require reading observation index entries;
@@ -619,15 +668,16 @@ export class Recorder {
       }
       const grouped = /_energy_l[123]$/.test(s.signal), totalEnergy = ['ev2_energy','caravan_energy'].includes(s.signal);
       const policy = recordingPolicy(s), exact = !policy.adaptive;
+      const powerFloor = policy.id==='adaptive-energy' && /^ev[12]_energy(?:_l[123])?$/.test(s.signal) ? CHARGER_POWER_FLOOR_KW : 0;
       return {signal:s.signal,source:s.source,unit:s.unit,status:s.status,lastSavedAt:s.last?.receivedAt ?? null,
         streamId:createHash('sha256').update(s.key).digest('hex').slice(0,12),
         policy:policy.id,openInterval:openEnergy.get(s.key) ?? null,
         lastSourceTime:s.lastSourceTime,lastPollAt:s.lastPollAt,scale:s.scale,
         freshness:recordingFreshness(s,s.coverageId ? latestCoverage.get(s.coverageId) : null,now),
-        threshold:exact ? null : s.scale*g.tolerance,thresholdUnit:grouped || totalEnergy ? 'kW' : s.unit,
+        threshold:exact ? null : Math.max(powerFloor,s.scale*g.tolerance),thresholdUnit:grouped || totalEnergy ? 'kW' : s.unit,
         optimizedQuantity:grouped ? 'phase-power' : totalEnergy ? 'total-power' : 'value',grouped,...stats};
     }).sort((a,b)=>a.signal.localeCompare(b.signal));
-    return {version:VERSION,...this.config,historyRevision:JSON.stringify({...revision,energy:g.energyRevision ?? 0}),temperatureReportRevision,normalizedTolerance:g.tolerance,measuredDatabaseBytes:this.store.databaseBytes(),
+    return {version:VERSION,...this.config,historyRevision:JSON.stringify({...revision,energy:g.energyRevision ?? 0}),temperatureReportRevision,sourceReportRevision,normalizedTolerance:g.tolerance,measuredDatabaseBytes:this.store.databaseBytes(),
       bytesPerDay:g.bytesPerDay,bytesPerDay7d:g.bytesPerDay7d,projectedAnnualBytes:g.bytesPerDay7d*YEAR/DAY,
       measurementHours:g.measuredHours,budgetBasis:'soft-rolling-growth',
       parameters:parameters.filter(row=>row.policy.startsWith('adaptive-')),
@@ -648,7 +698,7 @@ function compactRaw(raw) {
     'verified','retained','cached','publicationMayUseGatewayCache','verificationEvidence',
     'diagnosticAvailable','accuracyVerified','contractVersion','supported',
     'basis','energyBasis','source','issuedAt','fetchedAt','snapshotId','provenance','intervalStart','intervalEnd','durationMs',
-    'modelVersion','controllerPhase','estimated','forecast','reportIntervalMs','reportGraceMs',
+    'modelVersion','controllerPhase','estimated','forecast','reportIntervalMs','reportGraceMs','eventOnly','maxAgeMs',
     'reportPolicyChangedAt','originalReportReceivedAt','originalReportSourceTime','originalReportTimeBasis','transportRecoveredAt','temperatureRouteSignature'];
   return Object.fromEntries(allowed.filter(key=>raw[key] !== undefined).map(key=>[key,raw[key]]));
 }

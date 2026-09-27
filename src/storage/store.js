@@ -10,7 +10,7 @@ const MAX_LIMIT = 5000;
 
 // Validate the complete structural contract before any writable pragma or DDL.
 // The reference is made from the same single bootstrap definition, not migrations.
-const schemaObjects = db => db.prepare("SELECT type,name,sql FROM sqlite_schema WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' ORDER BY type,name")
+const schemaObjects = db => db.prepare("SELECT type,name,sql FROM sqlite_schema WHERE sql IS NOT NULL AND name NOT GLOB 'sqlite_*' ORDER BY type,name")
   .all().map(({type,name,sql}) => [type,name,sql.replace(/\s+/g,' ').trim()]);
 const reference = new DatabaseSync(':memory:');
 reference.exec(CURRENT_SCHEMA);
@@ -83,7 +83,7 @@ export class Store {
     try {
       this.db.exec('PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
       const version = this.db.prepare('PRAGMA user_version').get().user_version;
-      const empty = version === 0 && this.db.prepare("SELECT COUNT(*) AS n FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'").get().n === 0;
+      const empty = version === 0 && this.db.prepare("SELECT COUNT(*) AS n FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*'").get().n === 0;
       if (!readOnly && empty) this.transaction(() => {
         this.db.exec(CURRENT_SCHEMA);
         this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
@@ -458,10 +458,18 @@ export class Store {
 
   async backup(destination) {
     const path = resolve(destination);
-    if (path === this.path || existsSync(path)) throw new Error('Backup destination must be a new file');
+    const occupied = () => path === this.path || existsSync(path) || existsSync(`${path}-wal`) || existsSync(`${path}-shm`);
+    if (occupied()) throw new Error('Backup destination must be a new file without WAL/SHM companions');
     mkdirSync(dirname(path), { recursive: true });
-    closeSync(openSync(path, 'wx', 0o600));
-    await sqliteBackup(this.db, path);
+    const staging = `${path}.backup-${randomUUID()}`;
+    try {
+      closeSync(openSync(staging, 'wx', 0o600));
+      await sqliteBackup(this.db, staging);
+      if (occupied()) throw new Error('Backup destination must be a new file without WAL/SHM companions');
+      // Publish only a completed copy, without replacing a concurrently created
+      // destination. Failed backups leave no misleading partial final file.
+      linkSync(staging, path);
+    } finally { rmSync(staging, { force: true }); }
     return path;
   }
 

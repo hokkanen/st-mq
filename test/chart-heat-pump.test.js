@@ -208,3 +208,52 @@ test('read-only worker and compact range reconstruct the same priced energy with
   near(changed.timingBenefit.heatPump.energyKwh, 3.29);
   assert.notDeepEqual(changed.series.heat_pump_power, direct.series.heat_pump_power, 'Configuration-only changes invalidate the worker cache');
 });
+
+test('worker caches renew unchanged source coverage and growing pending energy without new observation IDs',async t=>{
+  const directory=mkdtempSync(join(tmpdir(),'stmq-source-coverage-cache-'));
+  const store=new Store(join(directory,'synthetic.sqlite')),service=createChartService({store}),recorder=new Recorder(store);
+  t.after(async()=>{await service.close();store.close();rmSync(directory,{recursive:true,force:true});});
+  for(const signal of ['compressor_active','dhw_routing']) recorder.record(observation(signal,signal==='compressor_active'?1:0,start,{unit:'state'}));
+  const args={input:'mqtt',now:start+9*MINUTE,startDate:day.startDate,endDate:day.endDate,left:'power'};
+  const before=await service.query(args),revision=store.db.prepare('SELECT MAX(id) id FROM observations').get().id;
+  const pastArgs={...args,startDate:'2026-01-14',endDate:'2026-01-14'};
+  await service.query(pastArgs);
+  assert.equal(before.shading.compressorHome.at(-1).end,start+5*MINUTE);
+  for(const signal of ['compressor_active','dhw_routing']) recorder.record(observation(signal,signal==='compressor_active'?1:0,start+4*MINUTE,{unit:'state'}));
+  assert.equal(store.db.prepare('SELECT MAX(id) id FROM observations').get().id,revision);
+  const after=await service.query(args);
+  assert.equal(after.shading.compressorHome.at(-1).end,start+9*MINUTE);
+  assert.notEqual(after.meta.cacheHit,true);
+  assert.equal((await service.query(pastArgs)).meta.cacheHit,true,'Current equipment reports preserve unrelated completed history');
+  assert.equal((await service.query(args)).meta.cacheHit,true);
+
+  const recordEnergy=minute=>recorder.recordEnergy({source:'synthetic-charger',device:'synthetic-charger',prefix:'ev2',
+    start:start+minute*MINUTE,end:start+(minute+1)*MINUTE,energies:[0.1],powers:[6],quality:[]});
+  recordEnergy(0);recordEnergy(1);
+  const energyBefore=await service.query(args),energyRevision=store.db.prepare('SELECT MAX(id) id FROM observations').get().id;
+  await service.query(pastArgs);
+  recordEnergy(2);
+  assert.equal(store.db.prepare('SELECT MAX(id) id FROM observations').get().id,energyRevision);
+  const energyAfter=await service.query(args);
+  assert.ok(energyBefore.series.charger2_power.some(row=>row.intervalEnd===start+2*MINUTE));
+  assert.ok(energyAfter.series.charger2_power.some(row=>row.intervalEnd===start+3*MINUTE));
+  assert.notEqual(energyAfter.meta.cacheHit,true);
+  assert.equal((await service.query(pastArgs)).meta.cacheHit,true,'An unrelated current tail preserves completed historical plots');
+
+  const asOfArgs={...args,now:start+3*MINUTE};
+  assert.ok((await service.query(asOfArgs)).series.charger2_power.some(row=>row.pending));
+  recordEnergy(3);
+  const asOfAfter=await service.query(asOfArgs);
+  assert.notEqual(asOfAfter.meta.cacheHit,true,'A tail extended beyond the receipt cutoff is no longer eligible');
+  assert.ok(asOfAfter.series.charger2_power.every(row=>!row.pending));
+
+  const simulationEnergy=minute=>recorder.recordEnergy({source:'simulation',device:'synthetic-simulation',prefix:'ev2',
+    start:start+minute*MINUTE,end:start+(minute+1)*MINUTE,energies:[0.1],powers:[6],quality:['simulated']});
+  simulationEnergy(0);simulationEnergy(1);
+  await service.query(args);
+  const simulatedArgs={...args,input:'simulated'};
+  await service.query(simulatedArgs);
+  simulationEnergy(2);
+  assert.equal((await service.query(args)).meta.cacheHit,true,'Simulation tails do not invalidate physical history');
+  assert.notEqual((await service.query(simulatedArgs)).meta.cacheHit,true);
+});

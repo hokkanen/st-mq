@@ -35,13 +35,13 @@ export class RecordedEvidenceLine {
       ...(raw.provisional === true ? { provisional: true } : {}),
       ...(interval ? { intervalStart: raw.intervalStart, intervalEnd: raw.intervalEnd,
         basis: raw.energyBasis, accuracyVerified: raw.accuracyVerified === true, fromEnergy: true } : {}),
-      ...(row.periodicCoverage ? { periodicCoverage: true, coverageId: row.coverageId,
+      ...(row.periodicCoverage || row.sourceCoverage ? { ...(row.periodicCoverage ? {periodicCoverage:true} : {sourceCoverage:true}), coverageId: row.coverageId,
         displayBoundary: true, reportExpiresAt: row.reportExpiresAt } : {}),
     };
     this.envelope.add(at, valid ? value : null, metadata);
     let expiresAt = at;
     if (categorical) {
-      if (row.periodicCoverage && Number.isFinite(row.reportExpiresAt)) expiresAt = row.reportExpiresAt;
+      if ((row.periodicCoverage || row.sourceCoverage) && Number.isFinite(row.reportExpiresAt)) expiresAt = row.reportExpiresAt;
       else if (raw.eventOnly === true) expiresAt = Infinity;
       else if (Number.isFinite(raw.maxAgeMs) && raw.maxAgeMs > 0) expiresAt = observedAt + raw.maxAgeMs;
     }

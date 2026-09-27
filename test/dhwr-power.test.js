@@ -47,7 +47,7 @@ test('DHWR watts-only feed accepts 0 and 1 as measured ON/OFF feedback and recor
   await f.capture.recheck({ deviceId: 'dhwr' });
   assert.deepEqual(f.publications, [], 'A subscription recheck cannot run the pump or manufacture a measurement');
   assert.deepEqual(f.observations, []);
-  assert.equal(f.store.db.prepare('SELECT COUNT(*) AS count FROM observations').get().count, 4);
+  assert.equal(f.store.db.prepare('SELECT COUNT(*) AS count FROM observations').get().count, 2, 'Repeated ON feedback shares one recorded state');
 });
 
 test('change-only power preserves original report age, clears on disconnect and waits for genuine recovery', t => {
@@ -67,6 +67,86 @@ test('change-only power preserves original report age, clears on disconnect and 
   f.report('27');
   assert.equal(f.status().feedback.available, true);
   assert.equal(f.status().feedback.power.observedAt, INITIAL + 86400000);
+});
+
+test('an hour of idle circulation feedback stays compact while ON/OFF and outages remain exact', t => {
+  const f = fixture(t);
+  for (let n = 0; n <= 720; n++) {
+    f.at(INITIAL + n * 5000);
+    assert.equal(f.report('0'), true);
+  }
+  const history = () => f.store.observations({ signal: 'dhwr_active' });
+  assert.deepEqual(history().map(row => row.value), [0]);
+  const coverage = f.store.db.prepare("SELECT * FROM recorder_coverage WHERE signal='dhwr_active'").all();
+  assert.equal(coverage.length, 1);
+  assert.equal(coverage[0].samples, 721);
+  assert.equal(coverage[0].end_at, INITIAL + 3600000);
+  assert.equal(history()[0].raw.recorder.policy, 'change-only');
+  f.at(INITIAL + 3605000); f.report('1');
+  f.at(INITIAL + 3610000); f.report('25');
+  f.at(INITIAL + 3615000); f.report('0');
+  f.capture.setConnected(false);
+  f.capture.setConnected(true); f.capture.confirmSubscriptions([TOPIC]);
+  f.report('0', { retain: true });
+  const beforeRecovery = history().length;
+  f.report('0');
+  assert.equal(history().length, beforeRecovery + 1);
+  assert.deepEqual(history().filter(row => row.value !== null).map(row => row.value), [0, 1, 0, 0]);
+  assert(history().some(row => row.value === null));
+  assert.deepEqual(f.observations, [], 'Recording does not inject control feedback');
+});
+
+test('periodic circulation recording honors its actual deadline and retains unobserved gaps', t => {
+  const f = fixture(t, { max_age_seconds: 120 });
+  f.report('0');
+  f.at(INITIAL + 60000); f.report('0');
+  // The next receipt is still within the recorder default five-minute age,
+  // but beyond this equipment's two-minute reporting deadline.
+  f.at(INITIAL + 240000); f.report('0');
+  const spans = f.store.db.prepare("SELECT * FROM recorder_coverage WHERE signal='dhwr_active'").all();
+  assert.equal(spans.length, 2);
+  assert.equal(spans[0].source_time, INITIAL + 60000);
+  assert.equal(spans[1].start_at, INITIAL + 240000);
+  assert.equal(f.store.observations({ signal: 'dhwr_active' }).length, 1);
+  f.capture.setConnected(false);
+  f.capture.setConnected(true); f.capture.confirmSubscriptions([TOPIC]);
+  f.report('0');
+  assert.equal(f.store.observations({ signal: 'dhwr_active' }).at(-1).value, 0,
+    'A new host-timed receipt in the same millisecond can recover transport');
+});
+
+test('failed circulation history writes roll back the delivery and allow an exact retry', t => {
+  const f = fixture(t);
+  f.report('0'); f.at(INITIAL + 5000);
+  const before = f.store.db.prepare("SELECT * FROM recorder_coverage WHERE signal='dhwr_active'").all();
+  const observation = f.store.observation;
+  f.store.observation = () => { throw new Error('synthetic write failure'); };
+  assert.throws(() => f.report('25'), /synthetic write failure/);
+  assert.deepEqual(f.store.db.prepare("SELECT * FROM recorder_coverage WHERE signal='dhwr_active'").all(), before);
+  assert.equal(f.status().actualOn, false);
+  f.store.observation = observation;
+  assert.equal(f.report('25'), true);
+  assert.equal(f.status().actualOn, true);
+  assert.deepEqual(f.store.observations({ signal: 'dhwr_active' }).map(row => row.value), [0, 1]);
+});
+
+test('switching circulation to an event-only feed clears its earlier periodic deadline', t => {
+  const f = fixture(t, { max_age_seconds: 120 });
+  f.report('0'); f.capture.close();
+  let now = INITIAL + 60000;
+  const capture = createEquipmentCapture({ store: f.store, settings: equipmentConfiguration({ devices: [device] }),
+    engine: { clock: () => now, ingest() {} }, publish: async () => {} });
+  try {
+    capture.setConnected(true); capture.confirmSubscriptions([TOPIC]);
+    capture.receive(TOPIC, '0');
+    const state = () => JSON.parse(f.store.db.prepare("SELECT value FROM state WHERE key LIKE 'recorder:signal:%' AND json_extract(value,'$.signal')='dhwr_active'").get().value);
+    assert.equal(state().eventOnly, true);
+    assert.equal(state().reportPolicy, undefined);
+    assert.equal(state().reportUnavailableSince, undefined);
+    now += 86400000;
+    capture.tick();
+    assert.equal(f.store.observations({ signal: 'dhwr_active' }).at(-1).value, 0);
+  } finally { capture.close(); }
 });
 
 test('invalid, implausible, overflowing and future-dated DHWR readings invalidate power', t => {

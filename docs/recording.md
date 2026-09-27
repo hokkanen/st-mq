@@ -243,6 +243,24 @@ distinct from interval energy and finalized session checks. The integration has 
 remains the authoritative measured total, separate from the three estimated
 phase-energy series. The phase sum and total must never both be counted as demand.
 
+Charger standby remains measured even when automatic charging is disabled.
+Changes at or below the 10 W selection floor can share a durable open interval;
+the kWh include all accepted standby consumption. Routine fresh/held source-clock
+flags accumulate conservatively within the interval. Real gaps, source/transport
+changes and different measurement bases retain separate boundaries. Exact zero
+does not require phase weights, so its absence of weight metadata alone does not
+split an otherwise unchanged reported-power interval. Material starts/stops and
+phase-use changes still create boundaries. Closing a session or reporting an
+outage flushes its accepted tail; ordinary ticks do not append timed zero rows.
+
+Charts read both finalized intervals and eligible durable tails. Zero is known
+covered consumption, while missing telemetry remains a gap. Estimated auxiliary
+power and heat-pump operating rows also use compact scalar coverage, stopping at
+the last confirmed report's deadline. Extending a span refreshes chart caches
+without inserting duplicate observations. See the
+[27 September recorder audit](audit/RECORDER-IDLE-2026-09-27.md) for storage
+findings, the retained recording costs and synthetic validation.
+
 TeslaMate and BMW remain read-only vehicle evidence for either physical charger.
 Their feed health, timestamps, plug events and home scope control applicability
 of identity and planning fields. Disabling economic charging never enables a
@@ -354,8 +372,12 @@ in December. It never causes historical deletion or an end-of-year squeeze.
 The recorder learns each continuous signal's scale from its observed variation
 and uses a shared normalized change threshold. That tolerance changes gradually
 in response to measured SQLite growth, using smoothed daily and weekly estimates.
-Signals are compared with their last saved value. There are no hand-assigned
-accuracy targets or model-importance weights for those approximated signals.
+Signals are compared with their last saved value. Charger energy has a 10 W
+per-channel selection floor to avoid saving idle noise on every acquisition;
+this selects interval boundaries, never rounds or discards accepted energy.
+Other adaptive signals retain their learned thresholds without model-importance
+weights. Native charger counters use a separate instantaneous-power selection
+reference, because a counter can remain unchanged between quantized increments.
 All room/protection temperatures use exact change recording so learning endpoints
 remain actual reported values. A reporting deadline does not itself make other
 continuous measurements exact: Caravan air/humidity and native pump diagnostics
@@ -457,8 +479,11 @@ unobserved chart options or mix exact contacts into the adaptive table.
   without a numeric tolerance. This includes the four individual floor override
   outputs and actual tariff relay feedback. Contact readback proves an electrical
   output, not valve position, water flow or successful heat reduction.
-- Hot-water circulation feedback: every report, including repeated states and
-  unavailable reports. Raw watts remain live-only; requested pulses are separate.
+- Hot-water circulation feedback: initial state and exact state, quality or
+  availability changes. Unchanged ON/OFF reports extend compact coverage;
+  periodic feeds retain their configured deadline and event-only feeds retain
+  their last reported state until a new report or explicit outage. Raw watts
+  remain live-only; requested pulses are separate.
 - Garage compressor activity and reported defrost: exact state changes. Native
   interpreted temperature and compressor frequency belong in Adaptive measurements. Garage power
   remains live input only. Qualified dedicated garage energy intervals and saved

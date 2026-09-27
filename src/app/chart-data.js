@@ -154,7 +154,8 @@ class HistoryLine {
   }
   add(x, y, metadata) {
     const previous = this.previous;
-    const covered = metadata?.periodicCoverage && previous?.periodicCoverage
+    const covered = (metadata?.periodicCoverage || metadata?.sourceCoverage)
+      && (previous?.periodicCoverage || previous?.sourceCoverage)
       && metadata.coverageId === previous.coverageId;
     if (previous && !covered && x - previous.x > this.gap && x > this.envelope.from) {
       if (this.boundedHold) {
@@ -545,17 +546,17 @@ export function getChartData({ store, input = 'offline', contract = null, market
   const flushTelemetry = until => {
     if (previousTelemetryAt === null || until <= previousTelemetryAt) return;
     const compressor = telemetry.get('compressor_active'), route = telemetry.get('dhw_routing'), mode = telemetry.get('operating_mode');
-    const compressorEnd = Math.min(until, now, compressor?.at + H66_MAX_AGE_MS);
+    const compressorEnd = Math.min(until, now, compressor?.until ?? compressor?.at + H66_MAX_AGE_MS);
     if (compressor?.value === 0) compressorHomeEnvelopes[0].add(previousTelemetryAt, compressorEnd);
     else if (compressor?.value === 1) {
       // Routing has its own deadline. A fresh running compressor remains known
       // after routing expires, but cannot be assigned to either heating circuit.
       const routeEnd = [0, 1].includes(route?.value)
-        ? Math.min(compressorEnd, route.at + H66_MAX_AGE_MS) : previousTelemetryAt;
+        ? Math.min(compressorEnd, route.until ?? route.at + H66_MAX_AGE_MS) : previousTelemetryAt;
       if (routeEnd > previousTelemetryAt) compressorHomeEnvelopes[route.value === 1 ? 2 : 1].add(previousTelemetryAt, routeEnd);
       compressorHomeEnvelopes[3].add(Math.max(previousTelemetryAt, routeEnd), compressorEnd);
     }
-    if (modeEnvelopes[mode?.value]) modeEnvelopes[mode.value].add(previousTelemetryAt, Math.min(until, mode.at + H66_MAX_AGE_MS));
+    if (modeEnvelopes[mode?.value]) modeEnvelopes[mode.value].add(previousTelemetryAt, Math.min(until, mode.until ?? mode.at + H66_MAX_AGE_MS));
     const phase = telemetry.get('controller_phase');
     if (phase?.value === 2) shading.heatOff.add(previousTelemetryAt, Math.min(until, phase.until));
   };
@@ -589,6 +590,9 @@ export function getChartData({ store, input = 'offline', contract = null, market
     flushTelemetry(time);
     for (const { row, value } of atRows.values()) {
       const signal = row.signal;
+      const coverageMetadata = row.periodicCoverage || row.sourceCoverage ? { source: row.source,
+        ...(row.periodicCoverage ? {periodicCoverage:true} : {sourceCoverage:true}),displayBoundary:true,
+        observedAt:row.observedAt,reportExpiresAt:row.reportExpiresAt,coverageId:row.coverageId } : undefined;
       if (evidenceLines[signal]) { evidenceLines[signal].add(row, value); continue; }
       if (signal === 'garage_compressor_active' && value === 1 && row.periodicCoverage && Number.isFinite(row.reportExpiresAt))
         shading.compressorGarage.add(time, Math.min(row.reportExpiresAt, now));
@@ -617,16 +621,17 @@ export function getChartData({ store, input = 'offline', contract = null, market
         telemetry.set(signal, { at: time, value: current, until });
       }
       else if (['compressor_active', 'dhw_routing', 'operating_mode'].includes(signal)) {
-        lines[signal]?.add(time, value);
-        telemetry.set(signal, { at: time, value: verifiedState(row) ? value : null });
+        lines[signal]?.add(time, value, coverageMetadata);
+        telemetry.set(signal, { at: time, value: verifiedState(row) ? value : null,
+          ...(row.sourceCoverage ? {until:row.reportExpiresAt} : {}) });
       } else if (signal === 'auxiliary_output') {
-        lines[signal]?.add(time, value);
+        lines[signal]?.add(time, value, coverageMetadata);
         if (!atRows.has('auxiliary_power') && lines.auxiliary_power) {
           let kw = null;
           try { const raw = JSON.parse(row.raw), capacity = raw?.ratedPowerKw;
             if (verified(row) && Number.isFinite(capacity) && capacity > 0) kw = auxiliaryPowerFromOutput(value, capacity)?.kw ?? null;
           } catch { /* Never assume installed heater capacity. */ }
-          lines.auxiliary_power.add(time, kw);
+          lines.auxiliary_power.add(time, kw, coverageMetadata);
         }
       } else {
         let metadata;
@@ -642,8 +647,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
           try { raw = JSON.parse(row.raw); } catch { /* Missing current provenance remains unavailable. */ }
           metadata = weatherPointMetadata({ source: row.source, solar: raw && typeof raw === 'object' ? raw : {} }, true);
         }
-        if (row.periodicCoverage) metadata = { ...metadata, source: row.source, periodicCoverage:true,displayBoundary:true,
-          observedAt:row.observedAt,reportExpiresAt:row.reportExpiresAt,coverageId:row.coverageId };
+        if (coverageMetadata) metadata = { ...metadata, ...coverageMetadata };
         if (signal !== 'charger_power') lines[signal]?.add(time, value, metadata);
         if (LEARNING.includes(signal)) {
           try { const raw = JSON.parse(row.raw); learningMetadata[signal] = { at: time, count: raw?.count ?? null, basis: raw?.basis ?? null, modelVersion: raw?.modelVersion ?? null }; } catch { /* Optional metadata. */ }
