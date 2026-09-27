@@ -1184,31 +1184,43 @@ try {
       const geometry = id => evaluate(`(() => {
         const summary = document.querySelector('#${id} > summary'), text = summary.querySelector('span');
         const outer = summary.getBoundingClientRect(), inner = text.getBoundingClientRect();
-        const before = getComputedStyle(summary, '::before'), after = getComputedStyle(summary, '::after');
+        const style = getComputedStyle(summary), marker = getComputedStyle(summary, '::marker');
         return { height: outer.height, textInset: inner.left - outer.left,
           textCenter: inner.top + inner.height / 2 - outer.top, textHeight: inner.height,
-          arrow: { content: before.content, width: before.width, height: before.height,
-            marginLeft: before.marginLeft, marginRight: before.marginRight, order: before.order },
-          trailingArrow: after.content, fits: outer.left >= 0 && outer.right <= innerWidth };
+          arrow: { display: style.display, type: style.listStyleType, fontSize: marker.fontSize },
+          leadingDecoration: getComputedStyle(summary, '::before').content,
+          trailingDecoration: getComputedStyle(summary, '::after').content,
+          fits: outer.left >= 0 && outer.right <= innerWidth };
       })()`);
       const comparison = await geometry('timing-details'), recording = await geometry('recording-details');
       for (const key of ['height', 'textInset', 'textCenter', 'textHeight'])
         assert(Math.abs(comparison[key] - recording[key]) < 1, `${width}px ${theme}: footer ${key} aligns across the two closed folds`);
-      assert.deepEqual(comparison.arrow, recording.arrow, `${width}px ${theme}: both folds use the same leading arrow`);
-      assert(comparison.arrow.content !== 'none' && parseFloat(comparison.arrow.width) > 0
-        && parseFloat(comparison.arrow.width) < comparison.textInset,
-      `${width}px ${theme}: an arrow precedes each footer title`);
-      assert([comparison, recording].every(row => row.trailingArrow === 'none' && row.fits),
-        `${width}px ${theme}: footer titles fit without a trailing marker`);
+      assert.deepEqual(comparison.arrow, recording.arrow, `${width}px ${theme}: both folds use the same native triangle`);
+      assert([comparison, recording].every(row => row.arrow.display === 'list-item'
+        && row.arrow.type === 'disclosure-closed' && row.textInset > 0),
+      `${width}px ${theme}: a native closed triangle precedes each footer title`);
+      assert([comparison, recording].every(row => row.leadingDecoration === 'none'
+        && row.trailingDecoration === 'none' && row.fits),
+        `${width}px ${theme}: footer titles fit with only their native marker`);
       await capture(`footer-folds-${width}-${theme}`);
       for (const [id, closed] of [['timing-details', comparison], ['recording-details', recording]]) {
         await evaluate(`document.querySelector('#${id} > summary').click(); true`); await settle();
         const open = await geometry(id);
         for (const key of ['height', 'textInset', 'textCenter', 'textHeight'])
           assert(Math.abs(open[key] - closed[key]) < 1, `${width}px ${theme}: opening ${id} preserves its header geometry`);
+        assert.deepEqual(open.arrow, { ...closed.arrow, type: 'disclosure-open' },
+          `${width}px ${theme}: opening ${id} changes only the native triangle direction`);
         assert.equal(await evaluate(`document.getElementById('${id}').open`), true);
-        if (id === 'recording-details') assert.equal(await evaluate("Boolean(document.querySelector('#recording-details > #recording-adaptive-details > summary'))"), true,
-          'The recording fold retains its independently expandable Adaptive measurements section');
+        if (id === 'recording-details') {
+          const nestedArrow = await evaluate(`(() => {
+            const summary = document.querySelector('#recording-details > #recording-adaptive-details > summary');
+            const style = getComputedStyle(summary);
+            return { display: style.display, type: style.listStyleType,
+              fontSize: getComputedStyle(summary, '::marker').fontSize };
+          })()`);
+          assert.deepEqual(nestedArrow, closed.arrow,
+            'The recording fold uses the same native triangle size as its independently expandable Adaptive measurements section');
+        }
         await capture(`footer-${id}-open-${width}-${theme}`);
         await evaluate(`document.querySelector('#${id} > summary').click(); true`); await settle();
       }

@@ -348,8 +348,8 @@ export function createTimingBenefit(root) {
     const displays = [heatingScopeDisplay(payload, heatingScope, heatingMode), chargingTimingDisplay(payload, chargingScope),
       firewoodDisplay(payload?.firewoodBenefit, payload)];
     const visibleAssumedRates = displays.some(display => display.assumedRates);
-    const chartAssumedRates = Boolean(payload?.meta?.priceAssumptions?.used);
-    const fingerprint = JSON.stringify({ displays, chartAssumedRates, heatingMode, heatingScope, chargingScope });
+    const periodAssumedRates = Boolean(payload?.meta?.priceAssumptions?.used);
+    const fingerprint = JSON.stringify({ displays, periodAssumedRates, heatingMode, heatingScope, chargingScope });
     if (fingerprint === lastFingerprint) return;
     lastFingerprint = fingerprint;
     if (!notes) initialize(displays);
@@ -374,12 +374,12 @@ export function createTimingBenefit(root) {
     explanation(notesContent, 'Timing coverage and energy sources', [...timingExplanations.coverage, ...timingExplanations.evidence]);
     explanation(notesContent, 'Heating model estimate', heatingExplanations);
     explanation(notesContent, 'Fireplace model estimate', firewoodExplanations);
-    if (chartAssumedRates || visibleAssumedRates) {
+    if (periodAssumedRates || visibleAssumedRates) {
       const rates = explanation(notesContent, 'When contract rates are assumed', timingExplanations.rates, 'timing-rate-explanation');
-      if (chartAssumedRates) {
-        const context = element('div', 'timing-chart-rates');
-        paragraph(context, 'Chart uses assumed rates', 'timing-assumed');
-        paragraph(context, 'Some periods in the price chart use assumed contract rates. Affected comparisons are marked “Assumed rates” in their results.');
+      if (periodAssumedRates) {
+        const context = element('div', 'timing-period-rates');
+        paragraph(context, 'Selected period uses assumed rates', 'timing-assumed');
+        paragraph(context, 'Some dates in this comparison period use assumed contract rates. Affected comparisons are marked “Assumed rates” in their results.');
         rates.append(context);
       }
     }

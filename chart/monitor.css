@@ -342,17 +342,16 @@ input[data-date-picker] { padding-right: 32px; background-image: url("data:image
 .chart-crosshair-extension { position: absolute; inset: 0; pointer-events: none; z-index: 2; }
 .chart-crosshair-segment { position: absolute; width: 0; border-left: 1px solid var(--muted); opacity: .75; }
 .chart-crosshair-readout { position: absolute; z-index: 3; pointer-events: none; max-width: min(420px, calc(100% - 24px)); padding: 7px 9px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 11px; white-space: pre-line; }
-.chart-legend-panel { margin: 8px 0 0; min-width: 0; border-top: 1px solid var(--border); }
-.chart-legend-panel > summary { display: flex; align-items: center; gap: 9px; padding: 8px 0; font-size: 11px; line-height: 18px; color: var(--muted); list-style: none; }
-.chart-legend-panel > summary::-webkit-details-marker { display: none; }
-.chart-legend-panel > summary::before { content: ''; flex: 0 0 5px; width: 5px; height: 5px; margin: 0 2px; border-right: 1px solid currentColor; border-bottom: 1px solid currentColor; transform: rotate(-45deg); }
-.chart-legend-panel[open] > summary::before { transform: rotate(45deg); }
-.chart-legend-panel > summary:hover, .chart-legend-panel > summary:focus-visible { color: var(--text); }
+.chart-legend-panel { margin: 8px 0 0 16px; min-width: 0; border-top: 1px solid var(--border); }
+:is(.chart-legend-panel, .chart-notes-disclosure) > summary { display: flex; align-items: center; gap: 9px; padding: 8px 0; font-size: 11px; line-height: 18px; color: var(--muted); list-style: none; }
+:is(.chart-legend-panel, .chart-notes-disclosure) > summary::-webkit-details-marker { display: none; }
+:is(.chart-legend-panel, .chart-notes-disclosure) > summary::before { content: ''; flex: 0 0 5px; width: 5px; height: 5px; margin: 0 2px; border-right: 1px solid currentColor; border-bottom: 1px solid currentColor; transform: rotate(-45deg); }
+:is(.chart-legend-panel, .chart-notes-disclosure)[open] > summary::before { transform: rotate(45deg); }
+:is(.chart-legend-panel, .chart-notes-disclosure) > summary:hover, :is(.chart-legend-panel, .chart-notes-disclosure) > summary:focus-visible { color: var(--text); }
 .chart-legend-content { display: flex; flex-direction: column; min-height: 0; max-height: min(42dvh, 420px); }
 .chart-legend-actions { flex: none; display: flex; justify-content: flex-end; gap: 8px; padding: 6px 0; border-top: 1px solid var(--border); }
 .chart-legend-reset, .chart-legend-save { margin: 0; padding: 5px 8px; min-height: 32px; background: transparent; color: var(--muted); border: 1px solid var(--border); font-size: 10px; }
-.chart-notes-disclosure { margin-top: 10px; }
-.chart-notes-disclosure > summary { padding: 8px 0; font-size: 11px; color: var(--muted); }
+.chart-notes-disclosure { margin: 10px 0 0 16px; }
 .chart-notes { font-size: 11px; line-height: 1.7; }
 .history-panel[data-fullscreen="true"] .chart-view-description { display: none; }
 .history-panel[data-fullscreen="true"] .chart-series-toggle { min-width: 0; width: 280px; max-width: 360px; min-height: 36px; padding: 5px 9px; }
@@ -467,12 +466,9 @@ input[data-date-picker] { padding-right: 32px; background-image: url("data:image
 .mode-track { height: 22px; position: relative; background: var(--surface-soft); border: 1px solid var(--border); overflow: hidden; touch-action: none; cursor: crosshair; user-select: none; }
 .mode-segment { position: absolute; height: 100%; background: var(--chart-outdoor); border-right: 1px solid var(--surface); }
 .chart-legend-swatch[data-kind="strip"], .mode-segment { background-image: repeating-linear-gradient(0deg, transparent 0 3px, var(--surface) 3px 4px); }
-/* Chart footer folds share one stable header and the legend's leading chevron. */
+/* Main history sections use the same native triangles as their nested folds. */
 :is(#timing-details, #recording-details) { margin-top: 18px; border-top: 1px solid var(--border); padding: 0; }
-:is(#timing-details, #recording-details) > summary { min-height: 48px; gap: 9px; padding: 14px 0; }
-:is(#timing-details, #recording-details) > summary::before { content: ''; flex: 0 0 5px; width: 5px; height: 5px; margin: 0 2px; border-right: 1px solid currentColor; border-bottom: 1px solid currentColor; color: var(--muted); transform: rotate(-45deg); }
-:is(#timing-details, #recording-details)[open] > summary::before { color: var(--accent); transform: rotate(45deg); }
-:is(#timing-details, #recording-details) > summary::after { content: none; }
+:is(#timing-details, #recording-details) > summary { min-height: 48px; padding: 14px 0; font-size: 14px; font-weight: 550; line-height: 1.5; }
 :is(#timing-details, #recording-details) > summary + * { margin-top: 0; }
 .timing-benefit { padding: 4px 0 8px; }
 .timing-intro { margin: 0 auto 24px; text-align: center; }
@@ -530,11 +526,11 @@ input[data-date-picker] { padding-right: 32px; background-image: url("data:image
 .timing-source-heading { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 4px 12px; font-size: 14px; }
 .timing-source-heading strong { font-weight: 550; }
 .timing-source-share { color: var(--muted); font-size: 12px; }
-.timing-explanations { max-width: 860px; margin: 32px auto 0; border-top: 1px solid var(--border); padding-top: 28px; }
+.timing-explanations { max-width: 860px; margin: 32px 0 0 16px; border-top: 1px solid var(--border); padding-top: 28px; }
 .timing-explanation + .timing-explanation { margin-top: 26px; }
 .timing-explanation h3 { margin: 0 0 10px; font-size: 16px; font-weight: 550; }
 .timing-explanation p { margin: 8px 0 0; color: var(--muted); font-size: 14px; }
-.timing-chart-rates { margin-top: 16px; border-left: 3px solid var(--stale); padding-left: 16px; }
+.timing-period-rates { margin-top: 16px; border-left: 3px solid var(--stale); padding-left: 16px; }
 @media (min-width: 801px) and (max-width: 999px) {
   .timing-devices { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .timing-devices .firewood-card { grid-column: 1 / -1; }

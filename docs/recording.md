@@ -1056,7 +1056,18 @@ download. Short views react to new committed data, including the durable open
 energy interval. The chart query runs in a separate worker with bounded memory
 and a cancellable queue, so a large query does not block the control event loop.
 The **Energy cost comparisons** fold starts closed beneath the chart, alongside
-**Recording details**. **Heating**, **Charging** and **Fireplace** summary boxes
+**Recording details**. Its **Comparison period** has independent start/end
+calendars with the same single-day and explicit end-selection behavior as the
+chart. The initial period is today. **Last 7 days** includes today; **Last month**
+and **Last year** select complete calendar periods; **This year** runs from
+January 1 through today. All dates use Finnish time and stay fixed across
+midnight until the reader chooses again. A comparison-date change does not move
+the chart, and chart navigation does not change comparisons. While loading or
+after a failed request, the status identifies the dates of any retained results;
+failed requests offer Retry. The section uses its own cancellable request cache
+and the current chart API's unreduced comparison calculations, with ordinary
+short/live and long/historical refresh intervals.
+**Heating**, **Charging** and **Fireplace** summary boxes
 align in three columns when space allows and stack on narrow screens.
 Heating starts on **Home** and **Model estimate**, restoring a saved **Timing cost**
 choice. It offers Home / Garage / Total; Charging offers Charger 1 / Charger 2 /

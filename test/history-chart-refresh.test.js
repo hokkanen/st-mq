@@ -2,14 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHistoryChart, historyRenderFingerprint } from '../chart/history-chart.js';
 
-test('a Garage-only assessment change redraws historical comparisons with unchanged chart metadata', () => {
+test('comparison-only changes do not redraw the independently selected chart', () => {
   const selection = { startDate: '2026-09-01', endDate: '2026-09-01', view: 'power' };
   const before = { range: { from: 0, to: 1000 }, now: 2000, series: {}, meta: { revision: 1 },
     heatingSavings: { garage: { model: { valueEuro: 2 } }, total: { model: { valueEuro: 3 } } } };
   const after = { ...before, heatingSavings: {
     garage: { model: { valueEuro: 5 } }, total: { model: { valueEuro: 6 } },
   } };
-  assert.notEqual(historyRenderFingerprint(before, selection), historyRenderFingerprint(after, selection));
+  assert.equal(historyRenderFingerprint(before, selection), historyRenderFingerprint(after, selection));
   assert.equal(historyRenderFingerprint(after, selection), historyRenderFingerprint({ ...after, now: 3000 }, selection),
     'An out-of-range clock change alone does not redraw historical results');
 });

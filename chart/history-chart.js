@@ -5,7 +5,7 @@ import { calendarTicks, chartQuery, createChartLoader, defaultPalette, finnishDa
 import { createDatePicker } from './date-picker.js';
 import { historyTooltipCallbacks, historyTooltipsEnabled, historyTooltipInteraction } from './history-tooltips.js';
 export { historyTooltipLabel, historyTooltipTitle } from './history-tooltips.js';
-import { createTimingBenefit } from './timing-benefit.js';
+import { createComparisonRange } from './comparison-range.js';
 import { selectedChartView, chartSelectionKey, readChartPreferences, chartViewPreferences, setChartVisibility, chartSubjectAvailability, CHART_PREFERENCES_KEY } from './chart-views.js';
 import { EXPLORER_SERIES_BY_KEY, explorerActivityTrack } from './series-explorer.js';
 import { createSeriesPicker } from './series-picker.js';
@@ -31,9 +31,7 @@ const paletteVariables = {
 };
 export function historyRenderFingerprint(overview, selection) {
   return JSON.stringify({ range: overview.range, input: overview.input, series: overview.series,
-    shading: overview.shading, meta: overview.meta, timingBenefit: overview.timingBenefit,
-    heatingBenefit: overview.heatingBenefit, heatingSavings: overview.heatingSavings,
-    firewoodBenefit: overview.firewoodBenefit, selection: chartSelectionKey(selection),
+    shading: overview.shading, meta: overview.meta, selection: chartSelectionKey(selection),
     now: overview.now >= overview.range.from && overview.now < overview.range.to ? overview.now : null });
 }
 export function historyLegendLabel(axis, view, datasets) {
@@ -77,7 +75,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
   const canvas = $('history');
   const mobilePointer = window.matchMedia('(pointer: coarse)');
   const loader = createChartLoader({ api });
-  const timing = createTimingBenefit($('timing-benefit'));
+  const comparisons = createComparisonRange({ api });
   let storage; try { storage = localStorage; } catch { /* Optional browser persistence. */ }
   const preferences = readChartPreferences(storage);
   const listeners = [];
@@ -221,9 +219,6 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     legend.dataset.viewKey = view.key;
     legend.scrollTop = scrollTop;
   }
-  function renderTiming() {
-    timing.render(overview);
-  }
   function renderStatus(datasets) {
     const plot = plottedSelection;
     const loading = !sameSelection(selection, plot);
@@ -303,7 +298,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     canvas.dataset.dataFrom = String(payload.range.from); canvas.dataset.dataTo = String(payload.range.to);
     overlays.render(); renderDetailStatus();
     if (viewOnly) return;
-    renderLegend(datasets, chartView, visibility); renderTiming();
+    renderLegend(datasets, chartView, visibility);
     $('chart-view-description').textContent = chartView.description;
     canvas.setAttribute('aria-label', `${chartView.label} for ${plot.startDate} to ${plot.endDate}. ${chartView.description}`);
     const loading = !sameSelection(selection, plot);
@@ -441,5 +436,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
   listen(mobilePointer, 'change', () => renderChart());
   function updateTheme() { readPalette(); renderChart(); }
   readPalette(); updateControls();
-  return { refresh, updateTheme, close() { closed = true; startDatePicker.close(); endDatePicker.close(); seriesPicker.close(); overlays.close(); navigation.close(); detailLoader.close(); loader.close(); timing.close(); listeners.forEach(remove => remove()); graph?.destroy(); } };
+  return { refresh(nextStatus, options) {
+    return Promise.all([refresh(nextStatus, options), comparisons.refresh(nextStatus, options)]);
+  }, updateTheme, close() { closed = true; startDatePicker.close(); endDatePicker.close(); seriesPicker.close(); overlays.close(); navigation.close(); detailLoader.close(); loader.close(); comparisons.close(); listeners.forEach(remove => remove()); graph?.destroy(); } };
 }

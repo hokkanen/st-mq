@@ -92,10 +92,26 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
   const text = css => evaluate(`document.querySelector(${JSON.stringify(css)})?.textContent ?? ''`);
   const expanded = "document.getElementById('timing-details').open";
   const summary = '#timing-details > summary';
+  const waitComparison = (start, end = start) => until(`(() => {
+    const range = document.getElementById('comparison-range-form').dataset;
+    return range.state === 'ready' && range.startDate === ${JSON.stringify(start)} && range.endDate === ${JSON.stringify(end)};
+  })()`, 650);
+  const chartRange = () => evaluate(`JSON.stringify({
+    start: document.getElementById('date-start').value, end: document.getElementById('date-end').value,
+    from: document.getElementById('history').dataset.rangeStart, to: document.getElementById('history').dataset.rangeEnd,
+  })`);
+  const comparisonRange = () => evaluate(`JSON.stringify({
+    start: document.getElementById('comparison-date-start').value, end: document.getElementById('comparison-date-end').value,
+    from: document.getElementById('comparison-range-form').dataset.startDate,
+    to: document.getElementById('comparison-range-form').dataset.endDate,
+    results: document.getElementById('timing-benefit').textContent,
+  })`);
   const chooseDate = async date => {
-    await evaluate(`document.getElementById('date-start').value=${JSON.stringify(date)}; document.getElementById('date-start').dispatchEvent(new Event('change')); true`);
-    await evaluate(`document.getElementById('date-end').value=${JSON.stringify(date)}; document.getElementById('date-end').dispatchEvent(new Event('change')); true`);
-    await until(`document.getElementById('history').dataset.ready === 'true' && document.getElementById('history').dataset.rangeStart === ${JSON.stringify(date)} && document.getElementById('history').dataset.rangeEnd === ${JSON.stringify(date)}`);
+    const before = await chartRange();
+    await evaluate(`document.getElementById('comparison-date-start').value=${JSON.stringify(date)}; document.getElementById('comparison-date-start').dispatchEvent(new Event('change')); true`);
+    await evaluate(`document.getElementById('comparison-date-end').value=${JSON.stringify(date)}; document.getElementById('comparison-date-end').dispatchEvent(new Event('change')); true`);
+    await waitComparison(date);
+    assert.equal(await chartRange(), before, 'Comparison dates leave the chart selection and displayed range unchanged');
   };
   const key = value => command('input.performActions', { context, actions: [{ type: 'key', id: 'timing-keyboard',
     actions: [{ type: 'keyDown', value }, { type: 'keyUp', value }] }] });
@@ -113,7 +129,7 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
   const checkFits = async () => {
     assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true,
       'Timing layout does not cause horizontal scrolling');
-    assert.deepEqual(await evaluate(`Array.from(document.querySelectorAll('#timing-details .timing-device, #timing-details .timing-device-detail, #timing-details .timing-explanations, #timing-details .timing-source')).flatMap(element => {
+    assert.deepEqual(await evaluate(`Array.from(document.querySelectorAll('#comparison-range-form, #comparison-range-status, #timing-details input, #timing-details button[id^="comparison-period-"], #timing-details .timing-device, #timing-details .timing-device-detail, #timing-details .timing-explanations, #timing-details .timing-source')).flatMap(element => {
       if (!element.checkVisibility()) return [];
       const r = element.getBoundingClientRect();
       return r.left >= 0 && r.right <= innerWidth && element.scrollWidth <= element.clientWidth + 1 ? []
@@ -124,6 +140,29 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
       const r = button.getBoundingClientRect();
       return r.height >= 40 && button.scrollWidth <= button.clientWidth + 1;
     })`), true, 'Both heating selectors keep readable labels and full touch targets');
+    assert.equal(await evaluate(`Array.from(document.querySelectorAll('#timing-details button[id^="comparison-period-"]')).every(button => {
+      const r = button.getBoundingClientRect();
+      return r.height >= 40 && button.scrollWidth <= button.clientWidth + 1;
+    })`), true, 'Comparison shortcuts retain readable labels and full touch targets');
+    assert.equal(await evaluate(`(() => {
+      const inputs = ['comparison-date-start', 'comparison-date-end'].map(id => document.getElementById(id));
+      const [a, b] = inputs.map(node => node.getBoundingClientRect());
+      return ['top', 'width', 'height'].every(key => Math.abs(a[key] - b[key]) < 1)
+        && inputs.every(node => node.getBoundingClientRect().height >= 40);
+    })()`), true, 'Comparison date fields stay aligned and usable across display sizes');
+    assert.equal(await evaluate(`(() => {
+      const notes = document.querySelector('.timing-explanations > summary').getBoundingClientRect();
+      const recording = document.querySelector('#recording-details > summary').getBoundingClientRect();
+      return notes.left >= recording.left + 8;
+    })()`), true, 'Comparison methodology remains visibly nested below the top-level sections');
+    assert.equal(await evaluate(`(() => {
+      const sections = ['#timing-details > summary', '#recording-details > summary'].map(css => document.querySelector(css));
+      const chartNotes = ['#chart-legend-panel > summary', '.chart-notes-disclosure > summary'].map(css => document.querySelector(css));
+      const markers = chartNotes.map(node => getComputedStyle(node, '::before'));
+      return sections.every(node => getComputedStyle(node).display === 'list-item')
+        && chartNotes.every(node => node.getBoundingClientRect().left >= sections[0].getBoundingClientRect().left + 8)
+        && ['content', 'width', 'height', 'borderRightWidth', 'borderBottomWidth'].every(property => markers[0][property] === markers[1][property]);
+    })()`), true, 'Main sections retain native triangles while both indented chart notes share one arrow style');
   };
   const scrollTo = css => evaluate(`document.querySelector(${JSON.stringify(css)}).scrollIntoView({ block: 'start' }); true`);
   const checkOpen = expected => evaluate(expanded).then(actual => assert.equal(actual, expected,
@@ -203,6 +242,69 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
         }) && document.querySelector('.timing-evidence-devices') === null;
     })()`), true, 'Each card contains its own native details fold and shared explanations come last');
   };
+  const checkDates = async () => {
+    const chartBefore = await chartRange();
+    for (const [preset, start, end] of [
+      ['week', '2026-09-01', '2026-09-07'],
+      ['month', '2026-08-01', '2026-08-31'],
+      ['year', '2026-01-01', '2026-09-07'],
+      ['previous-year', '2025-01-01', '2025-12-31'],
+    ]) {
+      await tap(`#comparison-period-${preset}`);
+      await waitComparison(start, end);
+      assert.equal(await evaluate("document.getElementById('comparison-date-start').value"), start);
+      assert.equal(await evaluate("document.getElementById('comparison-date-end').value"), end);
+      assert.deepEqual(await evaluate("[...document.querySelectorAll('#timing-details button[id^=comparison-period-][aria-pressed=true]')].map(button => button.id)"),
+        [`comparison-period-${preset}`], 'The chosen comparison period announces its selected state');
+      assert.equal(await chartRange(), chartBefore, 'Comparison shortcuts do not change chart dates');
+    }
+    await chooseDate('2026-09-06');
+    assert.equal(await evaluate("document.querySelectorAll('#timing-details button[id^=comparison-period-][aria-pressed=true]').length"), 0,
+      'Custom dates clear the selected comparison shortcut');
+    const beforeChartChange = await comparisonRange();
+    await evaluate("document.getElementById('range-yesterday').click(); true");
+    await until("document.getElementById('history').dataset.ready === 'true' && document.getElementById('history').dataset.rangeStart === '2026-09-06' && document.getElementById('history').dataset.rangeEnd === '2026-09-07'");
+    assert.equal(await comparisonRange(), beforeChartChange, 'Changing chart dates preserves comparison dates and results');
+    await evaluate("document.getElementById('range-today').click(); true");
+    await until("document.getElementById('history').dataset.ready === 'true' && document.getElementById('history').dataset.rangeStart === '2026-09-07' && document.getElementById('history').dataset.rangeEnd === '2026-09-07'");
+
+    for (const field of ['start', 'end']) {
+      assert.equal(await evaluate(`(() => {
+        const comparison = document.getElementById('comparison-date-${field}');
+        const chart = document.getElementById('date-${field}');
+        return ['type', 'data-date-picker', 'pattern', 'aria-haspopup'].every(name => comparison.getAttribute(name) === chart.getAttribute(name))
+          && comparison.required && comparison.getAttribute('aria-controls') !== chart.getAttribute('aria-controls');
+      })()`), true, 'Comparison dates use the same accessible calendar and validation as chart dates');
+    }
+    await tap('#comparison-date-start');
+    await until("document.getElementById('comparison-date-start').getAttribute('aria-expanded') === 'true'");
+    await key('\uE012');
+    await key('\uE007');
+    await waitComparison('2026-09-05');
+    assert.equal(await evaluate("document.getElementById('comparison-date-end').value"), '2026-09-06',
+      'A new comparison start shows one day while keeping the existing end-date suggestion');
+    assert.equal(await evaluate("document.getElementById('comparison-date-end').dataset.singleDay"), 'true');
+    assert.equal(await evaluate("document.activeElement.id"), 'comparison-date-start', 'Selecting a calendar day restores date-field focus');
+    await tap('#comparison-date-end');
+    await until("document.getElementById('comparison-date-end').getAttribute('aria-expanded') === 'true'");
+    assert.equal(await evaluate(`(() => {
+      const input = document.getElementById('comparison-date-end');
+      const popup = document.getElementById(input.getAttribute('aria-controls'));
+      return popup.getAttribute('role') === 'dialog' && popup.querySelector('[data-date="2026-09-04"]').disabled
+        && popup.querySelectorAll('.date-picker-weekdays > span').length === 7;
+    })()`), true, 'The end calendar disables dates before the selected start');
+    await key('\uE007');
+    await waitComparison('2026-09-05', '2026-09-06');
+    assert.equal(await evaluate("document.getElementById('comparison-date-end').dataset.singleDay"), 'false',
+      'Confirming an unchanged end-date suggestion activates the range immediately');
+    const validResults = await text('#timing-benefit');
+    await evaluate("document.getElementById('comparison-date-end').value = '2026-09-04'; document.getElementById('comparison-date-end').dispatchEvent(new Event('change')); true");
+    assert.equal(await evaluate("document.getElementById('comparison-date-end').checkValidity()"), false,
+      'A typed end before the start is rejected');
+    await waitComparison('2026-09-05', '2026-09-06');
+    assert.equal(await text('#timing-benefit'), validResults, 'Invalid dates retain the valid comparison results');
+    await chooseDate('2026-09-06');
+  };
 
   assert.equal(await evaluate("document.getElementById('timing-details').tagName"), 'DETAILS');
   assert.equal((await text(summary)).trim(), 'Energy cost comparisons');
@@ -223,6 +325,7 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
   await until(expanded);
   assert.equal(await evaluate('document.activeElement === window.timingFoldFixture.summary'), true,
     'Native summary keeps keyboard focus while toggling');
+  await checkDates();
   assert.equal(await evaluate("document.querySelectorAll('.timing-popover, #timing-benefit .timing-help, #timing-benefit button:not(.timing-comparison-option), #timing-benefit [role=dialog]').length"), 0,
     'Results use only the inline comparison selector and native details controls');
   assert.equal(await evaluate("document.querySelectorAll('#timing-benefit .timing-comparison-option[data-mode]').length"), 2,
@@ -465,21 +568,20 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
   assert.match(await text(card('charger')), /unavailable/i);
   assert.match(await text(card('charger')), /price/i);
   assert.equal(await evaluate("document.querySelectorAll('#timing-benefit .timing-assumed').length"), 1,
-    'The chart-level assumed-rate indication appears once when both comparisons are unavailable');
+    'The selected-period assumed-rate indication appears once when both comparisons are unavailable');
   assert.match(await text('.timing-rate-explanation'), /nearest known contract rates/i);
-  assert.match(await text('.timing-chart-rates'), /Affected comparisons are marked.*Assumed rates/i);
-  assert.doesNotMatch(await text('.timing-chart-rates'), /0% of included time/,
-    'Chart-only assumptions do not present an irrelevant zero share of included device time');
+  assert.match(await text('.timing-period-rates'), /Affected comparisons are marked.*Assumed rates/i);
+  assert.doesNotMatch(await text('.timing-period-rates'), /0% of included time/,
+    'Period-wide assumptions do not present an irrelevant zero share of included device time');
   await command('browsingContext.setViewport', { context, viewport: { width: 390, height: 844 }, devicePixelRatio: 1 });
   await checkFits();
-  await scrollTo('.timing-chart-rates');
-  await capture('home-energy-timing-chart-rates-mobile');
+  await scrollTo('.timing-period-rates');
+  await capture('home-energy-timing-period-rates-mobile');
   await tap(summary);
   await until(`!${expanded}`);
-  await evaluate("document.getElementById('range-today').click(); true");
-  await until("document.getElementById('history').dataset.ready === 'true' && document.getElementById('history').dataset.rangeStart === '2026-09-07'");
+  await chooseDate('2026-09-07');
   await checkOpen(false);
-  assert.equal(await evaluate("document.querySelector('.timing-chart-rates') === null && document.querySelector('.timing-rate-explanation') === null"), true,
+  assert.equal(await evaluate("document.querySelector('.timing-period-rates') === null && document.querySelector('.timing-rate-explanation') === null"), true,
     'Known-rate dates remove obsolete explanations about assumed contract rates');
   await tap(summary);
   await until(expanded);
@@ -512,6 +614,7 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
   await switchComparison('model');
   await command('browsingContext.reload', { context, wait: 'complete' });
   await until("document.getElementById('history')?.dataset.ready === 'true'");
+  await waitComparison('2026-09-07');
   await checkComparison('model');
   await checkOpen(false);
   await tap(summary);
@@ -571,5 +674,6 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
   await command('browsingContext.setViewport', { context, viewport: { width: 1440, height: 1100 }, devicePixelRatio: 1 });
   await evaluate("document.getElementById('range-today').click(); true");
   await until("document.getElementById('history').dataset.ready === 'true' && document.getElementById('history').dataset.rangeStart === '2026-09-07'");
+  await chooseDate('2026-09-07');
   await switchComparison('timing');
 }

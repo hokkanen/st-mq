@@ -1,6 +1,30 @@
 -Make README.md better and more descriptive of the app, especially the beginning of it
 -Implement support for local mqtt-based temperature receives (eg, from shelly or HASS through Meteorologisk Institute); just store last received temp values and time stamps (maybe in storage class, see below) when received (and accept if received within 1h)
 
+Completed 2026-09-27 — Independent comparison periods and chart fold hierarchy
+- Give Energy cost comparisons its own start/end calendars using the chart's
+  current picker and single-day/explicit-end behavior. Default to today; add
+  Last 7 days, Last month, This year and Last year shortcuts with Finnish
+  calendar boundaries. Keep the whole section's period above its three cards,
+  with a two-column shortcut grid on small screens and matching theme surfaces.
+- Keep comparison requests and selected dates independent of plot navigation.
+  Preserve fixed dates, folds, selected scopes and keyboard focus; cancel stale
+  requests, coalesce recorder polls, renew source-report coverage and invalidate
+  corrected data. Clearly label retained results while loading or after failure,
+  offer Retry and describe rate assumptions for the comparison period.
+- Unify Legend and How to read this view chevrons with a small chart inset;
+  keep comparison methodology indented at every width. Use the nested folds'
+  larger native triangles for Energy cost comparisons and Recording details.
+- Remove obsolete comparison-driven plot rendering/fingerprinting and its test
+  expectation. Reviewed current API producers, UI consumers, state, tests and
+  documentation; retained current calculations and refresh contracts without
+  schema/configuration changes, old-format decoders or compatibility aliases.
+- Validation: 123 focused calendar, request-state, comparison, chart and API tests;
+  production build; synthetic Firefox interaction/layout checks across desktop,
+  mobile portrait/landscape and both themes; Chromium card checks with and
+  without ResizeObserver. Responsive screenshots reviewed. Full standard suite
+  and broad chart-view browser suite were not run. No household access.
+
 Completed 2026-09-27 — Consistent application calendars and dropdowns
 - Replace the end-only calendar with one shared picker for chart start/end dates
   and temporary Home/Garage deadlines. Keep explicit unchanged-end selection,

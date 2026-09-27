@@ -329,7 +329,13 @@ Temporary Away and Pause dates use the same calendar with hour/minute fields;
   garage pump's interpreted temperature is a diagnostic, not a third independent
   protection sensor. Viewing history sends no equipment commands.
 - **Energy cost comparisons:** open this fold below the chart for **Heating**,
-  **Charging** and **Fireplace**. Heating starts on **Home** and **Model estimate**;
+  **Charging** and **Fireplace**. Its own **Comparison period** applies to all three
+  cards independently of the chart. Both calendars work like the chart: selecting
+  a start shows that day; explicitly choosing an end extends the range. Shortcuts
+  select **Last 7 days** (including today), **Last month** (the full calendar month),
+  **This year** (through today) or **Last year** (the full calendar year), in Finnish
+  time. Dates initially show today and remain fixed until changed.
+  Heating starts on **Home** and **Model estimate**;
   a saved **Timing cost** choice is restored. **Home**, **Garage** and **Total**
   select the heating scope. Model estimate sums supported, frozen cycle assessments
   on their Finnish completion dates, including recovery and excluding domestic hot
