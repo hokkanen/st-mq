@@ -1,6 +1,39 @@
 -Make README.md better and more descriptive of the app, especially the beginning of it
 -Implement support for local mqtt-based temperature receives (eg, from shelly or HASS through Meteorologisk Institute); just store last received temp values and time stamps (maybe in storage class, see below) when received (and accept if received within 1h)
--Chart dataset control buttons don't work when datasets are manually hidden/unhidden from legend, how to fix?
+
+Completed 2026-09-27 — Coherent chart views and history inspection
+- Replace the single-quantity drawer and universal context with 43 purposeful
+  views sharing one server/UI catalogue. Temperature-led views use one right
+  scale; each quantitative comparison declares its unit and relevant context.
+  Keep all original selectable history accessible, including interpreted garage
+  pump temperature, through named comparisons and a searchable 122-series explorer.
+- Remember visibility per view, keep price choices global, and provide Reset
+  view. Remove the old frontend string-selection/shared-context renderer and
+  old visibility storage reader instead of adding translation or migration.
+- Use consistent dark/light semantic colours, solid left history, dashed right
+  temperatures, dash-dot forecasts and dotted prices. Apply bounded monotone
+  temperature interpolation consistently, steps to discrete quantities, and
+  points to events/interval totals. Preserve turquoise/purple charger fills;
+  auxiliary is a separate estimate, never an extra fill on an inclusive total.
+- Put categorical evidence in selectable aligned lower rows. Confine the shared
+  cursor to the plot and visible rows; support mouse/touch, scrolling, zoom and
+  cleanup. Keep request durations, readback, source expiry, occupancy summaries
+  and isolated state observations distinct; unknown duration stays a point.
+- Extend qualified history projection for supported feedback and energy evidence.
+  Preserve source quality, gaps, original intervals, accounting and CSV provenance;
+  no recorder schema, configuration, control authority or learning semantics
+  change. Share Garage coefficient replay across selected comparisons.
+- Validation: all 3,581 routine tests pass with no skips; production build passes
+  with the existing bundle-size warning. Chrome covers all views/explorer options,
+  both themes, cursor bounds, preferences, isolated states and 320/390 px layouts;
+  31 synthetic screenshots were generated and representative layouts visually
+  reviewed. Native fullscreen and Firefox chart-only suites pass, including
+  request races, zoom, tooltips, fills and replay.
+- The combined Firefox dashboard suite stops at garage-door keyboard activation:
+  this browser session also fails to activate a plain focused button using
+  trusted Enter, including under Xvfb. The unchanged shared garage-door checks
+  pass separately in Chrome, including keyboard activation and command authority.
+  No production controls or fixtures were altered to avoid that limitation.
 
 Completed 2026-09-27 — Remove repository encryption
 - Remove the local repository key, both worktree key links and encryption filter

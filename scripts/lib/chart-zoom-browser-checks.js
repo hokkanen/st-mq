@@ -36,12 +36,12 @@ export async function checkChartZoomBrowser({ evaluate, command, context, until 
   };
   const checkAxisButton = async description => {
     assert.equal(await evaluate(`(() => {
-      const axis = document.getElementById('left-axis').getBoundingClientRect();
+      const axis = document.getElementById('chart-view').getBoundingClientRect();
       const button = document.getElementById('chart-fullscreen').getBoundingClientRect();
       return axis.width > 0 && button.width > 0 && button.left >= axis.right
         && button.left - axis.right <= 14 && Math.abs(axis.top + axis.height / 2 - button.top - button.height / 2) <= 2
         && button.right <= innerWidth;
-    })()`), true, `${description}: fullscreen button sits immediately to the right of the axis selector`);
+    })()`), true, `${description}: fullscreen button sits immediately to the right of the view selector`);
   };
   const checkToolbar = async description => {
     await checkAxisButton(description);
@@ -62,7 +62,7 @@ export async function checkChartZoomBrowser({ evaluate, command, context, until 
           return rect.left >= dates[1].right && rect.right <= document.querySelector('.chart-axis-actions').getBoundingClientRect().left
             && Math.abs(rect.top + rect.height / 2 - exit.top - exit.height / 2) <= 2;
         }))
-        && !document.querySelector('.chart-explorer-controls');
+        && document.getElementById('chart-explorer').hidden;
     })()`), true, `${description}: compact inspection controls keep both date pickers usable`);
   };
   const checkFits = async description => {
@@ -247,10 +247,10 @@ export async function checkChartZoomBrowser({ evaluate, command, context, until 
     window.fetch = (...args) => {
       const url = new URL(args[0], location.href), fixture = window.chartAxisFixture;
       if (url.pathname.endsWith('/api/chart') && !url.searchParams.has('viewFrom')) {
-        if (url.searchParams.get('left') === 'phases') return new Promise((resolve, reject) => {
+        if (url.searchParams.get('view') === 'phases') return new Promise((resolve, reject) => {
           fixture.release = () => fixture.fetch(args[0], { ...args[1], signal: undefined }).then(resolve, reject);
         });
-        if (url.searchParams.get('left') === 'integral') return fixture.fetch(...args).then(response => {
+        if (url.searchParams.get('view') === 'heating_water') return fixture.fetch(...args).then(response => {
           fixture.integralDone = true; return response;
         });
       }
@@ -262,22 +262,22 @@ export async function checkChartZoomBrowser({ evaluate, command, context, until 
     actions: [{ type: 'pointerMove', x: axisPoint.x, y: axisPoint.y, duration: 0 }, { type: 'pointerDown', button: 0 },
       { type: 'pointerMove', x: axisPoint.x + 25, y: axisPoint.y, duration: 16 }] }] });
   const axisView = await state();
-  await evaluate("document.getElementById('left-axis').value='phases'; document.getElementById('left-axis').dispatchEvent(new Event('change')); true");
+  await evaluate("document.getElementById('chart-view').value='phases'; document.getElementById('chart-view').dispatchEvent(new Event('change')); true");
   await until('Boolean(window.chartAxisFixture.release)');
-  await evaluate("document.getElementById('left-axis').value='integral'; document.getElementById('left-axis').dispatchEvent(new Event('change')); true");
+  await evaluate("document.getElementById('chart-view').value='heating_water'; document.getElementById('chart-view').dispatchEvent(new Event('change')); true");
   await until('window.chartAxisFixture.integralDone');
   await settle();
   await command('input.performActions', { context, actions: [{ type: 'pointer', id: 'chart-axis-mouse', parameters: { pointerType: 'mouse' },
     actions: [{ type: 'pointerUp', button: 0 }] }] });
-  await until(`${canvas}.dataset.ready === 'true' && ${canvas}.dataset.left === 'integral'
+  await until(`${canvas}.dataset.ready === 'true' && ${canvas}.dataset.view === 'heating_water'
     && Boolean(document.querySelector('[data-chart-key=heating_integral]'))`);
   checkSameView(await state(), axisView, 'Completing an axis change during a gesture');
   await evaluate('window.chartAxisFixture.release().then(() => true)');
   await settle();
-  assert.equal(await evaluate(`${canvas}.dataset.left`), 'integral', 'An older axis response cannot relabel the latest plotted data');
+  assert.equal(await evaluate(`${canvas}.dataset.view`), 'heating_water', 'An older axis response cannot relabel the latest plotted data');
   assert.equal(await evaluate("Boolean(document.querySelector('[data-chart-key=property_current_l1]'))"), false,
     'The discarded phase response cannot replace the latest legend');
-  await evaluate("window.fetch=window.chartAxisFixture.fetch; delete window.chartAxisFixture; document.getElementById('left-axis').value='power'; document.getElementById('left-axis').dispatchEvent(new Event('change')); true");
+  await evaluate("window.fetch=window.chartAxisFixture.fetch; delete window.chartAxisFixture; document.getElementById('chart-view').value='power'; document.getElementById('chart-view').dispatchEvent(new Event('change')); true");
   await until(`${canvas}.dataset.ready === 'true' && ${canvas}.dataset.left === 'power'
     && Boolean(document.querySelector('[data-chart-key=property_power]'))`);
   checkSameView(await state(), axisView, 'Restoring the power axis');

@@ -104,7 +104,7 @@ test('publisher-shaped on/off reports survive SQLite reopen and draw the compres
       assert(chart.series[ACTIVE].some(point => point.x === BASE && point.y === 1));
       assert(chart.series[ACTIVE].some(point => point.x === BASE + MINUTE && point.y === 0));
       assert(chart.series[ACTIVE].some(point => point.x === BASE + 3 * MINUTE && point.y === null));
-      const dataset = historyDatasets(chart.series, ACTIVE).find(row => row.key === ACTIVE);
+      const dataset = historyDatasets(chart.series, { leftSignals: [ACTIVE], rightSignals: [] }).find(row => row.key === ACTIVE);
       assert.equal(dataset.stepped, true);
       assert.equal(dataset.spanGaps, false);
       assert.equal(dataset.yAxisID, 'left');

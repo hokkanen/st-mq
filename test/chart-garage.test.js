@@ -137,6 +137,33 @@ test('coefficient chart uses same ordered learner and seed, then incrementally e
   assert.equal(store.db.prepare('SELECT COUNT(*) n FROM observations').get().n, 0);
 });
 
+test('coefficient comparisons replay the garage journal once and share cached history across selections', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  for (let i = 0; i < 18; i++) sample(store, range.from + i * MINUTE, { rearC: 8 - i * .01, frontC: 7.5 - i * .02 });
+  let scanned = 0;
+  const facade = { db: { prepare(sql) {
+    const statement = store.db.prepare(sql);
+    if (!sql.includes('SELECT * FROM learning_journal WHERE input=? AND id>? AND id<=?')) return statement;
+    return { *iterate(...args) { for (const row of statement.iterate(...args)) { scanned++; yield row; } } };
+  } } };
+  const keys = Object.keys(GARAGE_COEFFICIENT_INFO), before = store.learningJournal({ input: 'garage:providers' });
+  const rear = chart(facade, [coefficient]);
+  assert.equal(scanned, 18);
+  const combined = chart(facade, keys);
+  assert.equal(scanned, 18, 'Selecting other coefficients reuses the same ordered replay checkpoint');
+  assert.equal(combined.stats.replayedRecords, 18, 'Source evidence counts are not multiplied by visible coefficients');
+  assert.deepEqual(combined.series[coefficient], rear.series[coefficient]);
+  for (const key of keys) assert.deepEqual(combined.series[key], chart(store, [key]).series[key], key);
+  assert.deepEqual(store.learningJournal({ input: 'garage:providers' }), before);
+  sample(store, range.from + 18 * MINUTE, { rearC: 7.5, frontC: 7 });
+  const advanced = chart(facade, keys);
+  assert.equal(scanned, 19, 'One newly committed record is applied once for the whole comparison');
+  assert.equal(advanced.stats.replayedRecords, 19);
+  for (const key of keys) assert.deepEqual(advanced.series[key], chart(store, [key]).series[key], key);
+  chart(facade, keys, { now: range.from + 10 * MINUTE });
+  assert.equal(scanned, 30, 'Moving the as-of clock backwards replays only the earlier eligible prefix');
+});
+
 test('coefficient replay distinguishes learned cooling from observed electricity and the fixed power prior', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   const seed = createGarageModel({ seedAt: range.from });

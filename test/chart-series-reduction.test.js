@@ -1,3 +1,4 @@
+import { CHART_VIEW_BY_KEY } from '../src/domain/chart-views.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { reduceChartSeries, reduceSeries } from '../chart/chart-viewport.js';
@@ -5,6 +6,7 @@ import { historyDatasets } from '../chart/history-model.js';
 import { intervalPoints } from '../chart/interval-points.js';
 
 const loads = ['auxiliary_power', 'charger_power', 'charger2_power'];
+const chargingLoads = ['charger_power', 'charger2_power'];
 const powerKeys = ['property_power', ...loads];
 const finite = Number.isFinite;
 const near = (actual, expected, message) => assert(Math.abs(actual - expected) < 1e-9, message ?? `${actual} differs from ${expected}`);
@@ -46,8 +48,9 @@ function assertAligned(series, keys) {
 }
 
 function assertPowerRelationship(series, preferences = {}) {
-  const datasets = historyDatasets(series, 'power', preferences);
-  const components = loads.filter(key => preferences[key] !== false);
+  const datasets = historyDatasets(series, CHART_VIEW_BY_KEY.power, preferences);
+  const components = chargingLoads.filter(key => preferences[key] !== false);
+  if (!components.length) return;
   const property = datasets.find(dataset => dataset.key === 'property_power');
   const top = datasets.find(dataset => dataset.key === components.at(-1));
   for (const x of timesAndMidpoints(powerKeys.map(key => series[key]))) {
@@ -69,7 +72,7 @@ function assertNoBridgedGaps(original, reduced, key) {
   }
 }
 
-test('grouped reduction keeps three charging/heating fills below the contemporaneous property curve', () => {
+test('grouped reduction keeps charging fills below the contemporaneous property curve', () => {
   const source = powerFixture();
   const before = structuredClone(source), view = { from: 0, to: 999 };
   // This is the original regression: unrelated house demand has a later peak
@@ -100,8 +103,8 @@ test('duplicate interval edges keep both power states and valid sums at edges an
   assertAligned(reduced, powerKeys);
   for (const key of powerKeys) assert.deepEqual(reduced[key].filter(point => point.x === 10).map(point => point.y), source[key].filter(point => point.x === 10).map(point => point.y));
   assertPowerRelationship(reduced);
-  const top = historyDatasets(reduced, 'power').find(dataset => dataset.key === 'charger2_power');
-  assert.deepEqual(top.data.filter(point => point.x === 10).map(point => point.y), [5, 9]);
+  const top = historyDatasets(reduced, CHART_VIEW_BY_KEY.power).find(dataset => dataset.key === 'charger2_power');
+  assert.deepEqual(top.data.filter(point => point.x === 10).map(point => point.y), [3, 4]);
   assert(top.data.at(-1).y === null, 'The final interval end cannot become indefinite charging');
 });
 
@@ -126,7 +129,7 @@ test('all six phase-current curves retain simultaneous EV/property comparisons a
       if (finite(property) && finite(charging)) assert(charging <= property, `L${phase} charging exceeds its property curve at ${x}`);
     }
   }
-  const datasets = historyDatasets(reduced, 'phases');
+  const datasets = historyDatasets(reduced, CHART_VIEW_BY_KEY.phases);
   assert(keys.every(key => datasets.find(dataset => dataset.key === key).data === reduced[key]));
 });
 
@@ -190,7 +193,7 @@ test('alignment preserves recorded provenance and labels held sample times hones
     }
   }
   assert(held > 0);
-  const datasets = historyDatasets(reduced, 'power');
+  const datasets = historyDatasets(reduced, CHART_VIEW_BY_KEY.power);
   for (const key of loads) {
     const dataset = datasets.find(row => row.key === key);
     for (let index = 0; index < dataset.data.length; index++) {
@@ -207,9 +210,10 @@ test('legend changes restack the reduced components while keeping property and i
   for (const preferences of [{}, { auxiliary_power: false }, { charger_power: false }, { charger2_power: false },
     { auxiliary_power: false, charger_power: false }, { charger_power: false, charger2_power: false }]) {
     assertPowerRelationship(reduced, preferences);
-    const datasets = historyDatasets(reduced, 'power', preferences);
+    const datasets = historyDatasets(reduced, CHART_VIEW_BY_KEY.power, preferences);
     let previous;
-    for (const key of loads) {
+    assert.equal(datasets.find(row => row.key === 'auxiliary_power').fill, false);
+    for (const key of chargingLoads) {
       const dataset = datasets.find(row => row.key === key);
       if (preferences[key] === false) { assert.equal(dataset.hidden, true); continue; }
       assert.equal(dataset.fill, previous ? datasets.indexOf(previous) : 'origin');
@@ -235,9 +239,9 @@ test('each visible load combination retains its cumulative peak even away from i
   assert(reduced.property_power.length < source.property_power.length);
   for (let mask = 1; mask < 8; mask++) {
     const preferences = Object.fromEntries(loads.map((key, bit) => [key, Boolean(mask & (1 << bit))]));
-    const topKey = loads.filter(key => preferences[key]).at(-1);
-    const fullStack = historyDatasets(source, 'power', preferences).find(dataset => dataset.key === topKey).data;
-    const reducedStack = historyDatasets(reduced, 'power', preferences).find(dataset => dataset.key === topKey).data;
+    const topKey = chargingLoads.filter(key => preferences[key]).at(-1) ?? 'auxiliary_power';
+    const fullStack = historyDatasets(source, CHART_VIEW_BY_KEY.power, preferences).find(dataset => dataset.key === topKey).data;
+    const reducedStack = historyDatasets(reduced, CHART_VIEW_BY_KEY.power, preferences).find(dataset => dataset.key === topKey).data;
     near(Math.max(...reducedStack.map(point => point.y).filter(finite)), Math.max(...fullStack.map(point => point.y).filter(finite)),
       `Visibility combination ${mask} retains its real cumulative peak`);
   }
@@ -247,8 +251,8 @@ test('genuine recorded power conflicts and missing property readings are not cli
   const source = powerFixture(100), before = structuredClone(source);
   for (let x = 40; x < 60; x++) source.property_power[x].y = 6;
   const reduced = reduceChartSeries(source, { from: 0, to: 99 }, 7);
-  const top = historyDatasets(reduced, 'power').find(dataset => dataset.key === 'charger2_power');
-  near(stepAt(reduced.property_power, 40), 6); near(stepAt(top.data, 40), 11);
+  const top = historyDatasets(reduced, CHART_VIEW_BY_KEY.power).find(dataset => dataset.key === 'charger2_power');
+  near(stepAt(reduced.property_power, 40), 6); near(stepAt(top.data, 40), 9);
   near(stepAt(reduced.charger_power, 40), before.charger_power[40].y);
   for (let x = 40; x < 60; x++) source.property_power[x].y = null;
   const withMissing = reduceChartSeries(source, { from: 0, to: 99 }, 500);

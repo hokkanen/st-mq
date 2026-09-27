@@ -5,7 +5,9 @@ import { Envelope, getChartData } from '../src/app/chart-data.js';
 import { addModelInputs } from '../src/app/chart-model-inputs.js';
 import { LEARNING_ALGORITHM } from '../src/app/committed-learning.js';
 import { MODEL_INPUT_INFO } from '../src/domain/history-series.js';
-import { historyDatasets, historySeriesAt, leftAxisAvailability, historyStateLabel } from '../chart/history-model.js';
+import { historyDatasets, historySeriesAt, historyStateLabel } from '../chart/history-model.js';
+import { CHART_VIEW_BY_KEY } from '../src/domain/chart-views.js';
+import { chartSubjectAvailability } from '../chart/chart-views.js';
 
 import { currentHomeSample } from './helpers/home-learning-fixture.js';
 
@@ -94,7 +96,7 @@ test('the default Average indoor is the saved model input and missing sensors ca
     const chart = getChartData({ ...args, left });
     assert.deepEqual(chart.series.model_indoor_temperature.map(row => [row.x, row.y]),
       [[start + 15 * MINUTE, 20.25], [start + 30 * MINUTE, null]]);
-    const average = historyDatasets(chart.series, left).find(row => row.key === 'model_indoor_temperature');
+    const average = historyDatasets(chart.series, CHART_VIEW_BY_KEY.power).find(row => row.key === 'model_indoor_temperature');
     assert.equal(average.label, 'Average indoor');
     assert.equal(average.yAxisID, 'right');
     assert.equal(average.borderColor, '#81ca99');
@@ -176,12 +178,16 @@ test('DHWR left axis ends each request at its expiry and merges overlapping puls
   assert(!pulses.some(row => row.y === null && row.x < start + 15 * MINUTE));
 });
 
-test('right-axis data cannot hide missing or hidden left-axis values and states use meaningful labels', () => {
-  const series = { indoor_temperature: [{ x: start, y: 21 }] };
-  assert.match(leftAxisAvailability(historyDatasets(series, 'model_compressor_duty')), /No recorded values/);
+test('temperature context cannot hide unavailable selected values while deliberate hiding remains usable', () => {
+  const view = CHART_VIEW_BY_KEY.learning_duty;
+  const series = { model_indoor_temperature: [{ x: start, y: 21 }] };
+  const preferences = { ...view.defaults, model_indoor_temperature: true };
+  const availability = () => chartSubjectAvailability(view, historyDatasets(series, view, preferences), { series }, preferences);
+  assert.match(availability(), /No % values/);
   series.model_compressor_duty = [{ x: start, y: 0 }];
-  assert.equal(leftAxisAvailability(historyDatasets(series, 'model_compressor_duty')), '');
-  assert.match(leftAxisAvailability(historyDatasets(series, 'model_compressor_duty', { model_compressor_duty: false })), /hidden in the legend/);
+  assert.equal(availability(), '');
+  preferences.model_compressor_duty = false;
+  assert.equal(availability(), '', 'A deliberately temperature-only view remains available');
   assert.equal(historyStateLabel('model_controller_phase', 2), 'Tariff reduction');
   assert.equal(historyStateLabel('operating_mode', 2), 'Compressor only');
 });

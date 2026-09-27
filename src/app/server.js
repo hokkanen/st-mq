@@ -301,7 +301,8 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
             simulated: engine.plant ? simulatedOutlook(now) : null, now,
             startDate: url.searchParams.get('start') ?? undefined,
             endDate: url.searchParams.get('end') ?? undefined,
-            left: url.searchParams.get('left') ?? 'power', points: numberParam(url, 'points', 800, 4096),
+            left: url.searchParams.get('left') ?? undefined, view: url.searchParams.get('view') ?? undefined,
+            points: numberParam(url, 'points', 800, 4096),
             viewFrom: optionalTimestampParam(url, 'viewFrom'), viewTo: optionalTimestampParam(url, 'viewTo') };
           const cancellation = new AbortController();
           const cancel = () => cancellation.abort();

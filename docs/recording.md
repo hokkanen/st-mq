@@ -210,7 +210,7 @@ saved assumptions instead of today's settings. Source verification, freshness
 and availability bound every reconstructed interval. Missing source data or
 missing historical power assumptions leave gaps; the chart does not fill them
 with live model predictions. The timing calculation uses the underlying
-intervals, independently of chart point reduction and the selected left axis.
+intervals, independently of chart point reduction and the selected view.
 
 The imported CSV formats do not contain the necessary H66 equipment readings.
 They remain useful for their recorded temperatures, prices, requests and phase
@@ -274,13 +274,22 @@ energy-weighted difference `100 × (sum estimate − sum reference) / sum refere
 Incomplete sessions and zero references are excluded, with no invented zero-percent
 accuracy. Property cumulative readings remain available in history.
 
-The left-axis **Meter checks** group contains the property counter and exactly
-one **Charger 1** and one **Charger 2** entry. Each charger selection plots the
-final reference kWh of its recorded sessions as separate points at the session
-end, directly from the existing session records. No duplicate time-series rows
-are saved. Hollow points identify references excluded from comparison averages;
-tooltips identify the physical electricity meter and show the session
-period. No continuous power or lifetime-counter meaning is implied between points.
+The **Charging session checks** view compares both chargers' final reference kWh
+as separate points at the session end, directly from existing session records.
+The **Property meter counter** view keeps its cumulative meaning separate.
+**Series explorer** can isolate either session check or a supported cumulative
+counter. No duplicate time-series rows are saved. Hollow session points identify
+references excluded from comparison averages; tooltips identify the physical
+electricity meter and show the session period. No continuous power or
+lifetime-counter meaning is implied between session points.
+
+**Recording-interval energy** exposes original phase increments, Charger 2's
+authoritative total, Caravan intervals and qualified dedicated Garage intervals.
+Each retains its original duration and source basis; these are not equal-length
+period totals. Garage intervals preserve their counter-delta or integrated-power
+basis and any provisional accuracy. Its native cumulative counter remains a
+separate diagnostic series. Charger 2 phase allocations are alternative views of
+its total, never additional electricity to add to that total.
 
 For Charger 1, Easee observation `129` supplies authoritative finalized session boundaries and
 energy; `223` supplies the current session start when available. A new finalized
@@ -539,12 +548,12 @@ versions change for this presentation update.
 
 ## Chart exploration and fullscreen
 
-The chart icon button, immediately right of the left-axis selector,
+The chart icon button beside the **View** selector
 opens a view with both date pickers, gesture navigation and a selected-period navigator. The normal
 chart is fixed to the entire selected period, with no zoom controls or navigator.
 **Exit** restores that fixed chart. Reopening chart view
 resumes its previous zoom and position while the selected dates remain the same.
-The Home and Garage chart shortcuts open the same view.
+The Garage chart shortcut opens the same view.
 
 Chart view requests page fullscreen when available. If the dashboard was already
 in page fullscreen, **Exit** keeps it there; otherwise **Exit** leaves page
@@ -555,12 +564,19 @@ again determines whether fullscreen is kept. The header's fullscreen icon follow
 page fullscreen changes from any control. Browser-level fullscreen such as F11
 is separate and cannot be tracked or controlled consistently by the page.
 
-The chart view keeps its axis selector, Exit button and two compact date pickers
+The chart view keeps its View selector, Exit button and two compact date pickers
 visible. Selecting the first date immediately shows that day; the second extends
 the inclusive range. On phones, **Legend** opens a bounded scrollable area and
-**Close legend** restores the navigator and activity strips and returns space to the plot. Activity entries occupy the first
-legend row, with explicitly labeled left/right groups following. Thin left-axis
-curves use sparse square markers; forecast dashes and price styling are retained.
+**Close legend** restores the navigator and activity strips and returns space to the plot. The legend separates quantitative series, temperature/price context and
+activity rows. Ordinary
+left-axis history uses solid lines and right-axis temperatures use dashed lines.
+Forecasts use dash-dot lines and electricity prices remain dotted. Measured
+temperatures share smooth monotone interpolation within covered spans; discrete
+settings, states and electrical power retain their steps. Events, session checks
+and original interval-energy totals remain points. Charger fills retain their
+physical electricity meaning, while control and equipment states use labeled
+rows below the plot. The cursor spans the plot and these rows within the time
+axis bounds, helping compare simultaneous changes without covering the controls.
 Landscape shows the entire selected time window at baseline zoom. Portrait uses
 the full available chart height and shows a narrower time slice; drag sideways
 or use the navigator to move through the selection even at baseline zoom.
@@ -811,13 +827,14 @@ See [SmartThings forwarding](smartthings-temperature-rule.md) for the rule and
 physical-driver requirements: configuring an interval alone does not establish
 that unchanged genuine reports reach MQTT.
 
-The right axis has one **Average indoor** series: the same configured average
-used by the model, retaining its green colour alongside blue Outdoor readings.
-The **Room temperatures** drawer section contains **Home and garage temperatures**,
-which adds Upstairs, Bedroom, Downstairs and Garage front to the left axis. Both axes use the
-same numeric range in that view, including visible prices, so equal temperatures
-align. Room colours are distinct: terracotta Upstairs, amber Downstairs and violet
-Bedroom. Garage remains a shared right-axis series with its existing colour and legend control.
+Views offer **Average indoor** as the same configured average used by the model,
+retaining its green colour alongside blue Outdoor readings. **Property
+temperatures** compares Upstairs, Bedroom, Downstairs and both Garage probes on
+one right temperature axis. **Home temperatures & comfort** focuses on home
+rooms, the saved average and reference. Each view keeps its own deliberate
+temperature choices. Room colours remain distinct; Garage front and rear use
+related shades. Temperatures use the same interpolation rules throughout these
+views, while missing and expired coverage still breaks the curves.
 Average indoor reads the resolved value already included in each existing
 15-minute learning journal record; it creates no additional temperature recorder
 channel or chart-history table. V8 additionally requires indoor report coverage
@@ -911,8 +928,9 @@ Remaining forecast savings are separate from past estimates. All fireplace chart
 and savings data are derived on demand without new telemetry or daily savings rows;
 see [fireplace logging](fireplace.md#visibility-and-estimated-savings).
 
-The property counter and finalized Charger 1 / Charger 2 session references are
-selectable under Meter checks, separately from estimated interval energy.
+The **Property meter counter** and **Charging session checks** views preserve
+these distinct quantities. **Series explorer** can isolate either charger's
+session reference, independently of recorded interval energy.
 
 ## Synthetic year benchmark
 
@@ -993,7 +1011,7 @@ The drawer separates everyday electricity, room, caravan and garage pump views
 from Home/Garage saved learning inputs, replayed coefficients and equipment
 diagnostics. Each choice states its unit and basis. A plot is not a promise of
 another database channel: power, phase-current estimates, indoor average,
-front–rear difference, coefficients, fireplace response and compressor shading
+front–rear difference, coefficients, fireplace response and compressor activity rows
 are projections of existing observations, energy intervals or journal inputs.
 
 The retained data has distinct responsibilities:
@@ -1010,12 +1028,17 @@ The retained data has distinct responsibilities:
 | Native garage compressor activity and defrost | Exact observed state changes; no inferred fault or defrost interpretation from arbitrary diagnostic bytes. |
 | External feed diagnostics | Abnormal onset, changed reason and recovery events; no numeric feed series or healthy renewal log. |
 
-Garage compressor shading comes from fresh native activity coverage and appears
-with every left-axis selection. Unknown periods are blank, never inferred off.
-The pump's interpreted indoor reading may incorporate its external feed; it is
-not relabeled as a physical indoor sensor. External feed failures and recoveries
-are retained as diagnostics outside adaptive measurements. Neither adds heat
-estimates or learning inputs.
+The Garage view offers native compressor activity, supported defrost reports and
+door contacts as separate activity rows. Native states follow their recorded
+availability deadlines; unknown periods remain unknown, never inferred off.
+The pump's interpreted indoor reading is available beside the front/rear probes
+and independently in **Series explorer**. It may incorporate its external feed
+and is not relabeled as a physical room sensor. Hot-water circulation requests
+and recorded electrical or switch feedback have separate rows; neither proves
+water flow. Floor override contacts describe electrical readback, not valve
+position or heating delivery. External feed failures and recoveries remain
+diagnostics outside adaptive measurements. These views add no heat estimates
+or learning inputs.
 This review does not delete historical evidence, introduce a second schema, or
 backfill charts from current live readings.
 

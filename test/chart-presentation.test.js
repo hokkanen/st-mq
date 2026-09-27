@@ -2,16 +2,17 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import Chart from 'chart.js/auto';
 import { historyTooltipLabel, historyValueScales } from '../chart/history-chart.js';
-import { historyDatasets, leftGroups } from '../chart/history-model.js';
+import { historyDatasets } from '../chart/history-model.js';
 import { historyTooltipTitle, historyTooltipCallbacks, historyLearningLabel, historyTooltipsEnabled, wrapHistoryTooltip } from '../chart/history-tooltips.js';
 import { isInterpolatedTemperature } from '../src/domain/chart-temperatures.js';
 import { temperatureIntervalKnots } from '../chart/temperature-curves.js';
 import { clipChartSeries } from '../chart/chart-resolution.js';
+import { selectedChartView } from '../chart/chart-views.js';
 import { HISTORY_AXES, MODEL_INPUT_INFO } from '../src/domain/history-series.js';
 
 // Use Chart.js itself for layout and pixel positions. Only canvas painting is
 // discarded, so these tests exercise the independent-scale bug in the screenshot.
-function createChart(t, series, selection = 'temperatures') {
+function createChart(t, series, selection = selectedChartView({ view: 'temperatures' })) {
   const canvas = { width: 1100, height: 600 };
   const context = new Proxy({ canvas, measureText: text => ({ width: String(text).length * 7 }) },
     { get: (target, key) => target[key] ?? (() => {}) });
@@ -26,21 +27,11 @@ function createChart(t, series, selection = 'temperatures') {
   return chart;
 }
 
-function updateChart(chart, series, selection = 'temperatures', preferences = {}, view) {
+function updateChart(chart, series, selection = selectedChartView({ view: 'temperatures' }), preferences = {}, view) {
   chart.data.datasets = historyDatasets(series, selection, preferences);
   chart.options.scales = { x: { type: 'linear', ...(view ? { min: view.from, max: view.to } : {}) },
     ...historyValueScales(selection, chart.data.datasets) };
   chart.update('none');
-}
-
-function equalAirAxes(chart) {
-  const { left, right } = chart.scales;
-  assert.equal(left.min, right.min);
-  assert.equal(left.max, right.max);
-  assert.deepEqual(left.ticks.map(tick => tick.value), right.ticks.map(tick => tick.value));
-  for (const value of [left.min, 0, 18.1, 23.3, right.max]) {
-    assert.equal(left.getPixelForValue(value), right.getPixelForValue(value), `${value} must have one height`);
-  }
 }
 
 const airSeries = () => ({
@@ -51,50 +42,46 @@ const airSeries = () => ({
   spot_price: [{ x: 0, y: -40 }, { x: 1, y: 3 }, { x: 2, y: 3 }, { x: 3, y: 3 }, { x: 5, y: 3 }],
 });
 
-test('home air axes align equal temperatures, retain visible prices, and stay aligned after resize', t => {
+test('temperature-led views have one scale for equal values, include prices and survive resize', t => {
   const chart = createChart(t, airSeries());
-  equalAirAxes(chart);
-  assert(chart.scales.left.min <= -40, 'Visible negative spot prices remain within the shared scale');
+  assert.equal(chart.scales.left.options.display, false);
+  assert(chart.scales.right.min <= -40);
   assert(chart.scales.right.max >= 24);
-  assert.equal(chart.scales.left.options.title.text, 'Air temperature · °C');
-  assert.equal(chart.scales.right.options.title.text, 'Air temperature · °C / Price · c/kWh');
-  const roomIndex = chart.data.datasets.findIndex(row => row.key === 'indoor_temperature');
-  const averageIndex = chart.data.datasets.findIndex(row => row.key === 'model_indoor_temperature');
-  assert.equal(chart.getDatasetMeta(roomIndex).data[0].y, chart.getDatasetMeta(averageIndex).data[0].y);
+  assert.equal(chart.scales.right.options.title.text, 'Temperature · °C / Price · c/kWh');
+  const room = chart.data.datasets.findIndex(row => row.key === 'indoor_temperature');
+  const average = chart.data.datasets.findIndex(row => row.key === 'model_indoor_temperature');
+  assert.equal(chart.getDatasetMeta(room).data[0].y, chart.getDatasetMeta(average).data[0].y);
   chart.resize(375, 240);
-  equalAirAxes(chart);
+  assert.equal(chart.getDatasetMeta(room).data[0].y, chart.getDatasetMeta(average).data[0].y);
 });
 
-test('shared air scale follows legend changes and clipped zoom data instead of keeping old extrema', t => {
-  const series = airSeries(), chart = createChart(t, series);
-  updateChart(chart, series, 'temperatures', { spot_price: false });
-  equalAirAxes(chart);
-  assert(chart.scales.left.min > -40, 'Hidden prices no longer expand either scale');
+test('shared temperature scale follows price toggles and clipped zoom data', t => {
+  const series = airSeries(), chart = createChart(t, series), view = selectedChartView({ view: 'temperatures' });
+  updateChart(chart, series, view, { spot_price: false });
+  assert(chart.scales.right.min > -40);
   updateChart(chart, series);
-  assert(chart.scales.left.min <= -40);
-  const view = { from: 3, to: 5 };
-  updateChart(chart, clipChartSeries(series, view), 'temperatures', {}, view);
-  equalAirAxes(chart);
-  assert(chart.scales.left.min > -40, 'Zoom recalculates both axes from the plotted data');
+  assert(chart.scales.right.min <= -40);
+  const window = { from: 3, to: 5 };
+  updateChart(chart, clipChartSeries(series, window), view, {}, window);
+  assert(chart.scales.right.min > -40);
 });
 
-test('switching from home temperatures restores independent power and temperature axes', t => {
+test('switching views restores independent electrical and temperature scales', t => {
   const chart = createChart(t, airSeries());
-  updateChart(chart, { ...airSeries(), property_power: [{ x: 0, y: 100 }, { x: 5, y: 200 }] }, 'power');
+  updateChart(chart, { ...airSeries(), property_power: [{ x: 0, y: 100 }, { x: 5, y: 200 }] }, selectedChartView({ view: 'power' }));
+  assert.equal(chart.scales.left.options.display, true);
   assert(chart.scales.left.max >= 200);
   assert(chart.scales.right.max < 200);
   assert.notEqual(chart.scales.left.getPixelForValue(23.3), chart.scales.right.getPixelForValue(23.3));
-  assert.equal(chart.scales.right.options.title.text, 'Air temperature · °C / Price · c/kWh');
   updateChart(chart, airSeries());
-  equalAirAxes(chart);
+  assert.equal(chart.scales.left.options.display, false);
 });
 
-test('empty and constant home-temperature histories have matching usable axes', t => {
+test('empty and constant temperature histories retain usable automatic limits', t => {
   const chart = createChart(t, {});
-  equalAirAxes(chart);
+  assert(Number.isFinite(chart.scales.right.min));
   updateChart(chart, { indoor_temperature: [{ x: 1, y: 23.3 }] });
-  equalAirAxes(chart);
-  assert(chart.scales.left.min < 23.3 && chart.scales.left.max > 23.3);
+  assert(chart.scales.right.min < 23.3 && chart.scales.right.max > 23.3);
 });
 
 test('saved model inputs use the same concise tooltip suffix without interval or import-source clutter', () => {
@@ -166,8 +153,8 @@ test('every selectable series uses one time context and value format in all four
     { carriedForward: true, observedAt: at - 3600000 }, { displayBoundary: true, interpolated: true },
     { equivalentCurrent: true }, { assumedPrice: true },
     { sessionCheck: true, sessionStart: at, sessionEnd: end, comparisonEligible: false }];
-  for (const [selection] of Object.entries(leftGroups)) {
-    const datasets = historyDatasets({}, selection);
+  for (const axis of HISTORY_AXES) {
+    const datasets = historyDatasets({}, { leftSignals: axis.signals, rightSignals: [], unit: axis.unit });
     for (const dataset of datasets) {
       tested.add(dataset.key);
       for (const raw of cases) {
@@ -245,7 +232,7 @@ test('all measured air, liquid and estimated temperatures render bounded cubic c
   const points = [{ x: 0, y: 18 }, { x: 2, y: 19 }, { x: 5, y: 24 }, { x: 6, y: 24 },
     { x: 7, y: null }, { x: 8, y: 20 }, { x: 9, y: 19 }, { x: 12, y: 23 }];
   for (const key of [...new Set(HISTORY_AXES.flatMap(axis => axis.signals))].filter(isInterpolatedTemperature)) {
-    const selection = key === 'outdoor_forecast' ? 'power' : key;
+    const selection = { leftSignals: [], rightSignals: [key], unit: '°C' };
     const chart = createChart(t, { [key]: points }, selection);
     const index = chart.data.datasets.findIndex(dataset => dataset.key === key), meta = chart.getDatasetMeta(index);
     assert.equal(meta.dataset.options.stepped, false, key);
@@ -263,7 +250,7 @@ test('all measured air, liquid and estimated temperatures render bounded cubic c
     assert(curved, `${key} genuinely uses cubic segments instead of linear or stepped drawing`);
   }
   const settings = ['heating_setpoint', 'room_setting', 'dhw_stop_setting', 'model_target_temperature', 'model_room_boost'];
-  for (const key of settings) assert.equal(historyDatasets({ [key]: points }, key)[0].stepped, true, `${key} is a command, not a temperature measurement`);
+  for (const key of settings) assert.equal(historyDatasets({ [key]: points }, { leftSignals: [key], rightSignals: [] })[0].stepped, true, `${key} is a command, not a temperature measurement`);
 });
 
 test('temperature interval curves remove artificial hold edges while preserving each knot, provenance and gap', t => {
@@ -275,7 +262,7 @@ test('temperature interval curves remove artificial hold edges while preserving 
   assert.deepEqual(knots.map(point => point.x), [0, 10, 20, 29, 30, 40, 49]);
   assert(knots.every(point => points.includes(point)));
   assert.deepEqual(points, original);
-  const chart = createChart(t, { outdoor_forecast: points }, 'power');
+  const chart = createChart(t, { outdoor_forecast: points }, selectedChartView({ view: 'weather' }));
   const index = chart.data.datasets.findIndex(dataset => dataset.key === 'outdoor_forecast');
   assert.equal(chart.getDatasetMeta(index).dataset.segments.length, 2);
   assert.deepEqual(chart.data.datasets[index].data, knots);

@@ -1,3 +1,4 @@
+import { CHART_VIEW_BY_KEY } from '../src/domain/chart-views.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { clampView, zoomView, panView, viewportTicks, sliceSeries, reduceSeries, createDetailLoader } from '../chart/chart-viewport.js';
@@ -125,7 +126,7 @@ test('small series keep exact step edges and recording gaps without reduction', 
 });
 
 test('reducing raw power components before stacking preserves aligned fills, missing baselines and tooltip provenance', () => {
-  const keys = ['auxiliary_power', 'charger_power', 'charger2_power'];
+  const keys = ['charger_power', 'charger2_power'];
   const series = Object.fromEntries(keys.map((key, component) => [key, Array.from({ length: 500 }, (_, index) => ({
     x: index * 10 + component,
     y: index >= 130 && index < 150 && component === 0 ? null : component + 1 + (index % 11) / 10,
@@ -134,11 +135,10 @@ test('reducing raw power components before stacking preserves aligned fills, mis
   }))]));
   const before = structuredClone(series);
   const reduced = Object.fromEntries(Object.entries(series).map(([key, points]) => [key, reduceSeries(points, { from: 0, to: 5000 }, 70)]));
-  const datasets = historyDatasets(reduced, 'power').filter(dataset => keys.includes(dataset.key));
+  const datasets = historyDatasets(reduced, CHART_VIEW_BY_KEY.power).filter(dataset => keys.includes(dataset.key));
   const ordered = keys.map(key => datasets.find(dataset => dataset.key === key));
-  assert(ordered[1].powerStacked && ordered[2].powerStacked);
+  assert(!ordered[0].powerStacked && ordered[1].powerStacked);
   assert.deepEqual(ordered[1].data.map(point => point.x), ordered[0].data.map(point => point.x));
-  assert.deepEqual(ordered[2].data.map(point => point.x), ordered[0].data.map(point => point.x));
   const firstGap = ordered[0].data.findIndex(point => point.x >= 1300 && point.x < 1500);
   assert(firstGap >= 0);
   assert(ordered.every(dataset => dataset.data.slice(firstGap).filter(point => point.x < 1500).every(point => point.y === null)));

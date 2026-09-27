@@ -31,12 +31,39 @@ async function fixture(t, overrides = {}) {
 test('chart API requires authentication and rejects malformed date/axis/point selections', async t => {
   const { base, headers } = await fixture(t);
   assert.equal((await fetch(`${base}/api/chart`)).status, 401);
-  for (const query of ['start=2026-02-31', 'start=2026-09-08&end=2026-09-07', 'left=arbitrary_signal', 'points=999999', 'start=not-a-date']) {
+  for (const query of ['start=2026-02-31', 'start=2026-09-08&end=2026-09-07', 'left=arbitrary_signal', 'view=arbitrary_view', 'view=constructor', 'view=garage&left=power', 'points=999999', 'start=not-a-date']) {
     const response = await fetch(`${base}/api/chart?${query}`, { headers });
     assert.equal(response.status, 400, query);
   }
   const response = await fetch(`${base}/api/chart`, { headers: { ...headers, Origin: 'https://untrusted.example' } });
   assert.equal(response.status, 403);
+});
+
+test('named-view API and worker cache keep distinct context and source selection for overview and detail', async t => {
+  const { base, headers, store, now } = await fixture(t);
+  const at = now - 24 * 3_600_000;
+  for (const [signal, value] of [['garage_native_indoor_temperature', 12], ['supply_temperature', 35], ['return_temperature', 28]])
+    store.observation({ source: 'synthetic-view', device: 'synthetic-equipment', signal, value, unit: 'degC', sourceTime: at, receivedAt: at });
+  const read = async (view, detail = false) => {
+    const response = await fetch(`${base}/api/chart?start=2026-09-06&view=${view}${detail ? `&viewFrom=${at - 60_000}&viewTo=${at + 60_000}` : ''}`, { headers });
+    assert.equal(response.status, 200);
+    return response.json();
+  };
+  const garage = await read('garage');
+  assert.equal(garage.view, 'garage');
+  assert(garage.series.garage_native_indoor_temperature.some(point => point.y === 12));
+  assert(!Object.hasOwn(garage.series, 'supply_temperature'));
+  assert.equal((await read('garage')).meta.cacheHit, true);
+  const water = await read('heating_water');
+  assert.notEqual(water.meta.cacheHit, true);
+  assert(water.series.supply_temperature.some(point => point.y === 35));
+  assert(water.series.return_temperature.some(point => point.y === 28));
+  assert(!Object.hasOwn(water.series, 'garage_native_indoor_temperature'));
+  const detail = await read('garage', true);
+  assert.equal(detail.meta.detail, true);
+  assert.equal(detail.view, 'garage');
+  assert.notEqual(detail.meta.cacheHit, true);
+  assert(detail.series.garage_native_indoor_temperature.some(point => point.y === 12));
 });
 
 test('real worker historical cache follows meter audits and finalized sessions but retains unrelated event hits',async t=>{

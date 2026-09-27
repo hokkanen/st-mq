@@ -51,10 +51,10 @@ function inputs({ store, range, now, input, envelopes, selected, stats }) {
   }
 }
 
-/** Incremental per-axis replay, bounded to four compact timelines. The same
+/** Incremental shared replay, bounded to four source/correction checkpoints. The same
  * pure entry operation powers runtime rebuilding. Old prefixes require their
  * own seed and algorithm; invalid dependencies create explicit chart gaps. */
-function coefficient({ store, range, now, input, envelopes, key, stats }) {
+function coefficients({ store, range, now, input, envelopes, selected, stats }) {
   const through = Math.min(range.to, now), context = garageCorrectionContext(store, input);
   const bounds = store.db.prepare(`SELECT MAX(id) lastId, MIN(CASE WHEN at>? THEN id END) futureId
     FROM learning_journal WHERE input=?`).get(through, garageInput(input));
@@ -62,33 +62,41 @@ function coefficient({ store, range, now, input, envelopes, key, stats }) {
   let cache = caches.get(store.db);
   if (!cache) { cache = new Map(); caches.set(store.db, cache); }
   const epoch = store.db.prepare('SELECT epoch FROM learning_epochs WHERE input=?').get(garageInput(input))?.epoch ?? 'original';
-  const cacheKey = `${input}:${epoch}:${context.revision}:${key}`, old = cache.get(cacheKey);
-  let state = old && old.lastId <= lastId && (!old.truncated || old.events[0]?.at <= range.from) ? old
-    : { checkpoint: null, lastId: 0, at: -Infinity, blocked: true, events: [], truncated: false,
+  const keys = Object.keys(GARAGE_COEFFICIENT_INFO);
+  const cacheKey = `${input}:${epoch}:${context.revision}`, old = cache.get(cacheKey);
+  let state = old && old.lastId <= lastId && selected.every(key => !old.truncated[key] || old.events[key][0]?.at <= range.from) ? old
+    : { checkpoint: null, lastId: 0, at: -Infinity, blocked: true,
+      events: Object.fromEntries(keys.map(key => [key, []])), truncated: {},
       records: 0, unsupportedRecords: 0, invalidRecords: 0 };
-  let previous = null, started = false;
-  const envelope = envelopes[key];
-  const add = (at, event) => envelope.add(at, event?.value ?? null, event?.value === null || !event ? undefined : {
-    modelCoefficient: true, coefficientStatus: event.status, modelUpdatedAt: event.updatedAt,
-    inputSource: source(input), algorithmVersion: GARAGE_ALGORITHM_VERSION,
-    coefficientBasis: event.basis, evidenceHours: event.evidence, correctionRevision: context.revision });
-  const project = event => {
-    if (event.at < range.from) { previous = event; return; }
-    if (!started && event.at > range.from) add(range.from, previous);
-    if (event.at > range.from) add(event.at - 1, previous);
-    add(event.at, event); previous = event; started = true;
-  };
-  for (const event of state.events) project(event);
-  const info = GARAGE_COEFFICIENT_INFO[key];
-  const emit = value => {
-    const previous = state.events.at(-1);
-    const status = value?.basis === 'observed-normal-power' ? 'observed' : value?.basis?.startsWith('fitted') ? 'fitted' : value?.basis?.startsWith('retained') ? 'retained'
-      : value?.basis === 'fixed-prior' && info.fixed ? 'fixed-prior' : 'initial';
-    if (previous && previous.value === (value?.value ?? null) && previous.status === status) return;
-    const event = { at: state.at, value: value?.value ?? null, status, basis: value?.basis,
-      updatedAt: state.at, evidence: value?.evidence ?? 0 };
-    state.events.push(event); project(event);
-    if (state.events.length > MAX_EVENTS) { state.events.splice(0, 1000); state.truncated = true; }
+  const projections = Object.fromEntries(selected.map(key => {
+    let previous = null, started = false;
+    const envelope = envelopes[key];
+    const add = (at, event) => envelope.add(at, event?.value ?? null, event?.value === null || !event ? undefined : {
+      modelCoefficient: true, coefficientStatus: event.status, modelUpdatedAt: event.updatedAt,
+      inputSource: source(input), algorithmVersion: GARAGE_ALGORITHM_VERSION,
+      coefficientBasis: event.basis, evidenceHours: event.evidence, correctionRevision: context.revision });
+    const project = event => {
+      if (event.at < range.from) { previous = event; return; }
+      if (!started && event.at > range.from) add(range.from, previous);
+      if (event.at > range.from) add(event.at - 1, previous);
+      add(event.at, event); previous = event; started = true;
+    };
+    for (const event of state.events[key]) project(event);
+    return [key, { project, finish() { if (previous) { if (!started) add(range.from, previous); add(through, previous); } } }];
+  }));
+  const emit = summary => {
+    for (const key of keys) {
+      const info = GARAGE_COEFFICIENT_INFO[key];
+      const value = summary?.coefficients[info.location]?.find(coefficient => coefficient.name === info.parameter);
+      const events = state.events[key], previous = events.at(-1);
+      const status = value?.basis === 'observed-normal-power' ? 'observed' : value?.basis?.startsWith('fitted') ? 'fitted' : value?.basis?.startsWith('retained') ? 'retained'
+        : value?.basis === 'fixed-prior' && info.fixed ? 'fixed-prior' : 'initial';
+      if (previous && previous.value === (value?.value ?? null) && previous.status === status) continue;
+      const event = { at: state.at, value: value?.value ?? null, status, basis: value?.basis,
+        updatedAt: state.at, evidence: value?.evidence ?? 0 };
+      events.push(event); projections[key]?.project(event);
+      if (events.length > MAX_EVENTS) { events.splice(0, 1000); state.truncated[key] = true; }
+    }
   };
   for (const row of store.db.prepare('SELECT * FROM learning_journal WHERE input=? AND id>? AND id<=? ORDER BY id')
     .iterate(garageInput(input), state.lastId, lastId)) {
@@ -100,11 +108,10 @@ function coefficient({ store, range, now, input, envelopes, key, stats }) {
       const entry = decode(row);
       if (state.blocked && !entry.payload?.seed) { state.invalidRecords++; emit(null); continue; }
       state.checkpoint = applyGarageEntry(state.blocked ? null : state.checkpoint, entry, context); state.blocked = false;
-      const summary = garageModelSummary(state.checkpoint.model);
-      emit(summary.coefficients[info.location]?.find(coefficient => coefficient.name === info.parameter));
+      emit(garageModelSummary(state.checkpoint.model));
     } catch { state.invalidRecords++; state.blocked = true; state.checkpoint = null; emit(null); }
   }
-  if (previous) { if (!started) add(range.from, previous); add(through, previous); }
+  for (const projection of Object.values(projections)) projection.finish();
   stats.replayedRecords += state.records; stats.unsupportedRecords += state.unsupportedRecords; stats.invalidRecords += state.invalidRecords;
   cache.delete(cacheKey);
   while (cache.size >= 4) cache.delete(cache.keys().next().value);
@@ -119,6 +126,6 @@ export function addGarageHistory(args) {
     basis: 'original-garage-inputs-and-versioned-read-only-replay' };
   if (Math.min(args.now, args.range.to) < args.range.from) return stats;
   if (inputKeys.length) inputs({ ...args, selected: inputKeys, stats });
-  for (const key of coefficientKeys) coefficient({ ...args, key, stats });
+  if (coefficientKeys.length) coefficients({ ...args, selected: coefficientKeys, stats });
   return stats;
 }

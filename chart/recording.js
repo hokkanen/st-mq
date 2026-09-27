@@ -1,40 +1,7 @@
-import { HISTORY_AXES, HISTORY_GROUPS, RIGHT_AXIS_SIGNALS } from '../src/domain/history-series.js';
+import { HISTORY_GROUPS } from '../src/domain/history-series.js';
 import { durationText, qualityReasonText } from './reading-status.js';
 import { providerName } from './provider-status.js';
 import { recordingPolicy, recordedSignalInfo, RECORDING_POLICIES } from '../src/domain/recording-policy.js';
-
-// Separate daily comparisons from diagnostic inputs without hiding any current
-// series. The menu labels describe the plotted basis, not how SQLite stores it.
-const leftAxisGroups = ['Electricity', 'Home temperatures', 'Caravan', 'Garage heat pump', 'Heating', 'Hot water', 'Ground loop', 'Weather',
-  'Learning', 'Model inputs', 'Model coefficients', 'Garage model inputs', 'Garage model coefficients', 'Control', 'Equipment states', 'Settings', 'Runtime counters', 'Meter checks'];
-const groupLabels = { 'Home temperatures': 'Room temperatures', Heating: 'Home heat pump', 'Hot water': 'Home hot water',
-  'Ground loop': 'Home ground loop', Learning: 'Home learning and outcomes', 'Model inputs': 'Home learning · saved inputs',
-  'Model coefficients': 'Home learning · coefficients', 'Garage model inputs': 'Garage learning · saved inputs',
-  'Garage model coefficients': 'Garage learning · coefficients', Control: 'Requested control',
-  'Equipment states': 'Equipment diagnostics', Settings: 'Home pump settings', 'Runtime counters': 'Home runtime counters' };
-const roomSignals = new Set(['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature', 'garage_temperature_2']);
-const leftAxes = HISTORY_AXES.filter(axis => !RIGHT_AXIS_SIGNALS.includes(axis.key) && !roomSignals.has(axis.key));
-
-export function populateHistoryAxes(select) {
-  const chosen = leftAxes.some(axis => axis.key === select.value) ? select.value : 'power';
-  select.replaceChildren();
-  for (const name of leftAxisGroups) {
-    const axes = leftAxes.filter(axis => axis.group === name);
-    if (!axes.length) continue;
-    const group = document.createElement('optgroup');
-    group.label = groupLabels[name] ?? name;
-    for (const axis of axes) {
-      const option = document.createElement('option'); option.value = axis.key;
-      const label = axis.label.replace(/^Garage · /, '');
-      const basis = name.endsWith('model inputs') || name === 'Model inputs' ? 'saved input'
-        : name.includes('coefficients') ? 'replayed' : axis.kind.toLowerCase();
-      option.textContent = `${label} · ${axis.unit} · ${basis}`;
-      group.append(option);
-    }
-    select.append(group);
-  }
-  select.value = chosen;
-}
 
 export function durationLabel(ms) {
   if (!Number.isFinite(ms) || ms < 0) return 'Collecting';

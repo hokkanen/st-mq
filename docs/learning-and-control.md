@@ -114,12 +114,17 @@ keeps ROOM-only observations separate from confirmed floor charging.
 Chart requests use a read-only database connection and never save replay checkpoints,
 coefficient rows or new snapshots. A bounded memory cache reuses derived timelines
 and resumes replay as new entries arrive; advancing the clock alone does not repeat
-learning. The first request can take longer because it replays earlier learning. The left-axis
-menu starts with **Electricity**, followed by heating and control, weather, learning
-and model views, then equipment diagnostics. Main temperature and electricity-price
-choices are omitted from that menu because they already appear on the right axis.
-Saved model-input temperatures remain selectable because they describe the inputs
-used for learning.
+learning. The first request can take longer because it replays earlier learning.
+The **View** menu groups compatible comparisons with their relevant temperature
+context and labeled activity rows. Saved temperatures and references, thermal
+inputs, electrical inputs, activity fractions and coefficients keep their own
+units and meanings. Both Garage cooling coefficients share one ordered replay
+and retain independent coefficient timelines; selecting another coefficient
+does not repeat the same learning. **Series explorer** can isolate every
+supported saved input or coefficient by its label or signal identifier. The
+shared electricity-price controls remain available across views. Observed
+temperature history stays distinct from the original normalized inputs used
+for learning.
 
 Observed thermal drivers are outdoor temperature, archived solar radiation,
 the estimated combined hydronic heat, derived from space-heating compressor duty

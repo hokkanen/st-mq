@@ -13,7 +13,7 @@ import { createHistoricalPricing } from './chart-prices.js';
 import { historicalSpotIntervals } from './historical-spot-prices.js';
 import { resolveMarketIntervals } from '../domain/market-authority.js';
 import { auxiliaryPowerFromOutput } from '../domain/telemetry.js';
-import { HISTORY_AXIS_BY_KEY, CARAVAN_RUNNING_STATES, GARAGE_INPUT_INFO, GARAGE_COEFFICIENT_INFO, ENERGY_SIGNALS, AUDIT_SIGNALS, SESSION_CHECK_INFO, MODEL_INPUT_INFO, MODEL_COEFFICIENT_INFO } from '../domain/history-series.js';
+import { HISTORY_AXIS_BY_KEY, CARAVAN_RUNNING_STATES, GARAGE_INPUT_INFO, GARAGE_COEFFICIENT_INFO, ENERGY_SIGNALS, AUDIT_SIGNALS, SESSION_CHECK_INFO, MODEL_INPUT_INFO, MODEL_COEFFICIENT_INFO, RECORDED_EVIDENCE_SIGNALS } from '../domain/history-series.js';
 import { addChargingSessionChecks } from './chart-session-checks.js';
 import { addModelInputs } from './chart-model-inputs.js';
 import { addModelCoefficients } from './chart-model-coefficients.js';
@@ -27,6 +27,8 @@ import { getHeatingBenefit } from './chart-heating-benefit.js';
 import { RelatedStepSampler, alignRelatedSamples } from './chart-related-series.js';
 import { alignEaseePowerSnapshots } from './chart-phase-snapshots.js';
 import { powerExtremaTimes } from './chart-power-extrema.js';
+import { CHART_VIEW_BY_KEY } from '../domain/chart-views.js';
+import { RecordedEvidenceLine } from './chart-recorded-evidence.js';
 
 export const CHART_TIME_ZONE = 'Europe/Helsinki';
 const HOUR = 3_600_000, DAY = 24 * HOUR;
@@ -283,6 +285,7 @@ function weatherPointMetadata(row, solar = false) {
 }
 
 function intervalPoints(intervals, key, envelope) {
+  if (!envelope) return;
   let previous = null;
   for (const interval of intervals) {
     const start = Math.max(envelope.from, interval.start), end = Math.min(envelope.to, interval.end);
@@ -370,31 +373,44 @@ function addHistoricalChargerTiming(store, timing, range, now, input, cutoff = I
 /** Combined chart query. This deliberately never calls providers, reads options,
  * writes history, or turns phase-current estimates into electricity metering. */
 export function getChartData({ store, input = 'offline', contract = null, market = null, weather = null,
-  simulated = null, now = Date.now(), startDate, endDate, left = 'power', points = 800, viewFrom, viewTo,
-  _relatedTimes, _priceProjection }) {
+  simulated = null, now = Date.now(), startDate, endDate, left, view, points = 800, viewFrom, viewTo,
+  _relatedTimes, _relatedSignals, _priceProjection }) {
   const started = performance.now();
   const { range, selection, detail } = chartRequestRange({ startDate, endDate, now, viewFrom, viewTo });
   const projecting = Array.isArray(_relatedTimes), drawingOnly = detail || projecting;
-  if (!HISTORY_AXIS_BY_KEY[left]) throw new TypeError('Unknown left axis');
+  const selectedView = view !== undefined && Object.hasOwn(CHART_VIEW_BY_KEY, view) ? CHART_VIEW_BY_KEY[view] : null;
+  if (view !== undefined && left !== undefined) throw new TypeError('Choose either a chart view or a historical series.');
+  if (view !== undefined && !selectedView) throw new TypeError('Unknown chart view');
+  left ??= 'power';
+  if (!selectedView && !Object.hasOwn(HISTORY_AXIS_BY_KEY, left)) throw new TypeError('Unknown left axis');
   if (!Number.isInteger(points) || points < 100 || points > 2000) throw new RangeError('Chart points must be 100–2000');
   if (!['simulated', 'providers', 'mqtt', 'offline'].includes(input)) throw new TypeError('Unknown chart input');
   let rates = null;
   if (contract && (!projecting || _priceProjection)) { rates = validateContract(contract); if (rates.mode !== 'billing') throw new TypeError('Historical charts require dated billing rates'); }
-  const leftNames = HISTORY_AXIS_BY_KEY[left].signals;
-  const names = projecting ? _priceProjection ? ['all_in_price', 'spot_price'] : leftNames
-    : [...new Set([...TEMPERATURES, 'model_indoor_temperature', 'outdoor_forecast', 'all_in_price', 'spot_price', ...leftNames])];
+  const leftNames = selectedView ? [...new Set([...selectedView.leftSignals, ...selectedView.rightSignals,
+    ...selectedView.tracks.filter(name => Object.hasOwn(HISTORY_AXIS_BY_KEY, name))])]
+    : HISTORY_AXIS_BY_KEY[left].signals;
+  const names = projecting ? _priceProjection ? ['all_in_price', 'spot_price'] : _relatedSignals ?? leftNames
+    : [...new Set([...(selectedView ? [] : [...TEMPERATURES, 'model_indoor_temperature', 'outdoor_forecast']),
+      'all_in_price', 'spot_price', ...leftNames])];
+  const powerNames = ['property_power', 'auxiliary_power', 'charger_power', 'charger2_power'].filter(name => names.includes(name));
+  const phaseNames = ['property', 'ev1', 'ev2'].flatMap(prefix => [1, 2, 3].map(phase => `${prefix}_current_l${phase}`)).filter(name => names.includes(name));
+  const aggregatePower = powerNames.some(name => ['property_power', 'charger_power'].includes(name));
+  const selectedHas = candidates => leftNames.some(name => candidates.includes(name));
   const envelopes = Object.fromEntries(names.map(name => [name, projecting
     ? new RelatedStepSampler(range.from, range.to, _relatedTimes) : new Envelope(range.from, range.to, points)]));
   if (_priceProjection) for (const envelope of Object.values(envelopes)) envelope.mask = _priceProjection.marketIntervals;
   const lines = Object.fromEntries(names.map(name => [name, new HistoryLine(envelopes[name], LEARNING.includes(name) || DOOR_SIGNALS.includes(name) ? Infinity : name === 'auxiliary_power' ? H66_MAX_AGE_MS : /power|current|integral|solar/.test(name) ? 30 * 60_000 : 3 * HOUR, ['auxiliary_power', 'solar_radiation', ...DOOR_SIGNALS].includes(name), detail,
-    name.endsWith('_price') || leftNames.includes(name) && left !== 'integral' && !isInterpolatedTemperature(name) && !ENERGY_SIGNALS.includes(name))]));
+    name.endsWith('_price') || leftNames.includes(name) && name !== 'heating_integral' && !isInterpolatedTemperature(name) && !ENERGY_SIGNALS.includes(name))]));
+  const evidenceLines = Object.fromEntries(names.filter(name => RECORDED_EVIDENCE_SIGNALS.includes(name))
+    .map(name => [name, new RecordedEvidenceLine(envelopes[name], range, now)]));
   // Following samples close clipped scalar segments, including a viewport
   // narrower than their source cadence. Context never crosses selected dates.
   const queryTo = Math.min(detail ? Math.min(selection.to, range.to + 3 * HOUR) : range.to, now + 1);
   const shading = Object.fromEntries(['heatOff', 'compressorSpace', 'compressorDhw', 'compressorGarage', 'dhwr', 'fireplace'].map(key => [key, new ShadeEnvelope(range, points)])), warnings = [];
   // Daily outcomes retain their selected calendar-day meaning at every zoom.
   // Only their selected series needs this calculation on detail requests.
-  const firewoodRange = detail && FIREWOOD_OUTCOME_NAMES.includes(left) ? { ...range,
+  const firewoodRange = detail && selectedHas(FIREWOOD_OUTCOME_NAMES) ? { ...range,
     from: Math.max(selection.from, moment.tz(range.from, CHART_TIME_ZONE).startOf('day').valueOf()),
     to: Math.min(selection.to, moment.tz(range.to - 1, CHART_TIME_ZONE).startOf('day').add(1, 'day').valueOf()),
   } : range;
@@ -412,14 +428,15 @@ export function getChartData({ store, input = 'offline', contract = null, market
   const modeEnvelopes = Object.fromEntries([0, 1, 2, 3, 4].map(mode => [mode, new ShadeEnvelope(range, points)]));
   let telemetry = new Map(), previousTelemetryAt = null;
   const learningMetadata = {};
-  const requested = new Set(projecting ? _priceProjection ? ['spot_price']
-    : left === 'power' ? [...PHASES, 'auxiliary_output', 'auxiliary_power', 'charger_power'] : PHASES
-    : [...TEMPERATURES, 'garage_compressor_active', 'spot_price', 'requested_heat_mode', 'auxiliary_output', ...H66_SIGNALS,
-    ...(left === 'integral' ? [] : PHASES), ...leftNames.filter(name => !Object.hasOwn(GARAGE_INPUT_INFO, name) && !Object.hasOwn(GARAGE_COEFFICIENT_INFO, name) && !Object.hasOwn(MODEL_INPUT_INFO, name) && !Object.hasOwn(MODEL_COEFFICIENT_INFO, name) && !Object.hasOwn(SESSION_CHECK_INFO, name) && !AUDIT_SIGNALS.includes(name) && !FIREWOOD_OUTCOME_NAMES.includes(name) && !['caravan_energy', 'property_power', 'charger2_power', 'heat_pump_power', 'solar_forecast',...ENERGY_SIGNALS].includes(name))]);
+  const requested = new Set(projecting && _priceProjection ? ['spot_price']
+    : [...names.filter(name => !Object.hasOwn(GARAGE_INPUT_INFO, name) && !Object.hasOwn(GARAGE_COEFFICIENT_INFO, name) && !Object.hasOwn(MODEL_INPUT_INFO, name) && !Object.hasOwn(MODEL_COEFFICIENT_INFO, name) && !Object.hasOwn(SESSION_CHECK_INFO, name) && !AUDIT_SIGNALS.includes(name) && !FIREWOOD_OUTCOME_NAMES.includes(name) && !['caravan_energy', 'property_power', 'charger2_power', 'heat_pump_power', 'outdoor_forecast', 'solar_forecast', 'all_in_price', ...ENERGY_SIGNALS].includes(name)),
+      ...(aggregatePower ? PHASES : []),
+      ...(!projecting ? ['garage_compressor_active', 'spot_price', 'requested_heat_mode', 'auxiliary_output', ...H66_SIGNALS] : []),
+      ...(names.includes('auxiliary_power') ? ['auxiliary_output'] : [])]);
   const compactImports = input !== 'simulated' && range.to - range.from > 7 * DAY;
   const columns = `o.id,o.source,o.device,o.signal,o.value,o.unit,o.source_time,o.received_at,
     json_extract(o.raw,'$.reportIntervalMs') AS report_interval_ms,
-    o.quality,o.import_id,o.row_number,CASE WHEN o.signal IN ('heat_pump_power','charger_power','solar_radiation','auxiliary_output','compressor_active','dhw_routing','operating_mode','controller_phase','dhwr_request',${LEARNING.map(name => `'${name}'`).join(',')}) THEN o.raw END AS raw`;
+    o.quality,o.import_id,o.row_number,CASE WHEN o.signal IN ('heat_pump_power','charger_power','solar_radiation','auxiliary_output','compressor_active','dhw_routing','operating_mode','controller_phase','dhwr_request',${[...LEARNING, ...RECORDED_EVIDENCE_SIGNALS].map(name => `'${name}'`).join(',')}) THEN o.raw END AS raw`;
   const sourceScope = input === 'simulated' ? "(o.source='simulation' OR o.source IN ('controller-learning','controller-estimate','controller') AND o.device='simulated')"
     : "(o.source<>'simulation' AND NOT(o.source IN ('controller-learning','controller-estimate','controller') AND o.device='simulated'))";
   // Read only the selected signals from their index. A chronological full-table
@@ -456,14 +473,29 @@ export function getChartData({ store, input = 'offline', contract = null, market
   }
   const flagsOf = qualityReader(); let rawRows = 0, invalidRows = 0, latestOutdoor = null;
   let time = null, atRows = new Map(), phases = new Map();
-  let previousHeat = null, pendingPulse = null;
+  let previousHeat = null, pendingPulse = null, pendingPhase = null;
+  const flushPhase = (until, final = false) => {
+    if (!pendingPhase) return;
+    const { start, end, value } = pendingPhase;
+    const a = Math.max(start, range.from), b = Math.min(end, until, now, range.to);
+    if (envelopes.controller_phase && b > a) {
+      const metadata = { source: 'controller', requested: true, basis: 'recorded-request',
+        observedAt: start, intervalStart: start, intervalEnd: b };
+      envelopes.controller_phase.add(a, value, metadata);
+      envelopes.controller_phase.add(b - 1, value, metadata);
+      if (final || b < until) envelopes.controller_phase.add(b, null);
+    }
+    pendingPhase = null;
+  };
   const flushPulse = () => {
     if (!pendingPulse) return;
     const { start, end } = pendingPulse, until = Math.min(end, now, range.to);
     shading.dhwr.add(start, until);
     if (envelopes.dhwr_request && until > Math.max(start, range.from)) {
-      envelopes.dhwr_request.add(Math.max(start, range.from), 1);
-      envelopes.dhwr_request.add(until - 1, 1);
+      const metadata = { source: 'controller', requested: true, basis: 'recorded-request',
+        observedAt: start, intervalStart: start, intervalEnd: until };
+      envelopes.dhwr_request.add(Math.max(start, range.from), 1, metadata);
+      envelopes.dhwr_request.add(until - 1, 1, metadata);
       envelopes.dhwr_request.add(until, null);
     }
     pendingPulse = null;
@@ -513,6 +545,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
     flushTelemetry(time);
     for (const { row, value } of atRows.values()) {
       const signal = row.signal;
+      if (evidenceLines[signal]) { evidenceLines[signal].add(row, value); continue; }
       if (signal === 'garage_compressor_active' && value === 1 && row.periodicCoverage && Number.isFinite(row.reportExpiresAt))
         shading.compressorGarage.add(time, Math.min(row.reportExpiresAt, now));
       if (signal === 'charger_power' && time >= energyStarts.ev1) continue;
@@ -530,10 +563,13 @@ export function getChartData({ store, input = 'offline', contract = null, market
         }
       }
       else if (signal === 'controller_phase' && row.source === 'controller' && row.device === input) {
+        flushPhase(time);
         let until = time;
         try { const raw = JSON.parse(row.raw); if (Number.isFinite(raw?.expiresAt) && raw.expiresAt > time) until = raw.expiresAt; } catch { /* Unsupported native request. */ }
         const current = until > time ? value : null;
-        lines[signal]?.add(time, current);
+        // Request duration comes from its own expiry, not a scalar sample gap.
+        envelopes[signal]?.add(time, current);
+        if (Number.isFinite(current)) pendingPhase = { start: time, end: until, value: current };
         telemetry.set(signal, { at: time, value: current, until });
       }
       else if (['compressor_active', 'dhw_routing', 'operating_mode'].includes(signal)) {
@@ -575,7 +611,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
         }
       }
     }
-    if (left === 'power') {
+    if (aggregatePower) {
       const candidates = new Map();
       for (const group of phases.values()) {
         const complete = group.values.every(value => Number.isFinite(value));
@@ -602,7 +638,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
     // Door contacts report changes rather than a sampling cadence. An indexed
     // prior state seeds historical days too; explicit outage coverage still
     // interrupts it, and the original report time accompanies the held line.
-    for (const signal of leftNames.filter(name => DOOR_SIGNALS.includes(name))) {
+    for (const signal of leftNames.filter(name => DOOR_SIGNALS.includes(name) || RECORDED_EVIDENCE_SIGNALS.includes(name))) {
       const seed = store.db.prepare(`SELECT ${columns} FROM observations o LEFT JOIN imports i ON i.id=o.import_id
         WHERE o.signal=? AND o.source_time<? AND ${sourceScope}
         AND o.received_at<=? AND (o.import_id IS NULL OR i.status='complete' AND i.completed_at<=?) ORDER BY o.source_time DESC,o.id DESC LIMIT 1`)
@@ -611,9 +647,9 @@ export function getChartData({ store, input = 'offline', contract = null, market
     }
     // Learned estimates remain in effect until superseded, including past-day
     // views. A seed retains its original timestamp and never backdates learning.
-    if (LEARNING.includes(left)) {
+    for (const signal of leftNames.filter(name => LEARNING.includes(name))) {
       const seed = store.db.prepare(`SELECT ${columns} FROM observations o WHERE o.signal=? AND o.source_time<?
-        AND o.source='controller-learning' AND o.device=? AND o.received_at<=? ORDER BY o.source_time DESC,o.id DESC LIMIT 1`).get(left, range.from - 3 * HOUR, input, now);
+        AND o.source='controller-learning' AND o.device=? AND o.received_at<=? ORDER BY o.source_time DESC,o.id DESC LIMIT 1`).get(signal, range.from - 3 * HOUR, input, now);
       if (seed) earlier.push(seed);
     }
     const phaseSeed = store.db.prepare(`SELECT ${columns} FROM observations o WHERE o.signal='controller_phase'
@@ -624,7 +660,8 @@ export function getChartData({ store, input = 'offline', contract = null, market
       // A sensor can stay unchanged for days. Seed live plots with its latest
       // prior reading, including invalid readings so they cannot revive old data.
       // Indexed lookups avoid expanding the selected history scan indefinitely.
-      const signals = [...TEMPERATURES, ...(left === 'integral' ? ['heating_integral'] : PHASES)];
+      const signals = [...new Set([...TEMPERATURES.filter(name => names.includes(name)),
+        ...(names.includes('heating_integral') ? ['heating_integral'] : []), ...(aggregatePower ? PHASES : phaseNames)])];
       const latest = store.db.prepare(`SELECT o.source_time FROM observations o INDEXED BY observations_signal_time
         LEFT JOIN imports i ON i.id=o.import_id WHERE o.signal=? AND o.source_time<?
         AND ${sourceScope} AND o.received_at<=? AND (o.import_id IS NULL OR i.status='complete' AND i.completed_at<=?)
@@ -641,7 +678,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
     yield* historyRows;
   }
   const rows = mergeCoverageRows(rowsWithPreviousReadings(),store,{from:range.from-3*HOUR,to:queryTo,input,signals:requested,now});
-  for (const row of left === 'power' ? alignEaseePowerSnapshots(rows, store.db, now) : rows) {
+  for (const row of aggregatePower ? alignEaseePowerSnapshots(rows, store.db, now) : rows) {
     if (!isRecordedDataset(row)) continue;
     // Periodic reports have their own explicit availability projection, including
     // unchanged spans beginning before the normal three-hour context query.
@@ -650,7 +687,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
       if (time !== null && time !== row.source_time) flushTime();
       time = row.source_time;
       const decoded = { observations: JSON.parse(row.canonical) };
-      if (row.kind === 'easee' && left === 'power') {
+      if (row.kind === 'easee' && aggregatePower) {
         // The original row is already the exact six-phase acquisition cohort.
         // Aggregate it without manufacturing six intermediate SQLite-shaped rows.
         for (const [prefix, offset] of [['ev1', 0], ['property', 3]]) {
@@ -677,9 +714,10 @@ export function getChartData({ store, input = 'offline', contract = null, market
     if (time !== null && time !== row.source_time) flushTime();
     time = row.source_time;
     if (LEARNING.includes(row.signal) && (row.source !== 'controller-learning' || row.device !== input)) continue;
+    if (['controller_phase', 'dhwr_request'].includes(row.signal) && (row.source !== 'controller' || row.device !== input)) continue;
     const flags = row.flags ?? flagsOf(row.quality), value = valueOf(row, flags);
     if (value === null) invalidRows++;
-    if (left === 'power' && PHASES.includes(row.signal)) {
+    if (aggregatePower && PHASES.includes(row.signal)) {
       const prefix = row.signal.startsWith('property') ? 'property' : 'ev1';
       // Same original CSV row, or the last-reported states from one device poll.
       // Easee phases retain independent source timestamps in the phase view.
@@ -692,6 +730,8 @@ export function getChartData({ store, input = 'offline', contract = null, market
     } else rememberScalar(row, value);
   }
   if (time !== null) flushTime();
+  flushPhase(Math.min(now, range.to), true);
+  for (const line of Object.values(evidenceLines)) line.flush();
   flushPulse();
   if (Number.isFinite(energyStarts.ev1)) timing.add('charger1',energyStarts.ev1,null);
   const recordedEnergy = !drawingOnly || names.some(name => ENERGY_SIGNALS.includes(name) || PHASES.includes(name)
@@ -726,22 +766,22 @@ export function getChartData({ store, input = 'offline', contract = null, market
   const garageHistory = addGarageHistory({ store, range, now, input, envelopes });
   const modelCoefficients = addModelCoefficients({ store, range, now, input, envelopes });
   const fireplaceInputs = addFireplaceInputs({ store, range, now, input, envelopes, shading });
-  const needsFirewood = !detail || FIREWOOD_OUTCOME_NAMES.includes(left);
+  const needsFirewood = !detail || selectedHas(FIREWOOD_OUTCOME_NAMES);
   const outlookForFirewood = !needsFirewood ? {} : input === 'simulated' ? simulated ?? {} : assembleOutlook(market, weather, contract, now);
   const firewood = needsFirewood ? getFirewoodBenefit({ store, input, range: firewoodRange, now,
     priceIntervals: priced.map(row => ({ ...row, price: row.totalCtPerKwh })),
     futureIntervals: !detail && range.from <= now && range.to > now
       ? forecastIntervals(outlookForFirewood.prices, outlookForFirewood.forecast, Math.floor(now / 900_000) * 900_000) : [] }) : null;
   const firewoodOutcomes = firewood ? addFirewoodOutcomes({ result: firewood, range: firewoodRange, now, envelopes }) : null;
-  if (FIREPLACE_INPUT_NAMES.includes(left) && fireplaceInputs.loggingStartedAt === null)
+  if (selectedHas(FIREPLACE_INPUT_NAMES) && fireplaceInputs.loggingStartedAt === null)
     warnings.push('No fireplace logging exists for this input source. Earlier unlogged periods are unknown.');
-  if (FIREWOOD_OUTCOME_NAMES.includes(left)) {
+  if (selectedHas(FIREWOOD_OUTCOME_NAMES)) {
     warnings.push('Firewood savings are retrospective model estimates of avoided space-heating electricity, with free wood. They are separate from timing-cost comparisons.');
     if (firewood.summary.status === 'unavailable') warnings.push(firewood.summary.reason ?? 'Firewood savings need usable heating observations and prices.');
   }
-  if (Object.hasOwn(MODEL_INPUT_INFO, left) && !FIREPLACE_INPUT_NAMES.includes(left) && !modelInputs.records) warnings.push('No saved learning inputs exist for these dates and input source. Recording sensor values alone does not create learning-input history.');
-  if (Object.hasOwn(MODEL_COEFFICIENT_INFO, left)) {
-    if (!envelopes[left].values().some(point => Number.isFinite(point.y))) warnings.push('No reconstructable model coefficients exist for these dates and input source.');
+  if (leftNames.some(name => Object.hasOwn(MODEL_INPUT_INFO, name) && !FIREPLACE_INPUT_NAMES.includes(name)) && !modelInputs.records) warnings.push('No saved learning inputs exist for these dates and input source. Recording sensor values alone does not create learning-input history.');
+  if (leftNames.some(name => Object.hasOwn(MODEL_COEFFICIENT_INFO, name))) {
+    if (!leftNames.some(name => Object.hasOwn(MODEL_COEFFICIENT_INFO, name) && envelopes[name].values().some(point => Number.isFinite(point.y)))) warnings.push('No reconstructable model coefficients exist for these dates and input source.');
     if (modelCoefficients.unsupportedRecords || modelCoefficients.invalidRecords) warnings.push('Some coefficient history is unavailable because its learning records are unsupported or incomplete.');
   }
   for(const signal of leftNames.filter(name=>AUDIT_SIGNALS.includes(name))) {
@@ -799,14 +839,14 @@ export function getChartData({ store, input = 'offline', contract = null, market
   }
   const series = Object.fromEntries(Object.entries(envelopes).map(([name, envelope]) => [name, envelope.values()]));
   let relatedSampling;
-  const relatedGroups = [...(['power', 'phases'].includes(left) ? [leftNames] : []), ['all_in_price', 'spot_price']];
+  const relatedGroups = [...(powerNames.length > 1 ? [powerNames] : []), ...(phaseNames.length > 1 ? [phaseNames] : []), ['all_in_price', 'spot_price']];
   for (const group of relatedGroups) if (group.some(name => envelopes[name].count > series[name].length)) {
-    const compositeTimes = left === 'power' && group === leftNames ? powerExtremaTimes({ store,range,now,input,
+    const compositeTimes = group === powerNames && aggregatePower ? powerExtremaTimes({ store,range,now,input,
       points,readValue:valueOf }) : [];
     const times = [...new Set([...group.flatMap(name => series[name].map(point => point.x)),...compositeTimes])].sort((a, b) => a - b);
     const priceGroup = group[0] === 'all_in_price';
-    const projected = getChartData({ store, input, contract, now, startDate, endDate, left, points, viewFrom, viewTo,
-      _relatedTimes: times, ...(priceGroup ? { _priceProjection: { marketIntervals, priced } } : {}) });
+    const projected = getChartData({ store, input, contract, now, startDate, endDate, ...(view === undefined ? { left } : { view }), points, viewFrom, viewTo,
+      _relatedTimes: times, _relatedSignals: group, ...(priceGroup ? { _priceProjection: { marketIntervals, priced } } : {}) });
     Object.assign(series, alignRelatedSamples(projected.series));
     relatedSampling ??= { basis: 'shared-original-step-times', groups: [], times: 0, sourceRows: 0,
       description: 'Related channels share selected original step times; held display points retain their original source timestamp and interval. Omitted missing runs remain disconnected.' };
@@ -821,7 +861,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
   const lastReadings = Object.fromEntries([...TEMPERATURES,
     ...leftNames]
     .filter(name => lines[name]?.previous).map(name => [name, { ...lines[name].previous }]));
-  if (LEARNING.includes(left)) warnings.push('Learning history records estimates when assessed. Gaps mean no recorded estimate; auxiliary recovery metrics exclude cycles whose auxiliary state was unknown.');
+  if (selectedHas(LEARNING)) warnings.push('Learning history records estimates when assessed. Gaps mean no recorded estimate; auxiliary recovery metrics exclude cycles whose auxiliary state was unknown.');
   const operatingModes = Object.entries(modeEnvelopes).flatMap(([value, envelope]) => envelope.values().map(row => ({ ...row, value: Number(value) }))).sort((a, b) => a.start - b.start);
   const timingBenefit = detail ? null : timing.result();
   const heatingBenefit = detail ? null : getHeatingBenefit({ store, input, range, now });
@@ -829,15 +869,15 @@ export function getChartData({ store, input = 'offline', contract = null, market
     homeModel: heatingBenefit, homeTiming: timingBenefit.heatPump,
     garageModel: getGarageModelBenefit({ store, input, range, now }),
     garageTiming: getGarageTimingBenefit({ store, input, range, now, prices: priced }) });
-  return { range, now, input, left, series, shading, operatingModes,
+  return { range, now, input, ...(view === undefined ? { left } : { view }), series, shading, operatingModes,
     ...(detail ? { selection } : { timingBenefit, heatingBenefit, heatingSavings, firewoodBenefit: firewood.summary }),
     meta: { ...(detail ? { detail: true } : {}), ...(relatedSampling ? { relatedSampling } : {}), warnings, priceAssumptions, rawRows, invalidRows, lastReadings, learning: learningMetadata, modelInputs, modelCoefficients, garageHistory, fireplaceInputs, firewoodOutcomes, recordedEnergy, chargingSessions, heatPumpEnergy, historyBasis: 'original-recorded-history',
     returnedPoints: Object.values(series).reduce((sum, rows) => sum + rows.length, 0),
     elapsedMs: Math.round((performance.now() - started) * 100) / 100,
-    powerEstimate: left === 'power' ? 'Recorded phase or total energy divided by its interval duration; coherent current snapshots, including v0.7.5 CSV imports, use 230 V. Phase allocation and energy integration are estimates.' : null,
+    powerEstimate: powerNames.length ? 'Recorded phase or total energy divided by its interval duration; coherent current snapshots, including v0.7.5 CSV imports, use 230 V. Phase allocation and energy integration are estimates.' : null,
     heatOffBasis: 'Historical requested reduction, not compressor activity.',
     auxHeatBasis: 'Estimated kW from H66 auxiliary output and configured capacity; cumulative counters do not identify episodes.',
-    dhwrBasis: 'Requested circulation with its recorded duration; v0.7.5 CSV requests last ten minutes. MQTT acknowledgement is not physical pump feedback. Independent electrical feedback is live-only.',
+    dhwrBasis: 'Requested circulation with its recorded duration; v0.7.5 CSV requests last ten minutes. MQTT acknowledgement is not physical pump feedback. Recorded electrical or switch feedback is shown separately and does not prove water flow.',
     fireplaceBasis: 'Corrected manual additions over the model burn timescale; heat release continues afterward.',
     decimation: 'Original recorded history, reduced in memory for display: first, last, minimum, maximum and missing-data breaks per time bucket. Costs use original energy intervals independently of drawing points.' } };
 }

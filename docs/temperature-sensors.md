@@ -17,17 +17,23 @@ and `stmq/home/smoke3/status/temperature`. Assign each exact topic to its corres
 the subscription fields require exact topics, not a wildcard such as
 `stmq/home/+/status/temperature`.
 
-The chart shows one **Average indoor** series on the right axis, using the existing
-indoor temperature colour. This is the same fixed average of configured indoor
-sensors used by the thermal model: Upstairs, Bedroom and Downstairs each contribute
-one third when all three are configured with the default weights. The **Room
-temperatures** section of the **Left axis** drawer contains one option,
-**Home and garage temperatures**, which adds the rooms and Garage front on the left
-axis. Both air temperature axes then use the same scale. Garage rear remains a shared
-right-axis series with its existing colour and legend control. Average indoor keeps
-its green colour, with terracotta for Upstairs, violet for Bedroom, amber for Downstairs and
-blue for Outdoor. The summary above the chart shows Average indoor and Outdoor;
-individual rooms are available through the chart and source details.
+The **Home temperatures & comfort** view compares Upstairs, Bedroom, Downstairs,
+**Average indoor** and the saved reference. **Property temperatures** keeps all
+three rooms and both garage probes together. Temperatures share one right-hand
+scale; views with no other quantitative subject hide the left scale. The average
+is the fixed configured indoor average used by the thermal model: the three rooms
+each contribute one third with default weights. Historical inputs retain their
+original membership instead of applying today's sensor configuration backwards.
+
+Average indoor is green, Upstairs terracotta, Bedroom violet, Downstairs amber and
+Outdoor blue. Garage front and rear use related but distinct warm colours. Dashed
+measured-temperature curves use bounded monotone interpolation; forecast curves
+use dash-dot strokes. References and settings keep steps. Each view remembers its
+own legend choices; price visibility is shared. **Garage temperatures & compressor**
+also offers the pump's interpreted indoor temperature as a diagnostic, separately
+from the two protection probes. Individual signals remain searchable in **Series
+explorer**. The summary above the chart shows Average indoor and Outdoor.
+
 By default, st-mq expects a genuine report on each dedicated indoor MQTT topic
 every 70 minutes, with five minutes allowed for delivery delay. This is an
 application policy, not a guarantee about the detector. Set

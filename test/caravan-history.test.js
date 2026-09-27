@@ -10,7 +10,8 @@ import { isRecordedDataset } from '../src/storage/recorded-datasets.js';
 import { CARAVAN_RUNNING_STATES, HISTORY_AXES, SIGNAL_INFO } from '../src/domain/history-series.js';
 import { INDOOR_SIGNALS, GARAGE_TEMPERATURE_SIGNALS, indoorWeights } from '../src/domain/indoor-sensors.js';
 import { historyDatasets, historySeriesAt, historyValueLabel } from '../chart/history-model.js';
-import { historyTooltipLabel, historyValueScales } from '../chart/history-chart.js';
+import { historyTooltipLabel } from '../chart/history-chart.js';
+import { explorerSelection } from '../chart/series-explorer.js';
 import { recordingRows } from '../chart/recording.js';
 
 const start = Date.parse('2026-09-14T10:00:00Z');
@@ -91,7 +92,7 @@ test('dehumidifier enum transitions, viewport edges and dense plots contain only
     assert(points.length > 0);
     assert(points.every(point => point.y === null || Object.hasOwn(CARAVAN_RUNNING_STATES, point.y)));
     assert(!points.some(point => point.interpolated === true));
-    const dataset = historyDatasets(payload.series, stateSignal).find(dataset => dataset.key === stateSignal);
+    const dataset = historyDatasets(payload.series, { leftSignals: [stateSignal], rightSignals: [] }).find(dataset => dataset.key === stateSignal);
     assert.equal(dataset.stepped, true);
     assert.equal(dataset.cubicInterpolationMode, 'default');
     if (options.viewFrom) assert.deepEqual(points.find(point => point.x === options.viewFrom)?.y, 0);
@@ -104,9 +105,9 @@ test('dehumidifier enum transitions, viewport edges and dense plots contain only
     assert.match(tooltip, new RegExp(`Caravan dehumidifier: ${label}`));
     assert.match(tooltip, /not used for learning/);
   }
-  const scale = historyValueScales(stateSignal, []).left;
-  assert.equal(scale.min, 0); assert.equal(scale.max, 4); assert.equal(scale.ticks.stepSize, 1);
-  assert.deepEqual([0, 1, 2, 3, 4].map(scale.ticks.callback), ['Off', 'Low', 'Medium', 'High', 'Auto']);
+  const view = explorerSelection(stateSignal);
+  assert.deepEqual(view.leftSignals, []);
+  assert.deepEqual(view.tracks, [stateSignal], 'Categorical readings use labelled activity rows, not a numeric value axis');
 });
 
 test('non-enum dehumidifier samples are gaps and never interpreted as fractional fan states', t => {

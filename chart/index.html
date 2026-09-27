@@ -714,19 +714,8 @@
         <div class="section-top chart-heading">
           <div class="chart-heading-copy"><h2 id="history-title">History &amp; outlook</h2><p class="muted">Finnish local time · Europe/Helsinki</p></div>
           <div class="chart-axis-actions">
-            <label class="axis-control">Left axis
-              <select id="left-axis">
-                <option value="power">Power</option>
-                <option value="phases">Phase currents</option>
-                <option value="integral">Heating integral</option>
-                <optgroup label="Learning">
-                  <option value="learning_profit">Space-heating benefit after recovery</option>
-                  <option value="learning_aux_profit">Space-heating benefit with auxiliary recovery</option>
-                  <option value="learning_recovery_error">Space-heating recovery-cost prediction error</option>
-                  <option value="learning_indoor_temperature">Learned normal temperature</option>
-                </optgroup>
-                <option value="solar_radiation">Solar radiation forecast</option>
-              </select>
+            <label class="axis-control">View
+              <select id="chart-view" aria-describedby="chart-view-description"><option value="power">Electrical power</option></select>
             </label>
             <button id="chart-fullscreen" class="chart-shortcut secondary-button" type="button" data-chart-view="false" aria-label="Open chart view" title="Open chart view" aria-expanded="false" aria-controls="history">
               <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4v16h16M7 14l4-5 4 3 5-7"/></svg>
@@ -749,6 +738,16 @@
           </div>
         </div>
       </div>
+      <p id="chart-view-description" class="chart-view-description muted"></p>
+      <div id="chart-explorer" class="chart-explorer" hidden>
+        <div class="chart-explorer-search">
+          <label for="chart-series-search">Find a series</label>
+          <input id="chart-series-search" type="search" placeholder="Temperature, pump, energy…" autocomplete="off" aria-controls="chart-series">
+          <p id="chart-series-count" class="muted" aria-live="polite"></p>
+          <p class="muted">Search measurements, recorded states and supported calculations by name, unit or signal. Each selection keeps its own unit and evidence basis.</p>
+        </div>
+        <label class="chart-series-control">Series<select id="chart-series" size="6" aria-describedby="chart-view-description"></select></label>
+      </div>
       <p id="chart-status" class="chart-status muted" role="status">Loading selected dates…</p>
       <div id="chart-overview" class="chart-overview">
         <div class="chart-overview-labels"><span id="chart-selected-start"></span><span id="chart-selected-end"></span></div>
@@ -756,15 +755,13 @@
         <div class="chart-view-status"><span id="chart-visible-range"></span><span id="chart-detail-status" role="status" data-state="idle"></span></div>
       </div>
       <div class="plot"><canvas id="history" aria-label="Home energy, temperature and electricity prices for selected dates" role="img"></canvas></div>
-      <div id="operating-modes" class="mode-history" aria-label="Heat-pump operating mode history"></div>
-      <div id="dhwr-history" class="mode-history" aria-label="Hot-water recirculation request history"></div>
-      <div id="fireplace-history" class="mode-history" aria-label="Fireplace activity from manually recorded firewood"></div>
+      <div id="chart-activity" class="chart-activity" aria-label="Operating history"></div>
       <div class="chart-legend-panel">
         <button id="chart-legend-toggle" class="secondary-button" type="button" aria-expanded="false" aria-controls="chart-legend">Legend</button>
         <div id="chart-legend" class="chart-legend" aria-label="Chart series visibility"></div>
       </div>
       <p id="chart-gesture-help" class="muted chart-gesture-help">Chart view: pinch or wheel to zoom, drag to move, tap for values. Keyboard: + / − to zoom, arrows to move, Home to reset.</p>
-      <p id="chart-notes" class="muted chart-notes"></p>
+      <details class="chart-notes-disclosure"><summary>How to read this view</summary><p id="chart-notes" class="muted chart-notes"></p></details>
       <details id="timing-details" class="timing-details dashboard-disclosure">
         <summary><span>Energy cost comparisons</span></summary>
         <div id="timing-benefit" class="timing-benefit">

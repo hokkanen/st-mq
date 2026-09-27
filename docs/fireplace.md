@@ -61,9 +61,11 @@ or certify the original model's control forecasts.
 
 **Home → Heating configuration → Home learning** explains manual kilograms, calculated delayed release
 and the effective fireplace response in degrees C/kg, including its evidence status. The
-left-axis drawer adds **Manually recorded firewood additions**, **Fireplace release input**,
-**Fireplace response**, and daily **Firewood electricity cost avoided** and
-**Firewood electricity avoided**.
+**View** menu groups **Firewood additions**, **Modeled fireplace release**, daily
+**Firewood electricity cost avoided** and **Firewood electricity avoided** under
+Fireplace. **Fireplace response** is a separate Home coefficients view because its
+°C/kg unit differs from fuel events and modeled release. Individual signals are
+also searchable in Series explorer.
 Simultaneous additions share a marker with total kilograms and load count. Release
 includes tails from loads before the selected dates. Before logging began, missing
 records do not establish zero firewood. Corrections update these derived views.
@@ -73,7 +75,9 @@ and lasts for the model's shared `FIREPLACE_RESPONSE.burnHours` value, currently
 two hours. Overlapping additions merge into one continuous interval, and removing
 a mistaken entry updates the strip. This marks the model's burn timescale; masonry
 continues releasing heat after the strip ends. **DHWR** and **Pump mode** have
-their own strips below the chart, so simultaneous activity remains visible.
+their own selectable rows in relevant views, so simultaneous activity remains
+visible. A shared vertical cursor spans the plot and visible rows, ending before
+the legend. Each view remembers the enabled rows.
 
 The **Energy cost comparisons** fold contains **Heating**, **Charging** and
 **Firewood**. Heating and Charging retain their same-energy timing comparison.

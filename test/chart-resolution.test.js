@@ -1,3 +1,4 @@
+import { CHART_VIEW_BY_KEY } from '../src/domain/chart-views.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { chartDetailRequest, clipChartSeries, selectChartResolution } from '../chart/chart-resolution.js';
@@ -59,9 +60,9 @@ test('clipping keeps power and phase cohorts intact, including genuine violation
     assert.deepEqual(clipped[key], series[key].slice(1, 7));
     assert(clipped[key].every((point, index) => point === series[key][index + 1]));
   }
-  const datasets = historyDatasets(clipped, 'power');
+  const datasets = historyDatasets(clipped, CHART_VIEW_BY_KEY.power);
   const top = datasets.find(dataset => dataset.key === 'charger2_power');
-  assert.equal(top.data.find(point => point.x === 30).y, 9, 'A true component sum above the source total remains visible');
+  assert.equal(top.data.find(point => point.x === 30).y, 7, 'A true charging sum above the source total remains visible');
   assert.equal(datasets.find(dataset => dataset.key === 'property_power').data.find(point => point.x === 30).y, 2);
   assert(top.data.some(point => point.x === 20 && point.y === null), 'A shared missing edge cannot be bridged');
   assert.deepEqual(series, original);

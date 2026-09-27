@@ -33,7 +33,7 @@ test('DHWR chart respects longer configured runs and recorded early OFF without 
   } finally { store.close(); }
 });
 
-test('DHWR history ignores retired physical-feedback rows and keeps current requests explicitly labelled', () => {
+test('DHWR request shading remains independent of separately selectable recorded feedback', () => {
   const store = new Store(':memory:');
   try {
     const put = (signal, value, at, raw) => store.observation({ source: signal === 'dhwr_active' ? 'mqtt-equipment' : 'controller',
@@ -49,6 +49,6 @@ test('DHWR history ignores retired physical-feedback rows and keeps current requ
       startDate: '2026-09-10', endDate: '2026-09-10' });
     assert.deepEqual(result.shading.dhwr, [{ start,end:start+60*MINUTE }]);
     assert.match(result.meta.dhwrBasis, /Requested circulation/);
-    assert.match(result.meta.dhwrBasis, /live-only/);
+    assert.match(result.meta.dhwrBasis, /feedback is shown separately/);
   } finally { store.close(); }
 });

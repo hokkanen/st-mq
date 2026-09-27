@@ -70,6 +70,13 @@ export function historyTooltipLabel(item) {
   else if (key === 'caravan_energy') {
     details.push('meter energy over the recorded interval');
   }
+  else if (key === 'garage_native_energy') details.push('cumulative native meter counter; not interval consumption');
+  else if (key === 'garage_energy') {
+    details.push(raw.basis === 'counter-delta' ? 'native meter difference over the recorded interval'
+      : raw.basis === 'power-trapezoid' ? 'integrated reported power over the recorded interval' : 'recorded interval energy; measurement basis unavailable');
+    if (raw.provisional) details.push('provisional estimate');
+    details.push(raw.accuracyVerified === true ? 'accuracy verified' : 'accuracy unverified');
+  }
   else if (raw.equivalentCurrent) details.push('interval average', 'equivalent at 230 V');
   else if (['property_power', 'charger_power', 'charger2_power'].includes(key) && Number.isFinite(raw.intervalStart)) details.push('interval average from recorded energy');
   else if (key.endsWith('_energy') || /_energy_l[123]$/.test(key)) details.push('recorded interval energy');

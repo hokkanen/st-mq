@@ -1,7 +1,8 @@
+import { CHART_VIEW_BY_KEY } from '../src/domain/chart-views.js';
 import { stackPowerSeries } from './power-stack.js';
 import { isInterpolatedTemperature } from '../src/domain/chart-temperatures.js';
 import { temperatureIntervalKnots } from './temperature-curves.js';
-import { HISTORY_AXES, CARAVAN_RUNNING_STATES, GARAGE_INPUT_INFO, GARAGE_COEFFICIENT_INFO, SIGNAL_INFO, MODEL_INPUT_INFO, MODEL_COEFFICIENT_INFO, PHASE_ENERGY_SIGNALS, RIGHT_AXIS_SIGNALS } from '../src/domain/history-series.js';
+import { HISTORY_AXIS_BY_KEY, CARAVAN_RUNNING_STATES, GARAGE_INPUT_INFO, GARAGE_COEFFICIENT_INFO, SIGNAL_INFO, MODEL_INPUT_INFO, MODEL_COEFFICIENT_INFO, PHASE_ENERGY_SIGNALS } from '../src/domain/history-series.js';
 // Calendar navigation always refers to the house, regardless of browser timezone.
 const calendar = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Helsinki', year: 'numeric', month: '2-digit', day: '2-digit' });
 const hourInFinland = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', hour: '2-digit', hourCycle: 'h23' });
@@ -61,29 +62,13 @@ export function calendarTicks(range, maxTicks = 9) {
 }
 
 export const defaultVisibility = Object.freeze({ heatOff: true, compressorSpace: true, compressorDhw: true, compressorGarage: true, operatingMode: true, dhwr: true, fireplace: true, spot_price: true });
-export const leftGroups = Object.freeze({
-  ...Object.fromEntries(HISTORY_AXES.map(axis => [axis.key, axis.signals])),
-  power: ['property_power', 'auxiliary_power', 'charger_power', 'charger2_power'],
-  phases: ['property', 'ev1', 'ev2'].flatMap(prefix => [1, 2, 3].map(phase => `${prefix}_current_l${phase}`)),
-  integral: ['heating_integral'],
-  learning_profit: ['learning_profit'],
-  learning_aux_profit: ['learning_aux_profit'],
-  learning_recovery_error: ['learning_recovery_error'],
-  learning_indoor_temperature: ['learning_indoor_temperature'],
-  solar_radiation: ['solar_radiation', 'solar_forecast'],
-});
-export const leftTitles = Object.freeze({ power: 'Power · kW', phases: 'Current · A', integral: 'Heating integral · °min',
-  ...Object.fromEntries(HISTORY_AXES.map(axis => [axis.key, `${axis.label} · ${axis.unit}`])),
-  temperatures: 'Air temperature · °C',
-  learning_profit: 'Estimated space-heating benefit · €/cycle', learning_aux_profit: 'Space-heating benefit with auxiliary recovery · €/cycle',
-  learning_recovery_error: 'Space-heating recovery-cost prediction error · €/cycle', learning_indoor_temperature: 'Learned normal temperature · °C',
-  solar_radiation: 'Solar radiation forecast · W/m²' });
 export const operationModes = Object.freeze({ 0: 'Off', 1: 'Auto', 2: 'Compressor only', 3: 'Auxiliary only', 4: 'Hot water only' });
 export const defaultPalette = Object.freeze({
   text: '#e0ede6', muted: '#9bb4a5', border: '#334d3e', grid: '#243c30',
-  property: '#e98576', ev: '#e98576', ev2: '#b493db', auxiliary: '#e86868', phase1: '#66cbd0', phase2: '#cf94d3', phase3: '#dfc16c',
-  indoor: '#81ca99', upstairs: '#e99583', downstairs: '#e5cb75', bedroom: '#d3b7ed', garage: '#eda65e', outdoor: '#83b8da', integral: '#cea0dc', price: '#ffffff', spot: '#c5c5c5',
-  heatOff: '#9ba89e', compressorSpace: '#dbc754', compressorDhw: '#549edd', dhwr: '#e05555', learning: '#baa0de', solar: '#e4ca67',
+  property: '#e99583', ev: '#66c7bd', ev2: '#b99bdc', auxiliary: '#e47f79', phase1: '#dfc16c', phase2: '#66c7bd', phase3: '#cf94c7',
+  indoor: '#81ca99', upstairs: '#e99583', downstairs: '#e5cb75', bedroom: '#d3b7ed', garage: '#e4aa6d', garageFront: '#d28c62', garagePump: '#bb8bd0', outdoor: '#83b8da', integral: '#80cbb3', price: '#ffffff', spot: '#b7c4bd',
+  supply: '#df9980', return: '#d5bb7d', brineIn: '#70c3bd', brineOut: '#86adda', reference: '#b6c6b7',
+  heatOff: '#7891a7', compressorSpace: '#d5c456', compressorDhw: '#83b8da', dhwr: '#e47f79', learning: '#c0a0df', solar: '#dfc16c',
   firewood: '#d8aa75', fireplace: '#b79b28',
 });
 
@@ -102,13 +87,13 @@ const seriesInfo = {
   ev2_energy: ['Charger 2 total energy', 'kWh · physical Shelly EVSE meter difference over the recorded interval', 'ev2', 'interval-energy'],
   ev1_session_energy_check: ['Charger 1', 'kWh · finalized session electricity reading', 'ev', 'session'],
   shelly_session_energy_check: ['Charger 2', 'kWh · finalized physical charging session electricity', 'ev2', 'session'],
-  auxiliary_power: ['Auxiliary heat', 'kW · estimated from H66 output and configured capacity', 'auxiliary', 'fill'],
+  auxiliary_power: ['Auxiliary heat', 'kW · estimated from H66 output and configured capacity', 'auxiliary'],
   property_current_l1: ['Property L1', 'A', 'phase1'],
   property_current_l2: ['Property L2', 'A', 'phase2'],
   property_current_l3: ['Property L3', 'A', 'phase3'],
-  ev1_current_l1: ['Charger 1 L1', 'A', 'phase1', 'fill'],
-  ev1_current_l2: ['Charger 1 L2', 'A', 'phase2', 'fill'],
-  ev1_current_l3: ['Charger 1 L3', 'A', 'phase3', 'fill'],
+  ev1_current_l1: ['Charger 1 L1', 'A', 'phase1'],
+  ev1_current_l2: ['Charger 1 L2', 'A', 'phase2'],
+  ev1_current_l3: ['Charger 1 L3', 'A', 'phase3'],
   ev2_current_l1: ['Charger 2 L1', 'A · equivalent interval average from estimated phase energy', 'phase1'],
   ev2_current_l2: ['Charger 2 L2', 'A · equivalent interval average from estimated phase energy', 'phase2'],
   ev2_current_l3: ['Charger 2 L3', 'A · equivalent interval average from estimated phase energy', 'phase3'],
@@ -119,14 +104,14 @@ const seriesInfo = {
   learning_indoor_temperature: ['Learned normal temperature', '°C · learned reference, not a thermostat command', 'learning', 'learning'],
   firewood_savings: ['Firewood electricity cost avoided', '€/day · retrospective model estimate; wood cost €0', 'firewood', 'daily'],
   firewood_electricity_avoided: ['Firewood electricity avoided', 'kWh/day · retrospective model estimate, not metered savings', 'firewood', 'daily'],
-  solar_radiation: ['Archived solar forecast', 'W/m² · forecast archived at the time, not a measured solar sensor', 'solar', 'learning'],
+  solar_radiation: ['Archived solar forecast', 'W/m² · forecast archived at the time, not a measured solar sensor', 'solar', 'forecast'],
   solar_forecast: ['Solar forecast', 'W/m² · forecast', 'solar', 'forecast'],
   indoor_temperature: ['Upstairs', '°C', 'upstairs'],
   downstairs_temperature: ['Downstairs', '°C', 'downstairs'],
   bedroom_temperature: ['Bedroom', '°C', 'bedroom'],
   garage_temperature: ['Garage rear', '°C', 'garage'],
-  garage_temperature_2: ['Garage front', '°C', 'garage'],
-  outdoor_temperature: ['Outdoor', '°C · FMI station or Open-Meteo model estimate; dashed line is forecast', 'outdoor'],
+  garage_temperature_2: ['Garage front', '°C', 'garageFront'],
+  outdoor_temperature: ['Outdoor', '°C · FMI station or Open-Meteo model estimate', 'outdoor'],
   outdoor_forecast: ['Outdoor forecast', '°C · forecast', 'outdoor', 'forecast'],
   all_in_price: ['All-in price', 'c/kWh', 'price'],
   spot_price: ['Spot price', 'c/kWh · excludes VAT and other charges', 'spot'],
@@ -140,9 +125,63 @@ Object.assign(seriesInfo, {
   heat_pump_power: ['Heat pump', 'kW · reconstructed estimated electrical input', 'auxiliary'],
   controller_phase: ['Requested phase', 'state · 0 normal, 1 preheat, 2 reduction, 3 recovery', 'learning'],
   dhwr_request: ['Recirculation request', 'state · requested, not confirmed flow', 'learning'],
+  garage_native_energy: ['Garage pump meter counter', 'kWh · native cumulative counter observation; not interval consumption', 'garagePump', 'audit'],
+  garage_energy: ['Garage pump energy', 'kWh · original recording interval; inspect the point for its measurement basis', 'garagePump', 'interval-energy'],
 });
 for (const [signal, info] of Object.entries({ ...MODEL_INPUT_INFO, ...MODEL_COEFFICIENT_INFO, ...GARAGE_INPUT_INFO, ...GARAGE_COEFFICIENT_INFO }))
   seriesInfo[signal] = [info.label, `${info.unit} · ${info.detail}`, info.color, signal === 'firewood_load' ? 'event' : 'line'];
+
+// The same physical quantity keeps its colour across views and saved inputs.
+for (const [key, color] of Object.entries({
+  supply_temperature: 'supply', heating_setpoint: 'garage', return_temperature: 'return',
+  brine_in_temperature: 'brineIn', brine_out_temperature: 'brineOut',
+  heating_pump_speed: 'supply', brine_pump_speed: 'brineIn', maximum_supply_setting: 'auxiliary',
+  model_target_temperature: 'reference', room_setting: 'reference', heating_curve: 'garage', heat_stop_setting: 'outdoor', tariff_reduction_setting: 'learning',
+  learning_aux_profit: 'auxiliary', compressor_hours: 'compressorSpace', dhw_hours: 'compressorDhw',
+  auxiliary_3kw_hours: 'auxiliary', auxiliary_6kw_hours: 'garagePump',
+  dhw_temperature: 'compressorDhw', dhw_start_setting: 'brineIn', dhw_stop_setting: 'supply',
+  garage_native_indoor_temperature: 'garagePump', garage_model_front: 'garageFront',
+  garage_model_difference: 'garagePump', garage_coefficient_front_coolingPerHour: 'garageFront',
+  garage_model_ev1: 'ev', garage_model_ev1_active: 'ev', garage_model_ev2: 'ev2', garage_model_ev2_active: 'ev2',
+})) if (seriesInfo[key]) seriesInfo[key][2] = color;
+
+const forecastSignals = new Set(['outdoor_forecast', 'solar_forecast', 'solar_radiation', 'model_solar_radiation']);
+export const chartLinePatterns = Object.freeze({
+  solid: Object.freeze([]), temperature: Object.freeze([6, 4]),
+  forecast: Object.freeze([8, 3, 2, 3]), price: Object.freeze([1, 3]),
+});
+
+/** Colour stays semantic; stroke describes axis/forecast rather than device. */
+export function historySeriesStyle(key, axis, kind = 'line') {
+  const temperature = isInterpolatedTemperature(key);
+  const temperatureUnit = temperature || seriesInfo[key]?.[1].split(' · ')[0] === '°C';
+  const forecast = kind === 'forecast' || forecastSignals.has(key);
+  const price = key.endsWith('_price');
+  const pointsOnly = ['event', 'daily', 'session', 'interval-energy', 'audit'].includes(kind);
+  const interpolation = temperature || key === 'caravan_humidity' ? 'monotone'
+    : key === 'heating_integral' ? 'linear' : 'step';
+  return {
+    forecast, interpolation, showLine: !pointsOnly,
+    borderDash: forecast ? chartLinePatterns.forecast : price ? chartLinePatterns.price
+      : axis === 'right' && temperatureUnit ? chartLinePatterns.temperature : chartLinePatterns.solid,
+    stepped: pointsOnly || interpolation !== 'step' ? false : price ? 'before' : true,
+    cubicInterpolationMode: interpolation === 'monotone' ? 'monotone' : 'default',
+  };
+}
+
+function fillColor(color) {
+  // Canvas accepts CSS hex alpha; the outline and legend retain the full colour.
+  return /^#[\da-f]{6}$/i.test(color) ? `${color}45` : color;
+}
+
+function phaseColor(color, key) {
+  const source = /^(ev[12])_(?:current|energy)_l[123]$/.exec(key)?.[1];
+  if (!source || !/^#[\da-f]{6}$/i.test(color)) return color;
+  // Phase hue identifies the conductor. A consistent light/dark variation
+  // identifies charging sources when several same-phase curves are enabled.
+  const target = source === 'ev1' ? 255 : 0;
+  return `#${color.slice(1).match(/../g).map(value => Math.round(parseInt(value, 16) * .78 + target * .22).toString(16).padStart(2, '0')).join('')}`;
+}
 
 export function firewoodPointDetail(key, point = {}) {
   if (key === 'firewood_load') return `Recorded manual ${point.loadCount > 1 ? `total of ${point.loadCount} additions at this time` : 'addition'} · corrected history`;
@@ -151,14 +190,6 @@ export function firewoodPointDetail(key, point = {}) {
   const status = point.status === 'validated' ? 'Validated model estimate' : point.status === 'unavailable' ? 'Estimate unavailable' : 'Provisional model estimate';
   const coverage = Number.isFinite(point.coverage) ? ` · ${Math.round(Math.max(0, Math.min(1, point.coverage)) * 100)}% of elapsed time included` : '';
   return `${status} · retrospective daily total${coverage}${key === 'firewood_savings' ? ' · wood cost €0' : ''}`;
-}
-
-/** Shared right-axis readings must not conceal an empty selected left axis. */
-export function leftAxisAvailability(datasets) {
-  const left = datasets.filter(dataset => dataset.yAxisID === 'left');
-  if (!left.some(dataset => dataset.data.some(point => Number.isFinite(point.y)))) return 'No recorded values for the selected left axis in these dates';
-  if (!left.some(dataset => !dataset.hidden && dataset.data.some(point => Number.isFinite(point.y)))) return 'Selected left-axis values are hidden in the legend';
-  return '';
 }
 
 export function historyStateLabel(key, value) {
@@ -172,6 +203,8 @@ export function historyStateLabel(key, value) {
   if (['compressor_active', 'garage_compressor_active', 'heating_pump_active', 'alarm_active'].includes(key)) return value === 1 ? 'Active' : value === 0 ? 'Inactive' : `Unknown (${value})`;
   if (key === 'model_valve_override') return ['Normal valve mode', 'Pooled override confirmed', 'Partial override', 'Unconfirmed override'][value] ?? 'Unknown valve mode';
   if (key === 'dhwr_request') return value === 1 ? 'On requested' : value === 0 ? 'Off requested' : `Unknown (${value})`;
+  if (['dhwr_active', 'heat_savings_active', 'garage_native_defrost'].includes(key) || /^floor_(living|storage)_[01]_active$/.test(key))
+    return value === 1 ? 'Active' : value === 0 ? 'Inactive' : `Unknown (${value})`;
   return null;
 }
 
@@ -194,7 +227,10 @@ export function sessionPointDetail(point = {}) {
 }
 
 // Learning and H66 output have their own bounded/recorded-state semantics.
-const heldReadingKeys = ['property_power', 'charger_power', 'charger2_power', ...leftGroups.phases, 'heating_integral', 'indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature', 'outdoor_temperature', 'caravan_temperature', 'caravan_humidity', 'caravan_dehumidifier_running_state'];
+const heldReadingKeys = ['property_power', 'charger_power', 'charger2_power',
+  ...['property', 'ev1', 'ev2'].flatMap(prefix => [1, 2, 3].map(phase => `${prefix}_current_l${phase}`)),
+  'heating_integral', 'indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature', 'garage_temperature_2',
+  'garage_native_indoor_temperature', 'outdoor_temperature', 'caravan_temperature', 'caravan_humidity', 'caravan_dehumidifier_running_state'];
 
 /** Advance display tails without changing source timestamps or cached history. */
 export function historySeriesAt(payload, now = payload.now) {
@@ -206,7 +242,7 @@ export function historySeriesAt(payload, now = payload.now) {
     const points = series[key];
     const last = meta.lastReadings?.[key] ?? points.at(-1);
     if (!last || !Number.isFinite(last.x) || !Number.isFinite(last.y) || last.x > now) continue;
-    if (key.startsWith('caravan_') && !last.periodicCoverage) continue;
+    if ((key.startsWith('caravan_') || key === 'garage_native_indoor_temperature') && !last.periodicCoverage) continue;
     // Explicit missing/invalid readings remain breaks, even if older metadata
     // was paired with a newer series. Never bridge a missing final sample.
     const end = points.at(-1);
@@ -224,20 +260,14 @@ export function historySeriesAt(payload, now = payload.now) {
   return projected;
 }
 
-/** Align displayed step segments, preserving both sides of duplicate edges and
- * explicit gaps. This changes presentation only; original readings and interval
- * provenance remain attached to every point used in the cumulative fill. */
-export function stackedPowerSeries(auxiliary = [], charger = []) {
-  const [alignedAuxiliary, alignedCharger] = stackPowerSeries([auxiliary, charger]);
-  return { auxiliary: alignedAuxiliary, charger: alignedCharger };
-}
-
-export function historyDatasets(series = {}, left = 'power', preferences = {}, palette = defaultPalette) {
-  if (!leftGroups[left]) throw new RangeError('Choose a valid left axis.');
-  const keys = [...new Set([...leftGroups[left], ...RIGHT_AXIS_SIGNALS])];
-  const powerKeys = ['auxiliary_power', 'charger_power', 'charger2_power'];
+export function historyDatasets(series = {}, descriptor, preferences = {}, palette = defaultPalette) {
+  if (!descriptor || typeof descriptor !== 'object' || !Array.isArray(descriptor.leftSignals) || !Array.isArray(descriptor.rightSignals))
+    throw new RangeError('Choose a chart view or supported series.');
+  const { leftSignals, rightSignals } = descriptor;
+  const keys = [...new Set([...leftSignals, ...rightSignals])];
+  const powerKeys = ['charger_power', 'charger2_power'].filter(key => leftSignals.includes(key));
   const stackedData = new Map(), stackBases = new Map();
-  if (left === 'power') {
+  if (descriptor.stackPower) {
     let group = [];
     for (const key of powerKeys) {
       if (!visible(key, preferences) || !(series[key] ?? []).some(point => Number.isFinite(point.y))) continue;
@@ -257,39 +287,43 @@ export function historyDatasets(series = {}, left = 'power', preferences = {}, p
     }
   }
   return keys.map(key => {
-    const [label, unit, colorKey, kind = 'line'] = seriesInfo[key];
-    const visibilityKey = key === 'outdoor_forecast' ? 'outdoor_temperature' : key;
-    const isLeft = leftGroups[left].includes(key) && !(left === 'temperatures' && RIGHT_AXIS_SIGNALS.includes(key));
+    const info = descriptor?.seriesInfo?.[key];
+    const definition = seriesInfo[key] ?? (info ? [info.label, info.unit, info.color ?? 'learning', info.kind ?? 'line'] : null);
+    if (!definition) throw new RangeError(`Unknown chart signal: ${key}`);
+    const [label, unit, colorKey, kind = 'line'] = definition;
+    const visibilityKey = key;
+    const isLeft = leftSignals.includes(key);
     const isPrice = key.endsWith('_price');
     const temperature = isInterpolatedTemperature(key);
     const original = stackedData.get(key) ?? series[key] ?? [];
-    const data = ['outdoor_forecast', 'model_outdoor_temperature'].includes(key) ? temperatureIntervalKnots(original) : original;
+    const data = temperature && original.some(point => Number.isFinite(point.intervalStart) && Number.isFinite(point.intervalEnd))
+      ? temperatureIntervalKnots(original) : original;
     const stackBase = stackBases.get(key);
+    const axis = isLeft ? 'left' : 'right';
+    const style = historySeriesStyle(key, axis, kind);
+    const color = phaseColor(palette[colorKey] ?? defaultPalette[colorKey] ?? palette.learning, key);
+    const chargerPhase = /^(ev[12])_current_l[123]$/.exec(key)?.[1];
     return {
       key, visibilityKey, unit, kind, label,
       data,
       ...(powerKeys.includes(key) ? { powerStacked: Boolean(stackBase), powerStackBase: stackBase ?? null } : {}),
-      showLine: !['event', 'daily', 'session', 'interval-energy'].includes(kind),
-      yAxisID: isLeft ? 'left' : 'right',
-      borderColor: palette[colorKey], backgroundColor: palette[colorKey],
-      borderWidth: kind === 'fill' ? 0 : isPrice ? 1 : isLeft ? 1.25 : 1.5,
-      borderDash: kind === 'forecast' || PHASE_ENERGY_SIGNALS.includes(key) && key.startsWith('ev1') ? [5, 4] : isPrice ? [1, 3] : [],
+      ...style,
+      yAxisID: axis,
+      borderColor: color, backgroundColor: kind === 'fill' ? fillColor(color) : color,
+      borderWidth: kind === 'fill' ? 1 : isPrice ? 1.25 : key === 'property_power' ? 2 : 1.65,
       fill: stackBase ? keys.indexOf(stackBase) : kind === 'fill' ? 'origin' : false,
       order: powerKeys.includes(key) ? 4 - powerKeys.indexOf(key) : kind === 'fill' ? 2 : 1,
-      pointBackgroundColor: kind === 'daily' ? data.map(point => point.status === 'validated' ? palette[colorKey] : 'transparent')
-        : kind === 'session' ? data.map(point => point.comparisonEligible ? palette[colorKey] : 'transparent') : palette[colorKey], pointBorderColor: palette[colorKey],
-      pointStyle: kind === 'event' ? 'triangle' : kind === 'daily' ? 'rectRot' : isLeft && !['session', 'interval-energy', 'fill'].includes(kind) ? 'rect' : 'circle',
+      pointBackgroundColor: kind === 'daily' ? data.map(point => point.status === 'validated' ? color : 'transparent')
+        : kind === 'session' ? data.map(point => point.comparisonEligible ? color : 'transparent') : color, pointBorderColor: color,
+      pointStyle: kind === 'event' || chargerPhase === 'ev1' ? 'triangle' : kind === 'daily' || chargerPhase === 'ev2' ? 'rectRot' : isLeft && !['session', 'interval-energy', 'audit', 'fill'].includes(kind) ? 'rect' : 'circle',
       // A finite reading surrounded by gaps has no line segment to draw.
-      pointRadius: kind === 'event' ? 5 : ['daily', 'session', 'interval-energy'].includes(kind) ? 4 : isPrice ? 1 : data.map((point, index) => Number.isFinite(point.y)
+      pointRadius: kind === 'event' ? 5 : ['daily', 'session', 'interval-energy', 'audit'].includes(kind) ? 4 : isPrice ? 1 : data.map((point, index) => Number.isFinite(point.y)
         && !Number.isFinite(data[index - 1]?.y) && !Number.isFinite(data[index + 1]?.y) ? 2
-        : isLeft && kind !== 'fill' && Number.isFinite(point.y) && index % Math.max(1, Math.ceil(data.length / 12)) === 0 ? 1.6 : 0),
-      pointHoverRadius: kind === 'event' ? 7 : ['daily', 'session', 'interval-energy'].includes(kind) ? 6 : 3, pointHitRadius: 8,
-      // Duplicate interval-edge points from the API retain exact price/forecast steps.
-      stepped: temperature ? false : isPrice ? 'before' : kind === 'forecast' || isLeft && left !== 'integral' && !PHASE_ENERGY_SIGNALS.includes(key),
+        : chargerPhase && Number.isFinite(point.y) && index % Math.max(1, Math.ceil(data.length / 10)) === 0 ? 2 : 0),
+      pointHoverRadius: kind === 'event' ? 7 : ['daily', 'session', 'interval-energy', 'audit'].includes(kind) ? 6 : 3, pointHitRadius: 8,
       // Chart.js' monotone cubic Hermite interpolation is O(n), preserves local
       // extrema and never overshoots adjacent values. Zero tension is ignored
       // in monotone mode; no synthetic samples enter storage or the learner.
-      cubicInterpolationMode: temperature ? 'monotone' : 'default',
       tension: 0, spanGaps: false, hidden: !visible(visibilityKey, preferences),
     };
   });
@@ -297,10 +331,11 @@ export function historyDatasets(series = {}, left = 'power', preferences = {}, p
 
 export function chartQuery(selection) {
   if (!validDate(selection.startDate) || !validDate(selection.endDate) || selection.endDate < selection.startDate) throw new RangeError('The end date must be on or after the start date.');
-  if (!leftGroups[selection.left]) throw new RangeError('Choose a valid left axis.');
+  if (selection.view !== undefined ? !Object.hasOwn(CHART_VIEW_BY_KEY, selection.view) : !Object.hasOwn(HISTORY_AXIS_BY_KEY, selection.left)) throw new RangeError('Choose a valid chart view or series.');
+  if (selection.view !== undefined && selection.left !== undefined) throw new RangeError('Choose either a view or an individual series.');
   const points = selection.points ?? 800;
   if (!Number.isInteger(points) || points < 100 || points > 2000) throw new RangeError('Invalid chart resolution.');
-  const params = new URLSearchParams({ start: selection.startDate, end: selection.endDate, left: selection.left, points: String(points) });
+  const params = new URLSearchParams({ start: selection.startDate, end: selection.endDate, ...(selection.view !== undefined ? { view: selection.view } : { left: selection.left }), points: String(points) });
   if (selection.viewFrom !== undefined || selection.viewTo !== undefined) {
     if (!Number.isSafeInteger(selection.viewFrom) || !Number.isSafeInteger(selection.viewTo) || selection.viewFrom >= selection.viewTo)
       throw new RangeError('Invalid chart viewport.');

@@ -7,7 +7,7 @@ const tickClock = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki'
 
 /** Gesture frames only transform a bitmap. Chart.js and data preparation run
  * after movement settles, independently of network refinement. */
-export function createChartNavigation({ canvas, getChart, onSettle }) {
+export function createChartNavigation({ canvas, getChart, onSettle, onMove }) {
   const $ = id => document.getElementById(id), panel = canvas.closest('.history-panel');
   const shortcuts = ['garage-chart-shortcut'].map($).filter(Boolean);
   const pointers = new Map(), listeners = [], inertNodes = [];
@@ -99,6 +99,7 @@ export function createChartNavigation({ canvas, getChart, onSettle }) {
   }
   function move(next) {
     if (!fullscreen || !bounds || closed) return;
+    onMove?.();
     capture();
     const limited = clampView(next, bounds, Math.min(minimum, baseSpan()));
     const span = Math.min(limited.to - limited.from, baseSpan());
@@ -116,6 +117,7 @@ export function createChartNavigation({ canvas, getChart, onSettle }) {
   }
   function resize() {
     if (!bounds || closed) return;
+    onMove?.();
     pointers.clear(); gesture = undefined; clearPreview(); moving = false; clearTimeout(timer);
     if (frame) cancelAnimationFrame(frame); frame = undefined;
     const center = (view.from + view.to) / 2, span = baseSpan() / zoom;
@@ -239,7 +241,7 @@ export function createChartNavigation({ canvas, getChart, onSettle }) {
     setRange(range) {
       const changed = !bounds || bounds.from !== range.from || bounds.to !== range.to;
       bounds = { from: range.from, to: range.to };
-      if (changed) { pointers.clear(); clearTimeout(timer); clearPreview(); fullscreenView = undefined; zoom = 1; view = maxView(); moving = false; }
+      if (changed) { onMove?.(); pointers.clear(); clearTimeout(timer); clearPreview(); fullscreenView = undefined; zoom = 1; view = maxView(); moving = false; }
       sync();
     },
     close() { closed = true; clearTimeout(timer); if (frame) cancelAnimationFrame(frame); pointers.clear(); clearPreview(); leave(); listeners.forEach(remove => remove()); },

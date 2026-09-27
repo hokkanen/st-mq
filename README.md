@@ -211,45 +211,52 @@ the current readings.
   without changing its length. Both date pickers remain available in chart view.
   Forecasts and known electricity prices appear only
   inside the selected dates; they never extend the horizontal axis automatically.
-- **Left axis:** **Power** shows combined property power as a line, with estimated
-  auxiliary power, Charger 1 and Charger 2 stacked in that order. **Phase currents** shows the three property phase lines
-  in amperes with corresponding charger fills. **Phase energy per interval** shows
-  the three saved kWh increments for property import and Charger 1. Charger 2 has
-  total energy only. The drawer groups all retained H66
-  parameters, control, weather and learning series.
-  **Home and garage temperatures** is the sole **Room temperatures** drawer option;
-  it shows Upstairs, Bedroom, Downstairs and Garage front on the left with the two air-temperature
-  scales synchronized. Garage remains available on the right axis. **Heating integral** selects the integral instead. Four **Learning** choices show profit after recovery, profit
-  with observed auxiliary recovery, recovery cost prediction error and learned
-  normal indoor temperature. **Solar radiation** shows archived and future FMI
-  forecasts in W/m², not a solar sensor. Only that group's legend items appear.
-  New property/charger power comes from phase-energy increments divided by their
-  actual intervals. Equivalent chart currents assume 230 V and unity power factor;
-  they are not the acquired current snapshots. Coherent current snapshots, including
-  v0.7.5 CSV imports, use `230 × (L1 + L2 + L3) / 1000`. Neither path measures heat-pump consumption.
-- **Right axis:** **Average indoor**, Garage, outdoor temperature and electricity prices
-  stay available with every left-axis selection, retaining their existing colours.
-  Average indoor is the same configured sensor average used by the house model,
-  with equal contributions from Upstairs, Bedroom and Downstairs when all three
-  are configured with default weights. Saved inputs retain their original sensor
-  membership; imported learning keeps its original Upstairs measurement.
-  Select **Home and garage temperatures** to compare the rooms. Outdoor stays blue,
-  Average indoor green, Upstairs terracotta, Downstairs amber and Bedroom violet.
-  The dashed outdoor continuation is forecast. All-in and **Spot price** start visible; spot excludes VAT and other
-  charges. Explicit saved legend choices are preserved. All-in prices combine
-  historical spot prices with the contract rates for that date, or the nearest
-  known rates when the date is uncovered. An **Assumed rates** explanation identifies these assumptions;
-  missing spot prices stay unavailable.
-- **Shading:** crosshatched **Tariff reduction requested** represents requested reduction; yellow
-  **Compressor · house** and blue **Compressor · hot water** require concurrent
-  compressor/routing readbacks. Red **DHWR** marks requested circulation runs with their recorded duration
-  in its own strip below the chart. A separate **Pump mode** strip shows categorical H66 readback.
-  Orange **Compressor · garage** uses native garage compressor reports and expires
-  at their recorded freshness deadline. The Garage heat-pump group offers pump
-  interpreted indoor temperature, acknowledged external-temperature feed, and
-  native compressor diagnostics. The feed has gaps when inactive or unconfirmed.
-  Unknown or stale operation leaves gaps. Dated runtime counters cannot identify
-  individual auxiliary episodes.
+- **Views:** choose a purposeful comparison from the **View** menu. Electrical
+  power compares property demand and both chargers, with heat-pump and auxiliary
+  estimates available. Heating water combines supply, return and target with the
+  integral; hot water uses tank temperature and its thresholds. Property
+  temperatures keeps all three rooms and both garage probes together. Garage
+  combines front/rear temperatures and compressor frequency, with **Pump
+  interpreted indoor temperature** available in its legend. Saved inputs,
+  coefficients, cycle outcomes and interval-energy evidence have their own views
+  with explicit units and evidence descriptions.
+- **Series explorer:** choose this final menu entry to search supported recorded
+  measurements, states and calculations by label, unit or canonical signal name.
+  It plots one quantity with its own unit and provenance. Categorical signals use
+  an activity row. Cumulative counters, original recording-interval energy and
+  completed-session checks remain distinct. It does not treat arbitrary database
+  JSON, configuration or current-state snapshots as historical measurements.
+- **Legend and axes:** each view remembers its own series and activity-row
+  choices in this browser. **Reset view** restores its initial comparisons.
+  Temperature-led views need no left scale; operational views have one declared
+  left unit and relevant temperatures on the right. Both electricity prices are
+  available in every view; their visibility is remembered globally, including
+  across resets. Prices and temperatures share the right scale without artificial
+  caps. All-in prices use the historical contract or the nearest known rates;
+  point inspection identifies assumed rates and missing prices stay unavailable.
+- **Lines and fills:** left-axis history is solid, right-axis temperatures dashed,
+  forecasts dash-dot and electricity prices dotted. Measured temperatures use
+  monotone curves that preserve extrema; humidity is smooth too. Power, settings,
+  states, counters and model updates retain steps. Interval totals, manual
+  additions and session checks stay individual points. Charger 1 and Charger 2
+  retain turquoise and purple fills, stacked where their intervals overlap.
+  Auxiliary is an independent line; it is already included in the whole heat-pump
+  estimate. Missing evidence never becomes a fabricated zero or bridged gap.
+- **Activity and cursor:** relevant operating states appear in labeled rows below
+  the plot. Pump readback, compressor activity, requested reduction, requested
+  circulation, circulation feedback and modeled fireplace windows remain separate.
+  Their legend controls select the rows for this view. Move the cursor across the
+  plot or rows to follow a shared time; the vertical crosshair ends at the last
+  visible row. Row inspection reports its interval and evidence. On touch devices,
+  tap in chart view to inspect; dragging or pinching clears the cursor. At long
+  ranges, activity occupancy and reduced state samples are explicitly identified.
+- **Reading evidence:** open **How to read this view** for line conventions and
+  the selected quantities' interpretation. Recorded power reconstructed from
+  energy is an interval average, and phase-current equivalents assume 230 V and
+  unity power factor. Imported coherent current observations retain their original
+  basis. Saved indoor averages retain their original sensor membership. The
+  garage pump's interpreted temperature is a diagnostic, not a third independent
+  protection sensor. Viewing history sends no equipment commands.
 - **Energy cost comparisons:** open this fold below the chart. Charging has
   **Charger 1**, **Charger 2** and **Total** selectors, each with its own coverage. Heating and Charging compare each device's cost of
   included energy at the recorded timestamps with the same daily energy at the
@@ -273,7 +280,7 @@ the current readings.
   accuracy. Missing history and charging periods with incomplete daily prices
   are excluded, without extrapolation. Future hours do not reduce coverage.
   Calculations use the underlying energy and equipment intervals independently
-  of chart point reduction and the selected left axis.
+  of chart point reduction and the selected chart view.
   The fold starts closed, like **Recording details**, and stays as you set it
   when the chart refreshes or dates change. The **Heating** and **Charging** boxes
   align when closed; each details fold expands independently. They show source
@@ -288,15 +295,15 @@ the current readings.
   for the selected dates, with any remaining forecast estimate separately. It uses
   a different reference from the timing comparisons, so the cards are not summed.
   Manual wood loads, delayed release, the fitted response and daily savings are
-  also available in the left-axis drawer. See [fireplace details](docs/fireplace.md).
+  also available in the Fireplace views. See [fireplace details](docs/fireplace.md).
 
 Chart changes affect the display only. Viewing history neither polls providers
 nor sends equipment commands. Large ranges use bounded display resolution,
 preserving extremes and missing-data breaks. Power reduction also retains peaks
-for every visible combination of auxiliary power and the two chargers. A display
+for the visible charging fills and their property comparison. A display
 bucket with too many separate gaps marks its interior unavailable. Interval-energy
 values appear as separate marks and never connect across unrecorded time. Dense
-shading represents recorded activity within each display interval. Queries run
+activity rows represent recorded occupancy within each display interval. Queries run
 in a background worker and recent selections are cached. New energy-audit readings
 and finalized session checks invalidate their historical chart responses; unrelated
 operational events do not. A newer selection cancels an obsolete request.
@@ -305,7 +312,7 @@ lines extend their last recorded value to the current time on each status refres
 even when the history response is cached. Hover text identifies the original
 recording time. These display extensions do not add measurements to history or
 make old readings fresh for control. Missing/invalid values retain their gaps;
-prices, forecasts and equipment-state shading keep their recorded time bounds.
+prices, forecasts and equipment-state rows keep their recorded time bounds.
 Auxiliary output has a five-minute freshness bound. Learning histories keep the
 estimate assessed at the time and never rewrite old points using a later model.
 
@@ -400,13 +407,14 @@ DHW runtime is not added to compressor runtime.
 
 Backups use SQLite's online backup API. Restore to a new path while the target
 application is stopped; validate it before changing the configured path. Keep
-backups on separate storage. Schema upgrades run transactionally; newer unknown
-schemas are rejected. Raw observation queries are bounded to at most 5,000
+backups on separate storage. Incompatible or malformed schemas are rejected
+before mutation; development databases require a deliberate fresh start. Raw observation queries are bounded to at most 5,000
 observations; `/api/history` limits a request to 31 days. The separate `/api/chart`
-endpoint accepts inclusive `start`/`end` calendar dates and left-axis keys from
-the shared catalogue, including `power`, `phases`, `phase_energy`, `integral`,
-`solar_radiation`, individual H66 signals and the four `learning_*` signals,
-and a `points` resolution of 100–2,000 time buckets per series. It accepts at most
+endpoint accepts inclusive `start`/`end` calendar dates and either a named `view`
+from the shared view catalogue or a `left` projection key for Series explorer.
+Supplying both selectors is rejected. A named view fetches its declared
+quantities, temperatures and recorded state rows together. The `points` resolution
+is 100–2,000 time buckets per series. It accepts at most
 3,660 calendar days and summarizes the full selected history into bounded drawing
 data. Source history is retained; there
 is no automatic deletion policy in this stage. Monitor disk growth and archive
@@ -795,7 +803,8 @@ with `controller.dhwr_duration_minutes` (default 10; 1–60 minutes), and saves 
 OFF commands for restart recovery. The default equipment entry listens for measured
 watts on `stmq/home/dhwr/status/power`, forwarded by a SmartThings Rule. It shows the last
 reported watts and timestamp without inferring relay state or recording power
-history; chart shading continues to show requested circulation. See
+history; the chart keeps requested circulation and recorded on/off feedback
+in separately labeled activity rows. See
 [DHWR setup and Rule template](docs/dhwr-mqtt.md) and the
 [custom MQTT topic migration](docs/mqtt-topics.md).
 The native periodic hygiene cycle remains unchanged, with an explicitly accepted

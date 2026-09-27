@@ -36,6 +36,9 @@ export const H66_HISTORY_SIGNALS = Object.freeze(h66.map(([signal]) => signal));
 export const PHASE_ENERGY_SIGNALS = Object.freeze(['property', 'ev1', 'ev2'].flatMap(prefix => [1, 2, 3].map(phase => `${prefix}_energy_l${phase}`)));
 export const ENERGY_SIGNALS = Object.freeze([...PHASE_ENERGY_SIGNALS, 'ev2_energy', 'caravan_energy']);
 export const AUDIT_SIGNALS = Object.freeze(['property_import_energy_counter']);
+export const RECORDED_EVIDENCE_SIGNALS = Object.freeze(['dhwr_active', 'heat_savings_active',
+  ...['living', 'storage'].flatMap(group => [0, 1].map(output => `floor_${group}_${output}_active`)),
+  'garage_native_defrost', 'garage_native_energy', 'garage_energy']);
 export const CARAVAN_RUNNING_STATES = Object.freeze({ 0: 'Off', 1: 'Low', 2: 'Medium', 3: 'High', 4: 'Auto' });
 export const SESSION_CHECK_INFO = Object.freeze({
   ev1_session_energy_check: { label: 'Charger 1', source: 'easee', color: 'ev', unit: 'kWh', group: 'Meter checks', role: 'Audit only', kind: 'Recorded',
@@ -57,7 +60,16 @@ export const SIGNAL_INFO = Object.freeze(Object.fromEntries([
   ['garage_temperature', { label: 'Garage rear temperature', unit: '°C', group: 'Home temperatures', role: 'Garage protection input', kind: 'Recorded' }],
   ['garage_native_indoor_temperature', { label: 'Pump interpreted indoor temperature', unit: '°C', group: 'Garage heat pump', role: 'History only', kind: 'Recorded', detail: 'Temperature reported by the pump; it may reflect its internal sensor or the supplied external value and native processing, not an independent room measurement' }],
   ['garage_compressor_frequency', { label: 'Compressor frequency', unit: 'Hz', group: 'Garage heat pump', role: 'History only', kind: 'Recorded', detail: 'Native compressor frequency; not electrical power' }],
-  ['garage_compressor_active', { label: 'Compressor running', unit: 'state', group: 'Garage heat pump', role: 'History only', kind: 'Recorded', detail: 'Native compressor operation; also available as Garage compressor shading with every left-axis selection' }],
+  ['garage_compressor_active', { label: 'Compressor running', unit: 'state', group: 'Garage heat pump', role: 'History only', kind: 'Recorded', detail: 'Native compressor operation; missing or expired reports remain unknown' }],
+  ['garage_native_defrost', { label: 'Garage defrost', unit: 'state', group: 'Garage heat pump', role: 'Equipment context', kind: 'Recorded', detail: 'Supported native defrost reports; unsupported, expired and unavailable reports remain unknown' }],
+  ['garage_native_energy', { label: 'Garage native energy counter', unit: 'kWh', group: 'Meter checks', role: 'Audit only', kind: 'Recorded', detail: 'Native cumulative energy counter; not interval consumption, verified electricity or delivered heat' }],
+  ['garage_energy', { label: 'Garage heat-pump interval energy', unit: 'kWh', group: 'Garage heat pump', role: 'Recorded energy', kind: 'Recorded', detail: 'Dedicated garage electricity over each recorded interval, from counter differences or integrated power. Native accuracy and provisional evidence remain explicit' }],
+  ['dhwr_active', { label: 'Hot-water circulation feedback', unit: 'state', group: 'Control', role: 'Equipment context', kind: 'Recorded', detail: 'Measured electrical load or reported switch state, kept separate from circulation requests; neither proves water flow' }],
+  ['heat_savings_active', { label: 'Tariff-control relay feedback', unit: 'state', group: 'Control', role: 'Equipment context', kind: 'Recorded', detail: 'Reported tariff-control contact; not a measurement of compressor activity or heat delivery' }],
+  ...['living', 'storage'].flatMap(group => [0, 1].map(output => [`floor_${group}_${output}_active`, {
+    label: `${group === 'living' ? 'Living' : 'Storage'} floor override · output ${output}`, unit: 'state', group: 'Control', role: 'Equipment context', kind: 'Recorded',
+    detail: 'Reported electrical override contact: 1 on, 0 off; missing readback remains unknown. This does not prove valve position or water flow',
+  }])),
   ['auxiliary_power', { label: 'Auxiliary power estimate', unit: 'kW', group: 'Electricity', role: 'Equipment context', kind: 'Calculated', detail: 'Saved estimate from verified auxiliary output and rated capacity' }],
   ...PHASE_ENERGY_SIGNALS.map(signal => [signal, { label: `${signal.startsWith('property') ? 'Property' : signal.startsWith('ev2') ? 'Charger 2' : 'Charger 1'} L${signal.at(-1)} energy`, unit: 'kWh', group: 'Electricity', role: 'Recorded energy', kind: 'Recorded', detail: signal.startsWith('ev2') ? 'Native total meter energy allocated using measured phase-power shares; estimated phase energy, never an additional contribution to total consumption' : 'Estimated energy over the recorded interval' }]),
   ['ev2_energy', { label: 'Charger 2 total energy', unit: 'kWh', group: 'Electricity', role: 'Recorded energy', kind: 'Recorded', detail: 'Authoritative native Charger 2 electricity counter differences over the recorded interval' }],
@@ -140,13 +152,23 @@ const basic = [
 
 export const HISTORY_AXES = Object.freeze([
   ...basic.map(([key, label, group, signals, unit, kind]) => ({ key, label, group, signals, unit, kind })),
-  ...Object.entries(SIGNAL_INFO).filter(([signal]) => !ENERGY_SIGNALS.includes(signal) || signal === 'caravan_energy').map(([signal, info]) => ({
+  ...Object.entries(SIGNAL_INFO).map(([signal, info]) => ({
     key: signal === 'heating_integral' ? 'integral' : signal, ...info, signals: [signal],
   })),
   ...Object.entries({ ...GARAGE_INPUT_INFO, ...GARAGE_COEFFICIENT_INFO }).map(([signal, info]) => ({ key: signal, ...info, signals: [signal] })),
   ...Object.entries(SESSION_CHECK_INFO).map(([signal, info]) => ({ key: signal, ...info, signals: [signal] })),
   ...Object.entries(MODEL_INPUT_INFO).map(([signal, info]) => ({ key: signal, ...info, signals: [signal] })),
   ...Object.entries(MODEL_COEFFICIENT_INFO).map(([signal, info]) => ({ key: signal, ...info, signals: [signal] })),
+  ...[
+    ['property_power', 'Property electrical power', 'kW', 'Interval-average electricity; supported older current snapshots use 230 V'],
+    ['charger_power', 'Charger 1 electrical power', 'kW', 'Interval-average electricity; supported older current snapshots use 230 V'],
+    ['charger2_power', 'Charger 2 electrical power', 'kW', 'Authoritative native energy divided by its recording interval'],
+    ...['property', 'ev1', 'ev2'].flatMap(prefix => [1, 2, 3].map(phase => [`${prefix}_current_l${phase}`,
+      `${prefix === 'property' ? 'Property' : prefix === 'ev1' ? 'Charger 1' : 'Charger 2'} L${phase} current`, 'A',
+      'Equivalent interval-average current at 230 V from phase energy; supported older current snapshots retain their observed values'])),
+    ['solar_forecast', 'Solar forecast from now', 'W/m²', 'Forecast radiation; not a measurement at the house'],
+  ].map(([key, label, unit, detail]) => ({ key, label, unit, detail, signals: [key],
+    group: key === 'solar_forecast' ? 'Weather' : 'Electricity', kind: key === 'solar_forecast' ? 'Forecast' : 'Calculated' })),
 ]);
 export const HISTORY_AXIS_BY_KEY = Object.freeze(Object.fromEntries(HISTORY_AXES.map(axis => [axis.key, axis])));
 export const HISTORY_GROUPS = Object.freeze(['Electricity', 'Home temperatures', 'Caravan', 'Garage heat pump', 'Heating', 'Ground loop', 'Hot water', 'Equipment states', 'Settings', 'Runtime counters', 'Control', 'Weather', 'Model inputs', 'Model coefficients', 'Learning', 'Meter checks', 'Garage model inputs', 'Garage model coefficients']);

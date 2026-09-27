@@ -5,6 +5,8 @@
 export function temperatureIntervalKnots(points) {
   const result = [];
   let interval, tail;
+  const sameQuality = (a, b) => a === b || Array.isArray(a) && Array.isArray(b)
+    && a.length === b.length && a.every((value, index) => value === b[index]);
   const flush = () => {
     if (tail && result.at(-1) !== tail) result.push(tail);
     interval = tail = undefined;
@@ -13,8 +15,11 @@ export function temperatureIntervalKnots(points) {
     if (!Number.isFinite(point.y) || !Number.isFinite(point.intervalStart) || !Number.isFinite(point.intervalEnd)) {
       flush(); result.push(point); continue;
     }
-    const same = interval && point.intervalStart === interval.intervalStart && point.intervalEnd === interval.intervalEnd;
+    const same = interval && point.intervalStart === interval.intervalStart && point.intervalEnd === interval.intervalEnd
+      && point.y === interval.y && point.source === interval.source && sameQuality(point.quality, interval.quality);
     if (!same) {
+      // Reduced envelopes may omit intermediate intervals. Only explicit null
+      // markers break coverage; retained interval metadata is provenance.
       if (interval && point.intervalStart > interval.intervalEnd) flush();
       result.push(point); interval = point;
     }

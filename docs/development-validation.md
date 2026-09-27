@@ -84,6 +84,7 @@ node scripts/browser-equipment-smoke.js
 node scripts/browser-home-controls-smoke.js
 node scripts/browser-garage-smoke.js
 node scripts/browser-fullscreen-smoke.js
+node scripts/browser-chart-views-smoke.js
 ```
 
 The access suite checks password entry, keyboard and touch visibility controls,
@@ -94,6 +95,14 @@ synthetic screenshots and the geometry report, set
 
 The fullscreen suite checks the page controls, chart entry/exit restoration,
 external fullscreen changes and fallback behavior with synthetic data.
+
+The chart-views suite exercises every named view, the complete supported series
+explorer, view-specific legend choices, global price visibility, reset behavior,
+garage pump interpretation, line/fill conventions and aligned activity rows. It
+checks cursor bounds, row inspection, touch and keyboard cleanup, both themes and
+320/390 px fullscreen layouts. Its synthetic screenshot gallery is written to
+ignored `var/chart-views-*.png` files. The Firefox chart suite below retains broader
+chart/date/detail/tooltips and related dashboard regression coverage.
 
 They default to `/opt/google/chrome/chrome`; set `STMQ_CHROME_BIN` if needed. The
 remaining Chrome checks expect a separately started browser with a disposable
@@ -128,6 +137,8 @@ a new disposable profile before the next suite:
 
 ```sh
 node scripts/browser-chart-smoke.js ws://127.0.0.1:39124/session
+# Limit this combined suite to chart, recording, dates, tooltips and zoom checks:
+# node scripts/browser-chart-smoke.js ws://127.0.0.1:39124/session --chart-only
 node scripts/browser-pairing-smoke.js ws://127.0.0.1:39124/session
 ```
 

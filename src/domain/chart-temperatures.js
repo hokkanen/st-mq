@@ -5,7 +5,8 @@ import { SIGNAL_INFO } from './history-series.js';
 const continuous = new Set([
   ...Object.entries(SIGNAL_INFO).filter(([key, info]) => info.unit === '°C'
     && (info.group === 'Home temperatures' || key.endsWith('_temperature'))).map(([key]) => key),
-  'model_indoor_temperature', 'model_outdoor_temperature', 'learning_indoor_temperature', 'outdoor_forecast',
+  'model_indoor_temperature', 'model_outdoor_temperature', 'outdoor_forecast',
+  'garage_model_rear', 'garage_model_front', 'garage_model_difference', 'garage_model_outdoor',
 ]);
 
 export const isInterpolatedTemperature = key => continuous.has(key);

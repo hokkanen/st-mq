@@ -1,3 +1,4 @@
+import { CHART_VIEW_BY_KEY } from '../src/domain/chart-views.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createEquipmentActions, createEquipmentPanel, equipmentReadingRows, equipmentTestAllowed, equipmentSource, equipmentControlAllowed, equipmentCheckText, dhwrReadingSummary } from '../chart/equipment.js';
@@ -63,7 +64,7 @@ test('transport labels match throughout equipment, providers and chart tooltips'
   assert.equal(historyValueLabel('garage_door1_open', 1, 'state'), 'Open');
   assert.equal(historyValueLabel('garage_door2_open', 0, 'state'), 'Closed');
   for (const key of ['garage_temperature', 'garage_temperature_2']) {
-    const dataset = historyDatasets({}, 'temperatures').find(row => row.key === key);
+    const dataset = historyDatasets({}, CHART_VIEW_BY_KEY.temperatures).find(row => row.key === key);
     assert.equal(dataset.cubicInterpolationMode, 'monotone'); assert.equal(dataset.stepped, false);
   }
 });

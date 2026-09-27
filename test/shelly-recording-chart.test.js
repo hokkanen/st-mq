@@ -47,7 +47,9 @@ test('charger 2 power uses native total energy; absent phase evidence remains em
   assert(power.series.charger2_power.some(row=>row.y===null && row.x>=start+10*MINUTE && row.x<start+12*MINUTE));
   assert([1,2,3].every(phase=>phases.series[`ev2_current_l${phase}`].every(row=>row.y===null)));
   assert(HISTORY_AXIS_BY_KEY.phases.signals.includes('ev2_current_l1'));
-  assert.equal(HISTORY_AXIS_BY_KEY.ev2_energy,undefined,'stored total energy has no separate asymmetric left-axis entry');
+  assert.deepEqual(HISTORY_AXIS_BY_KEY.ev2_energy.signals, ['ev2_energy'], 'authoritative raw interval energy is independently inspectable');
+  const raw = getChartData({ ...options, left: 'ev2_energy' });
+  assert(raw.series.ev2_energy.some(row => row.intervalEnd === start + 10 * MINUTE && Math.abs(row.y - 1.2) < 1e-9));
   assert(!store.observations().some(row=>row.signal==='charger2_power'));
 });
 

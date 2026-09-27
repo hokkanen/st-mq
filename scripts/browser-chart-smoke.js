@@ -17,6 +17,8 @@ import { initialAdaptiveModel } from '../src/control/adaptive-learning.js';
 import { addFireplace } from '../src/app/fireplace.js';
 import { recordChargingSessionCheck } from '../src/app/charging-session-checks.js';
 import { equipmentConfiguration } from '../src/acquisition/equipment-config.js';
+import { CHART_VIEWS, CHART_VIEW_BY_KEY } from '../src/domain/chart-views.js';
+import { EXPLORER_SERIES } from '../chart/series-explorer.js';
 
 // Requires a separately started isolated Firefox BiDi listener. This script
 // creates its own temporary simulation, never reads household credentials.
@@ -30,6 +32,7 @@ const coefficientValues = {
 };
 const coefficientKeys = Object.keys(coefficientValues);
 const recordingOnly = process.argv.includes('--recording-only');
+const chartOnly = process.argv.includes('--chart-only');
 function seedRecordingFixture(app) {
   const record = (signal,value,unit,device,source='mqtt-equipment') => app.engine.recorder.record({
     source,device,signal,value,unit,sourceTime:now,receivedAt:now,quality:[],raw:{reportIntervalMs:90_000} });
@@ -199,26 +202,22 @@ try {
   assert.equal(await evaluate("document.getElementById('range-today').getAttribute('aria-pressed')"), 'true');
   assert.equal(await evaluate("Array.from(document.querySelectorAll('.range-shortcuts button')).map(button => button.id).join(',')"), 'range-back,range-yesterday,range-today,range-tomorrow,range-forward');
   await checkRangeSteps();
-  assert.equal(await evaluate("document.getElementById('left-axis').value"), 'power');
-  assert.match(await evaluate("document.getElementById('chart-notes').textContent"),/original saved history.*stay in memory.*original recorded intervals/);
-  assert.doesNotMatch(await evaluate("document.getElementById('chart-notes').textContent"),/hourly temperature extrema|15-minute energy sums|15-minute aggregate/);
-  assert(await evaluate("document.querySelectorAll('#left-axis optgroup').length")>=10);
-  assert.equal(await evaluate("document.querySelector('#left-axis optgroup').label.split(' · ')[0]"), 'Electricity');
-  const meterChoices=JSON.parse(await evaluate(`JSON.stringify([...document.querySelectorAll('#left-axis optgroup')].find(group=>group.label.startsWith('Meter checks'))?.children
-    ? [...[...document.querySelectorAll('#left-axis optgroup')].find(group=>group.label.startsWith('Meter checks')).children].map(option=>({key:option.value,label:option.textContent})) : [])`));
-  assert.deepEqual(meterChoices.filter(row=>row.key!=='property_import_energy_counter'),[
-    {key:'ev1_session_energy_check',label:'Charger 1 · kWh · recorded'},{key:'shelly_session_energy_check',label:'Charger 2 · kWh · recorded'}]);
-  for(const key of ['ev1_lifetime_energy_counter','ev1_session_energy_counter','ev2_energy'])
-    assert.equal(await evaluate(`Boolean(document.querySelector('#left-axis option[value="${key}"]'))`),false,`${key} has no separate drawer entry`);
-  for(const key of ['brine_pump_speed','phase_energy','alarm_code', ...coefficientKeys])assert.equal(await evaluate(`Boolean(document.querySelector('#left-axis option[value="${key}"]'))`),true);
-  for(const key of ['temperatures'])
-    assert.equal(await evaluate(`Boolean(document.querySelector('#left-axis option[value="${key}"]'))`),true,`${key} is selectable on the left axis`);
-  for(const key of ['indoor_temperature','downstairs_temperature','bedroom_temperature'])
-    assert.equal(await evaluate(`Boolean(document.querySelector('#left-axis option[value="${key}"]'))`),false,`${key} is compared in the combined home-temperatures view`);
-  for(const key of ['model_indoor_temperature','garage_temperature','outdoor_temperature','outdoor_forecast','spot_price','all_in_price'])
-    assert.equal(await evaluate(`Boolean(document.querySelector('#left-axis option[value="${key}"]'))`),false,`${key} is already shown on the right axis`);
-  assert.deepEqual(JSON.parse(await evaluate(`JSON.stringify([...document.querySelector('#left-axis optgroup[label="Home learning · coefficients"]').children].map(option => option.value))`)),
+  assert.equal(await evaluate("document.getElementById('chart-view').value"), 'power');
+  assert.deepEqual(await evaluate("[...document.querySelectorAll('#chart-view option')].map(option => option.value)"),
+    [...CHART_VIEWS.map(view => view.key), 'explorer'], 'Every named investigation and the series explorer is selectable');
+  assert.deepEqual(await evaluate("[...document.querySelectorAll('#chart-series option')].map(option => option.value).sort()"),
+    EXPLORER_SERIES.map(series => series.key).sort(), 'The explorer retains every supported numerical and state projection');
+  assert.equal(await evaluate("document.querySelector('#chart-view optgroup').label"), 'Electricity');
+  assert.deepEqual(await evaluate("[...document.querySelector('#chart-view optgroup[label=\"Home coefficients\"]').children].map(option => option.value)"),
     coefficientKeys, 'Only the four fitted Home coefficients have chart choices');
+  const selectChartSubject = async key => {
+    if (CHART_VIEW_BY_KEY[key]) await evaluate(`document.getElementById('chart-view').value=${JSON.stringify(key)};
+      document.getElementById('chart-view').dispatchEvent(new Event('change')); true`);
+    else await evaluate(`document.getElementById('chart-view').value='explorer';
+      document.getElementById('chart-view').dispatchEvent(new Event('change'));
+      document.getElementById('chart-series').value=${JSON.stringify(key === 'integral' ? 'heating_integral' : key)};
+      document.getElementById('chart-series').dispatchEvent(new Event('change')); true`);
+  };
   assert.equal(await evaluate("performance.getEntriesByType('resource').some(entry=>entry.name.includes('/api/recording-overview'))"),false,'collapsed recording inventory does not fetch');
   await evaluate(`(() => {
     window.recordingFixture={fetch:window.fetch.bind(window),requests:0,fail:false,hold:false};
@@ -290,7 +289,7 @@ try {
     assert.match(await evaluate(`document.querySelector('[data-dataset-id="${key}"]').textContent`),/Every change/);
   }
   assert.match(await evaluate("document.querySelector('[data-dataset-id=dhwr_active]').textContent"),/2 records.*Every report/);
-  assert.match(await evaluate("document.querySelector('[data-dataset-id=garage_native_defrost]').textContent"),/Garage defrost state/);
+  assert.match(await evaluate("document.querySelector('[data-dataset-id=garage_native_defrost]').textContent"),/Garage defrost/);
   assert.match(await evaluate("document.querySelector('[data-dataset-id=events-garage-feed]').textContent"),/garage-external-temperature-diagnostic/);
   assert.match(await evaluate("document.querySelector('[data-dataset-id=adaptive-observations]').textContent"),/workshop_pressure.*bar.*Adaptive measurement/);
   const chargingInventory=await evaluate("document.querySelector('[data-dataset-id=state-charging]').textContent");
@@ -379,11 +378,16 @@ try {
   assert.equal(await evaluate("document.getElementById('error').hidden"), true);
   const legendState = text => evaluate(`Array.from(document.querySelectorAll('#chart-legend button')).find(b => b.textContent.toLowerCase().includes(${JSON.stringify(text.toLowerCase())}))?.getAttribute('aria-pressed')`);
   const checkSeriesDrawn = async (keys, left) => {
+    await evaluate(`${JSON.stringify(keys)}.forEach(key => {const button = document.querySelector('[data-chart-key=\"'+key+'\"]'); if(button?.getAttribute('aria-pressed')==='false')button.click();}); true`);
     await until(`document.getElementById('history').dataset.ready === 'true'
       && document.getElementById('history').dataset.left === ${JSON.stringify(left)}
       && ${JSON.stringify(keys)}.every(key =>
         document.querySelector('[data-chart-key="' + key + '"]')?.getAttribute('aria-pressed') === 'true')`);
     for (const key of keys) {
+      if (await evaluate(`document.querySelector('[data-chart-key=\"${key}\"]').dataset.axis === 'activity'`)) {
+        assert.equal(await evaluate(`document.querySelector('[data-activity-key=\"${key}\"] .mode-track').children.length > 0`), true, `${key} has visible lower-row intervals`);
+        continue;
+      }
       const changedPixels = await evaluate(`(async () => {
         const canvas = document.getElementById('history');
         const context = canvas.getContext('2d');
@@ -411,14 +415,14 @@ try {
     const palette=JSON.parse(await evaluate(`JSON.stringify((()=>{const styles=getComputedStyle(document.documentElement);
       return {property:styles.getPropertyValue('--chart-property').trim(),charger1:styles.getPropertyValue('--chart-ev').trim(),
         charger2:styles.getPropertyValue('--chart-ev2').trim(),theme:document.documentElement.dataset.theme};})())`));
-    assert.equal(palette.charger1,palette.property,'Charger 1 uses the property power color');
-    assert.equal(palette.charger2,palette.theme==='light'?'#8050a6':'#b493db','Charger 2 retains the earlier violet color');
+    assert.notEqual(palette.charger1,palette.property,'Charger 1 has a distinct semantic color from property demand');
+    assert.notEqual(palette.charger2,palette.charger1,'The two chargers remain distinguishable');
   };
   await checkPowerDrawn();
   await checkChartPopupBrowser({ evaluate, command, context, until });
-  await checkEquipmentBrowser({ evaluate, command, context, until });
+  if (!chartOnly) await checkEquipmentBrowser({ evaluate, command, context, until });
   await checkChartZoomBrowser({ evaluate, command, context, until });
-  assert.match(await evaluate("document.getElementById('chart-notes').textContent"),/Auxiliary heat, Charger 1, Charger 2/);
+  assert.match(await evaluate("document.getElementById('chart-notes').textContent"),/two chargers.*Auxiliary.*separate lines/);
   await evaluate("document.querySelector('[data-chart-key=auxiliary_power]').click(); document.querySelector('[data-chart-key=charger_power]').click(); true");
   await checkSeriesDrawn(['charger2_power'],'power');
   await evaluate("document.querySelector('[data-chart-key=auxiliary_power]').click(); document.querySelector('[data-chart-key=charger_power]').click(); true");
@@ -447,7 +451,7 @@ try {
   assert.equal(await legendState('spot'), 'true');
   assert.equal(await legendState('dhwr'), 'true');
   assert.equal(await legendState('fireplace'), 'true');
-  assert.equal(await evaluate("document.querySelector('#left-axis option[value=firewood_load]').textContent"), 'Manually recorded firewood additions · kg · saved input');
+  assert.equal(await evaluate("document.querySelector('#chart-view option[value=firewood]').textContent"), 'Firewood additions');
   await checkActivityTracks();
   for (const key of ['dhwr', 'fireplace']) {
     assert.equal(await evaluate(`(async () => {
@@ -537,19 +541,18 @@ try {
     ...['ev1_session_energy_check','shelly_session_energy_check'].map(name=>[name,name,'property_power']),
     ['solar_radiation', 'solar_radiation', 'property_power'], ['power', 'property_power', 'heating_integral']]) {
     const began = performance.now();
-    await evaluate(`document.getElementById('left-axis').value=${JSON.stringify(left)}; document.getElementById('left-axis').dispatchEvent(new Event('change')); true`);
+    await selectChartSubject(left);
     await until(`document.getElementById('history').dataset.ready === 'true' && document.getElementById('history').dataset.left === ${JSON.stringify(left)} && !!document.querySelector('[data-chart-key="${expected}"]') && !document.querySelector('[data-chart-key="${absent}"]')`);
     assert.equal(await legendState('spot'), 'false', 'Explicitly hidden shared legend preference survives axis changes');
-    assert.equal(await legendState('indoor'), 'true');
-    if(left==='phases')assert.equal(await evaluate("Boolean(document.querySelector('[data-chart-key=charger2_power], [data-chart-key^=ev2_]'))"),false,'Physical C2 total power never invents phase readings');
+    if(left==='phases')assert.equal(await evaluate("Boolean(document.querySelector('[data-chart-key=charger2_power]'))"),false,'Phase loading retains ampere units rather than total power');
     if(['ev1_session_energy_check','shelly_session_energy_check'].includes(left)) {
       assert.equal(await evaluate(`document.querySelector('[data-chart-key="${left}"]').textContent.includes(${JSON.stringify(left==='ev1_session_energy_check'?'Charger 1':'Charger 2')})`),true);
-      assert.match(await evaluate("document.getElementById('chart-notes').textContent"),/one finalized session reference.*Hollow points.*excluded/);
+      assert.match(await evaluate("document.getElementById('chart-view-description').textContent"),/[Ss]ession/);
       const sessionPlot=await fetch(`${base}/api/chart?start=2026-09-07&end=2026-09-07&left=${left}`).then(response=>response.json());
       assert.equal(sessionPlot.series[left].length,2,'one chart point per finalized session');
       await checkSeriesDrawn([left],left);
     }
-    if(left==='heat_pump_power')assert.match(await evaluate("document.getElementById('chart-notes').textContent"),/reconstructed from saved equipment states.*gaps/);
+    if(left==='heat_pump_power')assert.match(await evaluate("document.getElementById('chart-view-description').textContent"),/reconstruct|estimate|recorded/i);
     if (coefficientKeys.includes(left)) {
       const tableCounts = () => app.store.db.prepare("SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name").all()
         .map(({ name }) => [name, app.store.db.prepare(`SELECT COUNT(*) AS count FROM "${name.replaceAll('"', '""')}"`).get().count]);
@@ -562,8 +565,7 @@ try {
       assert(values.some(point => point.coefficientStatus === 'fitted' && point.y === coefficientValues[left].value));
       assert(values.every(point => point.modelCoefficient && point.inputSource === 'Simulation'));
       assert(values.every(point => point.x <= now), 'Current coefficients are never extended into the future');
-      assert.match(await evaluate("document.getElementById('chart-notes').textContent"), /without additional stored history.*initial estimates, fitted values and retained values/);
-      assert.doesNotMatch(await evaluate("document.getElementById('chart-notes').textContent"), /Model inputs are the values saved/);
+      assert.match(await evaluate("document.getElementById('chart-notes').textContent"), /Coefficients replay.*supported journal/);
       await checkSeriesDrawn([left], left);
     }
     if (left === 'power') await checkPowerDrawn();
@@ -578,7 +580,7 @@ try {
   const tomorrow = await fetch(`${base}/api/chart?start=2026-09-08&end=2026-09-08`).then(r => r.json());
   assert.ok(tomorrow.series.outdoor_forecast.length > 0);
   assert.ok(tomorrow.series.all_in_price.length > 0);
-  assert.equal(tomorrow.series.indoor_temperature.some(p => p.y !== null), false);
+  assert.equal(tomorrow.series.property_power.some(p => p.y !== null), false);
   for (const series of Object.values(tomorrow.series)) assert.ok(series.every(p => p.x >= tomorrow.range.from && p.x <= tomorrow.range.to));
   await evaluate("document.getElementById('range-yesterday').click(); true");
   await until("document.getElementById('history').dataset.ready === 'true' && document.getElementById('history').dataset.rangeStart === '2026-09-06' && document.getElementById('history').dataset.rangeEnd === '2026-09-07'");
@@ -591,6 +593,7 @@ try {
   await checkSeriesDrawn(['auxiliary_power', 'charger_power', 'compressorSpace', 'compressorDhw'], 'power');
   assert.ok(populated.operatingModes.length > 0);
   assert.ok(populated.series.auxiliary_power.some(point => point.y > 0));
+  if (!chartOnly) {
   assert.equal(await evaluate("document.getElementById('learning-details').open"), false);
   assert.equal(await evaluate("document.getElementById('learning-panel-details').open"), false);
   assert.equal(await evaluate("[...document.querySelectorAll('#learning-metrics > details[data-learning-key]')].map(row => row.dataset.learningKey).join(',')"),
@@ -835,7 +838,7 @@ try {
   await checkPowerDrawn();
   await checkTimingBrowser({ command, evaluate, until, capture, context });
   for (const left of ['phases', 'integral', 'power']) {
-    await evaluate(`document.getElementById('left-axis').value=${JSON.stringify(left)}; document.getElementById('left-axis').dispatchEvent(new Event('change')); true`);
+    await selectChartSubject(left);
     await until(`document.getElementById('history').dataset.ready === 'true' && document.getElementById('history').dataset.left === ${JSON.stringify(left)}`);
   }
   await checkPowerDrawn();
@@ -971,8 +974,12 @@ try {
   await evaluate("document.getElementById('providers').scrollIntoView({block:'center'}); true");
   await capture('home-energy-provider-fixture-mobile');
   }
+  }
   assert.deepEqual(errors, []);
-  console.log(JSON.stringify(recordingOnly?{result:'recording-browser-smoke-passed',browserTimeZone,
+  console.log(JSON.stringify(chartOnly ? { result: 'chart-only-browser-smoke-passed', browserTimeZone, timings,
+    checked: ['named-views-and-series-explorer', 'recording-inventory', 'power-visible-pixels', 'fullscreen-and-zoom',
+      'pointer-gestures-and-keyboard', 'date-and-view-request-races', 'tooltips', 'charger-fills', 'coefficient-replay', 'activity-rows'] }
+    : recordingOnly?{result:'recording-browser-smoke-passed',browserTimeZone,
     checked:['actual-adaptive-streams-only','opaque-duplicate-stream-identities','unit-distinction','all-four-floor-outputs',
       'every-report-circulation-feedback','observed-defrost','abnormal-feed-events','event-type-breakdown','saved-history-without-checkpoint','durable-open-energy','lazy-read-only-inventory',
       'counts-and-dates','persistent-charging-choices-and-separate-session-edits','keyboard-and-refresh-preservation','dark-and-light','390-and-1440-layouts','physical-table-accounting']}:{ result: 'chart-browser-smoke-passed', browserTimeZone, timings,

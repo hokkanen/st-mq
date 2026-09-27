@@ -8,11 +8,14 @@ import { historyDatasets, historySeriesAt } from '../chart/history-model.js';
 
 const HOUR = 3_600_000, start = Date.parse('2026-02-03T10:00:00Z');
 
-test('meter checks offer one finalized-session entry per charger and no charger cumulative or asymmetric energy axes', () => {
+test('meter checks distinguish cumulative counters and finalized sessions from independently selectable interval energy', () => {
   const meterChecks = HISTORY_AXES.filter(axis => axis.group === 'Meter checks');
-  assert.deepEqual(meterChecks.map(axis => axis.label), ['Property meter counter', 'Charger 1', 'Charger 2']);
-  assert.deepEqual(meterChecks.map(axis => axis.key), ['property_import_energy_counter', 'ev1_session_energy_check', 'shelly_session_energy_check']);
-  assert(!HISTORY_AXES.some(axis => ['ev1_lifetime_energy_counter', 'ev1_session_energy_counter', 'ev2_energy'].includes(axis.key)));
+  assert.deepEqual(meterChecks.map(axis => axis.key), ['garage_native_energy', 'property_import_energy_counter', 'ev1_session_energy_check', 'shelly_session_energy_check']);
+  assert(!HISTORY_AXES.some(axis => ['ev1_lifetime_energy_counter', 'ev1_session_energy_counter'].includes(axis.key)));
+  const authoritative = HISTORY_AXES.find(axis => axis.key === 'ev2_energy');
+  assert.deepEqual(authoritative.signals, ['ev2_energy']);
+  assert.equal(authoritative.group, 'Electricity');
+  assert.match(authoritative.detail, /Authoritative native Charger 2/);
 });
 
 test('charger meter charts project each saved session reference once, distinguish excluded comparisons and never hold between sessions', t => {
@@ -47,7 +50,7 @@ test('charger meter charts project each saved session reference once, distinguis
   assert.equal(two.series.shelly_session_energy_check[0].referenceBasis, 'electricity-meter');
   assert(!JSON.stringify(one.series).includes('invented-'), 'Chart metadata exposes no session or device identities');
   for (const chart of [one, two]) {
-    const dataset = historyDatasets(chart.series, chart.left).find(row => row.key === chart.left);
+    const dataset = historyDatasets(chart.series, { leftSignals: [chart.left], rightSignals: [] }).find(row => row.key === chart.left);
     assert.equal(dataset.showLine, false);
     assert.equal(dataset.fill, false);
     const shown = historySeriesAt(chart, options.now + HOUR);

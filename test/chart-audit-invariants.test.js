@@ -1,3 +1,4 @@
+import { CHART_VIEW_BY_KEY } from '../src/domain/chart-views.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Store } from '../src/storage/store.js';
@@ -36,7 +37,7 @@ test('the real chart producer preserves scalar outages on overview and detail re
     assert(result.series.indoor_temperature.some(point=>point.y===null&&point.x>=start+400));
   }
 });
-test('production power reduction preserves independently calculated maxima for every visible charger/AUX subset',t=>{
+test('production power reduction preserves independent auxiliary maxima and every visible charging sum',t=>{
   const store=new Store(':memory:');t.after(()=>store.close());
   const auxiliary=[0,6,0,3,0],one=[1,0,7,6,1],two=[0,0,4,3,0],property=[8,25,20,17,8];
   for(let i=0;i<5;i++){
@@ -51,11 +52,15 @@ test('production power reduction preserves independently calculated maxima for e
     for(let mask=1;mask<8;mask++){
       const selected=keys.filter((_,i)=>mask&(1<<i));
       const preferences=Object.fromEntries(keys.map((key,i)=>[key,Boolean(mask&(1<<i))]));
-      const datasets=historyDatasets(result.series,'power',preferences);
-      const expected=Math.max(...auxiliary.map((_,i)=>[auxiliary[i],one[i],two[i]].reduce((n,value,j)=>n+(mask&(1<<j)?value:0),0)));
+      const datasets=historyDatasets(result.series, CHART_VIEW_BY_KEY.power,preferences);
+      const chargers=selected.filter(key=>key!=='auxiliary_power');
+      const expected=chargers.length?Math.max(...one.map((value,i)=>(preferences.charger_power?value:0)+(preferences.charger2_power?two[i]:0))):Math.max(...auxiliary);
       const top=datasets.find(dataset=>dataset.key===selected.at(-1));
       const actual=Math.max(...top.data.filter(point=>Number.isFinite(point.y)).map(point=>point.y));
       assert(Math.abs(actual-expected)<1e-9,`${mask}: ${actual} != ${expected}`);
+      const aux=datasets.find(dataset=>dataset.key==='auxiliary_power');
+      assert.equal(aux.fill,false);
+      assert.equal(Math.max(...aux.data.map(point=>point.y).filter(Number.isFinite)),Math.max(...auxiliary));
     }
   }
 });
@@ -64,7 +69,7 @@ test('interval energy remains visible as separate kWh marks across a multi-day g
   energy(store,'ev1',3,start,start+HOUR);energy(store,'ev1',3,start+48*HOUR,start+49*HOUR);
   for(const points of [100,2000]){
     const payload=getChartData({store,input:'offline',now:start+72*HOUR,startDate:'2026-01-01',endDate:'2026-01-03',left:'phase_energy',points});
-    const dataset=historyDatasets(payload.series,'phase_energy').find(row=>row.key==='ev1_energy_l1');
+    const dataset=historyDatasets(payload.series, CHART_VIEW_BY_KEY.interval_energy).find(row=>row.key==='ev1_energy_l1');
     assert.equal(dataset.kind,'interval-energy');assert.equal(dataset.showLine,false);assert(dataset.pointRadius>0);
     assert.deepEqual(dataset.data.filter(point=>Number.isFinite(point.y)).map(point=>point.y),[1,1]);
     assert.deepEqual(dataset.data.filter(point=>Number.isFinite(point.y)).map(point=>point.intervalEnd-point.intervalStart),[HOUR,HOUR]);

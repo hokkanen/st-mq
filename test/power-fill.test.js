@@ -1,3 +1,4 @@
+import { CHART_VIEW_BY_KEY } from '../src/domain/chart-views.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { LineElement } from 'chart.js';
@@ -72,11 +73,11 @@ test('only supported aligned bands bypass generic filling; original data and too
   assert.equal(result[0].data, sample); assert.deepEqual(datasets, before);
 });
 
-test('history power, phase and legend fallback bands use their current baseline and Chart pixel coordinates', () => {
+test('only charger bands use their current baseline and clipped Chart pixel coordinates', () => {
   const series = { property_power: points([[0, 9], [10, 9]]), auxiliary_power: points([[0, 2], [10, 3]]),
     charger_power: points([[0, 4], [10, 5]]), charger2_power: points([[0, 1], [10, 1]]) };
   for (const preferences of [{}, { auxiliary_power: false }, { charger_power: false }]) {
-    const datasets = preparePowerFills(historyDatasets(series, 'power', preferences));
+    const datasets = preparePowerFills(historyDatasets(series, CHART_VIEW_BY_KEY.power, preferences));
     for (const dataset of datasets.filter(row => row.kind === 'fill' && !row.hidden)) {
       assert.equal(dataset.fill, false);
       const target = dataset.powerFill.target;
@@ -88,8 +89,11 @@ test('history power, phase and legend fallback bands use their current baseline 
     const chart = { data: { datasets }, ctx: result.ctx, chartArea: { left: 0, right: 10, top: 0, bottom: 100 },
       getDatasetMeta: index => metas[index], isDatasetVisible: index => !datasets[index].hidden };
     datasets.forEach((dataset, index) => { if (!dataset.hidden) powerFillPlugin.beforeDatasetDraw(chart, { index, meta: metas[index] }); });
-    assert(result.paths.length >= 2); assert(result.clips.every(bounds => bounds.join(',') === '0,0,10,100'));
+    assert.equal(result.paths.length, preferences.charger_power === false ? 1 : 2);
+    assert(result.clips.every(bounds => bounds.join(',') === '0,0,10,100'));
+    assert.equal(datasets.find(dataset => dataset.key === 'auxiliary_power').powerFill, undefined);
   }
-  const phases = preparePowerFills(historyDatasets({ ev1_current_l1: points([[0, 4], [10, 5]]) }, 'phases'));
-  assert.equal(phases.find(dataset => dataset.key === 'ev1_current_l1').powerFill.target, 'origin');
+  const phases = preparePowerFills(historyDatasets({ ev1_current_l1: points([[0, 4], [10, 5]]) }, CHART_VIEW_BY_KEY.phases));
+  assert.equal(phases.find(dataset => dataset.key === 'ev1_current_l1').powerFill, undefined);
+  assert.equal(phases.find(dataset => dataset.key === 'ev1_current_l1').fill, false);
 });

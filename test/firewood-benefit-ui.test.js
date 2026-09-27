@@ -1,3 +1,4 @@
+import { CHART_VIEW_BY_KEY } from '../src/domain/chart-views.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { firewoodDisplay, firewoodExplanations } from '../chart/firewood-benefit.js';
@@ -86,11 +87,11 @@ test('remaining release and projected savings never enter the elapsed selection 
 });
 
 test('manual additions and daily outcomes use visible event markers and never connect across missing data', () => {
-  const load = historyDatasets({ firewood_load: [{ x: from, y: 8 }, { x: from + 1000, y: 2 }] }, 'firewood_load')[0];
+  const load = historyDatasets({ firewood_load: [{ x: from, y: 8 }, { x: from + 1000, y: 2 }] }, CHART_VIEW_BY_KEY.firewood)[0];
   assert.equal(load.showLine, false); assert.equal(load.pointStyle, 'triangle'); assert.equal(load.pointRadius, 5);
   assert.equal(load.spanGaps, false); assert.equal(load.unit.split(' · ')[0], 'kg');
   const outcomes = historyDatasets({ firewood_savings: [{ x: from, y: 1, status: 'provisional' },
-    { x: from + 24 * HOUR, y: 0, status: 'validated' }] }, 'firewood_savings')[0];
+    { x: from + 24 * HOUR, y: 0, status: 'validated' }] }, CHART_VIEW_BY_KEY.fireplace_cost)[0];
   assert.equal(outcomes.showLine, false); assert.equal(outcomes.pointStyle, 'rectRot');
   assert.equal(outcomes.pointBackgroundColor[0], 'transparent'); assert.notEqual(outcomes.pointBackgroundColor[1], 'transparent');
   assert.equal(historyValueLabel('firewood_savings', 0, outcomes.unit), '0 €/day');

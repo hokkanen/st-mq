@@ -1,3 +1,4 @@
+import { CHART_VIEW_BY_KEY } from '../src/domain/chart-views.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -65,7 +66,7 @@ function saveDecoded(store, payload) {
 }
 
 for (const provider of ['fmi', 'openmeteo']) {
-  test(`${provider} decoder snapshots supply solid solar history and future forecasts without database writes`, () => {
+  test(`${provider} decoder snapshots distinguish archived and future forecast values without database writes`, () => {
     const store = new Store(':memory:');
     try {
       const payload = provider === 'fmi' ? decodeFmiForecast(fmiSolarFixture(), decoderOptions)
@@ -99,9 +100,9 @@ for (const provider of ['fmi', 'openmeteo']) {
         assert.equal(point.issuedAtBasis, payload.issuedAtBasis);
         assert.equal(point.intervalBasis, payload.forecast[0].solar.intervalBasis);
       }
-      const datasets = historyDatasets(chart.series, 'solar_radiation').filter(dataset => dataset.yAxisID === 'left');
+      const datasets = historyDatasets(chart.series, CHART_VIEW_BY_KEY.weather).filter(dataset => dataset.yAxisID === 'left');
       assert.deepEqual(datasets.map(dataset => dataset.key), ['solar_radiation', 'solar_forecast']);
-      assert.deepEqual(datasets.map(dataset => dataset.borderDash), [[], [5, 4]]);
+      assert.deepEqual(datasets.map(dataset => dataset.borderDash), [[8, 3, 2, 3], [8, 3, 2, 3]]);
       assert(datasets.every(dataset => dataset.stepped && !dataset.spanGaps));
       assert.equal(store.observations({ signal: 'solar_radiation' }).length, 0);
       assert.equal(store.db.prepare('SELECT COUNT(*) AS count FROM provider_snapshot_fetches').get().count, 1);
