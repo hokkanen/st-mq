@@ -130,12 +130,16 @@ without activating a range, and fitting the end calendar on small screens.
 The timing compatibility suite uses the production comparison-section markup
 with native, missing and delayed `ResizeObserver` delivery. It checks visible
 figures and controls, resizing, refresh, keyboard focus and unclipped content at
-five widths in both themes. The comparison section uses an accessible button
+seven widths in both themes, including either side of the indentation breakpoint.
+The comparison section uses an accessible button
 and an ordinary hidden panel, keeping native inner folds mounted without placing
 the cards inside a native outer disclosure. Enter/Space activation, expanded state
 and hidden layout must agree. Repeated close/reopen checks include refreshes and
 viewport changes while hidden, retained cached alignment until reopening,
-preserved inner folds, hit testing and identical painted-card captures.
+preserved inner folds, hit testing and identical painted-card captures. Layout
+checks verify that the whole expanded panel is inset beneath its header, inner
+headers align with their content level, and opened bodies add one further inset
+without overflowing narrow screens.
 Use `STMQ_CHROME_BIN` to exercise an actual older Chromium executable; changing
 a modern browser's user agent does not reproduce an older rendering engine.
 These checks do not certify a particular appliance's browser.

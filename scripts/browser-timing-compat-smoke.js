@@ -126,6 +126,29 @@ try {
     function frame() { if (--frames) requestAnimationFrame(frame); else resolve(); }
     requestAnimationFrame(frame);
   })`);
+  const checkIndentation = async () => {
+    assert.deepEqual(await evaluate(`(() => {
+      const inset = innerWidth <= 640 ? 16 : 24;
+      const left = node => node.getBoundingClientRect().left;
+      const panelLeft = left(document.getElementById('comparison-toggle')) + inset;
+      const failures = [];
+      for (const selector of ['#comparison-content', '.timing-intro', '.comparison-range-controls',
+        '.timing-devices', '.timing-explanations > summary']) {
+        if (Math.abs(left(document.querySelector(selector)) - panelLeft) > 1) failures.push(selector);
+      }
+      for (const card of document.querySelectorAll('.timing-device')) {
+        if (Math.abs(left(card.querySelector('summary')) - left(card.querySelector('.timing-overview-content'))) > 1)
+          failures.push(card.dataset.device + ' summary');
+      }
+      for (const body of document.querySelectorAll('details[open] > .timing-detail-content, details[open] > .timing-explanations-content')) {
+        const bounds = body.getBoundingClientRect(), summary = body.previousElementSibling.getBoundingClientRect();
+        if (bounds.height <= 0 || Math.abs(bounds.left - summary.left - inset) > 1
+          || bounds.right > summary.right + 1 || body.scrollWidth > body.clientWidth + 1)
+          failures.push(body.className);
+      }
+      return failures;
+    })()`), [], 'Outer content shares one inset; nested headers align with their peers and opened bodies add one inset');
+  };
   const checkVisibleCards = async (amounts = ['€3.50', '€2.00', '€1.25']) => {
     assert.deepEqual(await evaluate(`Array.from(document.querySelectorAll('.timing-device')).map(card => {
       const overview = card.querySelector('.timing-device-overview'), fold = card.querySelector('details');
@@ -214,11 +237,12 @@ try {
     await keyboardToggle('Enter', true);
     await keyboardToggle(' ', false);
     await keyboardToggle('Enter', true);
-    for (const width of [1440, 1024, 844, 390, 320]) {
+    for (const width of [1440, 1024, 844, 641, 640, 390, 320]) {
       await send('Emulation.setDeviceMetricsOverride', { width, height: 1100, deviceScaleFactor: 1, mobile: false });
       for (const theme of ['dark', 'light']) {
         await evaluate(`document.documentElement.dataset.theme = '${theme}'`); await settle();
         await checkVisibleCards();
+        await checkIndentation();
         if (width >= 1000) assert.equal(await evaluate(`(() => {
           const tops = Array.from(document.querySelectorAll('.timing-device-detail')).map(node => node.getBoundingClientRect().top);
           return Math.max(...tops) - Math.min(...tops) < 1;
@@ -251,6 +275,20 @@ try {
       }
       assert.equal(reopenedPaint === visiblePaint, true,
         `Restoring the same cards after close, hidden refresh and reopen restores their painted contents (${artifacts})`);
+      await evaluate("document.querySelectorAll('#timing-benefit details > summary').forEach(summary => summary.click())");
+      await toggleOuter(false);
+      await toggleOuter(true);
+      assert.equal(await evaluate("document.querySelectorAll('#timing-benefit details[open]').length"), 4,
+        'Reopening the outer panel preserves every expanded inner fold');
+      await checkVisibleCards();
+      await checkIndentation();
+      if (observerMode === 'native' && (width === 1440 || width === 320)) {
+        await evaluate("document.querySelector('.timing-device-detail').scrollIntoView({ block: 'start' })");
+        const shot = await send('Page.captureScreenshot', { format: 'png' });
+        writeFileSync(join(artifacts, `comparison-expanded-${width}.png`), Buffer.from(shot.data, 'base64'));
+      }
+      await evaluate("document.querySelectorAll('#timing-benefit details > summary').forEach(summary => summary.click())");
+      await settle();
     }
     await evaluate(`const mode = document.querySelector('[data-mode="timing"]');
       document.querySelector('.timing-device-detail').open = true; mode.focus(); mode.click();
@@ -273,7 +311,7 @@ try {
     await evaluate('comparisonPanel.close()');
   }
   assert.deepEqual(errors, []);
-  console.log(`Comparison browser checks passed through repeated disclosure, hidden refresh and resize cycles with native, missing and delayed ResizeObserver at five widths in both themes, with native button keyboard activation and zero-sized hidden layout. Synthetic screenshots: ${artifacts}`);
+  console.log(`Comparison browser checks passed through repeated disclosure, hidden refresh and resize cycles with native, missing and delayed ResizeObserver at seven widths in both themes, including outer and nested indentation, native button keyboard activation and zero-sized hidden layout. Synthetic screenshots: ${artifacts}`);
 } finally {
   for (const task of pending.values()) clearTimeout(task.timer);
   socket?.close();

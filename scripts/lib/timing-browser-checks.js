@@ -151,10 +151,19 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
         && inputs.every(node => node.getBoundingClientRect().height >= 40);
     })()`), true, 'Comparison date fields stay aligned and usable across display sizes');
     assert.equal(await evaluate(`(() => {
-      const notes = document.querySelector('.timing-explanations > summary').getBoundingClientRect();
-      const recording = document.querySelector('#recording-details > summary').getBoundingClientRect();
-      return notes.left >= recording.left + 8;
-    })()`), true, 'Comparison methodology remains visibly nested below the top-level sections');
+      const inset = innerWidth <= 640 ? 16 : 24;
+      const left = node => node.getBoundingClientRect().left;
+      const panelLeft = left(document.getElementById('comparison-toggle')) + inset;
+      return ['#comparison-content', '.timing-intro', '.comparison-range-controls', '.timing-devices', '.timing-explanations > summary']
+        .every(css => Math.abs(left(document.querySelector(css)) - panelLeft) < 1)
+        && [...document.querySelectorAll('.timing-device')].every(card =>
+          Math.abs(left(card.querySelector('summary')) - left(card.querySelector('.timing-overview-content'))) < 1)
+        && [...document.querySelectorAll('details[open] > .timing-detail-content, details[open] > .timing-explanations-content')].every(body => {
+          const bounds = body.getBoundingClientRect(), summary = body.previousElementSibling.getBoundingClientRect();
+          return bounds.height > 0 && Math.abs(bounds.left - summary.left - inset) < 1
+            && bounds.right <= summary.right + 1 && body.scrollWidth <= body.clientWidth + 1;
+        });
+    })()`), true, 'Comparison contents share an inset below their outer header, and opened inner content adds one further level');
     assert.equal(await evaluate(`(() => {
       const sections = ['#comparison-toggle', '#recording-details > summary'].map(css => document.querySelector(css));
       const chartNotes = ['#chart-legend-panel > summary', '.chart-notes-disclosure > summary'].map(css => document.querySelector(css));

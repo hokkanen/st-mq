@@ -1,3 +1,25 @@
+Completed 2026-09-27 — Consistent comparison indentation and workaround cleanup
+- Indent all expanded comparison contents beneath the outer header by 24px,
+  reduced to 16px on small screens. Align card-detail and methodology headers
+  with their own content level; indent their expanded bodies one further level.
+  Remove the broad nested-header margin that overrode the methodology spacing.
+- Restore the original flow-root margin containment, replacing speculative table
+  pseudo-elements from the earlier unsuccessful rendering workaround. Remove
+  redundant display and hidden-panel rules; retain the shared hidden contract.
+- Preserve the ordinary outer panel confirmed working by the owner on the
+  Samsung RF56M9540SR. Keep optional size observation, explicit reopen alignment,
+  coalesced frames, teardown and visibility guards: these protect current layout
+  behavior rather than attempting to repair native disclosure painting.
+- Reviewed current UI producers/consumers, state, tests and documentation against
+  F1/F4/F7/F8. Calculations, date choices and controls remain unchanged; no old
+  payload contracts, device-specific detection or migration paths introduced.
+- Validation: 31 focused lifecycle/range/UI tests and production build pass.
+  Current Chromium and Chromium 98 pass seven widths, both themes, all three
+  observer modes, repeated reopen with every inner fold expanded, visible
+  indentation, clipping/hit tests and matching card captures. Synthetic Firefox
+  energy checks pass; narrow and desktop screenshots reviewed. No full standard
+  suite, household access or deployment. Build retains its bundle-size warning.
+
 Completed 2026-09-27 — Bypass the comparison panel's native outer disclosure
 - Follow up the RF56M9540SR report after the previous layout workaround failed.
   Closing and reopening does not remove headings or controls in application
@@ -24,7 +46,8 @@ Completed 2026-09-27 — Bypass the comparison panel's native outer disclosure
   likewise did not reproduce the symptom. No claim of Chrome 93 app support.
   The full Chromium chart-view smoke also passes, including footer geometry,
   Enter/Space and chart fullscreen layouts. No full standard Node suite run.
-  Actual fridge validation remains necessary. No household access or deployment.
+  Owner subsequently confirmed this version works on the Samsung RF56M9540SR.
+  No household access or deployment.
 
 Completed 2026-09-27 — Automatic local OCPP server address
 - Treat omitted or empty easee.local_ocpp.server_url as automatic LAN IPv4

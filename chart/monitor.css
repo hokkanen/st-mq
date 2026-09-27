@@ -477,20 +477,15 @@ input[data-date-picker] { padding-right: 32px; background-image: url("data:image
 #comparison-toggle { display: flex; align-items: center; width: 100%; margin: 0; border: 0; border-radius: 0; background: transparent; color: var(--text); text-align: left; }
 #comparison-toggle::before { content: '\25B6'; flex: 0 0 1em; margin-right: .4em; font-size: .75em; color: var(--muted); }
 #comparison-toggle[aria-expanded="true"]::before { content: '\25BC'; color: var(--accent); }
-#comparison-content[hidden] { display: none; }
-.timing-details details { margin-inline-start: 24px; }
-.timing-benefit { display: block; padding: 4px 0 8px; }
+#comparison-content, .timing-detail-content, .timing-explanations-content { margin-inline-start: 24px; }
+.timing-benefit { padding: 4px 0 8px; }
 .timing-intro { margin: 0 auto 24px; text-align: center; }
 .timing-intro p { margin: 4px 0; }
 .timing-intro .timing-sign-guide { color: var(--muted); font-size: 13px; }
 .timing-devices { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; align-items: start; }
 .timing-card { min-width: 0; padding: 24px; background: var(--surface-soft); border: 1px solid var(--border); border-radius: 8px; }
 .timing-device-overview { min-width: 0; min-height: var(--timing-overview-height, 0px); }
-/* Contain adjoining margins without clipping the summary or relying on an
-   overflow clip being restored when the native fold reopens. */
-.timing-overview-content, .timing-figures { display: block; }
-.timing-overview-content::before, .timing-overview-content::after,
-.timing-figures::before, .timing-figures::after { content: ''; display: table; }
+.timing-overview-content, .timing-figures { display: flow-root; }
 .timing-card .timing-device-detail { margin-top: 20px; align-self: start; min-width: 0; }
 .timing-device-detail > summary { padding: 14px 0 0; font-weight: 550; }
 .timing-device-detail[open] > summary { padding-bottom: 18px; }
@@ -537,7 +532,7 @@ input[data-date-picker] { padding-right: 32px; background-image: url("data:image
 .timing-source-heading { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 4px 12px; font-size: 14px; }
 .timing-source-heading strong { font-weight: 550; }
 .timing-source-share { color: var(--muted); font-size: 12px; }
-.timing-explanations { max-width: 860px; margin: 32px 0 0 16px; border-top: 1px solid var(--border); padding-top: 28px; }
+.timing-explanations { max-width: 860px; margin: 32px 0 0; border-top: 1px solid var(--border); padding-top: 28px; }
 .timing-explanation + .timing-explanation { margin-top: 26px; }
 .timing-explanation h3 { margin: 0 0 10px; font-size: 16px; font-weight: 550; }
 .timing-explanation p { margin: 8px 0 0; color: var(--muted); font-size: 14px; }
@@ -1007,7 +1002,7 @@ details.energy-check-details { margin: 8px 0 0; border: 0; font-size: 12px; line
 @media(max-width: 640px) {
   .energy-check { grid-template-columns: minmax(0, 1fr); gap: 8px; }
   details details { margin-inline-start: 16px; }
-  .timing-details details { margin-inline-start: 16px; }
+  #comparison-content, .timing-detail-content, .timing-explanations-content { margin-inline-start: 16px; }
   .recording-table { min-width: 720px; }
   .recording-metrics { grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; }
   .recording-metrics dd { font-size: 14px; }
