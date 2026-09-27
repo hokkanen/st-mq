@@ -7,6 +7,10 @@ Home Assistant add-on and standalone Linux. Current behavior is described below
 and in the linked feature guides. Audit implementation decisions are recorded in
 [the audit ledger](docs/audit/README.md).
 
+For development, start with [repository foundations and working rules](AGENTS.md).
+It defines the current design contracts, their detailed references and how to
+resolve a request that would change a foundation.
+
 The default icon and all three reusable SVG/PNG designs are in
 [branding assets](assets/branding/README.md).
 

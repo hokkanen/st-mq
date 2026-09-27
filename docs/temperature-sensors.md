@@ -1,5 +1,11 @@
 # Indoor temperatures and sensor changes
 
+The governing foundations are [F1: current-format compatibility](../AGENTS.md#f1),
+[F2: model reconstruction](../AGENTS.md#f2) and
+[F4: evidence and provenance](../AGENTS.md#f4). Follow the
+[conflicting-request process](../AGENTS.md#conflicting-requests) before changing
+those commitments; this document specifies their sensor behavior.
+
 Indoor sensors publish through the existing local MQTT broker. Smoke channel 1
 is Upstairs (`indoor_temperature`), channel 2 is Bedroom (`bedroom_temperature`)
 and channel 3 is Downstairs (`downstairs_temperature`). Configure each exact topic
@@ -48,7 +54,7 @@ every 70 minutes, with five minutes allowed for delivery delay. This is an
 application policy, not a guarantee about the detector. Set
 `mqtt.temperature_report_interval_minutes` and
 `mqtt.temperature_report_grace_seconds` to match the publisher. Interval `0`
-selects the earlier change-only, last-known-reading policy after the next genuine
+selects the change-only, last-known-reading policy after the next genuine
 report. A configured periodic deadline is applied from its change time forward;
 an existing genuine report younger than the new limit can remain valid without
 pretending another report arrived. Earlier gaps and explicit sensor-change
@@ -57,8 +63,10 @@ After successful MQTT subscriptions, a room reading interrupted only by a
 connection failure can resume for the remainder of its original deadline. Its
 saved broker/topic signature must match; invalid reports and sensor-change
 exclusions still require a genuine new reading. The outage remains a recorded
-gap. Records from before route signatures were introduced need one genuine
-publication before this restart recovery is available.
+gap. This recovery applies only within the current supported database and input
+contract. Incompatible development formats are rejected before mutation and
+require a deliberate fresh database; an older record format is not a supported
+restart-recovery path.
 These settings apply to the three indoor MQTT topics. Garage has a two-minute
 expiry for either its single Shelly or MQTT connection; outdoor limits remain separate.
 
@@ -83,13 +91,14 @@ value timestamp remains distinct from the later coverage evidence.
 
 The Average indoor chart follows saved inputs of completed 15-minute learning
 windows, preserving gaps when a participating room lacks report coverage. The
-report-coverage rule introduced in v8 and retained in v9 rejects an interval containing a
+current report-coverage rule rejects an interval containing a
 report outage even if a sensor recovers before its endpoint. Fixed weights never
 redistribute to the remaining rooms. Missing coverage makes the average
 unavailable for optimisation; ordinary heating remains available. Other missing
-learning inputs do not hide an otherwise known indoor average. Earlier algorithms
-retain their original interpretation, and history is not recalculated from
-today's membership or weights.
+learning inputs do not hide an otherwise known indoor average. Supported journal
+history retains its recorded membership and weights instead of being recalculated
+from today's configuration. Unsupported earlier learning algorithms are rejected;
+this historical fidelity does not require retaining old interpreters.
 
 This requires genuine repeated reports all the way through SmartThings and MQTT.
 A timer that republishes a cached value cannot prove a sensor is alive. The
@@ -123,8 +132,8 @@ not recorded instead of guessing.
 | Input | Availability rule | Warning or learning effect |
 | --- | --- | --- |
 | Periodic indoor MQTT | 70-minute reporting interval plus five-minute grace | At 75 minutes, or on an explicit acquisition failure, control falls back. Learning rejects a whole window containing a report gap. |
-| Garage | Two minutes after the last genuine Shelly or MQTT report; direct Shelly is polled every 30 seconds | At expiry the reading becomes unavailable and the chart has a gap. Garage is monitoring/history only. |
-| Legacy indoor without a periodic contract | Keep the last genuine valid value until replaced or excluded by a sensor change | Applies only when explicitly disabling the reporting contract, not the three configured room sensors. |
+| Garage | Two minutes after the last genuine Shelly or MQTT report; direct Shelly is polled every 30 seconds | At expiry the reading becomes unavailable and the chart has a gap. Fresh sensor evidence is required for [Garage control](garage.md). |
+| Indoor without a periodic contract | Keep the last genuine valid value until replaced or excluded by a sensor change | Applies only when explicitly disabling the reporting contract, not the three configured room sensors. |
 | H66 equipment (outdoor register excluded from weather selection/history) | Five-minute source validity for equipment diagnostics | A stricter live transport/readback gate can reject sooner, and its actual limit is displayed. It cannot extend the source-validity limit. |
 | FMI / Open-Meteo outdoor | Thirty-minute source validity | Expiry removes the reading from current outdoor selection and leaves unavailable learning coverage. |
 

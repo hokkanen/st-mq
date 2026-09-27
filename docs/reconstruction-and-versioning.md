@@ -1,8 +1,16 @@
 # Model reconstruction, corrections and software versions
 
-This is the agreed engineering contract. Changes to it require the owner's explicit
-agreement. The fireplace feature keeps the existing scope of reproducible learning;
-it does not add a general archive for reproducing every historical control choice.
+This is the detailed engineering contract for
+[F2: model reconstruction](../AGENTS.md#f2). The foundational policies and
+[conflicting-request process](../AGENTS.md#conflicting-requests) in `AGENTS.md`
+govern changes; [F1: current-format compatibility](../AGENTS.md#f1) governs the
+supported software and database boundary. Changes to the agreed reconstruction
+guarantees or scope require the owner's explicit agreement after identifying the
+conflict and consequences; specific informed approval already given for the change
+carries forward. Maintaining algorithm identifiers and implementation details
+within those guarantees does not itself require another approval. The
+fireplace feature keeps the existing scope of reproducible learning; it does not
+add a general archive for reproducing every historical control choice.
 
 ## What can be reconstructed
 

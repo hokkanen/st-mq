@@ -1,11 +1,71 @@
-# Repository instructions
+# Repository foundations and working rules
 
-## Pre-v1.0.0 compatibility guard
+This is the entry point for the owner's foundational design decisions and AI
+working rules. Read it before changing code, tests, configuration or documentation.
+Apply the relevant linked contracts as part of the task, including delegated work.
 
-This is the owner's governing policy for every task in this package and every
-ST-MQ change before the first production release, **v1.0.0**.
+## Authority and scope
 
-## One historical exception
+Within repository documentation, this file governs the foundations; linked feature
+contracts define their detailed behavior. Historical handoffs, audit results, TODOs,
+examples, existing code and tests do not silently amend these decisions. If they
+conflict, flag the discrepancy and align affected work with the current contract.
+An implementation or passing test is not proof that a foundation is satisfied.
+
+The foundations protect behavior and ownership, not every implementation choice.
+Algorithm identifiers, schema versions, thresholds, file layouts and UI conventions
+may evolve within them. Ordinary compliant work needs no new approval. The owner
+can explicitly amend a foundation using the conflict procedure below; a routine
+feature request is not by itself an informed waiver of an earlier decision.
+
+| ID | Foundation | Scope |
+| --- | --- | --- |
+| [F1](#f1) | One current development contract | Temporary pre-v1.0.0 policy; only v0.7.5 CSV import is a historical exception. |
+| [F2](#f2) | Reconstructible learning and reversible corrections | Durable model contract within the supported journal/algorithm. |
+| [F3](#f3) | Explicit configuration and state ownership | Configuration defaults, scoped overrides, device state and durable intent have distinct owners. |
+| [F4](#f4) | Honest evidence and historical meaning | Preserve provenance, unknown states and the distinction between observation and inference. |
+| [F5](#f5) | Explicit control authority and restoration | Device identity, fresh evidence and physical obligations govern actuation. |
+| [F6](#f6) | Cost, comfort and service together | Assess complete consequences; do not substitute a convenient proxy for savings. |
+| [F7](#f7) | Responsive local operation | Raspberry Pi 5/Home Assistant and standalone Linux remain first-class targets. |
+| [F8](#f8) | Private data stays private | Keep installation secrets and household data outside Git and diagnostic output. |
+
+<a id="conflicting-requests"></a>
+
+## Handling requests that conflict with a foundation
+
+Before making a potentially conflicting change, including one explicitly requested
+by the owner:
+
+1. Name the affected foundation ID, link the relevant rule and explain the concrete
+   conflict and consequences in plain language. Do this before the conflicting
+   edit or operation, not only in the final report.
+2. Offer a compliant alternative when one is practical. If the conflict or intended
+   exception remains unresolved, ask one focused question and **wait for explicit
+   owner approval** of the exception or amendment. Silence is not approval.
+3. Pause only the conflicting part. Continue independent authorized investigation,
+   design and implementation that does not assume the answer. Do not bypass the
+   decision by first weakening documentation, tests or validation.
+4. An instruction that already explicitly acknowledges the affected rule and
+   authorizes that specific departure is sufficient approval. State its scope and
+   proceed; do not ask again. A general instruction to work autonomously, make it
+   work, or use best judgment is not approval to disregard a foundation.
+5. For an approved lasting change, update this file and affected contracts,
+   implementation and validation together. Record the reason and scope in the
+   task's issue/TODO entry. A one-task exception does not silently become a new
+   general rule; record its limits without exposing private information.
+
+Ask about a material ambiguity in a foundation when the existing contracts and
+session do not resolve it. Do not create approval gates for routine implementation
+choices. Report unresolved contradictions and validation limits honestly.
+
+<a id="f1"></a>
+
+## F1. One current development contract before v1.0.0
+
+This temporary policy governs every change before the first actual production
+release, **v1.0.0**. It does not weaken the durable correctness and safety rules.
+
+### One historical exception
 
 Retain **read-only import of version 0.7.5 `easee.csv` and `st-mq.csv`**. Preserve
 source bytes/files, timestamp and unit meanings, missing/invalid-value quality,
@@ -18,7 +78,7 @@ filename spelling variants nor unverified CSV dialects become additional support
 promises. Tests use synthetic files with the supported headers; real owner files
 remain outside the repository and must never be silently rewritten.
 
-## Actively remove internal backwards compatibility
+### Actively remove internal backwards compatibility
 
 Development databases and checkpoints are disposable. Do not add or retain
 schema-upgrade ladders, development-data backfills/repair passes, old-path
@@ -45,7 +105,7 @@ fields and genuinely absent new state may use documented current defaults; that
 is different from recognizing an old shape. No old charger slot, device
 association, ownership or permission may authorize a newly configured actuator.
 
-## Preserve current correctness and safety
+### Preserve current correctness and safety
 
 Do not confuse backwards compatibility with current functionality. Preserve
 same-schema backup/restore, current-version restart and deterministic journal
@@ -65,7 +125,7 @@ interpreters, migrating old checkpoints, seeding from old fitted coefficients or
 archiving every prior development interpretation. Current source corrections
 within the supported contract still need provenance and atomic current replay.
 
-## Agent/review gate
+### Agent/review gate
 
 Before and after each relevant change, inspect producers, consumers, state,
 configuration, UI, tests and documentation for obsolete compatibility paths.
@@ -79,116 +139,54 @@ first actual v1.0.0 release. A package-version edit, future-dated release plan o
 agent assumption does not authorize pre-release migrations. Production support
 requirements will be decided explicitly; do not build speculative machinery now.
 
-## Model reconstruction and versioning contract
+<a id="f2"></a>
 
-- Apply [docs/reconstruction-and-versioning.md](docs/reconstruction-and-versioning.md)
-  to the current supported journal/algorithm contract. The pre-v1.0.0 guard above
-  takes precedence over any wording that would retain obsolete development formats.
-- Preserve deterministic model replay from the committed journal, saved seed and
-  configuration, selected manual-event revision and matching algorithm. Use the
-  same ordered update function for live learning and rebuilding.
-- Keep manual loads and corrections as compact source events; never silently
-  rewrite telemetry or reinterpret an old learning algorithm as a new one.
-- Version changes to learning semantics explicitly. Before v1.0.0, start fresh
-  when a format/algorithm becomes incompatible; do not retain an old interpreter,
-  checkpoint translator or obsolete development-history archive. Preserve current
-  journal provenance and documented current seeds/epochs for supported replay.
-- Background correction rebuilds must keep control available, reject stale results
-  and atomically publish a complete, caught-up checkpoint. Keep original observed
-  behavior and frozen forecasts distinct from corrected model assessments.
-- This contract does not require exact replay of every historical control choice
-  or guarantee heat-pump receipt of attempted commands. Do not expand storage into
-  per-minute model snapshots or full decision-input archives without agreement.
+## F2. Reconstructible learning and reversible corrections
 
-## Required commits for AI tasks
+- Apply [the reconstruction contract](docs/reconstruction-and-versioning.md) to
+  both Home and Garage within the current supported journal/algorithm. F1 governs
+  incompatible development formats; reconstruction does not require old interpreters.
+- Given the intact committed learning journal, saved seed and configuration,
+  selected source-correction revisions and matching algorithm/software, replay
+  must reproduce the complete model checkpoint at the same journal boundary:
+  coefficients, estimated thermal state, comfort references and learning evidence.
+  Live learning and rebuilding use the same ordered update function. Checkpoints
+  are replaceable caches, never the only source of learning history.
+- Preserve enough committed inputs, source context and configuration history to
+  reconstruct corrected learning from the supported seed. A telemetry CSV alone
+  is insufficient. Do not silently remove required replay history or replace it
+  with fitted coefficients; a retention change that narrows the guarantee needs
+  an explicit scope decision under the conflict procedure.
+- Manual additions, sensor changes and their corrections are compact immutable
+  source events. Removing a firewood entry excludes its heat throughout the
+  selected corrected history. Reverting a sensor-change entry removes that
+  boundary's learning effect, including its settling exclusion, using preserved
+  measurements. Other active corrections and actual reporting gaps still apply.
+  Keep original events and observations so earlier revisions remain interpretable.
+- Change the learning algorithm identifier when numerical interpretation, training
+  selection, corrections, seeds or fitting rules change, and validate replay.
+  SQLite schema versioning remains separate. Before v1.0.0, an
+  incompatible format/algorithm requires a deliberate fresh start, not an old
+  interpreter, checkpoint translator, old fitted seed or development-history archive.
+- Correction rebuilds keep control available, survive restart, reject stale work
+  and atomically publish a complete, caught-up checkpoint with matching source
+  revisions and journal head. Failure retains the previous model and reports the
+  problem; publication must never expose partial replacement state.
+- Original observed behavior and frozen forecasts remain distinct from corrected
+  assessments. This contract does not reproduce every historical control choice,
+  recover missing physical outcomes or prove receipt of attempted commands. It is
+  conditional on intact retained inputs and corresponding software. Do not add
+  per-minute snapshots or comprehensive decision-input archives without agreement.
 
-- Every AI task that changes repository files must commit its completed changes
-  before the final response, however small the task. This includes code, tests,
-  documentation, configuration, formatting, and repository instructions.
-- Commits are authorized by default; do not wait for another request or ask for
-  confirmation. Follow an explicit user instruction not to commit when given.
-- **Never create empty commits.** If a task makes no net repository changes,
-  report that no commit was needed. Do not manufacture changes just to commit.
-- Commit only the task's intended changes. Preserve unrelated pending work
-  unless the user explicitly asks to include it.
-- Complete appropriate validation and all secret/encryption checks below before
-  committing. Never bypass a failed check to satisfy this rule; resolve it or
-  clearly report the blocker without claiming the task is complete.
-- The lead agent coordinates commits for delegated work. Subagents must not
-  stage or commit concurrently unless explicitly assigned ownership of Git work.
-- Report the resulting commit hash and validation outcome. Creating a commit
-  does not authorize pushing it; push only when the user requests it.
+<a id="f3"></a>
 
-## Private configuration and personal data
+## F3. Explicit configuration and state ownership
 
-- Keep credentials and private personal data out of Git and out of tool output,
-  logs, diffs, screenshots and commit messages. This includes precise household
-  coordinates, private device/account identifiers and household exports.
-- Private configuration lives outside the checkout in
-  `$XDG_CONFIG_HOME/st-mq/secrets.json` (default `~/.config/st-mq/secrets.json`),
-  or the explicit `STMQ_CONFIG` path. Never stage `secrets.json`, its copies or
-  the retired `options.json`. Use invented, nonfunctional examples in tests/docs.
-- Private directories use mode `0700`; private files use `0600`. Do not read
-  private values unless needed for the task. Inspect them in memory and report
-  only paths, field names and counts.
-- Repository encryption is retired. Keep encryption keys out of the checkout,
-  Git metadata and Git history; do not install encryption filters or key links.
-  Private configuration stays external. Existing historical encrypted data stays
-  opaque and unchanged; never decrypt it into the repository. Its exact paths and
-  blob IDs are inventoried in `scripts/historical-private-blobs.json` solely for
-  history auditing, not runtime support. Do not extend that inventory to admit
-  new private data or keys.
+Classify a new setting or control by its owner and lifetime before choosing where
+it is stored. Persistence alone does not make a value a configuration default or
+permission to act. See [the configuration guide](docs/configuration.md).
 
-## Routine commit validation
-
-1. Use the repository hooks (`core.hooksPath=.githooks`). If another hooks path
-   is configured, integrate the checks instead of silently replacing it.
-2. Review intended changed paths, run appropriate tests/build checks, and stage
-   explicit paths. Never use an unchecked `git add .` or bypass hooks.
-3. The pre-commit hook runs `node scripts/check-secrets.js --staged`, checking the
-   index for private filenames and credential patterns. One successful check on
-   the final index is sufficient; routine tasks need no decryption or
-   whole-history audit commands.
-4. Pre-push and CI audit reachable history automatically against the fixed
-   private-blob inventory. Run a history audit manually when changing the
-   checker, repairing history or investigating an exposure, not after every task.
-
-Pattern checks cannot recognize every private value. Review confidential-data
-handling when the task touches configuration, accounts or household observations.
-Do not broaden a routine code task into a repeated security audit without evidence.
-
-## If plaintext ever enters history
-
-Stop committing/pushing the affected history. Deleting a file from the newest
-revision does not remove earlier plaintext. Preserve unrelated work and recovery
-information, identify affected refs without printing values, and coordinate any
-shared-history repair with the owner. If credentials reached a remote or another
-person, revoke/rotate them with the provider. Do not rewrite unrelated refs or
-claim an exposure is removed from other clones/caches without evidence.
-
-See [docs/secret-handling.md](docs/secret-handling.md) for historical audit scope.
-
-## Configuration design
-
-- Keep `config.json.options` as the shared defaults and the existing private or
-  Supervisor source as sparse installation overrides. Add another configuration
-  layer or format only when a concrete requirement justifies it.
-- Keep credentials and private identifiers in private configuration. Non-secret
-  installation choices may also go there; common MQTT topics and equipment
-  definitions belong in public defaults. Do not copy defaults into private files
-  or examples just because a feature adds settings.
-- Put new settings in their owning section beside related settings, and keep
-  `options` and `schema` in the same section and field order. Use the section map
-  in [docs/configuration.md](docs/configuration.md); update it for new sections.
-  Change field paths when the current design needs it, updating all current callers, examples and tests together. Reject retired paths; do not add aliases or migrations for development configurations.
-- Public Garage enablement and protection approval default to false. Test the
-  explicit private opt-in independently; owner approval is installation state,
-  not evidence of adapter readiness.
-- Feature tests must explicitly configure the synthetic integrations relevant
-  to their scenario instead of inheriting unrelated public device subscriptions.
-  Keep separate coverage for intended public defaults and sparse override merging.
-
-## Configuration ownership and dashboard controls
+### Configuration ownership and dashboard controls
 
 - Configured controller defaults belong exclusively to configuration. Dashboard
   edits must never rewrite those defaults or create persistent database
@@ -232,7 +230,195 @@ See [docs/secret-handling.md](docs/secret-handling.md) for historical audit scop
   assumptions, not observed settings or commands. Controller strategies,
   comfort/protection limits and integration setup remain configuration-owned.
 
-## UI wording
+### Configuration design
+
+- Keep `config.json.options` as the shared defaults and the existing private or
+  Supervisor source as sparse installation overrides. Add another configuration
+  layer or format only when a concrete requirement justifies it.
+- Keep credentials and private identifiers in private configuration. Non-secret
+  installation choices may also go there; common MQTT topics and equipment
+  definitions belong in public defaults. Do not copy defaults into private files
+  or examples just because a feature adds settings.
+- Put new settings in their owning section beside related settings, and keep
+  `options` and `schema` in the same section and field order. Use the section map
+  in [docs/configuration.md](docs/configuration.md); update it for new sections.
+  Change field paths when the current design needs it, updating all current callers, examples and tests together. Reject retired paths; do not add aliases or migrations for development configurations.
+- Public Garage enablement and protection approval default to false. Test the
+  explicit private opt-in independently; owner approval is installation state,
+  not evidence of adapter readiness.
+- Feature tests must explicitly configure the synthetic integrations relevant
+  to their scenario instead of inheriting unrelated public device subscriptions.
+  Keep separate coverage for intended public defaults and sparse override merging.
+
+<a id="f4"></a>
+
+## F4. Honest evidence and historical meaning
+
+- Keep observations, engineering assumptions, estimates, forecasts, requests,
+  acknowledgements and confirmed device readback distinguishable. Preserve source
+  identity, units, source/receipt clocks, quality and the meaning effective at the
+  recorded time. Today's configuration must not silently reinterpret history.
+- Missing, stale, invalid or unsupported evidence is unknown, not zero, off or a
+  successful result. Preserve valid zero/false values. Reconnection, held values
+  and cached republishes do not manufacture fresh observations or independent
+  learning evidence. Corrections cannot invent data for actual acquisition gaps.
+- Keep original frozen forecasts and outcomes separate from later corrected model
+  assessments. Estimated or timing-only benefits are not measured causal savings;
+  overlapping energy totals and components must not be double-counted.
+- Require independent validation appropriate to the claim. Tests should encode
+  expected behavior rather than reproduce implementation formulas; chronological
+  learning validation must not leak future evidence into training or forecasts.
+
+Details: [recording and provenance](docs/recording.md),
+[temperature evidence](docs/temperature-sensors.md),
+[learning and control](docs/learning-and-control.md).
+
+<a id="f5"></a>
+
+## F5. Explicit control authority and restoration
+
+- Keep one authorized owner of equipment commands. Monitoring/shadow operation,
+  read-only replicas, copied database state and restored checkpoints do not grant
+  actuation permission. Pair promotion is explicit, never automatic after timeout.
+- Bind control choices and permission to the current equipment/session identity
+  where applicable. Require the live evidence, commissioning and readiness for
+  the action; owner approval alone is not evidence of adapter capability. Reject
+  stale, unknown or retired authority rather than translating it into permission.
+- Preserve native equipment protection and required service. Temporary changes
+  retain their ownership, expiry and durable restoration obligations across
+  restart, failure, model repair and correction. Reconcile with fresh actual state
+  and respect independent manual device changes. Model resets do not erase physical
+  obligations; a command acknowledgement alone does not prove restoration.
+- Preserve qualified device-local expiry/fencing where supported. Do not claim a
+  software retry can restore equipment through a broken link. Economic preferences
+  and learned confidence cannot relax hard comfort/equipment protection limits.
+- Use controlled offline fixtures for ordinary development. A coding request alone
+  does not authorize deployment, household probing or live equipment commands;
+  honor explicit, applicable authorization already given in the session.
+
+Details: [control and restoration](docs/learning-and-control.md),
+[pairing](docs/pairing.md), [Garage adapter](docs/garage-adapter.md),
+[charging](docs/charging.md).
+
+<a id="f6"></a>
+
+## F6. Cost, comfort and service together
+
+Reduce actual attributable energy cost while maintaining acceptable comfort and
+required service. Evaluate preheat, reduction and recovery together at comparable
+comfort and thermal end states. Account for auxiliary energy and delayed recovery;
+cheaper purchase timing, more OFF time or fewer auxiliary starts alone do not prove
+savings. Keep normal operation a real option. Do not provoke unsafe cooling or
+resistance use merely to obtain training labels, or treat reduced service during
+absence as ordinary occupied-operation savings. State uncertainty and distinguish
+engineering assumptions, simulated benefit and supported outcome evidence.
+
+Details: [learning and control](docs/learning-and-control.md),
+[Garage learning](docs/garage-model.md), [firewood estimates](docs/fireplace.md).
+
+<a id="f7"></a>
+
+## F7. Responsive local operation
+
+Raspberry Pi 5 Home Assistant add-on and standalone Linux are first-class targets
+with the same core behavior and data semantics. Keep learning and control practical
+locally without a GPU, a permanently running cloud model or routine paid AI calls.
+External weather, market and supported device services remain legitimate inputs;
+the application must handle their outages conservatively.
+
+Learning, reconstruction and historical queries must not block timely control,
+MQTT ingestion or the UI. Keep memory, rolling caches and background work bounded;
+do not load unlimited history for routine requests or rebuild all history on every
+ordinary restart. Choose maintainable complexity supported by measured behavior.
+Resource/storage targets do not authorize discarding required F2/F4 evidence.
+
+Details: [development validation](docs/development-validation.md),
+[recording](docs/recording.md), [startup](docs/startup.md).
+
+<a id="f8"></a>
+
+## F8. Private configuration and personal data
+
+- Keep credentials and private personal data out of Git and out of tool output,
+  logs, diffs, screenshots and commit messages. This includes precise household
+  coordinates, private device/account identifiers and household exports.
+- Private configuration lives outside the checkout in
+  `$XDG_CONFIG_HOME/st-mq/secrets.json` (default `~/.config/st-mq/secrets.json`),
+  or the explicit `STMQ_CONFIG` path. Never stage `secrets.json`, its copies or
+  the retired `options.json`. Use invented, nonfunctional examples in tests/docs.
+- Private directories use mode `0700`; private files use `0600`. Do not read
+  private values unless needed for the task. Inspect them in memory and report
+  only paths, field names and counts.
+- Repository encryption is retired. Keep encryption keys out of the checkout,
+  Git metadata and Git history; do not install encryption filters or key links.
+  Private configuration stays external. Existing historical encrypted data stays
+  opaque and unchanged; never decrypt it into the repository. Its exact paths and
+  blob IDs are inventoried in `scripts/historical-private-blobs.json` solely for
+  history auditing, not runtime support. Do not extend that inventory to admit
+  new private data or keys.
+
+### If plaintext ever enters history
+
+Stop committing/pushing the affected history. Deleting a file from the newest
+revision does not remove earlier plaintext. Preserve unrelated work and recovery
+information, identify affected refs without printing values, and coordinate any
+shared-history repair with the owner. If credentials reached a remote or another
+person, revoke/rotate them with the provider. Do not rewrite unrelated refs or
+claim an exposure is removed from other clones/caches without evidence.
+
+See [docs/secret-handling.md](docs/secret-handling.md) for historical audit scope.
+
+## Working and review rules
+
+For each relevant task, identify the foundations it touches and inspect the affected
+producers, consumers, state, configuration, UI, tests and documentation. Keep them
+consistent. Use current contracts and unsupported-input rejection tests; do not
+restore forbidden compatibility to satisfy an obsolete test. Apply focused checks
+that establish the changed behavior; documentation-only work calls for consistency,
+link and diff checks, not a new runtime test suite. Use the existing
+[validation guide](docs/development-validation.md) for code and deployment changes.
+Report what ran and what remains unverified; never claim exhaustive compliance
+from a narrow guard test. Update the issue/TODO record with the change, retained
+capabilities, relevant removals and validation.
+
+### Required commits for AI tasks
+
+- Every AI task that changes repository files must commit its completed changes
+  before the final response, however small the task. This includes code, tests,
+  documentation, configuration, formatting, and repository instructions.
+- Commits are authorized by default; do not wait for another request or ask for
+  confirmation. Follow an explicit user instruction not to commit when given.
+- **Never create empty commits.** If a task makes no net repository changes,
+  report that no commit was needed. Do not manufacture changes just to commit.
+- Commit only the task's intended changes. Preserve unrelated pending work
+  unless the user explicitly asks to include it.
+- Complete appropriate validation and the secret checks below before
+  committing. Never bypass a failed check to satisfy this rule; resolve it or
+  clearly report the blocker without claiming the task is complete.
+- The lead agent coordinates commits for delegated work. Subagents must not
+  stage or commit concurrently unless explicitly assigned ownership of Git work.
+- Report the resulting commit hash and validation outcome. Creating a commit
+  does not authorize pushing it; push only when the user requests it.
+
+### Routine commit validation
+
+1. Use the repository hooks (`core.hooksPath=.githooks`). If another hooks path
+   is configured, integrate the checks instead of silently replacing it.
+2. Review intended changed paths, run appropriate tests/build checks, and stage
+   explicit paths. Never use an unchecked `git add .` or bypass hooks.
+3. The pre-commit hook runs `node scripts/check-secrets.js --staged`, checking the
+   index for private filenames and credential patterns. One successful check on
+   the final index is sufficient; routine tasks need no decryption or
+   whole-history audit commands.
+4. Pre-push and CI audit reachable history automatically against the fixed
+   private-blob inventory. Run a history audit manually when changing the
+   checker, repairing history or investigating an exposure, not after every task.
+
+Pattern checks cannot recognize every private value. Review confidential-data
+handling when the task touches configuration, accounts or household observations.
+Do not broaden a routine code task into a repeated security audit without evidence.
+
+## UI conventions
 
 - Do not use the project name **ST-MQ** in user-facing labels, descriptions,
   popovers, status messages or errors. Use natural wording such as “the controller”

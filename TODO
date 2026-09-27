@@ -1,6 +1,24 @@
 -Make README.md better and more descriptive of the app, especially the beginning of it
 -Implement support for local mqtt-based temperature receives (eg, from shelly or HASS through Meteorologisk Institute); just store last received temp values and time stamps (maybe in storage class, see below) when received (and accept if received within 1h)
 
+Completed 2026-09-27 — Foundational decisions and informed conflict handling
+- Organize AGENTS.md around eight stable foundation IDs: pre-v1 compatibility,
+  reconstructible learning, configuration/state ownership, evidence/provenance,
+  control/restoration, cost/comfort, responsive local operation and privacy.
+  Preserve current dashboard persistence exceptions, correction/replay guarantees,
+  the sole read-only v0.7.5 CSV boundary and explicit production-policy approval.
+- Owner confirmed that AI must explain a potential foundation conflict and wait
+  for explicit approval of the affected change while continuing independent work.
+  Carry forward specific informed approval; routine requests and general autonomy
+  do not waive foundations. Record lasting amendments and bounded exceptions.
+- Link the governing rules from README, validation and relevant feature guides.
+  Remove obsolete sensor-documentation compatibility promises and the stale
+  Garage monitoring-only claim. Separate foundational guarantees from ordinary
+  algorithm/version maintenance. Historical local handoffs remain reference only.
+- Validation: independent documentation and concrete-request scenario review,
+  92 relative-link/fragment checks across six Markdown files, and git diff checks
+  passed. Documentation only; no runtime tests/build or household access.
+
 Completed 2026-09-27 — Protected pairing recovery and complete read-only dashboards
 - Treat a valid saved Garage room setting bound to a different MQTT/device
   identity as inactive historical intent instead of aborting controller startup.

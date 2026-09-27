@@ -1,5 +1,10 @@
 # Development validation
 
+Start with the [repository foundations and working rules](../AGENTS.md). Tests
+validate those contracts; existing assertions do not authorize conflicting changes.
+Follow the [conflict procedure](../AGENTS.md#conflicting-requests) before changing
+a foundation, even when the requested implementation would require it.
+
 Run checks from the repository root. Ordinary tests, browser fixtures, container
 checks and Garage simulations use synthetic data. The separately invoked live
 suite contacts configured providers; see [live testing](live-testing.md).

@@ -1,5 +1,10 @@
 # Configuration guide
 
+[F3: configuration and UI ownership](../AGENTS.md#f3) is the governing policy;
+this guide specifies its settings and persistence rules. Apply the
+[conflicting-request process](../AGENTS.md#conflicting-requests) before changing
+that ownership boundary.
+
 ST-MQ uses shared defaults and sparse installation overrides. The JSON field
 paths are the same in both files; nested objects merge without copying their
 other fields. There is no separate file to maintain for each feature.
@@ -12,7 +17,7 @@ other fields. There is no separate file to maintain for each feature.
 | Standalone `secrets.json` | Credentials, private locations/device identifiers and only the installation choices you want to supply or override. Non-secret overrides are allowed. |
 | Saved Home Assistant add-on options | The authoritative installation settings in the add-on. An uploaded sparse `secrets.json` is an import into these settings. |
 | Environment variables | Explicit process/deployment overrides, taking precedence over file settings. |
-| Dashboard controls | Explicit temporary session/deadline overrides and labeled device actions; permanent controller defaults are edited only in configuration. |
+| Dashboard controls | Temporary session/deadline overrides, labeled native-device actions and the explicitly documented persistent device-bound choices below. Controller defaults remain configuration-owned. |
 | `config.json.schema` and manifest metadata | Software configuration: accepted fields, types, ranges and Home Assistant packaging. These are not installation overrides. |
 
 Any supported option can be overridden. Validation checks field names, types and
