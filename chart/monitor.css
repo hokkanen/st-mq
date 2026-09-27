@@ -470,16 +470,21 @@ input[data-date-picker] { padding-right: 32px; background-image: url("data:image
 :is(#timing-details, #recording-details) { margin-top: 18px; border-top: 1px solid var(--border); padding: 0; }
 :is(#timing-details, #recording-details) > summary { min-height: 48px; padding: 14px 0; font-size: 14px; font-weight: 550; line-height: 1.5; }
 :is(#timing-details, #recording-details) > summary + * { margin-top: 0; }
-.timing-benefit { padding: 4px 0 8px; }
+/* Use a normal display transition when the outer native fold reopens, so its
+   grid does not depend on a browser's cached disclosure layout. */
+.timing-benefit { display: block; padding: 4px 0 8px; }
+#timing-details:not([open]) > .timing-benefit { display: none; }
 .timing-intro { margin: 0 auto 24px; text-align: center; }
 .timing-intro p { margin: 4px 0; }
 .timing-intro .timing-sign-guide { color: var(--muted); font-size: 13px; }
 .timing-devices { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; align-items: start; }
 .timing-card { min-width: 0; padding: 24px; background: var(--surface-soft); border: 1px solid var(--border); border-radius: 8px; }
 .timing-device-overview { min-width: 0; min-height: var(--timing-overview-height, 0px); }
-/* Contain summary margins without requiring flow-root in appliance browsers.
-   Auto height keeps the complete overview above its separate details fold. */
-.timing-overview-content, .timing-figures { display: block; overflow: hidden; }
+/* Contain adjoining margins without clipping the summary or relying on an
+   overflow clip being restored when the native fold reopens. */
+.timing-overview-content, .timing-figures { display: block; }
+.timing-overview-content::before, .timing-overview-content::after,
+.timing-figures::before, .timing-figures::after { content: ''; display: table; }
 .timing-card .timing-device-detail { margin-top: 20px; align-self: start; min-width: 0; }
 .timing-device-detail > summary { padding: 14px 0 0; font-weight: 550; }
 .timing-device-detail[open] > summary { padding-bottom: 18px; }

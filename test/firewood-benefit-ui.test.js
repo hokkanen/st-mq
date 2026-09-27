@@ -140,21 +140,41 @@ test('House model explains manual fuel, delayed release, effective coefficient u
 });
 
 function dom(storage = new Map()) {
-  let disconnected = false;
-  const windowListeners = new Map();
+  let disconnected = false, nextFrame = 0;
+  const windowListeners = new Map(), frames = new Map(), observers = [];
+  const measurements = [], styleWrites = [];
   const document = { activeElement: null,
     createElement: tag => new Element(tag), createDocumentFragment: () => new Element('fragment'),
     defaultView: { localStorage: { getItem: key => storage.get(key), setItem: (key, value) => storage.set(key, value) },
       addEventListener: (type, listener) => windowListeners.set(type, listener),
       removeEventListener: type => windowListeners.delete(type),
-      ResizeObserver: class { observe() {} disconnect() { disconnected = true; } } } };
+      requestAnimationFrame: callback => { const id = ++nextFrame; frames.set(id, callback); return id; },
+      cancelAnimationFrame: id => frames.delete(id),
+      ResizeObserver: class {
+        constructor(callback) { this.callback = callback; this.targets = []; observers.push(this); }
+        observe(target) { this.targets.push(target); }
+        disconnect() { disconnected = true; this.targets = []; }
+      } } };
   class Element {
     constructor(tag) { this.tagName = tag; this.children = []; this.dataset = {}; this.ownerDocument = document;
-      this.style = { setProperty(name, value) { this[name] = value; } }; this._text = ''; this.attributes = {}; this.listeners = new Map(); }
-    set textContent(value) { this._text = value; this.children = []; }
+      this.style = { setProperty(name, value) { styleWrites.push({ name, value }); this[name] = value; } };
+      this._text = ''; this.attributes = {}; this.listeners = new Map(); }
+    set textContent(value) { this._text = value; this.replaceChildren(); }
     get textContent() { return this._text + this.children.map(child => child.textContent).join(' '); }
-    append(...children) { for (const child of children) this.children.push(...(child.tagName === 'fragment' ? child.children : [child])); }
-    replaceChildren(...children) { this.children = []; this.append(...children); }
+    append(...children) {
+      for (const child of children) {
+        if (child.tagName === 'fragment') { this.append(...child.children); child.children = []; }
+        else { this.children.push(child); child.parentElement = this; }
+      }
+    }
+    replaceChildren(...children) {
+      for (const child of this.children) child.parentElement = null;
+      this.children = []; this.append(...children);
+    }
+    closest(selector) {
+      for (let node = this; node; node = node.parentElement) if (node.tagName === selector) return node;
+      return null;
+    }
     setAttribute(key, value) { this.attributes[key] = value; }
     addEventListener(type, listener) { this.listeners.set(type, listener); }
     removeEventListener(type) { this.listeners.delete(type); }
@@ -164,10 +184,19 @@ function dom(storage = new Map()) {
       this.listeners.get('keydown')?.({ currentTarget: this, key, preventDefault() { prevented = true; } });
       return prevented;
     }
-    getBoundingClientRect() { return { height: 200 }; }
+    getBoundingClientRect() {
+      measurements.push(this);
+      for (let node = this; node; node = node.parentElement) {
+        if (node.hidden || (node.tagName === 'details' && !node.open)) return { width: 0, height: 0 };
+      }
+      return this.bounds || { width: 960, height: 200 };
+    }
     focus() { document.activeElement = this; }
   }
-  return { root: new Element('div'), document, windowListeners, disconnected: () => disconnected };
+  return { root: new Element('div'), document, windowListeners, measurements, styleWrites, frames,
+    flushFrame() { const callbacks = [...frames.values()]; frames.clear(); for (const callback of callbacks) callback(); },
+    notifyResize() { for (const observer of observers) if (observer.targets.length) observer.callback(); },
+    disconnected: () => disconnected };
 }
 
 function findByLabel(node, label) {
@@ -201,10 +230,10 @@ test('three cost cards retain their folds and focus across updates and keep the 
 });
 
 test('comparison results and controls remain usable without ResizeObserver', () => {
-  const { root, document, windowListeners } = dom();
+  const { root, document, windowListeners, flushFrame } = dom();
   delete document.defaultView.ResizeObserver;
   const disclosure = document.createElement('details');
-  root.parentElement = disclosure;
+  disclosure.open = true; disclosure.append(root);
   const panel = createTimingBenefit(root);
   const data = { ...payload, heatingBenefit: { status: 'estimated', valueEuro: 3.5, counts: { assessed: 2, completed: 2 } },
     firewoodBenefit: estimate, timingBenefit: { heatPump: timing(1), charger: timing(2, 'charger') } };
@@ -223,15 +252,95 @@ test('comparison results and controls remain usable without ResizeObserver', () 
 
   const content = heating.children[0].children[0];
   content.getBoundingClientRect = () => ({ height: 400 });
-  disclosure.listeners.get('toggle')();
+  disclosure.listeners.get('toggle')(); flushFrame();
   assert.equal(devices.style['--timing-overview-height'], '400px', 'Opening the initially closed fold measures its visible content');
   content.getBoundingClientRect = () => ({ height: 300 });
-  windowListeners.get('resize')();
+  windowListeners.get('resize')(); flushFrame();
   assert.equal(devices.style['--timing-overview-height'], '300px', 'Resizing can shrink the shared overview height');
   panel.close();
   assert.equal(windowListeners.has('resize'), false);
   assert.equal(disclosure.listeners.has('toggle'), false);
 });
+
+for (const observerAvailable of [true, false]) {
+  const observerLabel = observerAvailable ? 'with ResizeObserver' : 'without ResizeObserver';
+  test(`comparison fold measures only visible content and restores alignment on every reopen ${observerLabel}`, () => {
+    const f = dom(), { root, document } = f;
+    if (!observerAvailable) delete document.defaultView.ResizeObserver;
+    const disclosure = document.createElement('details'), wrapper = document.createElement('div');
+    disclosure.append(wrapper); wrapper.append(root); disclosure.open = false;
+    const panel = createTimingBenefit(root);
+    const data = { ...payload, firewoodBenefit: estimate,
+      timingBenefit: { heatPump: timing(1), charger: timing(2, 'charger') } };
+    panel.render(data); f.notifyResize(); f.flushFrame();
+    const devices = root.children[1], heating = devices.children[0];
+    const overview = heating.children[0].children[0], selection = overview.children[1].children[0];
+    overview.bounds = { width: 250, height: 480 }; selection.bounds = { width: 250, height: 240 };
+    assert.equal(f.measurements.length, 0, 'Initial rendering inside a closed fold must not measure hidden content');
+    assert.equal(f.styleWrites.length, 0, 'Hidden content must not replace alignment with zero heights');
+    assert.match(heating.children[0].textContent, /Heating/);
+
+    disclosure.open = true; disclosure.listeners.get('toggle')();
+    assert.equal(f.frames.size, 1, 'Opening schedules layout even if ResizeObserver never notifies');
+    assert.equal(f.styleWrites.length, 0, 'Disclosure layout waits until the next animation frame');
+    f.flushFrame();
+    assert.equal(devices.style['--timing-overview-height'], '480px');
+    assert.equal(devices.style['--timing-selection-height'], '240px');
+    const comparison = findByLabel(heating, 'Heating cost comparison'), timingButton = comparison.children[1];
+    const innerFold = heating.children[1]; innerFold.open = true;
+    timingButton.focus(); timingButton.click();
+    const measurementsBeforeClose = f.measurements.length, writesBeforeClose = f.styleWrites.length;
+    f.windowListeners.get('resize')(); assert.equal(f.frames.size, 1);
+    disclosure.open = false; disclosure.listeners.get('toggle')();
+    assert.equal(f.frames.size, 0, 'Closing the fold cancels layout queued while it was visible');
+    panel.render({ ...data, firewoodBenefit: { ...estimate, valueEuro: 2.25 } });
+    f.notifyResize(); f.windowListeners.get('resize')(); f.flushFrame();
+    assert.equal(f.measurements.length, measurementsBeforeClose, 'Closed-fold refreshes and resize events must skip measurements');
+    assert.equal(f.styleWrites.length, writesBeforeClose, 'Closing retains the last visible heights');
+    assert.equal(devices.style['--timing-overview-height'], '480px');
+    assert.match(devices.children[2].textContent, /€2.25/, 'Payload updates still populate hidden cards');
+
+    overview.bounds.height = 360; selection.bounds.height = 220;
+    disclosure.open = true; disclosure.listeners.get('toggle')(); f.windowListeners.get('resize')();
+    assert.equal(f.frames.size, 1, 'Several layout events share one animation frame');
+    f.flushFrame();
+    assert.equal(devices.style['--timing-overview-height'], '360px', 'Reopening recomputes heights without an observer notification');
+    assert.equal(devices.style['--timing-selection-height'], '220px');
+    assert.equal(heating.children[1], innerFold); assert.equal(innerFold.open, true);
+    assert.equal(findByLabel(heating, 'Heating cost comparison'), comparison);
+    assert.equal(comparison.children[1], timingButton); assert.equal(timingButton.attributes['aria-pressed'], 'true');
+    assert.equal(document.activeElement, timingButton);
+    assert.match(heating.children[0].textContent, /Timing cost difference.*€1.00/);
+    panel.close();
+    assert.equal(f.windowListeners.has('resize'), false); assert.equal(disclosure.listeners.has('toggle'), false);
+  });
+
+  test(`comparison layout skips hidden ancestors and cancels pending work on disposal ${observerLabel}`, () => {
+    const f = dom(), { root, document } = f;
+    if (!observerAvailable) delete document.defaultView.ResizeObserver;
+    const disclosure = document.createElement('details'); disclosure.open = true; disclosure.append(root);
+    root.bounds = { width: 0, height: 0 };
+    const panel = createTimingBenefit(root); panel.render({ ...payload, firewoodBenefit: estimate });
+    assert.equal(typeof f.windowListeners.get('resize'), 'function', 'Window resize remains wired when an observer is present');
+    f.notifyResize(); f.windowListeners.get('resize')(); f.flushFrame();
+    assert(f.measurements.every(node => node === root), 'A zero-width root must not measure its card descendants');
+    assert.equal(f.styleWrites.length, 0);
+
+    root.bounds = { width: 960, height: 600 };
+    f.windowListeners.get('resize')(); f.flushFrame();
+    const devices = root.children[1];
+    assert.equal(devices.style['--timing-overview-height'], '200px');
+    f.windowListeners.get('resize')();
+    assert.equal(f.frames.size, 1);
+    const measuredBeforeDisposal = f.measurements.length, writtenBeforeDisposal = f.styleWrites.length;
+    panel.close();
+    assert.equal(f.frames.size, 0, 'Disposal cancels the queued animation frame');
+    assert.equal(f.windowListeners.has('resize'), false); assert.equal(disclosure.listeners.has('toggle'), false);
+    if (observerAvailable) assert.equal(f.disconnected(), true);
+    f.flushFrame(); f.notifyResize();
+    assert.equal(f.measurements.length, measuredBeforeDisposal); assert.equal(f.styleWrites.length, writtenBeforeDisposal);
+  });
+}
 
 test('heating choice changes its amount and details while preserving focus, folds and the other cards', () => {
   const storage = new Map(), { root, document } = dom(storage);

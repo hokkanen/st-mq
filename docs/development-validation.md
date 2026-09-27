@@ -122,10 +122,15 @@ chart/date/detail/tooltips and related dashboard regression coverage.
 Date checks also cover preserving the inactive end-date suggestion, showing just
 the new start day, explicitly choosing the same or another end date, canceling
 without activating a range, and fitting the end calendar on small screens.
-The timing compatibility suite renders synthetic comparisons with and without
-`ResizeObserver`, checking visible figures and controls above the folds, resizing,
-refresh, keyboard focus and unclipped content at five widths in both themes.
-This simulates a missing browser API; it does not certify a particular appliance.
+The timing compatibility suite renders synthetic comparisons with native,
+missing and delayed `ResizeObserver` delivery, checking visible figures and
+controls above the folds, resizing, refresh, keyboard focus and unclipped content
+at five widths in both themes. Repeated outer-fold close/reopen checks include
+refreshes and viewport changes while closed, unchanged cached alignment until
+reopening, preserved inner folds, hit testing and painted-content comparisons.
+An explicit hidden-layout variant also exercises browsers that return zero
+geometry for a closed disclosure. These simulated cases do not certify a
+particular appliance's rendering engine.
 
 They default to `/opt/google/chrome/chrome`; set `STMQ_CHROME_BIN` if needed. The
 remaining Chrome checks expect a separately started browser with a disposable
