@@ -1,15 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, copyFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const checker = fileURLToPath(new URL('../scripts/check-secrets.js', import.meta.url));
-// A signature fixture exercises locked-CI validation, not cryptographic validity.
+// Synthetic retired-format bytes; these contain no cryptographic key or private data.
 const ciphertext = Buffer.concat([Buffer.from([0, 71, 73, 84, 67, 82, 89, 80, 84, 0]), Buffer.alloc(40, 19)]);
-const policy = 'options.json filter=git-crypt diff=git-crypt -text\noptions.json.* filter=git-crypt diff=git-crypt -text\n';
+const policy = 'options.json filter=unavailable-filter diff=unavailable-filter -text\n';
+const ciphertextId = createHash('sha1').update(`blob ${ciphertext.length}\0`).update(ciphertext).digest('hex');
 
 function repository(t) {
   const path = mkdtempSync(join(tmpdir(), 'stmq-secret-test-'));
@@ -27,8 +29,13 @@ function repository(t) {
     writeFileSync(join(path, name), bytes);
   }
   function stage(name, bytes) { write(name, bytes); git('add', '--', name); }
+  const tools = mkdtempSync(join(tmpdir(), 'stmq-checker-test-'));
+  t.after(() => rmSync(tools, { recursive: true, force: true }));
+  const localChecker = join(tools, 'check-secrets.mjs');
+  copyFileSync(checker, localChecker);
+  writeFileSync(join(tools, 'historical-private-blobs.json'), JSON.stringify({ 'data/options.json': [ciphertextId] }));
   function check(...args) {
-    const result = spawnSync(process.execPath, [checker, ...args], { cwd: path, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    const result = spawnSync(process.execPath, [localChecker, ...args], { cwd: path, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
     assert.ifError(result.error);
     return { code: result.status, output: result.stdout + result.stderr };
   }
@@ -64,12 +71,11 @@ test('safe current checkout needs no encryption attributes or filter and reads i
   assert.equal(repo.check('--staged').code, 0);
 });
 
-test('historical ciphertext remains valid with its historical attributes after migration', t => {
+test('inventoried historical bytes need no encryption attributes, executable or key', t => {
   const repo = repository(t);
-  repo.stage('.gitattributes', policy);
   repo.stage('data/options.json', ciphertext);
   repo.commit();
-  repo.git('rm', '-f', 'data/options.json', '.gitattributes');
+  repo.git('rm', '-f', 'data/options.json');
   repo.stage('.gitignore', 'options.json\nsecrets.json\n');
   repo.commit();
   assert.equal(repo.check('--history', 'HEAD').code, 0);
@@ -90,8 +96,50 @@ test('history scans intermediate exposure and deleted files, irrespective of tip
   repo.write('.git/info/attributes', 'options.json -filter -diff\n');
   const result = repo.check('--history', 'HEAD');
   assert.equal(result.code, 1);
-  assert.match(result.output, new RegExp(`${exposed} .*ciphertext signature missing`));
+  assert.match(result.output, new RegExp(`${exposed} .*only inventoried historical blobs`));
   assert.doesNotMatch(result.output, /attributes must set/);
+});
+
+test('inventoried ciphertext is rejected in the index, at another path, or after any byte change', t => {
+  const repo = repository(t);
+  repo.stage('data/options.json', ciphertext);
+  assert.equal(repo.check('--staged').code, 1);
+  repo.commit();
+  assert.equal(repo.check('--history', 'HEAD').code, 0);
+  repo.stage('renamed.bin', ciphertext);
+  repo.commit();
+  assert.match(repo.check('--history', 'HEAD').output, /renamed.bin.*only inventoried historical blobs/);
+  repo.git('reset', '--hard', 'HEAD~1');
+  const changed = Buffer.from(ciphertext);
+  changed[changed.length - 1] ^= 1;
+  repo.stage('data/options.json', changed);
+  repo.commit();
+  assert.match(repo.check('--history', 'HEAD').output, /data\/options.json.*only inventoried historical blobs/);
+});
+
+test('unavailable filters and text converters are never invoked by a history scan', t => {
+  const repo = repository(t);
+  repo.stage('.gitattributes', policy);
+  repo.stage('data/options.json', ciphertext);
+  repo.commit();
+  repo.git('config', 'filter.unavailable-filter.smudge', '/does-not-exist');
+  repo.git('config', 'filter.unavailable-filter.clean', '/does-not-exist');
+  repo.git('config', 'filter.unavailable-filter.required', 'true');
+  repo.git('config', 'diff.unavailable-filter.textconv', '/does-not-exist');
+  assert.equal(repo.check('--history', 'HEAD').code, 0);
+});
+
+test('retired key signatures are rejected in deleted history and behind a data header', t => {
+  const repo = repository(t);
+  const marker = Buffer.from([0, 71, 73, 84, 67, 82, 89, 80, 84, 75, 69, 89, 0]);
+  repo.stage('arbitrary.bin', Buffer.concat([ciphertext, marker, Buffer.alloc(64, 17)]));
+  assert.match(repo.check('--staged').output, /retired encryption key/);
+  const exposed = repo.commit();
+  repo.git('rm', 'arbitrary.bin');
+  repo.commit();
+  const result = repo.check('--history', 'HEAD');
+  assert.equal(result.code, 1);
+  assert.match(result.output, new RegExp(`${exposed} .*retired encryption key`));
 });
 
 test('history follows both merge parents and does not let grafts hide an ancestor', t => {
@@ -122,7 +170,7 @@ test('credential patterns cover private keys, provider keys, raw exported keys a
   repo.stage('arbitrary.bin', Buffer.concat([Buffer.from([0, 71, 73, 84, 67, 82, 89, 80, 84, 75, 69, 89, 0]), Buffer.alloc(64, 17)]));
   const result = repo.check('--staged');
   assert.equal(result.code, 1);
-  for (const category of ['private key', 'GitHub token', 'literal credential assignment', 'exported git-crypt key']) assert.ok(result.output.includes(category), result.output);
+  for (const category of ['private key', 'GitHub token', 'literal credential assignment', 'retired encryption key']) assert.ok(result.output.includes(category), result.output);
   assert.ok(!result.output.includes(provider));
   assert.ok(!result.output.includes(literal));
 });

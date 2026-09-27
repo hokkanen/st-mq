@@ -131,10 +131,13 @@ requirements will be decided explicitly; do not build speculative machinery now.
 - Private directories use mode `0700`; private files use `0600`. Do not read
   private values unless needed for the task. Inspect them in memory and report
   only paths, field names and counts.
-- Current development no longer needs git-crypt. Historical encrypted blobs and
-  decryption keys must remain recoverable; do not rewrite history or remove keys
-  as part of ordinary work. Never commit a decryption key. Retained local
-  git-crypt filters are for old revisions only; do not disable their required flag.
+- Repository encryption is retired. Keep encryption keys out of the checkout,
+  Git metadata and Git history; do not install encryption filters or key links.
+  Private configuration stays external. Existing historical encrypted data stays
+  opaque and unchanged; never decrypt it into the repository. Its exact paths and
+  blob IDs are inventoried in `scripts/historical-private-blobs.json` solely for
+  history auditing, not runtime support. Do not extend that inventory to admit
+  new private data or keys.
 
 ## Routine commit validation
 
@@ -144,10 +147,10 @@ requirements will be decided explicitly; do not build speculative machinery now.
    explicit paths. Never use an unchecked `git add .` or bypass hooks.
 3. The pre-commit hook runs `node scripts/check-secrets.js --staged`, checking the
    index for private filenames and credential patterns. One successful check on
-   the final index is sufficient; routine tasks need no git-crypt status,
-   attribute, decryption or whole-history audit commands.
-4. Pre-push and CI audit reachable history automatically, including historical
-   ciphertext requirements. Run a history audit manually when changing the
+   the final index is sufficient; routine tasks need no decryption or
+   whole-history audit commands.
+4. Pre-push and CI audit reachable history automatically against the fixed
+   private-blob inventory. Run a history audit manually when changing the
    checker, repairing history or investigating an exposure, not after every task.
 
 Pattern checks cannot recognize every private value. Review confidential-data

@@ -2,6 +2,22 @@
 -Implement support for local mqtt-based temperature receives (eg, from shelly or HASS through Meteorologisk Institute); just store last received temp values and time stamps (maybe in storage class, see below) when received (and accept if received within 1h)
 -Chart dataset control buttons don't work when datasets are manually hidden/unhidden from legend, how to fix?
 
+Completed 2026-09-27 — Remove repository encryption
+- Remove the local repository key, both worktree key links and encryption filter
+  configuration. Remove obsolete attributes, tool-specific ignore rules and the
+  instructions to retain local decryption support. Private configuration remains
+  external; keys are prohibited in the checkout, Git metadata and history.
+- Replace historical encryption-attribute validation with a fixed inventory of
+  15 existing private blob IDs and their original paths. Preserve the historical
+  bytes without decryption or history rewriting. Keep staged-file, credential,
+  private-key and commit-message checks; reject changed or renamed archived data.
+  Retired format signatures are rejection checks only, not encryption support.
+- Review hooks, CI, configuration, policy, documentation and secret-check tests.
+  Validation: all 13 focused secret-check tests and the 397-commit H66 history
+  audit pass. A separate scan of 592 stored commits, 4,835 blobs and 5,660 local
+  files finds no remaining key matches; Git configuration has no encryption
+  filters. Recovery backups outside this checkout remain outside the removal.
+
 Completed 2026-09-26 — BMW target hold after one 100% to X transition
 - Replace the X-to-100-to-X cycle and fifteen-minute transition window with one
   live 100%-to-X transition anywhere in the current connection. Hold the latest

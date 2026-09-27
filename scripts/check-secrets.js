@@ -1,15 +1,21 @@
 #!/usr/bin/env node
 // Read Git objects, never the decrypted working tree or a textconv result.
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { readFileSync } from 'node:fs';
 
-const HEADER = Buffer.from([0, 71, 73, 84, 67, 82, 89, 80, 84, 0]);
+// These signatures only reject retired data/key formats; no encryption tooling is used.
+const RETIRED_DATA_HEADER = Buffer.from([0, 71, 73, 84, 67, 82, 89, 80, 84, 0]);
 const MAX_BUFFER = 256 * 1024 * 1024;
 const decoder = new TextDecoder('utf-8', { fatal: true });
 const baseEnv = { ...process.env, GIT_NO_REPLACE_OBJECTS: '1', GIT_GRAFT_FILE: '/dev/null', GIT_ATTR_NOSYSTEM: '1' };
-let temporary;
+const RETIRED_KEY_HEADER = Buffer.from([0, 71, 73, 84, 67, 82, 89, 80, 84, 75, 69, 89, 0]);
+const historical = JSON.parse(readFileSync(new URL('./historical-private-blobs.json', import.meta.url), 'utf8'));
+const archived = new Map(Object.entries(historical).map(([path, ids]) => {
+  if (!Array.isArray(ids) || !ids.length || ids.some(id => !/^[a-f0-9]{40}$/.test(id))) {
+    throw new Error('Invalid historical private-blob inventory.');
+  }
+  return [path, new Set(ids)];
+}));
 
 function git(args, { env = baseEnv, input } = {}) {
   try {
@@ -29,13 +35,10 @@ function placeholder(value) {
     || /(?:\$\{|\$[A-Za-z_]|process\.env\b|\benv\.|os\.environ|\.example\b|\.invalid\b)/.test(value);
 }
 
-function categories(bytes, allowCiphertext = true) {
-  if (allowCiphertext && bytes.subarray(0, HEADER.length).equals(HEADER)) {
-    return bytes.length >= 22 ? [] : ['truncated git-crypt data'];
-  }
+function categories(bytes) {
   const source = bytes.toString('utf8');
   const found = new Set();
-  if (bytes.includes(Buffer.from([0, 71, 73, 84, 67, 82, 89, 80, 84, 75, 69, 89, 0]))) found.add('exported git-crypt key');
+  if (bytes.includes(RETIRED_KEY_HEADER)) found.add('retired encryption key');
   const patterns = [
     ['private key', /-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY-----/],
     ['GitHub token', /\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{70,})\b/],
@@ -69,22 +72,6 @@ function categories(bytes, allowCiphertext = true) {
   return [...found];
 }
 
-function attributes(paths, env) {
-  if (!paths.length) return new Map();
-  const fields = decoder.decode(git(['-c', 'core.attributesFile=/dev/null', 'check-attr', '--cached', '-z', '--stdin', 'filter', 'diff'],
-    { env, input: Buffer.from(`${paths.join('\0')}\0`) })).split('\0');
-  fields.pop();
-  if (fields.length !== paths.length * 6) throw new Error('Incomplete attribute scan.');
-  const result = new Map();
-  for (let i = 0; i < fields.length; i += 3) {
-    const [path, name, value] = fields.slice(i, i + 3);
-    const attrs = result.get(path) ?? {};
-    attrs[name] = value;
-    result.set(path, attrs);
-  }
-  return result;
-}
-
 function objects(ids) {
   if (!ids.length) return [];
   const output = git(['cat-file', '--batch'], { input: `${ids.join('\n')}\n` });
@@ -116,25 +103,16 @@ function run() {
   const commits = history
     ? git(['rev-list', git(['rev-parse', '--verify', '--end-of-options', `${args[1]}^{commit}`]).toString().trim()]).toString().trim().split('\n')
     : [];
-  temporary = mkdtempSync(join(tmpdir(), 'stmq-secret-check-'));
-  const objectDirectory = resolve(git(['rev-parse', '--git-path', 'objects']).toString().trim());
-  // A separate Git directory prevents local/global/info attributes and working-tree
-  // files from changing the historical attribute policy being audited.
-  const isolated = { ...baseEnv, GIT_DIR: join(temporary, 'git'), GIT_WORK_TREE: temporary,
-    GIT_INDEX_FILE: join(temporary, 'index'), GIT_OBJECT_DIRECTORY: objectDirectory };
-  delete isolated.GIT_COMMON_DIR;
-  git(['init', '--bare', isolated.GIT_DIR], { env: baseEnv });
   const cache = new Map();
   const findings = new Set();
   let snapshots = 0;
-  let encryptedSnapshots = 0;
+  let archivedSnapshots = 0;
   function report(ref, path, category, id) {
     findings.add(`${ref} ${JSON.stringify(path)}${id ? ` [${id}]` : ''}: ${category}`);
   }
   for (const ref of history ? commits : ['index']) {
     let entries;
     if (history) {
-      git(['read-tree', ref], { env: isolated });
       entries = decoder.decode(git(['ls-tree', '-r', '-z', '--full-tree', ref])).split('\0').filter(Boolean).map(record => {
         const tab = record.indexOf('\t');
         const [mode, type, id] = record.slice(0, tab).split(' ');
@@ -143,7 +121,7 @@ function run() {
       const message = objects([ref])[0];
       const split = message.indexOf(Buffer.from('\n\n'));
       if (split < 0) throw new Error('Malformed commit object.');
-      for (const category of categories(message.subarray(split + 2), false)) report(ref, '(commit message)', category);
+      for (const category of categories(message.subarray(split + 2))) report(ref, '(commit message)', category);
     } else {
       entries = decoder.decode(git(['ls-files', '--stage', '-z', '--full-name'])).split('\0').filter(Boolean).map(record => {
         const tab = record.indexOf('\t');
@@ -151,35 +129,22 @@ function run() {
         if (stage !== '0') throw new Error('Unmerged index cannot be audited.');
         return { mode, id, path: record.slice(tab + 1) };
       }).filter(entry => entry.mode !== '160000');
-      git(['read-tree', '--empty'], { env: isolated });
-      git(['update-index', '-z', '--index-info'], { env: isolated,
-        input: entries.map(({ mode, id, path }) => `${mode} ${id}\t${path}\0`).join('') });
     }
-    const paths = entries.map(entry => entry.path);
-    const tracked = history ? attributes(paths, isolated) : new Map();
-    const effective = tracked;
     const missing = [...new Set(entries.map(entry => entry.id))].filter(id => !cache.has(id));
     const raw = objects(missing);
     for (let i = 0; i < missing.length; i++) cache.set(missing[i], {
-      encrypted: raw[i].length >= 22 && raw[i].subarray(0, HEADER.length).equals(HEADER),
+      retiredData: raw[i].subarray(0, RETIRED_DATA_HEADER.length).equals(RETIRED_DATA_HEADER),
       categories: categories(raw[i]),
     });
     for (const { path, id } of entries) {
       snapshots++;
       const status = cache.get(id);
-      if (status.encrypted) encryptedSnapshots++;
-      const attrs = tracked.get(path) ?? {};
-      const actual = effective.get(path) ?? {};
+      const historicalMatch = history && archived.get(path)?.has(id);
+      if (historicalMatch) archivedSnapshots++;
       const privateName = /^(?:secrets|options)\.json(?:\..*)?$/.test(path.split('/').at(-1));
-      if (/^secrets\.json(?:\..*)?$/.test(path.split('/').at(-1))
-        || !history && (privateName || path === 'workspace/consumption.csv' || status.encrypted))
-        report(ref, path, 'private configuration/data must remain outside Git', id);
-      const required = /^options\.json(?:\..*)?$/.test(path.split('/').at(-1)) || path === 'workspace/consumption.csv'
-        || [attrs.filter, attrs.diff, actual.filter, actual.diff].includes('git-crypt');
-      if (history && required) {
-        if (attrs.filter !== 'git-crypt' || attrs.diff !== 'git-crypt') report(ref, path, 'tracked attributes must set filter=git-crypt and diff=git-crypt', id);
-        if (actual.filter !== 'git-crypt' || actual.diff !== 'git-crypt') report(ref, path, 'effective attributes must set filter=git-crypt and diff=git-crypt', id);
-        if (!status.encrypted) report(ref, path, 'required git-crypt ciphertext signature missing', id);
+      const privateData = privateName || path === 'workspace/consumption.csv' || archived.has(path);
+      if (!historicalMatch && (privateData || status.retiredData)) {
+        report(ref, path, 'private configuration/data must remain outside Git; only inventoried historical blobs are allowed in history', id);
       }
       for (const category of status.categories) report(ref, path, category, id);
     }
@@ -188,8 +153,8 @@ function run() {
     for (const finding of findings) process.stderr.write(`${finding}\n`);
     throw new Error(`Secret check failed: ${findings.size} finding(s). No values were printed.`);
   }
-  process.stdout.write(`Secret check passed: ${history ? `${commits.length} reachable commits` : 'complete staged index'}, ${snapshots} file snapshots, ${cache.size} unique blobs, ${encryptedSnapshots} encrypted snapshots.\n`);
-  process.stdout.write(history ? 'History includes archived ciphertext/attribute checks and credential patterns.\n' : 'Checks cover private filenames and credential patterns; private values are never printed.\n');
+  process.stdout.write(`Secret check passed: ${history ? `${commits.length} reachable commits` : 'complete staged index'}, ${snapshots} file snapshots, ${cache.size} unique blobs, ${archivedSnapshots} inventoried historical snapshots.\n`);
+  process.stdout.write(history ? 'History permits only inventoried private blobs and checks credential patterns and commit messages.\n' : 'Checks cover private filenames and credential patterns; private values are never printed.\n');
 }
 
 try {
@@ -197,6 +162,4 @@ try {
 } catch (error) {
   process.stderr.write(`${error.message}\n`);
   process.exitCode = 1;
-} finally {
-  if (temporary) rmSync(temporary, { recursive: true, force: true });
 }

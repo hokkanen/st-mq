@@ -20,8 +20,6 @@ workspace/
 *.pem
 *.p12
 *.pfx
-git-crypt-key*
-.git-crypt-key*
 options.json.*
 
 # Private configuration is external; ignore accidental local uploads and copies.
