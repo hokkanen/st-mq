@@ -59,6 +59,10 @@ unplugging returns to configuration defaults. Editing a field does not erase the
 live source reading beside it. Draft edits survive ordinary status refreshes.
 Change permanent defaults in configuration and choose **Apply configuration**.
 
+Enter ready-by time as **HH:mm**, or use **Choose time** and **Set**. The time
+chooser stays within the window and scrolls when space is limited. Set updates
+the draft; **Save for this session** applies it to the current connection.
+
 **Charge now** is immediately visible at the top right of each charger card.
 It releases the controller's automatic scheduling delay for the current session
 without changing the Automatic charging choice. It works with Automatic

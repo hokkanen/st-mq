@@ -144,7 +144,7 @@ try {
         for (const [chargerId, state] of states) {
           const manual = ['manual', 'manual-stop', 'handover-pending'].includes(state),
             controlled = manual || ['single', 'periods', 'paused', 'problem', 'progress', 'reported-progress', 'full', 'risk', 'waiting', 'provisional',
-              'released', 'handover', 'unknown-controlled', 'disconnected-controlled'].includes(state);
+              'released', 'handover', 'unknown-controlled', 'disconnected-controlled', 'target-held', 'target-manual84', 'target-manual100'].includes(state);
           const charger = status.charging.chargers.find(item => item.id === (chargerId ?? (controlled ? 'charger1' : 'charger2')));
           const observation = value => ({ value, source: charger.id === 'charger1' ? 'bmw-cardata' : 'teslamate', available: true, measuredAt: null, receivedAt: status.now });
           charger.values.soc = { ...observation(62), measuredAt: status.now - 4 * 86400_000 };
@@ -239,6 +239,23 @@ try {
               charger.settings.enabled = false;
               charger.control = { phase: 'disabled', handoverConfirmed: false,
                 reason: 'Automatic charging is off. The charger has not confirmed the handover; the last instruction may remain active.' };
+            }
+          }
+          if (state.startsWith('target-')) {
+            const lower = { value: 85, measuredAt: status.now - 3600_000, receivedAt: status.now - 3590_000, readingId: 'synthetic-target-lower' };
+            charger.targetSelection = { connectedAt: status.now - 2 * 3600_000, conflict: true, lower,
+              selected: { ...lower, source: 'bmw-target-filter' },
+              raw: { value: 100, measuredAt: status.now - 60_000, receivedAt: status.now - 50_000, readingId: 'synthetic-target-latest' } };
+            const target = state === 'target-held' ? 85 : state === 'target-manual84' ? 84 : 100;
+            charger.values.minimumSoc = { ...observation(target), source: state === 'target-held' ? 'bmw-target-filter' : 'session-request',
+              ...(state === 'target-held' ? lower : {}) };
+            charger.settings.minimumSoc = target;
+            charger.association = 'synthetic-browser-charger';
+            charger.request.revision = globalThis.chargingTargetSmokeRevision ?? 1;
+            if (state !== 'target-held') charger.request.overrides.minimumSoc = target;
+            if (globalThis.chargingTargetSmokeReadyBy) {
+              charger.settings.readyBy = globalThis.chargingTargetSmokeReadyBy;
+              charger.request.overrides.readyBy = globalThis.chargingTargetSmokeReadyBy;
             }
           }
         }
@@ -898,6 +915,7 @@ try {
     ['paused', 'charger1', 'Paused between periods'], ['problem', 'charger1', 'Update unconfirmed'],
     ['scheduled', 'charger2', 'Connected'], ['unavailable', 'charger2', 'Connected'],
     ['charging', 'charger2', 'Charging'], ['progress', 'charger1', 'Charging'], ['reported-progress', 'charger1', 'Charging'],
+    ['target-held', 'charger1', 'Scheduled'], ['target-manual84', 'charger1', 'Scheduled'], ['target-manual100', 'charger1', 'Scheduled'],
   ];
   for (const width of [320, 390, 1440]) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: width > 600 ? 1100 : 844, deviceScaleFactor: 1, mobile: false });
@@ -1008,6 +1026,34 @@ try {
           await capture(`charger-explanations-${width}-${theme}`);
           await evaluate("document.getElementById('charger1-explanation-details').open=false");
         }
+        if (state.startsWith('target-')) {
+          const held = state === 'target-held', target = held ? 85 : state === 'target-manual84' ? 84 : 100;
+          const targetState = await evaluate(`(() => {
+            const value = document.getElementById('charger1-minimum');
+            const probe = document.createElement('span'); probe.style.color = 'var(--stale)'; document.body.append(probe);
+            const attentionColor = getComputedStyle(probe).color; probe.remove();
+            return { text: value.textContent, state: value.dataset.state, color: getComputedStyle(value).color,
+              attentionColor, source: document.getElementById('charger1-target-source').textContent,
+              input: document.getElementById('charger1-setting-minimumSoc').value,
+              oldControls: [...document.querySelectorAll('#charger1-device button, #charger1-device p')]
+                .some(node => /BMW target reports conflict|Plan for 100% this connection|For a full charge, also set 100% in the car/.test(node.textContent)) };
+          })()`);
+          assert.equal(targetState.text, `${target} %`);
+          assert.equal(targetState.input, String(target));
+          assert.equal(targetState.state, held ? 'attention' : 'normal');
+          assert.equal(targetState.color === targetState.attentionColor, held,
+            `${width}px ${theme} colors only the BMW target actually held for planning`);
+          assert.equal(targetState.source, held ? 'Held BMW target' : '');
+          assert.equal(targetState.oldControls, false, 'The conflict banner and separate full-charge shortcut are absent');
+          await evaluate("document.querySelector('#charger1-target-label .status-detail-trigger').click()");
+          const detail = await evaluate("document.querySelector('#status-detail-popover .status-detail-body').textContent");
+          assert.match(detail, new RegExp(`Selected planning target: ${target} %`));
+          assert.match(detail, /Latest BMW target report: 100 %/);
+          assert.equal(detail.includes('automatic planning holds'), held,
+            'The explanation describes the effective planning value after a manual override');
+          await capture(`charger-${state}-target-help-${width}-${theme}`);
+          await keyPress('Escape');
+        }
       }
       await evaluate("globalThis.chargingSmokeValues=null; globalThis.nativePumpSmokeValues=false; globalThis.refreshLearningSmokeStatus()");
       await until("document.getElementById('charger2-setting-manualSoc').disabled===true");
@@ -1021,6 +1067,86 @@ try {
       await capture(`${name}-${width}`);
     }
   }
+  // Exercise the regular session Save action with only this disposable page's
+  // synthetic response changing. No fixture writes reach a physical integration.
+  await evaluate(`globalThis.chargingSessionSmokeFetch = globalThis.fetch;
+    globalThis.chargingSessionSmokeWrites = [];
+    globalThis.chargingTargetSmokeRevision = 1;
+    globalThis.fetch = async (input, options) => {
+      const path = new URL(input.url ?? String(input), location.href).pathname;
+      if (path === '/api/charging/chargers/charger1/settings' && options?.method === 'POST') {
+        const payload = JSON.parse(options.body);
+        globalThis.chargingSessionSmokeWrites.push(payload);
+        if (payload.changes.minimumSoc !== undefined)
+          globalThis.chargingSmokeValues = { charger1: 'target-manual' + payload.changes.minimumSoc };
+        if (payload.changes.readyBy !== undefined) globalThis.chargingTargetSmokeReadyBy = payload.changes.readyBy;
+        globalThis.chargingTargetSmokeRevision += 1;
+        return globalThis.chargingSessionSmokeFetch('/api/status');
+      }
+      return globalThis.chargingSessionSmokeFetch(input, options);
+    };
+    globalThis.chargingSmokeValues = { charger1: 'target-held' };
+    globalThis.refreshLearningSmokeStatus()`);
+  await until("document.getElementById('charger1-minimum').dataset.state === 'attention'");
+  await evaluate("document.getElementById('charger1-device').open = true");
+  for (const target of [84, 100]) {
+    await evaluate(`(() => {
+      const input = document.getElementById('charger1-setting-minimumSoc');
+      input.value = '${target}'; input.dispatchEvent(new Event('input', { bubbles: true }));
+      document.getElementById('charger1-settings-save').click();
+    })()`);
+    await until(`document.getElementById('charger1-minimum').textContent === '${target} %'
+      && document.getElementById('charger1-settings-save').disabled`);
+    assert.equal(await evaluate("document.getElementById('charger1-minimum').dataset.state"), 'normal',
+      'Saving an explicit target clears BMW held-target attention');
+  }
+  assert.deepEqual(await evaluate('globalThis.chargingSessionSmokeWrites'), [
+    { scope: 'session', association: 'synthetic-browser-charger', sessionId: 'synthetic-browser-session', revision: 1, changes: { minimumSoc: 84 } },
+    { scope: 'session', association: 'synthetic-browser-charger', sessionId: 'synthetic-browser-session', revision: 2, changes: { minimumSoc: 100 } },
+  ], 'The normal Save button handles both target changes with the displayed connection and revision');
+  assert.equal(await evaluate("document.getElementById('charger1-setting-readyBy').type"), 'text',
+    'Ready-by keeps direct keyboard entry without relying on the browser time popup');
+  for (const [width, height] of [[1440, 1100], [390, 844], [320, 480], [320, 240]]) for (const theme of ['dark', 'light']) {
+    await send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
+    await evaluate(`window.homeEnergyTheme.setTheme('${theme}');
+      document.getElementById('charger1-setting-readyBy-choose').click()`);
+    const dialogLayout = await evaluate(`(() => {
+      const dialog = document.getElementById('charging-time-dialog'), button = document.getElementById('charging-time-set');
+      button.scrollIntoView({ block: 'nearest' });
+      const outer = dialog.getBoundingClientRect(), inner = button.getBoundingClientRect();
+      const range = document.createRange(); range.selectNodeContents(button);
+      return { open: dialog.open, fits: outer.left >= 0 && outer.right <= innerWidth + 1
+        && outer.top >= 0 && outer.bottom <= innerHeight + 1,
+        contentFits: dialog.scrollWidth <= dialog.clientWidth + 1,
+        setFits: inner.left >= outer.left && inner.right <= outer.right && inner.top >= outer.top && inner.bottom <= outer.bottom,
+        labelFits: [...range.getClientRects()].every(box => box.left >= inner.left && box.right <= inner.right
+          && box.top >= inner.top && box.bottom <= inner.bottom) };
+    })()`);
+    assert.deepEqual(dialogLayout, { open: true, fits: true, contentFits: true, setFits: true, labelFits: true },
+      `${width}x${height} ${theme} keeps the ready-by dialog and complete Set button accessible`);
+    const screenshot = await send('Page.captureScreenshot', { format: 'png' });
+    writeFileSync(join(artifacts, `ready-by-${width}x${height}-${theme}.png`), Buffer.from(screenshot.data, 'base64'));
+    await evaluate("document.getElementById('charging-time-hour').value = '21'; document.getElementById('charging-time-cancel').click()");
+    await until("!document.getElementById('charging-time-dialog').open && document.activeElement.id === 'charger1-setting-readyBy-choose'");
+    assert.equal(await evaluate("document.getElementById('charger1-setting-readyBy').value"), '06:00', 'Cancel preserves the ready-by value');
+    assert.equal(await evaluate('globalThis.chargingSessionSmokeWrites.length'), 2, 'Opening and cancelling the time picker does not save');
+  }
+  await evaluate(`document.getElementById('charger1-setting-readyBy-choose').click();
+    document.getElementById('charging-time-hour').value = '23'; document.getElementById('charging-time-minute').value = '7';
+    document.getElementById('charging-time-set').click()`);
+  await until("!document.getElementById('charging-time-dialog').open && document.getElementById('charger1-setting-readyBy').value === '23:07'");
+  assert.equal(await evaluate('globalThis.chargingSessionSmokeWrites.length'), 2, 'Set updates the draft until the normal Save button is used');
+  assert.equal(await evaluate(`(() => {
+    const input = document.getElementById('charger1-setting-readyBy'); input.value = '24:00';
+    const valid = input.checkValidity(); input.value = '23:07'; return valid;
+  })()`), false, 'Direct time entry rejects an invalid hour');
+  await evaluate("document.getElementById('charger1-settings-save').click()");
+  await until("globalThis.chargingSessionSmokeWrites.length === 3 && document.getElementById('charger1-settings-save').disabled");
+  assert.deepEqual(await evaluate('globalThis.chargingSessionSmokeWrites[2]'),
+    { scope: 'session', association: 'synthetic-browser-charger', sessionId: 'synthetic-browser-session', revision: 3, changes: { readyBy: '23:07' } },
+    'The normal Save button submits the selected ready-by time for this connection');
+  await evaluate(`globalThis.fetch = globalThis.chargingSessionSmokeFetch;
+    globalThis.chargingTargetSmokeRevision = undefined; globalThis.chargingTargetSmokeReadyBy = undefined`);
   // Responsive reflow and status polling must keep an in-progress session edit intact.
   await evaluate("globalThis.chargingSmokeValues={charger1:'single'}; globalThis.refreshLearningSmokeStatus()");
   await until("!document.getElementById('charger1-setting-capacityKwh').disabled");
@@ -1087,6 +1213,8 @@ try {
       'equal desktop charger columns, narrow mobile stacking, independent folds without stretching the closed sibling, and active full-dashboard screenshots',
       'persistent shared priority and automatic controls remain separate from session settings; Charge now works with automatic OFF and stays visible at 320/390/1440px in both themes',
       'unsaved charger settings and focus survive status polling and reflow between desktop and mobile',
+      'held BMW targets use attention color and retain raw-report details; explicit 84% and 100% session targets clear attention without growing the card',
+      'normal session Save submits 84%, 100% and ready-by changes; the ready-by dialog and full Set button fit 320x240 through desktop in both themes',
       'summary bands remain separate without vertical overflow; disconnected and unknown readings retain the layout without stale percentages',
       'metric explanations open without toggling equipment, preserve focus during refresh, and return on Escape; form guidance and all charging periods remain inline',
       'separate Home and Garage cards, independent keyboard disclosures, and Fireplace and Garage chart shortcuts preserve fold state and focus',

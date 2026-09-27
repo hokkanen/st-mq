@@ -17,6 +17,7 @@ import { garageModelSummary, GARAGE_ALGORITHM_VERSION } from '../garage/model.js
 import { LEARNING_ALGORITHM } from './committed-learning.js';
 import { chargingSettings } from '../charging/settings.js';
 import { CHARGER_DEFINITIONS, buildCharger } from '../charging/model.js';
+import { validateTargetState, validateTargetSelection } from '../charging/target.js';
 
 const INPUTS = new Set(['mqtt', 'providers', 'simulated', 'offline']);
 const unavailable = 'This replica is read-only. Make changes on the primary instance.';
@@ -55,6 +56,8 @@ function chargingSnapshot(snapshot) {
   if (saved.version !== 6 || Object.hasOwn(saved, 'settings')) throw new Error('Unsupported charging snapshot; start a fresh development database');
   if (!saved.view?.settings || !Array.isArray(saved.view?.chargers) || CHARGER_DEFINITIONS.some(({id}) => !saved.view.chargers.some(row => row.id === id && row.values)))
     throw new Error('Malformed current charging snapshot; start a fresh development database');
+  for (const record of Object.values(saved.chargers ?? {})) validateTargetState(record.targetState);
+  for (const charger of saved.view.chargers) validateTargetSelection(charger.targetSelection);
   const snapshotAt = snapshot.publication.sourceAt;
   const settings = chargingSettings(saved.view.settings);
   const reception = value => ({ ...value, connected: null, brokerConnected: null, subscribed: null,

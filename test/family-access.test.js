@@ -33,7 +33,7 @@ async function fixture(t, options = {}) {
       { id: 'disabled_door', area: 'garage', kind: 'door', enabled: false, controls: { cover: { open: true, close: true, stop: true } } },
       { id: 'sensor_door', area: 'garage', kind: 'door', enabled: true, controls: { cover: false } },
     ] }),
-    charging: Object.fromEntries(['setSettings', 'setChargerSettings', 'setControl', 'resume', 'setTarget', 'chargeNow', 'identifyVehicle']
+    charging: Object.fromEntries(['setSettings', 'setChargerSettings', 'setControl', 'resume', 'chargeNow', 'identifyVehicle']
       .map(name => [name, record(`charging.${name}`)])),
     garage: Object.fromEntries(['release', 'setTemporary', 'setHeating', 'setNativeSettings']
       .map(name => [name, record(`garage.${name}`)])),
@@ -112,7 +112,6 @@ test('family may use every charging card route but not charger commissioning', a
     ['/api/charging/chargers/charger1/control', { enabled: false, association: 'synthetic-identity', revision: 1 }, 'charging.setControl'],
     ['/api/charging/chargers/charger1/control', { enabled: true, association: 'synthetic-identity', revision: 2 }, 'charging.setControl'],
     ['/api/charging/chargers/charger1/resume', {}, 'charging.resume'],
-    ['/api/charging/chargers/charger1/target', { connectedAt: INITIAL, mode: 'full' }, 'charging.setTarget'],
     ['/api/charging/chargers/charger1/charge-now', { association: 'synthetic-identity', sessionId: 'synthetic-session', revision: 1 }, 'charging.chargeNow'],
     ['/api/charging/chargers/charger1/identify', { association: 'synthetic-identity', sessionId: 'synthetic-session', revision: 1 }, 'charging.identifyVehicle'],
   ];

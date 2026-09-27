@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { updateTargetState, targetSelection, selectTargetMode } from '../src/charging/target.js';
+import { updateTargetState, targetSelection, validateTargetState, validateTargetSelection } from '../src/charging/target.js';
 
 const START = Date.parse('2026-09-22T09:00:00Z'), MINUTE = 60_000;
 const reading = (value, at = START, metadata = {}) => ({ chargeLimitSoc: value,
@@ -16,7 +16,7 @@ test('a single target change to 100 remains a valid automatic target', () => {
   const first = update(null, 85), state = update(first, 100, 1);
   const selected = targetSelection(state, { reading: reading(100, START + MINUTE) });
   assert.equal(state.conflict, false); assert.equal(selected.selected.value, 100);
-  assert.equal(selected.selected.source, 'bmw-cardata'); assert.equal(selected.mode, 'automatic');
+  assert.equal(selected.selected.source, 'bmw-cardata');
   assert.equal(first.history.length, 1, 'Updating never mutates prior state');
 });
 
@@ -148,37 +148,46 @@ test('a bounded earlier evidence start can admit actual observations preceding t
   assert.equal(state.conflict, true);
 });
 
-test('a new connection or a confirmed disconnect clears the conflict and explicit choice', () => {
-  const full = selectTargetMode(hold(), 'full', START + 3 * MINUTE);
-  const reset = update(full, 100, 4, { connectedAt: START + 4 * MINUTE });
-  assert.equal(reset.conflict, false); assert.equal(reset.override, null); assert.equal(reset.lower, null);
+test('a new connection or a confirmed disconnect clears the conflict', () => {
+  const confirmed = hold();
+  const reset = update(confirmed, 100, 4, { connectedAt: START + 4 * MINUTE });
+  assert.equal(reset.conflict, false); assert.equal(reset.lower, null);
   assert.equal(reset.history.length, 1);
-  assert.equal(update(full, 100, 4, { connectedAt: null }), null);
+  assert.equal(update(confirmed, 100, 4, { connectedAt: null }), null);
 });
 
-test('serialized state preserves evidence, hold, deduplication and full override across restart', () => {
+test('serialized state preserves evidence, hold and deduplication across restart', () => {
   const pending = JSON.parse(JSON.stringify(update(null, 100, 1)));
   assert.equal(update(pending, 100, 1), pending);
   const confirmed = update(pending, 85, 2);
   assert.equal(confirmed.conflict, true);
-  const saved = JSON.parse(JSON.stringify(selectTargetMode(confirmed, 'full', START + 3 * MINUTE)));
+  const saved = JSON.parse(JSON.stringify(confirmed));
+  validateTargetState(saved);
   const restored = update(saved, 100, 4);
   const selected = targetSelection(restored, { reading: reading(100, START + 4 * MINUTE) });
-  assert.equal(selected.mode, 'full'); assert.equal(selected.conflict, true);
-  assert.deepEqual(selected.selected, { value: 100, source: 'session-target', measuredAt: null,
-    receivedAt: START + 3 * MINUTE });
-  const automatic = targetSelection(selectTargetMode(restored, 'automatic'), { reading: reading(100, START + 4 * MINUTE) });
-  assert.equal(automatic.mode, 'automatic'); assert.equal(automatic.selected.value, 85);
-  assert.equal(automatic.selected.source, 'bmw-target-filter');
+  validateTargetSelection(selected);
+  assert.equal(selected.conflict, true);
+  assert.deepEqual(selected.selected, { ...confirmed.lower, source: 'bmw-target-filter' });
 });
 
-test('missing targets produce no selection and invalid modes or sessions fail explicitly', () => {
+test('missing targets produce no selection', () => {
   const state = update(null, 85);
   for (const value of [undefined, null, NaN, -1, 101, '85']) {
     assert.equal(targetSelection(state, { reading: { chargeLimitSoc: value } }), null);
     assert.equal(update(state, value), state);
   }
-  assert.throws(() => selectTargetMode(state, 'minimum'), /Invalid target mode/);
-  assert.throws(() => selectTargetMode(null, 'full'), /connected vehicle/);
-  assert.throws(() => selectTargetMode(state, 'full', NaN), /Invalid selection time/);
+});
+
+test('retired target modes and overrides and malformed evidence fail closed', () => {
+  const state = hold(), selected = targetSelection(state, { reading: reading(100, START + 3 * MINUTE) });
+  for (const invalid of [{ ...state, override: null }, { ...state, override: { value: 100, selectedAt: START } },
+    { ...state, mode: 'automatic' }, { ...state, unknown: true }, { ...state, connectedAt: -1 },
+    { ...state, lower: null }, { ...state, lower: { ...state.lower, value: 101 } }]) {
+    assert.throws(() => validateTargetState(invalid), /Unsupported saved charging target.*fresh development database/);
+    assert.throws(() => update(invalid, 100, 4), /Unsupported saved charging target/);
+  }
+  for (const invalid of [{ ...selected, mode: 'full' }, { ...selected, mode: 'automatic' },
+    { ...selected, override: null }, { ...selected, selected: { ...selected.selected, source: 'session-target' } },
+    { ...selected, selected: { ...selected.selected, measuredAt: START + 3 * MINUTE } }])
+    assert.throws(() => validateTargetSelection(invalid), /Unsupported saved charging target selection.*fresh development database/);
 });

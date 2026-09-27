@@ -168,7 +168,7 @@ test('independent MQTT vehicle routes keep source timestamps without overriding 
   assert.equal(chargerView(engine.charging, 'charger2').vehicle.id, null);
 });
 
-test('session target API authenticates, enforces controller authority and rejects a replaced connection', async t => {
+test('ordinary BMW target settings authenticate, enforce authority and reject retired routes and stale sessions', async t => {
   const { store, engine, advance } = fixture(t);
   const runtime = engine.charging, connectedAt = engine.clock();
   runtime.setMqttStatus({connected:true,subscribed:true},'bmw');
@@ -190,24 +190,40 @@ test('session target API authenticates, enforces controller authority and reject
     controlAuthority: { canControl: () => primary, status: () => ({}) } });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise(resolve => server.close(resolve)));
-  const url = `http://127.0.0.1:${server.address().port}/api/charging/chargers/charger1/target`;
+  const base = `http://127.0.0.1:${server.address().port}/api/charging/chargers/charger1`;
+  const url = `${base}/settings`;
   const post = (body, authenticated = true) => fetch(url, { method: 'POST',
     headers: { 'content-type': 'application/json', ...(authenticated ? { authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify(body) });
-  assert.equal((await post({ connectedAt, mode: 'full' }, false)).status, 401);
+  const displayed = chargerView(runtime);
+  const request = { scope: 'session', association: displayed.association, sessionId: displayed.request.sessionId,
+    revision: displayed.request.revision, changes: { minimumSoc: 100 } };
+  assert.equal((await post(request, false)).status, 401);
   primary = false;
-  assert.equal((await post({ connectedAt, mode: 'full' })).status, 409);
+  assert.equal((await post(request)).status, 409);
   primary = true;
-  assert.equal((await post({ connectedAt, mode: 'invalid' })).status, 400);
-  const response = await post({ connectedAt, mode: 'full' });
+  assert.equal((await post({ connectedAt, mode: 'full' })).status, 400);
+  assert.equal((await post({ ...request, mode: 'full' })).status, 400);
+  assert.equal((await post({ ...request, changes: { minimumSoc: 100, mode: 'full' } })).status, 400);
+  const before = structuredClone(runtime.chargers.charger1.request);
+  for (const mode of ['full', 'automatic']) {
+    const retired = await fetch(`${base}/target`, { method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+      body: JSON.stringify({ connectedAt, mode }) });
+    assert.equal(retired.status, 404);
+    assert.deepEqual(runtime.chargers.charger1.request, before);
+  }
+  const response = await post(request);
   assert.equal(response.status, 200);
   const chosen = (await response.json()).charging.chargers[0];
   assert.equal(chosen.values.minimumSoc.value, 100);
-  assert.equal(chosen.targetSelection.mode, 'full');
+  assert.equal(chosen.values.minimumSoc.source, 'session-request');
   assert.equal(chosen.targetSelection.raw.value, 85);
-  assert.equal((await post({ connectedAt, mode: 'automatic' })).status, 200);
-  assert.equal(chargerView(runtime).values.minimumSoc.value, 85);
+  assert.equal((await post(request)).status, 400, 'A repeated Save cannot reuse the old revision');
+  const next = { ...request, revision: chosen.request.revision, changes: { minimumSoc: 84 } };
+  assert.equal((await post(next)).status, 200);
+  assert.equal(chargerView(runtime).values.minimumSoc.value, 84);
   advance(60_000); sessionAt = engine.clock();
-  assert.equal((await post({ connectedAt, mode: 'full' })).status, 400);
+  assert.equal((await post({ ...next, revision: chosen.request.revision + 1 })).status, 400);
   assert.equal(chargerView(runtime).targetSelection, null);
 });
 test('physical C2 alone starts MQTT acquisition when all vehicle feeds and other MQTT inputs are absent',async t=>{

@@ -142,6 +142,11 @@ function fixture(chargingConfig = {}) {
     setCharging: value => { charging = value; }, setTeslaEvidence: (value, at = now) => { tesla.healthy=value==='easee'; tesla.charging=charging; tesla.actualPowerKw=7; tesla.fields={charger_power:{receivedAt:at,retained:false},plugged_in:{receivedAt:sessionAt,retained:false}}; } };
 }
 const view = runtime => runtime.status().chargers[0];
+const sessionEdit = (runtime, changes) => {
+  const current = view(runtime);
+  return { scope: 'session', association: current.association, sessionId: current.request.sessionId,
+    revision: current.request.revision, changes };
+};
 const publish = (runtime, value, packet) => runtime.receiveSoc(runtime.configuration.vehicles.bmw.mqttTopic, JSON.stringify(value), packet);
 function pauseBmw(runtime, f, at = START + MINUTE) {
   f.setNow(at); f.setCharging(false); runtime.tick();
@@ -512,32 +517,84 @@ test('one BMW 100 to X transition holds the latest lower target across restart w
   assert.equal(restarted.chargers.charger1.targetState, null);
 });
 
-test('a full-charge planning choice is explicit, durable, and guarded by the displayed BMW connection', async t => {
+test('normal Save overrides a held BMW target with 84 or 100 for this connection across restart', async t => {
   const f = fixture(), runtime = f.create(); t.after(() => runtime.close());
-  await assert.rejects(runtime.setTarget('charger1', { connectedAt: START, mode: 'full' }), /connection changed/);
-  publish(runtime, facts(START, { chargeLimitSoc: 85 })); pauseBmw(runtime, f);
-  await assert.rejects(runtime.setTarget('charger1', { connectedAt: START - 1, mode: 'full' }), /connection changed/);
-  for (const input of [{ connectedAt: START, mode: 'lower' }, { connectedAt: START, mode: 'full', value: 85 }, { mode: 'full' }])
-    await assert.rejects(runtime.setTarget('charger1', input), /Choose automatic or full/);
-  f.setNow(START + 2 * MINUTE); await runtime.setTarget('charger1', { connectedAt: START, mode: 'full' });
-  assert.equal(view(runtime).values.minimumSoc.value, 100);
-  assert.equal(view(runtime).values.minimumSoc.source, 'session-target');
-  assert.equal(view(runtime).values.minimumSoc.measuredAt, null);
-  assert.equal(view(runtime).values.minimumSoc.receivedAt, START + 2 * MINUTE);
-  assert.equal(view(runtime).automatic.minimumSoc.value, 85);
-  assert.equal(runtime.settings.chargers.charger1.minimumSoc, 80);
+  publish(runtime, facts(START, { chargeLimitSoc: 100 })); pauseBmw(runtime, f);
+  f.setNow(START + 2 * MINUTE); publishTarget(runtime, 85, START + 2 * MINUTE);
+  f.setNow(START + 3 * MINUTE); publishTarget(runtime, 100, START + 3 * MINUTE);
+  const held = view(runtime), before = structuredClone(runtime.settings);
+  assert.equal(held.values.minimumSoc.value, 85);
+  assert.equal(held.values.minimumSoc.source, 'bmw-target-filter');
+  const request = sessionEdit(runtime, { minimumSoc: 84 });
+  await assert.rejects(runtime.setChargerSettings('charger1', { ...request, sessionId: 'different-session' }), /connection changed/);
+  await runtime.setChargerSettings('charger1', request);
+  await assert.rejects(runtime.setChargerSettings('charger1', request), /connection changed/);
+  let current = view(runtime);
+  assert.equal(current.values.minimumSoc.value, 84);
+  assert.equal(current.values.minimumSoc.source, 'session-request');
+  assert.deepEqual(current.targetSelection, held.targetSelection, 'Saving preserves source conflict evidence and raw clocks');
+  assert.equal(current.automatic.minimumSoc.value, 100);
+  assert.ok(Math.abs(current.referenceGridKwh - current.values.capacityKwh.value * .24 / current.configuration.efficiency) < 1e-9);
   const restarted = f.create(); t.after(() => restarted.close());
-  assert.equal(view(restarted).targetSelection.mode, 'full');
-  assert.equal(view(restarted).values.minimumSoc.value, 100);
-  publish(restarted, facts(START, { chargeLimitSoc: 85 }));
-  await restarted.setTarget('charger1', { connectedAt: START, mode: 'automatic' });
+  assert.equal(view(restarted).values.minimumSoc.value, 84, 'Session choice remains usable before a live bridge heartbeat');
+  assert.equal(view(restarted).values.minimumSoc.source, 'session-request');
+  f.setNow(START + 4 * MINUTE); publishTarget(restarted, 100, START + 4 * MINUTE);
+  assert.equal(view(restarted).targetSelection.selected.value, 85);
+  assert.equal(view(restarted).values.minimumSoc.value, 84, 'A later raw 100% does not replace the saved target');
+  await restarted.setChargerSettings('charger1', sessionEdit(restarted, { minimumSoc: 100 }));
+  current = view(restarted);
+  assert.equal(current.values.minimumSoc.value, 100);
+  assert.equal(current.values.minimumSoc.source, 'session-request');
+  assert.equal(current.targetSelection.selected.value, 85);
+  assert.equal(current.targetSelection.raw.value, 100);
+  assert.ok(Math.abs(current.referenceGridKwh - current.values.capacityKwh.value * .4 / current.configuration.efficiency) < 1e-9);
+  assert.deepEqual(restarted.settings, before, 'Session target edits leave configured defaults intact');
+  const again = f.create(); t.after(() => again.close());
+  assert.equal(view(again).values.minimumSoc.value, 100);
+  const stale = sessionEdit(again, { minimumSoc: 84 });
+  f.setConnection(false); again.tick();
+  await assert.rejects(again.setChargerSettings('charger1', stale), /connection changed/);
+  f.setNow(START + 5 * MINUTE); f.setConnection(true); again.tick();
+  assert.equal(again.chargers.charger1.targetState, null);
+  assert.deepEqual(view(again).request.overrides, {});
+  assert.equal(view(again).values.minimumSoc.value, 80);
+  await assert.rejects(again.setChargerSettings('charger1', stale), /connection changed/);
+});
+
+test('retired BMW target state and saved selection fields fail before any persistence', async t => {
+  const f = fixture(), runtime = f.create(); t.after(() => runtime.close());
+  publish(runtime, facts(START, { chargeLimitSoc: 100 })); pauseBmw(runtime, f);
+  f.setNow(START + 2 * MINUTE); publishTarget(runtime, 85, START + 2 * MINUTE);
+  const saved = f.store.getState(runtime.key);
+  const cases = [];
+  for (const override of [null, { value: 100, selectedAt: START }]) {
+    const state = structuredClone(saved); state.chargers.charger1.targetState.override = override; cases.push(state);
+  }
+  for (const mode of ['automatic', 'full']) {
+    const state = structuredClone(saved); state.view.chargers[0].targetSelection.mode = mode; cases.push(state);
+  }
+  for (const state of cases) {
+    f.store.setState(runtime.key, state);
+    f.store.fail = true;
+    assert.throws(() => f.create(), /Unsupported saved charging target.*fresh development database/);
+    assert.deepEqual(f.store.getState(runtime.key), state, 'Rejected saved data remains unchanged');
+    f.store.fail = false;
+  }
+  f.store.setState(runtime.key, saved);
+  const restarted = f.create(); t.after(() => restarted.close());
+  publishTarget(restarted, 100, START + 2 * MINUTE);
   assert.equal(view(restarted).values.minimumSoc.value, 85);
-  assert.equal(view(restarted).values.minimumSoc.source, 'bmw-cardata');
-  await restarted.setTarget('charger1', { connectedAt: START, mode: 'full' });
-  f.setConnection(false); restarted.tick();
-  await assert.rejects(restarted.setTarget('charger1', { connectedAt: START, mode: 'automatic' }), /connection changed/);
-  f.setNow(START + 3 * MINUTE); f.setConnection(true); restarted.tick();
-  assert.equal(restarted.chargers.charger1.targetState, null);
+});
+
+test('ordinary target saves reject retired BMW mode payloads', async t => {
+  const f = fixture(), runtime = f.create(); t.after(() => runtime.close());
+  publish(runtime, facts(START, { chargeLimitSoc: 85 })); pauseBmw(runtime, f);
+  const request = sessionEdit(runtime, { minimumSoc: 100 });
+  for (const input of [{ connectedAt: START, mode: 'full' }, { ...request, mode: 'full' },
+    { ...request, changes: { minimumSoc: 100, mode: 'full' } }])
+    await assert.rejects(runtime.setChargerSettings('charger1', input), /configuration|Invalid session/);
+  await runtime.setChargerSettings('charger1', request);
+  assert.equal(view(runtime).values.minimumSoc.source, 'session-request');
 });
 
 test('failed target persistence rolls back evidence and explicit session choices', async t => {
@@ -550,7 +607,10 @@ test('failed target persistence rolls back evidence and explicit session choices
   assert.deepEqual(runtime.chargers.charger1.targetState, before);
   assert.equal(view(runtime).targetSelection.conflict, false);
   assert.equal(runtime.vehicleFeeds.bmw.reading.chargeLimitSoc, 100);
-  await assert.rejects(runtime.setTarget('charger1', { connectedAt: START, mode: 'full' }), /database unavailable/);
+  const request = structuredClone(runtime.chargers.charger1.request), revision = runtime.revision;
+  await assert.rejects(runtime.setChargerSettings('charger1', sessionEdit(runtime, { minimumSoc: 100 })), /database unavailable/);
+  assert.deepEqual(runtime.chargers.charger1.request, request);
+  assert.equal(runtime.revision, revision);
   assert.deepEqual(runtime.chargers.charger1.targetState, before);
   f.store.fail = false;
 });
@@ -586,21 +646,22 @@ test('confirmed target holds and choices survive a telemetry gap but clear on di
     f.setNow(START + minutes * MINUTE); publishTarget(runtime, target, START + minutes * MINUTE);
   }
   assert.equal(view(runtime).values.minimumSoc.value, 85);
-  await runtime.setTarget('charger1', { connectedAt: START, mode: 'full' });
+  await runtime.setChargerSettings('charger1', sessionEdit(runtime, { minimumSoc: 100 }));
   f.setConnection(null, START); runtime.tick();
   assert.equal(view(runtime).vehicle.id, 'bmw');
   assert.equal(view(runtime).targetSelection.conflict, true);
-  assert.equal(view(runtime).targetSelection.mode, 'full');
+  assert.equal(view(runtime).values.minimumSoc.source, 'session-request');
   const restarted = f.create(); t.after(() => restarted.close());
-  assert.equal(view(restarted).targetSelection.conflict, true);
+  assert.equal(restarted.chargers.charger1.targetState.conflict, true);
   assert.equal(view(restarted).values.minimumSoc.value, 100);
-  await assert.rejects(restarted.setTarget('charger1', { connectedAt: START, mode: 'automatic' }), /connection changed/);
+  const stale = sessionEdit(restarted, { minimumSoc: 84 });
   f.setNow(START + 5 * MINUTE);
   publish(restarted, { provider: 'bmw-cardata', pluggedIn: false,
     fields: { pluggedIn: { measuredAt: START + 5 * MINUTE, readingId: 'unplug-during-gap' } } });
   assert.equal(view(restarted).targetSelection, null);
   assert.equal(restarted.chargers.charger1.targetState, null);
   assert.equal(view(restarted).values.minimumSoc.source, 'manual-fallback');
+  await assert.rejects(restarted.setChargerSettings('charger1', stale), /connection changed/);
 });
 
 test('a failed BMW unplug save cannot queue a phantom charger disconnect', async t => {

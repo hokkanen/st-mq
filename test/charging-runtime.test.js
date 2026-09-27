@@ -1044,7 +1044,7 @@ test('a matched BMW quick unplug ends the old schedule even when every Easee pol
   fact('charging', false, f.clock()); await runtime.reconcile();
   assert.equal(chargerView(runtime).vehicle.id, 'bmw');
   runtime.tick({ prices }); await editSession(runtime, 'charger1', { capacityKwh: 20, manualSoc: 60, minimumSoc: 85 });
-  await runtime.setTarget('charger1', { connectedAt: initialNow, mode: 'full' });
+  await editSession(runtime, 'charger1', { minimumSoc: 100 });
   const old = chargerView(runtime);
   assert.equal(old.control.phase, 'waiting'); assert(old.control.owned);
   const clearCount = adapter.calls.filter(call => call.kind === 'clear').length;
@@ -1085,7 +1085,7 @@ test('a matched BMW quick unplug ends the old schedule even when every Easee pol
   assert.equal(chargerView(runtime).vehicle.id, 'bmw');
   assert.equal(chargerView(runtime).control.phase, 'waiting');
   assert.equal(chargerView(runtime).values.minimumSoc.value, 85);
-  assert.equal(chargerView(runtime).targetSelection.mode, 'automatic');
+  assert.equal(chargerView(runtime).values.minimumSoc.source, 'bmw-cardata');
   assert.equal(adapter.calls.filter(call => call.kind === 'clear').length, clearCount + 1);
 });
 

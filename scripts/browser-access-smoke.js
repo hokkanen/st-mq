@@ -76,8 +76,8 @@ try {
       charger.control = { phase: 'yielded', manual: { kind: 'window', resumeAt: now + 3600_000 } };
       if (charger.id === 'charger1') {
         charger.vehicle = { state: 'identified', id: 'bmw', label: 'BMW', source: 'bmw-cardata' };
-        const selected = { value: 80, source: 'bmw-cardata', measuredAt: now, receivedAt: now, readingId: 'synthetic-target' };
-        charger.targetSelection = { connectedAt: now, mode: 'automatic', selected, lower: selected, raw: selected };
+        const raw = { value: 80, measuredAt: now, receivedAt: now, readingId: 'synthetic-target' };
+        charger.targetSelection = { connectedAt: now, conflict: false, selected: { ...raw, source: 'bmw-cardata' }, lower: raw, raw };
       }
     }
     return status;
@@ -261,7 +261,7 @@ try {
     }
     for (const selector of ['#pairing-check-recovery', '#pairing-handover', '.provider-local-adopt'])
       assert.equal(await evaluate(`document.querySelector(${JSON.stringify(selector)}).disabled`), role === 'family', `${role}: ${selector}`);
-    for (const id of ['charger1-charge-now', 'charger1-enabled', 'charger1-resume', 'charger1-target-toggle', 'charger1-identify',
+    for (const id of ['charger1-charge-now', 'charger1-enabled', 'charger1-resume', 'charger1-setting-readyBy-choose', 'charger1-identify',
       'charger1-setting-readyBy', 'charger1-setting-manualSoc', 'charger1-setting-minimumSoc', 'charger1-setting-capacityKwh'])
       assert.equal(await evaluate(`document.getElementById(${JSON.stringify(id)}).disabled`), false, `${role}: EV card ${id} remains available`);
     await evaluate(`(() => {

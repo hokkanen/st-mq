@@ -14,7 +14,7 @@ import { recordedChargingEnergy } from './energy.js';
 import { updateSupplyEstimate } from './supply.js';
 import { restoreChargingProgress, updateChargingProgress } from './progress.js';
 import { updateSessionCost } from './session-cost.js';
-import { updateTargetState, targetSelection, selectTargetMode } from './target.js';
+import { updateTargetState, targetSelection, validateTargetState, validateTargetSelection } from './target.js';
 import { acceptEaseeTransition } from './stream-evidence.js';
 import { confirmedIdentityPause } from './identity-evidence.js';
 import { advanceIdentification, prepareActiveBmwCandidate, matchActiveBmwPause, validateIdentificationState } from './identification.js';
@@ -109,9 +109,11 @@ export class ChargingRuntime {
     validateSavedControls(saved.controls, true);
     for (const previous of Object.values(saved.chargers ?? {})) {
       validateSavedControls(previous.controls);
+      validateTargetState(previous.targetState);
       if (previous.replan !== undefined && typeof previous.replan !== 'boolean')
         throw new Error('Unsupported saved charging controls; start a fresh development database');
     }
+    for (const previous of saved.view?.chargers ?? []) validateTargetSelection(previous.targetSelection);
     this.streamAssociation = digest(config.connections?.easee?.charger_id ?? null);
     this.streamPending = new Set(); this.streamPersistencePending = false;
     this.vehicleFeeds = Object.fromEntries(Object.entries(this.configuration.vehicles).filter(([, definition]) => definition.provider === 'bmw-cardata').map(([id, definition]) => {
@@ -649,7 +651,7 @@ export class ChargingRuntime {
       }
       const definition = { ...item.definition, capabilities: { ...item.definition.capabilities, ...item.adapter?.capabilities } };
       const selectedTarget = telemetry[id]?.vehicle?.id === 'bmw' && telemetry[id].vehicle.state === 'identified'
-        && (vehicleFeedAvailable(this.vehicleFeeds.bmw, now) || item.targetState?.override?.value === 100)
+        && vehicleFeedAvailable(this.vehicleFeeds.bmw, now)
         ? targetSelection(item.targetState, { reading: this.vehicleFeeds.bmw.reading }) : null;
       const scopedTelemetry = { ...telemetry[id] };
       if (Object.hasOwn(item.request?.overrides ?? {}, 'capacityKwh')) { scopedTelemetry.capacityKwh = { value: settings.capacityKwh, available: true, source: 'session-request' }; scopedTelemetry.vehicleCapacityFallbackKwh = settings.capacityKwh; }
@@ -1085,21 +1087,6 @@ export class ChargingRuntime {
       ? { ...previousPlan, ...(Object.hasOwn(input.changes, 'readyBy') ? { replanReadyBy: checked.readyBy } : {}) } : null;
     try { this.persist(); } catch (error) { item.request = previous; item.plan = previousPlan; this.revision = previousRevision; throw error; }
     item.controller?.invalidate?.(); this.updatePlan(); await this.reconcile(id);
-  }
-  async setTarget(id, input) {
-    const item = this.charger(id);
-    if (!object(input) || Object.keys(input).some(key => !['connectedAt', 'mode'].includes(key))
-      || !Number.isSafeInteger(input.connectedAt) || !['automatic', 'full'].includes(input.mode))
-      throw new Error('Choose automatic or full for the displayed charging connection');
-    const view = this.views().find(charger => charger.id === id);
-    if (view.values.connected.value !== true || view.vehicle?.state !== 'identified' || view.vehicle.id !== 'bmw'
-      || !view.targetSelection || view.targetSelection.connectedAt !== input.connectedAt)
-      throw new Error('Vehicle connection changed; review its target before saving');
-    const previous = item.targetState;
-    item.targetState = selectTargetMode(previous, input.mode, this.clock());
-    try { this.persist(); } catch (error) { item.targetState = previous; throw error; }
-    try { this.updatePlan(); } catch { this.error = 'charging-planning-unavailable'; }
-    await this.reconcile(id);
   }
   async resume(id, input) {
     this.charger(id);
