@@ -732,7 +732,7 @@
         <div class="chart-range-controls">
           <form id="chart-range-form" class="date-range" aria-label="Chart dates">
             <input id="date-start" type="text" data-date-picker="date" aria-label="Start date" title="Show this day; choose an end date to show a range" required>
-            <span aria-hidden="true">to</span>
+            <span aria-hidden="true">–</span>
             <input id="date-end" type="text" data-date-picker="date" aria-label="End date; extend the selected range" title="Extend the date range" required>
           </form>
           <div class="range-shortcuts" role="group" aria-label="Quick date ranges">
@@ -782,6 +782,10 @@
       <details class="chart-notes-disclosure"><summary>How to read this view</summary><p id="chart-notes" class="muted chart-notes"></p></details>
       <details id="timing-details" class="timing-details">
         <summary><span>Energy cost comparisons</span></summary>
+        <div class="timing-intro">
+          <p>Explore Heating by model estimate or timing cost. Charging shows timing cost; Fireplace shows a model estimate.</p>
+          <p class="timing-sign-guide">These comparisons have different baselines and are not added together. Positive amounts mean lower estimated cost; negative amounts mean higher cost.</p>
+        </div>
         <div class="comparison-range-controls" aria-label="Comparison period">
           <div class="comparison-range-heading">
             <span id="comparison-range-label">Comparison period</span>

@@ -125,9 +125,6 @@ export function createTimingBenefit(root) {
     });
   }
   function initialize(displays) {
-    const intro = element('div', 'timing-intro');
-    paragraph(intro, 'Explore Heating by model estimate or timing cost. Charging shows timing cost; Fireplace shows a model estimate.');
-    paragraph(intro, 'These comparisons have different baselines and are not added together. Positive amounts mean lower estimated cost; negative amounts mean higher cost.', 'timing-sign-guide');
     devices = element('div', 'timing-devices');
     for (const display of displays) {
       const card = element('article', `timing-card timing-device${display.key === 'firewood' ? ' firewood-card' : ''}`); card.dataset.device = display.key;
@@ -202,7 +199,7 @@ export function createTimingBenefit(root) {
     notes = element('details', 'timing-explanations');
     notesContent = element('div', 'timing-explanations-content');
     notes.append(element('summary', '', 'How these comparisons work'), notesContent);
-    root.replaceChildren(intro, devices, notes);
+    root.replaceChildren(devices, notes);
     // Equal heights are a layout enhancement. Older appliance browsers must
     // still render the figures and controls when ResizeObserver is unavailable.
     if (typeof view.ResizeObserver === 'function') {

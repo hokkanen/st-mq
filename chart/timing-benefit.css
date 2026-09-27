@@ -21,6 +21,9 @@
 #comparison-date-end[data-single-day="true"] { color: var(--muted); background-color: var(--surface-soft); }
 #comparison-date-end:focus { color: var(--text); }
 .timing-benefit[data-stale="true"] .timing-figures { opacity: .55; }
+@media (min-width: 601px) {
+  .comparison-shortcuts { margin-left: auto; }
+}
 @media (max-width: 600px) {
   .comparison-range-controls { padding: 12px; }
   .comparison-range-fields .date-range { flex: 1 1 100%; display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); }
