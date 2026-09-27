@@ -228,7 +228,7 @@ test('Caravan energy popups identify measured interval energy outside heating le
   assert.match(label('caravan_energy', {}), /meter energy over the recorded interval · not used for learning/);
 });
 
-test('all measured air, liquid and estimated temperatures render bounded cubic curves on either axis', t => {
+test('all measured, estimated, reference and setting temperatures render bounded cubic curves', t => {
   const points = [{ x: 0, y: 18 }, { x: 2, y: 19 }, { x: 5, y: 24 }, { x: 6, y: 24 },
     { x: 7, y: null }, { x: 8, y: 20 }, { x: 9, y: 19 }, { x: 12, y: 23 }];
   for (const key of [...new Set(HISTORY_AXES.flatMap(axis => axis.signals))].filter(isInterpolatedTemperature)) {
@@ -250,7 +250,7 @@ test('all measured air, liquid and estimated temperatures render bounded cubic c
     assert(curved, `${key} genuinely uses cubic segments instead of linear or stepped drawing`);
   }
   const settings = ['heating_setpoint', 'room_setting', 'dhw_stop_setting', 'model_target_temperature', 'model_room_boost'];
-  for (const key of settings) assert.equal(historyDatasets({ [key]: points }, { leftSignals: [key], rightSignals: [] })[0].stepped, true, `${key} is a command, not a temperature measurement`);
+  for (const key of settings) assert.equal(historyDatasets({ [key]: points }, { leftSignals: [key], rightSignals: [] })[0].stepped, false, `${key} follows the shared temperature display rule`);
 });
 
 test('temperature interval curves remove artificial hold edges while preserving each knot, provenance and gap', t => {

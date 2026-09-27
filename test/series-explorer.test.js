@@ -31,6 +31,10 @@ test('compatible comparisons respect units, temporal basis and physical meaning'
   assert(!compatibleExplorerSeries('caravan_humidity', 'heating_pump_speed'));
   assert(!compatibleExplorerSeries('model_hydronic_heat', 'model_auxiliary_power'));
   assert(!compatibleExplorerSeries('garage_model_difference', 'garage_model_rear'));
+  assert(!compatibleExplorerSeries('model_fireplace_release', 'model_hydronic_heat'));
+  assert.equal(EXPLORER_SERIES_BY_KEY.model_fireplace_release.basis, 'Calculated fireplace release');
+  assert.equal(EXPLORER_SERIES_BY_KEY.dhwr_request.basis, 'Recorded control request');
+  assert.equal(EXPLORER_SERIES_BY_KEY.solar_radiation.basis, 'Historical solar estimate');
   assert(!compatibleExplorerSeries('constructor', 'constructor'));
   assert(!compatibleExplorerSeries('unsupported', 'unsupported'));
 });

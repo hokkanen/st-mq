@@ -111,7 +111,7 @@ test('charger fills and independent forecast visibility retain exact missing and
   assert.equal(power.find(dataset => dataset.key === 'property_power').stepped, true);
   assert.equal(power.find(dataset => dataset.key === 'property_power').fill, false);
   assert.deepEqual(power.find(dataset => dataset.key === 'property_power').data, series.property_power);
-  assert.deepEqual(power.find(dataset => dataset.key === 'property_power').pointRadius, [2, 0, 2], 'Isolated valid totals remain visible between gaps');
+  assert.deepEqual(power.find(dataset => dataset.key === 'property_power').pointRadius, [5, 0, 5], 'Isolated valid totals remain visible between gaps');
   assert.equal(power.find(dataset => dataset.key === 'outdoor_forecast').hidden, true);
   assert.deepEqual(power.find(dataset => dataset.key === 'outdoor_forecast').borderDash, [8, 3, 2, 3]);
   assert.equal(power.find(dataset => dataset.key === 'spot_price').hidden, false);
@@ -208,9 +208,9 @@ test('session check axes show single reference points, including hollow excluded
     const dataset=historyDatasets({[key]:points}, explorerSelection(key)).find(row=>row.key===key);
     assert.equal(dataset.label,label);
     assert.equal(dataset.showLine,false);
-    assert.equal(dataset.pointRadius,4);
-    assert.equal(dataset.pointBackgroundColor[0],dataset.borderColor);
-    assert.equal(dataset.pointBackgroundColor[1],'transparent');
+    assert.equal(dataset.pointRadius,5);
+    assert.equal(dataset.pointBackgroundColor,'transparent');
+    assert.deepEqual(dataset.pointBorderWidth,[2,1]);
     assert.equal(historySeriesAt({now:8,range:{from:0,to:10},series:{[key]:points}})[key],points);
     assert.match(sessionPointDetail(points[0]),/included in session averages/);
     assert.match(sessionPointDetail(points[1]),/excluded from session averages/);
@@ -467,7 +467,7 @@ test('smooth curves stay uncluttered and axis styles differ while price styling 
   const datasets = historyDatasets({ indoor_temperature: values, garage_temperature: values }, { leftSignals: ['indoor_temperature'], rightSignals: ['garage_temperature', 'all_in_price'] });
   const left = datasets.find(row => row.key === 'indoor_temperature');
   const right = datasets.find(row => row.key === 'garage_temperature');
-  assert.equal(left.pointStyle, 'rect'); assert(left.pointRadius.every(radius => radius === 0));
+  assert.equal(left.pointStyle, 'circle'); assert(left.pointRadius.every(radius => radius === 0));
   assert.equal(right.pointStyle, 'circle'); assert(right.pointRadius.every(radius => radius === 0));
   assert.deepEqual(left.borderDash, []); assert.deepEqual(right.borderDash, [6, 4]);
   assert(left.borderWidth < 1.8 && right.borderWidth < 1.8);

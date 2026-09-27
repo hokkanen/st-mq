@@ -613,10 +613,64 @@ test('shading respects bounded requests, DHWR pulses and separately verified com
     assert.deepEqual(result.shading.heatOff, [{ start: from, end: from + 10 * MINUTE }, { start: from + 4 * HOUR, end: from + 4 * HOUR + 30 * MINUTE }]);
     assert.deepEqual(result.shading.dhwr, [{ start: from + HOUR, end: from + HOUR + 10 * MINUTE }]);
     assert.equal(result.shading.auxHeat, undefined);
-    assert.deepEqual(result.shading.compressorSpace, [{ start: from + HOUR, end: from + HOUR + 2 * MINUTE }]);
-    assert.deepEqual(result.shading.compressorDhw, [{ start: from + HOUR + 2 * MINUTE, end: from + HOUR + 5 * MINUTE }]);
+    assert.deepEqual(result.shading.compressorHome, [
+      { start: from + HOUR, end: from + HOUR + 2 * MINUTE, value: 1 },
+      { start: from + HOUR + 2 * MINUTE, end: from + HOUR + 5 * MINUTE, value: 2 },
+    ]);
+    assert(!Object.hasOwn(result.shading, 'compressorSpace'));
+    assert(!Object.hasOwn(result.shading, 'compressorDhw'));
     assert.deepEqual(result.operatingModes, [{ start: from + HOUR, end: from + HOUR + 5 * MINUTE, value: 1 }]);
   } finally { store.close(); }
+});
+
+test('home compressor activity separates stopped, known routes and fresh running with unknown routing', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  const start = from + HOUR;
+  const report = (signal, value, minute, extra = {}) => put(store, signal, value, start + minute * MINUTE,
+    { source: 'husdata-h66', unit: 'state', raw: { verified: true, usableForControl: true }, ...extra });
+  report('compressor_active', 1, 0); report('dhw_routing', 0, 0);
+  report('dhw_routing', 1, 2); report('compressor_active', 1, 3);
+  report('compressor_active', 0, 8);
+  report('compressor_active', 1, 10, { raw: { verified: false } });
+  report('compressor_active', 1, 12);
+  report('compressor_active', 0, 18);
+  report('compressor_active', 1, 24, { quality: ['stale'] });
+  report('compressor_active', 1, 25, { raw: { verified: true, usableForControl: false } });
+  report('dhw_routing', 0, 26);
+  const result = get(store, { now: start + 30 * MINUTE, left: 'compressor_active' });
+  assert.deepEqual(result.shading.compressorHome.map(({ start: a, end: b, value }) =>
+    [(a - start) / MINUTE, (b - start) / MINUTE, value]), [
+    [0, 2, 1], [2, 7, 2], [7, 8, 3], [8, 10, 0], [12, 17, 3], [18, 23, 0],
+  ]);
+  const clipped = get(store, { now: start + 30 * MINUTE, left: 'compressor_active',
+    viewFrom: start + 6 * MINUTE, viewTo: start + 8 * MINUTE });
+  assert.deepEqual(clipped.shading.compressorHome, [
+    { start: start + 6 * MINUTE, end: start + 7 * MINUTE, value: 2 },
+    { start: start + 7 * MINUTE, end: start + 8 * MINUTE, value: 3 },
+  ]);
+  const current = get(store, { now: start + 13 * MINUTE, left: 'compressor_active' });
+  assert.equal(current.shading.compressorHome.at(-1).end, start + 13 * MINUTE, 'Current activity stops at the explicit receipt cutoff');
+});
+
+test('dense combined compressor activity bounds each state while preserving its occupied duration', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  const start = from + HOUR, count = 804;
+  const extra = { source: 'husdata-h66', unit: 'state', raw: { verified: true, usableForControl: true } };
+  for (let i = 0; i < count; i++) {
+    put(store, 'compressor_active', 1, start + i * 1000, extra);
+    put(store, 'dhw_routing', i % 2, start + i * 1000, extra);
+  }
+  const result = get(store, { now: start + count * 1000, left: 'compressor_active', points: 100 });
+  const rows = result.shading.compressorHome;
+  assert(rows.length <= 200);
+  assert(rows.every(row => row.aggregated && row.fraction > 0 && row.fraction <= 1));
+  for (const value of [1, 2]) {
+    const duration = rows.filter(row => row.value === value).reduce((sum, row) => sum + (row.end - row.start) * row.fraction, 0);
+    assert(Math.abs(duration - count * 1000 / 2) < 0.001);
+  }
+  for (const start of new Set(rows.map(row => row.start)))
+    assert(rows.filter(row => row.start === start).reduce((sum, row) => sum + row.fraction, 0) <= 1 + 1e-12,
+      'Exclusive source states cannot exceed full occupancy in a display bucket');
 });
 
 test('all-in history uses nearest dated rates with an explicit assumption and still requires a contract', () => {

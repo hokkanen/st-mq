@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import Chart from 'chart.js/auto';
 import { Store } from '../src/storage/store.js';
 import { Envelope, getChartData } from '../src/app/chart-data.js';
 import { addModelInputs } from '../src/app/chart-model-inputs.js';
@@ -8,6 +9,7 @@ import { MODEL_INPUT_INFO } from '../src/domain/history-series.js';
 import { historyDatasets, historySeriesAt, historyStateLabel } from '../chart/history-model.js';
 import { CHART_VIEW_BY_KEY } from '../src/domain/chart-views.js';
 import { chartSubjectAvailability } from '../chart/chart-views.js';
+import { clipChartSeries } from '../chart/chart-resolution.js';
 
 import { currentHomeSample } from './helpers/home-learning-fixture.js';
 
@@ -114,14 +116,43 @@ test('a narrow zoom keeps the Average indoor segment between saved endpoints and
   const args = { store, input: 'mqtt', now: start + 60 * MINUTE, startDate: '2026-09-08' };
   const zoom = getChartData({ ...args, viewFrom: start + 20 * MINUTE, viewTo: start + 25 * MINUTE });
   assert.deepEqual(zoom.series.model_indoor_temperature.map(row => [row.x, row.y]),
-    [[start + 20 * MINUTE, 21], [start + 25 * MINUTE, 22]]);
-  assert(zoom.series.model_indoor_temperature.every(row => row.displayBoundary && row.interpolated
+    [[start + 15 * MINUTE, 20], [start + 20 * MINUTE, 21], [start + 25 * MINUTE, 22], [start + 30 * MINUTE, 23], [start + 45 * MINUTE, null]]);
+  const neighbours = zoom.series.model_indoor_temperature.filter(row => row.displayContext);
+  assert.deepEqual(neighbours.map(row => [row.x, row.y, row.journalId]),
+    [[start + 15 * MINUTE, 20, 1], [start + 30 * MINUTE, 23, 2], [start + 45 * MINUTE, null, 3]]);
+  assert(neighbours.every(row => !row.displayBoundary && row.savedIndoorAverage));
+  assert(zoom.series.model_indoor_temperature.filter(row => !row.displayContext).every(row => row.displayBoundary && row.interpolated
     && row.observedAt === start + 15 * MINUTE && row.nextObservedAt === start + 30 * MINUTE));
+  const rendered = payload => {
+    const canvas = { width: 800, height: 400 };
+    const context = new Proxy({ canvas, measureText: value => ({ width: String(value).length * 7 }) },
+      { get: (object, key) => object[key] ?? (() => {}) });
+    canvas.getContext = () => context;
+    const datasets = historyDatasets(clipChartSeries(payload.series, payload.range),
+      { leftSignals: [], rightSignals: ['model_indoor_temperature'] });
+    const chart = new Chart(canvas, { type: 'line', data: { datasets }, options: {
+      responsive: false, animation: false, parsing: false,
+      scales: { x: { type: 'linear', min: payload.range.from, max: payload.range.to }, right: { type: 'linear', position: 'right' } },
+      plugins: { legend: { display: false }, tooltip: { enabled: false } },
+    } });
+    t.after(() => chart.destroy());
+    return { data: datasets[0].data, at(minute) {
+      const point = chart.getDatasetMeta(0).dataset.interpolate({ x: chart.scales.x.getPixelForValue(start + minute * MINUTE) }, 'x');
+      return point && !Array.isArray(point) ? chart.scales.right.getValueForPixel(point.y) : undefined;
+    } };
+  };
+  const plotted = rendered(zoom);
+  assert.deepEqual(plotted.data, neighbours, 'Actual saved endpoints define the monotone curve; linear API clip points do not pin its geometry');
+  for (const [minute, value] of [[20, 21], [22.5, 21.5], [25, 22]]) assert(Math.abs(plotted.at(minute) - value) < 1e-8);
   const missing = getChartData({ ...args, viewFrom: start + 35 * MINUTE, viewTo: start + 40 * MINUTE });
-  assert(missing.series.model_indoor_temperature.every(row => row.y === null));
+  assert(missing.series.model_indoor_temperature.filter(row => !row.displayContext).every(row => row.y === null));
+  assert(missing.series.model_indoor_temperature.some(row => row.x === start + 45 * MINUTE && row.y === null && row.displayContext));
+  assert.equal(rendered(missing).at(37.5), undefined, 'Surrounding context cannot draw a segment across the missing saved window');
   const future = getChartData({ ...args, now: start + 27 * MINUTE,
     viewFrom: start + 20 * MINUTE, viewTo: start + 25 * MINUTE });
-  assert.deepEqual(future.series.model_indoor_temperature, [], 'An endpoint recorded after now cannot supply a display segment');
+  assert.deepEqual(future.series.model_indoor_temperature.map(row => [row.x, row.y, row.displayContext]),
+    [[start + 15 * MINUTE, 20, true]], 'Only the already recorded neighbour can be included before the next endpoint exists');
+  assert.equal(rendered(future).at(22.5), undefined, 'An endpoint recorded after now cannot supply a display segment');
 });
 
 test('current saved indoor averages survive unrelated rejected learning inputs and preserve held-room provenance', t => {

@@ -40,7 +40,7 @@ test('unavailable equipment immediately ends compressor shading rather than usin
   recorder.recordFailure({source:'husdata-h66',device:'synthetic-heatpump',signal:'compressor_active',unit:'state',at:start+MINUTE});
   const result=getChartData({store,input:'mqtt',startDate:date,endDate:date,now:start+4*MINUTE,left:'compressor_active'});
   assert.ok(result.series.compressor_active.some(row=>row.x===start+MINUTE&&row.y===null));
-  assert.ok(result.shading.compressorSpace.every(row=>row.end<=start+MINUTE));
+  assert.deepEqual(result.shading.compressorHome, [{start,end:start+MINUTE,value:1}]);
 });
 
 test('outages beginning before the range seed missing coverage and fresh recovery uses committed values only',t=>{
@@ -87,7 +87,7 @@ test('missing periodic messages break the chart at the report deadline and ident
   assert.ok(rows.every(row=>row.y===null||row.x<start+32*MINUTE||row.x>=start+60*MINUTE));
   const gap=getChartData({store,input:'mqtt',startDate:date,endDate:date,now:start+90*MINUTE,
     left:'indoor_temperature',viewFrom:start+40*MINUTE,viewTo:start+45*MINUTE});
-  assert.ok(gap.series.indoor_temperature.every(row=>row.y===null));
+  assert.ok(gap.series.indoor_temperature.filter(row=>!row.displayContext).every(row=>row.y===null));
 });
 
 test('explicit disconnect ends periodic coverage immediately; cached browser tails expire without a new API response',t=>{
@@ -106,7 +106,7 @@ test('explicit disconnect ends periodic coverage immediately; cached browser tai
   assert.ok(result.series.indoor_temperature.every(row=>row.y===null||row.x<start+2*MINUTE||row.x>=start+10*MINUTE));
 });
 
-test('a changed periodic reading steps from the confirmed prior value without a fifteen-minute interpolation ramp',t=>{
+test('periodic source projection retains recorded holds while exposing neighbouring knots for cubic display',t=>{
   const {store,date,start,put}=fixture(t);
   put('indoor_temperature',20,start,periodic);
   put('indoor_temperature',20,start+15*MINUTE,periodic);
@@ -115,7 +115,8 @@ test('a changed periodic reading steps from the confirmed prior value without a 
     left:'indoor_temperature',viewFrom:start+20*MINUTE,viewTo:start+25*MINUTE});
   assert.equal(store.observations().length,2);
   assert.ok(chart.series.indoor_temperature.length>=2);
-  assert.ok(chart.series.indoor_temperature.every(point=>point.y===20));
+  assert.ok(chart.series.indoor_temperature.filter(point=>!point.displayContext).every(point=>point.y===20));
+  assert.ok(chart.series.indoor_temperature.some(point=>point.displayContext&&point.x===start+30*MINUTE&&point.y===21));
 });
 
 test('live long-view caches renew report deadlines promptly while ordinary measurements retain their longer TTL',async t=>{

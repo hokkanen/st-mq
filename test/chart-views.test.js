@@ -97,7 +97,7 @@ test('water views use the appropriate temperatures, preserve hidden integral, an
   assert.equal(historyValueScales(view, datasets).left.display, false);
   assert(!datasets.some(dataset => dataset.key === 'garage_temperature'));
   assert.equal(chartSubjectAvailability(view, datasets, {}, preferences), '');
-  assert.equal(datasets.find(dataset => dataset.key === 'heating_setpoint').stepped, true);
+  assert.equal(datasets.find(dataset => dataset.key === 'heating_setpoint').stepped, false);
   assert.deepEqual(datasets.find(dataset => dataset.key === 'supply_temperature').borderDash, [6, 4]);
 });
 

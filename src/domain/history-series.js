@@ -36,6 +36,8 @@ export const H66_HISTORY_SIGNALS = Object.freeze(h66.map(([signal]) => signal));
 export const PHASE_ENERGY_SIGNALS = Object.freeze(['property', 'ev1', 'ev2'].flatMap(prefix => [1, 2, 3].map(phase => `${prefix}_energy_l${phase}`)));
 export const ENERGY_SIGNALS = Object.freeze([...PHASE_ENERGY_SIGNALS, 'ev2_energy', 'caravan_energy']);
 export const AUDIT_SIGNALS = Object.freeze(['property_import_energy_counter']);
+export const COUNTER_SIGNALS = Object.freeze([...h66.filter(([, , unit]) => unit === 'h').map(([signal]) => signal),
+  ...AUDIT_SIGNALS, 'garage_native_energy']);
 export const RECORDED_EVIDENCE_SIGNALS = Object.freeze(['dhwr_active', 'heat_savings_active',
   ...['living', 'storage'].flatMap(group => [0, 1].map(output => `floor_${group}_${output}_active`)),
   'garage_native_defrost', 'garage_native_energy', 'garage_energy']);
@@ -81,7 +83,7 @@ export const SIGNAL_INFO = Object.freeze(Object.fromEntries([
 export const MODEL_INPUT_INFO = Object.freeze(Object.fromEntries([
   ['model_indoor_temperature', 'Average indoor', '°C', 'indoor', 'The configured indoor average saved at the end of each completed learning interval. Missing inputs remain gaps. Imported learning keeps its original upstairs-only temperature.'],
   ['model_outdoor_temperature', 'Outdoor temperature input', '°C', 'outdoor', 'Recorded outdoor values used within the completed interval, split at source and value changes.'],
-  ['model_solar_radiation', 'Solar radiation input', 'W/m²', 'solar', 'Radiation from the forecast available before the interval began. Missing forecasts remain unknown; later forecast updates do not rewrite this input.'],
+  ['model_solar_radiation', 'Solar estimate input', 'W/m²', 'solar', 'Historical radiation estimate from the forecast available before the interval began. Missing forecasts remain unknown; later forecast updates do not rewrite this input.'],
   ['model_compressor_duty', 'Space-heating compressor duty', '%', 'auxiliary', 'The fraction of the interval with observed compressor activity routed to space heating. Hot-water operation contributes zero; unavailable attribution remains unknown.'],
   ['model_hydronic_heat', 'Combined hydronic heat estimate', 'kW thermal', 'compressorSpace', 'Estimated compressor heat plus resistance-heater heat attributed to space heating. The saved manufacturer performance map supplies compressor output; this is not heat metering. Unknown routing remains unknown.'],
   ['model_valve_override', 'Floor valve override input', 'state', 'learning', 'Pooled relay-output mode saved with the learning interval. Feedback confirms the electrical override, not valve movement or flow. Opening circuits changes heat allocation; it does not create heat or reset stored energy. Unknown confirmation remains unknown.'],
@@ -111,14 +113,17 @@ export const GARAGE_INPUT_INFO = Object.freeze(Object.fromEntries([
   ['power', 'Qualified electrical input', 'kW', 'powerKw'],
   ['activity', 'Compressor activity input', 'fraction', 'activity', undefined,
     'Recorded compressor activity from 0 to 1; reported off/on is 0/1. This describes equipment activity, not measured watts or delivered heat.'],
-  ['available', 'Native heating available', 'state', 'available'],
+  ['available', 'Pump power readback', 'state', 'available', undefined,
+    'Fresh native pump On/Off readback sampled when the garage learning input was recorded. This is not compressor activity or a continuous archive of native power reports.'],
+  ['managed_pause', 'Managed heating pause', 'state', 'managedPause', undefined,
+    'Saved confirmed managed-pause phase, including managed savings or timed-off periods. This does not distinguish automatic from manual pauses or measure money saved. Missing samples remain unknown.'],
   ['ev1', 'Charger 1 input', 'kW', 'ev1Kw'], ['ev2', 'Charger 2 input', 'kW', 'ev2Kw'],
   ['ev1_active', 'Charger 1 activity input', 'fraction', 'ev1Active', undefined,
     'Recorded charger 1 activity from 0 to 1; reported off/on is 0/1. Indicates charging disturbance when electrical input is unavailable; it is not converted into heat.'],
   ['ev2_active', 'Charger 2 activity input', 'fraction', 'ev2Active', undefined,
     'Recorded charger 2 activity from 0 to 1; reported off/on is 0/1. Indicates charging disturbance when electrical input is unavailable; it is not converted into heat.'],
 ].map(([name, label, unit, field, location, detail]) => [`garage_model_${name}`, { label: `Garage · ${label}`,
-  unit, field, location, color: location === 'outdoor' ? 'outdoor' : name.startsWith('ev') ? 'ev' : 'garage',
+  unit, field, location, color: location === 'outdoor' ? 'outdoor' : name.startsWith('ev') ? 'ev' : name === 'managed_pause' ? 'heatOff' : 'garage',
   kind: 'Calculated', group: 'Garage model inputs', detail: detail ?? 'Original normalized garage learning input; missing or unqualified evidence remains unknown.' }])));
 export const GARAGE_COEFFICIENT_INFO = Object.freeze(Object.fromEntries([
   ['rear', 'coolingPerHour', 'Cooling rate', '1/h'],
@@ -135,7 +140,7 @@ const basic = [
   ['temperatures', 'Home and garage temperatures', 'Home temperatures', ['indoor_temperature', 'bedroom_temperature', 'downstairs_temperature', 'garage_temperature', 'garage_temperature_2'], '°C', 'Recorded'],
   ['phases', 'Phase currents / interval estimates', 'Electricity', ['property', 'ev1', 'ev2'].flatMap(prefix => [1, 2, 3].map(phase => `${prefix}_current_l${phase}`)), 'A', 'Calculated'],
   ['phase_energy', 'Phase energy per interval', 'Electricity', PHASE_ENERGY_SIGNALS, 'kWh', 'Recorded'],
-  ['solar_radiation', 'Solar radiation', 'Weather', ['solar_radiation', 'solar_forecast'], 'W/m²', 'Forecast'],
+  ['solar_radiation', 'Solar estimate', 'Weather', ['solar_radiation', 'solar_forecast'], 'W/m²', 'Estimated'],
   ['outdoor_forecast', 'Outdoor forecast from now', 'Weather', ['outdoor_forecast'], '°C', 'Forecast'],
   ['spot_price','Spot price','Electricity',['spot_price'],'c/kWh','Recorded'],
   ['all_in_price','All-in price','Electricity',['all_in_price'],'c/kWh','Calculated'],
@@ -146,12 +151,13 @@ const basic = [
   ['firewood_savings', 'Firewood electricity cost avoided', 'Learning', ['firewood_savings'], '€/day', 'Calculated'],
   ['firewood_electricity_avoided', 'Firewood electricity avoided', 'Learning', ['firewood_electricity_avoided'], 'kWh/day', 'Calculated'],
   ['heat_pump_power', 'Heat-pump power estimate', 'Electricity', ['heat_pump_power'], 'kW', 'Calculated'],
+  ['caravan_power', 'Caravan power', 'Caravan', ['caravan_power'], 'kW', 'Calculated', 'Average power derived from measured energy over each original recording interval; not instantaneous power'],
   ['controller_phase', 'Requested controller phase', 'Control', ['controller_phase'], 'state', 'Recorded'],
   ['dhwr_request', 'Hot-water recirculation request', 'Control', ['dhwr_request'], 'state', 'Recorded'],
 ];
 
 export const HISTORY_AXES = Object.freeze([
-  ...basic.map(([key, label, group, signals, unit, kind]) => ({ key, label, group, signals, unit, kind })),
+  ...basic.map(([key, label, group, signals, unit, kind, detail]) => ({ key, label, group, signals, unit, kind, ...(detail ? { detail } : {}) })),
   ...Object.entries(SIGNAL_INFO).map(([signal, info]) => ({
     key: signal === 'heating_integral' ? 'integral' : signal, ...info, signals: [signal],
   })),

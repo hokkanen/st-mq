@@ -255,7 +255,20 @@ test('chart viewport API validates immutable bounds and caches independent detai
   assert.equal((await read(viewFrom, viewTo)).meta.cacheHit, true);
   const moved = await read(viewTo, viewTo + 60_000);
   assert.notEqual(moved.meta.cacheHit, true);
-  assert(!moved.series.indoor_temperature.some(point => point.y === 21.3));
-  assert.equal((await read(viewTo, viewTo + 60_000)).meta.cacheHit, true);
-  assert.equal((await read(viewFrom, viewTo)).meta.cacheHit, true);
+  assert.equal(moved.range.from, viewTo);
+  assert.equal(moved.range.to, viewTo + 60_000);
+  assert(!moved.series.indoor_temperature.some(point => point.x >= moved.range.from
+    && point.x <= moved.range.to && point.y === 21.3), 'A cached reading cannot become an observation in the moved viewport');
+  const context = moved.series.indoor_temperature.filter(point => point.x < moved.range.from || point.x > moved.range.to);
+  assert(context.some(point => point.x === viewFrom + 60_000 && point.y === 21.3));
+  assert(context.every(point => point.displayContext && point.x >= moved.range.from - 3 * 3_600_000
+    && point.x <= Math.min(now, moved.range.to + 3 * 3_600_000)), 'Only explicitly bounded real interpolation context is outside the viewport');
+  assert(context.filter(point => point.x < moved.range.from).length <= 8);
+  assert(context.filter(point => point.x > moved.range.to).length <= 8);
+  assert.notDeepEqual(moved.series.indoor_temperature, first.series.indoor_temperature);
+  const cachedMoved = await read(viewTo, viewTo + 60_000), cachedFirst = await read(viewFrom, viewTo);
+  assert.equal(cachedMoved.meta.cacheHit, true);
+  assert.equal(cachedFirst.meta.cacheHit, true);
+  assert.deepEqual(cachedMoved.series, moved.series);
+  assert.deepEqual(cachedFirst.series, first.series);
 });

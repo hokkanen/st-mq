@@ -1,12 +1,12 @@
-import { SIGNAL_INFO } from './history-series.js';
+import { SIGNAL_INFO, MODEL_INPUT_INFO, GARAGE_INPUT_INFO } from './history-series.js';
 
-// Measurements and temperature estimates are continuous quantities. A setting
-// expressed in °C is still a discrete command and must keep its actual steps.
+// The chart uses one display rule for every temperature-valued quantity,
+// including references and settings. This does not change stored observations
+// or imply that a command transitioned continuously in the equipment.
 const continuous = new Set([
-  ...Object.entries(SIGNAL_INFO).filter(([key, info]) => info.unit === '°C'
-    && (info.group === 'Home temperatures' || key.endsWith('_temperature'))).map(([key]) => key),
-  'model_indoor_temperature', 'model_outdoor_temperature', 'outdoor_forecast',
-  'garage_model_rear', 'garage_model_front', 'garage_model_difference', 'garage_model_outdoor',
+  ...Object.entries({ ...SIGNAL_INFO, ...MODEL_INPUT_INFO, ...GARAGE_INPUT_INFO })
+    .filter(([, info]) => info.unit === '°C').map(([key]) => key),
+  'learning_indoor_temperature', 'outdoor_forecast',
 ]);
 
 export const isInterpolatedTemperature = key => continuous.has(key);

@@ -7,11 +7,23 @@ export const activityTracks = Object.freeze([
   { key: 'operatingMode', id: 'operating-modes', label: 'Pump mode', color: 'outdoor',
     detail: 'Configured operating mode from H66 readback; independent of compressor activity',
     caption: 'Pump mode · readback · blank intervals are unknown',
-    values: { 0: 'Off', 1: 'Auto', 2: 'Compressor only', 3: 'Auxiliary only', 4: 'Hot water only' } },
-  { key: 'compressorSpace', label: 'Compressor · house', color: 'compressorSpace',
-    detail: 'Compressor reported on, valve routed to house heating; blank intervals include stopped or unavailable readings' },
-  { key: 'compressorDhw', label: 'Compressor · hot water', color: 'compressorDhw',
-    detail: 'Compressor reported on, valve routed to hot water; blank intervals include stopped or unavailable readings' },
+    values: { 0: 'Off', 1: 'Auto', 2: 'Compressor only', 3: 'Auxiliary only', 4: 'Hot water only' },
+    colors: { 0: 'muted', 1: 'indoor', 2: 'outdoor', 3: 'auxiliary', 4: 'compressorDhw' },
+    legendSummary: 'Mode key',
+    legend: [
+      { label: 'Off', color: 'muted', description: 'Heating is switched off. Protection or circulation may still operate.' },
+      { label: 'Auto', color: 'indoor', description: 'Heating and hot water, using the compressor and auxiliary heat as permitted.' },
+      { label: 'Compressor only', color: 'outdoor', description: 'Compressor operation is permitted; auxiliary heat is disabled.' },
+      { label: 'Auxiliary only', color: 'auxiliary', description: 'Electric auxiliary heating is permitted; the compressor is disabled.' },
+      { label: 'Hot water only', color: 'compressorDhw', description: 'Hot-water operation without house heating.' },
+    ] },
+  { key: 'compressorHome', label: 'Home compressor', color: 'compressorSpace',
+    detail: 'Reported compressor operation and routing: yellow is space heating, blue is hot water, gray is stopped, hatched gray is running with unknown routing. Blank intervals have no known state.',
+    missingLabel: 'No known compressor state at this time',
+    values: { 0: 'Stopped', 1: 'Space heating', 2: 'Hot water', 3: 'Running · routing unknown' },
+    colors: { 0: 'muted', 1: 'compressorSpace', 2: 'compressorDhw', 3: 'muted' },
+    patterns: { 3: 'unknown' }, opacities: { 0: .28 },
+    legend: [{ label: 'Space heating', color: 'compressorSpace' }, { label: 'Hot water', color: 'compressorDhw' }] },
   { key: 'compressorGarage', label: 'Compressor · garage', color: 'garage',
     detail: 'Garage compressor reported running; blank intervals include stopped or unavailable readings' },
   { key: 'heatOff', label: 'Tariff reduction request', color: 'heatOff',
@@ -37,9 +49,14 @@ export function activityIntervals(descriptor, payload) {
     if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) continue;
     const explicit = Number.isFinite(point.intervalStart) && Number.isFinite(point.intervalEnd) && point.intervalEnd > point.intervalStart;
     const start = explicit ? point.intervalStart : point.x;
+    const next = points[index + 1];
+    // A tagged gap boundary one millisecond after a source sample closes its
+    // drawing path; it supplies no evidence for a one-millisecond state span.
+    const isolated = next?.sampleBoundary === true && next.displayBoundary === true
+      && next.y === null && next.x === point.x + 1;
     // Do not infer freshness for a last sample. Existing server-provided tails
     // and missing markers define coverage; a view change cannot extend it.
-    const end = Math.min(explicit ? point.intervalEnd : points[index + 1]?.x ?? point.x,
+    const end = Math.min(explicit ? point.intervalEnd : isolated ? point.x : next?.x ?? point.x,
       payload.range.to, Number.isFinite(payload.now) ? payload.now : payload.range.to);
     if (!(end > start)) {
       // A genuine isolated state report is still evidence. Show its instant
@@ -87,7 +104,7 @@ export function historyCursorGeometry({ chart, canvasRect, panelRect, trackRects
 export function createChartOverlays({ canvas, getChart, getPayload, getView, getPalette, getTracks,
   isVisible = () => true, isMoving = () => false, isTouchEnabled = () => false }) {
   const document = canvas.ownerDocument ?? globalThis.document, window = document.defaultView ?? globalThis.window;
-  const panel = canvas.closest('.history-panel'), listeners = [], touchPointers = new Set();
+  const panel = canvas.closest('.history-panel'), listeners = [], touchPointers = new Set(), expandedKeys = new Set();
   let rows = [], cursor, extension, readout, closed = false, touching;
   function listen(node, type, handler, options) {
     node.addEventListener(type, handler, options);
@@ -144,7 +161,8 @@ export function createChartOverlays({ canvas, getChart, getPayload, getView, get
         ? Math.abs(chart.scales.x.getPixelForValue(interval.start) - bounds.x) <= 4
         : interval.start <= time && interval.end > time);
       const detail = active.length ? active.map(interval => activityIntervalLabel(row.descriptor, interval)).join('\n')
-        : row.descriptor.signal || row.descriptor.key === 'operatingMode' ? 'No known state at this time' : 'No active interval recorded; stopped and unavailable periods may both be blank';
+        : row.descriptor.missingLabel ?? (row.descriptor.signal || row.descriptor.key === 'operatingMode'
+          ? 'No known state at this time' : 'No active interval recorded; stopped and unavailable periods may both be blank');
       readout.textContent = `${row.descriptor.label} · ${dateTime.format(time)}\n${detail}`;
       readout.style.maxWidth = `${Math.max(0, bounds.plotRight - bounds.plotLeft)}px`;
       readout.style.left = `${Math.max(bounds.plotLeft, Math.min(bounds.left + 12, bounds.plotRight - readout.offsetWidth))}px`;
@@ -173,6 +191,7 @@ export function createChartOverlays({ canvas, getChart, getPayload, getView, get
     const container = document.getElementById('chart-activity'), payload = getPayload();
     if (!container || !payload) return;
     const palette = getPalette(), view = getView() ?? payload.range;
+    const focusedKey = document.activeElement && rows.find(row => row.keySummary === document.activeElement)?.descriptor.key;
     rows = [];
     const roots = [];
     for (const descriptor of getTracks()) {
@@ -183,6 +202,30 @@ export function createChartOverlays({ canvas, getChart, getPayload, getView, get
       const title = document.createElement('p'); title.textContent = descriptor.caption ?? descriptor.label;
       if (descriptor.key === 'fireplace' && Number.isFinite(payload.meta?.fireplaceInputs?.burnHours))
         title.textContent += ` · ${payload.meta.fireplaceInputs.burnHours} h after each addition`;
+      const caption = document.createElement('div'); caption.className = 'activity-caption'; caption.append(title);
+      let keySummary;
+      if (descriptor.legend) {
+        const items = document.createElement('div'); items.className = `activity-key-items${descriptor.legendSummary ? '' : ' activity-key-inline'}`;
+        for (const entry of descriptor.legend) {
+          const item = document.createElement('span'); item.className = 'activity-key-item';
+          const swatch = document.createElement('span'); swatch.className = 'activity-key-swatch';
+          swatch.style.backgroundColor = palette[entry.color]; swatch.setAttribute('aria-hidden', 'true');
+          const label = document.createElement('span'); label.textContent = `${entry.label}${entry.description ? ` — ${entry.description}` : ''}`;
+          item.append(swatch, label); items.append(item);
+        }
+        if (descriptor.legendSummary) {
+          const key = document.createElement('details'); key.className = 'activity-key';
+          const summary = document.createElement('summary'); summary.textContent = descriptor.legendSummary;
+          keySummary = summary;
+          key.open = expandedKeys.has(descriptor.key);
+          key.addEventListener('toggle', () => {
+            if (closed || !rows.some(row => row.root === root)) return;
+            if (key.open) expandedKeys.add(descriptor.key); else expandedKeys.delete(descriptor.key);
+            clear(); align();
+          });
+          key.append(summary, items); caption.append(key);
+        } else caption.append(items);
+      }
       const track = document.createElement('div'); track.className = 'mode-track';
       const intervals = activityIntervals(descriptor, payload).filter(interval => interval.pointOnly
         ? interval.start >= view.from && interval.start <= view.to : interval.end > view.from && interval.start < view.to);
@@ -194,20 +237,23 @@ export function createChartOverlays({ canvas, getChart, getPayload, getView, get
         item.style.left = `${100 * (from - view.from) / (view.to - view.from)}%`;
         item.style.width = interval.pointOnly ? '2px' : `${100 * (to - from) / (view.to - view.from)}%`;
         if (interval.pointOnly) { item.dataset.kind = 'point'; item.style.transform = 'translateX(-1px)'; item.style.borderRight = '0'; }
-        item.style.opacity = String((interval.aggregated ? Math.min(1, Math.max(0, interval.fraction ?? 0)) : 1) * 0.75);
+        item.style.opacity = String((interval.aggregated ? Math.min(1, Math.max(0, interval.fraction ?? 0)) : 1)
+          * (descriptor.opacities?.[interval.value] ?? .75));
+        if (descriptor.patterns?.[interval.value]) item.dataset.pattern = descriptor.patterns[interval.value];
+        if (Number.isFinite(interval.value)) item.dataset.value = String(interval.value);
         const lane = values.indexOf(String(interval.value));
         if (interval.aggregated && lane >= 0) { item.style.top = `${lane * 100 / values.length}%`; item.style.height = `${100 / values.length}%`; }
-        item.style.backgroundColor = descriptor.colors?.[interval.value] ? palette[descriptor.colors[interval.value]] : descriptor.key === 'operatingMode'
-          ? [palette.muted, palette.indoor, palette.outdoor, palette.auxiliary, palette.compressorDhw][interval.value] ?? palette.muted
+        item.style.backgroundColor = descriptor.colors?.[interval.value] ? palette[descriptor.colors[interval.value]]
           : Number.isFinite(interval.value) && interval.value === 0 ? palette.muted : palette[descriptor.color ?? descriptor.key] ?? palette.muted;
         item.title = `${activityIntervalLabel(descriptor, interval)}\n${descriptor.detail}`;
         item.setAttribute('aria-label', item.title); track.append(item);
       }
       if (!track.children.length) title.textContent += ' · no recorded intervals';
       const viewport = document.createElement('div'); viewport.className = 'mode-viewport'; viewport.append(track);
-      root.append(title, viewport); roots.push(root); rows.push({ root, descriptor, intervals });
+      root.append(caption, viewport); roots.push(root); rows.push({ root, descriptor, intervals, keySummary });
     }
     container.replaceChildren(...roots); container.hidden = rows.every(row => row.root.hidden);
+    if (focusedKey) rows.find(row => row.descriptor.key === focusedKey)?.keySummary?.focus({ preventScroll: true });
     align();
   }
   function paintNow(chart) {

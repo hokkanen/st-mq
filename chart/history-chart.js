@@ -1,11 +1,13 @@
 import Chart from 'chart.js/auto';
+import { Interaction } from 'chart.js';
 import { color } from 'chart.js/helpers';
 import { calendarTicks, chartQuery, createChartLoader, defaultPalette, finnishDate, historyDatasets, historySeriesAt, selectedRange, shiftDate, dateSelection, visible } from './history-model.js';
-import { historyTooltipCallbacks, historyTooltipsEnabled } from './history-tooltips.js';
+import { historyTooltipCallbacks, historyTooltipsEnabled, historyTooltipInteraction } from './history-tooltips.js';
 export { historyTooltipLabel, historyTooltipTitle } from './history-tooltips.js';
 import { createTimingBenefit } from './timing-benefit.js';
 import { populateChartViews, selectedChartView, chartSelectionKey, readChartPreferences, chartViewPreferences, setChartVisibility, chartSubjectAvailability, CHART_PREFERENCES_KEY } from './chart-views.js';
-import { EXPLORER_SERIES_BY_KEY, filterExplorerSeries } from './series-explorer.js';
+import { EXPLORER_SERIES_BY_KEY } from './series-explorer.js';
+import { createSeriesPicker } from './series-picker.js';
 import { createChartOverlays, activityTracks } from './chart-overlays.js';
 import { chartObservationTime, replicaSnapshotKey } from './replica-status.js';
 import { createChartNavigation } from './chart-navigation.js';
@@ -15,6 +17,7 @@ import { preparePowerFills, powerFillPlugin } from './power-fill.js';
 import { SIGNAL_INFO, MODEL_INPUT_INFO, GARAGE_INPUT_INFO, CARAVAN_RUNNING_STATES, ENERGY_SIGNALS } from '../src/domain/history-series.js';
 
 const clock = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+Interaction.modes.historyPoint = historyTooltipInteraction;
 const shortDate = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', day: 'numeric', month: 'short' });
 const datedYear = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', year: 'numeric', month: 'short', day: 'numeric' });
 const paletteVariables = {
@@ -91,6 +94,14 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     isMoving: () => navigation.moving,
     isTouchEnabled: () => navigation.fullscreen,
   });
+  const seriesPicker = createSeriesPicker({ getSelected: () => preferences.series, onOpen: () => overlays.clear(),
+    onSelect(key) {
+      preferences.series = key; savePreferences();
+      const { view, left, series, ...range } = selection;
+      selection = { ...range, ...selectionForView('explorer') };
+      overlays.clear(); refresh();
+    },
+  });
   function selectionForView(key) {
     if (key === 'explorer') return { left: EXPLORER_SERIES_BY_KEY[preferences.series].requestKey, series: preferences.series };
     return { view: key };
@@ -99,9 +110,11 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     const definitions = { ...EXPLORER_SERIES_BY_KEY, ...SIGNAL_INFO, ...MODEL_INPUT_INFO, ...GARAGE_INPUT_INFO };
     return view.tracks.map(key => activityTracks.find(track => track.key === key) ?? {
       key, signal: key, label: definitions[key]?.label ?? key.replaceAll('_', ' '),
-      detail: definitions[key]?.detail ?? 'Recorded state; blank intervals are unknown', color: definitions[key]?.color ?? 'learning',
+      detail: definitions[key]?.detail ?? 'Recorded state; blank intervals are unknown',
+      color: key === 'garage_model_managed_pause' ? 'heatOff' : definitions[key]?.color ?? 'learning',
       values: definitions[key]?.unit === 'code' ? undefined : key === 'dhw_routing' ? { 0: 'Space heating', 1: 'Hot water' }
-        : key === 'garage_model_available' ? { 0: 'Reported off', 1: 'Available to native control' }
+        : key === 'garage_model_available' ? { 0: 'Pump off', 1: 'Pump on' }
+        : key === 'garage_model_managed_pause' ? { 0: 'No managed pause', 1: 'Managed heating pause' }
         : ['controller_phase', 'model_controller_phase'].includes(key) ? { 0: 'Normal', 1: 'Preheat', 2: 'Reduction', 3: 'Recovery' }
         : key === 'model_valve_override' ? { 0: 'Normal valve mode', 1: 'Override confirmed', 2: 'Partial override', 3: 'Unconfirmed override' }
           : key === 'operating_mode' ? { 0: 'Off', 1: 'Auto', 2: 'Compressor only', 3: 'Auxiliary only', 4: 'Hot water only' }
@@ -153,24 +166,6 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     palette = Object.fromEntries(Object.entries(paletteVariables).map(([key, variable]) => [key, styles.getPropertyValue(variable).trim() || defaultPalette[key]]));
   }
   function savePreferences() { try { storage?.setItem(CHART_PREFERENCES_KEY, JSON.stringify(preferences)); } catch { /* Charts remain usable when storage is unavailable. */ } }
-  function renderExplorer() {
-    const select = $('chart-series'), matches = filterExplorerSeries($('chart-series-search').value);
-    select.replaceChildren();
-    if (!matches.some(row => row.key === preferences.series)) {
-      const prompt = document.createElement('option'); prompt.value = ''; prompt.textContent = matches.length ? 'Choose a matching series…' : 'No matching series';
-      prompt.disabled = true; prompt.selected = true; select.append(prompt);
-    }
-    for (const name of new Set(matches.map(row => row.group))) {
-      const group = document.createElement('optgroup'); group.label = name;
-      for (const row of matches.filter(row => row.group === name)) {
-        const option = document.createElement('option'); option.value = row.key;
-        option.textContent = `${row.label} · ${row.unit} · ${row.basis.toLowerCase()}`;
-        option.selected = row.key === preferences.series; group.append(option);
-      }
-      select.append(group);
-    }
-    $('chart-series-count').textContent = `${matches.length} matching series`;
-  }
   function renderLegend(datasets, view, visibility) {
     const groups = ['left', 'right', 'activity'].map(axis => {
       const group = document.createElement('div'); group.className = 'chart-legend-group'; group.dataset.axis = axis;
@@ -184,7 +179,10 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
       button.setAttribute('aria-pressed', String(visible(key, visibility))); button.title = detail;
       const swatch = document.createElement('span'); swatch.className = 'chart-legend-swatch'; swatch.dataset.kind = kind;
       swatch.dataset.pattern = dash.length > 2 ? 'dash-dot' : dash[0] === 1 ? 'dotted' : dash.length ? 'dashed' : 'solid';
-      swatch.style.color = swatchColor; swatch.style.backgroundColor = kind === 'fill' ? color(swatchColor).alpha(0.4).rgbString() : swatchColor;
+      swatch.style.color = swatchColor;
+      swatch.style.backgroundColor = ['audit', 'session', 'interval-energy'].includes(kind) ? 'transparent'
+        : kind === 'fill' ? color(swatchColor).alpha(0.4).rgbString() : swatchColor;
+      if (key === 'compressorHome') swatch.style.backgroundImage = `linear-gradient(to right, ${palette.compressorSpace} 50%, ${palette.compressorDhw} 50%)`;
       swatch.style.borderColor = swatchColor; swatch.setAttribute('aria-hidden', 'true');
       button.append(swatch, document.createTextNode(label));
       button.addEventListener('click', () => {
@@ -266,7 +264,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
         type: 'line', data: { datasets }, plugins: [powerFillPlugin, overlays.plugin],
         options: {
           animation: false, responsive: true, maintainAspectRatio: false, parsing: false, normalized: false,
-          interaction: { mode: 'nearest', axis: 'x', intersect: false }, scales,
+          interaction: { mode: 'historyPoint', axis: 'x', intersect: false }, scales,
           plugins: {
             legend: { display: false },
             tooltip: {
@@ -286,24 +284,23 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     overlays.render(); renderDetailStatus();
     if (viewOnly) return;
     renderLegend(datasets, chartView, visibility); renderTiming();
-    if (plot.view) $('chart-view-description').textContent = chartView.description;
-    else {
-      const label = document.createElement('span'); label.className = 'chart-subject-label';
-      label.textContent = `${chartView.label} · ${chartView.unit}`;
-      const description = document.createElement('span'); description.className = 'chart-subject-detail'; description.textContent = chartView.description;
-      $('chart-view-description').replaceChildren(label, description);
-    }
+    $('chart-view-description').textContent = chartView.description;
     canvas.setAttribute('aria-label', `${chartView.label} for ${plot.startDate} to ${plot.endDate}. ${chartView.description}`);
     const loading = !sameSelection(selection, plot);
     canvas.dataset.rangeStart = plot.startDate; canvas.dataset.rangeEnd = plot.endDate; canvas.dataset.view = plot.view ?? 'explorer'; canvas.dataset.series = plot.series ?? ''; canvas.dataset.left = plot.left ?? plot.view; canvas.dataset.ready = String(!loading);
     renderStatus(datasets);
     const keys = [...chartView.leftSignals, ...chartView.rightSignals];
-    const notes = ['Solid lines use the left axis; dashed temperatures use the right. Forecasts use dash-dot lines and electricity prices are dotted. Toggle any legend item to tailor this view; price choices apply to every view.',
-      'Measured temperatures use monotone curves without overshoot. Power, settings and states retain their steps. Missing evidence remains a gap. Activity rows share the time axis; hover across the plot and rows to inspect the same moment.'];
+    const notes = ['Solid lines use the left axis; right-axis temperatures and solar estimates are dashed. Future forecasts use dash-dot lines and electricity prices are dotted. Toggle any legend item to tailor this view; price choices apply to every view.',
+      'Temperature curves use cubic interpolation without overshoot, including displayed settings and targets. Recorded values remain unchanged; a curve between settings does not imply gradual control changes. Power and states retain their steps. Missing evidence remains a gap. Activity rows share the time axis; hover across the plot and rows to inspect the same moment.'];
+    if (chartView.stackPhases) notes.push('Charger currents form translucent stacks separately for L1, L2 and L3. Each phase keeps its property reference line. Tooltips show each charger’s own current; stacks require overlapping recorded evidence.');
+    if (keys.includes('solar_radiation')) notes.push('Solar estimate is the latest valid weather estimate known at each historical time, not a solar sensor reading. Later forecast revisions do not replace it. The future Solar forecast remains separate.');
     if (keys.some(key => ['charger_power', 'charger2_power'].includes(key))) notes.push('Translucent fills show the two chargers, stacked only where their recorded intervals overlap. Tooltips show each charger’s own power. Auxiliary and whole heat-pump estimates are separate lines; the whole estimate includes auxiliary.');
     if (keys.includes('garage_native_indoor_temperature')) notes.push('Pump interpreted indoor temperature is native readback after the pump’s sensing or external-temperature processing; it is not an independent protection probe.');
+    if (chartView.tracks.includes('garage_model_available')) notes.push('Garage pump power is fresh native on/off readback captured in saved garage inputs. Managed heating pause identifies savings or timed-off control at those sample times; it does not establish measured savings. These sampled rows are separate from compressor activity and cannot establish every transition between reports.');
     if (keys.some(key => key.startsWith('model_') || key.startsWith('garage_model_'))) notes.push('Saved learning inputs retain the original interval evidence. Quality eligibility does not establish that a model fit used a point. Coefficients replay the supported journal and correction context; they are not a promise of the model’s original operational state.');
     if (keys.some(key => ENERGY_SIGNALS.includes(key) || key === 'garage_energy')) notes.push('Energy points describe the original recording intervals, which can have different durations. Do not compare them as equal-period totals.');
+    if (keys.includes('caravan_power')) notes.push('Caravan power is measured meter energy divided by its original interval duration. It shows average electrical load, not instantaneous peaks; original energy readings remain in Series explorer.');
+    if (datasets.some(dataset => ['audit', 'session', 'interval-energy'].includes(dataset.kind))) notes.push('Hollow circles mark individual recorded readings or interval totals. Hover or tap a point in fullscreen to inspect its value and original time; gaps do not imply a zero reading.');
     if (keys.some(key => key.includes('_current_'))) notes.push('Reconstructed currents are equivalent interval averages at 230 V, not instantaneous RMS peaks. Imported current observations retain their original basis.');
     if (datasets.some(dataset => dataset.data.some(point => point.carriedForward))) notes.push(replicaSnapshotKey(status) !== null
       ? 'Display tails carry the last reading to the saved snapshot time; these extensions are not new measurements.'
@@ -407,20 +404,14 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     const { view, left, series, ...range } = selection;
     selection = { ...range, ...selectionForView(preferences.view) };
     overlays.clear(); updateControls(); refresh();
-  });
-  listen($('chart-series-search'), 'input', renderExplorer);
-  listen($('chart-series'), 'change', () => {
-    if (!EXPLORER_SERIES_BY_KEY[$('chart-series').value]) return;
-    preferences.series = $('chart-series').value; savePreferences();
-    const { view, left, series, ...range } = selection;
-    selection = { ...range, ...selectionForView('explorer') };
-    overlays.clear(); refresh();
+    if (preferences.view === 'explorer') seriesPicker.open();
+    else seriesPicker.dismiss({ restoreFocus: false });
   });
   for (const preset of ['today', 'yesterday', 'tomorrow']) listen($(`range-${preset}`), 'click', () => choosePreset(preset));
   listen($('range-back'), 'click', () => shiftRange(-1));
   listen($('range-forward'), 'click', () => shiftRange(1));
   listen(mobilePointer, 'change', () => renderChart());
   function updateTheme() { readPalette(); renderChart(); }
-  readPalette(); updateControls(); renderExplorer();
-  return { refresh, updateTheme, close() { closed = true; overlays.close(); navigation.close(); detailLoader.close(); loader.close(); timing.close(); listeners.forEach(remove => remove()); graph?.destroy(); } };
+  readPalette(); updateControls();
+  return { refresh, updateTheme, close() { closed = true; seriesPicker.close(); overlays.close(); navigation.close(); detailLoader.close(); loader.close(); timing.close(); listeners.forEach(remove => remove()); graph?.destroy(); } };
 }

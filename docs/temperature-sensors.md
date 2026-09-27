@@ -27,12 +27,20 @@ original membership instead of applying today's sensor configuration backwards.
 
 Average indoor is green, Upstairs terracotta, Bedroom violet, Downstairs amber and
 Outdoor blue. Garage front and rear use related but distinct warm colours. Dashed
-measured-temperature curves use bounded monotone interpolation; forecast curves
-use dash-dot strokes. References and settings keep steps. Each view remembers its
-own legend choices; price visibility is shared. **Garage temperatures & compressor**
+temperature curves use monotone cubic interpolation; forecast curves use
+dash-dot strokes. Every plotted temperature in °C follows the same rule,
+including references, settings, targets and temperature differences. This changes
+only the drawing: exact recorded setting changes, commands and learning inputs
+retain their original meanings. Unknown or unavailable intervals still break
+the curves. Each view remembers its own legend choices; price visibility is
+shared. **Garage temperatures & compressor**
 also offers the pump's interpreted indoor temperature as a diagnostic, separately
-from the two protection probes. Individual signals remain searchable in **Series
-explorer**. The summary above the chart shows Average indoor and Outdoor.
+from the two protection probes. Its saved **Pump power readback** and **Managed
+pause** rows distinguish the native on/off report from a savings or timed-off
+control pause; a pause is not evidence of measured savings. Individual signals remain searchable in **Series
+explorer**. Its searchable picker closes after a selection and keeps the chosen
+series in a compact label; phones use a drawer. The summary above the chart shows
+Average indoor and Outdoor.
 
 By default, st-mq expects a genuine report on each dedicated indoor MQTT topic
 every 70 minutes, with five minutes allowed for delivery delay. This is an

@@ -5,8 +5,8 @@ import { MODEL_COEFFICIENT_INFO, PHASE_ENERGY_SIGNALS } from './history-series.j
 const home = ['model_indoor_temperature', 'indoor_temperature', 'bedroom_temperature', 'downstairs_temperature', 'outdoor_temperature', 'outdoor_forecast'];
 const garage = ['garage_temperature', 'garage_temperature_2', 'garage_native_indoor_temperature', 'outdoor_temperature', 'outdoor_forecast'];
 const property = ['model_indoor_temperature', 'garage_temperature', 'outdoor_temperature', 'outdoor_forecast'];
-const homeRows = ['operatingMode', 'compressorSpace', 'compressorDhw', 'heatOff', 'dhwr', 'fireplace'];
-const garageRows = ['compressorGarage', 'garage_door1_open', 'garage_door2_open', 'garage_native_defrost'];
+const homeRows = ['operatingMode', 'compressorHome', 'heatOff', 'dhwr', 'fireplace'];
+const garageRows = ['garage_model_managed_pause', 'garage_model_available', 'compressorGarage', 'garage_door1_open', 'garage_door2_open', 'garage_native_defrost'];
 const water = ['supply_temperature', 'return_temperature', 'heating_setpoint', 'maximum_supply_setting'];
 const saved = ['model_indoor_temperature', 'model_outdoor_temperature', 'model_target_temperature'];
 const savedGarage = ['garage_model_rear', 'garage_model_front', 'garage_model_outdoor'];
@@ -20,9 +20,9 @@ function view(key, label, group, description, unit, leftSignals, rightSignals, t
 view('power', 'Electrical power', 'Electricity', 'Compare property demand with charging and estimated heating loads.', 'kW',
   ['property_power', 'charger_power', 'charger2_power', 'heat_pump_power', 'auxiliary_power'], property, homeRows,
   ['property_power', 'charger_power', 'charger2_power', 'model_indoor_temperature', 'outdoor_temperature', 'outdoor_forecast', 'operatingMode', 'dhwr', 'fireplace'], { stackPower: true });
-view('phases', 'Phase loading', 'Electricity', 'Compare phase loading across the property and either charger. Reconstructed currents are interval averages.', 'A',
+view('phases', 'Phase loading', 'Electricity', 'Compare property phase currents with charger fills stacked separately for each phase. Reconstructed currents are interval averages.', 'A',
   ['property', 'ev1', 'ev2'].flatMap(prefix => [1, 2, 3].map(phase => `${prefix}_current_l${phase}`)), property, [],
-  ['property_current_l1', 'property_current_l2', 'property_current_l3']);
+  ['property_current_l1', 'property_current_l2', 'property_current_l3'], { stackPhases: true });
 view('session_checks', 'Charging session checks', 'Electricity', 'Final meter readings for completed sessions; inspect a point for its reconstruction and difference.', 'kWh / session',
   ['ev1_session_energy_check', 'shelly_session_energy_check'], property, [], ['ev1_session_energy_check', 'shelly_session_energy_check']);
 view('temperatures', 'Property temperatures', 'Temperatures & weather', 'Compare the three home rooms and both garage probes on one temperature scale.', '', [],
@@ -31,42 +31,42 @@ view('temperatures', 'Property temperatures', 'Temperatures & weather', 'Compare
 view('home_temperatures', 'Home temperatures & comfort', 'Temperatures & weather', 'Compare rooms with the saved indoor average and comfort reference.', '', [],
   [...home, 'model_target_temperature', 'learning_indoor_temperature'], homeRows,
   ['indoor_temperature', 'bedroom_temperature', 'downstairs_temperature', 'model_indoor_temperature', 'model_target_temperature', 'fireplace']);
-view('weather', 'Outdoor conditions & sunshine', 'Temperatures & weather', 'Outdoor temperature and archived or future solar forecasts. Solar values are forecast evidence, not a radiation sensor.', 'W/m²',
+view('weather', 'Outdoor conditions & sunshine', 'Temperatures & weather', 'Outdoor temperature, historical solar estimates and the future solar forecast. Solar values come from weather models, not a radiation sensor.', 'W/m²',
   ['solar_radiation', 'solar_forecast'], ['outdoor_temperature', 'outdoor_forecast', 'model_indoor_temperature'], [],
   ['solar_radiation', 'solar_forecast', 'outdoor_temperature', 'outdoor_forecast']);
 view('home_power', 'Heat-pump electricity', 'Home heating', 'The whole heat-pump estimate includes auxiliary heating. Compare the component without adding it to the total.', 'kW',
-  ['heat_pump_power', 'auxiliary_power'], home, homeRows, ['heat_pump_power', 'auxiliary_power', 'model_indoor_temperature', 'compressorSpace', 'compressorDhw']);
+  ['heat_pump_power', 'auxiliary_power'], home, homeRows, ['heat_pump_power', 'auxiliary_power', 'model_indoor_temperature', 'compressorHome']);
 view('heating_water', 'Heating water & demand', 'Home heating', 'Supply, return and target temperatures explain the heating integral. Hide the integral for a temperature-only view.', '°min',
-  ['heating_integral'], water, homeRows, ['heating_integral', 'supply_temperature', 'return_temperature', 'heating_setpoint', 'compressorSpace', 'heatOff']);
+  ['heating_integral'], water, homeRows, ['heating_integral', 'supply_temperature', 'return_temperature', 'heating_setpoint', 'compressorHome', 'heatOff']);
 view('hot_water', 'Hot water & circulation', 'Home heating', 'Tank temperature and switching thresholds, with circulation requests distinct from reported operation.', '', [],
-  ['dhw_temperature', 'dhw_start_setting', 'dhw_stop_setting'], ['compressorDhw', 'dhwr', 'dhwr_active', 'dhw_routing', 'operatingMode'],
-  ['dhw_temperature', 'dhw_start_setting', 'dhw_stop_setting', 'compressorDhw', 'dhwr', 'dhwr_active']);
+  ['dhw_temperature', 'dhw_start_setting', 'dhw_stop_setting'], ['compressorHome', 'dhwr', 'dhwr_active', 'dhw_routing', 'operatingMode'],
+  ['dhw_temperature', 'dhw_start_setting', 'dhw_stop_setting', 'compressorHome', 'dhwr', 'dhwr_active']);
 view('ground_loop', 'Ground-loop temperatures', 'Home heating', 'Compare brine inlet and outlet temperatures during compressor operation.', '', [],
-  ['brine_in_temperature', 'brine_out_temperature'], ['compressorSpace', 'compressorDhw'], ['brine_in_temperature', 'brine_out_temperature', 'compressorSpace', 'compressorDhw']);
+  ['brine_in_temperature', 'brine_out_temperature'], ['compressorHome'], ['brine_in_temperature', 'brine_out_temperature', 'compressorHome']);
 view('circulation', 'Circulation-pump speeds', 'Home heating', 'Compare reported heating and brine pump speeds with their operating context.', '%',
-  ['heating_pump_speed', 'brine_pump_speed'], water, ['heating_pump_active', 'compressorSpace', 'compressorDhw'], ['heating_pump_speed', 'brine_pump_speed', 'heating_pump_active']);
+  ['heating_pump_speed', 'brine_pump_speed'], water, ['heating_pump_active', 'compressorHome'], ['heating_pump_speed', 'brine_pump_speed', 'heating_pump_active']);
 view('auxiliary', 'Auxiliary output', 'Home heating', 'Reported heater output alongside heating-water temperature and operating mode.', '%',
-  ['auxiliary_output'], water, ['operatingMode', 'compressorSpace', 'compressorDhw'], ['auxiliary_output', 'supply_temperature', 'heating_setpoint', 'operatingMode']);
+  ['auxiliary_output'], water, ['operatingMode', 'compressorHome'], ['auxiliary_output', 'supply_temperature', 'heating_setpoint', 'operatingMode']);
 view('control', 'Control requests & operation', 'Home controls & diagnostics', 'Inspect requests and equipment readback separately. A requested reduction does not prove that the compressor stopped.', '', [], home,
-  ['controller_phase', 'operatingMode', 'compressorSpace', 'compressorDhw', 'heating_pump_active', 'dhwr', 'dhwr_active', 'heat_savings_active',
+  ['controller_phase', 'operatingMode', 'compressorHome', 'heating_pump_active', 'dhwr', 'dhwr_active', 'heat_savings_active',
     'floor_living_0_active', 'floor_living_1_active', 'floor_storage_0_active', 'floor_storage_1_active', 'alarm_active'],
-  ['model_indoor_temperature', 'controller_phase', 'operatingMode', 'compressorSpace', 'compressorDhw']);
-view('settings', 'Temperature settings', 'Home controls & diagnostics', 'Recorded controller settings retain their steps; these are parameters, not measured room temperatures.', '', [],
+  ['model_indoor_temperature', 'controller_phase', 'operatingMode', 'compressorHome']);
+view('settings', 'Temperature settings', 'Home controls & diagnostics', 'Recorded temperature settings, shown as smooth curves. Interpolation is for display; settings change at their recorded times.', '', [],
   ['room_setting', 'heating_curve', 'maximum_supply_setting', 'heat_stop_setting', 'tariff_reduction_setting', 'dhw_start_setting', 'dhw_stop_setting'], ['operatingMode'],
   ['room_setting', 'heating_curve', 'maximum_supply_setting']);
 view('room_influence', 'Room influence', 'Home controls & diagnostics', 'The recorded room-influence factor with indoor temperature context.', 'factor', ['room_influence'], home, [], ['room_influence', 'model_indoor_temperature']);
 view('runtime', 'Lifetime runtime counters', 'Home controls & diagnostics', 'Reported cumulative runtime. These are lifetime counters, not hours consumed within the selected dates.', 'h',
   ['compressor_hours', 'dhw_hours', 'auxiliary_3kw_hours', 'auxiliary_6kw_hours'], [], [], ['compressor_hours', 'dhw_hours', 'auxiliary_3kw_hours', 'auxiliary_6kw_hours']);
 view('alarms', 'Pump alarms', 'Home controls & diagnostics', 'Recorded alarm codes with a separate alarm activity row. Missing readback remains unknown.', 'code', ['alarm_code'], [], ['alarm_active', 'operatingMode'], ['alarm_code', 'alarm_active']);
-view('garage', 'Garage temperatures & compressor', 'Garage', 'Compare front and rear protection probes with compressor frequency. The pump-interpreted temperature is available as a diagnostic.', 'Hz',
+view('garage', 'Garage temperatures & compressor', 'Garage', 'Compare protection probes and compressor frequency with managed heating pauses and saved pump power readback. The pump-interpreted temperature is available as a diagnostic.', 'Hz',
   ['garage_compressor_frequency'], garage, garageRows, ['garage_compressor_frequency', 'garage_temperature', 'garage_temperature_2', ...garageRows]);
 view('garage_inputs', 'Garage electrical inputs', 'Garage', 'Qualified electrical inputs saved for garage learning, including both chargers as independent comparisons.', 'kW',
   ['garage_model_power', 'garage_model_ev1', 'garage_model_ev2'], savedGarage, ['compressorGarage', 'garage_model_available'],
   ['garage_model_power', 'garage_model_ev1', 'garage_model_ev2', 'garage_model_rear', 'garage_model_front', 'compressorGarage']);
 view('caravan', 'Caravan climate', 'Caravan', 'Air temperature, relative humidity and the reported dehumidifier mode. Auto mode does not imply continuous operation.', '%',
   ['caravan_humidity'], ['caravan_temperature', 'outdoor_temperature', 'outdoor_forecast'], ['caravan_dehumidifier_running_state'], ['caravan_humidity', 'caravan_temperature', 'caravan_dehumidifier_running_state']);
-view('caravan_energy', 'Caravan recorded energy', 'Caravan', 'Meter increments over their original recording intervals. Interval lengths can differ; these are not daily totals.', 'kWh / interval',
-  ['caravan_energy'], ['caravan_temperature'], ['caravan_dehumidifier_running_state'], ['caravan_energy', 'caravan_temperature', 'caravan_dehumidifier_running_state']);
+view('caravan_power', 'Caravan power', 'Caravan', 'Average electrical load calculated from measured energy over each recorded interval, with air temperature and dehumidifier mode. This is not instantaneous power.', 'kW',
+  ['caravan_power'], ['caravan_temperature'], ['caravan_dehumidifier_running_state'], ['caravan_power', 'caravan_temperature', 'caravan_dehumidifier_running_state']);
 view('firewood', 'Firewood additions', 'Fireplace', 'Manually recorded fuel additions, with room temperatures and the modeled burn window.', 'kg / addition', ['firewood_load'], home, ['fireplace'], ['firewood_load', 'model_indoor_temperature', 'fireplace']);
 view('fireplace_release', 'Modeled fireplace release', 'Fireplace', 'Delayed fuel-equivalent release from corrected additions. This is a model input, not measured heat output.', 'kg/h', ['model_fireplace_release'], home, ['fireplace'], ['model_fireplace_release', 'model_indoor_temperature', 'fireplace']);
 view('fireplace_energy', 'Firewood electricity avoided', 'Fireplace', 'Retrospective daily model estimates of electricity avoided. Inspect points for evidence and provisional status.', 'kWh/day', ['firewood_electricity_avoided'], home, [], ['firewood_electricity_avoided']);

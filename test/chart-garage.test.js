@@ -8,6 +8,8 @@ import { appendGarageEntry, applyGarageEntry, garageCorrectionContext } from '..
 import { createGarageModel, garageModelSummary, GARAGE_ALGORITHM_VERSION } from '../src/garage/model.js';
 import { garageSettings } from '../src/garage/settings.js';
 import { GARAGE_INPUT_INFO, GARAGE_COEFFICIENT_INFO } from '../src/domain/history-series.js';
+import { historyStateLabel } from '../chart/history-model.js';
+import { activityIntervals, activityIntervalLabel } from '../chart/chart-overlays.js';
 
 const MINUTE = 60_000, range = chartRange({ startDate: '2026-09-08' }), now = range.to;
 const coefficient = 'garage_coefficient_rear_coolingPerHour';
@@ -111,6 +113,62 @@ test('compressor and separate charger activity charts preserve actual fractions 
   }
   const power = chart(store, ['garage_model_power', 'garage_model_ev1', 'garage_model_ev2']);
   for (const points of Object.values(power.series)) assert(points.slice(0, 2).every(point => point.y === null));
+});
+
+test('garage pump readback and managed pause retain only saved boolean states without inference', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  const cases = [
+    { available: true, managedPause: false, activity: false, powerKw: 0, recovering: true },
+    { available: false, managedPause: true, activity: true, powerKw: 1 },
+    { available: null, managedPause: null, activity: true, powerKw: 1, recovering: true },
+    { available: 1, managedPause: 0, activity: false, powerKw: 0 },
+    { available: 'false', managedPause: 'true' },
+    { available: false },
+  ];
+  cases.forEach((value, i) => sample(store, range.from + i * MINUTE, value));
+  const before = store.learningJournal({ input: 'garage:providers' });
+  for (const [key, expected, labels] of [
+    ['garage_model_available', [1, 0, null, null, null, 0], ['Pump off', 'Pump on']],
+    ['garage_model_managed_pause', [0, 1, null, null, null, null], ['No managed pause', 'Managed heating pause']],
+  ]) {
+    const result = getChartData({ store, input: 'providers', startDate: range.startDate, now, left: key });
+    assert.deepEqual(result.series[key].map(point => point.y), expected);
+    assert.deepEqual(result.series[key].map(point => point.inputQualified), expected.map(value => value !== null));
+    assert(result.series[key].every((point, i) => point.observedAt === range.from + i * MINUTE
+      && point.garageModelInput === true && point.inputSource === 'Recorded garage inputs'));
+    assert.equal(GARAGE_INPUT_INFO[key].unit, 'state');
+    assert.deepEqual([0, 1].map(value => historyStateLabel(key, value)), labels);
+    assert.equal(historyStateLabel(key, null), 'Unknown');
+  }
+  assert.deepEqual(store.learningJournal({ input: 'garage:providers' }), before);
+});
+
+test('saved garage state samples keep bounded gaps and original timestamps without extending the tail', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  const first = range.from + MINUTE, second = first + 5 * MINUTE;
+  sample(store, first, { available: false, managedPause: true, at: first - 1000 });
+  sample(store, second, { available: true, managedPause: false, at: second - 2000 });
+  const keys = ['garage_model_available', 'garage_model_managed_pause'];
+  const result = chart(store, keys);
+  for (const key of keys) {
+    const expected = key === 'garage_model_available' ? [0, 1] : [1, 0];
+    assert.deepEqual(result.series[key].map(point => [point.x, point.y]), [
+      [first, expected[0]], [first + 1, null], [second, expected[1]],
+    ]);
+    assert.deepEqual(result.series[key].filter(point => point.y !== null).map(point => point.observedAt),
+      [first - 1000, second - 2000]);
+    assert.equal(result.series[key][1].displayBoundary, true);
+    assert.equal(result.series[key][1].sampleBoundary, true);
+    const descriptor = { key, signal: key, values: { 0: 'Off', 1: 'On' } };
+    const intervals = activityIntervals(descriptor, { ...result, range, now });
+    assert.deepEqual(intervals.map(({ start, end, value, pointOnly }) => ({ start, end, value, pointOnly })), [
+      { start: first, end: first, value: expected[0], pointOnly: true },
+      { start: second, end: second, value: expected[1], pointOnly: true },
+    ], 'Both source readings remain inspectable points around an unknown gap');
+    assert.match(activityIntervalLabel(descriptor, intervals[0]), /recorded sample; duration unknown/);
+    assert.deepEqual(chart(store, [key], { now: first + MINUTE }).series[key].map(point => [point.x, point.y]),
+      [[first, expected[0]]], 'Future saved inputs cannot appear in earlier as-of history');
+  }
 });
 
 test('coefficient chart uses same ordered learner and seed, then incrementally extends without writes', t => {

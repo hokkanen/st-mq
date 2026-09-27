@@ -167,7 +167,7 @@ try {
     })()`), true, 'Accessible one-day arrows are compact and flank the shortcuts in one aligned row');
   };
   const checkActivityTracks = async () => {
-    assert.match(await evaluate("document.querySelector('#dhwr-history > p').textContent"), /DHWR.*requested circulation.*recorded duration/i);
+    assert.match(await evaluate("document.querySelector('#dhwr-history .activity-caption > p').textContent"), /DHWR.*requested circulation.*recorded duration/i);
     assert.equal(await evaluate(`(() => {
       const canvas = document.getElementById('history').getBoundingClientRect();
       const rows = ['operating-modes', 'dhwr-history', 'fireplace-history'].map(id => document.getElementById(id));
@@ -205,8 +205,10 @@ try {
   assert.equal(await evaluate("document.getElementById('chart-view').value"), 'power');
   assert.deepEqual(await evaluate("[...document.querySelectorAll('#chart-view option')].map(option => option.value)"),
     [...CHART_VIEWS.map(view => view.key), 'explorer'], 'Every named investigation and the series explorer is selectable');
-  assert.deepEqual(await evaluate("[...document.querySelectorAll('#chart-series option')].map(option => option.value).sort()"),
+  await evaluate("document.getElementById('chart-view').value='explorer'; document.getElementById('chart-view').dispatchEvent(new Event('change')); true");
+  assert.deepEqual(await evaluate("[...document.querySelectorAll('#chart-series [role=option]')].map(option => option.dataset.seriesKey).sort()"),
     EXPLORER_SERIES.map(series => series.key).sort(), 'The explorer retains every supported numerical and state projection');
+  await evaluate("document.getElementById('chart-series-close').click(); document.getElementById('chart-view').value='power'; document.getElementById('chart-view').dispatchEvent(new Event('change')); true");
   assert.equal(await evaluate("document.querySelector('#chart-view optgroup').label"), 'Electricity');
   assert.deepEqual(await evaluate("[...document.querySelector('#chart-view optgroup[label=\"Home coefficients\"]').children].map(option => option.value)"),
     coefficientKeys, 'Only the four fitted Home coefficients have chart choices');
@@ -215,8 +217,9 @@ try {
       document.getElementById('chart-view').dispatchEvent(new Event('change')); true`);
     else await evaluate(`document.getElementById('chart-view').value='explorer';
       document.getElementById('chart-view').dispatchEvent(new Event('change'));
-      document.getElementById('chart-series').value=${JSON.stringify(key === 'integral' ? 'heating_integral' : key)};
-      document.getElementById('chart-series').dispatchEvent(new Event('change')); true`);
+      document.getElementById('chart-series-search').value='';
+      document.getElementById('chart-series-search').dispatchEvent(new Event('input'));
+      document.querySelector('#chart-series [data-series-key="${key === 'integral' ? 'heating_integral' : key}"]').click(); true`);
   };
   assert.equal(await evaluate("performance.getEntriesByType('resource').some(entry=>entry.name.includes('/api/recording-overview'))"),false,'collapsed recording inventory does not fetch');
   await evaluate(`(() => {
@@ -585,12 +588,12 @@ try {
   await evaluate("document.getElementById('range-yesterday').click(); true");
   await until("document.getElementById('history').dataset.ready === 'true' && document.getElementById('history').dataset.rangeStart === '2026-09-06' && document.getElementById('history').dataset.rangeEnd === '2026-09-07'");
   const populated = await fetch(`${base}/api/chart?start=2026-09-06&end=2026-09-07`).then(r => r.json());
-  for (const key of ['heatOff', 'compressorSpace', 'compressorDhw', 'dhwr', 'fireplace']) assert.ok(populated.shading[key].length > 0, `Synthetic ${key} activity is available`);
+  for (const key of ['heatOff', 'compressorHome', 'dhwr', 'fireplace']) assert.ok(populated.shading[key].length > 0, `Synthetic ${key} activity is available`);
   assert.deepEqual(populated.shading.fireplace, [{ start: now - 3 * 3600000, end: now }], 'Overlapping additions use the model burn window');
   await checkActivityTracks();
   assert.equal(await evaluate("document.querySelectorAll('#fireplace-history .mode-segment').length"), 1);
   assert.equal(await evaluate("document.querySelectorAll('#dhwr-history .mode-segment').length > 0"), true);
-  await checkSeriesDrawn(['auxiliary_power', 'charger_power', 'compressorSpace', 'compressorDhw'], 'power');
+  await checkSeriesDrawn(['auxiliary_power', 'charger_power', 'compressorHome'], 'power');
   assert.ok(populated.operatingModes.length > 0);
   assert.ok(populated.series.auxiliary_power.some(point => point.y > 0));
   if (!chartOnly) {

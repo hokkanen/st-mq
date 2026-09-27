@@ -14,8 +14,10 @@ function decode(row) {
 /** Original normalized inputs, not today's readings or corrected model values. */
 function inputs({ store, range, now, input, envelopes, selected, stats }) {
   const previous = new Map();
+  const queryFrom = Math.min(range.from - 600_000, ...selected.map(key => envelopes[key].contextFrom ?? range.from));
+  const queryTo = Math.min(now, Math.max(range.to, ...selected.map(key => envelopes[key].contextTo ?? range.to)));
   for (const row of store.db.prepare(`SELECT * FROM learning_journal WHERE input=? AND kind='sample'
-    AND at>=? AND at<=? ORDER BY at,id`).iterate(garageInput(input), range.from - 600_000, Math.min(range.to, now))) {
+    AND at>=? AND at<=? ORDER BY at,id`).iterate(garageInput(input), queryFrom, queryTo)) {
     const reject = reason => { stats[reason]++; for (const key of selected) envelopes[key].add(row.at, null); };
     let entry;
     try { entry = decode(row); } catch { reject('invalidRecords'); continue; }
@@ -35,14 +37,18 @@ function inputs({ store, range, now, input, envelopes, selected, stats }) {
       if (info.location && (!fresh(info.location) || !validC(y))) y = null;
       if (field === 'differenceC') y = fresh('front') && fresh('rear') && validC(value.frontC) && validC(value.rearC)
         ? value.frontC - value.rearC : null;
-      if (field === 'available' || field === 'activity' || field.endsWith('Active')) y = typeof y === 'boolean' ? Number(y) : y;
+      // These saved states are booleans. Missing or malformed state must not be
+      // inferred from electrical input, compressor activity or recovery status.
+      if (field === 'available' || field === 'managedPause') y = typeof y === 'boolean' ? Number(y) : null;
+      if (field === 'activity' || field.endsWith('Active')) y = typeof y === 'boolean' ? Number(y) : y;
       if ((field === 'activity' || field.endsWith('Active')) && !(finite(y) && y >= 0 && y <= 1)) y = null;
       if (field === 'powerKw' && (!['verified', 'provisional', 'simulated'].includes(value.powerQuality)
         || !(finite(y) && y >= 0 && y <= 8))) y = null;
       if (/^ev[12]Kw$/.test(field) && !(finite(y) && y >= 0 && y <= 50)) y = null;
-      const before = previous.get(key), at = Math.max(range.from, row.at);
-      if (before && row.at - before.at > maxAge) envelopes[key].add(before.at + 1, null);
-      if (row.at >= range.from) envelopes[key].add(at, finite(y) ? y : null, { modelInput: true, garageModelInput: true,
+      const before = previous.get(key), from = envelopes[key].contextFrom ?? range.from;
+      if (before && row.at - before.at > maxAge) envelopes[key].add(before.at + 1, null,
+        { displayBoundary: true, sampleBoundary: true });
+      if (row.at >= from) envelopes[key].add(row.at, finite(y) ? y : null, { modelInput: true, garageModelInput: true,
         inputQualified: finite(y), algorithmVersion: row.algorithm_version,
         inputSource: source(input), observedAt: info.location ? value[`${info.location}At`] : value.at,
         ...(field === 'outdoorC' ? { outdoorSource: ['husdata-h66', 'fmi', 'openmeteo', 'mqtt-temperature', 'shelly-mqtt', 'simulation', 'garage-adapter'].includes(value.outdoorSource) ? value.outdoorSource : 'unknown' } : {}) });

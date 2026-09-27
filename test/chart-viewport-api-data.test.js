@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Store } from '../src/storage/store.js';
 import { chartRange, chartRequestRange, getChartData } from '../src/app/chart-data.js';
+import { isInterpolatedTemperature } from '../src/domain/chart-temperatures.js';
 
 import { appendLearningRecord } from './helpers/home-learning-fixture.js';
 import { addFireplace } from '../src/app/fireplace.js';
@@ -55,7 +56,11 @@ test('detail inside a three-year selection reveals original samples with bounded
   }
   assert.equal(detail.meta.firewoodOutcomes, null);
   assert.equal(detail.meta.heatPumpEnergy, null, 'Detail skips invisible timing reconstruction');
-  assert(Object.values(detail.series).flat().every(point => point.x >= viewFrom && point.x <= viewTo));
+  for (const [key, rows] of Object.entries(detail.series)) {
+    assert(rows.every(point => point.x >= viewFrom && point.x <= viewTo || isInterpolatedTemperature(key) && point.displayContext === true));
+    assert(rows.filter(point => point.x < viewFrom).length <= 8);
+    assert(rows.filter(point => point.x > viewTo).length <= 8);
+  }
   const sameDay = getChartData({ store, ...args, points: 100, viewFrom, viewTo });
   assert.deepEqual(detail.series.indoor_temperature, sameDay.series.indoor_temperature,
     'Detail resolution and source interpretation do not depend on original selected span');
@@ -93,7 +98,10 @@ test('a viewport within one learning interval keeps its committed boundaries and
   const viewFrom = start + 5 * MINUTE, viewTo = start + 10 * MINUTE;
   const result = getChartData({ store, ...args, left: 'model_outdoor_temperature', viewFrom, viewTo });
   assert.deepEqual(result.series.model_outdoor_temperature.map(point => [point.x, point.y]),
-    [[viewFrom, 8], [viewTo - 1, 8], [viewTo, null]]);
+    [[start, 8], [end - 1, 8], [end, null]]);
+  assert(result.series.model_outdoor_temperature.every(point => point.displayContext === true),
+    'The original interval endpoints surround this viewport without inventing new source knots');
+  assert.equal(result.range.from, viewFrom); assert.equal(result.range.to, viewTo);
   assert(result.series.model_outdoor_temperature.filter(point => point.y !== null)
     .every(point => point.intervalStart === start && point.intervalEnd === end));
 });
@@ -108,9 +116,12 @@ test('a viewport between scalar readings clips their original line and clearly i
   observation(store, 'operating_mode', 1, start, { unit: 'state' });
   observation(store, 'operating_mode', 2, start + 8 * MINUTE, { unit: 'state' });
   const linear = getChartData({ store, ...args, left: 'integral', viewFrom, viewTo });
-  assert.deepEqual(linear.series.indoor_temperature.map(point => [point.x, point.y]), [[viewFrom, 21], [viewTo, 22]]);
+  const edges = linear.series.indoor_temperature.filter(point => !point.displayContext);
+  assert.deepEqual(edges.map(point => [point.x, point.y]), [[viewFrom, 21], [viewTo, 22]]);
+  assert.deepEqual(linear.series.indoor_temperature.filter(point => point.displayContext).map(point => [point.x, point.y]),
+    [[start, 20], [start + 8 * MINUTE, 24]], 'Original source knots remain available to cubic display');
   assert.deepEqual(linear.series.heating_integral.map(point => point.y), [-80, -60]);
-  assert(linear.series.indoor_temperature.every(point => point.displayBoundary && point.interpolated
+  assert(edges.every(point => point.displayBoundary && point.interpolated
     && point.observedAt === start && point.nextObservedAt === start + 8 * MINUTE));
   for (const left of ['temperatures', 'indoor_temperature']) {
     const temperatures = getChartData({ store, ...args, left, viewFrom, viewTo });
@@ -136,12 +147,12 @@ test('clipped scalar context cannot bridge missing readings or extend past selec
   observation(store, 'outdoor_temperature', 5, from + 24 * HOUR - MINUTE);
   observation(store, 'outdoor_temperature', 6, from + 24 * HOUR + MINUTE);
   const missing = getChartData({ store, ...args, left: 'operating_mode', viewFrom: start + 2 * MINUTE, viewTo: start + 4 * MINUTE });
-  assert(missing.series.indoor_temperature.every(point => point.y === null));
+  assert(missing.series.indoor_temperature.filter(point => !point.displayContext).every(point => point.y === null));
   assert(missing.series.operating_mode.every(point => point.y === null));
   const gap = getChartData({ store, ...args, viewFrom: start + 2 * HOUR, viewTo: start + 2 * HOUR + MINUTE });
-  assert(gap.series.garage_temperature.every(point => point.y === null), 'A four-hour source gap remains missing');
+  assert(gap.series.garage_temperature.filter(point => !point.displayContext).every(point => point.y === null), 'A four-hour source gap remains missing');
   const edge = getChartData({ store, ...args, now: now + HOUR, viewFrom: now - 30_000, viewTo: now });
-  assert(!edge.series.outdoor_temperature.some(point => Number.isFinite(point.y)),
+  assert(!edge.series.outdoor_temperature.some(point => !point.displayContext && Number.isFinite(point.y)),
     'An observation outside the selected dates cannot extend the chart domain');
 });
 
@@ -178,10 +189,11 @@ test('future context closes earlier state spans without reviving expired equipme
   }
   const early = getChartData({ store, ...args, viewFrom: start + 2 * MINUTE, viewTo: start + 4 * MINUTE });
   const earlySpan = [{ start: early.range.from, end: early.range.to }];
-  for (const key of ['compressorSpace', 'heatOff', 'dhwr']) assert.deepEqual(early.shading[key], earlySpan);
+  for (const key of ['heatOff', 'dhwr']) assert.deepEqual(early.shading[key], earlySpan);
+  assert.deepEqual(early.shading.compressorHome, [{ ...earlySpan[0], value: 1 }]);
   assert.deepEqual(early.operatingModes, [{ ...earlySpan[0], value: 1 }]);
   const later = getChartData({ store, ...args, viewFrom: start + 11 * MINUTE, viewTo: start + 12 * MINUTE });
-  assert.deepEqual(later.shading.compressorSpace, []);
+  assert.deepEqual(later.shading.compressorHome, []);
   assert.deepEqual(later.shading.dhwr, []);
   assert.deepEqual(later.operatingModes, []);
   assert.deepEqual(later.shading.heatOff, [{ start: later.range.from, end: later.range.to }],

@@ -2,7 +2,7 @@ import { CHART_VIEW_BY_KEY } from '../src/domain/chart-views.js';
 import { stackPowerSeries } from './power-stack.js';
 import { isInterpolatedTemperature } from '../src/domain/chart-temperatures.js';
 import { temperatureIntervalKnots } from './temperature-curves.js';
-import { HISTORY_AXIS_BY_KEY, CARAVAN_RUNNING_STATES, GARAGE_INPUT_INFO, GARAGE_COEFFICIENT_INFO, SIGNAL_INFO, MODEL_INPUT_INFO, MODEL_COEFFICIENT_INFO, PHASE_ENERGY_SIGNALS } from '../src/domain/history-series.js';
+import { HISTORY_AXIS_BY_KEY, CARAVAN_RUNNING_STATES, GARAGE_INPUT_INFO, GARAGE_COEFFICIENT_INFO, SIGNAL_INFO, MODEL_INPUT_INFO, MODEL_COEFFICIENT_INFO, PHASE_ENERGY_SIGNALS, COUNTER_SIGNALS } from '../src/domain/history-series.js';
 // Calendar navigation always refers to the house, regardless of browser timezone.
 const calendar = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Helsinki', year: 'numeric', month: '2-digit', day: '2-digit' });
 const hourInFinland = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', hour: '2-digit', hourCycle: 'h23' });
@@ -61,7 +61,7 @@ export function calendarTicks(range, maxTicks = 9) {
   return ticks.map(value => ({ value }));
 }
 
-export const defaultVisibility = Object.freeze({ heatOff: true, compressorSpace: true, compressorDhw: true, compressorGarage: true, operatingMode: true, dhwr: true, fireplace: true, spot_price: true });
+export const defaultVisibility = Object.freeze({ heatOff: true, compressorHome: true, compressorGarage: true, operatingMode: true, dhwr: true, fireplace: true, spot_price: true });
 export const operationModes = Object.freeze({ 0: 'Off', 1: 'Auto', 2: 'Compressor only', 3: 'Auxiliary only', 4: 'Hot water only' });
 export const defaultPalette = Object.freeze({
   text: '#e0ede6', muted: '#9bb4a5', border: '#334d3e', grid: '#243c30',
@@ -81,6 +81,7 @@ const seriesInfo = {
   charger_power: ['Charger 1', 'kW · interval average from recorded energy; older history uses 230 V × current', 'ev', 'fill'],
   charger2_power: ['Charger 2', 'kW · interval average from recorded native total meter energy', 'ev2', 'fill'],
   caravan_energy: ['Caravan energy', 'kWh · measured meter energy over the recorded interval', 'garage', 'interval-energy'],
+  caravan_power: ['Caravan power', 'kW · interval average from recorded meter energy', 'garage'],
   caravan_temperature: ['Caravan air', '°C', 'garage'],
   caravan_humidity: ['Caravan relative humidity', '%', 'outdoor'],
   caravan_dehumidifier_running_state: ['Caravan dehumidifier', 'state · reported running state', 'garage'],
@@ -104,7 +105,7 @@ const seriesInfo = {
   learning_indoor_temperature: ['Learned normal temperature', '°C · learned reference, not a thermostat command', 'learning', 'learning'],
   firewood_savings: ['Firewood electricity cost avoided', '€/day · retrospective model estimate; wood cost €0', 'firewood', 'daily'],
   firewood_electricity_avoided: ['Firewood electricity avoided', 'kWh/day · retrospective model estimate, not metered savings', 'firewood', 'daily'],
-  solar_radiation: ['Archived solar forecast', 'W/m² · forecast archived at the time, not a measured solar sensor', 'solar', 'forecast'],
+  solar_radiation: ['Solar estimate', 'W/m² · historical estimate from the forecast available at the time, not a measured solar sensor', 'solar', 'estimate'],
   solar_forecast: ['Solar forecast', 'W/m² · forecast', 'solar', 'forecast'],
   indoor_temperature: ['Upstairs', '°C', 'upstairs'],
   downstairs_temperature: ['Downstairs', '°C', 'downstairs'],
@@ -119,7 +120,7 @@ const seriesInfo = {
 for (const [signal, info] of Object.entries(SIGNAL_INFO)) {
   seriesInfo[signal] ??= [info.label, `${info.unit} · ${info.detail ?? info.kind.toLowerCase()}`,
     PHASE_ENERGY_SIGNALS.includes(signal) ? `phase${signal.at(-1)}` : signal.startsWith('ev1') ? 'ev' : signal.startsWith('property') ? 'property' : info.group === 'Ground loop' ? 'outdoor' : info.group === 'Garage heat pump' ? 'garage' : 'integral',
-    PHASE_ENERGY_SIGNALS.includes(signal) ? 'interval-energy' : 'line'];
+    PHASE_ENERGY_SIGNALS.includes(signal) ? 'interval-energy' : COUNTER_SIGNALS.includes(signal) ? 'audit' : 'line'];
 }
 Object.assign(seriesInfo, {
   heat_pump_power: ['Heat pump', 'kW · reconstructed estimated electrical input', 'auxiliary'],
@@ -145,7 +146,8 @@ for (const [key, color] of Object.entries({
   garage_model_ev1: 'ev', garage_model_ev1_active: 'ev', garage_model_ev2: 'ev2', garage_model_ev2_active: 'ev2',
 })) if (seriesInfo[key]) seriesInfo[key][2] = color;
 
-const forecastSignals = new Set(['outdoor_forecast', 'solar_forecast', 'solar_radiation', 'model_solar_radiation']);
+const forecastSignals = new Set(['outdoor_forecast', 'solar_forecast']);
+const solarEstimates = new Set(['solar_radiation', 'model_solar_radiation']);
 export const chartLinePatterns = Object.freeze({
   solid: Object.freeze([]), temperature: Object.freeze([6, 4]),
   forecast: Object.freeze([8, 3, 2, 3]), price: Object.freeze([1, 3]),
@@ -162,7 +164,7 @@ export function historySeriesStyle(key, axis, kind = 'line') {
     : key === 'heating_integral' ? 'linear' : 'step';
   return {
     forecast, interpolation, showLine: !pointsOnly,
-    borderDash: forecast ? chartLinePatterns.forecast : price ? chartLinePatterns.price
+    borderDash: forecast ? chartLinePatterns.forecast : solarEstimates.has(key) ? chartLinePatterns.temperature : price ? chartLinePatterns.price
       : axis === 'right' && temperatureUnit ? chartLinePatterns.temperature : chartLinePatterns.solid,
     stepped: pointsOnly || interpolation !== 'step' ? false : price ? 'before' : true,
     cubicInterpolationMode: interpolation === 'monotone' ? 'monotone' : 'default',
@@ -199,7 +201,8 @@ export function historyStateLabel(key, value) {
   if (['controller_phase', 'model_controller_phase'].includes(key))
     return ['Normal', 'Preheat', 'Tariff reduction', 'Recovery'][value] ?? `Unknown phase (${value})`;
   if (key === 'dhw_routing') return value === 0 ? 'Space heating' : value === 1 ? 'Hot water' : `Unknown route (${value})`;
-  if (key === 'garage_model_available') return value === 1 ? 'Available to native control' : value === 0 ? 'Reported off' : 'Unknown';
+  if (key === 'garage_model_available') return value === 1 ? 'Pump on' : value === 0 ? 'Pump off' : 'Unknown';
+  if (key === 'garage_model_managed_pause') return value === 1 ? 'Managed heating pause' : value === 0 ? 'No managed pause' : 'Unknown';
   if (['compressor_active', 'garage_compressor_active', 'heating_pump_active', 'alarm_active'].includes(key)) return value === 1 ? 'Active' : value === 0 ? 'Inactive' : `Unknown (${value})`;
   if (key === 'model_valve_override') return ['Normal valve mode', 'Pooled override confirmed', 'Partial override', 'Unconfirmed override'][value] ?? 'Unknown valve mode';
   if (key === 'dhwr_request') return value === 1 ? 'On requested' : value === 0 ? 'Off requested' : `Unknown (${value})`;
@@ -266,10 +269,15 @@ export function historyDatasets(series = {}, descriptor, preferences = {}, palet
   const { leftSignals, rightSignals } = descriptor;
   const keys = [...new Set([...leftSignals, ...rightSignals])];
   const powerKeys = ['charger_power', 'charger2_power'].filter(key => leftSignals.includes(key));
-  const stackedData = new Map(), stackBases = new Map();
-  if (descriptor.stackPower) {
+  const phaseGroups = descriptor.stackPhases ? [1, 2, 3].map(phase => ['ev1', 'ev2']
+    .map(prefix => `${prefix}_current_l${phase}`).filter(key => leftSignals.includes(key))) : [];
+  const phaseKeys = new Set(phaseGroups.flat());
+  const stackGroups = [...(descriptor.stackPower ? [powerKeys] : []), ...phaseGroups];
+  const stackedData = new Map(), stackBases = new Map(), fillOrder = new Map();
+  for (const stack of stackGroups) {
     let group = [];
-    for (const key of powerKeys) {
+    stack.forEach((key, index) => fillOrder.set(key, 4 - index));
+    for (const key of stack) {
       if (!visible(key, preferences) || !(series[key] ?? []).some(point => Number.isFinite(point.y))) continue;
       const next = [...group, key];
       const aligned = stackPowerSeries(next.map(component => series[component]));
@@ -290,37 +298,45 @@ export function historyDatasets(series = {}, descriptor, preferences = {}, palet
     const info = descriptor?.seriesInfo?.[key];
     const definition = seriesInfo[key] ?? (info ? [info.label, info.unit, info.color ?? 'learning', info.kind ?? 'line'] : null);
     if (!definition) throw new RangeError(`Unknown chart signal: ${key}`);
-    const [label, unit, colorKey, kind = 'line'] = definition;
+    const [label, unit, colorKey, baseKind = 'line'] = definition;
+    const kind = phaseKeys.has(key) ? 'fill' : baseKind;
     const visibilityKey = key;
     const isLeft = leftSignals.includes(key);
     const isPrice = key.endsWith('_price');
     const temperature = isInterpolatedTemperature(key);
     const original = stackedData.get(key) ?? series[key] ?? [];
-    const data = temperature && original.some(point => Number.isFinite(point.intervalStart) && Number.isFinite(point.intervalEnd))
-      ? temperatureIntervalKnots(original) : original;
+    const data = ['audit', 'session', 'interval-energy'].includes(kind) ? original.filter(point => !point.displayBoundary && !point.carriedForward)
+      : temperature && original.some(point => point.periodicCoverage || point.interpolated || Number.isFinite(point.intervalStart) && Number.isFinite(point.intervalEnd))
+        ? temperatureIntervalKnots(original) : original;
     const stackBase = stackBases.get(key);
     const axis = isLeft ? 'left' : 'right';
     const style = historySeriesStyle(key, axis, kind);
     const color = phaseColor(palette[colorKey] ?? defaultPalette[colorKey] ?? palette.learning, key);
     const chargerPhase = /^(ev[12])_current_l[123]$/.exec(key)?.[1];
+    const circles = ['session', 'interval-energy', 'audit'].includes(kind);
+    const genuine = point => !point.displayBoundary && !point.carriedForward;
+    const isolated = (point, index) => genuine(point) && Number.isFinite(point.y)
+      && !Number.isFinite(data[index - 1]?.y) && !Number.isFinite(data[index + 1]?.y);
     return {
       key, visibilityKey, unit, kind, label,
       data,
-      ...(powerKeys.includes(key) ? { powerStacked: Boolean(stackBase), powerStackBase: stackBase ?? null } : {}),
+      ...(powerKeys.includes(key) || phaseKeys.has(key) ? { powerStacked: Boolean(stackBase), powerStackBase: stackBase ?? null } : {}),
       ...style,
       yAxisID: axis,
       borderColor: color, backgroundColor: kind === 'fill' ? fillColor(color) : color,
       borderWidth: kind === 'fill' ? 1 : isPrice ? 1.25 : key === 'property_power' ? 2 : 1.65,
       fill: stackBase ? keys.indexOf(stackBase) : kind === 'fill' ? 'origin' : false,
-      order: powerKeys.includes(key) ? 4 - powerKeys.indexOf(key) : kind === 'fill' ? 2 : 1,
+      order: fillOrder.get(key) ?? (kind === 'fill' ? 2 : 1),
       pointBackgroundColor: kind === 'daily' ? data.map(point => point.status === 'validated' ? color : 'transparent')
-        : kind === 'session' ? data.map(point => point.comparisonEligible ? color : 'transparent') : color, pointBorderColor: color,
-      pointStyle: kind === 'event' || chargerPhase === 'ev1' ? 'triangle' : kind === 'daily' || chargerPhase === 'ev2' ? 'rectRot' : isLeft && !['session', 'interval-energy', 'audit', 'fill'].includes(kind) ? 'rect' : 'circle',
+        : circles ? 'transparent' : data.map((point, index) => isolated(point, index) ? 'transparent' : color), pointBorderColor: color,
+      pointBorderWidth: kind === 'session' ? data.map(point => point.comparisonEligible ? 2 : 1) : circles ? 1.75 : 1.5,
+      pointStyle: kind === 'event' ? 'triangle' : kind === 'daily' ? 'rectRot' : 'circle',
       // A finite reading surrounded by gaps has no line segment to draw.
-      pointRadius: kind === 'event' ? 5 : ['daily', 'session', 'interval-energy', 'audit'].includes(kind) ? 4 : isPrice ? 1 : data.map((point, index) => Number.isFinite(point.y)
-        && !Number.isFinite(data[index - 1]?.y) && !Number.isFinite(data[index + 1]?.y) ? 2
-        : chargerPhase && Number.isFinite(point.y) && index % Math.max(1, Math.ceil(data.length / 10)) === 0 ? 2 : 0),
-      pointHoverRadius: kind === 'event' ? 7 : ['daily', 'session', 'interval-energy', 'audit'].includes(kind) ? 6 : 3, pointHitRadius: 8,
+      pointRadius: kind === 'event' ? 5 : kind === 'daily' ? 4 : circles ? 5 : data.map((point, index) => isolated(point, index) ? 5
+        : !genuine(point) ? 0 : isPrice ? 1 : chargerPhase && kind !== 'fill' && Number.isFinite(point.y) && index % Math.max(1, Math.ceil(data.length / 10)) === 0 ? 2 : 0),
+      pointHoverRadius: kind === 'event' || circles ? 7 : kind === 'daily' ? 6
+        : data.map((point, index) => !genuine(point) ? 0 : isolated(point, index) ? 7 : 3),
+      pointHitRadius: circles || kind === 'event' ? 12 : data.map(point => genuine(point) ? 12 : 0),
       // Chart.js' monotone cubic Hermite interpolation is O(n), preserves local
       // extrema and never overshoots adjacent values. Zero tension is ignored
       // in monotone mode; no synthetic samples enter storage or the learner.

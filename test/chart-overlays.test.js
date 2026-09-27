@@ -51,6 +51,26 @@ test('an isolated zero state remains an inspectable point without an invented in
   }
 });
 
+test('tagged sample-gap boundaries leave inspectable points without changing real short intervals', () => {
+  const descriptor = { key: 'pause', signal: 'pause', values: { 0: 'Normal', 1: 'Paused' } };
+  const gap = { x: 501, y: null, displayBoundary: true, sampleBoundary: true };
+  const payload = { range, now: 900, series: { pause: [{ x: 500, y: 1 }, gap] } };
+  const [point] = activityIntervals(descriptor, payload);
+  assert.deepEqual(point, { x: 500, y: 1, start: 500, end: 500, value: 1, pointOnly: true });
+  assert.match(activityIntervalLabel(descriptor, point), /Paused \(1\).*recorded sample; duration unknown/);
+  payload.series.pause[1] = { x: 501, y: null };
+  assert.deepEqual(activityIntervals(descriptor, payload), [
+    { x: 500, y: 1, start: 500, end: 501, value: 1, sampled: true },
+  ], 'An untagged one-millisecond state interval retains its original duration');
+  payload.series.pause = [{ x: 500, y: 1, intervalStart: 500, intervalEnd: 501 }, gap];
+  assert.equal(activityIntervals(descriptor, payload)[0].end, 501, 'Explicit interval evidence takes precedence');
+  assert.equal(activityIntervals(descriptor, payload)[0].pointOnly, undefined);
+  for (const marker of [{ displayBoundary: true }, { carriedForward: true }]) {
+    payload.series.pause = [{ x: 500, y: 1, ...marker }, gap];
+    assert.deepEqual(activityIntervals(descriptor, payload), [], 'Synthetic display points never become observations');
+  }
+});
+
 test('cursor geometry stays inside time bounds, scales CSS pixels, and ends at the last visible band', () => {
   const input = { chart: { width: 800, height: 400, chartArea: { left: 50, right: 750, top: 20, bottom: 340 } },
     canvasRect: { left: 100, top: 100, width: 400, height: 200 }, panelRect: { left: 80, top: 60 },
@@ -74,6 +94,7 @@ function fixture(t) {
     closest() { return panel; }
     contains(node) { return this === node || this.children.some(child => child.contains(node)); }
     remove() { if (this.parentElement) this.parentElement.children = this.parentElement.children.filter(child => child !== this); }
+    focus() { document.activeElement = this; }
     getBoundingClientRect() {
       if (this.className === 'mode-history') {
         if (this.hidden) return { left: 150, right: 850, top: 0, bottom: 0, width: 0, height: 0 };
@@ -124,6 +145,58 @@ test('isolated state ticks paint and expose their actual value and unknown durat
   assert.equal(segment.style.width, '2px', 'The sample is a tick, never an invented time interval');
   f.pointer('pointermove', { clientX: 500, clientY: 535 });
   assert.match(f.readout.textContent, /Closed \(0\).*duration unknown/);
+});
+
+test('one home compressor row distinguishes heating, hot water, stopped and unknown routing without filling missing evidence', t => {
+  const f = fixture(t), compressor = activityTracks.find(track => track.key === 'compressorHome');
+  assert(!activityTracks.some(track => ['compressorSpace', 'compressorDhw'].includes(track.key)));
+  const intervals = [
+    { start: 0, end: 100, value: 0 }, { start: 100, end: 300, value: 1 },
+    { start: 300, end: 400, value: 2 }, { start: 400, end: 450, value: 3 },
+    { start: 600, end: 800, value: 1, aggregated: true, fraction: .6 },
+    { start: 600, end: 800, value: 2, aggregated: true, fraction: .4 },
+  ];
+  f.payload.shading.compressorHome = intervals; f.setTracks([compressor]);
+  assert.equal(activityIntervals(compressor, f.payload), intervals);
+  const [caption, viewport] = f.container.children[0].children;
+  assert.equal(caption.children[0].textContent, 'Home compressor');
+  assert.deepEqual(caption.children[1].children.map(item => item.children[1].textContent), ['Space heating', 'Hot water']);
+  const segments = viewport.children[0].children;
+  assert.deepEqual(segments.map(segment => segment.style.backgroundColor),
+    ['muted', 'compressorSpace', 'compressorDhw', 'muted', 'compressorSpace', 'compressorDhw']);
+  assert.equal(segments[0].style.opacity, '0.28'); assert.equal(segments[1].style.opacity, '0.75');
+  assert.equal(segments[3].dataset.pattern, 'unknown');
+  assert.match(segments[3].title, /Running · routing unknown/);
+  assert.equal(segments[4].style.top, '25%'); assert.equal(segments[5].style.top, '50%');
+  assert.match(segments[4].title, /60% of this display interval/);
+  f.pointer('pointermove', { clientX: 185, clientY: 535 });
+  assert.match(f.readout.textContent, /Stopped \(0\)/);
+  f.pointer('pointermove', { clientX: 500, clientY: 535 });
+  assert.match(f.readout.textContent, /No known compressor state/);
+  assert.doesNotMatch(f.readout.textContent, /Stopped/);
+});
+
+test('pump-mode key explains every state, stays accessible and remains expanded across redraws', t => {
+  const f = fixture(t); f.setTracks([mode]);
+  let key = f.container.children[0].children[0].children[1];
+  assert.equal(key.className, 'activity-key'); assert.equal(key.children[0].textContent, 'Mode key');
+  const items = key.children[1].children;
+  assert.equal(items.length, 5);
+  assert.deepEqual(items.map(item => item.children[0].style.backgroundColor), ['muted', 'indoor', 'outdoor', 'auxiliary', 'compressorDhw']);
+  assert(items.every(item => item.children[0].attributes.get('aria-hidden') === 'true'));
+  assert.match(items[0].children[1].textContent, /Protection or circulation may still operate/);
+  assert.match(items[1].children[1].textContent, /as permitted/);
+  assert.match(items[2].children[1].textContent, /auxiliary heat is disabled/);
+  assert.match(items[3].children[1].textContent, /compressor is disabled/);
+  assert.match(items[4].children[1].textContent, /without house heating/);
+  f.pointer('pointermove'); assert.equal(f.extension.hidden, false);
+  key.open = true; key.dispatchEvent(new Event('toggle'));
+  assert.equal(f.extension.hidden, true, 'Expanding the explanation invalidates the old row cursor position');
+  key.children[0].focus(); f.overlays.render(); key = f.container.children[0].children[0].children[1];
+  assert.equal(key.open, true, 'A routine chart refresh does not close the explanation being read');
+  assert.equal(f.document.activeElement, key.children[0], 'Keyboard focus remains on the explanation disclosure after refresh');
+  key.open = false; key.dispatchEvent(new Event('toggle')); f.overlays.render();
+  assert.equal(f.container.children[0].children[0].children[1].open, false);
 });
 
 test('crosshair spans chart and selected rows, stays clipped, and disappears outside the chart', t => {

@@ -13,7 +13,7 @@ import { createHistoricalPricing } from './chart-prices.js';
 import { historicalSpotIntervals } from './historical-spot-prices.js';
 import { resolveMarketIntervals } from '../domain/market-authority.js';
 import { auxiliaryPowerFromOutput } from '../domain/telemetry.js';
-import { HISTORY_AXIS_BY_KEY, CARAVAN_RUNNING_STATES, GARAGE_INPUT_INFO, GARAGE_COEFFICIENT_INFO, ENERGY_SIGNALS, AUDIT_SIGNALS, SESSION_CHECK_INFO, MODEL_INPUT_INFO, MODEL_COEFFICIENT_INFO, RECORDED_EVIDENCE_SIGNALS } from '../domain/history-series.js';
+import { HISTORY_AXIS_BY_KEY, CARAVAN_RUNNING_STATES, GARAGE_INPUT_INFO, GARAGE_COEFFICIENT_INFO, ENERGY_SIGNALS, AUDIT_SIGNALS, COUNTER_SIGNALS, SESSION_CHECK_INFO, MODEL_INPUT_INFO, MODEL_COEFFICIENT_INFO, RECORDED_EVIDENCE_SIGNALS } from '../domain/history-series.js';
 import { addChargingSessionChecks } from './chart-session-checks.js';
 import { addModelInputs } from './chart-model-inputs.js';
 import { addModelCoefficients } from './chart-model-coefficients.js';
@@ -59,7 +59,8 @@ export function chartRange({ startDate, endDate, now = Date.now() } = {}) {
 }
 
 /** Calendar selection is immutable while a detail request changes only the
- * queried viewport. Context reads may precede it; returned points remain bounded. */
+ * queried viewport. Temperature detail retains explicitly marked neighbouring
+ * knots for display tangents; the requested viewport itself remains fixed. */
 export function chartRequestRange({ viewFrom, viewTo, ...args } = {}) {
   const selection = chartRange(args), detail = viewFrom !== undefined || viewTo !== undefined;
   if (!detail) return { selection, range: selection, detail: false };
@@ -122,10 +123,34 @@ export class Envelope {
   }
 }
 
+/** Cubic display needs the readings around a zoomed segment, not linear values
+ * invented at its cut edges. Reuse the already bounded context query and retain
+ * at most eight nearby vertices per side (periodic coverage uses two vertices
+ * per span). Gaps and source metadata remain attached to those exact points. */
+class TemperatureEnvelope extends Envelope {
+  constructor(from, to, points, contextFrom, contextTo) {
+    super(from, to, points); this.before = []; this.after = [];
+    this.contextFrom = contextFrom; this.contextTo = contextTo;
+  }
+  add(x, y, metadata) {
+    if (x < this.contextFrom || x > this.contextTo) return;
+    if (!Number.isFinite(x) || x >= this.from && x <= this.to) return super.add(x, y, metadata);
+    const neighbours = x < this.from ? this.before : this.after;
+    const point = { ...metadata, x, y: Number.isFinite(y) ? y : null, displayContext: true };
+    const index = neighbours.findIndex(row => row.x === x);
+    if (index >= 0) {
+      if (neighbours[index].y !== null || point.y === null) neighbours[index] = point;
+    } else neighbours.push(point);
+    neighbours.sort((a, b) => a.x - b.x);
+    if (neighbours.length > 8) neighbours.splice(x < this.from ? 0 : 8, neighbours.length - 8);
+  }
+  values() { return [...this.before, ...super.values(), ...this.after]; }
+}
+
 class HistoryLine {
-  constructor(envelope, gap, boundedHold = false, clipEdges = false, stepped = false) {
+  constructor(envelope, gap, boundedHold = false, clipEdges = false, stepped = false, observationsOnly = false) {
     this.envelope = envelope; this.gap = gap; this.previous = null;
-    this.boundedHold = boundedHold; this.clipEdges = clipEdges; this.stepped = stepped;
+    this.boundedHold = boundedHold; this.clipEdges = clipEdges; this.stepped = stepped; this.observationsOnly = observationsOnly;
   }
   add(x, y, metadata) {
     const previous = this.previous;
@@ -144,7 +169,7 @@ class HistoryLine {
       this.envelope.add(Math.max(this.envelope.from, previous.x + (this.boundedHold ? this.gap : 0) + 1), null);
       this.envelope.add(x - 1, null);
     }
-    if (this.clipEdges && previous && (covered || x - previous.x <= this.gap)) {
+    if (!this.observationsOnly && this.clipEdges && previous && (covered || x - previous.x <= this.gap)) {
       // A viewport between recorded samples still shows the same connecting
       // segment. These clipped display points never masquerade as observations.
       for (const boundary of [this.envelope.from, this.envelope.to]) {
@@ -154,7 +179,7 @@ class HistoryLine {
         this.envelope.add(boundary, value, { ...previous, displayBoundary: true,
           observedAt: previous.observedAt??previous.x, nextObservedAt: metadata?.observedAt??x, interpolated: !this.stepped });
       }
-    } else if (!this.clipEdges && x >= this.envelope.from && previous?.x < this.envelope.from && (covered || x - previous.x <= this.gap))
+    } else if (!this.observationsOnly && !this.clipEdges && x >= this.envelope.from && previous?.x < this.envelope.from && (covered || x - previous.x <= this.gap))
       this.envelope.add(this.envelope.from, previous.y, previous);
     this.envelope.add(x, y, metadata); this.previous = { ...metadata, x, y };
   }
@@ -288,7 +313,8 @@ function intervalPoints(intervals, key, envelope) {
   if (!envelope) return;
   let previous = null;
   for (const interval of intervals) {
-    const start = Math.max(envelope.from, interval.start), end = Math.min(envelope.to, interval.end);
+    const start = Math.max(envelope.contextFrom ?? envelope.from, interval.start),
+      end = Math.min(envelope.contextTo ?? envelope.to, interval.end);
     if (end <= start || !Number.isFinite(interval[key])) continue;
     if (previous && start > previous) { envelope.add(previous, null); envelope.add(start - 1, null); }
     const metadata = { intervalStart: interval.start, intervalEnd: interval.end,
@@ -398,16 +424,19 @@ export function getChartData({ store, input = 'offline', contract = null, market
   const aggregatePower = powerNames.some(name => ['property_power', 'charger_power'].includes(name));
   const selectedHas = candidates => leftNames.some(name => candidates.includes(name));
   const envelopes = Object.fromEntries(names.map(name => [name, projecting
-    ? new RelatedStepSampler(range.from, range.to, _relatedTimes) : new Envelope(range.from, range.to, points)]));
+    ? new RelatedStepSampler(range.from, range.to, _relatedTimes)
+    : detail && isInterpolatedTemperature(name)
+      ? new TemperatureEnvelope(range.from, range.to, points, Math.max(selection.from, range.from - 3 * HOUR), Math.min(selection.to, range.to + 3 * HOUR))
+      : new Envelope(range.from, range.to, points)]));
   if (_priceProjection) for (const envelope of Object.values(envelopes)) envelope.mask = _priceProjection.marketIntervals;
   const lines = Object.fromEntries(names.map(name => [name, new HistoryLine(envelopes[name], LEARNING.includes(name) || DOOR_SIGNALS.includes(name) ? Infinity : name === 'auxiliary_power' ? H66_MAX_AGE_MS : /power|current|integral|solar/.test(name) ? 30 * 60_000 : 3 * HOUR, ['auxiliary_power', 'solar_radiation', ...DOOR_SIGNALS].includes(name), detail,
-    name.endsWith('_price') || leftNames.includes(name) && name !== 'heating_integral' && !isInterpolatedTemperature(name) && !ENERGY_SIGNALS.includes(name))]));
+    name.endsWith('_price') || leftNames.includes(name) && name !== 'heating_integral' && !isInterpolatedTemperature(name) && !ENERGY_SIGNALS.includes(name), COUNTER_SIGNALS.includes(name))]));
   const evidenceLines = Object.fromEntries(names.filter(name => RECORDED_EVIDENCE_SIGNALS.includes(name))
     .map(name => [name, new RecordedEvidenceLine(envelopes[name], range, now)]));
   // Following samples close clipped scalar segments, including a viewport
   // narrower than their source cadence. Context never crosses selected dates.
   const queryTo = Math.min(detail ? Math.min(selection.to, range.to + 3 * HOUR) : range.to, now + 1);
-  const shading = Object.fromEntries(['heatOff', 'compressorSpace', 'compressorDhw', 'compressorGarage', 'dhwr', 'fireplace'].map(key => [key, new ShadeEnvelope(range, points)])), warnings = [];
+  const shading = Object.fromEntries(['heatOff', 'compressorGarage', 'dhwr', 'fireplace'].map(key => [key, new ShadeEnvelope(range, points)])), warnings = [];
   // Daily outcomes retain their selected calendar-day meaning at every zoom.
   // Only their selected series needs this calculation on detail requests.
   const firewoodRange = detail && selectedHas(FIREWOOD_OUTCOME_NAMES) ? { ...range,
@@ -426,10 +455,11 @@ export function getChartData({ store, input = 'offline', contract = null, market
   const energyStarts = Object.fromEntries(['property','ev1'].map(prefix=>[prefix,recordedEnergyStart(store,prefix,input,now)]));
   if (!drawingOnly) addHistoricalChargerTiming(store, timing, range, now, input, energyStarts.ev1);
   const modeEnvelopes = Object.fromEntries([0, 1, 2, 3, 4].map(mode => [mode, new ShadeEnvelope(range, points)]));
+  const compressorHomeEnvelopes = Object.fromEntries([0, 1, 2, 3].map(value => [value, new ShadeEnvelope(range, points)]));
   let telemetry = new Map(), previousTelemetryAt = null;
   const learningMetadata = {};
   const requested = new Set(projecting && _priceProjection ? ['spot_price']
-    : [...names.filter(name => !Object.hasOwn(GARAGE_INPUT_INFO, name) && !Object.hasOwn(GARAGE_COEFFICIENT_INFO, name) && !Object.hasOwn(MODEL_INPUT_INFO, name) && !Object.hasOwn(MODEL_COEFFICIENT_INFO, name) && !Object.hasOwn(SESSION_CHECK_INFO, name) && !AUDIT_SIGNALS.includes(name) && !FIREWOOD_OUTCOME_NAMES.includes(name) && !['caravan_energy', 'property_power', 'charger2_power', 'heat_pump_power', 'outdoor_forecast', 'solar_forecast', 'all_in_price', ...ENERGY_SIGNALS].includes(name)),
+    : [...names.filter(name => !Object.hasOwn(GARAGE_INPUT_INFO, name) && !Object.hasOwn(GARAGE_COEFFICIENT_INFO, name) && !Object.hasOwn(MODEL_INPUT_INFO, name) && !Object.hasOwn(MODEL_COEFFICIENT_INFO, name) && !Object.hasOwn(SESSION_CHECK_INFO, name) && !AUDIT_SIGNALS.includes(name) && !FIREWOOD_OUTCOME_NAMES.includes(name) && !['caravan_energy', 'caravan_power', 'property_power', 'charger2_power', 'heat_pump_power', 'outdoor_forecast', 'solar_forecast', 'all_in_price', ...ENERGY_SIGNALS].includes(name)),
       ...(aggregatePower ? PHASES : []),
       ...(!projecting ? ['garage_compressor_active', 'spot_price', 'requested_heat_mode', 'auxiliary_output', ...H66_SIGNALS] : []),
       ...(names.includes('auxiliary_power') ? ['auxiliary_output'] : [])]);
@@ -504,12 +534,26 @@ export function getChartData({ store, input = 'offline', contract = null, market
     if (input === 'simulated' && row.source === 'simulation') return true;
     try { const raw = JSON.parse(row.raw); return row.source === 'husdata-h66' && Boolean(raw?.verified) && raw?.usableForControl !== false; } catch { return false; }
   };
+  const verifiedState = row => {
+    if (!verified(row) || row.unit !== 'state'
+      || !(row.flags ?? flagsOf(row.quality)).every(flag => ['good', 'simulated'].includes(flag))) return false;
+    try {
+      const raw = JSON.parse(row.raw);
+      return raw?.retained !== true && raw?.cached !== true && !raw?.acquisitionOnly && !raw?.auditOnly;
+    } catch { return false; }
+  };
   const flushTelemetry = until => {
     if (previousTelemetryAt === null || until <= previousTelemetryAt) return;
     const compressor = telemetry.get('compressor_active'), route = telemetry.get('dhw_routing'), mode = telemetry.get('operating_mode');
-    if (compressor?.value === 1 && [0, 1].includes(route?.value)) {
-      const end = Math.min(until, compressor.at + H66_MAX_AGE_MS, route.at + H66_MAX_AGE_MS);
-      shading[route.value === 1 ? 'compressorDhw' : 'compressorSpace'].add(previousTelemetryAt, end);
+    const compressorEnd = Math.min(until, now, compressor?.at + H66_MAX_AGE_MS);
+    if (compressor?.value === 0) compressorHomeEnvelopes[0].add(previousTelemetryAt, compressorEnd);
+    else if (compressor?.value === 1) {
+      // Routing has its own deadline. A fresh running compressor remains known
+      // after routing expires, but cannot be assigned to either heating circuit.
+      const routeEnd = [0, 1].includes(route?.value)
+        ? Math.min(compressorEnd, route.at + H66_MAX_AGE_MS) : previousTelemetryAt;
+      if (routeEnd > previousTelemetryAt) compressorHomeEnvelopes[route.value === 1 ? 2 : 1].add(previousTelemetryAt, routeEnd);
+      compressorHomeEnvelopes[3].add(Math.max(previousTelemetryAt, routeEnd), compressorEnd);
     }
     if (modeEnvelopes[mode?.value]) modeEnvelopes[mode.value].add(previousTelemetryAt, Math.min(until, mode.at + H66_MAX_AGE_MS));
     const phase = telemetry.get('controller_phase');
@@ -574,7 +618,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
       }
       else if (['compressor_active', 'dhw_routing', 'operating_mode'].includes(signal)) {
         lines[signal]?.add(time, value);
-        telemetry.set(signal, { at: time, value: verified(row) ? value : null });
+        telemetry.set(signal, { at: time, value: verifiedState(row) ? value : null });
       } else if (signal === 'auxiliary_output') {
         lines[signal]?.add(time, value);
         if (!atRows.has('auxiliary_power') && lines.auxiliary_power) {
@@ -680,9 +724,13 @@ export function getChartData({ store, input = 'offline', contract = null, market
   const rows = mergeCoverageRows(rowsWithPreviousReadings(),store,{from:range.from-3*HOUR,to:queryTo,input,signals:requested,now});
   for (const row of aggregatePower ? alignEaseePowerSnapshots(rows, store.db, now) : rows) {
     if (!isRecordedDataset(row)) continue;
+    // Counters are source observations, never held coverage. Native garage
+    // counters have a reporting deadline too, but its drawing endpoints are
+    // not additional meter readings and cannot replace the original record.
+    if (COUNTER_SIGNALS.includes(row.signal) && row.coverage) continue;
     // Periodic reports have their own explicit availability projection, including
     // unchanged spans beginning before the normal three-hour context query.
-    if (!row.coverage && row.import_id == null && row.report_interval_ms>0) continue;
+    if (!row.coverage && row.import_id == null && row.report_interval_ms>0 && !COUNTER_SIGNALS.includes(row.signal)) continue;
     if (row.imported) {
       if (time !== null && time !== row.source_time) flushTime();
       time = row.source_time;
@@ -735,7 +783,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
   flushPulse();
   if (Number.isFinite(energyStarts.ev1)) timing.add('charger1',energyStarts.ev1,null);
   const recordedEnergy = !drawingOnly || names.some(name => ENERGY_SIGNALS.includes(name) || PHASES.includes(name)
-    || ['property_power', 'charger_power', 'charger2_power'].includes(name))
+    || ['property_power', 'charger_power', 'charger2_power', 'caravan_power'].includes(name))
     ? addRecordedEnergy({store,range,now,input,envelopes,timing}) : { rows: 0, intervals: 0 };
   const finishHeldLines = () => {
     for (const name of ['auxiliary_power', 'solar_radiation', ...DOOR_SIGNALS]) if (lines[name]?.previous) {
@@ -855,6 +903,9 @@ export function getChartData({ store, input = 'offline', contract = null, market
   }
   priceAssumptions.used ||= series.all_in_price.some(point => Number.isFinite(point.y) && point.assumedPrice);
   for (const key of Object.keys(shading)) shading[key] = shading[key].values();
+  shading.compressorHome = Object.entries(compressorHomeEnvelopes)
+    .flatMap(([value, envelope]) => envelope.values().map(row => ({ ...row, value: Number(value) })))
+    .sort((a, b) => a.start - b.start || a.value - b.value);
   if (Object.values(shading).some(rows => rows.some(row => row.aggregated))) warnings.push('Dense shading shows the occupied fraction of each display interval.');
   // These are original source timestamps, even when outside the visible range.
   // Only the browser draws carry-forward tails; no synthetic readings are stored.

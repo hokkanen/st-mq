@@ -28,17 +28,18 @@ test('axis strokes do not change interpolation and forecast or price patterns ta
   for (const axis of ['left', 'right']) {
     const data = historyDatasets(series, axis === 'left' ? descriptor(keys) : descriptor([], keys));
     for (const row of data) {
-      const forecast = ['outdoor_forecast', 'solar_forecast', 'solar_radiation', 'model_solar_radiation'].includes(row.key);
-      assert.deepEqual(row.borderDash, forecast ? [8, 3, 2, 3] : row.key === 'spot_price' ? [1, 3]
+      const forecast = ['outdoor_forecast', 'solar_forecast'].includes(row.key);
+      const solarEstimate = ['solar_radiation', 'model_solar_radiation'].includes(row.key);
+      assert.deepEqual(row.borderDash, forecast ? [8, 3, 2, 3] : solarEstimate ? [6, 4] : row.key === 'spot_price' ? [1, 3]
         : axis === 'right' ? [6, 4] : [], row.key);
       assert.equal(row.spanGaps, false);
       assert.equal(row.data, observations, 'Display styles never rewrite source samples');
     }
-    for (const key of ['bedroom_temperature', 'garage_native_indoor_temperature', 'garage_model_front', 'outdoor_forecast']) {
+    for (const key of ['bedroom_temperature', 'garage_native_indoor_temperature', 'garage_model_front', 'outdoor_forecast', 'room_setting', 'learning_indoor_temperature']) {
       assert.equal(data.find(row => row.key === key).cubicInterpolationMode, 'monotone');
       assert.equal(data.find(row => row.key === key).stepped, false);
     }
-    for (const key of ['room_setting', 'learning_indoor_temperature', 'model_solar_radiation'])
+    for (const key of ['model_solar_radiation'])
       assert.equal(data.find(row => row.key === key).stepped, true, key);
   }
 });
@@ -50,7 +51,9 @@ test('recorded quantities use deliberate time semantics across axes, with no pha
     const datasets = historyDatasets(Object.fromEntries(keys.map(key => [key, observations])),
       axis === 'left' ? descriptor(keys) : descriptor([], keys));
     const byKey = Object.fromEntries(datasets.map(row => [row.key, row]));
-    for (const key of keys.slice(0, 6)) assert.equal(byKey[key].stepped, true, `${axis}: ${key}`);
+    for (const key of keys.slice(0, 6).filter(key => key !== 'compressor_hours')) assert.equal(byKey[key].stepped, true, `${axis}: ${key}`);
+    assert.equal(byKey.compressor_hours.showLine, false);
+    assert.equal(byKey.compressor_hours.pointBackgroundColor, 'transparent');
     assert.equal(byKey.heating_integral.stepped, false);
     assert.equal(byKey.heating_integral.cubicInterpolationMode, 'default');
     assert.equal(byKey.caravan_humidity.cubicInterpolationMode, 'monotone');
@@ -100,7 +103,7 @@ test('temperature knot reduction keeps changed readings and source evidence with
     'JSON-decoded quality arrays do not restore artificial staircase edges');
 });
 
-test('optional same-phase charger curves retain phase hues with distinct source shades and markers', () => {
+test('optional same-phase charger bands retain phase hues with distinct source shades', () => {
   const view = CHART_VIEW_BY_KEY.phases;
   const points = Array.from({ length: 60 }, (_, x) => ({ x, y: x % 4 }));
   const datasets = historyDatasets(Object.fromEntries(view.leftSignals.map(key => [key, points])), view);
@@ -109,9 +112,12 @@ test('optional same-phase charger curves retain phase hues with distinct source 
     assert.equal(rows[0].borderColor, defaultPalette[`phase${phase}`]);
     assert.equal(new Set(rows.map(row => row.borderColor)).size, 3, 'Sources remain distinguishable on the same phase');
     assert.deepEqual(rows.map(row => row.borderDash), [[], [], []]);
-    assert.deepEqual(rows.slice(1).map(row => row.pointStyle), ['triangle', 'rectRot']);
-    assert(rows.slice(1).every(row => row.pointRadius.some(radius => radius > 0)));
-    assert(rows.every(row => row.fill === false && row.stepped === true));
+    assert(rows.every(row => row.pointStyle === 'circle'));
+    assert(rows.slice(1).every(row => row.kind === 'fill' && row.pointRadius.every(radius => radius === 0)));
+    assert.equal(rows[0].fill, false);
+    assert.equal(rows[1].fill, 'origin');
+    assert.equal(rows[2].fill, datasets.indexOf(rows[1]));
+    assert(rows.every(row => row.stepped === true));
   }
 });
 

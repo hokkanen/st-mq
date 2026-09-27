@@ -223,6 +223,8 @@ export function createChartNavigation({ canvas, getChart, onSettle, onMove }) {
   listen(document, 'fullscreenchange', resize);
   listen(window, 'resize', resize);
   listen(document, 'keydown', event => {
+    // Native modal dialogs own their focus trap while the chart is fullscreen.
+    if (document.activeElement?.closest('dialog[open]')) return;
     if (fullscreen && event.key === 'Tab') {
       const focusable = [...panel.querySelectorAll('button, input, select, [tabindex="0"]')].filter(node => !node.disabled && node.getClientRects().length);
       const index = focusable.indexOf(document.activeElement);

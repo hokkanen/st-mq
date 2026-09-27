@@ -160,6 +160,75 @@ test('adaptive caravan energy closes pending intervals at gaps and never covers 
   assert(points.some(point => point.x === start + 105_000 && point.y === 0.005));
 });
 
+test('caravan power uses each original energy interval duration and retains gaps and measured provenance', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  const record = (from, to, value, quality = []) => store.observation({ source: 'shelly-mqtt', device: 'caravan',
+    signal: 'caravan_energy', value, unit: 'kWh', sourceTime: start + to, receivedAt: start + to, quality,
+    raw: { intervalStart: start + from, intervalEnd: start + to, durationMs: to - from,
+      basis: 'meter-counter-delta', learningRole: 'history-only' } });
+  record(0, 15_000, 0.005); record(15_000, 60_000, 0.005);
+  record(90_000, 120_000, 0.005); record(120_000, 150_000, 0.005, ['meter-counter-reset']);
+  // Live watts are deliberately impossible here: the projected power must
+  // continue to come only from original metered energy, even if such a row exists.
+  store.observation({ source: 'shelly-mqtt', device: 'caravan', signal: 'caravan_power', value: 99,
+    unit: 'kW', sourceTime: start, receivedAt: start, quality: [], raw: {} });
+  const payload = chart(store, 'caravan_power'), points = payload.series.caravan_power;
+  const finite = points.filter(point => Number.isFinite(point.y));
+  assert.deepEqual([...new Set(finite.map(point => JSON.stringify([
+    point.intervalStart - start, point.intervalEnd - start, point.y,
+  ])))].map(value => JSON.parse(value)), [[0, 15_000, 1.2], [15_000, 60_000, 0.4], [90_000, 120_000, 0.6]]);
+  for (const [at, expected] of [[0, 1.2], [15_000, 0.4], [90_000, 0.6]])
+    assert(finite.some(point => point.x === start + at && point.y === expected));
+  for (const point of finite) {
+    assert.equal(point.source, 'shelly-mqtt');
+    assert.equal(point.basis, 'meter-counter-delta');
+    assert.equal(point.fromEnergy, true);
+    assert.equal(point.learningRole, 'history-only');
+    const expected = point.x < start + 15_000 ? [0, 15_000] : point.x < start + 60_000 ? [15_000, 60_000] : [90_000, 120_000];
+    assert.deepEqual([point.intervalStart - start, point.intervalEnd - start], expected);
+  }
+  assert(points.some(point => point.x === start + 60_000 && point.y === null));
+  assert(!points.some(point => point.x >= start + 60_000 && point.x < start + 90_000 && Number.isFinite(point.y)));
+  assert(!points.some(point => point.x >= start + 120_000 && Number.isFinite(point.y)), 'Invalid energy and the tail remain unavailable');
+  const clipped = chart(store, 'caravan_power', { viewFrom: start + 20_000, viewTo: start + 40_000 }).series.caravan_power;
+  assert(clipped.some(point => point.x === start + 20_000 && point.y === 0.4
+    && point.intervalStart === start + 15_000 && point.intervalEnd === start + 60_000), 'Viewport clipping cannot change the divisor or original interval provenance');
+  const energyPayload = chart(store, 'caravan_energy');
+  const energy = energyPayload.series.caravan_energy.filter(point => Number.isFinite(point.y));
+  assert.deepEqual(energy.map(({ x, y }) => [x - start, y]), [[15_000, 0.005], [60_000, 0.005], [120_000, 0.005]], 'Original energy remains available without conversion');
+  assert.deepEqual(payload.timingBenefit, energyPayload.timingBenefit, 'A new drawing projection does not change tariff comparisons');
+  const named = chart(store, undefined, { view: 'caravan_power' });
+  assert.deepEqual(named.series.caravan_power, points, 'Named view and explorer use the same original intervals');
+});
+
+test('caravan power exposes durable pending meter intervals without recording watts or extending past evidence', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  const recorder = new Recorder(store, { clock: () => start + 45_000 });
+  for (let i = 0; i < 3; i++) recorder.recordEnergy({ source: 'shelly-mqtt', device: 'caravan', prefix: 'caravan',
+    start: start + i * 15_000, end: start + (i + 1) * 15_000, energies: [0.005], powers: [1.2] });
+  assert.equal(store.observations().filter(row => row.signal === 'caravan_energy').length, 1);
+  const points = chart(store, 'caravan_power', { now: start + 45_000 }).series.caravan_power;
+  const pending = points.filter(point => point.pending);
+  assert(pending.length > 0);
+  for (const point of pending) {
+    assert.equal(point.y, 1.2); assert.equal(point.basis, 'meter-counter-delta');
+    assert.equal(point.source, 'shelly-mqtt'); assert.equal(point.learningRole, 'history-only');
+    assert.equal(point.intervalStart, start + 15_000); assert.equal(point.intervalEnd, start + 45_000);
+  }
+  assert(points.some(point => point.x === start + 45_000 && point.y === null));
+  assert(!points.some(point => point.x >= start + 45_000 && Number.isFinite(point.y)));
+  assert(!store.observations().some(row => row.signal === 'caravan_power'));
+  assert(!chart(store, 'caravan_power', { now: start + 30_000 }).series.caravan_power.some(point => point.pending),
+    'A pending interval observed later is unavailable to an earlier chart cutoff');
+});
+
+test('caravan power cannot be created from live watts without original meter intervals', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  store.observation({ source: 'mqtt-equipment', device: 'caravan', signal: 'caravan_power', value: 0.8,
+    unit: 'kW', sourceTime: start, receivedAt: start, quality: [], raw: {} });
+  assert.deepEqual(chart(store, 'caravan_power').series.caravan_power, []);
+});
+
 test('MQTT caravan air and dehumidifier reports reach the recorder with their real expiry policy and live-only diagnostics', async t => {
   const store = new Store(':memory:'); let now = start;
   const recorder = new Recorder(store, { clock: () => now });

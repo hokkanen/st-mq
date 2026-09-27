@@ -58,7 +58,9 @@ export function addModelInputs({ store, range, now, input, envelopes, indoorLine
       }
       return;
     }
-    const a = Math.max(start, range.from), b = Math.min(end, range.to, now);
+    // Temperature detail retains bounded original interval knots on either
+    // side; clipping a saved interval first would turn its cubic into a hold.
+    const a = Math.max(start, line.contextFrom ?? range.from), b = Math.min(end, line.contextTo ?? range.to, now);
     if (b <= a) return;
     if (lastEnd.has(key) && a > lastEnd.get(key)) line.add(lastEnd.get(key), null);
     line.add(a, value, metadata); line.add(b - 1, value, metadata);
@@ -101,7 +103,11 @@ export function addModelInputs({ store, range, now, input, envelopes, indoorLine
   // the selected physical input wins if both provider modes recorded a window.
   let pending;
   const priority = row => row.input === input ? 2 : row.input === 'history' ? 0 : 1;
-  for (const row of query.iterate(...inputs, range.from - (indoorLine ? WINDOW : 0), Math.min(now, range.to + WINDOW))) {
+  const queryFrom = Math.min(range.from - (indoorLine ? WINDOW : 0),
+    ...selected.map(key => envelopes[key].contextFrom ?? range.from));
+  const queryTo = Math.min(now, Math.max(range.to + WINDOW,
+    ...selected.map(key => envelopes[key].contextTo ?? range.to)));
+  for (const row of query.iterate(...inputs, queryFrom, queryTo)) {
     if (pending && pending.at !== row.at) { accept(pending); pending = null; }
     if (!pending || priority(row) >= priority(pending)) pending = row;
   }

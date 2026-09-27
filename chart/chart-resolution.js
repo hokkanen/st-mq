@@ -1,4 +1,6 @@
 import { sliceSeries } from './chart-viewport.js';
+import { isInterpolatedTemperature } from '../src/domain/chart-temperatures.js';
+import { temperatureIntervalKnots } from './temperature-curves.js';
 
 // The API's point count is a time-bucket target, not a count of returned
 // vertices. Extrema, gaps and aligned related channels can add many vertices.
@@ -21,7 +23,21 @@ export function selectChartResolution(overview, details, view) {
 /** Zooming clips the already bounded API envelope without discarding detail.
  * Keep original points, duplicate step edges, missing markers and provenance. */
 export function clipChartSeries(series, view) {
-  return Object.fromEntries(Object.entries(series).map(([key, points]) => [key, sliceSeries(points, view)]));
+  return Object.fromEntries(Object.entries(series).map(([key, points]) => {
+    if (!isInterpolatedTemperature(key)) return [key, sliceSeries(points, view)];
+    // Remove artificial hold edges before selecting neighbours. Otherwise the
+    // one point just beyond a zoom window can be a held edge instead of the next
+    // actual reading, and an ostensibly cubic temperature reverts to a plateau.
+    const knots = temperatureIntervalKnots(points), nearby = sliceSeries(knots, view);
+    if (!nearby.length) return [key, nearby];
+    // Monotone tangents need the next neighbour on both sides of a segment.
+    // Retain complete timestamp groups (including nulls) around that context.
+    const start = knots.indexOf(nearby[0]), end = knots.indexOf(nearby.at(-1));
+    let first = Math.max(0, start - 1), last = Math.min(knots.length - 1, end + 1);
+    while (first > 0 && knots[first - 1].x === knots[first].x) first--;
+    while (last + 1 < knots.length && knots[last + 1].x === knots[last].x) last++;
+    return [key, knots.slice(first, last + 1)];
+  }));
 }
 
 /** Request finer buckets independently of drawing speed. Overlapping windows

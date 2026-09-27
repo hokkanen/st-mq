@@ -31,8 +31,10 @@ export function addRecordedEnergy({store,range,now,input,envelopes,timing}) {
     if (prefix==='caravan') {
       // Measured caravan electricity stays an independent history series. It
       // never becomes property demand, charger timing evidence or heating input.
+      const caravanMetadata = {...metadata,basis:group.basis??'meter-counter-delta',learningRole:'history-only'};
+      project('caravan_power',start,end,total === null ? null : total*HOUR/duration,caravanMetadata);
       if (end >= range.from && end <= Math.min(range.to, now)) envelopes.caravan_energy?.add(end,total,
-        {...metadata,basis:group.basis??'meter-counter-delta',learningRole:'history-only'});
+        caravanMetadata);
       return;
     }
     if (prefix !== 'ev2-phase') project(prefix === 'ev1' ? 'charger_power' : prefix==='ev2'?'charger2_power':'property_power',start,end,total === null ? null : total*HOUR/duration,metadata);

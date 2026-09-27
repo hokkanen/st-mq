@@ -276,11 +276,13 @@ accuracy. Property cumulative readings remain available in history.
 
 The **Charging session checks** view compares both chargers' final reference kWh
 as separate points at the session end, directly from existing session records.
-The **Property meter counter** view keeps its cumulative meaning separate.
+The **Property meter counter** view keeps its cumulative meaning separate, using
+individual readings without a connecting line.
 **Series explorer** can isolate either session check or a supported cumulative
-counter. No duplicate time-series rows are saved. Hollow session points identify
-references excluded from comparison averages; tooltips identify the physical
-electricity meter and show the session period. No continuous power or
+counter. No duplicate time-series rows are saved. Session readings use hollow
+points; a stronger outline identifies references eligible for comparison
+averages. Tooltips explain exclusions, identify the physical electricity meter
+and show the session period. No continuous power or
 lifetime-counter meaning is implied between session points.
 
 **Recording-interval energy** exposes original phase increments, Charger 2's
@@ -378,10 +380,14 @@ so retries cannot count an interval twice.
 
 Forecast and price payloads are content-deduplicated separately from their
 acquisition references. Original issuance/fetch provenance survives unchanged
-re-downloads. Current solar radiation is selected from the forecast version known
-then; it is not duplicated as a synthetic one-minute solar observation and is not
-labelled as house-measured radiation. Later forecasts cannot replace the version
-used by an earlier learning sample.
+re-downloads. The historical **Solar estimate** selects the latest valid estimate
+known at each plotted time, using the archived forecast and its source provenance.
+It is not duplicated as a synthetic one-minute solar observation or labelled as
+house-measured radiation. Fetch and issuance evidence must meet the six-hour
+freshness bound; that age limit is not a six-hour forecast horizon. Later
+forecasts cannot revise an earlier plotted estimate or replace the version saved
+with an earlier learning sample. Historical Solar estimate uses a dashed line;
+the separate future **Solar forecast** uses a dash-dot line.
 
 Charts are constructed from original finalized history and eligible durable
 ongoing energy at every date range.
@@ -502,18 +508,37 @@ recovery intentionally did not copy their original recorder checkpoints.
 
 ## Chart curves and popup meanings
 
-Measured air and liquid temperatures, saved indoor/outdoor temperature inputs,
-the learned normal temperature and the outdoor forecast use Chart.js' monotone
-cubic Hermite interpolation on both axes. This uses linear time and storage in
-the number of displayed points, keeps local extrema and avoids overshooting the
-neighboring temperatures. Constant or two-point runs naturally stay flat or
-straight. Missing readings break the curve. True settings and commands, including
-supply targets and room boosts, retain their actual steps even when their unit is
-°C. Prices, energy, power and model coefficients retain their existing semantics.
+Every plotted temperature in °C uses Chart.js' monotone cubic Hermite
+interpolation on either axis. This includes measured air and liquid temperatures,
+saved temperature inputs, learned temperatures, forecasts, temperature-valued
+settings and references, targets and temperature differences. This uses linear
+time and storage in the number of displayed points, keeps local extrema and
+avoids overshooting neighboring values. Constant or two-point runs naturally
+stay flat or straight. Unknown or unavailable intervals break the curve.
+Smoothing temperature-valued settings and room boosts is a display choice;
+their recorded changes, actual commands, control interpretation and learning
+remain unchanged. Prices, energy, power, categorical states and model
+coefficients retain their own display semantics.
+
+Runtime readings and native cumulative counters appear as individual hollow
+points without connecting lines; a reading does not prove a value throughout the
+time between reports. Interval-energy totals and session checks also use larger
+hollow markers, with expanded hover and touch targets. Eligible session checks
+have a stronger marker outline. Isolated actual samples receive a visible hollow
+marker too. Synthetic display boundaries and carried-forward tails do not acquire
+observation markers. Manual additions and daily outcomes keep their existing
+distinct shapes and status meanings.
+
+Hovering or tapping a point selects the nearest target in both screen directions,
+instead of letting a vertically aligned reading in another series take its
+tooltip. Larger report markers keep their expanded hit area against dense price
+samples. Away from point targets, the shared nearest-time comparison remains.
 
 Interval-based temperature curves use original interval-start values as knots,
 with the final held edge retained; artificial duplicate hold edges do not force a
-staircase. Their original intervals remain available in the popup. Curves are
+staircase. Periodic coverage endpoints likewise retain their recorded availability
+bounds without forcing a separate plateau at every repeated report. Original
+intervals remain available in the popup. Curves are
 display interpolation, not additional measurements. The journal, recordings,
 CSV imports, energy calculations and learning inputs are unchanged. Clipped
 display boundaries and held tails are identified as such; a curve cannot provide
@@ -548,6 +573,21 @@ versions change for this presentation update.
 
 ## Chart exploration and fullscreen
 
+The **View** menu selects named comparisons. **Series explorer** opens a
+searchable picker for the 124 supported historical projections: recorded
+measurements and states, interval energy, counters, saved learning inputs,
+replayed coefficients and supported calculations. It includes individual
+diagnostics beyond the named views and retains entries with no records in the
+current installation or date range. It is a catalogue of defined chart meanings,
+not access to every numeric database field or current-state JSON value.
+
+Search filters labels, units and canonical signal identifiers. Choosing a result
+closes the picker; its compact selected-series label reopens it with the search
+retained. Escape or clicking outside dismisses it, and arrow keys with Enter
+select a result. On phones it opens as a drawer. The explorer plots one selected
+series, plus the globally controlled electricity prices. Categorical series use
+an activity row; selecting a sparse series does not manufacture missing history.
+
 The chart icon button beside the **View** selector
 opens a view with both date pickers, gesture navigation and a selected-period navigator. The normal
 chart is fixed to the entire selected period, with no zoom controls or navigator.
@@ -570,12 +610,21 @@ the inclusive range. On phones, **Legend** opens a bounded scrollable area and
 **Close legend** restores the navigator and activity strips and returns space to the plot. The legend separates quantitative series, temperature/price context and
 activity rows. Ordinary
 left-axis history uses solid lines and right-axis temperatures use dashed lines.
-Forecasts use dash-dot lines and electricity prices remain dotted. Measured
-temperatures share smooth monotone interpolation within covered spans; discrete
-settings, states and electrical power retain their steps. Events, session checks
-and original interval-energy totals remain points. Charger fills retain their
-physical electricity meaning, while control and equipment states use labeled
-rows below the plot. The cursor spans the plot and these rows within the time
+Historical Solar estimate is dashed; future forecasts use dash-dot lines and
+electricity prices remain dotted. All plotted temperatures, including settings
+and targets, share monotone cubic interpolation within covered spans. Categorical
+states and electrical power retain steps. Events, session checks and original
+interval-energy totals remain points. Charger fills retain their electricity
+meaning. In **Phase loading**, charger currents stack only within their own
+phase and only where the original evidence overlaps; property-phase lines remain
+independent references. Control and equipment states use labeled rows below the
+plot. The **Home compressor** row combines verified stopped, space-heating,
+hot-water and running-with-unknown-routing intervals. Compressor and routing
+reports expire independently: expired routing can leave a fresh running
+compressor with unknown routing, while missing, stale or unverified compressor
+data stays blank. Off is shown only when reported, never inferred from silence.
+The **Pump mode** row has an expandable **Mode key** for its color meanings.
+The cursor spans the plot and these rows within the time
 axis bounds, helping compare simultaneous changes without covering the controls.
 Landscape shows the entire selected time window at baseline zoom. Portrait uses
 the full available chart height and shows a narrower time slice; drag sideways
@@ -621,7 +670,10 @@ queried `range`, the full calendar `selection`, and `meta.detail: true`. It omit
 `timingBenefit`, `heatingBenefit` and `firewoodBenefit`; existing cost comparisons
 continue to describe the full selection. Daily firewood outcome points still use
 their whole-day calculation. Necessary source context can be read around a
-viewport, while returned points and visible bounds remain clipped.
+viewport. Temperature series retain at most eight neighbouring vertices on each
+side, marked `displayContext`, so fetched detail uses real source knots for cubic
+tangents. The visible viewport remains fixed; these neighbours do not become
+extra observations or extend the selected dates. Other series remain clipped.
 
 Initial multi-year loading is unchanged. Fine detail can arrive later than the
 gesture, and some reconstructed series still require an earlier journal prefix.
@@ -1004,6 +1056,16 @@ baseline; counter resets, excessive gaps and implausible jumps interrupt coverag
 Pending increments are checkpointed with the counter and daily total. Caravan
 measurements do not enter either heating learner.
 
+The **Caravan power** view shows interval-average power in kW alongside air temperature
+and the reported dehumidifier state. Power is calculated from each original
+metered energy increment divided by that interval's own duration; adaptive
+intervals need not have equal lengths. Gaps remain gaps, pending intervals keep
+their pending marker, and point inspection retains original boundaries and meter
+provenance. Live watt readings cannot supply this history. Original kWh increments
+remain available through **Recording-interval energy** and **Series explorer**.
+This projection creates no new recordings and does not enter household demand,
+charger timing comparisons or heating learning.
+
 
 ## Chart and storage review (September 2026)
 
@@ -1029,7 +1091,11 @@ The retained data has distinct responsibilities:
 | External feed diagnostics | Abnormal onset, changed reason and recovery events; no numeric feed series or healthy renewal log. |
 
 The Garage view offers native compressor activity, supported defrost reports and
-door contacts as separate activity rows. Native states follow their recorded
+door contacts as separate activity rows. **Pump power readback** uses the saved
+fresh native on/off report. **Managed pause** records that savings control or a
+timed-off request held the pump paused; it does not prove measured savings or an
+automatic-only cause. These two saved-input rows keep reported power distinct
+from the recorded reason for a control pause. Native states follow their recorded
 availability deadlines; unknown periods remain unknown, never inferred off.
 The pump's interpreted indoor reading is available beside the front/rear probes
 and independently in **Series explorer**. It may incorporate its external feed

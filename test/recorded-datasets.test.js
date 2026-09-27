@@ -25,11 +25,14 @@ test('retired equipment datasets cannot create observations, coverage or recorde
   assert.equal(recorder.record(observation('indoor_temperature', 'mqtt-temperature')).saved, true);
 });
 
-test('chart API rejects retired equipment axes instead of returning hidden datasets', t => {
+test('chart API rejects unsupported equipment axes and never uses live caravan watts as recorded power', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   for (const signal of retired) {
     store.observation(observation(signal));
-    assert.throws(() => getChartData({ store, input: 'mqtt', now, left: signal }), /Unknown left axis/);
+    if (signal === 'caravan_power') {
+      assert.deepEqual(getChartData({ store, input: 'mqtt', now, left: signal }).series.caravan_power, [],
+        'The supported interval-average projection requires meter energy, not old/live watts observations');
+    } else assert.throws(() => getChartData({ store, input: 'mqtt', now, left: signal }), /Unknown left axis/);
   }
 });
 

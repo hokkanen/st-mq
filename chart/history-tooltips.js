@@ -1,5 +1,7 @@
 import { historyValueLabel, coefficientStatusLabel, firewoodPointDetail, sessionPointDetail } from './history-model.js';
 import { outdoorSourceLabel, providerName, temperatureAttentionDetails } from './provider-status.js';
+import { Interaction } from 'chart.js';
+import { getRelativePosition } from 'chart.js/helpers';
 
 const dateTime = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', year: 'numeric',
   day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZoneName: 'shortOffset' });
@@ -78,9 +80,10 @@ export function historyTooltipLabel(item) {
     details.push(raw.accuracyVerified === true ? 'accuracy verified' : 'accuracy unverified');
   }
   else if (raw.equivalentCurrent) details.push('interval average', 'equivalent at 230 V');
-  else if (['property_power', 'charger_power', 'charger2_power'].includes(key) && Number.isFinite(raw.intervalStart)) details.push('interval average from recorded energy');
+  else if (['property_power', 'charger_power', 'charger2_power', 'caravan_power'].includes(key) && Number.isFinite(raw.intervalStart)) details.push('interval average from recorded energy');
   else if (key.endsWith('_energy') || /_energy_l[123]$/.test(key)) details.push('recorded interval energy');
-  else if (key.endsWith('_forecast') || key === 'solar_radiation') details.push(key === 'solar_radiation' ? 'archived forecast' : 'forecast');
+  else if (key === 'solar_radiation') details.push('historical solar estimate from the forecast available at the time');
+  else if (key.endsWith('_forecast')) details.push('forecast');
   if (raw.assumedPrice) details.push('assumed price');
   const session = sessionPointDetail(raw);
   if (session) details.push(session);
@@ -122,6 +125,27 @@ export function wrapHistoryTooltip(lines, chart, { bold = false } = {}) {
 
 export function historyTooltipsEnabled({ fullscreen, coarsePointer }) {
   return Boolean(fullscreen || !coarsePointer);
+}
+
+/** Large report markers own their generous hit targets even beside dense price
+ * points. Other genuine points use XY distance, so vertically aligned readings
+ * cannot steal a direct hit. Outside all targets retain shared nearest-time hover. */
+export function historyTooltipInteraction(chart, event, options, useFinalPosition) {
+  const position = getRelativePosition(event, chart);
+  const hits = Interaction.modes.point(chart, event, { ...options, axis: 'xy', includeInvisible: false }, useFinalPosition)
+    .filter(({ datasetIndex, index }) => {
+      const point = chart.data.datasets[datasetIndex]?.data[index];
+      return point && !point.displayBoundary && !point.carriedForward && !point.displayContext && !point.interpolated;
+    });
+  const markers = hits.filter(({ element }) => element.options.radius >= 4);
+  let nearest = [], distance = Infinity;
+  for (const item of markers.length ? markers : hits) {
+    const center = item.element.getCenterPoint(useFinalPosition);
+    const candidate = Math.hypot(position.x - center.x, position.y - center.y);
+    if (candidate < distance) { nearest = [item]; distance = candidate; }
+    else if (candidate === distance) nearest.push(item);
+  }
+  return nearest.length ? nearest : Interaction.modes.nearest(chart, event, { ...options, axis: 'x', intersect: false }, useFinalPosition);
 }
 
 export const historyTooltipCallbacks = {

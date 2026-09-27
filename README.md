@@ -220,12 +220,21 @@ the current readings.
   interpreted indoor temperature** available in its legend. Saved inputs,
   coefficients, cycle outcomes and interval-energy evidence have their own views
   with explicit units and evidence descriptions.
-- **Series explorer:** choose this final menu entry to search supported recorded
-  measurements, states and calculations by label, unit or canonical signal name.
-  It plots one quantity with its own unit and provenance. Categorical signals use
-  an activity row. Cumulative counters, original recording-interval energy and
-  completed-session checks remain distinct. It does not treat arbitrary database
-  JSON, configuration or current-state snapshots as historical measurements.
+  Caravan power uses each measured energy interval's average kW, with its original
+  duration and gaps preserved; recorded kWh remains available in interval energy
+  and the explorer.
+- **Series explorer:** choose this final menu entry to open a searchable picker
+  for the 124 supported chart projections. Search by label, unit or canonical
+  signal name; selecting a result closes the picker and leaves a compact label
+  that reopens it. On phones, the picker opens as a drawer. It includes recorded
+  measurements, states, energy, counters, saved learning inputs, replayed
+  coefficients and supported calculations, including diagnostics beyond the named
+  views. Entries stay discoverable when an installation or selected period has
+  no records. One selected series is shown with the global price controls;
+  categorical signals use an activity row. Cumulative counters, recording-interval
+  energy and completed-session checks retain distinct meanings. This catalogue
+  is not every database field: arbitrary JSON, configuration and current-state
+  snapshots are not historical measurements.
 - **Legend and axes:** each view remembers its own series and activity-row
   choices in this browser. **Reset view** restores its initial comparisons.
   Temperature-led views need no left scale; operational views have one declared
@@ -234,17 +243,43 @@ the current readings.
   across resets. Prices and temperatures share the right scale without artificial
   caps. All-in prices use the historical contract or the nearest known rates;
   point inspection identifies assumed rates and missing prices stay unavailable.
-- **Lines and fills:** left-axis history is solid, right-axis temperatures dashed,
-  forecasts dash-dot and electricity prices dotted. Measured temperatures use
-  monotone curves that preserve extrema; humidity is smooth too. Power, settings,
-  states, counters and model updates retain steps. Interval totals, manual
-  additions and session checks stay individual points. Charger 1 and Charger 2
+- **Lines and fills:** ordinary left-axis history is solid and right-axis
+  temperatures dashed. Historical **Solar estimate** is also dashed; future
+  forecasts use dash-dot and electricity prices stay dotted. Every plotted
+  temperature in °C uses monotone cubic curves, including targets, settings,
+  references and temperature differences; humidity is smooth too. This is display
+  interpolation only: recorded setting changes, control and learning are unchanged.
+  Power, states and model coefficients retain steps. Runtime readings and native
+  cumulative counters use individual hollow points, without a connecting line.
+  Interval totals and session checks also use larger hollow points with generous
+  hover and touch targets; isolated recorded samples remain easy to inspect.
+  Point inspection follows the pointer's position on both axes, so another
+  series at the same time does not take over the tooltip. Away from point targets,
+  hovering still compares readings at the nearest time.
+  Artificial display boundaries and held tails are not marked as observations.
+  Manual additions retain their distinct markers. Charger 1 and Charger 2
   retain turquoise and purple fills, stacked where their intervals overlap.
+  Enabling charger traces in **Phase loading** also shows fills, stacked only
+  within the same L1, L2 or L3 phase where overlapping evidence supports it;
+  property phases stay reference lines. Different phases are never stacked together.
   Auxiliary is an independent line; it is already included in the whole heat-pump
   estimate. Missing evidence never becomes a fabricated zero or bridged gap.
+- **Solar history:** **Solar estimate** shows the latest valid forecast-derived
+  estimate known at each historical plotted time, with its original provider
+  provenance. A newer forecast never replaces earlier plotted history with
+  hindsight values. **Solar forecast** shows the future outlook separately.
+  The six-hour freshness limit concerns the age of the source forecast evidence;
+  it does not restrict the forecast horizon to six hours. Neither series is a
+  house radiation measurement.
 - **Activity and cursor:** relevant operating states appear in labeled rows below
-  the plot. Pump readback, compressor activity, requested reduction, requested
-  circulation, circulation feedback and modeled fireplace windows remain separate.
+  the plot. One **Home compressor** row shows stopped, space heating, hot water
+  or running with unknown routing. Missing or expired compressor evidence stays
+  blank. **Pump mode** has an expandable **Mode key** explaining its colors.
+  Garage pump power readback and managed pause have separate rows: power is the
+  saved native on/off report; managed pause records a savings or timed-off control
+  pause, not measured savings or proof of automatic control. Requested reduction,
+  requested circulation, circulation feedback and modeled fireplace windows
+  remain separate.
   Their legend controls select the rows for this view. Move the cursor across the
   plot or rows to follow a shared time; the vertical crosshair ends at the last
   visible row. Row inspection reports its interval and evidence. On touch devices,

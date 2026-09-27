@@ -1,6 +1,39 @@
 -Make README.md better and more descriptive of the app, especially the beginning of it
 -Implement support for local mqtt-based temperature receives (eg, from shelly or HASS through Meteorologisk Institute); just store last received temp values and time stamps (maybe in storage class, see below) when received (and accept if received within 1h)
 
+Completed 2026-09-27 — Chart curves, series picker and operating evidence
+- Apply monotone cubic geometry to every temperature, including settings and
+  targets. Remove artificial interval stair edges and retain bounded source
+  neighbours for zoomed curves; preserve recorded values, provenance and gaps.
+  Rename historical solar to Solar estimate and use dashes, keeping the future
+  forecast separate with dash-dot strokes and its original source clocks.
+- Replace the expanded explorer with a searchable picker and phone drawer,
+  preserving keyboard, focus, fullscreen and dismissal behavior. Explain the
+  124 supported projections and diagnostics beyond named views; arbitrary
+  database fields and current-state objects are not historical series.
+- Stack charger fills independently within each phase. Replace the Caravan
+  energy view with interval-average power while keeping original energy in the
+  explorer. Standardize recorded counters, interval totals, session readings and
+  isolated numeric observations as large hollow circles with usable hit targets.
+  Prioritize the intended point by pointer position over same-time other series.
+- Combine verified home compressor operation into a single yellow/blue row,
+  distinguishing stopped, unknown routing and missing evidence. Explain pump
+  modes beside their row. Show saved Garage managed pauses and native power
+  readback separately, preserving unknown periods and isolated state samples.
+- Remove the split compressor row/API keys, old expanded explorer and obsolete
+  Caravan view key without aliases or preference migration. Review producers,
+  consumers, UI, tests and documentation. No recorder schema, configuration,
+  control authority, accounting or learning changes; synthetic fixtures only.
+- Validation: final full run passes all 3,613 tests without skips; production
+  build passes with the existing bundle-size warning. Real Chart.js tests cover
+  cubic geometry before/after fetched detail, gaps, original counter timestamps,
+  phase stacks and XY tooltip targeting. Chrome covers all 43 views and 124
+  explorer choices, dark/light themes, keyboard, touch and narrow/short layouts;
+  representative screenshots were reviewed. Firefox chart-only and native
+  fullscreen suites pass. One earlier full run hit an unchanged integration
+  test's temporary-directory cleanup race; its six-test rerun and final full
+  rerun pass without source changes to that fixture.
+
 Completed 2026-09-27 — Coherent chart views and history inspection
 - Replace the single-quantity drawer and universal context with 43 purposeful
   views sharing one server/UI catalogue. Temperature-led views use one right

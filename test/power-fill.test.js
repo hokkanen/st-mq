@@ -94,6 +94,6 @@ test('only charger bands use their current baseline and clipped Chart pixel coor
     assert.equal(datasets.find(dataset => dataset.key === 'auxiliary_power').powerFill, undefined);
   }
   const phases = preparePowerFills(historyDatasets({ ev1_current_l1: points([[0, 4], [10, 5]]) }, CHART_VIEW_BY_KEY.phases));
-  assert.equal(phases.find(dataset => dataset.key === 'ev1_current_l1').powerFill, undefined);
+  assert.equal(phases.find(dataset => dataset.key === 'ev1_current_l1').powerFill.target, 'origin');
   assert.equal(phases.find(dataset => dataset.key === 'ev1_current_l1').fill, false);
 });

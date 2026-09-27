@@ -11,6 +11,8 @@ import { CHART_VIEWS } from '../src/domain/chart-views.js';
 import { EXPLORER_SERIES } from '../chart/series-explorer.js';
 import { seedChartFixture } from './lib/chart-fixture.js';
 import { addFireplace } from '../src/app/fireplace.js';
+import { appendGarageEntry } from '../src/garage/learning.js';
+import { garageSettings } from '../src/garage/settings.js';
 
 const directory = mkdtempSync(join(tmpdir(), 'stmq-chart-views-browser-'));
 const now = Date.parse('2026-09-07T12:00:00Z');
@@ -26,6 +28,10 @@ try {
   app.store.observation({ signal: 'alarm_code', value: 13, unit: 'code', source: 'simulation',
     device: 'invented-chart-alarm', sourceTime: now - 2 * 3600_000, receivedAt: now - 2 * 3600_000,
     quality: ['simulated'], raw: {} });
+  for (let index = 0; index < 4; index++) app.store.observation({
+    signal: 'compressor_hours', value: 800 + index, unit: 'h', source: 'simulation', device: 'invented-chart-runtime',
+    sourceTime: now - (6 - index) * 3600_000, receivedAt: now - (6 - index) * 3600_000, quality: ['simulated'], raw: {},
+  });
   app.store.transaction(() => {
     for (let index = 0; index < 180; index++) {
       const at = now - (180 - index) * 60_000;
@@ -48,7 +54,39 @@ try {
       ]) app.engine.recorder.record({ signal, value, unit, source: 'simulation', device: 'invented-chart-views-probe',
         sourceTime: at, receivedAt: at, quality: ['simulated'], raw: { reportIntervalMs: 60_000 } });
     }
+    // Independent, overlapping phase-energy evidence exercises charger fills at
+    // unequal currents. These are allocated phase estimates, never total energy.
+    for (const prefix of ['ev1', 'ev2']) for (let index = 0; index < 12; index++) {
+      const start = now - (90 - index * 5) * 60_000, end = start + 5 * 60_000;
+      for (let phase = 1; phase <= 3; phase++) app.store.observation({
+        signal: `${prefix}_energy_l${phase}`, value: (prefix === 'ev1' ? 5 + phase : 2 + phase) * .23 / 12,
+        unit: 'kWh', source: 'simulation', device: `invented-chart-${prefix}`, sourceTime: end, receivedAt: end,
+        quality: ['estimated', 'simulated', 'phase_allocation_estimated'],
+        raw: { intervalStart: start, intervalEnd: end, durationMs: end - start, basis: 'integrated-power-phase-allocation' },
+      });
+    }
+    for (let index = 0; index < 6; index++) {
+      const start = now - (120 - index * 10) * 60_000, end = start + 10 * 60_000;
+      app.store.observation({ signal: 'caravan_energy', value: .1, unit: 'kWh', source: 'simulation',
+        device: 'invented-chart-caravan-meter', sourceTime: end, receivedAt: end, quality: ['simulated'],
+        raw: { intervalStart: start, intervalEnd: end, durationMs: end - start, basis: 'meter-counter-delta' } });
+    }
+    for (let index = 0; index < 6; index++) {
+      const at = now - (30 - index) * 60_000;
+      appendGarageEntry(app.store, 'simulated', 'sample', {
+        at, rearAt: at, rearC: 12, frontAt: at, frontC: 11.5, outdoorAt: at, outdoorC: 3,
+        available: [true, false, false, true, null, true][index], managedPause: [false, true, false, false, null, false][index],
+        powerKw: .4, powerQuality: 'simulated', ev1Kw: 0, ev2Kw: 0,
+      }, garageSettings(), at);
+    }
   });
+  const periodicFixture = await fetch(`http://127.0.0.1:${app.server.address().port}/api/chart?view=temperatures&start=2026-09-07&end=2026-09-07&points=800`).then(response => response.json());
+  for (const key of ['bedroom_temperature', 'downstairs_temperature']) {
+    assert(periodicFixture.series[key].some(point => point.periodicCoverage && point.displayBoundary),
+      `${key}: the fixture contains periodic hold endpoints, the geometry regression being tested`);
+    assert(new Set(periodicFixture.series[key].filter(point => Number.isFinite(point.y)).map(point => point.y)).size > 10,
+      `${key}: source readings change gradually across enough reports to inspect their curve`);
+  }
   let endpoint = process.argv[2];
   if (!endpoint) {
     const profile = join(directory, 'chrome'); mkdirSync(profile);
@@ -95,9 +133,35 @@ try {
     throw new Error(`Timed out: ${expression}; browser errors: ${JSON.stringify(errors)}`);
   };
   const settle = () => evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+  const pickerOpen = () => evaluate("document.getElementById('chart-series-picker').open");
+  const openPicker = async () => {
+    if (!await pickerOpen()) await evaluate("document.getElementById('chart-series-toggle').click(); true");
+    await until("document.getElementById('chart-series-picker').open"); await settle();
+  };
+  const searchSeries = async query => {
+    await openPicker();
+    await evaluate(`(() => { const input = document.getElementById('chart-series-search');
+      input.value = ${JSON.stringify(query)}; input.dispatchEvent(new Event('input')); return true; })()`);
+    await settle();
+  };
+  const pressKey = async key => {
+    const code = { Escape: 'Escape', ArrowDown: 'ArrowDown', ArrowUp: 'ArrowUp', Enter: 'Enter', Tab: 'Tab' }[key];
+    const windowsVirtualKeyCode = { Escape: 27, ArrowDown: 40, ArrowUp: 38, Enter: 13, Tab: 9 }[key];
+    await send('Input.dispatchKeyEvent', { type: 'keyDown', key, code, windowsVirtualKeyCode, nativeVirtualKeyCode: windowsVirtualKeyCode,
+      ...(key === 'Enter' ? { text: '\r', unmodifiedText: '\r' } : {}) });
+    await send('Input.dispatchKeyEvent', { type: 'keyUp', key, code, windowsVirtualKeyCode, nativeVirtualKeyCode: windowsVirtualKeyCode }); await settle();
+  };
   const choose = async (id, value) => {
-    await evaluate(`(() => { const input = document.getElementById(${JSON.stringify(id)});
-      input.value = ${JSON.stringify(value)}; input.dispatchEvent(new Event('change')); return true; })()`);
+    if (id === 'chart-series') {
+      await searchSeries('');
+      await evaluate(`document.querySelector('#chart-series [data-series-key="${value}"]').click(); true`);
+      await until("!document.getElementById('chart-series-picker').open");
+    } else {
+      // Native selects cannot be activated beneath a modal dialog.
+      if (await pickerOpen()) await pressKey('Escape');
+      await evaluate(`(() => { const input = document.getElementById(${JSON.stringify(id)});
+        input.value = ${JSON.stringify(value)}; input.dispatchEvent(new Event('change')); return true; })()`);
+    }
     const expected = id === 'chart-view' ? `dataset.view === ${JSON.stringify(value)}` : `dataset.series === ${JSON.stringify(value)}`;
     await until(`document.getElementById('history').dataset.ready === 'true' && document.getElementById('history').${expected}`);
     await settle();
@@ -106,6 +170,38 @@ try {
     await evaluate(`document.querySelector('[data-chart-key="${key}"]').click(); true`); await settle();
   };
   const shown = key => evaluate(`document.querySelector('[data-chart-key="${key}"]')?.getAttribute('aria-pressed') === 'true'`);
+  const drawnPaths = key => evaluate(`(() => {
+    const swatch = document.querySelector('[data-chart-key="${key}"] .chart-legend-swatch');
+    const context = document.createElement('canvas').getContext('2d');
+    context.strokeStyle = getComputedStyle(swatch).color;
+    return window.chartDrawing.filter(row => row.method === 'stroke' && row.color === context.strokeStyle);
+  })()`);
+  const checkTemperatureCurve = async key => {
+    const paths = await drawnPaths(key), curves = [], jumps = [];
+    for (const path of paths) {
+      let previous;
+      for (const command of path.path) {
+        if (command.method === 'moveTo') previous = command.args;
+        else if (['lineTo', 'bezierCurveTo'].includes(command.method)) {
+          const end = command.args.slice(-2);
+          if (previous) {
+            const dx = end[0] - previous[0], dy = end[1] - previous[1];
+            if (Math.abs(dx) < .01 && Math.abs(dy) > .01) jumps.push({ dx, dy });
+            if (command.method === 'bezierCurveTo' && Math.abs(dx) > .01 && Math.abs(dy) > .01) {
+              const [cx, cy] = command.args;
+              // The control point must depart from the endpoint chord: merely
+              // calling bezierCurveTo with a straight segment proves nothing.
+              if (Math.abs((cx - previous[0]) * dy - (cy - previous[1]) * dx) > .00001)
+                curves.push(command);
+            }
+          }
+          previous = end;
+        }
+      }
+    }
+    assert(curves.length >= 8, `${key}: real canvas contains curved temperature segments (${curves.length})`);
+    assert.equal(jumps.length, 0, `${key}: artificial periodic hold edges do not create near-vertical stair steps`);
+  };
   const capture = async name => {
     await settle(); mkdirSync('var', { recursive: true });
     const path = `var/chart-views-${name}.png`, screenshot = await send('Page.captureScreenshot', { format: 'png' });
@@ -127,7 +223,45 @@ try {
         && (panel.dataset.fullscreen !== 'true' || canvas.bottom <= innerHeight && bounds.bottom <= innerHeight + 1);
     })()`), true, `${label}: chart controls and plot fit without horizontal overflow`);
   };
+  const checkPickerFits = async label => {
+    assert.equal(await evaluate(`(() => {
+      const modal = document.getElementById('chart-series-picker').getBoundingClientRect();
+      const list = document.getElementById('chart-series'), rows = list.querySelectorAll('[role=option]');
+      return modal.left >= -1 && modal.top >= -1 && modal.right <= innerWidth + 1 && modal.bottom <= innerHeight + 1
+        && list.clientHeight >= 100 && rows.length > 0 && rows[0].getBoundingClientRect().height >= 40
+        && document.documentElement.scrollWidth <= innerWidth + 1;
+    })()`), true, `${label}: searchable picker stays inside the viewport with usable result targets`);
+  };
   await send('Runtime.enable'); await send('Page.enable');
+  // Observe the real canvas drawing operations, without importing chart internals
+  // or adding production hooks. Keep only the current frame of the history plot.
+  await send('Page.addScriptToEvaluateOnNewDocument', { source: `(() => {
+    const proto = CanvasRenderingContext2D.prototype, state = new WeakMap();
+    window.chartDrawing = []; window.chartLabels = [];
+    for (const method of ['moveTo', 'lineTo', 'bezierCurveTo', 'closePath']) {
+      const original = Path2D.prototype[method];
+      Path2D.prototype[method] = function(...args) {
+        const path = state.get(this) ?? []; state.set(this, path); path.push({ method, args });
+        return original.apply(this, args);
+      };
+    }
+    for (const method of ['beginPath', 'moveTo', 'lineTo', 'bezierCurveTo', 'arc', 'closePath', 'stroke', 'fill', 'fillText', 'clearRect']) {
+      const original = proto[method];
+      proto[method] = function(...args) {
+        if (this.canvas.id === 'history') {
+          let path = state.get(this) ?? [];
+          if (method === 'beginPath') { path = []; state.set(this, path); }
+          else if (method === 'clearRect') { window.chartDrawing = []; window.chartLabels = []; }
+          else if (method === 'fillText') window.chartLabels.push(String(args[0]));
+          else if (method === 'stroke' || method === 'fill') {
+            window.chartDrawing.push({ method, color: method === 'stroke' ? this.strokeStyle : this.fillStyle,
+              dash: this.getLineDash(), path: (args[0] instanceof Path2D ? state.get(args[0]) ?? [] : path).slice() });
+          } else path.push({ method, args });
+        }
+        return original.apply(this, args);
+      };
+    }
+  })();` });
   await viewport(1280, 1100);
   await send('Page.navigate', { url: `http://127.0.0.1:${app.server.address().port}/` });
   await until("document.getElementById('history')?.dataset.ready === 'true'");
@@ -161,7 +295,129 @@ try {
   assert.equal(await shown('spot_price'), false, 'Reset view preserves shared price choices');
   await toggle('spot_price');
 
+  for (const [view, temperatures] of [['temperatures', ['bedroom_temperature', 'downstairs_temperature']],
+    ['heating_water', ['supply_temperature', 'return_temperature']]]) {
+    await choose('chart-view', view);
+    for (const key of temperatures) await checkTemperatureCurve(key);
+  }
+  await choose('chart-view', 'home_power');
+  assert.deepEqual(await evaluate("[...document.querySelectorAll('[data-activity-key=compressorHome] .activity-key-item')].map(item=>item.textContent)"),
+    ['Space heating', 'Hot water'], 'The combined Home compressor row explains its yellow and blue states beside the label');
+  for (const [value, color] of [[1, '--chart-compressor-space'], [2, '--chart-compressor-dhw']]) {
+    assert.equal(await evaluate(`(() => {
+      const segment=document.querySelector('[data-activity-key=compressorHome] [data-value="${value}"]');
+      const swatch=document.createElement('span'); swatch.style.color=getComputedStyle(document.documentElement).getPropertyValue('${color}').trim();
+      return Boolean(segment) && segment.style.backgroundColor === swatch.style.color;
+    })()`), true, `Compressor state ${value} uses its own explained color`);
+  }
+  if (!await shown('operatingMode')) await toggle('operatingMode');
+  await evaluate("document.querySelector('#operating-modes .activity-key summary').focus(); true"); await pressKey('Enter');
+  assert.equal(await evaluate("document.querySelector('#operating-modes .activity-key').open"), true, 'The pump-mode explanation opens from the keyboard');
+  assert.equal(await evaluate("document.querySelectorAll('#operating-modes .activity-key-item').length"), 5);
+  assert.match(await evaluate("document.querySelector('#operating-modes .activity-key').textContent"), /Protection or circulation may still operate/);
+  await toggle('outdoor_temperature');
+  assert.equal(await evaluate("document.querySelector('#operating-modes .activity-key').open"), true, 'Changing a series does not close a mode explanation being read');
+  await evaluate("document.querySelector('.history-panel').scrollIntoView({block:'start'}); true");
+  await capture('home-compressor-mode-key-dark');
+  await evaluate("document.querySelector('#operating-modes .activity-key summary').click(); true"); await settle();
+  await choose('chart-view', 'weather');
+  assert.equal(await evaluate("document.querySelector('[data-chart-key=solar_radiation] .chart-legend-swatch').dataset.pattern"), 'dashed');
+  const solarPaths = await drawnPaths('solar_radiation');
+  assert(solarPaths.some(path => path.path.some(command => command.method === 'lineTo')), 'Solar estimate draws recorded forecast evidence');
+  assert(solarPaths.some(path => JSON.stringify(path.dash) === '[6,4]' && path.path.some(command => command.method === 'lineTo')),
+    'Solar estimate uses a dashed canvas stroke alongside the same-color future forecast');
+  assert.equal(await evaluate("document.querySelector('[data-chart-key=solar_forecast] .chart-legend-swatch').dataset.pattern"), 'dash-dot',
+    'Future solar forecast retains a distinct dash-dot stroke');
+  await choose('chart-view', 'phases');
+  for (const prefix of ['property', 'ev1', 'ev2']) for (let phase = 1; phase <= 3; phase++) {
+    const key = `${prefix}_current_l${phase}`;
+    if (prefix !== 'property' && !await shown(key)) await toggle(key);
+    assert.equal(await evaluate(`document.querySelector('[data-chart-key="${key}"] .chart-legend-swatch').dataset.kind`),
+      prefix === 'property' ? 'line' : 'fill', `${key}: property is an outline; charger phases are filled`);
+  }
+  assert(await evaluate("window.chartDrawing.filter(row => row.method === 'fill' && row.path.filter(command => command.method === 'lineTo').length >= 4).length >= 6"),
+    'All six charger phases render supported filled areas');
+  const phaseBands = await evaluate(`(() => {
+    const pixel = document.createElement('canvas'); pixel.width = pixel.height = 1;
+    const context = pixel.getContext('2d', {willReadFrequently:true});
+    const rgb = color => {
+      context.clearRect(0,0,1,1); context.fillStyle=color; context.fillRect(0,0,1,1);
+      return [...context.getImageData(0,0,1,1).data].slice(0,3);
+    };
+    const fills = key => {
+      const wanted = rgb(getComputedStyle(document.querySelector('[data-chart-key="'+key+'"] .chart-legend-swatch')).color);
+      return window.chartDrawing.filter(row => row.method === 'fill' && rgb(row.color).every((value,index) => Math.abs(value-wanted[index]) <= 2));
+    };
+    const coordinates = paths => paths.flatMap(path => path.path.filter(command => ['moveTo','lineTo'].includes(command.method)).map(command => command.args));
+    const result = [];
+    for (let phase=1;phase<=3;phase++) {
+      const lower=fills('ev1_current_l'+phase), upper=fills('ev2_current_l'+phase), points=coordinates(upper);
+      const at=(Math.min(...points.map(point=>point[0]))+Math.max(...points.map(point=>point[0])))/2, bounds=[];
+      for (const paths of [lower,upper]) {
+        const intersections=[];
+        for(const path of paths) {
+          let previous;
+          for(const command of path.path) {
+            if(command.method==='moveTo')previous=command.args;
+            else if(command.method==='lineTo'){
+              const next=command.args;
+              if(previous&&Math.min(previous[0],next[0])<at&&Math.max(previous[0],next[0])>at)
+                intersections.push(previous[1]+(next[1]-previous[1])*(at-previous[0])/(next[0]-previous[0]));
+              previous=next;
+            }
+          }
+        }
+        bounds.push({top:Math.min(...intersections),bottom:Math.max(...intersections)});
+      }
+      result.push(bounds);
+    }
+    return result;
+  })()`);
+  for (const [index, [lower, upper]] of phaseBands.entries()) {
+    assert(Number.isFinite(lower.top) && Number.isFinite(upper.top), `L${index + 1}: both chargers have a visible supported fill`);
+    assert(Math.abs(upper.bottom - lower.top) < .01, `L${index + 1}: Charger 2 stacks on the same phase of Charger 1`);
+    assert(Math.abs((upper.bottom - upper.top) / (lower.bottom - lower.top) - (3 + index) / (6 + index)) < .01,
+      `L${index + 1}: filled thickness preserves each charger's actual current`);
+    assert(Math.abs(lower.bottom - phaseBands[0][0].bottom) < .01, `L${index + 1}: each conductor has its own zero baseline`);
+  }
+  await evaluate("document.querySelector('.history-panel').scrollIntoView({block:'start'}); true");
+  await capture('phases-stacked-dark');
+  await choose('chart-view', 'runtime');
+  await evaluate("document.querySelector('.history-panel').scrollIntoView({block:'start'}); true"); await settle();
+  const runtimePaths = await drawnPaths('compressor_hours');
+  const runtimeMarkers = runtimePaths.flatMap(path => path.path.filter(command => command.method === 'arc' && command.args[2] >= 4));
+  assert(runtimeMarkers.length >= 4, 'Sparse runtime reports have clearly clickable circular outlines');
+  assert(runtimePaths.every(path => path.path.every(command => !['lineTo', 'bezierCurveTo'].includes(command.method))),
+    'Momentary runtime reports do not invent a connecting line between acquisitions');
+  const [markerX, markerY] = runtimeMarkers[1].args;
+  assert.equal(await evaluate(`window.chartDrawing.some(row => row.method === 'fill' && ['rgba(0, 0, 0, 0)', '#00000000'].includes(row.color)
+    && row.path.some(command => command.method === 'arc' && command.args[0] === ${markerX} && command.args[1] === ${markerY}))`), true,
+  'Runtime circles leave their centers hollow');
+  const markerPoint = await evaluate(`(() => { const r=document.getElementById('history').getBoundingClientRect(); return {x:r.left+${markerX}+2,y:r.top+${markerY}+1}; })()`);
+  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...markerPoint }); await settle();
+  assert.match(await evaluate("window.chartLabels.join(' ')"), /Compressor.*80[0-3]|80[0-3].*Compressor/i,
+    'Hovering the visible marker presents the original recorded runtime value');
+  await capture('runtime-markers-dark');
+  await choose('chart-view', 'caravan_power');
+  assert.equal(await evaluate("document.querySelector('[data-chart-key=caravan_power]').getAttribute('aria-pressed')"), 'true');
+  assert((await drawnPaths('caravan_power')).some(path => path.path.some(command => command.method === 'lineTo')),
+    'Caravan meter intervals draw their average power');
+  assert.match(await evaluate("document.querySelector('[data-chart-key=caravan_power]').title"), /kW/);
+  await evaluate("document.querySelector('.history-panel').scrollIntoView({block:'start'}); true");
+  await capture('caravan-power-dark');
+  await choose('chart-view', 'explorer'); await choose('chart-series', 'caravan_energy');
+  assert.equal(await evaluate("document.querySelector('[data-chart-key=caravan_energy] .chart-legend-swatch').dataset.kind"), 'interval-energy',
+    'The explorer keeps the original Caravan energy intervals separately available');
+
   await choose('chart-view', 'garage');
+  for (const key of ['garage_model_available', 'garage_model_managed_pause']) {
+    assert.equal(await shown(key), true, `${key}: garage operation context is visible by default`);
+    assert.equal(await evaluate(`document.querySelector('[data-activity-key="${key}"] .mode-segment[data-value="0"]') !== null
+      && document.querySelector('[data-activity-key="${key}"] .mode-segment[data-value="1"]') !== null`), true,
+    `${key}: known off/on states remain separately inspectable`);
+  }
+  assert.match(await evaluate("document.querySelector('[data-activity-key=garage_model_available]').textContent"), /Pump power readback/);
+  assert.match(await evaluate("document.querySelector('[data-activity-key=garage_model_managed_pause]').textContent"), /Managed.*pause/);
   await toggle('garage_native_indoor_temperature');
   assert.equal(await shown('garage_native_indoor_temperature'), true);
   assert.match(await evaluate("document.getElementById('chart-notes').textContent"), /native readback.*not an independent protection probe/);
@@ -169,16 +425,51 @@ try {
   await capture('garage-dark');
   await choose('chart-view', 'explorer');
   assert.equal(await evaluate("document.getElementById('chart-explorer').hidden"), false);
-  assert.equal(await evaluate("document.querySelectorAll('#chart-series option').length"), EXPLORER_SERIES.length);
-  await evaluate("document.getElementById('chart-series-search').value='pump interpreted'; document.getElementById('chart-series-search').dispatchEvent(new Event('input')); true");
-  assert.deepEqual(await evaluate("[...document.querySelectorAll('#chart-series option')].map(option => option.value)"), ['garage_native_indoor_temperature']);
-  await choose('chart-series', 'garage_native_indoor_temperature');
+  assert.equal(await pickerOpen(), true, 'Choosing the explorer opens its searchable series picker immediately');
+  assert.equal(await evaluate("document.activeElement.id"), 'chart-series-search', 'Search receives initial dialog focus');
+  assert.equal(await evaluate("document.querySelectorAll('#chart-series [role=option]').length"), EXPLORER_SERIES.length);
+  await checkPickerFits('Desktop');
+  await searchSeries('pump interpreted');
+  assert.deepEqual(await evaluate("[...document.querySelectorAll('#chart-series [role=option]')].map(option => option.dataset.seriesKey)"), ['garage_native_indoor_temperature']);
+  await pressKey('ArrowDown');
+  assert.equal(await evaluate("document.getElementById(document.activeElement.getAttribute('aria-activedescendant')).dataset.seriesKey"), 'garage_native_indoor_temperature');
+  await pressKey('Enter');
+  await until("document.getElementById('history').dataset.series === 'garage_native_indoor_temperature'");
+  assert.equal(await pickerOpen(), false, 'Enter selects and closes the picker');
+  assert.equal(await evaluate("document.activeElement.id"), 'chart-series-toggle', 'Selection restores focus to the compact series button');
   assert.match(await evaluate("document.getElementById('chart-view-description').textContent"), /Recorded temperature/);
-  await evaluate("document.getElementById('chart-series-search').value='no-synthetic-series-matches'; document.getElementById('chart-series-search').dispatchEvent(new Event('input')); true");
-  assert.equal(await evaluate("document.querySelectorAll('#chart-series option:not(:disabled)').length"), 0);
-  assert.match(await evaluate("document.getElementById('chart-series').textContent"), /No matching series/);
+  await openPicker();
+  assert.equal(await evaluate("document.getElementById('chart-series-search').value"), 'pump interpreted', 'Reopening keeps the useful search');
+  await capture('picker-desktop-dark');
+  await pressKey('Escape');
+  assert.equal(await pickerOpen(), false, `Escape dismisses the picker (focused element ${await evaluate('document.activeElement.id')}, query ${await evaluate("document.getElementById('chart-series-search').value")})`);
+  assert.equal(await evaluate("document.activeElement.id"), 'chart-series-toggle', 'Escape restores focus to the opener');
+  await viewport(1280, 740);
+  await evaluate("document.getElementById('chart-series-toggle').scrollIntoView({block:'end'}); true");
+  await openPicker();
+  await evaluate("document.getElementById('chart-series-clear').click(); true"); await settle();
+  await checkPickerFits('Desktop list expanding near the bottom edge');
+  await pressKey('Escape'); await viewport(1280, 1100);
+  await searchSeries('no-synthetic-series-matches');
+  assert.equal(await evaluate("document.querySelectorAll('#chart-series [role=option]').length"), 0);
+  assert.match(await evaluate("document.getElementById('chart-series-picker').textContent"), /No matching series/);
   assert.equal(await evaluate("document.getElementById('history').dataset.ready"), 'true', 'An empty search does not discard the displayed chart');
-  await evaluate("document.getElementById('chart-series-search').value=''; document.getElementById('chart-series-search').dispatchEvent(new Event('input')); true");
+  await searchSeries('temperature');
+  const results = await evaluate("[...document.querySelectorAll('#chart-series [role=option]')].map(option => option.dataset.seriesKey)");
+  await evaluate("document.getElementById('chart-series-search').focus(); true");
+  const activeResult = () => evaluate("document.getElementById(document.activeElement.getAttribute('aria-activedescendant')).dataset.seriesKey");
+  const activeIndex = results.indexOf(await activeResult());
+  await pressKey('ArrowDown');
+  assert.equal(await activeResult(), results[(activeIndex + 1) % results.length]);
+  await pressKey('ArrowUp');
+  assert.equal(await activeResult(), results[activeIndex]);
+  await pressKey('Escape');
+  await openPicker();
+  const outsidePoint = await evaluate("(() => { const r=document.getElementById('chart-series-picker').getBoundingClientRect(); return {x:r.left>5?2:innerWidth-2,y:r.top>5?2:innerHeight-2}; })()");
+  await send('Input.dispatchMouseEvent', { type: 'mousePressed', button: 'left', clickCount: 1, ...outsidePoint });
+  await send('Input.dispatchMouseEvent', { type: 'mouseReleased', button: 'left', clickCount: 1, ...outsidePoint }); await settle();
+  assert.equal(await pickerOpen(), false, 'Clicking outside dismisses the modal');
+  assert.equal(await evaluate("document.activeElement.id"), 'chart-series-toggle');
   await choose('chart-series', 'garage_door1_open');
   assert.equal(await evaluate("document.querySelector('#chart-activity [data-activity-key]').dataset.activityKey"), 'garage_door1_open');
   assert.equal(await evaluate("document.querySelectorAll('#chart-activity .mode-segment').length > 0"), true, 'Recorded state explorer has inspectable intervals');
@@ -238,6 +529,18 @@ try {
     assert.equal(await evaluate("document.querySelector('.chart-crosshair-extension').hidden"), true, 'Keyboard zoom clears the old time cursor before gesture capture');
     await until("document.querySelector('.chart-gesture-preview') === null");
     await choose('chart-view', 'explorer');
+    await searchSeries('');
+    await checkPickerFits(`${width}px fullscreen`);
+    await pressKey('Tab');
+    assert.equal(await evaluate("document.getElementById('chart-series-picker').contains(document.activeElement)"), true,
+      `${width}px fullscreen: the chart focus trap leaves keyboard navigation inside the series picker`);
+    await capture(`picker-mobile-${width}-dark`);
+    await evaluate("document.querySelector('#chart-series [role=option]').scrollIntoView({block:'nearest'}); true"); await settle();
+    const resultPoint = await evaluate("(() => { const r=document.querySelector('#chart-series [role=option]').getBoundingClientRect(); return {x:r.left+r.width/2,y:r.top+r.height/2}; })()");
+    await send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ ...resultPoint, id: 1 }] });
+    await send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    await until("!document.getElementById('chart-series-picker').open");
+    await until("document.getElementById('history').dataset.ready === 'true'");
     await checkFits(`${width}px fullscreen explorer`);
     await capture(`explorer-${width}-dark`);
     await choose('chart-view', 'power');
@@ -254,6 +557,10 @@ try {
         await evaluate("document.querySelector('.history-panel').scrollIntoView({block:'start'}); true");
         await checkFits(`${width}px ${theme} ${key}`);
         await capture(`${key}-${width}-${theme}`);
+        if (key === 'explorer') {
+          await openPicker(); await checkPickerFits(`${width}px ${theme}`);
+          await capture(`picker-${width}-${theme}`); await pressKey('Escape');
+        }
       }
       await choose('chart-view', 'power');
       await evaluate("document.getElementById('chart-fullscreen').click(); true"); await settle();
@@ -262,8 +569,12 @@ try {
       await evaluate("document.getElementById('chart-fullscreen').click(); true"); await settle();
     }
   }
+  await viewport(390, 400, true);
+  await choose('chart-view', 'explorer'); await searchSeries('');
+  await checkPickerFits('Phone with a short available viewport');
+  await capture('picker-short-phone'); await pressKey('Escape');
   assert.deepEqual(errors, [], 'All view selections and cursor interactions have no uncaught browser exceptions');
-  console.log(`Chart views browser checks passed: ${CHART_VIEWS.length} named views, ${EXPLORER_SERIES.length} explorer choices, visibility isolation, garage readback, crosshair bounds and touch, dark/light themes, and 320/390px fullscreen layouts.`);
+  console.log(`Chart views browser checks passed: ${CHART_VIEWS.length} named views, ${EXPLORER_SERIES.length} searchable explorer choices, modal keyboard/touch/focus, periodic temperature Bézier geometry, solar estimate dash, charger phase fills, visibility isolation, garage readback, crosshair bounds and touch, dark/light themes, and 320/390px fullscreen layouts.`);
   console.log(`Screenshots: ${screenshots.join(', ')}`);
 } finally {
   socket?.close(); for (const request of pending.values()) clearTimeout(request.timer);
