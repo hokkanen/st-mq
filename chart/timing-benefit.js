@@ -8,6 +8,8 @@ export function createTimingBenefit(root) {
   if (!root) return { render() {}, close() {} };
   const document = root.ownerDocument;
   const view = document.defaultView;
+  const disclosure = root.closest('details');
+  let alignmentFrame = null;
   let lastFingerprint, closed = false, notes, notesContent, devices, overviewObserver, overviewHeight, selectionHeight;
   let latestPayload, modeStatus, heatingMode = 'model', heatingScope = 'home', chargingScope = 'total';
   const preferenceKey = 'stmq.heatingSavingMode';
@@ -91,10 +93,13 @@ export function createTimingBenefit(root) {
     parent.append(section);
   }
   function alignOverviews() {
-    if (closed) return;
+    // Closed native details can report either stale boxes or zero boxes,
+    // depending on the browser. Neither describes the next visible layout.
+    if (closed || disclosure && !disclosure.open || root.getBoundingClientRect().width <= 0) return;
     // Match the control area before measuring the results. The inner content
     // keeps its natural height, so wrapping can both grow and shrink the row.
     const controlHeight = Math.ceil(Math.max(...[...cards.values()].map(card => card.selection.getBoundingClientRect().height)));
+    if (!Number.isFinite(controlHeight) || controlHeight <= 0) return;
     if (controlHeight !== selectionHeight) {
       selectionHeight = controlHeight;
       devices.style.setProperty('--timing-selection-height', `${controlHeight}px`);
@@ -102,9 +107,22 @@ export function createTimingBenefit(root) {
     // Measure only intrinsic summary content. Expanded details must never set
     // the other card's height; observing the inner nodes also avoids feedback.
     const height = Math.ceil(Math.max(...[...cards.values()].map(card => card.overview.getBoundingClientRect().height)));
+    if (!Number.isFinite(height) || height <= 0) return;
     if (height === overviewHeight) return;
     overviewHeight = height;
     devices.style.setProperty('--timing-overview-height', `${height}px`);
+  }
+  function scheduleAlignment() {
+    if (closed) return;
+    if (disclosure && !disclosure.open) {
+      if (alignmentFrame !== null) view.cancelAnimationFrame(alignmentFrame);
+      alignmentFrame = null;
+      return;
+    }
+    if (alignmentFrame === null) alignmentFrame = view.requestAnimationFrame(() => {
+      alignmentFrame = null;
+      alignOverviews();
+    });
   }
   function initialize(displays) {
     const intro = element('div', 'timing-intro');
@@ -188,15 +206,16 @@ export function createTimingBenefit(root) {
     // Equal heights are a layout enhancement. Older appliance browsers must
     // still render the figures and controls when ResizeObserver is unavailable.
     if (typeof view.ResizeObserver === 'function') {
-      overviewObserver = new view.ResizeObserver(alignOverviews);
+      overviewObserver = new view.ResizeObserver(scheduleAlignment);
       for (const card of cards.values()) {
         overviewObserver.observe(card.overview);
         overviewObserver.observe(card.selection);
       }
-    } else {
-      view.addEventListener('resize', alignOverviews);
-      root.parentElement?.addEventListener('toggle', alignOverviews);
     }
+    // A native disclosure reopening is not guaranteed to notify ResizeObserver.
+    // Wait until its visible subtree is restored before measuring it again.
+    view.addEventListener('resize', scheduleAlignment);
+    disclosure?.addEventListener('toggle', scheduleAlignment);
   }
   function deviceOverview(display) {
     const overview = document.createDocumentFragment();
@@ -388,10 +407,10 @@ export function createTimingBenefit(root) {
     render,
     close() {
       closed = true; overviewObserver?.disconnect();
-      if (!overviewObserver) {
-        view.removeEventListener('resize', alignOverviews);
-        root.parentElement?.removeEventListener('toggle', alignOverviews);
-      }
+      if (alignmentFrame !== null) view.cancelAnimationFrame(alignmentFrame);
+      alignmentFrame = null;
+      view.removeEventListener('resize', scheduleAlignment);
+      disclosure?.removeEventListener('toggle', scheduleAlignment);
       for (const button of modeButtons) button.removeEventListener('click', chooseMode);
       for (const button of scopeButtons) button.removeEventListener('click', chooseScope);
       for (const button of chargingButtons) button.removeEventListener('click', chooseChargingScope);

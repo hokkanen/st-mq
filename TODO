@@ -1,6 +1,32 @@
 -Make README.md better and more descriptive of the app, especially the beginning of it
 -Implement support for local mqtt-based temperature receives (eg, from shelly or HASS through Meteorologisk Institute); just store last received temp values and time stamps (maybe in storage class, see below) when received (and accept if received within 1h)
 
+Completed 2026-09-27 — Restore comparison contents after reopening their outer fold
+- Investigate the owner's first-open-success / subsequent-empty-fold sequence.
+  The card DOM stays mounted, but hidden refreshes and resize callbacks can
+  overwrite the last visible alignment. All missing overview content shared
+  overflow-clipping wrappers, while its sibling detail summaries remained outside.
+  The prior missing-observer startup fix does not explain this remaining sequence.
+- Hide the outer fold's content through an explicit CSS display transition and
+  contain overview/result margins with table pseudo-elements instead of clipping.
+  Preserve natural content heights and the existing native inner disclosures.
+- Measure only when the outer fold is open and has a visible width. Keep the
+  last valid alignment while closed; explicitly schedule fresh alignment on every
+  reopen even when ResizeObserver exists but delivers no notification. Coalesce
+  callbacks and cancel pending frames when the fold or controller closes.
+- Preserve current comparison choices, calculations, keyboard focus and nested
+  fold identity. Reviewed current data producers/consumers and UI lifecycle;
+  no configuration/schema changes, obsolete data compatibility or migrations.
+- Validation: 19 focused UI tests pass; all four new lifecycle regressions fail
+  against the pre-fix controller. Production build and synthetic Firefox energy
+  checks pass. Chromium passes native/missing/delayed observer scenarios with
+  normal/zero hidden geometry at five widths in both themes, including repeated
+  reopen, hidden refresh/resize, hit testing and identical rendered-card captures.
+  Screenshots reviewed. The exact physical-fridge paint failure remains
+  unverified; hidden alignment writes are reproduced, stale clipping is inferred.
+  Work isolated on fix/fridge-comparison-reopen; no merge into H66 or household
+  access. No full standard suite run.
+
 Completed 2026-09-27 — Consistent application calendars and dropdowns
 - Replace the end-only calendar with one shared picker for chart start/end dates
   and temporary Home/Garage deadlines. Keep explicit unchanged-end selection,

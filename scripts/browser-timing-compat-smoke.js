@@ -1,4 +1,4 @@
-// Isolated comparison UI with optional browser layout APIs removed; no runtime or household data.
+// Isolated comparison UI through disclosure cycles; no runtime or household data.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
@@ -42,11 +42,27 @@ const payload = { now: from + 12 * hour,
       firstAt: from + hour, lastAt: from + 8 * hour }, assumptions: ['Synthetic browser fixture.'] } };
 const fixture = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
   <link rel="stylesheet" href="/chart/monitor.css"><link rel="stylesheet" href="/chart/timing-benefit.css">
+  <style>html[data-hidden-layout] #timing-details:not([open]) > div { display: none; }</style>
   <title>Comparison browser fixture</title></head><body><main>
-  <details id="timing-details"><summary>Energy cost comparisons</summary><div id="timing-benefit"></div></details>
+  <details id="timing-details" class="timing-details dashboard-disclosure"><summary><span>Energy cost comparisons</span></summary><div id="timing-benefit" class="timing-benefit"></div></details>
   </main><script type="module">
     import { createTimingBenefit } from '/chart/timing-benefit.js';
-    if (new URLSearchParams(location.search).has('without-observer')) window.ResizeObserver = undefined;
+    const options = new URLSearchParams(location.search);
+    if (options.has('without-observer')) window.ResizeObserver = undefined;
+    if (options.has('delayed-observer')) {
+      const NativeResizeObserver = window.ResizeObserver;
+      window.pendingResizeDeliveries = [];
+      window.ResizeObserver = class extends NativeResizeObserver {
+        constructor(callback) {
+          super((entries, observer) => pendingResizeDeliveries.push(() => callback(entries, observer)));
+        }
+      };
+      window.flushResizeDeliveries = () => pendingResizeDeliveries.splice(0).forEach(deliver => deliver());
+    }
+    // Exercise engines that remove closed disclosure contents from layout.
+    // Current Chromium retains their old rects, so its native details alone
+    // does not cover zero-sized hidden measurements from appliance browsers.
+    if (options.has('hidden-layout')) document.documentElement.dataset.hiddenLayout = '';
     localStorage.clear();
     window.comparisonPayload = ${JSON.stringify(payload)};
     window.comparisonPanel = createTimingBenefit(document.getElementById('timing-benefit'));
@@ -96,8 +112,12 @@ try {
     if (result.exceptionDetails) throw new Error(JSON.stringify(result.exceptionDetails));
     return result.result.value;
   };
-  const settle = () => evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
-  const checkVisibleCards = async () => {
+  const settle = () => evaluate(`new Promise(resolve => {
+    let frames = 4;
+    function frame() { if (--frames) requestAnimationFrame(frame); else resolve(); }
+    requestAnimationFrame(frame);
+  })`);
+  const checkVisibleCards = async (amounts = ['€3.50', '€2.00', '€1.25']) => {
     assert.deepEqual(await evaluate(`Array.from(document.querySelectorAll('.timing-device')).map(card => {
       const overview = card.querySelector('.timing-device-overview'), fold = card.querySelector('details');
       return { name: card.querySelector('h3').textContent,
@@ -106,19 +126,60 @@ try {
         visible: Array.from(overview.querySelectorAll('h3, .heating-selection, .timing-amount, .timing-basis')).every(node =>
           node.getBoundingClientRect().height > 0 && getComputedStyle(node).visibility === 'visible') };
     })`), ['Heating', 'Charging', 'Fireplace'].map((name, index) => ({ name,
-      amount: ['€3.50', '€2.00', '€1.25'][index], aboveFold: true, visible: true })));
+      amount: amounts[index], aboveFold: true, visible: true })));
     assert.equal(await evaluate(`Array.from(document.querySelectorAll('.timing-overview-content, .timing-figures')).every(node =>
       node.scrollWidth <= node.clientWidth + 1 && node.scrollHeight <= node.clientHeight + 1)`), true,
     'Margin-containing wrappers keep the complete result visible without clipping');
+    assert.equal(await evaluate(`Array.from(document.querySelectorAll('.timing-device-overview')).every(overview => {
+      const bounds = overview.getBoundingClientRect();
+      return Array.from(overview.querySelectorAll('h3, .heating-selection, .timing-amount, .timing-basis')).every(node => {
+        const box = node.getBoundingClientRect();
+        return box.top >= bounds.top - 1 && box.bottom <= bounds.bottom + 1;
+      });
+    })`), true, 'Card ingredients remain inside their visible overview after reopening');
+    assert.equal(await evaluate(`Array.from(document.querySelectorAll(
+      '.timing-device-overview h3, .timing-device-overview .timing-amount, .timing-device-overview .timing-basis'
+    )).every(node => {
+      node.scrollIntoView({ block: 'center' });
+      const box = node.getBoundingClientRect();
+      const painted = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+      return painted && node.contains(painted);
+    })`), true, 'Overview text remains hit-testable through its ancestors, rather than clipped by a collapsed wrapper');
     assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true);
   };
+  const alignment = () => evaluate(`(() => {
+    const devices = document.querySelector('.timing-devices');
+    return { selection: devices.style.getPropertyValue('--timing-selection-height'),
+      overview: devices.style.getPropertyValue('--timing-overview-height') };
+  })()`);
+  const toggleOuter = async open => {
+    await evaluate("document.querySelector('#timing-details > summary').click()");
+    await settle();
+    assert.equal(await evaluate("document.getElementById('timing-details').open"), open);
+  };
+  const captureCards = async () => {
+    const clip = await evaluate(`(() => {
+      const bounds = document.querySelector('.timing-devices').getBoundingClientRect();
+      const x = Math.floor(bounds.left + scrollX), y = Math.floor(bounds.top + scrollY);
+      return { x, y, width: Math.ceil(bounds.right + scrollX) - x,
+        height: Math.ceil(bounds.bottom + scrollY) - y, scale: 1 };
+    })()`);
+    return (await send('Page.captureScreenshot', { format: 'png', clip, captureBeyondViewport: true })).data;
+  };
   await send('Runtime.enable'); await send('Page.enable');
-  for (const withoutObserver of [false, true]) {
-    await send('Page.navigate', { url: `http://127.0.0.1:${server.address().port}/${withoutObserver ? '?without-observer' : ''}` });
+  await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
+  for (const hiddenLayout of [false, true]) for (const observerMode of ['native', 'missing', 'delayed']) {
+    const options = new URLSearchParams();
+    const withoutObserver = observerMode === 'missing';
+    if (withoutObserver) options.set('without-observer', '');
+    if (observerMode === 'delayed') options.set('delayed-observer', '');
+    if (hiddenLayout) options.set('hidden-layout', '');
+    await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1100, deviceScaleFactor: 1, mobile: false });
+    await send('Page.navigate', { url: `http://127.0.0.1:${server.address().port}/?${options}` });
     for (let attempt = 0; attempt < 100 && !await evaluate('window.ready === true'); attempt++) await pause(30);
     assert.equal(await evaluate('window.ready'), true, `Comparison render completes; errors: ${errors.join(', ')}`);
     assert.equal(await evaluate('typeof ResizeObserver'), withoutObserver ? 'undefined' : 'function');
-    await evaluate("document.getElementById('timing-details').open = true");
+    await toggleOuter(true);
     for (const width of [1440, 1024, 844, 390, 320]) {
       await send('Emulation.setDeviceMetricsOverride', { width, height: 1100, deviceScaleFactor: 1, mobile: false });
       for (const theme of ['dark', 'light']) {
@@ -129,6 +190,33 @@ try {
           return Math.max(...tops) - Math.min(...tops) < 1;
         })()`), true, 'Opening and resizing aligns all three closed detail headers');
       }
+      const visiblePaint = await captureCards();
+      await settle();
+      const visibleAlignment = await alignment();
+      await toggleOuter(false);
+      assert.deepEqual(await alignment(), visibleAlignment,
+        `Closing the outer fold does not replace visible alignment (${width}px, ${observerMode}, hidden layout ${hiddenLayout})`);
+      await send('Emulation.setDeviceMetricsOverride', { width: width === 320 ? 1440 : 320,
+        height: 1100, deviceScaleFactor: 1, mobile: false });
+      await evaluate('comparisonPayload.firewoodBenefit.valueEuro = 2.25; comparisonPanel.render(comparisonPayload)');
+      await settle();
+      if (observerMode === 'delayed') await evaluate('flushResizeDeliveries()');
+      assert.deepEqual(await alignment(), visibleAlignment,
+        'Resizing and receiving comparison data while closed leave visible alignment intact');
+      await toggleOuter(true);
+      await checkVisibleCards(['€3.50', '€2.00', '€2.25']);
+      await toggleOuter(false);
+      await evaluate('comparisonPayload.firewoodBenefit.valueEuro = 1.25; comparisonPanel.render(comparisonPayload)');
+      await send('Emulation.setDeviceMetricsOverride', { width, height: 1100, deviceScaleFactor: 1, mobile: false });
+      await toggleOuter(true);
+      await checkVisibleCards();
+      const reopenedPaint = await captureCards();
+      if (reopenedPaint !== visiblePaint) {
+        writeFileSync(join(artifacts, 'before-reopening.png'), Buffer.from(visiblePaint, 'base64'));
+        writeFileSync(join(artifacts, 'after-reopening.png'), Buffer.from(reopenedPaint, 'base64'));
+      }
+      assert.equal(reopenedPaint === visiblePaint, true,
+        `Restoring the same cards after close, hidden refresh and reopen restores their painted contents (${artifacts})`);
     }
     await evaluate(`const mode = document.querySelector('[data-mode="timing"]');
       document.querySelector('.timing-device-detail').open = true; mode.focus(); mode.click();
@@ -147,11 +235,11 @@ try {
     await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1100, deviceScaleFactor: 1, mobile: false });
     await evaluate("document.querySelector('.timing-device-detail').open = false"); await settle();
     const shot = await send('Page.captureScreenshot', { format: 'png' });
-    writeFileSync(join(artifacts, `${withoutObserver ? 'without' : 'with'}-resize-observer.png`), Buffer.from(shot.data, 'base64'));
+    writeFileSync(join(artifacts, `${hiddenLayout ? 'hidden-layout' : 'native-details'}-${observerMode}-resize-observer.png`), Buffer.from(shot.data, 'base64'));
     await evaluate('comparisonPanel.close()');
   }
   assert.deepEqual(errors, []);
-  console.log(`Comparison browser checks passed with and without ResizeObserver at five widths in both themes. Synthetic screenshots: ${artifacts}`);
+  console.log(`Comparison browser checks passed through repeated disclosure, hidden refresh and resize cycles with native, missing and delayed ResizeObserver at five widths in both themes, using native and zero-sized hidden layout. Synthetic screenshots: ${artifacts}`);
 } finally {
   for (const task of pending.values()) clearTimeout(task.timer);
   socket?.close();
