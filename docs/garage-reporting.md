@@ -1,31 +1,38 @@
 # Garage reporting and charts
 
-The existing Heating savings card starts on **Home**. Its small Home / Garage /
-Total selector changes the display only. Model estimate and Timing cost remain
-separate comparisons. Neither is added to Charging or Fireplace savings.
+The **Heating** card in **Energy cost comparisons** starts on **Home** and
+**Model estimate**, unless a previous **Timing cost** choice was saved. Its
+Home / Garage / Total selector changes the display only. Model estimate and
+Timing cost remain separate comparisons. Neither is added to Charging or Fireplace.
 
 Home model money keeps its existing scope: attributable space-heating cycles,
 including recovery and excluding domestic hot water. A completed cycle contributes
-its full saved assessment on its Finnish completion date. Garage applies the same
-completion-date rule to its own frozen normal-reference episodes, stored under
+its full frozen assessment on its Finnish completion date. Home's execution
+electricity uses a temperature-dependent heat-pump source estimate, not a dedicated
+meter reading; this differs from the dated nominal powers used in Home timing.
+Garage applies the same completion-date rule to its own frozen normal-reference episodes, stored under
 `garage:<input>`. Active, incomplete, unsupported and mixed-scope assessments do
 not become completed savings. A cycle that starts before the selected period is
-counted once when it completes. No rolling euro-per-cycle mean enters a total.
+counted once when it completes. No rolling euro-per-cycle mean enters a total,
+and charger session costs use a different reporting boundary and reference.
 Garage completed estimates remain provisional; recorded electrical inputs do not
 make the counterfactual directly measured.
 
-Timing cost uses the existing `DailyTimingBenchmark`, extracted unchanged into
+Timing cost uses `DailyTimingBenchmark` in
 `src/app/daily-timing-benchmark.js`. Each system's included daily energy is priced
 at its original times and at the complete Finnish day's time-weighted all-in
 price. The benchmark respects 23-, 24- and 25-hour days and dated tariff
 assumptions. Constant prices give zero timing benefit, even with nonzero energy.
-All integration happens before chart decimation.
+Every timing scope requires complete full-day prices even when its recorded
+energy covers only part of that day; missing prices are distinct from missing
+electrical evidence. All integration happens before chart decimation.
 
 The existing Home timing assessment is reconstructed from recorded equipment
 operation and dated nominal powers; it is an operation estimate, including the
-existing domestic-hot-water electricity scope. This feature preserves that
-calculation and labels its qualification in combined reports. Garage timing
-accepts only dedicated `garage_energy` intervals with known kWh units, complete
+domestic-hot-water electricity scope. Its nominal-power estimate is distinct from
+the temperature-dependent estimate used for completed Home cycles; neither claims
+independent electrical measurement. Combined reports retain that qualification.
+Garage timing accepts only dedicated `garage_energy` intervals with known kWh units, complete
 coverage, explicit timing eligibility and a qualified counter-delta or power
 integration basis. Intervals may be at most fifteen minutes. Coarse totals,
 unknown scaling, stale/retained source evidence and overlapping intervals are
@@ -54,6 +61,9 @@ breakdown shows each scope's assessment count or elapsed-time coverage and sourc
 qualification. Combined timing coverage divides included Home plus Garage time
 by their combined elapsed time; it does not imply that the same hours were
 observed in both systems. Missing periods are never scaled up.
+Details expose the included timing kWh and actual-time/reference costs, or the
+completed assessments' execution/reference costs. The difference subtracts the
+execution or actual-time cost from its reference; negative values mean extra cost.
 
 The Garage heating configuration follows Home's current-state, temporary-control,
 price-control pause, strategy-and-limits and separate heat-model structure.

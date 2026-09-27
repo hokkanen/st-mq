@@ -1,6 +1,38 @@
 -Make README.md better and more descriptive of the app, especially the beginning of it
 -Implement support for local mqtt-based temperature receives (eg, from shelly or HASS through Meteorologisk Institute); just store last received temp values and time stamps (maybe in storage class, see below) when received (and accept if received within 1h)
 
+Completed 2026-09-27 — Energy cost comparison audit and UI polish
+- Address EC-01–05: distinguish estimated sources from missing coverage, retain
+  assumed-rate provenance and combined system-time, diagnose absent full-day
+  prices accurately, and share coverage/money formatting across scopes.
+- Address EC-06–10: expose cost operands and included timing kWh in details,
+  normalize numerical-zero residue without hiding real sub-cent differences,
+  refresh on Heating scope changes, retain period status and use sign-aware
+  result/remaining-forecast wording.
+- Balance Heating, Charging and Fireplace controls, comparison indicators and
+  summaries across themes and narrow layouts. Put shared explanations in a
+  persistent native disclosure; preserve independent card details and focus.
+- Address EC-11 in the main and recording guides: document the default model
+  view, scopes, Fireplace naming, timing-only coverage and full-day pricing,
+  frozen completed cycles, and Home's distinct nominal timing and
+  temperature-dependent cycle electricity estimates.
+- Remove superseded display paths and four obsolete Fireplace price-assumption
+  aliases; unsupported flags fail closed. Keep the current assumedPrice contract
+  and expose structured Fireplace assumption duration, share and dates.
+  Retain recorded evidence, frozen cycle attribution, current journal/model
+  reconstruction, the permitted read-only 0.7.5 CSV import, missing/unknown
+  states and separate comparison baselines. No model/schema migration.
+- Validation: all 3,682 unit/integration tests pass; production build passes
+  with the existing bundle-size warning. Isolated Firefox energy checks pass
+  with dark/light themes, 320/390/844/1024/1440px layouts, all three populated
+  cards, aligned controls/results, independent folds, keyboard focus, mode
+  persistence, assumptions and calculation operands. Run the focused browser
+  path with scripts/browser-chart-smoke.js <BiDi-URL> --energy-only.
+- The broad chart browser smoke still fails its unrelated recording assertion
+  (Every report versus Unregistered writer for dhwr_active); the
+  same failure was reproduced on untouched base ddb2e59. No household data,
+  live equipment, provider accounts or invoice reconciliation were used.
+
 Completed 2026-09-27 — Stable chart widths and legend disclosure
 - Keep indicator strips aligned with both plot endpoints when a scrollbar
   appears or disappears. Derive padding from actual row bounds and observe

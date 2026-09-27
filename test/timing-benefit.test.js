@@ -106,6 +106,32 @@ test('completed history with missing periods says partial data without promising
   assert.equal(timingDisplay('heatPump', { ...result, value: null }, { ...payload, now: from + 48 * hour }).periodLabel, null);
 });
 
+test('complete estimated history retains its energy qualification without inventing missing periods', () => {
+  const display = timingDisplay('heatPump', { ...result, provisional: true,
+    coverageDetails: { from, to: from + 24 * hour, elapsedMs: 24 * hour, includedMs: 24 * hour,
+      powerMs: 24 * hour, missingPowerMs: 0, incompletePriceMs: 0 } }, { ...payload, now: from + 48 * hour });
+  assert.equal(display.available, true);
+  assert.equal(display.basis, 'Operation estimate');
+  assert.equal(display.coverageLabel, '100% of time included');
+  assert.equal(display.periodLabel, null);
+  assert.equal(display.periodExplanation, null);
+  assert.equal(display.coverageSummary, null);
+  assert.match(display.energyExplanation, /Home model comparison instead uses a temperature-dependent electrical estimate/);
+});
+
+test('timing details expose the included energy and unrounded-cost subtraction for the chosen scope', () => {
+  const display = timingDisplay('charger1', { ...chargerResult, energyKwh: 11,
+    actualCostEuro: 4.4, uniformCostEuro: 1.2375, value: -3.1625 }, payload);
+  assert.deepEqual(display.reconciliation, [
+    { label: 'Included electricity', value: '11 kWh' },
+    { label: 'Cost at daily average prices', value: '€1.2375' },
+    { label: 'Cost at recorded times', value: '€4.40' },
+    { label: 'Timing difference', value: '-€3.1625' },
+  ]);
+  assert.match(display.reconciliationExplanation, /minus cost at recorded times.*unrounded values/);
+  assert.deepEqual(timingDisplay('charger1', { ...chargerResult, value: null }, payload).reconciliation, []);
+});
+
 test('the evidence ladder keeps its ordering when the earliest contributing source changes', () => {
   const display = timingDisplay('charger', { ...chargerResult,value: 1, evidence: { energyBasis:'recorded-and-legacy',sources: ['unknown', 'currents', 'recorded', 'simulated'].map(key => ({ key, durationMs: hour, share: 0.25 })) } }, payload);
   assert.deepEqual(display.sources.map(source => source.key), ['recorded', 'currents', 'unknown', 'simulated']);

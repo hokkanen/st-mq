@@ -1,8 +1,6 @@
 import { heatingDisplay, heatingExplanations } from './heating-benefit.js';
 import { timingDisplay } from './timing-model.js';
 
-const money = new Intl.NumberFormat('en-GB', { style: 'currency', currency: 'EUR' });
-const finite = Number.isFinite;
 const names = { home: 'Home', garage: 'Garage', total: 'Total' };
 export const garageHeatingExplanations = [
   'Garage compares completed episodes with their frozen normal-heating reference. Preparation, the pause, recovery and residual heat debt belong to the same assessment. Weather and EV assumptions are shared by both alternatives.',
@@ -26,10 +24,12 @@ export function heatingScopeDisplay(payload, scope = 'home', mode = 'model') {
   display.name = 'Heating';
   const partial = result.partial && display.available;
   const missing = (result.missingScopes ?? []).map(key => names[key]).join(' and ');
-  display.qualification = partial ? `Partial total${missing ? ` · ${missing} unavailable` : ' · some assessments excluded'}`
+  display.qualification = partial ? scope === 'total'
+    ? `Partial total${missing ? ` · ${missing} unavailable` : ' · some assessments excluded'}` : 'Some assessments excluded'
     : result.provisional ? 'Provisional estimate' : null;
-  display.periodLabel = names[scope];
   display.unavailableReason = ({
+    'no-elapsed-time': 'No elapsed time in this selection',
+    'incomplete-daily-prices': 'Full-day prices missing',
     'no-qualified-electrical-intervals': 'No qualified garage electricity intervals. Temperature learning can continue without a meter.',
     'overlapping-electrical-sources': 'Conflicting garage electricity intervals are excluded.',
     'overlapping-or-unknown-scope': 'Home and Garage sources overlap or their separation is unknown. A total is unsupported.',
@@ -46,16 +46,14 @@ export function heatingScopeDisplay(payload, scope = 'home', mode = 'model') {
       : 'Coverage is included Home plus Garage time divided by their combined elapsed time. The breakdown shows each system separately; missing evidence is never zero and is not extrapolated.';
     if (scope === 'garage') display.sources = display.sources.map(item => ({ ...item, explanation: item.key === 'simulated' ? 'Simulated electrical intervals; no household energy measurement.' : 'Dedicated garage electrical intervals with qualified units and intraday timing. Accuracy retains the original recorded qualification.' }));
     if (scope === 'total') { display.sources = []; display.auxiliaryNotes = []; }
-    if (scope === 'total') display.coverageLabel = `${Math.round((result.coverage ?? 0) * 100)}% of combined system time`;
   }
   display.breakdown = scope === 'total' ? ['home', 'garage'].map(key => {
     const item = payload?.heatingSavings?.[key]?.[mode === 'model' ? 'model' : 'timing'] ?? {};
-    const value = mode === 'model' ? ['estimated', 'partial'].includes(item.status) ? item.valueEuro : null
-      : item.status !== 'unavailable' ? item.value : null;
-    const evidence = mode === 'model' ? `${item.counts?.assessed ?? 0} assessed cycles`
-      : `${Math.round((item.coverage ?? 0) * 100)}% elapsed time included`;
-    const quality = mode === 'timing' ? item.sourceQuality ?? item.evidence?.sources?.map(source => source.key === 'observed' ? 'operation estimate' : source.key).join(', ') : null;
-    return `${names[key]}: ${finite(value) ? money.format(value) : 'unavailable'} · ${evidence}${quality ? ` · ${quality.replaceAll('-', ' ')}` : ''}${item.provisional ? ' · provisional' : ''}.`;
+    const component = heatingScopeDisplay(payload, key, mode);
+    const assessed = item.counts?.assessed ?? 0;
+    const evidence = mode === 'model' ? `${assessed} assessed ${assessed === 1 ? 'cycle' : 'cycles'}` : component.coverageLabel;
+    const quality = mode === 'timing' ? component.basis : null;
+    return `${names[key]}: ${component.amount ?? 'Unavailable'} · ${evidence}${quality ? ` · ${quality}` : ''}${mode === 'model' && item.provisional ? ' · provisional' : ''}.`;
   }) : [];
   return display;
 }

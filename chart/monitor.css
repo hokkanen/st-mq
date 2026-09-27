@@ -454,9 +454,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .timing-device-name { margin: 0; font-size: 18px; font-weight: 550; }
 .timing-period { color: var(--muted); font-size: 12px; }
 .timing-period:empty { display: none; }
-.timing-comparison { display: flex; align-items: center; min-height: 46px; margin: 16px 0; }
-.timing-comparison-fixed { color: var(--muted); font-size: 12px; padding: 8px 12px; border-left: 2px solid var(--chart-ev); }
-.firewood-card .timing-comparison-fixed { border-left-color: var(--chart-firewood); }
+.timing-comparison { display: flex; align-items: center; }
 .timing-card .timing-comparison-label { color: var(--muted); font-size: 12px; margin: 0; }
 .timing-figures { display: flow-root; }
 .timing-card .heating-cycle-summary { color: var(--text); }

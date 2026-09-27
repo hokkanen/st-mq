@@ -80,6 +80,7 @@ test('raw, coarse, partial, overlapping and non-dedicated electrical evidence ne
   energy(store, at + 6 * HOUR, at + 6 * HOUR + 3 * MINUTE, 1, { device: 'another-source' });
   const result = getGarageTimingBenefit({ store, range, now, prices: price });
   assert.equal(result.value, null); assert.equal(result.intervalCounts.accepted, 0);
+  assert.equal(result.reason, 'overlapping-electrical-sources');
   assert.equal(result.intervalCounts.overlap, 3); assert.equal(result.intervalCounts.rejected, 6);
   assert.equal(result.coverageDetails.missingPowerMs, 24 * HOUR);
 });
@@ -95,6 +96,10 @@ test('zero energy is known, future arrivals and gaps are unknown, and incomplete
   assert.equal(result.coverageDetails.missingPowerMs, 24 * HOUR - 15 * MINUTE);
   const missingPrices = getGarageTimingBenefit({ store, range, now, prices: [{ ...price[0], end: range.to - MINUTE }] });
   assert.equal(missingPrices.value, null); assert.equal(missingPrices.coverageDetails.incompletePriceMs, 15 * MINUTE);
+  assert.equal(missingPrices.intervalCounts.accepted, 1);
+  assert.equal(missingPrices.reason, 'incomplete-daily-prices');
+  assert.equal(getGarageTimingBenefit({ store, range, now: range.from, prices: price }).reason, 'no-elapsed-time');
+  assert.equal(getGarageTimingBenefit({ store, input: 'simulated', range, now, prices: price }).reason, 'no-qualified-electrical-intervals');
 });
 
 function report(changes = {}) {
@@ -116,6 +121,33 @@ test('Home/Garage/Total sums matching period money by method and inherits missin
   assert.equal(empty.total.model.valueEuro, null); assert.equal(empty.total.model.status, 'unavailable');
   const zero = report({ garageModel: { status: 'estimated', valueEuro: 0 } });
   assert.equal(zero.total.model.valueEuro, 4); assert.equal(zero.total.model.partial, false);
+});
+
+test('Heating Total preserves assumed-rate system-time and affected dates across overlapping scopes', () => {
+  const timing = (includedMs, durationMs, firstAt = null, lastAt = null) => ({ value: 0.25,
+    coverageDetails: { elapsedMs: 24 * HOUR, includedMs }, assumedPrices: durationMs > 0,
+    priceAssumptions: { durationMs, share: durationMs / includedMs, firstAt, lastAt, timeBasis: 'included-period' } });
+  const homeTiming = timing(24 * HOUR, 24 * HOUR, range.from, range.to);
+  const garageTiming = timing(15 * MINUTE, 15 * MINUTE, range.from + HOUR, range.from + HOUR + 15 * MINUTE);
+  const full = report({ homeTiming, garageTiming }).total.timing;
+  assert.equal(full.value, 0.5);
+  assert.deepEqual(full.priceAssumptions, { durationMs: 24 * HOUR + 15 * MINUTE, share: 1,
+    firstAt: range.from, lastAt: range.to, timeBasis: 'included-system-time' });
+  assert.equal(full.coverageDetails.coverageBasis, 'combined-system-time');
+  assert.equal(full.coverageDetails.includedMs, 24 * HOUR + 15 * MINUTE,
+    'Simultaneous Home and Garage intervals contribute separate system-time');
+  const mixed = report({ homeTiming, garageTiming: timing(12 * HOUR, 0) }).total.timing;
+  assert.equal(mixed.priceAssumptions.share, 2 / 3);
+  assert.equal(mixed.priceAssumptions.durationMs, 24 * HOUR);
+  const partial = report({ homeTiming, garageTiming: { value: null,
+    coverageDetails: { elapsedMs: 24 * HOUR, includedMs: 0 } } }).total.timing;
+  assert.equal(partial.value, 0.25); assert.equal(partial.status, 'partial');
+  assert.equal(partial.priceAssumptions.share, 1, 'Assumed share uses included time, not both systems’ elapsed time');
+  assert.equal(partial.priceAssumptions.firstAt, range.from);
+  assert.equal(partial.priceAssumptions.lastAt, range.to);
+  const known = report({ homeTiming: timing(24 * HOUR, 0), garageTiming: timing(12 * HOUR, 0) }).total.timing;
+  assert.deepEqual(known.priceAssumptions, { durationMs: 0, share: 0, firstAt: null, lastAt: null, timeBasis: 'included-system-time' });
+  assert.equal(known.assumedPrices, false);
 });
 
 test('overlap, different periods, currency, stage and €/cycle cannot be added', () => {

@@ -1,5 +1,5 @@
 import { heatingScopeDisplay } from './heating-scope.js';
-import { timingDisplay, chargingTimingDisplay, timingExplanations } from './timing-model.js';
+import { chargingTimingDisplay, timingExplanations } from './timing-model.js';
 import { firewoodDisplay, firewoodExplanations } from './firewood-benefit.js';
 import { heatingExplanations } from './heating-benefit.js';
 
@@ -7,7 +7,7 @@ import { heatingExplanations } from './heating-benefit.js';
 export function createTimingBenefit(root) {
   if (!root) return { render() {}, close() {} };
   const document = root.ownerDocument;
-  let lastFingerprint, closed = false, notes, devices, overviewObserver, overviewHeight;
+  let lastFingerprint, closed = false, notes, notesContent, devices, overviewObserver, overviewHeight, selectionHeight;
   let latestPayload, modeStatus, heatingMode = 'model', heatingScope = 'home', chargingScope = 'total';
   const preferenceKey = 'stmq.heatingSavingMode';
   try { if (document.defaultView.localStorage?.getItem(preferenceKey) === 'timing') heatingMode = 'timing'; } catch {}
@@ -32,7 +32,7 @@ export function createTimingBenefit(root) {
     try { document.defaultView.localStorage?.setItem(preferenceKey, heatingMode); } catch {}
     render(latestPayload);
     const display = cards.get('heatPump').display;
-    modeStatus.textContent = `Heating: ${heatingMode === 'model' ? 'model-estimated saving' : 'timing cost saving'}. ${display.amount ?? 'Unavailable'}${display.outcome ? `, ${display.outcome}` : ''}.`;
+    modeStatus.textContent = `Heating: ${heatingMode === 'model' ? 'estimated cost difference' : 'timing cost difference'}. ${display.amount ?? 'Unavailable'}${display.outcome ? `, ${display.outcome}` : ''}.`;
   }
 
   function navigateOptions(event) {
@@ -62,6 +62,12 @@ export function createTimingBenefit(root) {
     row.append(element('span', 'heating-selection-label', label), options);
     return row;
   }
+  function selectionPanel(parent, rows) {
+    const panel = element('div', 'heating-selection');
+    const content = element('div', 'heating-selection-content');
+    content.append(...rows); panel.append(content); parent.append(panel);
+    return content;
+  }
   function explanation(parent, title, paragraphs, className = '') {
     const section = element('section', `timing-explanation ${className}`.trim());
     section.append(element('h3', '', title));
@@ -69,8 +75,29 @@ export function createTimingBenefit(root) {
     parent.append(section);
     return section;
   }
+  function reconciliation(parent, display) {
+    if (!display.reconciliation?.length) return;
+    const section = element('section', 'timing-calculation');
+    section.append(element('h4', '', 'Calculation for this selection'));
+    const values = element('dl', 'timing-calculation-values');
+    for (const { label, value } of display.reconciliation) {
+      const row = element('div');
+      row.append(element('dt', '', label), element('dd', '', value));
+      values.append(row);
+    }
+    section.append(values);
+    paragraph(section, display.reconciliationExplanation, 'timing-calculation-note');
+    parent.append(section);
+  }
   function alignOverviews() {
     if (closed) return;
+    // Match the control area before measuring the results. The inner content
+    // keeps its natural height, so wrapping can both grow and shrink the row.
+    const controlHeight = Math.ceil(Math.max(...[...cards.values()].map(card => card.selection.getBoundingClientRect().height)));
+    if (controlHeight !== selectionHeight) {
+      selectionHeight = controlHeight;
+      devices.style.setProperty('--timing-selection-height', `${controlHeight}px`);
+    }
     // Measure only intrinsic summary content. Expanded details must never set
     // the other card's height; observing the inner nodes also avoids feedback.
     const height = Math.ceil(Math.max(...[...cards.values()].map(card => card.overview.getBoundingClientRect().height)));
@@ -88,12 +115,13 @@ export function createTimingBenefit(root) {
       const overviewBox = element('div', 'timing-device-overview');
       const overview = element('div', 'timing-overview-content'); overviewBox.append(overview);
       const heading = element('div', 'timing-device-heading');
+      let selection;
       const title = element('h3', 'timing-device-name', display.name);
       const period = element('span', 'timing-period'); heading.append(title, period);
       const comparison = element('div', 'timing-comparison');
       if (display.key === 'heatPump') {
         comparison.className += ' timing-comparison-switch';
-        comparison.setAttribute('role', 'group'); comparison.setAttribute('aria-label', 'Heating savings comparison');
+        comparison.setAttribute('role', 'group'); comparison.setAttribute('aria-label', 'Heating cost comparison');
         for (const [mode, label] of [['model', 'Model estimate'], ['timing', 'Timing cost']]) {
           const button = element('button', 'timing-comparison-option', label);
           button.type = 'button'; button.dataset.mode = mode;
@@ -115,9 +143,8 @@ export function createTimingBenefit(root) {
       }
       overview.append(heading);
       if (display.key === 'heatPump') {
-        const selection = element('div', 'heating-selection');
         const scopes = element('div', 'heating-scope-switch');
-        scopes.setAttribute('role', 'group'); scopes.setAttribute('aria-label', 'Heating savings scope');
+        scopes.setAttribute('role', 'group'); scopes.setAttribute('aria-label', 'Heating cost comparison scope');
         for (const [scope, text] of [['home', 'Home'], ['garage', 'Garage'], ['total', 'Total']]) {
           const button = element('button', 'timing-comparison-option', text);
           button.type = 'button'; button.dataset.scope = scope;
@@ -126,10 +153,8 @@ export function createTimingBenefit(root) {
           button.addEventListener('keydown', navigateOptions);
           scopeButtons.push(button); scopes.append(button);
         }
-        selection.append(selectionRow('Area', scopes), selectionRow('Compare', comparison));
-        overview.append(selection);
+        selection = selectionPanel(overview, [selectionRow('Area', scopes), selectionRow('Compare', comparison)]);
       } else if (display.key === 'charger') {
-        const selection = element('div', 'heating-selection');
         const scopes = element('div', 'heating-scope-switch');
         scopes.setAttribute('role', 'group'); scopes.setAttribute('aria-label', 'Charging cost comparison scope');
         result.id = 'charging-saving-result';
@@ -142,21 +167,28 @@ export function createTimingBenefit(root) {
           button.addEventListener('keydown', navigateOptions);
           chargingButtons.push(button); scopes.append(button);
         }
-        selection.append(selectionRow('Charger', scopes), selectionRow('Compare', comparison));
-        overview.append(selection);
-      } else overview.append(comparison);
+        selection = selectionPanel(overview, [selectionRow('Charger', scopes), selectionRow('Compare', comparison)]);
+      } else {
+        selection = selectionPanel(overview, [selectionRow('Source', element('span', 'timing-selection-value', 'Logged wood')),
+          selectionRow('Compare', comparison)]);
+      }
       overview.append(result);
       if (display.key === 'heatPump') overview.append(modeStatus);
       const details = element('details', 'timing-device-detail'); details.dataset.device = display.key;
       details.append(element('summary', '', `${display.name} details`));
       const content = element('div', 'timing-detail-content');
       details.append(content); card.append(overviewBox, details); devices.append(card);
-      cards.set(display.key, { overview, content, figures, period, label });
+      cards.set(display.key, { overview, selection, content, figures, period, label });
     }
-    notes = element('div', 'timing-explanations');
+    notes = element('details', 'timing-explanations');
+    notesContent = element('div', 'timing-explanations-content');
+    notes.append(element('summary', '', 'How these comparisons work'), notesContent);
     root.replaceChildren(intro, devices, notes);
     overviewObserver = new document.defaultView.ResizeObserver(alignOverviews);
-    for (const card of cards.values()) overviewObserver.observe(card.overview);
+    for (const card of cards.values()) {
+      overviewObserver.observe(card.overview);
+      overviewObserver.observe(card.selection);
+    }
   }
   function deviceOverview(display) {
     const overview = document.createDocumentFragment();
@@ -183,6 +215,7 @@ export function createTimingBenefit(root) {
   }
   function deviceDetail(display) {
     const content = document.createDocumentFragment();
+    reconciliation(content, display);
     const energy = element('section', 'timing-energy');
     energy.append(element('h4', '', display.available ? 'Energy used in the comparison' : 'What data is needed'));
     paragraph(energy, display.energyExplanation);
@@ -234,7 +267,9 @@ export function createTimingBenefit(root) {
     const meta = element('div', 'timing-meta');
     const status = element('span', 'timing-basis firewood-status', display.statusLabel);
     status.dataset.basis = 'firewood'; status.dataset.status = display.status;
-    meta.append(status, element('span', 'timing-coverage', display.coverageLabel)); overview.append(meta);
+    meta.append(status, element('span', 'timing-coverage', display.coverageLabel));
+    if (display.assumedRates) meta.append(element('span', 'timing-assumed', 'Assumed rates'));
+    overview.append(meta);
     paragraph(overview, display.woodCost, 'timing-dates');
     paragraph(overview, display.calculationPeriod, 'timing-dates');
     return overview;
@@ -261,7 +296,7 @@ export function createTimingBenefit(root) {
       const remaining = element('section', 'firewood-remaining');
       remaining.append(element('h4', '', display.remaining.label));
       for (const text of [display.remaining.amount, display.remaining.energy, display.remaining.fuel,
-        display.remaining.unavailable, display.remaining.through, display.remaining.reason, display.remaining.explanation]) paragraph(remaining, text);
+        display.remaining.uncertainty, display.remaining.unavailable, display.remaining.through, display.remaining.reason, display.remaining.explanation]) paragraph(remaining, text);
       content.append(remaining);
     }
     return content;
@@ -285,6 +320,7 @@ export function createTimingBenefit(root) {
   }
   function heatingDetail(display) {
     const content = document.createDocumentFragment();
+    reconciliation(content, display);
     const comparison = element('section', 'timing-energy');
     comparison.append(element('h4', '', 'How to read this estimate'));
     for (const text of display.explanations ?? heatingExplanations) paragraph(comparison, text);
@@ -301,10 +337,10 @@ export function createTimingBenefit(root) {
   function render(payload) {
     if (closed) return;
     latestPayload = payload;
-    const timingDisplays = [timingDisplay('heatPump', payload?.timingBenefit?.heatPump, payload), chargingTimingDisplay(payload, chargingScope)];
-    const displays = [heatingScopeDisplay(payload, heatingScope, heatingMode), timingDisplays[1],
+    const displays = [heatingScopeDisplay(payload, heatingScope, heatingMode), chargingTimingDisplay(payload, chargingScope),
       firewoodDisplay(payload?.firewoodBenefit, payload)];
-    const chartAssumedRates = Boolean(payload?.meta?.priceAssumptions?.used) && !timingDisplays.some(display => display.assumedRates);
+    const visibleAssumedRates = displays.some(display => display.assumedRates);
+    const chartAssumedRates = Boolean(payload?.meta?.priceAssumptions?.used);
     const fingerprint = JSON.stringify({ displays, chartAssumedRates, heatingMode, heatingScope, chargingScope });
     if (fingerprint === lastFingerprint) return;
     lastFingerprint = fingerprint;
@@ -320,22 +356,22 @@ export function createTimingBenefit(root) {
       if (cardFingerprint === card.fingerprint) continue;
       card.fingerprint = cardFingerprint; card.display = display;
       card.period.textContent = display.periodLabel ?? '';
-      card.label.textContent = display.key === 'firewood' || modelHeating ? 'Model-estimated saving' : 'Timing cost saving';
+      card.label.textContent = display.key === 'firewood' || modelHeating ? 'Estimated cost difference' : 'Timing cost difference';
       card.figures.replaceChildren(display.key === 'firewood' ? firewoodOverview(display) : modelHeating ? heatingOverview(display) : deviceOverview(display));
       card.content.replaceChildren(display.key === 'firewood' ? firewoodDetail(display) : modelHeating ? heatingDetail(display) : deviceDetail(display));
     }
     alignOverviews();
-    notes.replaceChildren();
-    explanation(notes, 'Timing cost comparison', timingExplanations.comparison);
-    explanation(notes, 'Timing coverage and energy sources', [...timingExplanations.coverage, ...timingExplanations.evidence]);
-    explanation(notes, 'Heating model estimate', heatingExplanations);
-    explanation(notes, 'Fireplace model estimate', firewoodExplanations);
-    if (chartAssumedRates || timingDisplays.some(display => display.assumedRates)) {
-      const rates = explanation(notes, 'When contract rates are assumed', timingExplanations.rates, 'timing-rate-explanation');
+    notesContent.replaceChildren();
+    explanation(notesContent, 'Timing cost comparison', timingExplanations.comparison);
+    explanation(notesContent, 'Timing coverage and energy sources', [...timingExplanations.coverage, ...timingExplanations.evidence]);
+    explanation(notesContent, 'Heating model estimate', heatingExplanations);
+    explanation(notesContent, 'Fireplace model estimate', firewoodExplanations);
+    if (chartAssumedRates || visibleAssumedRates) {
+      const rates = explanation(notesContent, 'When contract rates are assumed', timingExplanations.rates, 'timing-rate-explanation');
       if (chartAssumedRates) {
         const context = element('div', 'timing-chart-rates');
         paragraph(context, 'Chart uses assumed rates', 'timing-assumed');
-        paragraph(context, 'The price chart uses assumed rates, but no device comparison here includes the affected periods.');
+        paragraph(context, 'Some periods in the price chart use assumed contract rates. Affected comparisons are marked “Assumed rates” in their results.');
         rates.append(context);
       }
     }

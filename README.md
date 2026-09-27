@@ -305,19 +305,30 @@ the current readings.
   basis. Saved indoor averages retain their original sensor membership. The
   garage pump's interpreted temperature is a diagnostic, not a third independent
   protection sensor. Viewing history sends no equipment commands.
-- **Energy cost comparisons:** open this fold below the chart. Charging has
-  **Charger 1**, **Charger 2** and **Total** selectors, each with its own coverage. Heating and Charging compare each device's cost of
-  included energy at the recorded timestamps with the same daily energy at the
-  whole Finnish day's average all-in price. Heat-pump electricity is reconstructed
+- **Energy cost comparisons:** open this fold below the chart for **Heating**,
+  **Charging** and **Fireplace**. Heating starts on **Home** and **Model estimate**;
+  a saved **Timing cost** choice is restored. **Home**, **Garage** and **Total**
+  select the heating scope. Model estimate sums supported, frozen cycle assessments
+  on their Finnish completion dates, including recovery and excluding domestic hot
+  water. It reports a selected-period total, not the Learning view's rolling
+  €/cycle mean. Home's cycle electricity uses a temperature-dependent heat-pump
+  source estimate; it is not a separate meter reading.
+  Charging offers **Charger 1**, **Charger 2** and **Total** for timing comparisons.
+  Heating's **Timing cost** and Charging compare the cost of included energy at
+  its recorded times with the same daily energy at the whole Finnish day's average
+  all-in price. Home timing reconstructs heat-pump electricity, including hot water,
   from recorded compressor activity and auxiliary output using the nominal powers
-  saved for that time. Charger electricity uses recorded phase or total energy intervals;
-  eligible current snapshots retain their 230 V estimate. The visible basis and
+  saved for that time. This differs from Home's cycle electricity estimate. Garage
+  timing requires qualified dedicated electrical intervals. Charger electricity
+  uses recorded phase or total energy intervals; eligible current snapshots retain
+  their 230 V estimate. The visible basis and
   source details identify those estimates and simulation. Missing equipment data
   or dated heat-pump power assumptions leave gaps. Heat-pump power is never
   property consumption minus charger consumption.
-  **Heating** and each charger's breakdown show **Time included** as a percentage of
-  the selected elapsed time. Combined **Charging** uses **charger-time**: one hour
-  on both chargers is two charger-hours, and a 24-hour selection contains 48
+  Timing views show **Time included** as a percentage of the selected elapsed time;
+  completed-cycle model estimates show assessment counts instead. Heating **Total**
+  combines Home and Garage system-time. Combined **Charging** uses **charger-time**:
+  one hour on both chargers is two charger-hours, and a 24-hour selection contains 48
   possible charger-hours. Its cost and energy are the sums of Charger 1 and Charger 2;
   missing Charger 2 history remains unknown. Heating includes valid zero-power intervals;
   charging leaves out idle periods at or below 100 W. A low charging
@@ -325,23 +336,28 @@ the current readings.
   The full-day average price still includes every hour. Missing readings remain
   unknown, separate from idle time. With no detected charging, no comparison is shown.
   The source mix is weighted by included time, not sample count, energy or
-  accuracy. Missing history and charging periods with incomplete daily prices
+  accuracy. Missing history and all timing periods with incomplete daily prices
   are excluded, without extrapolation. Future hours do not reduce coverage.
   Calculations use the underlying energy and equipment intervals independently
   of chart point reduction and the selected chart view.
+  Timing differences are separate from charger session cost estimates, which
+  include delivered electricity and expected charging to the target.
   The fold starts closed, like **Recording details**, and stays as you set it
-  when the chart refreshes or dates change. The **Heating** and **Charging** boxes
-  align when closed; each details fold expands independently. They show source
-  shares, timestamps and short notes about missing data. Shared explanations come last, in a
-  centered column. Missing historical contract rates
+  when the chart refreshes or dates change. The three comparison cards
+  align when closed; each details fold expands independently. Timing and cycle
+  details expose the included kWh where applicable and the cost operands behind the difference,
+  alongside source shares, timestamps and missing-data notes. Shared explanations
+  appear in **How these comparisons work**. Missing historical contract rates
   use the nearest known rates with historical spot prices;
   **Assumed rates** includes assumptions affecting the daily average even when
   the device ran during a period with known rates. This comparison does not
   establish savings caused by the controller.
-  A third **Firewood** box estimates space-heating electricity and cost avoided
+  **Fireplace** estimates the space-heating electricity and cost difference
   with wood priced at zero. It shows a scenario range, evidence status and coverage
   for the selected dates, with any remaining forecast estimate separately. It uses
-  a different reference from the timing comparisons, so the cards are not summed.
+  a different reference from the other comparisons, so the cards are not summed.
+  Unlike frozen cycle assessments, this retrospective estimate can change when
+  logged wood or the reconstructible model is corrected.
   Manual wood loads, delayed release, the fitted response and daily savings are
   also available in the Fireplace views. See [fireplace details](docs/fireplace.md).
 

@@ -164,20 +164,39 @@ below the chart; saved legend choices persist. A separate strip
 shows observed native operating mode.
 
 The chart's **Energy cost comparisons** fold contains **Heating**, **Charging**
-and **Firewood**. Daily heating and charging price-timing comparisons hold the included daily
-energy fixed and compare its cost with each day's duration-weighted average
-all-in price. Heating, Charging and Firewood appear side by side, with a shared
-explanation below; narrow screens stack the results. Heating can switch between
-timing cost saving and model-estimated saving, and between Home, Garage and Total.
-Firewood uses a separate model reference and is not added to either comparison.
+and **Fireplace**. Heating starts on **Home** and **Model estimate**, unless a
+previous **Timing cost** choice was saved. It offers **Home**, **Garage** and
+**Total** scopes. Charging offers **Charger 1**, **Charger 2** and **Total** for
+timing comparisons. The cards appear side by side with matching comparison
+indicators; narrow screens stack the results. Heating can switch between
+**Model estimate** and **Timing cost**. Fireplace uses a separate model reference
+and is not added to either comparison. Shared guidance is in the **How these
+comparisons work** fold. Timing and completed-cycle details show the cost operands
+behind the difference, with included kWh where applicable.
 Underlined labels
 open explanations on hover, keyboard focus or tap. Escape or an outside tap
 closes the explanation.
 
-Each comparison identifies its energy basis. Heat-pump electricity is estimated
+Heating's **Model estimate** sums supported, saved assessments of completed cycles,
+using each cycle's frozen model and including recovery. Domestic hot water is
+excluded. Full cycles count on their Finnish completion date, even if they began
+before the selection; active, incomplete and unsupported cycles do not contribute.
+Assessment counts describe this scope, not elapsed-time coverage. Home's execution
+electricity uses a temperature-dependent heat-pump source estimate, not a separate
+meter. Garage compares completed episodes with its own frozen normal-heating
+reference and remains provisional. Total adds compatible Home and Garage amounts;
+missing components are identified in a partial total. These totals differ from
+the Learning view's rolling €/cycle mean and charger session cost estimates.
+
+Heating's **Timing cost** and Charging hold the included daily energy fixed and
+compare its cost at the recorded times with each full Finnish day's
+duration-weighted average all-in price. Each timing comparison identifies its
+energy basis. Home heat-pump electricity, including domestic hot water, is estimated
 from recorded compressor activity and auxiliary output using dated nominal
-compressor, circulation and auxiliary power assumptions. Charger electricity
-uses recorded phase-energy intervals, with a 230 V phase-current estimate for
+compressor, circulation and auxiliary power assumptions. It therefore differs
+from the Home cycle electricity estimate even before scope and dates differ.
+Garage timing requires qualified dedicated electrical intervals. Charger electricity
+uses recorded phase or total energy intervals, with a 230 V phase-current estimate for
 older current-only history. Simulation is identified separately. The
 included-time mix is duration-weighted, not a percentage of samples, energy or
 accuracy. Auxiliary consumption remains a nominal estimate even when its output
@@ -186,7 +205,9 @@ missing inputs or dated power assumptions leave gaps, and current sensors or
 model predictions never fill them. Source details report the contributing input
 times; these are not a claim of continuous observations between those times.
 
-Time included is the fraction of selected elapsed time used in the comparison.
+In timing views, **Time included** is the fraction of selected elapsed time used
+in the comparison. Heating Total uses combined Home and Garage system-time;
+Charging Total uses charger-time, so simultaneous use counts for each charger.
 Heating includes valid zero-power intervals; charging includes only recorded
 periods above 100 W with complete daily prices, keeping idle periods separate
 from missing readings. For today the elapsed selection ends at

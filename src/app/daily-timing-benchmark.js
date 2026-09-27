@@ -5,6 +5,16 @@ const HOUR = 3_600_000, CHARGING_MIN_POWER_KW = 0.1;
 const DEVICES = ['heatPump', 'charger1', 'charger2'];
 const charging = name => name === 'charger1' || name === 'charger2';
 
+// Bound arithmetic residue in the cost subtraction using the monetary flows
+// and accumulated terms, not a currency/display threshold. Absolute flows also
+// cover cancellation between negative and positive tariffs. Real sub-cent
+// differences remain signed when they exceed this floating-point error bound.
+export function normalizeTimingDifference(value, magnitude, terms = 1) {
+  const epsilon = Number.EPSILON * terms;
+  const tolerance = 8 * epsilon / (1 - epsilon) * magnitude;
+  return Math.abs(value) <= tolerance ? 0 : value;
+}
+
 /** Integrate original power observations, never the chart's extrema envelope.
  * Missing intervals stay missing. Each day's observed energy is compared with
  * that entire Finnish day's duration-weighted marginal price, including DST. */
@@ -22,18 +32,21 @@ export class DailyTimingBenchmark {
     let priceIndex = 0;
     for (let day = moment.tz(range.from, CHART_TIME_ZONE).startOf('day'); day.valueOf() < range.to; day.add(1, 'day')) {
       const start = day.valueOf(), end = day.clone().add(1, 'day').valueOf();
-      let covered = 0, weighted = 0, assumedPrices = false;
+      let covered = 0, weighted = 0, absoluteWeighted = 0, priceTerms = 0, assumedPrices = false;
       while (priceIndex < this.prices.length && this.prices[priceIndex].end <= start) priceIndex++;
       for (let index = priceIndex; index < this.prices.length; index++) {
         const price = this.prices[index];
         if (price.start >= end) break;
         const duration = Math.max(0, Math.min(end, price.end) - Math.max(start, price.start));
         covered += duration; weighted += duration * price.totalCtPerKwh;
+        absoluteWeighted += duration * Math.abs(price.totalCtPerKwh);
+        if (duration > 0) priceTerms++;
         if (duration > 0 && price.assumedPrice) assumedPrices = true;
       }
-      this.days.push({ start, end, average: covered === end - start ? weighted / covered : null, assumedPrices,
+      this.days.push({ start, end, average: covered === end - start ? weighted / covered : null,
+        absoluteAverage: covered ? absoluteWeighted / covered : 0, priceTerms, assumedPrices,
         observedDuration: Math.max(0, Math.min(end, this.now) - Math.max(start, range.from)),
-        ...Object.fromEntries(DEVICES.map(name => [name, { energy: 0, cost: 0, covered: 0 }])) });
+        ...Object.fromEntries(DEVICES.map(name => [name, { energy: 0, cost: 0, absoluteCost: 0, terms: 0, covered: 0 }])) });
     }
   }
   add(name, at, kw, evidence = {}) {
@@ -72,6 +85,7 @@ export class DailyTimingBenchmark {
           if (day.average !== null) {
             const energy = previous.kw * duration / HOUR;
             day[name].energy += energy; day[name].cost += energy * price.totalCtPerKwh / 100; day[name].covered += duration;
+            day[name].absoluteCost += energy * Math.abs(price.totalCtPerKwh) / 100; day[name].terms++;
             const key = timingEvidenceSource(previous.evidence?.key);
             if (!details.sources.has(key)) details.sources.set(key, { key, durationMs: 0, energyKwh: 0,
               firstAt, lastAt });
@@ -112,6 +126,8 @@ export class DailyTimingBenchmark {
       const energyKwh = this.days.reduce((sum, day) => sum + day[name].energy, 0);
       const actualCostEuro = this.days.reduce((sum, day) => sum + day[name].cost, 0);
       const uniformCostEuro = this.days.reduce((sum, day) => sum + day[name].energy * (day.average ?? 0) / 100, 0);
+      const magnitude = this.days.reduce((sum, day) => sum + day[name].absoluteCost + day[name].energy * day.absoluteAverage / 100, 0);
+      const terms = this.days.reduce((sum, day) => sum + day[name].terms + day.priceTerms + 1, 0);
       const details = this.details[name], share = ms => covered ? ms / covered : 0;
       const missingPowerMs = Math.max(0, duration - details.powerMs);
       const incompletePriceMs = Math.max(0, (charging(name) ? details.chargingMs : details.powerMs) - covered);
@@ -119,7 +135,7 @@ export class DailyTimingBenchmark {
         : [...details.energyBases][0] ?? 'power-snapshots';
       const timeBasis = details.timeBases.size > 1 ? 'mixed-recorded-time'
         : [...details.timeBases][0] ?? (energyBasis === 'reconstructed-equipment' ? 'recorded-interval-time' : 'power-sample-time');
-      return [name, { value: covered ? uniformCostEuro - actualCostEuro : null, energyKwh: covered ? energyKwh : null,
+      return [name, { value: covered ? normalizeTimingDifference(uniformCostEuro - actualCostEuro, magnitude, terms) : null, energyKwh: covered ? energyKwh : null,
         actualCostEuro: covered ? actualCostEuro : null, uniformCostEuro: covered ? uniformCostEuro : null,
         assumedPrices: this.days.some(day => day[name].covered > 0 && day.assumedPrices),
         coverage: duration ? Math.min(1, covered / duration) : 0,
@@ -170,6 +186,8 @@ export class DailyTimingBenchmark {
         share: includedMs ? sum(part => part.priceAssumptions.durationMs) / includedMs : 0 },
       basis: 'Combined timing for two distinct physical chargers. Coverage uses charger-time: one hour on both is two charger-hours.',
     };
+    if (includedMs) result.charger.value = normalizeTimingDifference(result.charger.value,
+      sum(part => Math.abs(part.actualCostEuro ?? 0) + Math.abs(part.uniformCostEuro ?? 0)), parts.length);
     return result;
   }
 }

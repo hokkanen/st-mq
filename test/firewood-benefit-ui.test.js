@@ -86,6 +86,31 @@ test('remaining release and projected savings never enter the elapsed selection 
   assert.equal(unpriced.remaining.reason, 'Fresh forecast coverage is unavailable.');
 });
 
+test('Fireplace forecasts describe cost increases, zero and uncertainty without promising savings', () => {
+  const negative = firewoodDisplay({ ...estimate, remaining: { status: 'partial-forecast',
+    valueEuro: -2.5, kwh: -1.25, lowerEuro: -4, upperEuro: 0.5 } }, payload);
+  assert.equal(negative.remaining.label, 'Remaining forecast');
+  assert.equal(negative.remaining.amount, '-€2.50 estimated electricity cost increase');
+  assert.equal(negative.remaining.energy, '1.3 kWh estimated additional electricity');
+  assert.match(negative.remaining.uncertainty, /-€4.00–€0.50.*not a statistical confidence interval/);
+  assert.doesNotMatch(negative.remaining.explanation, /savings/);
+  assert.equal(negative.amount, '€1.25', 'The forecast remains separate from elapsed results');
+  const zero = firewoodDisplay({ ...estimate, valueEuro: 0,
+    remaining: { status: 'partial-forecast', valueEuro: 0, kwh: 0 } }, payload);
+  assert.equal(zero.outcome, 'estimated electricity cost difference');
+  assert.equal(zero.remaining.amount, '€0.00 estimated electricity cost difference');
+  const increasedElectricity = firewoodDisplay({ ...estimate, electricityAvoidedKwh: -2 }, payload);
+  assert.equal(increasedElectricity.electricity, '2 kWh additional electricity');
+});
+
+test('Fireplace assumption status uses structured included-price evidence only', () => {
+  assert.equal(firewoodDisplay({ ...estimate, priceAssumptions: { durationMs: HOUR } }, payload).assumedRates, true);
+  assert.equal(firewoodDisplay({ ...estimate, priceAssumptions: { durationMs: 0 } }, payload).assumedRates, false);
+  assert.equal(firewoodDisplay({ ...estimate, status: 'unavailable',
+    priceAssumptions: { durationMs: HOUR } }, payload).assumedRates, false);
+  assert.equal(firewoodDisplay(estimate, payload).assumedRates, false);
+});
+
 test('manual additions and daily outcomes use visible event markers and never connect across missing data', () => {
   const load = historyDatasets({ firewood_load: [{ x: from, y: 8 }, { x: from + 1000, y: 2 }] }, CHART_VIEW_BY_KEY.firewood)[0];
   assert.equal(load.showLine, false); assert.equal(load.pointStyle, 'triangle'); assert.equal(load.pointRadius, 5);
@@ -180,35 +205,35 @@ test('heating choice changes its amount and details while preserving focus, fold
   panel.render(data);
   const [heating, charger, fireplace] = root.children[1].children;
   const overview = heating.children[0].children[0];
-  const comparison = findByLabel(overview, 'Heating savings comparison');
+  const comparison = findByLabel(overview, 'Heating cost comparison');
   const [modelButton, timingButton] = comparison.children;
   const fold = heating.children[1]; fold.open = true;
   assert.equal(modelButton.attributes['aria-pressed'], 'true');
-  assert.match(heating.textContent, /Model-estimated saving.*€3.50/);
+  assert.match(heating.textContent, /Estimated cost difference.*€3.50/);
   timingButton.focus(); timingButton.click();
   assert.equal(timingButton.attributes['aria-pressed'], 'true');
   assert.equal(document.activeElement, timingButton); assert.equal(fold.open, true);
-  assert.match(heating.textContent, /Timing cost saving.*€1.00/);
+  assert.match(heating.textContent, /Timing cost difference.*€1.00/);
   modelButton.focus(); modelButton.click();
   assert.equal(modelButton.attributes['aria-pressed'], 'true');
   assert.equal(timingButton.attributes['aria-pressed'], 'false');
   assert.equal(document.activeElement, modelButton); assert.equal(fold.open, true);
-  assert.match(heating.textContent, /Model-estimated saving.*€3.50/);
+  assert.match(heating.textContent, /Estimated cost difference.*€3.50/);
   assert.doesNotMatch(heating.textContent, /€1.00|Energy used in the comparison/);
   assert.match(heating.textContent, /2 assessed cycles.*Cycles included/);
-  assert.match(charger.textContent, /Timing cost saving.*€2.00/);
-  assert.match(fireplace.textContent, /Model-estimated saving.*€1.25/);
+  assert.match(charger.textContent, /Timing cost difference.*€2.00/);
+  assert.match(fireplace.textContent, /Estimated cost difference.*€1.25/);
   panel.render({ ...data, heatingBenefit: { status: 'unavailable', reason: 'no-completed-cycles' } });
   assert.equal(comparison.children[0], modelButton);
   assert.equal(document.activeElement, modelButton); assert.equal(heating.children[1], fold);
   assert.match(heating.textContent, /Estimate unavailable.*No completed heating cycles/);
   assert.doesNotMatch(heating.textContent, /€3.50|€1.00/);
   const reload = dom(storage), reloaded = createTimingBenefit(reload.root); reloaded.render(data);
-  assert.match(reload.root.children[1].children[0].textContent, /Model-estimated saving.*€3.50/);
-  timingButton.click(); assert.match(heating.textContent, /Timing cost saving.*€1.00/);
+  assert.match(reload.root.children[1].children[0].textContent, /Estimated cost difference.*€3.50/);
+  timingButton.click(); assert.match(heating.textContent, /Timing cost difference.*€1.00/);
   const timingReload = dom(storage), reloadedTiming = createTimingBenefit(timingReload.root); reloadedTiming.render(data);
-  assert.match(timingReload.root.children[1].children[0].textContent, /Timing cost saving.*€1.00/);
-  panel.close(); modelButton.click(); assert.match(heating.textContent, /Timing cost saving.*€1.00/);
+  assert.match(timingReload.root.children[1].children[0].textContent, /Timing cost difference.*€1.00/);
+  panel.close(); modelButton.click(); assert.match(heating.textContent, /Timing cost difference.*€1.00/);
   reloaded.close(); reloadedTiming.close();
 });
 
@@ -219,12 +244,12 @@ test('heating defaults to the model estimate with missing, blocked or invalid br
     const { root } = dom(storage), panel = createTimingBenefit(root);
     panel.render(payload);
     const heating = root.children[1].children[0];
-    assert.match(heating.textContent, /Model-estimated saving.*Estimate unavailable/);
-    const comparison = findByLabel(heating, 'Heating savings comparison');
+    assert.match(heating.textContent, /Estimated cost difference.*Estimate unavailable/);
+    const comparison = findByLabel(heating, 'Heating cost comparison');
     comparison.children[1].click();
-    assert.match(heating.textContent, /Timing cost saving/);
+    assert.match(heating.textContent, /Timing cost difference/);
     comparison.children[0].click();
-    assert.match(heating.textContent, /Model-estimated saving.*Estimate unavailable/);
+    assert.match(heating.textContent, /Estimated cost difference.*Estimate unavailable/);
     panel.close();
   }
 });
@@ -238,30 +263,74 @@ test('Home/Garage/Total changes only heating scope and keeps both comparison con
   }, firewoodBenefit: estimate, timingBenefit: { charger: timing(2,'charger') } };
   panel.render(data);
   const [heating, charger, fireplace] = root.children[1].children, overview = heating.children[0].children[0];
-  const scopes = findByLabel(overview, 'Heating savings scope');
-  const comparisons = findByLabel(overview, 'Heating savings comparison');
+  const scopes = findByLabel(overview, 'Heating cost comparison scope');
+  const comparisons = findByLabel(overview, 'Heating cost comparison');
   const [home, garage, total] = scopes.children;
   assert.equal(home.attributes['aria-pressed'], 'true'); assert.match(heating.textContent, /€3.00/);
   const fold = heating.children[1]; fold.open = true;
   garage.focus(); garage.click(); assert.equal(document.activeElement, garage); assert.equal(fold.open, true);
   assert.match(heating.textContent, /-€1.00.*Provisional/);
-  comparisons.children[1].click(); assert.match(heating.textContent, /Timing cost saving.*-€0.50/);
-  total.click(); assert.match(heating.textContent, /Timing cost saving.*€0.50/);
-  home.click(); assert.match(heating.textContent, /Timing cost saving.*€1.00/);
+  comparisons.children[1].click(); assert.match(heating.textContent, /Timing cost difference.*-€0.50/);
+  total.click(); assert.match(heating.textContent, /Timing cost difference.*€0.50/);
+  home.click(); assert.match(heating.textContent, /Timing cost difference.*€1.00/);
   assert.equal(home.pressKey('ArrowLeft'), true);
-  assert.equal(document.activeElement, total); assert.match(heating.textContent, /Timing cost saving.*€0.50/);
+  assert.equal(document.activeElement, total); assert.match(heating.textContent, /Timing cost difference.*€0.50/);
   total.pressKey('Home'); assert.equal(document.activeElement, home);
   home.pressKey('End'); assert.equal(document.activeElement, total);
   total.pressKey('ArrowRight'); assert.equal(document.activeElement, home);
   home.pressKey('ArrowDown'); assert.equal(document.activeElement, garage);
-  assert.match(heating.textContent, /Timing cost saving.*-€0.50/);
+  assert.match(heating.textContent, /Timing cost difference.*-€0.50/);
   garage.pressKey('ArrowUp'); assert.equal(document.activeElement, home);
   comparisons.children[1].pressKey('ArrowRight');
   assert.equal(document.activeElement, comparisons.children[0]);
-  assert.match(heating.textContent, /Model-estimated saving.*€3.00/);
+  assert.match(heating.textContent, /Estimated cost difference.*€3.00/);
   assert.equal(comparisons.children[0].pressKey('Tab'), false, 'Ordinary Tab navigation is left to the browser');
   assert.equal(fold.open, true);
   assert.match(charger.textContent, /€2.00/); assert.match(fireplace.textContent, /€1.25/);
   panel.close();
   assert.equal(home.pressKey('ArrowRight'), false, 'Closing removes keyboard handlers as well as click handlers');
+});
+
+test('visible rate assumptions follow Heating scope and Fireplace while shared copy never denies them', () => {
+  const { root } = dom(new Map([['stmq.heatingSavingMode', 'timing']]));
+  const panel = createTimingBenefit(root);
+  const assumed = { durationMs: HOUR, share: 1, firstAt: from, lastAt: from + HOUR };
+  const data = { ...payload, meta: { priceAssumptions: { used: true } }, heatingSavings: {
+    home: { timing: timing(1) },
+    garage: { timing: { ...timing(2, 'garage'), assumedPrices: true, priceAssumptions: assumed } },
+    total: { timing: { ...timing(3, 'total'), assumedPrices: true, priceAssumptions: assumed } },
+  }, firewoodBenefit: estimate };
+  panel.render(data);
+  const heating = root.children[1].children[0];
+  const scopes = findByLabel(heating, 'Heating cost comparison scope');
+  for (const index of [1, 2]) {
+    scopes.children[index].click();
+    assert.match(heating.textContent, /Assumed rates/);
+    assert.doesNotMatch(root.textContent, /no device comparison here includes/);
+  }
+  findByLabel(heating, 'Heating cost comparison').children[0].click();
+  panel.render({ ...data, meta: {}, firewoodBenefit: { ...estimate, priceAssumptions: assumed } });
+  assert.match(root.children[1].children[2].textContent, /Assumed rates/);
+  assert.match(root.children[2].textContent, /When contract rates are assumed/);
+  panel.render({ ...data, meta: {}, firewoodBenefit: estimate });
+  assert.doesNotMatch(root.children[2].textContent, /When contract rates are assumed/,
+    'Hidden timing scope assumptions do not qualify an unaffected visible model comparison');
+  panel.close();
+});
+
+test('details expose numerical operands and preserve the methodology disclosure across updates', () => {
+  const { root, document } = dom(new Map([['stmq.heatingSavingMode', 'timing']]));
+  const panel = createTimingBenefit(root);
+  const data = { ...payload, timingBenefit: { heatPump: { ...timing(1), energyKwh: 5,
+    actualCostEuro: 2.5, uniformCostEuro: 3.5 } } };
+  panel.render(data);
+  const heating = root.children[1].children[0], methodology = root.children[2];
+  assert.match(heating.children[1].textContent, /Included electricity.*5 kWh.*€3.50.*€2.50.*€1.00/);
+  assert.match(heating.children[1].textContent, /minus.*timing difference/);
+  assert.equal(methodology.tagName, 'details');
+  const summary = methodology.children[0]; methodology.open = true; summary.focus();
+  panel.render({ ...data, meta: { priceAssumptions: { used: true } } });
+  assert.equal(root.children[2], methodology); assert.equal(methodology.open, true);
+  assert.equal(methodology.children[0], summary); assert.equal(document.activeElement, summary);
+  panel.close();
 });

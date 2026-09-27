@@ -1,4 +1,4 @@
-import { DailyTimingBenchmark } from './daily-timing-benchmark.js';
+import { DailyTimingBenchmark, normalizeTimingDifference } from './daily-timing-benchmark.js';
 
 const finite = Number.isFinite, MAX_INTERVAL_MS = 15 * 60_000;
 const invalid = new Set(['missing', 'invalid_numeric', 'invalid_unit', 'invalid-value', 'invalid_value',
@@ -82,10 +82,13 @@ export function getGarageTimingBenefit({ store, input = 'offline', range, now = 
   }
   for (const interval of pending) accept(interval);
   const result = timing.result().heatPump;
+  const reason = finite(result.value) ? null : !result.coverageDetails.elapsedMs ? 'no-elapsed-time'
+    : result.coverageDetails.incompletePriceMs > 0 ? 'incomplete-daily-prices'
+      : stats.overlap ? 'overlapping-electrical-sources' : 'no-qualified-electrical-intervals';
   return { ...result, provisional: result.provisional || stats.provisional > 0 || input === 'simulated',
     basis: 'Dedicated garage electrical intervals; native accuracy remains provisional unless independently verified',
     sourceQuality: stats.accepted ? input === 'simulated' ? 'simulated-electrical' : stats.provisional ? 'provisional-electrical' : 'verified-electrical' : 'unavailable',
-    intervalCounts: stats, reason: finite(result.value) ? null : stats.overlap ? 'overlapping-electrical-sources' : 'no-qualified-electrical-intervals' };
+    intervalCounts: stats, reason };
 }
 
 const sum = (values, key) => values.every(value => finite(value[key])) ? values.reduce((total, value) => total + value[key], 0) : null;
@@ -134,7 +137,7 @@ export function combineSavings(home, garage, method) {
   } else {
     for (const name of ['energyKwh', 'actualCostEuro', 'uniformCostEuro']) total[name] = contributing.length ? sum(contributing, name) : null;
     const elapsed = home.coverageDetails?.elapsedMs ?? garage.coverageDetails?.elapsedMs ?? 0;
-    const included = all.reduce((value, item) => value + (item.coverageDetails?.includedMs ?? 0), 0);
+    const included = contributing.reduce((value, item) => value + (item.coverageDetails?.includedMs ?? 0), 0);
     total.coverage = elapsed ? included / (elapsed * 2) : 0;
     total.coverageDetails = { from: home.range?.from, to: Math.min(home.range?.to, home.generatedAt),
       elapsedMs: elapsed * 2, includedMs: included, coverageBasis: 'combined-system-time',
@@ -142,8 +145,17 @@ export function combineSavings(home, garage, method) {
       missingPowerMs: all.reduce((value, item) => value + (item.coverageDetails?.missingPowerMs ?? elapsed), 0),
       incompletePriceMs: all.reduce((value, item) => value + (item.coverageDetails?.incompletePriceMs ?? 0), 0) };
     total.evidence = { energyBasis: 'separate-system-intervals', sources: [] };
-    total.assumedPrices = all.some(value => value.assumedPrices);
-    total.priceAssumptions = { durationMs: all.reduce((value, item) => value + (item.priceAssumptions?.durationMs ?? 0), 0) };
+    // Each system contributes its own included time, even when their clock
+    // intervals overlap. The affected date span is only a span, not duration.
+    const durationMs = contributing.reduce((value, item) => value + (item.priceAssumptions?.durationMs ?? 0), 0);
+    const assumptionStarts = contributing.map(item => item.priceAssumptions?.firstAt).filter(finite);
+    const assumptionEnds = contributing.map(item => item.priceAssumptions?.lastAt).filter(finite);
+    total.assumedPrices = contributing.some(value => value.assumedPrices);
+    total.priceAssumptions = { durationMs, share: included ? durationMs / included : 0, timeBasis: 'included-system-time',
+      firstAt: assumptionStarts.length ? Math.min(...assumptionStarts) : null,
+      lastAt: assumptionEnds.length ? Math.max(...assumptionEnds) : null };
+    if (finite(total.value)) total.value = normalizeTimingDifference(total.value,
+      contributing.reduce((value, item) => value + Math.abs(item.actualCostEuro ?? 0) + Math.abs(item.uniformCostEuro ?? 0), 0), contributing.length);
   }
   return total;
 }

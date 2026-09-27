@@ -81,6 +81,21 @@ test('price gaps remain missing; historical tariff assumption flags reach the su
   assert.equal(result.summary.coverage.missingMs, 2 * HOUR);
   assert.match(result.summary.reason, /Partial/);
   assert.ok(result.summary.assumptions.some(value => /assumed tariff/.test(value)));
+  assert.deepEqual(result.summary.priceAssumptions, { durationMs: 2 * HOUR, share: 1 / 3,
+    firstAt: start, lastAt: start + 2 * HOUR, timeBasis: 'included-period' });
+  const known = getFirewoodBenefit(args);
+  assert.deepEqual(known.summary.priceAssumptions, { durationMs: 0, share: 0, firstAt: null, lastAt: null, timeBasis: 'included-period' });
+});
+
+test('retired price-assumption aliases cannot authorize a fireplace estimate', t => {
+  const { args } = fixture(t, { hours: 8 });
+  for (const key of ['rateAssumption', 'assumedRates', 'ratesAssumed', 'assumed']) {
+    const result = getFirewoodBenefit({ ...args, priceIntervals: args.priceIntervals.map(row => ({ ...row, [key]: true })) });
+    assert.equal(result.summary.status, 'unavailable');
+    assert.equal(result.summary.valueEuro, null);
+    assert.match(result.summary.reason, /unsupported rate-assumption fields/);
+    assert.equal(result.summary.priceAssumptions.durationMs, 0);
+  }
 });
 
 test('missing weather cannot become a zero-cost period or an invented later counterfactual', t => {
