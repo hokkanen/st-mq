@@ -4,7 +4,7 @@ const dateTime = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki',
 /** Categorical evidence occupies its own time-aligned rows. Requests, native
  * reports and model windows remain separate even when their intervals overlap. */
 export const activityTracks = Object.freeze([
-  { key: 'operatingMode', id: 'operating-modes', label: 'Pump mode', color: 'outdoor',
+  { key: 'operatingMode', id: 'operating-modes', label: 'Pump mode', color: 'indoor',
     detail: 'Configured operating mode from H66 readback; independent of compressor activity',
     values: { 0: 'Off', 1: 'Auto', 2: 'Compressor only', 3: 'Auxiliary only', 4: 'Hot water only' },
     colors: { 0: 'muted', 1: 'indoor', 2: 'outdoor', 3: 'auxiliary', 4: 'compressorDhw' },
@@ -217,11 +217,18 @@ export function createChartOverlays({ canvas, getChart, getPayload, getView, get
     synchronize(); getChart()?.draw();
   }
   function align(chart = getChart()) {
-    if (!chart?.chartArea || !chart.width) return;
-    const ratio = canvas.getBoundingClientRect().width / chart.width;
-    for (const { root } of rows) {
-      root.style.paddingLeft = `${chart.chartArea.left * ratio}px`;
-      root.style.paddingRight = `${(chart.width - chart.chartArea.right) * ratio}px`;
+    if (closed || !chart?.chartArea || !chart.width) return;
+    const canvasRect = canvas.getBoundingClientRect(), ratio = canvasRect.width / chart.width;
+    const left = canvasRect.left + chart.chartArea.left * ratio;
+    const right = canvasRect.left + chart.chartArea.right * ratio;
+    const bounds = rows.map(({ root }) => ({ root, rect: root.getBoundingClientRect(), width: root.offsetWidth }));
+    for (const { root, rect, width } of bounds) {
+      if (!rect.width || !width) continue;
+      const scale = rect.width / width;
+      // A scrollbar already takes space from the row's right edge. Consume the
+      // remaining axis gutter instead of subtracting the canvas gutter again.
+      root.style.paddingLeft = `${Math.max(0, (left - rect.left) / scale)}px`;
+      root.style.paddingRight = `${Math.max(0, (rect.right - right) / scale)}px`;
     }
     synchronize(chart);
   }
@@ -359,7 +366,12 @@ export function createChartOverlays({ canvas, getChart, getPayload, getView, get
   listen(document, 'keydown', event => { if (event.key === 'Escape') clear(); });
   listen(window, 'blur', () => clear());
   listen(window, 'resize', () => clear());
-  return { render, clear, close() { closed = true; clear({ redraw: false }); listeners.forEach(remove => remove()); extension?.remove(); readout?.remove(); rows = []; },
+  const activity = document.getElementById('chart-activity');
+  // Content-box observation also catches native scrollbars appearing after a
+  // disclosure opens, without needing a chart resize or a frame polling loop.
+  const resizeObserver = activity && window?.ResizeObserver ? new window.ResizeObserver(() => { clear(); align(); }) : undefined;
+  resizeObserver?.observe(activity);
+  return { render, clear, close() { closed = true; clear({ redraw: false }); resizeObserver?.disconnect(); listeners.forEach(remove => remove()); extension?.remove(); readout?.remove(); rows = []; },
     plugin: { id: 'historyOverlays', beforeDatasetsDraw: paintNow, afterDatasetsDraw: paintCursor,
       afterLayout: align, beforeEvent: () => isMoving() ? false : undefined } };
 }

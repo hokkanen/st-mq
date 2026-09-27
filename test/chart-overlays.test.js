@@ -90,6 +90,8 @@ test('cursor geometry scales CSS pixels and only activates on visible bands', ()
 function fixture(t) {
   class Element extends EventTarget {
     constructor() { super(); this.children = []; this.style = {}; this.dataset = {}; this.hidden = false; this.attributes = new Map(); this.offsetWidth = 260; this.offsetHeight = 65; this.captured = new Set(); }
+    get offsetWidth() { return this.className === 'mode-history' ? (container.rect?.width ?? 800) / (container.cssScale ?? 1) - (container.scrollbarWidth ?? 0) : this.width; }
+    set offsetWidth(value) { this.width = value; }
     setAttribute(key, value) { this.attributes.set(key, value); }
     append(...children) { for (const child of children) { child.parentElement = this; this.children.push(child); } }
     replaceChildren(...children) { this.children = []; this.append(...children); }
@@ -103,16 +105,26 @@ function fixture(t) {
       if (this.className === 'mode-history') {
         if (this.hidden) return { left: 100, right: 900, top: 0, bottom: 0, width: 0, height: 0 };
         const top = 520 + container.children.filter(child => !child.hidden).indexOf(this) * 60;
-        return { left: 100, right: 900, top, bottom: top + 52, width: 800, height: 52 };
+        const left = container.rect?.left ?? 100, width = this.offsetWidth * (container.cssScale ?? 1);
+        return { left, right: left + width, top, bottom: top + 52, width, height: 52 };
       }
       if (this.className === 'mode-track') {
-        const root = this.parentElement.parentElement.getBoundingClientRect(), top = root.top + 28;
-        return { left: 150, right: 850, top, bottom: top + 22, width: root.width ? 700 : 0, height: root.height ? 22 : 0 };
+        const row = this.parentElement.parentElement, root = row.getBoundingClientRect(), top = root.top + 28;
+        const scale = container.cssScale ?? 1;
+        const left = root.left + (parseFloat(row.style.paddingLeft) || 0) * scale;
+        const right = root.right - (parseFloat(row.style.paddingRight) || 0) * scale;
+        return { left, right, top, bottom: top + 22, width: root.width ? right - left : 0, height: root.height ? 22 : 0 };
       }
       return this.rect;
     }
   }
   const panel = new Element(), canvas = new Element(), container = new Element(), window = new EventTarget();
+  let resizeObserver;
+  window.ResizeObserver = class {
+    constructor(callback) { this.callback = callback; resizeObserver = this; }
+    observe(target) { this.target = target; }
+    disconnect() { this.disconnected = true; }
+  };
   panel.rect = { left: 80, top: 60, width: 840, height: 900 }; panel.clientLeft = 1; panel.clientTop = 1;
   canvas.rect = { left: 100, top: 100, width: 800, height: 400 };
   panel.append(canvas, container);
@@ -137,12 +149,50 @@ function fixture(t) {
     Object.assign(event, { pointerType: 'mouse', pointerId: 1, button: 0, buttons: 0, clientX: 450, clientY: 550, ...values });
     target.dispatchEvent(event); return event;
   }
-  return { panel, canvas, container, document, window, overlays, chart, commands, pointer, payload,
+  return { panel, canvas, container, document, window, overlays, chart, commands, pointer, payload, resizeObserver,
     setTracks(value) { tracks = value; overlays.render(); }, hide(key) { hidden.add(key); overlays.render(); },
     setMoving(value) { moving = value; },
     get extension() { return panel.children.find(child => child.className === 'chart-crosshair-extension'); },
     get readout() { return panel.children.find(child => child.className === 'chart-crosshair-readout'); } };
 }
+
+test('scrollbars consume the row axis gutter while time bounds and cursor remain aligned', t => {
+  const f = fixture(t), row = f.container.children[0], track = row.children[1].children[0];
+  assert.equal(f.resizeObserver.target, f.container);
+  for (const scrollbarWidth of [0, 16, 0, 6]) {
+    f.container.scrollbarWidth = scrollbarWidth;
+    f.resizeObserver.callback();
+    assert.equal(row.style.paddingLeft, '50px');
+    assert.equal(row.style.paddingRight, `${50 - scrollbarWidth}px`);
+    const rect = track.getBoundingClientRect();
+    assert.deepEqual([rect.left, rect.right, rect.width], [150, 850, 700]);
+    for (const [clientX, chartX, cursorLeft] of [[150, 50, '69px'], [850, 750, '768px']]) {
+      f.pointer('pointermove', { clientX });
+      assert.equal(f.extension.hidden, false);
+      assert.equal(f.extension.children[0].style.left, cursorLeft);
+      assert(f.commands.some(command => JSON.stringify(command) === JSON.stringify(['moveTo', chartX, 20])));
+    }
+  }
+  f.overlays.close();
+  assert.equal(f.resizeObserver.disconnected, true);
+});
+
+test('row gutters use actual container offsets and CSS scaling independently of canvas logical pixels', t => {
+  const f = fixture(t);
+  f.canvas.rect = { left: 100, top: 100, width: 400, height: 200 };
+  f.container.rect = { left: 110, right: 510, top: 500, bottom: 2000, width: 400, height: 1500 };
+  f.container.cssScale = .5;
+  f.container.scrollbarWidth = 16;
+  f.resizeObserver.callback();
+  const row = f.container.children[0], rect = row.children[1].children[0].getBoundingClientRect();
+  assert.equal(row.style.paddingLeft, '30px');
+  assert.equal(row.style.paddingRight, '54px');
+  assert.deepEqual([rect.left, rect.right, rect.width], [125, 475, 350]);
+  f.pointer('pointermove', { clientX: rect.left });
+  assert.equal(f.extension.children[0].style.left, '44px');
+  f.pointer('pointermove', { clientX: rect.right });
+  assert.equal(f.extension.children[0].style.left, '393px');
+});
 
 test('isolated state ticks paint and expose their actual value and unknown duration on inspection', t => {
   const f = fixture(t);

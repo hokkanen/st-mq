@@ -111,7 +111,9 @@ and synthetic edges. Browser checks cover combined home-compressor states, the
 persistent title folds and complete colour keys, separate garage power-readback
 and managed-pause rows, band-only mouse/touch cursor dragging, clipped cursor
 segments, independent plot navigation, touch and keyboard cleanup, both themes and
-320/390 px fullscreen layouts. Its synthetic screenshot gallery is written to
+320/390 px fullscreen layouts. Legend checks cover native keyboard disclosure,
+scrolling with Reset view always accessible, uniform active-state swatches,
+quantity-specific group labels and strip alignment as scrollbars appear. Its synthetic screenshot gallery is written to
 ignored `var/chart-views-*.png` files. The Firefox chart suite below retains broader
 chart/date/detail/tooltips and related dashboard regression coverage.
 

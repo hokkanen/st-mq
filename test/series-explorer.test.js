@@ -85,6 +85,9 @@ test('state colours retain their physical meaning and distinguish circulation re
   assert.match(request.detail, /not confirmed pump operation or water flow/);
   assert.match(feedback.detail, /neither proves water flow/);
   assert.deepEqual(explorerActivityTrack('dhw_routing').colors, { 0: 'compressorSpace', 1: 'compressorDhw' });
+  assert.equal(explorerActivityTrack('dhw_routing').color, 'compressorSpace');
+  assert.equal(explorerActivityTrack('operating_mode').color, 'indoor');
+  assert.equal(explorerActivityTrack('compressor_active').color, 'compressorSpace');
   assert.equal(explorerActivityTrack('model_valve_override').patterns[3], 'unknown');
   const alarm = explorerActivityTrack('alarm_code');
   assert.equal(alarm.values[0], 'No alarm');

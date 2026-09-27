@@ -324,13 +324,21 @@ export async function checkChartZoomBrowser({ evaluate, command, context, until 
   await until(`Number(${canvas}.dataset.viewTo) - Number(${canvas}.dataset.viewFrom) < Number(${canvas}.dataset.selectedTo) - Number(${canvas}.dataset.selectedFrom)`);
   const portrait = await state();
   assert.equal(await evaluate("document.getElementById('chart-legend').checkVisibility()"), false);
+  assert.equal(await evaluate("document.getElementById('chart-legend-panel').open"), false);
   await click('chart-legend-toggle');
   await settle();
   assert.equal(await evaluate("document.getElementById('chart-legend').checkVisibility()"), true);
+  assert.equal(await evaluate("document.getElementById('chart-legend-panel').open"), true);
+  assert.equal(await evaluate("document.getElementById('chart-activity').checkVisibility()"), false,
+    'Expanded legend temporarily replaces activity rows');
+  assert.equal(await evaluate("document.getElementById('chart-overview').checkVisibility()"), true,
+    'Expanded legend preserves the navigator');
   await checkFits('Portrait with expanded legend');
   await click('chart-legend-toggle');
   await settle();
   assert.equal(await evaluate("document.getElementById('chart-legend').checkVisibility()"), false);
+  assert.equal(await evaluate("document.getElementById('chart-activity').checkVisibility()"), true,
+    'Closing the legend restores activity rows');
 
   assert.ok(Math.abs(portrait.zoom - 1) < 0.001, 'Portrait starts at baseline magnification');
   checkBounds(portrait, initial, 'Portrait slice');

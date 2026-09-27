@@ -635,12 +635,15 @@ is separate and cannot be tracked or controlled consistently by the page.
 
 The chart view keeps its selection button, Exit button and two compact date pickers
 visible. Selecting the first date immediately shows that day; the second extends
-the inclusive range. On phones, **Legend** opens a bounded scrollable area and
-**Close legend** restores the navigator and activity strips and returns space to the plot. The legend separates quantitative series, temperature/price context and
-activity rows. Ordinary
-left-axis history uses solid lines and right-axis temperatures use dashed lines.
-Historical Solar estimate is solid; future forecasts use dash-dot lines and
-electricity prices remain dotted. All plotted temperatures, including settings
+the inclusive range. **Legend** is a fold on every screen size, with a scrollable
+list and a **Reset view** button that stays visible. In fullscreen, opening the
+fold hides the activity strips; closing it restores them. Short windows also
+hide the navigator while the legend is open. Escape inside the legend closes it
+and returns focus to the title. Group headings describe their available series:
+price-only groups say **Price**, with no temperature label. All activity icons
+use the same stripe style and a representative active-state colour. Left-axis
+history uses solid lines and right-axis temperatures use dashed lines. Future
+forecasts use dash-dot lines and electricity prices remain dotted. All plotted temperatures, including settings
 and targets, share monotone cubic interpolation within covered spans. Categorical
 states and electrical power retain steps. Events, session checks and original
 interval-energy totals remain points. Charger fills retain their electricity
@@ -657,6 +660,8 @@ meanings, including missing intervals. Wide layouts also show a compact key
 beside the title; phones keep the colours inside the fold. Hovering or dragging
 a strip moves the shared time cursor, including by touch. Its separate segments
 appear only in the plot and visible strips, leaving titles and gaps clear.
+Scrolling the activity rows or opening their explanations preserves their exact
+alignment with the plot at both time-axis endpoints.
 Landscape shows the entire selected time window at baseline zoom. Portrait uses
 the full available chart height and shows a narrower time slice; drag sideways
 or use the navigator to move through the selection even at baseline zoom.

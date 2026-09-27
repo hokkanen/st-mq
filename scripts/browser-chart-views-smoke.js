@@ -153,8 +153,8 @@ try {
   const searchSeries = query => searchCatalogue(query, 'series');
   const searchViews = query => searchCatalogue(query, 'views');
   const pressKey = async key => {
-    const code = { Escape: 'Escape', ArrowDown: 'ArrowDown', ArrowUp: 'ArrowUp', Enter: 'Enter', Tab: 'Tab' }[key];
-    const windowsVirtualKeyCode = { Escape: 27, ArrowDown: 40, ArrowUp: 38, Enter: 13, Tab: 9 }[key];
+    const code = { Escape: 'Escape', ArrowDown: 'ArrowDown', ArrowUp: 'ArrowUp', Enter: 'Enter', Tab: 'Tab', ' ': 'Space' }[key];
+    const windowsVirtualKeyCode = { Escape: 27, ArrowDown: 40, ArrowUp: 38, Enter: 13, Tab: 9, ' ': 32 }[key];
     await send('Input.dispatchKeyEvent', { type: 'keyDown', key, code, windowsVirtualKeyCode, nativeVirtualKeyCode: windowsVirtualKeyCode,
       ...(key === 'Enter' ? { text: '\r', unmodifiedText: '\r' } : {}) });
     await send('Input.dispatchKeyEvent', { type: 'keyUp', key, code, windowsVirtualKeyCode, nativeVirtualKeyCode: windowsVirtualKeyCode }); await settle();
@@ -219,8 +219,10 @@ try {
       const canvas = document.getElementById('history').getBoundingClientRect();
       const select = document.getElementById('chart-series-toggle').getBoundingClientRect();
       const exit = document.getElementById('chart-fullscreen').getBoundingClientRect();
+      const minimumPlotHeight = panel.dataset.fullscreen === 'true' && innerHeight <= 550
+        && document.getElementById('chart-legend-panel').open ? 40 : 80;
       return document.documentElement.scrollWidth <= innerWidth + 1 && bounds.left >= -1 && bounds.right <= innerWidth + 1
-        && select.width >= 80 && select.right <= exit.left + 1 && exit.right <= innerWidth + 1 && canvas.height >= 80
+        && select.width >= 80 && select.right <= exit.left + 1 && exit.right <= innerWidth + 1 && canvas.height >= minimumPlotHeight
         && (panel.dataset.fullscreen !== 'true' || canvas.bottom <= innerHeight && bounds.bottom <= innerHeight + 1);
     })()`), true, `${label}: chart controls and plot fit without horizontal overflow`);
   };
@@ -255,6 +257,100 @@ try {
       assert(Math.abs(segment.top - track.top) < 1 && Math.abs(segment.bottom - track.bottom) < 1,
         `${label}: band ${index} stops at its own edges, including scrolling clips`);
     });
+  };
+  const checkLegendDisclosure = async (label, fullscreen) => {
+    assert.equal(await evaluate("document.getElementById('chart-legend-panel').open"), false,
+      `${label}: the legend starts compact`);
+    const before = await viewportState();
+    await evaluate("document.getElementById('chart-legend-toggle').focus(); true");
+    await pressKey(await evaluate('innerWidth < 600') ? ' ' : 'Enter');
+    await until("document.getElementById('chart-legend-panel').open"); await settle();
+    assert.equal(await evaluate("document.getElementById('chart-legend').checkVisibility()"), true,
+      `${label}: native keyboard disclosure reveals the legend`);
+    assert.equal(await evaluate("document.getElementById('chart-activity').checkVisibility()"), !fullscreen,
+      `${label}: the expanded legend ${fullscreen ? 'temporarily replaces' : 'keeps'} the activity rows`);
+    if (fullscreen) assert.equal(await evaluate("document.getElementById('chart-overview').checkVisibility()"), await evaluate('innerHeight > 550'),
+      `${label}: the navigator stays available when viewport height permits`);
+    const layout = await evaluate(`(() => {
+      const list = document.getElementById('chart-legend'), reset = document.querySelector('.chart-legend-reset');
+      const resetBounds = () => { const r=reset.getBoundingClientRect(); return {top:r.top,bottom:r.bottom}; };
+      const before = resetBounds();
+      const buttons = [...list.querySelectorAll('[data-chart-key]')];
+      const accessible = buttons.map(button => {
+        button.scrollIntoView({block:'nearest'});
+        const r=button.getBoundingClientRect(), hit=document.elementFromPoint(r.left+r.width/2,r.top+r.height/2);
+        return {key:button.dataset.chartKey,visible:button.checkVisibility(),hit:hit?.closest('[data-chart-key]')===button};
+      });
+      return {accessible,resetBefore:before,resetAfter:resetBounds(),resetOutsideList:!list.contains(reset),
+        scrollHeight:list.scrollHeight,clientHeight:list.clientHeight,scrollTop:list.scrollTop,
+        panel:document.getElementById('chart-legend-panel').getBoundingClientRect().toJSON()};
+    })()`);
+    assert(layout.accessible.length > 3 && layout.accessible.every(item => item.visible && item.hit),
+      `${label}: every legend item is reachable through scrolling (${JSON.stringify(layout)})`);
+    assert.equal(layout.resetOutsideList, true, `${label}: reset sits outside the scrolling list`);
+    if (fullscreen) {
+      assert.deepEqual(layout.resetAfter, layout.resetBefore, `${label}: Reset view stays pinned when scrolling the legend`);
+      assert(layout.panel.top >= 0 && layout.panel.bottom <= await evaluate('innerHeight') + 1,
+        `${label}: the complete legend stays inside the viewport`);
+      await checkFits(`${label} expanded legend`);
+      if (await evaluate('innerWidth < 600 && innerHeight < 550'))
+        assert(layout.scrollHeight > layout.clientHeight, `${label}: the short phone viewport provides real scrolling for the complete legend`);
+      await capture(`legend-${label.toLowerCase().replaceAll(' ', '-')}`);
+    }
+    const original = await shown('property_power');
+    await evaluate("document.querySelector('[data-chart-key=property_power]').focus(); true"); await pressKey('Enter');
+    assert.equal(await shown('property_power'), !original, `${label}: a keyboard legend toggle changes the series`);
+    assert.equal(await evaluate("document.getElementById('chart-legend-panel').open"), true,
+      `${label}: changing a series keeps the legend open`);
+    await evaluate("document.querySelector('.chart-legend-reset').focus(); true"); await pressKey('Enter');
+    assert.equal(await shown('property_power'), true, `${label}: Reset view restores the default series`);
+    assert.equal(await evaluate("document.activeElement.classList.contains('chart-legend-reset')"), true,
+      `${label}: reset retains keyboard focus after the legend is rebuilt`);
+    assert.equal(await evaluate("document.getElementById('chart-legend-panel').open"), true,
+      `${label}: Reset view keeps the legend open`);
+    assert.deepEqual(await viewportState(), before, `${label}: opening and using the legend preserves the visible time range`);
+    await pressKey('Escape');
+    assert.equal(await evaluate("document.getElementById('chart-legend-panel').open"), false,
+      `${label}: Escape closes the legend`);
+    assert.equal(await evaluate("document.activeElement.id"), 'chart-legend-toggle', `${label}: Escape restores focus to the summary`);
+    assert.equal(await evaluate("document.getElementById('chart-activity').checkVisibility()"), true,
+      `${label}: closing the legend restores the activity rows`);
+    assert.equal(await evaluate("document.querySelector('.history-panel').dataset.fullscreen === 'true'"), fullscreen,
+      `${label}: Escape in the legend does not leave fullscreen`);
+  };
+  const checkScrollbarAlignment = async label => {
+    await evaluate(`(() => {
+      const sheet=document.styleSheets[0], index=sheet.cssRules.length;
+      sheet.insertRule('#chart-activity { overflow-y: hidden !important; scrollbar-width: auto !important; max-height: 160px !important; }',index);
+      sheet.insertRule('#chart-activity::-webkit-scrollbar { width:18px; }',index+1);
+      window.chartScrollbarFixture={sheet,index}; return true;
+    })()`); await settle();
+    const edges = () => evaluate(`(() => {
+      const root=document.getElementById('chart-activity');
+      return {gutter:root.offsetWidth-root.clientWidth,rows:[...root.querySelectorAll('.mode-history:not([hidden]) .mode-track')].map(node => {
+        const r=node.getBoundingClientRect(); return {left:r.left,right:r.right,width:r.width};
+      })};
+    })()`);
+    const baseline = await edges();
+    assert.equal(baseline.gutter, 0, `${label}: baseline has no reserved scrollbar`);
+    await evaluate("window.chartScrollbarFixture.sheet.cssRules[window.chartScrollbarFixture.index].style.setProperty('overflow-y','scroll','important'); true");
+    await settle();
+    const check = async phase => {
+      const current=await edges();
+      assert(current.gutter >= 16, `${label}: the fixture exercises a real non-overlay scrollbar`);
+      assert.equal(current.rows.length, baseline.rows.length);
+      current.rows.forEach((row,index) => {
+        assert(Math.abs(row.left-baseline.rows[index].left)<1 && Math.abs(row.right-baseline.rows[index].right)<1,
+          `${label}: ${phase} preserves both time endpoints of row ${index} (${JSON.stringify({before:baseline.rows[index],after:row,gutter:current.gutter})})`);
+      });
+    };
+    await check('showing a scrollbar');
+    await evaluate("document.querySelector('#operating-modes .activity-summary').click(); true"); await settle();
+    await check('opening an activity explanation');
+    await evaluate("document.querySelector('#operating-modes .activity-summary').click(); true"); await settle();
+    await check('closing an activity explanation');
+    await evaluate("window.chartScrollbarFixture.sheet.deleteRule(window.chartScrollbarFixture.index); window.chartScrollbarFixture.sheet.deleteRule(window.chartScrollbarFixture.index); delete window.chartScrollbarFixture; document.getElementById('chart-activity').scrollTop=0; true");
+    await settle();
   };
   const checkPickerFits = async label => {
     const layout = await evaluate(`(() => {
@@ -324,6 +420,11 @@ try {
   await send('Page.navigate', { url: `http://127.0.0.1:${app.server.address().port}/` });
   await until("document.getElementById('history')?.dataset.ready === 'true'");
   assert.equal(await evaluate("document.getElementById('history').dataset.view"), 'power');
+  assert.equal(await evaluate("document.getElementById('chart-legend-panel').tagName"), 'DETAILS',
+    'Legend uses a native disclosure on every screen size');
+  assert.equal(await evaluate("document.getElementById('chart-legend-toggle').tagName"), 'SUMMARY');
+  assert.equal(await evaluate("document.getElementById('chart-legend-panel').open"), false,
+    'The initial dashboard gives plot and activity rows the compact closed legend');
   assert.equal(await evaluate("document.getElementById('chart-series-toggle-label').textContent"), 'Selected view');
   assert.match(await evaluate("document.getElementById('chart-series-selected').textContent"), /Electrical power/);
   assert.equal(await evaluate("document.querySelectorAll('[aria-controls=chart-series-picker]').length"), 1,
@@ -380,6 +481,12 @@ try {
     for (const key of [...view.leftSignals, ...view.rightSignals, ...view.tracks, 'all_in_price', 'spot_price'])
       assert(legend.includes(key), `${view.key}: ${key} stays selectable`);
     assert.deepEqual(await evaluate("[...document.querySelectorAll('#chart-activity [data-activity-key]')].map(row => row.dataset.activityKey)"), view.tracks);
+    assert.equal(await evaluate(`(() => {
+      const swatches=[...document.querySelectorAll('.chart-legend-group[data-axis=activity] .chart-legend-swatch')];
+      const shape=node=>{ const s=getComputedStyle(node); return [s.width,s.height,s.borderStyle,s.borderRadius,s.backgroundImage].join('|'); };
+      return swatches.every(swatch=>swatch.dataset.kind==='strip' && swatch.dataset.pattern==='solid'
+        && !swatch.style.backgroundImage && shape(swatch)===shape(swatches[0]));
+    })()`), true, `${view.key}: every activity legend icon uses the same single-colour striped shape`);
     assert.equal(await evaluate("document.getElementById('chart-series-toggle-label').textContent"), 'Selected view');
     assert.equal(await evaluate("document.getElementById('chart-series-selected').textContent"), view.label);
     assert.equal(await evaluate(`(() => {
@@ -397,6 +504,13 @@ try {
     })()`), true, `${view.key}: every activity title unfolds its meaning and complete colour key`);
   }
   await choose('view', 'power');
+  await checkLegendDisclosure('Desktop dashboard', false);
+  await evaluate("document.getElementById('chart-legend-toggle').click(); true"); await settle();
+  await choose('view', 'weather');
+  assert.equal(await evaluate("document.getElementById('chart-legend-panel').open"), true,
+    'Changing the selected view keeps the legend open');
+  await choose('view', 'power');
+  await evaluate("document.getElementById('chart-legend-toggle').focus(); true"); await pressKey('Escape');
   for (const [key, pattern] of [['property_power', 'solid'], ['outdoor_temperature', 'dashed'], ['outdoor_forecast', 'dash-dot'], ['all_in_price', 'dotted']])
     assert.equal(await evaluate(`document.querySelector('[data-chart-key="${key}"] .chart-legend-swatch').dataset.pattern`), pattern);
   for (const key of ['charger_power', 'charger2_power']) assert.equal(await evaluate(`document.querySelector('[data-chart-key="${key}"] .chart-legend-swatch').dataset.kind`), 'fill');
@@ -434,6 +548,13 @@ try {
       const swatch=document.createElement('span'); swatch.style.color=getComputedStyle(document.documentElement).getPropertyValue('${color}').trim();
       return Boolean(segment) && segment.style.backgroundColor === swatch.style.color;
     })()`), true, `Compressor state ${value} uses its own explained color`);
+  }
+  for (const [key,variable] of [['operatingMode','--chart-indoor'],['compressorHome','--chart-compressor-space']]) {
+    assert.equal(await evaluate(`(() => {
+      const swatch=document.querySelector('[data-chart-key=${key}] .chart-legend-swatch');
+      const expected=document.createElement('span'); expected.style.color=getComputedStyle(document.documentElement).getPropertyValue('${variable}').trim();
+      return swatch.style.color===expected.style.color && swatch.style.backgroundColor===expected.style.color;
+    })()`), true, `${key}: the activity swatch uses its representative on-state colour`);
   }
   if (!await shown('operatingMode')) await toggle('operatingMode');
   await evaluate("document.querySelector('#operating-modes .activity-caption summary').focus(); true"); await pressKey('Enter');
@@ -619,6 +740,8 @@ try {
   assert.equal(await evaluate("document.querySelectorAll('#chart-activity .mode-segment[data-kind=point]').length"), 1,
     'An isolated state report remains visible as a point without inventing duration');
   assert.match(await evaluate("document.querySelector('#chart-activity .mode-segment').title"), /Value 13.*duration unknown/);
+  assert.equal(await evaluate("document.querySelector('.chart-legend-group[data-axis=right] .chart-legend-axis').textContent"), 'Price',
+    'A state-only explorer labels its price axis without claiming temperature series');
 
   await choose('view', 'power');
   await evaluate("document.querySelector('.history-panel').scrollIntoView({block:'start'}); true"); await settle();
@@ -650,6 +773,8 @@ try {
   assert.equal(await cursorHidden(), true, 'Returning to the main plot keeps its pointer free of the time cursor');
   await evaluate("document.getElementById('chart-fullscreen').click(); true");
   await until("document.querySelector('.history-panel').dataset.fullscreen === 'true'"); await settle();
+  await checkLegendDisclosure('Desktop fullscreen', true);
+  await checkScrollbarAlignment('Desktop fullscreen');
   await evaluate("document.getElementById('history').focus(); document.getElementById('history').dispatchEvent(new KeyboardEvent('keydown',{key:'+',bubbles:true})); true");
   await until("document.querySelector('.chart-gesture-preview') === null");
   const beforePlotDrag = await viewportState();
@@ -687,6 +812,8 @@ try {
     await evaluate("document.getElementById('chart-fullscreen').click(); true");
     await until("document.querySelector('.history-panel').dataset.fullscreen === 'true'"); await settle();
     await checkFits(`${width}px fullscreen`);
+    await checkLegendDisclosure(`${width}px fullscreen`, true);
+    await checkScrollbarAlignment(`${width}px fullscreen`);
     assert.equal(await evaluate("[...document.querySelectorAll('.mode-history:not([hidden]) .activity-caption')].every(fold=>fold.open || fold.getBoundingClientRect().height<=24)"), true,
       `${width}px: every closed activity title stays on one compact line`);
     assert.equal(await evaluate("[...document.querySelectorAll('.activity-key-inline')].every(key=>!key.checkVisibility())"), true,
@@ -762,7 +889,17 @@ try {
       await evaluate("document.getElementById('chart-fullscreen').click(); true"); await settle();
     }
   }
+  await viewport(1280, 460);
+  await choose('view', 'power');
+  await evaluate("document.getElementById('chart-fullscreen').click(); true"); await settle();
+  await checkLegendDisclosure('Short desktop fullscreen', true);
+  await checkScrollbarAlignment('Short desktop fullscreen');
+  await evaluate("document.getElementById('chart-fullscreen').click(); true"); await settle();
   await viewport(390, 400, true);
+  await choose('view', 'power');
+  await evaluate("document.getElementById('chart-fullscreen').click(); true"); await settle();
+  await checkLegendDisclosure('Short phone fullscreen', true);
+  await evaluate("document.getElementById('chart-fullscreen').click(); true"); await settle();
   await searchSeries('');
   await checkPickerFits('Phone with a short available viewport');
   await capture('picker-short-phone'); await pressKey('Escape');

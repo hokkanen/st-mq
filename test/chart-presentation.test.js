@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import Chart from 'chart.js/auto';
-import { historyTooltipLabel, historyValueScales } from '../chart/history-chart.js';
+import { historyTooltipLabel, historyLegendLabel, historyValueScales } from '../chart/history-chart.js';
 import { historyDatasets } from '../chart/history-model.js';
 import { historyTooltipTitle, historyTooltipCallbacks, historyLearningLabel, historyTooltipsEnabled, wrapHistoryTooltip } from '../chart/history-tooltips.js';
 import { isInterpolatedTemperature } from '../src/domain/chart-temperatures.js';
@@ -40,6 +40,26 @@ const airSeries = () => ({
   model_indoor_temperature: [{ x: 0, y: 23.3 }, { x: 5, y: 24 }],
   outdoor_temperature: [{ x: 0, y: 18.1 }, { x: 5, y: 15 }],
   spot_price: [{ x: 0, y: -40 }, { x: 1, y: 3 }, { x: 2, y: 3 }, { x: 3, y: 3 }, { x: 5, y: 3 }],
+});
+
+test('legend groups name their available quantities including hidden choices on either value axis', () => {
+  const priceView = selectedChartView({ series: 'spot_price' });
+  assert.equal(historyLegendLabel('left', priceView, historyDatasets({}, priceView)), 'Price');
+  const stateView = selectedChartView({ series: 'operating_mode' });
+  assert.equal(historyLegendLabel('right', stateView, historyDatasets({}, stateView)), 'Price');
+  const temperatureView = selectedChartView({ view: 'temperatures' });
+  const temperatures = historyDatasets({}, temperatureView, { all_in_price: false, spot_price: false });
+  assert.equal(historyLegendLabel('right', temperatureView, temperatures), 'Temperature & price');
+  assert.equal(historyLegendLabel('right', temperatureView, temperatures.filter(dataset => dataset.unit === '°C')), 'Temperature');
+  for (const key of ['learning_solar', 'learning_temperatures']) {
+    const view = selectedChartView({ view: key }), datasets = historyDatasets({}, view);
+    assert.equal(historyLegendLabel('right', view, datasets), 'Temperature & price', key);
+    assert.equal(historyLegendLabel('right', view, datasets.filter(dataset => !['all_in_price', 'spot_price'].includes(dataset.key))), 'Temperature', key);
+  }
+  for (const selection of [{ view: 'power' }, { series: 'model_room_boost' }]) {
+    const view = selectedChartView(selection);
+    assert.equal(historyLegendLabel('left', view, historyDatasets({}, view)), view.unit);
+  }
 });
 
 test('temperature-led views have one scale for equal values, include prices and survive resize', t => {

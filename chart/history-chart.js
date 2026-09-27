@@ -28,6 +28,14 @@ const paletteVariables = {
   firewood: '--chart-firewood', fireplace: '--chart-fireplace',
   reference: '--chart-reference', garageFront: '--chart-garage-front', garagePump: '--chart-garage-pump', supply: '--chart-supply', return: '--chart-return', brineIn: '--chart-brine-in', brineOut: '--chart-brine-out',
 };
+export function historyLegendLabel(axis, view, datasets) {
+  if (axis === 'activity') return 'Activity rows';
+  // Hidden series remain selectable in the legend, so they still belong to its group.
+  const members = datasets.filter(dataset => dataset.yAxisID === axis);
+  const temperatures = members.some(dataset => dataset.unit?.split(' · ')[0] === '°C') && !(axis === 'left' && view.unit === 'Δ°C');
+  const prices = members.some(dataset => ['spot_price', 'all_in_price'].includes(dataset.key));
+  return temperatures && prices ? 'Temperature & price' : temperatures ? 'Temperature' : prices ? 'Price' : view.unit || 'Values';
+}
 export function historyValueScales(view, datasets, palette = defaultPalette) {
   const hasLeft = datasets.some(dataset => dataset.yAxisID === 'left' && !dataset.hidden);
   const right = datasets.filter(dataset => dataset.yAxisID === 'right' && !dataset.hidden);
@@ -157,7 +165,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     const groups = ['left', 'right', 'activity'].map(axis => {
       const group = document.createElement('div'); group.className = 'chart-legend-group'; group.dataset.axis = axis;
       const label = document.createElement('span'); label.className = 'chart-legend-axis';
-      label.textContent = axis === 'activity' ? 'Activity rows' : axis === 'left' ? view.unit || 'Values' : 'Temperature & price';
+      label.textContent = historyLegendLabel(axis, view, datasets);
       group.setAttribute('aria-label', label.textContent); group.append(label); return group;
     });
     function add(group, key, label, detail, swatchColor, kind, dash = []) {
@@ -169,7 +177,6 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
       swatch.style.color = swatchColor;
       swatch.style.backgroundColor = ['audit', 'session', 'interval-energy'].includes(kind) ? 'transparent'
         : kind === 'fill' ? color(swatchColor).alpha(0.4).rgbString() : swatchColor;
-      if (key === 'compressorHome') swatch.style.backgroundImage = `linear-gradient(to right, ${palette.compressorSpace} 50%, ${palette.compressorDhw} 50%)`;
       swatch.style.borderColor = swatchColor; swatch.setAttribute('aria-hidden', 'true');
       button.append(swatch, document.createTextNode(label));
       button.addEventListener('click', () => {
@@ -185,8 +192,9 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     for (const track of tracksForView(view)) add(groups[2], track.key, track.label, track.detail, palette[track.color ?? track.key], 'strip');
     const reset = document.createElement('button'); reset.type = 'button'; reset.className = 'chart-legend-reset'; reset.textContent = 'Reset view';
     reset.title = 'Restore this view’s default series and activity rows; keep your price choices';
-    reset.addEventListener('click', () => { delete preferences.views[view.key]; savePreferences(); renderChart(); $('chart-legend').querySelector('.chart-legend-reset')?.focus({ preventScroll: true }); });
-    $('chart-legend').replaceChildren(...groups.filter(group => group.children.length > 1), reset);
+    reset.addEventListener('click', () => { delete preferences.views[view.key]; savePreferences(); renderChart(); $('chart-legend-actions').querySelector('.chart-legend-reset')?.focus({ preventScroll: true }); });
+    $('chart-legend').replaceChildren(...groups.filter(group => group.children.length > 1));
+    $('chart-legend-actions').replaceChildren(reset);
   }
   function renderTiming() {
     timing.render(overview);
@@ -277,7 +285,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     canvas.dataset.rangeStart = plot.startDate; canvas.dataset.rangeEnd = plot.endDate; canvas.dataset.view = plot.view ?? 'explorer'; canvas.dataset.series = plot.series ?? ''; canvas.dataset.left = plot.left ?? plot.view; canvas.dataset.ready = String(!loading);
     renderStatus(datasets);
     const keys = [...chartView.leftSignals, ...chartView.rightSignals];
-    const notes = ['Historical solar estimates and other left-axis lines are solid; right-axis temperatures are dashed. Future forecasts use dash-dot lines and electricity prices are dotted. Toggle any legend item to tailor this view; price choices apply to every view.',
+    const notes = ['Left-axis lines are solid; right-axis temperatures are dashed. Future forecasts use dash-dot lines and electricity prices are dotted. Toggle any legend item to tailor this view; price choices apply to every view.',
       'Temperature curves use cubic interpolation without overshoot, including displayed settings and targets. Recorded values remain unchanged; a curve between settings does not imply gradual control changes. Power and states retain their steps. Missing evidence remains a gap. Activity rows share the time axis; hover or drag along a bar to inspect the same moment across the chart. Open a row title for its colours and explanation.'];
     if (chartView.stackPhases) notes.push('Charger currents form translucent stacks separately for L1, L2 and L3. Each phase keeps its property reference line. Tooltips show each charger’s own current; stacks require overlapping recorded evidence.');
     if (keys.includes('solar_radiation')) notes.push('Solar estimate is the latest valid weather estimate known at each historical time, not a solar sensor reading. Later forecast revisions do not replace it. The future Solar forecast remains separate.');
@@ -380,12 +388,14 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
   listen($('date-start'), 'change', () => applyDate('start'));
   listen($('date-end'), 'change', () => applyDate('end'));
   listen($('chart-range-form'), 'submit', event => event.preventDefault());
-  listen($('chart-legend-toggle'), 'click', () => {
-    const button = $('chart-legend-toggle');
-    const expanded = button.getAttribute('aria-expanded') !== 'true';
-    button.setAttribute('aria-expanded', String(expanded));
-    button.textContent = expanded ? 'Close legend' : 'Legend';
-    canvas.closest('.history-panel').dataset.legendExpanded = String(expanded);
+  listen($('chart-legend-panel'), 'toggle', () => {
+    overlays.clear(); graph?.resize();
+  });
+  listen($('chart-legend-panel'), 'keydown', event => {
+    if (event.key !== 'Escape' || !$('chart-legend-panel').open) return;
+    event.preventDefault(); event.stopPropagation();
+    $('chart-legend-panel').open = false;
+    $('chart-legend-toggle').focus({ preventScroll: true });
   });
   for (const preset of ['today', 'yesterday', 'tomorrow']) listen($(`range-${preset}`), 'click', () => choosePreset(preset));
   listen($('range-back'), 'click', () => shiftRange(-1));

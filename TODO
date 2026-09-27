@@ -1,6 +1,29 @@
 -Make README.md better and more descriptive of the app, especially the beginning of it
 -Implement support for local mqtt-based temperature receives (eg, from shelly or HASS through Meteorologisk Institute); just store last received temp values and time stamps (maybe in storage class, see below) when received (and accept if received within 1h)
 
+Completed 2026-09-27 — Stable chart widths and legend disclosure
+- Keep indicator strips aligned with both plot endpoints when a scrollbar
+  appears or disappears. Derive padding from actual row bounds and observe
+  container resizing, preserving CSS scaling and cursor geometry.
+- Replace the phone-only legend toggle and cramped fullscreen list with one
+  native fold across layouts. Bound the scrollable list, keep Reset view in a
+  separate visible footer, and temporarily hide fullscreen activity strips when
+  expanded. Short windows also make room by hiding the navigator. Preserve
+  disclosure state across redraws; Escape closes and restores title focus.
+- Remove the compressor's special split icon. All activity legend icons use
+  the shared striped swatch and a representative active colour: Auto for pump
+  mode and space heating for the home compressor. Label price-only groups Price
+  and recognise descriptive temperature units in saved learning views.
+- Simplify the general line guidance to left-axis, temperature, forecast and
+  price conventions without singling out solar. Remove superseded toggle state,
+  display rules and fixed legend height caps; retain current chart preferences,
+  independent visibility and chart payloads without compatibility aliases.
+- Validation: 88 focused tests and production build pass (existing bundle-size
+  warning). Chrome checks pass all 43 views and 124 explorer choices, including
+  real 18 px scrollbars, keyboard disclosure, legend scrolling/reset access,
+  default swatches, price labels, 320/390 px phones and short desktop/phone
+  layouts. Screenshots reviewed. Synthetic fixtures only.
+
 Completed 2026-09-27 — Chart inspection and activity explanations
 - Draw historical solar estimates as solid lines and future forecasts as dash-dot.
   Keep right-axis temperature and price conventions, original evidence and

@@ -62,7 +62,7 @@ export function explorerActivityTrack(key) {
   const row = Object.hasOwn(EXPLORER_SERIES_BY_KEY, key) && EXPLORER_SERIES_BY_KEY[key];
   if (!row || !['state', 'code'].includes(row.unit)) throw new RangeError('Choose a supported historical state.');
   const color = key.startsWith('dhwr_') ? 'dhwr' : key === 'heat_savings_active' ? 'heatOff'
-    : key === 'compressor_active' ? 'compressorSpace' : key === 'heating_pump_active' ? 'supply'
+    : key === 'operating_mode' ? 'indoor' : ['compressor_active', 'dhw_routing'].includes(key) ? 'compressorSpace' : key === 'heating_pump_active' ? 'supply'
       : key.startsWith('garage_') ? definitions[key]?.color ?? 'garage'
         : key.startsWith('alarm_') ? 'auxiliary' : key.startsWith('caravan_') ? 'garage'
           : definitions[key]?.color ?? 'learning';
