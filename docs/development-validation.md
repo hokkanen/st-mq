@@ -85,6 +85,7 @@ node scripts/browser-home-controls-smoke.js
 node scripts/browser-garage-smoke.js
 node scripts/browser-fullscreen-smoke.js
 node scripts/browser-chart-views-smoke.js
+node scripts/browser-timing-compat-smoke.js
 ```
 
 The access suite checks password entry, keyboard and touch visibility controls,
@@ -116,6 +117,14 @@ scrolling with Reset view always accessible, uniform active-state swatches,
 quantity-specific group labels and strip alignment as scrollbars appear. Its synthetic screenshot gallery is written to
 ignored `var/chart-views-*.png` files. The Firefox chart suite below retains broader
 chart/date/detail/tooltips and related dashboard regression coverage.
+
+Date checks also cover preserving the inactive end-date suggestion, showing just
+the new start day, explicitly choosing the same or another end date, canceling
+without activating a range, and fitting the end calendar on small screens.
+The timing compatibility suite renders synthetic comparisons with and without
+`ResizeObserver`, checking visible figures and controls above the folds, resizing,
+refresh, keyboard focus and unclipped content at five widths in both themes.
+This simulates a missing browser API; it does not certify a particular appliance.
 
 They default to `/opt/google/chrome/chrome`; set `STMQ_CHROME_BIN` if needed. The
 remaining Chrome checks expect a separately started browser with a disposable

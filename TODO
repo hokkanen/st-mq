@@ -1,6 +1,34 @@
 -Make README.md better and more descriptive of the app, especially the beginning of it
 -Implement support for local mqtt-based temperature receives (eg, from shelly or HASS through Meteorologisk Institute); just store last received temp values and time stamps (maybe in storage class, see below) when received (and accept if received within 1h)
 
+Completed 2026-09-27 — Single-day chart selection and appliance comparison rendering
+- Correct the earlier end-date change: selecting a start date plots only that
+  day and keeps the previous end date greyed out as an inactive suggestion.
+  Explicit end selection activates range mode, including the same suggested
+  date or an end equal to the start. Presets and range stepping remain explicit.
+- Give the end field a small calendar with explicit day buttons because native
+  date inputs omit change events when confirming an unchanged value. Preserve
+  typed entry, keyboard/month navigation, invalid-date rejection, cancellation,
+  fullscreen focus ownership and mobile viewport bounds.
+- Make comparison height observation optional: absent ResizeObserver no longer
+  interrupts result rendering after mounting the fold skeleton. Align on resize
+  and opening the outer fold, and remove listeners on teardown. Replace the two
+  flow-root wrappers with ordinary block formatting and contained margins.
+- Reviewed current date producers/consumers, UI state, comparison data, fixtures
+  and documentation. No API/schema/configuration changes, old-format decoders,
+  migrations or compatibility aliases. The previous start-preserves-range
+  behavior is removed; original end suggestions belong only to UI state.
+- Validation: 101 focused tests and production build pass. Synthetic Chromium
+  checks pass all 44 views/129 series plus same/different end-date selection,
+  cancellation and mobile sizing. The dedicated comparison browser check passes
+  with/without ResizeObserver, five widths and both themes, including visible
+  content and focus outlines. Firefox chart/date/zoom checks also pass after
+  updating its fixture to the current circulation-feedback row and compact
+  toolbar layout. Screenshots reviewed; no household access.
+  Actual fridge/browser behavior remains unverified; the missing-observer crash
+  is reproduced, while the appliance's exact reason for hiding all headings is
+  unknown. No full standard test suite was run.
+
 Completed 2026-09-27 — Stable dashboard folds and next heating change
 - Remove column-balancing padding from equipment and connections folds. Keep
   their title areas stable when opening and closing, and use bounded gaps between

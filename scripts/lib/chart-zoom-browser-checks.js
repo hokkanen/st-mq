@@ -55,10 +55,10 @@ export async function checkChartZoomBrowser({ evaluate, command, context, until 
       const dates = ['date-start', 'date-end'].map(id => document.getElementById(id).getBoundingClientRect());
       const exit = document.getElementById('chart-fullscreen').getBoundingClientRect();
       const shortcuts = document.querySelector('.range-shortcuts');
-      const wide = innerWidth >= 800;
+      const wide = innerWidth >= 1000, inlineDates = innerWidth >= 600;
       return dates.every(rect => rect.width > 90 && rect.height >= 32
         && rect.left >= 0 && rect.right <= innerWidth
-        && (wide ? Math.abs(rect.top + rect.height / 2 - exit.top - exit.height / 2) <= 2
+        && (inlineDates ? Math.abs(rect.top + rect.height / 2 - exit.top - exit.height / 2) <= 2
           : rect.top >= heading.bottom - 1))
         && (wide ? exit.top >= 28 : heading.height <= 70 && exit.right >= innerWidth - 20)
         && shortcuts.checkVisibility() === (innerWidth >= 1120)

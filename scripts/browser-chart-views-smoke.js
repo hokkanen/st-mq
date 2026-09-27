@@ -526,15 +526,64 @@ try {
   await send('Page.navigate', { url: `http://127.0.0.1:${app.server.address().port}/` });
   await until("document.getElementById('history')?.dataset.ready === 'true'");
   assert.equal(await evaluate("document.getElementById('history').dataset.view"), 'power');
-  for (const [start, end] of [['2026-08-07', '2026-09-07'], ['2026-08-20', '2026-09-07'],
-    ['2026-09-07', '2026-09-07'], ['2026-09-08', '2026-09-08']]) {
+  const checkDateRange = async (start, end = start) => until(`document.getElementById('history').dataset.ready === 'true'
+    && document.getElementById('history').dataset.rangeStart === ${JSON.stringify(start)}
+    && document.getElementById('history').dataset.rangeEnd === ${JSON.stringify(end)}`);
+  const changeStart = async start => {
     await evaluate(`document.getElementById('date-start').value=${JSON.stringify(start)};
       document.getElementById('date-start').dispatchEvent(new Event('change')); true`);
-    await until(`document.getElementById('history').dataset.ready === 'true'
-      && document.getElementById('history').dataset.rangeStart === ${JSON.stringify(start)}
-      && document.getElementById('history').dataset.rangeEnd === ${JSON.stringify(end)}`);
-    assert.equal(await evaluate("document.getElementById('date-end').value"), end,
-      `${start}: the end moves only when the start passes it`);
+    await checkDateRange(start);
+  };
+  const endDateState = () => evaluate(`(() => { const end = document.getElementById('date-end');
+    return { value: end.value, inactive: end.dataset.singleDay, disabled: end.disabled }; })()`);
+  const openEndDate = async (touch = false) => {
+    const point = await evaluate(`(() => { const input = document.getElementById('date-end');
+      input.scrollIntoView({ block: 'center' }); const box = input.getBoundingClientRect();
+      return { x: box.right - 15, y: box.top + box.height / 2 }; })()`);
+    if (touch) {
+      await send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ ...point, id: 1 }] });
+      await send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    } else {
+      await send('Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button: 'left', clickCount: 1 });
+      await send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...point, button: 'left', clickCount: 1 });
+    }
+    await settle();
+    assert.equal(await evaluate("document.querySelector('.end-date-picker').hidden"), false);
+  };
+  for (const start of ['2026-08-07', '2026-08-20', '2026-09-07', '2026-09-08']) {
+    await changeStart(start);
+    assert.deepEqual(await endDateState(), { value: '2026-09-07', inactive: 'true', disabled: false },
+      `${start}: one day is plotted while the original end date stays greyed and selectable`);
+  }
+  await changeStart('2026-09-02');
+  await openEndDate();
+  assert.equal(await evaluate("document.activeElement.dataset.date"), '2026-09-07', 'The end calendar opens at its remembered date');
+  await checkDateRange('2026-09-02');
+  await pressKey('Escape');
+  await checkDateRange('2026-09-02');
+  assert.equal((await endDateState()).inactive, 'true', 'Opening and dismissing does not activate the range');
+  await openEndDate();
+  await evaluate("document.querySelector('.end-date-picker-day[data-date=\"2026-09-07\"]').click(); true");
+  await checkDateRange('2026-09-02', '2026-09-07');
+  assert.equal((await endDateState()).inactive, 'false', 'Clicking the already selected calendar day activates range mode');
+  await changeStart('2026-09-03');
+  await openEndDate();
+  assert.equal(await evaluate("document.querySelector('.end-date-picker-day[data-date=\"2026-09-02\"]').disabled"), true);
+  await evaluate("document.querySelector('.end-date-picker-day[data-date=\"2026-09-09\"]').click(); true");
+  await checkDateRange('2026-09-03', '2026-09-09');
+  await changeStart('2026-09-09');
+  await openEndDate(); await pressKey('Enter');
+  await checkDateRange('2026-09-09');
+  assert.equal((await endDateState()).inactive, 'false', 'Explicitly confirming equal start/end dates still activates range mode');
+  await changeStart('2026-09-05');
+  for (const [width, height, mobile] of [[390, 780, true], [740, 360, true], [1280, 1100, false]]) {
+    await viewport(width, height, mobile); await openEndDate(mobile);
+    assert.equal(await evaluate(`(() => { const box = document.querySelector('.end-date-picker').getBoundingClientRect();
+      return box.left >= 0 && box.top >= 0 && box.right <= innerWidth && box.bottom <= innerHeight; })()`), true,
+    `${width} × ${height}: the end calendar fits the viewport`);
+    await capture(`end-date-${width}`);
+    await pressKey('Escape');
+    await checkDateRange('2026-09-05');
   }
   await evaluate("document.getElementById('range-today').click(); true");
   await until(`document.getElementById('history').dataset.ready === 'true' && document.getElementById('history').dataset.rangeStart === '2026-09-07'

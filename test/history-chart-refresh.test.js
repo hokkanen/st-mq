@@ -22,6 +22,10 @@ function fixture(t) {
     append(...children) { this.children.push(...children); }
     replaceChildren(...children) { this.children = children; }
     setAttribute(name, value) { this.attributes.set(name, String(value)); }
+    getAttribute(name) { return this.attributes.get(name) ?? null; }
+    removeAttribute(name) { this.attributes.delete(name); }
+    remove() {}
+    checkValidity() { return true; }
     closest() { return this; }
   }
   const nodes = new Map();
@@ -29,14 +33,16 @@ function fixture(t) {
     documentElement: new Element(),
     getElementById(id) {
       if (id === 'timing-benefit') return null;
-      if (!nodes.has(id)) nodes.set(id, new Element());
+      if (!nodes.has(id)) nodes.set(id, Object.assign(new Element(), { ownerDocument: document }));
       return nodes.get(id);
     },
     createElement() { return new Element(); },
+    body: new Element(),
   });
   const globals = { document, localStorage: { getItem: () => null },
     window: Object.assign(new EventTarget(), { matchMedia: () => new EventTarget() }),
     getComputedStyle: () => ({ getPropertyValue: () => '' }) };
+  document.defaultView = globals.window;
   const previous = new Map(Object.keys(globals).map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
   for (const [key, value] of Object.entries(globals))
     Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
@@ -52,8 +58,21 @@ function fixture(t) {
     signal.addEventListener('abort', () => reject(new DOMException('Cancelled', 'AbortError')), { once: true });
   }) });
   t.after(() => chart.close());
-  return { chart, requests };
+  return { chart, requests, nodes };
 }
+
+test('a start selected before the first status keeps the original inactive end suggestion', async t => {
+  const { requests, nodes } = fixture(t);
+  const suggestedEnd = nodes.get('date-end').value;
+  const start = nodes.get('date-start');
+  start.value = '2024-01-15'; start.dispatchEvent(new Event('change'));
+  await Promise.resolve();
+  assert.equal(nodes.get('date-end').value, suggestedEnd);
+  assert.equal(nodes.get('date-end').dataset.singleDay, 'true');
+  const query = new URL(requests[0].path, 'http://fixture');
+  assert.equal(query.searchParams.get('start'), '2024-01-15');
+  assert.equal(query.searchParams.get('end'), '2024-01-15');
+});
 
 test('explicit chart refresh after a mutation cancels old work while recorder polls share it', async t => {
   const { chart, requests } = fixture(t);

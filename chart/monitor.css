@@ -238,6 +238,19 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .date-range > span { color: var(--muted); font-size: 11px; }
 .date-range #date-end[data-single-day="true"] { color: var(--muted); background: var(--surface-soft); }
 .date-range #date-end:focus { color: var(--text); }
+.end-date-picker { position: fixed; z-index: 1100; box-sizing: border-box; width: 300px; max-width: calc(100vw - 16px); max-height: calc(100vh - 16px); overflow: auto; padding: 10px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); color: var(--text); box-shadow: 0 8px 32px #0003; }
+.end-date-picker[hidden] { display: none; }
+.end-date-picker-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.end-date-picker-caption { font-size: 14px; font-weight: 550; }
+.end-date-picker-weekdays, .end-date-picker-days { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 2px; }
+.end-date-picker-weekdays { margin: 8px 0 4px; text-align: center; color: var(--muted); font-size: 11px; }
+.end-date-picker button { margin: 0; padding: 5px; min-height: 36px; border-color: transparent; background: transparent; color: var(--text); }
+.end-date-picker button:hover, .end-date-picker button:focus { background: var(--surface-soft); border-color: var(--muted); }
+.end-date-picker button:focus { outline: 2px solid var(--focus); outline-offset: -2px; }
+.end-date-picker button[aria-pressed="true"] { background: var(--accent); color: var(--accent-text); }
+.end-date-picker button:disabled { opacity: .35; cursor: default; background: transparent; border-color: transparent; }
+.end-date-picker .end-date-picker-nav { width: 36px; font-size: 20px; }
+.end-date-picker .end-date-picker-close { display: block; margin: 8px 0 0 auto; padding: 5px 12px; border-color: var(--border); }
 .range-shortcuts { display: grid; grid-template-columns: 32px minmax(0, 1fr) auto minmax(0, 1fr) 32px; align-items: center; gap: 6px; }
 .range-shortcuts button { margin: 0; background: transparent; color: var(--muted); border-color: var(--border); padding: 10px 12px; font-size: 12px; }
 .range-shortcuts .range-step { display: flex; align-items: center; justify-content: center; width: 32px; min-height: 34px; height: 34px; padding: 0; }
@@ -460,7 +473,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .timing-devices { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; align-items: start; }
 .timing-card { min-width: 0; padding: 24px; background: var(--surface-soft); border: 1px solid var(--border); border-radius: 8px; }
 .timing-device-overview { min-width: 0; min-height: var(--timing-overview-height, 0px); }
-.timing-overview-content { display: flow-root; }
+/* Contain summary margins without requiring flow-root in appliance browsers.
+   Auto height keeps the complete overview above its separate details fold. */
+.timing-overview-content, .timing-figures { display: block; overflow: hidden; }
 .timing-card .timing-device-detail { margin-top: 20px; align-self: start; min-width: 0; }
 .timing-device-detail > summary { padding: 14px 0 0; font-weight: 550; }
 .timing-device-detail[open] > summary { padding-bottom: 18px; }
@@ -471,7 +486,6 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .timing-period:empty { display: none; }
 .timing-comparison { display: flex; align-items: center; }
 .timing-card .timing-comparison-label { color: var(--muted); font-size: 12px; margin: 0; }
-.timing-figures { display: flow-root; }
 .timing-card .heating-cycle-summary { color: var(--text); }
 .timing-selection-status { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .timing-card .timing-result { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 12px; margin: 14px 0; color: var(--text); }

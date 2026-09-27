@@ -203,10 +203,10 @@ Both buttons have tooltips and accessible labels. The chart is directly below
 the current readings.
 
 - **Dates:** the default is today, midnight to midnight in **Europe/Helsinki**.
-  The first date picker changes the start while keeping the end date, unless
-  the new start is after the end; then the end moves to match the start.
-  The second picker extends the inclusive range immediately; it cannot precede
-  the first date. Its subdued single-day appearance remains clickable.
+  The first date picker shows that day immediately. The end date stays greyed
+  out with its previous date preserved for quick selection. Choosing that date
+  again or a different end date activates the inclusive range; the end cannot
+  precede the start. Opening or dismissing the end picker leaves the chart alone.
   **Yesterday – today**, **Today** and **Today – tomorrow** provide quick navigation.
   The small arrows beside these shortcuts shift the window one calendar day
   without changing its length. Both date pickers remain available in chart view.

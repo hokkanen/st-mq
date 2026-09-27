@@ -29,10 +29,10 @@ export function selectedRange(preset, now) {
   return { startDate: today, endDate: today };
 }
 
-/** Keep the end date unless the new start would put it before the range. */
+/** A new start shows one day; the end picker keeps its own suggested date. */
 export function dateSelection(selection, field, value) {
   if (!validDate(value)) return null;
-  if (field === 'start') return { startDate: value, endDate: value > selection.endDate ? value : selection.endDate };
+  if (field === 'start') return { startDate: value, endDate: value };
   if (field === 'end' && value >= selection.startDate) return { startDate: selection.startDate, endDate: value };
   return null;
 }

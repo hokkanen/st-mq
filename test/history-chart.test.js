@@ -454,14 +454,14 @@ test('old readings can start a live day, while missing, historical and future re
   assert.equal(historySeriesAt(payload, NaN), payload.series);
 });
 
-test('start date changes preserve the end unless they move past it', () => {
+test('start date changes select one day; choosing an end activates the inclusive range', () => {
   const selection = { startDate: '2026-09-08', endDate: '2026-09-15' };
   for (const startDate of ['2026-08-08', '2026-09-08', '2026-09-12', '2026-09-15']) {
-    assert.deepEqual(dateSelection(selection, 'start', startDate), { startDate, endDate: selection.endDate });
+    assert.deepEqual(dateSelection(selection, 'start', startDate), { startDate, endDate: startDate });
   }
   assert.deepEqual(dateSelection(selection, 'start', '2026-09-16'), { startDate: '2026-09-16', endDate: '2026-09-16' });
   assert.deepEqual(dateSelection({ startDate: '2026-09-08', endDate: '2026-09-08' }, 'start', '2026-08-08'),
-    { startDate: '2026-08-08', endDate: '2026-09-08' });
+    { startDate: '2026-08-08', endDate: '2026-08-08' });
   for (const value of ['', '2026-02-30']) assert.equal(dateSelection(selection, 'start', value), null);
   assert.deepEqual(dateSelection(selection, 'end', '2026-09-08'), { startDate: '2026-09-08', endDate: '2026-09-08' });
   assert.deepEqual(dateSelection(selection, 'end', '2026-09-20'), { startDate: '2026-09-08', endDate: '2026-09-20' });

@@ -141,13 +141,16 @@ test('House model explains manual fuel, delayed release, effective coefficient u
 
 function dom(storage = new Map()) {
   let disconnected = false;
+  const windowListeners = new Map();
   const document = { activeElement: null,
     createElement: tag => new Element(tag), createDocumentFragment: () => new Element('fragment'),
     defaultView: { localStorage: { getItem: key => storage.get(key), setItem: (key, value) => storage.set(key, value) },
+      addEventListener: (type, listener) => windowListeners.set(type, listener),
+      removeEventListener: type => windowListeners.delete(type),
       ResizeObserver: class { observe() {} disconnect() { disconnected = true; } } } };
   class Element {
     constructor(tag) { this.tagName = tag; this.children = []; this.dataset = {}; this.ownerDocument = document;
-      this.style = { setProperty() {} }; this._text = ''; this.attributes = {}; this.listeners = new Map(); }
+      this.style = { setProperty(name, value) { this[name] = value; } }; this._text = ''; this.attributes = {}; this.listeners = new Map(); }
     set textContent(value) { this._text = value; this.children = []; }
     get textContent() { return this._text + this.children.map(child => child.textContent).join(' '); }
     append(...children) { for (const child of children) this.children.push(...(child.tagName === 'fragment' ? child.children : [child])); }
@@ -164,7 +167,7 @@ function dom(storage = new Map()) {
     getBoundingClientRect() { return { height: 200 }; }
     focus() { document.activeElement = this; }
   }
-  return { root: new Element('div'), document, disconnected: () => disconnected };
+  return { root: new Element('div'), document, windowListeners, disconnected: () => disconnected };
 }
 
 function findByLabel(node, label) {
@@ -195,6 +198,39 @@ test('three cost cards retain their folds and focus across updates and keep the 
   assert.match(wood.textContent, /Fresh forecast coverage is unavailable/);
   assert.match(devices.children[0].textContent, /€1.00/); assert.match(devices.children[1].textContent, /€2.00/);
   panel.close(); assert.equal(disconnected(), true);
+});
+
+test('comparison results and controls remain usable without ResizeObserver', () => {
+  const { root, document, windowListeners } = dom();
+  delete document.defaultView.ResizeObserver;
+  const disclosure = document.createElement('details');
+  root.parentElement = disclosure;
+  const panel = createTimingBenefit(root);
+  const data = { ...payload, heatingBenefit: { status: 'estimated', valueEuro: 3.5, counts: { assessed: 2, completed: 2 } },
+    firewoodBenefit: estimate, timingBenefit: { heatPump: timing(1), charger: timing(2, 'charger') } };
+  panel.render(data);
+  const devices = root.children[1], [heating, charger, fireplace] = devices.children;
+  assert.match(heating.children[0].textContent, /Heating.*€3.50/);
+  assert.match(charger.children[0].textContent, /Charging.*€2.00/);
+  assert.match(fireplace.children[0].textContent, /Fireplace.*€1.25/);
+  const fold = heating.children[1]; fold.open = true;
+  const mode = findByLabel(heating, 'Heating cost comparison').children[1];
+  mode.focus(); mode.click();
+  assert.match(heating.children[0].textContent, /Timing cost difference.*€1.00/);
+  assert.equal(fold.open, true); assert.equal(document.activeElement, mode);
+  panel.render({ ...data, firewoodBenefit: { ...estimate, valueEuro: 2.25 } });
+  assert.match(fireplace.children[0].textContent, /€2.25/);
+
+  const content = heating.children[0].children[0];
+  content.getBoundingClientRect = () => ({ height: 400 });
+  disclosure.listeners.get('toggle')();
+  assert.equal(devices.style['--timing-overview-height'], '400px', 'Opening the initially closed fold measures its visible content');
+  content.getBoundingClientRect = () => ({ height: 300 });
+  windowListeners.get('resize')();
+  assert.equal(devices.style['--timing-overview-height'], '300px', 'Resizing can shrink the shared overview height');
+  panel.close();
+  assert.equal(windowListeners.has('resize'), false);
+  assert.equal(disclosure.listeners.has('toggle'), false);
 });
 
 test('heating choice changes its amount and details while preserving focus, folds and the other cards', () => {

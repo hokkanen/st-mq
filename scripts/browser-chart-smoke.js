@@ -50,8 +50,10 @@ function seedRecordingFixture(app) {
   // Current-format recovered observations need not have a live recorder checkpoint.
   app.store.observation({source:'mqtt-equipment',device:'private-recovered-probe',signal:'workshop_pressure',
     value:2,unit:'bar',sourceTime:now,receivedAt:now,quality:[],raw:{recorder:{policy:'adaptive-value'}}});
-  for(let i=0;i<2;i++) app.engine.recorder.record({source:'mqtt-equipment',device:'private-circulation',signal:'dhwr_active',
-    value:i,unit:'state',sourceTime:now-(1-i)*1000,receivedAt:now-(1-i)*1000,quality:[],raw:{basis:'measured-power',timeBasis:'mqtt-received'}});
+  // The chart runs in simulation, so its feedback fixture must use that scope.
+  for(let i=0;i<3;i++) app.engine.recorder.record({source:'simulation',device:'private-circulation',signal:'dhwr_active',
+    value:i ? 1 : 0,unit:'state',sourceTime:now-(2-i)*60_000,receivedAt:now-(2-i)*60_000,quality:['simulated'],
+    raw:{basis:'measured-power',timeBasis:'mqtt-received',reportIntervalMs:90_000}});
   app.store.event('garage-external-temperature-diagnostic',{status:'abnormal',reason:'synthetic-report-gap'},now);
   app.engine.latestStatus.recording=app.engine.recorder.status(now);
 }
@@ -189,10 +191,10 @@ try {
     })()`), true, 'Accessible one-day arrows are compact and flank the shortcuts in one aligned row');
   };
   const checkActivityTracks = async () => {
-    assert.match(await evaluate("document.querySelector('#dhwr-history .activity-title').textContent"), /Hot-water circulation request/i);
+    assert.match(await evaluate("document.querySelector('#dhwr_active-history .activity-title').textContent"), /circulation feedback/i);
     assert.equal(await evaluate(`(() => {
       const canvas = document.getElementById('history').getBoundingClientRect();
-      const rows = ['operating-modes', 'dhwr-history', 'fireplace-history'].map(id => document.getElementById(id));
+      const rows = ['operating-modes', 'dhwr_active-history', 'fireplace-history'].map(id => document.getElementById(id));
       const tracks = rows.map(row => row.querySelector('.mode-track').getBoundingClientRect());
       return rows.every(row => !row.hidden) && tracks.every(track => track.width > 0 && track.top >= canvas.bottom
         && Math.abs(track.left - tracks[0].left) < 1 && Math.abs(track.right - tracks[0].right) < 1);
@@ -588,10 +590,10 @@ try {
   await until("document.getElementById('history').dataset.ready==='true' && document.getElementById('history').dataset.rangeEnd==='2026-09-07'");
   assert.equal(await legendState('all-in'), 'true');
   assert.equal(await legendState('spot'), 'true');
-  assert.equal(await legendState('Hot-water circulation request'), 'true');
+  assert.equal(await legendState('circulation feedback'), 'true');
   assert.equal(await legendState('fireplace'), 'true');
   await checkActivityTracks();
-  for (const key of ['dhwr', 'fireplace']) {
+  for (const key of ['dhwr_active', 'fireplace']) {
     assert.equal(await evaluate(`(async () => {
       const canvas = document.getElementById('history'), ctx = canvas.getContext('2d');
       const before = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
@@ -632,19 +634,32 @@ try {
     };
     return true;
   })()`);
-  // Both native pickers apply immediately; changing the start preserves a valid end.
+  // A start applies one day immediately while the end field remembers its date.
   await evaluate("document.getElementById('date-start').value='2024-09-07'; document.getElementById('date-start').dispatchEvent(new Event('change')); true");
-  await checkRange('2024-09-07', '2026-09-07');
+  await checkRange('2024-09-07');
+  assert.equal(await evaluate("document.getElementById('date-end').value"), '2026-09-07');
+  assert.equal(await evaluate("document.getElementById('date-end').dataset.singleDay"), 'true');
   assert.equal(await evaluate("document.getElementById('date-end').disabled"), false);
   await evaluate("document.getElementById('date-end').value='2024-09-09'; document.getElementById('date-end').dispatchEvent(new Event('change')); true");
   await checkRange('2024-09-07', '2024-09-09');
   await evaluate("document.getElementById('date-start').value='2024-09-06'; document.getElementById('date-start').dispatchEvent(new Event('change')); true");
+  await checkRange('2024-09-06');
+  assert.equal(await evaluate("document.getElementById('date-end').value"), '2024-09-09');
+  await evaluate("document.getElementById('date-end').click(); true");
+  assert.equal(await evaluate("document.activeElement.dataset.date"), '2024-09-09');
+  await checkRange('2024-09-06');
+  await evaluate("document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); true");
+  assert.equal(await evaluate("document.getElementById('date-end').dataset.singleDay"), 'true');
+  await evaluate("document.getElementById('date-end').click(); document.querySelector('.end-date-picker-day[data-date=\"2024-09-09\"]').click(); true");
   await checkRange('2024-09-06', '2024-09-09');
+  assert.equal(await evaluate("document.getElementById('date-end').dataset.singleDay"), 'false');
+  await evaluate("document.getElementById('date-start').dispatchEvent(new Event('change')); true");
+  await checkRange('2024-09-06');
   const beforeInvalid = await evaluate('window.dateFixture.requests');
   await evaluate("document.getElementById('date-end').value='2024-09-05'; document.getElementById('date-end').dispatchEvent(new Event('change')); true");
   assert.equal(await evaluate("document.getElementById('chart-range-form').checkValidity()"), false);
   assert.equal(await evaluate('window.dateFixture.requests'), beforeInvalid);
-  await checkRange('2024-09-06', '2024-09-09');
+  await checkRange('2024-09-06');
   await evaluate("document.getElementById('date-start').value='2024-09-12'; document.getElementById('date-start').dispatchEvent(new Event('change')); true");
   await checkRange('2024-09-12');
   await evaluate("document.getElementById('date-end').value='2024-09-21'; document.getElementById('date-end').dispatchEvent(new Event('change')); true");
@@ -728,7 +743,7 @@ try {
   assert.deepEqual(populated.shading.fireplace, [{ start: now - 3 * 3600000, end: now }], 'Overlapping additions use the model burn window');
   await checkActivityTracks();
   assert.equal(await evaluate("document.querySelectorAll('#fireplace-history .mode-segment').length"), 1);
-  assert.equal(await evaluate("document.querySelectorAll('#dhwr-history .mode-segment').length > 0"), true);
+  assert.equal(await evaluate("document.querySelectorAll('#dhwr_active-history .mode-segment').length > 0"), true);
   await checkSeriesDrawn(['auxiliary_power', 'charger_power', 'compressorHome'], 'power');
   assert.ok(populated.operatingModes.length > 0);
   assert.ok(populated.series.auxiliary_power.some(point => point.y > 0));

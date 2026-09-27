@@ -7,6 +7,7 @@ import { heatingExplanations } from './heating-benefit.js';
 export function createTimingBenefit(root) {
   if (!root) return { render() {}, close() {} };
   const document = root.ownerDocument;
+  const view = document.defaultView;
   let lastFingerprint, closed = false, notes, notesContent, devices, overviewObserver, overviewHeight, selectionHeight;
   let latestPayload, modeStatus, heatingMode = 'model', heatingScope = 'home', chargingScope = 'total';
   const preferenceKey = 'stmq.heatingSavingMode';
@@ -184,10 +185,17 @@ export function createTimingBenefit(root) {
     notesContent = element('div', 'timing-explanations-content');
     notes.append(element('summary', '', 'How these comparisons work'), notesContent);
     root.replaceChildren(intro, devices, notes);
-    overviewObserver = new document.defaultView.ResizeObserver(alignOverviews);
-    for (const card of cards.values()) {
-      overviewObserver.observe(card.overview);
-      overviewObserver.observe(card.selection);
+    // Equal heights are a layout enhancement. Older appliance browsers must
+    // still render the figures and controls when ResizeObserver is unavailable.
+    if (typeof view.ResizeObserver === 'function') {
+      overviewObserver = new view.ResizeObserver(alignOverviews);
+      for (const card of cards.values()) {
+        overviewObserver.observe(card.overview);
+        overviewObserver.observe(card.selection);
+      }
+    } else {
+      view.addEventListener('resize', alignOverviews);
+      root.parentElement?.addEventListener('toggle', alignOverviews);
     }
   }
   function deviceOverview(display) {
@@ -380,6 +388,10 @@ export function createTimingBenefit(root) {
     render,
     close() {
       closed = true; overviewObserver?.disconnect();
+      if (!overviewObserver) {
+        view.removeEventListener('resize', alignOverviews);
+        root.parentElement?.removeEventListener('toggle', alignOverviews);
+      }
       for (const button of modeButtons) button.removeEventListener('click', chooseMode);
       for (const button of scopeButtons) button.removeEventListener('click', chooseScope);
       for (const button of chargingButtons) button.removeEventListener('click', chooseChargingScope);
