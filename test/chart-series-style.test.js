@@ -30,7 +30,7 @@ test('axis strokes do not change interpolation and forecast or price patterns ta
     for (const row of data) {
       const forecast = ['outdoor_forecast', 'solar_forecast'].includes(row.key);
       const solarEstimate = ['solar_radiation', 'model_solar_radiation'].includes(row.key);
-      assert.deepEqual(row.borderDash, forecast ? [8, 3, 2, 3] : solarEstimate ? [6, 4] : row.key === 'spot_price' ? [1, 3]
+      assert.deepEqual(row.borderDash, forecast ? [8, 3, 2, 3] : solarEstimate ? [] : row.key === 'spot_price' ? [1, 3]
         : axis === 'right' ? [6, 4] : [], row.key);
       assert.equal(row.spanGaps, false);
       assert.equal(row.data, observations, 'Display styles never rewrite source samples');

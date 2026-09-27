@@ -1,4 +1,4 @@
-import { HISTORY_AXES, SIGNAL_INFO, ENERGY_SIGNALS, SESSION_CHECK_INFO, MODEL_INPUT_INFO,
+import { HISTORY_AXES, SIGNAL_INFO, ENERGY_SIGNALS, CARAVAN_RUNNING_STATES, SESSION_CHECK_INFO, MODEL_INPUT_INFO,
   MODEL_COEFFICIENT_INFO, GARAGE_INPUT_INFO, GARAGE_COEFFICIENT_INFO } from '../src/domain/history-series.js';
 
 const definitions = { ...SIGNAL_INFO, ...SESSION_CHECK_INFO, ...MODEL_INPUT_INFO,
@@ -6,7 +6,7 @@ const definitions = { ...SIGNAL_INFO, ...SESSION_CHECK_INFO, ...MODEL_INPUT_INFO
 const descriptions = {
   model_fireplace_release: 'Calculated from corrected firewood additions; fuel-equivalent release, not measured heat.',
   controller_phase: 'Requested heating phase, bounded by the next request or expiry; not proof of equipment operation.',
-  dhwr_request: 'Requested recirculation pulse; not confirmed pump operation or water flow.',
+  dhwr_request: 'Timed hot-water circulation request; not confirmed pump operation or water flow.',
   spot_price: 'Market electricity price, excluding VAT and other charges.',
   all_in_price: 'Calculated electricity price with the applicable historical tariff; inspect points for assumed prices.',
   heat_pump_power: 'Reconstructed whole heat-pump electricity estimate, including auxiliary heating.',
@@ -55,6 +55,44 @@ export const EXPLORER_SERIES = Object.freeze([...new Set(HISTORY_AXES.flatMap(ax
 }));
 
 export const EXPLORER_SERIES_BY_KEY = Object.freeze(Object.fromEntries(EXPLORER_SERIES.map(row => [row.key, row])));
+
+/** State colours and their keys are declared together, including recorded zero
+ * values. A blank interval represents missing evidence, never an inferred off. */
+export function explorerActivityTrack(key) {
+  const row = Object.hasOwn(EXPLORER_SERIES_BY_KEY, key) && EXPLORER_SERIES_BY_KEY[key];
+  if (!row || !['state', 'code'].includes(row.unit)) throw new RangeError('Choose a supported historical state.');
+  const color = key.startsWith('dhwr_') ? 'dhwr' : key === 'heat_savings_active' ? 'heatOff'
+    : key === 'compressor_active' ? 'compressorSpace' : key === 'heating_pump_active' ? 'supply'
+      : key.startsWith('garage_') ? definitions[key]?.color ?? 'garage'
+        : key.startsWith('alarm_') ? 'auxiliary' : key.startsWith('caravan_') ? 'garage'
+          : definitions[key]?.color ?? 'learning';
+  const states = key === 'dhw_routing' ? [[0, 'Space heating', 'compressorSpace'], [1, 'Hot water', 'compressorDhw']]
+    : key === 'garage_model_available' ? [[0, 'Pump off', 'muted'], [1, 'Pump on', color]]
+      : key === 'garage_model_managed_pause' ? [[0, 'No managed pause', 'muted'], [1, 'Managed heating pause', color]]
+        : ['controller_phase', 'model_controller_phase'].includes(key)
+          ? [[0, 'Normal', 'reference'], [1, 'Preheat', 'auxiliary'], [2, 'Reduction', 'heatOff'], [3, 'Recovery', 'learning']]
+          : key === 'model_valve_override' ? [[0, 'Normal valve mode', 'reference'], [1, 'Override confirmed', color],
+            [2, 'Partial override', 'auxiliary'], [3, 'Unconfirmed override', 'muted', 'unknown']]
+            : key === 'operating_mode' ? [[0, 'Off', 'muted'], [1, 'Auto', 'indoor'], [2, 'Compressor only', 'outdoor'],
+              [3, 'Auxiliary only', 'auxiliary'], [4, 'Hot water only', 'compressorDhw']]
+              : key === 'caravan_dehumidifier_running_state' ? Object.entries(CARAVAN_RUNNING_STATES).map(([value, label]) =>
+                [Number(value), label, ['muted', 'garage', 'outdoor', 'compressorSpace', 'learning'][value]])
+                : key.includes('door') ? [[0, 'Closed', 'muted'], [1, 'Open', color]]
+                  : key === 'dhwr_request' ? [[0, 'Off requested', 'muted'], [1, 'On requested', color]]
+                    : row.unit === 'code' ? [[0, 'No alarm', 'muted']]
+                      : [[0, 'Off', 'muted'], [1, 'On', color]];
+  const detail = `${row.description.replace(/\.$/, '')}. Blank intervals have no known state.`;
+  const legend = states.map(([value, label, stateColor, pattern]) => ({ value, label, color: stateColor,
+    opacity: .75, ...(pattern ? { pattern } : {}) }));
+  if (row.unit === 'code') legend.push({ label: 'Alarm code', color, opacity: .75,
+    description: 'A nonzero code was recorded; inspect the bar for its value.' });
+  legend.push({ label: 'Unknown', color: 'muted', pattern: 'blank', description: 'No known state recorded.' });
+  return { key, signal: key, label: row.label, detail, color,
+    values: Object.fromEntries(states.map(([value, label]) => [value, label])),
+    colors: Object.fromEntries(states.map(([value, , stateColor]) => [value, stateColor])),
+    patterns: Object.fromEntries(states.filter(([, , , pattern]) => pattern).map(([value, , , pattern]) => [value, pattern])),
+    missingLabel: 'No known state at this time', legend };
+}
 
 export function filterExplorerSeries(query = '') {
   const terms = String(query).trim().toLowerCase().split(/\s+/).filter(Boolean);

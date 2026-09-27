@@ -74,10 +74,11 @@ The **Fireplace** activity strip below the chart starts at each recorded additio
 and lasts for the model's shared `FIREPLACE_RESPONSE.burnHours` value, currently
 two hours. Overlapping additions merge into one continuous interval, and removing
 a mistaken entry updates the strip. This marks the model's burn timescale; masonry
-continues releasing heat after the strip ends. **DHWR** and **Pump mode** have
+continues releasing heat after the strip ends. **Hot-water circulation request** and **Pump mode** have
 their own selectable rows in relevant views, so simultaneous activity remains
-visible. A shared vertical cursor spans the plot and visible rows, ending before
-the legend. Each view remembers the enabled rows.
+visible. Every row title expands to explain its colours and evidence. Hover or
+drag a strip to move the shared time cursor through the plot and visible strips;
+titles and gaps remain clear. Each view remembers the enabled rows.
 
 The **Energy cost comparisons** fold contains **Heating**, **Charging** and
 **Firewood**. Heating and Charging retain their same-energy timing comparison.

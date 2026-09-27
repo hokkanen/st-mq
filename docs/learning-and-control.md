@@ -503,22 +503,26 @@ through periods where the auxiliary baseline is unknown.
 Auxiliary power expires after five minutes without an updated observation,
 rather than extending indefinitely.
 
-Yellow background means the compressor was reported running toward the house;
-blue means it was running toward DHW. Missing/stale routing leaves a gap. Tariff reduction
-is crosshatched and describes a reduction request, not proof of a stopped
-compressor. **DHWR** shows observed circulation from power feedback in its own strip below the chart
-(positive watts means on, zero means off; unavailable feedback leaves gaps). Earlier
-history retains its recorded requests and durations. The strip appears
-alongside **Pump mode** and **Fireplace**. These strips start visible. **Fireplace**
+The **Home compressor** strip uses yellow for reported space heating, blue for
+hot water, grey for reported stopped and hatched grey for running with unknown
+routing. Missing compressor evidence remains blank. **Tariff reduction request**
+describes a request, not proof of a stopped compressor. **Hot-water circulation
+request** shows recorded requests and durations, while **Hot-water circulation
+feedback** shows observed circulation separately (positive watts means on, zero
+means off; unavailable feedback leaves gaps). They appear alongside **Pump mode**
+and **Fireplace** in relevant views. **Fireplace**
 uses the same recorded additions and burn duration as the model, currently two hours;
 overlapping periods merge, and corrections update the strip. This duration marks
 the burn timescale, while masonry heat release continues afterward. Explicit saved
 legend choices remain in effect.
 Horizontal stripes in the activity strips and their matching legend swatches
-distinguish them from the main plot. DHWR is red and Fireplace is dark yellow.
+distinguish them from the main plot. Both circulation rows use red for requested
+or observed activity; Fireplace is dark yellow. Every title expands to explain
+all colours, patterns and missing intervals.
 
-Solar history is a forecast archived at its valid time. Its dashed continuation
-is the currently available future forecast. Neither is a solar observation.
+Solar history is the latest valid forecast estimate known at each historical
+time, drawn as a solid line. The future forecast uses a dash-dot line. Neither
+is a solar observation.
 
 ## Timing benefit under the chart
 

@@ -6,16 +6,15 @@ const dateTime = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki',
 export const activityTracks = Object.freeze([
   { key: 'operatingMode', id: 'operating-modes', label: 'Pump mode', color: 'outdoor',
     detail: 'Configured operating mode from H66 readback; independent of compressor activity',
-    caption: 'Pump mode · readback · blank intervals are unknown',
     values: { 0: 'Off', 1: 'Auto', 2: 'Compressor only', 3: 'Auxiliary only', 4: 'Hot water only' },
     colors: { 0: 'muted', 1: 'indoor', 2: 'outdoor', 3: 'auxiliary', 4: 'compressorDhw' },
-    legendSummary: 'Mode key',
     legend: [
       { label: 'Off', color: 'muted', description: 'Heating is switched off. Protection or circulation may still operate.' },
       { label: 'Auto', color: 'indoor', description: 'Heating and hot water, using the compressor and auxiliary heat as permitted.' },
       { label: 'Compressor only', color: 'outdoor', description: 'Compressor operation is permitted; auxiliary heat is disabled.' },
       { label: 'Auxiliary only', color: 'auxiliary', description: 'Electric auxiliary heating is permitted; the compressor is disabled.' },
       { label: 'Hot water only', color: 'compressorDhw', description: 'Hot-water operation without house heating.' },
+      { label: 'Unknown', color: 'muted', pattern: 'blank', description: 'No operating mode was recorded.' },
     ] },
   { key: 'compressorHome', label: 'Home compressor', color: 'compressorSpace',
     detail: 'Reported compressor operation and routing: yellow is space heating, blue is hot water, gray is stopped, hatched gray is running with unknown routing. Blank intervals have no known state.',
@@ -23,17 +22,33 @@ export const activityTracks = Object.freeze([
     values: { 0: 'Stopped', 1: 'Space heating', 2: 'Hot water', 3: 'Running · routing unknown' },
     colors: { 0: 'muted', 1: 'compressorSpace', 2: 'compressorDhw', 3: 'muted' },
     patterns: { 3: 'unknown' }, opacities: { 0: .28 },
-    legend: [{ label: 'Space heating', color: 'compressorSpace' }, { label: 'Hot water', color: 'compressorDhw' }] },
+    legend: [
+      { label: 'Space heating', color: 'compressorSpace' },
+      { label: 'Hot water', color: 'compressorDhw' },
+      { label: 'Stopped', color: 'muted', opacity: .28 },
+      { label: 'Routing unknown', color: 'muted', pattern: 'unknown', description: 'The compressor is running, but its heating destination is unknown.' },
+      { label: 'Unknown', color: 'muted', pattern: 'blank', description: 'No compressor state was recorded.' },
+    ] },
   { key: 'compressorGarage', label: 'Compressor · garage', color: 'garage',
-    detail: 'Garage compressor reported running; blank intervals include stopped or unavailable readings' },
+    detail: 'Reported garage compressor operation. Blank intervals include stopped or unavailable readings.',
+    missingLabel: 'No running interval recorded; stopped and unavailable readings may both be blank',
+    legend: [{ label: 'Running', color: 'garage' },
+      { label: 'No interval', color: 'muted', pattern: 'blank', description: 'Stopped or unavailable; these intervals do not establish which.' }] },
   { key: 'heatOff', label: 'Tariff reduction request', color: 'heatOff',
-    detail: 'Requested tariff reduction; this does not establish whether the compressor was running' },
-  { key: 'dhwr', id: 'dhwr-history', label: 'DHWR', color: 'dhwr',
-    caption: 'DHWR · requested circulation · recorded duration',
-    detail: 'Timed hot-water circulation request. MQTT acknowledgement is not physical pump feedback.' },
+    detail: 'Requested tariff reduction; this does not establish whether the compressor was running.',
+    missingLabel: 'No tariff reduction request recorded at this time',
+    legend: [{ label: 'Requested', color: 'heatOff' },
+      { label: 'No interval', color: 'muted', pattern: 'blank', description: 'No reduction request recorded at this time.' }] },
+  { key: 'dhwr', id: 'dhwr-history', label: 'Hot-water circulation request', color: 'dhwr',
+    detail: 'Timed hot-water circulation request, shown for its recorded duration. MQTT acknowledgement is not physical pump feedback.',
+    missingLabel: 'No circulation request recorded at this time',
+    legend: [{ label: 'Requested', color: 'dhwr' },
+      { label: 'No interval', color: 'muted', pattern: 'blank', description: 'No circulation request recorded at this time.' }] },
   { key: 'fireplace', id: 'fireplace-history', label: 'Fireplace', color: 'fireplace',
-    caption: 'Fireplace · model burn window',
-    detail: 'Model burn window after manually recorded firewood additions; stored heat continues afterward' },
+    detail: 'Model burn window after manually recorded firewood additions; stored heat continues afterward.',
+    missingLabel: 'No model burn window at this time; stored heat may still be released',
+    legend: [{ label: 'Model burn window', color: 'fireplace' },
+      { label: 'No interval', color: 'muted', pattern: 'blank', description: 'No model burn window at this time; this does not rule out stored heat.' }] },
 ]);
 
 /** Scalar display envelopes are not occupancy summaries. Retain missing breaks
@@ -85,27 +100,29 @@ export function activityIntervalLabel(descriptor, interval) {
 
 /** Convert browser coordinates only once. Chart.js logical pixels can differ
  * from CSS pixels after browser zoom; device-pixel-ratio never enters this math. */
-export function historyCursorGeometry({ chart, canvasRect, panelRect, trackRects = [], clientX, clientY }) {
+export function historyCursorGeometry({ chart, canvasRect, panelRect, trackRects = [], clientX, clientY, clampX = false }) {
   const area = chart?.chartArea;
   if (!area || !chart.width || !chart.height || !canvasRect.width || !canvasRect.height) return null;
   const scaleX = canvasRect.width / chart.width, scaleY = canvasRect.height / chart.height;
   const left = canvasRect.left + area.left * scaleX, right = canvasRect.left + area.right * scaleX;
-  const top = canvasRect.top + area.top * scaleY, plotBottom = canvasRect.top + area.bottom * scaleY;
-  const bottom = Math.max(plotBottom, ...trackRects.filter(rect => rect.width > 0 && rect.height > 0).map(rect => rect.bottom));
-  if (!Number.isFinite(clientX) || !Number.isFinite(clientY) || clientX < left || clientX > right || clientY < top || clientY > bottom) return null;
-  return { x: (clientX - canvasRect.left) / scaleX, left: Math.min(clientX, right - 1) - panelRect.left,
-    top: plotBottom - panelRect.top, height: Math.max(0, bottom - plotBottom),
+  const bands = trackRects.filter(rect => rect.width > 0 && rect.height > 0);
+  if (!Number.isFinite(clientX) || !Number.isFinite(clientY)
+    || !clampX && (clientX < left || clientX > right)
+    || !bands.some(rect => clientY >= rect.top && clientY <= rect.bottom)) return null;
+  const x = Math.max(left, Math.min(clientX, right));
+  return { x: (x - canvasRect.left) / scaleX, left: Math.min(x, right - 1) - panelRect.left,
     plotLeft: left - panelRect.left, plotRight: right - panelRect.left,
-    inPlot: clientY <= plotBottom, bottom: bottom - panelRect.top };
+    plotBottom: canvasRect.top + area.bottom * scaleY - panelRect.top,
+    segments: bands.map(rect => ({ top: rect.top - panelRect.top, height: rect.height })) };
 }
 
-/** The canvas part draws before its tooltip. A separate, pointer-transparent
- * continuation spans the lower rows and stops before the legend and controls. */
+/** Only activity bands activate inspection. The canvas line is clipped to the
+ * plot; separate pointer-transparent segments stay inside the visible bands. */
 export function createChartOverlays({ canvas, getChart, getPayload, getView, getPalette, getTracks,
-  isVisible = () => true, isMoving = () => false, isTouchEnabled = () => false }) {
+  isVisible = () => true, isMoving = () => false }) {
   const document = canvas.ownerDocument ?? globalThis.document, window = document.defaultView ?? globalThis.window;
-  const panel = canvas.closest('.history-panel'), listeners = [], touchPointers = new Set(), expandedKeys = new Set();
-  let rows = [], cursor, extension, readout, closed = false, touching;
+  const panel = canvas.closest('.history-panel'), listeners = [], expandedKeys = new Set();
+  let rows = [], cursor, extension, readout, closed = false, dragging;
   function listen(node, type, handler, options) {
     node.addEventListener(type, handler, options);
     listeners.push(() => node.removeEventListener(type, handler, options));
@@ -118,8 +135,14 @@ export function createChartOverlays({ canvas, getChart, getPayload, getView, get
     readout.setAttribute('aria-hidden', 'true'); readout.hidden = true;
     panel.append(extension, readout);
   }
+  function releaseDrag() {
+    const pointerId = dragging?.pointerId; dragging = undefined;
+    if (pointerId !== undefined) {
+      try { panel.releasePointerCapture(pointerId); } catch { /* A cancelled pointer may already have lost capture. */ }
+    }
+  }
   function clear({ redraw = true } = {}) {
-    const active = Boolean(cursor); cursor = undefined;
+    const active = Boolean(cursor); cursor = undefined; releaseDrag();
     if (extension) extension.hidden = true;
     if (readout) readout.hidden = true;
     if (active && redraw && !closed) getChart()?.draw();
@@ -133,27 +156,38 @@ export function createChartOverlays({ canvas, getChart, getPayload, getView, get
   }
   function visibleRowRect(row) {
     if (row.root.hidden) return null;
-    const rect = row.root.getBoundingClientRect();
+    const rect = row.track.getBoundingClientRect();
     if (!rect.width || !rect.height) return null;
-    // Fullscreen activity can scroll in a bounded container. Offscreen rows
+    // Fullscreen activity can scroll in a bounded container. Offscreen bands
     // must not extend the cursor through the legend or steal hover inspection.
     const viewport = document.getElementById('chart-activity')?.getBoundingClientRect();
     if (!viewport) return rect;
     const top = Math.max(rect.top, viewport.top), bottom = Math.min(rect.bottom, viewport.bottom);
     return bottom > top ? { ...rect, width: rect.width, top, bottom, height: bottom - top } : null;
   }
+  function rowAt(clientY) {
+    return rows.find(row => {
+      const rect = visibleRowRect(row);
+      return rect && clientY >= rect.top && clientY <= rect.bottom;
+    });
+  }
   function synchronize(chart = getChart()) {
     if (!cursor || isMoving() || closed) return clear({ redraw: false });
     const bounds = geometry(cursor, chart);
     if (!bounds) return clear({ redraw: false });
     cursor.x = bounds.x;
-    ensureCursor(); extension.hidden = !bounds.height;
-    extension.style.left = `${bounds.left}px`; extension.style.top = `${bounds.top}px`; extension.style.height = `${bounds.height}px`;
-    const row = rows.find(item => {
-      const rect = visibleRowRect(item);
-      if (!rect) return false;
-      return cursor.clientY >= rect.top && cursor.clientY <= rect.bottom;
+    ensureCursor(); extension.hidden = false;
+    if (extension.children.length !== bounds.segments.length) {
+      extension.replaceChildren(...bounds.segments.map(() => {
+        const segment = document.createElement('div'); segment.className = 'chart-crosshair-segment'; return segment;
+      }));
+    }
+    bounds.segments.forEach((bounds, index) => {
+      const segment = extension.children[index];
+      segment.style.top = `${bounds.top}px`; segment.style.height = `${bounds.height}px`;
     });
+    for (const segment of extension.children) segment.style.left = `${bounds.left}px`;
+    const row = rowAt(cursor.clientY);
     readout.hidden = !row;
     if (row) {
       const time = chart.scales.x.getValueForPixel(bounds.x);
@@ -166,12 +200,17 @@ export function createChartOverlays({ canvas, getChart, getPayload, getView, get
       readout.textContent = `${row.descriptor.label} · ${dateTime.format(time)}\n${detail}`;
       readout.style.maxWidth = `${Math.max(0, bounds.plotRight - bounds.plotLeft)}px`;
       readout.style.left = `${Math.max(bounds.plotLeft, Math.min(bounds.left + 12, bounds.plotRight - readout.offsetWidth))}px`;
-      readout.style.top = `${Math.max(0, bounds.top - readout.offsetHeight - 8)}px`;
+      readout.style.top = `${Math.max(0, bounds.plotBottom - readout.offsetHeight - 8)}px`;
     }
   }
-  function inspect(event) {
+  function inspect(event, scrub = false) {
     if (closed || isMoving()) return clear();
     const point = { clientX: event.clientX, clientY: event.clientY };
+    if (scrub) {
+      const row = rows.find(row => row.descriptor.key === dragging?.key), rect = row && visibleRowRect(row);
+      if (!rect) return clear();
+      point.clientY = (rect.top + rect.bottom) / 2; point.clampX = true;
+    }
     const bounds = geometry(point);
     if (!bounds) return clear();
     cursor = { ...point, x: bounds.x };
@@ -197,35 +236,43 @@ export function createChartOverlays({ canvas, getChart, getPayload, getView, get
     for (const descriptor of getTracks()) {
       const root = document.createElement('div'); root.id = descriptor.id ?? `${descriptor.key}-history`;
       root.className = 'mode-history'; root.dataset.activityKey = descriptor.key;
-      root.hidden = !isVisible(descriptor.key); root.title = descriptor.detail;
+      root.hidden = !isVisible(descriptor.key);
       root.setAttribute('aria-label', `${descriptor.label} history`);
-      const title = document.createElement('p'); title.textContent = descriptor.caption ?? descriptor.label;
+      const caption = document.createElement('details'); caption.className = 'activity-caption';
+      const keySummary = document.createElement('summary'); keySummary.className = 'activity-summary';
+      const title = document.createElement('span'); title.className = 'activity-title'; title.textContent = descriptor.label;
+      keySummary.append(title);
+      const description = document.createElement('div'); description.className = 'activity-description';
+      const detail = document.createElement('p'); detail.textContent = descriptor.detail;
       if (descriptor.key === 'fireplace' && Number.isFinite(payload.meta?.fireplaceInputs?.burnHours))
-        title.textContent += ` · ${payload.meta.fireplaceInputs.burnHours} h after each addition`;
-      const caption = document.createElement('div'); caption.className = 'activity-caption'; caption.append(title);
-      let keySummary;
-      if (descriptor.legend) {
-        const items = document.createElement('div'); items.className = `activity-key-items${descriptor.legendSummary ? '' : ' activity-key-inline'}`;
+        detail.textContent += ` The burn window lasts ${payload.meta.fireplaceInputs.burnHours} h after each addition.`;
+      description.append(detail);
+      function legendItems(compact) {
+        const items = document.createElement('span'); items.className = `activity-key-items${compact ? ' activity-key-inline' : ''}`;
+        if (compact) items.setAttribute('aria-hidden', 'true');
         for (const entry of descriptor.legend) {
           const item = document.createElement('span'); item.className = 'activity-key-item';
           const swatch = document.createElement('span'); swatch.className = 'activity-key-swatch';
-          swatch.style.backgroundColor = palette[entry.color]; swatch.setAttribute('aria-hidden', 'true');
-          const label = document.createElement('span'); label.textContent = `${entry.label}${entry.description ? ` — ${entry.description}` : ''}`;
+          swatch.style.backgroundColor = entry.pattern === 'blank' ? 'var(--surface-soft)' : palette[entry.color];
+          swatch.style.opacity = String(entry.pattern === 'blank' ? 1 : entry.opacity ?? .75);
+          if (entry.pattern) swatch.dataset.pattern = entry.pattern;
+          swatch.setAttribute('aria-hidden', 'true');
+          const label = document.createElement('span'); label.textContent = `${entry.label}${!compact && entry.description ? ` — ${entry.description}` : ''}`;
           item.append(swatch, label); items.append(item);
         }
-        if (descriptor.legendSummary) {
-          const key = document.createElement('details'); key.className = 'activity-key';
-          const summary = document.createElement('summary'); summary.textContent = descriptor.legendSummary;
-          keySummary = summary;
-          key.open = expandedKeys.has(descriptor.key);
-          key.addEventListener('toggle', () => {
-            if (closed || !rows.some(row => row.root === root)) return;
-            if (key.open) expandedKeys.add(descriptor.key); else expandedKeys.delete(descriptor.key);
-            clear(); align();
-          });
-          key.append(summary, items); caption.append(key);
-        } else caption.append(items);
+        return items;
       }
+      if (descriptor.legend) description.append(legendItems(false));
+      caption.open = expandedKeys.has(descriptor.key);
+      caption.addEventListener('toggle', () => {
+        if (closed || !rows.some(row => row.root === root)) return;
+        // Restoring an open fold queues a native toggle too. Only a user's
+        // change should invalidate an inspection already in progress.
+        if (caption.open === expandedKeys.has(descriptor.key)) return;
+        if (caption.open) expandedKeys.add(descriptor.key); else expandedKeys.delete(descriptor.key);
+        clear(); align();
+      });
+      caption.append(keySummary, description);
       const track = document.createElement('div'); track.className = 'mode-track';
       const intervals = activityIntervals(descriptor, payload).filter(interval => interval.pointOnly
         ? interval.start >= view.from && interval.start <= view.to : interval.end > view.from && interval.start < view.to);
@@ -248,9 +295,15 @@ export function createChartOverlays({ canvas, getChart, getPayload, getView, get
         item.title = `${activityIntervalLabel(descriptor, interval)}\n${descriptor.detail}`;
         item.setAttribute('aria-label', item.title); track.append(item);
       }
-      if (!track.children.length) title.textContent += ' · no recorded intervals';
+      if (!track.children.length) {
+        const empty = document.createElement('span'); empty.className = 'activity-empty'; empty.textContent = 'No intervals';
+        keySummary.append(empty);
+        const note = document.createElement('p'); note.textContent = 'No recorded intervals in the visible range.';
+        description.append(note);
+      }
+      if (descriptor.legend) keySummary.append(legendItems(true));
       const viewport = document.createElement('div'); viewport.className = 'mode-viewport'; viewport.append(track);
-      root.append(caption, viewport); roots.push(root); rows.push({ root, descriptor, intervals, keySummary });
+      root.append(caption, viewport); roots.push(root); rows.push({ root, track, descriptor, intervals, keySummary });
     }
     container.replaceChildren(...roots); container.hidden = rows.every(row => row.root.hidden);
     if (focusedKey) rows.find(row => row.descriptor.key === focusedKey)?.keySummary?.focus({ preventScroll: true });
@@ -273,32 +326,40 @@ export function createChartOverlays({ canvas, getChart, getPayload, getView, get
     ctx.beginPath(); ctx.moveTo(cursor.x, chartArea.top); ctx.lineTo(cursor.x, chartArea.bottom); ctx.stroke(); ctx.restore();
   }
   listen(panel, 'pointermove', event => {
-    if (event.pointerType === 'touch') {
-      if (touching && Math.hypot(event.clientX - touching.clientX, event.clientY - touching.clientY) > 4) touching.moved = true;
-      return;
+    if (dragging) {
+      if (event.pointerId !== dragging.pointerId) return;
+      event.preventDefault(); inspect(event, true); return;
     }
+    if (event.pointerType === 'touch') return;
     if (event.buttons) clear(); else inspect(event);
-  }, { passive: true });
-  listen(panel, 'pointerleave', event => { if (event.pointerType !== 'touch') clear(); });
+  }, { passive: false });
+  listen(panel, 'pointerleave', event => { if (!dragging && event.pointerType !== 'touch') clear(); });
   listen(panel, 'pointerdown', event => {
-    clear();
-    if (event.pointerType === 'touch') touchPointers.add(event.pointerId);
-    touching = event.pointerType === 'touch' && touchPointers.size === 1 && isTouchEnabled()
-      ? { clientX: event.clientX, clientY: event.clientY, pointerId: event.pointerId, moved: false } : undefined;
-  }, { passive: true });
+    if (event.pointerType === 'mouse' && event.button !== 0) return;
+    const bounds = geometry({ clientX: event.clientX, clientY: event.clientY }), row = bounds && rowAt(event.clientY);
+    if (!row || isMoving()) return clear();
+    event.preventDefault();
+    // A second finger on a band cannot start chart navigation or replace the
+    // finger already scrubbing. The originating band keeps its row readout.
+    if (dragging) return;
+    dragging = { pointerId: event.pointerId, key: row.descriptor.key };
+    try { panel.setPointerCapture(event.pointerId); } catch { /* Synthetic events may not own a native pointer. */ }
+    inspect(event, true);
+  }, { passive: false });
   listen(panel, 'pointerup', event => {
-    if (touching?.pointerId === event.pointerId && !touching.moved && !isMoving()) inspect(event);
-    touchPointers.delete(event.pointerId);
-    touching = undefined;
+    if (event.pointerId !== dragging?.pointerId) return;
+    inspect(event, true); releaseDrag();
   }, { passive: true });
-  listen(panel, 'pointercancel', () => { touchPointers.clear(); touching = undefined; clear(); });
+  for (const name of ['pointercancel', 'lostpointercapture']) listen(panel, name, event => {
+    if (event.pointerId === dragging?.pointerId) clear();
+  });
   listen(panel, 'wheel', () => clear(), { passive: true });
   listen(panel, 'scroll', () => clear(), { passive: true, capture: true });
   listen(document, 'pointerdown', event => { if (!panel.contains(event.target)) clear(); }, { passive: true });
   listen(document, 'keydown', event => { if (event.key === 'Escape') clear(); });
   listen(window, 'blur', () => clear());
   listen(window, 'resize', () => clear());
-  return { render, clear, close() { closed = true; clear({ redraw: false }); touchPointers.clear(); listeners.forEach(remove => remove()); extension?.remove(); readout?.remove(); rows = []; },
+  return { render, clear, close() { closed = true; clear({ redraw: false }); listeners.forEach(remove => remove()); extension?.remove(); readout?.remove(); rows = []; },
     plugin: { id: 'historyOverlays', beforeDatasetsDraw: paintNow, afterDatasetsDraw: paintCursor,
       afterLayout: align, beforeEvent: () => isMoving() ? false : undefined } };
 }

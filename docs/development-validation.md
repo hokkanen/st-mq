@@ -102,14 +102,15 @@ garage pump interpretation, line/fill conventions and aligned activity rows.
 Explorer checks cover the shared selection button, searchable **Views** and
 **All series** modes, selection/dismissal, keyboard navigation and centered
 desktop, mobile and fullscreen layouts. Chart style checks
-include cubic temperature settings, dashed historical Solar estimate, dash-dot
+include cubic temperature settings, solid historical Solar estimate, dash-dot
 future Solar forecast and charger fills within each individual phase. It verifies
 Caravan interval-average power, original energy availability, hollow observation
 markers and point targeting against nearby price samples. Real Chart.js
 interaction tests also cover vertically aligned readings, overlapping markers
 and synthetic edges. Browser checks cover combined home-compressor states, the
-pump-mode color key, separate garage power-readback and managed-pause rows,
-cursor bounds, row inspection, touch and keyboard cleanup, both themes and
+persistent title folds and complete colour keys, separate garage power-readback
+and managed-pause rows, band-only mouse/touch cursor dragging, clipped cursor
+segments, independent plot navigation, touch and keyboard cleanup, both themes and
 320/390 px fullscreen layouts. Its synthetic screenshot gallery is written to
 ignored `var/chart-views-*.png` files. The Firefox chart suite below retains broader
 chart/date/detail/tooltips and related dashboard regression coverage.

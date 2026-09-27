@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { HISTORY_AXES, HISTORY_AXIS_BY_KEY, ENERGY_SIGNALS } from '../src/domain/history-series.js';
 import { EXPLORER_SERIES, EXPLORER_SERIES_BY_KEY, filterExplorerSeries,
-  compatibleExplorerSeries, explorerSelection } from '../chart/series-explorer.js';
+  compatibleExplorerSeries, explorerSelection, explorerActivityTrack } from '../chart/series-explorer.js';
 
 test('explorer exposes every supported history once and resolves a bounded catalogue query', () => {
   assert.deepEqual(new Set(EXPLORER_SERIES.map(row => row.signal)), new Set(HISTORY_AXES.flatMap(row => row.signals)));
@@ -54,4 +54,39 @@ test('single-series selections isolate the selected subject and use rows for cat
   assert.deepEqual(explorerSelection('spot_price').rightSignals, []);
   assert.deepEqual(explorerSelection('model_room_boost').leftSignals, ['model_room_boost']);
   assert.equal(explorerSelection('model_room_boost').unit, 'Δ°C');
+});
+
+test('every categorical series declares its recorded states and missing evidence in its colour key', () => {
+  for (const row of EXPLORER_SERIES.filter(row => ['state', 'code'].includes(row.unit))) {
+    const track = explorerActivityTrack(row.key);
+    assert.equal(track.signal, row.signal);
+    assert.equal(track.label, row.label);
+    for (const [value, label] of Object.entries(track.values)) {
+      const entry = track.legend.find(entry => entry.value === Number(value));
+      assert.equal(entry.label, label, `${row.key}: ${value}`);
+      assert.equal(entry.color, track.colors[value], `${row.key}: ${value}`);
+      assert.equal(entry.pattern, track.patterns[value], `${row.key}: ${value}`);
+    }
+    assert(track.legend.some(entry => entry.pattern === 'blank' && entry.label === 'Unknown'), row.key);
+    assert.match(track.detail, /Blank intervals have no known state/);
+  }
+  assert.throws(() => explorerActivityTrack('constructor'), /supported historical state/);
+  assert.throws(() => explorerActivityTrack('solar_radiation'), /supported historical state/);
+});
+
+test('state colours retain their physical meaning and distinguish circulation requests from feedback', () => {
+  const request = explorerActivityTrack('dhwr_request'), feedback = explorerActivityTrack('dhwr_active');
+  assert.equal(request.label, 'Hot-water circulation request');
+  assert.equal(feedback.label, 'Hot-water circulation feedback');
+  assert.equal(request.colors[1], 'dhwr');
+  assert.equal(feedback.colors[1], 'dhwr');
+  assert.equal(request.values[1], 'On requested');
+  assert.equal(feedback.values[1], 'On');
+  assert.match(request.detail, /not confirmed pump operation or water flow/);
+  assert.match(feedback.detail, /neither proves water flow/);
+  assert.deepEqual(explorerActivityTrack('dhw_routing').colors, { 0: 'compressorSpace', 1: 'compressorDhw' });
+  assert.equal(explorerActivityTrack('model_valve_override').patterns[3], 'unknown');
+  const alarm = explorerActivityTrack('alarm_code');
+  assert.equal(alarm.values[0], 'No alarm');
+  assert(alarm.legend.some(entry => entry.label === 'Alarm code' && entry.color === alarm.color));
 });

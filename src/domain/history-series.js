@@ -153,7 +153,7 @@ const basic = [
   ['heat_pump_power', 'Heat-pump power estimate', 'Electricity', ['heat_pump_power'], 'kW', 'Calculated'],
   ['caravan_power', 'Caravan power', 'Caravan', ['caravan_power'], 'kW', 'Calculated', 'Average power derived from measured energy over each original recording interval; not instantaneous power'],
   ['controller_phase', 'Requested controller phase', 'Control', ['controller_phase'], 'state', 'Recorded'],
-  ['dhwr_request', 'Hot-water recirculation request', 'Control', ['dhwr_request'], 'state', 'Recorded'],
+  ['dhwr_request', 'Hot-water circulation request', 'Control', ['dhwr_request'], 'state', 'Recorded'],
 ];
 
 export const HISTORY_AXES = Object.freeze([

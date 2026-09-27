@@ -272,23 +272,27 @@ the current readings.
 - **Solar history:** **Solar estimate** shows the latest valid forecast-derived
   estimate known at each historical plotted time, with its original provider
   provenance. A newer forecast never replaces earlier plotted history with
-  hindsight values. **Solar forecast** shows the future outlook separately.
+  hindsight values. Its line is solid; **Solar forecast** shows the future outlook
+  separately with a dash-dot line.
   The six-hour freshness limit concerns the age of the source forecast evidence;
   it does not restrict the forecast horizon to six hours. Neither series is a
   house radiation measurement.
 - **Activity and cursor:** relevant operating states appear in labeled rows below
   the plot. One **Home compressor** row shows stopped, space heating, hot water
   or running with unknown routing. Missing or expired compressor evidence stays
-  blank. **Pump mode** has an expandable **Mode key** explaining its colors.
+  blank. Every row title expands to explain its evidence, colours, patterns and
+  blank intervals. Wide layouts also show a compact colour key beside the title;
+  on phones the key stays inside the fold.
   Garage pump power readback and managed pause have separate rows: power is the
   saved native on/off report; managed pause records a savings or timed-off control
   pause, not measured savings or proof of automatic control. Requested reduction,
-  requested circulation, circulation feedback and modeled fireplace windows
-  remain separate.
-  Their legend controls select the rows for this view. Move the cursor across the
-  plot or rows to follow a shared time; the vertical crosshair ends at the last
-  visible row. Row inspection reports its interval and evidence. On touch devices,
-  tap in chart view to inspect; dragging or pinching clears the cursor. At long
+  **Hot-water circulation request**, **Hot-water circulation feedback** and modeled
+  fireplace windows remain separate.
+  Their legend controls select the rows for this view. Hover or drag an indicator
+  strip to inspect a shared time, including by touch. The cursor appears only in
+  the plot and visible strips, leaving titles and gaps clear. Strips move the
+  cursor; chart-view plot gestures zoom and pan. Row inspection reports its
+  interval and evidence. At long
   ranges, activity occupancy and reduced state samples are explicitly identified.
 - **Reading evidence:** open **How to read this view** for line conventions and
   the selected quantities' interpretation. Recorded power reconstructed from

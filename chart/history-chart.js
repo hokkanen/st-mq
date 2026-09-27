@@ -6,7 +6,7 @@ import { historyTooltipCallbacks, historyTooltipsEnabled, historyTooltipInteract
 export { historyTooltipLabel, historyTooltipTitle } from './history-tooltips.js';
 import { createTimingBenefit } from './timing-benefit.js';
 import { selectedChartView, chartSelectionKey, readChartPreferences, chartViewPreferences, setChartVisibility, chartSubjectAvailability, CHART_PREFERENCES_KEY } from './chart-views.js';
-import { EXPLORER_SERIES_BY_KEY } from './series-explorer.js';
+import { EXPLORER_SERIES_BY_KEY, explorerActivityTrack } from './series-explorer.js';
 import { createSeriesPicker } from './series-picker.js';
 import { createChartOverlays, activityTracks } from './chart-overlays.js';
 import { chartObservationTime, replicaSnapshotKey } from './replica-status.js';
@@ -14,7 +14,7 @@ import { createChartNavigation } from './chart-navigation.js';
 import { createDetailLoader, viewportTicks } from './chart-viewport.js';
 import { chartBucketWidth, chartDetailRequest, clipChartSeries, selectChartResolution } from './chart-resolution.js';
 import { preparePowerFills, powerFillPlugin } from './power-fill.js';
-import { SIGNAL_INFO, MODEL_INPUT_INFO, GARAGE_INPUT_INFO, CARAVAN_RUNNING_STATES, ENERGY_SIGNALS } from '../src/domain/history-series.js';
+import { ENERGY_SIGNALS } from '../src/domain/history-series.js';
 
 const clock = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
 Interaction.modes.historyPoint = historyTooltipInteraction;
@@ -91,7 +91,6 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     getTracks: () => tracksForView(selectedChartView(plottedSelection ?? selection)),
     isVisible: key => visible(key, chartViewPreferences(selectedChartView(plottedSelection ?? selection), preferences)),
     isMoving: () => navigation.moving,
-    isTouchEnabled: () => navigation.fullscreen,
   });
   const seriesPicker = createSeriesPicker({ getSelected: () => preferences, onOpen: () => overlays.clear(),
     onSelect(chosen) {
@@ -108,20 +107,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     return { view: key };
   }
   function tracksForView(view) {
-    const definitions = { ...EXPLORER_SERIES_BY_KEY, ...SIGNAL_INFO, ...MODEL_INPUT_INFO, ...GARAGE_INPUT_INFO };
-    return view.tracks.map(key => activityTracks.find(track => track.key === key) ?? {
-      key, signal: key, label: definitions[key]?.label ?? key.replaceAll('_', ' '),
-      detail: definitions[key]?.detail ?? 'Recorded state; blank intervals are unknown',
-      color: key === 'garage_model_managed_pause' ? 'heatOff' : definitions[key]?.color ?? 'learning',
-      values: definitions[key]?.unit === 'code' ? undefined : key === 'dhw_routing' ? { 0: 'Space heating', 1: 'Hot water' }
-        : key === 'garage_model_available' ? { 0: 'Pump off', 1: 'Pump on' }
-        : key === 'garage_model_managed_pause' ? { 0: 'No managed pause', 1: 'Managed heating pause' }
-        : ['controller_phase', 'model_controller_phase'].includes(key) ? { 0: 'Normal', 1: 'Preheat', 2: 'Reduction', 3: 'Recovery' }
-        : key === 'model_valve_override' ? { 0: 'Normal valve mode', 1: 'Override confirmed', 2: 'Partial override', 3: 'Unconfirmed override' }
-          : key === 'operating_mode' ? { 0: 'Off', 1: 'Auto', 2: 'Compressor only', 3: 'Auxiliary only', 4: 'Hot water only' }
-            : key === 'caravan_dehumidifier_running_state' ? CARAVAN_RUNNING_STATES
-              : key.includes('door') ? { 0: 'Closed', 1: 'Open' } : { 0: 'Off', 1: 'On' },
-    });
+    return view.tracks.map(key => activityTracks.find(track => track.key === key) ?? explorerActivityTrack(key));
   }
   function sameSelection(a, b) { return a && b && a.startDate === b.startDate && a.endDate === b.endDate && chartSelectionKey(a) === chartSelectionKey(b); }
   function invalidateDetail() { detail = undefined; detailLoader.invalidate(); }
@@ -291,8 +277,8 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     canvas.dataset.rangeStart = plot.startDate; canvas.dataset.rangeEnd = plot.endDate; canvas.dataset.view = plot.view ?? 'explorer'; canvas.dataset.series = plot.series ?? ''; canvas.dataset.left = plot.left ?? plot.view; canvas.dataset.ready = String(!loading);
     renderStatus(datasets);
     const keys = [...chartView.leftSignals, ...chartView.rightSignals];
-    const notes = ['Solid lines use the left axis; right-axis temperatures and solar estimates are dashed. Future forecasts use dash-dot lines and electricity prices are dotted. Toggle any legend item to tailor this view; price choices apply to every view.',
-      'Temperature curves use cubic interpolation without overshoot, including displayed settings and targets. Recorded values remain unchanged; a curve between settings does not imply gradual control changes. Power and states retain their steps. Missing evidence remains a gap. Activity rows share the time axis; hover across the plot and rows to inspect the same moment.'];
+    const notes = ['Historical solar estimates and other left-axis lines are solid; right-axis temperatures are dashed. Future forecasts use dash-dot lines and electricity prices are dotted. Toggle any legend item to tailor this view; price choices apply to every view.',
+      'Temperature curves use cubic interpolation without overshoot, including displayed settings and targets. Recorded values remain unchanged; a curve between settings does not imply gradual control changes. Power and states retain their steps. Missing evidence remains a gap. Activity rows share the time axis; hover or drag along a bar to inspect the same moment across the chart. Open a row title for its colours and explanation.'];
     if (chartView.stackPhases) notes.push('Charger currents form translucent stacks separately for L1, L2 and L3. Each phase keeps its property reference line. Tooltips show each charger’s own current; stacks require overlapping recorded evidence.');
     if (keys.includes('solar_radiation')) notes.push('Solar estimate is the latest valid weather estimate known at each historical time, not a solar sensor reading. Later forecast revisions do not replace it. The future Solar forecast remains separate.');
     if (keys.some(key => ['charger_power', 'charger2_power'].includes(key))) notes.push('Translucent fills show the two chargers, stacked only where their recorded intervals overlap. Tooltips show each charger’s own power. Auxiliary and whole heat-pump estimates are separate lines; the whole estimate includes auxiliary.');

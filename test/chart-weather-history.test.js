@@ -102,7 +102,7 @@ for (const provider of ['fmi', 'openmeteo']) {
       }
       const datasets = historyDatasets(chart.series, CHART_VIEW_BY_KEY.weather).filter(dataset => dataset.yAxisID === 'left');
       assert.deepEqual(datasets.map(dataset => dataset.key), ['solar_radiation', 'solar_forecast']);
-      assert.deepEqual(datasets.map(dataset => dataset.borderDash), [[6, 4], [8, 3, 2, 3]]);
+      assert.deepEqual(datasets.map(dataset => dataset.borderDash), [[], [8, 3, 2, 3]]);
       assert.equal(datasets[0].label, 'Solar estimate');
       assert(datasets.every(dataset => dataset.stepped && !dataset.spanGaps));
       assert.equal(store.observations({ signal: 'solar_radiation' }).length, 0);

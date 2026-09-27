@@ -167,7 +167,7 @@ try {
     })()`), true, 'Accessible one-day arrows are compact and flank the shortcuts in one aligned row');
   };
   const checkActivityTracks = async () => {
-    assert.match(await evaluate("document.querySelector('#dhwr-history .activity-caption > p').textContent"), /DHWR.*requested circulation.*recorded duration/i);
+    assert.match(await evaluate("document.querySelector('#dhwr-history .activity-title').textContent"), /Hot-water circulation request/i);
     assert.equal(await evaluate(`(() => {
       const canvas = document.getElementById('history').getBoundingClientRect();
       const rows = ['operating-modes', 'dhwr-history', 'fireplace-history'].map(id => document.getElementById(id));
@@ -455,7 +455,7 @@ try {
   await until("document.getElementById('history').dataset.ready==='true' && document.getElementById('history').dataset.rangeEnd==='2026-09-07'");
   assert.equal(await legendState('all-in'), 'true');
   assert.equal(await legendState('spot'), 'true');
-  assert.equal(await legendState('dhwr'), 'true');
+  assert.equal(await legendState('Hot-water circulation request'), 'true');
   assert.equal(await legendState('fireplace'), 'true');
   await checkActivityTracks();
   for (const key of ['dhwr', 'fireplace']) {

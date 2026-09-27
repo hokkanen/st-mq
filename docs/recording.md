@@ -639,7 +639,7 @@ the inclusive range. On phones, **Legend** opens a bounded scrollable area and
 **Close legend** restores the navigator and activity strips and returns space to the plot. The legend separates quantitative series, temperature/price context and
 activity rows. Ordinary
 left-axis history uses solid lines and right-axis temperatures use dashed lines.
-Historical Solar estimate is dashed; future forecasts use dash-dot lines and
+Historical Solar estimate is solid; future forecasts use dash-dot lines and
 electricity prices remain dotted. All plotted temperatures, including settings
 and targets, share monotone cubic interpolation within covered spans. Categorical
 states and electrical power retain steps. Events, session checks and original
@@ -652,19 +652,23 @@ hot-water and running-with-unknown-routing intervals. Compressor and routing
 reports expire independently: expired routing can leave a fresh running
 compressor with unknown routing, while missing, stale or unverified compressor
 data stays blank. Off is shown only when reported, never inferred from silence.
-The **Pump mode** row has an expandable **Mode key** for its color meanings.
-The cursor spans the plot and these rows within the time
-axis bounds, helping compare simultaneous changes without covering the controls.
+Every row title expands to explain its evidence and all colour and pattern
+meanings, including missing intervals. Wide layouts also show a compact key
+beside the title; phones keep the colours inside the fold. Hovering or dragging
+a strip moves the shared time cursor, including by touch. Its separate segments
+appear only in the plot and visible strips, leaving titles and gaps clear.
 Landscape shows the entire selected time window at baseline zoom. Portrait uses
 the full available chart height and shows a narrower time slice; drag sideways
 or use the navigator to move through the selection even at baseline zoom.
 Rotation preserves magnification and the visible center where the date boundaries
 allow it. Axes and controls stay within the screen.
 
-In chart view, pinch or the mouse wheel zooms around the gesture position, dragging
-pans, and tapping inspects a value. With the chart focused, +/− zoom,
+In chart view, pinch or the mouse wheel on the plot zooms around the gesture
+position, and dragging the plot pans. Indicator strips inspect time without
+zooming or panning. With the chart focused, +/− zoom,
 arrow keys pan, and Home resets. Outside chart view, wheel, keyboard and touch
-retain their normal page behavior and do not zoom or pan the chart. The applied
+retain their normal page behavior except for touch inspection on the strips;
+they do not zoom or pan the chart. The applied
 Finnish dates are fixed until another date, preset or date-navigation action is explicitly applied,
 including across midnight. Zooming, theme/series changes, refresh and fullscreen
 transitions never expand those dates. Reset restores baseline zoom; portrait still

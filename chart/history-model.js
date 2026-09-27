@@ -125,7 +125,7 @@ for (const [signal, info] of Object.entries(SIGNAL_INFO)) {
 Object.assign(seriesInfo, {
   heat_pump_power: ['Heat pump', 'kW · reconstructed estimated electrical input', 'auxiliary'],
   controller_phase: ['Requested phase', 'state · 0 normal, 1 preheat, 2 reduction, 3 recovery', 'learning'],
-  dhwr_request: ['Recirculation request', 'state · requested, not confirmed flow', 'learning'],
+  dhwr_request: ['Hot-water circulation request', 'state · requested, not confirmed flow', 'dhwr'],
   garage_native_energy: ['Garage pump meter counter', 'kWh · native cumulative counter observation; not interval consumption', 'garagePump', 'audit'],
   garage_energy: ['Garage pump energy', 'kWh · original recording interval; inspect the point for its measurement basis', 'garagePump', 'interval-energy'],
 });
@@ -147,7 +147,6 @@ for (const [key, color] of Object.entries({
 })) if (seriesInfo[key]) seriesInfo[key][2] = color;
 
 const forecastSignals = new Set(['outdoor_forecast', 'solar_forecast']);
-const solarEstimates = new Set(['solar_radiation', 'model_solar_radiation']);
 export const chartLinePatterns = Object.freeze({
   solid: Object.freeze([]), temperature: Object.freeze([6, 4]),
   forecast: Object.freeze([8, 3, 2, 3]), price: Object.freeze([1, 3]),
@@ -164,7 +163,7 @@ export function historySeriesStyle(key, axis, kind = 'line') {
     : key === 'heating_integral' ? 'linear' : 'step';
   return {
     forecast, interpolation, showLine: !pointsOnly,
-    borderDash: forecast ? chartLinePatterns.forecast : solarEstimates.has(key) ? chartLinePatterns.temperature : price ? chartLinePatterns.price
+    borderDash: forecast ? chartLinePatterns.forecast : price ? chartLinePatterns.price
       : axis === 'right' && temperatureUnit ? chartLinePatterns.temperature : chartLinePatterns.solid,
     stepped: pointsOnly || interpolation !== 'step' ? false : price ? 'before' : true,
     cubicInterpolationMode: interpolation === 'monotone' ? 'monotone' : 'default',

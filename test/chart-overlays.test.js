@@ -71,23 +71,25 @@ test('tagged sample-gap boundaries leave inspectable points without changing rea
   }
 });
 
-test('cursor geometry stays inside time bounds, scales CSS pixels, and ends at the last visible band', () => {
+test('cursor geometry scales CSS pixels and only activates on visible bands', () => {
   const input = { chart: { width: 800, height: 400, chartArea: { left: 50, right: 750, top: 20, bottom: 340 } },
     canvasRect: { left: 100, top: 100, width: 400, height: 200 }, panelRect: { left: 80, top: 60 },
-    trackRects: [{ width: 400, height: 30, bottom: 370 }, { width: 0, height: 0, bottom: 700 }], clientX: 300, clientY: 350 };
-  assert.deepEqual(historyCursorGeometry(input), { x: 400, left: 220, top: 210, height: 100,
-    plotLeft: 45, plotRight: 395, inPlot: false, bottom: 310 });
-  for (const point of [{ clientX: 124, clientY: 150 }, { clientX: 476, clientY: 150 },
-    { clientX: 300, clientY: 109 }, { clientX: 300, clientY: 371 }])
+    trackRects: [{ width: 350, height: 20, top: 330, bottom: 350 },
+      { width: 350, height: 20, top: 390, bottom: 410 }, { width: 0, height: 0, top: 700, bottom: 700 }],
+    clientX: 300, clientY: 340 };
+  assert.deepEqual(historyCursorGeometry(input), { x: 400, left: 220, plotLeft: 45, plotRight: 395, plotBottom: 210,
+    segments: [{ top: 270, height: 20 }, { top: 330, height: 20 }] });
+  for (const point of [{ clientX: 124 }, { clientX: 476 }, { clientY: 150 }, { clientY: 320 },
+    { clientY: 370 }, { clientY: 411 }])
     assert.equal(historyCursorGeometry({ ...input, ...point }), null);
-  const noRows = historyCursorGeometry({ ...input, trackRects: [], clientY: 240 });
-  assert.equal(noRows.height, 0);
   assert.equal(historyCursorGeometry({ ...input, trackRects: [] }), null);
+  assert.equal(historyCursorGeometry({ ...input, clientX: 900, clampX: true }).x, 750,
+    'Captured scrubbing stops at the time-axis boundary');
 });
 
 function fixture(t) {
   class Element extends EventTarget {
-    constructor() { super(); this.children = []; this.style = {}; this.dataset = {}; this.hidden = false; this.attributes = new Map(); this.offsetWidth = 260; this.offsetHeight = 65; }
+    constructor() { super(); this.children = []; this.style = {}; this.dataset = {}; this.hidden = false; this.attributes = new Map(); this.offsetWidth = 260; this.offsetHeight = 65; this.captured = new Set(); }
     setAttribute(key, value) { this.attributes.set(key, value); }
     append(...children) { for (const child of children) { child.parentElement = this; this.children.push(child); } }
     replaceChildren(...children) { this.children = []; this.append(...children); }
@@ -95,17 +97,23 @@ function fixture(t) {
     contains(node) { return this === node || this.children.some(child => child.contains(node)); }
     remove() { if (this.parentElement) this.parentElement.children = this.parentElement.children.filter(child => child !== this); }
     focus() { document.activeElement = this; }
+    setPointerCapture(id) { this.captured.add(id); }
+    releasePointerCapture(id) { this.captured.delete(id); }
     getBoundingClientRect() {
       if (this.className === 'mode-history') {
-        if (this.hidden) return { left: 150, right: 850, top: 0, bottom: 0, width: 0, height: 0 };
-        const top = 520 + container.children.filter(child => !child.hidden).indexOf(this) * 32;
-        return { left: 100, right: 900, top, bottom: top + 28, width: 800, height: 28 };
+        if (this.hidden) return { left: 100, right: 900, top: 0, bottom: 0, width: 0, height: 0 };
+        const top = 520 + container.children.filter(child => !child.hidden).indexOf(this) * 60;
+        return { left: 100, right: 900, top, bottom: top + 52, width: 800, height: 52 };
+      }
+      if (this.className === 'mode-track') {
+        const root = this.parentElement.parentElement.getBoundingClientRect(), top = root.top + 28;
+        return { left: 150, right: 850, top, bottom: top + 22, width: root.width ? 700 : 0, height: root.height ? 22 : 0 };
       }
       return this.rect;
     }
   }
   const panel = new Element(), canvas = new Element(), container = new Element(), window = new EventTarget();
-  panel.rect = { left: 80, top: 60, width: 840, height: 700 }; panel.clientLeft = 1; panel.clientTop = 1;
+  panel.rect = { left: 80, top: 60, width: 840, height: 900 }; panel.clientLeft = 1; panel.clientTop = 1;
   canvas.rect = { left: 100, top: 100, width: 800, height: 400 };
   panel.append(canvas, container);
   const document = Object.assign(new EventTarget(), { defaultView: window,
@@ -113,7 +121,7 @@ function fixture(t) {
   canvas.ownerDocument = document;
   const commands = [], ctx = Object.fromEntries(['save', 'beginPath', 'rect', 'clip', 'setLineDash', 'moveTo', 'lineTo', 'stroke', 'restore']
     .map(name => [name, (...args) => commands.push([name, ...args])]));
-  let chart, overlays, tracks = activityTracks, moving = false, touchEnabled = false, hidden = new Set();
+  let chart, overlays, tracks = activityTracks, moving = false, hidden = new Set();
   const payload = { range, now: 500, operatingModes: [{ start: 0, end: 1000, value: 1 }],
     shading: { dhwr: [{ start: 400, end: 700 }], fireplace: [{ start: 200, end: 600 }] } };
   const palette = Object.fromEntries(['muted', 'indoor', 'outdoor', 'auxiliary', 'compressorDhw', 'compressorSpace', 'garage', 'heatOff', 'dhwr', 'fireplace'].map(key => [key, key]));
@@ -121,17 +129,17 @@ function fixture(t) {
     scales: { x: { getValueForPixel: x => (x - 50) / 700 * 1000, getPixelForValue: x => 50 + x / 1000 * 700 } },
     drawCount: 0, draw() { chart.drawCount++; overlays.plugin.beforeDatasetsDraw(chart); overlays.plugin.afterDatasetsDraw(chart); } };
   overlays = createChartOverlays({ canvas, getChart: () => chart, getPayload: () => payload, getView: () => range,
-    getPalette: () => palette, getTracks: () => tracks, isVisible: key => !hidden.has(key), isMoving: () => moving, isTouchEnabled: () => touchEnabled });
+    getPalette: () => palette, getTracks: () => tracks, isVisible: key => !hidden.has(key), isMoving: () => moving });
   overlays.render();
   t.after(() => overlays.close());
   function pointer(type, values = {}, target = panel) {
-    const event = new Event(type);
-    Object.assign(event, { pointerType: 'mouse', pointerId: 1, buttons: 0, clientX: 450, clientY: 250, ...values });
-    target.dispatchEvent(event);
+    const event = new Event(type, { cancelable: true });
+    Object.assign(event, { pointerType: 'mouse', pointerId: 1, button: 0, buttons: 0, clientX: 450, clientY: 550, ...values });
+    target.dispatchEvent(event); return event;
   }
   return { panel, canvas, container, document, window, overlays, chart, commands, pointer, payload,
     setTracks(value) { tracks = value; overlays.render(); }, hide(key) { hidden.add(key); overlays.render(); },
-    setMoving(value) { moving = value; }, enableTouch() { touchEnabled = true; },
+    setMoving(value) { moving = value; },
     get extension() { return panel.children.find(child => child.className === 'chart-crosshair-extension'); },
     get readout() { return panel.children.find(child => child.className === 'chart-crosshair-readout'); } };
 }
@@ -143,7 +151,7 @@ test('isolated state ticks paint and expose their actual value and unknown durat
   const segment = f.container.children[0].children[1].children[0].children[0];
   assert.equal(segment.dataset.kind, 'point');
   assert.equal(segment.style.width, '2px', 'The sample is a tick, never an invented time interval');
-  f.pointer('pointermove', { clientX: 500, clientY: 535 });
+  f.pointer('pointermove', { clientX: 500, clientY: 550 });
   assert.match(f.readout.textContent, /Closed \(0\).*duration unknown/);
 });
 
@@ -159,8 +167,9 @@ test('one home compressor row distinguishes heating, hot water, stopped and unkn
   f.payload.shading.compressorHome = intervals; f.setTracks([compressor]);
   assert.equal(activityIntervals(compressor, f.payload), intervals);
   const [caption, viewport] = f.container.children[0].children;
-  assert.equal(caption.children[0].textContent, 'Home compressor');
-  assert.deepEqual(caption.children[1].children.map(item => item.children[1].textContent), ['Space heating', 'Hot water']);
+  assert.equal(caption.children[0].children[0].textContent, 'Home compressor');
+  assert.deepEqual(caption.children[0].children[1].children.map(item => item.children[1].textContent),
+    ['Space heating', 'Hot water', 'Stopped', 'Routing unknown', 'Unknown']);
   const segments = viewport.children[0].children;
   assert.deepEqual(segments.map(segment => segment.style.backgroundColor),
     ['muted', 'compressorSpace', 'compressorDhw', 'muted', 'compressorSpace', 'compressorDhw']);
@@ -169,20 +178,22 @@ test('one home compressor row distinguishes heating, hot water, stopped and unkn
   assert.match(segments[3].title, /Running · routing unknown/);
   assert.equal(segments[4].style.top, '25%'); assert.equal(segments[5].style.top, '50%');
   assert.match(segments[4].title, /60% of this display interval/);
-  f.pointer('pointermove', { clientX: 185, clientY: 535 });
+  f.pointer('pointermove', { clientX: 185, clientY: 550 });
   assert.match(f.readout.textContent, /Stopped \(0\)/);
-  f.pointer('pointermove', { clientX: 500, clientY: 535 });
+  f.pointer('pointermove', { clientX: 500, clientY: 550 });
   assert.match(f.readout.textContent, /No known compressor state/);
   assert.doesNotMatch(f.readout.textContent, /Stopped/);
 });
 
-test('pump-mode key explains every state, stays accessible and remains expanded across redraws', t => {
+test('foldable pump-mode title explains every state, stays accessible and remains expanded across redraws', t => {
   const f = fixture(t); f.setTracks([mode]);
-  let key = f.container.children[0].children[0].children[1];
-  assert.equal(key.className, 'activity-key'); assert.equal(key.children[0].textContent, 'Mode key');
-  const items = key.children[1].children;
-  assert.equal(items.length, 5);
-  assert.deepEqual(items.map(item => item.children[0].style.backgroundColor), ['muted', 'indoor', 'outdoor', 'auxiliary', 'compressorDhw']);
+  let key = f.container.children[0].children[0];
+  assert.equal(key.className, 'activity-caption'); assert.equal(key.children[0].children[0].textContent, 'Pump mode');
+  const items = key.children[1].children[1].children;
+  assert.equal(items.length, 6);
+  assert.deepEqual(items.map(item => item.children[0].style.backgroundColor),
+    ['muted', 'indoor', 'outdoor', 'auxiliary', 'compressorDhw', 'var(--surface-soft)']);
+  assert.equal(items[5].children[0].dataset.pattern, 'blank');
   assert(items.every(item => item.children[0].attributes.get('aria-hidden') === 'true'));
   assert.match(items[0].children[1].textContent, /Protection or circulation may still operate/);
   assert.match(items[1].children[1].textContent, /as permitted/);
@@ -192,55 +203,95 @@ test('pump-mode key explains every state, stays accessible and remains expanded 
   f.pointer('pointermove'); assert.equal(f.extension.hidden, false);
   key.open = true; key.dispatchEvent(new Event('toggle'));
   assert.equal(f.extension.hidden, true, 'Expanding the explanation invalidates the old row cursor position');
-  key.children[0].focus(); f.overlays.render(); key = f.container.children[0].children[0].children[1];
+  key.children[0].focus(); f.overlays.render(); key = f.container.children[0].children[0];
   assert.equal(key.open, true, 'A routine chart refresh does not close the explanation being read');
   assert.equal(f.document.activeElement, key.children[0], 'Keyboard focus remains on the explanation disclosure after refresh');
+  f.pointer('pointermove'); f.overlays.render(); key = f.container.children[0].children[0];
+  key.dispatchEvent(new Event('toggle'));
+  assert.equal(f.extension.hidden, false, 'Restoring an open fold during refresh does not clear band inspection');
   key.open = false; key.dispatchEvent(new Event('toggle')); f.overlays.render();
-  assert.equal(f.container.children[0].children[0].children[1].open, false);
+  assert.equal(f.container.children[0].children[0].open, false);
 });
 
-test('crosshair spans chart and selected rows, stays clipped, and disappears outside the chart', t => {
+test('crosshair only starts in bands and paints the plot and individual bands without bridging captions or gaps', t => {
   const f = fixture(t);
   f.setTracks(activityTracks.filter(track => ['operatingMode', 'dhwr', 'fireplace'].includes(track.key)));
+  f.pointer('pointermove', { clientY: 250 });
+  assert.equal(f.extension, undefined, 'The main plot leaves inspection to its regular chart tooltip');
   f.pointer('pointermove');
   assert.equal(f.extension.hidden, false);
-  assert.equal(f.extension.style.left, '369px');
-  assert.equal(f.extension.style.top, '379px');
-  assert.equal(f.extension.style.height, '172px');
+  assert.deepEqual(f.extension.children.map(segment => ({ ...segment.style })), [
+    { top: '487px', height: '22px', left: '369px' },
+    { top: '547px', height: '22px', left: '369px' },
+    { top: '607px', height: '22px', left: '369px' },
+  ]);
   assert(f.commands.some(command => JSON.stringify(command) === JSON.stringify(['rect', 50, 20, 700, 320])));
   assert(f.commands.some(command => JSON.stringify(command) === JSON.stringify(['moveTo', 350, 20])));
   assert(f.commands.some(command => JSON.stringify(command) === JSON.stringify(['lineTo', 350, 340])));
-  assert.equal(f.readout.hidden, true);
-  f.pointer('pointermove', { clientY: 560 });
   assert.equal(f.readout.hidden, false);
-  assert.match(f.readout.textContent, /DHWR.*\nDHWR/);
+  f.pointer('pointermove', { clientY: 610 });
+  assert.match(f.readout.textContent, new RegExp(activityTracks.find(track => track.key === 'dhwr').label));
   f.hide('fireplace');
-  assert.equal(f.extension.style.height, '140px', 'A hidden last band cannot extend the cursor');
-  f.pointer('pointermove', { clientX: 900 });
-  assert.equal(f.extension.hidden, true);
-  assert.equal(f.readout.hidden, true);
-  f.pointer('pointermove');
-  f.pointer('pointermove', { clientY: 650 });
-  assert.equal(f.extension.hidden, true, 'The legend and notes cannot activate the cursor');
-  f.pointer('pointermove');
-  f.pointer('pointerleave');
+  assert.equal(f.extension.children.length, 2, 'Hidden bands have no cursor segment');
+  for (const position of [{ clientX: 900 }, { clientY: 250 }, { clientY: 540 }, { clientY: 575 }, { clientY: 650 }]) {
+    f.pointer('pointermove'); f.pointer('pointermove', position);
+    assert.equal(f.extension.hidden, true, 'Plot, labels, gaps and areas beyond the bands cannot activate the cursor');
+    assert.equal(f.readout.hidden, true);
+  }
+  f.pointer('pointermove'); f.pointer('pointerleave');
   assert.equal(f.extension.hidden, true);
 });
 
-test('touch inspection requires fullscreen and a single stationary tap; gestures and navigation clear it', t => {
-  const f = fixture(t), touch = { pointerType: 'touch', pointerId: 4 };
-  f.pointer('pointerdown', touch); f.pointer('pointerup', touch);
-  assert.equal(f.extension, undefined, 'Ordinary page scrolling must not create a cursor');
-  f.enableTouch();
-  f.pointer('pointerdown', touch); f.pointer('pointerup', touch);
-  assert.equal(f.extension.hidden, false);
-  f.pointer('pointerleave', touch);
-  assert.equal(f.extension.hidden, false, 'A tap remains inspectable after the finger leaves');
-  f.pointer('pointerdown', touch); f.pointer('pointermove', { ...touch, clientX: 500 }); f.pointer('pointerup', touch);
+test('band mouse dragging follows the pointer beyond its band, clamps to time bounds and releases capture', t => {
+  const f = fixture(t);
+  const down = f.pointer('pointerdown', { buttons: 1 });
+  assert.equal(down.defaultPrevented, true);
+  assert.equal(f.panel.captured.has(1), true);
+  assert.equal(f.extension.children[0].style.left, '369px');
+  const move = f.pointer('pointermove', { buttons: 1, clientX: 600, clientY: 250 });
+  assert.equal(move.defaultPrevented, true);
+  assert.equal(f.extension.children[0].style.left, '519px', 'Dragging continues even outside the originating band');
+  assert.match(f.readout.textContent, /Pump mode/);
+  f.pointer('pointerleave', { buttons: 1 });
+  assert.equal(f.extension.hidden, false, 'Pointer capture keeps scrubbing outside the panel');
+  f.pointer('pointermove', { buttons: 1, clientX: 1200, clientY: 200 });
+  assert.equal(f.extension.children[0].style.left, '768px');
+  f.pointer('pointermove', { buttons: 1, clientX: 0 });
+  assert.equal(f.extension.children[0].style.left, '69px');
+  f.pointer('pointerup', { clientX: 550 });
+  assert.equal(f.extension.children[0].style.left, '469px');
+  assert.equal(f.panel.captured.size, 0);
+  f.pointer('lostpointercapture');
+  assert.equal(f.extension.hidden, false, 'Normal capture release preserves the inspected time');
+  f.pointer('pointermove', { clientY: 250 });
   assert.equal(f.extension.hidden, true);
-  f.pointer('pointerdown', touch); f.pointer('pointerdown', { ...touch, pointerId: 5 });
-  f.pointer('pointerup', { ...touch, pointerId: 5 }); f.pointer('pointerup', touch);
-  assert.equal(f.extension.hidden, true, 'A two-finger gesture must not leave a tap marker');
+  f.pointer('pointerdown', { clientY: 250, buttons: 1 }); f.pointer('pointermove', { buttons: 1 });
+  assert.equal(f.extension.hidden, true, 'Dragging from the main plot into a band never turns chart panning into inspection');
+});
+
+test('touch scrubbing works in ordinary page view and extra band fingers cannot navigate or replace it', t => {
+  const f = fixture(t), touch = { pointerType: 'touch', pointerId: 4 };
+  const pageTouch = f.pointer('pointerdown', { ...touch, clientY: 250 });
+  assert.equal(pageTouch.defaultPrevented, false, 'Ordinary page scrolling outside bands remains native');
+  assert.equal(f.extension, undefined);
+  f.pointer('pointerdown', touch);
+  assert.equal(f.extension.hidden, false);
+  assert.equal(f.panel.captured.has(4), true);
+  f.pointer('pointermove', { ...touch, clientX: 500, clientY: 200 });
+  assert.equal(f.extension.children[0].style.left, '419px');
+  f.pointer('pointerdown', { ...touch, pointerId: 5 });
+  f.pointer('pointermove', { ...touch, pointerId: 5, clientX: 700 });
+  assert.equal(f.extension.children[0].style.left, '419px', 'Only the first finger controls the cursor');
+  f.pointer('pointerup', { ...touch, pointerId: 5 });
+  assert.equal(f.panel.captured.has(4), true);
+  f.pointer('pointerup', { ...touch, clientX: 600 });
+  f.pointer('pointerleave', touch);
+  assert.equal(f.extension.hidden, false, 'The selected time remains after a touch scrub');
+  assert.equal(f.extension.children[0].style.left, '519px');
+  assert.equal(f.panel.captured.size, 0);
+  f.pointer('pointerdown', touch); f.pointer('pointercancel', touch);
+  assert.equal(f.extension.hidden, true);
+  assert.equal(f.panel.captured.size, 0);
   f.pointer('pointermove'); f.setMoving(true); f.pointer('pointermove');
   assert.equal(f.extension.hidden, true);
   assert.equal(f.overlays.plugin.beforeEvent(), false);
@@ -248,30 +299,37 @@ test('touch inspection requires fullscreen and a single stationary tap; gestures
   assert.equal(f.extension.hidden, true);
 });
 
-test('fullscreen activity scrolling clips the cursor and inspection to the visible container', t => {
+test('fullscreen activity scrolling clips each cursor segment and inspection to visible band portions', t => {
   const f = fixture(t);
-  f.container.rect = { left: 100, right: 900, top: 520, bottom: 590, width: 800, height: 70 };
-  f.pointer('pointermove');
-  assert.equal(f.extension.style.height, '150px');
-  f.pointer('pointermove', { clientY: 585 });
-  assert.equal(f.readout.hidden, false, 'The visible part of a clipped row can be inspected');
-  f.pointer('pointermove', { clientY: 591 });
-  assert.equal(f.extension.hidden, true, 'Offscreen rows do not make legend space interactive');
-  f.pointer('pointermove'); f.panel.dispatchEvent(new Event('scroll'));
-  assert.equal(f.extension.hidden, true, 'Scrolling clears the old row inspection');
+  f.container.rect = { left: 100, right: 900, top: 555, bottom: 620, width: 800, height: 65 };
+  f.pointer('pointermove', { clientY: 560 });
+  assert.deepEqual(f.extension.children.map(segment => [segment.style.top, segment.style.height]), [
+    ['494px', '15px'], ['547px', '12px'],
+  ]);
+  f.pointer('pointermove', { clientY: 615 });
+  assert.equal(f.readout.hidden, false, 'The visible part of a clipped band can be inspected');
+  for (const clientY of [550, 600, 621]) {
+    f.pointer('pointermove', { clientY });
+    assert.equal(f.extension.hidden, true, 'Clipped bands, headers and offscreen rows cannot start inspection');
+  }
+  f.pointer('pointerdown', { clientY: 560 }); f.panel.dispatchEvent(new Event('scroll'));
+  assert.equal(f.extension.hidden, true, 'Scrolling clears the old band inspection');
+  assert.equal(f.panel.captured.size, 0);
 });
 
-test('overlay disposal removes pointer listeners and overlay nodes', t => {
+test('overlay disposal removes pointer listeners, releases capture and removes overlay nodes', t => {
   const f = fixture(t);
   f.pointer('pointermove');
   f.pointer('pointerdown', {}, f.document);
-  assert.equal(f.extension.hidden, true, 'A touch cursor clears when the user interacts elsewhere');
+  assert.equal(f.extension.hidden, true, 'Inspection clears when the user interacts elsewhere');
   f.pointer('pointermove');
   f.window.dispatchEvent(new Event('blur'));
   assert.equal(f.extension.hidden, true);
+  f.pointer('pointerdown');
   const draws = f.chart.drawCount;
   f.overlays.close();
   assert.equal(f.extension, undefined); assert.equal(f.readout, undefined);
+  assert.equal(f.panel.captured.size, 0);
   f.pointer('pointermove');
   assert.equal(f.chart.drawCount, draws);
 });

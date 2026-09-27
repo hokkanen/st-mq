@@ -16,6 +16,7 @@ import { garageSettings } from '../src/garage/settings.js';
 
 const directory = mkdtempSync(join(tmpdir(), 'stmq-chart-views-browser-'));
 const now = Date.parse('2026-09-07T12:00:00Z');
+const screenshotDirectory = process.env.STMQ_SCREENSHOT_DIR ?? 'var';
 let app, socket, browser, id = 0;
 const pending = new Map(), errors = [], screenshots = [];
 try {
@@ -203,8 +204,8 @@ try {
     assert.equal(jumps.length, 0, `${key}: artificial periodic hold edges do not create near-vertical stair steps`);
   };
   const capture = async name => {
-    await settle(); mkdirSync('var', { recursive: true });
-    const path = `var/chart-views-${name}.png`, screenshot = await send('Page.captureScreenshot', { format: 'png' });
+    await settle(); mkdirSync(screenshotDirectory, { recursive: true });
+    const path = join(screenshotDirectory, `chart-views-${name}.png`), screenshot = await send('Page.captureScreenshot', { format: 'png' });
     writeFileSync(path, Buffer.from(screenshot.data, 'base64')); screenshots.push(path);
   };
   const viewport = async (width, height, touch = false) => {
@@ -222,6 +223,38 @@ try {
         && select.width >= 80 && select.right <= exit.left + 1 && exit.right <= innerWidth + 1 && canvas.height >= 80
         && (panel.dataset.fullscreen !== 'true' || canvas.bottom <= innerHeight && bounds.bottom <= innerHeight + 1);
     })()`), true, `${label}: chart controls and plot fit without horizontal overflow`);
+  };
+  const viewportState = () => evaluate(`(() => {
+    const data = document.getElementById('history').dataset;
+    return { from: data.viewFrom, to: data.viewTo, zoom: data.zoom };
+  })()`);
+  const bandPoint = (fraction = .47, id = 'operating-modes') => evaluate(`(() => {
+    const r = document.querySelector('#${id} .mode-track').getBoundingClientRect();
+    return { x: r.left + r.width * ${fraction}, y: r.top + r.height / 2 };
+  })()`);
+  const cursorHidden = () => evaluate("document.querySelector('.chart-crosshair-extension')?.hidden !== false");
+  const checkCursorSegments = async (x, label) => {
+    const bounds = await evaluate(`(() => {
+      const rect = node => { const r = node.getBoundingClientRect(); return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width,height:r.height}; };
+      const activity = rect(document.getElementById('chart-activity'));
+      const tracks = [...document.querySelectorAll('#chart-activity .mode-history:not([hidden]) .mode-track')]
+        .map(rect).filter(r => r.width > 0 && r.height > 0 && r.bottom > activity.top && r.top < activity.bottom)
+        .map(r => ({...r,top:Math.max(r.top,activity.top),bottom:Math.min(r.bottom,activity.bottom)}));
+      const extension = document.querySelector('.chart-crosshair-extension');
+      return {tracks,segments:[...extension.querySelectorAll('.chart-crosshair-segment')].map(rect),
+        border:getComputedStyle(extension).borderLeftWidth,hidden:extension.hidden};
+    })()`);
+    assert.equal(bounds.hidden, false, `${label}: the time cursor is visible`);
+    assert.equal(bounds.border, '0px', `${label}: no continuous border crosses captions or gaps`);
+    assert.equal(bounds.segments.length, bounds.tracks.length, `${label}: every visible band has one cursor segment`);
+    assert(bounds.segments.length > 0, `${label}: at least one band is visible`);
+    bounds.segments.forEach((segment, index) => {
+      const track = bounds.tracks[index];
+      assert(Math.abs(segment.left - x) < 2 && segment.left >= track.left - 1 && segment.right <= track.right + 1,
+        `${label}: band ${index} follows the inspected time`);
+      assert(Math.abs(segment.top - track.top) < 1 && Math.abs(segment.bottom - track.bottom) < 1,
+        `${label}: band ${index} stops at its own edges, including scrolling clips`);
+    });
   };
   const checkPickerFits = async label => {
     const layout = await evaluate(`(() => {
@@ -349,6 +382,19 @@ try {
     assert.deepEqual(await evaluate("[...document.querySelectorAll('#chart-activity [data-activity-key]')].map(row => row.dataset.activityKey)"), view.tracks);
     assert.equal(await evaluate("document.getElementById('chart-series-toggle-label').textContent"), 'Selected view');
     assert.equal(await evaluate("document.getElementById('chart-series-selected').textContent"), view.label);
+    assert.equal(await evaluate(`(() => {
+      const rows = [...document.querySelectorAll('#chart-activity [data-activity-key]')];
+      return rows.every(row => {
+        const fold = row.querySelector(':scope > details.activity-caption');
+        return fold && fold.querySelector(':scope > summary.activity-summary .activity-title')?.textContent.trim()
+          && fold.querySelector('.activity-description > p')?.textContent.trim()
+          && fold.querySelectorAll('.activity-description .activity-key-item').length > 0
+          && [...row.querySelectorAll('.mode-segment')].every(segment =>
+            [...fold.querySelectorAll('.activity-description .activity-key-swatch')].some(swatch =>
+              swatch.style.backgroundColor === segment.style.backgroundColor
+              && (swatch.dataset.pattern ?? '') === (segment.dataset.pattern ?? '')));
+      }) && !document.querySelector('.activity-key');
+    })()`), true, `${view.key}: every activity title unfolds its meaning and complete colour key`);
   }
   await choose('view', 'power');
   for (const [key, pattern] of [['property_power', 'solid'], ['outdoor_temperature', 'dashed'], ['outdoor_forecast', 'dash-dot'], ['all_in_price', 'dotted']])
@@ -372,9 +418,16 @@ try {
     await choose('view', view);
     for (const key of temperatures) await checkTemperatureCurve(key);
   }
+  await choose('view', 'hot_water');
+  assert.deepEqual(await evaluate("['dhwr','dhwr_active'].map(key=>document.querySelector('[data-activity-key='+key+'] .activity-title').textContent)"),
+    ['Hot-water circulation request','Hot-water circulation feedback'], 'Requested and reported circulation use equivalent labels');
+  assert.equal(await evaluate(`(() => {
+    const titles = ['dhwr','dhwr_active'].map(key=>getComputedStyle(document.querySelector('[data-activity-key='+key+'] .activity-title')));
+    return ['fontSize','fontWeight','color'].every(property=>titles[0][property]===titles[1][property]);
+  })()`), true, 'Requested and reported circulation share the same visual hierarchy');
   await choose('view', 'home_power');
-  assert.deepEqual(await evaluate("[...document.querySelectorAll('[data-activity-key=compressorHome] .activity-key-item')].map(item=>item.textContent)"),
-    ['Space heating', 'Hot water'], 'The combined Home compressor row explains its yellow and blue states beside the label');
+  assert.match(await evaluate("[...document.querySelectorAll('[data-activity-key=compressorHome] .activity-description .activity-key-item')].map(item=>item.textContent).join(' ')"),
+    /Space heating.*Hot water.*Stopped.*Routing unknown.*Unknown/, 'The Home compressor row explains all colours, hatching and blank intervals');
   for (const [value, color] of [[1, '--chart-compressor-space'], [2, '--chart-compressor-dhw']]) {
     assert.equal(await evaluate(`(() => {
       const segment=document.querySelector('[data-activity-key=compressorHome] [data-value="${value}"]');
@@ -383,23 +436,37 @@ try {
     })()`), true, `Compressor state ${value} uses its own explained color`);
   }
   if (!await shown('operatingMode')) await toggle('operatingMode');
-  await evaluate("document.querySelector('#operating-modes .activity-key summary').focus(); true"); await pressKey('Enter');
-  assert.equal(await evaluate("document.querySelector('#operating-modes .activity-key').open"), true, 'The pump-mode explanation opens from the keyboard');
-  assert.equal(await evaluate("document.querySelectorAll('#operating-modes .activity-key-item').length"), 5);
-  assert.match(await evaluate("document.querySelector('#operating-modes .activity-key').textContent"), /Protection or circulation may still operate/);
+  await evaluate("document.querySelector('#operating-modes .activity-caption summary').focus(); true"); await pressKey('Enter');
+  assert.equal(await evaluate("document.querySelector('#operating-modes .activity-caption').open"), true, 'The pump-mode explanation opens from the keyboard');
+  assert.equal(await evaluate("document.querySelectorAll('#operating-modes .activity-description .activity-key-item').length"), 6);
+  assert.match(await evaluate("document.querySelector('#operating-modes .activity-caption').textContent"), /Protection or circulation may still operate/);
   await toggle('outdoor_temperature');
-  assert.equal(await evaluate("document.querySelector('#operating-modes .activity-key').open"), true, 'Changing a series does not close a mode explanation being read');
+  assert.equal(await evaluate("document.querySelector('#operating-modes .activity-caption').open"), true, 'Changing a series does not close a mode explanation being read');
   await evaluate("document.querySelector('.history-panel').scrollIntoView({block:'start'}); true");
-  await capture('home-compressor-mode-key-dark');
-  await evaluate("document.querySelector('#operating-modes .activity-key summary').click(); true"); await settle();
+  await capture('home-compressor-activity-explanation-dark');
+  await choose('view', 'weather'); await choose('view', 'home_power');
+  assert.equal(await evaluate("document.querySelector('#operating-modes .activity-caption').open"), true,
+    'Returning to a view preserves the activity explanation being read');
+  const refreshedCursor = await evaluate(`(() => {
+    document.querySelector('[data-chart-key=outdoor_temperature]').click();
+    const track = document.querySelector('#operating-modes .mode-track'), r = track.getBoundingClientRect();
+    const point = {clientX:r.left+r.width*.47,clientY:r.top+r.height/2};
+    track.dispatchEvent(new PointerEvent('pointermove',{...point,pointerType:'mouse',pointerId:1,bubbles:true}));
+    return point.clientX;
+  })()`);
+  await settle();
+  await checkCursorSegments(refreshedCursor, 'A restored open title does not cancel a new cursor when its native toggle event arrives');
+  await evaluate("document.querySelector('#operating-modes .activity-caption summary').click(); true"); await settle();
   await choose('view', 'weather');
-  assert.equal(await evaluate("document.querySelector('[data-chart-key=solar_radiation] .chart-legend-swatch').dataset.pattern"), 'dashed');
+  assert.equal(await evaluate("document.querySelector('[data-chart-key=solar_radiation] .chart-legend-swatch').dataset.pattern"), 'solid');
   const solarPaths = await drawnPaths('solar_radiation');
   assert(solarPaths.some(path => path.path.some(command => command.method === 'lineTo')), 'Solar estimate draws recorded forecast evidence');
-  assert(solarPaths.some(path => JSON.stringify(path.dash) === '[6,4]' && path.path.some(command => command.method === 'lineTo')),
-    'Solar estimate uses a dashed canvas stroke alongside the same-color future forecast');
+  assert(solarPaths.some(path => path.dash.length === 0 && path.path.some(command => command.method === 'lineTo')),
+    'Solar estimate uses a solid canvas stroke alongside the same-colour future forecast');
   assert.equal(await evaluate("document.querySelector('[data-chart-key=solar_forecast] .chart-legend-swatch').dataset.pattern"), 'dash-dot',
     'Future solar forecast retains a distinct dash-dot stroke');
+  assert(solarPaths.some(path => JSON.stringify(path.dash) === '[8,3,2,3]' && path.path.some(command => command.method === 'lineTo')),
+    'Future solar forecast uses a dash-dot canvas stroke');
   await choose('view', 'phases');
   for (const prefix of ['property', 'ev1', 'ev2']) for (let phase = 1; phase <= 3; phase++) {
     const key = `${prefix}_current_l${phase}`;
@@ -555,35 +622,53 @@ try {
 
   await choose('view', 'power');
   await evaluate("document.querySelector('.history-panel').scrollIntoView({block:'start'}); true"); await settle();
-  const cursorPoint = await evaluate(`(() => {
-    const canvas = document.getElementById('history').getBoundingClientRect();
-    const track = document.querySelector('#operating-modes .mode-track').getBoundingClientRect();
-    return { x: track.left + track.width * .47, y: canvas.top + canvas.height * .45 };
+  const plotPoint = await evaluate(`(() => {
+    const r = document.getElementById('history').getBoundingClientRect();
+    return {x:r.left+r.width*.47,y:r.top+r.height*.45};
   })()`);
+  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...plotPoint }); await settle();
+  assert.equal(await cursorHidden(), true, 'Hovering the main plot does not activate the time cursor');
+  const cursorPoint = await bandPoint();
   await send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...cursorPoint }); await settle();
-  await until("document.querySelector('.chart-crosshair-extension')?.hidden === false");
-  const cursorBounds = await evaluate(`(() => {
-    const rect = node => { const r = node.getBoundingClientRect(); return {left:r.left,right:r.right,top:r.top,bottom:r.bottom}; };
-    const rows = [...document.querySelectorAll('#chart-activity .mode-history')].filter(row => !row.hidden);
-    const panel = document.querySelector('.history-panel'), cursor = document.querySelector('.chart-crosshair-extension');
-    return {cursor:rect(cursor),style:cursor.style.cssText,panel:rect(panel),scrollTop:panel.scrollTop,position:getComputedStyle(panel).position,offsetParent:cursor.offsetParent?.className,last:rect(rows.at(-1)),
-      track:rect(rows[0].querySelector('.mode-track')),legend:rect(document.querySelector('.chart-legend-panel'))};
-  })()`);
-  assert.equal(await evaluate(`(() => {
-    const cursor = document.querySelector('.chart-crosshair-extension').getBoundingClientRect();
-    const rows = [...document.querySelectorAll('#chart-activity .mode-history')].filter(row => !row.hidden);
-    const last = rows.at(-1).getBoundingClientRect(), track = rows[0].querySelector('.mode-track').getBoundingClientRect();
-    const legend = document.querySelector('.chart-legend-panel').getBoundingClientRect();
-    return Math.abs(cursor.left - ${cursorPoint.x}) < 2 && cursor.left >= track.left && cursor.right <= track.right
-      && Math.abs(cursor.bottom - last.bottom) < 2 && cursor.bottom <= legend.top;
-  })()`), true, `Crosshair remains inside the time axis and stops at the last active row: ${JSON.stringify(cursorBounds)}`);
-  await capture('power-dark-cursor');
-  const rowY = await evaluate("(() => { const rect = document.getElementById('dhwr-history').getBoundingClientRect(); return rect.top + rect.height / 2; })()");
-  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: cursorPoint.x, y: rowY }); await settle();
+  await checkCursorSegments(cursorPoint.x, 'Desktop band hover');
+  const beforeBandDrag = await viewportState();
+  await send('Input.dispatchMouseEvent', { type: 'mousePressed', button: 'left', buttons: 1, clickCount: 1, ...cursorPoint });
+  const dragged = await bandPoint(.71);
+  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', button: 'left', buttons: 1, x: dragged.x, y: dragged.y - 24 }); await settle();
+  await checkCursorSegments(dragged.x, 'Desktop drag beyond the originating band');
+  await send('Input.dispatchMouseEvent', { type: 'mouseReleased', button: 'left', buttons: 0, clickCount: 1, ...dragged }); await settle();
+  assert.deepEqual(await viewportState(), beforeBandDrag, 'Dragging a band changes neither the visible interval nor magnification');
+  const rowPoint = await bandPoint(.71, 'dhwr-history');
+  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...rowPoint }); await settle();
   assert.equal(await evaluate("document.querySelector('.chart-crosshair-readout').hidden"), false);
-  assert.match(await evaluate("document.querySelector('.chart-crosshair-readout').textContent"), /DHWR/);
-  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 2, y: rowY }); await settle();
-  assert.equal(await evaluate("document.querySelector('.chart-crosshair-extension').hidden"), true);
+  assert.match(await evaluate("document.querySelector('.chart-crosshair-readout').textContent"), /Hot-water circulation request/);
+  await capture('power-dark-cursor');
+  const captionPoint = await evaluate("(() => { const r=document.querySelector('#dhwr-history .activity-summary').getBoundingClientRect(); return {x:r.left+r.width*.71,y:r.top+r.height/2}; })()");
+  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...captionPoint }); await settle();
+  assert.equal(await cursorHidden(), true, 'Captions between bands do not activate the cursor');
+  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...plotPoint }); await settle();
+  assert.equal(await cursorHidden(), true, 'Returning to the main plot keeps its pointer free of the time cursor');
+  await evaluate("document.getElementById('chart-fullscreen').click(); true");
+  await until("document.querySelector('.history-panel').dataset.fullscreen === 'true'"); await settle();
+  await evaluate("document.getElementById('history').focus(); document.getElementById('history').dispatchEvent(new KeyboardEvent('keydown',{key:'+',bubbles:true})); true");
+  await until("document.querySelector('.chart-gesture-preview') === null");
+  const beforePlotDrag = await viewportState();
+  const dragPlot = await evaluate("(() => {const r=document.getElementById('history').getBoundingClientRect();return{x:r.left+r.width*.5,y:r.top+r.height*.5};})()");
+  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...dragPlot });
+  await send('Input.dispatchMouseEvent', { type: 'mousePressed', button: 'left', buttons: 1, clickCount: 1, ...dragPlot });
+  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', button: 'left', buttons: 1, x: dragPlot.x + 60, y: dragPlot.y });
+  await send('Input.dispatchMouseEvent', { type: 'mouseReleased', button: 'left', buttons: 0, clickCount: 1, x: dragPlot.x + 60, y: dragPlot.y }); await settle();
+  assert(Number((await viewportState()).from) < Number(beforePlotDrag.from), 'Dragging the main chart still moves the visible interval horizontally');
+  assert.equal(await cursorHidden(), true, 'Panning the main chart does not show a vertical cursor');
+  await until("document.querySelector('.chart-gesture-preview') === null");
+  const zoomBeforeBand = await viewportState(), zoomBand = await bandPoint(.47);
+  await send('Input.dispatchMouseEvent', { type: 'mousePressed', button: 'left', buttons: 1, clickCount: 1, ...zoomBand });
+  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', button: 'left', buttons: 1, x: zoomBand.x + 60, y: zoomBand.y });
+  await send('Input.dispatchMouseEvent', { type: 'mouseReleased', button: 'left', buttons: 0, clickCount: 1, x: zoomBand.x + 60, y: zoomBand.y }); await settle();
+  await checkCursorSegments(zoomBand.x + 60, 'Magnified desktop band drag');
+  await send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: zoomBand.x, y: zoomBand.y, deltaX: 80, deltaY: -200 }); await settle();
+  assert.deepEqual(await viewportState(), zoomBeforeBand, 'Dragging and wheel gestures on bands cannot pan or zoom a magnified chart');
+  await evaluate("document.getElementById('chart-fullscreen').click(); true"); await settle();
   await evaluate("document.getElementById('theme-toggle').click(); true"); await settle();
   await capture('power-light');
   await evaluate("document.getElementById('theme-toggle').click(); true");
@@ -592,13 +677,42 @@ try {
     await viewport(width, height, true);
     await evaluate("document.querySelector('.history-panel').scrollIntoView({block:'start'}); true"); await settle();
     await checkFits(`${width}px dashboard`);
+    await evaluate("document.querySelector('#operating-modes .mode-track').scrollIntoView({block:'center'}); true"); await settle();
+    const dashboardStart = await bandPoint(.35), dashboardEnd = await bandPoint(.6), dashboardView = await viewportState();
+    await send('Input.dispatchTouchEvent', {type:'touchStart',touchPoints:[{...dashboardStart,id:1}]});
+    await send('Input.dispatchTouchEvent', {type:'touchMove',touchPoints:[{...dashboardEnd,id:1}]});
+    await send('Input.dispatchTouchEvent', {type:'touchEnd',touchPoints:[]}); await settle();
+    await checkCursorSegments(dashboardEnd.x, `${width}px dashboard touch drag`);
+    assert.deepEqual(await viewportState(), dashboardView, `${width}px: dashboard band inspection keeps the whole selected interval`);
     await evaluate("document.getElementById('chart-fullscreen').click(); true");
     await until("document.querySelector('.history-panel').dataset.fullscreen === 'true'"); await settle();
     await checkFits(`${width}px fullscreen`);
+    assert.equal(await evaluate("[...document.querySelectorAll('.mode-history:not([hidden]) .activity-caption')].every(fold=>fold.open || fold.getBoundingClientRect().height<=24)"), true,
+      `${width}px: every closed activity title stays on one compact line`);
+    assert.equal(await evaluate("[...document.querySelectorAll('.activity-key-inline')].every(key=>!key.checkVisibility())"), true,
+      `${width}px: compact closed titles keep colour keys inside their folds`);
+    await evaluate("document.querySelector('#operating-modes .activity-summary').click(); true"); await settle();
+    assert.equal(await evaluate("document.querySelector('#operating-modes .activity-description .activity-key-items').checkVisibility()"), true,
+      `${width}px: opening the title reveals every colour and its explanation`);
+    await checkFits(`${width}px expanded activity explanation`);
+    await capture(`mobile-${width}-activity-explanation-dark`);
+    await evaluate("document.querySelector('#operating-modes .activity-summary').click(); true"); await settle();
     const point = await evaluate("(() => { const r = document.getElementById('history').getBoundingClientRect(); return {x:r.left+r.width*.48,y:r.top+r.height*.45}; })()");
     await send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ ...point, id: 1 }] });
     await send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] }); await settle();
-    assert.equal(await evaluate("document.querySelector('.chart-crosshair-extension').hidden"), false, `${width}px fullscreen: a tap keeps the time cursor visible`);
+    assert.equal(await cursorHidden(), true, `${width}px: tapping the main plot does not show a time cursor`);
+    const touchBand = await bandPoint(.35), touchEnd = await bandPoint(.65), beforeTouch = await viewportState();
+    await send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ ...touchBand, id: 1 }] });
+    await send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x:touchEnd.x,y:touchEnd.y-20,id:1 }] }); await settle();
+    await checkCursorSegments(touchEnd.x, `${width}px touch drag outside the originating band`);
+    await send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] }); await settle();
+    await checkCursorSegments(touchEnd.x, `${width}px touch release retains the inspected time`);
+    assert.deepEqual(await viewportState(), beforeTouch, `${width}px: a band drag changes neither magnification nor time range`);
+    const pinchLeft = await bandPoint(.3), pinchRight = await bandPoint(.7);
+    await send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{...touchBand,id:1},{...touchEnd,id:2}] });
+    await send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{...pinchLeft,id:1},{...pinchRight,id:2}] });
+    await send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] }); await settle();
+    assert.deepEqual(await viewportState(), beforeTouch, `${width}px: two fingers on a band cannot zoom or pan the chart`);
     await capture(`mobile-${width}-dark`);
     await evaluate("document.getElementById('history').focus(); document.getElementById('history').dispatchEvent(new KeyboardEvent('keydown', {key:'+',bubbles:true})); true");
     assert.equal(await evaluate("document.querySelector('.chart-crosshair-extension').hidden"), true, 'Keyboard zoom clears the old time cursor before gesture capture');
@@ -653,7 +767,7 @@ try {
   await checkPickerFits('Phone with a short available viewport');
   await capture('picker-short-phone'); await pressKey('Escape');
   assert.deepEqual(errors, [], 'All view selections and cursor interactions have no uncaught browser exceptions');
-  console.log(`Chart views browser checks passed: ${CHART_VIEWS.length} named views, ${EXPLORER_SERIES.length} searchable explorer choices, unified view/series browsing without chart changes, separate searches, centered modal keyboard/touch/focus, periodic temperature Bézier geometry, solar estimate dash, charger phase fills, visibility isolation, garage readback, crosshair bounds and touch, dark/light themes, and 320/390px fullscreen layouts.`);
+  console.log(`Chart views browser checks passed: ${CHART_VIEWS.length} named views, ${EXPLORER_SERIES.length} searchable explorer choices, unified view/series browsing without chart changes, separate searches, centered modal keyboard/touch/focus, periodic temperature Bézier geometry, solid solar history and dash-dot forecast, charger phase fills, visibility isolation, garage readback, crosshair bounds and touch, dark/light themes, and 320/390px fullscreen layouts.`);
   console.log(`Screenshots: ${screenshots.join(', ')}`);
 } finally {
   socket?.close(); for (const request of pending.values()) clearTimeout(request.timer);

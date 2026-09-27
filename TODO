@@ -1,6 +1,32 @@
 -Make README.md better and more descriptive of the app, especially the beginning of it
 -Implement support for local mqtt-based temperature receives (eg, from shelly or HASS through Meteorologisk Institute); just store last received temp values and time stamps (maybe in storage class, see below) when received (and accept if received within 1h)
 
+Completed 2026-09-27 — Chart inspection and activity explanations
+- Draw historical solar estimates as solid lines and future forecasts as dash-dot.
+  Keep right-axis temperature and price conventions, original evidence and
+  independent forecast visibility unchanged.
+- Move the shared time cursor by hovering or dragging indicator strips, including
+  touch outside fullscreen. Capture the pointer and clip separate cursor segments
+  to the plot and each visible strip. Preserve plot zoom/pan and page scrolling
+  outside strips; remove plot-triggered cursors and the old tap-only restriction.
+- Replace the separate Mode key with one compact native title fold on every row.
+  Explain all colours, stopped states, unknown hatching and blank intervals. Show
+  compact keys on wide layouts and keep them inside the folds on phones. Preserve
+  open folds and keyboard focus across redraws without cancelling active scrubs.
+- Use matching Hot-water circulation request / feedback labels, colours and
+  presentation while keeping requested duration separate from observed operation.
+  Remove superseded captions, cursor continuation and disclosure styles; retain
+  current chart preferences and payload contracts without compatibility aliases.
+- Validation: 117 focused chart tests pass, production build passes with the
+  existing bundle-size warning, and Chrome checks pass all 43 named views and
+  124 searchable series, mouse/touch scrubbing, gesture isolation, fold refresh,
+  both themes and 320/390 px layouts. Desktop, phone, open-fold and segmented
+  cursor screenshots reviewed. Synthetic fixtures only; no household access.
+- Firefox's broader chart-only sweep stops at its existing recording-fixture
+  assertion: direct-store circulation samples report Unregistered writer rather
+  than Every report. That suite remains incomplete; no fixture-policy change is
+  included in this UI task.
+
 Completed 2026-09-27 — Compact BMW targets and ready-by time chooser
 - Remove the BMW conflict textbox and redundant full-charge shortcut. Color the
   effective held BMW target with the attention color, retaining source/report
