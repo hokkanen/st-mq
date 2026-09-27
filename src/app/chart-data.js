@@ -13,7 +13,7 @@ import { createHistoricalPricing } from './chart-prices.js';
 import { historicalSpotIntervals } from './historical-spot-prices.js';
 import { resolveMarketIntervals } from '../domain/market-authority.js';
 import { auxiliaryPowerFromOutput } from '../domain/telemetry.js';
-import { HISTORY_AXIS_BY_KEY, CARAVAN_RUNNING_STATES, GARAGE_INPUT_INFO, GARAGE_COEFFICIENT_INFO, ENERGY_SIGNALS, AUDIT_SIGNALS, COUNTER_SIGNALS, SESSION_CHECK_INFO, MODEL_INPUT_INFO, MODEL_COEFFICIENT_INFO, RECORDED_EVIDENCE_SIGNALS } from '../domain/history-series.js';
+import { HISTORY_AXIS_BY_KEY, CARAVAN_RUNNING_STATES, GARAGE_INPUT_INFO, GARAGE_COEFFICIENT_INFO, GARAGE_OUTCOME_INFO, ENERGY_SIGNALS, AUDIT_SIGNALS, COUNTER_SIGNALS, SESSION_CHECK_INFO, MODEL_INPUT_INFO, MODEL_COEFFICIENT_INFO, RECORDED_EVIDENCE_SIGNALS } from '../domain/history-series.js';
 import { addChargingSessionChecks } from './chart-session-checks.js';
 import { addModelInputs } from './chart-model-inputs.js';
 import { addModelCoefficients } from './chart-model-coefficients.js';
@@ -460,7 +460,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
   let telemetry = new Map(), previousTelemetryAt = null;
   const learningMetadata = {};
   const requested = new Set(projecting && _priceProjection ? ['spot_price']
-    : [...names.filter(name => !Object.hasOwn(GARAGE_INPUT_INFO, name) && !Object.hasOwn(GARAGE_COEFFICIENT_INFO, name) && !Object.hasOwn(MODEL_INPUT_INFO, name) && !Object.hasOwn(MODEL_COEFFICIENT_INFO, name) && !Object.hasOwn(SESSION_CHECK_INFO, name) && !AUDIT_SIGNALS.includes(name) && !FIREWOOD_OUTCOME_NAMES.includes(name) && !['caravan_energy', 'caravan_power', 'property_power', 'charger2_power', 'heat_pump_power', 'outdoor_forecast', 'solar_forecast', 'all_in_price', ...ENERGY_SIGNALS].includes(name)),
+    : [...names.filter(name => !Object.hasOwn(GARAGE_INPUT_INFO, name) && !Object.hasOwn(GARAGE_COEFFICIENT_INFO, name) && !Object.hasOwn(GARAGE_OUTCOME_INFO, name) && !Object.hasOwn(MODEL_INPUT_INFO, name) && !Object.hasOwn(MODEL_COEFFICIENT_INFO, name) && !Object.hasOwn(SESSION_CHECK_INFO, name) && !AUDIT_SIGNALS.includes(name) && !FIREWOOD_OUTCOME_NAMES.includes(name) && !['caravan_energy', 'caravan_power', 'property_power', 'charger2_power', 'heat_pump_power', 'outdoor_forecast', 'solar_forecast', 'all_in_price', ...ENERGY_SIGNALS].includes(name)),
       ...(aggregatePower ? PHASES : []),
       ...(!projecting ? ['garage_compressor_active', 'spot_price', 'requested_heat_mode', 'auxiliary_output', ...H66_SIGNALS] : []),
       ...(names.includes('auxiliary_power') ? ['auxiliary_output'] : [])]);
@@ -815,7 +815,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
   const chargingSessions = addChargingSessionChecks({ store, range, now, envelopes });
   const modelInputs = addModelInputs({ store, range, now, input, envelopes,
     indoorLine: detail ? lines.model_indoor_temperature : undefined });
-  const garageHistory = addGarageHistory({ store, range, now, input, envelopes });
+  const garageHistory = addGarageHistory({ store, range, now, input, envelopes, referenceRange: detail ? selection : range });
   const modelCoefficients = addModelCoefficients({ store, range, now, input, envelopes });
   const fireplaceInputs = addFireplaceInputs({ store, range, now, input, envelopes, shading });
   const needsFirewood = !detail || selectedHas(FIREWOOD_OUTCOME_NAMES);

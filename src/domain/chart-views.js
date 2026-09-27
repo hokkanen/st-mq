@@ -5,11 +5,12 @@ import { MODEL_COEFFICIENT_INFO, PHASE_ENERGY_SIGNALS } from './history-series.j
 const home = ['model_indoor_temperature', 'indoor_temperature', 'bedroom_temperature', 'downstairs_temperature', 'outdoor_temperature', 'outdoor_forecast'];
 const garage = ['garage_temperature', 'garage_temperature_2', 'garage_native_indoor_temperature', 'outdoor_temperature', 'outdoor_forecast'];
 const property = ['model_indoor_temperature', 'garage_temperature', 'outdoor_temperature', 'outdoor_forecast'];
-const homeRows = ['operatingMode', 'compressorHome', 'heatOff', 'dhwr', 'fireplace'];
+const homeRows = ['controller_phase', 'operatingMode', 'compressorHome', 'dhwr_active', 'fireplace'];
 const garageRows = ['garage_model_managed_pause', 'garage_model_available', 'compressorGarage', 'garage_door1_open', 'garage_door2_open', 'garage_native_defrost'];
 const water = ['supply_temperature', 'return_temperature', 'heating_setpoint', 'maximum_supply_setting'];
 const saved = ['model_indoor_temperature', 'model_outdoor_temperature', 'model_target_temperature'];
 const savedGarage = ['garage_model_rear', 'garage_model_front', 'garage_model_outdoor'];
+const savedGarageRows = ['garage_model_managed_pause', 'garage_model_available'];
 const views = [];
 function view(key, label, group, description, unit, leftSignals, rightSignals, tracks = [], show = [], extra = {}) {
   const keys = [...leftSignals, ...rightSignals, ...tracks];
@@ -19,25 +20,26 @@ function view(key, label, group, description, unit, leftSignals, rightSignals, t
 }
 view('power', 'Electrical power', 'Electricity', 'Compare property demand with charging and estimated heating loads.', 'kW',
   ['property_power', 'charger_power', 'charger2_power', 'heat_pump_power', 'auxiliary_power'], property, homeRows,
-  ['property_power', 'charger_power', 'charger2_power', 'model_indoor_temperature', 'outdoor_temperature', 'outdoor_forecast', 'operatingMode', 'dhwr', 'fireplace'], { stackPower: true });
+  ['property_power', 'charger_power', 'charger2_power', 'model_indoor_temperature', 'outdoor_temperature', 'outdoor_forecast', ...homeRows], { stackPower: true });
 view('phases', 'Phase loading', 'Electricity', 'Compare property phase currents with charger fills stacked separately for each phase. Reconstructed currents are interval averages.', 'A',
   ['property', 'ev1', 'ev2'].flatMap(prefix => [1, 2, 3].map(phase => `${prefix}_current_l${phase}`)), property, [],
   ['property_current_l1', 'property_current_l2', 'property_current_l3'], { stackPhases: true });
 view('session_checks', 'Charging session checks', 'Electricity', 'Final meter readings for completed sessions; inspect a point for its reconstruction and difference.', 'kWh / session',
   ['ev1_session_energy_check', 'shelly_session_energy_check'], property, [], ['ev1_session_energy_check', 'shelly_session_energy_check']);
 view('temperatures', 'Property temperatures', 'Temperatures & weather', 'Compare the three home rooms and both garage probes on one temperature scale.', '', [],
-  ['indoor_temperature', 'bedroom_temperature', 'downstairs_temperature', ...property, 'garage_temperature_2', 'caravan_temperature'], ['operatingMode', 'fireplace', ...garageRows],
-  ['indoor_temperature', 'bedroom_temperature', 'downstairs_temperature', 'garage_temperature', 'garage_temperature_2']);
+  ['indoor_temperature', 'bedroom_temperature', 'downstairs_temperature', ...property, 'garage_temperature_2', 'caravan_temperature'],
+  ['controller_phase', 'operatingMode', 'compressorHome', 'fireplace', ...garageRows.filter(key => key !== 'garage_model_managed_pause')],
+  ['indoor_temperature', 'bedroom_temperature', 'downstairs_temperature', 'garage_temperature', 'garage_temperature_2', 'controller_phase', 'compressorHome']);
 view('home_temperatures', 'Home temperatures & comfort', 'Temperatures & weather', 'Compare rooms with the saved indoor average and comfort reference.', '', [],
   [...home, 'model_target_temperature', 'learning_indoor_temperature'], homeRows,
-  ['indoor_temperature', 'bedroom_temperature', 'downstairs_temperature', 'model_indoor_temperature', 'model_target_temperature', 'fireplace']);
+  ['indoor_temperature', 'bedroom_temperature', 'downstairs_temperature', 'model_indoor_temperature', 'model_target_temperature', ...homeRows]);
 view('weather', 'Outdoor conditions & sunshine', 'Temperatures & weather', 'Outdoor temperature, historical solar estimates and the future solar forecast. Solar values come from weather models, not a radiation sensor.', 'W/m²',
   ['solar_radiation', 'solar_forecast'], ['outdoor_temperature', 'outdoor_forecast', 'model_indoor_temperature'], [],
   ['solar_radiation', 'solar_forecast', 'outdoor_temperature', 'outdoor_forecast']);
 view('home_power', 'Heat-pump electricity', 'Home heating', 'The whole heat-pump estimate includes auxiliary heating. Compare the component without adding it to the total.', 'kW',
-  ['heat_pump_power', 'auxiliary_power'], home, homeRows, ['heat_pump_power', 'auxiliary_power', 'model_indoor_temperature', 'compressorHome']);
+  ['heat_pump_power', 'auxiliary_power'], home, homeRows, ['heat_pump_power', 'auxiliary_power', 'model_indoor_temperature', ...homeRows]);
 view('heating_water', 'Heating water & demand', 'Home heating', 'Supply, return and target temperatures explain the heating integral. Hide the integral for a temperature-only view.', '°min',
-  ['heating_integral'], water, homeRows, ['heating_integral', 'supply_temperature', 'return_temperature', 'heating_setpoint', 'compressorHome', 'heatOff']);
+  ['heating_integral'], water, homeRows, ['heating_integral', 'supply_temperature', 'return_temperature', 'heating_setpoint', ...homeRows]);
 view('hot_water', 'Hot water & circulation', 'Home heating', 'Tank temperature and switching thresholds, with circulation requests distinct from reported operation.', '', [],
   ['dhw_temperature', 'dhw_start_setting', 'dhw_stop_setting'], ['compressorHome', 'dhwr', 'dhwr_active', 'dhw_routing', 'operatingMode'],
   ['dhw_temperature', 'dhw_start_setting', 'dhw_stop_setting', 'compressorHome', 'dhwr', 'dhwr_active']);
@@ -48,9 +50,9 @@ view('circulation', 'Circulation-pump speeds', 'Home heating', 'Compare reported
 view('auxiliary', 'Auxiliary output', 'Home heating', 'Reported heater output alongside heating-water temperature and operating mode.', '%',
   ['auxiliary_output'], water, ['operatingMode', 'compressorHome'], ['auxiliary_output', 'supply_temperature', 'heating_setpoint', 'operatingMode']);
 view('control', 'Control requests & operation', 'Home controls & diagnostics', 'Inspect requests and equipment readback separately. A requested reduction does not prove that the compressor stopped.', '', [], home,
-  ['controller_phase', 'operatingMode', 'compressorHome', 'heating_pump_active', 'dhwr', 'dhwr_active', 'heat_savings_active',
+  ['controller_phase', 'heating_pump_active', 'operatingMode', 'compressorHome', 'dhwr', 'dhwr_active', 'heat_savings_active',
     'floor_living_0_active', 'floor_living_1_active', 'floor_storage_0_active', 'floor_storage_1_active', 'alarm_active'],
-  ['model_indoor_temperature', 'controller_phase', 'operatingMode', 'compressorHome']);
+  ['model_indoor_temperature', 'controller_phase', 'heating_pump_active', 'operatingMode', 'compressorHome']);
 view('settings', 'Temperature settings', 'Home controls & diagnostics', 'Recorded temperature settings, shown as smooth curves. Interpolation is for display; settings change at their recorded times.', '', [],
   ['room_setting', 'heating_curve', 'maximum_supply_setting', 'heat_stop_setting', 'tariff_reduction_setting', 'dhw_start_setting', 'dhw_stop_setting'], ['operatingMode'],
   ['room_setting', 'heating_curve', 'maximum_supply_setting']);
@@ -71,19 +73,25 @@ view('firewood', 'Firewood additions', 'Fireplace', 'Manually recorded fuel addi
 view('fireplace_release', 'Modeled fireplace release', 'Fireplace', 'Delayed fuel-equivalent release from corrected additions. This is a model input, not measured heat output.', 'kg/h', ['model_fireplace_release'], home, ['fireplace'], ['model_fireplace_release', 'model_indoor_temperature', 'fireplace']);
 view('fireplace_energy', 'Firewood electricity avoided', 'Fireplace', 'Retrospective daily model estimates of electricity avoided. Inspect points for evidence and provisional status.', 'kWh/day', ['firewood_electricity_avoided'], home, [], ['firewood_electricity_avoided']);
 view('fireplace_cost', 'Firewood electricity cost avoided', 'Fireplace', 'Retrospective daily model estimates with wood cost set to zero. These are distinct from timing comparisons.', '€/day', ['firewood_savings'], home, [], ['firewood_savings']);
-view('learning_temperatures', 'Saved temperatures & reference', 'Home learning', 'The original temperatures and reference supplied to completed learning intervals.', '', [], saved, ['model_controller_phase', 'model_valve_override'], saved);
+view('learning_temperatures', 'Saved temperatures & control', 'Home learning', 'Original indoor, outdoor and comfort-reference inputs with saved control phase and valve feedback. Optional ROOM boost is a requested temperature increase, not measured warming.', 'Δ°C', ['model_room_boost'], saved,
+  ['model_controller_phase', 'model_valve_override'], [...saved, 'model_controller_phase', 'model_valve_override']);
 view('learning_heat', 'Saved hydronic heat input', 'Home learning', 'Saved estimated thermal input from compressor and auxiliary heating together. This is not electrical power or metered heat.', 'kW thermal', ['model_hydronic_heat'], saved, ['model_controller_phase', 'model_valve_override'], ['model_hydronic_heat', 'model_indoor_temperature']);
-view('learning_auxiliary', 'Saved auxiliary electricity', 'Home learning', 'Auxiliary electrical input attributed to space heating in the saved interval.', 'kW', ['model_auxiliary_power'], saved, ['model_controller_phase'], ['model_auxiliary_power']);
 view('learning_duty', 'Saved compressor duty', 'Home learning', 'The fraction of each saved interval attributed to compressor space heating.', '%', ['model_compressor_duty'], saved, ['model_controller_phase'], ['model_compressor_duty']);
 view('learning_solar', 'Saved solar input', 'Home learning', 'Forecast radiation available before the learning interval began; later forecasts do not replace this evidence.', 'W/m²', ['model_solar_radiation'], saved, [], ['model_solar_radiation']);
-view('learning_treatment', 'Saved control treatment', 'Home learning', 'Saved ROOM boost and control phase describe requests, not measured warming or compressor activity.', 'Δ°C', ['model_room_boost'], saved, ['model_controller_phase', 'model_valve_override'], ['model_room_boost', 'model_controller_phase', 'model_valve_override']);
 for (const [key, info] of Object.entries(MODEL_COEFFICIENT_INFO)) view(key, info.label, 'Home coefficients', info.detail, info.unit, [key], saved, [], [key]);
-view('learning_benefit', 'Assessed heating-cycle benefit', 'Home outcomes', 'Saved benefit assessments, distinguishing cycles that included auxiliary recovery.', '€/cycle', ['learning_profit', 'learning_aux_profit'], saved, [], ['learning_profit', 'learning_aux_profit']);
-view('learning_error', 'Recovery-cost prediction error', 'Home outcomes', 'Recorded recovery-cost prediction error. Missing eligible assessments remain gaps.', '€/cycle', ['learning_recovery_error'], saved, [], ['learning_recovery_error']);
-view('garage_temperatures', 'Garage saved temperatures', 'Garage learning', 'Original normalized rear, front and outdoor inputs with their saved front–rear difference.', 'Δ°C', ['garage_model_difference'], savedGarage, ['garage_model_available'], ['garage_model_difference', ...savedGarage]);
-view('garage_activity', 'Garage saved activity', 'Garage learning', 'Compressor and charger activity fractions from saved intervals; these are not electrical power.', 'fraction', ['garage_model_activity', 'garage_model_ev1_active', 'garage_model_ev2_active'], savedGarage, ['garage_model_available'], ['garage_model_activity', 'garage_model_ev1_active', 'garage_model_ev2_active']);
-view('garage_cooling', 'Garage cooling coefficients', 'Garage learning', 'Compare replayed front and rear cooling rates. Initial, fitted and retained values remain distinct.', '1/h', ['garage_coefficient_rear_coolingPerHour', 'garage_coefficient_front_coolingPerHour'], savedGarage, [], ['garage_coefficient_rear_coolingPerHour', 'garage_coefficient_front_coolingPerHour']);
-view('garage_electricity_model', 'Garage normal-electricity model', 'Garage learning', 'Replayed normal electrical input, with its observed or initial evidence shown on inspection.', 'kW', ['garage_coefficient_native_normalPowerKw'], savedGarage, [], ['garage_coefficient_native_normalPowerKw']);
+view('learning_benefit', 'Assessed heating-cycle benefit', 'Home outcomes', 'Saved rolling mean benefit per completed heating cycle, separating cycles with auxiliary recovery. These estimates are not individual cycle totals or metered savings.', '€/cycle', ['learning_profit', 'learning_aux_profit'], saved, [], ['learning_profit', 'learning_aux_profit']);
+view('learning_error', 'Recovery-cost prediction error', 'Home outcomes', 'Saved rolling mean absolute recovery-cost prediction error; lower is better. Missing eligible assessments remain gaps.', '€/cycle', ['learning_recovery_error'], saved, [], ['learning_recovery_error']);
+view('garage_temperatures', 'Garage saved temperatures', 'Garage learning', 'Original normalized rear, front and outdoor inputs with their saved front–rear difference and pause context.', 'Δ°C', ['garage_model_difference'], savedGarage, savedGarageRows, ['garage_model_difference', ...savedGarage, ...savedGarageRows]);
+view('garage_activity', 'Garage saved activity', 'Garage learning', 'Compressor and charger activity fractions from saved intervals; these are not electrical power. Compare qualified kW separately in Garage electrical inputs.', 'fraction', ['garage_model_activity', 'garage_model_ev1_active', 'garage_model_ev2_active'], savedGarage, savedGarageRows, ['garage_model_activity', 'garage_model_ev1_active', 'garage_model_ev2_active', ...savedGarageRows]);
+view('garage_cooling', 'Garage cooling coefficients', 'Garage coefficients', 'Compare replayed front and rear cooling rates. Initial, fitted and retained values remain distinct.', '1/h', ['garage_coefficient_rear_coolingPerHour', 'garage_coefficient_front_coolingPerHour'], savedGarage, [], ['garage_coefficient_rear_coolingPerHour', 'garage_coefficient_front_coolingPerHour']);
+view('garage_electricity_model', 'Garage normal-electricity model', 'Garage coefficients', 'Replayed normal electrical input, with its observed or initial evidence shown on inspection.', 'kW', ['garage_coefficient_native_normalPowerKw'], savedGarage, [], ['garage_coefficient_native_normalPowerKw']);
+view('garage_references', 'Garage normal warmth references', 'Garage outcomes', 'Compare achieved normal-heating references with the original protection inputs. References are reconstructed with current corrections; missing qualified learning stays unknown.', '', [],
+  ['garage_outcome_rear_reference', 'garage_outcome_front_reference', ...savedGarage], savedGarageRows,
+  ['garage_outcome_rear_reference', 'garage_outcome_front_reference', 'garage_model_rear', 'garage_model_front']);
+view('garage_error', 'Garage cooling prediction error', 'Garage outcomes', 'Rolling RMSE of clean held-out OFF forecasts for rear and front, including failed checks; lower is better. Forecasts were frozen before each episode and use observed outdoor conditions. This does not measure weather-forecast accuracy.', 'Δ°C',
+  ['garage_outcome_rear_error', 'garage_outcome_front_error'], savedGarage, [], ['garage_outcome_rear_error', 'garage_outcome_front_error']);
+view('garage_benefit', 'Garage assessed pause benefit', 'Garage outcomes', 'One provisional estimate per completed pause and recovery, compared with its frozen normal-heating reference. Points appear at completion; missing assessments remain absent. These are not metered savings or the Home rolling mean.', '€/episode',
+  ['garage_outcome_benefit'], savedGarage, [], ['garage_outcome_benefit']);
 view('interval_energy', 'Recording-interval energy', 'Recorded evidence', 'Original energy intervals, not fixed-period totals. Charger 2 phase allocations are alternatives to its authoritative total. Garage electricity retains its qualified dedicated-meter basis.', 'kWh / interval', [...PHASE_ENERGY_SIGNALS, 'ev2_energy', 'caravan_energy', 'garage_energy'], [], [], ['property_energy_l1', 'property_energy_l2', 'property_energy_l3', 'ev2_energy']);
 view('meter_counter', 'Property meter counter', 'Recorded evidence', 'A cumulative diagnostic meter reading. It does not correct recorded energy or describe period consumption.', 'kWh cumulative', ['property_import_energy_counter'], [], [], ['property_import_energy_counter']);
 

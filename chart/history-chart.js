@@ -23,7 +23,7 @@ const datedYear = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki'
 const paletteVariables = {
   text: '--text', muted: '--muted', border: '--border', grid: '--grid',
   property: '--chart-property', ev: '--chart-ev', ev2: '--chart-ev2', phase1: '--chart-phase-1', phase2: '--chart-phase-2', phase3: '--chart-phase-3',
-  indoor: '--chart-indoor', upstairs: '--chart-upstairs', downstairs: '--chart-downstairs', bedroom: '--chart-bedroom', garage: '--chart-garage', outdoor: '--chart-outdoor', integral: '--chart-integral', price: '--chart-price', spot: '--chart-spot',
+  indoor: '--chart-indoor', upstairs: '--chart-upstairs', downstairs: '--chart-downstairs', bedroom: '--chart-bedroom', garage: '--chart-garage', caravan: '--chart-caravan', outdoor: '--chart-outdoor', integral: '--chart-integral', price: '--chart-price', spot: '--chart-spot',
   heatOff: '--chart-heat-off', auxiliary: '--chart-auxiliary', compressorSpace: '--chart-compressor-space', compressorDhw: '--chart-compressor-dhw', dhwr: '--chart-dhwr', learning: '--chart-learning', solar: '--chart-solar',
   firewood: '--chart-firewood', fireplace: '--chart-fireplace',
   reference: '--chart-reference', garageFront: '--chart-garage-front', garagePump: '--chart-garage-pump', supply: '--chart-supply', return: '--chart-return', brineIn: '--chart-brine-in', brineOut: '--chart-brine-out',
@@ -175,6 +175,8 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     } catch { return false; /* Charts remain usable when storage is unavailable. */ }
   }
   function renderLegend(datasets, view, visibility) {
+    const legend = $('chart-legend');
+    const scrollTop = legend.dataset.viewKey === view.key ? legend.scrollTop : 0;
     const groups = ['left', 'right', 'activity'].map(axis => {
       const group = document.createElement('div'); group.className = 'chart-legend-group'; group.dataset.axis = axis;
       const label = document.createElement('span'); label.className = 'chart-legend-axis';
@@ -188,7 +190,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
       const swatch = document.createElement('span'); swatch.className = 'chart-legend-swatch'; swatch.dataset.kind = kind;
       swatch.dataset.pattern = dash.length > 2 ? 'dash-dot' : dash[0] === 1 ? 'dotted' : dash.length ? 'dashed' : 'solid';
       swatch.style.color = swatchColor;
-      swatch.style.backgroundColor = ['audit', 'session', 'interval-energy'].includes(kind) ? 'transparent'
+      swatch.style.backgroundColor = ['audit', 'session', 'episode', 'interval-energy'].includes(kind) ? 'transparent'
         : kind === 'fill' ? color(swatchColor).alpha(0.4).rgbString() : swatchColor;
       swatch.style.borderColor = swatchColor; swatch.setAttribute('aria-hidden', 'true');
       button.append(swatch, document.createTextNode(label));
@@ -209,8 +211,12 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     const save = document.createElement('button'); save.type = 'button'; save.className = 'chart-legend-save'; save.textContent = 'Save view';
     save.title = 'Save the selected view, series visibility and price choices in this browser';
     save.addEventListener('click', () => { save.textContent = savePreferences() ? 'View saved' : 'Could not save'; });
-    $('chart-legend').replaceChildren(...groups.filter(group => group.children.length > 1));
+    legend.replaceChildren(...groups.filter(group => group.children.length > 1));
     $('chart-legend-actions').replaceChildren(reset, save);
+    // Replacing the scrolling children resets the browser's scroll anchor.
+    // Keep the same place for toggles and refreshes; a different view starts at top.
+    legend.dataset.viewKey = view.key;
+    legend.scrollTop = scrollTop;
   }
   function renderTiming() {
     timing.render(overview);
@@ -307,8 +313,12 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     if (keys.includes('solar_radiation')) notes.push('Solar estimate is the latest valid weather estimate known at each historical time, not a solar sensor reading. Later forecast revisions do not replace it. The future Solar forecast remains separate.');
     if (keys.some(key => ['charger_power', 'charger2_power'].includes(key))) notes.push('Translucent fills show the two chargers, stacked only where their recorded intervals overlap. Tooltips show each charger’s own power. Auxiliary and whole heat-pump estimates are separate lines; the whole estimate includes auxiliary.');
     if (keys.includes('garage_native_indoor_temperature')) notes.push('Pump interpreted indoor temperature is native readback after the pump’s sensing or external-temperature processing; it is not an independent protection probe.');
-    if (chartView.tracks.includes('garage_model_available')) notes.push('Garage pump power is fresh native on/off readback captured in saved garage inputs. Managed heating pause identifies savings or timed-off control at those sample times; it does not establish measured savings. These sampled rows are separate from compressor activity and cannot establish every transition between reports.');
+    if (chartView.tracks.includes('garage_model_available')) notes.push('Garage pump power is fresh native on/off readback captured in saved garage inputs. Sampled rows are separate from compressor activity and cannot establish every transition between reports.');
+    if (chartView.tracks.includes('garage_model_managed_pause')) notes.push('Managed heating pause identifies savings or timed-off control at the saved sample times; it does not establish measured savings.');
     if (keys.some(key => key.startsWith('model_') || key.startsWith('garage_model_'))) notes.push('Saved learning inputs retain the original interval evidence. Quality eligibility does not establish that a model fit used a point. Coefficients replay the supported journal and correction context; they are not a promise of the model’s original operational state.');
+    if (chartView.key === 'learning_heat') notes.push('The combined thermal estimate includes compressor and auxiliary heat. The separate saved auxiliary electrical input remains available in All series as Space-heating auxiliary input.');
+    if (keys.some(key => /^garage_outcome_(rear|front)_/.test(key))) notes.push('Normal warmth references and cooling errors are reconstructed from the supported Garage learning journal with current corrections. They describe model results, not extra temperature measurements. References appear only after qualified normal-heating observations; error values require held-out episodes.');
+    if (keys.includes('garage_outcome_benefit')) notes.push('Each hollow point is a completed pause-and-recovery assessment against its frozen normal-heating reference. Inspect it for uncertainty, actual/reference cost estimates and the electricity basis. Positive values mean estimated benefit; negative values mean estimated extra cost. All Garage money remains provisional.');
     if (keys.some(key => ENERGY_SIGNALS.includes(key) || key === 'garage_energy')) notes.push('Energy points describe the original recording intervals, which can have different durations. Do not compare them as equal-period totals.');
     if (keys.includes('caravan_power')) notes.push('Caravan power is measured meter energy divided by its original interval duration. It shows average electrical load, not instantaneous peaks; original energy readings remain in Series explorer.');
     if (datasets.some(dataset => ['audit', 'session', 'interval-energy'].includes(dataset.kind))) notes.push('Hollow circles mark individual recorded readings or interval totals. Hover or tap a point in fullscreen to inspect its value and original time; gaps do not imply a zero reading.');

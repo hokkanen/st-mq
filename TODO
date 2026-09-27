@@ -1080,3 +1080,37 @@ Completed 2026-09-25 — Comprehensive recording contract and inventory audit
   passed 26 tests. Evidence: docs/audit/RECORDING-CONTRACT-2026-09.md.
   Synthetic fixtures only; no household configuration, database or device used.
   The owner authorized merging after validation; no deployment or push.
+
+Completed 2026-09-27 — Chart activity, palette and learning balance
+- Put requested controller phase first and circulation feedback fourth in shared
+  Home power/temperature/water activities, removing tariff and circulation
+  request rows there. Add phase/compressor to property temperatures, remove its
+  managed Garage pause, and put heating-pump activity second in control checks.
+- Separate Caravan temperature from Garage with consistent cyan; use darker rear
+  and lighter front Garage temperatures in both themes. Caravan electrical load
+  uses the property-power colour.
+- Reassess all learning comparisons: Home has ten curated input/coefficient/
+  outcome views, Garage seven plus its existing electrical-input comparison.
+  Fold Home control treatment into saved temperatures; retain saved auxiliary
+  electricity in All series instead of a duplicate curated diagnostic.
+- Give Garage coefficient and outcome groups equal prominence. Add achieved
+  normal warmth references, held-out OFF forecast RMSE and provisional completed
+  pause/recovery benefit, with evidence, uncertainty and clear distinct units.
+- Reuse current Garage journal replay and compact frozen cycle assessments.
+  Preserve source isolation, corrections, missing evidence, negative/zero money,
+  immutable assessments and current-version replay; no recorder/schema/model
+  changes, compatibility aliases, migrations or household access.
+- Detailed analysis: docs/audit/CHART-LEARNING-BALANCE-2026-09.md.
+- Keep Explore chart's search unfocused on open and mode switches so browsing
+  does not open the touch keyboard. Preserve explicit search and focus return.
+- Fit chart-mode dates and selection/Exit into one upper row in mobile landscape,
+  with dates left and actions right, retaining the narrow portrait layout.
+- Preserve the legend's scroll position when toggling items or refreshing its
+  current view, while a newly selected view starts at the top.
+- Align Energy cost comparisons and Recording details fold headers with matching
+  heights, text insets and leading disclosure arrows; opening keeps labels stable.
+- Validation: 3,712 standard tests passed; later refinements passed 41 focused
+  final checks, including ten new Garage outcome cases. Production build and
+  synthetic Chromium checks passed for all 44 views/129 series, both themes,
+  desktop, portrait, landscape, keyboard/touch and the new scroll/fold behavior.
+  Screenshots reviewed. No merge, push or deployment.

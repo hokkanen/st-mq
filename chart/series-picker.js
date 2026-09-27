@@ -97,7 +97,9 @@ export function createSeriesPicker({ getSelected, onSelect, onOpen = () => {} })
     onOpen(); setMode(getSelected().view === 'explorer' ? 'series' : 'views'); dialog.showModal();
     options[active]?.scrollIntoView({ block: 'nearest' });
     toggle.setAttribute('aria-expanded', 'true'); search.setAttribute('aria-expanded', 'true');
-    search.focus({ preventScroll: true }); search.select();
+    // Browsing must not summon the touch keyboard. Search takes focus only when
+    // the user selects it; reopening retains the query without selecting text.
+    $(`chart-series-mode-${mode}`).focus({ preventScroll: true });
   }
   function select(key) {
     if (!matches.some(row => row.key === key)) return;
@@ -106,7 +108,7 @@ export function createSeriesPicker({ getSelected, onSelect, onOpen = () => {} })
   listen(toggle, 'click', open);
   listen($('chart-series-close'), 'click', () => dismiss());
   for (const key of ['views', 'series']) listen($(`chart-series-mode-${key}`), 'click', () => {
-    setMode(key); search.focus({ preventScroll: true });
+    setMode(key); $(`chart-series-mode-${key}`).focus({ preventScroll: true });
   });
   listen(dialog, 'cancel', event => { event.preventDefault(); dismiss(); });
   const outside = event => {

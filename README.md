@@ -210,6 +210,8 @@ the current readings.
   **Yesterday – today**, **Today** and **Today – tomorrow** provide quick navigation.
   The small arrows beside these shortcuts shift the window one calendar day
   without changing its length. Both date pickers remain available in chart view.
+  In landscape, dates sit at the upper left with selection and Exit at the upper
+  right whenever the viewport is wide enough for one row.
   Forecasts and known electricity prices appear only
   inside the selected dates; they never extend the horizontal axis automatically.
 - **Views:** the button at the chart's top right shows the active view or series
@@ -224,14 +226,26 @@ the current readings.
   interpreted indoor temperature** available in its legend. Saved inputs,
   coefficients, cycle outcomes and interval-energy evidence have their own views
   with explicit units and evidence descriptions.
+  Home and Garage both separate **learning**, **coefficients** and **outcomes**.
+  Home keeps four input comparisons and four coefficients with distinct units,
+  plus two outcome views. Saved temperatures also includes optional ROOM boost
+  and the saved control phase; **Space-heating auxiliary input** remains in
+  All series. Garage separates saved temperatures/activity, two coefficient
+  comparisons, achieved normal warmth references, held-out cooling error and
+  provisional benefit per completed pause and recovery. Its existing electrical
+  inputs view stays under Garage. Home benefit is a rolling mean per cycle;
+  Garage benefit uses individual completion points, with uncertainty and the
+  electricity basis on inspection. Neither is metered savings.
   Caravan power uses each measured energy interval's average kW, with its original
   duration and gaps preserved; recorded kWh remains available in interval energy
   and the explorer.
-- **All series:** this explorer mode offers the 124 supported chart projections.
+- **All series:** this explorer mode offers the supported chart projections.
   Search by label, unit or canonical signal name; selecting a result closes the
   explorer and updates the selection button. The centered window also works on
   phones and in fullscreen. It opens in the active chart's mode and remembers
-  each mode's search separately. **Close**, Escape or clicking outside dismisses
+  each mode's search separately. Opening it or switching modes keeps focus on
+  the mode button; the on-screen keyboard opens only when you select search.
+  **Close**, Escape or clicking outside dismisses
   it and returns focus to the selection button. It includes recorded
   measurements, states, energy, counters, saved learning inputs, replayed
   coefficients and supported calculations, including diagnostics beyond the named
@@ -244,6 +258,7 @@ the current readings.
 - **Legend and axes:** each view remembers its own series and activity-row
   choices in this browser. **Save view** explicitly saves the selected view and
   visibility choices; **Reset view** restores its initial comparisons.
+  Toggling a legend item keeps the list at its current scroll position.
   Temperature-led views need no left scale; operational views have one declared
   left unit and relevant temperatures on the right. Both electricity prices are
   available in every view; their visibility is remembered globally, including

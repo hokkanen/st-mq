@@ -125,11 +125,23 @@ test('comparable equipment roles have distinct colours within each view', () => 
   for (const keys of [
     ['supply_temperature', 'return_temperature', 'heating_setpoint', 'maximum_supply_setting'],
     ['model_indoor_temperature', 'model_target_temperature', 'learning_indoor_temperature'],
+    ['garage_temperature', 'garage_temperature_2', 'caravan_temperature'],
     ['heating_pump_speed', 'brine_pump_speed'], ['learning_profit', 'learning_aux_profit'],
     ['compressor_hours', 'dhw_hours', 'auxiliary_3kw_hours', 'auxiliary_6kw_hours'],
   ]) {
     const rows = historyDatasets({}, descriptor(keys));
     assert.equal(new Set(rows.map(row => row.borderColor)).size, keys.length, keys.join(', '));
+  }
+  for (const keys of [
+    ['garage_temperature', 'garage_model_rear', 'garage_coefficient_rear_coolingPerHour'],
+    ['garage_temperature_2', 'garage_model_front', 'garage_coefficient_front_coolingPerHour'],
+    ['property_power', 'caravan_power', 'caravan_energy'],
+  ]) {
+    const rows = historyDatasets({}, descriptor(keys));
+    assert.equal(new Set(rows.map(row => row.borderColor)).size, 1, keys.join(', '));
+  }
+  for (const view of Object.values(CHART_VIEW_BY_KEY).filter(view => [...view.leftSignals, ...view.rightSignals].includes('caravan_temperature'))) {
+    assert.equal(historyDatasets({}, view).find(row => row.key === 'caravan_temperature').borderColor, defaultPalette.caravan, view.key);
   }
 });
 

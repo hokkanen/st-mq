@@ -13,6 +13,38 @@ function timeRange(start, end) {
     : `${dateTime.format(start)} – ${dateTime.format(end)}`;
 }
 
+const outcomeBases = new Map([
+  ['continuously-available-achieved-reference', 'achieved normal-heating reference; not a thermostat setting'],
+  ['rolling-clean-held-out-off-episode-rmse', 'rolling clean held-out OFF-episode RMSE; lower is better'],
+  ['garage-frozen-normal-reference', 'frozen normal-reference model estimate; positive is benefit, negative is extra cost'],
+]);
+const outcomeElectricityBases = new Map([
+  ['qualified-recorded-electricity', 'qualified recorded electricity'],
+  ['recorded-and-modeled-electricity', 'recorded and modelled electricity'],
+  ['modeled-native-electricity', 'modelled native electricity'],
+]);
+const outcomeNumber = new Intl.NumberFormat('en-GB', { maximumFractionDigits: 2 });
+function garageOutcomeDetails(key, raw) {
+  const episode = key === 'garage_outcome_benefit';
+  const details = [episode ? 'completed episode estimate' : 'replayed model outcome',
+    outcomeBases.get(raw.outcomeBasis) ?? 'outcome basis unavailable'];
+  if (raw.inputSource) details.push(raw.inputSource);
+  if (Number.isFinite(raw.modelUpdatedAt)) details.push(`model updated ${dateTime.format(raw.modelUpdatedAt)}`);
+  if (/^[a-f\d]{64}$/.test(raw.correctionRevision)) details.push(`correction revision ${raw.correctionRevision.slice(0, 12)}`);
+  if (Number.isFinite(raw.evidenceCount)) details.push(`${outcomeNumber.format(raw.evidenceCount)} ${key.endsWith('_error')
+    ? 'clean held-out OFF validation episodes' : 'normal-heating samples'}`);
+  if (Number.isFinite(raw.evidenceHours)) details.push(`${outcomeNumber.format(raw.evidenceHours)} h ${key.endsWith('_error')
+    ? 'held-out OFF evidence' : 'qualified normal-heating evidence'}`);
+  if (episode) {
+    if (raw.provisional === true) details.push('provisional model estimate');
+    details.push(outcomeElectricityBases.get(raw.electricityBasis) ?? 'electricity basis unavailable');
+    for (const [field, label] of [['referenceCostEuro', 'frozen reference cost'], ['actualCostEuro', 'assessed actual cost'],
+      ['uncertaintyEuro', 'model uncertainty']])
+      if (Number.isFinite(raw[field])) details.push(`${label} ${outcomeNumber.format(raw[field])} €`);
+  }
+  return details;
+}
+
 /** Only committed input quality describes learning eligibility. A raw sensor,
  * forecast or model result cannot tell whether an observation trained a model. */
 export function historyLearningLabel(key, point = {}) {
@@ -54,7 +86,7 @@ export function historyTooltipTitle(items) {
 
 export function historyTooltipLabel(item) {
   const { key } = item.dataset, raw = item.raw ?? {}, details = [];
-  const source = raw.modelInput ? null : key === 'outdoor_temperature' ? outdoorSourceLabel(raw.source) : providerName(raw.source);
+  const source = raw.modelInput || raw.modelOutcome ? null : key === 'outdoor_temperature' ? outdoorSourceLabel(raw.source) : providerName(raw.source);
   if (source) details.push(source);
   if (raw.modelCoefficient) {
     details.push('model result', coefficientStatusLabel(raw.coefficientStatus));
@@ -63,6 +95,7 @@ export function historyTooltipLabel(item) {
     if (Number.isFinite(raw.evidenceHours)) details.push(`input evidence at that update: ${new Intl.NumberFormat('en-GB',
       { maximumFractionDigits: 2 }).format(raw.evidenceHours)} h`);
   }
+  if (raw.modelOutcome) details.push(...garageOutcomeDetails(key, raw));
   const firewood = firewoodPointDetail(key, raw);
   if (firewood) details.push(firewood);
   else if (raw.modelInput) details.push(raw.savedIndoorAverage ? 'saved indoor average'

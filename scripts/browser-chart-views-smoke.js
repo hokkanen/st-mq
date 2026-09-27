@@ -7,11 +7,13 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { start } from '../src/main.js';
 import { loadConfig } from '../src/app/config.js';
+import { Store } from '../src/storage/store.js';
 import { CHART_VIEWS } from '../src/domain/chart-views.js';
 import { EXPLORER_SERIES } from '../chart/series-explorer.js';
 import { seedChartFixture } from './lib/chart-fixture.js';
 import { addFireplace } from '../src/app/fireplace.js';
 import { appendGarageEntry } from '../src/garage/learning.js';
+import { createGarageModel, GARAGE_ALGORITHM_VERSION } from '../src/garage/model.js';
 import { garageSettings } from '../src/garage/settings.js';
 
 const directory = mkdtempSync(join(tmpdir(), 'stmq-chart-views-browser-'));
@@ -23,6 +25,43 @@ try {
   writeFileSync(join(directory, 'options.json'), '{}');
   const config = loadConfig({ STMQ_CONFIG: join(directory, 'options.json'), STMQ_DATA_DIR: directory,
     STMQ_PORT: '0', STMQ_INPUT: 'simulated' }, directory);
+  // Build the Garage journal before application startup, which adds its own
+  // current context. This preserves the seed boundary and chronological replay.
+  const fixtureStore = new Store(config.dbPath);
+  try {
+    fixtureStore.transaction(() => {
+      // A current-format saved seed supplies achieved reference and independent
+      // validation evidence. It is artificial chart evidence, never live state.
+      const seed = createGarageModel({ seedAt: now - 30 * 60_000, roomTargetC: 12 });
+      Object.assign(seed.normalReference, { initialized: true, interceptC: 12.1, frontC: 11.6,
+        samples: 120, qualifiedHours: 2.5 });
+      seed.validation.episodes = [{ id: 0, role: 'validation', clean: true, complete: true,
+        startedAt: now - 6 * 3600_000, endedAt: now - 2 * 3600_000,
+        offHours: 1, recoveryHours: 3, thermalPassed: true, trainingSupportHours: 1,
+        offRearRmse: .2, offFrontRmse: .3, rearRmse: .25, frontRmse: .4,
+        rearBias: -.05, frontBias: -.1 }];
+      seed.validation.nextId = 1;
+      for (let index = 0; index < 6; index++) {
+        const at = now - (30 - index) * 60_000;
+        appendGarageEntry(fixtureStore, 'simulated', 'sample', {
+          at, rearAt: at, rearC: 12, frontAt: at, frontC: 11.5, outdoorAt: at, outdoorC: 3,
+          available: [true, false, false, true, null, true][index], managedPause: [false, true, false, false, null, false][index],
+          powerKw: .4, powerQuality: 'simulated', ev1Kw: 0, ev2Kw: 0,
+        }, garageSettings(), at, index === 0 ? { seed } : {});
+      }
+      for (const [index, profitCents] of [125, -35].entries()) {
+        fixtureStore.cycle('garage:simulated', {
+          id: `invented-chart-garage-episode-${index}`, status: 'completed',
+          startedAt: now - (8 - index * 2) * 3600_000, endedAt: now - (4 - index * 2) * 3600_000,
+          algorithmVersion: GARAGE_ALGORITHM_VERSION,
+          assessment: { algorithmVersion: GARAGE_ALGORITHM_VERSION, stage: 'completed',
+            basis: 'garage-frozen-normal-reference', includesGarageOnly: true, provisional: true,
+            profitCents, uncertaintyCents: 20, referenceCostCents: 250, actualCostCents: 250 - profitCents,
+            electricityBasis: index ? 'modeled-native-electricity' : 'qualified-recorded-electricity' },
+        });
+      }
+    });
+  } finally { fixtureStore.close(); }
   app = await start({ config, clock: () => now });
   seedChartFixture(app.store, now);
   addFireplace(app.store, 'simulated', { kg: 5, requestId: 'invented-chart-views-fire' }, now - 3 * 3600_000);
@@ -49,6 +88,7 @@ try {
         ['supply_temperature', 34 + Math.sin(index / 18) * 3, 'degC'],
         ['return_temperature', 30 + Math.sin(index / 18) * 2, 'degC'],
         ['heating_setpoint', 35 + Math.floor(index / 40), 'degC'],
+        ['dhwr_active', index % 60 < 10 ? 1 : 0, 'state'],
         ['caravan_temperature', 17 + Math.sin(index / 16), 'degC'],
         ['caravan_humidity', 65 + Math.sin(index / 20) * 5, '%'],
         ['caravan_dehumidifier_running_state', index % 50 < 35 ? 4 : 0, 'state'],
@@ -72,14 +112,7 @@ try {
         device: 'invented-chart-caravan-meter', sourceTime: end, receivedAt: end, quality: ['simulated'],
         raw: { intervalStart: start, intervalEnd: end, durationMs: end - start, basis: 'meter-counter-delta' } });
     }
-    for (let index = 0; index < 6; index++) {
-      const at = now - (30 - index) * 60_000;
-      appendGarageEntry(app.store, 'simulated', 'sample', {
-        at, rearAt: at, rearC: 12, frontAt: at, frontC: 11.5, outdoorAt: at, outdoorC: 3,
-        available: [true, false, false, true, null, true][index], managedPause: [false, true, false, false, null, false][index],
-        powerKw: .4, powerQuality: 'simulated', ev1Kw: 0, ev2Kw: 0,
-      }, garageSettings(), at);
-    }
+
   });
   const periodicFixture = await fetch(`http://127.0.0.1:${app.server.address().port}/api/chart?view=temperatures&start=2026-09-07&end=2026-09-07&points=800`).then(response => response.json());
   for (const key of ['bedroom_temperature', 'downstairs_temperature']) {
@@ -88,6 +121,26 @@ try {
     assert(new Set(periodicFixture.series[key].filter(point => Number.isFinite(point.y)).map(point => point.y)).size > 10,
       `${key}: source readings change gradually across enough reports to inspect their curve`);
   }
+  const outcomeFixtures = Object.fromEntries(await Promise.all(['garage_references', 'garage_error', 'garage_benefit'].map(async view => {
+    const response = await fetch(`http://127.0.0.1:${app.server.address().port}/api/chart?view=${view}&start=2026-09-07&end=2026-09-07&points=800`);
+    assert.equal(response.status, 200, `${view}: the synthetic outcome projection is available`);
+    return [view, await response.json()];
+  })));
+  for (const [key, expected] of [['garage_outcome_rear_reference', 12.1], ['garage_outcome_front_reference', 11.6]]) {
+    const points = outcomeFixtures.garage_references.series[key].filter(point => Number.isFinite(point.y));
+    assert(points.length && points.every(point => point.y === expected && point.modelOutcome === true
+      && point.outcomeBasis === 'continuously-available-achieved-reference'), `${key}: the fixture supplies achieved, replayed references`);
+  }
+  for (const [key, expected] of [['garage_outcome_rear_error', .2], ['garage_outcome_front_error', .3]]) {
+    const points = outcomeFixtures.garage_error.series[key].filter(point => Number.isFinite(point.y));
+    assert(points.length && points.every(point => Math.abs(point.y - expected) < 1e-12 && point.modelOutcome === true
+      && point.evidenceCount === 1), `${key}: the fixture supplies independent held-out evidence`);
+  }
+  assert.deepEqual(outcomeFixtures.garage_benefit.series.garage_outcome_benefit.map(point => point.y), [1.25, -.35],
+    'Completed Garage assessments preserve benefit and extra cost as individual outcomes');
+  assert(outcomeFixtures.garage_benefit.series.garage_outcome_benefit.every(point => point.modelOutcome === true
+    && point.provisional === true && !point.displayBoundary && !point.carriedForward),
+  'Episode outcomes retain their provisional provenance without fabricated chart tails');
   let endpoint = process.argv[2];
   if (!endpoint) {
     const profile = join(directory, 'chrome'); mkdirSync(profile);
@@ -136,13 +189,18 @@ try {
   const settle = () => evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
   const pickerOpen = () => evaluate("document.getElementById('chart-series-picker').open");
   const openPicker = async () => {
-    if (!await pickerOpen()) await evaluate("document.getElementById('chart-series-toggle').click(); true");
+    const opening = !await pickerOpen();
+    if (opening) await evaluate("document.getElementById('chart-series-toggle').click(); true");
     await until("document.getElementById('chart-series-picker').open"); await settle();
+    if (opening) assert.equal(await evaluate("document.activeElement.matches('input, textarea, [contenteditable=true]')"), false,
+      'Opening or reopening Explore chart leaves the virtual keyboard closed');
   };
   const pickerMode = async mode => {
     await openPicker();
     await evaluate(`document.getElementById('chart-series-mode-${mode}').click(); true`);
     await settle();
+    assert.equal(await evaluate("document.activeElement.id"), `chart-series-mode-${mode}`,
+      'Switching chart catalogues keeps focus on the chosen mode instead of opening the search keyboard');
   };
   const searchCatalogue = async (query, mode) => {
     await pickerMode(mode);
@@ -296,6 +354,41 @@ try {
       if (await evaluate('innerWidth < 600 && innerHeight < 550'))
         assert(layout.scrollHeight > layout.clientHeight, `${label}: the short phone viewport provides real scrolling for the complete legend`);
       await capture(`legend-${label.toLowerCase().replaceAll(' ', '-')}`);
+    }
+    if (layout.scrollHeight > layout.clientHeight + 1) {
+      const lowerItem = await evaluate(`(() => {
+        const list = document.getElementById('chart-legend'), bounds = list.getBoundingClientRect();
+        const button = [...list.querySelectorAll('[data-chart-key]')].filter(node => {
+          const r = node.getBoundingClientRect();
+          return r.top >= Math.max(bounds.top, 0) && r.bottom <= Math.min(bounds.bottom, innerHeight);
+        }).at(-1);
+        return { key: button?.dataset.chartKey, scrollTop: list.scrollTop };
+      })()`);
+      assert(lowerItem.key && lowerItem.scrollTop > 0, `${label}: a lower legend item is visible after real scrolling`);
+      const originalVisibility = await shown(lowerItem.key), touch = await evaluate('matchMedia("(pointer: coarse)").matches');
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const target = await evaluate(`(() => {
+          const button = document.querySelector('[data-chart-key="${lowerItem.key}"]');
+          if (!${touch}) button.focus({preventScroll:true});
+          const r = button.getBoundingClientRect();
+          return { x: r.left + r.width / 2, y: r.top + r.height / 2, scrollTop: document.getElementById('chart-legend').scrollTop };
+        })()`);
+        if (touch) {
+          await send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: target.x, y: target.y, id: 1 }] });
+          await send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] }); await settle();
+        } else await pressKey('Enter');
+        assert.equal(await shown(lowerItem.key), attempt ? originalVisibility : !originalVisibility,
+          `${label}: the scrolled legend item changes through ${touch ? 'touch' : 'keyboard'}`);
+        assert(Math.abs(await evaluate("document.getElementById('chart-legend').scrollTop") - target.scrollTop) < 1,
+          `${label}: toggling a lower legend item preserves the scroll position`);
+        assert.equal(await evaluate("document.activeElement.dataset.chartKey"), lowerItem.key,
+          `${label}: the same legend item retains focus after it is rebuilt`);
+        assert.equal(await evaluate(`(() => {
+          const button = document.querySelector('[data-chart-key="${lowerItem.key}"]'), r = button.getBoundingClientRect();
+          return document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)?.closest('[data-chart-key]') === button;
+        })()`), true, `${label}: the toggled item remains visible at the same place`);
+      }
+      await capture(`legend-scroll-${label.toLowerCase().replaceAll(' ', '-')}`);
     }
     const original = await shown('property_power');
     await evaluate("document.querySelector('[data-chart-key=property_power]').focus(); true"); await pressKey('Enter');
@@ -470,10 +563,31 @@ try {
     'Opening a grouped view starts in Views');
   assert.equal(await evaluate("Boolean(document.getElementById('chart-series-mode-views').closest('[role=group]')) && document.getElementById('chart-series-mode-views').closest('[role=group]') === document.getElementById('chart-series-mode-series').closest('[role=group]')"), true);
   assert.equal(await evaluate("document.getElementById('chart-series').getAttribute('role')"), 'listbox');
-  assert.equal(await evaluate("document.activeElement.id"), 'chart-series-search');
+  assert.equal(await evaluate("document.activeElement.id"), 'chart-series-mode-views');
   assert.match(await evaluate("document.getElementById('chart-series-picker').textContent"), /Explore chart/);
   assert.deepEqual(await evaluate("[...document.querySelectorAll('#chart-series [data-view-key]')].map(option => option.dataset.viewKey)"),
     CHART_VIEWS.map(view => view.key));
+  for (const [group, count] of [['Home learning', 4], ['Home coefficients', 4], ['Home outcomes', 2],
+    ['Garage learning', 2], ['Garage coefficients', 2], ['Garage outcomes', 3]]) {
+    await searchViews(group);
+    const groupResults = await evaluate(`(() => {
+      let group;
+      return [...document.getElementById('chart-series').children].flatMap(node => {
+        if (node.matches('.chart-series-group')) { group = node.textContent; return []; }
+        return group === ${JSON.stringify(group)} && node.dataset.viewKey ? [node.dataset.viewKey] : [];
+      });
+    })()`);
+    assert.deepEqual(groupResults,
+      CHART_VIEWS.filter(view => view.group === group).map(view => view.key), `${group}: the matching learning section is discoverable`);
+    assert.equal(groupResults.length, count,
+      `${group}: useful comparisons retain deliberate Home and Garage detail`);
+  }
+  assert(!CHART_VIEWS.some(view => ['learning_auxiliary', 'learning_treatment'].includes(view.key)),
+    'The streamlined Home catalogue removes the separate auxiliary and treatment views');
+  await searchSeries('model_auxiliary_power');
+  assert.equal(await evaluate("Boolean(document.querySelector('#chart-series [data-series-key=model_auxiliary_power]'))"), true,
+    'The original saved auxiliary electrical input remains independently searchable');
+  await searchViews('');
   await checkPickerFits('Desktop views');
   await capture('picker-views-desktop-dark');
   await searchViews('heating water');
@@ -722,14 +836,55 @@ try {
   assert.match(await evaluate("document.getElementById('chart-notes').textContent"), /native readback.*not an independent protection probe/);
   await evaluate("document.querySelector('.history-panel').scrollIntoView({block:'start'}); true");
   await capture('garage-dark');
+  await choose('view', 'garage_references');
+  for (const key of ['garage_outcome_rear_reference', 'garage_outcome_front_reference']) {
+    assert.equal(await shown(key), true, `${key}: achieved references are visible by default`);
+    assert.equal(await evaluate(`document.querySelector('[data-chart-key="${key}"]').closest('[data-axis]').dataset.axis`), 'right',
+      `${key}: absolute reference temperature shares the °C axis with saved room readings`);
+    assert((await drawnPaths(key)).some(path => path.path.some(command => ['lineTo', 'bezierCurveTo'].includes(command.method))),
+      `${key}: saved reference evidence actually renders in the chart`);
+  }
+  await capture('garage-references-dark');
+  await choose('view', 'garage_error');
+  for (const key of ['garage_outcome_rear_error', 'garage_outcome_front_error']) {
+    assert.equal(await shown(key), true, `${key}: both locations have visible held-out forecast errors`);
+    assert.equal(await evaluate(`document.querySelector('[data-chart-key="${key}"]').closest('[data-axis]').dataset.axis`), 'left',
+      `${key}: temperature error uses its own difference axis`);
+    assert.match(await evaluate(`document.querySelector('[data-chart-key="${key}"]').title`), /Δ°C/);
+    assert((await drawnPaths(key)).some(path => path.path.some(command => command.method === 'lineTo')),
+      `${key}: reconstructed held-out error draws supported evidence`);
+  }
+  await capture('garage-errors-dark');
+  await choose('view', 'garage_benefit');
+  assert.equal(await evaluate("document.querySelector('[data-chart-key=garage_outcome_benefit] .chart-legend-swatch').dataset.kind"), 'episode');
+  assert.match(await evaluate("document.querySelector('[data-chart-key=garage_outcome_benefit]').title"), /€\/episode/);
+  const benefitPaths = await drawnPaths('garage_outcome_benefit');
+  const benefitMarkers = benefitPaths.flatMap(path => path.path.filter(command => command.method === 'arc' && command.args[2] >= 4));
+  assert.equal(benefitMarkers.length, 2, 'Each completed pause and recovery has one visible episode marker');
+  assert(benefitPaths.every(path => path.path.every(command => !['lineTo', 'bezierCurveTo'].includes(command.method))),
+    'Individual episode outcomes have no connecting line or invented duration');
+  const [benefitX, benefitY] = benefitMarkers[0].args;
+  assert.equal(await evaluate(`window.chartDrawing.some(row => row.method === 'fill' && ['rgba(0, 0, 0, 0)', '#00000000'].includes(row.color)
+    && row.path.some(command => command.method === 'arc' && command.args[0] === ${benefitX} && command.args[1] === ${benefitY}))`), true,
+  'Provisional episode markers are hollow');
+  const benefitPoint = await evaluate(`(() => { const r=document.getElementById('history').getBoundingClientRect(); return {x:r.left+${benefitX}+2,y:r.top+${benefitY}+1}; })()`);
+  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...benefitPoint }); await settle();
+  assert.match(await evaluate("window.chartLabels.join(' ')"), /completed episode estimate.*provisional model estimate/,
+    'Inspecting an episode clearly identifies its provisional model assessment');
+  await capture('garage-benefit-dark');
+  await choose('view', 'garage');
   await pickerMode('series');
   assert.equal(await pickerOpen(), true, 'The selection button opens the explorer and its catalogue switch keeps it open');
-  assert.equal(await evaluate("document.activeElement.id"), 'chart-series-search', 'Search receives initial dialog focus');
+  assert.equal(await evaluate("document.activeElement.id"), 'chart-series-mode-series', 'The selected catalogue receives initial focus');
   await searchSeries('');
   assert.equal(await evaluate("document.querySelectorAll('#chart-series [role=option]').length"), EXPLORER_SERIES.length);
   await checkPickerFits('Desktop');
   await searchSeries('pump interpreted');
   assert.deepEqual(await evaluate("[...document.querySelectorAll('#chart-series [role=option]')].map(option => option.dataset.seriesKey)"), ['garage_native_indoor_temperature']);
+  const searchPoint = await evaluate("(() => { const r=document.getElementById('chart-series-search').getBoundingClientRect(); return {x:r.left+r.width/2,y:r.top+r.height/2}; })()");
+  await send('Input.dispatchMouseEvent', { type: 'mousePressed', button: 'left', clickCount: 1, ...searchPoint });
+  await send('Input.dispatchMouseEvent', { type: 'mouseReleased', button: 'left', clickCount: 1, ...searchPoint });
+  assert.equal(await evaluate("document.activeElement.id"), 'chart-series-search', 'Deliberately clicking search enables keyboard search');
   await pressKey('ArrowDown');
   assert.equal(await evaluate("document.getElementById(document.activeElement.getAttribute('aria-activedescendant')).dataset.seriesKey"), 'garage_native_indoor_temperature');
   await pressKey('Enter');
@@ -800,12 +955,12 @@ try {
   await checkCursorSegments(dragged.x, 'Desktop drag beyond the originating band');
   await send('Input.dispatchMouseEvent', { type: 'mouseReleased', button: 'left', buttons: 0, clickCount: 1, ...dragged }); await settle();
   assert.deepEqual(await viewportState(), beforeBandDrag, 'Dragging a band changes neither the visible interval nor magnification');
-  const rowPoint = await bandPoint(.71, 'dhwr-history');
+  const rowPoint = await bandPoint(.71, 'dhwr_active-history');
   await send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...rowPoint }); await settle();
   assert.equal(await evaluate("document.querySelector('.chart-crosshair-readout').hidden"), false);
-  assert.match(await evaluate("document.querySelector('.chart-crosshair-readout').textContent"), /Hot-water circulation request/);
+  assert.match(await evaluate("document.querySelector('.chart-crosshair-readout').textContent"), /Hot-water circulation feedback/);
   await capture('power-dark-cursor');
-  const captionPoint = await evaluate("(() => { const r=document.querySelector('#dhwr-history .activity-summary').getBoundingClientRect(); return {x:r.left+r.width*.71,y:r.top+r.height/2}; })()");
+  const captionPoint = await evaluate("(() => { const r=document.querySelector('#dhwr_active-history .activity-summary').getBoundingClientRect(); return {x:r.left+r.width*.71,y:r.top+r.height/2}; })()");
   await send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...captionPoint }); await settle();
   assert.equal(await cursorHidden(), true, 'Captions between bands do not activate the cursor');
   await send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...plotPoint }); await settle();
@@ -887,6 +1042,11 @@ try {
     await searchViews('');
     await checkPickerFits(`${width}px fullscreen views`);
     await searchSeries('');
+    const searchTouch = await evaluate("(() => { const r=document.getElementById('chart-series-search').getBoundingClientRect(); return {x:r.left+r.width/2,y:r.top+r.height/2}; })()");
+    await send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ ...searchTouch, id: 1 }] });
+    await send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] }); await settle();
+    assert.equal(await evaluate("document.activeElement.id"), 'chart-series-search', `${width}px: search accepts an intentional touch`);
+    await pressKey('Escape'); await openPicker(); await searchSeries('');
     assert.equal(await evaluate("document.getElementById('history').dataset.view"), 'power',
       `${width}px fullscreen: changing catalogue keeps the active chart`);
     await checkPickerFits(`${width}px fullscreen series`);
@@ -910,7 +1070,7 @@ try {
     for (const theme of ['dark', 'light']) {
       if (await evaluate('document.documentElement.dataset.theme') !== theme)
         await evaluate("document.getElementById('theme-toggle').click(); true");
-      for (const key of ['power', 'garage', 'heating_water', 'temperatures', 'explorer']) {
+      for (const key of ['power', 'garage', 'heating_water', 'temperatures', 'garage_references', 'garage_error', 'garage_benefit', 'explorer']) {
         if (key === 'explorer') await choose('series', 'garage_native_indoor_temperature');
         else await choose('view', key);
         await evaluate("document.querySelector('.history-panel').scrollIntoView({block:'start'}); true");
@@ -928,6 +1088,83 @@ try {
       await evaluate("document.getElementById('chart-fullscreen').click(); true"); await settle();
     }
   }
+  for (const [width, height] of [[600, 360], [667, 375], [844, 390], [932, 430], [768, 1024], [320, 568], [390, 844]]) {
+    await viewport(width, height, true);
+    for (const theme of ['dark', 'light']) {
+      if (await evaluate('document.documentElement.dataset.theme') !== theme)
+        await evaluate("document.getElementById('theme-toggle').click(); true");
+      await choose('view', 'power');
+      await evaluate("document.getElementById('chart-fullscreen').click(); true"); await settle();
+      for (const subject of ['power', 'model_coefficient_hydronic_response']) {
+        await choose('view', subject);
+        const label = `${width}×${height} ${theme} ${subject}`;
+        await checkFits(label);
+        const header = await evaluate(`(() => {
+          const rect = id => { const r = document.getElementById(id).getBoundingClientRect();
+            return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, centerY: r.top + r.height / 2 }; };
+          return { start: rect('date-start'), end: rect('date-end'), selection: rect('chart-series-toggle'), exit: rect('chart-fullscreen') };
+        })()`);
+        assert(Object.values(header).every(rect => rect.left >= 0 && rect.right <= width && rect.top >= 0 && rect.bottom <= height),
+          `${label}: every header control stays inside the viewport`);
+        assert(header.start.right < header.end.left && header.selection.right < header.exit.left,
+          `${label}: the date fields and selection/Exit controls do not overlap`);
+        assert(Math.abs(header.selection.centerY - header.exit.centerY) < 2,
+          `${label}: selection and Exit share a row`);
+        if (width >= 600) {
+          assert(Math.abs(header.start.centerY - header.selection.centerY) < 2
+            && Math.abs(header.end.centerY - header.selection.centerY) < 2,
+          `${label}: date fields occupy the same header row as selection and Exit`);
+          assert(header.end.right < header.selection.left && header.start.left <= 20 && header.exit.right >= width - 20,
+            `${label}: dates align left and selection/Exit align right without overlap`);
+        } else {
+          assert(header.selection.bottom <= header.start.top,
+            `${label}: narrow portrait keeps usable separate rows`);
+        }
+        await capture(`header-${width}x${height}-${subject}-${theme}`);
+      }
+      await evaluate("document.getElementById('chart-fullscreen').click(); true"); await settle();
+    }
+  }
+  for (const [width, height] of [[1280, 1100], [390, 844], [320, 568]]) {
+    await viewport(width, height, width < 600);
+    for (const theme of ['dark', 'light']) {
+      if (await evaluate('document.documentElement.dataset.theme') !== theme)
+        await evaluate("document.getElementById('theme-toggle').click(); true");
+      await evaluate("document.getElementById('timing-details').open=false; document.getElementById('recording-details').open=false; document.getElementById('timing-details').scrollIntoView({block:'center'}); true");
+      await settle();
+      const geometry = id => evaluate(`(() => {
+        const summary = document.querySelector('#${id} > summary'), text = summary.querySelector('span');
+        const outer = summary.getBoundingClientRect(), inner = text.getBoundingClientRect();
+        const before = getComputedStyle(summary, '::before'), after = getComputedStyle(summary, '::after');
+        return { height: outer.height, textInset: inner.left - outer.left,
+          textCenter: inner.top + inner.height / 2 - outer.top, textHeight: inner.height,
+          arrow: { content: before.content, width: before.width, height: before.height,
+            marginLeft: before.marginLeft, marginRight: before.marginRight, order: before.order },
+          trailingArrow: after.content, fits: outer.left >= 0 && outer.right <= innerWidth };
+      })()`);
+      const comparison = await geometry('timing-details'), recording = await geometry('recording-details');
+      for (const key of ['height', 'textInset', 'textCenter', 'textHeight'])
+        assert(Math.abs(comparison[key] - recording[key]) < 1, `${width}px ${theme}: footer ${key} aligns across the two closed folds`);
+      assert.deepEqual(comparison.arrow, recording.arrow, `${width}px ${theme}: both folds use the same leading arrow`);
+      assert(comparison.arrow.content !== 'none' && parseFloat(comparison.arrow.width) > 0
+        && parseFloat(comparison.arrow.width) < comparison.textInset,
+      `${width}px ${theme}: an arrow precedes each footer title`);
+      assert([comparison, recording].every(row => row.trailingArrow === 'none' && row.fits),
+        `${width}px ${theme}: footer titles fit without a trailing marker`);
+      await capture(`footer-folds-${width}-${theme}`);
+      for (const [id, closed] of [['timing-details', comparison], ['recording-details', recording]]) {
+        await evaluate(`document.querySelector('#${id} > summary').click(); true`); await settle();
+        const open = await geometry(id);
+        for (const key of ['height', 'textInset', 'textCenter', 'textHeight'])
+          assert(Math.abs(open[key] - closed[key]) < 1, `${width}px ${theme}: opening ${id} preserves its header geometry`);
+        assert.equal(await evaluate(`document.getElementById('${id}').open`), true);
+        if (id === 'recording-details') assert.equal(await evaluate("Boolean(document.querySelector('#recording-details > #recording-adaptive-details > summary'))"), true,
+          'The recording fold retains its independently expandable Adaptive measurements section');
+        await capture(`footer-${id}-open-${width}-${theme}`);
+        await evaluate(`document.querySelector('#${id} > summary').click(); true`); await settle();
+      }
+    }
+  }
   await viewport(1280, 460);
   await choose('view', 'power');
   await evaluate("document.getElementById('chart-fullscreen').click(); true"); await settle();
@@ -943,7 +1180,7 @@ try {
   await checkPickerFits('Phone with a short available viewport');
   await capture('picker-short-phone'); await pressKey('Escape');
   assert.deepEqual(errors, [], 'All view selections and cursor interactions have no uncaught browser exceptions');
-  console.log(`Chart views browser checks passed: ${CHART_VIEWS.length} named views, ${EXPLORER_SERIES.length} searchable explorer choices, unified view/series browsing without chart changes, separate searches, centered modal keyboard/touch/focus, periodic temperature Bézier geometry, solid solar history and dash-dot forecast, charger phase fills, visibility isolation, garage readback, crosshair bounds and touch, dark/light themes, and 320/390px fullscreen layouts.`);
+  console.log(`Chart views browser checks passed: ${CHART_VIEWS.length} named views, ${EXPLORER_SERIES.length} searchable explorer choices, balanced Home/Garage learning groups, achieved references and held-out errors, isolated provisional episode markers and provenance, unified view/series browsing without chart changes, separate searches, centered modal keyboard/touch/focus without automatic search keyboards, periodic temperature Bézier geometry, solid solar history and dash-dot forecast, charger phase fills, visibility isolation, garage readback, crosshair bounds and touch, dark/light themes, 320/390px portrait, and aligned landscape/tablet headers with long selected labels.`);
   console.log(`Screenshots: ${screenshots.join(', ')}`);
 } finally {
   socket?.close(); for (const request of pending.values()) clearTimeout(request.timer);

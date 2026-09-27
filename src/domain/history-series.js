@@ -133,6 +133,23 @@ export const GARAGE_COEFFICIENT_INFO = Object.freeze(Object.fromEntries([
   label: `Garage ${location} · ${label}`, location, parameter, unit, digits: 4, color: 'garage', fixed: location === 'native',
   kind: 'Calculated', group: 'Garage model coefficients', detail: 'Versioned garage model replay; fitted cooling, observed electricity and initial assumptions remain distinct.' }])));
 
+export const GARAGE_OUTCOME_INFO = Object.freeze(Object.fromEntries([
+  ...['rear', 'front'].map(location => [`garage_outcome_${location}_reference`, {
+    label: `Garage ${location} · Achieved normal temperature`, unit: '°C', location, outcome: 'reference',
+    color: location === 'rear' ? 'garage' : 'garageFront', kind: 'Calculated',
+    detail: 'Replayed achieved temperature during qualified normal heating. The selected room setting is not shown as measured achievement; resets remain gaps until a new reference qualifies.',
+  }]),
+  ...['rear', 'front'].map(location => [`garage_outcome_${location}_error`, {
+    label: `Garage ${location} · Held-out cooling error`, unit: 'Δ°C', location, outcome: 'error',
+    color: location === 'rear' ? 'garage' : 'garageFront', kind: 'Calculated',
+    detail: 'Rolling root mean square prediction error across clean held-out OFF episodes, including failed validation. Lower is better; no eligible episodes remains unknown.',
+  }]),
+  ['garage_outcome_benefit', {
+    label: 'Garage · Assessed episode benefit', unit: '€/episode', outcome: 'benefit', color: 'learning', kind: 'episode',
+    detail: 'Frozen normal-reference assessment at each completed garage episode. Negative and zero estimates remain visible; the result is provisional and separate from electricity timing comparisons.',
+  }],
+].map(([signal, info]) => [signal, { ...info, group: 'Garage model outcomes' }])));
+
 export const RIGHT_AXIS_SIGNALS = Object.freeze(['model_indoor_temperature', 'garage_temperature', 'outdoor_temperature', 'outdoor_forecast', 'all_in_price', 'spot_price']);
 
 const basic = [
@@ -161,7 +178,7 @@ export const HISTORY_AXES = Object.freeze([
   ...Object.entries(SIGNAL_INFO).map(([signal, info]) => ({
     key: signal === 'heating_integral' ? 'integral' : signal, ...info, signals: [signal],
   })),
-  ...Object.entries({ ...GARAGE_INPUT_INFO, ...GARAGE_COEFFICIENT_INFO }).map(([signal, info]) => ({ key: signal, ...info, signals: [signal] })),
+  ...Object.entries({ ...GARAGE_INPUT_INFO, ...GARAGE_COEFFICIENT_INFO, ...GARAGE_OUTCOME_INFO }).map(([signal, info]) => ({ key: signal, ...info, signals: [signal] })),
   ...Object.entries(SESSION_CHECK_INFO).map(([signal, info]) => ({ key: signal, ...info, signals: [signal] })),
   ...Object.entries(MODEL_INPUT_INFO).map(([signal, info]) => ({ key: signal, ...info, signals: [signal] })),
   ...Object.entries(MODEL_COEFFICIENT_INFO).map(([signal, info]) => ({ key: signal, ...info, signals: [signal] })),
@@ -177,4 +194,4 @@ export const HISTORY_AXES = Object.freeze([
     group: key === 'solar_forecast' ? 'Weather' : 'Electricity', kind: key === 'solar_forecast' ? 'Forecast' : 'Calculated' })),
 ]);
 export const HISTORY_AXIS_BY_KEY = Object.freeze(Object.fromEntries(HISTORY_AXES.map(axis => [axis.key, axis])));
-export const HISTORY_GROUPS = Object.freeze(['Electricity', 'Home temperatures', 'Caravan', 'Garage heat pump', 'Heating', 'Ground loop', 'Hot water', 'Equipment states', 'Settings', 'Runtime counters', 'Control', 'Weather', 'Model inputs', 'Model coefficients', 'Learning', 'Meter checks', 'Garage model inputs', 'Garage model coefficients']);
+export const HISTORY_GROUPS = Object.freeze(['Electricity', 'Home temperatures', 'Caravan', 'Garage heat pump', 'Heating', 'Ground loop', 'Hot water', 'Equipment states', 'Settings', 'Runtime counters', 'Control', 'Weather', 'Model inputs', 'Model coefficients', 'Learning', 'Meter checks', 'Garage model inputs', 'Garage model coefficients', 'Garage model outcomes']);

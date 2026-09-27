@@ -2,7 +2,7 @@ import { CHART_VIEW_BY_KEY } from '../src/domain/chart-views.js';
 import { stackPowerSeries } from './power-stack.js';
 import { isInterpolatedTemperature } from '../src/domain/chart-temperatures.js';
 import { temperatureIntervalKnots } from './temperature-curves.js';
-import { HISTORY_AXIS_BY_KEY, CARAVAN_RUNNING_STATES, GARAGE_INPUT_INFO, GARAGE_COEFFICIENT_INFO, SIGNAL_INFO, MODEL_INPUT_INFO, MODEL_COEFFICIENT_INFO, PHASE_ENERGY_SIGNALS, COUNTER_SIGNALS } from '../src/domain/history-series.js';
+import { HISTORY_AXIS_BY_KEY, CARAVAN_RUNNING_STATES, GARAGE_INPUT_INFO, GARAGE_COEFFICIENT_INFO, GARAGE_OUTCOME_INFO, SIGNAL_INFO, MODEL_INPUT_INFO, MODEL_COEFFICIENT_INFO, PHASE_ENERGY_SIGNALS, COUNTER_SIGNALS } from '../src/domain/history-series.js';
 // Calendar navigation always refers to the house, regardless of browser timezone.
 const calendar = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Helsinki', year: 'numeric', month: '2-digit', day: '2-digit' });
 const hourInFinland = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', hour: '2-digit', hourCycle: 'h23' });
@@ -66,7 +66,7 @@ export const operationModes = Object.freeze({ 0: 'Off', 1: 'Auto', 2: 'Compresso
 export const defaultPalette = Object.freeze({
   text: '#e0ede6', muted: '#9bb4a5', border: '#334d3e', grid: '#243c30',
   property: '#e99583', ev: '#66c7bd', ev2: '#b99bdc', auxiliary: '#e47f79', phase1: '#dfc16c', phase2: '#66c7bd', phase3: '#cf94c7',
-  indoor: '#81ca99', upstairs: '#e99583', downstairs: '#e5cb75', bedroom: '#d3b7ed', garage: '#e4aa6d', garageFront: '#d28c62', garagePump: '#bb8bd0', outdoor: '#83b8da', integral: '#80cbb3', price: '#ffffff', spot: '#b7c4bd',
+  indoor: '#81ca99', upstairs: '#e99583', downstairs: '#e5cb75', bedroom: '#d3b7ed', garage: '#c57739', garageFront: '#f4cd95', garagePump: '#bb8bd0', caravan: '#58c8d1', outdoor: '#83b8da', integral: '#80cbb3', price: '#ffffff', spot: '#b7c4bd',
   supply: '#df9980', return: '#d5bb7d', brineIn: '#70c3bd', brineOut: '#86adda', reference: '#b6c6b7',
   heatOff: '#7891a7', compressorSpace: '#d5c456', compressorDhw: '#83b8da', dhwr: '#e47f79', learning: '#c0a0df', solar: '#dfc16c',
   firewood: '#d8aa75', fireplace: '#b79b28',
@@ -80,9 +80,9 @@ const seriesInfo = {
   property_power: ['Property', 'kW · interval average from recorded energy; older history uses 230 V × current', 'property'],
   charger_power: ['Charger 1', 'kW · interval average from recorded energy; older history uses 230 V × current', 'ev', 'fill'],
   charger2_power: ['Charger 2', 'kW · interval average from recorded native total meter energy', 'ev2', 'fill'],
-  caravan_energy: ['Caravan energy', 'kWh · measured meter energy over the recorded interval', 'garage', 'interval-energy'],
-  caravan_power: ['Caravan power', 'kW · interval average from recorded meter energy', 'garage'],
-  caravan_temperature: ['Caravan air', '°C', 'garage'],
+  caravan_energy: ['Caravan energy', 'kWh · measured meter energy over the recorded interval', 'property', 'interval-energy'],
+  caravan_power: ['Caravan power', 'kW · interval average from recorded meter energy', 'property'],
+  caravan_temperature: ['Caravan air', '°C', 'caravan'],
   caravan_humidity: ['Caravan relative humidity', '%', 'outdoor'],
   caravan_dehumidifier_running_state: ['Caravan dehumidifier', 'state · reported running state', 'garage'],
   ev2_energy: ['Charger 2 total energy', 'kWh · physical Shelly EVSE meter difference over the recorded interval', 'ev2', 'interval-energy'],
@@ -129,8 +129,8 @@ Object.assign(seriesInfo, {
   garage_native_energy: ['Garage pump meter counter', 'kWh · native cumulative counter observation; not interval consumption', 'garagePump', 'audit'],
   garage_energy: ['Garage pump energy', 'kWh · original recording interval; inspect the point for its measurement basis', 'garagePump', 'interval-energy'],
 });
-for (const [signal, info] of Object.entries({ ...MODEL_INPUT_INFO, ...MODEL_COEFFICIENT_INFO, ...GARAGE_INPUT_INFO, ...GARAGE_COEFFICIENT_INFO }))
-  seriesInfo[signal] = [info.label, `${info.unit} · ${info.detail}`, info.color, signal === 'firewood_load' ? 'event' : 'line'];
+for (const [signal, info] of Object.entries({ ...MODEL_INPUT_INFO, ...MODEL_COEFFICIENT_INFO, ...GARAGE_INPUT_INFO, ...GARAGE_COEFFICIENT_INFO, ...GARAGE_OUTCOME_INFO }))
+  seriesInfo[signal] = [info.label, `${info.unit} · ${info.detail}`, info.color, signal === 'firewood_load' ? 'event' : info.kind === 'episode' ? 'episode' : 'line'];
 
 // The same physical quantity keeps its colour across views and saved inputs.
 for (const [key, color] of Object.entries({
@@ -147,24 +147,27 @@ for (const [key, color] of Object.entries({
 })) if (seriesInfo[key]) seriesInfo[key][2] = color;
 
 const forecastSignals = new Set(['outdoor_forecast', 'solar_forecast']);
+const garageReferenceSignals = new Set(Object.entries(GARAGE_OUTCOME_INFO)
+  .filter(([, info]) => info.unit === '°C').map(([key]) => key));
 export const chartLinePatterns = Object.freeze({
   solid: Object.freeze([]), temperature: Object.freeze([6, 4]),
-  forecast: Object.freeze([8, 3, 2, 3]), price: Object.freeze([1, 3]),
+  reference: Object.freeze([12, 4]), forecast: Object.freeze([8, 3, 2, 3]), price: Object.freeze([1, 3]),
 });
 
-/** Colour stays semantic; stroke describes axis/forecast rather than device. */
+/** Colour stays semantic; stroke distinguishes axes, references and forecasts. */
 export function historySeriesStyle(key, axis, kind = 'line') {
   const temperature = isInterpolatedTemperature(key);
   const temperatureUnit = temperature || seriesInfo[key]?.[1].split(' · ')[0] === '°C';
   const forecast = kind === 'forecast' || forecastSignals.has(key);
   const price = key.endsWith('_price');
-  const pointsOnly = ['event', 'daily', 'session', 'interval-energy', 'audit'].includes(kind);
+  const pointsOnly = ['event', 'daily', 'session', 'episode', 'interval-energy', 'audit'].includes(kind);
   const interpolation = temperature || key === 'caravan_humidity' ? 'monotone'
     : key === 'heating_integral' ? 'linear' : 'step';
   return {
     forecast, interpolation, showLine: !pointsOnly,
     borderDash: forecast ? chartLinePatterns.forecast : price ? chartLinePatterns.price
-      : axis === 'right' && temperatureUnit ? chartLinePatterns.temperature : chartLinePatterns.solid,
+      : garageReferenceSignals.has(key) ? chartLinePatterns.reference
+        : axis === 'right' && temperatureUnit ? chartLinePatterns.temperature : chartLinePatterns.solid,
     stepped: pointsOnly || interpolation !== 'step' ? false : price ? 'before' : true,
     cubicInterpolationMode: interpolation === 'monotone' ? 'monotone' : 'default',
   };
@@ -304,7 +307,8 @@ export function historyDatasets(series = {}, descriptor, preferences = {}, palet
     const isPrice = key.endsWith('_price');
     const temperature = isInterpolatedTemperature(key);
     const original = stackedData.get(key) ?? series[key] ?? [];
-    const data = ['audit', 'session', 'interval-energy'].includes(kind) ? original.filter(point => !point.displayBoundary && !point.carriedForward)
+    const data = kind === 'episode' ? original.filter(point => !point.displayBoundary && !point.carriedForward && !point.displayContext && !point.interpolated)
+      : ['audit', 'session', 'interval-energy'].includes(kind) ? original.filter(point => !point.displayBoundary && !point.carriedForward)
       : temperature && original.some(point => point.periodicCoverage || point.interpolated || Number.isFinite(point.intervalStart) && Number.isFinite(point.intervalEnd))
         ? temperatureIntervalKnots(original) : original;
     const stackBase = stackBases.get(key);
@@ -312,7 +316,7 @@ export function historyDatasets(series = {}, descriptor, preferences = {}, palet
     const style = historySeriesStyle(key, axis, kind);
     const color = phaseColor(palette[colorKey] ?? defaultPalette[colorKey] ?? palette.learning, key);
     const chargerPhase = /^(ev[12])_current_l[123]$/.exec(key)?.[1];
-    const circles = ['session', 'interval-energy', 'audit'].includes(kind);
+    const circles = ['session', 'episode', 'interval-energy', 'audit'].includes(kind);
     const genuine = point => !point.displayBoundary && !point.carriedForward;
     const isolated = (point, index) => genuine(point) && Number.isFinite(point.y)
       && !Number.isFinite(data[index - 1]?.y) && !Number.isFinite(data[index + 1]?.y);

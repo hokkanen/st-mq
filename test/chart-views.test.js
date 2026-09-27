@@ -97,3 +97,45 @@ test('stored per-view fields cannot override global price choices', () => {
   assert.equal(visibility.all_in_price, false);
   assert.equal(visibility.spot_price, undefined);
 });
+
+test('home and garage learning separate inputs, coefficients and outcomes without duplicate diagnostics', () => {
+  for (const prefix of ['Home', 'Garage']) for (const section of ['learning', 'coefficients', 'outcomes'])
+    assert(CHART_VIEWS.some(view => view.group === `${prefix} ${section}`));
+  const home = CHART_VIEWS.filter(view => /^Home (learning|coefficients|outcomes)$/.test(view.group));
+  const garage = CHART_VIEWS.filter(view => /^Garage (learning|coefficients|outcomes)$/.test(view.group));
+  assert.equal(home.length, 10);
+  assert.equal(garage.length, 7);
+  assert.equal(CHART_VIEW_BY_KEY.garage_inputs.group, 'Garage', 'The existing electrical comparison remains in place');
+  assert.equal(CHART_VIEW_BY_KEY.learning_auxiliary, undefined);
+  assert.equal(CHART_VIEW_BY_KEY.learning_treatment, undefined);
+  assert(EXPLORER_SERIES_BY_KEY.model_auxiliary_power, 'Saved auxiliary input remains available with its own electrical unit');
+  assert(CHART_VIEW_BY_KEY.learning_temperatures.leftSignals.includes('model_room_boost'));
+  assert.equal(CHART_VIEW_BY_KEY.learning_temperatures.defaults.model_room_boost, false);
+  assert.match(CHART_VIEW_BY_KEY.learning_benefit.description, /rolling mean/);
+  assert.match(CHART_VIEW_BY_KEY.garage_benefit.description, /provisional/);
+  assert.equal(CHART_VIEW_BY_KEY.garage_benefit.unit, '€/episode');
+  assert.equal(CHART_VIEW_BY_KEY.garage_error.unit, 'Δ°C');
+  assert(CHART_VIEW_BY_KEY.garage_references.rightSignals.includes('garage_outcome_front_reference'));
+});
+
+test('home activity rows share the requested order and keep equipment feedback distinct from requests', () => {
+  const homeTracks = ['controller_phase', 'operatingMode', 'compressorHome', 'dhwr_active', 'fireplace'];
+  for (const key of ['power', 'home_temperatures', 'home_power', 'heating_water']) {
+    const view = CHART_VIEW_BY_KEY[key];
+    assert.deepEqual(view.tracks, homeTracks, key);
+    assert(view.tracks.every(track => view.defaults[track] === true), key);
+    assert(!Object.hasOwn(view.defaults, 'heatOff'), key);
+    assert(!Object.hasOwn(view.defaults, 'dhwr'), key);
+  }
+  const property = CHART_VIEW_BY_KEY.temperatures;
+  assert.equal(property.tracks[0], 'controller_phase');
+  assert.equal(property.defaults.controller_phase, true);
+  assert.equal(property.defaults.compressorHome, true);
+  assert(!property.tracks.includes('garage_model_managed_pause'));
+  assert(property.tracks.includes('compressorGarage'));
+  assert(CHART_VIEW_BY_KEY.garage.tracks.includes('garage_model_managed_pause'));
+  assert.equal(CHART_VIEW_BY_KEY.control.tracks[1], 'heating_pump_active');
+  assert.equal(CHART_VIEW_BY_KEY.control.defaults.heating_pump_active, true);
+  assert(CHART_VIEW_BY_KEY.hot_water.tracks.includes('dhwr'));
+  assert(CHART_VIEW_BY_KEY.hot_water.tracks.includes('dhwr_active'));
+});

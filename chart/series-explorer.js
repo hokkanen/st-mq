@@ -1,8 +1,8 @@
 import { HISTORY_AXES, SIGNAL_INFO, ENERGY_SIGNALS, CARAVAN_RUNNING_STATES, SESSION_CHECK_INFO, MODEL_INPUT_INFO,
-  MODEL_COEFFICIENT_INFO, GARAGE_INPUT_INFO, GARAGE_COEFFICIENT_INFO } from '../src/domain/history-series.js';
+  MODEL_COEFFICIENT_INFO, GARAGE_INPUT_INFO, GARAGE_COEFFICIENT_INFO, GARAGE_OUTCOME_INFO } from '../src/domain/history-series.js';
 
 const definitions = { ...SIGNAL_INFO, ...SESSION_CHECK_INFO, ...MODEL_INPUT_INFO,
-  ...MODEL_COEFFICIENT_INFO, ...GARAGE_INPUT_INFO, ...GARAGE_COEFFICIENT_INFO };
+  ...MODEL_COEFFICIENT_INFO, ...GARAGE_INPUT_INFO, ...GARAGE_COEFFICIENT_INFO, ...GARAGE_OUTCOME_INFO };
 const descriptions = {
   model_fireplace_release: 'Calculated from corrected firewood additions; fuel-equivalent release, not measured heat.',
   controller_phase: 'Requested heating phase, bounded by the next request or expiry; not proof of equipment operation.',
@@ -26,6 +26,9 @@ function meaning(signal, info) {
   if (signal === 'model_fireplace_release') return ['fireplace-release', 'Calculated fireplace release'];
   if (signal.startsWith('firewood_')) return [signal, 'Retrospective daily model estimate'];
   if (MODEL_COEFFICIENT_INFO[signal] || GARAGE_COEFFICIENT_INFO[signal]) return [`coefficient:${info.unit}`, 'Replayed model coefficient'];
+  if (GARAGE_OUTCOME_INFO[signal]) return info.kind === 'episode'
+    ? ['completed-garage-episode', 'Completed frozen episode estimate']
+    : [info.unit === '°C' ? 'temperature' : 'garage-validation-error', 'Replayed model outcome'];
   if (['model_room_boost', 'garage_model_difference'].includes(signal)) return ['saved-temperature-difference', 'Saved temperature difference'];
   if (MODEL_INPUT_INFO[signal] || GARAGE_INPUT_INFO[signal]) return [`saved-input:${info.unit}`, 'Saved learning input'];
   if (signal.startsWith('learning_')) return [signal === 'learning_indoor_temperature' ? 'temperature' : `assessed-cycle:${info.unit}`, 'Saved model assessment'];

@@ -30,9 +30,10 @@
   --chart-upstairs: #e99583;
   --chart-downstairs: #e5cb75;
   --chart-bedroom: #d3b7ed;
-  --chart-garage: #e4aa6d;
-  --chart-garage-front: #d28c62;
+  --chart-garage: #c57739;
+  --chart-garage-front: #f4cd95;
   --chart-garage-pump: #bb8bd0;
+  --chart-caravan: #58c8d1;
   --chart-outdoor: #83b8da;
   --chart-supply: #df9980;
   --chart-return: #d5bb7d;
@@ -85,9 +86,10 @@
   --chart-upstairs: #a44c38;
   --chart-downstairs: #927218;
   --chart-bedroom: #8150a0;
-  --chart-garage: #a4692d;
-  --chart-garage-front: #a2532d;
+  --chart-garage: #874118;
+  --chart-garage-front: #b47f3c;
   --chart-garage-pump: #81509b;
+  --chart-caravan: #087d8a;
   --chart-outdoor: #3278b3;
   --chart-supply: #a85e43;
   --chart-return: #8c742e;
@@ -399,6 +401,17 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
   .history-panel[data-fullscreen="true"] .range-shortcuts button { min-height: 36px; height: 36px; padding: 7px 10px; }
   .history-panel[data-fullscreen="true"] .range-shortcuts .range-step { padding: 0; }
 }
+/* Dates and inspection actions fit together on landscape phones and tablets.
+   Let the selected label shorten before spending another row above the plot. */
+@media (min-width: 600px) and (max-width: 999px) {
+  .history-panel[data-fullscreen="true"] .chart-toolbar { display: grid; flex: none; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 12px; margin-bottom: 5px; }
+  .history-panel[data-fullscreen="true"] .chart-heading,
+  .history-panel[data-fullscreen="true"] .chart-range-controls { display: contents; }
+  .history-panel[data-fullscreen="true"] .chart-heading-copy { display: none; }
+  .history-panel[data-fullscreen="true"] .date-range { grid-column: 1; grid-row: 1; }
+  .history-panel[data-fullscreen="true"] .chart-axis-actions { grid-column: 2; grid-row: 1; justify-self: end; width: 100%; max-width: 340px; }
+  .history-panel[data-fullscreen="true"] .chart-series-toggle { flex: 1; width: 0; max-width: none; }
+}
 @media (orientation: landscape) and (max-height: 550px) {
   .history-panel[data-fullscreen="true"] { padding-top: max(4px, env(safe-area-inset-top)); padding-bottom: max(4px, env(safe-area-inset-bottom)); }
   .history-panel[data-fullscreen="true"] .chart-overview-track, .history-panel[data-fullscreen="true"] #chart-navigator { height: 22px; min-height: 22px; }
@@ -424,7 +437,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .chart-legend-swatch[data-kind="fill"], .chart-legend-swatch[data-kind="strip"] { height: 10px; border: 1px solid; }
 .chart-legend-swatch[data-kind="event"] { width: 10px; height: 10px; flex-basis: 10px; clip-path: polygon(50% 0, 100% 100%, 0 100%); }
 .chart-legend-swatch[data-kind="daily"] { width: 8px; height: 8px; flex-basis: 8px; transform: rotate(45deg); }
-.chart-legend-swatch[data-kind="session"], .chart-legend-swatch[data-kind="audit"], .chart-legend-swatch[data-kind="interval-energy"] { width: 10px; height: 10px; flex-basis: 10px; border: 2px solid; border-radius: 50%; }
+.chart-legend-swatch[data-kind="session"], .chart-legend-swatch[data-kind="episode"], .chart-legend-swatch[data-kind="audit"], .chart-legend-swatch[data-kind="interval-energy"] { width: 10px; height: 10px; flex-basis: 10px; border: 2px solid; border-radius: 50%; }
 .chart-legend-swatch[data-pattern="dashed"] { background: repeating-linear-gradient(to right, currentColor 0 6px, transparent 6px 10px) !important; }
 .chart-legend-swatch[data-pattern="dotted"] { background: repeating-linear-gradient(to right, currentColor 0 2px, transparent 2px 5px) !important; }
 .chart-legend-swatch[data-pattern="dash-dot"] { background: repeating-linear-gradient(to right, currentColor 0 7px, transparent 7px 10px, currentColor 10px 12px, transparent 12px 15px) !important; }
@@ -433,7 +446,13 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .mode-track { height: 22px; position: relative; background: var(--surface-soft); border: 1px solid var(--border); overflow: hidden; touch-action: none; cursor: crosshair; user-select: none; }
 .mode-segment { position: absolute; height: 100%; background: var(--chart-outdoor); border-right: 1px solid var(--surface); }
 .chart-legend-swatch[data-kind="strip"], .mode-segment { background-image: repeating-linear-gradient(0deg, transparent 0 3px, var(--surface) 3px 4px); }
-.timing-details { padding-top: 12px; }
+/* Chart footer folds share one stable header and the legend's leading chevron. */
+:is(#timing-details, #recording-details) { margin-top: 18px; border-top: 1px solid var(--border); padding: 0; }
+:is(#timing-details, #recording-details) > summary { min-height: 48px; gap: 9px; padding: 14px 0; }
+:is(#timing-details, #recording-details) > summary::before { content: ''; flex: 0 0 5px; width: 5px; height: 5px; margin: 0 2px; border-right: 1px solid currentColor; border-bottom: 1px solid currentColor; color: var(--muted); transform: rotate(-45deg); }
+:is(#timing-details, #recording-details)[open] > summary::before { color: var(--accent); transform: rotate(45deg); }
+:is(#timing-details, #recording-details) > summary::after { content: none; }
+:is(#timing-details, #recording-details) > summary + * { margin-top: 0; }
 .timing-benefit { padding: 4px 0 8px; }
 .timing-intro { margin: 0 auto 24px; text-align: center; }
 .timing-intro p { margin: 4px 0; }
@@ -900,7 +919,6 @@ details details { margin-inline-start: 24px; }
   .plot { height: 350px; }
 }
 
-.recording-details { margin-top: 18px; border-top: 1px solid var(--border); padding-top: 12px; }
 .recording-section-title { font-size: 14px; font-weight: 550; margin: 10px 0; }
 .recording-metrics { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 12px; margin: 8px 0 18px; }
 .recording-metrics > div { padding: 12px; background: var(--surface-soft); border: 1px solid var(--border); border-radius: 8px; }

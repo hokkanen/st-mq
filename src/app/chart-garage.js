@@ -1,10 +1,12 @@
-import { GARAGE_INPUT_INFO, GARAGE_COEFFICIENT_INFO } from '../domain/history-series.js';
+import { GARAGE_INPUT_INFO, GARAGE_COEFFICIENT_INFO, GARAGE_OUTCOME_INFO } from '../domain/history-series.js';
 import { applyGarageEntry, garageCorrectionContext, garageInput, garageDigest } from '../garage/learning.js';
 import { GARAGE_ALGORITHM_VERSION, garageModelSummary } from '../garage/model.js';
 
 const finite = Number.isFinite, caches = new WeakMap(), MAX_EVENTS = 25_000;
 const validC = value => finite(value) && value >= -60 && value <= 65;
 const source = input => input === 'simulated' ? 'Garage simulation' : input === 'offline' ? 'Imported garage history' : 'Recorded garage inputs';
+const replayOutcomes = Object.keys(GARAGE_OUTCOME_INFO).filter(key => GARAGE_OUTCOME_INFO[key].outcome !== 'benefit');
+const electricityBases = new Set(['qualified-recorded-electricity', 'recorded-and-modeled-electricity', 'modeled-native-electricity']);
 function decode(row) {
   return { id: row.id, key: row.key, kind: row.kind, at: row.at, algorithmVersion: row.algorithm_version,
     configVersion: JSON.parse(row.config_version), forecastVersion: row.forecast_version === null ? null : JSON.parse(row.forecast_version),
@@ -60,46 +62,79 @@ function inputs({ store, range, now, input, envelopes, selected, stats }) {
 /** Incremental shared replay, bounded to four source/correction checkpoints. The same
  * pure entry operation powers runtime rebuilding. Old prefixes require their
  * own seed and algorithm; invalid dependencies create explicit chart gaps. */
-function coefficients({ store, range, now, input, envelopes, selected, stats }) {
-  const through = Math.min(range.to, now), context = garageCorrectionContext(store, input);
+function replay({ store, range, referenceRange = range, now, input, envelopes, selected, stats }) {
+  const references = selected.filter(key => GARAGE_OUTCOME_INFO[key]?.outcome === 'reference');
+  // A fitted reference may stay unchanged much longer than a sensor freshness
+  // window. Use the selected dates, not a three-hour cutoff, to find its real
+  // neighbouring updates. TemperatureEnvelope retains at most eight knots per
+  // side, and the shared replay/event cache keeps its existing size bound.
+  for (const key of references) if (finite(envelopes[key].contextFrom)) {
+    envelopes[key].contextFrom = referenceRange.from;
+    envelopes[key].contextTo = Math.min(referenceRange.to, now);
+  }
+  const through = Math.min(now, references.length ? Math.max(range.to, referenceRange.to) : range.to);
+  const context = garageCorrectionContext(store, input);
   const bounds = store.db.prepare(`SELECT MAX(id) lastId, MIN(CASE WHEN at>? THEN id END) futureId
     FROM learning_journal WHERE input=?`).get(through, garageInput(input));
   const lastId = bounds.futureId === null ? bounds.lastId ?? 0 : bounds.futureId - 1;
   let cache = caches.get(store.db);
   if (!cache) { cache = new Map(); caches.set(store.db, cache); }
   const epoch = store.db.prepare('SELECT epoch FROM learning_epochs WHERE input=?').get(garageInput(input))?.epoch ?? 'original';
-  const keys = Object.keys(GARAGE_COEFFICIENT_INFO);
+  const keys = [...Object.keys(GARAGE_COEFFICIENT_INFO), ...replayOutcomes];
   const cacheKey = `${input}:${epoch}:${context.revision}`, old = cache.get(cacheKey);
-  let state = old && old.lastId <= lastId && selected.every(key => !old.truncated[key] || old.events[key][0]?.at <= range.from) ? old
+  let state = old && old.lastId <= lastId && selected.every(key => !old.truncated[key]
+    || old.events[key][0]?.at <= (GARAGE_OUTCOME_INFO[key]?.outcome === 'reference' ? envelopes[key].contextFrom ?? range.from : range.from)) ? old
     : { checkpoint: null, lastId: 0, at: -Infinity, blocked: true,
       events: Object.fromEntries(keys.map(key => [key, []])), truncated: {},
       records: 0, unsupportedRecords: 0, invalidRecords: 0 };
   const projections = Object.fromEntries(selected.map(key => {
     let previous = null, started = false;
     const envelope = envelopes[key];
+    const reference = GARAGE_OUTCOME_INFO[key]?.outcome === 'reference';
+    const from = reference ? envelope.contextFrom ?? range.from : range.from;
+    const to = Math.min(now, reference ? envelope.contextTo ?? range.to : range.to);
     const add = (at, event) => envelope.add(at, event?.value ?? null, event?.value === null || !event ? undefined : {
-      modelCoefficient: true, coefficientStatus: event.status, modelUpdatedAt: event.updatedAt,
-      inputSource: source(input), algorithmVersion: GARAGE_ALGORITHM_VERSION,
-      coefficientBasis: event.basis, evidenceHours: event.evidence, correctionRevision: context.revision });
+      ...(GARAGE_OUTCOME_INFO[key] ? { modelOutcome: true, outcomeBasis: event.basis, evidenceCount: event.count }
+        : { modelCoefficient: true, coefficientStatus: event.status, coefficientBasis: event.basis }),
+      modelUpdatedAt: event.updatedAt, inputSource: source(input), algorithmVersion: GARAGE_ALGORITHM_VERSION,
+      evidenceHours: event.evidence, correctionRevision: context.revision });
     const project = event => {
-      if (event.at < range.from) { previous = event; return; }
-      if (!started && event.at > range.from) add(range.from, previous);
-      if (event.at > range.from) add(event.at - 1, previous);
+      if (event.at > to) return;
+      if (event.at < from) { previous = event; return; }
+      if (!started && event.at > from) add(from, previous);
+      // Temperature references use the original model-update knots. Only an
+      // explicit reset/gap needs the preceding known endpoint; injecting old
+      // values before every finite update would turn a cubic into stair steps.
+      if (event.at > from && (!reference || event.value === null && previous?.value !== null)) add(event.at - 1, previous);
       add(event.at, event); previous = event; started = true;
     };
     for (const event of state.events[key]) project(event);
-    return [key, { project, finish() { if (previous) { if (!started) add(range.from, previous); add(through, previous); } } }];
+    return [key, { project, finish() { if (previous) { if (!started) add(from, previous); add(to, previous); } } }];
   }));
   const emit = summary => {
+    const holdouts = state.checkpoint?.model.validation.episodes.filter(episode => episode.role === 'validation' && episode.clean) ?? [];
     for (const key of keys) {
-      const info = GARAGE_COEFFICIENT_INFO[key];
-      const value = summary?.coefficients[info.location]?.find(coefficient => coefficient.name === info.parameter);
+      const info = GARAGE_COEFFICIENT_INFO[key], outcome = GARAGE_OUTCOME_INFO[key];
+      let value = info ? summary?.coefficients[info.location]?.find(coefficient => coefficient.name === info.parameter) : null;
+      if (outcome?.outcome === 'reference') {
+        const reference = summary?.normalReference, temperature = reference?.[`${outcome.location}C`];
+        value = { value: reference?.initialized === true && validC(temperature) ? temperature : null,
+          basis: 'continuously-available-achieved-reference',
+          count: Number.isSafeInteger(reference?.samples) && reference.samples >= 0 ? reference.samples : 0,
+          evidence: finite(reference?.qualifiedHours) && reference.qualifiedHours >= 0 ? reference.qualifiedHours : 0 };
+      } else if (outcome?.outcome === 'error') {
+        const error = summary?.validation?.[outcome.location === 'rear' ? 'offRearRmse' : 'offFrontRmse'];
+        value = { value: holdouts.length && finite(error) && error >= 0 ? error : null,
+          basis: 'rolling-clean-held-out-off-episode-rmse', count: holdouts.length,
+          evidence: holdouts.reduce((hours, episode) => hours + (finite(episode.offHours) && episode.offHours > 0 ? episode.offHours : 0), 0) };
+      }
       const events = state.events[key], previous = events.at(-1);
       const status = value?.basis === 'observed-normal-power' ? 'observed' : value?.basis?.startsWith('fitted') ? 'fitted' : value?.basis?.startsWith('retained') ? 'retained'
-        : value?.basis === 'fixed-prior' && info.fixed ? 'fixed-prior' : 'initial';
-      if (previous && previous.value === (value?.value ?? null) && previous.status === status) continue;
+        : value?.basis === 'fixed-prior' && info?.fixed ? 'fixed-prior' : 'initial';
+      if (previous && previous.value === (value?.value ?? null) && previous.status === status
+        && (!outcome || previous.basis === value?.basis && previous.count === value?.count && previous.evidence === value?.evidence)) continue;
       const event = { at: state.at, value: value?.value ?? null, status, basis: value?.basis,
-        updatedAt: state.at, evidence: value?.evidence ?? 0 };
+        updatedAt: state.at, evidence: value?.evidence ?? 0, ...(outcome ? { count: value?.count ?? 0 } : {}) };
       events.push(event); projections[key]?.project(event);
       if (events.length > MAX_EVENTS) { events.splice(0, 1000); state.truncated[key] = true; }
     }
@@ -124,14 +159,51 @@ function coefficients({ store, range, now, input, envelopes, selected, stats }) 
   cache.set(cacheKey, state);
 }
 
+/** Frozen episode assessments are independent events, never a carried rolling
+ * estimate. Extract only compact public fields; payloads contain private native
+ * identities and frozen observation/model tapes that are not chart data. */
+function benefits({ store, range, now, input, envelopes, stats }) {
+  const numeric = field => `CASE WHEN json_type(data,'$.assessment.${field}') IN ('integer','real')
+    THEN json_extract(data,'$.assessment.${field}') END`;
+  const query = `WITH selected AS (
+    SELECT started_at,ended_at,CASE WHEN json_valid(payload) THEN payload ELSE '{}' END data
+    FROM learning_cycles WHERE input=? AND status='completed' AND ended_at>=? AND ended_at<? AND ended_at<=?
+    ORDER BY ended_at,started_at
+  ) SELECT started_at,ended_at,${numeric('profitCents')} profit,${numeric('uncertaintyCents')} uncertainty,
+    ${numeric('referenceCostCents')} referenceCost,${numeric('actualCostCents')} actualCost,
+    json_extract(data,'$.assessment.electricityBasis') electricityBasis
+    FROM selected WHERE json_extract(data,'$.algorithmVersion')=?
+      AND json_extract(data,'$.assessment.algorithmVersion')=?
+      AND json_extract(data,'$.assessment.stage')='completed'
+      AND json_extract(data,'$.assessment.basis')='garage-frozen-normal-reference'
+      AND json_type(data,'$.assessment.includesGarageOnly')='true'
+    ORDER BY ended_at,started_at`;
+  for (const row of store.db.prepare(query).iterate(garageInput(input), range.from, range.to, now,
+    GARAGE_ALGORITHM_VERSION, GARAGE_ALGORITHM_VERSION)) {
+    if (!Number.isSafeInteger(row.started_at) || row.started_at < 0 || !Number.isSafeInteger(row.ended_at)
+      || row.ended_at <= row.started_at || !finite(row.profit)) continue;
+    envelopes.garage_outcome_benefit.add(row.ended_at, row.profit / 100, {
+      modelOutcome: true, outcomeBasis: 'garage-frozen-normal-reference', provisional: true,
+      algorithmVersion: GARAGE_ALGORITHM_VERSION, inputSource: source(input),
+      intervalStart: row.started_at, intervalEnd: row.ended_at,
+      ...(electricityBases.has(row.electricityBasis) ? { electricityBasis: row.electricityBasis } : {}),
+      ...(finite(row.uncertainty) && row.uncertainty >= 0 ? { uncertaintyEuro: row.uncertainty / 100 } : {}),
+      ...(finite(row.referenceCost) ? { referenceCostEuro: row.referenceCost / 100 } : {}),
+      ...(finite(row.actualCost) ? { actualCostEuro: row.actualCost / 100 } : {}),
+    });
+    stats.assessmentRecords++;
+  }
+}
+
 export function addGarageHistory(args) {
   const { envelopes } = args;
   const inputKeys = Object.keys(GARAGE_INPUT_INFO).filter(key => envelopes[key]);
-  const coefficientKeys = Object.keys(GARAGE_COEFFICIENT_INFO).filter(key => envelopes[key]);
-  const stats = { inputRecords: 0, replayedRecords: 0, unsupportedRecords: 0, invalidRecords: 0,
+  const replayKeys = [...Object.keys(GARAGE_COEFFICIENT_INFO), ...replayOutcomes].filter(key => envelopes[key]);
+  const stats = { inputRecords: 0, replayedRecords: 0, assessmentRecords: 0, unsupportedRecords: 0, invalidRecords: 0,
     basis: 'original-garage-inputs-and-versioned-read-only-replay' };
   if (Math.min(args.now, args.range.to) < args.range.from) return stats;
   if (inputKeys.length) inputs({ ...args, selected: inputKeys, stats });
-  if (coefficientKeys.length) coefficients({ ...args, selected: coefficientKeys, stats });
+  if (replayKeys.length) replay({ ...args, selected: replayKeys, stats });
+  if (envelopes.garage_outcome_benefit) benefits({ ...args, stats });
   return stats;
 }

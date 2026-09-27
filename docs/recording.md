@@ -617,19 +617,58 @@ versions change for this presentation update.
 
 The button at the chart's top right shows the active view or series and opens a
 centered explorer. Its **Views** mode offers searchable, grouped named comparisons;
-**All series** offers the 124 supported historical projections: recorded
+**All series** offers the supported historical projections: recorded
 measurements and states, interval energy, counters, saved learning inputs,
 replayed coefficients and supported calculations. It includes individual
 diagnostics beyond the named views and retains entries with no records in the
 current installation or date range. It is a catalogue of defined chart meanings,
 not access to every numeric database field or current-state JSON value.
 
+Home and Garage each have **learning**, **coefficients** and **outcomes** view
+groups. Home retains extra detail for hydronic heat, solar gain and fireplace
+response, whose coefficients have different units. The Home saved-temperature
+view includes control phase, valve feedback and optional ROOM boost. Saved
+auxiliary electricity remains available as **Space-heating auxiliary input** in
+All series; it is not mixed onto the thermal-kW axis. Garage electrical inputs
+stays in its existing Garage group, alongside its operational temperatures and
+compressor comparison.
+
+Garage outcomes are read-only projections of existing evidence:
+
+- **Normal warmth references** reconstructs rear/front references only after
+  qualified normal-heating observations establish them. Original saved probe
+  inputs provide a comparison; a selected room setting alone cannot create an
+  achieved reference. Longer dashes distinguish each reference from its probe
+  input while retaining the same rear/front colour.
+- **Cooling prediction error** shows rolling rear/front OFF RMSE in Δ°C, from
+  clean held-out episodes in the model's bounded validation history, including
+  failed checks. The forecasts froze the model before each episode and used
+  observed outdoor conditions; this does not validate weather forecasts.
+- **Assessed pause benefit** shows one hollow €/episode point at the completion
+  of a qualified pause and recovery. It compares that episode with its frozen
+  normal-heating reference and preserves uncertainty and recorded/modeled
+  electricity provenance. Negative and zero estimates remain valid. Incomplete,
+  unsupported or unassessed episodes do not become zero-valued points.
+
+References and prediction errors use the same supported, corrected journal
+replay as Garage coefficients. Completed money assessments retain their original
+frozen basis and remain provisional; they are not recomputed from today's model.
+They differ from Home's saved rolling mean benefit and mean absolute
+recovery-cost error. These projections add no recording channels, stored model
+snapshots, schema changes or learning behavior. See the
+[learning-view review](audit/CHART-LEARNING-BALANCE-2026-09.md) for the selection
+rationale.
+
 Search filters labels, units and canonical signal identifiers. Switching modes
 or searching leaves the current chart unchanged; choosing a result applies it
 and closes the explorer. Reopening starts in the active chart's mode, with each
 mode's search retained separately. **Close**, Escape or clicking outside dismisses
 the window and returns focus to the selection button; arrow keys with Enter
-select a result. The window stays centered on phones and in fullscreen.
+select a result while searching. Opening or switching modes focuses the mode
+button instead of the search field, keeping the touch keyboard closed until
+search is selected. The window stays centered on phones and in fullscreen.
+Toggling a legend item or refreshing the current view preserves the legend's
+scroll position; selecting a different view starts its legend at the top.
 An individual-series chart plots the selected series, plus the globally
 controlled electricity prices. Categorical series use
 an activity row; selecting a sparse series does not manufacture missing history.
@@ -637,6 +676,8 @@ an activity row; selecting a sparse series does not manufacture missing history.
 The chart icon button beside the selection button opens a view with both date
 pickers, gesture navigation and a selected-period navigator. The normal chart is
 fixed to the entire selected period, with no zoom controls or navigator.
+Landscape chart mode keeps dates at the upper left and selection/Exit at the
+upper right on one row when space allows; narrow portrait layouts still wrap.
 **Exit** restores that fixed chart. Reopening chart view
 resumes its previous zoom and position while the selected dates remain the same.
 The Garage chart shortcut opens the same view.
@@ -939,8 +980,10 @@ retaining its green colour alongside blue Outdoor readings. **Property
 temperatures** compares Upstairs, Bedroom, Downstairs and both Garage probes on
 one right temperature axis. **Home temperatures & comfort** focuses on home
 rooms, the saved average and reference. Each view keeps its own deliberate
-temperature choices. Room colours remain distinct; Garage front and rear use
-related shades. Temperatures use the same interpolation rules throughout these
+temperature choices. Room colours remain distinct; Garage rear uses dark orange
+and front a noticeably lighter orange. Caravan air uses the same distinct cyan
+throughout its views; Caravan electricity uses the property-power colour.
+Temperatures use the same interpolation rules throughout these
 views, while missing and expired coverage still breaks the curves.
 Average indoor reads the resolved value already included in each existing
 15-minute learning journal record; it creates no additional temperature recorder
