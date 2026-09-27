@@ -235,6 +235,26 @@ settings; when unchanged from setup, that is HEAT at 17°C. This relies on the
 driver enforcing its local expiry and on a working Pill and serial path. The
 90-second source lifetime is unchanged; no additional lease timer is introduced.
 
+The Pill also refreshes the admitted sample on its serial link every 10 seconds.
+A numeric command arriving during that transaction can be rejected `busy`, even
+with a fresh challenge: public state does not expose serial readiness. After a
+busy rejection, the host waits at least four seconds before retrying, increasing
+to eight seconds for subsequent rejections until acknowledgement. New source
+reports and challenges do not bypass this delay. The next ordinary safety tick
+or input update reconsiders the latest usable measurement with a fresh envelope
+and its unchanged source timestamp and expiry; no retry timer or queue of old
+measurements is added. Explicit clear bypasses the numeric retry delay.
+
+Brief busy renewal rejections remain visible in live command status but do not
+create history events while fresh, owned device evidence confirms the exact
+previous acknowledged sample within its original permission. Contention lasting
+15 seconds records one abnormal event, retaining the first rejection time even
+across retries. Only confirmed acknowledgement or completed clearing establishes
+recovery. Initial rejection without acknowledged coverage, expired permission,
+changed ownership, mismatched evidence and communication failures remain
+diagnostic. These host measures reduce repeated collisions without requiring
+firmware changes; an individual collision can still occur.
+
 A numeric renewal that remains published without acceptance can be retried after
 10 seconds when a newer live report still acknowledges the exact previous sample
 and supplies a fresh unused challenge. The challenge fences the earlier envelope;
@@ -293,7 +313,8 @@ temporary data loss. Detailed source clocks and quality remain in value popovers
 The supplied external temperature and native electrical power are live-only
 diagnostics. External control records compact abnormal-onset, reason-change and
 recovery events; ordinary activation, clear and successful renewals create no
-events or numeric history. An accepted renewal cannot conceal expiry of the
+events or numeric history. Brief covered busy renewals use the bounded grace
+described above. An accepted renewal cannot conceal expiry of the
 previous acknowledged sample. Missing replies, disconnected transport, failed
 commands and mismatched or expired device evidence remain distinguishable.
 The last unresolved diagnostic is checkpointed to avoid repeating it after a

@@ -70,6 +70,15 @@ function fixture(t, { initialNativeTargetC = 17 } = {}) {
     }
     state();
   }
+  function rejectBusy() {
+    const command = published.at(-1).command;
+    assert.equal(command.action, 'remote-temperature');
+    assert.notEqual(command.temperatureC, null);
+    result = { action: command.action, ownerSession: command.ownerSession, commandId: command.commandId,
+      sequence: command.sequence, status: 'rejected', reason: 'busy' };
+    // The driver rejected this renewal before changing the acknowledged feed.
+    state();
+  }
   async function settle() {
     // Incoming state schedules safety work; publication schedules another state
     // checkpoint. Drain both without advancing the original sensor timestamp.
@@ -109,7 +118,7 @@ function fixture(t, { initialNativeTargetC = 17 } = {}) {
   }
   measure(); state();
   t.after(async () => { await runtime.close({ restore: false }); await adapter.close({ restore: false }); store.close(); });
-  return { runtime, adapter, engine, store, native, published, observations, state, report, measure, settle, advanceReport, start,
+  return { runtime, adapter, engine, store, native, published, observations, state, report, rejectBusy, measure, settle, advanceReport, start,
     now: () => now, advance(ms = 1000) { now += ms; } };
 }
 
@@ -339,6 +348,93 @@ test('fresh independent room measurements renew through active externalBusy and 
   assert.equal(f.runtime.status().roomTemperature.phase, 'waiting');
   assert.equal(f.runtime.status().roomTemperature.targetC, 5, 'fallback preserves saved room intent');
   await f.settle(); assert.equal(f.published.length, 5);
+});
+
+test('brief busy renewals coalesce fresh room readings during cooldown without clearing or recording a fault', async t => {
+  const f = fixture(t); await f.start();
+  f.advance(20_000); f.measure(4); f.state(); await f.settle();
+  assert.equal(f.published.length, 4);
+  const rejected = f.published.at(-1).command;
+  f.advance(); f.rejectBusy(); await f.settle();
+  assert.equal(f.published.length, 4, 'a new challenge cannot immediately retry a busy renewal');
+
+  for (let update = 1; update <= 3; update++) {
+    f.advance(); f.measure(4 + update / 2); f.state(); await f.settle();
+    assert.equal(f.published.length, 4, 'fresh source readings cannot bypass the busy cooldown');
+    assert.equal(f.adapter.externalTemperature().phase, 'active');
+    assert.equal(f.adapter.externalTemperature().temperatureC, 17, 'the previous acknowledged feed remains in use');
+  }
+  const latest = structuredClone(f.engine.latest.garage_temperature);
+  const lastReportAt = f.adapter.snapshot().acceptedEvidence.observedAt;
+  f.advance(); f.runtime.safetyTick(); await f.settle();
+  assert.equal(f.adapter.snapshot().acceptedEvidence.observedAt, lastReportAt, 'no new adapter report triggers the retry');
+  assert.equal(f.published.length, 5, 'the safety tick retries at the cooldown boundary using the already-fresh challenge');
+  const retry = f.published.at(-1).command;
+  assert.equal(retry.action, 'remote-temperature');
+  assert.equal(retry.temperatureC, latest.value + 12);
+  assert.equal(retry.measuredAt, latest.sourceTime);
+  assert.equal(retry.requestedExpiryAt, latest.sourceTime + 90_000);
+  assert.notEqual(retry.measuredAt, f.now(), 'retry time cannot replace the original sensor timestamp');
+  assert.equal(retry.issuedAt, f.now());
+  assert.equal(retry.sequence, rejected.sequence + 1);
+  assert.notEqual(retry.commandId, rejected.commandId);
+  assert.notEqual(retry.challenge, rejected.challenge);
+  assert.deepEqual(f.engine.latest.garage_temperature, latest);
+  assert.ok(f.published.slice(2).every(({ command }) => command.action === 'remote-temperature' && command.temperatureC !== null));
+
+  await f.advanceReport('acknowledged');
+  assert.equal(f.runtime.status().roomTemperature.phase, 'active');
+  assert.equal(f.runtime.status().roomTemperature.acknowledged, true);
+  assert.equal(f.adapter.externalTemperature().temperatureC, latest.value + 12);
+  assert.equal(f.now() + f.adapter.externalTemperature().expiresInMs, retry.requestedExpiryAt);
+  assert.deepEqual(f.observations, []);
+  assert.equal(f.store.db.prepare("SELECT count(*) n FROM events WHERE type='garage-external-temperature-diagnostic'").get().n, 0);
+});
+
+test('sustained busy renewals back off and record one fault until acknowledged recovery', async t => {
+  const f = fixture(t); await f.start();
+  f.advance(20_000); f.measure(4); f.state(); await f.settle();
+  const first = f.published.at(-1).command;
+  f.advance(); f.rejectBusy(); await f.settle();
+  const busySince = f.now();
+  const diagnostics = () => f.store.db.prepare("SELECT payload FROM events WHERE type='garage-external-temperature-diagnostic' ORDER BY id")
+    .all().map(row => JSON.parse(row.payload));
+  assert.deepEqual(diagnostics(), []);
+
+  f.advance(4_000); f.state(); await f.settle();
+  assert.equal(f.published.length, 5);
+  f.rejectBusy(); await f.settle();
+  assert.equal(f.published.length, 5);
+  for (let update = 0; update < 7; update++) {
+    f.advance(); f.state(); await f.settle();
+    assert.equal(f.published.length, 5, 'repeated busy doubles the cooldown to eight seconds');
+  }
+  f.advance(); f.state(); await f.settle();
+  assert.equal(f.published.length, 6);
+  assert.deepEqual(diagnostics(), [], 'published retries do not end the brief-busy grace');
+  f.advance(2_999); f.state(); await f.settle();
+  assert.deepEqual(diagnostics(), []);
+  f.advance(1); f.state(); await f.settle();
+  assert.deepEqual(diagnostics(), [{ status: 'abnormal', reason: 'busy', since: busySince }]);
+  f.advance(); f.state(); await f.settle();
+  assert.equal(diagnostics().length, 1, 'continued contention cannot repeat the same fault');
+
+  for (const { command } of f.published.slice(4)) {
+    assert.equal(command.action, 'remote-temperature');
+    assert.equal(command.temperatureC, first.temperatureC);
+    assert.equal(command.measuredAt, first.measuredAt);
+    assert.equal(command.requestedExpiryAt, first.requestedExpiryAt);
+  }
+  assert.equal(new Set(f.published.map(({ command }) => command.commandId)).size, f.published.length);
+  assert.equal(new Set(f.published.map(({ command }) => command.challenge)).size, f.published.length);
+  await f.advanceReport('acknowledged');
+  assert.equal(f.runtime.status().roomTemperature.phase, 'active');
+  assert.equal(f.runtime.status().roomTemperature.acknowledged, true);
+  assert.deepEqual(diagnostics().map(row => row.status), ['abnormal', 'recovered']);
+  assert.equal(diagnostics()[1].reason, 'external-feed-confirmed');
+  assert.equal(diagnostics()[1].previousReason, 'busy');
+  assert.equal(diagnostics()[1].since, busySince);
+  assert.deepEqual(f.observations, []);
 });
 
 test('a dropped external renewal retries on a new challenge without clearing or changing the original sensor deadline', async t => {

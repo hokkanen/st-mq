@@ -1,6 +1,27 @@
 -Make README.md better and more descriptive of the app, especially the beginning of it
 -Implement support for local mqtt-based temperature receives (eg, from shelly or HASS through Meteorologisk Institute); just store last received temp values and time stamps (maybe in storage class, see below) when received (and accept if received within 1h)
 
+Completed 2026-09-27 — Garage external-temperature busy contention
+- Inspect the current Pill producer: its ten-second external serial refresh can
+  reject a numeric sample as busy even when a new challenge is available. Replace
+  immediate host retries with a four-second delay, increasing to eight seconds
+  after repeated rejection. Coalesce source updates through the existing safety
+  loop; retain original sensor timestamps, deadlines and fresh command envelopes.
+- Replace per-collision fault/recovery events with a fifteen-second grace only
+  while the preceding acknowledged feed remains valid. Keep initial failures,
+  persistent contention, expired permission, lost ownership, mismatched evidence
+  and communication loss diagnostic. Confirmed acknowledgement or clearing is
+  required for recovery; clear bypasses the numeric cooldown.
+- Review firmware producer, adapter/runtime consumers, saved state, configuration,
+  dashboard status, tests and documentation. Preserve restart reconciliation,
+  diagnostic checkpointing and all native/source/authority gates. No firmware,
+  protocol, database, learning or configuration changes and no compatibility
+  aliases, migrations or old interpreters are introduced.
+- Validation: full routine suite passes 3,629 tests; final focused suite covers
+  137 tests including the added restart regression and safety-tick retry without
+  another device report. Production build passes with its existing bundle-size
+  warning. Synthetic fixtures only; no installed-device commands or deployment.
+
 Completed 2026-09-27 — Chart curves, series picker and operating evidence
 - Apply monotone cubic geometry to every temperature, including settings and
   targets. Remove artificial interval stair edges and retain bounded source
