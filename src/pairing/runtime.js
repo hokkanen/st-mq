@@ -14,9 +14,9 @@ const ACTIONS = new Set(['check-recovery', 'recover', 'handover', 'promote', 're
 const requestError = message => Object.assign(new Error(message), { statusCode: 409 });
 
 async function prepareAddonVipPolicy(config) {
-  if (!config.addon || config.pairing.vip.socketPath) return;
+  if (!config.addon || config.pair.vip.socketPath) return;
   await mkdir('/etc/st-mq-vip', { recursive: true, mode: 0o700 });
-  const { interface: networkInterface, address, prefixLength } = config.pairing.vip;
+  const { interface: networkInterface, address, prefixLength } = config.pair.vip;
   await durableJson('/etc/st-mq-vip/policy.json', { interface: networkInterface, address, prefixLength });
 }
 
@@ -37,14 +37,14 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
   let historyAbort = null, historyPending = null;
   function historyJob(operation) {
     historyAbort = new AbortController();
-    const signal = AbortSignal.any([historyAbort.signal, AbortSignal.timeout(config.pairing.timeoutMs ?? 3600000)]);
+    const signal = AbortSignal.any([historyAbort.signal, AbortSignal.timeout(config.pair.timeoutMs ?? 3600000)]);
     historyPending = Promise.resolve().then(() => operation(signal)).finally(() => {
       historyPending = null; historyAbort = null;
     });
     return historyPending;
   }
   const operations = new Map(), handlers = new Map();
-  const runtimeConfiguration = next => ({ ...next, role: 'primary', dbPath: primaryPath });
+  const runtimeConfiguration = next => ({ ...next, role: 'master', dbPath: primaryPath });
   const context = {
     canControl: () => !closed && Boolean(manager?.canControl()),
     recovering: () => recoveryRunning,
@@ -112,7 +112,7 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
     async closeReplica() { const previous = runtime; runtime = null; await previous?.close(); },
     async startPrimary({ dbPath, onWriting } = {}) {
       if (closed || closing) throw requestError('The instance is shutting down.');
-      await validateBroker(config.connections.mqtt, { addon: config.addon, vipAddress: config.pairing.vip.address });
+      await validateBroker(config.connections.mqtt, { addon: config.addon, vipAddress: config.pair.vip.address });
       if (closed || closing) throw requestError('The instance is shutting down.');
       primaryPath = dbPath ?? primaryPath;
       if (runtime) await hooks.stopControl({ restore: false });
@@ -137,11 +137,11 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
       replicaAbort = new AbortController();
       const signal = replicaAbort.signal;
       runtimeStarting = (async () => {
-        let directory = config.replication.directory;
+        let directory = config.pair.snapshotDirectory;
         if ((role ?? manager.status().role) === 'protected' && dbPath && existsSync(dbPath)) {
           let incoming;
           try {
-            directory = join(config.pairing.directory, 'protected-view');
+            directory = join(config.pair.directory, 'protected-view');
             await ownedDirectory(directory, '.st-mq-protected-view');
             const generation = randomUUID(); incoming = join(directory, `incoming-${generation}.sqlite`);
             const snapshot = await snapshotSource({ dbPath, destination: incoming, signal });
@@ -153,15 +153,15 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
             // Protection and its management UI must survive an unreadable
             // donor. Existing verified history remains available for viewing.
             manager.error = 'snapshot_failed';
-            directory = config.replication.directory;
+            directory = config.pair.snapshotDirectory;
           }
         }
         if (closed || closing || signal.aborted) return;
-        const started = await startReplica({ config: { ...config, role: 'replica', input: 'offline',
+        const started = await startReplica({ config: { ...config, role: 'slave', input: 'offline',
           // The read model needs local equipment mappings and defaults. The
           // viewer never constructs acquisition or control from this config.
           h66: { ...config.h66, enabled: false, writeEnabled: false }, settings: { ...config.settings, mode: 'monitoring' },
-          replication: { ...config.replication, enabled: false, directory } }, clock, pairContext: context, installSignalHandlers: false });
+          }, snapshotDirectory: directory, clock, pairContext: context, installSignalHandlers: false });
         if (closed || closing || signal.aborted) await started.close(); else runtime = started;
       })();
       try { await runtimeStarting; } finally { runtimeStarting = null; replicaAbort = null; }
@@ -171,7 +171,7 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
       const { recoveryPreview } = await recoveryModule();
       const owner = runtime;
       return historyJob(signal => recoveryPreview({ masterPath: owner.store.path, donorPath, signal,
-        input: owner.engine.config.input, workDirectory: join(config.pairing.directory, 'recovery-work') }));
+        input: owner.engine.config.input, workDirectory: join(config.pair.directory, 'recovery-work') }));
     },
     async recoveryApply({ donorPath, preview }) {
       if (!context.canControl() || !runtime?.engine) throw requestError('Recovery is available on the active master.');
@@ -181,7 +181,7 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
         await engine.closeFireplace(); engine.fireplaceRebuild = null;
         const { recoverHistory } = await recoveryModule();
         return await historyJob(signal => recoverHistory({ store: owner.store, donorPath, input: engine.config.input, preview, signal,
-          workDirectory: join(config.pairing.directory, 'recovery-work'),
+          workDirectory: join(config.pair.directory, 'recovery-work'),
           isCurrent: () => !closed && context.canControl() && runtime === owner && owner.engine === engine,
           onProgress: progress => { if (latestOperation) latestOperation.progress = progress; },
           onPublish: result => {
@@ -192,7 +192,7 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
       } finally { recoveryRunning = false; }
     },
   };
-  manager = managerFactory({ config: config.pairing, hooks, clock, ...managerOptions });
+  manager = managerFactory({ config: config.pair, hooks, clock, ...managerOptions });
   function close() {
     if (closing) return closing;
     // Manager chooses the appropriate restoring/nonrestoring shutdown while its
@@ -222,7 +222,7 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
     await manager.start();
     requireOpen();
     finishStartup();
-    return { pairing: manager, get store() { return runtime?.store; }, get engine() { return runtime?.engine; },
+    return { pair: manager, get store() { return runtime?.store; }, get engine() { return runtime?.engine; },
       get server() { return runtime?.server; }, get webAccess() { return runtime?.webAccess; }, close,
       status: context.status, requestAction: context.requestAction };
   } catch (error) { finishStartup(); try { await close(); } catch (cleanupError) { error.cleanupError = cleanupError; } throw error; }

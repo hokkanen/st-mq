@@ -55,8 +55,8 @@ function snapshot(directory, generation, value = 21, sourceAt = at) {
     digest: digest(dbPath), bytes: readFileSync(dbPath).length };
 }
 
-const configuration = directory => ({ role: 'replica', input: 'mqtt', addon: false,
-  host: '127.0.0.1', port: 0, token: '', replication: { directory, intervalMs: 60_000 },
+const configuration = directory => ({ topology: 'mirror', role: 'slave', input: 'mqtt', addon: false,
+  host: '127.0.0.1', port: 0, token: '', mirror: { directory, intervalMs: 60_000 },
   settings: { mode: 'active' }, connections: { mqtt: { address: 'mqtt://127.0.0.1:1' } },
   h66: { enabled: true, writeEnabled: true } });
 
@@ -139,8 +139,8 @@ test('replica exposes both saved models without sample histories, live readiness
   for (const section of ['outcomeDetails', 'inputDetails', 'coefficientDetails', 'planningDetails'])
     assert(garageDisplayValue[section].length > 0, `${section} is available as a recorded model explanation`);
   assert.equal(garageDisplayValue.coefficientDetails.length, 6);
-  assert.equal(garageDisplayValue.evidenceDetails.find(row => row.key === 'recorded-history-reconstruction').value, 'Recorded primary snapshot');
-  assert.match(garageDisplayValue.planningDetails.find(row => row.key === 'current-opportunity').value, /Read.only replica/);
+  assert.equal(garageDisplayValue.evidenceDetails.find(row => row.key === 'recorded-history-reconstruction').value, 'Recorded master snapshot');
+  assert.match(garageDisplayValue.planningDetails.find(row => row.key === 'current-opportunity').value, /Read.only slave/);
   assert.equal(garageDisplayValue.planningDetails.find(row => row.key === 'pause-window').value, 'Unavailable',
     'A missing live plan cannot establish that no pause is planned');
   const target = { textContent: '', classList: { toggle() {} } }, basis = { textContent: '', hidden: true }, context = { textContent: '' };
@@ -280,7 +280,7 @@ test('main replica startup bypasses legacy migration and providers and removes i
   const directory = fixture(t), legacy = snapshot(directory, 'st-mq');
   const databaseDir = join(directory, 'database');
   const config = loadConfig({ HOME: directory, XDG_CONFIG_HOME: join(directory, 'configuration'),
-    STMQ_ROLE: 'replica', STMQ_INPUT: 'mqtt', STMQ_MODE: 'active', STMQ_DATA_DIR: directory,
+    STMQ_TOPOLOGY: 'mirror', STMQ_MIRROR_ROLE: 'slave', STMQ_INPUT: 'mqtt', STMQ_MODE: 'active', STMQ_DATA_DIR: directory,
     STMQ_DATABASE_DIR: databaseDir, STMQ_PORT: '0' }, directory);
   const signalCounts = Object.fromEntries(['SIGINT', 'SIGTERM'].map(signal => [signal, process.listenerCount(signal)]));
   const app = await start({ config, clock: () => at,
@@ -292,7 +292,7 @@ test('main replica startup bypasses legacy migration and providers and removes i
   assert.equal(existsSync(databaseDir), false, 'No primary database or migration directory is created');
   assert.equal(digest(legacy.dbPath), legacy.digest);
   const response = await fetch(`http://127.0.0.1:${app.server.address().port}/api/status`);
-  assert.equal((await response.json()).replication.state, 'waiting');
+  assert.equal((await response.json()).sync.state, 'waiting');
   await app.close();
   for (const signal of ['SIGINT', 'SIGTERM']) assert.equal(process.listenerCount(signal), signalCounts[signal]);
 });
@@ -301,12 +301,12 @@ test('configured freshness checks source snapshot age even immediately after ver
   const directory = fixture(t), publication = snapshot(directory, 'delayed', 21, at - 40_000);
   publication.verifiedAt = at;
   const config = configuration(directory);
-  config.replication.staleAfterMs = 30_000;
+  config.mirror.staleAfterMs = 30_000;
   const { request } = await viewer(t, directory, async () => publication, { config });
   const result = await request('/api/status');
-  assert.equal(result.body.replication.state, 'stale');
-  assert.equal(result.body.replication.staleAfterMs, 30_000);
-  assert.equal(result.body.replication.lastSuccessAt, at);
+  assert.equal(result.body.sync.state, 'stale');
+  assert.equal(result.body.sync.staleAfterMs, 30_000);
+  assert.equal(result.body.sync.lastSuccessAt, at);
 });
 
 test('viewer starts before first snapshot and denies every mutation without opening control runtime', async t => {
@@ -314,8 +314,8 @@ test('viewer starts before first snapshot and denies every mutation without open
   const { app, request } = await viewer(t, directory, async () => null);
   const result = await request('/api/status');
   assert.equal(result.status, 200);
-  assert.equal(result.body.instance.role, 'replica');
-  assert.equal(result.body.replication.state, 'waiting');
+  assert.equal(result.body.instance.role, 'slave');
+  assert.equal(result.body.sync.state, 'waiting');
   assert.equal(result.body.liveWrites, false);
   assert.equal(app.store, null);
   assert.equal((await request(chartPath)).status, 503);
@@ -481,7 +481,7 @@ test('verified snapshots remain unchanged and viewer replaces charts and history
   assert.equal(initial.body.observations.indoor.value, 21);
   assert.equal(initial.body.lastDecision.phase, 'reduction');
   assert.equal(initial.body.liveWrites, false);
-  assert.equal(initial.body.replication.digest, first.digest);
+  assert.equal(initial.body.sync.digest, first.digest);
   assert.equal((await request(chartPath)).body.series.indoor_temperature[0].y, 21);
   assert.equal((await request('/api/recording-overview')).status, 200);
   assert.equal((await request('/api/energy-audits')).status, 200);
@@ -491,7 +491,7 @@ test('verified snapshots remain unchanged and viewer replaces charts and history
 
   now += 7 * 86_400_000;
   const stale = await request('/api/status');
-  assert.equal(stale.body.replication.state, 'stale');
+  assert.equal(stale.body.sync.state, 'stale');
   assert.equal(stale.body.now, now);
   const oldChart = await request(chartPath);
   assert.equal(oldChart.body.now, first.sourceAt, 'snapshot calculations never advance into an unobserved outage');
@@ -501,7 +501,7 @@ test('verified snapshots remain unchanged and viewer replaces charts and history
   const second = snapshot(directory, 'second', 24, at + 120_000);
   publication = second;
   now = second.verifiedAt;
-  assert.equal((await request('/api/status')).body.replication.generation, 'second');
+  assert.equal((await request('/api/status')).body.sync.generation, 'second');
   assert.equal(app.store.path, second.dbPath);
   assert.equal((await request(chartPath)).body.series.indoor_temperature[0].y, 24);
   assert.equal((await request('/api/history?signal=indoor_temperature')).body[0].value, 24);
@@ -515,13 +515,13 @@ test('bad replacement keeps serving the last verified snapshot and recovers on n
   const { request } = await viewer(t, directory, async () => publication);
   publication = { ...first, generation: 'missing', dbPath: join(directory, 'absent.sqlite') };
   const error = await request('/api/status');
-  assert.equal(error.body.replication.state, 'error');
-  assert.equal(error.body.replication.generation, 'first');
+  assert.equal(error.body.sync.state, 'error');
+  assert.equal(error.body.sync.generation, 'first');
   assert.equal(error.body.observations.indoor.value, 21);
   assert.equal((await request(chartPath)).body.series.indoor_temperature[0].y, 21);
-  assert(!error.body.replication.error.includes(directory));
+  assert(!error.body.sync.error.includes(directory));
   publication = snapshot(directory, 'recovered', 23);
-  assert.equal((await request('/api/status')).body.replication.state, 'ready');
+  assert.equal((await request('/api/status')).body.sync.state, 'ready');
   assert.equal((await request(chartPath)).body.series.indoor_temperature[0].y, 23);
 });
 
@@ -541,7 +541,7 @@ test('in-flight chart requests lease their generation across publication and old
   const oldRequest = request(chartPath);
   await entered.promise;
   publication = snapshot(directory, 'second', 25);
-  assert.equal((await request('/api/status')).body.replication.generation, 'second');
+  assert.equal((await request('/api/status')).body.sync.generation, 'second');
   unlinkSync(first.dbPath);
   proceed.resolve();
   const old = await oldRequest;

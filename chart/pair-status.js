@@ -1,11 +1,11 @@
 import { confirmAction } from './confirmation.js';
 const actions = ['check-recovery', 'recover', 'handover', 'promote', 'rejoin'];
-const pendingKey = 'stmq-pairing-pending-v1';
+const pendingKey = 'stmq-pair-pending-v1';
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
 const validPreviewId = value => typeof value === 'string' && (/^[a-f0-9]{64}$/i.test(value) || uuid.test(value));
 const stamp = value => Number.isFinite(value) && value > 0 ? value : null;
 const count = value => Number.isSafeInteger(value) && value >= 0 ? value : null;
-const roleName = role => ({ primary: 'Master', replica: 'Read-only slave', protected: 'Protected recovery' })[role] ?? 'Checking role';
+const roleName = role => ({ master: 'Master', slave: 'Slave', protected: 'Protected recovery' })[role] ?? 'Checking role';
 const checkedPreview = view => view?.recovery?.state === 'ready' && validPreviewId(view.recovery.preview?.previewId);
 const ocppReadinessHelp = 'The other computer is not ready to accept the local charger connection. Check that both computers use the same charger endpoint, credentials and authorization tags, and that its OCPP port is available.';
 
@@ -15,16 +15,16 @@ const startupProblem = view => view?.role === 'protected' && ['activation_failed
 export function pairIssueHelp(view) {
   const code = view?.error ?? view?.vip?.error;
   return {
-    vip_helper_unavailable: 'The virtual-IP helper is unavailable. Check that the address-helper socket service is running on this computer and that its socket path matches the pairing configuration.',
+    vip_helper_unavailable: 'The virtual-IP helper is unavailable. Check that the address-helper socket service is running on this computer and that its socket path matches the pair configuration.',
     vip_helper_permission: 'The controller cannot access the virtual-IP helper. Check the socket permissions and the group membership of the user running the controller; sign in again after changing groups.',
     vip_policy_invalid: 'The virtual-IP helper policy could not be read safely. Check its JSON, root ownership and permissions, then restart the helper service.',
     vip_policy_mismatch: 'The virtual-IP settings do not match the helper policy. Use the same address, network interface and prefix in both files on this computer.',
-    vip_interface_missing: 'The configured network interface does not exist here. Check this computer’s LAN interface with ip route show default and use it in both pairing settings and the helper policy.',
+    vip_interface_missing: 'The configured network interface does not exist here. Check this computer’s LAN interface with ip route show default and use it in both pair settings and the helper policy.',
     vip_command_failed: 'The virtual IP could not be assigned. Check that the configured LAN interface is up and the address and prefix belong to that network. Review the address-helper service log for the failed network operation.',
     vip_announce_failed: 'The virtual IP could not be announced on the LAN. Check the address-helper service log and that its network announcement tool is installed and permitted.',
     vip_release_failed: 'The virtual IP could not be released. Check the address-helper service and its policy. Keep the other controller stopped until this computer’s address ownership is resolved.',
     vip_failed: 'The virtual IP could not be activated. Check the local network interface, helper service and matching address policy.',
-    mqtt_local_required: 'Pairing needs a broker on this computer. Set the controller’s MQTT address to its local broker, usually mqtt://127.0.0.1. Devices use the shared virtual IP.',
+    mqtt_local_required: 'Pair mode needs a broker on this computer. Set the controller’s MQTT address to its local broker, usually mqtt://127.0.0.1. Devices use the shared virtual IP.',
     mqtt_resolution_failed: 'The MQTT broker name could not be resolved. Check the configured local broker address; use mqtt://127.0.0.1 when the broker runs directly on this computer.',
     runtime_failed: 'The controller could not start. Check the application’s terminal or service log for the startup error. Confirm that the local MQTT broker is running and accepts the configured credentials.',
     snapshot_failed: 'Local history could not be opened for viewing. Keep the database files intact and check the application log. Any last verified snapshot remains available.',
@@ -33,25 +33,26 @@ export function pairIssueHelp(view) {
 }
 
 export function pairAllowsControl(status) {
-  const pair = status?.pairing;
-  return pair?.enabled !== true || (pair.role === 'primary' && pair.canControl === true && !pair.transition);
+  const pair = status?.pair;
+  return status?.topology !== 'pair' || (pair?.role === 'master' && pair.canControl === true && !pair.transition);
 }
 
 export function isPairManagementRequest(path, body, status) {
-  return path === '/api/pairing/action' && status?.pairing?.enabled === true
+  return path === '/api/pair/action' && status?.topology === 'pair'
     && actions.includes(body?.action) && uuid.test(body?.requestId ?? '');
 }
 
 export function pairActionAllowed(view, action) {
-  if (view?.enabled !== true || view.busy || view.transition || view.uiOperation?.state === 'running' || view.actions?.[action] !== true) return false;
-  if (action === 'promote') return ['replica', 'protected'].includes(view.role);
-  if (view.role !== 'primary') return false;
+  if (!view || view.busy || view.transition || view.uiOperation?.state === 'running' || view.actions?.[action] !== true) return false;
+  if (action === 'promote') return ['slave', 'protected'].includes(view.role);
+  if (view.role !== 'master') return false;
   if (action === 'recover') return checkedPreview(view);
   if (action === 'rejoin') return view.recovery?.state === 'complete' || checkedPreview(view);
   return ['check-recovery', 'handover'].includes(action);
 }
 
-export function pairConfirmation(action, { discardUnrecovered = false, counts = {} } = {}) {
+export function pairConfirmation(action, { discardUnrecovered = false, counts = {}, bootstrapPending = false } = {}) {
+  if (action === 'promote' && bootstrapPending) return 'Promote this computer to the pair’s first master? Confirm that the other computer is not already master or controlling equipment. Only one computer may be master. This starts local recording and enables control according to this computer’s operating mode. Leave the other computer as a read-only slave; it will synchronize from this master.';
   if (action === 'rejoin' && discardUnrecovered) {
     const missing = count(counts.missing);
     return `Skip recovery and replace the other computer’s database with this master’s database? ${missing !== null ? `The check found ${missing} missing entries that will NOT be recovered. ` : ''}All unmatched history on the other computer, including recoverable gaps, conflicting and unsupported entries, will be discarded. No separate archive is kept. This master’s history and learned model stay as they are. Only continue if you accept losing that history.`;
@@ -80,18 +81,20 @@ const phaseText = {
 
 /** Public status only: arbitrary peer errors, paths and configuration never become display text. */
 export function pairDisplay(view, { now = Date.now(), formatTime = at => new Date(at).toISOString() } = {}) {
-  if (view?.enabled !== true) return null;
-  const state = view.transition ? 'transition' : ['primary', 'replica', 'protected'].includes(view.role) ? view.role : 'unknown';
+  if (!view) return null;
+  const state = view.transition ? 'transition' : ['master', 'slave', 'protected'].includes(view.role) ? view.role : 'unknown';
   const issue = pairIssueHelp(view);
   const summary = startupProblem(view)
     ? `${issue} Local history is preserved. After correcting the setup, retry promotion below; the other computer can stay offline.`
     : state === 'protected' && view.error === 'snapshot_failed' ? issue
     : state === 'protected' ? 'Local history is preserved. Incoming mirroring is blocked so another computer cannot overwrite it. Inspect this history before choosing recovery or promotion.'
     : state === 'transition' ? 'A role change is in progress. Wait for its confirmed result before starting another action.'
-      : state === 'primary' ? view.canControl === true
+      : state === 'master' ? view.canControl === true
         ? 'This computer is the master. Losing contact with the slave does not stop home control.'
-        : 'This computer is designated master, but home control is unavailable until local readiness is confirmed.'
-        : state === 'replica' ? 'This computer is a read-only slave. History, saved settings and device details are available for inspection. It never takes control automatically.'
+        : 'This computer has the saved master role. Home control is unavailable until local readiness is confirmed.'
+        : state === 'slave' ? view.bootstrapPending
+          ? 'Both computers start as read-only slaves. To set up the pair, explicitly promote one computer to master. Confirm that the other computer is not already master or controlling equipment. It never takes control automatically.'
+          : 'This computer is a read-only slave. History, saved settings and device details are available for inspection. It never takes control automatically.'
           : 'Waiting for a confirmed local role. Management actions are unavailable.';
   const peer = view.peer ?? {};
   const peerText = peer.reachable === true ? `Other computer: ${roleName(peer.role).toLowerCase()} · connected.`
@@ -99,15 +102,15 @@ export function pairDisplay(view, { now = Date.now(), formatTime = at => new Dat
   const vip = view.vip ?? {};
   const brokerText = vip.error ? 'Virtual-IP setup needs attention.'
     : vip.owned === true ? vip.ready === true ? 'MQTT address is active on this computer.' : 'MQTT address is assigned; waiting for readiness confirmation.'
-      : state === 'primary' ? 'Waiting for this computer’s MQTT address.' : 'The virtual IP is not active here. This is expected while this computer is read-only.';
+      : state === 'master' ? 'Waiting for this computer’s MQTT address.' : 'The virtual IP is not active here. This is expected while this computer is read-only.';
   const sync = view.sync ?? {}, sourceAt = stamp(sync.sourceAt ?? sync.snapshotAt), verifiedAt = stamp(sync.verifiedAt);
   const syncText = state === 'protected' ? 'Mirroring is blocked to preserve the local history.'
-    : view.role === 'primary' ? 'This master supplies the database for one-way mirroring.'
+    : view.role === 'master' ? 'This master supplies the database for one-way mirroring.'
     : sync.state === 'syncing' ? phaseText[sync.phase] ?? 'Synchronizing the database.'
       : sync.state === 'error' ? 'Synchronization needs attention. The last verified snapshot is kept.'
         : sourceAt ? `Last snapshot: ${formatTime(sourceAt)} · ${Math.max(0, Math.floor((now - sourceAt) / 60_000))} minutes old.`
           : 'No verified snapshot has been reported yet.';
-  const syncDetail = state === 'protected' ? 'Incoming snapshots cannot replace this history while protection is active.' : view.role === 'primary' ? 'The slave reports its snapshot time and identity checks in its own UI. A connection alone does not confirm that its database is current.'
+  const syncDetail = state === 'protected' ? 'Incoming snapshots cannot replace this history while protection is active.' : view.role === 'master' ? 'The slave reports its snapshot time and identity checks in its own UI. A connection alone does not confirm that its database is current.'
     : [verifiedAt ? `Identity verified ${formatTime(verifiedAt)}.` : '',
     count(sync.bytes) !== null ? `${new Intl.NumberFormat('en-GB', { maximumFractionDigits: 1 }).format(sync.bytes / 1e6)} MB.` : '',
     sync.state === 'syncing' && count(sync.completedBytes) !== null && sync.bytes > 0
@@ -128,7 +131,7 @@ export function pairDisplay(view, { now = Date.now(), formatTime = at => new Dat
   const peerStat = peer.reachable === true ? 'Other computer connected' : 'Other computer offline';
   const brokerStat = vip.error ? 'MQTT needs attention' : vip.owned && vip.ready ? 'MQTT active here' : 'MQTT not ready here';
   const syncStat = state === 'protected' ? 'Mirroring blocked'
-    : view.role === 'primary' ? brokerStat
+    : view.role === 'master' ? brokerStat
       : sync.state === 'syncing' ? 'Syncing snapshot'
         : sync.state === 'error' ? 'Sync needs attention'
           : sourceAt > now ? 'Snapshot clock ahead'
@@ -139,10 +142,10 @@ export function pairDisplay(view, { now = Date.now(), formatTime = at => new Dat
       : recovery.state === 'ready' ? `Check ready${count(recovery.preview?.counts?.missing) !== null ? ` · ${recovery.preview.counts.missing} missing entries` : ''} · review before continuing.`
         : recovery.state === 'complete' ? 'Recovery complete · ready to resume mirroring.'
           : recovery.state === 'error' || view.error ? 'An operation needs attention · open details before trying again.'
-            : sync.state === 'error' && view.role !== 'primary' ? 'Sync needs attention · the last verified snapshot is kept.' : '');
+            : sync.state === 'error' && view.role !== 'master' ? 'Sync needs attention · the last verified snapshot is kept.' : '');
   return { state, title: `${roleName(view.role)}${state === 'transition' ? ' · changing role' : ''}`, summary, peerStat, syncStat, attention,
     peer: peerText, broker: brokerText, sync: syncText, syncDetail, phase, recovery: recoveryText,
-    error: Boolean(view.error || recovery.error || vip.error || (view.role !== 'primary' && sync.state === 'error')),
+    error: Boolean(view.error || recovery.error || vip.error || (view.role !== 'master' && sync.state === 'error')),
     preview: recovery.preview ?? null, report: recovery.report ?? null };
 }
 
@@ -168,7 +171,9 @@ export function pairActionHelp(view) {
       : view?.actions?.handover === true ? 'Both computers are connected. Charger readiness is checked before this master stops.'
       : view?.peer?.reachable !== true ? 'The other computer must be connected for a graceful handover.'
         : 'The other computer must be a ready slave. Resolve protected history and resume mirroring first.'),
-    promote: wait ?? (view?.actions?.promote === true ? startupProblem(view) ? 'Correct the setup described above, then retry. No online slave is required. Confirm that any previous master is stopped or isolated.' : 'Manual confirmation required. Any previous master must be stopped or isolated. The other computer can be offline.'
+    promote: wait ?? (view?.actions?.promote === true ? startupProblem(view) ? 'Correct the setup described above, then retry. No online slave is required. Confirm that any previous master is stopped or isolated.'
+      : view.bootstrapPending ? 'First setup: choose one master. Confirm that the other computer is not already master before promoting this one. No online slave is required.'
+        : 'Manual confirmation required. Any previous master must be stopped or isolated. The other computer can be offline.'
       : 'Promotion is unavailable until the local role and readiness are confirmed.'),
   };
 }
@@ -218,11 +223,12 @@ export function createPairActions({ request, storage, confirm = message => confi
     }
   }
   async function send(body) {
-    if (busy || !available || view?.enabled !== true || (body && pending)) return false;
+    if (busy || !available || !view || (body && pending)) return false;
     if (body && !pairActionAllowed(view, body.action)) return false;
     busy = true; notify();
     if (body) {
-      const confirmation = pairConfirmation(body.action, { discardUnrecovered: body.discardUnrecovered, counts: view.recovery?.preview?.counts });
+      const confirmation = pairConfirmation(body.action, { discardUnrecovered: body.discardUnrecovered,
+        counts: view.recovery?.preview?.counts, bootstrapPending: view.bootstrapPending });
       let accepted = !confirmation;
       try { if (confirmation) accepted = await confirm(confirmation); } catch { /* A blocked dialog is a cancelled action. */ }
       if (!accepted || !available || !pairActionAllowed(view, body.action)) { busy = false; notify(); return false; }
@@ -237,8 +243,8 @@ export function createPairActions({ request, storage, confirm = message => confi
     error = false; message = 'Waiting for this operation’s confirmed result…'; notify();
     let saved = false;
     try {
-      const result = await request('/api/pairing/action', pending);
-      const status = result?.status?.enabled === true ? result.status : result?.enabled === true ? result : null;
+      const result = await request('/api/pair/action', pending);
+      const status = result?.status ?? null;
       if (status) acceptStatus(status);
       if (pending) message = 'Operation accepted. Waiting for its completion; status updates automatically.';
       saved = true;
@@ -255,7 +261,7 @@ export function createPairActions({ request, storage, confirm = message => confi
     return saved;
   }
   return { snapshot,
-    update(next) { if (next?.enabled !== undefined) { acceptStatus(next); notify(); } },
+    update(next) { if (next) acceptStatus(next); else { view = null; available = false; } notify(); },
     unavailable() { available = false; notify(); }, retry: () => send(),
     run(action) {
       if (busy || pending || !available || !actions.includes(action) || !pairActionAllowed(view, action)) return Promise.resolve(false);
@@ -287,10 +293,12 @@ export function createPairPanel({ document, request, storage, confirm, afterMuta
     $('pairing-attention').textContent = attention;
     $('pairing-attention').hidden = !attention;
     $('pairing-panel').dataset.attention = String(Boolean(state.error || display.error || !state.available));
-    $('pairing-master-controls').hidden = state.view.role !== 'primary';
-    $('pairing-slave-controls').hidden = !['replica', 'protected'].includes(state.view.role);
+    $('pairing-master-controls').hidden = state.view.role !== 'master';
+    $('pairing-slave-controls').hidden = !['slave', 'protected'].includes(state.view.role);
     $('pairing-standby-help').textContent = startupProblem(state.view)
       ? 'Startup stopped before this computer could become master. This does not mean that history has diverged. Fix the reported setup problem, then explicitly retry promotion. All database and settings edits remain disabled until it succeeds.'
+      : state.view.bootstrapPending
+      ? 'No master is selected automatically. Promote only one computer to master after confirming that the other is not already controlling equipment. Leave the other as a slave. Once a master is available, the slave synchronizes from it.'
       : state.view.role === 'protected'
       ? 'If another computer is the master, use its Paired computers section to check this computer’s history and recover missing entries before resuming mirroring. If this computer should become master instead, promote it below using the preserved local history.'
       : 'This computer reads the last copied snapshot and does not record measurements or send commands. While the master is unavailable, the history remains readable and grows older. Mirroring catches up when the master returns, provided the histories have not diverged.';
@@ -304,7 +312,7 @@ export function createPairPanel({ document, request, storage, confirm, afterMuta
     $('pairing-rejoin').textContent = checkedPreview(state.view) ? 'Skip recovery and resume mirroring' : 'Resume mirroring';
     for (const action of actions) {
       const button = $(`pairing-${action}`);
-      button.hidden = action === 'promote' ? !['replica', 'protected'].includes(state.view.role) : state.view.role !== 'primary';
+      button.hidden = action === 'promote' ? !['slave', 'protected'].includes(state.view.role) : state.view.role !== 'master';
       button.disabled = !state.available || state.busy || Boolean(state.pending) || !pairActionAllowed(state.view, action);
     }
     $('pairing-retry').hidden = !state.pending || (state.view.uiOperation?.id === state.pending.requestId && state.view.uiOperation.state === 'running');

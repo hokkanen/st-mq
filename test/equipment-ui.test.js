@@ -13,7 +13,7 @@ const plug = { id: 'caravan', label: 'Caravan', area: 'garage', kind: 'metered_s
     caravan_current: { value: 1.2, unit: 'A', label: 'Current', estimated: true, observedAt: now },
     caravan_power: { value: 0.28, unit: 'kW', label: 'Power', observedAt: now } },
   energy: { dailyKwh: 1.23, partial: true, observedAt: now } };
-const status = (overrides = {}) => ({ role: 'primary', now, equipment: { configured: true, devices: [structuredClone(plug)] },
+const status = (overrides = {}) => ({ role: 'master', now, equipment: { configured: true, devices: [structuredClone(plug)] },
   equipmentTests: { available: true, busy: false }, ...overrides });
 
 test('monitoring keeps physically named probes independent and only renders configured channels', () => {
@@ -71,7 +71,7 @@ test('transport labels match throughout equipment, providers and chart tooltips'
 
 test('test availability requires switch capability, fresh readback, authority and no concurrent test', () => {
   assert(equipmentTestAllowed(status(), plug));
-  for (const next of [status({ role: 'replica' }), status({ equipmentTests: { available: false } }),
+  for (const next of [status({ role: 'slave' }), status({ equipmentTests: { available: false } }),
     status({ equipmentTests: { available: true, busy: true } }), status({ equipmentTests: { available: true, active: { deviceId: 'caravan' } } })])
     assert.equal(equipmentTestAllowed(next, plug), false);
   for (const device of [{ ...plug, available: false }, { ...plug, controls: { switch: false } },
@@ -127,7 +127,7 @@ test('failed requests retain monitoring, hide transport error details and replic
   assert.equal(await actions.recheck(), false); assert.equal(actions.snapshot().status, initial);
   assert.doesNotMatch(actions.snapshot().message, /invented-private/);
   assert.equal(actions.snapshot().busy, false);
-  actions.update(status({ role: 'replica' }));
+  actions.update(status({ role: 'slave' }));
   assert.equal(await actions.recheck(), false); assert.equal(await actions.test('caravan', true, 5), false);
   assert.equal(count, 1);
 });
@@ -142,7 +142,7 @@ test('direct controls use no duration, require current state and serialize reque
   actions.update(current);
   assert.equal(equipmentControlAllowed(current, plug), true);
   assert.equal(equipmentControlAllowed(status(), plug), false);
-  for (const next of [{ ...current, role: 'replica' }, { ...current, equipmentControls: { available: true, busy: true } }])
+  for (const next of [{ ...current, role: 'slave' }, { ...current, equipmentControls: { available: true, busy: true } }])
     assert.equal(equipmentControlAllowed(next, plug), false);
   assert.equal(await actions.switch('unknown', false), false);
   assert.equal(await actions.switch('caravan', 'off'), false);
@@ -457,9 +457,9 @@ test('Caravan groups air and pending dehumidifier with energy, preserving disclo
   assert.match(appliance.querySelector('.equipment-control-result').textContent, /device reported/);
   liveDevice.dehumidifier.available = false;
   liveDevice.dehumidifier.temperatureControl = { enabled: true, colocated: false, reason: 'air-unavailable' };
-  panel.update({ ...next, role: 'replica' }); assert.equal(fan.disabled, true);
+  panel.update({ ...next, role: 'slave' }); assert.equal(fan.disabled, true);
   assert.equal(fan.value, 'high', 'Read-only authority cannot hide healthy reported settings');
-  assert.match(appliance.querySelector('.caravan-control-help').textContent, /primary computer/);
+  assert.match(appliance.querySelector('.caravan-control-help').textContent, /master computer/);
   next.equipment.devices[0].readings.caravan_temperature.stale = true; next.equipment.devices[0].available = false;
   liveDevice.available = false; liveDevice.dehumidifier.available = false; panel.update(next);
   assert.equal(fan.value, '', 'Stale settings cannot look live');
@@ -490,8 +490,8 @@ test('dehumidifier commands validate allowed values, require live authority and 
   assert.deepEqual(calls, [{ path: '/api/equipment/dehumidifier', body: { deviceId: device.id, setting: 'power', value: 'on' } }]);
   resolve(initial); await pending;
   assert.equal(actions.snapshot().status.equipment.devices[0].dehumidifier.state.power, 'off');
-  for (const unavailable of [{ ...initial, role: 'replica' }, { ...initial, role: 'protected' }, { ...initial, role: 'transition' },
-    { ...initial, pairing: { enabled: true, role: 'primary', canControl: false } }]) {
+  for (const unavailable of [{ ...initial, role: 'slave' }, { ...initial, role: 'protected' }, { ...initial, role: 'transition' },
+    { ...initial, topology: 'pair', pair: { role: 'master', canControl: false } }]) {
     actions.update(unavailable); assert.equal(await actions.dehumidifier(device.id, 'power', 'on'), false);
   }
   assert.equal(dehumidifierControlAllowed(initial, dehumidifier()), false);
@@ -559,5 +559,5 @@ test('recorded equipment values stay visible with provenance while live device a
   assert.equal(rows[1].value, '0 W');
   assert(rows.slice(0, 2).every(row => row.qualifier === 'Recorded' && row.stale));
   assert.equal(rows[2].value, 'Unavailable');
-  assert.equal(equipmentControlAllowed({ role: 'replica' }, device, false), false);
+  assert.equal(equipmentControlAllowed({ role: 'slave' }, device, false), false);
 });

@@ -31,8 +31,22 @@ export function parseOptions(text, { allowWrapper = false } = {}) {
   return mergeOptions({}, options);
 }
 
+// Retired topology settings must fail even during the add-on's bootstrap,
+// before Supervisor resolves any unrelated secret references.
+export function validateTopologyOptions(options) {
+  for (const field of ['replication', 'pairing']) if (Object.hasOwn(options, field))
+    throw new Error(`Retired configuration section: ${field}. Select controller.topology and configure the mirror or pair section without enable flags.`);
+  for (const field of ['mirror', 'pair']) if (object(options[field]) && Object.hasOwn(options[field], 'enabled'))
+    throw new Error(`Retired configuration field: ${field}.enabled. Select controller.topology instead.`);
+  if (object(options.controller) && Object.hasOwn(options.controller, 'role'))
+    throw new Error('Retired configuration field: controller.role. Configure mirror.role for mirror topology; pair roles are managed through manual promotion and handover.');
+  if (object(options.pair) && Object.hasOwn(options.pair, 'role'))
+    throw new Error('Unsupported configuration field: pair.role. Pair roles are managed through manual promotion and handover.');
+}
+
 export function validateOptionFields(options, schema, path = '') {
   if (!object(options) || !object(schema)) throw new Error(`Invalid configuration section${path ? `: ${path}` : ''}.`);
+  if (!path) validateTopologyOptions(options);
   for (const [key, value] of Object.entries(options)) {
     const field = path ? `${path}.${key}` : key;
     if (!Object.hasOwn(schema, key) || forbiddenKeys.has(key)) throw new Error(`Unknown configuration field: ${field}.`);
@@ -92,6 +106,8 @@ function privateOptions(path, required) {
 export function readConfigurationOptions(env, cwd, paths = configurationPaths(env, cwd)) {
   const defaults = manifest(paths.defaultsPath);
   const overrides = privateOptions(paths.privatePath, Boolean(env.STMQ_CONFIG));
+  validateTopologyOptions(defaults.options);
+  validateTopologyOptions(overrides);
   if (env.STMQ_ADDON !== '1') {
     validateOptionFields(defaults.options, defaults.schema);
     validateOptionFields(overrides, defaults.schema);

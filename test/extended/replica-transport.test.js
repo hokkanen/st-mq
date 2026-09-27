@@ -33,7 +33,7 @@ async function fixture(t) {
   await writeFile(join(bin, 'ssh'), '#!/bin/sh\nwhile [ "$#" -gt 0 ] && [ "$1" != "test-peer" ]; do shift; done\n[ "$#" -gt 0 ] || exit 2\nshift\nexec /bin/sh -c "$*"\n', { mode: 0o700 });
   const previousPath = process.env.PATH; process.env.PATH = `${bin}:${previousPath}`;
   t.after(() => { process.env.PATH = previousPath; });
-  const config = { sshHost: 'test-peer', remoteDirectory: join(directory, 'replica'),
+  const config = { sshHost: 'test-peer', remoteDirectory: join(directory, 'slave'),
     receiverPath: resolve('scripts/replica-receiver.js'), sourceDirectory: join(directory, 'work'),
     nodePath: process.execPath, rsyncPath: rsync, remoteRsyncPath: rsync, intervalMs: 10, timeoutMs: 30000 };
   return { directory, source, db, config };
@@ -103,13 +103,13 @@ test('private SSH config is selected on both channels without changing the paren
   const { directory, source, config } = await fixture(t);
   const sshConfigPath = join(directory, 'private ssh config'), capture = join(directory, 'ssh-arguments.jsonl');
   await writeFile(sshConfigPath, '# synthetic SSH config\n', { mode: 0o600 });
-  const previous = process.env.STMQ_REPLICATION_SSH_CONFIG;
+  const previous = process.env.STMQ_MIRROR_SSH_CONFIG;
   await writeFile(join(directory, 'bin/ssh'), `#!${process.execPath}\nimport fs from 'node:fs'; import {spawn} from 'node:child_process';\nconst args=process.argv.slice(2); fs.appendFileSync(${JSON.stringify(capture)},JSON.stringify(args)+'\\n');\nconst index=args.indexOf('test-peer'); const child=spawn('/bin/sh',['-c',args.slice(index+1).join(' ')],{stdio:'inherit'}); child.on('exit',code=>process.exitCode=code??1);\n`, { mode: 0o700 });
   await synchronizeReplica({ signal: t.signal, dbPath: source, config: { ...config, sshConfigPath } });
   const invocations = (await readFile(capture, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
   assert.ok(invocations.length >= 2);
   for (const args of invocations) assert.equal(args[args.indexOf('-F') + 1], sshConfigPath);
-  assert.equal(process.env.STMQ_REPLICATION_SSH_CONFIG, previous);
+  assert.equal(process.env.STMQ_MIRROR_SSH_CONFIG, previous);
 });
 
 test('offline peer fails before creating a source snapshot and resumes at the next attempt', { skip: skipRsync, timeout: 60_000 }, async t => {

@@ -108,7 +108,7 @@ function garageLearningRows(garage, now) {
         ? `Starting estimate from the ${number(reference.roomTargetC, '°C')} room setting. Both locations start here until enough settled normal-heating observations establish their own achieved temperatures. Changing the room setting restarts this reference learning; an initial estimate does not qualify a new automatic pause.`
         : 'Choose a room setting in Heat-pump settings, or wait for a fresh pump setting. Without a known setting there is no initial normal-warmth estimate. Settled observations must establish both references before a new automatic pause is eligible.',
     `${number(reference.qualifiedHours, 'h')} qualified normal-heating observations.`));
-  const reconstruction = ({ current: 'Up to date', snapshot: 'Recorded primary snapshot', rebuilding: 'Rebuilding from recorded history', failed: 'Reconstruction unavailable' })[learning.reconstruction] ?? 'Unavailable';
+  const reconstruction = ({ current: 'Up to date', snapshot: 'Recorded master snapshot', rebuilding: 'Rebuilding from recorded history', failed: 'Reconstruction unavailable' })[learning.reconstruction] ?? 'Unavailable';
   const evidenceDetails = [];
   if (validation) {
     evidenceDetails.push(learningRow('complete-clean-episodes', 'Complete clean episodes', number(validation.completedEpisodes), 'Episode evidence', 'Recorded',
@@ -123,7 +123,7 @@ function garageLearningRows(garage, now) {
       validation.active.phase === 'off' ? 'Cooling' : 'Recovery', 'Current episode', 'In progress', 'This episode is assigned to training or validation. A validation episode can extend forecast support only after cooling and recovery finish and the required checks pass.'));
   }
   evidenceDetails.push(learningRow('recorded-history-reconstruction', 'Recorded history reconstruction', reconstruction, 'Model record', 'Recorded history',
-    'The current model is rebuilt from its recorded inputs and selected corrections. A primary snapshot is historical evidence, not live pause eligibility.'));
+    'The current model is rebuilt from its recorded inputs and selected corrections. A master snapshot is historical evidence, not live pause eligibility.'));
   const version = learning.algorithm?.match(/^committed-garage-v(\d+)-/);
   if (version) evidenceDetails.push(learningRow('model-version', 'Model version', `Garage ${version[1]}`, 'Model record', 'Algorithm',
     'Version of the garage algorithm used for learning and replay.'));

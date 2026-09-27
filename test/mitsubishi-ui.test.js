@@ -57,7 +57,7 @@ test('additional native and diagnostic values are visible without inventing unsu
 
 test('native controls require their own advertised authority, independently of automatic savings', () => {
   const status=fixture();assert.equal(mitsubishiControl(status,'power').available,true);
-  for(const changed of [{...status,readOnly:true},{...status,role:'replica'},{...status,role:'protected'},
+  for(const changed of [{...status,readOnly:true},{...status,role:'slave'},{...status,role:'protected'},
     {...status,garage:{...status.garage,nativeControls:{...status.garage.nativeControls,available:false}}},
     {...status,garage:{...status.garage,nativeControls:{...status.garage.nativeControls,pending:true}}},
     {...status,garage:{...status.garage,nativeControls:{...status.garage.nativeControls,busy:true}}},
@@ -342,7 +342,7 @@ test('external room targets remain visible but cannot be submitted from read-onl
   const f = panelFixture(), status = structuredClone(f.status);
   Object.assign(status.garage.nativeControls.settings.targetC, { min: 5, value: 5 });
   status.garage.roomTemperature = { targetC: 5, phase: 'active', acknowledged: true, offsetC: 12 };
-  for (const role of ['replica', 'protected', 'transition']) {
+  for (const role of ['slave', 'protected', 'transition']) {
     f.panel.update({ ...status, role }); f.change('targetC'); await f.submit();
     assert.equal(f.nodes.get('garage-native-temperature').value, '5');
     assert.equal(f.nodes.get('garage-native-submit').disabled, true);

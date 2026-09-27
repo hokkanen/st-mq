@@ -98,7 +98,7 @@ export function createSensorChangeActions({ request, storage, makeRequestId = re
       if (failure.status >= 400 && failure.status < 500 && ![408, 429].includes(failure.status)) {
         pending = null; persist();
         message = failure.status === 401 ? 'Enter your password, then try again.'
-          : failure.status === 403 ? 'Sensor changes must be managed on the active primary computer.'
+          : failure.status === 403 ? 'Sensor changes must be managed on the active master computer.'
             : failure.status === 409 ? 'The change cannot be applied to the current history. Refresh to check its status.'
               : 'The change could not be saved. Refresh the sensors and try again.';
       } else message = 'Save not confirmed. Retry the same change without adding a duplicate.';
@@ -166,7 +166,7 @@ export function createSensorChangePanel({ document, request, storage, confirm, b
       node('retry').hidden = !state.pending || state.busy;
       node('retry').disabled = !available(state.view);
       node('refresh').disabled = state.busy || state.loading;
-      node('availability').textContent = state.view?.readOnly ? 'Manage changes on the active primary computer.'
+      node('availability').textContent = state.view?.readOnly ? 'Manage changes on the active master computer.'
         : state.view && !available(state.view) ? 'Sensor changes are unavailable in this installation.' : '';
       node('rebuild').textContent = rebuildMessage(state.view?.rebuild);
       node('rebuild').classList.toggle('form-error', state.view?.rebuild?.status === 'failed');

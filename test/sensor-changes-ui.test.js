@@ -171,7 +171,7 @@ test('panel preserves user selection and focus across status updates and display
   assert.match(row.children[1].textContent, /15:00/);
   panel.update({ ...view(2), readOnly: true });
   assert.equal($('sensor-change-submit').disabled, true);
-  assert.match($('sensor-change-availability').textContent, /primary/);
+  assert.match($('sensor-change-availability').textContent, /master/);
 });
 
 test('add and revert require an impact-specific confirmation, cancellation saves nothing', async () => {

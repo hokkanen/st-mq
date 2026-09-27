@@ -163,7 +163,7 @@ function garageSnapshot(snapshot, read) {
 
 /** This projection owns no timers, connections, command transports or writable
  * Store. Configuration defaults are explicitly local when the source has not
- * saved them; they are never presented as primary settings or live readbacks. */
+ * saved them; they are never presented as master settings or live readbacks. */
 export function replicaReadModel(snapshot, config) {
   const store = snapshot?.store, input = snapshot?.input, at = snapshot?.publication.sourceAt ?? null;
   const state = name => store?.getState(name) ?? null;

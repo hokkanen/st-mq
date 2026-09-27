@@ -1,14 +1,16 @@
-# Paired master and read-only slave
+# Pair mode: master and read-only slave
 
-Paired mode adds manual role changes and protected history recovery to the
-[read-only replica](replication.md). The master records measurements, learns and
-controls the home. The slave displays verified database snapshots. Losing the
-slave or the connection to it does not stop the master, and the slave never
-promotes itself after a timeout.
+Pair mode supports manual role changes and protected history recovery. Unlike
+a [read-only mirror](replication.md), its slave is prepared to take control.
+The master records measurements, learns and controls the home. The slave
+displays verified database snapshots. Losing the slave or the connection to it
+does not stop the master, and the slave never promotes itself after a timeout.
 
-This mode is optional. Existing standalone operation and simple one-way SSH
-replication remain available when `pairing.enabled` is false. Paired mode owns
-its synchronization, so separate `replication.enabled` must be false.
+Both computers select `controller.topology: "pair"`. The other topology choices
+are `standalone` for independent operation and `mirror` for one-way SSH
+synchronization. The `pair` section owns peer synchronization, snapshot storage
+and freshness settings; pair mode never reads the `mirror` section. Neither
+section has an `enabled` flag.
 
 ## Before enabling pairing
 
@@ -34,9 +36,9 @@ handover.
 
 The peer connection always uses the other machine's fixed address, never the
 virtual IP. Permit the configured peer TCP port between the two computers;
-the default is 1244. Peer messages and snapshot chunks use authenticated
-encryption with the shared pairing token. This token is distinct from the web
-access token and MQTT credentials. Neither the token nor household contents
+the default is 1244. The connection uses HTTP; peer messages and snapshot chunks
+use authenticated encryption with the shared pairing token. This token is
+distinct from the web access token and MQTT credentials. Neither the token nor household contents
 belong in Git or diagnostic output.
 
 ## Configuration
@@ -47,22 +49,21 @@ addresses and interface name are examples and must be replaced:
 ```json
 {
   "controller": {
-    "role": "primary"
+    "topology": "pair",
+    "input": "mqtt"
   },
   "mqtt": {
     "address": "mqtt://127.0.0.1"
   },
-  "replication": {
-    "enabled": false
-  },
-  "pairing": {
-    "enabled": true,
+  "pair": {
     "pair_id": "example-home-pair",
     "token": "replace-example-pairing-token-with-a-new-private-random-value",
     "peer_url": "http://192.0.2.20:1244",
     "listen_host": "192.0.2.10",
     "port": 1244,
     "directory": "/var/lib/st-mq/pairing",
+    "snapshot_directory": "/var/lib/st-mq/pair-snapshots",
+    "stale_seconds": 180,
     "interval_seconds": 60,
     "timeout_seconds": 3600,
     "vip_interface": "eth0",
@@ -74,14 +75,17 @@ addresses and interface name are examples and must be replaced:
 }
 ```
 
-Keep the normal live `controller.input` (`mqtt` or `providers`) and intended
-control mode in each machine's private configuration. Pairing controls whether
+The example selects live `controller.input: "mqtt"`. Adapt this to `providers`
+if that is the installation's live input, and keep the intended control mode in
+each machine's private configuration. The default simulated input cannot be
+used for pair mode. Pairing controls whether
 that runtime may start; copied active settings cannot activate a slave.
 
-On the second machine, use `controller.role: "replica"`, swap `peer_url` and
-`listen_host` to its own and the other machine's fixed addresses, and use the
-same pair ID, private token and virtual IP. Interface names and storage paths
-are machine-local and may differ. The add-on's local broker address may be
+On the second machine, also select `controller.topology: "pair"`. Swap
+`peer_url` and `listen_host` to its own and the other machine's fixed addresses,
+and use the same pair ID, private token and virtual IP. Interface names and
+storage paths are machine-local and may differ. The add-on's local broker address
+may be
 `mqtt://core-mosquitto`.
 Set `vip_socket` to an empty string in the add-on; it uses its bundled helper
 directly. Standalone Linux defaults to the restricted local helper socket.
@@ -91,31 +95,47 @@ manager or a script that writes directly to the private configuration. Do not
 use the example token. Private directories use mode `0700` and private files
 use `0600`.
 
-`controller.role` selects a role only when initializing a new pair state.
-Subsequent roles, relinquishment and protected recovery are persisted locally.
-Changing the configured initial role or restarting the process does not clear
-a protected state. Do not copy or delete the pairing state directory to force
-a role change; use the explicit management actions.
+Pair mode has no configured role. Fresh installations without existing local
+history start as read-only slaves. After completing setup on both, use **Promote this
+computer to master** on exactly one computer to establish the first master. Confirm
+that no other computer is controlling the equipment; the other computer stays
+a slave and receives verified snapshots. Opening the dashboard or restarting
+never automatically promotes either computer. Existing local history starts in
+**Protected recovery** so ordinary synchronization cannot overwrite it. Review
+that history and use the explicit promotion or recovery actions.
+
+Saved pair state owns the runtime role, relinquishment and protected recovery.
+Handover and promotion update that state, never the configuration file. A restart
+does not undo a handover or clear protection. Do not copy or delete the pair state
+directory to force a role change; use the explicit management actions.
 
 | Private setting | Environment override | Default |
 | --- | --- | --- |
-| `enabled` | `STMQ_PAIR_ENABLED` (`0` or `1`) | `false` |
-| `pair_id` | `STMQ_PAIR_ID` | Required when enabled |
-| `token` | `STMQ_PAIR_TOKEN` | Required when enabled |
-| `peer_url` | `STMQ_PAIR_PEER_URL` | Required fixed peer origin |
-| `listen_host` | `STMQ_PAIR_HOST` | `0.0.0.0` |
-| `port` | `STMQ_PAIR_PORT` | `1244` |
-| `directory` | `STMQ_PAIR_DIR` | `<dataDir>/pairing` |
-| `interval_seconds` | `STMQ_PAIR_INTERVAL_SECONDS` | `60` |
-| `timeout_seconds` | `STMQ_PAIR_TIMEOUT_SECONDS` | `3600` |
-| `vip_interface` | `STMQ_PAIR_VIP_INTERFACE` | Required |
-| `vip_address` | `STMQ_PAIR_VIP_ADDRESS` | Required IPv4 address |
-| `vip_prefix` | `STMQ_PAIR_VIP_PREFIX` | `24` |
-| `vip_helper` | `STMQ_PAIR_VIP_HELPER` | `/usr/local/bin/st-mq-vip` |
-| `vip_socket` | `STMQ_PAIR_VIP_SOCKET` | `/run/st-mq-vip/socket` on standalone Linux; empty in the add-on |
+| `controller.topology` | `STMQ_TOPOLOGY` | `standalone`; choose `pair` on both computers |
+| `pair.pair_id` | `STMQ_PAIR_ID` | Required in pair mode |
+| `pair.token` | `STMQ_PAIR_TOKEN` | Required in pair mode |
+| `pair.peer_url` | `STMQ_PAIR_PEER_URL` | Required fixed peer origin |
+| `pair.listen_host` | `STMQ_PAIR_HOST` | `0.0.0.0` |
+| `pair.port` | `STMQ_PAIR_PORT` | `1244` |
+| `pair.directory` | `STMQ_PAIR_DIR` | `<data directory>/pairing` |
+| `pair.snapshot_directory` | `STMQ_PAIR_SNAPSHOT_DIR` | `<database directory>/pair-snapshots` |
+| `pair.stale_seconds` | `STMQ_PAIR_STALE_SECONDS` | `180`; adjust for longer sync intervals |
+| `pair.interval_seconds` | `STMQ_PAIR_INTERVAL_SECONDS` | `60` |
+| `pair.timeout_seconds` | `STMQ_PAIR_TIMEOUT_SECONDS` | `3600` |
+| `pair.vip_interface` | `STMQ_PAIR_VIP_INTERFACE` | Required |
+| `pair.vip_address` | `STMQ_PAIR_VIP_ADDRESS` | Required IPv4 address |
+| `pair.vip_prefix` | `STMQ_PAIR_VIP_PREFIX` | `24` |
+| `pair.vip_helper` | `STMQ_PAIR_VIP_HELPER` | `/usr/local/bin/st-mq-vip` |
+| `pair.vip_socket` | `STMQ_PAIR_VIP_SOCKET` | `/run/st-mq-vip/socket` on standalone Linux; empty in the add-on |
 
-Restart after changing pairing configuration. The pairing directory must be
-separate from the database directory and the replica snapshot directory.
+Restart after changing pair configuration. The pair state directory must be
+separate from the database directory and `pair.snapshot_directory`. Pair mode
+does not borrow storage or freshness settings from `mirror`. The state directory
+keeps its existing `pairing` name so a configuration rename cannot bypass saved
+authority. Incompatible saved state is rejected before mutation with deliberate
+fresh-start guidance; it is never silently skipped or reset. Pair authority state
+uses version 3 and the encrypted peer protocol uses version 2 (`/v2/pair`). Both
+computers must run this contract; earlier formats are not translated.
 
 ## MQTT address management
 
@@ -184,8 +204,8 @@ because the master is unreachable.
 
 The paired-computers panel reports local role, peer reachability, broker
 address ownership, snapshot age, verification and operation progress. It is
-hidden when pairing is disabled. A regular slave continues serving its last
-verified snapshot while the master or network is unavailable.
+hidden unless `controller.topology` is `pair`. A regular slave continues serving
+its last verified snapshot while the master or network is unavailable.
 
 The master retries synchronization after a slave outage. Transfers are based
 on consistent snapshots, with integrity and content-identity verification
@@ -198,7 +218,7 @@ journals and concurrent master writes.
 Transfers reuse matching 1 MiB chunks and retain interrupted progress. Each
 received database passes SQLite integrity and SHA-256 page-content verification
 before it becomes visible. The current protocol accepts databases up to 64 GiB;
-an oversized or failed transfer leaves the last verified replica available.
+an oversized or failed transfer leaves the last verified snapshot available.
 
 Synchronization is asynchronous. Forced takeover can therefore start from a
 snapshot older than the last master write. A snapshot that was recently
@@ -276,7 +296,7 @@ snapshot. That snapshot includes the OCPP transaction ledger, setup journal
 and native charging ownership, preserving transaction IDs, pending profile
 commands and commissioning state. A paused transaction retains its finite
 profile expiry even while the computers transfer control. The slave validates the
-final setup state before activation. Only the authoritative primary owns the
+final setup state before activation. Only the authoritative master owns the
 live listener and provisions the charger. The moved VIP gives the charger the
 same endpoint and credentials, so a role handover keeps OCPP active and does
 not reconfigure the charger through Easee cloud. An ordinary application stop
@@ -297,9 +317,9 @@ recent history.
 
 ## Force promotion
 
-Use **Force promote this computer** on a slave or protected computer only
-after the old master has actually failed, been stopped, or been isolated from
-the equipment. Confirm the operation in the UI. Being unreachable is not
+After the pair has an established master, use **Promote this computer to master**
+on a slave or protected computer only after the old master has actually failed,
+been stopped, or been isolated from the equipment. Confirm the operation in the UI. Being unreachable is not
 proof that the old master stopped controlling the home. Promotion uses the
 available local history and does not automatically fetch or merge missing
 history from another master.
@@ -353,7 +373,7 @@ control or the virtual IP. Do not delete pairing state or overwrite a database
 to clear protection. A failed address release also keeps the protected management
 page available; the page does not grant device control.
 
-Replica and protected dashboards keep the same cards, history, recorded settings
+Slave and protected dashboards keep the same cards, history, recorded settings
 and available device evidence visible. Snapshot time and provenance distinguish
 recorded values from live state. Missing live readings remain unavailable;
 viewing the page never connects to devices or starts the controller. Local
@@ -367,9 +387,10 @@ file on the server requires the active master. Explicit pairing actions retain
 their own confirmation and authority checks. Internal snapshot publication and
 pair-state persistence remain necessary and do not grant dashboard editing rights.
 
-The header shows this computer's role alongside its operating mode: owning
-the master role does not mean automatic control is enabled. Open **Paired
-computers**, just above **Event log**, for connection and snapshot details,
+The header shows **Pair · Master** or **Pair · Slave** alongside the control
+mode: owning the master role does not mean automatic control is enabled.
+Protected recovery and transitions are shown separately from normal roles.
+Open **Paired computers**, just above **Event log**, for connection and snapshot details,
 recovery controls, handover or manual promotion. The section stays compact when
 closed and still shows important progress or attention messages. Slaves use
 the same layout, with recovery and handover performed from the master's UI.

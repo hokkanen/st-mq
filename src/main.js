@@ -16,28 +16,34 @@ import { standaloneAuthority, stoppedControllerViewer } from './control/authorit
 import { createRuntimeTiming } from './app/runtime-timing.js';
 
 export async function start({ config = loadConfig(), readConfig = configurationReader(config),
-  clock = Date.now, providerOptions = {}, mqttOptions = {}, pairContext = null, pairingOptions = {},
+  clock = Date.now, providerOptions = {}, mqttOptions = {}, pairContext = null, pairOptions = {},
   installSignalHandlers = true, shutdownSignal = null } = {}) {
+  const validateTopology = candidate => {
+    if (!['standalone', 'mirror', 'pair'].includes(candidate.topology ?? 'standalone')) throw new Error('Invalid local topology');
+    if (candidate.role !== undefined && !['master', 'slave'].includes(candidate.role)) throw new Error('Invalid local instance role');
+    if ((candidate.topology ?? 'standalone') === 'standalone' && candidate.role === 'slave' && !pairContext)
+      throw new Error('Standalone topology requires the master role');
+  };
+  validateTopology(config);
   const started = performance.now();
   const source = pairContext?.configurationSource ?? (readConfig === configurationReader(config) ? configurationSource(config) : null);
   let startupImport = null;
   if (config.addon && source && !pairContext) {
     startupImport = await source.prepare({ startup: true });
     config = startupImport.config;
+    validateTopology(config);
     await startupImport.persist();
   }
-  if (config.role !== undefined && !['primary', 'replica'].includes(config.role))
-    throw new Error('Invalid local instance role');
-  if (config.pairing?.enabled && !pairContext) {
+  if (config.topology === 'pair' && !pairContext) {
     const { startPaired } = await import('./pairing/runtime.js');
     const app = await startPaired({ config, readConfig, clock, providerOptions, mqttOptions,
-      startRuntime: start, installSignalHandlers, ...pairingOptions });
+      startRuntime: start, installSignalHandlers, ...pairOptions });
     if (startupImport) await startupImport.complete().catch(() => {});
     return app;
   }
-  // A replica never opens the live Store or constructs a controller. Its role
-  // comes from this machine's configuration, never from replicated state.
-  if (config.role === 'replica') {
+  // A slave never opens the live Store or constructs a controller. Mirror roles
+  // come from local configuration; pair roles come from the pair supervisor.
+  if (config.role === 'slave') {
     const { startReplica } = await import('./app/replica.js');
     const app = await startReplica({ config, clock, pairContext, installSignalHandlers });
     if (startupImport) {
@@ -271,10 +277,10 @@ export async function start({ config = loadConfig(), readConfig = configurationR
         throw new Error(`Configuration could not be read or validated. ${source ? error.message : 'Check the configuration file.'}`);
       }
       requireRunning();
-      const startupKeys = ['role', 'input', 'host', 'port', 'ingressHost', 'ingressPort', 'dataDir', 'databaseDir', 'dbPath', 'addon'];
-      if (startupKeys.some(key => next[key] !== config[key]) || !isDeepStrictEqual(next.replication, config.replication)
-        || !isDeepStrictEqual(next.pairing, config.pairing))
-        throw new Error('Input, role, replication, network access or storage settings changed. Restart to apply these changes; no settings were updated.');
+      const startupKeys = ['topology', 'role', 'input', 'host', 'port', 'ingressHost', 'ingressPort', 'dataDir', 'databaseDir', 'dbPath', 'addon'];
+      if (startupKeys.some(key => next[key] !== config[key]) || !isDeepStrictEqual(next.mirror, config.mirror)
+        || !isDeepStrictEqual(next.pair, config.pair))
+        throw new Error('Input, topology, role, mirror, pair, network access or storage settings changed. Restart to apply these changes; no settings were updated.');
       const native = engine.h66Status?.();
       if (engine.heatingTestBusy || engine.dispatchPending || engine.executor.pending
         || engine.equipmentTests?.status().busy
@@ -432,9 +438,9 @@ export async function start({ config = loadConfig(), readConfig = configurationR
     // A duplicate launch must fail without touching equipment. API requests are
     // held by settingsReloadStatus().busy until startup has completed.
     chartService = createChartService({ store });
-    webAccess = createWebAccess({ config, getEngine: () => engine, store, chartService,
+    webAccess = createWebAccess({ config, topology: config.topology, role: config.role, getEngine: () => engine, store, chartService,
       getDatabaseExportDirectory: () => config.recording?.exportDirectory ?? homedir(),
-      replicationStatus: () => replication?.status() ?? null,
+      syncStatus: () => replication?.status() ?? null,
       pairContext,
       controlAuthority: authority,
       reloadSettings: typeof readConfig === 'function' ? reloadSettings : null, settingsReloadStatus,
@@ -449,10 +455,10 @@ export async function start({ config = loadConfig(), readConfig = configurationR
     requireRunning();
     // Background work follows the initial control tick and provider startup.
     learning = canControl() && config.input !== 'simulated' ? startHistoryLearning({ store, config: engine.control }) : null;
-    if (config.replication?.enabled) {
+    if (config.topology === 'mirror' && config.role === 'master') {
       const { ReplicationService } = await import('./replication/service.js');
       requireRunning();
-      replication = new ReplicationService({ dbPath: store.path, config: config.replication });
+      replication = new ReplicationService({ dbPath: store.path, config: config.mirror });
       replication.start();
     }
     if (startupImport) {
@@ -467,7 +473,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
     console.log(JSON.stringify({ event: 'ready', input: config.input, mode: engine.settings.mode, liveWrites: engine.status().liveWrites, manualHeatingTests: engine.heatingTests().available,
       address: webAccess.server.address(), startupMs: Math.round(performance.now() - started) }));
     finishStartup();
-    return { store, get engine() { return engine; }, get server() { return webAccess.server; }, webAccess, replication, close, reloadSettings, revokeControl };
+    return { store, get engine() { return engine; }, get server() { return webAccess.server; }, webAccess, mirror: replication, close, reloadSettings, revokeControl };
   } catch (error) {
     finishStartup();
     try { await close(); } catch (cleanupError) { error.cleanupError = cleanupError; }

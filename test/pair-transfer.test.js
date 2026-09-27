@@ -19,7 +19,7 @@ async function fixture(t) {
   for (let n = 0; n < 100; n++) insert.run(String(n).padStart(2,'0').repeat(20000));
   t.after(() => db.close());
   const repository = new SnapshotRepository({ directory: join(root, 'exports') }); await repository.init();
-  const claim = { nodeId: randomUUID(), epoch: randomUUID(), role: 'primary', platform: 'ubuntu', ancestors: [], sequence: 1 };
+  const claim = { nodeId: randomUUID(), epoch: randomUUID(), role: 'master', platform: 'ubuntu', ancestors: [], sequence: 1 };
   let chunks = 0, failAfter = Infinity;
   const peer = { request: async (operation, body) => {
     if (operation === 'snapshot-hashes') return repository.hashes(body);
@@ -30,7 +30,7 @@ async function fixture(t) {
 }
 
 test('paired snapshot replication catches up inserts, changes and deletions exactly with changed chunks', async t => {
-  const f = await fixture(t), directory = join(f.root, 'replica');
+  const f = await fixture(t), directory = join(f.root, 'slave');
   const first = await f.repository.create({ dbPath: f.dbPath, claim: f.claim, sequence: 1 });
   const result = await receiveSnapshot({ directory, metadata: first, peer: f.peer });
   assert.equal((await snapshotDigest(result.dbPath)).digest, first.digest);
@@ -47,7 +47,7 @@ test('paired snapshot replication catches up inserts, changes and deletions exac
 });
 
 test('interrupted initial catchup resumes verified chunks and does not publish partial SQLite', async t => {
-  const f = await fixture(t), directory = join(f.root, 'replica');
+  const f = await fixture(t), directory = join(f.root, 'slave');
   const metadata = await f.repository.create({ dbPath: f.dbPath, claim: f.claim, sequence: 1 });
   f.failAfter(2);
   await assert.rejects(receiveSnapshot({ directory, metadata, peer: f.peer }), { code: 'peer_unavailable' });
@@ -59,7 +59,7 @@ test('interrupted initial catchup resumes verified chunks and does not publish p
 });
 
 test('universal gate preserves old publication and refuses legacy SSH receiver', async t => {
-  const f = await fixture(t), directory = join(f.root, 'replica');
+  const f = await fixture(t), directory = join(f.root, 'slave');
   const metadata = await f.repository.create({ dbPath: f.dbPath, claim: f.claim, sequence: 1 });
   await receiveSnapshot({ directory, metadata, peer: f.peer });
   const previous = await readFile(join(directory, 'publication.json'), 'utf8');

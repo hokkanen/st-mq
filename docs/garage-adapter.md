@@ -188,7 +188,7 @@ Mitsubishi i-save mode is not used or inferred.
 
 `garage.nativeControls` reports overall availability, reason, busy/pending flags,
 per-setting typed choices/ranges and readbacks, and the separate last native
-result. Ordinary controls require primary ownership, the live production route,
+result. Ordinary controls require master ownership, the live production route,
 fresh state and device/driver/pump health, `authority.manualControlAllowed`, an
 unused current challenge, and no foreign owner or pending command. They are
 available independently of economic enablement, active/shadow mode and automatic

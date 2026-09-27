@@ -5,8 +5,11 @@ import { DatabaseSync } from 'node:sqlite';
 import { durableJson, ownedDirectory, privateFile, replicationError } from '../replication/publication.js';
 
 export const NODE_PATTERN = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
-export const ROLES = new Set(['primary', 'replica', 'protected']);
+export const ROLES = new Set(['master', 'slave', 'protected']);
 export const pairError = replicationError;
+const invalidState = () => Object.assign(pairError('invalid_pair_state'), {
+  message: 'Saved pair state is incompatible or invalid. Preserve its files and database; configure a fresh pair directory for a deliberate new setup. Existing state was not replaced.',
+});
 
 /** Platform preference applies only to simultaneous active claims. */
 export function compareAuthority(left, right) {
@@ -29,15 +32,18 @@ export function acceptsLineage(accepted, claim) {
 }
 
 export class PairState {
-  constructor({ directory, pairId, platform, initialRole = 'replica', databasePath, clock = Date.now }) {
+  constructor({ directory, pairId, platform, databasePath, clock = Date.now }) {
     this.directory = resolve(directory);
     this.path = join(this.directory, 'state.json');
-    this.options = { pairId, platform, initialRole, databasePath };
+    this.options = { pairId, platform, databasePath };
     this.clock = clock;
     this.queue = Promise.resolve();
   }
 
   async open() {
+    // Reject retired role/state contracts before creating locks or changing files.
+    try { await this.readState(); }
+    catch (error) { if (error.code !== 'ENOENT') throw invalidState(); }
     await ownedDirectory(this.directory, '.st-mq-pair');
     const lockPath = join(this.directory, '.node-lock.sqlite');
     try { const file = await open(lockPath, 'wx', 0o600); await file.close(); }
@@ -47,28 +53,33 @@ export class PairState {
     try { this.lock.exec('PRAGMA busy_timeout=0; CREATE TABLE IF NOT EXISTS lock (id); BEGIN EXCLUSIVE'); }
     catch { this.lock.close(); this.lock = null; throw pairError('pair_already_running'); }
     try {
-      const raw = JSON.parse(await readFile(this.path, 'utf8'));
-      if (raw.version !== 2 || raw.pairId !== this.options.pairId || !validClaim(raw) ||
-          !Number.isSafeInteger(raw.sequence) || !Array.isArray(raw.ancestors) ||
-          !Array.isArray(raw.actions) || typeof raw.everWritten !== 'boolean') throw pairError('invalid_pair_state');
+      const raw = await this.readState();
       this.value = raw;
       // A platform change is a configuration change, never a new node identity.
       if (raw.platform !== this.options.platform) await this.update({ platform: this.options.platform });
     } catch (error) {
-      if (error.code !== 'ENOENT') { await this.close(); throw pairError('invalid_pair_state'); }
+      if (error.code !== 'ENOENT') { await this.close(); throw invalidState(); }
       let existing = false;
       try { existing = (await lstat(this.options.databasePath)).size > 0; }
       catch (error) { if (error.code !== 'ENOENT') throw error; }
-      const protectedExisting = this.options.initialRole !== 'primary' && existing;
-      this.value = { version: 2, pairId: this.options.pairId, nodeId: randomUUID(),
-        platform: this.options.platform, role: protectedExisting ? 'protected' : this.options.initialRole,
-        epoch: randomUUID(), sequence: 0, ancestors: [], everWritten: this.options.initialRole === 'primary' || existing,
-        bootstrapPending: this.options.initialRole === 'primary' && !existing,
+      const protectedExisting = existing;
+      this.value = { version: 3, pairId: this.options.pairId, nodeId: randomUUID(),
+        platform: this.options.platform, role: protectedExisting ? 'protected' : 'slave',
+        epoch: randomUUID(), sequence: 0, ancestors: [], everWritten: existing,
+        bootstrapPending: !existing,
         accepted: null, activeDbPath: this.options.databasePath, reason: protectedExisting ? 'unclassified_local_history' : null,
         transition: null, release: null, actions: [], createdAt: this.clock() };
       await this.update({});
     }
     return this.value;
+  }
+
+  async readState() {
+    const raw = JSON.parse(await readFile(this.path, 'utf8'));
+    if (raw.version !== 3 || raw.pairId !== this.options.pairId || !validClaim(raw) ||
+        !Number.isSafeInteger(raw.sequence) || !Array.isArray(raw.ancestors) ||
+        !Array.isArray(raw.actions) || typeof raw.everWritten !== 'boolean') throw invalidState();
+    return raw;
   }
 
   update(patch) {

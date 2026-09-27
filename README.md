@@ -29,16 +29,25 @@ regressions and a separate opt-in live suite verify the provider paths. See the
 Commissioning evidence is recorded per integration; see the
 [bounded native OCPP checks](docs/audit/OCPP-SETUP.md).
 
-An optional [read-only LAN replica](docs/replication.md) keeps a second computer's
-SQLite history synchronized over SSH. It serves charts through primary outages,
-catches up after replica outages, and verifies each snapshot before publication.
-The replica never acquires data or controls equipment. Replication is disabled by
-default and requires configuring the two computers.
+`controller.topology` selects **standalone**, **mirror** or **pair** operation;
+standalone is the default and runs independently. Topology is separate from the
+configured heating/control mode. Only mirror mode has a configured role,
+`mirror.role`, using **master** or **slave**.
 
-Optional [paired operation](docs/pairing.md) adds manual handover and force
-promotion, a managed MQTT virtual IP, and protected recovery of missing history.
-The dashboard shows each computer's role, synchronization and verification
-status, and the explicit recovery controls. There is no automatic failover.
+In [mirror mode](docs/replication.md), both computers select `mirror`: the master
+controls locally and sends verified SQLite snapshots over SSH; the slave serves
+read-only history and charts. It catches up after outages and never acquires data
+or controls equipment. Configure its SSH and snapshot settings in `mirror`.
+
+In [pair mode](docs/pairing.md), both computers select `pair`. The `pair` section
+owns the encrypted HTTP peer connection and snapshot settings, with manual
+handover and force promotion, a managed MQTT virtual IP, and protected recovery
+of missing history. Both new pair computers start as read-only slaves; manually
+promote one to establish the first master. Saved pair state owns subsequent roles
+across handover and restart; pair roles are never configuration fields.
+The dashboard shows **Mirror · Master/Slave** or **Pair · Master/Slave** with
+synchronization and verification status. Neither mode has automatic failover,
+and neither settings section has a separate enable flag.
 
 An independent recording optimizer targets a configurable **10 GB/year** rolling
 growth rate for continuous measurements and accumulated energy. There is no

@@ -134,8 +134,8 @@ export async function synchronizeReplica({ dbPath, config, signal, onPhase = () 
   const forwardAbort = () => abort.abort(signal.reason ?? replicationError('stopped'));
   if (signal?.aborted) forwardAbort(); else signal?.addEventListener('abort', forwardAbort, { once: true });
   const env = { ...process.env };
-  if (config.sshConfigPath) env.STMQ_REPLICATION_SSH_CONFIG = config.sshConfigPath;
-  else delete env.STMQ_REPLICATION_SSH_CONFIG;
+  if (config.sshConfigPath) env.STMQ_MIRROR_SSH_CONFIG = config.sshConfigPath;
+  else delete env.STMQ_MIRROR_SSH_CONFIG;
   const options = { signal: abort.signal, spawnProcess, env };
   let generation = randomUUID();
   let channel, destination;

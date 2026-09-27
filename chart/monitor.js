@@ -815,7 +815,7 @@ async function refresh({ forceChart = false, background = false } = {}) {
     if (sequence !== refreshSequence) return;
     communication.received();
     const replica = render(s);
-    const snapshot = replica ? replicaSnapshotKey(s) ?? 'replica-unavailable' : 'primary';
+    const snapshot = replica ? replicaSnapshotKey(s) ?? 'replica-unavailable' : 'master';
     const replaced = snapshot !== lastReplicaSnapshot;
     if (replaced) {
       eventStream.reset(snapshot); auditFetchedAt = 0;
@@ -828,13 +828,13 @@ async function refresh({ forceChart = false, background = false } = {}) {
 }
 let pairPollBusy = false;
 async function refreshPairing() {
-  if (lastStatus?.pairing?.enabled !== true || pairPollBusy) return;
+  if (lastStatus?.topology !== 'pair' || pairPollBusy) return;
   pairPollBusy = true;
   try {
-    const pairing = await api('/api/pairing');
-    const previous = lastStatus.pairing;
-    const changed = pairing.role !== previous.role || pairing.canControl !== previous.canControl || Boolean(pairing.transition) !== Boolean(previous.transition);
-    lastStatus = { ...lastStatus, pairing };
+    const pair = await api('/api/pair');
+    const previous = lastStatus.pair ?? {};
+    const changed = pair.role !== previous.role || pair.canControl !== previous.canControl || Boolean(pair.transition) !== Boolean(previous.transition);
+    lastStatus = { ...lastStatus, pair };
     readOnlyControls.update(lastStatus);
     garageDoors.update({ ...equipmentPanel.actions.snapshot(), status: lastStatus });
     pairPanel.update(pairPanelView(lastStatus));

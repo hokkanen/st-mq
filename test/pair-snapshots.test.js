@@ -18,7 +18,7 @@ async function fixture(t) {
   const repository = new SnapshotRepository({ directory: join(root, 'exports'), clock: () => 2000,
     snapshot: async options => ({ ...await createSourceSnapshot(options), sourceStartedAt: 1000, sourceAt: 1000 + ++sequence }) });
   await repository.init();
-  const claim = { nodeId: randomUUID(), epoch: randomUUID(), role: 'primary', platform: 'ubuntu' };
+  const claim = { nodeId: randomUUID(), epoch: randomUUID(), role: 'master', platform: 'ubuntu' };
   return { repository, create: options => repository.create({ dbPath, claim, sequence: sequence + 1, ...options }),
     path: (generation, suffix) => join(repository.directory, `export-${generation}.${suffix}`) };
 }

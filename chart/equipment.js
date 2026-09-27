@@ -724,7 +724,7 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
       node.off.setAttribute('aria-pressed', state === 0 ? 'true' : 'false');
       node.on.disabled = !allowed || state === 1; node.off.disabled = !allowed || state === 0;
       node.help.textContent = allowed ? 'Changes stay in effect until changed again.'
-        : isReadOnlyReplica(status) ? 'Controls are available on the primary computer.'
+        : isReadOnlyReplica(status) ? 'Controls are available on the master computer.'
           : busy || blocked() || status.equipmentControls?.busy ? 'Another request is in progress.'
             : !device.available ? 'A current switch report is needed to control this device.'
               : status.equipmentControls?.reason ?? 'Manual control is unavailable.';
@@ -750,7 +750,7 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
         control.setAttribute('aria-describedby', node.coverHelp.id);
       }
       const coverScoped = actionKind === 'cover' && actionDeviceId === device.id;
-      node.coverHelp.textContent = isReadOnlyReplica(status) ? 'Controls are available on the primary computer.'
+      node.coverHelp.textContent = isReadOnlyReplica(status) ? 'Controls are available on the master computer.'
         : busy || blocked() ? 'Another request is in progress.'
           : !device.cover?.available ? 'Door control is unavailable. Check the connection.'
             : 'Open means the door is not fully closed.';

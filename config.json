@@ -41,7 +41,7 @@
     "controller": {
       "input": "simulated",
       "mode": "shadow",
-      "role": "primary",
+      "topology": "standalone",
       "web_token": "",
       "web_family_token": "",
 
@@ -482,16 +482,17 @@
       "export_directory": "~"
     },
 
-    "pairing": {
-      "enabled": false,
+    "pair": {
       "pair_id": "",
       "token": "",
       "peer_url": "",
       "listen_host": "0.0.0.0",
       "port": 1244,
       "directory": "",
+      "snapshot_directory": "",
       "interval_seconds": 60,
       "timeout_seconds": 3600,
+      "stale_seconds": 180,
       "vip_interface": "",
       "vip_address": "",
       "vip_prefix": 24,
@@ -499,8 +500,8 @@
       "vip_socket": ""
     },
 
-    "replication": {
-      "enabled": false,
+    "mirror": {
+      "role": "master",
       "directory": "",
       "ssh_host": "",
       "remote_directory": "",
@@ -520,7 +521,7 @@
     "controller": {
       "input": "list(simulated|offline|mqtt|providers)",
       "mode": "list(monitoring|shadow|active)",
-      "role": "list(primary|replica)",
+      "topology": "list(standalone|mirror|pair)",
       "web_token": "password",
       "web_family_token": "password",
 
@@ -832,16 +833,17 @@
       "export_directory": "str"
     },
 
-    "pairing": {
-      "enabled": "bool",
+    "pair": {
       "pair_id": "str?",
       "token": "password?",
       "peer_url": "str?",
       "listen_host": "str",
       "port": "int(1,65535)",
       "directory": "str?",
+      "snapshot_directory": "str?",
       "interval_seconds": "int(10,86400)",
       "timeout_seconds": "int(30,86400)",
+      "stale_seconds": "int(30,604800)",
       "vip_interface": "str?",
       "vip_address": "str?",
       "vip_prefix": "int(1,30)",
@@ -849,8 +851,8 @@
       "vip_socket": "str?"
     },
 
-    "replication": {
-      "enabled": "bool",
+    "mirror": {
+      "role": "list(master|slave)",
       "directory": "str?",
       "ssh_host": "str?",
       "remote_directory": "str?",

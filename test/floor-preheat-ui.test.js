@@ -52,7 +52,7 @@ test('pending release and broker mismatch stay visible when commissioning or ena
 
 test('floor readiness does not grant heating control or establish thermostat restoration', () => {
   const view = floorPreheatView({ ...ready(), liveWrites: false,
-    pairing: { canControl: false }, settings: { controlEnabled: false } });
+    topology: 'pair', pair: { canControl: false }, settings: { controlEnabled: false } });
   assert.equal(view.label, 'Ready for preheating');
   assert.equal(view.state, 'available');
   assert.match(view.detail, /floor devices report ready for an override/);

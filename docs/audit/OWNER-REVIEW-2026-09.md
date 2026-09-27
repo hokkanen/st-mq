@@ -67,7 +67,7 @@ The dehumidifier bridge must supply its own actual temperature/humidity in a
 complete snapshot; it must not copy BLU values. The demand/association latch is
 deliberately transient: startup in the 1–2 °C band starts with OFF demand, and an
 appliance first seen away from the caravan receives no automatic command.
-Primary authority, live subscriptions and fresh appliance readback gate every
+Master authority, live subscriptions and fresh appliance readback gate every
 write. Offline appliances cannot be switched or confirmed. The host policy does
 not replace native appliance protection. Matching repeated commands are limited
 to one attempt per 30 seconds; a change to OFF after confirmed ON is immediate.
@@ -89,12 +89,12 @@ services. They do not establish household device health or commissioning.
 | `node scripts/browser-chart-smoke.js <isolated-Firefox-BiDi-WebSocket-URL>` | Passed date/range selection, inspection, gestures/fullscreen, mobile legends/layout, timing comparisons, export and provider/manual-control checks. |
 | `node scripts/browser-garage-learning-smoke.js` | Passed at 320, 390 and 1440 pixels in light/dark themes; screenshots inspected. |
 | `node scripts/browser-sensors-smoke.js <isolated-Chrome-DevTools-URL>` | Passed sensor availability, scoped changes, styled confirmations and layout checks. |
-| `node --test test/equipment-ui.test.js` | 22 passed after the final caravan help-text adjustment; replica/authority explanations remain visible. |
+| `node --test test/equipment-ui.test.js` | 22 passed after the final caravan help-text adjustment; slave/authority explanations remain visible. |
 | `git diff --check` | Passed. |
 
 The normal test suite includes OCPP authentication, freshness, authority loss,
 durable transaction retries, configuration replies and transport handoff;
-WAL-inclusive single-file export, authorization, replica reader lifetime and concurrent
+WAL-inclusive single-file export, authorization, slave reader lifetime and concurrent
 export rejection; and acquisition, scoped sensor correction, history coverage and
 dehumidifier hysteresis regressions. A real firmware 344 charger, Pill and caravan
 appliance were not exercised.

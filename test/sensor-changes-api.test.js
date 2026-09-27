@@ -103,7 +103,7 @@ test('a durable sensor change survives follow-up failure and the same retry crea
 test('offline, replica and protected controllers cannot record sensor changes through HTTP', async t => {
   for (const [name, options, code] of [
     ['offline', { input: 'offline' }, 400],
-    ['replica', { role: 'replica' }, 405],
+    ['slave', { role: 'slave' }, 405],
     ['another controller owns control', { controlAuthority: { canControl: () => false, status: () => ({ protected: true }) } }, 409],
     ['paired standby', { pairContext: { canControl: () => false, status: () => ({ role: 'standby' }) } }, 409],
     ['historical recovery', { pairContext: { canControl: () => true, recovering: () => true, status: () => ({ recovering: true }) } }, 409],

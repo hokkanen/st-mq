@@ -17,14 +17,14 @@ export function ocppInstallation(config, { createCredential = false } = {}) {
   const local = localOcppConfiguration(easee.local_ocpp);
   const identity = local.charge_point_id || easee.charger_id || '';
   const scope = digest([easee.charger_id ?? '', identity]);
-  const paired = config.pairing?.enabled === true;
-  const virtualEndpoint = paired ? `ws://${config.pairing.vip.address}:${local.port}/ocpp` : '';
+  const paired = config.topology === 'pair';
+  const virtualEndpoint = paired ? `ws://${config.pair.vip.address}:${local.port}/ocpp` : '';
   if (paired && (local.server_url && local.server_url !== virtualEndpoint
-    || !['0.0.0.0', config.pairing.vip.address].includes(local.host)))
+    || !['0.0.0.0', config.pair.vip.address].includes(local.host)))
     throw fail('Paired OCPP must listen on the shared virtual IPv4 address or all IPv4 interfaces and use the virtual address endpoint.');
   const endpoint = local.server_url || virtualEndpoint;
   let password = local.password;
-  if (!password && paired) password = Buffer.from(hkdfSync('sha256', config.pairing.token,
+  if (!password && paired) password = Buffer.from(hkdfSync('sha256', config.pair.token,
     scope, 'st-mq:easee-native-ocpp:basic-auth:v1', 15)).toString('base64url');
   if (!password && createCredential && easee.charger_id) {
     const path = join(config.dataDir, 'easee-ocpp-credentials.json');
@@ -54,7 +54,7 @@ export function ocppInstallation(config, { createCredential = false } = {}) {
   const virtualTag = password ? Buffer.from(hkdfSync('sha256', password, scope,
     'st-mq:easee-native-ocpp:virtual-tag:v1', 12)).toString('hex').slice(0, 20) : '';
   return { ...local, password, virtualTag, endpoint, identity, chargerId: easee.charger_id ?? '', scope,
-    endpointSource: endpoint ? local.server_url ? 'configured' : 'pairing-vip' : null };
+    endpointSource: endpoint ? local.server_url ? 'configured' : 'pair-vip' : null };
 }
 
 function validState(value, scope) {
@@ -74,7 +74,7 @@ export function ocppHandoverRequirements(config, setupState = null, { restoratio
   if (setupState !== null && setupState !== undefined && !validState(setupState, installation.scope)) throw fail('ocpp-handover-incompatible');
   const needsListener = installation.enabled || restorationRequired || Boolean(setupState?.ownedFingerprint || setupState?.intent);
   if (!needsListener || !installation.chargerId) return null;
-  if (!config.pairing?.enabled || !installation.endpoint || !installation.password) throw fail('ocpp-handover-incompatible');
+  if (config.topology !== 'pair' || !installation.endpoint || !installation.password) throw fail('ocpp-handover-incompatible');
   const compatibility = { enabled: installation.enabled, scope: installation.scope, endpoint: installation.endpoint,
     password: installation.password, port: installation.port,
     certificate: installation.ca_certificate, certificateDomain: installation.ca_certificate_domain,

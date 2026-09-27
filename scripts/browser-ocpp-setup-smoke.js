@@ -44,7 +44,7 @@ try {
       if (path.endsWith('/api/charging/ocpp-setup')) {
         window.setupRequests.push(JSON.parse(options.body));
         await new Promise(resolve => { window.finishSetup = resolve; });
-        window.setupFixture = { state: 'connecting', reason: 'waiting-connection', endpointSource: 'pairing-vip' };
+        window.setupFixture = { state: 'connecting', reason: 'waiting-connection', endpointSource: 'pair-vip' };
         return new Response(JSON.stringify({ setup: window.setupFixture }), { status: 200 });
       }
       const response = await original(input, options);
@@ -82,13 +82,13 @@ try {
   assert.match(await evaluate(`document.querySelector('${local} .provider-local-outage').textContent`), /If the controller stops.*crash or power loss.*waiting for approval.*Restart the controller/);
   for (const [reason, label] of [['native-control-unavailable', 'Activation pending'],
     ['cloud-schedule-active', 'Waiting for cloud schedule'], ['control-transition-pending', 'Control handover pending']]) {
-    await evaluate(`window.setupFixture = {state:'blocked', reason:${JSON.stringify(reason)}, endpointSource:'pairing-vip', canAdopt:false}; true`);
+    await evaluate(`window.setupFixture = {state:'blocked', reason:${JSON.stringify(reason)}, endpointSource:'pair-vip', canAdopt:false}; true`);
     await refresh(); await until(`document.querySelector('${setupLabel}').textContent === ${JSON.stringify(label)}`);
     assert.equal(await evaluate(`document.querySelector('${setupLabel}').dataset.state`), 'pending');
     assert.equal(await evaluate(`document.querySelector('${button}').hidden`), true);
     assert.equal(await evaluate("document.querySelector('[data-provider=electricity] .provider-category-state').textContent"), 'Available');
   }
-  await evaluate("window.setupFixture = { state: 'blocked', reason: 'foreign-configuration', endpointSource: 'pairing-vip', canAdopt: true, revision: 'a'.repeat(64) }; true");
+  await evaluate("window.setupFixture = { state: 'blocked', reason: 'foreign-configuration', endpointSource: 'pair-vip', canAdopt: true, revision: 'a'.repeat(64) }; true");
   await refresh(); await until(`!document.querySelector('${button}').hidden`);
   await evaluate(`document.querySelector('${button}').click(); true`);
   await until("Boolean(document.querySelector('.confirmation-dialog[open]'))");
@@ -114,7 +114,7 @@ try {
   await evaluate('window.finishSetup(); true');
   await until(`document.querySelector('${setupLabel}').textContent === 'Waiting for connection'`);
   assert.equal(await evaluate(`document.querySelector('${button}').hidden`), true);
-  await evaluate("window.localAvailable = true; window.setupFixture = { state: 'ready', endpointSource: 'pairing-vip' }; true");
+  await evaluate("window.localAvailable = true; window.setupFixture = { state: 'ready', endpointSource: 'pair-vip' }; true");
   await refresh(); await until(`document.querySelector('${setupLabel}').textContent === 'Setup complete'`);
   assert.equal(await evaluate(`document.querySelector('${local} [data-local-connection=readings]').textContent`), 'Available');
   assert.equal(await evaluate(`document.querySelector('${local} .provider-local-message').textContent`), '', 'Confirmed setup replaces the earlier waiting notice');

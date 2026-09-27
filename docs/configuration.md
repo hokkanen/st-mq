@@ -196,6 +196,43 @@ locations have always been required by the current protection algorithm.
 Unsupported saved development settings require a deliberate fresh database;
 loading or applying configuration never rewrites the owner's source.
 
+## Topology and role
+
+Use one `controller.topology` choice. Both computers in a mirror or pair use the
+same topology. Only mirror mode has a configured master/slave role, `mirror.role`.
+
+| Topology | Role ownership | Settings read and behavior |
+| --- | --- | --- |
+| `standalone` (default) | Local runtime is master; no role setting | Local controller/provider settings; no synchronization. The UI shows **Standalone**. |
+| `mirror` | `mirror.role: "master"` (default) | Local controller settings and `mirror` SSH destination/transfer settings; controls locally and sends snapshots. **Mirror · Master**. |
+| `mirror` | `mirror.role: "slave"` | `mirror.directory` and `mirror.stale_seconds`; displays verified snapshots without device connections or control. Outgoing SSH settings are unnecessary. **Mirror · Slave**. |
+| `pair` | Saved pair authority; fresh empty installations start as slaves | Local future-controller settings and `pair` connection, storage and virtual-IP settings; explicit promotion establishes the first master. **Pair · Master** or **Pair · Slave** reflects the actual runtime role. |
+
+`STMQ_TOPOLOGY` overrides topology. `STMQ_MIRROR_ROLE` overrides `mirror.role`.
+Pair and standalone modes have no configured role. `controller.mode` continues
+to choose the heating/control mode; master authority alone does not enable
+automatic control.
+
+[Mirror mode](replication.md) uses SSH and fixed local roles. [Pair mode](pairing.md)
+uses the encrypted HTTP peer protocol and manual role changes. Fresh pair installations without local history
+start as slaves; after setup, manually promote exactly one computer to establish
+the first master. Existing unclassified local history starts protected.
+Persisted authority survives handover and restart. Handover
+and promotion write pair state, never the configuration file. Copied database
+contents cannot grant authority or replace local credentials.
+
+The sections are `mirror` and `pair`, with no `enabled` fields. Pair owns
+`pair.snapshot_directory` and `pair.stale_seconds`; it does not read the mirror
+section. Connection environment settings use `STMQ_MIRROR_*` and `STMQ_PAIR_*`.
+The former `replication`/`pairing` sections, `controller.role`, any `pair.role`,
+`primary`/`replica` role values, `STMQ_ROLE`, `STMQ_REPLICATION_*`,
+`STMQ_REPLICA_*` and `STMQ_PAIR_ENABLED` are rejected with actionable errors.
+There are no aliases or automatic configuration/state conversions. Incompatible
+saved state is reported before mutation; it is not silently reset, overwritten
+or migrated. This includes saved pair authority and standalone controller
+identity. Follow the reported guidance for a deliberate new setup with a fresh
+state directory; preserve the rejected files.
+
 ## Section map
 
 The public `options` and `schema` use the same section order. Settings stay with
@@ -204,11 +241,11 @@ larger sections without adding another configuration format.
 
 | Sections, in file order | Settings they own |
 | --- | --- |
-| `controller`, `garage`, `charging`, `electricity` | Home operation/heating and web access passwords, Garage policy/adapter, charger/vehicle sources and permanent charging defaults, electricity tariffs. |
+| `controller`, `garage`, `charging`, `electricity` | Topology, Home operation/heating and web access passwords, Garage policy/adapter, charger/vehicle sources and permanent charging defaults, electricity tariffs. |
 | `geoloc`, `mqtt`, `entsoe`, `easee`, `teslamate` | Location, broker access and provider connections. `easee.local_ocpp` contains the authenticated local charger listener and explicit authorization tags; see [Easee setup](charging-easee.md#direct-local-ocpp-telemetry-firmware-344-or-later). |
 | `equipment` | The current MQTT/Shelly equipment inventory and device mappings. |
 | `acquisition`, `recording` | Provider polling/freshness and recording/storage settings. |
-| `pairing`, `replication` | Instance pairing, failover and database replication. |
+| `pair`, `mirror` | Pair peer connection, snapshots, manual handover and recovery; mirror role, SSH connection and snapshots. `controller.topology` selects which is used. |
 
 Equipment mappings use `equipment.devices`. Retired role-based Shelly and
 individual MQTT temperature-topic fields are rejected. The heat-pump adapter

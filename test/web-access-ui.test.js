@@ -10,7 +10,7 @@ const status = { equipment: { devices: [{ id: 'door', kind: 'door', area: 'garag
 
 test('family requests allow household controls and reads while all other writes and downloads require admin', () => {
   for (const [path, data] of [
-    ['/api/status'], ['/api/events?after=0'], ['/api/energy-audits'], ['/api/sensor-changes'], ['/api/pairing'],
+    ['/api/status'], ['/api/events?after=0'], ['/api/energy-audits'], ['/api/sensor-changes'], ['/api/pair'],
     ['/api/fireplace', { kg: 6 }], ['/api/fireplace/remove', { id: 3 }], ['/api/temporary', { awayUntil: null, pauseUntil: null }],
     ['/api/dhwr/stop', {}], ['/api/heating-test', { command: 'circulation' }], ['/api/heating-test', { command: 'preheat' }],
     ['/api/garage/heating', { mode: 'off' }], ['/api/garage/temporary', { pauseUntil: null }], ['/api/garage/release', {}],
@@ -21,7 +21,7 @@ test('family requests allow household controls and reads while all other writes 
     ['/api/database-export'], ['/api/database-export', {}], ['/api/downloads/floor-lease-script'],
     ['/api/settings/reload', {}], ['/api/sensor-changes', {}], ['/api/sensor-changes/retry-rebuild', {}],
     ['/api/equipment/switch', { deviceId: 'door', on: true }], ['/api/equipment/test', {}], ['/api/equipment/dehumidifier', {}],
-    ['/api/equipment/h66', {}], ['/api/garage/native', {}], ['/api/pairing/action', {}], ['/api/charging/ocpp-setup', {}],
+    ['/api/equipment/h66', {}], ['/api/garage/native', {}], ['/api/pair/action', {}], ['/api/charging/ocpp-setup', {}],
     ['/api/heating-test', { command: 'commission' }], ['/api/garage/heating', { mode: 'power' }],
     ['/api/equipment/cover', { deviceId: 'gate', action: 'open' }], ['/api/equipment/cover', { deviceId: 'door', action: 'stop' }],
     ['/api/new-control', {}], ['/api/charging/chargers/test/new-control', {}],
@@ -123,7 +123,7 @@ test('session requests work in appliance browsers without AbortSignal.any', asyn
 test('logout removes credentials and pending actions, aborts requests, and prevents late responses and automatic reconnection', async () => {
   const storage = storageFixture(), session = createWebSession({ storage });
   session.login('invented-family-browser-password');
-  for (const key of ['stmq-fireplace-pending', 'stmq-sensor-change-pending', 'stmq-pairing-pending-v1']) storage.setItem(key, '{}');
+  for (const key of ['stmq-fireplace-pending', 'stmq-sensor-change-pending', 'stmq-pair-pending-v1']) storage.setItem(key, '{}');
   let finish, signal, calls = 0;
   const pending = session.run(options => {
     calls++; signal = options.signal;

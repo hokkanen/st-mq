@@ -25,7 +25,7 @@ function fixture() {
 
 test('read-only permissions survive renderer updates and synthetic events while keeping navigation and download usable', () => {
   const view = fixture(), access = createReadOnlyControls(view);
-  access.update({ role: 'replica' });
+  access.update({ role: 'slave' });
   assert.equal(view.apply.disabled, true);
   assert.equal(view.navigate.disabled, false);
   assert.equal(view.download.disabled, false);
@@ -35,11 +35,11 @@ test('read-only permissions survive renderer updates and synthetic events while 
     assert.deepEqual(view.event(type, view.apply), { stopped: true, prevented: true });
     assert.deepEqual(view.event(type, view.navigate), { stopped: false, prevented: false });
   }
-  access.update({ pairing: { enabled: true, role: 'primary', canControl: false } });
+  access.update({ topology: 'pair', pair: { role: 'master', canControl: false } });
   assert.equal(view.apply.disabled, true, 'a role label alone never grants mutation access');
-  access.update({ role: 'replica', pairing: { enabled: true, role: 'primary', canControl: true } });
+  access.update({ role: 'slave', topology: 'pair', pair: { role: 'master', canControl: true } });
   assert.equal(view.apply.disabled, true, 'a stale replica status stays locked during promotion');
-  access.update({ role: 'primary', pairing: { enabled: true, role: 'primary', canControl: true } });
+  access.update({ role: 'master', topology: 'pair', pair: { role: 'master', canControl: true } });
   assert.equal(view.apply.disabled, false);
   assert.equal(view.unsupported.disabled, true, 'native capability checks still apply after promotion');
   assert.deepEqual(view.event('submit', view.apply), { stopped: false, prevented: false });

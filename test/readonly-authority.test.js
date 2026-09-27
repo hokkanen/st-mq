@@ -15,7 +15,7 @@ const writes = ['/api/settings/reload', '/api/charging/ocpp-setup', '/api/chargi
   '/api/sensor-changes/retry-rebuild', '/api/dhwr/stop', '/api/temporary', '/api/database-export',
   '/api/test/h66', '/api/heating-test', '/api/override', '/api/settings', '/api/contract'];
 
-async function fixture(t, { role = 'primary', pairContext, controlAuthority } = {}) {
+async function fixture(t, { role = 'master', pairContext, controlAuthority } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'stmq-readonly-gate-'));
   const store = new Store(':memory:'); store.setState('synthetic-history', { retained: true });
   let mutations = 0;
@@ -32,14 +32,14 @@ async function fixture(t, { role = 'primary', pairContext, controlAuthority } = 
   return { root, store, url: `http://127.0.0.1:${server.address().port}`, mutations: () => mutations };
 }
 
-for (const kind of ['replica', 'protected', 'stopped']) test(`${kind} keeps read access and rejects every dashboard write without changing history`, async t => {
+for (const kind of ['slave', 'protected', 'stopped']) test(`${kind} keeps read access and rejects every dashboard write without changing history`, async t => {
   const authority = { canControl: () => false, status: () => ({ role: 'protected' }), recovering: () => false };
-  const f = await fixture(t, kind === 'replica' ? { role: 'replica' }
+  const f = await fixture(t, kind === 'slave' ? { role: 'slave' }
     : kind === 'protected' ? { pairContext: authority } : { controlAuthority: authority });
   const before = f.store.db.prepare('SELECT total_changes() n').get().n;
   for (const path of writes) {
     const response = await fetch(`${f.url}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
-    assert.equal(response.status, kind === 'replica' ? 405 : 409, path);
+    assert.equal(response.status, kind === 'slave' ? 405 : 409, path);
     assert.match((await response.json()).error, /read-only/);
   }
   const status = await (await fetch(`${f.url}/api/status`)).json();

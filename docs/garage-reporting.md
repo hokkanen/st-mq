@@ -84,7 +84,7 @@ down to 5°C when external temperature control is available. Below 16°C the
 requested room setting is distinct from the actual native 17°C readback. Status
 shows the Garage rear sensor, offset, remote temperature and active or fallback
 state; it never infers Mitsubishi i-save. The owning instance retains the chosen
-room target without expiry, bound to the configured device; replicas are read-only.
+room target without expiry, bound to the configured device; slaves are read-only.
 Native settings come from the pump. Enabling or renewing the external feed requires fresh
 ON, HEAT and 17°C readbacks; a failed check stops renewals and lets the current
 lease expire. Missing or stale source evidence also ends the feed. Internal-sensor

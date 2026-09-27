@@ -10,7 +10,7 @@ const door = (value = 0, extra = {}) => ({
   readings: { side_entrance_open: { value, unit: 'state', stale: false, observedAt: now - 1000 } },
   ...extra,
 });
-const status = device => ({ role: 'primary', now, equipment: { devices: [device] } });
+const status = device => ({ role: 'master', now, equipment: { devices: [device] } });
 const operation = (device, action, state, requestedAt = now) => {
   device.cover.operation = { action, status: state, requestedAt };
   return device;
@@ -192,12 +192,12 @@ test('the shortcut respects configured capabilities, connection availability and
 
 test('replica, transition and protected authority cannot operate doors even with advertised controls', () => {
   const device = door(), current = status(device);
-  for (const update of [{ role: 'replica' }, { role: 'transition' }, { role: 'protected' },
-    { instance: { role: 'replica' } }, { controlAuthority: { state: 'protected' } },
-    { pairing: { enabled: true, role: 'primary', canControl: false } }]) {
+  for (const update of [{ role: 'slave' }, { role: 'transition' }, { role: 'protected' },
+    { instance: { role: 'slave' } }, { controlAuthority: { state: 'protected' } },
+    { topology: 'pair', pair: { role: 'master', canControl: false } }]) {
     const view = garageDoorControl({ ...current, ...update }, device);
     assert.equal(view.disabled, true);
-    assert.match(view.feedback, /primary computer/);
+    assert.match(view.feedback, /master computer/);
   }
 });
 
@@ -208,7 +208,7 @@ test('garage door discovery uses configured devices and signals without hard-cod
     door(0, { id: 'outside', area: 'garden' }), door(0, { id: 'disabled', enabled: false }),
     door(0, { id: 'switch', kind: 'switch' }),
   ];
-  const current = { role: 'primary', now, equipment: { devices } }, before = structuredClone(current);
+  const current = { role: 'master', now, equipment: { devices } }, before = structuredClone(current);
   const selected = garageDoorDevices(current);
   assert.deepEqual(selected.map(device => device.id), ['side_entrance', 'unassigned', 'sensor_mapped']);
   assert.equal(selected[0], devices[0], 'Configured identity is preserved');

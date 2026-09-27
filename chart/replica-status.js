@@ -4,35 +4,45 @@ import { pairAllowsControl } from './pair-status.js';
 import { renderCurrentPrice } from './current-price.js';
 import { setStatusDetail } from './status-details.js';
 
-export const isReadOnlyReplica = status => status?.readOnly === true || ['replica', 'protected', 'transition'].includes(status?.role)
-  || status?.instance?.role === 'replica' || status?.controlAuthority?.state === 'protected' || !pairAllowsControl(status);
+export const isReadOnlyReplica = status => status?.readOnly === true
+  || status?.role !== undefined && status.role !== 'master'
+  || status?.instance?.role !== undefined && status.instance.role !== 'master'
+  || status?.topology !== undefined && !['standalone', 'mirror', 'pair'].includes(status.topology)
+  || status?.controlAuthority?.state === 'protected' || !pairAllowsControl(status);
 const timestamp = value => Number.isFinite(value) && value > 0 ? value : null;
 
 /** The instance role is separate from whether the master is monitoring or controlling. */
 export function instanceRoleDisplay(status) {
-  const pairing = status?.pairing;
-  if (pairing?.enabled === true) {
-    if (pairing.transition || pairing.role === 'transition') return { state: 'transition', label: 'ROLE CHANGE',
+  if (status?.topology !== undefined && !['standalone', 'mirror', 'pair'].includes(status.topology))
+    return { state: 'transition', label: 'Checking topology', detail: 'Waiting for a supported topology. Controls remain disabled.' };
+  const pair = status?.pair ?? {};
+  if (status?.topology === 'pair') {
+    if (pair.transition || pair.role === 'transition') return { state: 'transition', label: 'Pair · Role change',
       detail: 'A role change is in progress. Wait for the new role to be confirmed.' };
-    if (pairing.role === 'protected') return { state: 'protected', label: 'PROTECTED',
+    if (pair.role === 'protected') return { state: 'protected', label: 'Pair · Protected',
       detail: 'Local history is protected. Home control and incoming mirroring are stopped.' };
-    if (pairing.role === 'replica') return { state: 'replica', label: 'SLAVE',
-      detail: 'Read-only slave. This computer shows synchronized history and never takes control automatically.' };
-    if (pairing.role === 'primary') {
-      const waiting = pairing.canControl !== true || ['replica', 'protected', 'transition'].includes(status?.role)
-        || status?.instance?.role === 'replica';
-      return waiting ? { state: 'transition', label: 'MASTER · WAITING',
+    if (pair.role === 'slave') return { state: 'slave', label: 'Pair · Slave',
+      detail: 'Read-only slave. Keeps synchronized history ready for manual handover or promotion. Never takes control automatically.' };
+    if (pair.role === 'master') {
+      const waiting = pair.canControl !== true || ['slave', 'protected', 'transition'].includes(status?.role)
+        || status?.instance?.role === 'slave';
+      return waiting ? { state: 'transition', label: 'Pair · Master · Waiting',
         detail: 'Master role reported. Waiting for its current dashboard and control readiness.' }
-        : { state: 'primary', label: 'MASTER',
+        : { state: 'master', label: 'Pair · Master',
           detail: 'This computer owns the master role. The operating mode shows whether automatic control is enabled.' };
     }
-    return { state: 'transition', label: 'CHECKING ROLE', detail: 'Waiting for this computer’s paired role to be confirmed.' };
+    return { state: 'transition', label: 'Pair · Checking role', detail: 'Waiting for this computer’s pair role to be confirmed.' };
   }
   if (status?.controlAuthority?.state === 'protected') return { state: 'protected', label: 'CONTROL STOPPED',
     detail: 'Another controller won authority. This computer preserves its local history without controlling devices.' };
-  if (isReadOnlyReplica(status)) return { state: 'replica', label: 'READ-ONLY REPLICA',
-    detail: 'This computer shows a synchronized database without controlling devices.' };
-  return { state: 'standalone', label: 'STANDALONE', detail: 'Paired operation is not enabled on this computer.' };
+  if (status?.topology === 'mirror' && !['master', 'slave'].includes(status.role ?? status.instance?.role))
+    return { state: 'transition', label: 'Mirror · Checking role', detail: 'Waiting for a confirmed master or slave role. Controls remain disabled.' };
+  if (status?.topology === 'mirror') return isReadOnlyReplica(status)
+    ? { state: 'slave', label: 'Mirror · Slave',
+      detail: 'Read-only slave. Receives database snapshots over SSH. Mirror mode has no handover or promotion.' }
+    : { state: 'master', label: 'Mirror · Master',
+      detail: 'Runs the local controller and sends database snapshots to its slave over SSH. Mirror mode has no handover or promotion.' };
+  return { state: 'standalone', label: 'Standalone', detail: 'Runs independently, without synchronization to another computer.' };
 }
 
 export function renderInstanceRole(document, status) {
@@ -47,16 +57,17 @@ export function renderInstanceRole(document, status) {
 
 /** A restarted receiver still has its durable, published snapshot to report. */
 export function pairPanelView(status) {
-  const pairing = status?.pairing ?? { enabled: false };
-  const publication = status?.replication;
-  if (pairing.enabled !== true || pairing.role !== 'replica' || !publication) return pairing;
-  const sync = pairing.sync ?? {};
+  if (status?.topology !== 'pair') return null;
+  const pair = status?.pair ?? {};
+  const publication = status?.sync;
+  if (pair.role !== 'slave' || !publication) return pair;
+  const sync = pair.sync ?? {};
   const sourceAt = timestamp(sync.sourceAt), publishedAt = timestamp(publication.snapshotAt ?? publication.sourceAt);
   // Handover/rejoin can publish directly without updating the receiver's last
   // ordinary-sync timestamps. Always describe the newest confirmed snapshot.
   const publishedNewer = publishedAt !== null && (sourceAt === null || publishedAt > sourceAt);
   const bytes = publishedNewer && sync.state !== 'syncing' ? publication.bytes : sync.bytes;
-  return { ...pairing, sync: { ...sync,
+  return { ...pair, sync: { ...sync,
     state: ['syncing', 'error'].includes(sync.state) ? sync.state : publication.state ?? sync.state,
     sourceAt: publishedNewer ? publishedAt : sourceAt,
     verifiedAt: publishedNewer ? timestamp(publication.verifiedAt) : timestamp(sync.verifiedAt) ?? timestamp(publication.verifiedAt),
@@ -67,7 +78,7 @@ export function pairPanelView(status) {
 
 export function replicaSnapshotKey(status) {
   if (!isReadOnlyReplica(status)) return null;
-  const sync = status.replication ?? {};
+  const sync = status.sync ?? {};
   return sync.generation ?? sync.digest ?? timestamp(sync.snapshotAt ?? sync.sourceAt)
     ?? (status.controlAuthority?.state === 'protected' ? timestamp(status.controlAuthority.stoppedAt) ?? 'controller-stopped' : null);
 }
@@ -76,7 +87,7 @@ export function replicaSnapshotKey(status) {
 export function chartObservationTime(status, fallback) {
   const now = timestamp(status?.now) ?? fallback;
   const snapshot = (status?.controlAuthority?.state === 'protected' ? timestamp(status.controlAuthority.stoppedAt) : null)
-    ?? timestamp(status?.replication?.snapshotAt ?? status?.replication?.sourceAt);
+    ?? timestamp(status?.sync?.snapshotAt ?? status?.sync?.sourceAt);
   return isReadOnlyReplica(status) && snapshot !== null ? Math.min(now, snapshot) : now;
 }
 
@@ -89,13 +100,13 @@ function ageLabel(ms) {
 
 /** Only report verified facts from the local receiver, never primary online flags. */
 export function replicaDisplay(status, { now = status?.now ?? Date.now(), formatTime = at => new Date(at).toISOString() } = {}) {
-  const sync = status?.replication ?? {};
+  const sync = status?.sync ?? {};
   const stoppedController = status?.controlAuthority?.state === 'protected';
   const snapshotAt = (stoppedController ? timestamp(status.controlAuthority.stoppedAt) : null)
     ?? timestamp(sync.snapshotAt ?? sync.sourceAt);
   const lastSuccessAt = timestamp(sync.lastSuccessAt ?? sync.verifiedAt);
-  const verifiedAt = stoppedController && status.role !== 'replica' ? null : timestamp(sync.verifiedAt);
-  const available = (snapshotAt !== null || stoppedController && status?.role !== 'replica') && sync.available !== false;
+  const verifiedAt = stoppedController && status.role !== 'slave' ? null : timestamp(sync.verifiedAt);
+  const available = (snapshotAt !== null || stoppedController && status?.role !== 'slave') && sync.available !== false;
   const future = snapshotAt !== null && snapshotAt > now + 60_000;
   const staleAfterMs = Number.isFinite(sync.staleAfterMs) && sync.staleAfterMs > 0 ? sync.staleAfterMs : 5 * 60_000;
   const stale = available && (sync.state === 'stale' || sync.stale === true || now - snapshotAt > staleAfterMs);
@@ -109,11 +120,11 @@ export function replicaDisplay(status, { now = status?.now ?? Date.now(), format
           : 'synchronization reports stale history; snapshot age is unavailable'}. It will catch up automatically when synchronization resumes.`
           : 'Showing the most recently synchronized history.';
   const snapshot = snapshotAt === null ? 'Snapshot time unavailable.'
-    : `Primary snapshot: ${formatTime(snapshotAt)}${future ? '' : ` · ${ageLabel(Math.max(0, now - snapshotAt))}`}.`;
+    : `Master snapshot: ${formatTime(snapshotAt)}${future ? '' : ` · ${ageLabel(Math.max(0, now - snapshotAt))}`}.`;
   const success = lastSuccessAt === null ? 'No successful synchronization recorded.' : `Last successful sync: ${formatTime(lastSuccessAt)}.`;
   const verification = verifiedAt === null ? 'Snapshot verification is not reported.'
-    : `Database identity verified ${formatTime(verifiedAt)}. Later primary changes are copied on the next synchronization.`;
-  const protectedHistory = status?.pairing?.enabled === true && status.pairing.role === 'protected';
+    : `Database identity verified ${formatTime(verifiedAt)}. Later master changes are copied on the next synchronization.`;
+  const protectedHistory = status?.topology === 'pair' && status.pair?.role === 'protected';
   return { state, available, snapshotAt, lastSuccessAt, verifiedAt,
     summary: stoppedController ? 'Another controller won authority. This controller is stopped and its local history is protected for manual recovery.'
       : protectedHistory ? 'Local history is protected. Mirroring will resume only after the master explicitly resolves recovery.' : summary,
@@ -123,19 +134,19 @@ export function replicaDisplay(status, { now = status?.now ?? Date.now(), format
 }
 
 export function primaryReplicationDisplay(status, { formatTime = at => new Date(at).toISOString() } = {}) {
-  const sync = status?.replication;
-  if (isReadOnlyReplica(status) || sync?.enabled !== true) return null;
+  const sync = status?.sync;
+  if (status?.topology !== 'mirror' || isReadOnlyReplica(status) || !sync) return null;
   const state = ['waiting', 'syncing', 'ready', 'error', 'stopped'].includes(sync.state) ? sync.state : 'waiting';
-  const phase = { connecting: 'Connecting to the replica.', snapshotting: 'Preparing a consistent database snapshot.',
-    transferring: 'Sending database changes to the replica.', verifying: 'Verifying the replica’s database identity.' }[sync.phase];
-  const summary = state === 'syncing' ? phase ?? 'Synchronizing the database replica.'
-    : state === 'error' ? 'Replica synchronization failed. Home control continues; synchronization will retry automatically.'
+  const phase = { connecting: 'Connecting to the slave.', snapshotting: 'Preparing a consistent database snapshot.',
+    transferring: 'Sending database changes to the slave.', verifying: 'Verifying the slave’s database identity.' }[sync.phase];
+  const summary = state === 'syncing' ? phase ?? 'Synchronizing the slave database.'
+    : state === 'error' ? 'Mirror synchronization failed. Home control continues; synchronization will retry automatically.'
       : state === 'stopped' ? 'Database synchronization is stopped.'
-        : state === 'ready' ? 'The last database synchronization was verified.' : 'Waiting to synchronize the database replica.';
+        : state === 'ready' ? 'The last database synchronization was verified.' : 'Waiting to synchronize the slave database.';
   const sourceAt = timestamp(sync.snapshotAt ?? sync.sourceAt), verifiedAt = timestamp(sync.verifiedAt);
   const lastSuccessAt = timestamp(sync.lastSuccessAt), nextAttemptAt = timestamp(sync.nextAttemptAt);
   const detail = [lastSuccessAt ? `Last successful sync: ${formatTime(lastSuccessAt)}.` : 'No successful synchronization yet.',
-    sourceAt ? `Primary snapshot: ${formatTime(sourceAt)}.` : '',
+    sourceAt ? `Master snapshot: ${formatTime(sourceAt)}.` : '',
     verifiedAt ? `Identity verified: ${formatTime(verifiedAt)}.` : '',
     nextAttemptAt && state !== 'syncing' && state !== 'stopped' ? `Next attempt: ${formatTime(nextAttemptAt)}.` : ''].filter(Boolean).join(' ');
   return { state, summary, detail };
@@ -145,9 +156,9 @@ export function primaryReplicationDisplay(status, { formatTime = at => new Date(
 export function renderReplicaStatus(document, status, { formatTime = at => new Date(at).toISOString() } = {}) {
   const $ = id => document.getElementById(id);
   const replica = isReadOnlyReplica(status);
-  const paired = status.pairing?.enabled === true;
+  const paired = status.topology === 'pair';
   renderInstanceRole(document, status);
-  document.documentElement.dataset.instanceRole = replica ? 'replica' : 'primary';
+  document.documentElement.dataset.instanceRole = replica ? 'slave' : 'master';
   const outgoing = primaryReplicationDisplay(status, { formatTime });
   $('primary-replication-notice').hidden = !outgoing;
   if (outgoing) {
@@ -164,19 +175,19 @@ export function renderReplicaStatus(document, status, { formatTime = at => new D
   }
   const display = replicaDisplay(status, { formatTime });
   const stoppedController = status.controlAuthority?.state === 'protected';
-  if ($('replica-title')) $('replica-title').textContent = stoppedController ? 'Controller stopped' : 'Read-only replica';
+  if ($('replica-title')) $('replica-title').textContent = stoppedController ? 'Controller stopped' : 'Database mirroring';
   $('replica-notice').dataset.state = display.state;
   $('replica-summary').textContent = display.summary;
   $('replica-snapshot').textContent = display.snapshot;
   $('replica-success').textContent = display.success;
   $('replica-verification').textContent = display.verification;
   $('connection').textContent = stoppedController ? 'CONTROLLER STOPPED · READ-ONLY HISTORY'
-    : status.pairing?.role === 'protected' ? 'PROTECTED RECOVERY · HOME CONTROL DISABLED'
-    : status.pairing?.transition ? 'ROLE CHANGE · WAITING FOR CONFIRMATION'
-      : `${paired ? 'READ-ONLY HISTORY' : 'READ-ONLY REPLICA'} · ${display.state === 'ready' ? 'HISTORY AVAILABLE' : display.state === 'waiting' ? 'WAITING FOR SNAPSHOT' : 'SYNC NEEDS ATTENTION'}`;
+    : status.pair?.role === 'protected' ? 'PROTECTED RECOVERY · HOME CONTROL DISABLED'
+    : status.pair?.transition ? 'ROLE CHANGE · WAITING FOR CONFIRMATION'
+      : `${paired ? 'READ-ONLY HISTORY' : 'READ-ONLY SLAVE'} · ${display.state === 'ready' ? 'HISTORY AVAILABLE' : display.state === 'waiting' ? 'WAITING FOR SNAPSHOT' : 'SYNC NEEDS ATTENTION'}`;
   $('context').textContent = stoppedController ? 'Another controller owns control. This computer preserves its local history and remains read-only until its history is explicitly recovered.'
-    : paired && status.pairing.role === 'protected' ? 'Local history is protected. Open Paired computers below to resolve startup or choose the next role.'
-    : 'Recorded history from the primary computer. This viewer does not connect to devices or control the home. The primary’s current operating state is unknown.';
+    : paired && status.pair?.role === 'protected' ? 'Local history is protected. Open Paired computers below to resolve startup or choose the next role.'
+    : 'Recorded history from the master computer. This viewer does not connect to devices or control the home. The master’s current operating state is unknown.';
   for (const node of document.querySelectorAll('[data-snapshot-content]')) node.hidden = false;
   $('recording-adaptive-details').hidden = false;
   for (const key of ['indoor', 'outdoor']) {
@@ -210,6 +221,6 @@ export function renderReplicaStatus(document, status, { formatTime = at => new D
     if (node) { node.textContent = 'View only'; if (node.parentElement) node.parentElement.dataset.state = 'muted'; }
   }
   $('updated').textContent = display.snapshotAt === null ? stoppedController ? 'Local history preserved' : 'Waiting for a snapshot'
-    : `${stoppedController ? 'Local history' : 'Primary snapshot'} ${formatTime(display.snapshotAt)}`;
+    : `${stoppedController ? 'Local history' : 'Master snapshot'} ${formatTime(display.snapshotAt)}`;
   return display;
 }

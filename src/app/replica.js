@@ -21,7 +21,7 @@ import { validateTargetState, validateTargetSelection } from '../charging/target
 import { replicaReadModel, snapshotState } from './replica-read-model.js';
 
 const INPUTS = new Set(['mqtt', 'providers', 'simulated', 'offline']);
-const unavailable = 'This replica is read-only. Make changes on the primary instance.';
+const unavailable = 'This slave is read-only. Make changes on the master instance.';
 
 function publishedCheckpointAt(snapshot, input, cursor, algorithm, now) {
   if (!snapshot || !Number.isSafeInteger(cursor) || cursor <= 0) return null;
@@ -30,7 +30,7 @@ function publishedCheckpointAt(snapshot, input, cursor, algorithm, now) {
     && row.at <= Math.min(now, snapshot.publication.sourceAt) ? row.at : null;
 }
 
-/** Project the saved primary model only. A viewer has no current equipment,
+/** Project the saved master model only. A viewer has no current equipment,
  * control budget or cycle evaluator with which to establish live readiness. */
 function homeLearningSnapshot(snapshot, checkpoint, now) {
   const recordedAt = publishedCheckpointAt(snapshot, snapshot?.input, checkpoint?.journalCursor, LEARNING_ALGORITHM, now);
@@ -45,11 +45,11 @@ function homeLearningSnapshot(snapshot, checkpoint, now) {
       cursor: checkpoint.cursor ?? null } : null,
     metrics: null, readiness: null, outcomes: null, episode: null,
     parameters: available ? checkpoint.learningConfiguration ?? {} : {},
-    message: available ? 'Recorded primary model. Live control readiness and completed-cycle assessments are unavailable in this snapshot.'
+    message: available ? 'Recorded master model. Live control readiness and completed-cycle assessments are unavailable in this snapshot.'
       : 'No compatible saved Home model is available at this snapshot boundary.' };
 }
 
-/** Show the primary's saved charging decision at the publication boundary.
+/** Show the master's saved charging decision at the publication boundary.
  * Neither the viewer clock nor copied ownership can schedule charger actions. */
 function chargingSnapshot(snapshot) {
   if (!snapshot) return null;
@@ -71,8 +71,8 @@ function chargingSnapshot(snapshot) {
     const recorded = saved.view?.chargers?.find(charger => charger.id === id);
     const control = { ...(ownership ?? recorded?.control ?? { phase: 'unavailable', released: false }),
       enabled: settings.chargers[id].enabled, readOnly: true, snapshotAt, snapshot: null,
-      reason: `${ownership?.reason ? `${ownership.reason} ` : ''}Recorded primary status; live charger health is unavailable on this read-only replica.` };
-    // A published view already contains the primary's selected vehicle, battery
+      reason: `${ownership?.reason ? `${ownership.reason} ` : ''}Recorded master status; live charger health is unavailable on this read-only slave.` };
+    // A published view already contains the master's selected vehicle, battery
     // facts and energy assumption. Rebuilding it with this viewer's code would
     // reinterpret historical decisions and discard independently stored feeds.
     const charger = structuredClone(recorded);
@@ -133,14 +133,16 @@ function observed(snapshot, signal, now) {
  * verified generation, including its chart worker, until the response ends. */
 export async function startReplica({ config, clock = Date.now,
   readPublication = readReplicaPublication, makeChartService = createChartService,
-  installSignalHandlers = true, pairContext = null, controlAuthority = null } = {}) {
-  if (config?.role !== 'replica') throw new TypeError('Replica startup requires the local replica role');
-  if (!config.replication?.directory) throw new TypeError('A local replica directory is required');
+  installSignalHandlers = true, pairContext = null, controlAuthority = null, snapshotDirectory } = {}) {
+  if (config?.role !== 'slave') throw new TypeError('Slave startup requires the local slave role');
+  const snapshotSettings = config.topology === 'pair' ? config.pair : config.mirror;
+  const directory = snapshotDirectory ?? (config.topology === 'pair' ? snapshotSettings?.snapshotDirectory : snapshotSettings?.directory);
+  if (!directory) throw new TypeError('A local snapshot directory is required');
   let current = null, refreshing = null, closed = false, lastError = null;
   let closePending = null, finishStartup;
   const startupSettled = new Promise(resolve => { finishStartup = resolve; });
   const retiring = new Set(), signalHandlers = new Map();
-  const staleAfterMs = config.replication.staleAfterMs ?? 180_000;
+  const staleAfterMs = snapshotSettings?.staleAfterMs ?? 180_000;
 
   function retire(snapshot) {
     if (!snapshot || snapshot.retiring || snapshot.references > 0 || !snapshot.retired) return;
@@ -152,7 +154,7 @@ export async function startReplica({ config, clock = Date.now,
   }
 
   async function refresh() {
-    if (closed) throw new Error('Replica viewer is closed');
+    if (closed) throw new Error('Slave viewer is closed');
     if (refreshing) return refreshing;
     refreshing = (async () => {
       // A publisher can advance twice between manifest read and worker startup.
@@ -160,7 +162,7 @@ export async function startReplica({ config, clock = Date.now,
       for (let attempt = 0; attempt < 3; attempt++) {
         let store, chartService;
         try {
-          const publication = await readPublication(config.replication.directory);
+          const publication = await readPublication(directory);
           if (!publication) {
             lastError = current ? 'The snapshot manifest is unavailable; serving the last verified snapshot.' : null;
             return;
@@ -198,7 +200,7 @@ export async function startReplica({ config, clock = Date.now,
     try { charging = chargingSnapshot(snapshot); }
     catch {
       // Invalid controller state must stay uninterpreted, while independent
-      // history remains available to diagnose a failed primary startup.
+      // history remains available to diagnose a failed master startup.
       charging = { available: false, readOnly: true, recorded: true, snapshotAt: publication?.sourceAt ?? null,
         settings: null, chargers: [], vehicleFeeds: [],
         error: 'The saved charging data is unavailable in this snapshot. Other recorded data remains readable.' };
@@ -230,16 +232,16 @@ export async function startReplica({ config, clock = Date.now,
     observations.indoor = indoorAverage({ indoor_temperature: observations.upstairs,
       downstairs_temperature: observations.downstairs, bedroom_temperature: observations.bedroom }, learningConfig);
     observations.indoor = temperatureBoundaryStatus(observations.indoor, checkpoint?.measurementEpochAt, now, { clearValue: true });
-    return { ...recorded, role: 'replica', instance: { role: 'replica', readOnly: true }, readOnly: true,
+    return { ...recorded, role: 'slave', instance: { role: 'slave', readOnly: true }, readOnly: true,
       mode: 'monitoring', liveWrites: false, now, input: snapshot?.input ?? 'offline',
-      replication: { state, generation: publication?.generation ?? null,
+      sync: { state, generation: publication?.generation ?? null,
         snapshotAt: publication?.sourceAt ?? null, lastSuccessAt: publication?.verifiedAt ?? null,
         verifiedAt: publication?.verifiedAt ?? null, digest: publication?.digest ?? null,
         bytes: publication?.bytes ?? null, staleAfterMs, ...(lastError ? { error: lastError } : {}) },
       observations,
       learning: { ...homeLearningSnapshot(snapshot, checkpoint, now), ...(homeState.error ? { error: homeState.error } : {}) },
       charging,
-      garage: { ...recorded.garage, status: 'monitoring', reason: recorded.garage.error ?? 'Read-only replica; recorded primary evidence',
+      garage: { ...recorded.garage, status: 'monitoring', reason: recorded.garage.error ?? 'Read-only slave; recorded master evidence',
         observations: { rear: observations.garage, front: observations.garageFront, outdoor: observations.outdoor },
         learning: { ...garageSummary, reconstruction: 'snapshot', readOnly: true,
           snapshotAt: publication?.sourceAt ?? null, recordedAt: garageModel ? garageRecordedAt : null,
@@ -258,7 +260,7 @@ export async function startReplica({ config, clock = Date.now,
 
   async function getReadContext() {
     await refresh();
-    if (closed) throw Object.assign(new Error('Replica viewer is closed'), { statusCode: 503 });
+    if (closed) throw Object.assign(new Error('Slave viewer is closed'), { statusCode: 503 });
     const snapshot = current;
     if (snapshot) snapshot.references++;
     let released = false;
@@ -274,7 +276,7 @@ export async function startReplica({ config, clock = Date.now,
       } };
   }
 
-  const webAccess = createWebAccess({ config, role: 'replica', getReadContext, pairContext, controlAuthority,
+  const webAccess = createWebAccess({ config, topology: config.topology, role: 'slave', getReadContext, pairContext, controlAuthority,
     getDatabaseExportDirectory: () => config.recording?.exportDirectory ?? homedir(),
     settingsReloadStatus: () => ({ available: false, busy: false, reason: unavailable }),
     staticDir: resolve(dirname(fileURLToPath(import.meta.url)), '../../dist') });
@@ -289,7 +291,7 @@ export async function startReplica({ config, clock = Date.now,
       try { await refreshing; } catch (error) { errors.push(error); }
       if (current) { current.retired = true; retire(current); }
       for (const result of await Promise.allSettled([...retiring])) if (result.status === 'rejected') errors.push(result.reason);
-      if (errors.length) throw new AggregateError(errors, 'Replica cleanup completed with errors.');
+      if (errors.length) throw new AggregateError(errors, 'Slave cleanup completed with errors.');
     })();
     return closePending;
   }
@@ -299,9 +301,9 @@ export async function startReplica({ config, clock = Date.now,
   }
   try {
     await refresh();
-    if (closed) throw new Error('The replica is shutting down.');
+    if (closed) throw new Error('The slave is shutting down.');
     await webAccess.start();
-    if (closed) throw new Error('The replica is shutting down.');
+    if (closed) throw new Error('The slave is shutting down.');
     finishStartup();
     return { get store() { return current?.store ?? null; }, get server() { return webAccess.server; },
       webAccess, close, refresh, status };

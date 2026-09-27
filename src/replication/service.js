@@ -9,7 +9,7 @@ export class ReplicationService {
     this.clock = clock;
     this.synchronize = synchronize;
     this.running = false;
-    this.state = { enabled: true, role: 'primary', state: 'waiting', phase: null,
+    this.state = { role: 'master', state: 'waiting', phase: null,
       lastAttemptAt: null, lastSuccessAt: null, nextAttemptAt: null, consecutiveFailures: 0, error: null };
   }
 

@@ -277,7 +277,7 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
     ['charging', "key LIKE 'charging:%' OR key LIKE 'shelly-evse:%'", 'Charging choices, sessions and device state', 'Device-bound Automatic charging and shared priority choices survive restart and unplugging. Physical connections, energy baselines, vehicle observations, session edits, schedules and charger-controller state are also retained. Battery and ready-by defaults remain configured.'],
     ['easee-ocpp', "key LIKE 'easee:ocpp%'", 'Charger 1 OCPP setup', 'Current native OCPP setup verification, saved restoration baseline and control readiness.'],
     ['garage', "key LIKE 'garage:%'", 'Garage control and learning state', 'Current model checkpoint, protection exposure, active episode, adapter restoration, temporary price-control pause and device-bound room target.'],
-    ['pairing', "key='pairing-lineage'", 'Paired database lineage', 'Current pairing lineage used to identify a published database and fence replica ownership; private identifiers are omitted.'],
+    ['pairing', "key='pairing-lineage'", 'Paired database lineage', 'Current pairing lineage used to identify a published database and fence slave ownership; private identifiers are omitted.'],
     ['simulation', "key LIKE 'simulation:%'", 'Simulation state', 'Current simulated plant state for resuming a simulation.'],
   ];
   const state = grouped('state', `CASE ${stateCategories.map(([id, where]) => `WHEN ${where} THEN ${quote(id)}`).join(' ')} ELSE 'other' END`, 'updated_at', 'updated_at', ",SUM(value='null') missingCount");

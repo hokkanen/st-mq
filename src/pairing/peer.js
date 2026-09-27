@@ -4,8 +4,8 @@ import { pairError } from './state.js';
 
 const MAX_BODY = 2 * 1024 * 1024;
 const WINDOW = 120000;
-const ROUTE = '/v1/pair';
-const CONTEXT = 'st-mq-pair-v1:POST:/v1/pair';
+const ROUTE = '/v2/pair';
+const CONTEXT = 'st-mq-pair-v2:POST:/v2/pair';
 
 function keyFor(token) {
   if (typeof token !== 'string' || token.length < 32) throw pairError('pair_token_invalid');
@@ -17,14 +17,14 @@ export function sealEnvelope(value, key, context = CONTEXT) {
   const cipher = createCipheriv('aes-256-gcm', key, nonce);
   cipher.setAAD(Buffer.from(context));
   const ciphertext = Buffer.concat([cipher.update(JSON.stringify(value), 'utf8'), cipher.final()]);
-  return JSON.stringify({ version: 1, nonce: nonce.toString('base64'),
+  return JSON.stringify({ version: 2, nonce: nonce.toString('base64'),
     data: ciphertext.toString('base64'), tag: cipher.getAuthTag().toString('base64') });
 }
 
 export function openEnvelope(raw, key, context = CONTEXT) {
   try {
     const value = JSON.parse(raw);
-    if (value.version !== 1 || ![value.nonce, value.data, value.tag].every(part => typeof part === 'string')) throw Error();
+    if (value.version !== 2 || ![value.nonce, value.data, value.tag].every(part => typeof part === 'string')) throw Error();
     const nonce = Buffer.from(value.nonce, 'base64'), tag = Buffer.from(value.tag, 'base64');
     if (nonce.length !== 12 || tag.length !== 16) throw Error();
     const cipher = createDecipheriv('aes-256-gcm', key, nonce);
@@ -47,7 +47,7 @@ async function readBounded(stream) {
 }
 
 const PUBLIC_ERRORS = new Set(['peer_unavailable', 'peer_authentication_failed', 'peer_message_too_large',
-  'peer_protocol_failed', 'peer_replay', 'peer_busy', 'not_primary', 'protected_history', 'invalid_claim',
+  'peer_protocol_failed', 'peer_replay', 'peer_busy', 'not_master', 'protected_history', 'invalid_claim',
   'invalid_action', 'snapshot_unavailable', 'snapshot_failed', 'verification_failed', 'integrity_failed',
   'lineage_mismatch', 'authority_changed', 'recovery_required', 'invalid_transition', 'transfer_incomplete',
   'invalid_pair_state', 'confirmation_required', 'invalid_request_id', 'recovery_unavailable', 'snapshot_expired',

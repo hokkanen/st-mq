@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, access } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -18,22 +18,24 @@ async function fixture(t) {
     for (const app of running) await app.close();
     await rm(root, { recursive: true, force: true });
   });
-  async function open(name, { role = 'primary', releaseError = null, brokerError = null, runtimeError = null,
+  async function open(name, { role = 'master', releaseError = null, brokerError = null, runtimeError = null,
     reportStartupFailure = null } = {}) {
     const directory = join(root, name);
     const config = { ...loadConfig({ XDG_CONFIG_HOME: root, STMQ_DATA_DIR: directory, STMQ_PORT: '0' }, directory),
-      input: 'mqtt', role, connections: { mqtt: { address: 'mqtt://127.0.0.1' } } };
-    config.pairing = { enabled: true, directory: join(directory, 'pairing'), databasePath: config.dbPath,
-      replicaDirectory: config.replication.directory, initialRole: role, platform: 'ubuntu', pairId: 'synthetic-startup-pair',
+      input: 'mqtt', role: 'slave', connections: { mqtt: { address: 'mqtt://127.0.0.1' } } };
+    config.topology = 'pair';
+    config.pair = { directory: join(directory, 'pairing'), databasePath: config.dbPath,
+      snapshotDirectory: join(directory, 'pair-snapshots'), platform: 'ubuntu', pairId: 'synthetic-startup-pair',
       token: 'synthetic-startup-shared-token-0123456789', peerUrl: 'http://127.0.0.1:1',
       listenHost: '127.0.0.1', port: 0, intervalMs: 60000, timeoutMs: 30000, vip: {}, mqtt: config.connections.mqtt };
-    if (role === 'primary') {
+    if (role === 'master') {
       const store = new Store(config.dbPath);
       try {
         if (!store.observations().length) store.observation({ source: 'synthetic', device: 'invented-room',
           signal: 'indoor_temperature', value: 20, unit: 'degC', sourceTime: now, receivedAt: now });
       } finally { store.close(); }
     }
+    const fresh = await access(join(config.pair.directory, 'state.json')).then(() => false, () => true);
     let owned = false, error = null, primaryStarts = 0;
     const diagnostics = [];
     const app = await startPaired({ config, clock: () => now, installSignalHandlers: false,
@@ -53,7 +55,11 @@ async function fixture(t) {
         },
         status: () => ({ owned, ready: owned && !error, error }),
       } } });
-    clearTimeout(app.pairing.timer); await app.pairing.polling; clearTimeout(app.pairing.timer);
+    if (fresh && role === 'master') {
+      try { await app.pair.action('promote', { requestId: randomUUID(), confirmed: true }); }
+      catch (error) { if (app.pair.state.value.role !== 'protected' || !app.pair.state.value.activationError) throw error; }
+    }
+    clearTimeout(app.pair.timer); await app.pair.polling; clearTimeout(app.pair.timer);
     running.add(app);
     return { app, config, diagnostics, primaryStarts: () => primaryStarts };
   }
@@ -102,20 +108,20 @@ test('a throwing startup diagnostic sink cannot prevent activation fallback or p
   const first = await f.open('controller', { brokerError: 'mqtt_local_required', reportStartupFailure });
   const view = await status(first.app);
   assert.equal(view.readOnly, true);
-  assert.equal(view.pairing.role, 'protected');
-  assert.equal(view.pairing.error, 'mqtt_local_required');
+  assert.equal(view.pair.role, 'protected');
+  assert.equal(view.pair.error, 'mqtt_local_required');
   assert.equal(first.primaryStarts(), 0);
   assert.deepEqual(first.diagnostics.map(({ event, reason }) => ({ event, reason })),
     [{ event: 'paired-startup-failed', reason: 'mqtt_local_required' }]);
   assert.match(first.diagnostics[0].location, /^src\/pairing\/runtime\.js:\d+:\d+$/);
   assert.doesNotMatch(JSON.stringify(first.diagnostics), /synthetic private|synthetic diagnostic/);
-  const dbPath = first.app.pairing.state.value.activeDbPath;
+  const dbPath = first.app.pair.state.value.activeDbPath;
   await f.close(first.app);
   const restarted = await f.open('controller', { releaseError: 'vip_helper_permission', reportStartupFailure });
   const after = await status(restarted.app);
   assert.equal(after.readOnly, true);
-  assert.equal(after.pairing.role, 'protected');
-  assert.equal(after.pairing.error, 'vip_helper_permission');
+  assert.equal(after.pair.role, 'protected');
+  assert.equal(after.pair.error, 'vip_helper_permission');
   assert.equal(restarted.primaryStarts(), 0);
   assert.deepEqual(restarted.diagnostics.map(({ event, reason }) => ({ event, reason })),
     [{ event: 'paired-startup-failed', reason: 'vip_helper_permission' }]);
@@ -133,9 +139,9 @@ test('an asynchronously rejecting diagnostic sink cannot interrupt protected fal
   await new Promise(resolve => setImmediate(resolve));
   const view = await status(instance.app);
   assert.equal(view.readOnly, true);
-  assert.equal(view.pairing.role, 'protected');
-  assert.equal(view.pairing.canControl, false);
-  assert.equal(view.pairing.error, 'runtime_failed');
+  assert.equal(view.pair.role, 'protected');
+  assert.equal(view.pair.canControl, false);
+  assert.equal(view.pair.error, 'runtime_failed');
   assert.equal(instance.diagnostics.length, 1);
   assert.doesNotMatch(JSON.stringify(instance.diagnostics), /synthetic asynchronous|synthetic private/);
 });
@@ -146,48 +152,48 @@ test('a failed activation retains sanitized diagnostics and protected history ac
     const first = await f.open('controller', code === 'runtime_failed' ? { runtimeError: code } : { brokerError: code });
     const before = await status(first.app);
     assert.equal(before.readOnly, true);
-    assert.equal(before.pairing.role, 'protected');
-    assert.equal(before.pairing.error, code);
-    assert.equal(before.pairing.canControl, false);
-    assert.equal(before.pairing.actions.promote, true);
+    assert.equal(before.pair.role, 'protected');
+    assert.equal(before.pair.error, code);
+    assert.equal(before.pair.canControl, false);
+    assert.equal(before.pair.actions.promote, true);
     assert.doesNotMatch(JSON.stringify(before), /synthetic private diagnostic/);
-    const dbPath = first.app.pairing.state.value.activeDbPath;
-    const epoch = first.app.pairing.state.value.epoch;
+    const dbPath = first.app.pair.state.value.activeDbPath;
+    const epoch = first.app.pair.state.value.epoch;
     await f.close(first.app);
     const restarted = await f.open('controller');
     const after = await status(restarted.app);
-    assert.equal(after.pairing.error, code);
-    assert.equal(after.pairing.role, 'protected');
-    assert.equal(after.pairing.canControl, false);
+    assert.equal(after.pair.error, code);
+    assert.equal(after.pair.role, 'protected');
+    assert.equal(after.pair.canControl, false);
     assert.equal(restarted.primaryStarts(), 0, 'Fixing configuration must not automatically promote after restart');
-    assert.equal(restarted.app.pairing.state.value.activeDbPath, dbPath);
-    assert.equal(restarted.app.pairing.state.value.epoch, epoch);
+    assert.equal(restarted.app.pair.state.value.activeDbPath, dbPath);
+    assert.equal(restarted.app.pair.state.value.epoch, epoch);
     const store = new Store(dbPath, { readOnly: true });
     try { assert.equal(store.observations().length, 1); assert.equal(store.observations()[0].value, 20); }
     finally { store.close(); }
-    await restarted.app.pairing.action('promote', { requestId: randomUUID(), confirmed: true });
-    assert.equal(restarted.app.pairing.canControl(), true);
-    assert.equal(restarted.app.pairing.status().error, null);
-    assert.equal(restarted.app.pairing.state.value.activationError, null);
+    await restarted.app.pair.action('promote', { requestId: randomUUID(), confirmed: true });
+    assert.equal(restarted.app.pair.canControl(), true);
+    assert.equal(restarted.app.pair.status().error, null);
+    assert.equal(restarted.app.pair.state.value.activationError, null);
   });
 });
 
 test('a broken release helper leaves protected management and history readable without granting authority', async t => {
   const f = await fixture(t);
   const initial = await f.open('controller', { brokerError: 'mqtt_local_required' });
-  const dbPath = initial.app.pairing.state.value.activeDbPath;
+  const dbPath = initial.app.pair.state.value.activeDbPath;
   await f.close(initial.app);
   const restarted = await f.open('controller', { releaseError: 'vip_policy_mismatch' });
   const view = await status(restarted.app);
-  assert.equal(view.pairing.role, 'protected');
-  assert.equal(view.pairing.reason, 'vip_release_failed');
-  assert.equal(view.pairing.error, 'vip_policy_mismatch');
-  assert.equal(view.pairing.canControl, false);
+  assert.equal(view.pair.role, 'protected');
+  assert.equal(view.pair.reason, 'vip_release_failed');
+  assert.equal(view.pair.error, 'vip_policy_mismatch');
+  assert.equal(view.pair.canControl, false);
   assert.equal(view.readOnly, true);
   assert.equal(restarted.primaryStarts(), 0);
-  assert.equal(restarted.app.pairing.state.value.activeDbPath, dbPath);
+  assert.equal(restarted.app.pair.state.value.activeDbPath, dbPath);
   const base = `http://127.0.0.1:${restarted.app.server.address().port}`;
-  assert.equal((await fetch(`${base}/api/pairing`)).status, 200);
+  assert.equal((await fetch(`${base}/api/pair`)).status, 200);
   for (const path of ['/api/settings/reload', '/api/garage/native', '/api/database-export'])
     assert.equal((await fetch(`${base}${path}`, { method: 'POST' })).status, 405);
   assert.equal((await fetch(`${base}/api/database-export`)).status, 200);
@@ -197,34 +203,34 @@ test('a broken release helper leaves protected management and history readable w
 });
 
 test('a protected accepted replica cannot promote a publication that disagrees with its durable proof', async t => {
-  const f = await fixture(t), primary = await f.open('primary'), replica = await f.open('replica', { role: 'replica' });
-  replica.app.pairing.peer.peerUrl = `http://127.0.0.1:${primary.app.pairing.peer.server.address().port}`;
-  await replica.app.pairing.synchronize(primary.app.pairing.state.claim());
-  assert.equal(replica.app.pairing.sync.state, 'ready');
-  const accepted = structuredClone(replica.app.pairing.state.value.accepted);
-  const dbPath = replica.app.pairing.state.value.activeDbPath;
+  const f = await fixture(t), primary = await f.open('master'), replica = await f.open('slave', { role: 'slave' });
+  replica.app.pair.peer.peerUrl = `http://127.0.0.1:${primary.app.pair.peer.server.address().port}`;
+  await replica.app.pair.synchronize(primary.app.pair.state.claim());
+  assert.equal(replica.app.pair.sync.state, 'ready');
+  const accepted = structuredClone(replica.app.pair.state.value.accepted);
+  const dbPath = replica.app.pair.state.value.activeDbPath;
   for (const patch of [{ digest: 'f'.repeat(64) }, { epoch: randomUUID() }, { nodeId: randomUUID() },
     { sequence: accepted.sequence + 1 }]) {
-    await replica.app.pairing.state.update({ role: 'protected', reason: 'replica_verification_failed', accepted: { ...accepted, ...patch } });
-    await assert.rejects(replica.app.pairing.action('promote', { requestId: randomUUID(), confirmed: true }), { code: 'verification_failed' });
-    assert.equal(replica.app.pairing.state.value.role, 'protected');
-    assert.equal(replica.app.pairing.canControl(), false);
-    assert.equal(replica.app.pairing.state.value.activeDbPath, dbPath);
+    await replica.app.pair.state.update({ role: 'protected', reason: 'snapshot_verification_failed', accepted: { ...accepted, ...patch } });
+    await assert.rejects(replica.app.pair.action('promote', { requestId: randomUUID(), confirmed: true }), { code: 'verification_failed' });
+    assert.equal(replica.app.pair.state.value.role, 'protected');
+    assert.equal(replica.app.pair.canControl(), false);
+    assert.equal(replica.app.pair.state.value.activeDbPath, dbPath);
     assert.equal(replica.primaryStarts(), 0);
   }
-  await replica.app.pairing.state.update({ accepted });
-  await replica.app.pairing.action('promote', { requestId: randomUUID(), confirmed: true });
-  assert.equal(replica.app.pairing.canControl(), true);
-  const store = new Store(replica.app.pairing.state.value.activeDbPath, { readOnly: true });
+  await replica.app.pair.state.update({ accepted });
+  await replica.app.pair.action('promote', { requestId: randomUUID(), confirmed: true });
+  assert.equal(replica.app.pair.canControl(), true);
+  const store = new Store(replica.app.pair.state.value.activeDbPath, { readOnly: true });
   try { assert.equal(store.observations().length, 1); assert.equal(store.observations()[0].value, 20); }
   finally { store.close(); }
 });
 
 test('an accepted replica protected by helper failure keeps showing accepted history instead of an unused configured database', async t => {
-  const f = await fixture(t), primary = await f.open('primary'), replica = await f.open('replica', { role: 'replica' });
-  replica.app.pairing.peer.peerUrl = `http://127.0.0.1:${primary.app.pairing.peer.server.address().port}`;
-  await replica.app.pairing.synchronize(primary.app.pairing.state.claim());
-  assert.equal(replica.app.pairing.sync.state, 'ready');
+  const f = await fixture(t), primary = await f.open('master'), replica = await f.open('slave', { role: 'slave' });
+  replica.app.pair.peer.peerUrl = `http://127.0.0.1:${primary.app.pair.peer.server.address().port}`;
+  await replica.app.pair.synchronize(primary.app.pair.state.claim());
+  assert.equal(replica.app.pair.sync.state, 'ready');
   await f.close(replica.app);
   // A former configured database is user-owned and can legitimately remain
   // after handover. It is not the accepted replica or a protected donor.
@@ -232,9 +238,9 @@ test('an accepted replica protected by helper failure keeps showing accepted his
   try { leftover.observation({ source: 'synthetic', device: 'unused-original-room', signal: 'indoor_temperature',
     value: 99, unit: 'degC', sourceTime: now, receivedAt: now }); }
   finally { leftover.close(); }
-  const restarted = await f.open('replica', { role: 'replica', releaseError: 'vip_helper_unavailable' });
-  assert.equal(restarted.app.pairing.state.value.everWritten, false);
-  assert.equal(restarted.app.pairing.state.value.role, 'protected');
+  const restarted = await f.open('slave', { role: 'slave', releaseError: 'vip_helper_unavailable' });
+  assert.equal(restarted.app.pair.state.value.everWritten, false);
+  assert.equal(restarted.app.pair.state.value.role, 'protected');
   const base = `http://127.0.0.1:${restarted.app.server.address().port}`;
   const response = await fetch(`${base}/api/history?from=${now - 1}&to=${now + 1}`);
   assert.equal(response.status, 200);

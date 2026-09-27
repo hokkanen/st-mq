@@ -9,7 +9,7 @@ import { ocppHandoverHooks } from '../src/pairing/ocpp.js';
 
 const AT = Date.parse('2026-09-24T12:00:00Z');
 function configuration() {
-  return { pairing: { enabled: true, token: 'fixture-disable-pair-token-at-least-32-characters', vip: { address: '192.0.2.30' } },
+  return { topology: 'pair', pair: { token: 'fixture-disable-pair-token-at-least-32-characters', vip: { address: '192.0.2.30' } },
     connections: { easee: { charger_id: 'fixture-disable-charger', local_ocpp: { authorization_tags: ['fixture-tag'] } } } };
 }
 async function ownedFixture() {

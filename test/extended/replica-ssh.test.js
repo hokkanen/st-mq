@@ -140,7 +140,7 @@ test('real SSH transport verifies SQLite snapshots and catches up after receiver
     `try { const result = await synchronizeReplica({ ...JSON.parse(input), signal: abort.signal }); process.stdout.write(JSON.stringify({ ok: true, result, ticks })); }\n` +
     `catch (error) { process.stdout.write(JSON.stringify({ ok: false, code: publicReplicationError(error), ticks })); }\n` +
     `finally { clearInterval(timer); }\n`, { mode: 0o600 });
-  const sourcePath = join(directory, 'primary.sqlite'), remoteDirectory = join(directory, 'replica');
+  const sourcePath = join(directory, 'primary.sqlite'), remoteDirectory = join(directory, 'slave');
   const config = { sshHost: 'synthetic-replica', remoteDirectory,
     sshConfigPath: clientConfig,
     sourceDirectory: join(directory, 'work'), receiverPath: join(root, 'scripts/replica-receiver.js'),

@@ -13,6 +13,10 @@ import { copySnapshot, ownedDirectory, readReplicaPublication, syncDirectory } f
 
 const ACTIONS = new Set(['handover', 'promote', 'check-recovery', 'recover', 'rejoin']);
 const sourceRoot = fileURLToPath(new URL('../', import.meta.url));
+// A setup failure before the first write may retry bootstrap. Protection of
+// received history must never authorize replacing that history with an empty DB.
+const canBootstrap = local => local.bootstrapPending === true && !local.everWritten && !local.accepted
+  && (local.role === 'slave' || local.role === 'protected' && ['activation_failed', 'vip_release_failed'].includes(local.reason));
 
 /** Exceptions may contain credentials or provider payloads. Report only the
  * closed public code and a repository source location, never raw error text. */
@@ -57,35 +61,35 @@ export class PairManager {
   async init() {
     await this.state.open();
     await this.snapshots.init();
-    await ownedDirectory(this.config.replicaDirectory, '.st-mq-replica');
-    const marker = await open(join(this.config.replicaDirectory, '.st-mq-paired-receiver'), 'a', 0o600);
-    await marker.sync(); await marker.close(); await syncDirectory(this.config.replicaDirectory);
+    await ownedDirectory(this.config.snapshotDirectory, '.st-mq-replica');
+    const marker = await open(join(this.config.snapshotDirectory, '.st-mq-paired-receiver'), 'a', 0o600);
+    await marker.sync(); await marker.close(); await syncDirectory(this.config.snapshotDirectory);
     // Old standalone publications lack a branch ancestry proof. Existing paired
     // publications must also match the durable accepted record after a restart.
-    const publication = await readReplicaPublication(this.config.replicaDirectory).catch(() => false);
-    const pending = this.state.value.pendingReplica;
+    const publication = await readReplicaPublication(this.config.snapshotDirectory).catch(() => false);
+    const pending = this.state.value.pendingSnapshot;
     let publicationVerified = false;
-    if (this.state.value.role === 'replica' && publication && pending && publication.generation === pending.generation &&
+    if (this.state.value.role === 'slave' && publication && pending && publication.generation === pending.generation &&
         publication.digest === pending.digest && acceptsLineage(this.state.value.accepted, pending.claim)) {
       // The immutable publication may have committed immediately before a
       // crash, while the separate node-state acknowledgement had not.
       try {
         await verifySnapshot(publication.dbPath, publication, this.abort.signal);
         publicationVerified = true;
-        await this.state.update({ pendingReplica: null, accepted: { generation: publication.generation,
+        await this.state.update({ pendingSnapshot: null, accepted: { generation: publication.generation,
           digest: publication.digest, epoch: pending.claim.epoch, sequence: pending.sequence, nodeId: pending.claim.nodeId } });
-      } catch { await this.state.update({ role: 'protected', reason: 'replica_verification_failed' }); }
+      } catch { await this.state.update({ role: 'protected', reason: 'snapshot_verification_failed', bootstrapPending: false }); }
     }
-    if (this.state.value.role === 'replica' && (publication === false || publication &&
+    if (this.state.value.role === 'slave' && (publication === false || publication &&
         (!this.state.value.accepted || publication.generation !== this.state.value.accepted.generation))) {
-      await this.state.update({ role: 'protected', reason: 'unclassified_local_history' });
+      await this.state.update({ role: 'protected', reason: 'unclassified_local_history', bootstrapPending: false });
     }
-    if (this.state.value.role === 'replica' && publication && this.state.value.accepted) {
+    if (this.state.value.role === 'slave' && publication && this.state.value.accepted) {
       try {
         if (publication.digest !== this.state.value.accepted.digest) throw pairError('verification_failed');
         if (!publicationVerified) await verifySnapshot(publication.dbPath, publication, this.abort.signal);
       } catch {
-        await this.state.update({ role: 'protected', reason: 'replica_verification_failed' });
+        await this.state.update({ role: 'protected', reason: 'snapshot_verification_failed', bootstrapPending: false });
       }
     }
     if (this.state.value.recovery?.state === 'recovering') {
@@ -104,9 +108,9 @@ export class PairManager {
     if (previousError) this.error = publicPairError({ code: previousError });
     await this.peer.start();
     try {
-      if (this.state.value.role === 'primary' && !this.state.value.transition) await this.startPrimary();
+      if (this.state.value.role === 'master' && !this.state.value.transition) await this.startPrimary();
       else {
-        if (this.state.value.role === 'primary') await this.state.update({ role: 'protected', reason: 'interrupted_handover' });
+        if (this.state.value.role === 'master') await this.state.update({ role: 'protected', reason: 'interrupted_handover' });
         try { await this.vip.release(); }
         catch (error) {
           // A broken address helper must not make protected history and setup
@@ -126,7 +130,7 @@ export class PairManager {
       } else if (!this.canControl() && this.state.value.role !== 'protected') throw error;
     }
     this.announcements = this.announcementsFactory(this.config, {
-      claim: () => this.canControl() ? this.state.claim() : { ...this.state.claim(), role: this.state.value.role === 'primary' ? 'protected' : this.state.value.role },
+      claim: () => this.canControl() ? this.state.claim() : { ...this.state.claim(), role: this.state.value.role === 'master' ? 'protected' : this.state.value.role },
       onConflict: claim => this.observeClaim(claim), clock: this.clock,
     });
     this.announcements?.start();
@@ -134,7 +138,7 @@ export class PairManager {
     return this;
   }
 
-  canControl() { return !this.closed && this.activeAllowed && this.state.value?.role === 'primary'; }
+  canControl() { return !this.closed && this.activeAllowed && this.state.value?.role === 'master'; }
 
   reportFailure(error, code) {
     try { void Promise.resolve(this.reportStartupFailure(startupFailureDiagnostic(error, code))).catch(() => {}); }
@@ -161,17 +165,17 @@ export class PairManager {
       code = 'runtime_failed';
       await this.hooks.startPrimary?.({ dbPath: activationDbPath,
         onWriting: async () => {
-          if (this.stopping || this.closed || this.state.value.role !== 'primary' || !ownsActivation()) throw pairError('stopped');
+          if (this.stopping || this.closed || this.state.value.role !== 'master' || !ownsActivation()) throw pairError('stopped');
           await this.state.update(value => {
-            if (value.epoch !== activationEpoch || value.role !== 'primary') throw pairError('authority_changed');
-            return { bootstrapPending: false };
+            if (value.epoch !== activationEpoch || value.role !== 'master') throw pairError('authority_changed');
+            return { bootstrapPending: false, everWritten: true };
           });
-          if (this.stopping || this.closed || this.state.value.role !== 'primary' || !ownsActivation()) throw pairError('stopped');
+          if (this.stopping || this.closed || this.state.value.role !== 'master' || !ownsActivation()) throw pairError('stopped');
         } });
       if (!this.canControl() || !ownsActivation()) throw pairError('authority_changed');
       await this.state.update(value => {
-        if (value.epoch !== activationEpoch || value.role !== 'primary') throw pairError('authority_changed');
-        return { bootstrapPending: false, activationError: null };
+        if (value.epoch !== activationEpoch || value.role !== 'master') throw pairError('authority_changed');
+        return { bootstrapPending: false, everWritten: true, activationError: null };
       });
       this.error = null;
     } catch (error) {
@@ -218,18 +222,19 @@ export class PairManager {
 
   status() {
     const local = this.state.value;
-    if (!local) return { enabled: true, role: 'protected', canControl: false, busy: true, phase: 'initializing', actions: {} };
+    if (!local) return { role: 'protected', canControl: false, busy: true, phase: 'initializing', actions: {} };
     const recovery = this.publicRecovery();
-    const primary = local.role === 'primary' && this.canControl();
+    const primary = local.role === 'master' && this.canControl();
+    const bootstrapPending = canBootstrap(local);
     const free = !this.busy && !this.closed && !this.stopping;
-    return { enabled: true, ...this.state.claim(), canControl: this.canControl(), busy: this.busy,
+    return { ...this.state.claim(), canControl: this.canControl(), busy: this.busy, bootstrapPending,
       phase: this.phase, error: this.error, vip: this.vip.status(), peer: { ...this.peerState }, sync: { ...this.sync },
       recovery, recentActions: local.actions.map(({ requestId, name, state, error, startedAt, finishedAt }) =>
         ({ requestId, name, state, error, startedAt, finishedAt })),
-      actions: { handover: free && primary && this.peerState.reachable && this.peerState.role === 'replica',
-        promote: free && (['replica', 'protected'].includes(local.role) && !!local.accepted
+      actions: { handover: free && primary && this.peerState.reachable && this.peerState.role === 'slave',
+        promote: free && (['slave', 'protected'].includes(local.role) && (!!local.accepted || bootstrapPending)
           || local.role === 'protected' && local.everWritten && !!local.activeDbPath),
-        'check-recovery': free && primary && this.peerState.reachable && this.peerState.role !== 'primary',
+        'check-recovery': free && primary && this.peerState.reachable && this.peerState.role !== 'master',
         recover: free && primary && recovery.state === 'ready',
         rejoin: free && primary && ['ready', 'complete'].includes(recovery.state) && this.peerState.reachable } };
   }
@@ -250,7 +255,7 @@ export class PairManager {
       if (!validClaim(result.claim)) throw pairError('invalid_claim');
       this.peerState = { reachable: true, lastSeenAt: this.clock(), ...result.claim };
       await this.observeClaim(result.claim);
-      if (!this.busy && !this.syncTask && this.state.value.role === 'replica' && result.claim.role === 'primary' &&
+      if (!this.busy && !this.syncTask && this.state.value.role === 'slave' && result.claim.role === 'master' &&
           (!this.nextSyncAt || this.nextSyncAt <= this.clock())) {
         this.syncTask = this.synchronize(result.claim).finally(() => { this.syncTask = null; });
       }
@@ -267,7 +272,7 @@ export class PairManager {
 
   async observeClaim(claim, { confirmed = false } = {}) {
     if (!validClaim(claim)) throw pairError('invalid_claim');
-    if (this.closed || claim.role !== 'primary' || this.state.value.role !== 'primary') return;
+    if (this.closed || claim.role !== 'master' || this.state.value.role !== 'master') return;
     const superseded = this.state.value.supersededPeer;
     if (!confirmed && superseded?.nodeId === claim.nodeId && superseded.epoch === claim.epoch) {
       // A valid, delayed announcement may describe the owner that handed over.
@@ -300,7 +305,7 @@ export class PairManager {
       let persistenceError;
       try {
         await this.serialized(async () => {
-          if (this.state.value.role !== 'primary') return;
+          if (this.state.value.role !== 'master') return;
           await this.state.update({ role: 'protected', reason, release: null, transition: null });
         });
       } catch (error) { persistenceError = error; }
@@ -315,7 +320,7 @@ export class PairManager {
   async assertReplica(claim, { allowRelease = false } = {}) {
     const local = this.state.value;
     const released = allowRelease && local.role === 'protected' && local.release?.epoch === claim.epoch;
-    if (this.closed || local.role !== 'replica' && !released) throw pairError('protected_history');
+    if (this.closed || local.role !== 'slave' && !released) throw pairError('protected_history');
     if (!released && !acceptsLineage(local.accepted, claim)) {
       await this.state.update({ role: 'protected', reason: 'lineage_mismatch' });
       throw pairError('lineage_mismatch');
@@ -328,33 +333,33 @@ export class PairManager {
     this.sync = { ...this.sync, state: 'syncing', error: null };
     try {
       await this.assertReplica(claim);
-      let metadata = this.state.value.pendingReplica;
+      let metadata = this.state.value.pendingSnapshot;
       if (!metadata || metadata.claim?.epoch !== claim.epoch) {
         metadata = validateSnapshot(await this.peer.request('snapshot', {}, { signal, timeoutMs: this.config.timeoutMs }));
-        await this.state.update({ pendingReplica: metadata });
+        await this.state.update({ pendingSnapshot: metadata });
       } else validateSnapshot(metadata);
-      if (metadata.claim.role !== 'primary' || metadata.claim.epoch !== claim.epoch) throw pairError('authority_changed');
+      if (metadata.claim.role !== 'master' || metadata.claim.epoch !== claim.epoch) throw pairError('authority_changed');
       const result = await this.installReplica(metadata, { signal });
       this.sync = { state: 'ready', sourceAt: result.sourceAt, verifiedAt: result.verifiedAt, bytes: result.bytes,
         lastSuccessAt: this.clock(), error: null, transferredBytes: result.transferredBytes };
     } catch (error) {
       this.sync = { ...this.sync, state: 'error', error: publicPairError(error) };
-      if (['snapshot_unavailable', 'authority_changed'].includes(error?.code)) await this.state.update({ pendingReplica: null });
+      if (['snapshot_unavailable', 'authority_changed'].includes(error?.code)) await this.state.update({ pendingSnapshot: null });
     }
     finally { this.nextSyncAt = this.clock() + (this.config.intervalMs ?? 60000); this.syncAbort = null; }
   }
 
   async installReplica(metadata, { signal, allowRelease = false } = {}) {
     const guard = () => this.assertReplica(metadata.claim, { allowRelease });
-    return receiveSnapshot({ directory: this.config.replicaDirectory, metadata, peer: this.peer, signal, guard,
+    return receiveSnapshot({ directory: this.config.snapshotDirectory, metadata, peer: this.peer, signal, guard,
       onProgress: value => { this.sync = { ...this.sync, ...value }; },
       commit: action => this.serialized(async () => {
         await guard();
         // Check the sender is still authoritative just before publication.
         const remote = await this.peer.request('status', { claim: this.state.claim() }, { signal });
-        if (remote.claim?.role !== 'primary' || remote.claim.epoch !== metadata.claim.epoch) throw pairError('authority_changed');
+        if (remote.claim?.role !== 'master' || remote.claim.epoch !== metadata.claim.epoch) throw pairError('authority_changed');
         const result = await action();
-        await this.state.update({ pendingReplica: null, accepted: { generation: result.generation, digest: result.digest,
+        await this.state.update({ pendingSnapshot: null, accepted: { generation: result.generation, digest: result.digest,
           epoch: metadata.claim.epoch, sequence: metadata.sequence, nodeId: metadata.claim.nodeId } });
         return result;
       }) });
@@ -362,13 +367,13 @@ export class PairManager {
 
   async exportSnapshot({ force = false, pin = false } = {}) {
     let local = this.state.value;
-    if (local.role === 'replica' || local.role === 'protected' && (!local.everWritten || !local.activeDbPath)) {
-      const publication = await readReplicaPublication(this.config.replicaDirectory);
+    if (local.role === 'slave' || local.role === 'protected' && (!local.everWritten || !local.activeDbPath)) {
+      const publication = await readReplicaPublication(this.config.snapshotDirectory);
       if (!publication) throw pairError('snapshot_unavailable');
       return this.snapshots.create({ dbPath: publication.dbPath, claim: this.state.claim(), sequence: local.sequence,
         signal: this.abort.signal, force, pin });
     }
-    if (local.role === 'primary') {
+    if (local.role === 'master') {
       await this.prepareExportStamp();
       local = this.state.value;
     }
@@ -400,7 +405,7 @@ export class PairManager {
   async prepareExportStamp() {
     return this.serialized(async () => {
       let local = this.state.value;
-      if (local.role !== 'primary') throw pairError('not_primary');
+      if (local.role !== 'master') throw pairError('not_master');
       const actual = await this.readLineage(local.activeDbPath);
       const equal = (a, b) => a && b && a.epoch === b.epoch && a.sequence === b.sequence && a.token === b.token;
       if (equal(actual, local.pendingStamp)) {
@@ -468,13 +473,13 @@ export class PairManager {
   }
 
   async promote({ handover = false } = {}) {
-    if (!handover && this.state.value.role === 'protected' && this.state.value.bootstrapPending && !this.state.value.accepted) {
+    if (!handover && canBootstrap(this.state.value)) {
       let present;
       try { present = await lstat(this.state.value.activeDbPath); }
       catch (error) { if (error.code !== 'ENOENT') throw error; }
-      if (!present) {
+      if (!present || present.isFile() && present.size === 0) {
         await this.hooks.closeReplica?.();
-        await this.state.update({ role: 'primary', epoch: randomUUID(), sequence: 0, ancestors: [],
+        await this.state.update({ role: 'master', epoch: randomUUID(), sequence: 0, ancestors: [],
           reason: null, transition: null, release: null, recovery: null, dbStamp: null, pendingStamp: null });
         await this.startPrimary();
         return;
@@ -485,26 +490,26 @@ export class PairManager {
       await verifySnapshot(join(this.snapshots.directory, `export-${source.generation}.sqlite`), source, this.abort.signal);
       await this.hooks.closeReplica?.();
       const epoch = randomUUID();
-      await this.serialized(() => this.state.update({ role: 'primary', epoch, sequence: 0,
+      await this.serialized(() => this.state.update({ role: 'master', epoch, sequence: 0,
         ancestors: [...this.state.value.ancestors, { epoch: source.claim.epoch, sequence: source.sequence }],
         reason: null, transition: null, release: null, recovery: null, dbStamp: null, pendingStamp: null }));
       await this.startPrimary();
       return;
     }
-    if (!['replica', 'protected'].includes(this.state.value.role) || !this.state.value.accepted) throw pairError('protected_history');
-    const publication = await readReplicaPublication(this.config.replicaDirectory);
+    if (!['slave', 'protected'].includes(this.state.value.role) || !this.state.value.accepted) throw pairError('protected_history');
+    const publication = await readReplicaPublication(this.config.snapshotDirectory);
     const accepted = this.state.value.accepted;
     if (!publication || publication.generation !== accepted.generation || publication.digest !== accepted.digest
       || publication.claim?.epoch !== accepted.epoch || publication.claim?.nodeId !== accepted.nodeId
       || publication.sequence !== accepted.sequence) throw pairError('verification_failed');
     await verifySnapshot(publication.dbPath, publication, this.abort.signal);
     await this.hooks.closeReplica?.();
-    const epoch = randomUUID(), destination = join(this.config.directory, `primary-${epoch}.sqlite`);
+    const epoch = randomUUID(), destination = join(this.config.directory, `master-${epoch}.sqlite`);
     await copySnapshot(publication.dbPath, destination);
     const file = await open(destination, 'r'); await file.sync(); await file.close(); await syncDirectory(this.config.directory);
     const ancestors = [...(publication.claim?.ancestors ?? []),
       { epoch: this.state.value.accepted.epoch, sequence: this.state.value.accepted.sequence }];
-    await this.serialized(() => this.state.update({ role: 'primary', epoch, sequence: 0,
+    await this.serialized(() => this.state.update({ role: 'master', epoch, sequence: 0,
       ancestors, activeDbPath: destination, everWritten: true, reason: null, transition: null, release: null,
       recovery: null, dbStamp: null, pendingStamp: null,
       supersededPeer: handover ? { nodeId: this.state.value.accepted.nodeId, epoch: this.state.value.accepted.epoch } : null }));
@@ -513,11 +518,11 @@ export class PairManager {
   }
 
   async handover() {
-    if (!this.canControl()) throw pairError('not_primary');
+    if (!this.canControl()) throw pairError('not_master');
     const claim = this.state.claim(), token = randomUUID();
     const ocpp = await this.hooks.handoverRequirements?.() ?? null;
     const remote = await this.peer.request('handover-prepare', { claim, token, ocpp });
-    if (remote.role !== 'replica') throw pairError('invalid_transition');
+    if (remote.role !== 'slave') throw pairError('invalid_transition');
     if (!Object.hasOwn(remote, 'ocpp') || !isDeepStrictEqual(remote.ocpp, ocpp)) throw pairError('ocpp_handover_not_ready');
     if (!this.canControl() || this.state.value.epoch !== claim.epoch) throw pairError('authority_changed');
     await this.state.update(value => {
@@ -530,21 +535,21 @@ export class PairManager {
       await this.hooks.stopControl?.({ restore: true, preserveOcpp: true });
       this.activeAllowed = false;
       await this.vip.release();
-      if (this.state.value.role !== 'primary') throw pairError('authority_changed');
+      if (this.state.value.role !== 'master') throw pairError('authority_changed');
       const metadata = await this.exportSnapshot({ force: true });
       await this.peer.request('handover-stage', { token, metadata }, { timeoutMs: this.config.timeoutMs });
       await this.serialized(() => this.state.update({ role: 'protected', reason: 'handover_released',
         transition: { kind: 'handover', phase: 'released', token, peerNodeId: remote.nodeId, generation: metadata.generation } }));
       const activated = await this.peer.request('handover-activate', { token }, { timeoutMs: this.config.timeoutMs });
-      if (activated.role !== 'primary' || activated.accepted?.generation !== metadata.generation) throw pairError('invalid_transition');
+      if (activated.role !== 'master' || activated.accepted?.generation !== metadata.generation) throw pairError('invalid_transition');
       // The peer accepted the exact final copy. There is no independent history
       // left to recover; normal lineage gating can now follow its new branch.
-      await receiveSnapshot({ directory: this.config.replicaDirectory, metadata,
+      await receiveSnapshot({ directory: this.config.snapshotDirectory, metadata,
         peer: { request: (operation, body) => operation === 'snapshot-hashes' ? this.snapshots.hashes(body) : this.snapshots.chunk(body) },
         signal: this.abort.signal, guard: async () => {
           if (this.state.value.role !== 'protected' || this.state.value.transition?.token !== token) throw pairError('authority_changed');
         }, commit: action => this.serialized(action) });
-      await this.state.update({ role: 'replica', reason: null, transition: null, everWritten: false, activeDbPath: null, accepted: {
+      await this.state.update({ role: 'slave', reason: null, transition: null, everWritten: false, activeDbPath: null, accepted: {
         generation: metadata.generation, digest: metadata.digest, epoch: metadata.claim.epoch,
         sequence: metadata.sequence, nodeId: metadata.claim.nodeId } });
       await this.startReplica();
@@ -559,15 +564,15 @@ export class PairManager {
   }
 
   async checkRecovery() {
-    if (!this.canControl()) throw pairError('not_primary');
+    if (!this.canControl()) throw pairError('not_master');
     if (!this.hooks.recoveryPreview) throw pairError('recovery_unavailable');
     await this.state.update({ recovery: { state: 'checking' } });
     try {
       const metadata = validateSnapshot(await this.peer.request('snapshot', { force: true }, { timeoutMs: this.config.timeoutMs }));
-      if (metadata.claim.role === 'primary') throw pairError('authority_changed');
+      if (metadata.claim.role === 'master') throw pairError('authority_changed');
       const donor = await receiveSnapshot({ directory: join(this.config.directory, 'recovery'), metadata,
         peer: this.peer, signal: this.abort.signal, publish: false,
-        guard: async () => { if (!this.canControl()) throw pairError('not_primary'); } });
+        guard: async () => { if (!this.canControl()) throw pairError('not_master'); } });
       const preview = await this.hooks.recoveryPreview({ donorPath: donor.dbPath });
       preview.previewId ??= randomUUID();
       await this.state.update({ recovery: { state: 'ready', metadata, donorPath: donor.dbPath, preview } });
@@ -578,7 +583,7 @@ export class PairManager {
   }
 
   async recover(body) {
-    if (!this.canControl()) throw pairError('not_primary');
+    if (!this.canControl()) throw pairError('not_master');
     const recovery = this.state.value.recovery;
     if (recovery?.state !== 'ready' || body.previewId !== recovery.preview.previewId) throw pairError('invalid_transition');
     if (!this.hooks.recoveryApply) throw pairError('recovery_unavailable');
@@ -595,7 +600,7 @@ export class PairManager {
   }
 
   async rejoin(body = {}) {
-    if (!this.canControl()) throw pairError('not_primary');
+    if (!this.canControl()) throw pairError('not_master');
     const recovery = this.state.value.recovery;
     const skipRecovery = body.discardUnrecovered === true;
     if (skipRecovery) {
@@ -611,7 +616,7 @@ export class PairManager {
     }
     const metadata = operation.metadata;
     const result = await this.peer.request('release', operation, { timeoutMs: this.config.timeoutMs });
-    if (result.role !== 'replica' || result.releaseReceipt?.digest !== metadata.digest
+    if (result.role !== 'slave' || result.releaseReceipt?.digest !== metadata.digest
       || result.releaseReceipt?.generation !== metadata.generation || result.releaseReceipt?.requestId !== operation.requestId)
       throw pairError('verification_failed');
     const report = skipRecovery ? { ...recovery.preview, status: 'skipped', recoverySkipped: true,
@@ -635,7 +640,7 @@ export class PairManager {
     if (operation === 'snapshot-hashes') return this.snapshots.hashes(body);
     if (operation === 'snapshot-chunk') return this.snapshots.chunk(body);
     if (operation === 'handover-prepare') {
-      if (!validClaim(body.claim) || body.claim.role !== 'primary' || !NODE_PATTERN.test(body.token ?? '')) throw pairError('invalid_transition');
+      if (!validClaim(body.claim) || body.claim.role !== 'master' || !NODE_PATTERN.test(body.token ?? '')) throw pairError('invalid_transition');
       if (!Object.hasOwn(body, 'ocpp')) throw pairError('ocpp_handover_not_ready');
       await this.assertReplica(body.claim);
       if (this.busy) throw pairError('peer_busy');
@@ -650,7 +655,7 @@ export class PairManager {
       } finally { this.busy = false; }
     }
     if (operation === 'handover-stage') {
-      if (this.busy || this.state.value.transition?.token !== body.token || this.state.value.role !== 'replica') throw pairError('invalid_transition');
+      if (this.busy || this.state.value.transition?.token !== body.token || this.state.value.role !== 'slave') throw pairError('invalid_transition');
       const metadata = validateSnapshot(body.metadata);
       if (metadata.claim.epoch !== this.state.value.transition.epoch) throw pairError('authority_changed');
       this.busy = true;
@@ -669,7 +674,7 @@ export class PairManager {
       if (remote.claim?.role !== 'protected' || remote.claim.transition?.phase !== 'released') throw pairError('invalid_transition');
       this.busy = true;
       try {
-        const publication = await readReplicaPublication(this.config.replicaDirectory);
+        const publication = await readReplicaPublication(this.config.snapshotDirectory);
         if (!publication || publication.generation !== this.state.value.accepted?.generation) throw pairError('verification_failed');
         await this.hooks.verifyHandover?.({ dbPath: publication.dbPath, requirements: this.state.value.transition.ocpp });
         await this.promote({ handover: true });
@@ -685,18 +690,18 @@ export class PairManager {
         bytes: metadata.bytes, targetEpoch: metadata.claim.epoch, targetNodeId: metadata.claim.nodeId };
       const receipt = this.state.value.releaseReceipt;
       if (receipt?.requestId === body.requestId) {
-        if (JSON.stringify(receipt.identity) !== JSON.stringify(identity) || this.state.value.role !== 'replica'
+        if (JSON.stringify(receipt.identity) !== JSON.stringify(identity) || this.state.value.role !== 'slave'
           || this.state.value.epoch !== donor.claim.epoch || this.state.value.everWritten
           || this.state.value.accepted?.epoch !== metadata.claim.epoch || this.state.value.accepted?.sequence < metadata.sequence)
           throw pairError('invalid_transition');
-        const publication = await readReplicaPublication(this.config.replicaDirectory);
+        const publication = await readReplicaPublication(this.config.snapshotDirectory);
         if (publication?.generation !== this.state.value.accepted?.generation || publication.digest !== this.state.value.accepted?.digest) throw pairError('verification_failed');
         await verifySnapshot(publication.dbPath,publication,this.abort.signal);
         return { ...this.state.claim(), accepted: this.state.value.accepted, releaseReceipt: identity };
       }
-      if (this.busy || !['protected', 'replica'].includes(this.state.value.role)) throw pairError('protected_history');
+      if (this.busy || !['protected', 'slave'].includes(this.state.value.role)) throw pairError('protected_history');
       if (donor.claim.epoch !== this.state.value.epoch || donor.claim.nodeId !== this.state.value.nodeId ||
-          metadata.claim.role !== 'primary') throw pairError('authority_changed');
+          metadata.claim.role !== 'master') throw pairError('authority_changed');
       // A donor that wrote again after the checked snapshot is never erased by
       // a stale recovery completion. The epoch changes on every promotion.
       this.busy = true;
@@ -708,13 +713,13 @@ export class PairManager {
         const result = await this.installReplica(metadata, { signal: this.abort.signal, allowRelease: true });
         await this.hooks.closeReplica?.();
         const oldPath = this.state.value.activeDbPath;
-        await this.state.update({ role: 'replica', reason: null, release: null, transition: null, everWritten: false,
+        await this.state.update({ role: 'slave', reason: null, release: null, transition: null, everWritten: false,
           activeDbPath: null, recovery: null, activationError: null, releaseReceipt: { requestId: body.requestId, identity } });
         this.error = null;
         await this.startReplica(result);
         // Only our dedicated former primary files are owned for deletion. The
         // initially configured path may be user-owned and is never reopened.
-        if (oldPath?.startsWith(join(this.config.directory, 'primary-'))) await rm(oldPath, { force: true });
+        if (oldPath?.startsWith(join(this.config.directory, 'master-'))) await rm(oldPath, { force: true });
         return { ...this.state.claim(), accepted: this.state.value.accepted, releaseReceipt: identity };
       } finally { this.busy = false; }
     }

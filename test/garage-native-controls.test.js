@@ -344,7 +344,7 @@ test('ordinary Mitsubishi HTTP route uses shared write authorization and returns
     store: f.store, chartService: { overview: async () => ({ rows: [] }) } };
   const servers = [];
   t.after(async () => { for (const server of servers) await new Promise(resolve => server.close(resolve)); });
-  async function serve(role = 'primary') {
+  async function serve(role = 'master') {
     const server = createAppServer({ ...app, role }); servers.push(server);
     server.listen(0, '127.0.0.1'); await once(server, 'listening');
     return (input, headers = {}) => fetch(`http://127.0.0.1:${server.address().port}/api/garage/native`, {
@@ -353,7 +353,7 @@ test('ordinary Mitsubishi HTTP route uses shared write authorization and returns
   const post = await serve();
   assert.equal((await post({ setting: 'targetC', value: 10 })).status, 400);
   assert.equal((await post({ setting: 'power', value: 'off' }, { Origin: 'http://invented.invalid' })).status, 403);
-  const replica = await serve('replica');
+  const replica = await serve('slave');
   assert.equal((await replica({ setting: 'power', value: 'off' })).status, 405);
   assert.equal(f.published.length, 0);
   const response = await post({ setting: 'power', value: 'off' });

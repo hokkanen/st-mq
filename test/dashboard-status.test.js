@@ -52,7 +52,7 @@ test('garage overview never infers current validation from an old status label o
 test('replica overviews identify saved evidence without presenting live control readiness', () => {
   const home = learningOverview({ reconstruction: 'snapshot', adaptive: { health: {
     status: 'learning', usableSamples: 120, acceptedFits: 3 } } });
-  assert.equal(home.title, 'Recorded primary model');
+  assert.equal(home.title, 'Recorded master model');
   assert.equal(home.usableSamples, 120);
   assert.match(home.summary, /Live action readiness and cycle assessments are unavailable/);
   const garage = garageLearningOverview({ reconstruction: 'snapshot', status: 'validated-provisional',

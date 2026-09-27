@@ -505,7 +505,7 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until,
     assert.equal(await evaluate(`document.querySelector('${fan}').value`), 'high');
     assert.equal(await evaluate(`document.querySelector('${fan}').disabled`), false);
     assert.match(await evaluate(`document.querySelector('${appliance} .equipment-control-result').textContent`), /device reported/);
-    await evaluate("window.equipmentUiFixture.status.role='replica';true"); await refresh();
+    await evaluate("window.equipmentUiFixture.status.role='slave';true"); await refresh();
     assert.equal(await evaluate(`document.querySelector('${fan}').disabled`), true, 'Replica remains read-only');
     await evaluate("window.equipmentUiFixture.status={};window.equipmentUiFixture.observations={};window.equipmentUiFixture.devices=[];true"); await refresh();
     assert.match(await evaluate("document.getElementById('garage-equipment-readings').textContent"), /No garage devices enabled/);

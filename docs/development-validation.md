@@ -25,7 +25,7 @@ npm run test:all        # routine followed by extended
 
 Extended tests live in `test/extended/`, with at most two files in parallel and
 a three-minute test deadline. They cover recovery at larger history volumes
-and real SQLite replication through SSH. A sensor duplicate-delivery regression
+and real SQLite mirroring through SSH. A sensor duplicate-delivery regression
 also runs the installed MQTT.js client against an isolated Mosquitto broker and
 packet proxy. Install `mosquitto` to run it; set `STMQ_REQUIRE_MQTT_TESTS=1` to
 make a missing broker fail instead of skip. Cheap mocked transport validation stays
@@ -36,11 +36,11 @@ Pushes and pull requests run routine tests and builds on Node 22 and 24, plus th
 secret-history audit. The **Extended validation** workflow runs weekly on Monday
 at 03:27 UTC or manually using `workflow_dispatch`; it runs the extended Node
 suite on both versions and the amd64/arm64 container checks. Run it before a
-release and after changes to recovery, replication or packaging. This workflow
-requires replication prerequisites, so a missing tool fails instead of silently
+release and after changes to recovery, mirroring or packaging. This workflow
+requires mirror prerequisites, so a missing tool fails instead of silently
 skipping coverage. Local extended runs report missing tools as skips.
 
-To require real replication locally, install OpenSSH client and server tools,
+To require real mirroring locally, install OpenSSH client and server tools,
 prepare the host's SSH privilege-separation directory, and build the pinned
 SQLite tool:
 
@@ -186,7 +186,7 @@ node scripts/garage-pipe-simulation.js
 
 The container suite uses temporary mounts and disables container networking.
 It checks the shipped startup command, authentication, assets, restart,
-backup/export/restore, shared files, provider fixtures and replica viewer.
+backup/export/restore, shared files, provider fixtures and slave viewer.
 The weekly/manual extended workflow builds and runs both amd64 and arm64
 images. Running arm64 locally requires an arm64 host or working emulation and
 a matching image.
@@ -235,7 +235,7 @@ rerun for this change.
 ## September 2026 development review
 
 Validation on 2026-09-16 covers dashboard/backend consistency, configuration,
-replication, documentation and the available test suites:
+mirroring, documentation and the available test suites:
 
 | Check | Result |
 | --- | --- |

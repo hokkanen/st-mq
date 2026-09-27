@@ -81,7 +81,7 @@ test('all equipment HTTP actions require authenticated same-origin JSON before d
 
 test('replicas, protected controllers and paired standbys reject equipment actions before dispatch', async t => {
   for (const [name, options, expected] of [
-    ['replica', { role: 'replica' }, 405],
+    ['slave', { role: 'slave' }, 405],
     ['protected', { controlAuthority: { canControl: () => false, status: () => ({ protected: true }) } }, 409],
     ['standby', { pairContext: { canControl: () => false, recovering: () => false, status: () => ({ role: 'standby' }) } }, 409],
   ]) await t.test(name, async t => {
@@ -501,7 +501,7 @@ test('authority demotion cancels an in-flight equipment readback and keeps its o
   const identity = f.mqtt.identities[0];
   identity.connected = true; identity.emit('connect');
   identity.emit('message', topic, Buffer.from(JSON.stringify({ version: 1, nodeId: randomUUID(), epoch: randomUUID(),
-    role: 'primary', platform: 'hassio', at: INITIAL, boot: randomUUID(), heartbeat: 1 })), {});
+    role: 'master', platform: 'hassio', at: INITIAL, boot: randomUUID(), heartbeat: 1 })), {});
   const failed = await pending;
   assert.equal(failed.status, 400);
   assert.equal(f.mqtt.clients[0].closed, true);

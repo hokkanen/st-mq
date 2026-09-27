@@ -28,9 +28,9 @@ async function bounded(promise, milliseconds = 1500) {
 async function fixture(t, { runtimeFactory, recoveryModule, snapshotSource } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'stmq-pair-runtime-race-'));
   const dbPath = join(root, 'source.sqlite'); await writeFile(dbPath, 'synthetic placeholder');
-  const config = { dbPath, dataDir: root, databaseDir: root, input: 'mqtt', role: 'primary', port: 0, host: '127.0.0.1', token: '',
+  const config = { dbPath, dataDir: root, databaseDir: root, input: 'mqtt', role: 'master', port: 0, host: '127.0.0.1', token: '',
     settings: { mode: 'monitoring' }, connections: { mqtt: { address: 'mqtt://127.0.0.1' } },
-    replication: { directory: join(root, 'replica') }, pairing: { directory: join(root, 'pair'), timeoutMs: 30000, vip: {} } };
+    topology: 'pair', pair: { snapshotDirectory: join(root, 'pair-snapshots'), directory: join(root, 'pair'), timeoutMs: 30000, vip: {} } };
   let hooks, controlling = true, closed = false;
   const instances = [], gates = [];
   const defaultRuntime = async () => {
@@ -48,7 +48,7 @@ async function fixture(t, { runtimeFactory, recoveryModule, snapshotSource } = {
     }, managerFactory: options => {
       hooks = options.hooks;
       return { init: async () => {}, start: () => hooks.startPrimary({ dbPath }),
-        status: () => ({ role: controlling ? 'primary' : 'protected' }), canControl: () => controlling && !closed,
+        status: () => ({ role: controlling ? 'master' : 'protected' }), canControl: () => controlling && !closed,
         prepareShutdown: () => {}, close: async () => { closed = true; controlling = false; } };
     } });
   t.after(async () => { await app.close(); for (const instance of instances) await instance.close(); await rm(root, { recursive: true, force: true }); });
@@ -124,12 +124,12 @@ test('an unreadable protected donor retains its management API and read-only wai
   const f = await fixture(t);
   f.demote();
   await f.hooks.startReplica({ role: 'protected', dbPath: f.config.dbPath });
-  assert.equal(f.app.pairing.error, 'snapshot_failed');
+  assert.equal(f.app.pair.error, 'snapshot_failed');
   const response = await fetch(`http://127.0.0.1:${f.app.server.address().port}/api/status`);
   assert.equal(response.status, 200);
   const status = await response.json();
-  assert.equal(status.readOnly, true); assert.equal(status.pairing.role, 'protected');
-  assert.equal(status.replication.state, 'waiting');
+  assert.equal(status.readOnly, true); assert.equal(status.pair.role, 'protected');
+  assert.equal(status.sync.state, 'waiting');
   assert.equal(f.app.engine, undefined);
   await bounded(f.app.close());
 });

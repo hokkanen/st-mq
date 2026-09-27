@@ -34,7 +34,7 @@ export class ControllerAnnouncements {
   announce() {
     if (!this.client?.connected) return;
     const claim = this.claim();
-    if (!claim || claim.role !== 'primary') return;
+    if (!claim || claim.role !== 'master') return;
     this.client.publish(this.topic, JSON.stringify({ version: 1, ...claim, at: this.clock(),
       boot: this.boot, heartbeat: ++this.sequence }), { retain: false, qos: 0 });
   }
@@ -44,7 +44,7 @@ export class ControllerAnnouncements {
     let value;
     try { value = JSON.parse(data.toString()); } catch { return; }
     const mine = this.claim();
-    if (!validClaim(value) || value.role !== 'primary' || value.nodeId === mine?.nodeId ||
+    if (!validClaim(value) || value.role !== 'master' || value.nodeId === mine?.nodeId ||
         value.version !== 1 || !Number.isSafeInteger(value.at) || Math.abs(value.at - this.clock()) > 15000 ||
         typeof value.boot !== 'string' || value.boot.length > 80 || !Number.isSafeInteger(value.heartbeat) || value.heartbeat < 1) return;
     const key = `${value.nodeId}:${value.boot}`, previous = this.seen.get(key);

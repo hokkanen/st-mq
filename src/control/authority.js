@@ -15,22 +15,25 @@ export async function stoppedControllerViewer({ config, authority, clock, instal
   const generation = randomUUID(), incoming = join(directory, `incoming-${generation}.sqlite`);
   const snapshot = await createSourceSnapshot({ dbPath: config.dbPath, destination: incoming });
   await publishSnapshot(directory, incoming, { generation, ...snapshot, verifiedAt: clock() });
-  return startReplica({ config: { ...config, role: 'replica', replication: { ...config.replication, directory } },
+  return startReplica({ config: { ...config, role: 'slave' }, snapshotDirectory: directory,
     controlAuthority: authority, clock, installSignalHandlers });
 }
 
 /** Duplicate-controller protection also applies to unpaired live instances. */
 export async function standaloneAuthority({ config, onLoss, clock = Date.now, connect }) {
   const directory = join(config.dataDir, 'controller-authority');
-  await ownedDirectory(directory, '.st-mq-controller-authority');
   const path = join(directory, 'identity.json');
   let identity;
   try {
     identity = JSON.parse(await readFile(path, 'utf8'));
-    if (!validClaim(identity) || typeof identity.blocked !== 'boolean') throw new Error('Invalid controller identity');
+    if (identity.version !== 1 || !validClaim(identity) || identity.role !== 'master' ||
+        typeof identity.blocked !== 'boolean') throw new Error('Invalid controller identity');
   } catch (error) {
-    if (error.code !== 'ENOENT') throw new Error('Controller identity could not be validated');
-    identity = { nodeId: randomUUID(), epoch: randomUUID(), role: 'primary',
+    if (error.code !== 'ENOENT') throw new Error('Saved controller authority is incompatible or invalid. Preserve the existing files and use a fresh data directory for a deliberate new setup.');
+  }
+  await ownedDirectory(directory, '.st-mq-controller-authority');
+  if (!identity) {
+    identity = { version: 1, nodeId: randomUUID(), epoch: randomUUID(), role: 'master',
       platform: config.addon ? 'hassio' : 'ubuntu', blocked: false };
     await durableJson(path, identity);
   }

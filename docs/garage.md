@@ -131,7 +131,7 @@ pump's own thermostat to work, not a claim that it is producing heat.
 Authenticated mutations return the full dashboard status:
 `POST /api/garage/temporary`, `POST /api/garage/heating`,
 and `POST /api/garage/native`. Room setting uses
-`{ "setting": "targetC", "value": 5 }`. Replicas cannot change settings or command
+`{ "setting": "targetC", "value": 5 }`. Slaves cannot change settings or command
 the pump. UI polling never renews an OFF permission.
 
 ## Sensors, doors and protection

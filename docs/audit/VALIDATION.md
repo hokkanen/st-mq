@@ -43,7 +43,7 @@ skip them. It covers duplicate MQTT delivery, current-schema transfer and recove
 interrupted transfer, SSH channel configuration, and real SQLite lock contention.
 The container harness covers the shipped command, authentication, restart,
 current-schema persistence, export, cold backup/restore, read-only shared folders,
-provider plumbing, replica viewer and bundled SSH/SQLite/VIP tools.
+provider plumbing, slave viewer and bundled SSH/SQLite/VIP tools.
 
 ## Actual browser checks
 
@@ -52,7 +52,7 @@ These scripts ran in isolated Chrome sessions against the built application:
 | Script | Executed coverage |
 | --- | --- |
 | `scripts/browser-ingress-smoke.js` | Ingress-prefixed assets/API, authentication/session expiry, settings application, stalled initial requests, complete-body timeout, continuing status polling and stale/online recovery |
-| `scripts/browser-equipment-smoke.js` | Current independent vehicle feeds, equipment controls, pending/readback/replica presentation and five responsive widths |
+| `scripts/browser-equipment-smoke.js` | Current independent vehicle feeds, equipment controls, pending/readback/slave presentation and five responsive widths |
 | `scripts/browser-garage-smoke.js` | Home/Garage/Total and timing/model controls, 22 charging states, physical C2 presentation, both themes, 320–1920 px layouts, keyboard/focus and polling persistence |
 | `scripts/browser-home-controls-smoke.js` | Synthetic Home controls, state/confirmation presentation and responsive layouts |
 | `scripts/browser-learning-smoke.js` | Current learning/input charts and axes, settings drafts, real Engine/API path with fake H66 50-degree readback and restoration to 55 |

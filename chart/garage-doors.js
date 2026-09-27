@@ -33,7 +33,7 @@ export function garageDoorControl(status, device, snapshot = {}) {
   }
   if (sending) label = 'Sending…';
   if (ownRequest && snapshot.error) feedback = snapshot.message;
-  if (isReadOnlyReplica(status)) feedback = 'Door controls are available on the primary computer.';
+  if (isReadOnlyReplica(status)) feedback = 'Door controls are available on the master computer.';
   else if (!known) feedback ||= 'Waiting for a current door report.';
   else if (device.cover?.available !== true) feedback ||= 'Door control is currently unavailable.';
   else if (action && device.controls?.cover?.[action] !== true) feedback ||= `${label} control is not configured.`;

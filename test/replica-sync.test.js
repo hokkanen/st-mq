@@ -16,7 +16,7 @@ import { createSourceSnapshot } from '../src/replication/transport.js';
 async function fixture(t) {
   const directory = await mkdtemp(join(tmpdir(), 'stmq-replica-test-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
-  const source = join(directory, 'source.sqlite'), replica = join(directory, 'replica');
+  const source = join(directory, 'source.sqlite'), replica = join(directory, 'slave');
   const db = new Store(source).db;
   db.exec("INSERT INTO events(id,type,payload,at) VALUES(1,'fixture',json_object('value','invented observation'),0)");
   t.after(() => db.close());

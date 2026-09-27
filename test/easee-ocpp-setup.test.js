@@ -11,7 +11,7 @@ const AT = Date.parse('2026-09-24T12:00:00Z');
 function config(overrides = {}) {
   return { dataDir: '/unused-fixture-directory', connections: { easee: { charger_id: 'fixture-charger', local_ocpp: {
     server_url: 'ws://192.0.2.10:9001/ocpp', password: 'fixture-setup-pass', authorization_tags: ['fixture-tag'], ...overrides,
-  } } }, pairing: { enabled: false } };
+  } } }, topology: 'standalone', pair: {} };
 }
 function fixture(overrides = {}) {
   const installation = overrides.installation ?? ocppInstallation(config());
@@ -252,8 +252,8 @@ test('disabling does not turn off a foreign connection or apply before failed st
 
 test('paired endpoint and credentials remain stable across nodes while incompatible takeover settings fail', () => {
   const primary = config({ password: '', server_url: '' });
-  primary.pairing = { enabled: true, token: 'fixture-shared-pairing-token-for-derivation', vip: { address: '192.0.2.30' } };
-  const peer = structuredClone(primary); peer.dataDir = '/fixture-other-node'; peer.pairing.listenHost = '192.0.2.20';
+  primary.topology = 'pair'; primary.pair = { token: 'fixture-shared-pairing-token-for-derivation', vip: { address: '192.0.2.30' } };
+  const peer = structuredClone(primary); peer.dataDir = '/fixture-other-node'; peer.pair.listenHost = '192.0.2.20';
   assert.equal(ocppInstallation(primary).endpoint, 'ws://192.0.2.30:9001/ocpp');
   assert.equal(ocppInstallation(primary).password, ocppInstallation(peer).password);
   const requirements = ocppHandoverRequirements(primary);
@@ -288,7 +288,7 @@ test('standalone credentials are durable and private and cannot silently transfe
 
 test('disabled paired OCPP retains compatibility checks while native restoration is outstanding', () => {
   const source = config({ enabled: false, password: '', server_url: '' });
-  source.pairing = { enabled: true, token: 'fixture-shared-pairing-token-for-derivation', vip: { address: '192.0.2.30' } };
+  source.topology = 'pair'; source.pair = { token: 'fixture-shared-pairing-token-for-derivation', vip: { address: '192.0.2.30' } };
   const installation = ocppInstallation(source), empty = { version: 1, scope: installation.scope,
     ownedFingerprint: null, appliedFingerprint: null, adoptionFingerprint: null, intent: null,
     lastAppliedAt: null, lastSuccessAt: null, nextAttemptAt: null, failures: 0 };

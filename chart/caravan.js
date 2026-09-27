@@ -130,7 +130,7 @@ export function createCaravanContents({ document, actions, blocked, readingsFor,
       select.value = live && dehumidifierValueAllowed(setting, reported[setting]) ? String(reported[setting]) : '';
       select.disabled = !allowed;
     }
-    help.textContent = isReadOnlyReplica(status) ? 'Controls are available on the primary computer.'
+    help.textContent = isReadOnlyReplica(status) ? 'Controls are available on the master computer.'
       : !live ? 'Controls become available after the dehumidifier connects and reports its settings.'
         : ['publishing', 'published'].includes(device.operation?.status) ? 'Waiting for the device to report the requested setting.'
           : busy || blocked() ? 'Another request is in progress.'

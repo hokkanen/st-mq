@@ -15,7 +15,7 @@ function charger(id = 'charger1', patch = {}) {
     association: `fixture:${id}`, request: { sessionId: `session:${id}`, revision: 1, overrides: {} },
     requiredGridKwh: 32.888, ...patch };
 }
-const status = (...chargers) => ({ role: 'primary', now, charging: { settings: { priority: 'balanced', ...structuredClone(DEFAULT_CHARGING_SETTINGS) }, controls: { priority: 'balanced', revision: 0 },
+const status = (...chargers) => ({ role: 'master', now, charging: { settings: { priority: 'balanced', ...structuredClone(DEFAULT_CHARGING_SETTINGS) }, controls: { priority: 'balanced', revision: 0 },
   timezone: 'Europe/Helsinki', chargers: chargers.length ? chargers : [charger(), charger('charger2')] } });
 const connected = (id = 'charger1') => { const item = charger(id); return { ...item, values: { ...item.values, connected: reading(true) } }; };
 const sessionPayload = (id, changes, extra = {}) => ({ scope: 'session', association: `fixture:${id}`, sessionId: `session:${id}`, revision: 1, changes, ...extra });
@@ -688,7 +688,7 @@ test('identical forms adapt to capabilities and automatic values, with no shared
   assert.equal($('charger1-setting-manualSoc').value, 20);
   const original = $('charger2-device'); panel.update(status(connected(), connected('charger2'))); assert.equal($('charger2-device'), original);
   assert.equal($('charger2-setting-manualSoc').value, 20); assert(!$('charger2-setting-manualSoc').disabled);
-  panel.update({ ...status(connected(), connected('charger2')), role: 'replica' }); assert($('charger1-charge-now').disabled); assert($('charger2-setting-manualSoc').disabled);
+  panel.update({ ...status(connected(), connected('charger2')), role: 'slave' }); assert($('charger1-charge-now').disabled); assert($('charger2-setting-manualSoc').disabled);
   assert(![...document.nodes.keys()].some(id => /installation|mqtt|efficiency|soc-form|soc-automatic/.test(id)));
   panel.close(); assert(!$('charger1-enabled').listeners.has('click'));
 });
@@ -1233,7 +1233,7 @@ test('priority stays inspectable while replica and read-only transitions lock ev
   const panel = createChargingPanel({ document, request: async (...args) => { calls.push(args); return priorityStatus(); } });
   panel.update(priorityStatus()); $('charger1-shared-priority').dispatch('click'); choosePriority(document, 'charger2');
   for (const snapshot of [
-    { ...priorityStatus(), role: 'replica' },
+    { ...priorityStatus(), role: 'slave' },
     { ...priorityStatus(), readOnly: true },
     (() => { const snapshot = priorityStatus(); snapshot.charging.readOnly = true; return snapshot; })(),
   ]) {
@@ -1390,7 +1390,7 @@ test('Identify respects availability, ongoing work, read-only authority and the 
   const panel = createChargingPanel({ document, request: async (...args) => { calls.push(args); } });
   const item = { ...connected(), identification: { phase: 'completed', active: false, available: true } };
   for (const snapshot of [
-    { ...status(item), role: 'replica' }, { ...status(item), readOnly: true }, status({ ...item, readOnly: true }),
+    { ...status(item), role: 'slave' }, { ...status(item), readOnly: true }, status({ ...item, readOnly: true }),
     status({ ...item, request: null }), status({ ...item, values: { ...item.values, connected: reading(false) } }),
     status({ ...item, identification: { ...item.identification, available: false } }),
     status({ ...item, identification: { ...item.identification, active: true, phase: 'charging' } }),
@@ -1472,7 +1472,7 @@ test('Charge now obeys primary, capability and connection boundaries', async () 
   const panel = createChargingPanel({ document, request: async (...args) => { calls.push(args); return status(active()); } });
   const item = active();
   for (const snapshot of [
-    { ...status(item), role: 'replica' }, { ...status(item), readOnly: true },
+    { ...status(item), role: 'slave' }, { ...status(item), readOnly: true },
     status({ ...item, readOnly: true }),
     status({ ...item, values: { ...item.values, connected: reading(false) } }),
     status({ ...item, request: null }), status({ ...item, capabilities: { scheduling: false } }),
@@ -1503,7 +1503,7 @@ test('automatic charging is a persistent fenced control, separate from the four 
   assert.equal(toggle.getAttribute('aria-checked'), 'true');
   assert.match($('charger1-control-message').textContent, /stays in effect until changed/);
   assert.match($('charger1-control-detail').textContent, /unplugging and restart/);
-  panel.update({ ...status(item), role: 'replica' }); assert(toggle.disabled);
+  panel.update({ ...status(item), role: 'slave' }); assert(toggle.disabled);
   await clickAction(toggle); assert.equal(calls.length, 1); panel.close();
 });
 
@@ -1636,7 +1636,7 @@ test('ready-by chooser discards open drafts when session, capability or write au
   const document = documentFixture(), $ = id => document.getElementById(id);
   const item = connected(), panel = createChargingPanel({ document, request: async () => assert.fail('No request expected') });
   const nextSession = { ...item, request: { ...item.request, sessionId: 'next-session' } };
-  for (const next of [status(nextSession), { ...status(item), readOnly: true }, { ...status(item), role: 'replica' },
+  for (const next of [status(nextSession), { ...status(item), readOnly: true }, { ...status(item), role: 'slave' },
     status({ ...item, readOnly: true }), status({ ...item, capabilities: { scheduling: false } }),
     status({ ...item, values: { ...item.values, connected: reading(false) } }), status({ ...item, request: null }),
     status(connected('charger2'))]) {
@@ -1656,8 +1656,8 @@ test('ready-by chooser discards open drafts when session, capability or write au
 test('a lower-revision replica snapshot revokes previously writable charger settings', () => {
   const document = documentFixture(), panel = createChargingPanel({ document, request: async () => { throw new Error('No mutation allowed'); } });
   const current = status(); current.charging.revision = 20; panel.update(current);
-  const recorded = status(); recorded.charging.revision = 1; recorded.role = 'replica'; recorded.readOnly = true;
-  recorded.replication = { generation: 'synthetic-next-snapshot' }; panel.update(recorded);
+  const recorded = status(); recorded.charging.revision = 1; recorded.role = 'slave'; recorded.readOnly = true;
+  recorded.sync = { generation: 'synthetic-next-snapshot' }; panel.update(recorded);
   for (const id of ['charger1-charge-now', 'charger1-setting-manualSoc', 'charger1-setting-capacityKwh'])
     assert.equal(document.getElementById(id).disabled, true, id);
   panel.close();

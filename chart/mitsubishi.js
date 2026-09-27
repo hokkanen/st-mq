@@ -204,7 +204,7 @@ export function mitsubishiControl(status, setting) {
   const writable = Boolean(status && status.readOnly !== true && !isReadOnlyReplica(status));
   return { ...selected, available: writable && controls.available === true && selected.available === true
     && selected.supported === true && scalar(selected.value) && !controls.busy && !controls.pending,
-  reason: !writable ? 'This view is read-only. Use the primary controller to change settings.'
+  reason: !writable ? 'This view is read-only. Use the master controller to change settings.'
     : selected.reason ?? controls.reason ?? 'Waiting for a supported native control connection.' };
 }
 export function mitsubishiResult(result) {

@@ -7,10 +7,10 @@ import { isReadOnlyReplica, replicaDisplay, chartObservationTime } from '../char
 const now = Date.parse('2026-09-12T12:00:00Z');
 const id = '11111111-1111-4111-8111-111111111111';
 const previewId = 'a'.repeat(64);
-const primary = (overrides = {}) => ({ enabled: true, role: 'primary', canControl: true, busy: false,
-  peer: { reachable: true, role: 'replica' }, vip: { owned: true, ready: true },
+const primary = (overrides = {}) => ({ role: 'master', canControl: true, busy: false,
+  peer: { reachable: true, role: 'slave' }, vip: { owned: true, ready: true },
   recovery: { state: 'idle' }, actions: { 'check-recovery': true, recover: false, handover: true, promote: false, rejoin: false }, ...overrides });
-const standby = (overrides = {}) => primary({ role: 'replica', canControl: false, vip: { owned: false },
+const standby = (overrides = {}) => primary({ role: 'slave', canControl: false, vip: { owned: false },
   actions: { promote: true }, ...overrides });
 const preview = () => ({ previewId, counts: { missing: 12, conflicts: 3, duplicates: 4, skipped: 5 },
   period: { from: now - 2 * 86400_000, to: now - 86400_000 }, model: { status: 'rebuild-required', unsupported: 2 } });
@@ -23,20 +23,20 @@ function memoryStorage() {
 }
 
 test('paired controls require confirmed primary authority while recovery keeps normal control available', () => {
-  assert.equal(pairAllowsControl({ role: 'primary' }), true);
-  for (const pairing of [{ enabled: true }, standby(), standby({ role: 'protected' }), primary({ canControl: false }), primary({ transition: { kind: 'handover' } })]) {
-    const status = { role: 'primary', pairing };
+  assert.equal(pairAllowsControl({ role: 'master' }), true);
+  for (const pair of [{}, standby(), standby({ role: 'protected' }), primary({ canControl: false }), primary({ transition: { kind: 'handover' } })]) {
+    const status = { role: 'master', topology: 'pair', pair };
     assert.equal(pairAllowsControl(status), false);
     assert.equal(isReadOnlyReplica(status), true, 'a stale primary dashboard cannot enable controls after authority loss');
   }
-  assert.equal(pairAllowsControl({ pairing: primary({ busy: true, recovery: { state: 'recovering' } }) }), true);
-  assert.equal(isReadOnlyReplica({ role: 'replica', pairing: primary() }), true, 'a promoted viewer waits for fresh primary runtime status');
+  assert.equal(pairAllowsControl({ topology: 'pair', pair: primary({ busy: true, recovery: { state: 'recovering' } }) }), true);
+  assert.equal(isReadOnlyReplica({ role: 'slave', topology: 'pair', pair: primary() }), true, 'a promoted viewer waits for fresh primary runtime status');
 });
 
 test('a standalone authority loser remains readable and its chart stops at authority loss rather than an older outgoing backup', () => {
   const stoppedAt = now - 60000;
-  const status = { role: 'primary', now, controlAuthority: { state: 'protected', stoppedAt },
-    replication: { sourceAt: now - 86400_000, verifiedAt: now - 86000_000 }, observations: {} };
+  const status = { role: 'master', now, controlAuthority: { state: 'protected', stoppedAt },
+    sync: { sourceAt: now - 86400_000, verifiedAt: now - 86000_000 }, observations: {} };
   assert.equal(isReadOnlyReplica(status), true);
   assert.equal(chartObservationTime(status, now), stoppedAt);
   const display = replicaDisplay(status);
@@ -47,19 +47,21 @@ test('a standalone authority loser remains readable and its chart stops at autho
   assert.equal(display.verifiedAt, null, 'an earlier outgoing backup cannot verify the local stopped controller database');
 });
 
-test('the read-only POST exception is limited to known pairing operations on an enabled pair', () => {
-  const status = { role: 'replica', pairing: standby() }, body = { action: 'promote', requestId: id };
-  assert.equal(isPairManagementRequest('/api/pairing/action', body, status), true);
-  for (const path of ['/api/temporary', '/api/settings/reload', '/api/pairing/action/other', '/api/pairing'])
+test('the read-only POST exception is limited to known pair operations in pair topology', () => {
+  const status = { role: 'slave', topology: 'pair', pair: standby() }, body = { action: 'promote', requestId: id };
+  assert.equal(isPairManagementRequest('/api/pair/action', body, status), true);
+  for (const path of ['/api/temporary', '/api/settings/reload', '/api/pair/action/other', '/api/pair'])
     assert.equal(isPairManagementRequest(path, body, status), false);
-  assert.equal(isPairManagementRequest('/api/pairing/action', { ...body, action: 'control' }, status), false);
-  assert.equal(isPairManagementRequest('/api/pairing/action', { ...body, requestId: 'invalid' }, status), false);
-  assert.equal(isPairManagementRequest('/api/pairing/action', body, { pairing: { enabled: false } }), false);
-  assert.equal(isPairManagementRequest('/api/pairing/action', body, undefined), false);
+  assert.equal(isPairManagementRequest('/api/pair/action', { ...body, action: 'control' }, status), false);
+  assert.equal(isPairManagementRequest('/api/pair/action', { ...body, requestId: 'invalid' }, status), false);
+  assert.equal(isPairManagementRequest('/api/pair/action', body, { topology: 'standalone', pair: null }), false);
+  assert.equal(isPairManagementRequest('/api/pair/action', body, { topology: 'mirror', role: 'slave' }), false);
+  assert.equal(isPairManagementRequest('/api/pairing/action', body, status), false, 'retired API path never grants management access');
+  assert.equal(isPairManagementRequest('/api/pair/action', body, undefined), false);
 });
 
 test('pair display distinguishes protected history, peer outages, broker readiness and sync progress without exposing errors', () => {
-  assert.equal(pairDisplay({ enabled: false }), null);
+  assert.equal(pairDisplay(null), null);
   const protectedView = standby({ role: 'protected', reason: 'private diagnostic', error: 'private error',
     peer: { reachable: false, lastSeenAt: now - 120000, url: 'private peer URL' }, vip: { error: 'private broker diagnostic' } });
   const display = pairDisplay(protectedView, { now });
@@ -69,8 +71,8 @@ test('pair display distinguishes protected history, peer outages, broker readine
   assert.match(display.peer, /Last seen/);
   assert.match(display.broker, /needs attention/);
   assert.doesNotMatch(JSON.stringify(display), /private/);
-  const copied = replicaDisplay({ role: 'replica', now, pairing: protectedView,
-    replication: { sourceAt: now - 86400_000, verifiedAt: now - 86000_000 } });
+  const copied = replicaDisplay({ role: 'slave', now, topology: 'pair', pair: protectedView,
+    sync: { sourceAt: now - 86400_000, verifiedAt: now - 86000_000 } });
   assert.match(copied.summary, /explicitly resolves recovery/);
   assert.doesNotMatch(copied.summary, /automatically/);
   assert.match(pairDisplay(primary({ peer: { reachable: false } })).summary, /does not stop home control/);
@@ -100,13 +102,13 @@ test('management capability flags are restricted by role, transition, operation 
   assert.equal(pairActionAllowed(checked(), 'recover'), true);
   assert.equal(pairActionAllowed({ ...checked(), recovery: { state: 'ready', preview: { previewId: 'invalid' } } }, 'recover'), false);
   assert.equal(pairActionAllowed(primary({ recovery: { state: 'complete' }, actions: { rejoin: true } }), 'rejoin'), true);
-  for (const change of [{ busy: true }, { transition: { kind: 'handover' } }, { uiOperation: { state: 'running' } }, { enabled: false }])
+  for (const change of [{ busy: true }, { transition: { kind: 'handover' } }, { uiOperation: { state: 'running' } }, { role: 'unknown' }])
     assert.equal(pairActionAllowed(primary(change), 'handover'), false);
 });
 
 test('force promotion requires explicit confirmation and never becomes an automatic retry', async () => {
   const requests = [], confirmations = [];
-  const actions = createPairActions({ requestId: () => id, request: async (...args) => { requests.push(args); return operation(primary()); },
+  const actions = createPairActions({ requestId: () => id, request: async (...args) => { requests.push(args); return { status: operation(primary()) }; },
     confirm: text => { confirmations.push(text); return false; } });
   actions.update(standby({ role: 'protected' }));
   assert.equal(await actions.run('promote'), false);
@@ -114,6 +116,28 @@ test('force promotion requires explicit confirmation and never becomes an automa
   assert.match(confirmations[0], /unreachable computer may still be controlling/i);
   assert.equal(actions.snapshot().pending, null);
   assert.match(pairConfirmation('rejoin'), /divergent data will be replaced/);
+});
+
+test('first setup explains explicit master selection while both fresh computers remain read-only slaves', async () => {
+  const fresh = standby({ bootstrapPending: true, sync: { state: 'waiting' } });
+  const display = pairDisplay(fresh, { now });
+  assert.equal(display.state, 'slave');
+  assert.match(display.summary, /Both computers start as read-only slaves/);
+  assert.match(display.summary, /explicitly promote one computer to master/);
+  assert.match(pairActionHelp(fresh).promote, /other computer is not already master/);
+  const confirmations = [], requests = [];
+  const controller = createPairActions({ requestId: () => id,
+    confirm: message => { confirmations.push(message); return false; },
+    request: async (...args) => requests.push(args) });
+  controller.update(fresh);
+  assert.equal(await controller.run('promote'), false);
+  assert.match(confirmations[0], /first master.*other computer is not already master.*Only one computer may be master/);
+  assert.equal(requests.length, 0);
+  const { document, $ } = fixture();
+  const panel = createPairPanel({ document, request: async () => {}, now: () => now });
+  panel.update(fresh);
+  assert.match($('pairing-standby-help').textContent, /No master is selected automatically/);
+  assert.equal($('pairing-promote').disabled, false);
 });
 
 test('an asynchronous accepted operation stays pending until its matching completion and blocks duplicate clicks', async () => {
@@ -124,7 +148,7 @@ test('an asynchronous accepted operation stays pending until its matching comple
   const first = actions.run('check-recovery');
   assert.equal(await actions.run('check-recovery'), false);
   assert.equal(bodies.length, 1);
-  resolve(operation(primary(), 'running'));
+  resolve({ status: operation(primary(), 'running') });
   assert.equal(await first, true);
   assert.equal(actions.snapshot().pending.requestId, id, 'HTTP 202 is not a completion');
   assert.match(actions.snapshot().message, /Waiting for its completion/);
@@ -138,7 +162,7 @@ test('an asynchronous accepted operation stays pending until its matching comple
 test('confirmed recovery sends the exact checked preview identity and server confirmation field', async () => {
   let body, confirmation;
   const actions = createPairActions({ requestId: () => id, confirm: text => { confirmation = text; return true; },
-    request: async (path, payload) => { assert.equal(path, '/api/pairing/action'); body = payload; return operation(primary(), 'running', 'recover'); } });
+    request: async (path, payload) => { assert.equal(path, '/api/pair/action'); body = payload; return { status: operation(primary(), 'running', 'recover') }; } });
   actions.update(checked());
   assert.equal(await actions.run('recover'), true);
   assert.deepEqual(body, { action: 'recover', requestId: id, confirmed: true, previewId });
@@ -155,7 +179,7 @@ test('an uncertain promotion survives a reload and rechecks the original request
   assert.doesNotMatch(first.snapshot().message, /private/);
   const restored = createPairActions({ storage, requestId: () => { throw new Error('must reuse the original ID'); },
     confirm: () => { throw new Error('already confirmed'); }, request: async (path, body) => {
-      requests.push(body); return operation(primary(), 'complete', 'promote');
+      requests.push(body); return { status: operation(primary(), 'complete', 'promote') };
     } });
   assert.equal(requests.length, 1, 'restoring a browser tab never automatically promotes');
   restored.update(primary());
@@ -198,7 +222,7 @@ test('rejected actions clear pending IDs, and asynchronous failures expose only 
   assert.equal(actions.snapshot().pending, null);
   assert.match(actions.snapshot().message, /readiness changed/);
   assert.doesNotMatch(actions.snapshot().message, /private/);
-  const accepted = createPairActions({ requestId: () => id, request: async () => operation(primary(), 'running') });
+  const accepted = createPairActions({ requestId: () => id, request: async () => ({ status: operation(primary(), 'running') }) });
   accepted.update(primary()); await accepted.run('check-recovery');
   accepted.update({ ...operation(primary(), 'error'), error: 'private error' });
   assert.equal(accepted.snapshot().pending, null);
@@ -259,7 +283,7 @@ test('skip recovery requires its own warning and sends the exact checked preview
   const sent = [], warnings = [];
   let accept = false;
   const controller = createPairActions({ requestId: () => id, confirm: message => { warnings.push(message); return accept; },
-    request: async (path, body) => { sent.push(body); return operation(primary(), 'running', 'rejoin'); } });
+    request: async (path, body) => { sent.push(body); return { status: operation(primary(), 'running', 'rejoin') }; } });
   controller.update(checked());
   assert.equal(await controller.run('rejoin'), false);
   assert.equal(sent.length, 0);
@@ -291,14 +315,14 @@ test('an uncertain skip request retains its discard consent and preview across r
   const first = createPairActions({ storage, requestId: () => id, confirm: () => true,
     request: async (path, body) => { sent.push(body); throw new TypeError('response lost'); } });
   first.update(checked()); await first.run('rejoin');
-  const restored = createPairActions({ storage, request: async (path, body) => { sent.push(body); return operation(primary(), 'complete', 'rejoin'); } });
+  const restored = createPairActions({ storage, request: async (path, body) => { sent.push(body); return { status: operation(primary(), 'complete', 'rejoin') }; } });
   restored.update(primary());
   assert.equal(await restored.retry(), true);
   assert.deepEqual(sent[1], sent[0]);
   assert.equal(sent[1].discardUnrecovered, true);
   assert.equal(sent[1].previewId, previewId);
   const normal = createPairActions({ requestId: () => id, confirm: () => true,
-    request: async (path, body) => { sent.push(body); return operation(primary(), 'complete', 'rejoin'); } });
+    request: async (path, body) => { sent.push(body); return { status: operation(primary(), 'complete', 'rejoin') }; } });
   normal.update(primary({ recovery: { state: 'complete' }, actions: { rejoin: true } }));
   await normal.run('rejoin');
   assert.deepEqual(sent[2], { action: 'rejoin', requestId: id, confirmed: true });
@@ -316,7 +340,7 @@ test('skipped recovery reports explicitly describe discarded gaps without claimi
   assert.match(pairDisplay(primary({ recovery: { state: 'resolved', report } })).recovery, /without recovering gaps/);
 });
 
-test('the paired panel hides when disabled, shows promotion only on a slave, and locks actions during reconnect', () => {
+test('the pair panel hides outside pair mode, shows promotion only on a slave, and locks actions during reconnect', () => {
   const { document, $ } = fixture();
   const panel = createPairPanel({ document, request: async () => {}, now: () => now });
   assert.equal($('pairing-panel').hidden, true);
@@ -347,6 +371,8 @@ test('the paired panel hides when disabled, shows promotion only on a slave, and
   assert.equal($('pairing-recover').disabled, true);
   assert.equal($('pairing-rejoin').disabled, true);
   assert.match($('pairing-recover-help').textContent, /Locked until step 1/);
+  panel.update(null);
+  assert.equal($('pairing-panel').hidden, true, 'leaving pair topology removes controls from a previous pair status');
 });
 
 test('recovery reports render aggregate counts and periods while omitting donor rows and unknown fields', () => {

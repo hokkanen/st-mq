@@ -56,7 +56,7 @@ function optionalTimestampParam(url, key) {
 }
 
 export function createAppServer({ engine, getEngine = () => engine, store, chartService, token = '', familyToken = '',
-  getAccess, ingress = false, role = 'primary', getReadContext, replicationStatus,
+  getAccess, ingress = false, role = 'master', topology = 'standalone', getReadContext, syncStatus,
   pairContext, controlAuthority, getDatabaseExportDirectory = homedir,
   reloadSettings, settingsReloadStatus = () => ({ available: false, busy: false,
     reason: 'This instance has no reloadable configuration source.' }), staticDir = resolve('dist') }) {
@@ -66,7 +66,7 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
   const fixedAccess = { enabled: true, token, familyToken, tokenRequired: false };
   const access = getAccess ?? (() => fixedAccess);
   const exportDatabase = createDatabaseExport({ getDirectory: getDatabaseExportDirectory });
-  const writesBlocked = () => role === 'replica' || Boolean(pairContext && !pairContext.canControl())
+  const writesBlocked = () => role === 'slave' || Boolean(pairContext && !pairContext.canControl())
     || Boolean(controlAuthority && !controlAuthority.canControl());
   const readOnlyMessage = 'This computer is read-only. Database edits, settings changes and device commands require the active master.';
   const server = createServer(async (req, res) => {
@@ -122,9 +122,9 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
             'cache-control': 'no-store', 'content-length': data.length });
           return res.end(data);
         }
-        if (url.pathname === '/api/pairing' && req.method === 'GET')
-          return json(200, pairContext?.status() ?? { enabled: false });
-        if (url.pathname === '/api/pairing/action' && req.method === 'POST') {
+        if (url.pathname === '/api/pair' && req.method === 'GET')
+          return json(200, pairContext?.status() ?? null);
+        if (url.pathname === '/api/pair/action' && req.method === 'POST') {
           if (!pairContext) return json(409, { error: 'Paired operation is not configured.' });
           const input = await body(req);
           if (!stillAuthorized()) return;
@@ -136,7 +136,7 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
         // saving a new database file on this host requires the active master;
         // downloading existing history remains available through GET.
         if (writesBlocked() && !['GET', 'HEAD'].includes(req.method))
-          return json(role === 'replica' ? 405 : 409, { error: readOnlyMessage });
+          return json(role === 'slave' ? 405 : 409, { error: readOnlyMessage });
         const unavailable = () => {
           const state = settingsReloadStatus();
           if (state.unavailable) return state.reason;
@@ -155,7 +155,7 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
         const readerStore = readContext?.store ?? store;
         const readerCharts = readContext?.chartService ?? chartService;
         const sensorChangesStatus = (view = (readContext ? engine : getEngine()).sensorChangesStatus()) => {
-          const readOnly = role === 'replica' || controlAuthority && !controlAuthority.canControl()
+          const readOnly = role === 'slave' || controlAuthority && !controlAuthority.canControl()
             || pairContext && (!pairContext.canControl() || pairContext.recovering());
           return readOnly ? { ...view, available: false, readOnly: true, canRetryRebuild: false,
             events: view.events.map(event => ({ ...event, canRevert: false })) } : view;
@@ -163,14 +163,14 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
         const fireplaceStatus = (view, now) => fireplaceAccess(writesBlocked() || pairContext?.recovering()
           ? { ...view, available: false, readOnly: true } : view, webAccess, now);
         const status = () => {
-          const replication = replicationStatus?.();
+          const sync = syncStatus?.();
           const current = (readContext ? engine : getEngine()).status();
-          return { ...current, webAccess,
+          return { ...current, topology, role, webAccess,
             ...(current.fireplace ? { fireplace: fireplaceStatus(current.fireplace, current.now ?? engine.clock()) } : {}),
             ...(current.sensorChanges ? { sensorChanges: sensorChangesStatus(current.sensorChanges) } : {}), settingsReload: settingsReloadStatus(),
-            ...(replication ? { replication } : {}), ...(controlAuthority ? { controlAuthority: controlAuthority.status(),
+            ...(sync ? { sync } : {}), ...(controlAuthority ? { controlAuthority: controlAuthority.status(),
               ...(!controlAuthority.canControl() ? { readOnly: true, liveWrites: false } : {}) } : {}),
-            ...(pairContext ? { pairing: pairContext.status(),
+            ...(pairContext ? { pair: pairContext.status(),
               liveWrites: pairContext.canControl() && Boolean((readContext ? engine : getEngine()).status().liveWrites),
               readOnly: writesBlocked() } : {}) };
         };
@@ -192,7 +192,7 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
           return action(current, input);
         };
         if (req.method === 'GET' && url.pathname === '/api/status') return json(200, status());
-        if (readContext && !readContext.store) return json(503, { error: 'Waiting for a verified primary snapshot.' });
+        if (readContext && !readContext.store) return json(503, { error: 'Waiting for a verified master snapshot.' });
         if (req.method === 'GET' && url.pathname === '/api/database-export')
           return await exportDatabase({ store: readerStore, response: res, authorized: stillAuthorized });
         if (saveDatabase) {

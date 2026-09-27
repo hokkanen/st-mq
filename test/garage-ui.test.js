@@ -288,8 +288,8 @@ test('End garage pause requires an owned restoration obligation, supported capab
   assert.equal(garageReleaseAvailable({ garage: { adapter: { restorePending: true, liveControlSupported: true } } }), true);
   for (const value of [undefined, {}, { garage: { adapter: { simulation: true } } },
     { garage: { adapter: { restorePending: true, liveControlSupported: false } } },
-    { ...status, role: 'replica' }, { ...status, role: 'protected' }, { ...status, readOnly: true },
-    { ...status, pairing: { enabled: true, role: 'primary', canControl: false } }])
+    { ...status, role: 'slave' }, { ...status, role: 'protected' }, { ...status, readOnly: true },
+    { ...status, topology: 'pair', pair: { role: 'master', canControl: false } }])
     assert.equal(garageReleaseAvailable(value), false);
 });
 
@@ -314,7 +314,7 @@ test('garage release uses the empty safe request, rejects double clicks and awai
   resolve(status); await pending;
   assert.equal(returned, status); assert.match(message.textContent, /Waiting for heating confirmation/);
   assert.deepEqual(busy, [true, false]); assert.equal(button.disabled, false);
-  panel.update({ ...status, role: 'replica' }); await button.listeners.get('click')();
+  panel.update({ ...status, role: 'slave' }); await button.listeners.get('click')();
   assert.equal(calls.length, 1); assert.equal(button.disabled, true);
   panel.close(); assert.equal(button.listeners.has('click'), false);
 });
@@ -508,7 +508,7 @@ test('Garage rendering fills the learning contexts and keeps reconstruction insi
   assert.match(nodes.get('garage-input-context').textContent, /Missing readings remain unknown/);
   assert.match(nodes.get('garage-coefficient-context').textContent, /rear and front cooling rates are fitted independently/);
   assert.match(nodes.get('garage-coefficient-context').textContent, /electrical average can replace assumed pump power/);
-  assert.equal(garageDisplay({ learning: { reconstruction: 'snapshot' } }).evidenceDetails.find(row => row.key === 'recorded-history-reconstruction').value, 'Recorded primary snapshot');
+  assert.equal(garageDisplay({ learning: { reconstruction: 'snapshot' } }).evidenceDetails.find(row => row.key === 'recorded-history-reconstruction').value, 'Recorded master snapshot');
 });
 
 test('Garage strategy uses the model room setting during pending commands, reporting gaps and ambiguous native reports', () => {

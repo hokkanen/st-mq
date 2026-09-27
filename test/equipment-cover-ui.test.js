@@ -6,7 +6,7 @@ const now = Date.parse('2026-09-14T12:00:00Z');
 const door = (id = 'door1') => ({ id, label: 'Door 1', kind: 'door', available: true,
   controls: { cover: { open: true, close: true, stop: false } }, cover: { available: true, state: 'open', operation: null },
   readings: { door_open: { value: 1, unit: 'state', observedAt: now, stale: false } } });
-const status = (device = door()) => ({ role: 'primary', now, equipment: { devices: [device] } });
+const status = (device = door()) => ({ role: 'master', now, equipment: { devices: [device] } });
 
 test('fresh reported movement is prominent while binary contact values and stable state semantics remain unchanged', () => {
   const device = door(), reading = device.readings.door_open;
@@ -36,8 +36,8 @@ test('cover controls use advertised capability and authority without treating a 
   assert.equal(equipmentCoverAllowed(current, device, 'close'), true);
   assert.equal(equipmentCoverAllowed(current, device, 'stop'), false);
   for (const action of ['toggle', 'OPEN', null]) assert.equal(equipmentCoverAllowed(current, device, action), false);
-  for (const update of [{ role: 'replica' }, { role: 'transition' }, { controlAuthority: { state: 'protected' } },
-    { pairing: { enabled: true, role: 'primary', canControl: false } }])
+  for (const update of [{ role: 'slave' }, { role: 'transition' }, { controlAuthority: { state: 'protected' } },
+    { topology: 'pair', pair: { role: 'master', canControl: false } }])
     assert.equal(equipmentCoverAllowed({ ...current, ...update }, device, 'open'), false);
   for (const update of [{ enabled: false }, { kind: 'switch' }, { cover: { available: false } }, { cover: null }])
     assert.equal(equipmentCoverAllowed(current, { ...device, ...update }, 'open'), false);

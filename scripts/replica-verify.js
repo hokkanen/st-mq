@@ -10,7 +10,7 @@ if (process.argv.length !== 4 || process.argv[2] !== '--directory') {
     const { generation, digest, bytes, sourceAt, verifiedAt, digestAlgorithm } = publication;
     process.stdout.write(`${JSON.stringify({ ok: true, generation, digestAlgorithm, digest, bytes, sourceAt, verifiedAt })}\n`);
   } catch {
-    process.stdout.write(`${JSON.stringify({ ok: false, error: 'replica_verification_failed' })}\n`);
+    process.stdout.write(`${JSON.stringify({ ok: false, error: 'snapshot_verification_failed' })}\n`);
     process.exitCode = 1;
   }
 }

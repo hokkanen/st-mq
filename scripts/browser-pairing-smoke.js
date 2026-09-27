@@ -1,5 +1,5 @@
 // Isolated UI fixture: actual built HTML, styles and monitor modules, with a
-// synthetic pairing API in front of a temporary simulation. No pairing manager,
+// synthetic pair API in front of a temporary simulation. No pair manager,
 // broker, virtual IP, household configuration or physical device is used.
 // Run `npm run build`, then provide an isolated Firefox BiDi listener as argv[2].
 import assert from 'node:assert/strict';
@@ -19,17 +19,17 @@ const now = Date.now(), previewId = 'a'.repeat(64);
 const actions = [], pending = new Map(), errors = [], prompts = [], measurements = [];
 const preview = { previewId, counts: { missing: 12, conflicts: 3, duplicates: 4, skipped: 2 },
   period: { from: now - 8 * 86400_000, to: now - 86400_000 }, model: { status: 'rebuild-required', unsupported: 2 } };
-const master = (overrides = {}) => ({ enabled: true, role: 'primary', canControl: true, busy: false,
-  peer: { reachable: true, role: 'replica', lastSeenAt: now }, vip: { owned: true, ready: true },
+const master = (overrides = {}) => ({ role: 'master', canControl: true, busy: false,
+  peer: { reachable: true, role: 'slave', lastSeenAt: now }, vip: { owned: true, ready: true },
   recovery: { state: 'idle' }, actions: { 'check-recovery': true, recover: false, rejoin: false, handover: true, promote: false },
   ...overrides });
 const checked = () => master({ recovery: { state: 'ready', preview },
   actions: { 'check-recovery': true, recover: true, rejoin: true, handover: false, promote: false } });
 const standby = role => ({ ...master(), role, canControl: false, vip: { owned: false, ready: true },
-  peer: { reachable: true, role: 'primary', lastSeenAt: now }, actions: { promote: true },
+  peer: { reachable: true, role: 'master', lastSeenAt: now }, actions: { promote: true },
   sync: { state: 'ready', sourceAt: now - 60_000, verifiedAt: now - 30_000, bytes: 2e6 } });
 let sectionUnavailable = false;
-let pairing = master(), app, viewer, proxy, socket, command, ownsBrowser = false, requestId = 0;
+let topology = 'pair', pair = master(), app, viewer, proxy, socket, command, ownsBrowser = false, requestId = 0;
 
 try {
   const privatePath = join(directory, 'secrets.json');
@@ -43,37 +43,39 @@ try {
   const bytes = readFileSync(dbPath);
   const publication = { dbPath, generation: 'synthetic-pair-snapshot', sourceAt: now,
     verifiedAt: now, sourceStartedAt: now - 1000, digest: createHash('sha256').update(bytes).digest('hex'), bytes: bytes.length };
-  viewer = await startReplica({ config: { ...config, role: 'replica', replication: { directory } }, clock: () => now,
+  viewer = await startReplica({ config: { ...config, topology: 'mirror', role: 'slave', mirror: { directory } }, clock: () => now,
     readPublication: () => publication, installSignalHandlers: false });
   let readOnlyUpstream = `http://127.0.0.1:${viewer.server.address().port}`;
   proxy = createServer(async (request, response) => {
     const json = (status, value) => { response.writeHead(status, { 'Content-Type': 'application/json' }); response.end(JSON.stringify(value)); };
     try {
       if (request.url === '/favicon.ico') { response.writeHead(204); response.end(); return; }
-      if (request.url === '/api/pairing' && request.method === 'GET') return json(200, pairing);
-      if (request.url === '/api/pairing/action' && request.method === 'POST') {
+      if (request.url === '/api/pair' && request.method === 'GET') return json(200, topology === 'pair' ? pair : null);
+      if (request.url === '/api/pair/action' && request.method === 'POST') {
         const chunks = []; let bytes = 0;
         for await (const chunk of request) { bytes += chunk.length; assert(bytes <= 4096); chunks.push(chunk); }
         const body = JSON.parse(Buffer.concat(chunks).toString()); actions.push(body);
         assert(['check-recovery', 'recover', 'rejoin'].includes(body.action), 'Fixture only accepts the tested management actions');
-        pairing = { ...pairing, busy: true, uiOperation: { id: body.requestId, action: body.action, state: 'running' },
-          recovery: { ...pairing.recovery, state: body.action === 'check-recovery' ? 'checking' : 'recovering' } };
-        return json(202, { status: pairing });
+        pair = { ...pair, busy: true, uiOperation: { id: body.requestId, action: body.action, state: 'running' },
+          recovery: { ...pair.recovery, state: body.action === 'check-recovery' ? 'checking' : 'recovering' } };
+        return json(202, { status: pair });
       }
       assert.equal(request.method, 'GET', 'No other fixture mutations are allowed');
-      const result = await fetch(`${pairing.role === 'primary' ? upstream : readOnlyUpstream}${request.url}`, { signal: AbortSignal.timeout(10_000) });
+      const result = await fetch(`${pair.role === 'master' ? upstream : readOnlyUpstream}${request.url}`, { signal: AbortSignal.timeout(10_000) });
       const headers = Object.fromEntries([...result.headers].filter(([key]) =>
         !['content-length', 'content-encoding', 'transfer-encoding', 'connection'].includes(key)));
       if (request.url === '/api/status') {
-        const status = await result.json(); status.pairing = pairing;
-        if (sectionUnavailable && pairing.role !== 'primary') {
+        const status = await result.json(); status.topology = topology; status.pair = topology === 'pair' ? pair : null;
+        if (topology === 'mirror' && pair.role === 'master') status.sync = { state: 'ready',
+          sourceAt: now - 60_000, verifiedAt: now - 30_000, lastSuccessAt: now - 30_000 };
+        if (sectionUnavailable && pair.role !== 'master') {
           status.charging = { available: false, readOnly: true, settings: null, controls: null, chargers: [], vehicleFeeds: [], error: 'Saved charging data unavailable' };
           status.readView.settingsError = 'Saved Home settings unavailable';
           status.readView.configurationMessage = 'Saved Home settings unavailable. Shown defaults come from this computer.';
           status.garage.errors = [{ section: 'roomTemperature', message: 'Saved Garage room setting unavailable' }];
           status.garage.error = 'Some saved Garage data is unavailable. Other recorded data remains readable.';
         }
-        if (pairing.role === 'primary') { status.input = 'providers'; status.mode = 'monitoring'; status.liveWrites = false; }
+        if (pair.role === 'master') { status.input = 'providers'; status.mode = 'monitoring'; status.liveWrites = false; }
         response.writeHead(result.status, headers); response.end(JSON.stringify(status));
       } else { response.writeHead(result.status, headers); response.end(Buffer.from(await result.arrayBuffer())); }
     } catch { if (!response.headersSent) json(500, { error: 'Synthetic browser fixture failure' }); else response.end(); }
@@ -126,7 +128,7 @@ try {
     assert.equal(await evaluate(`${$('pairing-panel')}.nextElementSibling.contains(${$('events')})`), true, 'Paired computers sits immediately above Event log');
     const height = await evaluate(`${$('pairing-panel')}.getBoundingClientRect().height`);
     measurements.push({ width, theme, closedHeight: height });
-    assert(height <= (width >= 1000 ? 90 : 125), `Closed pairing block stays compact: ${height}px at ${width}px`);
+    assert(height <= (width >= 1000 ? 90 : 125), `Closed pair block stays compact: ${height}px at ${width}px`);
     assert.equal(await evaluate(`${$('pairing-check-recovery')}.checkVisibility()`), false, 'Closed disclosure hides controls');
   };
   const capture = async (name, header = false, element = null) => {
@@ -143,8 +145,20 @@ try {
   };
 
   await command('browsingContext.setViewport', { context, viewport: { width: 1440, height: 1000 }, devicePixelRatio: 1 });
+  for (const [mode, role, label] of [
+    ['standalone', 'master', 'Standalone'], ['mirror', 'master', 'Mirror · Master'],
+    ['mirror', 'slave', 'Mirror · Slave'], ['pair', 'slave', 'Pair · Slave'], ['pair', 'master', 'Pair · Master'],
+  ]) {
+    topology = mode; pair = role === 'master' ? master() : standby(role);
+    await command('browsingContext.navigate', { context, url: `http://127.0.0.1:${proxy.address().port}`, wait: 'complete' });
+    await until(`${$('instance-role')}.textContent === ${JSON.stringify(label)}`);
+    assert.equal(await evaluate(`${$('pairing-panel')}.hidden`), mode !== 'pair', `${label}: pair controls follow topology`);
+    assert.equal(await evaluate(`${$('primary-replication-notice')}.hidden`), mode !== 'mirror' || role !== 'master');
+    assert.equal(await evaluate(`${$('replica-notice')}.hidden`), mode !== 'mirror' || role !== 'slave');
+    assert.equal(await evaluate(`${$('read-only-help')}.hidden`), role === 'master', `${label}: slave views stay read-only`);
+  }
   await command('browsingContext.navigate', { context, url: `http://127.0.0.1:${proxy.address().port}`, wait: 'complete' });
-  await until(`${$('instance-role')}.textContent === 'MASTER' && !${$('pairing-panel')}.hidden`);
+  await until(`${$('instance-role')}.textContent === 'Pair · Master' && !${$('pairing-panel')}.hidden`);
   assert.equal(await evaluate(`${$('connection')}.textContent`), 'LIVE OBSERVATION · MONITORING');
   assert.equal(await evaluate(`${$('pairing-details')}.open`), false, 'Pairing starts folded');
   assert.equal(await evaluate(`${$('error')}.hidden`), true);
@@ -164,10 +178,10 @@ try {
   await capture('desktop-header', true);
   await evaluate(`${$('pairing-recover')}.click(); true`);
   assert.equal(actions.length, 0, 'Disabled recovery does not issue a request');
-  pairing = master({ peer: { reachable: false, lastSeenAt: now - 120_000 } });
+  pair = master({ peer: { reachable: false, lastSeenAt: now - 120_000 } });
   await until(`${$('pairing-peer')}.textContent.includes('unavailable')`);
   assert.equal(await evaluate(`${$('pairing-details')}.open`), true, 'Polling preserves the open disclosure');
-  pairing = master(); await until(`${$('pairing-peer')}.textContent.includes('connected')`);
+  pair = master(); await until(`${$('pairing-peer')}.textContent.includes('connected')`);
 
   await evaluate(`${$('pairing-check-recovery')}.click(); true`);
   await until(`${$('pairing-recovery')}.textContent.includes('Checking')`);
@@ -175,7 +189,7 @@ try {
   assert.equal(await evaluate(`${$('pairing-recover')}.disabled`), true, 'Running check cannot enable recovery');
   await close();
   assert.equal(await evaluate(`${$('pairing-attention')}.checkVisibility()`), true, 'Check progress remains visible when folded');
-  pairing = master({ recovery: { state: 'error', error: 'synthetic-unrendered-detail' },
+  pair = master({ recovery: { state: 'error', error: 'synthetic-unrendered-detail' },
     uiOperation: { id: actions.at(-1).requestId, action: 'check-recovery', state: 'error' } });
   await until(`${$('pairing-attention')}.textContent.length > 0 && ${$('pairing-check-recovery')}.disabled === false`);
   assert.equal(await evaluate(`${$('pairing-recover')}.disabled`), true, 'Failed check cannot enable recovery');
@@ -184,7 +198,7 @@ try {
   await open(); await evaluate(`${$('pairing-check-recovery')}.click(); true`);
   await until(`${$('pairing-recovery')}.textContent.includes('Checking')`);
   assert.equal(actions.length, 2);
-  pairing = { ...checked(), uiOperation: { id: actions.at(-1).requestId, action: 'check-recovery', state: 'complete' } };
+  pair = { ...checked(), uiOperation: { id: actions.at(-1).requestId, action: 'check-recovery', state: 'complete' } };
   await until(`${$('pairing-recover')}.disabled === false`);
   assert.equal(await evaluate(`${$('pairing-details')}.open`), true);
   assert.equal(await evaluate(`${$('pairing-preview')}.checkVisibility()`), true);
@@ -200,18 +214,18 @@ try {
   assert.equal(actions.at(-1).previewId, previewId, 'Recovery uses the successfully checked snapshot');
   await close();
   assert.equal(await evaluate(`${$('pairing-attention')}.checkVisibility()`), true, 'Recovery progress remains visible when folded');
-  pairing = master({ recovery: { state: 'complete', report: { ...preview, imported: 12, model: { status: 'rebuilt' } } },
+  pair = master({ recovery: { state: 'complete', report: { ...preview, imported: 12, model: { status: 'rebuilt' } } },
     actions: { 'check-recovery': true, recover: false, rejoin: true },
     uiOperation: { id: actions.at(-1).requestId, action: 'recover', state: 'complete', progress: { phase: 'publishing', processed: 12 } } });
   await until(`${$('pairing-rejoin')}.textContent === 'Resume mirroring' && !${$('pairing-rejoin')}.disabled`);
   assert.equal(await evaluate(`${$('pairing-phase')}.textContent`), '', 'Completed recovery cannot retain a publishing progress indicator');
 
-  for (const role of ['replica', 'protected']) {
-    pairing = role === 'replica' ? { ...standby(role), sync: { state: 'waiting' } } : standby(role);
-    await until(`${$('instance-role')}.textContent === '${role === 'replica' ? 'SLAVE' : 'PROTECTED'}'`);
+  for (const role of ['slave', 'protected']) {
+    pair = role === 'slave' ? { ...standby(role), sync: { state: 'waiting' } } : standby(role);
+    await until(`${$('instance-role')}.textContent === '${role === 'slave' ? 'Pair · Slave' : 'Pair · Protected'}'`);
     await until(`${$('read-only-help')}.hidden === false && ${$('home-pump-health')}.textContent === 'Recorded snapshot'`);
     await open();
-    if (role === 'replica') {
+    if (role === 'slave') {
       await until(`${$('pairing-syncDetail')}.textContent.includes('Identity verified')`);
       assert.match(await evaluate(`${$('pairing-syncStat')}.textContent`), /Snapshot.*min old/,
         'Durable publication remains visible after the receiver’s in-memory progress restarts');
@@ -252,7 +266,7 @@ try {
       assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, 'Expanded protected dashboard fits 320px');
       await capture('protected-dashboard-320', true);
 
-      pairing = { ...standby('protected'), reason: 'activation_failed', error: 'vip_policy_mismatch', peer: { reachable: false } };
+      pair = { ...standby('protected'), reason: 'activation_failed', error: 'vip_policy_mismatch', peer: { reachable: false } };
       await until(`${$('pairing-summary')}.textContent.includes('same address, network interface and prefix')`);
       assert.match(await evaluate(`${$('pairing-summary')}.textContent`), /other computer can stay offline/);
       await capture('protected-setup-guidance');
@@ -269,10 +283,10 @@ try {
   assert.match(await evaluate(`${$('garage-controller-reason')}.textContent`), /Some saved Garage data is unavailable/);
   sectionUnavailable = false;
   await viewer.close();
-  viewer = await startReplica({ config: { ...config, role: 'replica', replication: { directory } }, clock: () => now,
+  viewer = await startReplica({ config: { ...config, topology: 'mirror', role: 'slave', mirror: { directory } }, clock: () => now,
     readPublication: () => null, installSignalHandlers: false });
   readOnlyUpstream = `http://127.0.0.1:${viewer.server.address().port}`;
-  pairing = { ...standby('replica'), sync: { state: 'waiting' } };
+  pair = { ...standby('slave'), sync: { state: 'waiting' } };
   await command('browsingContext.navigate', { context, url: `http://127.0.0.1:${proxy.address().port}`, wait: 'complete' });
   await until(`${$('connection')}.textContent.includes('WAITING FOR SNAPSHOT') && !${$('read-only-help')}.hidden`);
   assert.equal(await evaluate(`${$('error')}.hidden`), true, 'The empty viewer renders before its first snapshot');
@@ -280,12 +294,12 @@ try {
     assert.equal(await evaluate(`${$(id)}.checkVisibility()`), true, `No first snapshot does not hide ${id}`);
   assert.equal(await evaluate(`${$('settings-reload')}.disabled`), true);
   assert.match(await evaluate(`${$('settings-read-only-source')}.textContent`), /this computer/);
-  pairing = master({ transition: { kind: 'handover', phase: 'quiescing' }, canControl: false });
-  await until(`${$('instance-role')}.textContent === 'ROLE CHANGE'`);
+  pair = master({ transition: { kind: 'handover', phase: 'quiescing' }, canControl: false });
+  await until(`${$('instance-role')}.textContent === 'Pair · Role change'`);
   assert.equal(await evaluate(`${$('pairing-attention')}.checkVisibility()`), true, 'Role-change progress remains visible when folded');
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ result: 'pairing-browser-smoke-passed', measurements, screenshots,
-    checked: ['actual built dashboard', 'role beside operating mode', 'compact desktop/mobile dark/light layout',
+    checked: ['actual built dashboard', 'all topology and role headers', 'mode-specific synchronization panels and read-only controls', 'role beside operating mode', 'compact desktop/mobile dark/light layout',
       'placement above events', 'keyboard disclosure', 'poll preserves disclosure', 'failed/running checks never enable recovery',
       'successful preview unlocks recovery', 'skip recovery requires explicit discard confirmation',
       'recovery sends checked identity', 'closed progress and failures', 'matching protected/slave layout without master controls', 'actual immutable ReplicaViewer projection',

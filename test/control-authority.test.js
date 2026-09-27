@@ -1,14 +1,27 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, readFile } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, mkdir, writeFile, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
 import { start } from '../src/main.js';
 import { equipmentConfiguration } from '../src/acquisition/equipment-config.js';
 import { loadConfig } from '../src/app/config.js';
-import { CONTROL_SCOPE } from '../src/control/authority.js';
+import { CONTROL_SCOPE, standaloneAuthority } from '../src/control/authority.js';
 import { idleIdentityClient, identityConnection } from './helpers/identity-mqtt.js';
+
+test('retired standalone authority is rejected without replacing its identity or opening MQTT', async t => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'stmq-retired-authority-'));
+  t.after(() => rm(dataDir, { recursive: true, force: true }));
+  const directory = join(dataDir, 'controller-authority'); await mkdir(directory);
+  const path = join(directory, 'identity.json');
+  const raw = JSON.stringify({ nodeId: randomUUID(), epoch: randomUUID(), role: 'primary', platform: 'ubuntu', blocked: true });
+  await writeFile(path, raw);
+  await assert.rejects(standaloneAuthority({ config: { dataDir }, connect: () => assert.fail('No connection is authorized') }),
+    /Preserve.*fresh data directory/);
+  assert.equal(await readFile(path, 'utf8'), raw);
+  assert.deepEqual(await readdir(directory), ['identity.json']);
+});
 
 test('standalone MQTT authority loss stops writes, retains a read-only dashboard and survives restart', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'stmq-controller-authority-'));
@@ -26,7 +39,7 @@ test('standalone MQTT authority loss stops writes, retains a read-only dashboard
     client.connected = true; client.emit('connect');
     const topic = `st-mq/control-authority/${createHash('sha256').update(CONTROL_SCOPE).digest('hex').slice(0, 32)}`;
     client.emit('message', topic, Buffer.from(JSON.stringify({ version: 1, nodeId: randomUUID(), epoch: randomUUID(),
-      role: 'primary', platform: 'hassio', at: Date.now(), boot: randomUUID(), heartbeat: 1 })), {});
+      role: 'master', platform: 'hassio', at: Date.now(), boot: randomUUID(), heartbeat: 1 })), {});
     const status = await (await fetch(`${endpoint}/api/status`)).json();
     assert.equal(status.readOnly, true); assert.equal(status.liveWrites, false);
     assert.equal(status.controlAuthority.state, 'protected'); assert.ok(status.controlAuthority.stoppedAt > 0);
@@ -72,7 +85,7 @@ test('authority loss invalidates a delayed settings reload without recreating ac
   await entered;
   const topic = `st-mq/control-authority/${createHash('sha256').update(CONTROL_SCOPE).digest('hex').slice(0, 32)}`;
   identity.emit('message', topic, Buffer.from(JSON.stringify({ version: 1, nodeId: randomUUID(), epoch: randomUUID(),
-    role: 'primary', platform: 'hassio', at: Date.now(), boot: randomUUID(), heartbeat: 1 })), {});
+    role: 'master', platform: 'hassio', at: Date.now(), boot: randomUUID(), heartbeat: 1 })), {});
   releaseRead();
   await rejected;
   for (let i = 0; i < 100 && !oldEngine.executor.closed; i++) await new Promise(resolve => setTimeout(resolve, 10));

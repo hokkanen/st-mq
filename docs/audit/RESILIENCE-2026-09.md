@@ -31,7 +31,7 @@ here. No household device was commanded or service restarted.
   vehicle commands or automatic schedule disabling was added.
 - A promoted master needs locally provisioned credentials, broker and reachable
   devices. VIP movement cannot restart HA/TeslaMate on a failed computer. It also
-  cannot turn a stale replica into fresh physical observations.
+  cannot turn a stale slave snapshot into fresh physical observations.
 - Pill's commissioned local OFF bound and external-temperature expiry remain
   essential. H66 has no documented local expiry; restoration needs a reachable
   gateway and the persisted obligation. ON is not proof of useful heat.

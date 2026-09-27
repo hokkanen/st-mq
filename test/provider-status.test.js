@@ -919,7 +919,7 @@ test('Data and settings propagates the actual local/cloud source for each electr
 test('automatic charger setup remains visible independently of working cloud readings', () => {
   const easee = { status: 'ok', currentReadings: easeeReadings(),
     localOcpp: { configured: true, connected: false, available: false,
-      setup: { state: 'retrying', endpointSource: 'pairing-vip', nextAttemptAt: now + 60_000 } } };
+      setup: { state: 'retrying', endpointSource: 'pair-vip', nextAttemptAt: now + 60_000 } } };
   const group = dashboardProviders({ providers: { easee } }, options).find(row => row.key === 'electricity');
   assert.equal(group.display.state, 'Available', 'A cloud setup failure does not invalidate usable electricity readings');
   assert.equal(group.localConnection.setup.tone, 'attention');
@@ -1000,7 +1000,7 @@ test('native control readiness and exclusive cloud handover are pending rather t
     ['control-transition-pending', 'Control handover pending', /finishing the current charging instruction.*confirmed handover/],
   ]) {
     const group = dashboardProviders({ providers: { easee: { status: 'ok', currentReadings: easeeReadings(),
-      localOcpp: { configured: true, setup: { state: 'blocked', reason, endpointSource: 'pairing-vip' } } } } }, options)
+      localOcpp: { configured: true, setup: { state: 'blocked', reason, endpointSource: 'pair-vip' } } } } }, options)
       .find(row => row.key === 'electricity');
     assert.equal(group.display.state, 'Available');
     assert.equal(group.localConnection.setup.label, label);

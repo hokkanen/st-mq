@@ -26,8 +26,8 @@ async function fixture(t, saved, ownership) {
   const publication = { dbPath, generation: 'charging-snapshot', sourceAt: snapshotAt, verifiedAt: snapshotAt,
     digest: originalDigest, bytes: readFileSync(dbPath).length };
   let now = snapshotAt + 7 * 86400_000;
-  const app = await startReplica({ config: { role: 'replica', input: 'offline', addon: false,
-    host: '127.0.0.1', port: 0, token: '', replication: { directory } }, clock: () => now,
+  const app = await startReplica({ config: { topology: 'mirror', role: 'slave', input: 'offline', addon: false,
+    host: '127.0.0.1', port: 0, token: '', mirror: { directory } }, clock: () => now,
     readPublication: async () => publication, installSignalHandlers: false,
     makeChartService: () => ({ overview: async () => ({}), close: async () => {} }) });
   t.after(() => app.close());
@@ -64,9 +64,9 @@ test('read-only replica shows saved charging preferences, SoC and ownership at t
     charger1: { association: 'synthetic-association', plan }, charger2: { automaticSoc: null, plan: null },
   }, view }, ownership);
   const status = await (await fetch(`${root}/api/status`)).json();
-  assert.equal(status.role, 'replica');
+  assert.equal(status.role, 'slave');
   assert.equal(status.input, 'mqtt', 'Charging scope follows the primary recorded input, not the viewer configuration');
-  assert.equal(status.replication.state, 'stale');
+  assert.equal(status.sync.state, 'stale');
   assert.equal(status.charging.readOnly, true);
   assert.equal(status.charging.snapshotAt, snapshotAt);
   assert.deepEqual(status.charging.settings, settings);

@@ -3,14 +3,14 @@ import assert from 'node:assert/strict';
 import { createOcppSetupAction, ocppSetupRevision } from '../chart/ocpp-setup.js';
 
 const revision = 'a'.repeat(64);
-const status = () => ({ role: 'primary', providers: { easee: { localOcpp: {
+const status = () => ({ role: 'master', providers: { easee: { localOcpp: {
   setup: { state: 'blocked', reason: 'foreign-configuration', canAdopt: true, revision },
 } } } });
 
 test('only a reviewed foreign connection on the active computer can be adopted', () => {
   assert.equal(ocppSetupRevision(status()), revision);
-  for (const patch of [{ role: 'replica' }, { readOnly: true }, { controlAuthority: { state: 'protected' } },
-    { pairing: { enabled: true, role: 'primary', canControl: false } }])
+  for (const patch of [{ role: 'slave' }, { readOnly: true }, { controlAuthority: { state: 'protected' } },
+    { topology: 'pair', pair: { role: 'master', canControl: false } }])
     assert.equal(ocppSetupRevision({ ...status(), ...patch }), null);
   for (const patch of [{ state: 'ready' }, { reason: 'cloud-authentication' }, { canAdopt: false }, { busy: true },
     { revision: null }, { revision: '' }, { revision: 'a'.repeat(257) }, { revision: 'A'.repeat(64) }]) {

@@ -140,17 +140,17 @@ test('add-on default indoor weights include the required nested object and retai
     { equipment: sensors(['downstairs','bedroom']) }),
   { indoor_temperature: 1/3, downstairs_temperature: 1/3, bedroom_temperature: 1/3 });
 });
-test('explicit indoor weights load through the public schema and survive disabled replica acquisition', t => {
+test('explicit indoor weights load through the public schema and survive disabled mirror slave acquisition', t => {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-indoor-weight-config-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const path = join(directory, 'fixture.json');
   writeFileSync(path, JSON.stringify({ controller: { input: 'providers', indoor_sensor_weights: {
     indoor_temperature: 1, downstairs_temperature: 2, bedroom_temperature: 2,
   } }, equipment: sensors() }));
-  for (const role of ['primary', 'replica']) {
-    const config = loadConfig({ STMQ_CONFIG: path, STMQ_ROLE: role }, directory);
+  for (const role of ['master', 'slave']) {
+    const config = loadConfig({ STMQ_CONFIG: path, STMQ_TOPOLOGY: role === 'slave' ? 'mirror' : 'standalone', STMQ_MIRROR_ROLE: role }, directory);
     assert.deepEqual(config.control.indoorSensorWeights, { indoor_temperature: 0.2, downstairs_temperature: 0.4, bedroom_temperature: 0.4 });
-    if (role === 'replica') assert.deepEqual(config.connections, {});
+    if (role === 'slave') assert.deepEqual(config.connections, {});
   }
 });
 

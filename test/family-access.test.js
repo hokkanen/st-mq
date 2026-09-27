@@ -72,7 +72,7 @@ test('both passwords identify their access role and family retains ordinary read
   const admin = await f.call('/api/status', { token: ADMIN });
   assert.deepEqual(admin.body.webAccess, { role: 'admin', source: 'password' });
   assert.equal((await f.call('/api/status', { token: 'synthetic-incorrect-password' })).status, 401);
-  for (const path of ['/api/pairing', '/api/fireplace', '/api/sensor-changes', '/api/events',
+  for (const path of ['/api/pair', '/api/fireplace', '/api/sensor-changes', '/api/events',
     '/api/history', '/api/contract', '/api/chart', '/api/recording-overview']) {
     assert.equal((await f.call(path)).status, 200, path);
   }
@@ -141,7 +141,7 @@ test('family garage-door permission verifies the configured device and exact cov
 test('family denies exports and every remaining write before any operation is dispatched', async t => {
   const f = await fixture(t);
   for (const path of ['/api/database-export', '/api/settings/reload', '/api/settings', '/api/contract',
-    '/api/pairing/action', '/api/sensor-changes', '/api/sensor-changes/revert', '/api/sensor-changes/retry-rebuild',
+    '/api/pair/action', '/api/sensor-changes', '/api/sensor-changes/revert', '/api/sensor-changes/retry-rebuild',
     '/api/garage/native', '/api/equipment/recheck', '/api/equipment/switch', '/api/equipment/dehumidifier',
     '/api/equipment/h66', '/api/equipment/test', '/api/equipment/test/restore', '/api/test/h66',
     '/api/charging/ocpp-setup', '/api/new-unrecognized-write']) {
@@ -181,7 +181,7 @@ test('admin and trusted Home Assistant ingress retain administrative controls', 
   const f = await fixture(t);
   const native = { setting: 'roomTemperatureC', value: 19 };
   assert.equal((await f.post('/api/garage/native', native, { token: ADMIN })).status, 200);
-  assert.equal((await f.post('/api/pairing/action', { action: 'take-control' }, { token: ADMIN })).status, 202);
+  assert.equal((await f.post('/api/pair/action', { action: 'take-control' }, { token: ADMIN })).status, 202);
   assert.equal((await f.post('/api/charging/ocpp-setup', { action: 'adopt', revision: 'a'.repeat(64) }, { token: ADMIN })).status, 200);
   f.access.ingressServer.on('connection', socket => Object.defineProperty(socket, 'remoteAddress', { value: '172.30.32.2' }));
   const ingress = { server: f.access.ingressServer, headers: { 'Content-Type': 'application/json' } };

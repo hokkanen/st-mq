@@ -551,7 +551,7 @@ export function easeeLocalConnectionDisplay(health, { now, formatTime } = {}) {
   const label = controlPending ? localPendingReasons[setup.reason] : stateLabel;
   const explanation = Object.hasOwn(localSetupReasons, setup.reason) ? localSetupReasons[setup.reason] : stateExplanation;
   const setupAttention = !controlPending && ['needs-endpoint', 'blocked', 'retrying'].includes(setup.state);
-  const endpoint = setup.endpointSource === 'pairing-vip' ? 'Paired virtual address'
+  const endpoint = setup.endpointSource === 'pair-vip' ? 'Paired virtual address'
     : setup.endpointSource === 'configured' ? 'Configured standalone address' : 'Address not configured';
   const timing = typeof formatTime === 'function' && Number.isFinite(now)
     && Number.isSafeInteger(setup.nextAttemptAt) && setup.nextAttemptAt > now
@@ -570,7 +570,7 @@ export function easeeLocalConnectionDisplay(health, { now, formatTime } = {}) {
       tone: local.configurationFailures?.length ? 'attention' : readings[2] },
     endpoint,
     outage: 'A normal shutdown requests a return to Easee cloud control; a paired handover keeps the local connection active. A failed handback, crash or power loss can leave charging and Easee app Start waiting for authorization. Restart the controller or disable Direct OCPP in Easee configuration. An expired pause does not restore cloud authorization.',
-    detail: setup.endpointSource === 'pairing-vip'
+    detail: setup.endpointSource === 'pair-vip'
       ? 'Setup is automatic. OCPP handles charging authorization and schedules locally. During paired handover, the other computer must be ready to accept the charger at the shared address.'
       : 'Setup is automatic. OCPP handles charging authorization and schedules locally.' };
 }

@@ -30,8 +30,8 @@ export function learningOverview(learning = {}) {
         : 'Temperature checks have passed. Heating-action validation is not reported yet.';
   }
   if (learning?.reconstruction === 'snapshot' && status !== 'unavailable') {
-    status = 'snapshot'; title = 'Recorded primary model';
-    summary = 'Saved model and evidence from the primary snapshot. Live action readiness and cycle assessments are unavailable here.';
+    status = 'snapshot'; title = 'Recorded master model';
+    summary = 'Saved model and evidence from the master snapshot. Live action readiness and cycle assessments are unavailable here.';
   }
   return { status, title, summary, usableSamples, acceptedFits };
 }
@@ -68,8 +68,8 @@ export function garageLearningOverview(learning = {}) {
       : 'Complete cooling and recovery episodes test forecast accuracy. Pipe protection limits each pause; electricity is validated separately.';
   }
   if (learning?.reconstruction === 'snapshot' && status !== 'unavailable') {
-    status = 'snapshot'; title = 'Recorded primary model';
-    summary = 'Saved temperature and electricity evidence from the primary snapshot. Live pause eligibility is unavailable here.';
+    status = 'snapshot'; title = 'Recorded master model';
+    summary = 'Saved temperature and electricity evidence from the master snapshot. Live pause eligibility is unavailable here.';
   }
   return { status, title, summary, completedEpisodes, validatedOffHours };
 }

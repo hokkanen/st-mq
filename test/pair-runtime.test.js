@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, access } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -22,28 +22,34 @@ async function fixture(t) {
   async function open(name, role, platform) {
     const directory = join(root, name);
     const config = { ...loadConfig({ XDG_CONFIG_HOME: root, STMQ_DATA_DIR: directory, STMQ_PORT: '0' }, directory),
-      input: 'mqtt', role, connections: { mqtt: { address: 'mqtt://127.0.0.1' } } };
-    config.pairing = { enabled: true, directory: join(directory, 'pairing'), databasePath: config.dbPath,
-      replicaDirectory: config.replication.directory, initialRole: role, platform, pairId: 'synthetic-runtime-pair',
+      input: 'mqtt', role: 'slave', connections: { mqtt: { address: 'mqtt://127.0.0.1' } } };
+    config.topology = 'pair';
+    config.pair = { directory: join(directory, 'pairing'), databasePath: config.dbPath,
+      snapshotDirectory: join(directory, 'pair-snapshots'), platform, pairId: 'synthetic-runtime-pair',
       token: 'synthetic-runtime-shared-token-0123456789', peerUrl: 'http://127.0.0.1:1',
       listenHost: '127.0.0.1', port: 0, intervalMs: 60000, timeoutMs: 30000, vip: {}, mqtt: config.connections.mqtt };
+    const fresh = await access(join(config.pair.directory, 'state.json')).then(() => false, () => true);
     let owned = false;
     const app = await start({ config, clock: () => now, installSignalHandlers: false, providerOptions: { automatic: false },
-      pairingOptions: { validateBroker: async () => {}, prepareVipPolicy: async () => {}, managerOptions: {
+      pairOptions: { validateBroker: async () => {}, prepareVipPolicy: async () => {}, managerOptions: {
         announcements: () => null, vip: { acquire: async () => { owned = true; }, release: async () => { owned = false; },
           status: () => ({ owned, ready: owned }) } } } });
-    clearTimeout(app.pairing.timer); await app.pairing.polling; clearTimeout(app.pairing.timer);
+    if (fresh && role === 'master') {
+      try { await app.pair.action('promote', { requestId: randomUUID(), confirmed: true }); }
+      catch (error) { if (app.pair.state.value.role !== 'protected' || !app.pair.state.value.activationError) throw error; }
+    }
+    clearTimeout(app.pair.timer); await app.pair.polling; clearTimeout(app.pair.timer);
     running.add(app); return app;
   }
   return { open, async close(app) { await app.close(); running.delete(app); } };
 }
 function connect(a, b) {
-  a.pairing.peer.peerUrl = `http://127.0.0.1:${b.pairing.peer.server.address().port}`;
-  b.pairing.peer.peerUrl = `http://127.0.0.1:${a.pairing.peer.server.address().port}`;
+  a.pair.peer.peerUrl = `http://127.0.0.1:${b.pair.peer.server.address().port}`;
+  b.pair.peer.peerUrl = `http://127.0.0.1:${a.pair.peer.server.address().port}`;
 }
 const url = app => `http://127.0.0.1:${app.server.address().port}`;
 async function apiAction(app, body) {
-  const response = await fetch(`${url(app)}/api/pairing/action`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const response = await fetch(`${url(app)}/api/pair/action`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   assert.equal(response.status, 202);
   const accepted = await response.json(); assert.equal(accepted.uiOperation.id, body.requestId);
   await until(() => app.status().uiOperation?.state !== 'running');
@@ -54,50 +60,77 @@ function observation(store, at, value) {
     value, unit: 'degC', sourceTime: at, receivedAt: at });
 }
 
+test('both fresh pair nodes stay read-only until explicit promotion, then restart preserves the chosen master', async t => {
+  const f = await fixture(t), a = await f.open('a', 'slave', 'hassio'), b = await f.open('b', 'slave', 'ubuntu');
+  connect(a, b);
+  for (const app of [a, b]) {
+    assert.equal(app.engine, undefined);
+    assert.equal(app.pair.canControl(), false);
+    assert.equal(app.pair.status().role, 'slave');
+    assert.equal(app.pair.status().bootstrapPending, true);
+    assert.equal(app.pair.status().actions.promote, true);
+    await assert.rejects(access(app.pair.config.databasePath), { code: 'ENOENT' });
+    await app.pair.poll();
+    assert.equal(app.pair.canControl(), false);
+  }
+  await assert.rejects(a.pair.action('promote', { requestId: randomUUID() }), { code: 'confirmation_required' });
+  await apiAction(a, command('promote'));
+  assert.equal(a.pair.canControl(), true);
+  assert.equal(a.pair.status().bootstrapPending, false);
+  assert.equal(a.pair.state.value.everWritten, true);
+  await b.pair.synchronize(a.pair.state.claim());
+  assert.equal(b.pair.status().bootstrapPending, false);
+  assert.equal(b.pair.canControl(), false);
+  await f.close(a);
+  const restarted = await f.open('a', 'slave', 'hassio');
+  assert.equal(restarted.pair.status().role, 'master');
+  assert.equal(restarted.pair.canControl(), true);
+});
+
 test('full application handover switches controller/viewer, preserves durable roles and exposes idempotent UI actions', async t => {
-  const f = await fixture(t), a = await f.open('a', 'primary', 'hassio'), b = await f.open('b', 'replica', 'ubuntu');
+  const f = await fixture(t), a = await f.open('a', 'master', 'hassio'), b = await f.open('b', 'slave', 'ubuntu');
   connect(a, b); observation(a.store, now - W, 20);
-  await b.pairing.synchronize(a.pairing.state.claim());
-  assert.equal(b.pairing.sync.state, 'ready');
+  await b.pair.synchronize(a.pair.state.claim());
+  assert.equal(b.pair.sync.state, 'ready');
   const initial = await (await fetch(`${url(b)}/api/status`)).json();
-  assert.equal(initial.readOnly, true); assert.equal(initial.pairing.role, 'replica');
+  assert.equal(initial.readOnly, true); assert.equal(initial.pair.role, 'slave');
   assert.equal((await fetch(`${url(b)}/api/settings/reload`, { method: 'POST' })).status, 405);
   const handover = command('handover'); await apiAction(a, handover);
-  assert.equal(a.pairing.canControl(), false); assert.equal(b.pairing.canControl(), true);
+  assert.equal(a.pair.canControl(), false); assert.equal(b.pair.canControl(), true);
   assert.equal(a.engine, undefined); assert.equal(b.engine.config.input, 'mqtt');
   assert.equal(b.store.latestObservation('indoor_temperature').value, 20);
   await apiAction(a, handover);
-  await a.pairing.poll();
-  assert.equal(a.pairing.state.value.role, 'replica', 'intentional Hassio demotion does not automatically take control back');
-  await f.close(a); const restarted = await f.open('a', 'primary', 'hassio'); connect(restarted, b);
-  assert.equal(restarted.pairing.state.value.role, 'replica'); assert.equal(restarted.engine, undefined);
-  await restarted.pairing.synchronize(b.pairing.state.claim()); assert.equal(restarted.pairing.sync.state, 'ready');
+  await a.pair.poll();
+  assert.equal(a.pair.state.value.role, 'slave', 'intentional Hassio demotion does not automatically take control back');
+  await f.close(a); const restarted = await f.open('a', 'master', 'hassio'); connect(restarted, b);
+  assert.equal(restarted.pair.state.value.role, 'slave'); assert.equal(restarted.engine, undefined);
+  await restarted.pair.synchronize(b.pair.state.claim()); assert.equal(restarted.pair.sync.state, 'ready');
 });
 
 test('outage promotion, returning Hassio, manual gap recovery and exact rejoin run through real app lifecycle', async t => {
-  const f = await fixture(t), a = await f.open('a', 'primary', 'hassio'), b = await f.open('b', 'replica', 'ubuntu');
+  const f = await fixture(t), a = await f.open('a', 'master', 'hassio'), b = await f.open('b', 'slave', 'ubuntu');
   connect(a, b); observation(a.store, now - 4 * W, 20);
-  await b.pairing.synchronize(a.pairing.state.claim()); assert.equal(b.pairing.sync.state, 'ready');
+  await b.pair.synchronize(a.pair.state.claim()); assert.equal(b.pair.sync.state, 'ready');
   await f.close(a);
-  await apiAction(b, command('promote')); assert.equal(b.pairing.canControl(), true);
+  await apiAction(b, command('promote')); assert.equal(b.pair.canControl(), true);
   observation(b.store, now - 3 * W, 21);
   observation(b.store, now - 2 * W, 99); // conflict: returning master's observation must win.
   b.store.setState('synthetic-donor-only-state', { obsolete: true });
-  const returned = await f.open('a', 'primary', 'hassio');
+  const returned = await f.open('a', 'master', 'hassio');
   observation(returned.store, now - 2 * W, 22);
-  connect(returned, b); await b.pairing.observeClaim(returned.pairing.state.claim());
-  assert.equal(b.pairing.state.value.role, 'protected'); assert.equal(b.engine, undefined);
+  connect(returned, b); await b.pair.observeClaim(returned.pair.state.claim());
+  assert.equal(b.pair.state.value.role, 'protected'); assert.equal(b.engine, undefined);
   await apiAction(returned, command('check-recovery'));
-  const preview = returned.pairing.state.value.recovery.preview;
+  const preview = returned.pair.state.value.recovery.preview;
   assert.match(preview.previewId, /^[a-f0-9]{64}$/); assert.ok(preview.counts.missing >= 1);
   await apiAction(returned, command('recover', { previewId: preview.previewId }));
-  assert.equal(b.pairing.state.value.role, 'protected');
+  assert.equal(b.pair.state.value.role, 'protected');
   assert.equal(returned.store.observations().find(row => row.sourceTime === now - 3 * W).value, 21);
   assert.equal(returned.store.observations().find(row => row.sourceTime === now - 2 * W).value, 22);
   assert.deepEqual(replayLearningJournal(returned.store, 'mqtt', null, { rebuild: true }), returned.engine.checkpoint);
   await apiAction(returned, command('rejoin'));
-  assert.equal(b.pairing.state.value.role, 'replica');
-  const publication = await readReplicaPublication(b.pairing.config.replicaDirectory);
+  assert.equal(b.pair.state.value.role, 'slave');
+  const publication = await readReplicaPublication(b.pair.config.snapshotDirectory);
   const replica = new Store(publication.dbPath, { readOnly: true });
   try {
     assert.equal(replica.getState('synthetic-donor-only-state'), null);
@@ -105,18 +138,18 @@ test('outage promotion, returning Hassio, manual gap recovery and exact rejoin r
     assert.equal(replica.db.prepare('PRAGMA integrity_check').get().integrity_check, 'ok');
     assert.equal(replica.db.prepare('PRAGMA foreign_key_check').get(), undefined);
   } finally { replica.close(); }
-  assert.equal(publication.digest, returned.pairing.state.value.recovery?.metadata?.digest ?? b.pairing.state.value.accepted.digest);
+  assert.equal(publication.digest, returned.pair.state.value.recovery?.metadata?.digest ?? b.pair.state.value.accepted.digest);
   await f.close(returned);
   await apiAction(b, command('promote'));
   assert.equal(b.store.getState('synthetic-donor-only-state'), null, 'later promotion uses clean mirrored database');
 });
 
 test('HTTP rejoin can explicitly skip checked gaps while preserving the master history and model', async t => {
-  const f = await fixture(t), master = await f.open('master', 'primary', 'hassio'), donor = await f.open('donor', 'primary', 'ubuntu');
+  const f = await fixture(t), master = await f.open('master', 'master', 'hassio'), donor = await f.open('donor', 'master', 'ubuntu');
   observation(master.store, now - 4 * W, 20);
   observation(donor.store, now - 3 * W, 21);
   donor.store.setState('synthetic-donor-only-state', { obsolete: true });
-  connect(master, donor); await donor.pairing.observeClaim(master.pairing.state.claim());
+  connect(master, donor); await donor.pair.observeClaim(master.pair.state.claim());
   await apiAction(master, command('check-recovery'));
   const preview = master.status().recovery.preview;
   assert.ok(preview.counts.missing > 0);
@@ -124,7 +157,7 @@ test('HTTP rejoin can explicitly skip checked gaps while preserving the master h
     epoch: master.store.learningEpoch('mqtt'), journal: master.store.db.prepare('SELECT * FROM learning_journal_all').all() };
   for (const body of [command('recover', { previewId: preview.previewId, discardUnrecovered: true }),
     command('rejoin', { previewId: preview.previewId, discardUnrecovered: 'true' })]) {
-    const rejected = await fetch(`${url(master)}/api/pairing/action`, { method: 'POST',
+    const rejected = await fetch(`${url(master)}/api/pair/action`, { method: 'POST',
       headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     assert.equal(rejected.status, 409);
   }
@@ -135,8 +168,8 @@ test('HTTP rejoin can explicitly skip checked gaps while preserving the master h
   assert.deepEqual(master.store.db.prepare('SELECT * FROM learning_journal_all').all(), before.journal);
   assert.equal(master.status().recovery.report.recoverySkipped, true);
   assert.equal(master.status().recovery.report.imported, 0);
-  assert.equal(donor.pairing.state.value.role, 'replica');
-  const publication = await readReplicaPublication(donor.pairing.config.replicaDirectory);
+  assert.equal(donor.pair.state.value.role, 'slave');
+  const publication = await readReplicaPublication(donor.pair.config.snapshotDirectory);
   const replica = new Store(publication.dbPath, { readOnly: true });
   try {
     assert.deepEqual(replica.observations(), before.observations);

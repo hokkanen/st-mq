@@ -7,7 +7,7 @@ import { pairError } from './state.js';
 /** Reserve no service on standby: only check that its future listener can bind. */
 export async function probeOcppListener(config) {
   const local = localOcppConfiguration(config.connections.easee.local_ocpp);
-  const host = local.host === config.pairing.vip.address ? '0.0.0.0' : local.host;
+  const host = local.host === config.pair.vip.address ? '0.0.0.0' : local.host;
   await new Promise((resolve, reject) => {
     const controller = new AbortController();
     const server = createServer(socket => socket.destroy());

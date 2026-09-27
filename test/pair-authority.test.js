@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, copyFile, access } from 'node:fs/promises';
+import { mkdtemp, rm, copyFile, cp, access, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -16,21 +16,26 @@ function createDatabase(path) {
   db.close();
 }
 
-async function manager(t, root, name, { role = 'primary', platform = 'ubuntu', create = role === 'primary', hooks = {} } = {}) {
+async function manager(t, root, name, { role = 'master', platform = 'ubuntu', create = role === 'master', hooks = {} } = {}) {
   const path = join(root, `${name}.sqlite`);
   if (create) createDatabase(path);
-  const config = { enabled: true, directory: join(root, name), replicaDirectory: join(root, `${name}-replica`),
+  const config = { directory: join(root, name), snapshotDirectory: join(root, `${name}-replica`),
     databasePath: path, pairId: 'fixture-pair', token: 'synthetic-authority-token-0123456789abcdef',
-    initialRole: role, platform, listenHost: '127.0.0.1', port: 0, peerUrl: 'http://127.0.0.1:1',
+    platform, listenHost: '127.0.0.1', port: 0, peerUrl: 'http://127.0.0.1:1',
     timeoutMs: 30000, intervalMs: 60000, vip: {} };
   let owned = false;
   const calls = [];
   const result = new PairManager({ config, announcements: () => null,
     vip: { acquire: async () => { owned = true; }, release: async () => { owned = false; }, status: () => ({ owned, ready: owned }) },
-    hooks: { startPrimary: async value => calls.push(['primary', value.dbPath]), startReplica: async value => calls.push(['replica', value.role]),
+    hooks: { startPrimary: async value => calls.push(['master', value.dbPath]), startReplica: async value => calls.push(['slave', value.role]),
       stopControl: async value => calls.push(['stop', value.restore, result.canControl()]), closeReplica: async () => {}, ...hooks } });
-  await result.init(); await result.start(); clearTimeout(result.timer);
+  const fresh = await access(join(config.directory, 'state.json')).then(() => false, () => true);
   t.after(() => result.close());
+  await result.init(); await result.start(); clearTimeout(result.timer);
+  if (fresh && role === 'master') {
+    try { await result.promote(); }
+    catch (error) { if (result.state.value.role !== 'protected' || !result.state.value.activationError) throw error; }
+  }
   result.calls = calls;
   return result;
 }
@@ -47,8 +52,8 @@ function connect(left, right) {
 }
 
 test('Hassio wins active claims regardless of promotion order; equal platforms agree by stable node ID', () => {
-  const first = { nodeId: randomUUID(), epoch: randomUUID(), role: 'primary', platform: 'hassio', sequence: 0 };
-  const second = { nodeId: randomUUID(), epoch: randomUUID(), role: 'primary', platform: 'ubuntu', sequence: 10000 };
+  const first = { nodeId: randomUUID(), epoch: randomUUID(), role: 'master', platform: 'hassio', sequence: 0 };
+  const second = { nodeId: randomUUID(), epoch: randomUUID(), role: 'master', platform: 'ubuntu', sequence: 10000 };
   assert.ok(compareAuthority(first, second) > 0);
   assert.ok(compareAuthority(second, first) < 0);
   first.platform = 'ubuntu';
@@ -57,7 +62,7 @@ test('Hassio wins active claims regardless of promotion order; equal platforms a
 
 test('unknown existing history starts protected and durable state refuses concurrent ownership', async t => {
   const root = await fixture(t), databasePath = join(root, 'existing.sqlite'); createDatabase(databasePath);
-  const options = { directory: join(root, 'state'), pairId: 'fixture', platform: 'ubuntu', initialRole: 'replica', databasePath };
+  const options = { directory: join(root, 'state'), pairId: 'fixture', platform: 'ubuntu', databasePath };
   const state = new PairState(options); await state.open();
   assert.equal(state.value.role, 'protected');
   const nodeId = state.value.nodeId;
@@ -68,12 +73,30 @@ test('unknown existing history starts protected and durable state refuses concur
   await restarted.close();
 });
 
+test('retired pair state and role values are rejected before altering files or acquiring a lock', async t => {
+  const root = await fixture(t), directory = join(root, 'state'), databasePath = join(root, 'saved.sqlite');
+  await mkdir(directory); createDatabase(databasePath);
+  const database = await readFile(databasePath);
+  const path = join(directory, 'state.json');
+  const options = { directory, pairId: 'fixture', platform: 'ubuntu', databasePath };
+  for (const change of [{ version: 2, role: 'protected' }, { role: 'primary' }, { role: 'replica' }]) {
+    const raw = JSON.stringify({ version: 3, pairId: 'fixture', nodeId: randomUUID(), epoch: randomUUID(),
+      role: 'slave', platform: 'ubuntu', sequence: 0, ancestors: [], actions: [], everWritten: true, ...change });
+    await writeFile(path, raw);
+    await assert.rejects(new PairState(options).open(), error =>
+      error.code === 'invalid_pair_state' && /Preserve.*fresh pair directory/.test(error.message));
+    assert.equal(await readFile(path, 'utf8'), raw);
+    assert.deepEqual(await readdir(directory), ['state.json']);
+    assert.deepEqual(await readFile(databasePath), database);
+  }
+});
+
 test('no peer availability promotes a replica or stops an active master', async t => {
   const root = await fixture(t);
-  const primary = await manager(t, root, 'primary');
-  const replica = await manager(t, root, 'replica', { role: 'replica' });
+  const primary = await manager(t, root, 'master');
+  const replica = await manager(t, root, 'slave', { role: 'slave' });
   await primary.poll(); await replica.poll();
-  assert.equal(primary.canControl(), true); assert.equal(replica.state.value.role, 'replica');
+  assert.equal(primary.canControl(), true); assert.equal(replica.state.value.role, 'slave');
   assert.equal(replica.canControl(), false);
 });
 
@@ -92,11 +115,11 @@ test('loser disables control before stopping, keeps original history and remains
 
 test('graceful handover commits final snapshot, demotion survives restart and later promotion uses current replica', async t => {
   const root = await fixture(t), left = await manager(t, root, 'hassio', { platform: 'hassio' });
-  const right = await manager(t, root, 'ubuntu', { role: 'replica' }); connect(left, right);
+  const right = await manager(t, root, 'ubuntu', { role: 'slave' }); connect(left, right);
   await right.synchronize(left.state.claim());
   assert.equal(right.sync.state, 'ready');
   await left.action('handover', command());
-  assert.equal(left.state.value.role, 'replica'); assert.equal(right.state.value.role, 'primary');
+  assert.equal(left.state.value.role, 'slave'); assert.equal(right.state.value.role, 'master');
   assert.deepEqual(left.calls.find(call => call[0] === 'stop'), ['stop', true, true]);
   assert.equal(acceptsLineage(left.state.value.accepted, right.state.claim()), true);
   await left.synchronize(right.state.claim());
@@ -111,7 +134,7 @@ test('graceful handover commits final snapshot, demotion survives restart and la
 test('OCPP readiness refusal leaves the current primary and its VIP running', async t => {
   const root = await fixture(t), requirements = { version: 1, fingerprint: 'a'.repeat(64) };
   const source = await manager(t, root, 'source', { hooks: { handoverRequirements: () => requirements } });
-  const target = await manager(t, root, 'target', { role: 'replica', hooks: {
+  const target = await manager(t, root, 'target', { role: 'slave', hooks: {
     prepareHandover: async received => {
       assert.deepEqual(received, requirements);
       throw Object.assign(Error('private configuration diagnostic'), { code: 'ocpp_handover_not_ready' });
@@ -129,7 +152,7 @@ test('OCPP readiness refusal leaves the current primary and its VIP running', as
 
 test('handover requires current OCPP readiness acknowledgement before stopping', async t => {
   const root = await fixture(t), source = await manager(t, root, 'source');
-  const target = await manager(t, root, 'target', { role: 'replica' }); connect(source, target);
+  const target = await manager(t, root, 'target', { role: 'slave' }); connect(source, target);
   await assert.rejects(target.handlePeer('handover-prepare', { claim: source.state.claim(), token: randomUUID() }),
     { code: 'ocpp_handover_not_ready' });
   const request = source.peer.request.bind(source.peer);
@@ -156,7 +179,7 @@ test('final handover snapshot preserves OCPP transactions and setup after listen
       finally { store.close(); }
     },
   } });
-  const target = await manager(t, root, 'target', { role: 'replica', hooks: {
+  const target = await manager(t, root, 'target', { role: 'slave', hooks: {
     prepareHandover: async received => assert.deepEqual(received, requirements),
     verifyHandover: async ({ dbPath, requirements: received }) => {
       assert.deepEqual(received, requirements);
@@ -176,13 +199,13 @@ test('final handover snapshot preserves OCPP transactions and setup after listen
 
 test('final OCPP verification failure leaves both controllers fenced', async t => {
   const root = await fixture(t), source = await manager(t, root, 'source');
-  const target = await manager(t, root, 'target', { role: 'replica', hooks: {
+  const target = await manager(t, root, 'target', { role: 'slave', hooks: {
     verifyHandover: async () => { throw Object.assign(Error(), { code: 'ocpp_handover_not_ready' }); },
   } });
   connect(source, target);
   await assert.rejects(source.action('handover', command()), { code: 'ocpp_handover_not_ready' });
   assert.equal(source.canControl(), false); assert.equal(target.canControl(), false);
-  assert.equal(source.state.value.role, 'protected'); assert.equal(target.state.value.role, 'replica');
+  assert.equal(source.state.value.role, 'protected'); assert.equal(target.state.value.role, 'slave');
   assert.equal(source.vip.status().owned, false); assert.equal(target.vip.status().owned, false);
 });
 
@@ -191,7 +214,7 @@ test('authority lost during readiness check cannot start a restoring shutdown', 
   let prepared, proceed;
   const entered = new Promise(resolve => { prepared = resolve; });
   const paused = new Promise(resolve => { proceed = resolve; });
-  const target = await manager(t, root, 'target', { role: 'replica', hooks: {
+  const target = await manager(t, root, 'target', { role: 'slave', hooks: {
     prepareHandover: async () => { prepared(); await paused; },
   } });
   connect(source, target);
@@ -204,7 +227,7 @@ test('authority lost during readiness check cannot start a restoring shutdown', 
 
 test('database rollback breaks lineage and protects a more complete replica', async t => {
   const root = await fixture(t), source = await manager(t, root, 'source');
-  const replica = await manager(t, root, 'replica', { role: 'replica' }); connect(source, replica);
+  const replica = await manager(t, root, 'slave', { role: 'slave' }); connect(source, replica);
   const backup = join(root, 'before.sqlite'); await copyFile(source.config.databasePath, backup);
   await replica.synchronize(source.state.claim()); assert.equal(replica.sync.state, 'ready');
   const acceptedEpoch = replica.state.value.accepted.epoch;
@@ -217,7 +240,7 @@ test('database rollback breaks lineage and protects a more complete replica', as
 
 test('force promotion confirmation and durable request IDs prevent accidental repeated promotions', async t => {
   const root = await fixture(t), source = await manager(t, root, 'source');
-  const replica = await manager(t, root, 'replica', { role: 'replica' }); connect(source, replica);
+  const replica = await manager(t, root, 'slave', { role: 'slave' }); connect(source, replica);
   await replica.synchronize(source.state.claim());
   const body = command();
   await assert.rejects(replica.action('promote', { requestId: body.requestId }), { code: 'confirmation_required' });
@@ -245,7 +268,7 @@ test('manual recovery pins donor, keeps protection until verified rejoin, then r
   await primary.action('recover', { ...command(), previewId: primary.state.value.recovery.preview.previewId });
   assert.equal(donor.state.value.role, 'protected');
   await primary.action('rejoin', command());
-  assert.equal(donor.state.value.role, 'replica'); assert.equal(donor.state.value.everWritten, false);
+  assert.equal(donor.state.value.role, 'slave'); assert.equal(donor.state.value.everWritten, false);
   await donor.action('promote', command());
   const clean = new DatabaseSync(donor.state.value.activeDbPath, { readOnly: true });
   assert.deepEqual(clean.prepare('SELECT source_time AS at FROM observations ORDER BY source_time').all().map(row => row.at), [100, 200]); clean.close();
@@ -255,7 +278,7 @@ test('recovery requires the latest successful check and a pending or failed rech
   const root = await fixture(t);
   let applyCalls = 0;
   let preview = async () => ({ previewId: randomUUID(), counts: { missing: 1 } });
-  const primary = await manager(t, root, 'primary', { platform: 'hassio', hooks: {
+  const primary = await manager(t, root, 'master', { platform: 'hassio', hooks: {
     recoveryPreview: () => preview(),
     recoveryApply: async () => { applyCalls++; return { status: 'complete', imported: 1 }; },
   } });
@@ -298,7 +321,7 @@ test('recovery requires the latest successful check and a pending or failed rech
 test('explicit rejoin without recovery requires the checked preview and replaces donor history without importing it', async t => {
   const root = await fixture(t);
   let imported = false;
-  const primary = await manager(t, root, 'primary', { platform: 'hassio', hooks: {
+  const primary = await manager(t, root, 'master', { platform: 'hassio', hooks: {
     recoveryPreview: async () => ({ previewId: randomUUID(), counts: { missing: 1, conflicts: 1 }, model: { status: 'rebuild_required' } }),
     recoveryApply: async () => { imported = true; },
   } });
@@ -322,8 +345,8 @@ test('explicit rejoin without recovery requires the checked preview and replaces
   assert.equal(primary.status().recovery.report.recoverySkipped, true);
   assert.equal(primary.status().recovery.report.imported, 0);
   assert.equal(primary.status().recovery.report.model.status, 'unchanged');
-  assert.equal(donor.state.value.role, 'replica');
-  const publication = await readReplicaPublication(donor.config.replicaDirectory);
+  assert.equal(donor.state.value.role, 'slave');
+  const publication = await readReplicaPublication(donor.config.snapshotDirectory);
   for (const path of [primary.state.value.activeDbPath, publication.dbPath]) {
     const db = new DatabaseSync(path, { readOnly: true });
     assert.deepEqual(db.prepare('SELECT source_time AS at,value FROM observations ORDER BY source_time').all().map(row => ({ ...row })), [{ at: 100, value: 20 }]);
@@ -331,12 +354,12 @@ test('explicit rejoin without recovery requires the checked preview and replaces
   }
   assert.equal(publication.digest, donor.state.value.accepted.digest);
   assert.equal((await primary.action('rejoin', skipRequest)).duplicate, true);
-  assert.equal((await readReplicaPublication(donor.config.replicaDirectory)).generation, publication.generation);
+  assert.equal((await readReplicaPublication(donor.config.snapshotDirectory)).generation, publication.generation);
 });
 
 test('an uncertain discard request cannot authorize rejoin after another recovery has completed', async t => {
   const root = await fixture(t);
-  const primary = await manager(t, root, 'primary', { platform: 'hassio', hooks: {
+  const primary = await manager(t, root, 'master', { platform: 'hassio', hooks: {
     recoveryPreview: async () => ({ previewId: randomUUID(), counts: { missing: 0 } }),
     recoveryApply: async () => ({ status: 'complete', imported: 0 }),
   } });
@@ -353,13 +376,13 @@ test('an uncertain discard request cannot authorize rejoin after another recover
   assert.equal(donor.state.value.role, 'protected');
   assert.equal(primary.status().recovery.state, 'complete');
   await primary.action('rejoin', command());
-  assert.equal(donor.state.value.role, 'replica');
+  assert.equal(donor.state.value.role, 'slave');
   assert.equal(primary.status().recovery.report.recoverySkipped, undefined);
 });
 
 test('discarding unchecked donor changes is rejected and leaves the donor protected', async t => {
   const root = await fixture(t);
-  const primary = await manager(t, root, 'primary', { platform: 'hassio', hooks: {
+  const primary = await manager(t, root, 'master', { platform: 'hassio', hooks: {
     recoveryPreview: async () => ({ previewId: randomUUID(), counts: { missing: 0 } }),
   } });
   const donor = await manager(t, root, 'donor'); connect(primary, donor);
@@ -377,7 +400,7 @@ test('discarding unchecked donor changes is rejected and leaves the donor protec
 
 test('lost handover acknowledgement never resumes the old master and leaves recovery possible', async t => {
   const root = await fixture(t), source = await manager(t, root, 'source', { platform: 'hassio' });
-  const target = await manager(t, root, 'target', { role: 'replica' }); connect(source, target);
+  const target = await manager(t, root, 'target', { role: 'slave' }); connect(source, target);
   await target.synchronize(source.state.claim());
   const request = source.peer.request.bind(source.peer);
   source.peer.request = async (operation, ...args) => {
@@ -407,7 +430,7 @@ test('explicit promotion from protected history is available without reopening a
 });
 
 test('a stale recovery completion cannot erase changes made to the protected donor after preview', async t => {
-  const root = await fixture(t), primary = await manager(t, root, 'primary', { platform: 'hassio', hooks: {
+  const root = await fixture(t), primary = await manager(t, root, 'master', { platform: 'hassio', hooks: {
     recoveryPreview: async () => ({ previewId: randomUUID(), counts: {} }), recoveryApply: async () => ({ status: 'complete' }),
   } });
   const donor = await manager(t, root, 'donor'); connect(primary, donor);
@@ -423,7 +446,7 @@ test('large catchup retains its immutable source and completed chunks across rec
   const root = await fixture(t), source = await manager(t, root, 'source');
   const original = new DatabaseSync(source.state.value.activeDbPath);
   original.prepare("INSERT INTO events(type,payload,at) VALUES('bulk',json_object('value',?),0)").run('x'.repeat(3500000)); original.close();
-  const replica = await manager(t, root, 'replica', { role: 'replica' }); connect(source, replica);
+  const replica = await manager(t, root, 'slave', { role: 'slave' }); connect(source, replica);
   const request = replica.peer.request.bind(replica.peer);
   let chunks = 0;
   replica.peer.request = (operation, ...args) => {
@@ -432,10 +455,10 @@ test('large catchup retains its immutable source and completed chunks across rec
   };
   await replica.synchronize(source.state.claim());
   assert.equal(replica.sync.state, 'error');
-  const generation = replica.state.value.pendingReplica.generation;
+  const generation = replica.state.value.pendingSnapshot.generation;
   await replica.close();
-  const restarted = await manager(t, root, 'replica', { role: 'replica', create: false }); connect(source, restarted);
-  assert.equal(restarted.state.value.pendingReplica.generation, generation);
+  const restarted = await manager(t, root, 'slave', { role: 'slave', create: false }); connect(source, restarted);
+  assert.equal(restarted.state.value.pendingSnapshot.generation, generation);
   await restarted.synchronize(source.state.claim());
   assert.equal(restarted.sync.state, 'ready');
   assert.equal(restarted.state.value.accepted.generation, generation);
@@ -444,40 +467,74 @@ test('large catchup retains its immutable source and completed chunks across rec
 
 test('restart finishes an interrupted publication acknowledgement from its durable pending proof', async t => {
   const root = await fixture(t), source = await manager(t, root, 'source');
-  const replica = await manager(t, root, 'replica', { role: 'replica' }); connect(source, replica);
+  const replica = await manager(t, root, 'slave', { role: 'slave' }); connect(source, replica);
   const update = replica.state.update.bind(replica.state);
   replica.state.update = patch => patch.accepted ? Promise.reject(Object.assign(Error(), { code: 'EIO' })) : update(patch);
   await replica.synchronize(source.state.claim());
   assert.equal(replica.sync.state, 'error'); assert.equal(replica.state.value.accepted, null);
-  const pending = replica.state.value.pendingReplica;
+  const pending = replica.state.value.pendingSnapshot;
   replica.state.update = update; await replica.close();
-  const restarted = await manager(t, root, 'replica', { role: 'replica', create: false });
-  assert.equal(restarted.state.value.role, 'replica'); assert.equal(restarted.state.value.pendingReplica, null);
+  const restarted = await manager(t, root, 'slave', { role: 'slave', create: false });
+  assert.equal(restarted.state.value.role, 'slave'); assert.equal(restarted.state.value.pendingSnapshot, null);
   assert.equal(restarted.state.value.accepted.generation, pending.generation);
 });
 
 test('startup protects an accepted replica that acquired unclassified local writes', async t => {
   const root = await fixture(t), source = await manager(t, root, 'source');
-  const replica = await manager(t, root, 'replica', { role: 'replica' }); connect(source, replica);
+  const replica = await manager(t, root, 'slave', { role: 'slave' }); connect(source, replica);
   await replica.synchronize(source.state.claim());
-  const publication = await readReplicaPublication(replica.config.replicaDirectory);
+  const publication = await readReplicaPublication(replica.config.snapshotDirectory);
   await replica.close();
   const changed = new DatabaseSync(publication.dbPath); changed.exec(`INSERT INTO observations(source,device,signal,value,unit,source_time,received_at,quality) VALUES('fixture','fixture','temperature',23,'degC',300,300,'[]')`); changed.close();
-  const restarted = await manager(t, root, 'replica', { role: 'replica', create: false });
-  assert.equal(restarted.state.value.role, 'protected'); assert.equal(restarted.state.value.reason, 'replica_verification_failed');
+  const restarted = await manager(t, root, 'slave', { role: 'slave', create: false });
+  assert.equal(restarted.state.value.role, 'protected'); assert.equal(restarted.state.value.reason, 'snapshot_verification_failed');
   const donor = await restarted.exportSnapshot({ force: true });
   assert.notEqual(donor.digest, publication.digest);
 });
 
+test('fresh pair state cannot bootstrap over unclassified or corrupt received history', async t => {
+  const root = await fixture(t), source = await manager(t, root, 'source');
+  const receiver = await manager(t, root, 'receiver', { role: 'slave' }); connect(source, receiver);
+  await receiver.synchronize(source.state.claim());
+  const publication = await readReplicaPublication(receiver.config.snapshotDirectory);
+  const originalDatabase = await readFile(publication.dbPath);
+  for (const corrupt of [false, true]) {
+    const name = corrupt ? 'corrupt-history' : 'unclassified-history';
+    const directory = join(root, `${name}-replica`);
+    await cp(receiver.config.snapshotDirectory, directory, { recursive: true });
+    const manifest = join(directory, 'publication.json');
+    if (corrupt) await writeFile(manifest, '{invalid-publication');
+    const originalManifest = await readFile(manifest);
+    const app = await manager(t, root, name, { role: 'slave' });
+    assert.equal(app.state.value.role, 'protected');
+    assert.equal(app.state.value.reason, 'unclassified_local_history');
+    assert.equal(app.state.value.bootstrapPending, false);
+    assert.equal(app.status().bootstrapPending, false);
+    assert.equal(app.status().actions.promote, false);
+    await assert.rejects(app.action('promote', command()), { code: 'protected_history' });
+    assert.equal(app.calls.some(call => call[0] === 'master'), false);
+    await assert.rejects(access(app.config.databasePath), { code: 'ENOENT' });
+    // A later helper error may change the visible protection reason, but must
+    // not restore permission to bootstrap past the preserved received history.
+    await app.state.update({ reason: 'vip_release_failed' });
+    await app.close();
+    const restarted = await manager(t, root, name, { role: 'slave' });
+    assert.equal(restarted.status().actions.promote, false);
+    await assert.rejects(restarted.action('promote', command()), { code: 'protected_history' });
+    assert.deepEqual(await readFile(manifest), originalManifest);
+    assert.deepEqual(await readFile(join(directory, `snapshot-${publication.generation}.sqlite`)), originalDatabase);
+  }
+});
+
 test('failed VIP promotion preserves the database and protected management, then explicit retry succeeds', async t => {
   const root = await fixture(t), source = await manager(t, root, 'source');
-  const replica = await manager(t, root, 'replica', { role: 'replica' }); connect(source, replica);
+  const replica = await manager(t, root, 'slave', { role: 'slave' }); connect(source, replica);
   await replica.synchronize(source.state.claim());
   const acquire = replica.vip.acquire;
   replica.vip.acquire = async () => { throw Object.assign(Error(), { code: 'vip_failed' }); };
   await assert.rejects(replica.action('promote', command()), { code: 'vip_failed' });
   assert.equal(replica.state.value.role, 'protected'); assert.equal(replica.canControl(), false);
-  assert.deepEqual(replica.calls.at(-1), ['replica', 'protected']);
+  assert.deepEqual(replica.calls.at(-1), ['slave', 'protected']);
   assert.equal(replica.status().actions.promote, true);
   replica.vip.acquire = acquire;
   await replica.action('promote', command());
@@ -491,7 +548,7 @@ test('runtime startup failure leaves a protected management view with explicit r
     if (fail) throw Error('synthetic runtime failure');
   } } });
   assert.equal(app.state.value.role, 'protected'); assert.equal(app.canControl(), false);
-  assert.equal(app.error, 'runtime_failed'); assert.deepEqual(app.calls.at(-1), ['replica', 'protected']);
+  assert.equal(app.error, 'runtime_failed'); assert.deepEqual(app.calls.at(-1), ['slave', 'protected']);
   fail = false; await app.action('promote', command());
   assert.equal(app.canControl(), true);
 });
@@ -521,7 +578,7 @@ test('a stale activation callback cannot write or demote a newer local primary',
   app.hooks.startPrimary = async ({ onWriting }) => { enter(); await paused; await onWriting(); writes++; };
   const stale = app.startPrimary().catch(error => error);
   await entered;
-  const epoch = randomUUID(); await app.state.update({ epoch, role: 'primary' });
+  const epoch = randomUUID(); await app.state.update({ epoch, role: 'master' });
   app.activeAllowed = true;
   resume(); const result = await stale;
   assert.equal(result.code, 'authority_changed'); assert.equal(writes, 0); assert.equal(releases, 0);
@@ -529,17 +586,17 @@ test('a stale activation callback cannot write or demote a newer local primary',
 });
 
 test('A10-002 repeated cached synchronization remains a valid immutable publication',async t=>{
-  const root=await fixture(t),source=await manager(t,root,'source'),replica=await manager(t,root,'replica',{role:'replica'});
+  const root=await fixture(t),source=await manager(t,root,'source'),replica=await manager(t,root,'slave',{role:'slave'});
   connect(source,replica);await replica.synchronize(source.state.claim());
-  const first=await readReplicaPublication(replica.config.replicaDirectory);
+  const first=await readReplicaPublication(replica.config.snapshotDirectory);
   await replica.synchronize(source.state.claim());
-  const second=await readReplicaPublication(replica.config.replicaDirectory);
+  const second=await readReplicaPublication(replica.config.snapshotDirectory);
   assert.equal(second.generation,first.generation);assert.notEqual(second.previousGeneration,second.generation);
   assert.equal(replica.state.value.accepted.generation,first.generation);
 });
 
 test('A10-003 delayed pre-handover poll and MQTT claim cannot demote the new primary',async t=>{
-  const root=await fixture(t),source=await manager(t,root,'source',{platform:'hassio'}),target=await manager(t,root,'target',{role:'replica'});
+  const root=await fixture(t),source=await manager(t,root,'source',{platform:'hassio'}),target=await manager(t,root,'target',{role:'slave'});
   connect(source,target);await target.synchronize(source.state.claim());const stale=source.state.claim();
   const request=target.peer.request.bind(target.peer);let release;
   target.peer.request=(operation,...args)=>operation==='status' && !release?new Promise(resolve=>{release=()=>resolve({claim:stale});}):request(operation,...args);
@@ -557,12 +614,12 @@ test('A10-004 lost release acknowledgement retries the same durable operation',a
   const request=primary.peer.request.bind(primary.peer),action=command();let lost=false;
   primary.peer.request=async(operation,...args)=>{const result=await request(operation,...args);if(operation==='release'&&!lost){lost=true;throw Object.assign(Error(),{code:'peer_unavailable'});}return result;};
   await assert.rejects(primary.action('rejoin',action),{code:'peer_unavailable'});
-  assert.equal(donor.state.value.role,'replica');const generation=donor.state.value.accepted.generation;
+  assert.equal(donor.state.value.role,'slave');const generation=donor.state.value.accepted.generation;
   for (let n = 0; n < 3; n++) await primary.exportSnapshot({ force: true });
   await primary.snapshots.chunk({ generation, index: 0 });
   await primary.close(); await donor.close();
   const restartedPrimary = await manager(t,root,'master',{platform:'hassio',create:false});
-  const restartedDonor = await manager(t,root,'donor',{role:'replica',create:false});
+  const restartedDonor = await manager(t,root,'donor',{role:'slave',create:false});
   connect(restartedPrimary,restartedDonor);
   for (let n = 0; n < 3; n++) await restartedPrimary.exportSnapshot({ force: true });
   await restartedPrimary.snapshots.chunk({ generation, index: 0 });
@@ -571,7 +628,7 @@ test('A10-004 lost release acknowledgement retries the same durable operation',a
 });
 
 test('peer snapshot requests cannot pin exports indefinitely', async t => {
-  const root = await fixture(t), primary = await manager(t, root, 'primary');
+  const root = await fixture(t), primary = await manager(t, root, 'master');
   const metadata = await primary.handlePeer('snapshot', { force: true, pin: true });
   await assert.rejects(access(join(primary.snapshots.directory, `export-${metadata.generation}.pin`)), { code: 'ENOENT' });
 });

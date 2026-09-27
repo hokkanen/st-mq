@@ -1266,7 +1266,7 @@ with an empty JSON object saves in the configured server folder, and authenticat
 `GET /api/database-export` downloads a temporary snapshot. Temporary files are removed
 on completion, failure or disconnection. Only one export runs at a time per web
 server. Normal web/ingress authentication applies and is checked again before the
-copy is saved or sent. Replica exports hold the verified snapshot they began with
+copy is saved or sent. Slave exports hold the verified snapshot they began with
 until the operation completes.
 
 An export includes private history and saved application state. Retain the matching

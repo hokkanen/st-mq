@@ -16,6 +16,8 @@ test('paired transport encrypts household values and authenticates request-bound
   assert.equal(encrypted.includes('invented-reading'), false);
   assert.deepEqual(openEnvelope(encrypted, key), { household: 'invented-reading' });
   assert.throws(() => openEnvelope(encrypted, key, 'different-response'), { code: 'peer_authentication_failed' });
+  assert.throws(() => openEnvelope(JSON.stringify({ ...JSON.parse(encrypted), version: 1 }), key),
+    { code: 'peer_authentication_failed' });
 });
 
 test('wrong key, replayed requests, plaintext routes and redirects are rejected', async t => {
@@ -27,10 +29,11 @@ test('wrong key, replayed requests, plaintext routes and redirects are rejected'
   await assert.rejects(wrong.request('status'), { code: 'peer_authentication_failed' });
   const key = createHash('sha256').update('st-mq paired transport\0').update(options.token).digest();
   const body = sealEnvelope({ id: 'one-use', pairId: options.pairId, at: Date.now(), operation: 'status' }, key);
-  assert.equal((await fetch(`${origin}/v1/pair`, { method: 'POST', body })).status, 200);
-  assert.equal((await fetch(`${origin}/v1/pair`, { method: 'POST', body })).status, 401);
-  assert.equal((await fetch(`${origin}/v1/pair`)).status, 404);
-  assert.equal((await fetch(`${origin}/v1/pair`, { method: 'POST', body: JSON.stringify({ token: options.token }) })).status, 401);
+  assert.equal((await fetch(`${origin}/v1/pair`, { method: 'POST', body })).status, 404);
+  assert.equal((await fetch(`${origin}/v2/pair`, { method: 'POST', body })).status, 200);
+  assert.equal((await fetch(`${origin}/v2/pair`, { method: 'POST', body })).status, 401);
+  assert.equal((await fetch(`${origin}/v2/pair`)).status, 404);
+  assert.equal((await fetch(`${origin}/v2/pair`, { method: 'POST', body: JSON.stringify({ token: options.token }) })).status, 401);
   assert.equal(handled, 1);
 });
 

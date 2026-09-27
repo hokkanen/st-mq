@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { ControllerAnnouncements } from '../src/pairing/announcements.js';
 
 test('MQTT identity ignores retained, stale, duplicate and different-equipment announcements', async () => {
-  const own = { nodeId: randomUUID(), epoch: randomUUID(), platform: 'ubuntu', role: 'primary' };
+  const own = { nodeId: randomUUID(), epoch: randomUUID(), platform: 'ubuntu', role: 'master' };
   const other = { ...own, nodeId: randomUUID(), platform: 'hassio', boot: randomUUID(), heartbeat: 1, at: 1000000, version: 1 };
   const seen = [], client = new EventEmitter(); client.connected = true;
   client.publish = (...args) => seen.push(['sent', ...args]);

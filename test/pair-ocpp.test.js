@@ -9,7 +9,7 @@ import { Store } from '../src/storage/store.js';
 import { ocppInstallation } from '../src/acquisition/easee-ocpp-setup.js';
 import { ocppHandoverHooks, probeOcppListener } from '../src/pairing/ocpp.js';
 
-const configuration = () => ({ pairing: { enabled: true, token: 'synthetic-ocpp-pair-token-0123456789',
+const configuration = () => ({ topology: 'pair', pair: { token: 'synthetic-ocpp-pair-token-0123456789',
   vip: { address: '192.0.2.81' } }, connections: { easee: { charger_id: 'SYNTHETIC-CHARGER',
   local_ocpp: { enabled: true, host: '0.0.0.0', port: 9001, authorization_tags: ['synthetic-tag'] } } } });
 const setupState = config => ({ version: 1, scope: ocppInstallation(config).scope, ownedFingerprint: 'a'.repeat(64),
@@ -28,7 +28,7 @@ test('OCPP pairing hooks require matching derived credentials and probe before a
   const targetConfig = configuration();
   const target = ocppHandoverHooks({ configuration: () => targetConfig, store: () => null, probe: async () => { probes++; } });
   await target.prepareHandover(requirements); assert.equal(probes, 1);
-  targetConfig.pairing.token += 'different';
+  targetConfig.pair.token += 'different';
   await assert.rejects(target.prepareHandover(requirements), { code: 'ocpp_handover_not_ready' });
   assert.equal(probes, 1, 'incompatible credentials are rejected before binding');
   await assert.rejects(target.prepareHandover(null), { code: 'ocpp_handover_not_ready' });
@@ -67,7 +67,7 @@ test('standby port preflight catches a conflicting listener then releases its ow
   t.after(() => { if (server.listening) server.close(); });
   const config = configuration(), local = config.connections.easee.local_ocpp;
   local.port = server.address().port;
-  local.host = config.pairing.vip.address;
+  local.host = config.pair.vip.address;
   await assert.rejects(probeOcppListener(config), { code: 'ocpp_handover_not_ready' });
   await new Promise(resolve => server.close(resolve));
   await probeOcppListener(config);

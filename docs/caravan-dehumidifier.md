@@ -68,7 +68,7 @@ not retained. The bridge must apply only requested fields, reject unsupported
 options and then report actual device settings on `/state`. A successful publish
 is not confirmation: ST-MQ waits for fresh matching telemetry. It does not record
 requested settings as actual observations or retry old commands after reconnect.
-Manual controls respect the existing primary-controller and replica restrictions.
+Manual controls respect the existing master-control and read-only slave restrictions.
 
 ## Temperature control and location check
 

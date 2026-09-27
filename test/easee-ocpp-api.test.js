@@ -30,7 +30,7 @@ test('local charger adoption requires authentication, same-origin JSON, exact ac
 });
 
 test('replica, protected controller and recovery reject OCPP adoption before dispatch', async t => {
-  for (const [options, status] of [[{ role: 'replica' }, 405],
+  for (const [options, status] of [[{ role: 'slave' }, 405],
     [{ controlAuthority: { canControl: () => false } }, 409],
     [{ pairContext: { canControl: () => false, recovering: () => false } }, 409],
     [{ pairContext: { canControl: () => true, recovering: () => true } }, 409]]) {

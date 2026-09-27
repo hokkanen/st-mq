@@ -31,7 +31,7 @@ test('Home confirmation requires current verified evidence matching the requeste
 });
 
 test('Home confirmation retains simulation, pending delivery, restoration, alarms and native-setting mismatches', () => {
-  for (const patch of [{ input: 'simulated' }, { role: 'replica' },
+  for (const patch of [{ input: 'simulated' }, { role: 'slave' },
     { execution: { status: 'pending' } }, { execution: { status: 'failed' } }, { execution: { restorationPending: true } },
     { h66: { enabled: true, connected: false } }]) {
     assert.equal(homeHeatingConfirmation({ ...home(), ...patch }).state, 'attention', JSON.stringify(patch));
@@ -93,7 +93,7 @@ test('Garage matching power cannot hide simulation, pending commands, faults or 
     const status = garage(); Object.assign(status.garage.adapter, patch);
     assert.equal(garageHeatingConfirmation(status, 'Normal').state, 'attention', JSON.stringify(patch));
   }
-  assert.equal(garageHeatingConfirmation({ ...garage(), role: 'replica' }, 'Normal').state, 'attention');
+  assert.equal(garageHeatingConfirmation({ ...garage(), role: 'slave' }, 'Normal').state, 'attention');
   const paused = garage(); Object.assign(paused.garage.adapter, { phase: 'paused', restorePending: true });
   paused.garage.adapter.native.power = 'off';
   assert.equal(garageHeatingConfirmation(paused, 'Reduction').state, 'confirmed', 'a valid OFF lease has a future restoration obligation');

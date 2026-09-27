@@ -169,7 +169,7 @@ test('revocation during server-side publication removes the unacknowledged saved
 test('an export holds a replica snapshot until streaming finishes', async t => {
   let released = 0, finish;
   const completed = new Promise(resolve => { finish = resolve; });
-  const { store, url } = await fixture(t, { role: 'replica', getReadContext: async () => ({ store, engine: {}, release: () => { released++; finish(); } }) });
+  const { store, url } = await fixture(t, { role: 'slave', getReadContext: async () => ({ store, engine: {}, release: () => { released++; finish(); } }) });
   store.setState('replica-value', 9);
   const response = await fetch(url);
   assert.equal(response.status, 200);
@@ -181,7 +181,7 @@ test('an export holds a replica snapshot until streaming finishes', async t => {
 test('saving a database file on a replica is rejected before accessing its snapshot', async t => {
   let released = 0;
   const { store, url } = await fixture(t, {
-    role: 'replica', controlAuthority: { canControl: () => false },
+    role: 'slave', controlAuthority: { canControl: () => false },
     pairContext: { canControl: () => false },
     getReadContext: async () => ({ store, engine: {}, release: () => { released++; } }),
   });
@@ -196,13 +196,13 @@ test('saving a database file on a replica is rejected before accessing its snaps
 test('neither export action uses an unverified replica database', async t => {
   let released = 0;
   const { store, url, exportDirectory } = await fixture(t, {
-    role: 'replica', getReadContext: async () => ({ store: null, engine: {}, release: () => { released++; } }),
+    role: 'slave', getReadContext: async () => ({ store: null, engine: {}, release: () => { released++; } }),
   });
   let backups = 0;
   store.backup = async () => { backups++; };
   const response = await fetch(url);
   assert.equal(response.status, 503);
-  assert.match((await response.json()).error, /verified primary snapshot/);
+  assert.match((await response.json()).error, /verified master snapshot/);
   assert.equal((await saveCopy(url)).status, 405);
   assert.equal(backups, 0);
   assert.equal(released, 1);

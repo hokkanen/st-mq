@@ -100,7 +100,7 @@ do not imply a corresponding percentage reduction for the entire database.
 | Recorder statistics and state | Statistics aggregate into per-stream hourly buckets with seven-day pruning. State overwrites bounded checkpoints. Frequent writes remain, but they do not append a history row per poll. |
 | Weather/prices | Forecast content is deduplicated; fetch/issuance references remain for causal source age and reconstruction. Distinct forecasts and publication revisions legitimately grow history. |
 | Home/Garage learning journals, frozen cycle plans and corrections | Retained to reconstruct current learning and assessments. No indiscriminate retention limit or deletion was added. |
-| Decision events | Still one event per controller decision, even when summaries repeat. At a hypothetical one-minute cadence this is 525,600 events/year. Further compaction needs a separate explicit decision/heartbeat representation because replica status reads the latest event; a simple dedup would age that status incorrectly. |
+| Decision events | Still one event per controller decision, even when summaries repeat. At a hypothetical one-minute cadence this is 525,600 events/year. Further compaction needs a separate explicit decision/heartbeat representation because slave status reads the latest event; a simple dedup would age that status incorrectly. |
 | Property meter audits | Source timestamp/value pairs deduplicate; fresh cumulative meter reports remain for counter comparisons, resets and provenance. They are not charger idle power rows. |
 
 There are additional storage opportunities, but their tradeoffs are different

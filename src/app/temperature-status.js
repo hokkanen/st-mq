@@ -135,7 +135,7 @@ const outdoorTrustworthy = (row, now) => Boolean(row && Number.isFinite(row.valu
   && goodQuality((row.quality ?? []).filter(flag => !(row.source === 'openmeteo' && flag === 'estimated'))));
 const transition = row => row?.value === null && row.raw?.timeBasis === 'availability-transition';
 
-/** The primary and replica apply the same source update rules: retained packets
+/** The master and slave apply the same source update rules: retained packets
  * cannot replace a live source; failed downloads preserve a still-valid weather
  * reading; explicit source outages require a subsequent genuine measurement. */
 export function rememberOutdoorReading(prior, observation, now) {

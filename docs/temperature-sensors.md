@@ -142,7 +142,7 @@ identify the expired vehicle-health or charging-evidence clock and configured
 limit. Recording details distinguish current source/report validity from the
 last acquisition outcome and from completed historical energy intervals.
 
-Replicas apply the same temperature source limits and report policy to evidence
+Slaves apply the same temperature source limits and report policy to evidence
 available at the published snapshot boundary. When a compact coverage span proves
 availability at that boundary but not the precise most recent report timestamp,
 the display preserves that uncertainty. Synchronization age is reported
@@ -201,7 +201,7 @@ For a participating indoor sensor or the outdoor temperature, the action:
 Garage and zero-weight indoor sensor changes are recorded without resetting the
 house model. A change to indoor averaging membership or weights automatically
 establishes the corresponding model boundary. The event list also appears on a
-read-only replica; changes must be managed on the controlling instance.
+read-only slave; changes must be managed on the controlling instance.
 
 To undo a mistaken entry, choose **Revert and relearn** beside it and confirm.
 The original event remains in history with its reversal time. Relearning uses

@@ -8,7 +8,7 @@ const device = (value = 1, observedAt = now) => ({ id: 'fixture-switch', label: 
   readings: { switch_active: { value, unit: 'state', stale: false, observedAt } } });
 const receipt = (extra = {}) => ({ deviceId: 'fixture-switch', at: now, confirmedAt: now, on: true,
   confirmed: true, status: 'confirmed', sent: true, ...extra });
-const status = (extra = {}) => ({ now, role: 'primary', equipment: { devices: [device()] },
+const status = (extra = {}) => ({ now, role: 'master', equipment: { devices: [device()] },
   equipmentControls: { available: true, lastResult: receipt() }, equipmentTests: { available: true }, ...extra });
 const door = (operation = {}) => ({ ...device(), id: 'fixture-door', kind: 'door',
   controls: { cover: { open: true, close: true, stop: true } },

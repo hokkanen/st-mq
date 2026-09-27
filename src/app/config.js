@@ -4,8 +4,8 @@ import { H66_MAX_AGE_MS } from '../domain/reading-freshness.js';
 import { isAbsolute, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { configuredPriceSettings } from './contract.js';
-import { configurationPaths, createConfigurationSource, readConfigurationOptions } from './configuration-source.js';
-import { pairingEnabled, pairingConfiguration } from '../pairing/config.js';
+import { configurationPaths, createConfigurationSource, readConfigurationOptions, validateTopologyOptions } from './configuration-source.js';
+import { pairConfiguration } from '../pairing/config.js';
 import { garageSettings } from '../garage/settings.js';
 import { garageAdapterSettings } from '../garage/contract.js';
 import { floorOverrideConfiguration } from '../control/floor-override.js';
@@ -87,51 +87,68 @@ export function acquisitionConfiguration(input = {}) {
   };
 }
 
-/** Machine-local replication settings never enter the mirrored database. */
-export function replicationConfiguration(input = {}, env = {}, { role = 'primary', dataDir, databaseDir } = {}) {
-  const enabled = env.STMQ_REPLICATION_ENABLED === undefined ? input.enabled ?? false
-    : env.STMQ_REPLICATION_ENABLED === '1' ? true : env.STMQ_REPLICATION_ENABLED === '0' ? false : null;
-  if (typeof enabled !== 'boolean') throw new Error('STMQ_REPLICATION_ENABLED must be 0 or 1');
-  if (role === 'replica' && enabled) throw new Error('A replica cannot enable outgoing replication');
+function rejectRetiredTopologyEnvironment(env) {
+  if (Object.hasOwn(env, 'STMQ_ROLE'))
+    throw new Error('Retired environment setting: STMQ_ROLE. Use STMQ_MIRROR_ROLE for mirror topology; pair roles are managed through manual promotion and handover.');
+  if (Object.hasOwn(env, 'STMQ_PAIR_ROLE'))
+    throw new Error('STMQ_PAIR_ROLE is unsupported; pair roles are managed through manual promotion and handover.');
+  for (const name of Object.keys(env)) {
+    if (name.startsWith('STMQ_REPLICATION_') || name.startsWith('STMQ_REPLICA_')
+      || ['STMQ_PAIR_ENABLED', 'STMQ_MIRROR_ENABLED'].includes(name))
+      throw new Error(`Retired environment setting: ${name}. Select STMQ_TOPOLOGY and use STMQ_MIRROR_* or STMQ_PAIR_* settings without enable flags.`);
+  }
+}
+
+function configuredMirrorRole(input = {}, env = {}) {
+  const role = env.STMQ_MIRROR_ROLE ?? input.role ?? 'master';
+  if (!['master', 'slave'].includes(role)) throw new Error('mirror.role / STMQ_MIRROR_ROLE must be master or slave.');
+  return role;
+}
+
+/** Machine-local mirror settings never enter the mirrored database. */
+export function mirrorConfiguration(input = {}, env = {}, { topology = 'standalone', dataDir, databaseDir } = {}) {
+  rejectRetiredTopologyEnvironment(env);
+  if (Object.hasOwn(input, 'enabled')) throw new Error('mirror.enabled is retired; select controller.topology instead.');
+  const role = configuredMirrorRole(input, env);
   const text = (value, name) => {
     if (typeof value !== 'string' || value.length > 1024 || /[\u0000-\u001f\u007f]/.test(value))
-      throw new Error(`Invalid replication setting: ${name}`);
+      throw new Error(`Invalid mirror setting: ${name}`);
     return value;
   };
   const number = (value, fallback, min, max, name) => {
     const result = value === undefined ? fallback : Number(value);
     if (!Number.isFinite(result) || result < min || result > max)
-      throw new Error(`Invalid replication setting: ${name}`);
+      throw new Error(`Invalid mirror setting: ${name}`);
     return result;
   };
   const settings = {
-    enabled,
-    directory: resolve(text(env.STMQ_REPLICA_DIR ?? (input.directory || resolve(databaseDir ?? '.', 'replica')), 'directory')),
-    sourceDirectory: resolve(text(env.STMQ_REPLICATION_WORK_DIR ?? resolve(dataDir ?? '.', 'replication'), 'work_directory')),
-    sshHost: text(env.STMQ_REPLICATION_SSH_HOST ?? input.ssh_host ?? '', 'ssh_host'),
-    sshConfigPath: text(env.STMQ_REPLICATION_SSH_CONFIG ?? input.ssh_config ?? '', 'ssh_config'),
-    remoteDirectory: text(env.STMQ_REPLICATION_REMOTE_DIR ?? input.remote_directory ?? '', 'remote_directory'),
-    receiverPath: text(env.STMQ_REPLICATION_RECEIVER ?? input.receiver_path ?? '', 'receiver_path'),
-    nodePath: text(env.STMQ_REPLICATION_NODE ?? input.node_path ?? 'node', 'node_path'),
-    rsyncPath: text(env.STMQ_REPLICATION_RSYNC ?? input.rsync_path ?? 'sqlite3_rsync', 'rsync_path'),
-    remoteRsyncPath: text(env.STMQ_REPLICATION_REMOTE_RSYNC ?? input.remote_rsync_path ?? 'sqlite3_rsync', 'remote_rsync_path'),
-    intervalMs: Math.round(number(env.STMQ_REPLICATION_INTERVAL_SECONDS ?? input.interval_seconds, 60, 10, 86400, 'interval_seconds') * 1000),
-    timeoutMs: Math.round(number(env.STMQ_REPLICATION_TIMEOUT_SECONDS ?? input.timeout_seconds, 3600, 30, 86400, 'timeout_seconds') * 1000),
-    staleAfterMs: Math.round(number(env.STMQ_REPLICA_STALE_SECONDS ?? input.stale_seconds, 180, 30, 604800, 'stale_seconds') * 1000),
+    role,
+    directory: resolve(text(env.STMQ_MIRROR_DIR ?? (input.directory || resolve(databaseDir ?? '.', 'mirror')), 'directory')),
+    sourceDirectory: resolve(text(env.STMQ_MIRROR_WORK_DIR ?? resolve(dataDir ?? '.', 'mirror-work'), 'work_directory')),
+    sshHost: text(env.STMQ_MIRROR_SSH_HOST ?? input.ssh_host ?? '', 'ssh_host'),
+    sshConfigPath: text(env.STMQ_MIRROR_SSH_CONFIG ?? input.ssh_config ?? '', 'ssh_config'),
+    remoteDirectory: text(env.STMQ_MIRROR_REMOTE_DIR ?? input.remote_directory ?? '', 'remote_directory'),
+    receiverPath: text(env.STMQ_MIRROR_RECEIVER ?? input.receiver_path ?? '', 'receiver_path'),
+    nodePath: text(env.STMQ_MIRROR_NODE ?? input.node_path ?? 'node', 'node_path'),
+    rsyncPath: text(env.STMQ_MIRROR_RSYNC ?? input.rsync_path ?? 'sqlite3_rsync', 'rsync_path'),
+    remoteRsyncPath: text(env.STMQ_MIRROR_REMOTE_RSYNC ?? input.remote_rsync_path ?? 'sqlite3_rsync', 'remote_rsync_path'),
+    intervalMs: Math.round(number(env.STMQ_MIRROR_INTERVAL_SECONDS ?? input.interval_seconds, 60, 10, 86400, 'interval_seconds') * 1000),
+    timeoutMs: Math.round(number(env.STMQ_MIRROR_TIMEOUT_SECONDS ?? input.timeout_seconds, 3600, 30, 86400, 'timeout_seconds') * 1000),
+    staleAfterMs: Math.round(number(env.STMQ_MIRROR_STALE_SECONDS ?? input.stale_seconds, 180, 30, 604800, 'stale_seconds') * 1000),
   };
   if (settings.sshConfigPath && !isAbsolute(settings.sshConfigPath))
-    throw new Error('Replication ssh_config must be an absolute path');
-  if (enabled) {
+    throw new Error('Mirror ssh_config must be an absolute path');
+  if (topology === 'mirror' && role === 'master') {
     if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/.test(settings.sshHost))
-      throw new Error('Replication ssh_host must be an SSH host alias');
+      throw new Error('Mirror ssh_host must be an SSH host alias');
     if (!isAbsolute(settings.remoteDirectory) || settings.remoteDirectory === '/' || !isAbsolute(settings.receiverPath))
-      throw new Error('Replication remote_directory and receiver_path must be absolute paths');
+      throw new Error('Mirror remote_directory and receiver_path must be absolute paths');
     if (![settings.nodePath, settings.rsyncPath, settings.remoteRsyncPath].every(value => value && !value.startsWith('-')))
-      throw new Error('Replication executables must be configured');
+      throw new Error('Mirror executables must be configured');
     if (![settings.remoteDirectory, settings.receiverPath, settings.nodePath, settings.remoteRsyncPath]
       .every(value => /^[A-Za-z0-9_./-]+$/.test(value) && !value.split('/').includes('..')))
-      throw new Error('Replication remote paths must contain only letters, numbers, dots, underscores, slashes and hyphens, without parent traversal');
-    if (settings.sourceDirectory.includes(':')) throw new Error('Replication work directory cannot contain a colon');
+      throw new Error('Mirror remote paths must contain only letters, numbers, dots, underscores, slashes and hyphens, without parent traversal');
+    if (settings.sourceDirectory.includes(':')) throw new Error('Mirror work directory cannot contain a colon');
   }
   return settings;
 }
@@ -229,12 +246,16 @@ export function indoorSensorWeightsConfiguration(input, connections = {}) {
 // overrides remain authoritative; temporary occupancy stays in the database.
 function buildConfiguration(options, env, cwd, configuration, source, { bootstrap = false } = {}) {
   const addon = env.STMQ_ADDON === '1';
-  const role = env.STMQ_ROLE ?? options.controller?.role ?? 'primary';
-  if (!['primary', 'replica'].includes(role)) throw new Error('STMQ_ROLE must be primary or replica');
-  // Paired standbys retain their own future controller configuration privately.
+  rejectRetiredTopologyEnvironment(env);
+  validateTopologyOptions(options);
+  const topology = env.STMQ_TOPOLOGY ?? options.controller?.topology ?? 'standalone';
+  if (!['standalone', 'mirror', 'pair'].includes(topology))
+    throw new Error('controller.topology / STMQ_TOPOLOGY must be standalone, mirror or pair.');
+  const role = topology === 'mirror' ? configuredMirrorRole(options.mirror, env) : topology === 'pair' ? 'slave' : 'master';
+  // Pair slaves retain their own future controller configuration privately.
   // The durable pair role decides whether a runtime may actually use it.
-  const replica = role === 'replica' && !pairingEnabled(options.pairing, env);
-  const input = replica ? 'offline' : env.STMQ_INPUT ?? options.controller?.input ?? 'simulated';
+  const mirrorSlave = topology === 'mirror' && role === 'slave';
+  const input = mirrorSlave ? 'offline' : env.STMQ_INPUT ?? options.controller?.input ?? 'simulated';
   if (!['simulated', 'mqtt', 'offline', 'providers'].includes(input)) throw new Error('STMQ_INPUT must be simulated, mqtt, offline or providers');
   const dataDir = resolve(env.STMQ_DATA_DIR ?? (addon ? '/data/st-mq' : `${cwd}/var`));
   const databaseDir = resolve(env.STMQ_DATABASE_DIR ?? (addon ? '/config/st-mq' : dataDir));
@@ -254,7 +275,7 @@ function buildConfiguration(options, env, cwd, configuration, source, { bootstra
       'temperature_report_interval_minutes') * 60_000);
     mqtt.temperatureReportGraceMs = Math.round(interval(mqtt.temperature_report_grace_seconds, 300, 0, 900,
       'temperature_report_grace_seconds') * 1000);
-    const { replication: _replication, pairing: _pairing, charging: _charging, ...providerOptions } = options;
+    const { mirror: _mirror, pair: _pair, charging: _charging, ...providerOptions } = options;
     connections = { ...providerOptions, mqtt, teslamate: teslamateConfiguration(options.teslamate),
       equipment };
     if (options.easee) connections.easee = { ...options.easee, local_ocpp: localOcppConfiguration(options.easee.local_ocpp) };
@@ -291,34 +312,34 @@ function buildConfiguration(options, env, cwd, configuration, source, { bootstra
     throw new Error('The ingress port must be valid and different from the direct port.');
   const databaseName = input === 'simulated' ? 'simulation.sqlite' : 'st-mq.sqlite';
   const verification = env.STMQ_H66_VERIFICATION ?? options.controller?.h66_verification_file;
-  const config = { addon, role, input, dataDir, databaseDir, dbPath: resolve(databaseDir, databaseName),
+  const config = { addon, topology, role, input, dataDir, databaseDir, dbPath: resolve(databaseDir, databaseName),
     host, port, token, familyToken, ingressPort, ingressHost: env.STMQ_INGRESS_HOST ?? '0.0.0.0', configuration,
     connections, priceSettings: configuredPriceSettings(options.electricity),
     charging: chargingConfiguration(options.charging),
     garage: { ...garageSettings(Object.fromEntries(Object.entries(options.garage ?? {}).filter(([key]) => key !== 'adapter'))),
       adapter: garageAdapterSettings(options.garage?.adapter) },
-    replication: replicationConfiguration(options.replication, env, { role, dataDir, databaseDir }),
-    deviceId: replica ? undefined : (env.STMQ_H66_DEVICE ?? options.controller?.h66_device) || undefined,
+    mirror: mirrorConfiguration(options.mirror, env, { topology, dataDir, databaseDir }),
+    deviceId: mirrorSlave ? undefined : (env.STMQ_H66_DEVICE ?? options.controller?.h66_device) || undefined,
     floorPreheat,
     control: { ...controlConfiguration(options.controller),
       indoorSensorWeights: indoorSensorWeightsConfiguration(options.controller?.indoor_sensor_weights, options) },
     recording: recordingConfiguration(options.recording),
     acquisition: acquisitionConfiguration(options.acquisition),
-    h66: { enabled: !replica && Boolean(env.STMQ_H66_DEVICE ?? options.controller?.h66_device), writeEnabled: !replica,
+    h66: { enabled: !mirrorSlave && Boolean(env.STMQ_H66_DEVICE ?? options.controller?.h66_device), writeEnabled: !mirrorSlave,
       maxAgeMs: H66_MAX_AGE_MS, readbackTimeoutMs: 10000, snapshotIntervalMs: 60000,
       auxRatedKw: options.controller?.auxiliary_rated_kw ?? 9, compressorOnlyMode: 2 },
-    h66Verification: !replica && verification ? resolve(addon ? '/config' : cwd, verification) : undefined,
+    h66Verification: !mirrorSlave && verification ? resolve(addon ? '/config' : cwd, verification) : undefined,
     settings: validateSettings({ savingsStrategy: options.controller?.savings_strategy,
-      preheatRoomBoostC: options.controller?.preheat_room_boost_c ?? 5, mode: replica ? 'monitoring' : env.STMQ_MODE ?? options.controller?.mode ?? 'shadow',
+      preheatRoomBoostC: options.controller?.preheat_room_boost_c ?? 5, mode: mirrorSlave ? 'monitoring' : env.STMQ_MODE ?? options.controller?.mode ?? 'shadow',
       comfort: { targetC: null, maxRiseC: options.controller?.max_rise_c ?? 1.5, maxDropC: env.STMQ_MAX_DROP_C == null ? options.controller?.max_drop_c ?? 1.5 : Number(env.STMQ_MAX_DROP_C) } }) };
-  config.pairing = pairingConfiguration(options.pairing, env, config);
-  if (config.pairing.enabled && config.connections.easee?.local_ocpp?.enabled) {
+  config.pair = pairConfiguration(options.pair, env, config);
+  if (config.topology === 'pair' && config.connections.easee?.local_ocpp?.enabled) {
     const ocpp = config.connections.easee.local_ocpp;
-    const expected = `ws://${config.pairing.vip.address}:${ocpp.port}/ocpp`;
-    if (ocpp.server_url && ocpp.server_url !== expected || !['0.0.0.0', config.pairing.vip.address].includes(ocpp.host))
+    const expected = `ws://${config.pair.vip.address}:${ocpp.port}/ocpp`;
+    if (ocpp.server_url && ocpp.server_url !== expected || !['0.0.0.0', config.pair.vip.address].includes(ocpp.host))
       throw new Error('Paired OCPP must use the shared virtual IP; leave server_url empty and bind to 0.0.0.0 or the virtual address.');
-    if ([config.port, config.ingressPort, config.pairing.port].includes(ocpp.port))
-      throw new Error('The local OCPP port must differ from the web and pairing ports.');
+    if ([config.port, config.ingressPort, config.pair.port].includes(ocpp.port))
+      throw new Error('The local OCPP port must differ from the web and pair ports.');
   }
   configurationSources.set(config, source);
   configurationReaders.set(config, () => loadConfig(env, cwd));

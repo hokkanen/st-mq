@@ -32,6 +32,10 @@ The [vehicle identification review](VEHICLE-IDENTIFICATION-2026-09.md) records
 shared BMW/Tesla behavior across cloud and OCPP, guarded pause evidence,
 source/session binding and the synthetic reconnect/restart regression coverage.
 
+The [topology and role contract review](TOPOLOGY-2026-09.md) records the single
+standalone/mirror/pair selector, master/slave roles, retained transports and
+strict rejection of retired configuration and saved-state shapes.
+
 | Scope | Implementation and evidence |
 | --- | --- |
 | A01 charging | [Physical Charger 2, identity, energy, scheduling and controls](A01.md); [acceptance tracker](A01-tracker.json) |

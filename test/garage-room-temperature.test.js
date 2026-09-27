@@ -393,7 +393,7 @@ test('paired providers can change to the local broker without replaying low or n
   for (const targetC of [7, 18]) await t.test(`${targetC} C`, async t => {
     const store = new Store(':memory:'); t.after(() => store.close());
     const f = fixture(null), options = { store, engine: { latest: {}, settings: { mode: 'shadow' } },
-      config: { input: 'providers', garage: {}, pairing: { enabled: true },
+      config: { input: 'providers', garage: {}, topology: 'pair', pair: {},
         connections: { mqtt: { address: 'mqtt://invented-shared-broker', user: 'invented-owner' } } }, clock: f.now };
     const runtime = new GarageRuntime(options); runtime.setAdapter(f.adapter);
     runtime.saveRoomTarget(targetC, f.now());

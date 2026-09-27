@@ -117,6 +117,21 @@ test('HA rejects retired native token fields without translating or saving setti
   }
 });
 
+test('HA rejects retired topology imports and preserves both settings and source files', async t => {
+  for (const retired of [{ replication: {} }, { pairing: {} }, { mirror: { enabled: false } },
+    { pair: { enabled: true } }, { controller: { role: 'primary' } }, { controller: { role: 'replica' } },
+    { controller: { role: 'master' } }, { controller: { role: 'slave' } }, { pair: { role: 'master' } }]) {
+    const f = fixture(t);
+    const original = structuredClone(f.state.current);
+    f.upload(retired);
+    const bytes = readFileSync(f.paths.importPath);
+    await assert.rejects(f.source.prepare(), /(Retired|Unsupported).*(controller\.(topology|role)|pair.role)/);
+    assert.equal(f.posts(), 0);
+    assert.deepEqual(f.state.current, original);
+    assert.deepEqual(readFileSync(f.paths.importPath), bytes);
+  }
+});
+
 test('HA rejects explicit null and new secret references before saving', async t => {
   const f = fixture(t);
   f.upload({ controller: { compressor_integral_a1: null } });

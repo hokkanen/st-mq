@@ -137,7 +137,7 @@ export async function checkGarageDoorBrowser({ evaluate, command, context, refre
     await evaluate("window.equipmentUiFixture.devices=window.equipmentUiFixture.savedDoors;delete window.equipmentUiFixture.savedDoors;true");
     await refresh();
 
-    await evaluate("window.equipmentUiFixture.status.role='replica';true");
+    await evaluate("window.equipmentUiFixture.status.role='slave';true");
     await refresh();
     assert.equal(await evaluate(`!document.querySelector('${panel}').checkVisibility()||[...document.querySelectorAll('${panel} .garage-door-action')].every(b=>b.disabled)`), true, 'An open window cannot retain primary control after becoming a replica');
     assert.equal(await evaluate(`document.querySelector('${panel}').matches(':modal')`), false, 'A replica transition releases the modal');

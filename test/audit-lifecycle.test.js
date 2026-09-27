@@ -55,7 +55,7 @@ test('A11-002 signal ownership precedes the first controller tick and cancels pa
 
 test('paired signal ownership reaches a child still executing its first tick and restores before manager close', async t => {
   const config = configuration(t), original = Engine.prototype.tick;
-  config.pairing = {...config.pairing, vip:{}};
+  config.pair = {...config.pair, vip:{}};
   let restored = 0, managerClosed = false, hooks;
   t.mock.method(Engine.prototype,'tick',function(...args) {
     const close = this.executor.close.bind(this.executor);
@@ -65,12 +65,12 @@ test('paired signal ownership reaches a child still executing its first tick and
   await assert.rejects(startPaired({ config, startRuntime: start, prepareVipPolicy: async () => {}, validateBroker: async () => {},
     managerFactory: options => { hooks=options.hooks; return {
       init: async()=>{}, start:()=>hooks.startPrimary({dbPath:config.dbPath}), canControl:()=>!managerClosed,
-      status:()=>({role:'primary'}), prepareShutdown:()=>{}, close:async()=>{managerClosed=true;},
+      status:()=>({role:'master'}), prepareShutdown:()=>{}, close:async()=>{managerClosed=true;},
     }; } }), /shutting down/);
   assert.equal(restored,1); assert.equal(managerClosed,true);
 });
 
 test('replica signal ownership precedes publication lookup and aborts startup before opening HTTP', async t => {
-  const config = {...configuration(t),role:'replica'};
+  const config = {...configuration(t),role:'slave'};
   await assert.rejects(startReplica({config,readPublication:async()=>{process.emit('SIGTERM');return null;}}),/shutting down/);
 });

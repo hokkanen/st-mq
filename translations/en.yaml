@@ -3,7 +3,15 @@ configuration:
     name: Home controller
     description: >-
       Start with simulated input and shadow mode. Home Assistant ingress grants
-      admin access through your HA login. Leave web_token and web_family_token
+      admin access through your HA login. topology selects standalone, mirror or
+      pair. Standalone runs independently as master. Mirror uses
+      SSH to send snapshots from a master to a read-only slave; roles are fixed
+      by mirror.role. Pair uses the peer connection for synchronization and
+      manual handover. Both new pair computers start as slaves; manually promote
+      one to become the first master. Saved pair state determines later roles.
+      Neither mirror nor pair takes over automatically. Topology and mirror.role
+      configuration changes require a restart.
+      Leave web_token and web_family_token
       empty to keep direct port 1234 disabled, or set web_token to an admin
       password of at least 24 characters. Optionally set web_family_token to a
       different password of at least 24 characters for family access. Family can
@@ -101,3 +109,33 @@ configuration:
       are checked every 15 minutes. Source timestamps determine freshness.
       electricity_source_max_age_seconds limits holding an old power estimate;
       electricity_max_gap_seconds bounds integration across acquisition gaps.
+  mirror:
+    name: Database mirroring over SSH
+    description: >-
+      Used when controller.topology is mirror on both computers. The master
+      sends snapshots using sqlite3_rsync over SSH. Set mirror.role to master
+      on the sender and slave on the receiver. Configure ssh_host,
+      remote_directory and receiver_path there. ssh_config optionally selects
+      an absolute SSH configuration path. The slave displays received snapshots
+      without connecting to equipment and has no takeover workflow. Its
+      directory defaults to mirror inside the database directory. stale_seconds
+      marks old snapshots as stale. interval_seconds and timeout_seconds apply
+      to the master. Select standalone or pair in controller.topology to stop
+      SSH mirroring; there is no separate enable flag.
+  pair:
+    name: Paired computers with manual takeover
+    description: >-
+      Used when controller.topology is pair on both computers. Configure a shared
+      pair_id and private token, the other computer's fixed HTTP peer_url, and
+      the shared virtual IP settings. Peer messages and snapshots are encrypted.
+      Both computers need their own local MQTT broker and controller settings.
+      The master controls equipment; the slave keeps a read-only standby ready
+      for manual handover or promotion. It never takes over automatically.
+      Both new computers start as slaves. Manually promote one to initialize the
+      first master; saved pair state governs later roles across restarts. Pair
+      roles are not configuration settings. directory stores local pair state
+      and work, defaulting to pairing in
+      the data directory. snapshot_directory stores received snapshots,
+      defaulting to pair-snapshots in the database directory. stale_seconds
+      marks old snapshots as stale. Pair mode has its own synchronization and
+      uses its own snapshot settings. There is no separate enable flag.

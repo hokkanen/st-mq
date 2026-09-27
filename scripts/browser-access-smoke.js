@@ -22,10 +22,11 @@ try {
   await writeFile(configuration, '{}');
   const config = loadConfig({ STMQ_CONFIG: configuration, STMQ_DATA_DIR: directory,
     STMQ_INPUT: 'simulated', STMQ_PORT: '0', STMQ_API_TOKEN: admin, STMQ_FAMILY_API_TOKEN: family }, directory);
-  const pairing = { enabled: true, role: 'primary', canControl: true, busy: false,
-    peer: { reachable: true, role: 'replica', lastSeenAt: now }, vip: { owned: true, ready: true },
+  config.topology = 'pair'; // Synthetic pairContext below owns authority; no peer transport starts.
+  const pair = { role: 'master', canControl: true, busy: false,
+    peer: { reachable: true, role: 'slave', lastSeenAt: now }, vip: { owned: true, ready: true },
     recovery: { state: 'idle' }, actions: { 'check-recovery': true, recover: false, rejoin: false, handover: true, promote: false } };
-  app = await start({ config, clock: () => now, pairContext: { status: () => pairing,
+  app = await start({ config, clock: () => now, pairContext: { status: () => pair,
     canControl: () => true, recovering: () => false,
     requestAction: () => { throw new Error('The browser fixture must never dispatch pairing operations.'); } } });
   app.server.on('request', request => { if (request.method !== 'GET' && request.method !== 'HEAD') writes.push(request.url); });
