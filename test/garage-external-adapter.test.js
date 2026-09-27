@@ -323,7 +323,7 @@ test('external control serializes ordinary commands and never consumes a reused 
   g.advance(); g.result('rejected', { challenge: { value: oldChallenge, expiresAt: g.now() + 20_000 }, externalTemperature: { ...INTERNAL } }, { reason: 'busy' });
   assert.equal(g.adapter.externalTemperature().result.reason, 'busy');
   await assert.rejects(g.adapter.setExternalTemperature(g.sample()), /fresh device challenge/);
-  g.advance(); g.state();
+  g.advance(4000); g.state();
   await g.adapter.setExternalTemperature(g.sample());
   assert.equal(g.published[1].command.sequence, g.published[0].command.sequence + 1);
   assert.notEqual(g.published[1].command.challenge, oldChallenge);
@@ -370,18 +370,124 @@ test('assumption fields cannot authorize an unverified pause and are absent from
   assert.equal(f.published.length, 0);
 });
 
-test('a transient busy rejection during active control allows the same unadmitted sample on a fresh challenge', async t => {
-  const f = fixture(t);
+test('a transient busy renewal waits before retrying the original sample with a fresh envelope', async t => {
+  const events = [], f = fixture(t, { onDiagnostic: row => events.push(row) });
   await f.adapter.setExternalTemperature(f.sample()); f.advance(); f.result('acknowledged');
   const original = { ...INTERNAL, phase: 'active', restorationPending: true, temperatureC: 21,
     measuredAt: BASE, expiresInMs: 89_000, acknowledged: true };
   const next = f.sample({ temperatureC: 22 });
   await f.adapter.setExternalTemperature(next);
   f.advance(); f.result('rejected', { externalTemperature: original }, { reason: 'busy' });
+  assert.equal(f.adapter.externalTemperature().available, false);
+  const retryAt = f.adapter.externalTemperature().retryAt;
+  assert.equal(retryAt, f.now() + 4000);
+  const owner = { ownerSession: 'owner', controlAllowed: false, manualControlAllowed: false };
+  f.advance(3999); f.state({ authority: owner, externalTemperature: original });
+  await assert.rejects(f.adapter.setExternalTemperature(next), /retrying the busy adapter/);
+  assert.equal(f.published.length, 2);
+  f.advance(1); const ready = f.state({ authority: owner, externalTemperature: original });
   assert.equal(f.adapter.externalTemperature().available, true);
   await f.adapter.setExternalTemperature(next);
   assert.equal(f.published.at(-1).command.measuredAt, next.measuredAt);
   assert.equal(f.published.at(-1).command.temperatureC, 22);
+  assert.equal(f.published.at(-1).command.requestedExpiryAt, next.requestedExpiryAt);
+  assert.equal(f.published.at(-1).command.challenge, ready.challenge.value, 'blocked retries do not consume challenges');
+  f.advance(); f.result('acknowledged');
+  assert.equal(f.adapter.externalTemperature().retryAt, null);
+  assert.deepEqual(events, [], 'brief contention with uninterrupted acknowledged coverage is silent');
+});
+
+test('busy without acknowledged coverage is diagnostic and explicit clear bypasses the numeric cooldown', async t => {
+  const events = [], f = fixture(t, { onDiagnostic: row => events.push(row) });
+  await f.adapter.setExternalTemperature(f.sample());
+  f.advance(); f.result('rejected', { externalTemperature: { ...INTERNAL } }, { reason: 'busy' });
+  assert.equal(events.length, 1);
+  assert.equal(events[0].reason, 'busy');
+  assert.equal(f.adapter.externalTemperature().available, false);
+  assert.equal(f.adapter.externalTemperature().clearAvailable, true);
+  await f.adapter.setExternalTemperature({ temperatureC: null });
+  f.advance(); f.result('acknowledged');
+  assert.equal(f.adapter.externalTemperature().retryAt, null);
+  assert.deepEqual(events.map(row => row.status), ['abnormal', 'recovered']);
+});
+
+test('restart retains an unresolved busy diagnostic until confirmed cleanup without replay or duplicate events', async t => {
+  const f = fixture(t);
+  await f.adapter.setExternalTemperature(f.sample());
+  f.advance(); f.result('rejected', { externalTemperature: { ...INTERNAL } }, { reason: 'busy' });
+  const persisted = f.adapter.snapshot(), events = [];
+  const resumed = fixture(t, { persisted, initialState: false, onDiagnostic: row => events.push(row) });
+  resumed.advance(f.now() - resumed.now()); resumed.state();
+  await resumed.adapter.safetyTick();
+  assert.deepEqual(events, [], 'a fresh internal state alone cannot clear the saved command fault');
+  assert.equal(resumed.published.length, 0, 'restart never replays a rejected sample');
+  assert.deepEqual(resumed.adapter.snapshot().externalDiagnostic, persisted.externalDiagnostic);
+  await resumed.adapter.setExternalTemperature({ temperatureC: null });
+  resumed.advance(); resumed.result('accepted');
+  assert.deepEqual(events, []);
+  resumed.advance(); resumed.result('acknowledged');
+  assert.deepEqual(events, [{ status: 'recovered', reason: 'external-control-cleared',
+    previousReason: 'busy', since: persisted.externalDiagnostic.since }]);
+});
+
+test('busy grace never conceals lost coverage, changed ownership, invalid evidence or transport failures', async t => {
+  const scenarios = [
+    { name: 'source expiry', requestedExpiryAt: BASE + 180_000, delay: 88_000, reason: 'external-feed-expired' },
+    { name: 'requested expiry', requestedExpiryAt: BASE + 5000, delay: 3000, reason: 'external-feed-expired' },
+    { name: 'device expiry', feed: { expiresInMs: 0 }, reason: 'external-feed-expired' },
+    { name: 'foreign owner', patch: { authority: { ownerSession: 'other' } }, reason: 'external-owner-changed' },
+    { name: 'different value', feed: { temperatureC: 20 }, reason: 'external-feed-mismatch' },
+    { name: 'different source time', feed: { measuredAt: BASE - 1 }, reason: 'external-feed-mismatch' },
+    { name: 'missing acknowledgement', feed: { acknowledged: false }, reason: 'busy' },
+    { name: 'disabled feed', feed: { enabled: false }, reason: 'busy' },
+    { name: 'rearm required', feed: { rearmRequired: true, reason: 'external-native-change' }, reason: 'external-native-change' },
+    { name: 'disconnected', disconnect: true, reason: 'mqtt-disconnected' },
+    { name: 'missing report', delay: 120_000, noReport: true, reason: 'missing-adapter-report' },
+  ];
+  for (const scenario of scenarios) await t.test(scenario.name, async t => {
+    const events = [], f = fixture(t, { onDiagnostic: row => events.push(row) });
+    await f.adapter.setExternalTemperature(f.sample(scenario.requestedExpiryAt ? { requestedExpiryAt: scenario.requestedExpiryAt } : {}));
+    f.advance(); const previous = f.result('acknowledged');
+    await f.adapter.setExternalTemperature(f.sample({ temperatureC: 22 }));
+    f.advance(); f.result('rejected', { externalTemperature: previous.externalTemperature }, { reason: 'busy' });
+    assert.deepEqual(events, []);
+    if (scenario.disconnect) f.adapter.setConnected(false);
+    else {
+      if (scenario.delay) f.advance(scenario.delay);
+      if (!scenario.noReport) f.state({ authority: previous.authority,
+        externalTemperature: { ...previous.externalTemperature, ...scenario.feed }, ...scenario.patch });
+      await f.adapter.safetyTick();
+    }
+    assert.equal(events.length, 1);
+    assert.equal(events[0].reason, scenario.reason);
+  });
+});
+
+test('busy budget spans a retry awaiting acknowledgement and resets only on confirmed success', async t => {
+  const events = [], f = fixture(t, { onDiagnostic: row => events.push(row) });
+  await f.adapter.setExternalTemperature(f.sample());
+  f.advance(); const previous = f.result('acknowledged');
+  const next = f.sample({ temperatureC: 22 });
+  await f.adapter.setExternalTemperature(next);
+  f.advance(); f.result('rejected', { externalTemperature: previous.externalTemperature }, { reason: 'busy' });
+  const since = f.now();
+  f.advance(4000); f.state({ authority: previous.authority, externalTemperature: previous.externalTemperature });
+  await f.adapter.setExternalTemperature(next);
+  f.advance(); f.result('accepted');
+  assert.deepEqual(events, [], 'acceptance waits for ACK without claiming recovery or a new fault');
+  f.advance(9999); f.result('accepted');
+  assert.deepEqual(events, []);
+  f.advance(1); f.result('accepted');
+  assert.deepEqual(events, [{ status: 'abnormal', reason: 'busy', since }]);
+  await f.adapter.safetyTick();
+  assert.equal(events.length, 1);
+  f.advance(); const confirmed = f.result('acknowledged');
+  assert.deepEqual(events.map(row => row.status), ['abnormal', 'recovered']);
+  assert.equal(events[1].since, since);
+  await f.adapter.setExternalTemperature(f.sample());
+  f.advance(); f.result('rejected', { externalTemperature: confirmed.externalTemperature }, { reason: 'busy' });
+  assert.equal(f.adapter.externalTemperature().retryAt, f.now() + 4000, 'a successful ACK resets retry backoff');
+  assert.equal(events.length, 2);
 });
 
 test('native17 is checked at numeric admission without consuming a failed attempt or clearing its existing lease', async t => {
