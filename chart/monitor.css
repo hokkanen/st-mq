@@ -938,7 +938,19 @@ details details { margin-inline-start: 24px; }
 .recording-table thead th { color: var(--muted); white-space: nowrap; }
 .recording-table th small, .recording-table td small { display: block; color: var(--muted); font-size: 10px; margin-top: 3px; font-weight: 400; }
 .recording-table .recording-group th { color: var(--accent); font-weight: 550; padding-top: 18px; }
+.energy-check { display: grid; grid-template-columns: minmax(100px, 1fr) minmax(0, 4fr); gap: 12px 24px; padding: 18px 0; border-top: 1px solid var(--border); font-size: 12px; line-height: 1.6; }
+.energy-check h3 { margin: 0; font-size: 13px; font-weight: 550; }
+.energy-check-source { margin: 3px 0 0; color: var(--muted); font-size: 11px; }
+.energy-check-body { min-width: 0; overflow-wrap: anywhere; }
+.energy-check-result { margin: 0 0 6px; font-weight: 550; font-size: 13px; }
+.energy-check-context { margin: 3px 0; color: var(--muted); font-variant-numeric: tabular-nums; }
+.energy-check-notice { margin: 10px 0 4px; padding-left: 10px; border-left: 2px solid var(--border); }
+details.energy-check-details { margin: 8px 0 0; border: 0; font-size: 12px; line-height: 1.6; }
+.energy-check-details > summary { padding: 6px 0; font-size: 12px; }
+.energy-check-details > p { margin: 6px 0; color: var(--muted); max-width: 75ch; overflow-wrap: anywhere; }
+#energy-audit-content > .energy-check-details { padding-top: 8px; border-top: 1px solid var(--border); }
 @media(max-width: 640px) {
+  .energy-check { grid-template-columns: minmax(0, 1fr); gap: 8px; }
   details details { margin-inline-start: 16px; }
   .recording-table { min-width: 720px; }
   .recording-metrics { grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; }

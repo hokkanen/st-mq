@@ -284,13 +284,30 @@ records, property counters and supported CSV imports have separate provenance. D
 timestamp/value pairs are not copied. Source timestamps, resets, out-of-order
 counters and availability are retained.
 
-The existing **Meter accuracy checks** panel shows the latest property-meter
-comparison, a **Charger 1** session summary, and a **Charger 2** session summary.
-There is no session list. Each charger row reports compared, excluded and recorded
-session counts; mean estimated/reference kWh per compared session; and the
-energy-weighted difference `100 × (sum estimate − sum reference) / sum reference`.
-Incomplete sessions and zero references are excluded, with no invented zero-percent
-accuracy. Property cumulative readings remain available in history.
+The **Recorded energy checks** panel separates meter availability from comparison
+results. Property always has a row: it reports no readings, waiting for a second
+reading, a decreased or out-of-order counter, incomplete or conflicting energy
+coverage, or a completed comparison. The latest cumulative reading retains its
+full useful precision and source time; receipt time and coverage are in **Meter
+readings and coverage**. A previously successful comparison remains visible with
+its own dates when the latest reading cannot be compared. Reading counts and
+comparisons belong to the latest reading's source and physical meter; another
+meter's history cannot supply a baseline or a successful result.
+
+**Charger 1** and **Charger 2** report the direction and percentage of the
+difference, the total estimated and metered kWh, and how many recorded completed
+sessions contributed. The aggregation includes all recorded completed sessions;
+its percentage is `100 × (sum estimate − sum reference) / sum reference`. Totals
+and sample counts expose small amounts of evidence without misleading per-session
+averages. Empty chargers show one empty state. Incomplete sessions and zero
+references are excluded; **excluded · details** explains the reasons and that
+reason counts may overlap. Excluded sessions remain recorded. No session list or
+new time-series storage is introduced.
+
+**How comparisons work** contains the shared method, time zone and read-only
+scope. Disclosure state and keyboard focus survive refreshes; a failed refresh
+keeps the last displayed results with an explicit notice. Property cumulative
+readings remain available in history.
 
 The **Charging session checks** view compares both chargers' final reference kWh
 as separate points at the session end, directly from existing session records.
@@ -953,7 +970,7 @@ recording changes against the last saved value, and describes the shared rolling
 storage objective. An average recording interval is not a fixed poll schedule.
 
 The **Other recorded data** fold appears immediately after **Adaptive measurements**,
-followed by **Meter accuracy checks** and **Export database**. It
+followed by **Recorded energy checks** and **Export database**. It
 describes the remaining datasets using field lists, counts, available dates and
 the way each dataset is updated. Groups cover:
 

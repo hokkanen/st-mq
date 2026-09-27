@@ -1024,12 +1024,20 @@ for (const [id, path, filename] of [
 $('recording-overview-details').addEventListener('toggle',()=>void refreshRecordingOverview());
 $('recording-overview-refresh').addEventListener('click',()=>void refreshRecordingOverview({force:true}));
 setInterval(refreshRecordingOverview,60_000);
-let auditFetchedAt = 0, auditBusy = false;
+let auditFetchedAt = 0, auditBusy = false, auditLoaded = false;
 async function refreshAudits() {
   if (!$('recording-details').open || !$('energy-audit-details').open || auditBusy || Date.now()-auditFetchedAt<60_000) return;
   auditBusy = true;
-  try { renderEnergyAudits(await api('/api/energy-audits'),$('energy-audit-content')); auditFetchedAt=Date.now(); }
-  catch (error) { $('energy-audit-content').textContent=error.message; }
+  try {
+    renderEnergyAudits(await api('/api/energy-audits'),$('energy-audit-content'));
+    auditFetchedAt=Date.now();auditLoaded=true;$('energy-audit-message').hidden=true;
+  }
+  catch {
+    $('energy-audit-message').hidden=false;
+    $('energy-audit-message').textContent=auditLoaded
+      ? 'Could not refresh the checks. The last successful results are still shown.'
+      : 'Recorded energy checks could not be loaded. They will retry while this section is open.';
+  }
   finally { auditBusy=false; }
 }
 $('recording-details').addEventListener('toggle',()=>{

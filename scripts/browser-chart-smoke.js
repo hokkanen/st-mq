@@ -49,8 +49,8 @@ function seedRecordingFixture(app) {
   // Current-format recovered observations need not have a live recorder checkpoint.
   app.store.observation({source:'mqtt-equipment',device:'private-recovered-probe',signal:'workshop_pressure',
     value:2,unit:'bar',sourceTime:now,receivedAt:now,quality:[],raw:{recorder:{policy:'adaptive-value'}}});
-  for(let i=0;i<2;i++) app.store.observation({source:'mqtt-equipment',device:'private-circulation',signal:'dhwr_active',
-    value:1,unit:'state',sourceTime:now-i*1000,receivedAt:now-i*1000,quality:[],raw:{basis:'measured-power'}});
+  for(let i=0;i<2;i++) app.engine.recorder.record({source:'mqtt-equipment',device:'private-circulation',signal:'dhwr_active',
+    value:i,unit:'state',sourceTime:now-(1-i)*1000,receivedAt:now-(1-i)*1000,quality:[],raw:{basis:'measured-power',timeBasis:'mqtt-received'}});
   app.store.event('garage-external-temperature-diagnostic',{status:'abnormal',reason:'synthetic-report-gap'},now);
   app.engine.latestStatus.recording=app.engine.recorder.status(now);
 }
@@ -294,7 +294,7 @@ try {
     const key=`floor_${group}_${output}_active`;
     assert.match(await evaluate(`document.querySelector('[data-dataset-id="${key}"]').textContent`),/Every change/);
   }
-  assert.match(await evaluate("document.querySelector('[data-dataset-id=dhwr_active]').textContent"),/2 records.*Every report/);
+  assert.match(await evaluate("document.querySelector('[data-dataset-id=dhwr_active]').textContent"),/2 records.*Every change/);
   assert.match(await evaluate("document.querySelector('[data-dataset-id=garage_native_defrost]').textContent"),/Garage defrost/);
   assert.match(await evaluate("document.querySelector('[data-dataset-id=events-garage-feed]').textContent"),/garage-external-temperature-diagnostic/);
   assert.match(await evaluate("document.querySelector('[data-dataset-id=adaptive-observations]').textContent"),/workshop_pressure.*bar.*Adaptive measurement/);
@@ -340,27 +340,138 @@ try {
   writeFileSync('var/home-energy-recording-inventory.png',Buffer.from(inventoryShot.data,'base64'));
   await evaluate("window.fetch=window.recordingFixture.fetch; document.getElementById('recording-overview-details').open=false; true");
   await evaluate("document.getElementById('energy-audit-details').open=true; true");
-  await until("document.getElementById('energy-audit-content').textContent.includes('never change history')");
-  mkdirSync('var',{recursive:true});
+  await until("document.querySelectorAll('#energy-audit-content .energy-check').length===3");
+  assert.equal(await evaluate("document.querySelector('#energy-audit-details > summary').textContent.trim()"),'Recorded energy checks');
+  assert.match(await evaluate("document.getElementById('energy-audit-content').textContent"),/Compares recorded energy with electricity-meter readings\./);
+  const energyCheck = signal => `#energy-audit-content .energy-check[data-check-key="${signal}"]`;
+  const propertyCheck = energyCheck('property_import_energy_counter');
+  const charger1Check = energyCheck('ev1_session_energy_check');
+  const charger2Check = energyCheck('shelly_session_energy_check');
+  const checkText = selector => evaluate(`document.querySelector(${JSON.stringify(selector)}).textContent`);
+  const energyKey = value => command('input.performActions',{context,actions:[{type:'key',id:'energy-check-keyboard',
+    actions:[{type:'keyDown',value},{type:'keyUp',value}]}]});
+  const checkEnergyLayout = async label => {
+    assert.equal(await evaluate('document.documentElement.scrollWidth<=innerWidth'),true,`${label}: checks fit the page`);
+    assert.equal(await evaluate(`Array.from(document.querySelectorAll('#energy-audit-content .energy-check, #energy-audit-content .energy-check-details')).every(node=>{
+      const box=node.getBoundingClientRect();
+      return box.left>=0 && box.right<=innerWidth && node.scrollWidth<=node.clientWidth+1;
+    })`),true,`${label}: device rows and expanded explanations need no horizontal scrolling`);
+  };
   for(const theme of ['dark','light']) {
     if(await evaluate('document.documentElement.dataset.theme')!==theme)
       await evaluate("document.getElementById('theme-toggle').click(); true");
-    const checks=JSON.parse(await evaluate(`JSON.stringify([...document.querySelectorAll('#energy-audit-content tr')].map(row=>({
-      title:row.querySelector('th').firstChild.textContent,subtitle:row.querySelector('th small').textContent,text:row.textContent})))`));
-    assert.deepEqual(checks.map(row=>row.title),['Property','Charger 1','Charger 2'],`${theme}: one common meter-check table`);
-    assert.equal(checks[0].subtitle,'Cumulative import meter');
-    assert(checks.slice(1).every(row=>row.subtitle==='Completed-session averages'));
-    assert.match(checks[1].text,/-7% energy-weighted difference/);
-    assert.match(checks[1].text,/2 compared · 0 excluded · 2 recorded sessions/);
-    assert.match(checks[2].text,/20% energy-weighted difference/);
-    assert.match(checks[2].text,/1 compared · 1 excluded · 2 recorded sessions/);
-    assert.match(checks[2].text,/Recorded power estimate minus Charger 2 electricity meter/);
-    assert(!checks.slice(1).some(row=>row.text.includes('Lifetime energy meter')));
-    await evaluate("document.getElementById('energy-audit-details').scrollIntoView({block:'start'}); true");
-    const shot=await command('browsingContext.captureScreenshot',{context,origin:'viewport'});
-    writeFileSync(`var/home-energy-session-checks-${theme}.png`,Buffer.from(shot.data,'base64'));
+    const checks=await evaluate(`Array.from(document.querySelectorAll('#energy-audit-content .energy-check'),row=>({
+      title:row.querySelector('h3').textContent,subtitle:row.querySelector('.energy-check-source').textContent,
+      result:row.querySelector('.energy-check-result').textContent,text:row.textContent}))`);
+    assert.deepEqual(checks.map(row=>row.title),['Property','Charger 1','Charger 2'],`${theme}: device checks share a clear row layout`);
+    assert.equal(checks[0].subtitle,'Import meter');
+    assert.equal(checks[0].result,'Waiting for a second meter reading');
+    assert(checks.slice(1).every(row=>row.subtitle==='Completed sessions'));
+    assert.equal(checks[1].result,'Recorded energy is 7.0% lower than the meter');
+    assert.match(checks[1].text,/93(?:\.0+)? kWh.*100(?:\.0+)? kWh/);
+    assert.equal(checks[2].result,'Recorded energy is 20.0% higher than the meter');
+    assert(!checks.slice(1).some(row=>/averages|per session|Lifetime energy meter/.test(row.text)),
+      'Session results show weighted totals without per-session averages or lifetime counters');
+    for(const width of [1440,390]) {
+      await command('browsingContext.setViewport',{context,viewport:{width,height:width===390?844:1100},devicePixelRatio:1});
+      await evaluate("document.getElementById('energy-audit-details').scrollIntoView({block:'start'}); true");
+      await checkEnergyLayout(`${theme}/${width}`);
+      const shot=await command('browsingContext.captureScreenshot',{context,origin:'viewport'});
+      writeFileSync(`var/home-energy-checks-${theme}-${width}.png`,Buffer.from(shot.data,'base64'));
+    }
   }
-  await evaluate("document.getElementById('theme-toggle').click(); true");
+  // Exercise actual refresh rendering with controlled API responses. The brief
+  // clock offset bypasses only the audit refresh cache; no real data is read.
+  await evaluate(`(async()=>{
+    const fixture=window.energyCheckFixture={fetch:window.fetch.bind(window),now:Date.now,offset:0,requests:0};
+    fixture.original=await fixture.fetch('/api/energy-audits').then(response=>response.json());
+    fixture.rows=structuredClone(fixture.original);
+    window.fetch=(...args)=>{
+      if(!String(args[0]).includes('/api/energy-audits'))return fixture.fetch(...args);
+      fixture.requests++;
+      if(fixture.fail){fixture.fail=false;return Promise.reject(new Error('Synthetic energy-check failure'));}
+      return Promise.resolve(new Response(JSON.stringify(fixture.rows),{status:200,headers:{'content-type':'application/json'}}));
+    };
+    return true;
+  })()`);
+  const refreshEnergyChecks = async rows => {
+    if(rows) await evaluate(`window.energyCheckFixture.rows=${JSON.stringify(rows)}; true`);
+    const previous=await evaluate('window.energyCheckFixture.requests');
+    await evaluate(`(()=>{
+      const fixture=window.energyCheckFixture;fixture.offset+=61000;
+      Date.now=()=>fixture.now()+fixture.offset;
+      document.getElementById('energy-audit-details').dispatchEvent(new Event('toggle'));
+      return true;
+    })()`);
+    await until(`window.energyCheckFixture.requests>${previous}`);
+    await evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve(true))))');
+    await evaluate('Date.now=window.energyCheckFixture.now; true');
+  };
+  await evaluate(`document.querySelector(${JSON.stringify(charger1Check+' .energy-check-details > summary')}).focus(); true`);
+  await energyKey('\uE007');
+  assert.equal(await evaluate(`document.querySelector(${JSON.stringify(charger1Check+' .energy-check-details')}).open`),true,
+    'Session comparison details open with Enter');
+  assert.equal(await evaluate(`document.querySelector(${JSON.stringify(charger2Check+' .energy-check-details')}).open`),false,
+    'Other device details remain folded');
+  await refreshEnergyChecks();
+  assert.equal(await evaluate(`document.querySelector(${JSON.stringify(charger1Check+' .energy-check-details')}).open`),true,
+    'Audit refresh preserves the expanded device');
+  assert.equal(await evaluate('document.activeElement.closest(".energy-check")?.dataset.checkKey'),'ev1_session_energy_check',
+    'Audit refresh preserves keyboard focus on the device disclosure');
+  await evaluate("window.energyCheckFixture.previous=document.getElementById('energy-audit-content').innerHTML; window.energyCheckFixture.fail=true; true");
+  await refreshEnergyChecks();
+  assert.equal(await evaluate("document.getElementById('energy-audit-content').innerHTML===window.energyCheckFixture.previous"),true,
+    'Failed refresh preserves the full comparison and expanded detail');
+  assert.match(await checkText('#energy-audit-message'),/last successful results are still shown/);
+  assert.equal(await evaluate('document.activeElement.closest(".energy-check")?.dataset.checkKey'),'ev1_session_energy_check',
+    'Failed refresh preserves the focused disclosure');
+  await energyKey('\uE007');
+  assert.equal(await evaluate(`document.querySelector(${JSON.stringify(charger1Check+' .energy-check-details')}).open`),false,
+    'The focused disclosure still closes with Enter after refresh');
+  const gapRows=await evaluate('structuredClone(window.energyCheckFixture.original)');
+  gapRows[0].summary={status:'incomplete-coverage',readingCount:3,
+    latestReading:{valueKwh:110,sourceTime:now,receivedAt:now+1000},
+    previousReading:{valueKwh:105,sourceTime:now-3600000,receivedAt:now-3599000},
+    coverage:{start:now-3600000,end:now,coveredMs:1800000,durationMs:3600000,conflictingMs:0},comparison:null,
+    lastSuccessfulComparison:{start:now-7200000,end:now-3600000,estimatedKwh:4.5,meteredKwh:5,
+      differenceKwh:-.5,differencePercent:-10,edgeEstimated:false,includesOpenInterval:false,basis:'recorded-energy'}};
+  gapRows[1].summary={basis:'electricity-meter',recordedSessions:14,comparedSessions:2,excludedSessions:12,
+    exclusionReasons:{'incomplete-coverage':12,'zero-reference':6},estimatedKwh:.24002,referenceKwh:.25,
+    differenceKwh:-.00998,differencePercent:-3.992,start:now-7200000,end:now-3600000,lastSessionEnd:now};
+  gapRows[2].summary={basis:'electricity-meter',recordedSessions:0,comparedSessions:0,excludedSessions:0,
+    exclusionReasons:{},estimatedKwh:0,referenceKwh:0,differenceKwh:null,differencePercent:null,
+    start:null,end:null,lastSessionEnd:null};
+  await refreshEnergyChecks(gapRows);
+  assert.match(await checkText(propertyCheck),/10\.0% lower/,'An incomplete latest period retains the last successful result');
+  assert.match(await checkText(propertyCheck),/Last successful comparison:/);
+  assert.equal(await checkText(propertyCheck+' .energy-check-notice'),'Latest reading: Recording does not cover the whole meter period.');
+  assert.match(await checkText(propertyCheck),/Recording covers 30 min of 1 h/,'Property diagnostics identify the missing coverage');
+  assert.equal(await checkText(charger1Check+' .energy-check-result'),'Recorded energy is 4.0% lower than the meter');
+  assert.match(await checkText(charger1Check),/0\.25(?:0)? kWh/,'Tiny comparison samples disclose the metered total');
+  assert.match(await checkText(charger1Check),/Based on 2 of 14 completed sessions/);
+  assert.match(await checkText(charger1Check),/Incomplete recording: 12 sessions/);
+  assert.match(await checkText(charger1Check),/Meter reference is zero: 6 sessions/);
+  assert.match(await checkText(charger1Check),/Reason counts can overlap/,'Overlapping reasons cannot be mistaken for additional excluded sessions');
+  assert.equal(await checkText(charger2Check+' .energy-check-result'),'No completed sessions recorded');
+  assert(!/0 compared|0 excluded|0 recorded sessions/.test(await checkText(charger2Check)),
+    'An empty charger uses a useful empty state instead of zero-valued statistics');
+  const methodCheck='#energy-audit-content details[data-check-key="method"]';
+  assert.equal(await checkText(methodCheck+' > summary'),'How comparisons work');
+  assert.match(await checkText(methodCheck),/do not change recorded history, calibrate estimates, train the house model or adjust recording thresholds/);
+  await evaluate("document.querySelectorAll('#energy-audit-content .energy-check-details').forEach(node=>node.open=true); true");
+  for(const theme of ['dark','light']) for(const width of [390,1440]) {
+    if(await evaluate('document.documentElement.dataset.theme')!==theme)
+      await evaluate("document.getElementById('theme-toggle').click(); true");
+    await command('browsingContext.setViewport',{context,viewport:{width,height:width===390?844:1100},devicePixelRatio:1});
+    await evaluate("document.getElementById('energy-audit-details').scrollIntoView({block:'start'}); true");
+    await checkEnergyLayout(`expanded ${theme}/${width}`);
+    const shot=await command('browsingContext.captureScreenshot',{context,origin:'viewport'});
+    writeFileSync(`var/home-energy-checks-details-${theme}-${width}.png`,Buffer.from(shot.data,'base64'));
+  }
+  await refreshEnergyChecks(await evaluate('window.energyCheckFixture.original'));
+  await evaluate("window.fetch=window.energyCheckFixture.fetch; Date.now=window.energyCheckFixture.now; delete window.energyCheckFixture; document.querySelectorAll('#energy-audit-content .energy-check-details').forEach(node=>node.open=false); true");
+  if(await evaluate('document.documentElement.dataset.theme')!=='dark') await evaluate("document.getElementById('theme-toggle').click(); true");
+  await command('browsingContext.setViewport',{context,viewport:{width:1440,height:1100},devicePixelRatio:1});
   await evaluate("document.getElementById('recording-details').scrollIntoView(); true");
   mkdirSync('var',{recursive:true});
   const recordingShot=await command('browsingContext.captureScreenshot',{context,origin:'viewport'});
@@ -986,11 +1097,11 @@ try {
       'pointer-gestures-and-keyboard', 'date-and-view-request-races', 'tooltips', 'charger-fills', 'coefficient-replay', 'activity-rows'] }
     : recordingOnly?{result:'recording-browser-smoke-passed',browserTimeZone,
     checked:['actual-adaptive-streams-only','opaque-duplicate-stream-identities','unit-distinction','all-four-floor-outputs',
-      'every-report-circulation-feedback','observed-defrost','abnormal-feed-events','event-type-breakdown','saved-history-without-checkpoint','durable-open-energy','lazy-read-only-inventory',
-      'counts-and-dates','persistent-charging-choices-and-separate-session-edits','keyboard-and-refresh-preservation','dark-and-light','390-and-1440-layouts','physical-table-accounting']}:{ result: 'chart-browser-smoke-passed', browserTimeZone, timings,
+      'every-change-circulation-feedback','observed-defrost','abnormal-feed-events','event-type-breakdown','saved-history-without-checkpoint','durable-open-energy','lazy-read-only-inventory',
+      'counts-and-dates','persistent-charging-choices-and-separate-session-edits','keyboard-and-refresh-preservation','energy-check-device-rows','energy-check-focus-and-expansion-preservation','property-reading-gap-and-retained-result','tiny-session-sample-and-no-sessions','dark-and-light','390-and-1440-layouts','physical-table-accounting']}:{ result: 'chart-browser-smoke-passed', browserTimeZone, timings,
     electricityConnections: ['combined-source-overview-and-connection', 'charger2-native-phase-readings-and-total-energy',
       'source-scoped-charger2-errors', 'keyboard-expansion', 'refresh-preserves-expansion'],
-    chargingChecks:['charger2-visible-power-dark-and-light','charger2-visible-with-lower-loads-hidden-or-absent','charger2-no-invented-phases','exactly-two-charger-session-axes','property-latest-plus-charger-session-averages','session-counts-exclusions-and-energy-weighting'],
+    chargingChecks:['charger2-visible-power-dark-and-light','charger2-visible-with-lower-loads-hidden-or-absent','charger2-no-invented-phases','exactly-two-charger-session-axes','property-reading-status-and-retained-comparison','charger-session-totals-and-sample-size','session-counts-exclusions-and-energy-weighting'],
     checked: ['electricity-first-without-right-axis-duplicates', 'four-coefficients-from-read-only-replay', 'coefficient-visible-pixels-and-status', 'last-theme-restored-on-reload', 'theme-toggle', 'Finnish-today', 'single-old-day', 'immediate-end-date', 'immediate-date-range', 'one-day-window-stepping', 'rapid-range-stepping', 'calendar-boundary-stepping', 'compact-responsive-arrow-buttons', 'range-validation', 'shortcut-order-and-state', 'axis-and-legend-selection', 'property-and-charger-visible-pixels', 'asynchronous-provider-phase-power', 'historical-charger-assumed-rates', 'timing-evidence-shares-and-dates', 'heating-model-and-timing-selector-keyboard-touch', 'heating-saving-selection-refresh-reload-persistence', 'heating-model-positive-zero-negative-and-unavailable', 'timing-reconstructed-and-unavailable', 'timing-consistent-elapsed-time-coverage-and-standby-exclusion', 'timing-equal-closed-card-heights-and-independent-expansion', 'timing-stable-heading-and-fold-positions', 'timing-nested-fold-keyboard-touch-and-refresh', 'timing-dark-light-responsive-inline-explanations', 'grouped-history-catalogue', 'recording-frequencies', 'recording-inventory-lazy-fetch', 'recording-inventory-keyboard-mobile', 'recording-inventory-refresh-and-error-preservation', 'physical-storage-accounting', 'reconstructed-heat-pump-note', 'audit-only-diagnostics', 'price-defaults', 'date-races', 'tomorrow-only', 'desktop-mobile', 'Finnish-away-and-pause', 'independent-cancellation', 'draft-poll-preservation', 'DST-atomic-rejection', 'read-only-rates', 'home-model-settings-with-folded-equipment', 'equipment-grouped-readings-and-manual-controls', 'status-detail-escape-outside-dismissal-and-focus', 'status-detail-poll-preservation', 'status-detail-bounded-mobile-and-landscape', 'dynamic-equipment-rows-and-inline-controls', 'nested-learning-keyboard', 'closed-away-and-pause-deadlines', 'provider-sources-and-fallbacks', 'collapsed-MQTT-tests', 'MQTT-publish-acknowledgement-and-failure', 'MQTT-draft-preservation'] }, null, 2));
   await command('browser.close', {}); ownsBrowser=false;
 } finally {

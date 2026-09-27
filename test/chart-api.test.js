@@ -108,13 +108,16 @@ test('worker cache renews an unchanged periodic report within the same fifteen-s
   assert.notEqual(renewed.meta.cacheHit,true);
   assert.equal(renewed.meta.lastReadings.indoor_temperature.reportExpiresAt,now+age);
 });
-test('meter diagnostics preserve latest property check and show real charger session summaries without private identifiers',async t=>{
+test('recorded energy checks always include property availability and real charger summaries without private identifiers',async t=>{
   const {base,headers,store,now}=await fixture(t);
   assert.equal((await fetch(`${base}/api/energy-audits`)).status,401);
   const read=()=>fetch(`${base}/api/energy-audits`,{headers}).then(response=>response.json());
   const empty = await read();
-  assert.deepEqual(empty.map(row => row.source), ['easee', 'shelly-evse']);
-  assert(empty.every(row => row.summary.recordedSessions === 0 && row.summary.differencePercent === null));
+  assert.equal(empty[0].kind,'property-meter-summary');
+  assert.equal(empty[0].summary.status,'no-readings');
+  assert.equal(empty[0].summary.latestReading,null);
+  assert.deepEqual(empty.slice(1).map(row => row.source), ['easee', 'shelly-evse']);
+  assert(empty.slice(1).every(row => row.summary.recordedSessions === 0 && row.summary.differencePercent === null));
   for(const [at,value] of [[now-60000,10],[now,10.03]])store.energyAudit({source:'easee',device:'invented-property',
     signal:'property_import_energy_counter',sourceTime:at,receivedAt:at,value});
   for(let phase=1;phase<=3;phase++)store.observation({source:'easee',device:'invented-property',
@@ -131,10 +134,13 @@ test('meter diagnostics preserve latest property check and show real charger ses
   const response=await fetch(`${base}/api/energy-audits`,{headers});assert.equal(response.status,200);
   const rows=await response.json();
   assert.deepEqual(rows.map(row=>row.signal),['property_import_energy_counter','ev1_session_energy_check','shelly_session_energy_check']);
-  assert.equal(rows[0].sourceTime,now);
-  assert.equal(rows[0].comparison.start,now-60000);
-  assert.equal(rows[0].comparison.end,now);
-  assert.ok(Math.abs(rows[0].comparison.differenceKwh)<1e-12);
+  assert.equal(rows[0].summary.status,'compared');
+  assert.equal(rows[0].summary.readingCount,2);
+  assert.deepEqual(rows[0].summary.latestReading,{valueKwh:10.03,sourceTime:now,receivedAt:now});
+  assert.equal(rows[0].summary.comparison.start,now-60000);
+  assert.equal(rows[0].summary.comparison.end,now);
+  assert.ok(Math.abs(rows[0].summary.comparison.differenceKwh)<1e-12);
+  assert.deepEqual(rows[0].summary.lastSuccessfulComparison,rows[0].summary.comparison);
   assert.equal(rows[1].summary.comparedSessions,1);
   assert.equal(rows[1].summary.referenceKwh,1);
   assert(Math.abs(rows[1].summary.differencePercent-10)<1e-10);

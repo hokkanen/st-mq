@@ -1,6 +1,28 @@
 -Make README.md better and more descriptive of the app, especially the beginning of it
 -Implement support for local mqtt-based temperature receives (eg, from shelly or HASS through Meteorologisk Institute); just store last received temp values and time stamps (maybe in storage class, see below) when received (and accept if received within 1h)
 
+Completed 2026-09-27 — Clear recorded energy checks
+- Replace Meter accuracy checks with Recorded energy checks in Recording details.
+  Lead each device row with a plain-language result, total recorded/metered energy
+  and the amount of supporting evidence. Move exclusions and the shared method
+  into native disclosures; preserve open state, keyboard focus and results when
+  refreshing. Keep the same section order and responsive theme conventions.
+- Give Property explicit meter availability, counter reset/order and coverage
+  states. Show source and receipt times separately, coverage duration and the
+  latest successful comparison even when the newest period cannot be compared.
+  Keep all baseline/history selection within one physical meter and source.
+- Remove the ambiguous null-comparison API presentation and per-session means.
+  Retain current acquisition, stored counter/session provenance, exact coverage,
+  zero-reference handling and diagnostic-only behavior. No compatibility aliases,
+  schema changes, migrations, model changes or installation operations are added.
+- Bound fallback history work to one counter scan and shared energy scans; retain
+  the original baseline when a changed value arrives at the same meter timestamp.
+- Validation: all 3,680 offline tests and production build pass. Synthetic Firefox
+  checks pass mobile/desktop layouts in both themes, keyboard disclosure,
+  successful/failed refresh preservation, gap diagnostics, small samples and empty
+  states. Screenshots reviewed. A 5,000-counter fallback takes 42 ms without energy
+  and 176 ms with partial energy in the synthetic check. No household access.
+
 Completed 2026-09-27 — Stable chart widths and legend disclosure
 - Keep indicator strips aligned with both plot endpoints when a scrollbar
   appears or disappears. Derive padding from actual row bounds and observe

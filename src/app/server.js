@@ -7,6 +7,7 @@ import { getChartData } from './chart-data.js';
 import { simulatedOutlook } from './simulator.js';
 import { createChartService } from './chart-service.js';
 import { chargingSessionCheckSummaries } from './charging-session-checks.js';
+import { propertyEnergyCheckSummary } from './property-energy-checks.js';
 import { createDatabaseExport } from './database-export.js';
 import { familyRouteAllowed, familyActionAllowed, fireplaceAccess, FAMILY_FIREWOOD_REMOVAL_MS } from './web-permissions.js';
 
@@ -290,9 +291,7 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
           return;
         }
         if (req.method === 'GET' && url.pathname === '/api/energy-audits') {
-          const property = readerStore.energyAudits({ signal:'property_import_energy_counter', newestFirst:true, limit:1, now:engine.clock() })
-            .map(({signal,sourceTime,quality,comparison}) => ({signal,sourceTime,quality,comparison}));
-          return json(200, [...property, ...chargingSessionCheckSummaries(readerStore)]);
+          return json(200, [propertyEnergyCheckSummary(readerStore,{now:engine.clock()}), ...chargingSessionCheckSummaries(readerStore)]);
         }
         if (req.method === 'GET' && url.pathname === '/api/chart') {
           const now = engine.clock();

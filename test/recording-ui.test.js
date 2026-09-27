@@ -122,12 +122,62 @@ test('adaptive inventory contains only observed adaptive streams, including cust
   assert(!rows.some(row => row.signal === 'indoor_temperature'), 'never-observed indoor readings do not appear');
 });
 
-test('property meter comparison distinguishes durable ongoing energy from closed intervals', () => {
-  const comparison = { estimatedKwh: 1, meteredKwh: 1, differenceKwh: 0, differencePercent: 0,
-    start: 0, end: 60_000, edgeEstimated: true, includesOpenInterval: true };
-  const ongoing = energyAuditRow({ sourceTime: 60_000, comparison });
-  assert.match(ongoing.details[0], /interval edges prorated.*includes ongoing recorded interval/);
-  assert(!energyAuditRow({ sourceTime: 60_000, comparison: { ...comparison, includesOpenInterval: false } }).details[0].includes('ongoing'));
+const propertyCheck = summary => ({kind:'property-meter-summary',signal:'property_import_energy_counter',
+  summary:{status:'compared',readingCount:2,latestReading:{valueKwh:12345.678,sourceTime:60_000,receivedAt:61_000},
+    previousReading:{valueKwh:12344.678,sourceTime:0,receivedAt:1000},coverage:{start:0,end:60_000,coveredMs:60_000,durationMs:60_000},
+    comparison:null,lastSuccessfulComparison:null,...summary}});
+const meterComparison = {estimatedKwh:1,meteredKwh:1,differenceKwh:0,differencePercent:0,start:0,end:60_000,
+  edgeEstimated:true,includesOpenInterval:true};
+
+test('property comparison explains boundaries, ongoing energy and source versus receipt times', () => {
+  const ongoing=energyAuditRow(propertyCheck({comparison:meterComparison}));
+  assert.match(ongoing.details.join(' '),/boundaries is prorated.*ongoing recorded interval/);
+  assert.match(ongoing.context.join(' '),/Latest meter reading: 12,345.678 kWh/,'cumulative reading is not rounded to three significant digits');
+  assert.match(ongoing.details.join(' '),/Latest reading received:.*Meter times describe the source reading/);
+  assert.equal(ongoing.value,'Recorded energy matches the meter within 0.1%');
+  const closed=energyAuditRow(propertyCheck({comparison:{...meterComparison,includesOpenInterval:false}}));
+  assert(!closed.details.join(' ').includes('ongoing'));
+});
+
+test('property failures distinguish missing readings, reset, ordering and incomplete or conflicting coverage',()=>{
+  const cases={
+    'no-readings':'No property meter readings recorded',
+    'waiting-for-second-reading':'Waiting for a second meter reading',
+    'counter-reset':'Meter counter decreased; waiting for a new comparison period',
+    'out-of-order-counter':'Meter readings arrived out of order',
+    'incomplete-coverage':'Recording does not cover the whole meter period',
+    'conflicting-coverage':'Recorded energy has conflicting intervals',
+  };
+  for(const [status,message] of Object.entries(cases)) assert.equal(energyAuditRow(propertyCheck({status})).value,message);
+  const empty=energyAuditRow(propertyCheck({status:'no-readings',readingCount:0,latestReading:null,previousReading:null,coverage:null}));
+  assert.deepEqual(empty.context,[]);
+  assert.match(empty.details.join(' '),/Easee Equalizer.*Equipment/);
+});
+
+test('a previous property result is dated separately from the latest incomplete reading',()=>{
+  const display=energyAuditRow(propertyCheck({status:'incomplete-coverage',lastSuccessfulComparison:meterComparison,
+    coverage:{start:60_000,end:180_000,coveredMs:60_000,durationMs:120_000}}));
+  assert.equal(display.value,'Recorded energy matches the meter within 0.1%');
+  assert.match(display.context.join(' '),/Last successful comparison:/);
+  assert.equal(display.notice,'Latest reading: Recording does not cover the whole meter period.');
+  assert.match(display.details.join(' '),/Recording covers 1 min of 2 min/);
+});
+
+test('zero meter increments do not become zero-percent agreement',()=>{
+  const display=energyAuditRow(propertyCheck({comparison:{...meterComparison,meteredKwh:0,differencePercent:null}}));
+  assert.equal(display.value,'Meter recorded no consumption in this period');
+  assert.match(display.context[0],/1 kWh recorded · 0.000 kWh metered/);
+  assert.match(display.details.join(' '),/percentage cannot be calculated/);
+  assert(!display.value.includes('0%'));
+});
+
+test('small coverage gaps remain explicit instead of rounding up to complete coverage',()=>{
+  for(const gap of [500,3000]) {
+    const display=energyAuditRow(propertyCheck({status:'incomplete-coverage',
+      coverage:{start:0,end:3600000,coveredMs:3600000-gap,durationMs:3600000}}));
+    assert.equal(display.value,'Recording does not cover the whole meter period');
+    assert(display.details.includes(`Uncovered or unusable time: ${gap===500?'<1 s':'3 s'}.`));
+  }
 });
 
 test('two devices reporting the same measurement remain distinct without exposing private device identifiers', t => {

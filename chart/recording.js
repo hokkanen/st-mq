@@ -269,65 +269,145 @@ export function recordingOverviewRefresh({request,root,details,parent,message,bu
   return refresh;
 }
 
+const checkDate = value => Number.isFinite(value) ? new Intl.DateTimeFormat('en-GB', {
+  timeZone: 'Europe/Helsinki', dateStyle: 'medium', timeStyle: 'short',
+}).format(value) : 'Unknown';
+const checkEnergy = value => Number.isFinite(value) ? `${new Intl.NumberFormat('en-GB', {
+  minimumFractionDigits: value < 1 ? 3 : 0, maximumFractionDigits: 3,
+}).format(value)} kWh` : 'Unavailable';
+const checkPeriod = comparison => `${checkDate(comparison.start)} – ${checkDate(comparison.end)}`;
+const checkDuration = value => value > 0 && value < 1000 ? '<1 s' : durationText(value);
+const sessions = count => `${count} session${count === 1 ? '' : 's'}`;
+
+function energyDifference(percent) {
+  if (!Number.isFinite(percent)) return 'Meter recorded no consumption in this period';
+  if (Math.abs(percent) < 0.05) return 'Recorded energy matches the meter within 0.1%';
+  return `Recorded energy is ${Math.abs(percent).toFixed(1)}% ${percent < 0 ? 'lower' : 'higher'} than the meter`;
+}
+
+const exclusionLabels = {
+  'incomplete-coverage': 'Incomplete recording',
+  'missing-start': 'Charging start was not fully recorded',
+  'missing-end': 'Charging end could not be confirmed',
+  disconnected: 'Recording interrupted by a disconnect or restart',
+  stale: 'Charging data stopped updating',
+  'duplicate-suspected': 'Possible overlap with Charger 1 energy',
+  'assignment-uncertain': 'Charger assignment could not be confirmed',
+  'counter-reset': 'Session energy counter reset',
+  'out-of-order': 'Session order or boundaries conflict',
+  'missing-final-reference': 'Final meter reading was not confirmed',
+  'missing-estimate': 'Recorded energy total is unavailable',
+  'missing-reference': 'Meter reference is unavailable',
+  'zero-reference': 'Meter reference is zero',
+  'comparison-incomplete': 'Complete recording or final reference could not be confirmed',
+};
+const propertyCheckStates = {
+  'no-readings': 'No property meter readings recorded',
+  'waiting-for-second-reading': 'Waiting for a second meter reading',
+  'counter-reset': 'Meter counter decreased; waiting for a new comparison period',
+  'out-of-order-counter': 'Meter readings arrived out of order',
+  'incomplete-coverage': 'Recording does not cover the whole meter period',
+  'conflicting-coverage': 'Recorded energy has conflicting intervals',
+};
+
 export function energyAuditRow(item) {
-  const date = value => Number.isFinite(value) ? new Intl.DateTimeFormat('en-GB',{
-    timeZone:'Europe/Helsinki',dateStyle:'short',timeStyle:'short'}).format(value) : '—';
-  if (item.kind==='charging-session-summary') {
-    const s=item.summary ?? {}, second=item.source==='shelly-evse', count=s.comparedSessions ?? 0;
-    const reasonLabels={
-      'incomplete-coverage':'recorded energy does not cover the whole session',
-      'missing-start':'charging start was not fully recorded',
-      'missing-end':'charging end could not be confirmed',
-      'disconnected':'recording was interrupted by a disconnect or restart',
-      'stale':'charging data stopped updating',
-      'duplicate-suspected':'possible overlap with Charger 1 energy',
-      'assignment-uncertain':'charger assignment could not be confirmed',
-      'counter-reset':'session energy counter reset',
-      'out-of-order':'session order or boundaries conflict',
-      'missing-final-reference':'final physical meter reading was not confirmed',
-      'missing-estimate':'recorded energy total is unavailable',
-      'missing-reference':'Session-meter reference is unavailable',
-      'zero-reference':'Session-meter reference is zero',
-      'comparison-incomplete':'complete recording or final reference could not be confirmed',
+  const s = item.summary;
+  if (item.kind === 'charging-session-summary') {
+    const count = s.comparedSessions, excluded = s.excludedSessions, second = item.source === 'shelly-evse';
+    const reasons = Object.entries(exclusionLabels)
+      .filter(([key]) => Number.isSafeInteger(s.exclusionReasons?.[key]) && s.exclusionReasons[key] > 0)
+      .map(([key, label]) => `${label}: ${sessions(s.exclusionReasons[key])}.`);
+    return { key: item.signal ?? (second ? 'shelly_session_energy_check' : 'ev1_session_energy_check'),
+      title: second ? 'Charger 2' : 'Charger 1', subtitle: 'Completed sessions',
+      value: count > 0 ? energyDifference(s.differencePercent)
+        : s.recordedSessions > 0 ? 'No complete comparisons yet' : 'No completed sessions recorded',
+      context: count > 0 ? [
+        `${checkEnergy(s.estimatedKwh)} recorded · ${checkEnergy(s.referenceKwh)} metered`,
+        `Based on ${count} of ${s.recordedSessions} completed sessions.`,
+        `Compared sessions: ${checkPeriod(s)}`,
+      ] : s.recordedSessions > 0 ? [`All ${sessions(s.recordedSessions)} excluded from comparison.`] : [],
+      notice: null,
+      detailsLabel: excluded > 0 ? `${sessions(excluded)} excluded · details` : 'Comparison details',
+      details: s.recordedSessions > 0 ? [
+        ...reasons,
+        ...(reasons.length > 1 ? ['Reason counts can overlap: a session may have more than one issue.'] : []),
+        ...(excluded > 0 ? ['Excluded sessions remain in history and do not contribute to these totals.'] : []),
+        ...(Number.isFinite(s.lastSessionEnd) ? [`Latest completed session: ${checkDate(s.lastSessionEnd)}.${excluded > 0 ? ' This may be an excluded session.' : ''}`] : []),
+        'Includes all recorded completed sessions with full recording coverage and a positive final electricity-meter reference.',
+      ] : [],
     };
-    const reasons=Object.entries(reasonLabels).filter(([key])=>Number.isSafeInteger(s.exclusionReasons?.[key])&&s.exclusionReasons[key]>0)
-      .map(([key,label])=>`${s.exclusionReasons[key]} × ${label}`);
-    return { title:second?'Charger 2':'Charger 1', subtitle:'Completed-session averages',
-      when:Number.isFinite(s.lastSessionEnd)?`Last session: ${date(s.lastSessionEnd)}`:'No completed sessions recorded yet',
-      value:count>0?`${number(s.differencePercent)}% energy-weighted difference · ${number(s.differenceKwh/count)} kWh average difference`
-        :s.excludedSessions>0?'No sessions qualify for comparison yet.'
-          :'Session comparison pending: waiting for a completed session with full recording and a final reference.',
-      details:[...(count>0?[`${number(s.estimatedKwh/count)} kWh recorded / ${number(s.referenceKwh/count)} kWh metered per session`]:[]),
-        `${count} compared · ${s.excludedSessions ?? 0} excluded · ${s.recordedSessions ?? 0} recorded sessions`,
-        ...(reasons.length?[`Excluded because: ${reasons.join('; ')}.`,
-          'A session can have several reasons. Excluded sessions stay recorded and do not affect the averages.']:[]),
-        ...(count>0?[`Compared sessions: ${date(s.start)} – ${date(s.end)}`]:[]),
-        `Recorded power estimate minus Charger ${second?'2':'1'} electricity meter; excluded coverage is never extrapolated.`] };
   }
-  const c=item.comparison;
-  return {title:'Property',subtitle:'Cumulative import meter',when:`Meter reading: ${date(item.sourceTime)}`,
-    value:c?`${number(c.differenceKwh)} kWh difference · ${number(c.differencePercent)}% · estimated minus meter`
-      :'Comparison pending: two valid counters and matching energy coverage needed',
-    details:c?[`${number(c.estimatedKwh)} kWh estimated / ${number(c.meteredKwh)} kWh meter${c.edgeEstimated?' · interval edges prorated':''}${c.includesOpenInterval?' · includes ongoing recorded interval':''}`,
-      `Compared: ${date(c.start)} – ${date(c.end)}`]:[]};
+  if (item.kind !== 'property-meter-summary') throw new TypeError('Unknown recorded energy check');
+  const comparison = s.comparison ?? s.lastSuccessfulComparison;
+  const latest = s.latestReading, previous = s.previousReading;
+  const state = propertyCheckStates[s.status];
+  const coverage = s.coverage;
+  return { key: item.signal, title: 'Property', subtitle: 'Import meter',
+    value: comparison ? energyDifference(comparison.differencePercent) : state ?? 'Comparison unavailable',
+    context: [
+      ...(comparison ? [
+        `${checkEnergy(comparison.estimatedKwh)} recorded · ${checkEnergy(comparison.meteredKwh)} metered`,
+        `${s.comparison ? 'Compared period' : 'Last successful comparison'}: ${checkPeriod(comparison)}`,
+      ] : []),
+      ...(latest ? [`Latest meter reading: ${checkEnergy(latest.valueKwh)} · ${checkDate(latest.sourceTime)}`] : []),
+    ],
+    notice: comparison && !s.comparison ? `Latest reading: ${state ?? 'Comparison unavailable'}.` : null,
+    detailsLabel: 'Meter readings and coverage',
+    details: [
+      ...(latest ? [
+        `${s.readingCount} cumulative meter reading${s.readingCount === 1 ? '' : 's'} recorded.`,
+        `Latest reading received: ${checkDate(latest.receivedAt)}. Meter times describe the source reading; receiving the same reading again does not create a new counter.`,
+      ] : ['The property import counter is supplied by the Easee Equalizer. Check its connection under Equipment.']),
+      ...(previous ? [`Previous meter reading: ${checkEnergy(previous.valueKwh)} · ${checkDate(previous.sourceTime)}.`] : []),
+      ...(coverage ? [
+        `Latest meter period: ${checkPeriod(coverage)}.`,
+        `Recording covers ${checkDuration(coverage.coveredMs)} of ${checkDuration(coverage.durationMs)}.`,
+        ...(coverage.coveredMs < coverage.durationMs ? [`Uncovered or unusable time: ${checkDuration(coverage.durationMs - coverage.coveredMs)}.`] : []),
+      ] : []),
+      ...(s.status === 'incomplete-coverage' ? ['The missing part is not estimated. A comparison needs uninterrupted recording between the two meter readings.'] : []),
+      ...(s.status === 'conflicting-coverage' ? ['Overlapping or conflicting records prevent a reliable total for this period.'] : []),
+      ...(s.status === 'counter-reset' ? ['The decreased counter starts a new baseline; consumption across the reset cannot be compared.'] : []),
+      ...(s.status === 'out-of-order-counter' ? ['A reading with a later meter timestamp was already recorded. No consumption is calculated from this reversed period.'] : []),
+      ...(comparison?.edgeEstimated ? ['Energy at the comparison boundaries is prorated from recorded interval averages.'] : []),
+      ...(comparison?.includesOpenInterval ? ['The comparison includes an ongoing recorded interval saved to the database.'] : []),
+      ...(comparison && comparison.differencePercent === null ? ['A percentage cannot be calculated when the meter increment is zero.'] : []),
+    ],
+  };
 }
 
 export function renderEnergyAudits(rows, root) {
-  if(!root)return;
-  root.replaceChildren();
-  const note=document.createElement('p');note.className='muted';
-  note.textContent='Property shows its latest cumulative-meter check. Charger 1 and Charger 2 summarize completed sessions with matching recording coverage; percentages are weighted by reference energy. These checks never change history, calibrate estimates, train the house model or affect recording thresholds.';root.append(note);
-  if(!rows?.length) {const p=document.createElement('p');p.textContent='Waiting for fresh accumulated-kWh updates.';root.append(p);return;}
-  const table=document.createElement('table');table.className='recording-table';
-  for(const item of rows) {
-    const display=energyAuditRow(item);
-    const row=document.createElement('tr'),title=document.createElement('th');title.scope='row';
-    title.textContent=display.title;
-    const meter=document.createElement('small');meter.textContent=display.subtitle;title.append(meter);
-    const when=document.createElement('small');when.textContent=display.when;title.append(when);row.append(title);
-    const cell=document.createElement('td');cell.textContent=display.value;
-    for (const text of display.details) {const detail=document.createElement('small');detail.textContent=text;cell.append(detail);}
-    row.append(cell);table.append(row);
+  if (!root) return;
+  const expanded = new Set([...root.querySelectorAll('details[data-check-key][open]')].map(node => node.dataset.checkKey));
+  const focused = root.contains(document.activeElement) ? document.activeElement.closest('details[data-check-key]')?.dataset.checkKey : null;
+  const paragraph = (text, className) => {
+    const node = document.createElement('p'); node.textContent = text;
+    if (className) node.className = className;
+    return node;
+  };
+  const disclosure = (key, label, lines) => {
+    const details = document.createElement('details'), summary = document.createElement('summary');
+    details.className = 'energy-check-details'; details.dataset.checkKey = key; details.open = expanded.has(key);
+    summary.textContent = label; details.append(summary, ...lines.map(text => paragraph(text)));
+    return details;
+  };
+  const nodes = [paragraph('Compares recorded energy with electricity-meter readings.', 'muted')];
+  for (const item of rows) {
+    const display = energyAuditRow(item), article = document.createElement('article');
+    article.className = 'energy-check'; article.dataset.checkKey = display.key;
+    const identity = document.createElement('div'), title = document.createElement('h3');
+    title.textContent = display.title; identity.append(title, paragraph(display.subtitle, 'energy-check-source'));
+    const body = document.createElement('div'); body.className = 'energy-check-body';
+    body.append(paragraph(display.value, 'energy-check-result'), ...display.context.map(text => paragraph(text, 'energy-check-context')));
+    if (display.notice) body.append(paragraph(display.notice, 'energy-check-notice'));
+    if (display.details.length) body.append(disclosure(display.key, display.detailsLabel, display.details));
+    article.append(identity, body); nodes.push(article);
   }
-  const wrap=document.createElement('div');wrap.className='table-scroll';wrap.append(table);root.append(wrap);
+  nodes.push(disclosure('method', 'How comparisons work', [
+    'Recorded energy is estimated from power readings. Property compares that estimate with the increase between two cumulative import-meter readings. Chargers compare completed sessions with their final electricity-meter references.',
+    'The percentage is the difference between the recorded and metered totals, divided by the metered total. Larger sessions therefore contribute more. The number of sessions and energy checked show how much evidence supports the result.',
+    'Only matching periods with complete recording are compared. Gaps are never filled for these checks. All dates and times are Finnish time.',
+    'These checks are read-only. They do not change recorded history, calibrate estimates, train the house model or adjust recording thresholds.',
+  ]));
+  root.replaceChildren(...nodes);
+  if (focused) [...root.querySelectorAll('details[data-check-key]')].find(node => node.dataset.checkKey === focused)?.querySelector('summary')?.focus({ preventScroll: true });
 }

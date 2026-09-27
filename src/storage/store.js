@@ -197,44 +197,57 @@ export class Store {
           receivedAt:row.received_at,value:row.value,quality:JSON.parse(row.quality),
           comparison:row.comparison === null ? null : JSON.parse(row.comparison) };
         if (!result.comparison) {
-          const previous = this.db.prepare(`SELECT * FROM energy_audits WHERE source=? AND device=? AND signal=? AND id<?
-            AND source_time<=? AND received_at<=? ORDER BY source_time DESC,id DESC LIMIT 1`)
-            .get(row.source,row.device,row.signal,row.id,now,now);
-          if (previous) {
-            if (row.source_time <= previous.source_time) result.quality.push('out-of-order-counter');
-            else if (row.value < previous.value) result.quality.push('counter-reset');
-            else {
-              result.comparison = this.compareEnergyAudit(row,previous,now);
-              if (!result.comparison) result.quality.push('incomplete-estimated-coverage');
-            }
-          }
+          const previous = this.previousEnergyAudit(row, now);
+          const check = this.checkEnergyAudit(row, previous, now);
+          result.comparison = check.comparison;
+          if (check.status === 'out-of-order-counter' || check.status === 'counter-reset') result.quality.push(check.status);
+          else if (check.status === 'incomplete-coverage' || check.status === 'conflicting-coverage')
+            result.quality.push('incomplete-estimated-coverage');
         }
         result.quality = [...new Set(result.quality)];
         return result;
       });
   }
 
-  compareEnergyAudit(row,previous,now = Date.now()) {
-    if (row.signal !== 'property_import_energy_counter') return null;
+  previousEnergyAudit(row, now = Date.now()) {
+    // Receipt order makes a delayed older meter timestamp observable. Use the
+    // highest prior meter timestamp so it cannot become a new counter baseline.
+    return this.db.prepare(`SELECT * FROM energy_audits WHERE source=? AND device=? AND signal=?
+      AND (received_at<? OR received_at=? AND id<?) AND source_time<=? AND received_at<=?
+      ORDER BY source_time DESC,received_at,id LIMIT 1`)
+      .get(row.source,row.device,row.signal,row.received_at,row.received_at,row.id,now,now) ?? null;
+  }
+
+  checkEnergyAudit(row, previous, now = Date.now(), groups) {
+    instant(now, 'audit receipt cutoff');
+    if (row.signal !== 'property_import_energy_counter') throw new TypeError('Invalid property counter signal');
+    if (!previous) return { status:'waiting-for-second-reading', coverage:null, comparison:null };
+    if (row.source_time <= previous.source_time) return { status:'out-of-order-counter', coverage:null, comparison:null };
+    if (row.value < previous.value) return { status:'counter-reset', coverage:null, comparison:null };
     const start = previous.source_time, end = row.source_time;
-    let cursor = start, estimatedKwh = 0, edgeEstimated = false, includesOpenInterval = false;
-    for (const group of recordedEnergyGroups(this,{from:start,to:end,now,input:'providers',prefix:'property',source:row.source,device:row.device})) {
+    const coverage = { start, end, coveredMs:0, durationMs:end-start, conflictingMs:0 };
+    let estimatedKwh = 0, edgeEstimated = false, includesOpenInterval = false;
+    for (const group of groups ?? recordedEnergyGroups(this,{from:start,to:end,now,input:'providers',prefix:'property',source:row.source,device:row.device})) {
       if (group.source !== row.source || group.device !== row.device) continue;
-      if (group.conflict || group.start > cursor || group.start < cursor && cursor !== start || group.end <= cursor
-        || group.values.length !== 3 || !group.values.every(Number.isFinite)) return null;
-      const until = Math.min(group.end,end);
-      edgeEstimated ||= cursor !== group.start || until !== group.end;
+      const from = Math.max(group.start,start), until = Math.min(group.end,end);
+      if (until <= from) continue;
+      // The shared history reader merges overlapping cohorts into unusable
+      // conflict spans. Count usable duration across the whole period, including
+      // valid intervals after a gap, without filling any of the missing energy.
+      if (group.conflict) { coverage.conflictingMs += until-from; continue; }
+      if (group.values.length !== 3 || !group.values.every(Number.isFinite)) continue;
+      coverage.coveredMs += until-from;
+      edgeEstimated ||= from !== group.start || until !== group.end;
       includesOpenInterval ||= group.pending;
-      estimatedKwh += group.values.reduce((sum,value)=>sum+value,0)*(until-cursor)/(group.end-group.start);
-      cursor = until;
-      if (cursor === end) break;
+      estimatedKwh += group.values.reduce((sum,value)=>sum+value,0)*(until-from)/(group.end-group.start);
     }
-    if (cursor !== end) return null;
+    if (coverage.conflictingMs) return { status:'conflicting-coverage', coverage, comparison:null };
+    if (coverage.coveredMs !== coverage.durationMs) return { status:'incomplete-coverage', coverage, comparison:null };
     const meteredKwh = row.value-previous.value;
-    return {start,end,estimatedKwh,meteredKwh,differenceKwh:estimatedKwh-meteredKwh,
+    return { status:'compared', coverage, comparison:{start,end,estimatedKwh,meteredKwh,differenceKwh:estimatedKwh-meteredKwh,
       differencePercent:meteredKwh>0 ? (estimatedKwh-meteredKwh)/meteredKwh*100 : null,
       edgeEstimated,includesOpenInterval,basis:edgeEstimated ? 'diagnostic-only-complete-coverage-with-average-power-at-edges'
-        : 'diagnostic-only-matching-complete-intervals'};
+        : 'diagnostic-only-matching-complete-intervals'} };
   }
 
   databaseBytes() {

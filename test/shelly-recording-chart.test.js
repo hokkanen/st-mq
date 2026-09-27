@@ -53,39 +53,54 @@ test('charger 2 power uses native total energy; absent phase evidence remains em
   assert(!store.observations().some(row=>row.signal==='charger2_power'));
 });
 
-test('same meter panel presents per-session means using physical meter references for both chargers',()=>{
+test('energy checks show totals and evidence size with the same meaning for both chargers',()=>{
   const summary={recordedSessions:4,comparedSessions:2,excludedSessions:2,estimatedKwh:22,referenceKwh:20,
     differenceKwh:2,differencePercent:10,start,end:start+HOUR,lastSessionEnd:start+2*HOUR};
   const charger=energyAuditRow({kind:'charging-session-summary',source:'easee',summary});
-  const tesla=energyAuditRow({kind:'charging-session-summary',source:'shelly-evse',summary});
-  assert.equal(charger.title,'Charger 1');assert.equal(tesla.title,'Charger 2');
-  assert.equal(charger.subtitle,tesla.subtitle);
-  assert.match(charger.value,/10% energy-weighted difference.*1 kWh average difference/);
-  assert.match(charger.details.join(' '),/11 kWh recorded \/ 10 kWh metered per session/);
-  assert.match(tesla.details.join(' '),/Charger 2 electricity meter/);
-  assert.match(tesla.details.join(' '),/2 compared · 2 excluded · 4 recorded sessions/);
+  const second=energyAuditRow({kind:'charging-session-summary',source:'shelly-evse',summary});
+  assert.equal(charger.title,'Charger 1');assert.equal(second.title,'Charger 2');
+  assert.equal(charger.subtitle,second.subtitle);
+  assert.equal(charger.value,'Recorded energy is 10.0% higher than the meter');
+  assert.match(charger.context.join(' '),/22 kWh recorded · 20 kWh metered/);
+  assert.match(second.context.join(' '),/Based on 2 of 4 completed sessions/);
+  assert.equal(second.detailsLabel,'2 sessions excluded · details');
   const empty=energyAuditRow({kind:'charging-session-summary',source:'shelly-evse',summary:{recordedSessions:0,comparedSessions:0,excludedSessions:0}});
-  assert.match(empty.value,/pending/);assert(!empty.value.includes('0%'));
-  assert.equal(energyAuditRow({signal:'property_import_energy_counter',sourceTime:start}).subtitle,'Cumulative import meter');
+  assert.equal(empty.value,'No completed sessions recorded');
+  assert.deepEqual(empty.context,[]);assert.deepEqual(empty.details,[]);
 });
 
-test('excluded charger sessions explain known reasons instead of asking for references already recorded',()=>{
+test('excluded sessions explain overlapping issues separately from comparison results',()=>{
   const display=energyAuditRow({kind:'charging-session-summary',source:'shelly-evse',summary:{
     recordedSessions:2,comparedSessions:0,excludedSessions:2,
     exclusionReasons:{disconnected:2,stale:2,'missing-start':1,'missing-end':1,'duplicate-suspected':1,
       'invented-private-payload':1},
   }});
-  assert.equal(display.value,'No sessions qualify for comparison yet.');
+  assert.equal(display.value,'No complete comparisons yet');
+  assert.deepEqual(display.context,['All 2 sessions excluded from comparison.']);
   const details=display.details.join(' ');
-  assert.match(details,/2 × recording was interrupted by a disconnect or restart/);
-  assert.match(details,/2 × charging data stopped updating/);
-  assert.match(details,/1 × possible overlap with Charger 1 energy/);
-  assert.match(details,/A session can have several reasons/);
+  assert.match(details,/Recording interrupted by a disconnect or restart: 2 sessions/);
+  assert.match(details,/Charging data stopped updating: 2 sessions/);
+  assert.match(details,/Possible overlap with Charger 1 energy: 1 session/);
+  assert.match(details,/Reason counts can overlap/);
   assert(!details.includes('reference is unavailable'));
   assert(!details.includes('invented-private-payload'));
   const easee=energyAuditRow({kind:'charging-session-summary',source:'easee',summary:{
     recordedSessions:1,comparedSessions:0,excludedSessions:1,exclusionReasons:{'incomplete-coverage':1},
   }});
-  assert.match(easee.details.join(' '),/recorded energy does not cover the whole session/);
+  assert.match(easee.details.join(' '),/Incomplete recording: 1 session/);
   assert(!easee.value.includes('reference needed'));
+});
+
+test('tiny samples show their actual totals and session count without false precision or a signed percent',()=>{
+  const display=energyAuditRow({kind:'charging-session-summary',source:'easee',summary:{
+    recordedSessions:14,comparedSessions:2,excludedSessions:12,estimatedKwh:0.24002,referenceKwh:0.25,
+    differenceKwh:-0.00998,differencePercent:-3.992,start,end:start+HOUR,
+    exclusionReasons:{'incomplete-coverage':12,'zero-reference':6},
+  }});
+  assert.equal(display.value,'Recorded energy is 4.0% lower than the meter');
+  assert.equal(display.context[0],'0.240 kWh recorded · 0.250 kWh metered');
+  assert.equal(display.context[1],'Based on 2 of 14 completed sessions.');
+  assert.match(display.details.join(' '),/Incomplete recording: 12 sessions/);
+  assert.match(display.details.join(' '),/Meter reference is zero: 6 sessions/);
+  assert.doesNotMatch(JSON.stringify(display),/average|energy-weighted|-3.99/);
 });
