@@ -2,6 +2,7 @@ import { isReadOnlyReplica } from './replica-status.js';
 import { setStatusDetail } from './status-details.js';
 import { chargerSummary, chargingCost, chargingNotice } from './charging-summary.js';
 import { createChargingPriority } from './charging-priority.js';
+import { createChargingTime } from './charging-time.js';
 import { CHARGING_LOSS_FRACTION, CHARGING_EFFICIENCY } from '../src/domain/charging-energy.js';
 
 const finite = Number.isFinite;
@@ -30,7 +31,6 @@ const sourceLabel = (field, vehicle) => {
   if (field?.assumed || field?.source === 'assumed') return 'Planning assumption';
   if (field?.available !== true) return 'Awaiting a reading';
   if (field.source === 'bmw-target-filter') return 'Held BMW target';
-  if (field.source === 'session-target') return 'Session planning choice';
   const source = field.provider ?? (field.source === 'mqtt' && vehicle?.state === 'identified'
     ? vehicle.source ?? ({ bmw: 'bmw-cardata', tesla: 'teslamate' })[vehicle.id] ?? field.source : field.source);
   return ({ mqtt: 'Vehicle MQTT', 'bmw-cardata': 'BMW CarData', teslamate: 'TeslaMate', easee: 'Easee', 'shelly-evse':'Shelly EVSE', 'session-anchor':'Connection charge anchor', 'session-request':'Connection request' })[source] ?? 'Automatic';
@@ -397,30 +397,25 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
   const socSource = retainedVehicleReference ? `Estimated from last known vehicle charge${hasProgress ? ' + delivered energy' : ''}`
     : estimatedSoc ? automatic(soc) ? 'Estimated from vehicle charge + delivered energy' : 'Estimated from starting charge + delivered energy'
     : automatic(soc) ? sourceLabel(soc, charger.vehicle) : 'Starting charge';
-  const targetSource = values.minimumSoc?.source === 'session-target' ? 'Planning target for this connection'
+  const targetSource = values.minimumSoc?.source === 'session-request' ? 'Planning target for this connection'
     : values.minimumSoc?.source === 'bmw-target-filter' ? 'BMW target held after conflicting reports'
       : automatic(values.minimumSoc) ? `Target from ${sourceLabel(values.minimumSoc, charger.vehicle)}` : 'Requested target';
   const targetSelection = sessionTargetFor(charger);
-  const targetNotice = targetSelection?.conflict
-    ? `BMW target reports conflict. Planning for ${number(targetSelection.selected?.value, '%')}; latest report: ${number(targetSelection.raw?.value, '%')}.`
-    : targetSelection?.mode === 'full' ? 'Planning for 100% for this connection.' : '';
-  const targetDetail = targetSelection ? [targetNotice,
-    targetSelection.mode === 'full'
-      ? `Planning choice: 100%${validTime(targetSelection.selected?.receivedAt)
-        ? `, chosen ${chargingReadingTime(targetSelection.selected.receivedAt, timezone)}` : '; choice time unknown'}.`
-      : `Selected planning target: ${number(targetSelection.selected?.value, '%')}${validTime(targetSelection.selected?.measuredAt)
-        ? `, measured ${chargingReadingTime(targetSelection.selected.measuredAt, timezone)}`
-        : validTime(targetSelection.selected?.receivedAt) ? `, received ${chargingReadingTime(targetSelection.selected.receivedAt, timezone)}; measurement time unknown` : '; measurement time unknown'}.`,
+  const targetHeld = Boolean(targetSelection && values.minimumSoc?.source === 'bmw-target-filter');
+  const targetDetail = targetSelection ? [
+    `Selected planning target: ${number(minimum, '%')}${validTime(values.minimumSoc?.measuredAt)
+      ? `, measured ${chargingReadingTime(values.minimumSoc.measuredAt, timezone)}`
+      : validTime(values.minimumSoc?.receivedAt) ? `, received ${chargingReadingTime(values.minimumSoc.receivedAt, timezone)}; measurement time unknown` : ''}.`,
     `Latest BMW target report: ${number(targetSelection.raw?.value, '%')}${validTime(targetSelection.raw?.measuredAt)
       ? `, measured ${chargingReadingTime(targetSelection.raw.measuredAt, timezone)}`
       : validTime(targetSelection.raw?.receivedAt) ? `, received ${chargingReadingTime(targetSelection.raw.receivedAt, timezone)}; measurement time unknown` : '; measurement time unknown'}.`,
-    targetSelection.conflict ? 'After BMW reports a change from 100% to a lower target, automatic planning holds the latest target below 100% for this connection and ignores later 100% reports.' : '',
-    'This choice changes planning only. For a full charge, also set 100% in the car. Unplugging restores automatic target selection.',
+    targetHeld ? 'After BMW reports a change from 100% to a lower target, automatic planning holds the latest target below 100% for this connection and ignores later 100% reports.' : '',
+    'Edit the target in Session settings and save to change the plan until unplugging. This does not change the car’s charging limit.',
   ].filter(Boolean).join('\n\n') : '';
   const vehicle = vehiclePresentation(charger, { now, timezone });
   return { id: charger.id, label: charger.label, state, event, eventAt, eventKind, summary: `${state} · ${event}`, risk, showMetrics, vehicle, identification,
     soc: estimatedSoc ? `≈${Math.round(progress.estimatedSoc)} %` : socKnown ? number(soc.value, '%') : 'Unknown', socSource, minimum: number(minimum, '%'),
-    minimumSource: targetSource, sources: socSource, targetSelection, targetNotice, targetDetail,
+    minimumSource: targetSource, sources: socSource, targetHeld, targetDetail,
     gridEnergy: `${estimatedSoc && requiredGridKwh > 0 ? '≈' : ''}${number(requiredGridKwh, 'kWh')}`, deadline, readiness, readingTime, periodCount, periodRows,
     priority: activeManual && showMetrics ? resumption : '',
     energyLabel: hasProgress ? 'Grid remaining' : 'Grid to target',
@@ -439,6 +434,7 @@ export function chargingContext(charging, now = Date.now()) {
 
 export function createChargingPanel({ document, request, beforeRequest = () => {}, onStatus = () => {}, afterRequest = () => {} }) {
   const $ = id => document.getElementById(id), devices = new Map(), listeners = [];
+  const timePicker = createChargingTime({ document });
   let status, busy = false;
   const make = (tag, text = '', className = '', id) => {
     const node = document.createElement(tag); node.textContent = text;
@@ -495,7 +491,9 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     if (field.nullable) input.placeholder = 'Not set';
     const help = make('small', '', 'charging-field-help', `${input.id}-help`);
     label.htmlFor = input.id; input.setAttribute('aria-describedby', help.id);
-    container.append(label, input, help); root.append(container);
+    container.append(label, input);
+    if (field.type === 'time') timePicker.attach(input, container);
+    container.append(help); root.append(container);
     group.fields.set(field.key, { field, input, label: container, help });
     bind(input, 'input', () => { if (!group.dirty.size) group.draftSession = group.currentSession;
       group.dirty.add(field.key); group.drafts.set(field.key, input.value); refreshControls(); });
@@ -547,7 +545,7 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     const controlMessage = make('p', '', 'temporary-status charging-control-message', `${id}-control-message`); controlMessage.setAttribute('role', 'status');
     const overview = make('div', '', 'charging-overview', `${id}-overview`), metrics = {};
     const charge = make('div', '', 'equipment-value charging-charge');
-    const current = make('strong', 'Unknown', '', `${id}-soc`), target = make('strong', 'Unknown', '', `${id}-minimum`);
+    const current = make('strong', 'Unknown', '', `${id}-soc`), target = make('strong', 'Unknown', 'charging-target-value', `${id}-minimum`);
     const sources = make('small', '', '', `${id}-sources`);
     const chargeLabel = make('span', 'Charge', '', `${id}-charge-label`);
     charge.append(chargeLabel, current, sources);
@@ -569,8 +567,7 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     deadlineGroup.append(make('span', 'Ready by'), deadline); timing.append(event, deadlineGroup);
     const readiness = make('p', '', 'charging-readiness', `${id}-readiness`);
     const priority = make('p', '', 'charging-priority', `${id}-priority`);
-    const targetNotice = make('div', '', 'charging-notice charging-target-notice', `${id}-target-notice`); targetNotice.setAttribute('role', 'status');
-    summary.append(timing, overview, targetNotice);
+    summary.append(timing, overview);
     const problem = make('p', '', 'charging-problem', `${id}-problem`); problem.setAttribute('role', 'status');
     const body = make('div', '', 'equipment-device-body charging-settings', `${id}-settings-details`);
     const facts = make('div', '', 'charging-fact-overview');
@@ -624,19 +621,12 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     const message = make('p', '', 'temporary-status', `${id}-settings-message`); message.setAttribute('role', 'status');
     form.append(primaryFields, save); sessionPreferences.append(form, message);
     const settings = group(id, chargingFields, () => primaryFields, form, save, message, `${prefix}/settings`);
-    const targetControls = make('div', '', '', `${id}-target-controls`);
-    const targetHelp = make('p', '', 'charging-form-help', `${id}-target-help`);
-    const targetToggle = make('button', '', 'secondary-button', `${id}-target-toggle`); targetToggle.type = 'button';
-    targetToggle.setAttribute('aria-describedby', targetHelp.id);
-    targetControls.append(targetHelp, targetToggle); settings.fields.get('minimumSoc').label.append(targetControls);
-    const targetMessage = make('p', '', 'temporary-status', `${id}-target-message`); targetMessage.setAttribute('role', 'status');
-    sessionPreferences.append(targetMessage);
     body.append(preferences);
     const explanationFold = make('details', '', 'equipment-fold charging-explanations', `${id}-explanation-details`);
     explanationFold.append(make('summary', 'How charging works'));
     const explanations = make('dl', '', 'equipment-readings', `${id}-explanations`); explanationFold.append(explanations); body.append(explanationFold);
     section.append(summary, body); $('charging-devices')?.append(section);
-    const device = { id, chargeNow, chargeNowState, controlMessage, identify, identificationSection, identificationState, identificationStatus, identificationMessage, section, title, vehicle, state, event, eventLabel, eventValue, overview, sources, metrics, chargeLabel, targetLabel, targetSource, targetNotice, targetControls, targetHelp, targetToggle, targetMessage, completionLabel, completion, readiness, priority, readingTime, deadline, deadlineGroup, facts, deliveredLabel, deliveredValue, remaining, energyLabel, energyValue, costLabel, cost, costMetric, scheduleInfo, scheduleHeading, periodCount, periods, problem, explanations, readings, notes, settings, enabledValue, resume, controlDetail, charger, notice, footerHint, sessionStatus };
+    const device = { id, chargeNow, chargeNowState, controlMessage, identify, identificationSection, identificationState, identificationStatus, identificationMessage, section, title, vehicle, state, event, eventLabel, eventValue, overview, sources, metrics, chargeLabel, targetLabel, targetSource, completionLabel, completion, readiness, priority, readingTime, deadline, deadlineGroup, facts, deliveredLabel, deliveredValue, remaining, energyLabel, energyValue, costLabel, cost, costMetric, scheduleInfo, scheduleHeading, periodCount, periods, problem, explanations, readings, notes, settings, enabledValue, resume, controlDetail, charger, notice, footerHint, sessionStatus };
     bind(identify, 'click', () => {
       if (identify.disabled) return;
       const current = device.charger;
@@ -677,12 +667,6 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
             catch (error) { throw new Error(`Automatic charging is on, but handover could not be completed. ${error.message ?? 'Try again.'}`); }
           });
     }
-    bind(targetToggle, 'click', () => {
-      if (targetToggle.disabled || !device.targetAction) return;
-      const action = { ...device.targetAction };
-      return mutate(`${prefix}/target`, action, targetMessage, () => device.targetAction?.connectedAt === action.connectedAt
-        ? 'Planning target updated for this connection.' : 'The connection changed. Review the current target.');
-    });
     devices.set(id, device); return device;
   }
   async function mutate(path, payload, message, success = '', saved = () => {}, followup) {
@@ -722,6 +706,7 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
       for (const [key, { field, input, label }] of settings.fields) {
         const unsupported = field.scheduling && !supported;
         input.disabled = Boolean(locked || charger.readOnly || !connectedSession(charger) || unsupported);
+        if (field.type === 'time') timePicker.update(input, settings.currentSession);
         label.hidden = unsupported; label.classList.toggle('charging-field-disabled', Boolean(unsupported));
       }
       settings.save.disabled = locked || !connectedSession(charger) || settings.draftSession !== settings.currentSession
@@ -755,7 +740,6 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
             : 'A short charging test can check this connection again and may briefly pause charging. Works with Automatic charging off and Charge now; Manual Stop keeps priority.');
       device.resume.hidden = !supported || !view.yielded && charger.control?.reason !== 'identification-resume-required';
       device.resume.disabled = locked || charger.readOnly === true || device.resume.hidden;
-      device.targetToggle.disabled = locked || charger.readOnly === true || !device.targetAction;
     }
   }
   function update(next) {
@@ -789,21 +773,9 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
       device.overview.hidden = false;
       device.metrics.soc.value.textContent = view.showMetrics ? view.soc : '—'; device.metrics.minimum.value.textContent = view.showMetrics ? view.minimum : '—';
       device.sources.textContent = !view.showMetrics ? 'Awaiting data' : view.soc.startsWith('≈') ? 'Estimated charge' : view.sources;
-      device.targetSource.textContent = view.targetSelection?.mode === 'full' ? 'This connection'
-        : view.targetSelection?.conflict ? 'Held BMW target' : '';
+      device.metrics.minimum.value.dataset.state = view.showMetrics && view.targetHeld ? 'attention' : 'normal';
+      device.targetSource.textContent = view.showMetrics && view.targetHeld ? 'Held BMW target' : '';
       device.targetSource.hidden = !device.targetSource.textContent;
-      device.targetNotice.textContent = view.targetNotice; device.targetNotice.hidden = !view.targetNotice;
-      device.targetNotice.dataset.state = view.targetSelection?.conflict ? 'attention' : 'quiet';
-      const targetSelection = view.targetSelection;
-      if (device.targetAction?.connectedAt !== targetSelection?.connectedAt) {
-        device.targetMessage.textContent = ''; device.targetMessage.classList.remove('form-error');
-      }
-      device.targetAction = targetSelection ? { connectedAt: targetSelection.connectedAt, mode: targetSelection.mode === 'full' ? 'automatic' : 'full' } : null;
-      device.targetControls.hidden = !targetSelection;
-      device.targetToggle.textContent = targetSelection?.mode === 'full' ? 'Use automatic target again' : 'Plan for 100% this connection';
-      device.targetHelp.textContent = targetSelection?.mode === 'full'
-        ? 'Planning for 100% until unplugging. This does not change the car’s charge limit; set 100% in the car too for a full charge.'
-        : 'This changes the plan for this connection only. For a full charge, also set 100% in the car.';
       device.completion.textContent = presentation.completion.value;
       const sourceDetail = !view.showMetrics ? 'A confirmed vehicle connection is needed before a remembered charge reading can be shown as current.'
         : [view.soc.startsWith('≈') ? `${view.socSource}, allowing for charging losses. The battery estimate advances from the latest charge reference; Added energy covers the whole connection.` : view.socSource, view.readingTime].filter(Boolean).join('\n');
@@ -865,9 +837,12 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
       device.enabledValue.setAttribute('aria-checked', String(charger.settings.enabled === true));
       updateFields(device.settings, charger.settings, charger);
     }
-    for (const [id, device] of devices) if (!currentIds.has(id)) { device.section.remove(); devices.delete(id); sharedPriority.removeEntry(id); }
+    for (const [id, device] of devices) if (!currentIds.has(id)) {
+      timePicker.remove(device.settings.fields.get('readyBy').input);
+      device.section.remove(); devices.delete(id); sharedPriority.removeEntry(id);
+    }
     refreshControls();
   }
   refreshControls();
-  return { update, refreshControls, close() { sharedPriority.close(); for (const remove of listeners) remove(); } };
+  return { update, refreshControls, close() { sharedPriority.close(); timePicker.close(); for (const remove of listeners) remove(); } };
 }

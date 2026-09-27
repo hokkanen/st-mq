@@ -58,16 +58,15 @@ async function savedMatch(t) {
   publish(runtime, { provider: 'bmw-cardata', charging: false,
     fields: { charging: { measuredAt: START + MINUTE, readingId: 'synthetic-charge-stop' } } });
   assert.equal(view(runtime).vehicle.id, 'bmw');
-  await runtime.setTarget('charger1', { connectedAt: START, mode: 'full' });
   const current = view(runtime);
   await runtime.setChargerSettings('charger1', { scope: 'session', association: current.association,
     sessionId: current.request.sessionId, revision: current.request.revision,
-    changes: { readyBy: '08:30', capacityKwh: 79 } });
+    changes: { readyBy: '08:30', capacityKwh: 79, minimumSoc: 100 } });
   runtime.persist();
   const saved = f.store.getState(runtime.key);
   assert.equal(saved.version, 6);
   assert.equal(saved.chargers.charger1.vehicleMatch.id, 'bmw');
-  assert.equal(saved.chargers.charger1.targetState.override.value, 100);
+  assert.equal(saved.chargers.charger1.request.overrides.minimumSoc, 100);
   assert.equal(saved.chargers.charger1.request.revision, 2);
   assert.ok(saved.vehicleFeeds.bmw.consumedPlugId);
   await runtime.close();
@@ -117,7 +116,8 @@ test('current BMW identity and session choices survive startup before the charge
   await f.attach(restarted);
   assert.equal(view(restarted).vehicle.id, 'bmw');
   assert.equal(view(restarted).values.soc.source, 'bmw-cardata');
-  assert.equal(view(restarted).targetSelection.mode, 'full');
+  assert.equal(view(restarted).values.minimumSoc.value, 100);
+  assert.equal(view(restarted).values.minimumSoc.source, 'session-request');
   assertRetained(restarted, f.saved);
 });
 
@@ -282,7 +282,7 @@ test('startup unplug and replug require a new transaction and charging edges bef
       fields: { charging: { measuredAt: at, readingId: `synthetic-new-charge-${at}` } } });
   }
   assert.equal(view(restarted).vehicle.id, 'bmw', 'New start and stop evidence identifies the new transaction');
-  assert.equal(view(restarted).targetSelection.mode, 'automatic');
+  assert.equal(view(restarted).values.minimumSoc.source, 'bmw-cardata');
   assert.deepEqual(view(restarted).request.overrides, {});
 });
 
@@ -310,8 +310,9 @@ test('failed BMW departure persistence restores the matched session and its requ
   assert.equal(current.vehicle.id, 'bmw');
   assert.deepEqual(current.request, before.request);
   assert.equal(current.request.revision, 2);
-  assert.deepEqual(current.request.overrides, { readyBy: '08:30', capacityKwh: 79 });
-  assert.equal(current.targetSelection.mode, 'full');
+  assert.deepEqual(current.request.overrides, { readyBy: '08:30', capacityKwh: 79, minimumSoc: 100 });
+  assert.equal(current.values.minimumSoc.value, 100);
+  assert.equal(current.values.minimumSoc.source, 'session-request');
 
   publish(restarted, unplug);
   await restarted.reconcile();

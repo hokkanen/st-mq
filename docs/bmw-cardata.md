@@ -208,18 +208,24 @@ value cannot activate the filter. Until it activates, a change to 100% remains v
 After confirmation, planning holds the latest reported target below 100% for that
 connection, ignoring subsequent 100% reports. A new live lower-than-100% setting
 replaces the held value immediately; it need not be lower than the previous
-setting. Unverified reports cannot replace the held value. The card shows the
-selected planning target and the unmodified raw BMW report, with their separate original
-measurement times. Filtering changes neither battery percentage nor the target
-configured in the car.
+setting. Unverified reports cannot replace the held value. The card colors the
+held planning target with the attention color. Its Target details show the
+selected planning target and unmodified raw BMW report with their separate
+original measurement times. Filtering changes neither battery percentage nor
+the target configured in the car.
 
-**Plan for 100% this connection** explicitly overrides the filter for planning;
-set the desired full-charge limit in the car as well. **Use automatic target**
-returns to the filtered BMW value. The conflict and explicit choice survive a
-restart in the same connection and clear on unplug or a new connection. A stale
-browser cannot apply a choice to a different connection. Saved visitor defaults
-are unaffected. A newly installed filter starts collecting evidence from live
+Edit **Target charge** in Session settings and use **Save for this session** to
+plan for another target, including 100%. A saved target takes priority over the
+filter and clears the held-target indicator; it does not change the car's own
+charging limit. The hold evidence and saved session target survive a restart in
+the same connection and clear on unplug or a new connection. A stale browser
+cannot apply an edit to a different connection. Configured defaults are
+unaffected. A newly installed filter starts collecting evidence from live
 readings; it does not infer a past conflict from a lone saved target.
+
+Development snapshots containing the retired BMW target `override` or `mode`
+fields are rejected with fresh-database guidance, including an empty old
+override. They are not converted or reset automatically.
 
 ## Installing or updating the publisher
 

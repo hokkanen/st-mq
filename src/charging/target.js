@@ -1,6 +1,37 @@
 const MAX_OBSERVATION_AGE = 15 * 60_000;
 const time = value => Number.isSafeInteger(value) && value >= 0;
 const target = value => Number.isFinite(value) && value >= 0 && value <= 100;
+const exactKeys = (value, keys) => value && typeof value === 'object' && !Array.isArray(value)
+  && Object.keys(value).sort().join(',') === [...keys].sort().join(',');
+const factKeys = ['value', 'measuredAt', 'receivedAt', 'readingId'];
+const validFact = (value, selected = false) => exactKeys(value, selected ? [...factKeys, 'source'] : factKeys)
+  && target(value.value) && ['measuredAt', 'receivedAt'].every(key => value[key] === null || time(value[key]))
+  && (value.readingId === null || typeof value.readingId === 'string' && value.readingId.length > 0);
+
+/** Only source evidence belongs here; explicit targets use the ordinary session request. */
+export function validateTargetState(state) {
+  if (state == null) return;
+  if (!exactKeys(state, ['connectedAt', 'history', 'conflict', 'lower', 'last']) || !time(state.connectedAt)
+    || !Array.isArray(state.history) || state.history.length > 2 || state.history.some(fact => !validFact(fact))
+    || typeof state.conflict !== 'boolean' || state.conflict && state.lower === null
+    || state.lower !== null && (!validFact(state.lower) || state.lower.value >= 100)
+    || state.last !== null && !validFact(state.last))
+    throw new Error('Unsupported saved charging target; start a fresh development database');
+}
+
+export function validateTargetSelection(selection) {
+  if (selection == null) return;
+  if (!exactKeys(selection, ['connectedAt', 'conflict', 'raw', 'selected', 'lower'])
+    || selection.connectedAt !== null && !time(selection.connectedAt) || typeof selection.conflict !== 'boolean'
+    || !validFact(selection.raw) || !validFact(selection.selected, true)
+    || selection.lower !== null && (!validFact(selection.lower) || selection.lower.value >= 100)
+    || selection.conflict && selection.lower === null)
+    throw new Error('Unsupported saved charging target selection; start a fresh development database');
+  const held = selection.conflict && selection.lower;
+  if (selection.selected.source !== (held ? 'bmw-target-filter' : 'bmw-cardata')
+    || factKeys.some(key => selection.selected[key] !== (held || selection.raw)[key]))
+    throw new Error('Unsupported saved charging target selection; start a fresh development database');
+}
 
 function targetFact(reading) {
   if (!target(reading?.chargeLimitSoc)) return null;
@@ -25,9 +56,10 @@ function newer(fact, previous) {
  * observation must be fresh when received. Raw source readings stay intact. */
 export function updateTargetState(previous, { connectedAt, reading, now = Date.now(), live = true,
   evidenceStart = connectedAt } = {}) {
+  validateTargetState(previous);
   if (!time(connectedAt)) return null;
   const state = previous?.connectedAt === connectedAt ? previous
-    : { connectedAt, history: [], conflict: false, lower: null, override: null, last: null };
+    : { connectedAt, history: [], conflict: false, lower: null, last: null };
   const fact = targetFact(reading);
   if (!fact || !newer(fact, state.last)) return state;
   const next = { ...state, last: fact, history: [...state.history] };
@@ -49,24 +81,14 @@ export function updateTargetState(previous, { connectedAt, reading, now = Date.n
   return next;
 }
 
-/** An explicit planning choice applies only to this connection. It does not
- * write the vehicle's own target or clear the observed source conflict. */
-export function selectTargetMode(state, mode, now = Date.now()) {
-  if (!time(state?.connectedAt)) throw new TypeError('A connected vehicle is required');
-  if (!['automatic', 'full'].includes(mode)) throw new TypeError('Invalid target mode');
-  if (!time(now)) throw new TypeError('Invalid selection time');
-  return { ...state, override: mode === 'full' ? { value: 100, selectedAt: now } : null };
-}
-
 /** Keep the raw report and selected planning value separately visible, including
  * their original field clocks. A held lower value never borrows a newer clock. */
 export function targetSelection(state, { reading } = {}) {
+  validateTargetState(state);
   const raw = targetFact(reading);
   if (!raw) return null;
-  const full = state?.override?.value === 100;
   const lower = target(state?.lower?.value) && state.lower.value < 100 ? state.lower : null;
   const conflict = state?.conflict === true;
-  const selected = full ? { value: 100, source: 'session-target', measuredAt: null, receivedAt: state.override.selectedAt }
-    : conflict && lower ? { ...lower, source: 'bmw-target-filter' } : { ...raw, source: 'bmw-cardata' };
-  return { connectedAt: state?.connectedAt ?? null, mode: full ? 'full' : 'automatic', conflict, raw, selected, lower };
+  const selected = conflict && lower ? { ...lower, source: 'bmw-target-filter' } : { ...raw, source: 'bmw-cardata' };
+  return { connectedAt: state?.connectedAt ?? null, conflict, raw, selected, lower };
 }

@@ -104,8 +104,9 @@ test('replica preserves independent vehicle identification, selected values and 
     automaticSoc, now: snapshotAt, telemetry: { connected: true, charging: true } });
   charger.vehicle = { state: 'identified', id: 'bmw', label: 'BMW', source: 'bmw-cardata', chargerId: 'charger1' };
   charger.automaticSoc = automaticSoc;
-  charger.targetSelection = { connectedAt: snapshotAt - 5 * 60_000, mode: 'automatic', conflict: true,
+  charger.targetSelection = { connectedAt: snapshotAt - 5 * 60_000, conflict: true,
     raw: { value: 100, measuredAt: snapshotAt - 1000, receivedAt: snapshotAt - 500, readingId: 'raw-target' },
+    lower: { value: 95, measuredAt: snapshotAt - 60_000, receivedAt: snapshotAt - 30_000, readingId: 'held-target' },
     selected: { value: 95, source: 'bmw-target-filter', measuredAt: snapshotAt - 60_000, receivedAt: snapshotAt - 30_000, readingId: 'held-target' } };
   charger.automaticSoc.chargeLimitSoc = 100;
   charger.automatic.minimumSoc.value = 100;
@@ -129,9 +130,10 @@ test('replica preserves independent vehicle identification, selected values and 
   assert.equal(charging.vehicleFeeds[0].topic, feed.topic);
   assert.equal(charging.vehicleFeeds[0].reception.brokerConnected, null);
   advance(); assert.deepEqual(app.status().charging, charging);
-  const denied = await fetch(`${root}/api/charging/chargers/charger1/target`, { method: 'POST',
+  const denied = await fetch(`${root}/api/charging/chargers/charger1/settings`, { method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ connectedAt: charger.targetSelection.connectedAt, mode: 'full' }) });
+    body: JSON.stringify({ scope: 'session', association: 'synthetic-association', sessionId: 'synthetic-session',
+      revision: 1, changes: { minimumSoc: 100 } }) });
   assert.equal(denied.status, 405);
   assert.equal(digest(), originalDigest);
 });
@@ -139,6 +141,23 @@ test('replica preserves independent vehicle identification, selected values and 
 test('replica rejects unsupported development charging payloads', async t => {
   const { app } = await fixture(t, { version: 5, settings: chargingSettings(), chargers: {} });
   assert.throws(() => app.status(), /Unsupported charging snapshot/);
+});
+
+test('replica rejects retired BMW target state and selection shapes without altering the snapshot', async t => {
+  const settings = chargingSettings();
+  const fact = { value: 85, measuredAt: snapshotAt, receivedAt: snapshotAt, readingId: 'target-85' };
+  for (const kind of ['state', 'selection']) await t.test(kind, async t => {
+    const chargers = CHARGER_DEFINITIONS.map(definition => buildCharger({ definition,
+      settings: settings.chargers[definition.id], now: snapshotAt }));
+    const state = { version: 6, chargers: { charger1: {} }, view: { settings, chargers } };
+    if (kind === 'state') state.chargers.charger1.targetState = {
+      connectedAt: snapshotAt, history: [fact], conflict: false, lower: fact, last: fact, override: null };
+    else chargers[0].targetSelection = { connectedAt: snapshotAt, conflict: false, lower: fact,
+      raw: fact, selected: { ...fact, source: 'bmw-cardata' }, mode: 'automatic' };
+    const { app, digest, originalDigest } = await fixture(t, state);
+    assert.throws(() => app.status(), /Unsupported saved charging target.*fresh development database/);
+    assert.equal(digest(), originalDigest);
+  });
 });
 
 test('replica rejects a current snapshot missing its recorded configuration instead of inventing defaults', async t => {

@@ -1,6 +1,29 @@
 -Make README.md better and more descriptive of the app, especially the beginning of it
 -Implement support for local mqtt-based temperature receives (eg, from shelly or HASS through Meteorologisk Institute); just store last received temp values and time stamps (maybe in storage class, see below) when received (and accept if received within 1h)
 
+Completed 2026-09-27 — Compact BMW targets and ready-by time chooser
+- Remove the BMW conflict textbox and redundant full-charge shortcut. Color the
+  effective held BMW target with the attention color, retaining source/report
+  details in its existing popover. Ordinary session Save handles every target;
+  saving 84% or 100% clears stale held-target wording and color.
+- Replace the browser-owned ready-by dialog with an accessible in-page chooser
+  that fits the viewport, scrolls and keeps Cancel/Set available. Preserve direct
+  HH:mm entry, ordinary Save, drafts and session/authority fencing.
+- Remove the superseded target-mode API, state and permission route. Keep BMW
+  hold evidence, original raw clocks, normal session overrides, same-session
+  restart, unplug reset and persistence rollback. Primary and replica readers
+  reject retired BMW target shapes with fresh-development-database guidance;
+  no stored conversion, automatic reset or compatibility path is introduced.
+- Validation: all 3,587 routine tests pass without skips; production build passes
+  with the existing bundle-size warning. Access and charging browser checks
+  cover held/saved targets, ordinary Save, both themes and short-window chooser
+  geometry down to 320×240; additional chooser checks include 200% zoom. Samsung
+  Internet/DeX itself was unavailable. Synthetic fixtures only; no household
+  data, commands or deployment changed.
+- Refresh stale wording and retired chart selectors in the Garage smoke test.
+  Its charging/layout sweep passes; the corrected final chart segment passes
+  separately against the same synthetic fixture.
+
 Completed 2026-09-27 — Coherent chart views and history inspection
 - Replace the single-quantity drawer and universal context with 43 purposeful
   views sharing one server/UI catalogue. Temperature-led views use one right
