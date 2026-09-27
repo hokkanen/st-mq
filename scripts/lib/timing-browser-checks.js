@@ -5,6 +5,19 @@ import { Recorder } from '../../src/storage/recorder.js';
 // Invented observations only. These days deliberately separate operating evidence,
 // missing telemetry, and incomplete prices without accessing a household database.
 export function seedTimingBrowserFixture(store) {
+  const historicalStart = Date.parse('2026-09-06T00:00:00+03:00');
+  store.transaction(() => {
+    for (let slot = 0; slot <= 96; slot++) {
+      const at = historicalStart + slot * 15 * 60_000;
+      const add = (signal, value, unit) => store.observation({ source: 'browser-fixture',
+        device: 'synthetic-historical-charger', signal, value, unit,
+        sourceTime: at, receivedAt: at, quality: [], raw: { fixture: true } });
+      if (slot < 96) add('spot_price', slot < 4 ? 0 : 20, 'c/kWh_ex_vat');
+      if(slot<96)for(let phase=1;phase<=3;phase++)store.observation({source:'easee',device:'synthetic-historical-charger',
+        signal:`ev1_energy_l${phase}`,value:slot<4?6.9/12:0,unit:'kWh',sourceTime:at+15*60_000,receivedAt:at+15*60_000,
+        quality:['estimated'],raw:{intervalStart:at,intervalEnd:at+15*60_000}});
+    }
+  });
   const quarter = 15 * 60_000;
   const recorder = new Recorder(store);
   const add = (signal, value, unit, at, raw = {}) => store.observation({
@@ -99,10 +112,13 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
   const checkFits = async () => {
     assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true,
       'Timing layout does not cause horizontal scrolling');
-    assert.equal(await evaluate(`Array.from(document.querySelectorAll('#timing-details .timing-device, #timing-details .timing-device-detail, #timing-details .timing-explanations, #timing-details .timing-source')).every(element => {
+    assert.deepEqual(await evaluate(`Array.from(document.querySelectorAll('#timing-details .timing-device, #timing-details .timing-device-detail, #timing-details .timing-explanations, #timing-details .timing-source')).flatMap(element => {
+      if (!element.checkVisibility()) return [];
       const r = element.getBoundingClientRect();
-      return r.left >= 0 && r.right <= innerWidth && element.scrollWidth <= element.clientWidth + 1;
-    })`), true, 'Inline explanations wrap inside their cards and the viewport');
+      return r.left >= 0 && r.right <= innerWidth && element.scrollWidth <= element.clientWidth + 1 ? []
+        : [{ element: element.className, device: element.dataset.device, left: r.left, right: r.right,
+          width: innerWidth, scrollWidth: element.scrollWidth, clientWidth: element.clientWidth }];
+    })`), [], 'Inline explanations wrap inside their cards and the viewport');
     assert.equal(await evaluate(`Array.from(document.querySelectorAll('.heating-selection .timing-comparison-option')).every(button => {
       const r = button.getBoundingClientRect();
       return r.height >= 40 && button.scrollWidth <= button.clientWidth + 1;
@@ -120,8 +136,8 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
       assert.equal(await evaluate(`document.querySelector(${JSON.stringify(comparison(option))}).getAttribute('aria-pressed')`),
         String(option === mode), `The ${option} selector announces whether it is selected`);
     }
-    for (const [device, label] of [['heatPump', mode === 'model' ? 'Model-estimated saving' : 'Timing cost saving'],
-      ['charger', 'Timing cost saving'], ['firewood', 'Model-estimated saving']]) {
+    for (const [device, label] of [['heatPump', mode === 'model' ? 'Estimated cost difference' : 'Timing cost difference'],
+      ['charger', 'Timing cost difference'], ['firewood', 'Estimated cost difference']]) {
       assert.equal((await text(`${card(device)} .timing-comparison-label`)).trim(), label,
         `${device} labels the displayed comparison without changing the other cards' baselines`);
     }
@@ -223,6 +239,8 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
   await evaluate(`window.timingFoldFixture.comparisons = Object.fromEntries([...document.querySelectorAll('.timing-comparison-option[data-mode]')]
     .map(button => [button.dataset.mode, button])); true`);
   await checkComparison('model');
+  assert.equal(await evaluate("document.querySelector('.timing-explanations').open"), false, 'Shared methodology starts closed');
+  await tap('.timing-explanations > summary');
   await switchComparison('timing');
   await evaluate(`document.querySelector(${JSON.stringify(comparison('model'))}).focus(); true`);
   await switchComparison('model', () => key('\uE007'));
@@ -349,6 +367,8 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
   assert.equal(coverage.idleMs, 6 * 3_600_000);
   assert.equal(coverage.missingPowerMs, 36 * 3_600_000);
   assert.match(await text(`${card('heatPump')} .timing-coverage`), /100% of time included/);
+  assert.doesNotMatch(await text(`${card('heatPump')} .timing-period`), /Partial data/);
+  assert.match(await text(`${detail('heatPump')} .timing-calculation`), /Included electricity.*kWh.*Cost at daily average prices.*Cost at recorded times.*Timing difference/);
   assert.match(await text(`${card('charger')} .timing-coverage`), /13% of charger-time included/);
   assert.match(await text(detail('charger')), /unknown|missing/i,
     'The charging detail still explains unrecorded time separately from idle time');
@@ -446,7 +466,7 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
   assert.equal(await evaluate("document.querySelectorAll('#timing-benefit .timing-assumed').length"), 1,
     'The chart-level assumed-rate indication appears once when both comparisons are unavailable');
   assert.match(await text('.timing-rate-explanation'), /nearest known contract rates/i);
-  assert.match(await text('.timing-chart-rates'), /no device comparison.*includes the affected periods/i);
+  assert.match(await text('.timing-chart-rates'), /Affected comparisons are marked.*Assumed rates/i);
   assert.doesNotMatch(await text('.timing-chart-rates'), /0% of included time/,
     'Chart-only assumptions do not present an irrelevant zero share of included device time');
   await command('browsingContext.setViewport', { context, viewport: { width: 390, height: 844 }, devicePixelRatio: 1 });
@@ -498,4 +518,57 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
   await checkFits();
   await switchComparison('timing');
   await command('browsingContext.setViewport', { context, viewport: { width: 1440, height: 1100 }, devicePixelRatio: 1 });
+
+  // Exercise all three populated cards together, including Fireplace, with an
+  // invented API result. The simulation remains isolated from household data.
+  await evaluate(`window.comparisonFixtureFetch = window.fetch;
+    window.fetch = async (...args) => {
+      const response = await window.comparisonFixtureFetch(...args);
+      if (new URL(args[0], location.href).pathname !== '/api/chart') return response;
+      const data = await response.clone().json();
+      data.firewoodBenefit = { status: 'provisional', valueEuro: 0.65, electricityAvoidedKwh: 3.1,
+        range: data.range, generatedAt: data.now, woodCostEuro: 0,
+        coverage: { elapsedMs: data.range.to - data.range.from, includedMs: data.range.to - data.range.from,
+          firstAt: data.range.from, lastAt: data.range.to }, loads: { kg: 6, count: 1 },
+        estimateRange: { lowerEuro: 0.2, upperEuro: 1.1 }, assumptions: ['Synthetic browser fixture.'] };
+      return new Response(JSON.stringify(data), { status: response.status, headers: response.headers });
+    }; true`);
+  try {
+    await chooseDate('2026-09-05');
+    await switchComparison('model');
+    await evaluate(`document.querySelectorAll('#timing-benefit details').forEach(fold => fold.open = false); true`);
+    assert.match(await text(`${card('firewood')} .timing-amount`), /€0.65/);
+    for (const width of [1440, 1024, 844, 390, 320]) {
+      await command('browsingContext.setViewport', { context, viewport: { width, height: 1100 }, devicePixelRatio: 1 });
+      for (const theme of ['dark', 'light']) {
+        await evaluate(`if (document.documentElement.dataset.theme !== '${theme}') document.getElementById('theme-toggle').click(); true`);
+        await evaluate('new Promise(resolve => setTimeout(() => resolve(true), 200))');
+        await checkFits();
+        await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))');
+        assert.equal(await evaluate(`(() => {
+          const nodes = ['charger', 'firewood'].map(device => document.querySelector('.timing-device[data-device="' + device + '"] .timing-comparison-fixed'));
+          return ['backgroundColor', 'color', 'fontSize', 'fontWeight', 'padding', 'border'].every(key =>
+            getComputedStyle(nodes[0])[key] === getComputedStyle(nodes[1])[key]);
+        })()`), true, 'Charging and Fireplace comparison indicators share the same visual treatment');
+        if (width >= 1000) {
+          const resultTops = await evaluate(`[...document.querySelectorAll('.timing-saving-result')].map(node => node.getBoundingClientRect().top)`);
+          assert.ok(Math.max(...resultTops) - Math.min(...resultTops) < 1, 'All three desktop results align below their comparison controls');
+        }
+        await scrollTo(summary);
+        await capture(`energy-comparisons-populated-${theme}-${width}`);
+        if (width < 801) {
+          await scrollTo(card('firewood'));
+          await capture(`energy-comparisons-fireplace-${theme}-${width}`);
+        }
+      }
+    }
+  } finally {
+    await evaluate('window.fetch = window.comparisonFixtureFetch; delete window.comparisonFixtureFetch; true');
+  }
+  // Restore the provider chart used by the broader smoke test after the
+  // isolated historical layout fixture.
+  await command('browsingContext.setViewport', { context, viewport: { width: 1440, height: 1100 }, devicePixelRatio: 1 });
+  await evaluate("document.getElementById('range-today').click(); true");
+  await until("document.getElementById('history').dataset.ready === 'true' && document.getElementById('history').dataset.rangeStart === '2026-09-07'");
+  await switchComparison('timing');
 }

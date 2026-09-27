@@ -33,6 +33,7 @@ const coefficientValues = {
 const coefficientKeys = Object.keys(coefficientValues);
 const recordingOnly = process.argv.includes('--recording-only');
 const chartOnly = process.argv.includes('--chart-only');
+const energyOnly = process.argv.includes('--energy-only');
 function seedRecordingFixture(app) {
   const record = (signal,value,unit,device,source='mqtt-equipment') => app.engine.recorder.record({
     source,device,signal,value,unit,sourceTime:now,receivedAt:now,quality:[],raw:{reportIntervalMs:90_000} });
@@ -145,6 +146,27 @@ try {
     }
     throw new Error(`UI did not settle: ${expression}; errors: ${JSON.stringify(errors)}`);
   };
+  if (energyOnly) {
+    await app.close();
+    const fixture = providerFixture(now);
+    app = await start({ config: { ...config, input: 'providers', dbPath: join(directory, 'energy-fixture.sqlite'),
+      priceSettings: { ...config.priceSettings, effectiveDate: '2026-09-07' },
+      connections: { ...fixture.connections, equipment: equipmentConfiguration({ devices: [] }) } },
+      clock: () => now, providerOptions: fixture.providerOptions });
+    seedTimingBrowserFixture(app.store);
+    mkdirSync('var', { recursive: true });
+    const capture = async name => {
+      const shot = await command('browsingContext.captureScreenshot', { context, origin: 'viewport' });
+      writeFileSync(`var/${name}.png`, Buffer.from(shot.data, 'base64'));
+    };
+    await command('browsingContext.navigate', { context, url: `http://127.0.0.1:${app.server.address().port}`, wait: 'complete' });
+    await until("document.getElementById('history')?.dataset.ready === 'true'");
+    await checkTimingBrowser({ command, evaluate, until, capture, context });
+    assert.deepEqual(errors, [], 'Energy comparisons render without browser errors');
+    console.log(JSON.stringify({ result: 'energy-browser-smoke-passed', browserTimeZone,
+      checked: ['scopes-and-comparisons', 'calculation-operands', 'coverage-and-rates', 'zero-negative-unavailable',
+        'keyboard-focus-and-fold-preservation', 'responsive-layout', 'dark-and-light'] }));
+  } else {
   const base = `http://127.0.0.1:${app.server.address().port}`;
   const checkDateAlignment = async () => {
     assert.equal(await evaluate(`(() => {
@@ -923,19 +945,6 @@ try {
   }
   // Invented recorded energy predates the only known contract period. Original
   // quarter-hour energy and spot prices suffice; no HP power is invented.
-  const historicalStart = Date.parse('2026-09-06T00:00:00+03:00');
-  app.store.transaction(() => {
-    for (let slot = 0; slot <= 96; slot++) {
-      const at = historicalStart + slot * 15 * 60_000;
-      const add = (signal, value, unit) => app.store.observation({ source: 'browser-fixture',
-        device: 'synthetic-historical-charger', signal, value, unit,
-        sourceTime: at, receivedAt: at, quality: [], raw: { fixture: true } });
-      if (slot < 96) add('spot_price', slot < 4 ? 0 : 20, 'c/kWh_ex_vat');
-      if(slot<96)for(let phase=1;phase<=3;phase++)app.store.observation({source:'easee',device:'synthetic-historical-charger',
-        signal:`ev1_energy_l${phase}`,value:slot<4?6.9/12:0,unit:'kWh',sourceTime:at+15*60_000,receivedAt:at+15*60_000,
-        quality:['estimated'],raw:{intervalStart:at,intervalEnd:at+15*60_000}});
-    }
-  });
   seedTimingBrowserFixture(app.store);
   await command('browsingContext.setViewport', { context, viewport: { width: 1440, height: 1100 }, devicePixelRatio: 1 });
   await command('browsingContext.navigate', { context, url: `http://127.0.0.1:${app.server.address().port}`, wait: 'complete' });
@@ -1103,6 +1112,7 @@ try {
       'source-scoped-charger2-errors', 'keyboard-expansion', 'refresh-preserves-expansion'],
     chargingChecks:['charger2-visible-power-dark-and-light','charger2-visible-with-lower-loads-hidden-or-absent','charger2-no-invented-phases','exactly-two-charger-session-axes','property-reading-status-and-retained-comparison','charger-session-totals-and-sample-size','session-counts-exclusions-and-energy-weighting'],
     checked: ['electricity-first-without-right-axis-duplicates', 'four-coefficients-from-read-only-replay', 'coefficient-visible-pixels-and-status', 'last-theme-restored-on-reload', 'theme-toggle', 'Finnish-today', 'single-old-day', 'immediate-end-date', 'immediate-date-range', 'one-day-window-stepping', 'rapid-range-stepping', 'calendar-boundary-stepping', 'compact-responsive-arrow-buttons', 'range-validation', 'shortcut-order-and-state', 'axis-and-legend-selection', 'property-and-charger-visible-pixels', 'asynchronous-provider-phase-power', 'historical-charger-assumed-rates', 'timing-evidence-shares-and-dates', 'heating-model-and-timing-selector-keyboard-touch', 'heating-saving-selection-refresh-reload-persistence', 'heating-model-positive-zero-negative-and-unavailable', 'timing-reconstructed-and-unavailable', 'timing-consistent-elapsed-time-coverage-and-standby-exclusion', 'timing-equal-closed-card-heights-and-independent-expansion', 'timing-stable-heading-and-fold-positions', 'timing-nested-fold-keyboard-touch-and-refresh', 'timing-dark-light-responsive-inline-explanations', 'grouped-history-catalogue', 'recording-frequencies', 'recording-inventory-lazy-fetch', 'recording-inventory-keyboard-mobile', 'recording-inventory-refresh-and-error-preservation', 'physical-storage-accounting', 'reconstructed-heat-pump-note', 'audit-only-diagnostics', 'price-defaults', 'date-races', 'tomorrow-only', 'desktop-mobile', 'Finnish-away-and-pause', 'independent-cancellation', 'draft-poll-preservation', 'DST-atomic-rejection', 'read-only-rates', 'home-model-settings-with-folded-equipment', 'equipment-grouped-readings-and-manual-controls', 'status-detail-escape-outside-dismissal-and-focus', 'status-detail-poll-preservation', 'status-detail-bounded-mobile-and-landscape', 'dynamic-equipment-rows-and-inline-controls', 'nested-learning-keyboard', 'closed-away-and-pause-deadlines', 'provider-sources-and-fallbacks', 'collapsed-MQTT-tests', 'MQTT-publish-acknowledgement-and-failure', 'MQTT-draft-preservation'] }, null, 2));
+  }
   await command('browser.close', {}); ownsBrowser=false;
 } finally {
   if(ownsBrowser) { try {await command('browser.close',{});}catch{} }

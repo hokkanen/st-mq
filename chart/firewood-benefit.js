@@ -1,8 +1,7 @@
-import { timingPercent } from './timing-model.js';
+import { comparisonAmount, timingPercent } from './timing-model.js';
 
 const finite = Number.isFinite;
 const euro = new Intl.NumberFormat('en-GB', { style: 'currency', currency: 'EUR', maximumFractionDigits: 2 });
-const amount = value => value !== 0 && Math.abs(value) < 0.005 ? `${value < 0 ? '−' : '+'}<€0.01` : euro.format(Object.is(value, -0) ? 0 : value);
 const number = (value, digits = 1) => new Intl.NumberFormat('en-GB', { maximumFractionDigits: digits }).format(value);
 const dateTime = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', year: 'numeric', month: 'short',
   day: 'numeric', hour: '2-digit', minute: '2-digit', timeZoneName: 'shortOffset' });
@@ -21,7 +20,7 @@ const reasons = {
 };
 
 export const firewoodExplanations = [
-  'Firewood compares estimated heating electricity with and without the logged wood under the same house conditions. This is a retrospective model comparison, not a meter reading or a replay of historical controller choices.',
+  'Fireplace compares estimated heating electricity with and without the logged wood under the same house conditions. This is a retrospective model comparison, not a meter reading or a replay of historical controller choices.',
   'Heating’s timing view and Charging reprice the same electricity against each day’s average price. Heating’s model view uses saved completed-cycle assessments. These comparisons and the Fireplace estimate have different baselines and are not added together.',
   'Wood cost is set to €0. The estimate excludes the cost of buying wood, labour and other fireplace costs. Negative electricity prices can make avoided electricity cost negative.',
 ];
@@ -54,10 +53,13 @@ export function firewoodDisplay(result, payload = {}) {
   const through = Math.min(range.to, result.generatedAt ?? payload.now ?? range.to);
   return {
     key: 'firewood', name: 'Fireplace', available, status, statusLabel,
-    amount: available ? amount(result.valueEuro) : null,
-    outcome: available ? result.valueEuro < 0 ? 'estimated electricity cost increase' : 'estimated electricity cost avoided' : null,
+    amount: available ? comparisonAmount(result.valueEuro) : null,
+    outcome: available ? result.valueEuro < 0 ? 'estimated electricity cost increase'
+      : result.valueEuro > 0 ? 'estimated electricity cost avoided' : 'estimated electricity cost difference' : null,
+    assumedRates: available && result.priceAssumptions?.durationMs > 0,
     electricity: finite(result.electricityAvoidedKwh) && status !== 'unavailable'
-      ? `${number(result.electricityAvoidedKwh)} kWh electricity avoided` : 'Electricity avoided: unavailable',
+      ? result.electricityAvoidedKwh < 0 ? `${number(Math.abs(result.electricityAvoidedKwh))} kWh additional electricity`
+        : `${number(result.electricityAvoidedKwh)} kWh electricity avoided` : 'Electricity avoided: unavailable',
     uncertainty: available && finite(estimateRange?.lowerEuro) && finite(estimateRange?.upperEuro)
       ? `Estimate range ${euro.format(estimateRange.lowerEuro)}–${euro.format(estimateRange.upperEuro)}; not a statistical confidence interval.` : null,
     unavailableReason: reasons[result.reason] ?? (typeof result.reason === 'string' && result.reason.includes(' ') ? result.reason
@@ -78,13 +80,18 @@ export function firewoodDisplay(result, payload = {}) {
       ? 'The response has passed the required model checks. This remains an estimate of an unobserved alternative.'
       : 'Initial or incompletely validated response assumptions remain in use. This estimate does not establish metered savings or authorize heating reductions.',
     remaining: remaining ? {
-      label: 'Expected remaining contribution',
-      energy: remainingEnergy !== null ? `${number(remainingEnergy)} kWh estimated electricity still avoidable` : null,
-      amount: remainingValue !== null ? `${amount(remainingValue)} estimated electricity cost still avoidable` : null,
+      label: 'Remaining forecast',
+      energy: remainingEnergy !== null ? remainingEnergy < 0
+        ? `${number(Math.abs(remainingEnergy))} kWh estimated additional electricity`
+        : `${number(remainingEnergy)} kWh estimated electricity still avoidable` : null,
+      amount: remainingValue !== null ? `${comparisonAmount(remainingValue)} ${remainingValue < 0
+        ? 'estimated electricity cost increase' : remainingValue > 0 ? 'estimated electricity cost avoided' : 'estimated electricity cost difference'}` : null,
+      uncertainty: remainingValue !== null && finite(remaining.lowerEuro) && finite(remaining.upperEuro)
+        ? `Forecast range ${euro.format(remaining.lowerEuro)}–${euro.format(remaining.upperEuro)}; not a statistical confidence interval.` : null,
       fuel: finite(remaining.kgEquivalent) ? `${number(remaining.kgEquivalent, 2)} kg of fuel-equivalent release remaining` : null,
       through: finite(remaining.through) ? `Calculated through ${dateTime.format(remaining.through)}.` : null,
       reason: typeof remaining.reason === 'string' ? remaining.reason.trim() || null : null,
-      explanation: 'Expected heat release after the selected calculation period is separate from the figures above. It is not yet realised savings.',
+      explanation: 'Expected heat release after the selected calculation period is separate from the figures above. This is a forecast of electricity cost impact, not yet realised.',
       unavailable: remainingValue === null && remainingEnergy === null ? 'Remaining electricity and cost impact are not yet available.' : null,
     } : null,
   };

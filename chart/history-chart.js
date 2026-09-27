@@ -28,6 +28,13 @@ const paletteVariables = {
   firewood: '--chart-firewood', fireplace: '--chart-fireplace',
   reference: '--chart-reference', garageFront: '--chart-garage-front', garagePump: '--chart-garage-pump', supply: '--chart-supply', return: '--chart-return', brineIn: '--chart-brine-in', brineOut: '--chart-brine-out',
 };
+export function historyRenderFingerprint(overview, selection) {
+  return JSON.stringify({ range: overview.range, input: overview.input, series: overview.series,
+    shading: overview.shading, meta: overview.meta, timingBenefit: overview.timingBenefit,
+    heatingBenefit: overview.heatingBenefit, heatingSavings: overview.heatingSavings,
+    firewoodBenefit: overview.firewoodBenefit, selection: chartSelectionKey(selection),
+    now: overview.now >= overview.range.from && overview.now < overview.range.to ? overview.now : null });
+}
 export function historyLegendLabel(axis, view, datasets) {
   if (axis === 'activity') return 'Activity rows';
   // Hidden series remain selectable in the legend, so they still belong to its group.
@@ -356,8 +363,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
       // display tails and the now marker using each fresh server-status clock.
       const plotNow = chartObservationTime(status, result.now);
       overview = { ...result, points: requestedSelection.points, now: plotNow, series: historySeriesAt(result, plotNow) };
-      const nextFingerprint = JSON.stringify({ range: overview.range, input: overview.input, series: overview.series, shading: overview.shading, meta: overview.meta, timingBenefit: overview.timingBenefit, heatingBenefit: overview.heatingBenefit, firewoodBenefit: overview.firewoodBenefit, selection: chartSelectionKey(selection),
-        now: plotNow >= overview.range.from && plotNow < overview.range.to ? plotNow : null });
+      const nextFingerprint = historyRenderFingerprint(overview, selection);
       plottedSelection = requestedSelection;
       navigation.setRange(overview.range);
       if (nextFingerprint !== fingerprint) { fingerprint = nextFingerprint; renderChart(); }

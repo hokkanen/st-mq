@@ -47,7 +47,7 @@ test('Garage and Total presentation keeps provisional missing coverage and count
   const payload = { heatingSavings, range, now };
   const total = heatingScopeDisplay(payload, 'total');
   assert.equal(total.amount, '€2.00'); assert.match(total.qualification, /Partial total · Garage unavailable/);
-  assert.match(total.breakdown.join(' '), /Home: €2.00.*Garage: unavailable/);
+  assert.match(total.breakdown.join(' '), /Home: €2.00 · 1 assessed cycle\. Garage: Unavailable · 0 assessed cycles\./);
   assert.match(total.explanations.join(' '), /frozen normal-heating reference.*recovery.*provisional.*never added/);
   const timing = heatingScopeDisplay(payload, 'total', 'timing');
   assert.equal(timing.key,'heatPump','Changing scope must keep the mounted Heating card identity');

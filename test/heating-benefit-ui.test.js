@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { heatingDisplay } from '../chart/heating-benefit.js';
+import { heatingDisplay, heatingExplanations } from '../chart/heating-benefit.js';
 
 const from = Date.parse('2026-09-08T00:00:00+03:00'), HOUR = 3_600_000;
 const payload = { now: from + 12 * HOUR, range: { from, to: from + 24 * HOUR } };
@@ -38,4 +38,19 @@ test('zero, negative and sub-cent heating estimates retain their meaning', () =>
   assert.equal(heatingDisplay({ ...result, valueEuro: -1 }, payload).outcome, 'estimated extra cost');
   assert.equal(heatingDisplay({ ...result, valueEuro: 0 }, payload).outcome, 'estimated cost difference');
   assert.equal(heatingDisplay({ ...result, estimateRange: null }, payload).uncertainty, null);
+});
+
+test('completed-model reconciliation qualifies both costs and preserves selected-cycle scope', () => {
+  const display = heatingDisplay({ ...result, referenceCostEuro: 4.7125, actualSpaceHeatingCostEuro: 2.2125 }, payload);
+  assert.deepEqual(display.reconciliation, [
+    { label: 'Modelled reference cost', value: '€4.7125' },
+    { label: 'Assessed heating cost', value: '€2.2125' },
+    { label: 'Estimated cost difference', value: '€2.50' },
+  ]);
+  assert.match(display.reconciliationExplanation, /included completed cycles/);
+  assert.match(heatingExplanations.join(' '), /temperature-dependent electrical estimate.*dated nominal equipment powers/);
+  assert.match(heatingExplanations.join(' '), /Domestic hot water is excluded.*average euros per assessed cycle/);
+  const unsupported = heatingDisplay({ ...result, status: 'unavailable', valueEuro: null,
+    referenceCostEuro: 5, actualSpaceHeatingCostEuro: 2.5 }, payload);
+  assert.deepEqual(unsupported.reconciliation, []);
 });

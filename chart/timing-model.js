@@ -1,6 +1,8 @@
 const finite = Number.isFinite;
 const number = new Intl.NumberFormat('en-GB', { maximumFractionDigits: 1 });
 const euro = new Intl.NumberFormat('en-GB', { style: 'currency', currency: 'EUR', maximumFractionDigits: 2 });
+const preciseEuro = new Intl.NumberFormat('en-GB', { style: 'currency', currency: 'EUR', maximumFractionDigits: 4 });
+const energy = new Intl.NumberFormat('en-GB', { maximumFractionDigits: 3 });
 const dateTime = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZoneName: 'shortOffset' });
 const date = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Helsinki', year: 'numeric', month: '2-digit', day: '2-digit' });
 
@@ -20,7 +22,7 @@ export const timingExplanations = {
     'Positive means cheaper timing; negative means dearer timing. The amount is not scaled up for gaps and does not prove savings caused by the controller.',
   ],
   coverage: [
-    '“Time included” uses elapsed time for heating and each charger. Combined charging uses charger-time: an hour on each charger counts twice. Heating includes valid zero-use periods; charging excludes idle periods. Missing readings are unknown, not idle.',
+    '“Time included” uses elapsed time for heating and each charger. Combined charging uses charger-time: an hour on each charger counts twice. Heating Total uses combined system-time: an hour on Home and an hour on Garage also count twice. Heating includes valid zero-use periods; charging excludes idle periods. Missing readings are unknown, not idle.',
     'Today runs from Finnish midnight to the calculation time. Future hours do not reduce the percentage, but the price average still needs the full day’s prices. Unavailable means there is no supported total, not zero energy use.',
   ],
   evidence: [
@@ -37,6 +39,18 @@ export function timingPercent(share) {
   if (share < 0.01) return '<1%';
   if (share < 1 && Math.round(share * 100) === 100) return '>99%';
   return `${Math.round(Math.min(1, share) * 100)}%`;
+}
+
+/** Keep small, nonzero amounts distinct from zero in every comparison scope. */
+export function comparisonAmount(value) {
+  return value !== 0 && Math.abs(value) < 0.005
+    ? `${value < 0 ? '−' : '+'}<€0.01` : euro.format(Object.is(value, -0) ? 0 : value);
+}
+
+/** Extra precision makes the subtraction reviewable without rounding its inputs first. */
+export function comparisonCost(value) {
+  return value !== 0 && Math.abs(value) < 0.00005
+    ? `${value < 0 ? '−' : '+'}<€0.0001` : preciseEuro.format(Object.is(value, -0) ? 0 : value);
 }
 
 function span(from, to, prefix) {
@@ -56,7 +70,8 @@ export function timingDisplay(key, result = {}, payload = {}) {
   const charger = ['charger','charger1','charger2'].includes(key);
   const name = key === 'charger1' ? 'Charger 1' : key === 'charger2' ? 'Charger 2' : charger ? 'Charging' : 'Heating';
   const combined = result.coverageDetails?.coverageBasis === 'charger-time';
-  const includedTimeLabel = combined ? 'included charger-time' : 'included time';
+  const combinedSystems = result.coverageDetails?.coverageBasis === 'combined-system-time';
+  const includedTimeLabel = combined ? 'included charger-time' : combinedSystems ? 'included system-time' : 'included time';
   const coverage = result.coverageDetails ?? {};
   const energyBasis = result.evidence?.energyBasis;
   const reconstructed = key === 'heatPump';
@@ -76,8 +91,7 @@ export function timingDisplay(key, result = {}, payload = {}) {
   const inProgress = finite(now) && finite(range.to) && now < range.to && (elapsed > 0 || now > range.from);
   const today = inProgress && range.startDate === date.format(now) && range.endDate === range.startDate;
   const basis = sources.length > 1 ? 'Mixed basis' : sources.length ? timingSources[sources[0].key].label : null;
-  const tiny = available && result.value !== 0 && Math.abs(result.value) < 0.005;
-  const amount = available ? tiny ? `${result.value < 0 ? '−' : '+'}<€0.01` : euro.format(Object.is(result.value, -0) ? 0 : result.value) : null;
+  const amount = available ? comparisonAmount(result.value) : null;
   const calculationPeriod = span(coverage.from ?? range.from, coverage.to ?? Math.min(range.to, now), 'Calculation period (Finnish time)');
   const smallDifferenceExplanation = available && Math.abs(result.value) < 0.005
     ? result.value === 0
@@ -87,7 +101,7 @@ export function timingDisplay(key, result = {}, payload = {}) {
 
   const energyExplanation = available
     ? reconstructed
-      ? 'Energy for space heating and domestic hot water is reconstructed from recorded equipment operation and dated nominal powers. Model predictions and requested modes cannot fill missing equipment evidence. Whole-house power is not used.'
+      ? 'Energy for space heating and domestic hot water is reconstructed from recorded equipment operation and dated nominal powers. The Home model comparison instead uses a temperature-dependent electrical estimate for completed space-heating cycles, so its energy and cost need not match this timing view. Model predictions and requested modes cannot fill missing equipment evidence. Whole-house power is not used.'
       : recorded
         ? `Energy is estimated from the original recorded electrical intervals${energyBasis === 'recorded-and-legacy' ? ' and older phase-current samples' : ''}. Cumulative meter checks do not revise this history.`
         : 'Uses the recorded sources below; estimates are not direct energy measurements.'
@@ -145,7 +159,8 @@ export function timingDisplay(key, result = {}, payload = {}) {
   const powerSpan = !available ? span(coverage.firstPowerAt, coverage.lastPowerAt, intervalTime ? 'Available energy periods' : 'Available power samples') : null;
   const availablePowerPeriod = powerSpan ? `${powerSpan} Gaps may exist between them.` : null;
 
-  const periodLabel = inProgress ? today ? 'Today so far' : 'Period in progress' : available && result.provisional ? 'Partial data' : null;
+  const periodLabel = inProgress ? today ? 'Today so far' : 'Period in progress'
+    : available && (missingHistory || missingPrices) ? 'Partial data' : null;
   const periodExplanation = periodLabel ? inProgress
     ? 'The selection is still in progress. The comparison stops at the calculation time; later hours may change the total.'
     : 'The total covers only included periods. Missing history is not extrapolated.'
@@ -155,12 +170,19 @@ export function timingDisplay(key, result = {}, payload = {}) {
       const display = timingDisplay(id, payload.timingBenefit?.[id], payload);
       return `${display.name}: ${display.amount ?? 'Unavailable'}; ${display.coverageLabel}.`;
     })] : [];
+  const reconciliation = available ? [
+    finite(result.energyKwh) ? { label: 'Included electricity', value: `${energy.format(result.energyKwh)} kWh` } : null,
+    finite(result.uniformCostEuro) ? { label: 'Cost at daily average prices', value: comparisonCost(result.uniformCostEuro) } : null,
+    finite(result.actualCostEuro) ? { label: 'Cost at recorded times', value: comparisonCost(result.actualCostEuro) } : null,
+    { label: 'Timing difference', value: comparisonCost(result.value) },
+  ].filter(Boolean) : [];
   return { key, name, available, noChargingDetected, amount, outcome: 'timing difference', basis, sources: sourceDetails,
-    coverageLabel: `${timingPercent(ratio)} of ${combined ? 'charger-time' : 'time'} included`,
-    includedTimeLabel, coverageHeading: combined ? 'Charger-time included' : 'Time included', assumedRates, breakdown,
+    coverageLabel: `${timingPercent(ratio)} of ${combined ? 'charger-time' : combinedSystems ? 'combined system time' : 'time'} included`,
+    includedTimeLabel, coverageHeading: combined ? 'Charger-time included' : combinedSystems ? 'System-time included' : 'Time included', assumedRates, breakdown,
     periodLabel, unavailableReason, calculationPeriod, energyExplanation, coverageExplanation, coverageSummary,
     periodExplanation, smallDifferenceExplanation, availablePowerPeriod, auxiliaryNotes, evidenceExplanation,
-    rateSummary, ratePeriod };
+    rateSummary, ratePeriod, reconciliation,
+    reconciliationExplanation: 'Cost at daily average prices minus cost at recorded times gives the timing difference. Calculations use unrounded values; displayed amounts may not add exactly.' };
 }
 
 /** Stable card identity; values and coverage always come from the chosen meter scope. */

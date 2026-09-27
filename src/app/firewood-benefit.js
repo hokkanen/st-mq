@@ -21,6 +21,7 @@ function empty(range, now, context, reason) {
   return { summary: { status: 'unavailable', valueEuro: null, electricityAvoidedKwh: null, woodCostEuro: 0,
     range, generatedAt: now, fireplaceRevision: context?.fireplaceRevision ?? 0,
     coverage: { includedMs: 0, elapsedMs: Math.max(0, Math.min(range.to, now) - range.from), missingMs: Math.max(0, Math.min(range.to, now) - range.from), firstAt: null, lastAt: null },
+    priceAssumptions: { durationMs: 0, share: 0, firstAt: null, lastAt: null, timeBasis: 'included-period' },
     loads: { count: events.filter(event => event.at >= range.from && event.at < range.to).length,
       kg: events.filter(event => event.at >= range.from && event.at < range.to).reduce((sum, event) => sum + event.kg, 0) },
     remaining: { kgEquivalent: fireplaceIntegral(events.filter(event => event.at <= Math.min(range.to, now)), Math.min(range.to, now), Math.min(range.to, now) + FIREPLACE_HORIZON_MS),
@@ -47,6 +48,8 @@ export function getFirewoodBenefit(args) {
 function computeFirewoodBenefit({ store, input, range, now, priceIntervals = [], futureIntervals = [] }) {
   const through = Math.min(range.to, now);
   const context = fireplaceLearningContext(store, input, undefined, now);
+  if (priceIntervals.some(row => ['rateAssumption', 'assumedRates', 'ratesAssumed', 'assumed'].some(key => Object.hasOwn(row, key))))
+    return empty(range, now, context, 'Price history uses unsupported rate-assumption fields.');
   const result = empty(range, now, context, 'No logged fires overlap the available history.');
   if (through <= range.from || !context.fireplaceEvents.some(event => event.at < through)) return result;
   const bounds = store.db.prepare('SELECT MAX(id) id FROM learning_journal WHERE input=?').get(input);
@@ -54,8 +57,7 @@ function computeFirewoodBenefit({ store, input, range, now, priceIntervals = [],
   const committedThrough = store.db.prepare(`SELECT MAX(at) at FROM learning_journal
     WHERE input=? AND kind='sample' AND algorithm_version=? AND at<=?`).get(input, LEARNING_ALGORITHM, through).at ?? 0;
   const pricedPrefix = priceIntervals.filter(row => row.start < committedThrough).map(row => ({ start: row.start,
-    end: Math.min(row.end, committedThrough), price: row.price, rateAssumption: row.rateAssumption,
-    assumedRates: row.assumedRates, ratesAssumed: row.ratesAssumed, assumed: row.assumed, assumedPrice: row.assumedPrice, assumptions: row.assumptions }));
+    end: Math.min(row.end, committedThrough), price: row.price, assumedPrice: row.assumedPrice, assumptions: row.assumptions }));
   const key = createHash('sha256').update(JSON.stringify([input, range, Math.min(through, committedThrough), context.fireplaceRevision, bounds.id,
     checkpointRow?.value ?? null, pricedPrefix, LEARNING_ALGORITHM])).digest('hex');
   if (cache.get(store.db)?.key === key) return refreshResult(cache.get(store.db), range, now, futureIntervals, context);
@@ -90,6 +92,7 @@ function computeFirewoodBenefit({ store, input, range, now, priceIntervals = [],
   if (!fireplaceEvidenceReady(model)) assumptions.add('The wood response is provisional; kilograms are not converted directly to electricity or euros.');
   let previous = null, scenarios = null, cursor = null, blocked = false;
   let includedMs = 0, firstAt = null, lastAt = null, sourceGaps = 0, unsupportedRows = 0, resetCount = 0;
+  const priceAssumptions = { ...result.summary.priceAssumptions };
   const daily = new Map(), evidenceDays = new Map();
   let evidenceHours = 0, observedKwh = 0, predictedKwh = 0, dutyErrorHours = 0, auxErrorKwh = 0;
   let lastConfiguration = first.payload.configuration, lastTargetC = first.payload.configuration.targetC ?? 21;
@@ -127,8 +130,11 @@ function computeFirewoodBenefit({ store, input, range, now, priceIntervals = [],
           bucket.cents[i] += value.benefitCents; bucket.energy[i] += value.avoidedKwh; });
         bucket.includedMs += end - start; daily.set(date, bucket);
         includedMs += end - start; firstAt ??= start; lastAt = end;
-        if (price.rateAssumption || price.assumedRates || price.ratesAssumed || price.assumed || price.assumedPrice)
+        if (price.assumedPrice === true) {
           assumptions.add('Historical electricity prices include assumed tariff components supplied by the price history.');
+          priceAssumptions.durationMs += end - start;
+          priceAssumptions.firstAt ??= start; priceAssumptions.lastAt = end;
+        }
         if (Array.isArray(price.assumptions)) price.assumptions.forEach(value => assumptions.add(String(value)));
       }
       const independent = finite(trainedAt) && start > trainedAt && segment.phase === 'normal'
@@ -247,6 +253,7 @@ function computeFirewoodBenefit({ store, input, range, now, priceIntervals = [],
     reason: missingMs ? 'Partial estimate: uncovered intervals are unknown and excluded from the total.'
       : status === 'provisional' ? 'Estimated normal-heating displacement; independent electrical/runtime evidence is not yet sufficient.' : null,
     coverage: { includedMs, elapsedMs, missingMs, firstAt, lastAt }, assumptions: [...assumptions],
+    priceAssumptions: { ...priceAssumptions, share: includedMs ? priceAssumptions.durationMs / includedMs : 0 },
     estimateRange: { lowerEuro: Math.min(...totals) / 100, upperEuro: Math.max(...totals) / 100,
       lowerKwh: Math.min(...energyTotals), upperKwh: Math.max(...energyTotals) },
     modelVersion: model.trainedAt ?? 'provisional-priors', evidence: { thermalValidated: thermalEvidenceReady(model),

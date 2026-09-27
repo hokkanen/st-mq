@@ -1013,27 +1013,44 @@ download. Short views react to new committed data, including the durable open
 energy interval. The chart query runs in a separate worker with bounded memory
 and a cancellable queue, so a large query does not block the control event loop.
 The **Energy cost comparisons** fold starts closed beneath the chart, alongside
-**Recording details**. **Heating**, **Charging** and **Firewood** summary boxes
+**Recording details**. **Heating**, **Charging** and **Fireplace** summary boxes
 align in three columns when space allows and stack on narrow screens.
-Their details folds expand independently for energy sources, timestamps and coverage. Shared
-explanations come last in a centered column. The folds support keyboard and
+Heating starts on **Home** and **Model estimate**, restoring a saved **Timing cost**
+choice. It offers Home / Garage / Total; Charging offers Charger 1 / Charger 2 /
+Total for timing comparisons. Their details folds expand independently for
+cost operands, included energy, sources, timestamps and coverage. Shared
+explanations appear in **How these comparisons work**. The folds support keyboard and
 touch and keep their state across chart refreshes and date changes.
 
-Both headline percentages mean included time divided by the selected elapsed time;
-future hours do not enter that denominator. Charging includes only recorded periods
+The Heating model view sums supported frozen cycle assessments on their Finnish
+completion date, including recovery and excluding domestic hot water. Its evidence
+is assessed-cycle counts, not elapsed-time coverage. Home's execution electricity
+uses a temperature-dependent heat-pump source estimate; Home timing instead uses
+recorded operation and dated nominal powers, including hot-water operation. Neither
+is a dedicated meter reading. Garage's completed-episode reference remains
+provisional. These period totals differ from the Learning view's rolling €/cycle
+mean and from charger session costs.
+
+Timing coverage means included time divided by selected elapsed time; future
+hours do not enter that denominator. Heating Total combines Home and Garage
+system-time, and Charging Total combines charger-time. Charging includes only recorded periods
 above 100 W with complete daily prices; idle periods at or below 100 W contribute
 neither energy nor time to its comparison. Missing readings remain unknown, rather
 than idle. Heating continues to include valid zero-consumption time. Source and
-rate-assumption percentages describe shares of included time for either device.
-The daily average price still spans the full Finnish day. These rules affect the
+rate-assumption percentages describe shares of included timing time.
+Every timing scope requires complete prices for the full Finnish day's average,
+even when only part of the day's energy is included. These rules affect the
 comparison only; original energy records, chart series and CSV import interpretation
 remain unchanged.
 
-Firewood is a separate estimated reduction in space-heating electricity under a
+Fireplace is a separate estimated difference in space-heating electricity under a
 paired normal-heating reference, with free wood, a scenario range and explicit
-coverage. It is not included in a combined total with the timing comparisons.
-Remaining forecast savings are separate from past estimates. All fireplace chart
-and savings data are derived on demand without new telemetry or daily savings rows;
+coverage. It is not included in a combined total with the other comparisons.
+Remaining forecast cost and electricity differences are separate from past estimates;
+negative prices can make avoided electricity increase cost. Unlike frozen cycle
+assessments, this retrospective estimate can change after corrections to logged
+wood or the reconstructible model. All fireplace chart and savings data are
+derived on demand without new telemetry or daily savings rows;
 see [fireplace logging](fireplace.md#visibility-and-estimated-savings).
 
 The **Property meter counter** and **Charging session checks** views preserve
