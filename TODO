@@ -1,3 +1,37 @@
+Completed 2026-09-28 — Validate asynchronous expiry reports and preserve bounded Shelly evidence
+- Treat the first mixed-clock expiry overrun as unconfirmed evidence while the
+  existing command waits. A later report must validate the same or shorter
+  monotonic deadline against the unchanged UTC bound before acknowledgement or
+  disconnected holding is available. Valid pre-ACK reports establish only the
+  expiry check; they do not imply the serial write was acknowledged.
+- Keep the original result/request/source deadlines, immediate true-extension
+  rejection, latched cleanup, owner/session fencing and minimum host hold bound.
+  Missing validation expires at the earliest existing deadline. No widened clock
+  tolerance, permission extension, source-age allowance or new firmware contract.
+- Reject malformed/future Shelly notification clocks without wiping previously
+  valid probe evidence or renewing its original timestamps and expiry. Explicit
+  invalid measurements/component faults still revoke affected evidence. Rejected
+  clocks cannot credit relay readbacks, device liveness or energy counters.
+- Use the common Gen2 scripting subset for BLU bridges on Plus Plug S devices;
+  scanner startup failure stops that script. Decoder, original reception clocks,
+  duplicate suppression and MQTT topic identity remain unchanged.
+- Reviewed F1/F3/F4/F5/F7/F8 across acquisition, driver/host evidence, room control,
+  persistence, consumers and contracts. Removed explicit malformed-clock coercion;
+  absent native notification timestamps remain supported. No schema migration,
+  old payload bridge, configuration translation, learning or UI change.
+- Regression tests cover initial/renewal clock sampling, delayed ACK resolution,
+  immutable/extended device expiry, timeout/source bounds, restart and ownership
+  loss, future clocks, explicit faults, relay/meter isolation and scanner failure.
+- Validation: 4,052 routine tests pass, zero failures; one optional upstream
+  parser check skipped. Production build passes with the existing bundle-size
+  warning. Independent review caught and verified the pending-candidate
+  ownership-loss latch; both timing paths passed final cross-review.
+- Complete the explicitly authorized live BLU gateway handover with private
+  backups and fresh reception/MQTT verification, disable the original bridge
+  startup and Bluetooth services, and restart the controller with its existing
+  environment. Relay outputs/settings are preserved. Live reporting resumes;
+  persistent connection loss remains a separate reliability investigation.
+
 Completed 2026-09-28 — Preserve validated external-temperature expiry across report clock sampling
 - The Pill samples loop uptime/remaining lifetime before its publication-time
   UTC clock. Stop reinterpreting later UTC reports as an extended deadline once

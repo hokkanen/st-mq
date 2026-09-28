@@ -388,15 +388,11 @@ test('acknowledged external permission survives connection uncertainty only unti
   assert.equal(f.adapter.externalTemperature().continuation, null, 'the exact original deadline ends continuation');
 });
 
-test('a device expiry beyond the requested bound revokes continuation and requires explicit cleanup', async t => {
-  for (const timing of ['initial acknowledgement', 'later state', 'previous sample during renewal']) await t.test(timing, async t => {
+test('a device extending its validated expiry revokes continuation and requires explicit cleanup', async t => {
+  for (const timing of ['later state', 'previous sample during renewal']) await t.test(timing, async t => {
     const f = fixture(t), original = f.sample({ requestedExpiryAt: BASE + 70_000 });
     await f.adapter.setExternalTemperature(original);
-    f.advance(); const active = f.result('acknowledged', timing === 'initial acknowledgement' ? {
-      externalTemperature: { ...INTERNAL, phase: 'active', acknowledged: true, restorationPending: true,
-        temperatureC: original.temperatureC, measuredAt: original.measuredAt,
-        expiresInMs: original.requestedExpiryAt - f.now() + 1001 },
-    } : {});
+    f.advance(); const active = f.result('acknowledged');
     if (timing === 'previous sample during renewal') {
       f.advance(29_000);
       f.result('acknowledged');
@@ -405,7 +401,7 @@ test('a device expiry beyond the requested bound revokes continuation and requir
     f.advance();
     const patch = { authority: active.authority,
       externalTemperature: { ...active.externalTemperature, expiresInMs: original.requestedExpiryAt - f.now() + 1001 } };
-    if (timing !== 'initial acknowledgement') f.state(patch);
+    f.state(patch);
     assert.equal(f.adapter.externalTemperature().continuation, null);
     assert.equal(f.adapter.externalTemperature().result.reason, 'external-expiry-bound-mismatch');
     assert.equal(f.adapter.externalTemperature().needsClear, true);
@@ -512,8 +508,119 @@ test('monotonic trust cannot bypass a new or tighter bound, or substitute for mi
     f.state({ authority: active.authority,
       ...(change === 'missing uptime' ? { uptimeMs: undefined } : {}),
       externalTemperature: reported });
-    assert.equal(f.adapter.externalTemperature().result.reason, 'external-expiry-bound-mismatch');
     assert.equal(f.adapter.externalTemperature().continuation, null);
+    if (change !== 'missing uptime') {
+      assert.equal(f.adapter.externalTemperature().pending, true, 'a new bound has no acknowledged authority while validation is pending');
+      f.advance(45_000); await f.adapter.safetyTick();
+    }
+    assert.equal(f.adapter.externalTemperature().result.reason,
+      change === 'missing uptime' ? 'external-expiry-bound-mismatch' : 'external-expiry-unverified');
+  });
+});
+
+test('an ambiguous first report waits for exact monotonic expiry validation without widening UTC tolerance', async t => {
+  for (const firstResult of ['accepted', 'acknowledged']) await t.test(firstResult, async t => {
+    const events = [], f = fixture(t, { onDiagnostic: event => events.push(event) }), sample = f.sample();
+    await f.adapter.setExternalTemperature(sample);
+    f.advance(3554);
+    const first = f.result(firstResult, { observedAt: BASE + 3000, uptimeMs: TEMPLATE.uptimeMs + 2572,
+      externalTemperature: { ...INTERNAL, phase: 'active', acknowledged: firstResult === 'acknowledged', restorationPending: true,
+        temperatureC: sample.temperatureC, measuredAt: sample.measuredAt, expiresInMs: 118_272 } });
+    assert.equal(first.observedAt + first.externalTemperature.expiresInMs - sample.requestedExpiryAt, 1272);
+    assert.equal(f.adapter.externalTemperature().pending, true);
+    assert.equal(f.adapter.externalTemperature().result.status, 'accepted');
+    assert.equal(f.adapter.externalTemperature().continuation, null, 'an unvalidated report grants no holding authority');
+    await assert.rejects(f.adapter.setExternalTemperature(f.sample()), /current device command/);
+    f.advance(2352);
+    const patch = { observedAt: BASE + 5000, uptimeMs: TEMPLATE.uptimeMs + 5000,
+      authority: first.authority, externalTemperature: { ...first.externalTemperature, acknowledged: true, expiresInMs: 115_844 } };
+    const validated = firstResult === 'accepted' ? f.result('acknowledged', patch) : f.state(patch);
+    assert.equal(validated.observedAt + validated.externalTemperature.expiresInMs - sample.requestedExpiryAt, 844);
+    assert.equal(first.uptimeMs + first.externalTemperature.expiresInMs,
+      validated.uptimeMs + validated.externalTemperature.expiresInMs);
+    assert.equal(f.adapter.externalTemperature().result.status, 'acknowledged');
+    assert.equal(f.adapter.externalTemperature().continuation.expiresAt, sample.requestedExpiryAt);
+    assert.equal(f.published.length, 1, 'no replay, replacement or clear was published');
+    assert.deepEqual(events, []);
+  });
+});
+
+test('a validated pre-ACK report anchors a later ACK sampled across a UTC boundary', async t => {
+  const f = fixture(t), sample = f.sample();
+  await f.adapter.setExternalTemperature(sample);
+  f.advance(1000);
+  const accepted = f.result('accepted', { externalTemperature: { ...INTERNAL, phase: 'active', restorationPending: true,
+    temperatureC: sample.temperatureC, measuredAt: sample.measuredAt, expiresInMs: 119_999 } });
+  assert.equal(f.adapter.externalTemperature().continuation, null, 'expiry validation is not serial acknowledgement');
+  f.advance(2000);
+  f.result('acknowledged', { uptimeMs: TEMPLATE.uptimeMs + 2900,
+    externalTemperature: { ...accepted.externalTemperature, acknowledged: true, expiresInMs: 118_099 } });
+  assert.equal(f.adapter.externalTemperature().result.status, 'acknowledged');
+  assert.equal(f.adapter.externalTemperature().continuation.expiresAt, sample.requestedExpiryAt);
+});
+
+test('unverified initial expiry cannot wait beyond the result deadline or original source permission', async t => {
+  for (const deadline of ['result', 'requested', 'source']) await t.test(deadline, async t => {
+    const f = fixture(t), sample = f.sample(deadline === 'requested' ? { requestedExpiryAt: BASE + 8000 }
+      : deadline === 'source' ? { measuredAt: BASE - 112_000 } : {});
+    await f.adapter.setExternalTemperature(sample);
+    const command = f.published[0].command;
+    f.advance(1000);
+    const first = f.result('acknowledged', { externalTemperature: { ...INTERNAL, phase: 'active', acknowledged: true,
+      restorationPending: true, temperatureC: sample.temperatureC, measuredAt: sample.measuredAt,
+      expiresInMs: command.requestedExpiryAt - f.now() + 1001 } });
+    assert.equal(f.adapter.externalTemperature().pending, true);
+    const stopAt = deadline === 'result' ? BASE + 45_000 : BASE + 8000;
+    f.advance(stopAt - f.now() - 1); await f.adapter.safetyTick();
+    assert.equal(f.adapter.externalTemperature().pending, true);
+    f.advance(1); await f.adapter.safetyTick();
+    assert.equal(f.adapter.externalTemperature().pending, false);
+    assert.equal(f.adapter.externalTemperature().result.reason, 'external-expiry-unverified');
+    assert.equal(f.adapter.externalTemperature().continuation, null);
+    f.state({ authority: first.authority, externalTemperature: { ...first.externalTemperature,
+      expiresInMs: Math.max(0, command.requestedExpiryAt - f.now()) } });
+    assert.notEqual(f.adapter.externalTemperature().result.status, 'acknowledged', 'late validation cannot reverse required cleanup');
+    await f.adapter.setExternalTemperature({ temperatureC: null });
+    assert.equal(f.published.at(-1).command.temperatureC, null);
+  });
+});
+
+test('ambiguous initial expiry preserves monotonic, session and restart fencing', async t => {
+  for (const change of ['extension', 'boot', 'session', 'disconnect', 'restart', 'owner']) await t.test(change, async t => {
+    const f = fixture(t), sample = f.sample();
+    await f.adapter.setExternalTemperature(sample);
+    f.advance(1000);
+    const first = f.result('acknowledged', { externalTemperature: { ...INTERNAL, phase: 'active', acknowledged: true,
+      restorationPending: true, temperatureC: sample.temperatureC, measuredAt: sample.measuredAt, expiresInMs: 121_000 } });
+    if (change === 'restart') {
+      const restarted = fixture(t, { persisted: f.adapter.snapshot(), initialState: false });
+      restarted.advance(1000); restarted.state({ authority: first.authority, externalTemperature: first.externalTemperature });
+      assert.equal(restarted.adapter.externalTemperature().continuation, null);
+      assert.equal(restarted.adapter.externalTemperature().needsClear, true);
+      return;
+    }
+    if (change === 'disconnect') {
+      f.adapter.setConnected(false);
+      assert.equal(f.adapter.externalTemperature().continuation, null);
+      f.adapter.setConnected(true);
+    }
+    f.advance(1000);
+    f.state({ authority: change === 'owner' ? { ...first.authority, ownerSession: 'foreign-owner' } : first.authority,
+      ...(change === 'owner' ? { observedAt: f.now() - 1000 } : {}),
+      ...(change === 'boot' ? { bootId: 'another-boot' } : change === 'session' ? { sessionId: 'another-session' } : {}),
+      externalTemperature: { ...first.externalTemperature, expiresInMs: change === 'extension' ? 120_002 : 120_000 } });
+    assert.equal(f.adapter.externalTemperature().continuation, null);
+    assert.notEqual(f.adapter.externalTemperature().result.status, 'acknowledged');
+    if (change === 'extension') assert.equal(f.adapter.externalTemperature().result.reason, 'external-expiry-bound-mismatch');
+    if (change === 'owner') {
+      assert.equal(f.adapter.externalTemperature().result.reason, 'external-owner-changed');
+      f.advance(1000);
+      f.state({ authority: first.authority, observedAt: f.now() - 1000,
+        externalTemperature: { ...first.externalTemperature, expiresInMs: 119_000 } });
+      assert.equal(f.adapter.externalTemperature().result.reason, 'external-owner-changed');
+      assert.equal(f.adapter.externalTemperature().continuation, null, 'returning ownership cannot revive the abandoned candidate');
+    }
+    assert.equal(f.published.length, 1);
   });
 });
 

@@ -132,6 +132,41 @@ test('the engine retains outage history and unavailable latest separately from e
   assert.equal(garageTemperatureEvidence(f.engine.garageTemperatureEvidence, signal, start + 31_000).usable, false);
 });
 
+test('rejected Shelly notification clocks preserve bounded Garage evidence but never hide a probe fault', t => {
+  const f = engineFixture(t), publications = [];
+  const settings = equipmentConfiguration({ devices: [{ id: 'garage', kind: 'temperature', connection: 'shelly:invented-garage',
+    signal, temperature_id: 100, readings: [{ key: 'front', signal: 'garage_temperature_2',
+      component: 'temperature:101', unit: 'degC', required: true }] }] });
+  const capture = createShellyCapture({ engine: f.engine, store: f.store, settings,
+    publish: async (topic, payload) => { publications.push({ topic, payload: JSON.parse(payload) }); }, readbackTimeoutMs: 100 });
+  t.after(() => capture.close());
+  capture.setConnected(true);
+  const request = publications.find(row => row.payload.method === 'Shelly.GetDeviceInfo').payload;
+  capture.receive(`${request.src}/rpc`, JSON.stringify({ id: request.id, dst: request.src, src: 'invented-gateway',
+    result: { id: 'invented-gateway', gen: 2 } }));
+  const notify = (at, components) => capture.receive('invented-garage/events/rpc', JSON.stringify({
+    src: 'invented-gateway', method: 'NotifyStatus', params: { ts: at / 1000, ...components } }));
+  notify(start, { 'temperature:100': { tC: 8 }, 'temperature:101': { tC: 9 } });
+  const before = structuredClone(f.engine.garageTemperatureEvidence), count = f.store.observations().length;
+  f.now(start + 10_000); notify(start + 10_004, { 'temperature:100': { tC: 10 } });
+  assert.deepEqual(structuredClone(f.engine.garageTemperatureEvidence), before);
+  assert.equal(f.store.observations().length, count, 'No invented source outage or new temperature report');
+  for (const name of [signal, 'garage_temperature_2']) {
+    const evidence = garageTemperatureEvidence(f.engine.garageTemperatureEvidence, name, start + 119_999);
+    assert.equal(evidence.usable, true); assert.equal(evidence.held, false);
+    assert.equal(evidence.expiresAt, start + 120_000);
+    assert.equal(garageTemperatureEvidence(f.engine.garageTemperatureEvidence, name, start + 120_000).usable, false);
+  }
+  f.now(start + 120_010); notify(start + 120_010, { 'temperature:100': { tC: 8 }, 'temperature:101': { tC: 9 } });
+  f.now(start + 120_020); notify(start + 120_024, { 'temperature:100': { tC: null } });
+  assert.equal(garageTemperatureEvidence(f.engine.garageTemperatureEvidence, signal, start + 120_020).usable, false);
+  const front = garageTemperatureEvidence(f.engine.garageTemperatureEvidence, 'garage_temperature_2', start + 120_020);
+  assert.equal(front.usable, true); assert.equal(front.expiresAt, start + 240_010);
+  assert.equal(f.engine.latest[signal].value, null);
+  assert.equal(f.engine.latest.garage_temperature_2.value, 9);
+  capture.close();
+});
+
 test('failed multi-component Shelly reception rolls back the control-only cache and retries cleanly', t => {
   const f = engineFixture(t), publications = [];
   const settings = equipmentConfiguration({ devices: [{ id: 'garage', kind: 'temperature', connection: 'shelly:invented-garage',

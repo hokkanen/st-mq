@@ -255,18 +255,33 @@ rear measurement time +120 seconds, even if a caller asks for longer.
 The current driver publishes UTC state clocks with one-second precision, read
 later than the loop uptime used to calculate remaining lifetime. These fields
 describe different instants. Initial expiry validation allows the UTC reporting
-quantum, at most 1000 ms. Once the exact sample has an acknowledged, validated
-uptime-based expiry, subsequent reports in that boot/session must preserve or
-shorten that expiry (allowing only 1 ms for flooring). A later UTC read alone
-cannot revoke this already validated deadline. The original requested deadline
-and minimum host continuation limit remain unchanged, including after reconnect.
+quantum, at most 1000 ms. If a first report exceeds that bound, its monotonic
+expiry is only an unconfirmed candidate: the mixed clocks alone cannot distinguish
+publication delay from an excessive device lifetime. No acknowledgement, holding
+permission or additional numeric command is granted until a later fresh report
+validates the same or a shorter monotonic expiry against the original UTC bound.
+An already reported serial ACK remains unconfirmed during this check. Exact fresh
+acknowledged state can complete validation even when the earlier result has been
+replaced, with the existing owner/session/challenge checks.
 
-New samples, a shorter requested bound for the same sample, and reports without
-uptime still require UTC-bound validation. A first report whose UTC-derived
-expiry exceeds that bound remains rejected; the host does not invent a larger
-publication-delay allowance. Restart or lost ownership cannot restore the
-in-memory validation. These reporting rules add no outage grace or guarantee
-about physical heating response.
+This wait ends at the earlier of the original 45-second result deadline and the
+requested/source expiry. If validation never succeeds, cleanup is required;
+neither a later corrected report nor reconnect reverses that obligation. A real
+monotonic extension requires cleanup immediately, including before first ACK.
+The tradeoff is bounded time awaiting evidence for an ambiguous first expiry,
+instead of treating differently sampled clocks as proof of a broken local bound.
+There is no larger publication-delay tolerance and no extension of host authority.
+
+A valid pre-ACK report can establish the expiry check but cannot establish serial
+acknowledgement. Once the exact sample's uptime-based expiry is validated,
+subsequent reports in that boot/session must preserve or shorten it (allowing
+only 1 ms for flooring). A later UTC read alone cannot revoke that deadline.
+The original requested deadline and minimum host continuation limit remain
+unchanged, including after reconnect. New samples and a shorter requested bound
+for the same sample require their own validation. Reports without uptime still
+require the immediate UTC check because no stable candidate can be tracked.
+Restart or lost ownership cannot restore in-memory acknowledgement authority.
+These reporting rules add no outage grace or guarantee about physical heating response.
 
 Retained, future, invalid and stale reports cannot authorize a feed. Repeated
 timestamps, polling, reconnects and retries never restart either source clock.

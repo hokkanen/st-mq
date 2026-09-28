@@ -152,8 +152,6 @@ function loseSensor(f, signal = 'garage_temperature', reason = 'device-offline')
 test('delayed Pill wall-clock sampling keeps the acknowledged feed active only to its original deadline', async t => {
   const f = fixture(t); await f.start({ acknowledge: false });
   const sample = f.published.at(-1).command;
-  await f.advanceReport('accepted');
-  f.advance();
   // Conversion from second-precision UTC can place the local deadline 999ms
   // beyond the requested UTC bound. Admission validates that reporting quantum.
   const feed = { ...INTERNAL, phase: 'active', acknowledged: true, restorationPending: true,
@@ -161,6 +159,10 @@ test('delayed Pill wall-clock sampling keeps the acknowledged feed active only t
     expiresAt: sample.requestedExpiryAt + 999 };
   const result = { action: sample.action, ownerSession: sample.ownerSession, commandId: sample.commandId,
     sequence: sample.sequence, status: 'acknowledged', reason: null };
+  f.advance();
+  f.state({ feed: { ...feed, phase: 'arming', acknowledged: false }, result: { ...result, status: 'accepted' } });
+  await f.settle();
+  f.advance();
   const acknowledged = f.state({ feed, result }); await f.settle();
   assert.equal(f.runtime.status().roomTemperature.phase, 'active');
   assert.equal(f.adapter.externalTemperature().continuation.expiresAt, sample.requestedExpiryAt);
@@ -197,6 +199,54 @@ test('delayed Pill wall-clock sampling keeps the acknowledged feed active only t
   assert.equal(f.adapter.externalTemperature().phase, 'internal');
   assert.equal(f.runtime.status().roomTemperature.targetC, 5);
   assert.deepEqual(f.native, native, 'fallback preserves the confirmed native ON, HEAT and 17°C settings');
+});
+
+test('first-report clock sampling during initial feed and renewal waits for validation without internal fallback', async t => {
+  for (const renewal of [false, true]) await t.test(renewal ? 'renewal' : 'initial feed', async t => {
+    const f = fixture(t); await f.start({ acknowledge: renewal });
+    if (renewal) {
+      f.advance(30_000); f.measure(); f.state(); await f.settle();
+    }
+    const sample = f.published.at(-1).command, commands = structuredClone(f.published);
+    assert.equal(sample.temperatureC, 17);
+    const feed = { ...INTERNAL, phase: 'active', acknowledged: false, restorationPending: true,
+      temperatureC: sample.temperatureC, measuredAt: sample.measuredAt, expiresAt: sample.requestedExpiryAt + 844 };
+    const result = { action: sample.action, ownerSession: sample.ownerSession, commandId: sample.commandId,
+      sequence: sample.sequence, status: 'accepted', reason: null };
+    f.advance(3554);
+    const ambiguous = f.state({ feed, result, loopAt: f.now() - 428 }); await f.settle();
+    assert.equal(ambiguous.observedAt + ambiguous.externalTemperature.expiresInMs - sample.requestedExpiryAt, 1272);
+    assert.equal(f.adapter.externalTemperature().pending, true);
+    assert.equal(f.adapter.externalTemperature().continuation, null);
+    assert.equal(f.runtime.status().roomTemperature.phase, 'preparing');
+    assert.equal(f.runtime.roomTemperature.mustClear, false);
+    assert.deepEqual(f.published, commands);
+    f.advance(2352);
+    const confirmed = f.state({ feed: { ...feed, acknowledged: true }, result: { ...result, status: 'acknowledged' } });
+    await f.settle();
+    assert.equal(confirmed.uptimeMs + confirmed.externalTemperature.expiresInMs,
+      ambiguous.uptimeMs + ambiguous.externalTemperature.expiresInMs);
+    assert.equal(f.runtime.status().roomTemperature.phase, 'active');
+    assert.equal(f.adapter.externalTemperature().continuation.expiresAt, sample.requestedExpiryAt);
+    assert.deepEqual(f.published, commands, 'validation neither clears nor republishes the external sample');
+  });
+});
+
+test('an initial expiry that never validates causes cleanup at the original result deadline', async t => {
+  const f = fixture(t); await f.start({ acknowledge: false });
+  const sample = f.published.at(-1).command, count = f.published.length;
+  const feed = { ...INTERNAL, phase: 'active', acknowledged: true, restorationPending: true,
+    temperatureC: sample.temperatureC, measuredAt: sample.measuredAt, expiresAt: sample.requestedExpiryAt + 2000 };
+  const result = { action: sample.action, ownerSession: sample.ownerSession, commandId: sample.commandId,
+    sequence: sample.sequence, status: 'acknowledged', reason: null };
+  f.advance(); f.state({ feed, result }); await f.settle();
+  assert.equal(f.adapter.externalTemperature().pending, true);
+  assert.equal(f.published.length, count);
+  f.advance(44_000); f.state({ feed, result }); await f.settle();
+  assert.equal(f.runtime.status().roomTemperature.phase, 'clearing');
+  assert.equal(f.adapter.externalTemperature().continuation, null);
+  assert.equal(f.published.length, count + 1);
+  assert.equal(f.published.at(-1).command.temperatureC, null);
 });
 
 test('transport-only sensor loss holds the acknowledged feed to its original deadline without filling history', async t => {

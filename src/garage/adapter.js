@@ -36,8 +36,8 @@ const EXTERNAL_BUSY_MAX_RETRY_MS = 8000;
 const EXTERNAL_BUSY_GRACE_MS = 15_000;
 // The current Pill contract publishes UTC from second-precision sys.unixtime.
 // Its uptime and remaining permission share a loop instant; UTC is read later
-// during publication. Use UTC only to validate an unanchored deadline, then
-// enforce that sample's monotonic deadline. Neither tolerance adds host lease time.
+// during publication. An ambiguous first report stays unconfirmed until a
+// report validates its unchanged uptime deadline. Neither tolerance adds lease time.
 const EXTERNAL_UTC_QUANTUM_MS = 1000;
 const EXTERNAL_UPTIME_QUANTUM_MS = 1;
 const nativeCommandSummary = command => command ? { setting: command.setting, value: command.value,
@@ -333,7 +333,8 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
     return nativeCommandSummary(attempt);
   }
   function externalPending(now) {
-    return Boolean(externalCommand && NATIVE_PENDING.includes(externalCommand.status) && now < externalCommand.confirmBy);
+    return Boolean(externalCommand && NATIVE_PENDING.includes(externalCommand.status) && now < externalCommand.confirmBy
+      && (externalCommand.expiryEvidence?.validated !== false || now < externalExpiry(externalCommand)));
   }
   function externalStateFresh(now) {
     return connected && reconciled && !stopped && state && !state.retained
@@ -351,13 +352,30 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
     acknowledgedExternal = { temperatureC: sample.temperatureC, measuredAt: sample.measuredAt,
       requestedExpiryAt: externalExpiry(sample),
       expiresAt: Math.min(externalExpiry(sample), state.observedAt + state.externalTemperature.expiresInMs,
+        sample.expiryEvidence?.expiresAt ?? Infinity,
         same ? previous.expiresAt : Infinity),
       expiresAtUptime: deviceExpiry === null ? same ? previous.expiresAtUptime : null
-        : Math.min(deviceExpiry, same ? previous.expiresAtUptime ?? Infinity : Infinity),
+        : Math.min(deviceExpiry, sample.expiryEvidence?.expiresAtUptime ?? Infinity,
+          same ? previous.expiresAtUptime ?? Infinity : Infinity),
       bootId: state.bootId, sessionId: state.sessionId };
   }
+  function failExternalExpiry(reason) {
+    acknowledgedExternal = null; externalBusyRetry = null; externalNeedsClear = true;
+    if (externalCommand && externalCommand.temperatureC !== null) {
+      externalCommand.status = 'uncertain'; externalCommand.reason = reason;
+    }
+  }
+  function expireExternalValidation(now) {
+    if (externalCommand?.expiryEvidence?.validated === false
+      && (NATIVE_PENDING.includes(externalCommand.status)
+        || externalCommand.status === 'uncertain' && externalCommand.reason === 'mqtt-disconnected')
+      && now >= Math.min(externalCommand.confirmBy, externalExpiry(externalCommand)))
+      failExternalExpiry('external-expiry-unverified');
+  }
   function enforceExternalExpiry(now) {
+    expireExternalValidation(now);
     const feed = state?.externalTemperature, attempt = externalCommand;
+    if (attempt?.reason === 'external-owner-changed') return;
     if (!externalStateFresh(now) || !['arming', 'active'].includes(feed?.phase) || !(feed.expiresInMs > 0)) return;
     const matches = sample => sample?.temperatureC === feed.temperatureC && sample?.measuredAt === feed.measuredAt;
     const sameSession = sample => sample?.bootId === state.bootId && sample?.sessionId === state.sessionId;
@@ -368,23 +386,42 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
     }
     const known = sameSession(acknowledgedExternal) && matches(acknowledgedExternal) ? acknowledgedExternal : null;
     if (known) bounds.push(known.requestedExpiryAt);
+    const current = state.authority.ownerSession === hostSession && sameSession(attempt) && matches(attempt) && state.sequence > attempt.stateSequence
+      && state.observedAt >= attempt.requestedAt ? attempt : null;
+    const evidence = current?.expiryEvidence;
+    const deviceExpiry = finiteTime(state.uptimeMs) ? state.uptimeMs + feed.expiresInMs : null;
     const monotonic = known && finiteTime(state.uptimeMs) && Number.isFinite(known.expiresAtUptime);
-    const anchored = monotonic && bounds.every(bound => bound >= known.requestedExpiryAt);
-    const extended = monotonic
-      && state.uptimeMs + feed.expiresInMs > known.expiresAtUptime + EXTERNAL_UPTIME_QUANTUM_MS;
-    // Once the exact sample's deadline was validated, a later UTC reading must
-    // not invalidate an unchanged device deadline. New/shorter permissions and
-    // reports without uptime still require independent UTC-bound validation.
-    if (!extended && (anchored || !bounds.length
-      || state.observedAt + feed.expiresInMs <= Math.min(...bounds) + EXTERNAL_UTC_QUANTUM_MS)) return;
-    // Local expiry is a safety obligation, not just a displayed host bound.
-    // A device reporting a later deadline cannot qualify disconnected holding.
-    acknowledgedExternal = null; externalBusyRetry = null; externalNeedsClear = true;
-    if (attempt && attempt.temperatureC !== null) { attempt.status = 'uncertain'; attempt.reason = 'external-expiry-bound-mismatch'; }
+    const anchored = monotonic && bounds.every(bound => bound >= known.requestedExpiryAt)
+      || deviceExpiry !== null && evidence?.validated === true;
+    const extended = monotonic && deviceExpiry > known.expiresAtUptime + EXTERNAL_UPTIME_QUANTUM_MS
+      || deviceExpiry !== null && evidence && deviceExpiry > evidence.expiresAtUptime + EXTERNAL_UPTIME_QUANTUM_MS;
+    const utcExpiry = state.observedAt + feed.expiresInMs;
+    const valid = !extended && (anchored || !bounds.length
+      || utcExpiry <= Math.min(...bounds) + EXTERNAL_UTC_QUANTUM_MS);
+    if (valid) {
+      if (current && deviceExpiry !== null) current.expiryEvidence = {
+        expiresAtUptime: Math.min(deviceExpiry, evidence?.expiresAtUptime ?? Infinity), validated: true,
+        expiresAt: Math.min(externalExpiry(current), utcExpiry, evidence?.expiresAt ?? Infinity),
+      };
+      return;
+    }
+    // UTC and uptime describe different instants. Excess on the first report
+    // alone cannot prove an overlong device deadline. Retain only a candidate,
+    // never acknowledgement/hold authority, while the original command waits.
+    // A later report must validate that same (or shorter) monotonic deadline;
+    // real extension and the original result/source deadlines still fail closed.
+    if (!extended && current && deviceExpiry !== null && state.authority.ownerSession === hostSession
+      && (NATIVE_PENDING.includes(current.status) || current.status === 'uncertain' && current.reason === 'mqtt-disconnected')
+      && now < Math.min(current.confirmBy, externalExpiry(current))) {
+      current.expiryEvidence = { expiresAtUptime: Math.min(deviceExpiry, evidence?.expiresAtUptime ?? Infinity), validated: false };
+      return;
+    }
+    failExternalExpiry('external-expiry-bound-mismatch');
   }
   function externalContinuation(now) {
     const previous = acknowledgedExternal, feed = state?.externalTemperature;
     if (!previous || !canControl() || stopped || previous.expiresAt <= now
+      || externalCommand?.expiryEvidence?.validated === false
       || state.bootId !== previous.bootId || state.sessionId !== previous.sessionId
       || externalCommand?.temperatureC === null
       || ['failed', 'superseded'].includes(externalCommand?.status)
@@ -460,7 +497,8 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
     const pending = externalPending(now);
     let result = externalCommandSummary(externalCommand);
     if (result && NATIVE_PENDING.includes(result.status) && !pending)
-      result = { ...result, status: 'uncertain', reason: 'external-result-timeout' };
+      result = { ...result, status: 'uncertain', reason: externalCommand.expiryEvidence?.validated === false
+        ? 'external-expiry-unverified' : 'external-result-timeout' };
     return { ...(lifecycle ?? {}), supported: live && lifecycle !== null && lifecycle !== undefined,
       enabled: state?.capabilities.externalTemperature === true && lifecycle?.enabled === true,
       available: reasons.length === 0, clearAvailable: clearReasons.length === 0,
@@ -558,7 +596,7 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
       || state.sequence <= externalCommand.stateSequence || state.observedAt < externalCommand.requestedAt
       || !['accepted', 'acknowledged', 'rejected', 'uncertain', 'superseded', 'failed'].includes(result.status)
       || ['rejected', 'failed', 'superseded'].includes(externalCommand.status)
-      || ['external-owner-changed', 'external-expiry-bound-mismatch'].includes(externalCommand.reason)
+      || ['external-owner-changed', 'external-expiry-bound-mismatch', 'external-expiry-unverified'].includes(externalCommand.reason)
       || externalCommand.temperatureC !== null && state.authority.ownerSession !== hostSession) return;
     if (['accepted', 'acknowledged'].includes(result.status) && externalCommand.status === 'acknowledged') return;
     externalCommand.status = result.status;
@@ -574,6 +612,11 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
       }
     }
     if (result.status === 'acknowledged') {
+      if (externalCommand.expiryEvidence?.validated === false) {
+        externalCommand.status = 'accepted'; externalCommand.reason = 'external-expiry-awaiting-validation';
+        externalCommand.acknowledgementAwaitingExpiry = true;
+        return;
+      }
       const external = state.externalTemperature;
       const matches = externalCommand.temperatureC === null
         ? external?.phase === 'internal' && !external.restorationPending && !external.rearmRequired
@@ -595,9 +638,11 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
     // write unconfirmed. Exact current ACK evidence can resolve either without
     // replay. Explicit write faults and clears never enter this recovery path.
     const unresolved = attempt?.status === 'uncertain' && attempt.reason === 'mqtt-disconnected'
+      || attempt?.status === 'accepted' && attempt.acknowledgementAwaitingExpiry === true
       || NATIVE_PENDING.includes(attempt?.status) && now >= attempt.confirmBy
         && state.observedAt >= attempt.confirmBy;
     if (!externalStateFresh(now) || !canControl() || !unresolved || attempt.temperatureC === null
+      || attempt.expiryEvidence?.validated === false
       || state.bootId !== attempt.bootId || state.sessionId !== attempt.sessionId
       || state.authority.ownerSession !== hostSession || state.sequence <= attempt.stateSequence
       || state.observedAt < attempt.requestedAt || externalExpiry(attempt) <= now
@@ -825,7 +870,8 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
     }
     if (finiteTime(value.recoveryLockedUntil)) recoveryLockedUntil = Math.max(recoveryLockedUntil, value.recoveryLockedUntil);
     if (reconciled && !packet.retain) {
-      if (externalStateFresh(now) && acknowledgedExternal && state.authority.ownerSession !== hostSession) {
+      if (externalStateFresh(now) && (acknowledgedExternal || externalCommand?.expiryEvidence)
+        && state.authority.ownerSession !== hostSession) {
         acknowledgedExternal = null;
         if (externalCommand?.temperatureC !== null) {
           externalCommand.status = 'uncertain'; externalCommand.reason = 'external-owner-changed';
@@ -1040,6 +1086,7 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
     return send('start', now, plan);
   }
   async function safetyTick({ now = clock(), valid = true, reason = 'protection-or-data-failure' } = {}) {
+    expireExternalValidation(now);
     let diagnosticError;
     try { if (recordExternalDiagnostic(now)) changed(); } catch (error) { diagnosticError = error; }
     if (!restorePending) {

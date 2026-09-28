@@ -42,6 +42,9 @@ function fixture(t, devices = [], initialAt = initial) {
 }
 const caravan = { id: 'caravan', kind: 'metered_switch', connection: 'shelly:invented-caravan' };
 const garage = { id: 'garage', kind: 'switch', connection: 'shelly:invented-garage', temperature_id: 100 };
+const pairedGarage = { id: 'garage', kind: 'temperature', connection: 'shelly:invented-garage',
+  signal: 'garage_temperature', temperature_id: 100, readings: [
+    { key: 'front', signal: 'garage_temperature_2', component: 'temperature:101', unit: 'degC', required: true }] };
 const heat = { id: 'heat_savings', kind: 'switch', connection: 'shelly:invented-mini', tariff_control: true };
 
 test('Gen2 status reads actual plug values, ignores retained/replayed payloads and expires individual readings', t => {
@@ -249,15 +252,90 @@ test('Garage temperature routes bind the native Shelly identity and preserve it 
     changed.raw.temperatureRouteSignature);
 });
 
-test('future Shelly temperature notifications explicitly invalidate live evidence', t => {
-  const f = fixture(t, [garage]); f.capture.setConnected(true);
-  f.status({ 'switch:0': { output: false }, 'temperature:100': { tC: 9 } });
+for (const [name, timestamp] of [
+  ['four milliseconds ahead', (initial + 10_004) / 1000],
+  ['one hour ahead', (initial + HOUR) / 1000],
+  ['null', null], ['numeric string', String(initial / 1000)], ['nonnumeric string', 'invalid'],
+  ['boolean', true], ['object', {}], ['noncoercible object', { toString: null, valueOf: null }],
+  ['negative', -1], ['unsafe integer', Number.MAX_SAFE_INTEGER],
+]) test(`Shelly ${name} clock rejects only the incoming measurement and preserves original expiry`, t => {
+  const f = fixture(t, [pairedGarage]); f.capture.setConnected(true);
+  f.status({ 'temperature:100': { tC: 9 }, 'temperature:101': { tC: 10 } });
+  const before = structuredClone(f.capture.status().devices[0]), count = f.observations.length;
   f.now(initial + 10_000);
   f.capture.receive('invented-garage/events/rpc', JSON.stringify({ src: 'fixture-invented-garage', method: 'NotifyStatus',
-    params: { ts: (initial + 60_000) / 1000, 'temperature:100': { id: 100, tC: 10 } } }));
-  const reading = f.observations.findLast(row => row.signal === 'garage_temperature');
-  assert.equal(reading.value, null); assert(reading.quality.includes('invalid-source-time'));
+    params: { ts: timestamp, 'temperature:100': { id: 100, tC: 11 } } }));
+  assert.equal(f.observations.length, count, 'Rejected clock neither creates evidence nor invalidates either probe');
+  assert.deepEqual(f.capture.status().devices[0].readings, before.readings);
+  assert.equal(f.capture.status().devices[0].observedAt, initial, 'No device liveness credit');
+  assert.equal(f.capture.status().devices[0].available, true);
+  f.now(initial + 119_999);
+  f.capture.receive('invented-garage/events/rpc', JSON.stringify({ src: 'fixture-invented-garage', method: 'NotifyFullStatus',
+    params: { ts: (initial + HOUR) / 1000, 'temperature:100': { tC: 12 }, 'temperature:101': { tC: 13 } } }));
+  assert.equal(f.observations.length, count, 'A rejected full snapshot cannot renew either probe');
+  assert.equal(f.capture.status().devices[0].available, true);
+  f.now(initial + 120_000); f.capture.tick();
+  const expired = f.capture.status().devices[0];
+  assert.equal(expired.available, false);
+  for (const signal of ['garage_temperature', 'garage_temperature_2']) {
+    assert.equal(expired.readings[signal].value, null);
+    assert(expired.readings[signal].quality.includes('missing-report'));
+  }
+});
+
+test('a rejected Shelly clock cannot establish a first reading or undo a real fault', t => {
+  const f = fixture(t, [pairedGarage]); f.capture.setConnected(true);
+  const notification = (ts, temperature) => f.capture.receive('invented-garage/events/rpc', JSON.stringify({
+    src: 'fixture-invented-garage', method: 'NotifyStatus', params: { ts, 'temperature:100': { tC: temperature } } }));
+  notification((initial + 4) / 1000, 9);
+  assert.equal(f.observations.length, 0);
   assert.equal(f.capture.status().devices[0].available, false);
+  f.status({ 'temperature:100': { tC: 9 }, 'temperature:101': { tC: 10 } });
+  f.now(initial + 10_000); notification((initial + 10_000) / 1000, null);
+  const fault = structuredClone(f.capture.status().devices[0].readings.garage_temperature);
+  f.now(initial + 20_000); notification((initial + 20_004) / 1000, 11);
+  assert.deepEqual(f.capture.status().devices[0].readings.garage_temperature, fault);
+  assert.equal(f.capture.status().devices[0].available, false);
+  f.now(initial + 30_000); notification((initial + 30_000) / 1000, 12);
+  const recovered = f.capture.status().devices[0];
+  assert.equal(recovered.available, true);
+  assert.equal(recovered.readings.garage_temperature.value, 12);
+  assert.equal(recovered.readings.garage_temperature.observedAt, initial + 30_000);
+  assert.equal(recovered.readings.garage_temperature_2.observedAt, initial);
+});
+
+for (const component of [{ tC: null }, { tC: 999 }, { tC: 9, errors: ['read'] }])
+  for (const probe of [100, 101]) test(`a rejected Shelly clock cannot hide probe ${probe} fault ${JSON.stringify(component)}`, t => {
+    const f = fixture(t, [pairedGarage]); f.capture.setConnected(true);
+    f.status({ 'temperature:100': { tC: 9 }, 'temperature:101': { tC: 10 } });
+    f.now(initial + 10_000);
+    f.capture.receive('invented-garage/events/rpc', JSON.stringify({ src: 'fixture-invented-garage', method: 'NotifyStatus',
+      params: { ts: (initial + 10_004) / 1000, [`temperature:${probe}`]: component } }));
+    const affected = probe === 100 ? 'garage_temperature' : 'garage_temperature_2';
+    const other = probe === 100 ? 'garage_temperature_2' : 'garage_temperature';
+    const reading = f.observations.findLast(row => row.signal === affected);
+    assert.equal(reading.value, null); assert.equal(reading.sourceTime, null);
+    assert.equal(reading.receivedAt, initial + 10_000);
+    assert.equal(reading.raw.timeBasis, 'availability-transition');
+    const state = f.capture.status().devices[0];
+    assert.equal(state.available, false);
+    assert.equal(state.readings[other].observedAt, initial);
+    assert.equal(state.readings[other].value, probe === 100 ? 10 : 9);
+  });
+
+test('a rejected Shelly clock cannot change relay state or meter energy', t => {
+  const f = fixture(t, [caravan]); f.capture.setConnected(true);
+  f.status({ 'switch:0': { output: false, apower: 0, current: 0, aenergy: { total: 12000 } } });
+  const before = structuredClone(f.capture.status().devices[0]), count = f.observations.length;
+  f.now(initial + 10_000);
+  f.capture.receive('invented-caravan/events/rpc', JSON.stringify({ src: 'fixture-invented-caravan', method: 'NotifyStatus',
+    params: { ts: (initial + 10_004) / 1000, 'switch:0': { id: 0, output: true, apower: 100, current: 1, aenergy: { total: 12001 } } } }));
+  const after = f.capture.status().devices[0];
+  assert.deepEqual(after.readings, before.readings);
+  assert.deepEqual(after.energy, before.energy);
+  assert.deepEqual(f.store.getState('shelly:caravan-energy:v2').previous, { counterKwh: 12, at: initial });
+  assert.equal(f.observations.length, count);
+  assert.equal(after.observedAt, initial);
 });
 
 test('a failed identity check invalidates a temperature already held through transport loss', t => {

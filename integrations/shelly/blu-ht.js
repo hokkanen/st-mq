@@ -24,36 +24,38 @@ function validatePrefix(prefix) {
 export function bluHtScript({ address, prefix = 'stmq/garage/caravan_air' }) {
   if (typeof address !== 'string' || !/^(?:[0-9a-f]{2}:){5}[0-9a-f]{2}$/i.test(address)) throw new Error('Invalid Bluetooth address');
   validatePrefix(prefix);
+  // Stay within the Gen2 scripting subset: let declarations and braced else
+  // branches also work on Plus Plug S firmware 0.13.0.
   return `// ST-MQ BLU H&T bridge: passive broadcasts, no relay operations.
 // Polling returns the last received report with its ORIGINAL timestamp.
-var SENSOR = ${JSON.stringify(address.toLowerCase())};
-var PREFIX = ${JSON.stringify(prefix)};
-var latest = null;
-var previousData = null;
-var previousUptime = -100;
-var stats = {reports:0, published:0, requests:0};
+let SENSOR = ${JSON.stringify(address.toLowerCase())};
+let PREFIX = ${JSON.stringify(prefix)};
+let latest = null;
+let previousData = null;
+let previousUptime = -100;
+let stats = {reports:0, published:0, requests:0};
 function decode(data) {
   if (typeof data !== "string" || data.length < 2 || data.length > 64) return null;
-  var flags = data.charCodeAt(0);
+  let flags = data.charCodeAt(0);
   if ((flags >> 5) !== 2 || (flags & 1)) return null;
-  var sample = {};
-  var i = 1;
+  let sample = {};
+  let i = 1;
   while (i < data.length) {
-    var id = data.charCodeAt(i++);
-    var size = 0;
-    if (id === 0 || id === 1 || id === 46 || id === 58) size = 1;
-    else if (id === 2 || id === 3 || id === 69 || id === 240) size = 2;
-    else if (id === 241) size = 4;
-    else if (id === 242) size = 3;
-    else return null;
+    let id = data.charCodeAt(i++);
+    let size = 0;
+    if (id === 0 || id === 1 || id === 46 || id === 58) { size = 1; }
+    else if (id === 2 || id === 3 || id === 69 || id === 240) { size = 2; }
+    else if (id === 241) { size = 4; }
+    else if (id === 242) { size = 3; }
+    else { return null; }
     if (i + size > data.length) return null;
-    var v = data.charCodeAt(i);
+    let v = data.charCodeAt(i);
     if (size === 2) v += data.charCodeAt(i + 1) * 256;
     if (id === 2 || id === 69) {
       if (v > 32767) v -= 65536;
       sample.temperature = v / (id === 2 ? 100 : 10);
-    } else if (id === 3 || id === 46) sample.humidity = v / (id === 3 ? 100 : 1);
-    else if (id === 1) sample.battery = v;
+    } else if (id === 3 || id === 46) { sample.humidity = v / (id === 3 ? 100 : 1); }
+    else if (id === 1) { sample.battery = v; }
     i += size;
   }
   if (typeof sample.temperature !== "number" || typeof sample.humidity !== "number"
@@ -69,10 +71,10 @@ function publishLatest() {
 }
 function receive(event, result) {
   if (event !== BLE.Scanner.SCAN_RESULT || !result || result.addr !== SENSOR || !result.service_data) return;
-  var data = result.service_data["fcd2"];
-  var sample = decode(data);
+  let data = result.service_data["fcd2"];
+  let sample = decode(data);
   if (sample === null) return;
-  var sys = Shelly.getComponentStatus("sys");
+  let sys = Shelly.getComponentStatus("sys");
   if (!sys || typeof sys.unixtime !== "number" || sys.unixtime < 1700000000) return;
   // Suppress repeated advertising packets in one burst, but preserve each
   // minute's genuine report even when all measured values are unchanged.
@@ -90,7 +92,9 @@ MQTT.subscribe(PREFIX + "/get", function(topic, message) {
   if (message === "status") { stats.requests++; publishLatest(); }
 });
 BLE.Scanner.Subscribe(receive);
-if (!BLE.Scanner.Start({duration_ms:BLE.Scanner.INFINITE_SCAN, active:false}))
-  throw new Error("BLU scanner could not start");
+if (!BLE.Scanner.Start({duration_ms:BLE.Scanner.INFINITE_SCAN, active:false})) {
+  print("BLU scanner could not start");
+  Shelly.call("Script.Stop", {id:Shelly.getCurrentScriptId()});
+}
 `;
 }

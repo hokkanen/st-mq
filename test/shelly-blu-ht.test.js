@@ -9,22 +9,37 @@ const address = '00:00:00:00:00:01';
 const initial = Date.parse('2026-09-21T12:00:00Z');
 const packet = (temperature = 215, humidity = 46, extra = []) =>
   String.fromCharCode(0x40, 0, 1, 1, 95, 0x2e, humidity, 0x45, temperature & 255, (temperature >> 8) & 255, ...extra);
-function bridge() {
+function bridge({ scanStart = true } = {}) {
   let now = initial, uptime = 100, connected = true, callback, query;
-  const publications = [];
+  const publications = [], calls = [], messages = [];
   const context = vm.createContext({
-    Shelly: { getComponentStatus: () => ({ unixtime: now / 1000, uptime }) },
+    print: message => messages.push(message),
+    Shelly: { getComponentStatus: () => ({ unixtime: now / 1000, uptime }),
+      getCurrentScriptId: () => 7, call: (method, params) => calls.push({ method, ...params }) },
     MQTT: { isConnected: () => connected, publish: (topic, body, qos, retain) => {
       publications.push({ topic, body, qos, retain }); return true;
     }, subscribe: (topic, cb) => { assert.equal(topic, 'invented/blu/get'); query = cb; } },
     BLE: { Scanner: { SCAN_RESULT: 2, INFINITE_SCAN: -1,
-      Subscribe: cb => { callback = cb; }, Start: options => { assert.equal(options.active, false); return true; } } },
+      Subscribe: cb => { callback = cb; }, Start: options => { assert.equal(options.active, false); return scanStart; } } },
   });
   vm.runInContext(bluHtScript({ address, prefix: 'invented/blu' }), context);
-  return { publications, context, time: value => { now = value; uptime = 100 + (value - initial) / 1000; },
+  return { publications, calls, messages, context, time: value => { now = value; uptime = 100 + (value - initial) / 1000; },
     connected: value => { connected = value; }, query: message => query('invented/blu/get', message),
     receive: (data = packet(), addr = address) => callback(2, { addr, rssi: -65, service_data: { fcd2: data } }) };
 }
+
+test('BLU bridge stops its own script if the native scanner cannot start', () => {
+  for (const scanStart of [false, null]) {
+    const b = bridge({ scanStart });
+    assert.deepEqual(b.calls, [{ method: 'Script.Stop', id: 7 }]);
+    assert.deepEqual(b.messages, ['BLU scanner could not start']);
+    assert.equal(b.publications.length, 0);
+  }
+  const running = bridge({ scanStart: { duration_ms: -1, active: false } });
+  running.receive();
+  assert.equal(running.publications.length, 1);
+  assert.deepEqual(running.calls, []);
+});
 
 test('BLU bridge decodes signed temperatures, ignores duplicate bursts, and preserves unchanged minute reports', () => {
   const b = bridge(); b.receive(packet(-123));

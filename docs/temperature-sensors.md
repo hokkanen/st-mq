@@ -286,6 +286,13 @@ untimestamped delivery cannot establish a new sample. A first-seen timestamped
 MQTT DUP is evaluated once using receiver-local bounded delivery memory. Subsequent
 retransmissions and cached timestamps cannot extend source-report coverage.
 
+For native Shelly notifications, a rejected malformed or future `ts` supplies no
+new evidence. Previously accepted measurements keep only their original remaining
+lifetime; the rejected packet cannot renew them or device availability. A clock
+rejection alone does not manufacture an outage for either Garage probe. Explicit
+invalid temperatures or component errors still revoke the affected measurement,
+including its control-only copy, even when the notification's clock is rejected.
+
 Canonical equipment temperature mappings honor the selected primary JSON path.
 Fahrenheit converts to Celsius first, then `scale` and `offset` apply; recorded,
 held and source-health values share that normalization. Both Garage probes carry

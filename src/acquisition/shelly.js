@@ -75,6 +75,9 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
       signal })).digest('hex');
   };
   const emit = (device, signal, value, unit, at, quality = [], raw = {}) => {
+    // A rejected notification clock can report a fault, but cannot establish
+    // a measurement or renew any previously accepted observation.
+    if (value !== null && !scalar(at)) return;
     if (scalar(at) && scalar(device.readings[signal]?.observedAt) && at < device.readings[signal].observedAt) return;
     // A topic alone cannot bind a Garage permission to a native Shelly. Obtain
     // GetDeviceInfo first; the subsequent status request supplies the reading.
@@ -140,20 +143,22 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
       return;
     }
     if (device.generation > 1 && status.id !== device.switchId) return;
-    if (scalar(device.readings[signal]?.observedAt) && at < device.readings[signal].observedAt) return;
+    if (scalar(at) && scalar(device.readings[signal]?.observedAt) && at < device.readings[signal].observedAt) return;
     if (Array.isArray(status.errors) && status.errors.length) { unavailable(device, 'device-error'); return; }
     const output = device.kind === 'door' ? status.state : status.output ?? status.ison;
     if (typeof output === 'boolean') {
-      device.state = output; emit(device, signal, Number(output), 'state', at);
-      if (readback) for (const waiter of [...device.waiters])
-        if (waiter.at <= at && waiter.output === output && (device.generation === 1 || waiter.commandId === commandId)) reception.afterCommit(() => waiter.resolve());
+      if (scalar(at)) {
+        device.state = output; emit(device, signal, Number(output), 'state', at);
+        if (readback) for (const waiter of [...device.waiters])
+          if (waiter.at <= at && waiter.output === output && (device.generation === 1 || waiter.commandId === commandId)) reception.afterCommit(() => waiter.resolve());
+      }
     } else if (full) { device.state = null; emit(device, signal, null, 'state', at, ['missing']); }
     if (!metered(device)) return;
     if (Object.hasOwn(status, 'apower') || full) emit(device, `${device.role}_power`, valid(status.apower, 0, 25000) ? status.apower / 1000 : null,
       'kW', at, valid(status.apower, 0, 25000) ? [] : ['missing']);
     if (Object.hasOwn(status, 'current') || full) emit(device, `${device.role}_current`, valid(status.current, 0, 100) ? status.current : null,
       'A', at, valid(status.current, 0, 100) ? [] : ['missing']);
-    if (!device.customReadings.some(mapping => mapping.key === 'energy_counter') && valid(status.aenergy?.total, 0, 1e12)) energyFor(device)?.receive(status.aenergy.total / 1000, at);
+    if (scalar(at) && !device.customReadings.some(mapping => mapping.key === 'energy_counter') && valid(status.aenergy?.total, 0, 1e12)) energyFor(device)?.receive(status.aenergy.total / 1000, at);
   }
   function temperatureStatus(device, status, at, full) {
     if (!hasTemperature(device) || !status && !full) return;
@@ -180,7 +185,7 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
       if (scalar(value)) value = value * (mapping.scale ?? 1) + (mapping.offset ?? 0);
       const good = scalar(value) && !component?.errors?.length && (!['degC', '°C'].includes(mapping.unit) || valid(value, -60, 150));
       emit(device, mapping.signal, good ? value : null, mapping.unit, at, good ? [] : ['missing']); found ||= Boolean(component);
-      if (mapping.key === 'energy_counter' && good && value >= 0) energyFor(device)?.receive(value / (mapping.unit === 'Wh' ? 1000 : 1), at);
+      if (scalar(at) && mapping.key === 'energy_counter' && good && value >= 0) energyFor(device)?.receive(value / (mapping.unit === 'Wh' ? 1000 : 1), at);
     }
     return found;
   }
@@ -256,7 +261,7 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
       const body = Buffer.isBuffer(payload) ? payload.toString('utf8') : String(payload ?? '');
       if (body.length > 65536) return true;
       let delivery; try { delivery = JSON.parse(body); } catch { delivery = null; }
-      const sourceAt = delivery?.params?.ts * 1000;
+      const sourceAt = scalar(delivery?.params?.ts) ? delivery.params.ts * 1000 : NaN;
       if (!admission.admit(topic, body, packet, receivedAt, {
         timestamped: Number.isFinite(sourceAt) && sourceAt >= 0 && sourceAt <= receivedAt,
         correlated: topic === replyTopic && requests.has(delivery?.id),
@@ -329,17 +334,20 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
         if (!device.identity || frame.src !== device.identity) return true;
         const params = frame.params;
         if (!params || typeof params !== 'object') return true;
-        if (params.ts != null) {
-          at = Math.round(params.ts * 1000);
-          if (!Number.isSafeInteger(at) || at > receivedAt) { unavailable(device, 'invalid-source-time'); return true; }
-          if (receivedAt - at > (maxAge(device) || settings.maxAgeMs)) return true;
+        if (Object.hasOwn(params, 'ts')) {
+          at = scalar(params.ts) ? Math.round(params.ts * 1000) : null;
+          // Reject this source clock without erasing unrelated, still-bounded
+          // evidence. Explicit faults below still invalidate their components;
+          // null time grants no measurement, readback, energy or liveness credit.
+          if (!Number.isSafeInteger(at) || params.ts < 0 || at > receivedAt) at = null;
+          else if (receivedAt - at > (maxAge(device) || settings.maxAgeMs)) return true;
         }
         const full = frame.method === 'NotifyFullStatus', switchValue = params[`${device.kind === 'door' ? 'input' : 'switch'}:${device.switchId}`];
         const temperatureValue = params[`temperature:${device.temperatureId}`];
         if (switchValue || full) switchStatus(device, switchValue, at, { full });
         temperatureStatus(device, temperatureValue, at, full);
         const custom = customStatus(device, params, at, full);
-        if (!switchValue && !temperatureValue && !custom) return true;
+        if (at === null || !switchValue && !temperatureValue && !custom) return true;
       } else if (suffix === `status/${device.kind === 'door' ? 'input' : 'switch'}:${device.switchId}`) switchStatus(device, frame, at, { full: true });
       else if (hasTemperature(device) && suffix === `status/temperature:${device.temperatureId}`) temperatureStatus(device, frame, at, true);
       else if (device.customReadings.some(mapping => suffix === `status/${mapping.component}`)) customStatus(device, { [suffix.slice(7)]: frame }, at, false);

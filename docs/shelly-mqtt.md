@@ -26,6 +26,14 @@ Incremental notifications update only fields they actually contain. An omitted
 field retains its original timestamp and expires independently; explicit null,
 component errors and fields missing from a full snapshot invalidate that field.
 
+A malformed or future notification `ts` cannot establish a new measurement or
+refresh device availability. Rejecting that clock preserves previously accepted
+readings with their original timestamps and expiry; even a small source-clock
+lead does not mean both probes failed. Explicit invalid values and component
+errors still invalidate the affected readings, recorded as availability
+transitions without a trusted source time. A notification with no `ts` retains
+the native protocol's receipt-time behavior; an explicitly null clock does not.
+
 H66 register 0233 configures the reduction offset for EVU external control. It
 does not report whether that input is active; equality with the ROOM setting or
 measured room temperature cannot verify tariff operation. See the

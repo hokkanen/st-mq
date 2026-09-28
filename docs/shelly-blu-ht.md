@@ -40,7 +40,10 @@ This sensor is not an input to Home learning, its indoor average, or Garage prot
 
 4. Open the Plus's local web interface, create a script, paste the generated
    contents, start it, and enable running on startup. The script uses the Gen2
-   `BLE.Scanner.Start` / `Subscribe` API, verified on Plus 1 firmware 1.7.5.
+   `BLE.Scanner.Start` / `Subscribe` API, verified on Plus 1 firmware 1.7.5
+   and Plus Plug S firmware 0.13.0. The generated script uses the common Gen2
+   language subset (`let` and braced conditional branches), and stops its own
+   script if the Bluetooth scan cannot start.
    It performs no relay operations. Clock synchronization must work on the Plus;
    readings are withheld until it has a valid Unix clock.
 5. Apply ST-MQ configuration and check the new equipment card. If private
@@ -53,6 +56,15 @@ sensors. Each equipment entry also needs its own `id`. The default entry is Cara
 additional sensors can supply `label`, `area`, `temperatureSignal` and
 `humiditySignal` (custom IDs default to their own signal names). These generators do not
 modify device settings or install scripts themselves.
+
+To move the gateway, back up both devices' configuration and the installed script
+outside Git. Install on the destination and verify genuine Bluetooth receptions
+and fresh MQTT reports before disabling the original script's startup setting
+and stopping it. Disable Bluetooth and Bluetooth RPC on the original gateway
+when no other Bluetooth integration needs it; verify the applied settings and
+whether its firmware requires a restart. Preserve the sensor address and MQTT
+topic so the sensor keeps its identity and history. Relay settings and outputs
+are independent of the bridge and need no changes.
 
 ## Reporting and polling
 
