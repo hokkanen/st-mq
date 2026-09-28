@@ -155,13 +155,13 @@ export const chartLinePatterns = Object.freeze({
 });
 
 /** Colour stays semantic; stroke distinguishes axes, references and forecasts. */
-export function historySeriesStyle(key, axis, kind = 'line') {
+export function historySeriesStyle(key, axis, kind = 'line', { interpolation: enabled = true } = {}) {
   const temperature = isInterpolatedTemperature(key);
   const temperatureUnit = temperature || seriesInfo[key]?.[1].split(' · ')[0] === '°C';
   const forecast = kind === 'forecast' || forecastSignals.has(key);
   const price = key.endsWith('_price');
   const pointsOnly = ['event', 'daily', 'session', 'episode', 'interval-energy', 'audit'].includes(kind);
-  const interpolation = temperature || key === 'caravan_humidity' ? 'monotone'
+  const interpolation = !enabled ? 'step' : temperature || key === 'caravan_humidity' ? 'monotone'
     : key === 'heating_integral' ? 'linear' : 'step';
   return {
     forecast, interpolation, showLine: !pointsOnly,
@@ -265,7 +265,7 @@ export function historySeriesAt(payload, now = payload.now) {
   return projected;
 }
 
-export function historyDatasets(series = {}, descriptor, preferences = {}, palette = defaultPalette) {
+export function historyDatasets(series = {}, descriptor, preferences = {}, palette = defaultPalette, { interpolation = true } = {}) {
   if (!descriptor || typeof descriptor !== 'object' || !Array.isArray(descriptor.leftSignals) || !Array.isArray(descriptor.rightSignals))
     throw new RangeError('Choose a chart view or supported series.');
   const { leftSignals, rightSignals } = descriptor;
@@ -306,14 +306,19 @@ export function historyDatasets(series = {}, descriptor, preferences = {}, palet
     const isLeft = leftSignals.includes(key);
     const isPrice = key.endsWith('_price');
     const temperature = isInterpolatedTemperature(key);
-    const original = stackedData.get(key) ?? series[key] ?? [];
+    const points = stackedData.get(key) ?? series[key] ?? [];
+    // API clipping can supply a linear value at the visible edge. In step mode
+    // use its preceding source value, while preserving explicit missing edges.
+    const original = interpolation ? points : points.map(point => point.displayBoundary && point.interpolated
+      ? { ...point, y: Number.isFinite(point.y) && Number.isFinite(point.heldValue) ? point.heldValue : null, interpolated: false }
+      : point);
     const data = kind === 'episode' ? original.filter(point => !point.displayBoundary && !point.carriedForward && !point.displayContext && !point.interpolated)
       : ['audit', 'session', 'interval-energy'].includes(kind) ? original.filter(point => !point.displayBoundary && !point.carriedForward)
-      : temperature && original.some(point => point.periodicCoverage || point.interpolated || Number.isFinite(point.intervalStart) && Number.isFinite(point.intervalEnd))
+      : interpolation && temperature && original.some(point => point.periodicCoverage || point.interpolated || Number.isFinite(point.intervalStart) && Number.isFinite(point.intervalEnd))
         ? temperatureIntervalKnots(original) : original;
     const stackBase = stackBases.get(key);
     const axis = isLeft ? 'left' : 'right';
-    const style = historySeriesStyle(key, axis, kind);
+    const style = historySeriesStyle(key, axis, kind, { interpolation });
     const color = phaseColor(palette[colorKey] ?? defaultPalette[colorKey] ?? palette.learning, key);
     const chargerPhase = /^(ev[12])_current_l[123]$/.exec(key)?.[1];
     const circles = ['session', 'episode', 'interval-energy', 'audit'].includes(kind);

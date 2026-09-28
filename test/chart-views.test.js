@@ -9,6 +9,22 @@ import { historyValueScales } from '../chart/history-chart.js';
 
 const blank = () => readChartPreferences({ getItem: () => null });
 
+test('interpolation defaults on and is a global browser preference independent of view resets', () => {
+  assert.equal(blank().interpolation, true);
+  const preferences = blank();
+  preferences.interpolation = false;
+  const power = selectedChartView({ view: 'power' });
+  setChartVisibility(preferences, power, 'property_power', false);
+  preferences.view = 'garage';
+  delete preferences.views.power;
+  const restored = readChartPreferences({ getItem: () => JSON.stringify(preferences) });
+  assert.equal(restored.interpolation, false);
+  assert.equal(restored.view, 'garage');
+  assert.equal(chartViewPreferences(power, restored).property_power, power.defaults.property_power);
+  for (const interpolation of [true, undefined, null, 0, 'false', {}])
+    assert.equal(readChartPreferences({ getItem: () => JSON.stringify({ interpolation }) }).interpolation, true);
+});
+
 test('view catalogue covers every original signal through a view or searchable explorer without invalid units', () => {
   const supported = new Set(HISTORY_AXES.flatMap(axis => axis.signals));
   const definitions = { ...SIGNAL_INFO, ...MODEL_INPUT_INFO, ...GARAGE_INPUT_INFO };

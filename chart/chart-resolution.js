@@ -22,9 +22,9 @@ export function selectChartResolution(overview, details, view) {
 
 /** Zooming clips the already bounded API envelope without discarding detail.
  * Keep original points, duplicate step edges, missing markers and provenance. */
-export function clipChartSeries(series, view) {
+export function clipChartSeries(series, view, { interpolation = true } = {}) {
   return Object.fromEntries(Object.entries(series).map(([key, points]) => {
-    if (!isInterpolatedTemperature(key)) return [key, sliceSeries(points, view)];
+    if (!interpolation || !isInterpolatedTemperature(key)) return [key, sliceSeries(points, view)];
     // Remove artificial hold edges before selecting neighbours. Otherwise the
     // one point just beyond a zoom window can be a held edge instead of the next
     // actual reading, and an ostensibly cubic temperature reverts to a plateau.

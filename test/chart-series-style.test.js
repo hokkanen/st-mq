@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { historyDatasets, historySeriesAt, defaultPalette } from '../chart/history-model.js';
 import { historyTooltipLabel } from '../chart/history-tooltips.js';
 import { CHART_VIEW_BY_KEY } from '../src/domain/chart-views.js';
+import { HISTORY_AXIS_BY_KEY } from '../src/domain/history-series.js';
 import { temperatureIntervalKnots } from '../chart/temperature-curves.js';
 
 const observations = [{ x: 0, y: 15 }, { x: 10, y: 17 }, { x: 20, y: null }, { x: 30, y: 16 }];
@@ -64,6 +65,40 @@ test('recorded quantities use deliberate time semantics across axes, with no pha
     assert.equal(byKey.auxiliary_power.fill, false);
     assert.equal(byKey.ev1_current_l1.fill, false);
   }
+});
+
+test('disabled interpolation makes every connected series stepped while preserving marker presentation on either axis', () => {
+  const keys = [...new Set(Object.values(HISTORY_AXIS_BY_KEY).flatMap(axis => axis.signals))];
+  const series = Object.fromEntries(keys.map(key => [key, observations]));
+  const before = structuredClone(series);
+  const markerKinds = new Set();
+  for (const axis of ['left', 'right']) {
+    const view = axis === 'left' ? descriptor(keys) : descriptor([], keys);
+    const defaults = historyDatasets(series, view);
+    const enabled = historyDatasets(series, view, {}, undefined, { interpolation: true });
+    assert.deepEqual(enabled, defaults, 'Explicitly enabling interpolation preserves all default dataset behavior');
+    const disabled = historyDatasets(series, view, {}, undefined, { interpolation: false });
+    for (const [index, row] of disabled.entries()) {
+      const original = defaults[index];
+      assert.deepEqual(row.data, original.data, row.key);
+      assert.deepEqual(row.borderDash, original.borderDash, row.key);
+      assert.equal(row.borderColor, original.borderColor, row.key);
+      assert.equal(row.spanGaps, false, row.key);
+      if (original.showLine) {
+        assert.equal(row.showLine, true, row.key);
+        assert.equal(row.stepped, row.key.endsWith('_price') ? 'before' : true, `${axis}: ${row.key}`);
+        assert.equal(row.cubicInterpolationMode, 'default', row.key);
+        assert.equal(row.tension, 0, row.key);
+      } else {
+        markerKinds.add(row.kind);
+        for (const property of ['showLine', 'stepped', 'pointStyle', 'pointRadius', 'pointHoverRadius', 'pointHitRadius',
+          'pointBackgroundColor', 'pointBorderColor', 'pointBorderWidth'])
+          assert.deepEqual(row[property], original[property], `${row.key}: ${property}`);
+      }
+    }
+  }
+  assert.deepEqual([...markerKinds].sort(), ['audit', 'daily', 'episode', 'event', 'interval-energy', 'session']);
+  assert.deepEqual(series, before, 'Changing display modes does not rewrite any source observations');
 });
 
 test('charging bands stay semantically coloured and translucent without changing measured totals', () => {

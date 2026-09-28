@@ -178,7 +178,10 @@ class HistoryLine {
         const value = Number.isFinite(previous.y) && Number.isFinite(y)
           ? this.stepped ? previous.y : previous.y + (y - previous.y) * (boundary - previous.x) / (x - previous.x) : null;
         this.envelope.add(boundary, value, { ...previous, displayBoundary: true,
-          observedAt: previous.observedAt??previous.x, nextObservedAt: metadata?.observedAt??x, interpolated: !this.stepped });
+          observedAt: previous.observedAt??previous.x, nextObservedAt: metadata?.observedAt??x, interpolated: !this.stepped,
+          // The browser can show steps without re-querying or trying to recover
+          // a source value from the interpolated clip. Null clips stay gaps.
+          ...(!this.stepped ? { heldValue: previous.y } : {}) });
       }
     } else if (!this.observationsOnly && !this.clipEdges && x >= this.envelope.from && previous?.x < this.envelope.from && (covered || x - previous.x <= this.gap))
       this.envelope.add(this.envelope.from, previous.y, previous);

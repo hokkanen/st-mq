@@ -13,7 +13,7 @@ export function selectedChartView(selection) {
   return { ...definition, rightSignals: [...new Set([...definition.rightSignals, ...prices.filter(key => !definition.leftSignals.includes(key))])] };
 }
 export function readChartPreferences(storage) {
-  const empty = { view: 'power', series: 'garage_native_indoor_temperature', views: {}, prices: {} };
+  const empty = { view: 'power', series: 'garage_native_indoor_temperature', views: {}, prices: {}, interpolation: true };
   try {
     const saved = JSON.parse(storage.getItem(CHART_PREFERENCES_KEY) ?? '{}');
     if (!saved || typeof saved !== 'object' || Array.isArray(saved)) return empty;
@@ -21,6 +21,7 @@ export function readChartPreferences(storage) {
       .filter(([key, value]) => /^[a-zA-Z0-9_]{1,100}$/.test(key) && typeof value === 'boolean'));
     return { view: saved.view === 'explorer' || Object.hasOwn(CHART_VIEW_BY_KEY, saved.view) ? saved.view : empty.view,
       series: Object.hasOwn(EXPLORER_SERIES_BY_KEY, saved.series) ? saved.series : empty.series,
+      interpolation: saved.interpolation !== false,
       prices: Object.fromEntries(Object.entries(booleans(saved.prices)).filter(([key]) => prices.includes(key))),
       views: Object.fromEntries(Object.entries(saved.views && typeof saved.views === 'object' ? saved.views : {})
         .filter(([key]) => Object.hasOwn(CHART_VIEW_BY_KEY, key) || key.startsWith('series:') && Object.hasOwn(EXPLORER_SERIES_BY_KEY, key.slice(7)))

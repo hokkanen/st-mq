@@ -207,13 +207,27 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
       dataset.label, dataset.unit, dataset.borderColor, dataset.kind, dataset.borderDash);
     for (const track of tracksForView(view)) add(groups[2], track.key, track.label, track.detail, palette[track.color ?? track.key], 'strip');
     const reset = document.createElement('button'); reset.type = 'button'; reset.className = 'chart-legend-reset'; reset.textContent = 'Reset view';
-    reset.title = 'Restore this view’s default series and activity rows; keep your price choices';
+    reset.title = 'Restore this view’s default series and activity rows; keep your price and interpolation choices';
     reset.addEventListener('click', () => { delete preferences.views[view.key]; savePreferences(); renderChart(); $('chart-legend-actions').querySelector('.chart-legend-reset')?.focus({ preventScroll: true }); });
     const save = document.createElement('button'); save.type = 'button'; save.className = 'chart-legend-save'; save.textContent = 'Save view';
-    save.title = 'Save the selected view, series visibility and price choices in this browser';
-    save.addEventListener('click', () => { save.textContent = savePreferences() ? 'View saved' : 'Could not save'; });
+    save.title = 'Save the selected view, series visibility, price and interpolation choices in this browser';
+    save.addEventListener('click', () => { save.textContent = savePreferences() ? 'View saved' : 'Save failed'; });
+    const interpolation = document.createElement('button'); interpolation.type = 'button'; interpolation.className = 'chart-legend-interpolation';
+    interpolation.setAttribute('aria-label', 'Interpolation'); interpolation.setAttribute('aria-pressed', String(preferences.interpolation));
+    interpolation.title = preferences.interpolation
+      ? 'Interpolation is on. Turn off to draw all connected lines as steps.'
+      : 'Interpolation is off. Turn on to restore the usual curves and straight lines.';
+    const state = document.createElement('span'); state.className = 'chart-interpolation-state';
+    state.textContent = preferences.interpolation ? 'ON' : 'OFF'; state.setAttribute('aria-hidden', 'true');
+    interpolation.append(document.createTextNode('Interpolation'), state);
+    interpolation.addEventListener('click', () => {
+      preferences.interpolation = !preferences.interpolation; savePreferences();
+      const focused = document.activeElement === interpolation;
+      overlays.clear(); renderChart();
+      if (focused) $('chart-legend-actions').querySelector('.chart-legend-interpolation')?.focus({ preventScroll: true });
+    });
     legend.replaceChildren(...groups.filter(group => group.children.length > 1));
-    $('chart-legend-actions').replaceChildren(reset, save);
+    $('chart-legend-actions').replaceChildren(interpolation, reset, save);
     // Replacing the scrolling children resets the browser's scroll anchor.
     // Keep the same place for toggles and refreshes; a different view starts at top.
     legend.dataset.viewKey = view.key;
@@ -243,9 +257,10 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     const plot = plottedSelection;
     // The server has already bounded the envelope. Zoom must retain all loaded
     // detail until finer buckets arrive, including the first small wheel step.
-    const series = exploring ? clipChartSeries(payload.series, view) : payload.series;
+    const display = { interpolation: preferences.interpolation };
+    const series = exploring ? clipChartSeries(payload.series, view, display) : payload.series;
     const chartView = selectedChartView(plot), visibility = chartViewPreferences(chartView, preferences);
-    const datasets = preparePowerFills(historyDatasets(series, chartView, visibility, palette));
+    const datasets = preparePowerFills(historyDatasets(series, chartView, visibility, palette, display));
     for (const dataset of datasets) if (dataset.kind === 'fill') dataset.backgroundColor = color(dataset.backgroundColor).alpha(0.25).rgbString();
     const span = view.to - view.from;
     // Reserve space for both value axes and for the widest date format. A
@@ -306,7 +321,10 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     renderStatus(datasets);
     const keys = [...chartView.leftSignals, ...chartView.rightSignals];
     const notes = ['Left-axis lines are solid; right-axis temperatures are dashed. Future forecasts use dash-dot lines and electricity prices are dotted. Toggle any legend item to tailor this view; price choices apply to every view.',
-      'Temperature curves use cubic interpolation without overshoot, including displayed settings and targets. Recorded values remain unchanged; a curve between settings does not imply gradual control changes. Power and states retain their steps. Missing evidence remains a gap. Activity rows share the time axis; hover or drag along a bar to inspect the same moment across the chart. Open a row title for its colours and explanation.'];
+      (preferences.interpolation
+        ? 'Temperature curves use cubic interpolation without overshoot, including displayed settings and targets. Recorded values remain unchanged; a curve between settings does not imply gradual control changes. Power and states retain their steps. '
+        : 'Interpolation is off: all connected lines use steps. Recorded values and individual observation markers remain unchanged. ')
+      + 'Missing evidence remains a gap. Activity rows share the time axis; hover or drag along a bar to inspect the same moment across the chart. Open a row title for its colours and explanation.'];
     if (chartView.stackPhases) notes.push('Charger currents form translucent stacks separately for L1, L2 and L3. Each phase keeps its property reference line. Tooltips show each charger’s own current; stacks require overlapping recorded evidence.');
     if (keys.includes('solar_radiation')) notes.push('Solar estimate is the latest valid weather estimate known at each historical time, not a solar sensor reading. Later forecast revisions do not replace it. The future Solar forecast remains separate.');
     if (keys.some(key => ['charger_power', 'charger2_power'].includes(key))) notes.push('Translucent fills show the two chargers, stacked only where their recorded intervals overlap. Tooltips show each charger’s own power. Auxiliary and whole heat-pump estimates are separate lines; the whole estimate includes auxiliary.');

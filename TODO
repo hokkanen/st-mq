@@ -1,3 +1,27 @@
+Completed 2026-09-28 — Add compact chart interpolation control
+- Add an accessible Interpolation ON/OFF button beside Reset view and Save view
+  in the existing legend footer. Keep the same 32px button height and one row,
+  including 320px dashboards, both themes and save success/failure feedback.
+- Default ON preserves each series' existing interpolation and styling. OFF
+  renders every connected line as steps, including normally linear integral
+  values, while retaining observation markers, price steps, fills and gaps.
+  Restore original interval edges in step mode and retain preceding source values
+  separately at interpolated API boundaries; missing boundaries remain missing.
+- Remember this global display preference in the browser across views and reloads;
+  Reset view keeps interpolation and price choices. Preserve keyboard focus,
+  legend scroll position, selected dates and zoom when toggling.
+- Reviewed F1/F3/F4/F7 across projection, rendering, browser preferences and docs.
+  No configuration, recording, learning or control changes, schema migration,
+  compatibility alias or new query/cache layer. Independent review found no
+  blocking issues; source observations and default curve geometry are unchanged.
+- Validation: all 408 chart-related Node tests pass; production build passes
+  with the existing bundle-size warning. Full chart-views browser sweep passes
+  across 44 views and 129 explorer choices, including real cubic/linear-to-step
+  rendering and exact restoration. Final built assets additionally pass focused
+  320/390px dashboard/fullscreen checks in both themes, including all save labels,
+  keyboard/focus/scroll/range preservation and footer hit testing. Synthetic
+  fixtures only; full unrelated routine suite and live deployment were not run.
+
 Completed 2026-09-28 — Coordinate Garage challenge recovery with conservative Pill clocks
 - Retire the nonce advertised with a correlated challenge rejection, requiring a
   later unused challenge for numeric and clear retries. Use the existing bounded

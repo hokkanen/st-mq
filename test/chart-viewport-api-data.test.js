@@ -121,6 +121,10 @@ test('a viewport between scalar readings clips their original line and clearly i
   assert.deepEqual(linear.series.indoor_temperature.filter(point => point.displayContext).map(point => [point.x, point.y]),
     [[start, 20], [start + 8 * MINUTE, 24]], 'Original source knots remain available to cubic display');
   assert.deepEqual(linear.series.heating_integral.map(point => point.y), [-80, -60]);
+  assert.deepEqual(edges.map(point => point.heldValue), [20, 20],
+    'Temperature clips retain the preceding value for step display');
+  assert.deepEqual(linear.series.heating_integral.map(point => point.heldValue), [-100, -100],
+    'Scalar clips retain their preceding value even without surrounding source knots');
   assert(edges.every(point => point.displayBoundary && point.interpolated
     && point.observedAt === start && point.nextObservedAt === start + 8 * MINUTE));
   for (const left of ['temperatures', 'indoor_temperature']) {
@@ -131,6 +135,8 @@ test('a viewport between scalar readings clips their original line and clearly i
   const stepped = getChartData({ store, ...args, left: 'operating_mode', viewFrom, viewTo });
   assert.deepEqual(stepped.series.operating_mode.map(point => point.y), [1, 1]);
   assert(stepped.series.operating_mode.every(point => point.displayBoundary && !point.interpolated));
+  assert(stepped.series.operating_mode.every(point => !Object.hasOwn(point, 'heldValue')),
+    'Existing step boundaries need no alternate display value');
   assert.equal(stepped.meta.lastReadings.indoor_temperature.x, start + 8 * MINUTE,
     'Boundary interpolation never replaces an original observation timestamp');
 });
@@ -148,6 +154,8 @@ test('clipped scalar context cannot bridge missing readings or extend past selec
   observation(store, 'outdoor_temperature', 6, from + 24 * HOUR + MINUTE);
   const missing = getChartData({ store, ...args, left: 'operating_mode', viewFrom: start + 2 * MINUTE, viewTo: start + 4 * MINUTE });
   assert(missing.series.indoor_temperature.filter(point => !point.displayContext).every(point => point.y === null));
+  assert(missing.series.indoor_temperature.filter(point => !point.displayContext).every(point => point.heldValue === 20),
+    'Retaining a finite preceding value does not fill a clip bounded by an invalid next reading');
   assert(missing.series.operating_mode.every(point => point.y === null));
   const gap = getChartData({ store, ...args, viewFrom: start + 2 * HOUR, viewTo: start + 2 * HOUR + MINUTE });
   assert(gap.series.garage_temperature.filter(point => !point.displayContext).every(point => point.y === null), 'A four-hour source gap remains missing');

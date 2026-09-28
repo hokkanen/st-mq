@@ -279,6 +279,10 @@ Temporary Away and Pause dates use the same calendar with hour/minute fields;
 - **Legend and axes:** each view remembers its own series and activity-row
   choices in this browser. **Save view** explicitly saves the selected view and
   visibility choices; **Reset view** restores its initial comparisons.
+  **Interpolation ON/OFF** sits in the same footer row. It starts on, preserving
+  the usual curves and straight lines; off draws every connected line as steps.
+  Individual observation markers and gaps keep their meaning. This browser
+  remembers the choice across views, reloads and **Reset view**.
   Toggling a legend item keeps the list at its current scroll position.
   Temperature-led views need no left scale; operational views have one declared
   left unit and relevant temperatures on the right. Both electricity prices are
@@ -288,7 +292,7 @@ Temporary Away and Pause dates use the same calendar with hour/minute fields;
   point inspection identifies assumed rates and missing prices stay unavailable.
 - **Lines and fills:** ordinary left-axis history is solid and right-axis
   temperatures dashed. Future forecasts use dash-dot and electricity prices
-  stay dotted. Every plotted
+  stay dotted. With **Interpolation ON**, every plotted
   temperature in °C uses monotone cubic curves, including targets, settings,
   references and temperature differences; humidity is smooth too. This is display
   interpolation only: recorded setting changes, control and learning are unchanged.
@@ -327,7 +331,8 @@ Temporary Away and Pause dates use the same calendar with hour/minute fields;
   **Hot-water circulation request**, **Hot-water circulation feedback** and modeled
   fireplace windows remain separate.
   Open **Legend** to select series and rows for this view. The list scrolls while
-  **Reset view** stays visible. In fullscreen, opening the legend temporarily
+  **Interpolation**, **Reset view** and **Save view** stay visible. In fullscreen,
+  opening the legend temporarily
   hides the indicator strips; closing it restores them. Every activity icon uses
   the same stripe style with its usual active colour, such as Auto for Pump mode
   and space heating for Home compressor. Hover or drag an indicator

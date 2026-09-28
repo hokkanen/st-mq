@@ -550,8 +550,9 @@ recovery intentionally did not copy their original recorder checkpoints.
 
 ## Chart curves and popup meanings
 
-Every plotted temperature in °C uses Chart.js' monotone cubic Hermite
-interpolation on either axis. This includes measured air and liquid temperatures,
+With **Interpolation ON** (the default), every plotted temperature in °C uses
+Chart.js' monotone cubic Hermite interpolation on either axis. This includes
+measured air and liquid temperatures,
 saved temperature inputs, learned temperatures, forecasts, temperature-valued
 settings and references, targets and temperature differences. This uses linear
 time and storage in the number of displayed points, keeps local extrema and
@@ -561,6 +562,17 @@ Smoothing temperature-valued settings and room boosts is a display choice;
 their recorded changes, actual commands, control interpretation and learning
 remain unchanged. Prices, energy, power, categorical states and model
 coefficients retain their own display semantics.
+
+The compact **Interpolation ON/OFF** button beside **Reset view** and **Save view**
+switches every connected line to steps when off, including otherwise linear
+series. Turning it back on restores each series' existing interpolation rules.
+The browser saves this global display preference across views and reloads;
+**Reset view** resets series visibility while retaining interpolation and price
+choices. It does not change recording, learning or control. Original interval
+edges and explicit gaps survive in step mode. Interpolated viewport boundaries
+carry the preceding source value separately so the browser can display a held
+step at the edge without retaining the interpolated value or fetching again.
+Null boundaries remain null even when that preceding value is known.
 
 Runtime readings and native cumulative counters appear as individual hollow
 points without connecting lines; a reading does not prove a value throughout the
@@ -694,7 +706,8 @@ is separate and cannot be tracked or controlled consistently by the page.
 The chart view keeps its selection button, Exit button and two compact date pickers
 visible. Selecting the first date immediately shows that day; the second extends
 the inclusive range. **Legend** is a fold on every screen size, with a scrollable
-list and a **Reset view** button that stays visible. In fullscreen, opening the
+list and **Interpolation**, **Reset view** and **Save view** controls that stay
+visible on one footer row. In fullscreen, opening the
 fold hides the activity strips; closing it restores them. Short windows also
 hide the navigator while the legend is open. Escape inside the legend closes it
 and returns focus to the title. Group headings describe their available series:
@@ -702,7 +715,8 @@ price-only groups say **Price**, with no temperature label. All activity icons
 use the same stripe style and a representative active-state colour. Left-axis
 history uses solid lines and right-axis temperatures use dashed lines. Future
 forecasts use dash-dot lines and electricity prices remain dotted. All plotted temperatures, including settings
-and targets, share monotone cubic interpolation within covered spans. Categorical
+and targets, share monotone cubic interpolation within covered spans while
+**Interpolation** is on. Switching it off draws all connected lines as steps. Categorical
 states and electrical power retain steps. Events, session checks and original
 interval-energy totals remain points. Charger fills retain their electricity
 meaning. In **Phase loading**, charger currents stack only within their own

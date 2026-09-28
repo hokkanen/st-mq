@@ -229,6 +229,10 @@ try {
     await evaluate(`document.querySelector('[data-chart-key="${key}"]').click(); true`); await settle();
   };
   const shown = key => evaluate(`document.querySelector('[data-chart-key="${key}"]')?.getAttribute('aria-pressed') === 'true'`);
+  const interpolationEnabled = () => evaluate("document.querySelector('.chart-legend-interpolation')?.getAttribute('aria-pressed') === 'true'");
+  const toggleInterpolation = async () => {
+    await evaluate("document.querySelector('.chart-legend-interpolation').click(); true"); await settle();
+  };
   const drawnPaths = key => evaluate(`(() => {
     const swatch = document.querySelector('[data-chart-key="${key}"] .chart-legend-swatch');
     const context = document.createElement('canvas').getContext('2d');
@@ -260,6 +264,27 @@ try {
     }
     assert(curves.length >= 8, `${key}: real canvas contains curved temperature segments (${curves.length})`);
     assert.equal(jumps.length, 0, `${key}: artificial periodic hold edges do not create near-vertical stair steps`);
+  };
+  const checkStepGeometry = async key => {
+    const paths = await drawnPaths(key);
+    let horizontal = 0, vertical = 0;
+    for (const path of paths) {
+      let previous;
+      for (const command of path.path) {
+        assert.notEqual(command.method, 'bezierCurveTo', `${key}: interpolation off removes curved canvas segments`);
+        if (command.method === 'moveTo') previous = command.args;
+        else if (command.method === 'lineTo') {
+          if (previous) {
+            const dx = Math.abs(command.args[0] - previous[0]), dy = Math.abs(command.args[1] - previous[1]);
+            assert(dx < .01 || dy < .01, `${key}: interpolation off draws no sloped linear segments`);
+            if (dx > .01) horizontal++;
+            if (dy > .01) vertical++;
+          }
+          previous = command.args;
+        }
+      }
+    }
+    assert(horizontal > 4 && vertical > 4, `${key}: interpolation off draws real horizontal holds and vertical steps`);
   };
   const capture = async name => {
     await settle(); mkdirSync(screenshotDirectory, { recursive: true });
@@ -356,6 +381,8 @@ try {
       await capture(`legend-${label.toLowerCase().replaceAll(' ', '-')}`);
     }
     if (layout.scrollHeight > layout.clientHeight + 1) {
+      await evaluate("document.getElementById('chart-legend').scrollTop = document.getElementById('chart-legend').scrollHeight; true");
+      await settle();
       const lowerItem = await evaluate(`(() => {
         const list = document.getElementById('chart-legend'), bounds = list.getBoundingClientRect();
         const button = [...list.querySelectorAll('[data-chart-key]')].filter(node => {
@@ -390,6 +417,55 @@ try {
       }
       await capture(`legend-scroll-${label.toLowerCase().replaceAll(' ', '-')}`);
     }
+    const checkFooter = async () => {
+      await evaluate("document.getElementById('chart-legend-actions').scrollIntoView({block:'nearest'}); true"); await settle();
+      const footer = await evaluate(`(() => {
+        const actions = document.getElementById('chart-legend-actions'), bounds = actions.getBoundingClientRect();
+        const controls = [...actions.querySelectorAll('button')].map(button => {
+          const r = button.getBoundingClientRect();
+          return { className: button.className, left: r.left, right: r.right, top: r.top, bottom: r.bottom,
+            height: r.height, width: r.width, centerY: r.top + r.height / 2,
+            clipped: button.scrollWidth > button.clientWidth + 1,
+            hit: document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)?.closest('button') === button,
+            outsideList: !document.getElementById('chart-legend').contains(button) };
+        });
+        return { controls, left: bounds.left, right: bounds.right, height: bounds.height, width: innerWidth };
+      })()`);
+      assert.equal(footer.controls.length, 3, `${label}: interpolation shares the existing footer with Reset view and Save view`);
+      assert(footer.controls.every(control => control.hit && control.outsideList && !control.clipped
+        && control.width >= 32 && control.height >= 32 && control.left >= footer.left - 1 && control.right <= footer.right + 1),
+      `${label}: all three footer controls remain readable and reachable (${JSON.stringify(footer)})`);
+      assert(footer.controls.every(control => Math.abs(control.centerY - footer.controls[0].centerY) < 1)
+        && footer.height <= Math.max(...footer.controls.map(control => control.height)) + 14,
+      `${label}: interpolation adds no footer row or vertical space`);
+      const ordered = footer.controls.toSorted((a, b) => a.left - b.left);
+      assert(ordered.every((control, index) => index === 0 || ordered[index - 1].right <= control.left)
+        && footer.left >= 0 && footer.right <= footer.width,
+      `${label}: the compact footer controls never overlap or overflow`);
+    };
+    await checkFooter();
+    const initialInterpolation = await interpolationEnabled();
+    const interpolationScroll = await evaluate("document.getElementById('chart-legend').scrollTop");
+    const interpolationView = await viewportState();
+    for (const [index, key] of ['Enter', ' '].entries()) {
+      await evaluate("document.querySelector('.chart-legend-interpolation').focus({preventScroll:true}); true");
+      await pressKey(key);
+      const enabled = index ? initialInterpolation : !initialInterpolation;
+      assert.equal(await interpolationEnabled(), enabled, `${label}: ${key === ' ' ? 'Space' : key} toggles interpolation`);
+      assert.deepEqual(await evaluate(`(() => {
+        const button = document.querySelector('.chart-legend-interpolation');
+        return { label: button.getAttribute('aria-label'), focused: document.activeElement === button,
+          state: button.querySelector('.chart-interpolation-state')?.textContent,
+          stateHidden: button.querySelector('.chart-interpolation-state')?.getAttribute('aria-hidden') };
+      })()`), { label: 'Interpolation', focused: true, state: enabled ? 'ON' : 'OFF', stateHidden: 'true' },
+      `${label}: interpolation keeps keyboard focus, a stable accessible name and a visible state`);
+      assert.equal(await evaluate("document.getElementById('chart-legend-panel').open"), true,
+        `${label}: toggling interpolation keeps the legend open`);
+      assert(Math.abs(await evaluate("document.getElementById('chart-legend').scrollTop") - interpolationScroll) < 1,
+        `${label}: toggling interpolation preserves the legend scroll position`);
+      assert.deepEqual(await viewportState(), interpolationView, `${label}: interpolation preserves the visible time range and zoom`);
+      await checkFooter();
+    }
     const original = await shown('property_power');
     await evaluate("document.querySelector('[data-chart-key=property_power]').focus(); true"); await pressKey('Enter');
     assert.equal(await shown('property_power'), !original, `${label}: a keyboard legend toggle changes the series`);
@@ -404,6 +480,17 @@ try {
       `${label}: saving retains keyboard focus`);
     assert.equal(await evaluate("document.getElementById('chart-legend-panel').open"), true,
       `${label}: saving keeps the legend open`);
+    await checkFooter();
+    assert.equal(await evaluate(`(() => {
+      const original = Storage.prototype.setItem;
+      try {
+        Storage.prototype.setItem = () => { throw new Error('Storage unavailable'); };
+        document.querySelector('.chart-legend-save').click();
+        return document.querySelector('.chart-legend-save').textContent;
+      } finally { Storage.prototype.setItem = original; }
+    })()`), 'Save failed', `${label}: unavailable storage reports the failed save`);
+    await checkFooter();
+    if (!fullscreen) await capture(`legend-${label.toLowerCase().replaceAll(' ', '-')}`);
     assert.equal(await evaluate(`(() => {
       const save = document.querySelector('.chart-legend-save'), r = save.getBoundingClientRect();
       return document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2) === save;
@@ -526,6 +613,7 @@ try {
   await send('Page.navigate', { url: `http://127.0.0.1:${app.server.address().port}/` });
   await until("document.getElementById('history')?.dataset.ready === 'true'");
   assert.equal(await evaluate("document.getElementById('history').dataset.view"), 'power');
+  assert.equal(await interpolationEnabled(), true, 'Interpolation starts on, preserving the existing chart rendering');
   const checkDateRange = async (start, end = start) => until(`document.getElementById('history').dataset.ready === 'true'
     && document.getElementById('history').dataset.rangeStart === ${JSON.stringify(start)}
     && document.getElementById('history').dataset.rangeEnd === ${JSON.stringify(end)}`);
@@ -706,9 +794,14 @@ try {
   assert.notEqual(await evaluate("document.querySelector('[data-chart-key=auxiliary_power] .chart-legend-swatch').dataset.kind"), 'fill');
   await toggle('outdoor_temperature'); await toggle('spot_price');
   assert.equal(await shown('outdoor_temperature'), false); assert.equal(await shown('spot_price'), false);
+  await toggleInterpolation();
+  assert.equal(await interpolationEnabled(), false, 'Interpolation can be disabled independently of series visibility');
+  assert.equal(await evaluate("JSON.parse(localStorage.getItem('home-energy-chart-views')).interpolation"), false,
+    'Interpolation is remembered immediately without a separate Save view action');
   await choose('view', 'weather');
   assert.equal(await shown('outdoor_temperature'), true, 'Temperature visibility belongs to the selected view');
   assert.equal(await shown('spot_price'), false, 'Price visibility is shared across views');
+  assert.equal(await interpolationEnabled(), false, 'Interpolation is shared across named views');
   await choose('view', 'power');
   assert.equal(await shown('outdoor_temperature'), false, 'Returning restores that view’s deliberate choices');
   await evaluate("document.querySelector('.chart-legend-save').click(); true");
@@ -716,6 +809,7 @@ try {
   await until("document.getElementById('history')?.dataset.ready === 'true'");
   assert.equal(await shown('outdoor_temperature'), false, 'Reload restores the saved view visibility');
   assert.equal(await shown('spot_price'), false, 'Reload restores saved shared price choices');
+  assert.equal(await interpolationEnabled(), false, 'Reload restores the interpolation preference');
   assert.equal(await evaluate(`(() => {
     const original = Storage.prototype.setItem;
     try {
@@ -723,17 +817,52 @@ try {
       document.querySelector('.chart-legend-save').click();
       return document.querySelector('.chart-legend-save').textContent;
     } finally { Storage.prototype.setItem = original; }
-  })()`), 'Could not save', 'Failed storage does not claim that the view was saved');
+  })()`), 'Save failed', 'Failed storage does not claim that the view was saved');
   await evaluate("document.querySelector('.chart-legend-reset').click(); true"); await settle();
   assert.equal(await shown('outdoor_temperature'), true);
   assert.equal(await shown('spot_price'), false, 'Reset view preserves shared price choices');
+  assert.equal(await interpolationEnabled(), false, 'Reset view preserves the shared interpolation choice');
   await toggle('spot_price');
+  await choose('series', 'bedroom_temperature');
+  assert.equal(await interpolationEnabled(), false, 'The series explorer keeps the shared interpolation choice');
+  await checkStepGeometry('bedroom_temperature');
+  await toggleInterpolation();
 
   for (const [view, temperatures] of [['temperatures', ['bedroom_temperature', 'downstairs_temperature']],
     ['heating_water', ['supply_temperature', 'return_temperature']]]) {
     await choose('view', view);
     for (const key of temperatures) await checkTemperatureCurve(key);
+    const originalPaths = await Promise.all(temperatures.map(drawnPaths));
+    const pricePaths = await drawnPaths('all_in_price');
+    await toggleInterpolation();
+    for (const key of temperatures) await checkStepGeometry(key);
+    assert.deepEqual(await drawnPaths('all_in_price'), pricePaths, `${view}: interpolation does not change the existing price steps`);
+    await toggleInterpolation();
+    for (const [index, key] of temperatures.entries()) {
+      await checkTemperatureCurve(key);
+      assert.deepEqual(await drawnPaths(key), originalPaths[index], `${key}: enabling interpolation restores the exact original curves`);
+    }
   }
+  await choose('series', 'heating_integral');
+  const integralPaths = await drawnPaths('heating_integral');
+  let slopedIntegralSegments = 0;
+  for (const path of integralPaths) {
+    let previous;
+    for (const command of path.path) {
+      if (command.method === 'moveTo') previous = command.args;
+      else if (command.method === 'lineTo') {
+        if (previous && Math.abs(command.args[0] - previous[0]) > .01 && Math.abs(command.args[1] - previous[1]) > .01)
+          slopedIntegralSegments++;
+        previous = command.args;
+      }
+    }
+  }
+  assert(slopedIntegralSegments > 4, 'Heating integral exercises the existing linear interpolation');
+  await toggleInterpolation();
+  await checkStepGeometry('heating_integral');
+  await toggleInterpolation();
+  assert.deepEqual(await drawnPaths('heating_integral'), integralPaths,
+    'Enabling interpolation restores the original linear heating-integral geometry');
   await choose('view', 'hot_water');
   assert.deepEqual(await evaluate("['dhwr','dhwr_active'].map(key=>document.querySelector('[data-activity-key='+key+'] .activity-title').textContent)"),
     ['Hot-water circulation request','Hot-water circulation feedback'], 'Requested and reported circulation use equivalent labels');
@@ -1148,6 +1277,7 @@ try {
       await choose('view', 'power');
       await evaluate("document.getElementById('chart-fullscreen').click(); true"); await settle();
       await checkFits(`${width}px ${theme} fullscreen`);
+      await checkLegendDisclosure(`${width}px ${theme} fullscreen`, true);
       await capture(`fullscreen-${width}-${theme}`);
       await evaluate("document.getElementById('chart-fullscreen').click(); true"); await settle();
     }
@@ -1159,6 +1289,7 @@ try {
         await evaluate("document.getElementById('theme-toggle').click(); true");
       await choose('view', 'power');
       await evaluate("document.getElementById('chart-fullscreen').click(); true"); await settle();
+      await checkLegendDisclosure(`${width}×${height} ${theme} fullscreen`, true);
       for (const subject of ['power', 'model_coefficient_hydronic_response']) {
         await choose('view', subject);
         const label = `${width}×${height} ${theme} ${subject}`;
@@ -1259,6 +1390,15 @@ try {
       }
     }
   }
+  for (const [width, height] of [[320, 568], [390, 844]]) {
+    await viewport(width, height, true);
+    for (const theme of ['dark', 'light']) {
+      if (await evaluate('document.documentElement.dataset.theme') !== theme)
+        await evaluate("document.getElementById('theme-toggle').click(); true");
+      await choose('view', 'power');
+      await checkLegendDisclosure(`${width}px ${theme} dashboard`, false);
+    }
+  }
   await viewport(1280, 460);
   await choose('view', 'power');
   await evaluate("document.getElementById('chart-fullscreen').click(); true"); await settle();
@@ -1274,7 +1414,7 @@ try {
   await checkPickerFits('Phone with a short available viewport');
   await capture('picker-short-phone'); await pressKey('Escape');
   assert.deepEqual(errors, [], 'All view selections and cursor interactions have no uncaught browser exceptions');
-  console.log(`Chart views browser checks passed: ${CHART_VIEWS.length} named views, ${EXPLORER_SERIES.length} searchable explorer choices, balanced Home/Garage learning groups, achieved references and held-out errors, isolated provisional episode markers and provenance, unified view/series browsing without chart changes, separate searches, centered modal keyboard/touch/focus without automatic search keyboards, periodic temperature Bézier geometry, solid solar history and dash-dot forecast, charger phase fills, visibility isolation, garage readback, crosshair bounds and touch, dark/light themes, 320/390px portrait, and aligned landscape/tablet headers with long selected labels.`);
+  console.log(`Chart views browser checks passed: ${CHART_VIEWS.length} named views, ${EXPLORER_SERIES.length} searchable explorer choices, balanced Home/Garage learning groups, achieved references and held-out errors, isolated provisional episode markers and provenance, unified view/series browsing without chart changes, separate searches, centered modal keyboard/touch/focus without automatic search keyboards, periodic temperature Bézier geometry, persistent interpolation toggle with step-only rendering and restored original curves/lines, compact accessible legend footer including save failure, solid solar history and dash-dot forecast, charger phase fills, visibility isolation, garage readback, crosshair bounds and touch, dark/light themes, 320/390px portrait, and aligned landscape/tablet headers with long selected labels.`);
   console.log(`Screenshots: ${screenshots.join(', ')}`);
 } finally {
   socket?.close(); for (const request of pending.values()) clearTimeout(request.timer);

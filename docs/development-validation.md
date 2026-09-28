@@ -173,7 +173,10 @@ and managed-pause rows, band-only mouse/touch cursor dragging, clipped cursor
 segments, independent plot navigation, touch and keyboard cleanup, both themes and
 320/390 px fullscreen layouts. Legend checks cover native keyboard disclosure,
 scrolling with Reset view always accessible, uniform active-state swatches,
-quantity-specific group labels and strip alignment as scrollbars appear. Its synthetic screenshot gallery is written to
+quantity-specific group labels and strip alignment as scrollbars appear. They also
+check the compact Interpolation ON/OFF footer control, keyboard focus and scroll
+preservation, global browser persistence, step geometry and restoration of the
+existing curves and straight lines. Its synthetic screenshot gallery is written to
 ignored `var/chart-views-*.png` files. The Firefox chart suite below retains broader
 chart/date/detail/tooltips and related dashboard regression coverage.
 
