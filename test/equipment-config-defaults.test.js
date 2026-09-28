@@ -52,7 +52,7 @@ test('public equipment defaults work with broker-only private settings and prese
   assert.equal(dehumidifier.kind, 'dehumidifier');
   assert.equal(dehumidifier.enabled, true);
   assert.equal(dehumidifier.temperatureControl.sensorDeviceId, 'blu_ht');
-  assert.equal(dehumidifier.stateSignal, 'caravan_dehumidifier_active');
+  assert.equal(dehumidifier.stateSignal, 'caravan_dehumidifier_state');
   assert.equal(dehumidifier.mqtt.commandTopic, 'stmq/garage/caravan_dehumidifier/set');
   assert.equal(dehumidifier.maxAgeMs, 180_000);
   const dhwr = devices.find(row => row.id === 'dhwr');

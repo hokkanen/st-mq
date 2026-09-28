@@ -91,7 +91,7 @@ try {
         ['dhwr_active', index % 60 < 10 ? 1 : 0, 'state'],
         ['caravan_temperature', 17 + Math.sin(index / 16), 'degC'],
         ['caravan_humidity', 65 + Math.sin(index / 20) * 5, '%'],
-        ['caravan_dehumidifier_active', index % 50 < 35 ? 1 : 0, 'state'],
+        ['caravan_dehumidifier_state', Math.floor(index / 15) % 4, 'state'],
       ]) app.engine.recorder.record({ signal, value, unit, source: 'simulation', device: 'invented-chart-views-probe',
         sourceTime: at, receivedAt: at, quality: ['simulated'], raw: { reportIntervalMs: 60_000 } });
     }
@@ -865,8 +865,23 @@ try {
   assert((await drawnPaths('caravan_power')).some(path => path.path.some(command => command.method === 'lineTo')),
     'Caravan meter intervals draw their average power');
   assert.match(await evaluate("document.querySelector('[data-chart-key=caravan_power]').title"), /kW/);
+  const caravanStates = await evaluate(`(() => {
+    const row = document.querySelector('[data-activity-key=caravan_dehumidifier_state]');
+    return { labels: [...row.querySelectorAll('.activity-description .activity-key-item')].map(item => item.textContent),
+      states: [0, 1, 2, 3].map(value => {
+        const segment = row.querySelector('.mode-segment[data-value="' + value + '"]');
+        return { value, title: segment?.title, color: segment?.style.backgroundColor };
+      }) };
+  })()`);
+  assert.deepEqual(caravanStates.labels, ['Off', 'Low', 'Medium', 'High', 'Unknown — No known state recorded.']);
+  for (const [index, label] of ['Off', 'Low', 'Medium', 'High'].entries())
+    assert.match(caravanStates.states[index].title ?? '', new RegExp(label), `${label}: recorded Caravan state is inspectable`);
+  assert.equal(new Set(caravanStates.states.map(state => state.color)).size, 4, 'Caravan state levels have distinct activity colors');
   await evaluate("document.querySelector('.history-panel').scrollIntoView({block:'start'}); true");
   await capture('caravan-power-dark');
+  await choose('series', 'caravan_dehumidifier_state');
+  assert.equal(await evaluate("document.querySelectorAll('#chart-activity [data-activity-key=caravan_dehumidifier_state]').length"), 1,
+    'The explorer exposes one combined dehumidifier state series');
   await choose('series', 'caravan_energy');
   assert.equal(await evaluate("document.querySelector('[data-chart-key=caravan_energy] .chart-legend-swatch').dataset.kind"), 'interval-energy',
     'The explorer keeps the original Caravan energy intervals separately available');

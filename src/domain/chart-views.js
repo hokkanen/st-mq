@@ -65,10 +65,10 @@ view('garage', 'Garage temperatures & compressor', 'Garage', 'Compare protection
 view('garage_inputs', 'Garage electrical inputs', 'Garage', 'Qualified electrical inputs saved for garage learning, including both chargers as independent comparisons.', 'kW',
   ['garage_model_power', 'garage_model_ev1', 'garage_model_ev2'], savedGarage, ['compressorGarage', 'garage_model_available'],
   ['garage_model_power', 'garage_model_ev1', 'garage_model_ev2', 'garage_model_rear', 'garage_model_front', 'compressorGarage']);
-view('caravan', 'Caravan climate', 'Caravan', 'Air temperature, relative humidity and reported dehumidifier power. On does not prove water removal.', '%',
-  ['caravan_humidity'], ['caravan_temperature', 'outdoor_temperature', 'outdoor_forecast'], ['caravan_dehumidifier_active'], ['caravan_humidity', 'caravan_temperature', 'caravan_dehumidifier_active']);
-view('caravan_power', 'Caravan power', 'Caravan', 'Average electrical load calculated from measured energy over each recorded interval, with air temperature and dehumidifier On/Off state. This is not instantaneous power.', 'kW',
-  ['caravan_power'], ['caravan_temperature'], ['caravan_dehumidifier_active'], ['caravan_power', 'caravan_temperature', 'caravan_dehumidifier_active']);
+view('caravan', 'Caravan climate', 'Caravan', 'Air temperature, relative humidity and reported dehumidifier state: Off, Low, Medium or High. A powered fan setting does not prove water removal.', '%',
+  ['caravan_humidity'], ['caravan_temperature', 'outdoor_temperature', 'outdoor_forecast'], ['caravan_dehumidifier_state'], ['caravan_humidity', 'caravan_temperature', 'caravan_dehumidifier_state']);
+view('caravan_power', 'Caravan power', 'Caravan', 'Average electrical load calculated from measured energy over each recorded interval, with air temperature and dehumidifier Off/Low/Medium/High state. This is not instantaneous power.', 'kW',
+  ['caravan_power'], ['caravan_temperature'], ['caravan_dehumidifier_state'], ['caravan_power', 'caravan_temperature', 'caravan_dehumidifier_state']);
 view('firewood', 'Firewood additions', 'Fireplace', 'Manually recorded fuel additions, with room temperatures and the modeled burn window.', 'kg / addition', ['firewood_load'], home, ['fireplace'], ['firewood_load', 'model_indoor_temperature', 'fireplace']);
 view('fireplace_release', 'Modeled fireplace release', 'Fireplace', 'Delayed fuel-equivalent release from corrected additions. This is a model input, not measured heat output.', 'kg/h', ['model_fireplace_release'], home, ['fireplace'], ['model_fireplace_release', 'model_indoor_temperature', 'fireplace']);
 view('fireplace_energy', 'Firewood electricity avoided', 'Fireplace', 'Retrospective daily model estimates of electricity avoided. Inspect points for evidence and provisional status.', 'kWh/day', ['firewood_electricity_avoided'], home, [], ['firewood_electricity_avoided']);

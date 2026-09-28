@@ -1172,29 +1172,63 @@ button.garage-door-action:disabled { opacity: .55; cursor: default; }
 .caravan-sensor-details > summary { padding: 5px 0; color: var(--muted); font-size: 10px; }
 .caravan-sensor-details .equipment-readings { font-size: 10px; }
 .caravan-dehumidifier { margin-top: 20px; padding-top: 18px; border-top: 1px solid var(--border); }
-.caravan-recording { display: grid; gap: 3px; margin-top: 12px; font-size: 11px; line-height: 1.6; }
-.caravan-recording strong { font-weight: 550; }
-.caravan-recording span { color: var(--muted); }
-.caravan-comparison, .caravan-policy-help, .caravan-power-policy { margin: 8px 0 0; font-size: 10px; line-height: 1.65; overflow-wrap: anywhere; }
-.caravan-temperature-control { margin-top: 16px; padding: 12px; border: 1px solid var(--border); border-radius: 8px; }
-.caravan-auto-power { display: flex; flex-direction: row; align-items: center; gap: 8px; margin: 0; font-size: 12px; }
-.caravan-auto-power input { width: 16px; height: 16px; margin: 0; flex: none; }
-.caravan-thresholds { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
-.caravan-thresholds input { box-sizing: border-box; min-width: 0; width: 100%; min-height: 36px; margin: 0; padding: 6px 8px; font-size: 12px; }
-.caravan-temperature-control > button { min-height: 36px; margin: 12px 0 0; padding: 6px 12px; font-size: 11px; }
-.caravan-policy-message { margin: 8px 0 0; font-size: 10px; line-height: 1.65; }
-.caravan-dehumidifier-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 12px; margin-top: 16px; }
+.caravan-appliance-state { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 14px; margin: 12px 0 0; }
+.caravan-appliance-state > strong { font-size: 20px; line-height: 1.4; font-weight: 500; }
+.caravan-appliance-state[data-state="pending"] > strong { font-size: 12px; color: var(--muted); }
+.caravan-appliance-state > span { font-size: 10px; }
+.caravan-dehumidifier-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 12px; margin-top: 18px; }
 .caravan-setting { display: grid; min-width: 0; gap: 7px; margin: 0; align-content: start; }
-.caravan-setting-label { color: var(--muted); font-size: 11px; }
-.caravan-setting select { box-sizing: border-box; min-width: 0; width: 100%; min-height: 36px; margin: 0; padding: 6px 8px; font-size: 12px; }
-.caravan-setting-swing { grid-column: 1 / -1; }
-.caravan-power-buttons { display: flex; gap: 8px; max-width: 240px; }
-.caravan-power-buttons > button { flex: 1; min-height: 36px; padding: 6px 14px; margin: 0; font-size: 12px; }
+.caravan-setting-label { color: var(--muted); font-size: 11px; line-height: 1.5; }
+.caravan-setting select { box-sizing: border-box; min-width: 0; width: 100%; min-height: 40px; margin: 0; padding: 8px; font-size: 12px; }
+.caravan-power, .caravan-setting-swing { grid-column: 1 / -1; }
+.caravan-power-buttons { display: flex; gap: 8px; max-width: 280px; }
+.caravan-power-buttons > button { flex: 1; min-height: 40px; padding: 8px 14px; margin: 0; font-size: 12px; }
 .caravan-power-buttons > button[aria-pressed="true"] { border-color: var(--chart-indoor); color: var(--chart-indoor); background: color-mix(in srgb, var(--chart-indoor) 8%, transparent); }
 .caravan-power-buttons > button:disabled { cursor: default; }
-.caravan-control-help, .caravan-dehumidifier > .equipment-control-result { margin: 12px 0 0; font-size: 10px; line-height: 1.65; }
-@container (max-width: 280px) {
-  .caravan-dehumidifier-controls { grid-template-columns: minmax(0, 1fr); }
+.caravan-control-help, .caravan-dehumidifier > .equipment-control-result { margin: 9px 0 0; font-size: 10px; line-height: 1.65; }
+.caravan-policy-details { margin: 18px 0 0; border: 1px solid var(--border); border-radius: 8px; }
+.caravan-policy-details > summary { position: relative; display: grid; gap: 5px; padding: 13px 36px 13px 14px; list-style: none; border-radius: 8px; }
+.caravan-policy-details > summary::-webkit-details-marker, .caravan-recording-details > summary::-webkit-details-marker { display: none; }
+.caravan-policy-details > summary::after, .caravan-recording-details > summary::after { content: '›'; color: var(--muted); font-size: 18px; line-height: 1; }
+.caravan-policy-details > summary::after { position: absolute; right: 14px; top: 18px; }
+.caravan-policy-details[open] > summary::after, .caravan-recording-details[open] > summary::after { transform: rotate(90deg); }
+.caravan-policy-details > summary:hover { background: color-mix(in srgb, var(--text) 3%, transparent); }
+.caravan-policy-title { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; font-size: 12px; font-weight: 550; }
+.caravan-policy-state { margin-left: auto; color: var(--muted); font-size: 10px; font-weight: 400; }
+.caravan-policy-state[data-state="enabled"] { color: var(--chart-indoor); }
+.caravan-power-policy { font-size: 11px; line-height: 1.5; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.caravan-policy-help { margin: 0; padding: 0 14px 14px; font-size: 11px; line-height: 1.6; }
+.caravan-temperature-control { margin: 0; padding: 0 14px 14px; }
+.caravan-auto-power { display: flex; flex-direction: row; align-items: center; gap: 8px; min-height: 36px; margin: 0; font-size: 12px; }
+.caravan-auto-power input { width: 17px; height: 17px; margin: 0; flex: none; }
+.caravan-thresholds { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
+.caravan-temperature-entry { position: relative; display: block; min-width: 0; }
+.caravan-temperature-entry > span { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); pointer-events: none; color: var(--muted); font-size: 11px; }
+.caravan-thresholds input { box-sizing: border-box; min-width: 0; width: 100%; min-height: 40px; margin: 0; padding: 8px 30px 8px 10px; font-size: 12px; font-variant-numeric: tabular-nums; appearance: textfield; -moz-appearance: textfield; }
+.caravan-thresholds input::-webkit-inner-spin-button, .caravan-thresholds input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+.caravan-thresholds input[aria-invalid="true"] { border-color: var(--error-text); }
+.caravan-policy-footer { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 14px; }
+.caravan-policy-footer > button { min-height: 36px; margin: 0; padding: 7px 12px; font-size: 11px; }
+.caravan-policy-draft { flex-basis: 100%; font-size: 10px; }
+.caravan-policy-message { margin: 10px 0 0; font-size: 11px; line-height: 1.6; }
+.caravan-recording-panel { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border); }
+.caravan-recording { display: grid; gap: 4px; font-size: 11px; line-height: 1.6; }
+.caravan-recording strong { display: flex; align-items: center; gap: 7px; font-weight: 550; }
+.caravan-recording strong::before { content: ''; width: 5px; height: 5px; border-radius: 50%; background: var(--muted); flex: none; }
+.caravan-recording[data-state="available"] strong::before { background: var(--chart-indoor); }
+.caravan-recording span { color: var(--muted); }
+.caravan-recording-details { margin: 4px 0 0; border: 0; }
+.caravan-recording-details > summary { display: flex; align-items: center; gap: 8px; width: fit-content; min-height: 36px; box-sizing: border-box; padding: 8px 0; color: var(--muted); font-size: 11px; list-style: none; }
+.caravan-recording-details > summary:hover { color: var(--text); }
+.caravan-comparison { padding: 8px 0 0; }
+.caravan-comparison-values { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 0; }
+.caravan-comparison-values > div { min-width: 0; }
+.caravan-comparison-values dt { color: var(--muted); font-size: 10px; }
+.caravan-comparison-values dd { margin: 5px 0 0; font-size: 18px; font-weight: 500; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.caravan-comparison-label, .caravan-comparison-rule { margin: 12px 0 0; font-size: 11px; line-height: 1.65; }
+.caravan-comparison-label { margin-bottom: 8px; }
+@container (max-width: 220px) {
+  .caravan-dehumidifier-controls, .caravan-thresholds { grid-template-columns: minmax(0, 1fr); }
 }
 .equipment-cover-buttons { display: flex; flex-wrap: wrap; gap: 6px; max-width: 300px; }
 .equipment-cover-buttons > button { position: relative; display: inline-flex; align-items: center; justify-content: center; flex: 1; min-width: 84px; min-height: 36px; margin: 0; padding: 6px 24px; font-size: 12px; white-space: nowrap; }

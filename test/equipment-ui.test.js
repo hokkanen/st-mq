@@ -542,14 +542,22 @@ test('automatic power edits validate hysteresis, preserve draft through polling 
   assert.equal(save.disabled, true);
   input('onAtC').value = '1.2'; input('onAtC').listeners.get('input')();
   assert.equal(save.disabled, true); assert.match(policy.querySelector('.caravan-policy-message').textContent, /at least 0.5/);
+  assert.equal(input('onAtC').getAttribute('aria-invalid'), 'true');
+  assert.match(input('onAtC').getAttribute('aria-describedby'), /caravan-policy-message/);
   input('onAtC').value = '3'; input('onAtC').listeners.get('input')();
   input('automaticPower').checked = false; input('automaticPower').listeners.get('input')();
   panel.update(current); assert.equal(input('onAtC').value, '3', 'Status refresh keeps the draft'); assert.equal(save.disabled, false);
+  assert.equal(input('onAtC').getAttribute('aria-invalid'), 'false');
+  assert.equal(appliance.querySelector('.caravan-policy-state').textContent, 'Enabled', 'Summary describes saved policy');
+  assert.equal(appliance.querySelector('.caravan-power').hidden, true, 'An unsaved draft never enables manual power');
+  assert.equal(policy.querySelector('.caravan-policy-draft').textContent, 'Unsaved changes');
   await policy.listeners.get('submit')({ preventDefault() {} });
   assert.deepEqual(calls, [{ path: '/api/equipment/dehumidifier/temperature-control', body: { deviceId: device.id, enabled: false, offAtC: 1, onAtC: 3 } }]);
   assert.equal(save.disabled, true); assert.match(appliance.querySelector('.equipment-control-result').textContent, /settings saved/);
   assert.equal(appliance.querySelector('.caravan-recording').children[0].textContent, 'Recording active', 'Manual power does not remove recording checks');
   assert.equal(appliance.querySelector('.caravan-power-buttons').children[1].disabled, false);
+  assert.equal(appliance.querySelector('.caravan-power').hidden, false);
+  assert.equal(appliance.querySelector('.caravan-policy-state').textContent, 'Disabled');
   panel.update({ ...current, role: 'slave' });
   assert([input('automaticPower'), input('offAtC'), input('onAtC'), save].every(node => node.disabled));
 });
@@ -598,8 +606,11 @@ test('recording explains humidity agreement, qualification and missing evidence 
   panel.update(current);
   const appliance = deviceNode(document, 'garage-equipment-readings', 'caravan').querySelector('.caravan-dehumidifier');
   assert.match(appliance.querySelector('.caravan-recording').textContent, /Recording paused.*Humidity match.*2 minutes/);
-  assert.match(appliance.querySelector('.caravan-comparison').textContent, /Dehumidifier 58 %.*Shelly BLU 60 %.*10 humidity points/);
-  assert.doesNotMatch(appliance.querySelector('.caravan-comparison').textContent, /Temperature|Unavailable/);
+  const comparison = appliance.querySelector('.caravan-comparison');
+  assert.equal(comparison.querySelector('.caravan-comparison-values').textContent, 'Dehumidifier58 %Shelly BLU60 %');
+  assert.match(comparison.querySelector('.caravan-comparison-rule').textContent, /History records Off, Low, Medium or High.*within 10 points/);
+  assert.equal(comparison.querySelector('.caravan-comparison-label').hidden, true);
+  assert.equal(comparison.children[2].hidden, true, 'Absent appliance temperature has no visible placeholder');
   for (const [reason, expected] of [['appliance-unavailable', /fresh dehumidifier readings/],
     ['air-unavailable', /fresh Shelly BLU temperature and humidity/], ['appliance-readings-unavailable', /fresh dehumidifier humidity/],
     ['readings-mismatch', /Humidity does not match Shelly BLU/]]) {
@@ -611,19 +622,19 @@ test('recording explains humidity agreement, qualification and missing evidence 
   assert.match(appliance.querySelector('.caravan-recording').textContent, /Recording active.*Humidity match/);
 });
 
-test('equipment readings honor binary appliance power labels and never coerce unknown power to Off', () => {
-  const device = { kind: 'dehumidifier', available: true, readings: { caravan_dehumidifier_active: {
-    label: 'Power', unit: 'state', observedAt: now, stale: false,
-    stateLabels: { 0: 'Off', 1: 'On' },
+test('equipment readings honor combined appliance state labels and never coerce unknown state to Off', () => {
+  const device = { kind: 'dehumidifier', available: true, readings: { caravan_dehumidifier_state: {
+    label: 'Running state', unit: 'state', observedAt: now, stale: false,
+    stateLabels: { 0: 'Off', 1: 'Low', 2: 'Medium', 3: 'High' },
   } } };
-  const reading = device.readings.caravan_dehumidifier_active;
-  for (const [value, expected] of [[0, 'Off'], [1, 'On'], [2, 'Unknown'], [3, 'Unknown'], [4, 'Unknown'],
+  const reading = device.readings.caravan_dehumidifier_state;
+  for (const [value, expected] of [[0, 'Off'], [1, 'Low'], [2, 'Medium'], [3, 'High'], [4, 'Unknown'],
     [5, 'Unknown'], [null, 'Unknown'], [false, 'Unknown'], ['0', 'Unknown']]) {
     reading.value = value; assert.equal(equipmentReadingRows(device)[0].value, expected);
   }
   reading.value = 1; reading.stale = true;
   assert.equal(equipmentReadingRows(device)[0].value, 'Unknown');
-  assert.match(equipmentReadingRows(device)[0].detail, /Last reported On/);
+  assert.match(equipmentReadingRows(device)[0].detail, /Last reported Low/);
 });
 
 test('Caravan live power stays independent from its optional fan setting', () => {
@@ -631,11 +642,12 @@ test('Caravan live power stays independent from its optional fan setting', () =>
   const device = dehumidifier(true), current = status({ equipment: { devices: [device] } });
   Object.assign(device.dehumidifier, { runningState: 'on', state: { power: 'on', fanSpeed: 'high' } }); panel.update(current);
   const summary = deviceNode(document, 'garage-equipment-readings', 'caravan').querySelector('.caravan-dehumidifier').querySelector('.caravan-section-status');
-  assert.match(summary.textContent, /^On · high fan/);
+  assert.equal(summary.children[0].textContent, 'On');
+  assert.match(summary.children[1].textContent, /^High fan/);
   device.dehumidifier.state.fanSpeed = null; panel.update(current);
-  assert.match(summary.textContent, /^On ·/); assert.doesNotMatch(summary.textContent, /fan|unknown/i);
+  assert.equal(summary.children[0].textContent, 'On'); assert.doesNotMatch(summary.textContent, /fan|unknown/i);
   device.dehumidifier.runningState = 'high'; panel.update(current);
-  assert.match(summary.textContent, /^Power unknown/, 'Retired combined state values do not act as current power observations');
+  assert.equal(summary.children[0].textContent, 'Power unknown', 'Retired combined state values do not act as current power observations');
 });
 
 
@@ -681,4 +693,29 @@ test('recorded equipment values stay visible with provenance while live device a
   assert(rows.slice(0, 2).every(row => row.qualifier === 'Recorded' && row.stale));
   assert.equal(rows[2].value, 'Unavailable');
   assert.equal(equipmentControlAllowed({ role: 'slave' }, device, false), false);
+});
+
+
+test('power policy drafts can be discarded without a request, while open details and focus survive polling', () => {
+  const document = equipmentDocument(), calls = [], device = dehumidifier(true);
+  device.dehumidifier.temperatureControl = { configured: true, enabled: true, canEdit: true, offAtC: 1, onAtC: 2,
+    comparison: 'humidity', recording: false, readingsMatch: false, reason: 'readings-mismatch' };
+  const current = status({ equipment: { devices: [device] } });
+  const panel = createEquipmentPanel({ document, request: (...args) => { calls.push(args); } }); panel.update(current);
+  const appliance = deviceNode(document, 'garage-equipment-readings', 'caravan').querySelector('.caravan-dehumidifier');
+  const details = appliance.querySelector('.caravan-policy-details'), evidence = appliance.querySelector('.caravan-recording-details');
+  const policy = appliance.querySelector('.caravan-temperature-control');
+  const inputs = new Map(descendants(policy).filter(node => node.dataset.setting).map(node => [node.dataset.setting, node]));
+  const [save, cancel] = policy.querySelector('.caravan-policy-footer').children;
+  details.open = true; evidence.open = true;
+  inputs.get('onAtC').value = '4'; inputs.get('onAtC').listeners.get('input')(); inputs.get('onAtC').focus();
+  panel.update(current);
+  assert.equal(details.open, true); assert.equal(evidence.open, true);
+  assert.equal(document.activeElement, inputs.get('onAtC')); assert.equal(inputs.get('onAtC').value, '4');
+  assert.equal(cancel.hidden, false);
+  cancel.listeners.get('click')();
+  assert.equal(inputs.get('onAtC').value, '2'); assert.equal(inputs.get('automaticPower').checked, true);
+  assert.equal(document.activeElement, inputs.get('automaticPower'));
+  assert.equal(save.disabled, true); assert.equal(cancel.hidden, true); assert.deepEqual(calls, []);
+  assert.equal(appliance.querySelector('.caravan-power').hidden, true);
 });

@@ -6,7 +6,7 @@ export function createMqttReception({ store, engine, admission, devices, meters,
   const copiedFields = ['readings', 'coverOperation', 'dehumidifierState', 'dehumidifierReport', 'dehumidifierOperation', 'temperatureGuard'];
   const scalarFields = ['connected', 'available', 'lastAt', 'lastPollAt', 'state', 'identity', 'identityPending',
     'observationOrder', 'writeOrder', 'online', 'bridgeOnline', 'liveSinceConnect', 'heartbeatAt', 'invalid',
-    'subscriptionStatus', 'subscriptionRefresh', 'lastReceivedAt', 'lastLiveAt', 'lastRetainedAt', 'recordingLocation'];
+    'subscriptionStatus', 'subscriptionRefresh', 'lastReceivedAt', 'lastLiveAt', 'lastRetainedAt', 'recordingLocation', 'dehumidifierHistoryAfter'];
   return {
     afterCommit(effect) { if (effects) effects.push(effect); else effect(); },
     run(receive) {

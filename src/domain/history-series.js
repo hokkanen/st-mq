@@ -41,7 +41,7 @@ export const COUNTER_SIGNALS = Object.freeze([...h66.filter(([, , unit]) => unit
 export const RECORDED_EVIDENCE_SIGNALS = Object.freeze(['dhwr_active', 'heat_savings_active',
   ...['living', 'storage'].flatMap(group => [0, 1].map(output => `floor_${group}_${output}_active`)),
   'garage_native_defrost', 'garage_native_energy', 'garage_energy']);
-export const CARAVAN_POWER_STATES = Object.freeze({ 0: 'Off', 1: 'On' });
+export const CARAVAN_DEHUMIDIFIER_STATES = Object.freeze({ 0: 'Off', 1: 'Low', 2: 'Medium', 3: 'High' });
 export const SESSION_CHECK_INFO = Object.freeze({
   ev1_session_energy_check: { label: 'Charger 1', source: 'easee', color: 'ev', unit: 'kWh', group: 'Meter checks', role: 'Audit only', kind: 'Recorded',
     detail: 'Final session electricity reading; each point represents one completed session' },
@@ -56,7 +56,7 @@ export const SIGNAL_INFO = Object.freeze(Object.fromEntries([
   ['caravan_energy', { label: 'Caravan energy', unit: 'kWh', group: 'Electricity', role: 'History only', kind: 'Recorded', detail: 'Measured meter-counter increments over adaptive recording intervals; excluded from house and garage learning' }],
   ['caravan_temperature', { label: 'Caravan air temperature', unit: '°C', group: 'Caravan', role: 'History only', kind: 'Recorded', detail: 'Shelly BLU air temperature; excluded from house and garage learning' }],
   ['caravan_humidity', { label: 'Caravan relative humidity', unit: '%', group: 'Caravan', role: 'History only', kind: 'Recorded', detail: 'Shelly BLU relative humidity; battery and Bluetooth signal remain live details' }],
-  ['caravan_dehumidifier_active', { label: 'Caravan dehumidifier power', unit: 'state', group: 'Caravan', role: 'History only', kind: 'Recorded', detail: 'Reported appliance power: Off or On; missing reports remain gaps. Fan and other settings stay live-only, and commands do not create readings' }],
+  ['caravan_dehumidifier_state', { label: 'Caravan dehumidifier state', unit: 'state', group: 'Caravan', role: 'History only', kind: 'Recorded', detail: 'Reported appliance state: Off, Low, Medium or High. The fan level requires reported power on and fresh fan readback; missing evidence remains a gap. This does not prove water removal, and commands do not create readings' }],
   ['garage_temperature_2', { label: 'Garage front temperature', unit: '°C', group: 'Home temperatures', role: 'Garage protection input', kind: 'Recorded', detail: 'Front pipe-location sensor; separate exposure and garage learning input' }],
   ...[1, 2].map(index => [`garage_door${index}_open`, { label: `Garage door ${index}`, unit: 'state', group: 'Equipment states', role: 'History only', kind: 'Recorded', detail: 'Reported open or closed state; no age-based change is inferred for an event-only contact' }]),
   ['garage_temperature', { label: 'Garage rear temperature', unit: '°C', group: 'Home temperatures', role: 'Garage protection input', kind: 'Recorded' }],

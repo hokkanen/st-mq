@@ -6,6 +6,7 @@ import { createCaravanEnergy } from './shelly-energy.js';
 import { equipmentSignature, equipmentMeterIdentity } from './equipment-config.js';
 import { decodeMqttTemperature, temperatureRouteSignature } from './mqtt-temperature.js';
 import { INDOOR_SIGNALS } from '../domain/indoor-sensors.js';
+import { CARAVAN_DEHUMIDIFIER_STATES } from '../domain/history-series.js';
 import { DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS, DEFAULT_TEMPERATURE_REPORT_GRACE_MS } from '../domain/temperature-reports.js';
 import { Recorder } from '../storage/recorder.js';
 
@@ -23,8 +24,7 @@ const DEHUMIDIFIER_SETTINGS = {
   fanSpeed: ['low', 'medium', 'high', 'auto'], swing: ['fixed_90', 'fixed_45', 'oscillate'],
   targetHumidity: Array.from({ length: 11 }, (_, index) => 30 + index * 5),
 };
-const POWER_STATES = ['off', 'on'];
-const powerStateLabels = { 0: 'Off', 1: 'On' };
+const DEHUMIDIFIER_HISTORY_STATES = ['off', 'low', 'medium', 'high'];
 const dehumidifierState = input => Object.fromEntries(Object.entries(DEHUMIDIFIER_SETTINGS)
   .map(([key, allowed]) => [key, allowed.includes(input?.[key]) ? input[key] : null]));
 function dehumidifierCapabilities(input) {
@@ -34,7 +34,7 @@ function dehumidifierCapabilities(input) {
       || values.some(value => !DEHUMIDIFIER_SETTINGS[key].includes(value)))) return {};
   return Object.fromEntries(Object.entries(input).map(([key, values]) => [key, [...values]]));
 }
-const dehumidifierMetadata = device => ({ stateLabels: powerStateLabels,
+const dehumidifierMetadata = device => ({ stateLabels: CARAVAN_DEHUMIDIFIER_STATES,
   maxAgeMs: device.maxAgeMs, reportIntervalMs: device.maxAgeMs, reportGraceMs: 0 });
 const defaultTemperatureControl = { enabled: true, offAtC: 1, onAtC: 2 };
 const validDehumidifierIdentity = identity => typeof identity === 'string' && /^[a-f0-9]{64}$/.test(identity);
@@ -62,6 +62,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     online: null, bridgeOnline: null, liveSinceConnect: false, lastAt: null, heartbeatAt: null, waiters: new Set(), checks: new Set(), check: null, invalid: false,
     subscriptionStatus: 'unconfirmed', subscriptionRefresh: null, lastReceivedAt: null, lastLiveAt: null, lastRetainedAt: null,
     coverOperation: null, dehumidifierState: dehumidifierState(null), dehumidifierReport: null, dehumidifierOperation: null,
+    dehumidifierHistoryAfter: null,
     temperatureGuard: { settings: { ...defaultTemperatureControl }, demand: false, managed: false,
       lastAttemptAt: null, lastAttemptPower: null, recordingSince: null,
       matchingSince: null, matchedAirAt: null, matchedApplianceAt: null, qualified: false, boundIdentity: null }, recordingLocation: false }));
@@ -82,7 +83,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
   const definitions = device => [
     { signal: device.powerSignal ?? device.stateSignal ?? device.temperatureSignal,
       unit: device.kind === 'power' ? 'W' : device.kind === 'temperature' ? 'degC' : 'state',
-      label: ['dehumidifier', 'power'].includes(device.kind) ? 'Power' : device.kind === 'temperature' ? 'Temperature' : device.kind === 'door' ? 'Door' : 'Switch', required: true },
+      label: device.kind === 'dehumidifier' ? 'State' : device.kind === 'power' ? 'Power' : device.kind === 'temperature' ? 'Temperature' : device.kind === 'door' ? 'Door' : 'Switch', required: true },
     ...(device.metered ? [{ signal: `${device.id}_power`, unit: 'kW', label: 'Power', path: 'power', required: true },
       { signal: `${device.id}_current`, unit: 'A', label: 'Current', path: 'current', required: true }] : []),
   ].map(row => device.mappings.find(mapping => mapping.signal === row.signal) ?? row).concat(device.mappings.filter(mapping =>
@@ -104,7 +105,16 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
   ];
   function record(device, definition, value, at, receivedAt, quality = [], raw = {}) {
     const previous = device.readings[definition.signal];
-    if (scalar(at) && scalar(previous?.observedAt) && at < previous.observedAt) return false;
+    if (scalar(at) && scalar(previous?.observedAt) && (at < previous.observedAt
+      || device.kind === 'dehumidifier' && at === previous.observedAt && value !== previous.value)) {
+      if (device.kind !== 'dehumidifier') return false;
+      // A newly received OFF can have a newer power clock but an older clock
+      // than or equal to the preceding ON+fan combination. Accept live power independently;
+      // history must show a gap instead of backdating the combined transition.
+      value = null; at = null; quality = ['state-evidence-unavailable'];
+    }
+    if (device.kind === 'dehumidifier' && value === null && previous?.value != null)
+      device.dehumidifierHistoryAfter = receivedAt;
     const repeatedSource = scalar(at) && at === previous?.observedAt && previous.value !== null && raw.timeBasis === 'source-measured';
     if (repeatedSource && value !== null && value !== previous.value) return false;
     const observation = { ...identity(device), signal: definition.signal, value, unit: definition.unit, sourceTime: at, receivedAt, quality,
@@ -127,7 +137,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     device.readings[definition.signal] = { value, unit: definition.unit, label: definition.label, observedAt: at, receivedAt, quality,
       revision: repeatedSource ? previous.revision : ++sequence,
       ...(observation.raw.eventOnly ? { eventOnly: true } : {}),
-      ...(device.kind === 'dehumidifier' ? { stateLabels: powerStateLabels } : {}), ...raw };
+      ...(device.kind === 'dehumidifier' ? { stateLabels: CARAVAN_DEHUMIDIFIER_STATES } : {}), ...raw };
     // The pump's measured load is its operational ON/OFF feedback. Keep this
     // compact state history even when the raw watts are configured live-only.
     const powerFeedback = device.kind === 'power' || device.mappings.some(row => row.signal === 'dhwr_power');
@@ -176,13 +186,22 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     && device.subscriptionStatus === 'subscribed' && validDehumidifierIdentity(device.dehumidifierReport?.identity)
     && fieldFresh(device, 'power', now) && ['on', 'off'].includes(device.dehumidifierState.power)
     && (!device.mqtt.heartbeatMs || scalar(device.heartbeatAt) && now - device.heartbeatAt <= device.mqtt.heartbeatMs);
-  const healthy = (device, now) => connected && device.liveSinceConnect && availabilityConfirmed(device) && !device.invalid
+  const healthy = (device, now) => device.kind === 'dehumidifier' ? powerFeedbackReady(device, now) && !device.invalid
+    : connected && device.liveSinceConnect && availabilityConfirmed(device) && !device.invalid
     && !['failed', 'disconnected'].includes(device.subscriptionStatus)
-    && (device.kind !== 'dehumidifier' || device.subscriptionStatus === 'subscribed'
-      && validDehumidifierIdentity(device.dehumidifierReport?.identity))
-    && (device.kind !== 'dehumidifier' || fieldFresh(device, 'power', now))
     && (!device.mqtt.heartbeatMs || scalar(device.heartbeatAt) && now - device.heartbeatAt <= device.mqtt.heartbeatMs)
     && definitions(device).filter(row => row.required).every(definition => fresh(device, device.readings[definition.signal], now));
+  function dehumidifierHistory(device, now, state = device.dehumidifierState, report = device.dehumidifierReport) {
+    const fields = state.power === 'on' ? ['power', 'fanSpeed'] : ['power'];
+    const clocks = Object.fromEntries(fields.map(field => [field, report?.fieldTimestamps[field]]));
+    const value = state.power === 'off' ? 0 : state.power === 'on' && ['low', 'medium', 'high'].includes(state.fanSpeed)
+      ? DEHUMIDIFIER_HISTORY_STATES.indexOf(state.fanSpeed) : null;
+    const evidenceValid = value !== null && Object.values(clocks).every(at => scalar(at) && at >= 0 && at <= now && now - at < device.maxAgeMs);
+    const observedAt = evidenceValid ? Math.max(...Object.values(clocks)) : null;
+    const valid = evidenceValid && (device.dehumidifierHistoryAfter === null || observedAt > device.dehumidifierHistoryAfter);
+    return { value: valid ? value : null, observedAt: valid ? observedAt : null,
+      deadline: valid ? Math.min(...Object.values(clocks)) + device.maxAgeMs : null, fieldTimestamps: clocks };
+  }
   function temperatureGuardStatus(device, now) {
     if (!device.temperatureControl) return null;
     const sensor = devices.find(row => row.id === device.temperatureControl.sensorDeviceId);
@@ -211,7 +230,8 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       matchingForMs: readingsMatch && scalar(device.temperatureGuard.matchingSince) ? now - device.temperatureGuard.matchingSince : 0,
       requiredMatchingMs: 120_000,
       recording: readingsMatch && device.temperatureGuard.qualified && device.record !== false && scalar(device.temperatureGuard.recordingSince)
-        && device.readings[device.stateSignal].observedAt >= device.temperatureGuard.recordingSince,
+        && dehumidifierHistory(device, now).value !== null
+        && device.readings[device.stateSignal]?.observedAt >= device.temperatureGuard.recordingSince,
       desiredPower: policy.enabled ? device.temperatureGuard.demand ? 'on' : 'off' : null,
       reason: !healthy(device, now) ? 'appliance-unavailable' : !airFresh ? 'air-unavailable'
         : !identityKnown ? 'identity-unavailable' : !applianceReadingsFresh ? 'appliance-readings-unavailable' : !readingsMatch ? 'readings-mismatch'
@@ -246,7 +266,8 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     device.recordingLocation = qualified;
     // After a mismatch, only a new appliance observation may resume history.
     // A later BLU reading cannot move an old appliance sample past the gap.
-    return qualified && device.readings[device.stateSignal].observedAt >= state.recordingSince;
+    return qualified && dehumidifierHistory(device, now).value !== null
+      && device.readings[device.stateSignal]?.observedAt >= state.recordingSince;
   }
   function controlTemperature(device, now) {
     const guard = temperatureGuardStatus(device, now);
@@ -297,14 +318,17 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     }
   }
   function confirmDehumidifier(device, now) {
+    const history = dehumidifierHistory(device, now);
+    if (history.value === null && device.readings[device.stateSignal]?.value != null)
+      record(device, definitions(device)[0], null, null, now, ['state-evidence-unavailable']);
     const located = recordDehumidifierLocation(device, now);
     if (!healthy(device, now)) return;
     const reading = device.readings[device.stateSignal];
-    if (located && !reading.availabilityConfirmed) {
+    if (located && history.value !== null && !reading.availabilityConfirmed) {
       reading.availabilityConfirmed = true;
       const sensor = devices.find(row => row.id === device.temperatureControl?.sensorDeviceId);
       const report = device.dehumidifierReport;
-      const applianceDeadline = report.fieldTimestamps.power + device.maxAgeMs;
+      const applianceDeadline = history.deadline;
       const locationDeadline = sensor ? Math.min(...['caravan_temperature', 'caravan_humidity']
         .map(signal => sensor.readings[signal].observedAt + age(sensor)), applianceDeadline,
         report.fieldTimestamps.humidity + device.maxAgeMs,
@@ -312,7 +336,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       if (device.record !== false) engine.ingest({ ...identity(device), signal: device.stateSignal, value: reading.value,
         unit: reading.unit, sourceTime: reading.observedAt, receivedAt: now, quality: reading.quality,
         raw: { timeBasis: 'mqtt-live-status', ...dehumidifierMetadata(device), availabilityConfirmed: true,
-          identity: report.identity, fieldTimestamps: { power: report.fieldTimestamps.power },
+          identity: report.identity, fieldTimestamps: history.fieldTimestamps,
           reportIntervalMs: locationDeadline - reading.observedAt,
           ...(sensor ? { readingsMatch: true, sensorDeviceId: sensor.id,
             airObservedAt: sensor.readings.caravan_temperature.observedAt,
@@ -409,6 +433,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
         if (previousIdentity) {
           unavailable(device, 'device-replaced', receivedAt);
           device.dehumidifierReport = null; device.dehumidifierState = dehumidifierState(null); device.dehumidifierOperation = null;
+          device.dehumidifierHistoryAfter = null;
           Object.assign(device.temperatureGuard, { settings: { ...defaultTemperatureControl }, demand: false, managed: false,
             lastAttemptAt: null, lastAttemptPower: null, recordingSince: null,
             matchingSince: null, matchedAirAt: null, matchedApplianceAt: null, qualified: false });
@@ -418,8 +443,8 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
         if (device.temperatureControl) store.setState(temperatureControlKey(device), {
           signature: temperatureControlSignature(device), identity: physicalIdentity, settings: device.temperatureGuard.settings });
       }
-      // Native settings are live-only. The sole recorded device value is power,
-      // with its own observation clock, independent of fan or humidity updates.
+      // Live power authority remains independent of the recorded state. ON
+      // history needs both fresh power and a known, freshly observed fan speed.
       const state = dehumidifierState(mapping.statePath ? property(input, mapping.statePath) : input);
       const reportedSnapshot = mapping.statePath ? property(input, mapping.statePath) : input;
       const capabilities = dehumidifierCapabilities(reportedSnapshot?.capabilities);
@@ -435,19 +460,19 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
         return scalar(incomingAt) && scalar(previousAt) && (incomingAt < previousAt
           || incomingAt === previousAt && incomingValue !== previousValue);
       })) return;
-      const value = state.power === null ? null : POWER_STATES.indexOf(state.power);
       const definition = definitions(device)[0];
       const powerAt = fieldTimestamps.power;
       const stale = powerAt === null || receivedAt - powerAt >= device.maxAgeMs;
-      updated = record(device, definition, stale ? null : value, powerAt, receivedAt,
-        stale ? ['stale-report'] : value === null ? ['invalid-value'] : []);
+      const report = { observedAt: at, receivedAt, temperature: reportedSnapshot?.temperature, humidity: reportedSnapshot?.humidity,
+        capabilities, fieldTimestamps, identity: physicalIdentity };
+      const history = dehumidifierHistory(device, receivedAt, state, report);
+      updated = record(device, definition, history.value, history.observedAt, receivedAt,
+        stale ? ['stale-report'] : state.power === null ? ['invalid-value'] : history.value === null ? ['state-evidence-unavailable'] : []);
       if (updated) {
-        const report = mapping.statePath ? property(input, mapping.statePath) : input;
-        device.dehumidifierState = state; device.dehumidifierReport = { observedAt: at, receivedAt,
-          temperature: report?.temperature, humidity: report?.humidity, capabilities, fieldTimestamps, identity: physicalIdentity };
+        device.dehumidifierState = state; device.dehumidifierReport = report;
         reported.add(definition.signal);
       }
-      invalid = stale || value === null;
+      invalid = stale || state.power === null;
     } else if (canonicalTemperature(device) && topic === (definitions(device)[0].topic ?? device.topic)) {
       const definition = definitions(device)[0];
       const selectedPath = definition.path ?? mapping.statePath;
@@ -654,7 +679,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
         device.dehumidifierOperation.status = 'unconfirmed';
         device.dehumidifierOperation.error = 'The requested setting has not been reported. Check the dehumidifier live state.';
       }
-      for (const device of devices.filter(row => row.temperatureControl)) {
+      for (const device of devices.filter(row => row.kind === 'dehumidifier')) {
         confirmDehumidifier(device, now); controlTemperature(device, now);
       }
     },
@@ -824,6 +849,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
           lastLiveAt: device.lastLiveAt, lastRetainedAt: device.lastRetainedAt },
         readings: Object.fromEntries(Object.entries(device.readings).map(([signal, reading]) => [signal,
           { ...reading, stale: !connected || !device.liveSinceConnect || !availabilityConfirmed(device) || !fresh(device, reading, now)
+            || device.kind === 'dehumidifier' && dehumidifierHistory(device, now).value === null
             || Boolean(device.mqtt.heartbeatMs && (!scalar(device.heartbeatAt) || now - device.heartbeatAt > device.mqtt.heartbeatMs)) }])),
         ...(energy.has(device.id) ? { energy: energy.get(device.id).status(now) } : {}) }))];
       return { configured: configured.length > 0, connected, checking: rows.some(row => row.check?.checking),

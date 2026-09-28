@@ -43,7 +43,7 @@ function fixture(t, options = {}) {
       JSON.stringify({ identity: 'a'.repeat(64), power, temperature, humidity, fanSpeed: 'low', targetHumidity: 55,
         capabilities, timestamp: now, ...extra })),
     state: () => capture.status().devices.find(row => row.id === 'caravan_dehumidifier').dehumidifier,
-    history: () => observations.filter(row => row.signal === 'caravan_dehumidifier_active'),
+    history: () => observations.filter(row => row.signal === 'caravan_dehumidifier_state'),
     policy: patch => capture.setDehumidifierTemperatureControl({ deviceId: 'caravan_dehumidifier', ...patch }),
     qualify: (temperature = 3, humidity = 50, power = 'off', applianceTemperature = temperature) => {
       for (let index = 0; index < 3; index++) {
@@ -183,14 +183,14 @@ test('a fresh status envelope cannot refresh older independent humidity or power
 test('failed history qualification rolls back evidence and cannot dispatch automatic ON', async t => {
   let failOnce = true;
   const f = fixture(t, { beforeIngest: row => {
-    if (row.signal === 'caravan_dehumidifier_active' && failOnce) {
+    if (row.signal === 'caravan_dehumidifier_state' && failOnce) {
       failOnce = false; throw new Error('Synthetic recording failure');
     }
   } });
   f.air(3); f.dryer('off', null); f.advance(120_000); f.air(3);
   assert.throws(() => f.dryer('off', null), /Synthetic recording failure/);
   await settle(); assert.equal(f.sent.length, 0); assert.equal(f.state().temperatureControl.qualified, false);
-  assert.equal(f.store.observations().filter(row => row.signal === 'caravan_dehumidifier_active').length, 0);
+  assert.equal(f.store.observations().filter(row => row.signal === 'caravan_dehumidifier_state').length, 0);
   f.dryer('off', null); await settle();
   assert.deepEqual(f.sent, [{ power: 'on' }]); assert.equal(f.state().temperatureControl.qualified, true);
 });
@@ -235,7 +235,7 @@ test('physical replacement on the same MQTT route clears old policy and agreemen
   f.restart(); assert.equal(f.state().temperatureControl.enabled, false); assert.equal(f.state().temperatureControl.offAtC, 6);
 });
 
-test('binary power and qualification remain available when an unrelated fan reading expires', async t => {
+test('power and qualification remain available while an expired fan leaves unknown history', async t => {
   const f = fixture(t); f.qualify(3, 50, 'on', null); await settle();
   f.advance(100_000); f.air(3);
   f.dryer('on', null, 50, { fieldTimestamps: { power: f.now, fanSpeed: START + 120_000, humidity: f.now } });
@@ -243,5 +243,88 @@ test('binary power and qualification remain available when an unrelated fan read
   f.dryer('on', null, 50, { fieldTimestamps: { power: f.now, fanSpeed: START + 120_000, humidity: f.now } }); await settle();
   assert.equal(f.state().available, true); assert.equal(f.state().powerOffAvailable, true);
   assert.deepEqual(f.sent, []);
-  assert.equal(f.history().at(-1).value, 1);
+  assert.equal(f.history().at(-1).value, null);
+  assert.equal(f.state().runningState, 'on');
+  assert.equal(f.state().temperatureControl.qualified, true);
+  assert.equal(f.state().temperatureControl.recording, false);
+});
+
+test('durable Off/Low/Medium/High history cannot backfill a matching gap with old power and fan observations', async t => {
+  const f = fixture(t); f.dryer('on', null); await f.policy({ enabled: false });
+  f.qualify(3, 50, 'on', null);
+  const signal = 'caravan_dehumidifier_state';
+  assert.equal(f.store.observations({ signal }).at(-1).value, 1);
+  const original = START + 120_000;
+  f.advance(10_000); f.air(3, 90);
+  const gapAt = f.now;
+  assert.equal(f.store.observations({ signal }).at(-1).value, null);
+  f.advance(1000); f.air(3);
+  f.dryer('on', null, 50, { fieldTimestamps: { power: original, fanSpeed: original, humidity: f.now } });
+  f.advance(120_000); f.air(3);
+  f.dryer('on', null, 50, { fieldTimestamps: { power: original, fanSpeed: original, humidity: f.now } });
+  assert.equal(f.state().temperatureControl.qualified, true);
+  assert.equal(f.state().temperatureControl.recording, false);
+  assert.equal(f.store.observations({ signal }).at(-1).value, null);
+  f.advance(1000);
+  f.dryer('on', null, 50, { fanSpeed: 'high', fieldTimestamps: { power: original, fanSpeed: f.now, humidity: f.now } });
+  const row = f.store.observations({ signal }).at(-1);
+  assert.equal(row.value, 3); assert.equal(row.sourceTime, f.now);
+  assert.deepEqual(row.raw.fieldTimestamps, { power: original, fanSpeed: f.now });
+  assert.equal(row.raw.reportIntervalMs, original + 180_000 - f.now);
+  assert(f.store.observations({ signal }).filter(value => value.value !== null && value.receivedAt > gapAt)
+    .every(value => value.sourceTime >= START + 252_000));
+  assert.equal(f.state().temperatureControl.recording, true);
+});
+
+test('delayed OFF after a newer fan source leaves a durable gap while matching and controls stay available', async t => {
+  const f = fixture(t); f.dryer('on', null); await f.policy({ enabled: false });
+  f.qualify(3, 50, 'on', null);
+  const signal = 'caravan_dehumidifier_state', original = START + 120_000;
+  f.advance(20_000); f.dryer('on', null, 50, { fanSpeed: 'high',
+    fieldTimestamps: { power: original, fanSpeed: f.now, humidity: f.now } });
+  assert.equal(f.store.observations({ signal }).at(-1).value, 3);
+  f.advance(1000); f.dryer('off', null, 50, { fanSpeed: 'high',
+    fieldTimestamps: { power: original + 10_000, fanSpeed: original + 20_000, humidity: f.now } });
+  assert.equal(f.state().runningState, 'off');
+  assert.equal(f.state().available, true);
+  assert.equal(f.state().temperatureControl.qualified, true);
+  assert.equal(f.state().temperatureControl.recording, false);
+  const gap = f.store.observations({ signal }).at(-1);
+  assert.equal(gap.value, null); assert.equal(gap.sourceTime, null); assert.equal(gap.receivedAt, f.now);
+  f.advance(1000); f.dryer('off', null, 50, { fanSpeed: 'high',
+    fieldTimestamps: { power: original + 10_000, fanSpeed: original + 20_000, humidity: f.now } });
+  assert.equal(f.store.observations({ signal }).at(-1).value, null);
+  f.advance(1000); f.dryer('off', null, 50, { fanSpeed: 'high',
+    fieldTimestamps: { power: f.now, fanSpeed: original + 20_000, humidity: f.now } });
+  const recovered = f.store.observations({ signal }).at(-1);
+  assert.equal(recovered.value, 0); assert.equal(recovered.sourceTime, f.now);
+  assert.deepEqual(recovered.raw.fieldTimestamps, { power: f.now });
+  assert.equal(f.state().temperatureControl.recording, true);
+});
+
+test('failed delayed-OFF gap recording rolls back its history boundary together with live power', async t => {
+  let failGap = false;
+  const signal = 'caravan_dehumidifier_state';
+  const f = fixture(t, { beforeIngest: row => {
+    if (failGap && row.signal === signal && row.value === null) {
+      failGap = false; throw new Error('Synthetic gap recording failure');
+    }
+  } });
+  f.dryer('on', null); await f.policy({ enabled: false }); f.qualify(3, 50, 'on', null);
+  const original = START + 120_000;
+  f.advance(20_000); f.dryer('on', null, 50, { fanSpeed: 'high',
+    fieldTimestamps: { power: original, fanSpeed: f.now, humidity: f.now } });
+  f.advance(1000); failGap = true;
+  const delayed = { fanSpeed: 'high', fieldTimestamps: { power: original + 10_000, fanSpeed: original + 20_000, humidity: f.now } };
+  assert.throws(() => f.dryer('off', null, 50, delayed), /Synthetic gap recording failure/);
+  assert.equal(f.state().runningState, 'on');
+  assert.equal(f.store.observations({ signal }).at(-1).value, 3);
+  f.dryer('on', null, 50, { fanSpeed: 'high',
+    fieldTimestamps: { power: original, fanSpeed: original + 20_000, humidity: f.now } });
+  assert.equal(f.state().temperatureControl.recording, true, 'A rolled-back boundary cannot hide the previously valid observation');
+  assert.equal(f.store.observations({ signal }).at(-1).value, 3);
+  f.dryer('off', null, 50, delayed);
+  assert.equal(f.state().runningState, 'off');
+  assert.equal(f.state().temperatureControl.recording, false);
+  assert.equal(f.store.observations({ signal }).at(-1).value, null);
 });

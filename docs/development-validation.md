@@ -112,7 +112,12 @@ synthetic screenshots and the geometry report, set
 The equipment suite's `--caravan-only` option checks the Caravan disclosure,
 advertised dehumidifier settings, automatic power thresholds and saving,
 matching-reading recording states, and read-only control restrictions in both
-themes at 320, 390 and 1440 px. Commands terminate in synthetic browser fixtures.
+themes at 320, 390 and 1440 px. It exercises keyboard access to the policy and
+comparison disclosures, draft preservation through polling, discard without a
+command, error associations and saved-policy ownership of manual power. Synthetic
+screenshots include live automatic/paused recording, manual/active recording and
+expanded threshold editing, framed around the dehumidifier. Commands terminate
+in browser fixtures.
 
 The Tuya Local bridge tests render synthetic HA templates and verify independent
 native report clocks, identity, supported controls and request expiry. The pinned

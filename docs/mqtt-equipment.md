@@ -74,7 +74,7 @@ requires `switch_control: true`, `cover_control: true` for a door,
 never automatically made writable.
 `enabled: false` keeps an entry inactive. Configured future equipment can remain
 enabled to await its first live report; unknown readings never create invented history.
-The [Caravan dehumidifier contract](caravan-dehumidifier.md) defines its planned bridge.
+The [Caravan dehumidifier contract](caravan-dehumidifier.md) defines its local bridge and confirmed-report contract.
 Its `temperature_control.sensor_device_id` binds power hysteresis and recording
 location checks to the configured Caravan air sensor. The optional `manufacturer`
 label identifies equipment such as a Shelly BLU bridge independently of MQTT transport.
@@ -361,9 +361,11 @@ and no historical consumption is reconstructed from an unknown association.
 
 The chart includes the home/garage protection probes through **All home
 temperatures**, door states and Caravan interval energy. The separate **Caravan**
-group adds its air temperature, humidity and dehumidifier power (Off or On).
-Dehumidifier fan speed, settings and native sensor values stay live-only.
-Unknown state remains a gap. These caravan
+group adds its air temperature, humidity and one dehumidifier state series:
+Off, Low, Medium or High. Off requires fresh native power off; a fan level
+requires fresh power on and a matching fan report. Separate settings and native
+sensor values stay live-only. Unknown, stale or unsupported state remains a gap,
+as does missing humidity agreement with the Caravan Shelly BLU. These caravan
 measurements are excluded from house and garage learning. Actual tariff relay feedback is recorded on changes, separately from requested
 heating control. All four floor override outputs likewise retain exact changes. The
 [garage adapter](garage-adapter.md) records interpreted indoor temperature and

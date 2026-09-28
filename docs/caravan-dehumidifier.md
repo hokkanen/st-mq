@@ -19,6 +19,13 @@ Capabilities do not prove successful execution: confirmation requires a fresh
 matching device report. Never use the Caravan energy plug as the appliance power
 control; native shutdown allows its cooling cycle to finish.
 
+The card starts with reported power and the supported native humidity and fan
+controls. **Automatic power** shows the saved enabled state and thresholds;
+expand it to edit the switch and thresholds, then use **Save changes** or
+**Discard**. Unsaved edits do not change the active policy. Recording status
+stays visible, and **Compare readings** expands the live readings and agreement
+criteria. Family and replica views keep their read-only restrictions.
+
 Installation entity IDs and credentials stay outside the repository. Set up the
 local integration and bridge in this order:
 
@@ -146,16 +153,16 @@ The public equipment entry associates `temperature_control.sensor_device_id`
 with `blu_ht`; configuration owns that wiring only. **Automatic power**, **Off
 at** and **On at** are saved dashboard choices for this appliance and sensor
 connection. They survive restart without changing configuration defaults. An
-unrecognized/replaced connection starts with enabled, 1°C OFF and 2°C ON.
-Thresholds accept −10 through 30°C in 0.1°C steps, with ON at least 0.5°C above
-OFF. Authority is required to edit the policy; editing while the appliance is
+unrecognized/replaced connection starts with enabled, 1°C Off and 2°C On.
+Thresholds accept −10 through 30°C in 0.1°C steps, with On at least 0.5°C above
+Off. Authority is required to edit the policy; editing while the appliance is
 unavailable grants no permission to command it. The first device identity must
 be observed before saving choices; a previously bound identity permits edits
 while offline.
 
 With Automatic power enabled, fresh Caravan air temperature at or below **Off
-at** requests native OFF; at or above **On at** requests native ON. Between the
-thresholds the previous demand remains. Startup in the band uses OFF demand.
+at** requests native Off; at or above **On at** requests native On. Between the
+thresholds the previous demand remains. Startup in the band uses Off demand.
 Disable Automatic power to expose supported manual power controls and leave
 native power unchanged. Other supported native controls remain available.
 Disabling the policy does not disable the recording evidence check.
@@ -170,38 +177,47 @@ humidity only and never substitutes the BLU reading for appliance evidence.
 The UI reports matching, differing or unavailable readings and **Recording
 active/paused**, without guessing where the appliance is. Humidity agreement is
 a plausibility check, not proof of physical location: similar humidity in two
-places can pass. Missing, stale or disagreeing evidence immediately prevents ON
+places can pass. Missing, stale or disagreeing evidence immediately prevents On
 and ends caravan history coverage. Recovery requires a new qualifying period
 and fresh appliance state; it never fills the earlier gap backwards.
 
-Loss of comparison evidence requests OFF only for an appliance previously
+Loss of comparison evidence requests Off only for an appliance previously
 managed in this runtime. An appliance first seen with nonmatching readings
-receives no automatic commands. Pending ON or setting acknowledgements cannot
-block protective OFF. Offline devices cannot be switched or confirmed. Authority
+receives no automatic commands. Pending On or setting acknowledgements cannot
+block protective Off. Offline devices cannot be switched or confirmed. Authority
 loss prevents all writes. An uncertain request is reassessed before retrying,
 with a 30-second minimum interval for the same demand. Commands never switch the
 energy plug or replace native low-temperature protection and shutdown behavior.
 
 ## Recording
 
-The single `caravan_dehumidifier_active` series uses stable numeric codes
-with categorical chart labels:
+The single `caravan_dehumidifier_state` series uses stable numeric codes
+with categorical labels in both Caravan charts, tooltips and the series explorer:
 
 | Code | Label |
 | --- | --- |
 | 0 | Off |
-| 1 | On |
+| 1 | Low |
+| 2 | Medium |
+| 3 | High |
 | null / gap | Unknown, unavailable or stale |
 
-Only the appliance's reported power is recorded. On does not prove that water
-was being removed: a humidity target, full tank, fan setting or shutdown cycle
-can affect physical operation. Fan speed, mode, humidity target, louvre setting
-and the appliance's own temperature/humidity remain live-only; commands do not
-generate history points. The current series has no alias or conversion from
-the retired combined power/fan series.
+Off requires fresh reported power Off and does not depend on the fan setting.
+Low, Medium and High require fresh reported power On plus the corresponding
+fresh native fan report. Missing, stale or unsupported fan values while On leave
+a gap; there is no Auto category. These states describe the appliance's power
+and selected fan level, not measured airflow or proof of water removal. A humidity
+target, full tank or shutdown cycle can affect physical operation.
+
+The recorder retains only this combined state, appliance identity, required
+power/fan receipt clocks and comparison qualification provenance. Separate fan
+settings, mode, humidity target, louvre setting and the appliance's own
+temperature/humidity remain live-only; commands do not generate history points.
+There is no alias or conversion from either retired dehumidifier history series.
 With the Caravan sensor association configured, every recorded state requires
-the fresh, qualified comparison, including when Automatic power is disabled. Coverage ends at the earliest expiry of
-either device. Missing comparison evidence produces a gap instead of a claimed Off or On state.
+the fresh, qualified comparison, including when Automatic power is disabled.
+Coverage ends at the earliest expiry of the required appliance and comparison
+reports. Missing comparison evidence produces a gap instead of a claimed state.
 
 The same Caravan fold records `caravan_temperature` and `caravan_humidity` from
 the Shelly BLU H&T. Battery and Bluetooth signal strength are live-only.

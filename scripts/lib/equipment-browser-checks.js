@@ -483,6 +483,24 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until,
         topics:[{role:'Heat pump',topic:'invented/garage/pump/state',direction:'subscribe'}]});return next;};return true;})()`);
     await refresh();
     const appliance = `${caravan} .caravan-dehumidifier`, fan = `${appliance} [data-setting=fanSpeed]`;
+    const policyDetails = `${appliance} .caravan-policy-details`, recordingDetails = `${appliance} .caravan-recording-details`;
+    const policy = `${appliance} .caravan-temperature-control`, savePolicy = `${policy} button[type=submit]`;
+    const toggleDisclosure = async selector => {
+      await evaluate(`document.querySelector('${selector} > summary').focus();true`);
+      await command('input.performActions',{context,actions:[{type:'key',id:'caravan-disclosure',actions:[{type:'keyDown',value:'\uE007'},{type:'keyUp',value:'\uE007'}]}]});
+      await settle();
+    };
+    const captureAppliance = async label => {
+      for (const theme of ['dark','light']) for (const [width,height] of [[1440,1100],[390,1000],[320,900]]) {
+        await evaluate(`document.documentElement.dataset.theme='${theme}';true`);
+        await command('browsingContext.setViewport',{context,viewport:{width,height},devicePixelRatio:1}); await settle();
+        await evaluate(`document.activeElement?.blur();document.querySelector('${appliance}').scrollIntoView({block:'start',behavior:'instant'});true`); await settle();
+        assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, `${label}: Caravan does not overflow at ${width}px`);
+        assert.equal(await evaluate(`(() => {const card=document.querySelector('${appliance}').getBoundingClientRect();return [...document.querySelectorAll('${appliance} select, ${appliance} button, ${appliance} input[type=number]')].filter(node=>node.checkVisibility()).every(node=>{const box=node.getBoundingClientRect();return box.left>=card.left-1&&box.right<=card.right+1&&box.height>=36;});})()`), true, `${label}: Appliance controls fit at ${width}px in ${theme}`);
+        const screenshot=await command('browsingContext.captureScreenshot',{context,origin:'viewport'});
+        writeFileSync(`var/caravan-${label}-${theme}-${width}.png`,Buffer.from(screenshot.data,'base64'));
+      }
+    };
     assert.equal(await evaluate("document.querySelectorAll('#home-equipment-readings [data-device-id=blu_ht], #garage-equipment-readings > [data-device-id=blu_ht]').length"), 0);
     assert.match(await evaluate(`document.querySelector('${caravan} .caravan-air-metrics').textContent`), /14.1 °C.*63 %/);
     assert.equal(await evaluate(`document.querySelector('${caravan} .caravan-sensor-details').open`), false);
@@ -491,23 +509,29 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until,
     assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('#equipment-connections [data-connection-area=garage] .equipment-connection-fold')).map(node=>node.dataset.deviceId)"),
       ['connection:garage-adapter:garage','garage-probes','blu_ht','caravan_dehumidifier','caravan','door1','door2','connection:shelly-evse:garage']);
     assert.equal(await evaluate(`document.querySelector('${caravan}').open`), true, 'Adding Caravan devices preserves the open fold');
-    for (const theme of ['dark','light']) for (const [width,height] of [[1440,1100],[390,1000],[320,900]]) {
-      await evaluate(`document.documentElement.dataset.theme='${theme}';true`);
-      await command('browsingContext.setViewport',{context,viewport:{width,height},devicePixelRatio:1}); await settle();
-      await evaluate(`document.querySelector('${caravan}').scrollIntoView({block:'start'});true`); await settle();
-      assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, `Caravan does not overflow at ${width}px`);
-      assert.equal(await evaluate(`(() => {const card=document.querySelector('${caravan}').getBoundingClientRect();return [...document.querySelectorAll('${appliance} select, ${appliance} button, ${appliance} input[type=number]')].filter(node=>node.checkVisibility()).every(node=>{const box=node.getBoundingClientRect();return box.left>=card.left&&box.right<=card.right&&box.height>=36;});})()`), true, `Appliance controls fit at ${width}px in ${theme}`);
-      const screenshot=await command('browsingContext.captureScreenshot',{context,origin:'viewport'});
-      writeFileSync(`var/caravan-${theme}-${width}.png`,Buffer.from(screenshot.data,'base64'));
-    }
+    assert.equal(await evaluate(`document.querySelector('${policyDetails}').open||document.querySelector('${recordingDetails}').open`), false, 'Policy editing and recording evidence start collapsed');
     await evaluate(`(() => {const d=window.equipmentUiFixture.devices.find(d=>d.id==='caravan_dehumidifier');d.available=true;
-      Object.assign(d.dehumidifier,{available:true,state:{power:'off',targetHumidity:55,fanSpeed:'low'},runningState:'off'});
+      d.observedAt=window.equipmentUiFixture.now;
+      d.mqttStatus={subscriptionStatus:'subscribed',lastLiveAt:window.equipmentUiFixture.now};
+      Object.assign(d.dehumidifier,{available:true,observedAt:window.equipmentUiFixture.now,state:{power:'off',targetHumidity:55,fanSpeed:'low'},runningState:'off'});
       Object.assign(d.dehumidifier.temperatureControl,{canEdit:true,applianceHumidity:40,reason:'readings-mismatch'});return true;})()`);
     await refresh();
     assert.equal(await evaluate(`document.querySelector('${appliance} .caravan-setting-mode').checkVisibility()||document.querySelector('${appliance} .caravan-setting-swing').checkVisibility()`), false, 'Unsupported native settings are omitted');
     assert.match(await evaluate(`document.querySelector('${appliance} .caravan-recording').textContent`), /Recording paused.*Humidity does not match Shelly BLU/);
     assert.equal(await evaluate(`[...document.querySelectorAll('${appliance} .caravan-power-buttons button')].every(button=>button.disabled)`), true, 'Automatic power owns the power buttons');
+    assert.equal(await evaluate(`document.querySelector('${appliance} .caravan-power').checkVisibility()`), false, 'Managed power does not leave inactive manual buttons in the native settings grid');
+    assert.equal(await evaluate(`document.querySelector('${appliance} .caravan-dehumidifier-controls').getBoundingClientRect().top < document.querySelector('${policyDetails}').getBoundingClientRect().top`), true, 'Everyday native settings precede advanced power policy');
     assert.equal(await evaluate(`document.querySelector('${fan}').value`), 'low');
+    await captureAppliance('live-paused');
+    const disclosureCalls = await evaluate('window.equipmentUiFixture.calls.length');
+    await toggleDisclosure(recordingDetails);
+    assert.equal(await evaluate(`document.querySelector('${recordingDetails}').open`), true, 'Enter opens matching-reading evidence');
+    assert.equal(await evaluate(`document.querySelector('${appliance} .caravan-comparison').checkVisibility()`), true);
+    assert.match(await evaluate(`document.querySelector('${appliance} .caravan-comparison').textContent`), /40\s*%.*63\s*%/);
+    await refresh();
+    assert.equal(await evaluate(`document.activeElement===document.querySelector('${recordingDetails} > summary')&&document.querySelector('${recordingDetails}').open`), true, 'Polling keeps recording disclosure and keyboard focus');
+    await toggleDisclosure(recordingDetails);
+    assert.equal(await evaluate('window.equipmentUiFixture.calls.length'), disclosureCalls, 'Inspecting recording evidence sends no device commands');
     const dehumidifierCalls = await evaluate('window.equipmentUiFixture.calls.length');
     await evaluate(`document.querySelector('${fan}').value='high';document.querySelector('${fan}').dispatchEvent(new Event('change',{bubbles:true}));true`);
     await until(`window.equipmentUiFixture.calls.length===${dehumidifierCalls + 1}`); await settle();
@@ -520,18 +544,39 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until,
     assert.equal(await evaluate(`document.querySelector('${fan}').value`), 'high');
     assert.equal(await evaluate(`document.querySelector('${fan}').disabled`), false);
     assert.match(await evaluate(`document.querySelector('${appliance} .equipment-control-result').textContent`), /device reported/);
-    const policy = `${appliance} .caravan-temperature-control`;
+    await toggleDisclosure(policyDetails);
+    assert.equal(await evaluate(`document.querySelector('${policyDetails}').open`), true, 'Enter opens automatic power editing');
+    await refresh();
+    assert.equal(await evaluate(`document.activeElement===document.querySelector('${policyDetails} > summary')&&document.querySelector('${policyDetails}').open`), true, 'Polling keeps power disclosure and keyboard focus');
+    await captureAppliance('power-settings');
+    const draftCalls = await evaluate('window.equipmentUiFixture.calls.length');
+    await evaluate(`(() => {const input=document.querySelector('${policy} [data-setting=onAtC]');input.value='4';input.dispatchEvent(new Event('input',{bubbles:true}));document.querySelector('${policy} button[type=button]').click();return true;})()`);
+    assert.equal(await evaluate(`document.querySelector('${policy} [data-setting=onAtC]').value`), '2', 'Discard restores the saved threshold');
+    assert.equal(await evaluate(`document.activeElement===document.querySelector('${policy} [data-setting=automaticPower]')`), true, 'Discard keeps focus on a visible control');
+    assert.equal(await evaluate('window.equipmentUiFixture.calls.length'), draftCalls, 'Discarding a draft sends no commands');
     await evaluate(`(() => {const input=document.querySelector('${policy} [data-setting=onAtC]');input.value='1.2';input.dispatchEvent(new Event('input',{bubbles:true}));return true;})()`);
-    assert.equal(await evaluate(`document.querySelector('${policy} button').disabled`), true, 'Overlapping hysteresis thresholds cannot be saved');
-    await evaluate(`(() => {const input=document.querySelector('${policy} [data-setting=onAtC]');input.value='3';input.dispatchEvent(new Event('input',{bubbles:true}));return true;})()`);
+    assert.equal(await evaluate(`document.querySelector('${savePolicy}').disabled`), true, 'Overlapping hysteresis thresholds cannot be saved');
+    assert.equal(await evaluate(`[...document.querySelectorAll('${policy} input[type=number]')].every(input=>input.getAttribute('aria-invalid')==='true'&&input.getAttribute('aria-describedby').includes('caravan-policy-message'))`), true, 'Threshold errors are associated with both fields');
+    await evaluate(`(() => {const input=document.querySelector('${policy} [data-setting=onAtC]');input.focus();input.value='3';input.dispatchEvent(new Event('input',{bubbles:true}));return true;})()`);
     await refresh();
     assert.equal(await evaluate(`document.querySelector('${policy} [data-setting=onAtC]').value`), '3', 'Polling preserves the threshold draft');
+    assert.equal(await evaluate(`document.activeElement===document.querySelector('${policy} [data-setting=onAtC]')`), true, 'Polling preserves the edited field focus');
     const settingsCalls = await evaluate('window.equipmentUiFixture.calls.length');
-    await evaluate(`document.querySelector('${policy} [data-setting=automaticPower]').click();document.querySelector('${policy} button').click();true`);
+    await evaluate(`document.querySelector('${policy} [data-setting=automaticPower]').click();true`);
+    await refresh();
+    assert.equal(await evaluate(`document.querySelector('${policy} [data-setting=automaticPower]').checked`), false, 'Polling keeps an unsaved automatic-power draft');
+    assert.equal(await evaluate(`document.querySelector('${appliance} .caravan-power').checkVisibility()`), false, 'A draft cannot relinquish saved automatic power ownership');
+    await evaluate(`document.querySelector('${savePolicy}').click();true`);
     await until(`window.equipmentUiFixture.calls.length===${settingsCalls + 1}`); await settle();
     assert.deepEqual(await evaluate('window.equipmentUiFixture.calls.at(-1)'),
       {path:'/api/equipment/dehumidifier/temperature-control',body:{deviceId:'caravan_dehumidifier',enabled:false,offAtC:1,onAtC:3}});
     assert.equal(await evaluate(`document.querySelector('${appliance} .caravan-power-buttons button:last-child').disabled`), false, 'Disabling automatic power restores native manual controls');
+    assert.equal(await evaluate(`document.querySelector('${appliance} .caravan-power').checkVisibility()`), true);
+    if (await evaluate(`document.querySelector('${policyDetails}').open`)) await toggleDisclosure(policyDetails);
+    await evaluate(`(() => {const d=window.equipmentUiFixture.devices.find(d=>d.id==='caravan_dehumidifier').dehumidifier;
+      Object.assign(d,{state:{power:'on',targetHumidity:55,fanSpeed:'high'},runningState:'on',operation:null});
+      Object.assign(d.temperatureControl,{reason:'warm',readingsMatch:true,recording:true,applianceHumidity:60});return true;})()`); await refresh();
+    await captureAppliance('manual-active');
     for (const [reason,readingsMatch,recording,label] of [['checking-readings',true,false,'Recording paused'],['warm',true,true,'Recording active'],['air-unavailable',false,false,'Recording paused']]) {
       await evaluate(`Object.assign(window.equipmentUiFixture.devices.find(d=>d.id==='caravan_dehumidifier').dehumidifier.temperatureControl,${JSON.stringify({reason,readingsMatch,recording,applianceHumidity:60})});true`); await refresh();
       assert.equal(await evaluate(`document.querySelector('${appliance} .caravan-recording strong').textContent`), label);

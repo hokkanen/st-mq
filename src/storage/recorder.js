@@ -701,11 +701,15 @@ function compactRaw(raw, observation) {
     'modelVersion','controllerPhase','estimated','forecast','reportIntervalMs','reportGraceMs','eventOnly','maxAgeMs',
     'reportPolicyChangedAt','originalReportReceivedAt','originalReportSourceTime','originalReportTimeBasis','transportRecoveredAt','temperatureRouteSignature'];
   const result = Object.fromEntries(allowed.filter(key=>raw[key] !== undefined).map(key=>[key,raw[key]]));
-  // Caravan appliance history stores only power. Keep its physical identity
-  // and qualification clocks without retaining native sensor or setting values.
-  if (observation?.source === 'mqtt-equipment' && observation.signal === 'caravan_dehumidifier_active' && observation.unit === 'state') {
+  // Caravan appliance history stores one power/fan state. Keep its physical
+  // identity and evidence clocks without retaining sensor or setting values.
+  if (observation?.source === 'mqtt-equipment' && observation.signal === 'caravan_dehumidifier_state' && observation.unit === 'state') {
     if (typeof raw.identity === 'string' && /^[a-f0-9]{64}$/.test(raw.identity)) result.identity = raw.identity;
-    if (finiteTime(raw.fieldTimestamps?.power)) result.fieldTimestamps = { power: raw.fieldTimestamps.power };
+    if (finiteTime(raw.fieldTimestamps?.power)) {
+      result.fieldTimestamps = { power: raw.fieldTimestamps.power };
+      if ([1, 2, 3].includes(observation.value) && finiteTime(raw.fieldTimestamps?.fanSpeed))
+        result.fieldTimestamps.fanSpeed = raw.fieldTimestamps.fanSpeed;
+    }
     if (typeof raw.readingsMatch === 'boolean') result.readingsMatch = raw.readingsMatch;
     if (typeof raw.sensorDeviceId === 'string' && /^[a-z][a-z0-9_]{0,99}$/.test(raw.sensorDeviceId)) result.sensorDeviceId = raw.sensorDeviceId;
     for (const key of ['airObservedAt', 'humidityObservedAt', 'applianceHumidityObservedAt'])

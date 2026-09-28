@@ -1,3 +1,36 @@
+Completed 2026-09-28 — Balanced Caravan controls and four-state dehumidifier history
+- Reorganize the dehumidifier around reported power and paired native humidity/
+  fan controls. Keep Automatic power compact with saved enablement and thresholds;
+  expand for edits, explicit Save changes/Discard and accessible validation.
+  Unsaved drafts never change power ownership; manual buttons appear only when
+  the saved automatic policy is disabled. Preserve focus/disclosures on polling.
+- Keep recording status visible, with live matching values and criteria in
+  Compare readings. Remove repeated default explanations, preserve unknown/
+  unavailable states, and retain supported-capability and family/replica gates.
+- Owner revised the earlier binary-only choice: use one current
+  caravan_dehumidifier_state series with Off=0, Low=1, Medium=2 and High=3.
+  Update recording, chart tracks, legend keys, tooltips, explorer and docs together.
+  Retired active/running-state signals have no alias, translator or reinterpretation.
+- ON history needs fresh explicit low/medium/high fan feedback alongside power;
+  OFF needs fresh power only. Bound coverage to the earliest evidence expiry,
+  preserve humidity agreement and gaps, and keep live power authority independent
+  so missing fan evidence cannot prevent a supported protective OFF.
+  A newer power report with a source clock at or before the last combined
+  observation still updates live power; history stays unknown until fresh
+  evidence resumes. Preserve this boundary through recording rollback and clear
+  it for a physical replacement.
+- Reviewed F1/F3/F4/F5/F7/F8; keep actual source identity/qualification clocks,
+  no additional appliance measurement series or household data in fixtures.
+- Validation: 4,004 routine tests pass with zero skips; the final 84 focused
+  tests also cover the added equal-clock and replacement cases. Build passes
+  with the existing bundle-size warning. Caravan, access and complete chart
+  browser suites pass; both themes and 320/390/1440px screenshots inspected.
+- Restart the controller gracefully and verify its sole new history signal,
+  matching title-case labels, supported native controls and enabled 1°C/2°C
+  policy. Humidity still differs from Shelly BLU, so recording remains paused
+  with no known appliance history. The database schema is compatible; no reset,
+  data translation, Home Assistant change or appliance test command was needed.
+
 Completed 2026-09-28 — Local DESD8LW commissioning and binary-only history
 - Replace combined fan/power history with caravan_dehumidifier_active: Off=0,
   On=1, unknown gaps preserved. No old-signal alias or reinterpretation; native

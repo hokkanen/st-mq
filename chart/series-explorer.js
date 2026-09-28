@@ -1,4 +1,4 @@
-import { HISTORY_AXES, SIGNAL_INFO, ENERGY_SIGNALS, CARAVAN_POWER_STATES, SESSION_CHECK_INFO, MODEL_INPUT_INFO,
+import { HISTORY_AXES, SIGNAL_INFO, ENERGY_SIGNALS, CARAVAN_DEHUMIDIFIER_STATES, SESSION_CHECK_INFO, MODEL_INPUT_INFO,
   MODEL_COEFFICIENT_INFO, GARAGE_INPUT_INFO, GARAGE_COEFFICIENT_INFO, GARAGE_OUTCOME_INFO } from '../src/domain/history-series.js';
 
 const definitions = { ...SIGNAL_INFO, ...SESSION_CHECK_INFO, ...MODEL_INPUT_INFO,
@@ -78,8 +78,8 @@ export function explorerActivityTrack(key) {
             [2, 'Partial override', 'auxiliary'], [3, 'Unconfirmed override', 'muted', 'unknown']]
             : key === 'operating_mode' ? [[0, 'Off', 'muted'], [1, 'Auto', 'indoor'], [2, 'Compressor only', 'outdoor'],
               [3, 'Auxiliary only', 'auxiliary'], [4, 'Hot water only', 'compressorDhw']]
-              : key === 'caravan_dehumidifier_active' ? Object.entries(CARAVAN_POWER_STATES).map(([value, label]) =>
-                [Number(value), label, Number(value) === 0 ? 'muted' : color])
+              : key === 'caravan_dehumidifier_state' ? Object.entries(CARAVAN_DEHUMIDIFIER_STATES).map(([value, label]) =>
+                [Number(value), label, ['muted', 'garageFront', 'garage', 'auxiliary'][Number(value)]])
                 : key.includes('door') ? [[0, 'Closed', 'muted'], [1, 'Open', color]]
                   : key === 'dhwr_request' ? [[0, 'Off requested', 'muted'], [1, 'On requested', color]]
                     : row.unit === 'code' ? [[0, 'No alarm', 'muted']]
