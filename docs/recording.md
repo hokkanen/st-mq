@@ -1168,9 +1168,10 @@ for the indoor and outdoor maintenance controls, confirmation and rebuild status
 
 Caravan temperature and relative humidity are separate recorded Shelly BLU H&T
 series with the configured source deadline; battery and Bluetooth signal strength
-remain live-only. One categorical dehumidifier series combines reported power and
-fan setting: Off, Low, Medium, High or Auto. Unknown/offline data stays a gap;
-commands and other dehumidifier settings are not recorded as measurements.
+remain live-only. The single `caravan_dehumidifier_active` series records only
+reported appliance power: Off (0) or On (1). Unknown/offline data stays a gap.
+Fan speed, all other dehumidifier settings, and its own temperature/humidity
+remain live-only; commands are not recorded as measurements.
 
 Caravan energy uses the same adaptive interval recorder as property and charging
 energy. Its input is the measured difference between successive meter counters,

@@ -1,3 +1,34 @@
+Completed 2026-09-28 — Local DESD8LW commissioning and binary-only history
+- Replace combined fan/power history with caravan_dehumidifier_active: Off=0,
+  On=1, unknown gaps preserved. No old-signal alias or reinterpretation; native
+  humidity, target, fan and other settings stay live-only. Retain only compact
+  power identity and qualification provenance with the binary observations.
+- Qualify and expire power on its actual receipt clock, independently of fan
+  availability. Humidity-only/cached reports cannot extend power coverage or
+  backfill recording after a mismatch. Preserve UI Automatic power choices.
+- Inspect actual local DPs and replace the incomplete Qlima profile with a
+  dedicated verified DESD8LW profile. Expose native power, target 30–80%/5%,
+  and Low/Medium/High fan via a select that never implicitly turns power on.
+- Add a pinned Tuya Local 2026.9.2 observation adapter with source-hash guards,
+  backups, rollback and offline source tests. Genuine received DPs and physical
+  identity replace optimistic HA entity values/timestamps; native networking
+  and retries are unchanged. Unknown future HACS source needs a reviewed adapter.
+- Install profile/adapter and MQTT automations in HA using private identifiers;
+  restart HA and the controller gracefully. Live fan/target changes and restores
+  receive genuine device readback; a same-state power command also confirms.
+  UI policy save/restore passes. Final enabled thresholds are 1°C OFF / 2°C ON.
+- Current humidity does not match Shelly BLU: recording remains paused and the
+  controller has not taken automatic control. Read-only database inspection finds
+  no known appliance history or native measurement/settings telemetry. Actual
+  caravan boundary switching remains validated by controlled fixtures until moved.
+- Validation: all 3,996 routine tests pass, zero skips (including upstream profile
+  parser checks); build passes with existing bundle-size warning. Caravan, access
+  and complete chart browser suites pass; narrow synthetic screenshots inspected.
+  Full equipment browser retains the earlier unrelated garage-door modal limit.
+- Reviewed F1/F3/F4/F5/F7/F8 through configuration, producer, identity, controller,
+  recording, UI, docs and tests. Credentials, native IDs and observations remain
+  outside Git. No push.
+
 Completed 2026-09-28 — Caravan dehumidifier control, evidence and HA bridge
 - Keep automatic power as saved, device-bound dashboard intent: enabled with
   1°C OFF / 2°C ON initially, editable thresholds and a disable switch. Native
@@ -23,10 +54,8 @@ Completed 2026-09-28 — Caravan dehumidifier control, evidence and HA bridge
   both themes at narrow/mobile/desktop widths; screenshots inspected. Full
   equipment browser coverage stops at an unrelated garage-door modal assertion.
   Actual HA template rendering passes; no physical command confirmation claimed.
-- Installation follow-up: Tuya Local installed through HACS without restarting
-  HA; owner completed QR authentication and the device local key was retrieved.
-  Local commissioning awaits the appliance LAN address. No cloud-dependent
-  dehumidifier bridge was installed as a fallback and no appliance commands sent.
+- Installation follow-up completed by the local DESD8LW commissioning entry
+  above after the owner completed account-assisted Tuya Local setup.
 
 Completed 2026-09-28 — Restore the full Mitsubishi browser sweep
 - Align the sweep with application listboxes: arrows browse without committing,

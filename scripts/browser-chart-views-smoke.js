@@ -91,7 +91,7 @@ try {
         ['dhwr_active', index % 60 < 10 ? 1 : 0, 'state'],
         ['caravan_temperature', 17 + Math.sin(index / 16), 'degC'],
         ['caravan_humidity', 65 + Math.sin(index / 20) * 5, '%'],
-        ['caravan_dehumidifier_running_state', index % 50 < 35 ? 4 : 0, 'state'],
+        ['caravan_dehumidifier_active', index % 50 < 35 ? 1 : 0, 'state'],
       ]) app.engine.recorder.record({ signal, value, unit, source: 'simulation', device: 'invented-chart-views-probe',
         sourceTime: at, receivedAt: at, quality: ['simulated'], raw: { reportIntervalMs: 60_000 } });
     }

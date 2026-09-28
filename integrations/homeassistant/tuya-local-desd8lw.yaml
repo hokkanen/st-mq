@@ -1,0 +1,49 @@
+# electriQ DESD8LW: verified local DP subset for Tuya Local 2026.9.2.
+# The DESD9LW profiles use different DP types, ranges and enum values.
+# No product/device identifiers or observed household values belong here.
+# Native entity state may be optimistic; the MQTT bridge requires the separate
+# received-observation adapter for trustworthy values and source timestamps.
+name: Dehumidifier
+entities:
+  - entity: humidifier
+    class: dehumidifier
+    dps:
+      - id: 1
+        type: boolean
+        name: switch
+      - id: 2
+        type: integer
+        name: humidity
+        range:
+          min: 30
+          max: 80
+        mapping:
+          - step: 5
+      - id: 6
+        type: integer
+        name: current_humidity
+        readonly: true
+  # A select writes only the speed DP. Tuya Local's fan.set_percentage also
+  # turns a stopped appliance on when its fan entity includes a switch DP.
+  - entity: select
+    name: Fan speed
+    dps:
+      - id: 4
+        type: string
+        name: option
+        mapping:
+          - dps_val: low
+            value: low
+          - dps_val: mid
+            value: medium
+          - dps_val: high
+            value: high
+  - entity: sensor
+    class: humidity
+    dps:
+      - id: 6
+        type: integer
+        name: sensor
+        unit: "%"
+        class: measurement
+        readonly: true

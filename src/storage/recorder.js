@@ -225,7 +225,7 @@ export class Recorder {
       const raw = compactRaw({ ...previousRaw, ...policy, timeBasis: recoverConnection ? 'mqtt-transport-recovery' : 'report-policy-change',
         ...(recoverConnection ? { transportRecoveredAt: at, temperatureRouteSignature: routeSignature } : { reportPolicyChangedAt: at }), originalReportReceivedAt: receivedAt,
         originalReportSourceTime: sourceTime,
-        originalReportTimeBasis: previousRaw.originalReportTimeBasis ?? previousRaw.timeBasis });
+        originalReportTimeBasis: previousRaw.originalReportTimeBasis ?? previousRaw.timeBasis }, reading);
       raw.recorder = { version: VERSION, policy: recordingPolicy({ ...reading, raw }).id,
         reason: recoverConnection ? 'mqtt-transport-recovery' : 'report-policy-change', status: fresh ? 'fresh' : 'unavailable',
         originalSourceTime: sourceTime, temporalBasis: recoverConnection ? 'transport-recovery' : 'policy-change' };
@@ -376,7 +376,7 @@ export class Recorder {
       const prior = s.last;
       let committed = null;
       if (reason) {
-        const raw = compactRaw(o.raw);
+        const raw = compactRaw(o.raw, o);
         raw.recorder = { version: VERSION, policy: policy.id, reason, threshold: exact ? null : threshold,
           originalSourceTime: o.sourceTime, status, temporalBasis: 'source-observation' };
         committed = { ...o, raw, quality: fresh ? o.quality : flags([...o.quality,status]) };
@@ -690,7 +690,7 @@ function energySignals(prefix) {
     ? [1,2,3].map(phase=>`${prefix}_energy_l${phase}`) : prefix === 'ev2-phase' ? [1,2,3].map(phase=>`ev2_energy_l${phase}`) : null;
 }
 
-function compactRaw(raw) {
+function compactRaw(raw, observation) {
   if (!raw || typeof raw !== 'object') return {};
   // Repeated MQTT payload text and device metadata have no independent numeric
   // information. Retain interpretation, quality and lineage used by consumers.
@@ -700,5 +700,16 @@ function compactRaw(raw) {
     'basis','energyBasis','source','issuedAt','fetchedAt','snapshotId','provenance','intervalStart','intervalEnd','durationMs',
     'modelVersion','controllerPhase','estimated','forecast','reportIntervalMs','reportGraceMs','eventOnly','maxAgeMs',
     'reportPolicyChangedAt','originalReportReceivedAt','originalReportSourceTime','originalReportTimeBasis','transportRecoveredAt','temperatureRouteSignature'];
-  return Object.fromEntries(allowed.filter(key=>raw[key] !== undefined).map(key=>[key,raw[key]]));
+  const result = Object.fromEntries(allowed.filter(key=>raw[key] !== undefined).map(key=>[key,raw[key]]));
+  // Caravan appliance history stores only power. Keep its physical identity
+  // and qualification clocks without retaining native sensor or setting values.
+  if (observation?.source === 'mqtt-equipment' && observation.signal === 'caravan_dehumidifier_active' && observation.unit === 'state') {
+    if (typeof raw.identity === 'string' && /^[a-f0-9]{64}$/.test(raw.identity)) result.identity = raw.identity;
+    if (finiteTime(raw.fieldTimestamps?.power)) result.fieldTimestamps = { power: raw.fieldTimestamps.power };
+    if (typeof raw.readingsMatch === 'boolean') result.readingsMatch = raw.readingsMatch;
+    if (typeof raw.sensorDeviceId === 'string' && /^[a-z][a-z0-9_]{0,99}$/.test(raw.sensorDeviceId)) result.sensorDeviceId = raw.sensorDeviceId;
+    for (const key of ['airObservedAt', 'humidityObservedAt', 'applianceHumidityObservedAt'])
+      if (finiteTime(raw[key])) result[key] = raw[key];
+  }
+  return result;
 }

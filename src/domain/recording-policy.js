@@ -7,7 +7,7 @@ const LIVE_ONLY = new Set(['caravan_active', 'caravan_power', 'caravan_current',
   'garage_relay_active', 'blu_ht_battery', 'blu_ht_rssi',
   'garage_temperature_ha', 'garage_power', 'garage_external_temperature', 'heat_pump_power']);
 const CARAVAN_RECORDED = new Set(['caravan_energy', 'caravan_temperature', 'caravan_humidity',
-  'caravan_dehumidifier_running_state']);
+  'caravan_dehumidifier_active']);
 const EXACT = /(?:_active$|_routing$|_mode$|_code$|_setting$|_hours$|_counter$|^room_influence$|^heating_curve$|^heating_setpoint$|^auxiliary_output$|^garage_native_energy$)/;
 const EVENT_SIGNALS = new Set(['controller_phase', 'dhwr_request', 'learning_profit', 'learning_aux_profit',
   'learning_recovery_error', 'learning_indoor_temperature']);

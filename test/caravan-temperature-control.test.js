@@ -43,7 +43,7 @@ function fixture(t, options = {}) {
       JSON.stringify({ identity: 'a'.repeat(64), power, temperature, humidity, fanSpeed: 'low', targetHumidity: 55,
         capabilities, timestamp: now, ...extra })),
     state: () => capture.status().devices.find(row => row.id === 'caravan_dehumidifier').dehumidifier,
-    history: () => observations.filter(row => row.signal === 'caravan_dehumidifier_running_state'),
+    history: () => observations.filter(row => row.signal === 'caravan_dehumidifier_active'),
     policy: patch => capture.setDehumidifierTemperatureControl({ deviceId: 'caravan_dehumidifier', ...patch }),
     qualify: (temperature = 3, humidity = 50, power = 'off', applianceTemperature = temperature) => {
       for (let index = 0; index < 3; index++) {
@@ -183,14 +183,14 @@ test('a fresh status envelope cannot refresh older independent humidity or power
 test('failed history qualification rolls back evidence and cannot dispatch automatic ON', async t => {
   let failOnce = true;
   const f = fixture(t, { beforeIngest: row => {
-    if (row.signal === 'caravan_dehumidifier_running_state' && failOnce) {
+    if (row.signal === 'caravan_dehumidifier_active' && failOnce) {
       failOnce = false; throw new Error('Synthetic recording failure');
     }
   } });
   f.air(3); f.dryer('off', null); f.advance(120_000); f.air(3);
   assert.throws(() => f.dryer('off', null), /Synthetic recording failure/);
   await settle(); assert.equal(f.sent.length, 0); assert.equal(f.state().temperatureControl.qualified, false);
-  assert.equal(f.store.observations().filter(row => row.signal === 'caravan_dehumidifier_running_state').length, 0);
+  assert.equal(f.store.observations().filter(row => row.signal === 'caravan_dehumidifier_active').length, 0);
   f.dryer('off', null); await settle();
   assert.deepEqual(f.sent, [{ power: 'on' }]); assert.equal(f.state().temperatureControl.qualified, true);
 });
@@ -235,11 +235,13 @@ test('physical replacement on the same MQTT route clears old policy and agreemen
   f.restart(); assert.equal(f.state().temperatureControl.enabled, false); assert.equal(f.state().temperatureControl.offAtC, 6);
 });
 
-test('fresh ON power can be stopped even when the fan reading expires', async t => {
+test('binary power and qualification remain available when an unrelated fan reading expires', async t => {
   const f = fixture(t); f.qualify(3, 50, 'on', null); await settle();
-  f.advance(181_000); f.air(3);
+  f.advance(100_000); f.air(3);
+  f.dryer('on', null, 50, { fieldTimestamps: { power: f.now, fanSpeed: START + 120_000, humidity: f.now } });
+  f.advance(81_000); f.air(3);
   f.dryer('on', null, 50, { fieldTimestamps: { power: f.now, fanSpeed: START + 120_000, humidity: f.now } }); await settle();
-  assert.equal(f.state().available, false); assert.equal(f.state().powerOffAvailable, true);
-  assert.deepEqual(f.sent, [{ power: 'off' }]);
-  assert.equal(f.history().at(-1).value, null);
+  assert.equal(f.state().available, true); assert.equal(f.state().powerOffAvailable, true);
+  assert.deepEqual(f.sent, []);
+  assert.equal(f.history().at(-1).value, 1);
 });

@@ -611,19 +611,31 @@ test('recording explains humidity agreement, qualification and missing evidence 
   assert.match(appliance.querySelector('.caravan-recording').textContent, /Recording active.*Humidity match/);
 });
 
-test('equipment readings honor categorical state labels and never coerce unknown running states to Off', () => {
-  const device = { kind: 'dehumidifier', available: true, readings: { caravan_dehumidifier_running_state: {
-    label: 'Running state', unit: 'state', observedAt: now, stale: false,
-    stateLabels: { 0: 'Off', 1: 'Low', 2: 'Medium', 3: 'High', 4: 'Auto' },
+test('equipment readings honor binary appliance power labels and never coerce unknown power to Off', () => {
+  const device = { kind: 'dehumidifier', available: true, readings: { caravan_dehumidifier_active: {
+    label: 'Power', unit: 'state', observedAt: now, stale: false,
+    stateLabels: { 0: 'Off', 1: 'On' },
   } } };
-  const reading = device.readings.caravan_dehumidifier_running_state;
-  for (const [value, expected] of [[0, 'Off'], [1, 'Low'], [2, 'Medium'], [3, 'High'], [4, 'Auto'],
+  const reading = device.readings.caravan_dehumidifier_active;
+  for (const [value, expected] of [[0, 'Off'], [1, 'On'], [2, 'Unknown'], [3, 'Unknown'], [4, 'Unknown'],
     [5, 'Unknown'], [null, 'Unknown'], [false, 'Unknown'], ['0', 'Unknown']]) {
     reading.value = value; assert.equal(equipmentReadingRows(device)[0].value, expected);
   }
-  reading.value = 2; reading.stale = true;
+  reading.value = 1; reading.stale = true;
   assert.equal(equipmentReadingRows(device)[0].value, 'Unknown');
-  assert.match(equipmentReadingRows(device)[0].detail, /Last reported Medium/);
+  assert.match(equipmentReadingRows(device)[0].detail, /Last reported On/);
+});
+
+test('Caravan live power stays independent from its optional fan setting', () => {
+  const document = equipmentDocument(), panel = createEquipmentPanel({ document, request: async () => {} });
+  const device = dehumidifier(true), current = status({ equipment: { devices: [device] } });
+  Object.assign(device.dehumidifier, { runningState: 'on', state: { power: 'on', fanSpeed: 'high' } }); panel.update(current);
+  const summary = deviceNode(document, 'garage-equipment-readings', 'caravan').querySelector('.caravan-dehumidifier').querySelector('.caravan-section-status');
+  assert.match(summary.textContent, /^On · high fan/);
+  device.dehumidifier.state.fanSpeed = null; panel.update(current);
+  assert.match(summary.textContent, /^On ·/); assert.doesNotMatch(summary.textContent, /fan|unknown/i);
+  device.dehumidifier.runningState = 'high'; panel.update(current);
+  assert.match(summary.textContent, /^Power unknown/, 'Retired combined state values do not act as current power observations');
 });
 
 

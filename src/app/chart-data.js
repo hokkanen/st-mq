@@ -13,7 +13,7 @@ import { createHistoricalPricing } from './chart-prices.js';
 import { historicalSpotIntervals } from './historical-spot-prices.js';
 import { resolveMarketIntervals } from '../domain/market-authority.js';
 import { auxiliaryPowerFromOutput } from '../domain/telemetry.js';
-import { HISTORY_AXIS_BY_KEY, CARAVAN_RUNNING_STATES, GARAGE_INPUT_INFO, GARAGE_COEFFICIENT_INFO, GARAGE_OUTCOME_INFO, ENERGY_SIGNALS, AUDIT_SIGNALS, COUNTER_SIGNALS, SESSION_CHECK_INFO, MODEL_INPUT_INFO, MODEL_COEFFICIENT_INFO, RECORDED_EVIDENCE_SIGNALS } from '../domain/history-series.js';
+import { HISTORY_AXIS_BY_KEY, CARAVAN_POWER_STATES, GARAGE_INPUT_INFO, GARAGE_COEFFICIENT_INFO, GARAGE_OUTCOME_INFO, ENERGY_SIGNALS, AUDIT_SIGNALS, COUNTER_SIGNALS, SESSION_CHECK_INFO, MODEL_INPUT_INFO, MODEL_COEFFICIENT_INFO, RECORDED_EVIDENCE_SIGNALS } from '../domain/history-series.js';
 import { addChargingSessionChecks } from './chart-session-checks.js';
 import { addModelInputs } from './chart-model-inputs.js';
 import { addModelCoefficients } from './chart-model-coefficients.js';
@@ -202,7 +202,7 @@ function valueOf(row, flags) {
   if (!Number.isFinite(row.value) || flags.some(flag => BAD.has(flag))) return null;
   if (row.signal.endsWith('_temperature') && !['degC', '°C'].includes(row.unit)) return null;
   if (row.signal === 'caravan_humidity' && (row.unit !== '%' || row.value < 0 || row.value > 100)) return null;
-  if (row.signal === 'caravan_dehumidifier_running_state' && (row.unit !== 'state' || !Object.hasOwn(CARAVAN_RUNNING_STATES, row.value))) return null;
+  if (row.signal === 'caravan_dehumidifier_active' && (row.unit !== 'state' || !Object.hasOwn(CARAVAN_POWER_STATES, row.value))) return null;
   if (PHASES.includes(row.signal) && row.unit !== 'A') return null;
   if (row.signal === 'spot_price' && !['c/kWh_ex_vat', 'c/kWh'].includes(row.unit)) return null;
   if (['auxiliary_power', 'heat_pump_power', 'charger_power'].includes(row.signal) && (row.unit !== 'kW' || row.value < 0)) return null;

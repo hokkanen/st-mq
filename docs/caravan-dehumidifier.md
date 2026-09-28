@@ -3,12 +3,13 @@
 The **electriQ DESD8LW** appears below air and energy readings in
 **Garage → Sensors & More equipment → Caravan**. Its native Home Assistant
 entities connect through the [MQTT automation generator](../integrations/homeassistant/dehumidifier.js).
-Use **Tuya Local** entities for local-network operation; the ordinary Tuya
-integration depends on the cloud. Install and commission Tuya Local in Home
-Assistant first, using its [setup instructions](https://github.com/make-all/tuya-local#configuration).
+Use **Tuya Local** entities for local-network operation. Install and commission
+Tuya Local in Home Assistant first, using its
+[setup instructions](https://github.com/make-all/tuya-local#configuration).
 Account-assisted setup retrieves the local key once; runtime device control uses
-the LAN. A similar model name is insufficient to select a profile: verify the
-actual data points, entity capabilities and readback before connecting it.
+the LAN. This implementation uses the verified DESD8LW data points: 1 for power,
+2 for target humidity, 4 for fan speed and 6 for measured relative humidity.
+The DESD9LW and Qlima profiles describe different data-point types or settings.
 
 The bridge currently maps native power, 30–80% target humidity in increments of
 five, and Low/Medium/High fan settings. Unsupported modes, Auto fan and louvre
@@ -18,16 +19,40 @@ Capabilities do not prove successful execution: confirmation requires a fresh
 matching device report. Never use the Caravan energy plug as the appliance power
 control; native shutdown allows its cooling cycle to finish.
 
-Installation entity IDs and credentials stay outside the repository. Generate the
-two automations using `dehumidifierAutomations({ id, label, prefix,
-humidifierEntity, fanEntity, humidityEntity, deviceIdentity })`, with prefix
-`stmq/garage/caravan_dehumidifier`. Review and install their full JSON using
-Home Assistant's automation configuration interface. Enable its MQTT integration
-on the same broker as the controller. Verify the generated template against the
-chosen local entities before enabling the command automation. `deviceIdentity`
-is the SHA-256 digest of the stable HA appliance identity, never a raw private
-identifier. It binds observations, saved policy and commands to the appliance;
-replacing it resets the earlier policy and comparison evidence.
+Installation entity IDs and credentials stay outside the repository. Set up the
+local integration and bridge in this order:
+
+1. Install the [DESD8LW profile](../integrations/homeassistant/tuya-local-desd8lw.yaml)
+   as `custom_components/tuya_local/devices/electriq_desd8lw_dehumidifier.yaml`
+   and select that profile for the appliance. It creates a native humidifier,
+   a **Fan speed** select and a measured-humidity sensor. The select writes only
+   fan speed, so changing it does not implicitly switch the appliance on.
+2. Apply the [received-observation adapter](../integrations/homeassistant/tuya-local-observation.md).
+   Its installer checks the exact reviewed Tuya Local 2026.9.2 source hashes and
+   preserves private backups before changing Python files. A separately reviewed
+   Home Assistant restart loads the patch. The adapter exposes confirmed raw
+   device replies in the humidifier's `local_observations` attribute.
+3. Generate the two automations using `dehumidifierAutomations({ id, label,
+   prefix, humidifierEntity, fanSpeedEntity, deviceIdentity })`, with prefix
+   `stmq/garage/caravan_dehumidifier`. `humidifierEntity` must be the native
+   `humidifier` entity and `fanSpeedEntity` its same-device `select` entity.
+   Review and install their full JSON through Home Assistant's automation
+   configuration interface. Its MQTT integration must use the controller's broker.
+
+`deviceIdentity` is the lowercase SHA-256 digest of the UTF-8 Tuya Local native
+`unique_id`; for this appliance without a child device ID, that is the configured
+Tuya device ID. It is not the Home Assistant entity ID or device-registry ID.
+The observation adapter computes this digest from the actual configured native
+device. The bridge requires it to match the privately selected digest before
+publishing usable observations or accepting a command. Replacing the appliance
+invalidates the earlier saved policy and comparison evidence.
+
+Normal Tuya Local entity values may temporarily include pending command values.
+The bridge reads all actual values and clocks from `local_observations`, while
+native entity metadata establishes the supported controls. Missing adapter data,
+restored states or a different physical identity leave the bridge unavailable.
+Home Assistant's `last_reported` and a successful `update_entity` call cannot
+substitute for received device evidence.
 
 ## MQTT contract
 
@@ -39,7 +64,7 @@ Caravan energy plug prefix `stmq/garage/caravan`.
 | `/state` | Bridge → ST-MQ | Full JSON snapshot shown below |
 | `/availability` | Bridge → ST-MQ | `online` or `offline` |
 | `/get` | ST-MQ → bridge | `{}` requesting a read-only status snapshot |
-| `/set` | ST-MQ → bridge | JSON containing the setting(s) to change |
+| `/set` | ST-MQ → bridge | One setting, physical identity and request deadline |
 
 Example full snapshot, with an illustrative timestamp:
 
@@ -52,6 +77,13 @@ Example full snapshot, with an illustrative timestamp:
   "temperature": null,
   "humidity": 52,
   "timestamp": 1789992000000,
+  "fieldTimestamps": {
+    "power": 1789992000000,
+    "targetHumidity": 1789992000000,
+    "fanSpeed": 1789992000000,
+    "humidity": 1789992000000,
+    "temperature": null
+  },
   "capabilities": {
     "power": ["off", "on"],
     "targetHumidity": [30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80],
@@ -60,45 +92,53 @@ Example full snapshot, with an illustrative timestamp:
 }
 ```
 
-`timestamp` is the original device observation time in UTC epoch milliseconds.
-A full device snapshot may use this single clock. The Home Assistant bridge
-also supplies `fieldTimestamps` for power, targetHumidity, fanSpeed, humidity
-and temperature; each field uses its actual entity's original `last_reported`.
-The aggregate clock orders snapshots and cannot renew older field evidence.
-Repeated `/get` requests and periodic publications preserve those clocks.
-Publish live snapshots with QoS 1 and retention disabled, on state changes and
-regularly enough to stay within the configured 180-second expiry. A query must
-preserve the original observation time unless the device was actually read again.
-Send a live `online` report and a live snapshot after connecting/reconnecting;
-retained data alone cannot establish availability. Publish `offline` when device
-feedback is lost and configure a broker will for bridge disconnection.
+Each `fieldTimestamps` value is the original UTC epoch millisecond at which Tuya
+Local received that datapoint from the appliance. This is a native-report receipt
+clock, not the sensor's internal sampling clock or an HA entity-update clock.
+Partial native replies advance only the datapoints they contain. The aggregate
+`timestamp` is their maximum and cannot renew an older field's evidence. This
+model has no appliance temperature datapoint, so its value and clock are null.
 
-Advance the observation timestamp when a setting changes. Conflicting values
-with the same timestamp are rejected. Each snapshot replaces the previous settings; omitted/invalid values are unknown,
-not merged with older settings. Power Off gives running state Off even if fan
-speed is absent; Power On requires a valid fan speed to establish running state.
+The automation publishes on source changes, every 30 seconds, on startup and
+reconnection, and in response to `/get`. Queries and periodic publications
+preserve the original clocks. Snapshots use QoS 1 with retention disabled. The
+bridge publishes `offline` when its source is unusable and during Home Assistant
+shutdown; an `online` transport marker never extends measurement freshness.
+Every required field still expires after the configured 180 seconds. Retained
+data alone cannot establish availability, and connection loss clears the
+adapter's old device observations.
+
+Advance a field's clock only when a new native reply contains that datapoint.
+Conflicting values at the same field clock are rejected. Each snapshot replaces
+the previous settings; omitted/invalid values are unknown,
+not merged with older settings. Reported power independently establishes the
+recorded Off/On state; a missing fan setting does not make known power unknown.
+Fan settings are displayed live and are never stored as telemetry history.
 
 | Setting | Allowed values |
 | --- | --- |
 | `power` | `off`, `on` |
-| `mode` | `auto`, `dehumidify`, `heater`, `fan_only` |
 | `targetHumidity` | 30 through 80, in increments of 5 |
-| `fanSpeed` | `low`, `medium`, `high`, `auto` |
-| `swing` | `fixed_90`, `fixed_45`, `oscillate` (0–90°) |
+| `fanSpeed` | `low`, `medium`, `high` |
 
 Only options listed in the current snapshot's `capabilities` can be sent.
-The table lists the canonical vocabulary, not a promise of support for every model.
+These are the verified controls exposed by this local DESD8LW profile.
 
 For example, a fan change sends
 `{"fanSpeed":"medium","identity":"<the current 64-character identity>","requestedAt":1789992000000,"expiresAt":1789992010000}`
 on `/set`. Commands are not retained and expire after ten seconds. The bridge
 rejects unknown or multiple setting fields, invalid values, future or expired
 requests, mismatched device identities and replayed request times. Its native actions target only the privately
-selected entities. The bridge must apply only requested fields, reject unsupported
-options and then report actual device settings on `/state`. A successful publish
-is not confirmation: ST-MQ waits for fresh matching telemetry. It does not record
+selected entities. Power uses the humidifier's native on/off services, humidity
+uses its humidity-setting service, and fan speed uses `select.select_option`.
+A successful publish or native service response is not confirmation: the controller
+waits for a matching independently received datapoint clocked at or after the
+request. It does not record
 requested settings as actual observations or retry old commands after reconnect.
 Manual controls respect the existing master-control and read-only slave restrictions.
+The request deadline fences bridge dispatch. Once a request reaches Tuya Local,
+that integration's native delivery and retry behavior applies; the deadline is
+not a device-local cancellation guarantee through a broken link.
 
 ## Automatic power and humidity agreement
 
@@ -144,23 +184,21 @@ energy plug or replace native low-temperature protection and shutdown behavior.
 
 ## Recording
 
-The single `caravan_dehumidifier_running_state` series uses stable numeric codes
+The single `caravan_dehumidifier_active` series uses stable numeric codes
 with categorical chart labels:
 
 | Code | Label |
 | --- | --- |
 | 0 | Off |
-| 1 | Low |
-| 2 | Medium |
-| 3 | High |
-| 4 | Auto |
+| 1 | On |
 | null / gap | Unknown, unavailable or stale |
 
-This combines reported power and fan setting, making it sufficient for reviewing
-when the appliance was enabled and at which fan setting. It does not prove that
-water was being removed: a humidity target, full tank, automatic fan selection or
-shutdown cycle can affect physical operation. Operating mode, humidity target and
-louvre setting remain live-only; commands do not generate history points.
+Only the appliance's reported power is recorded. On does not prove that water
+was being removed: a humidity target, full tank, fan setting or shutdown cycle
+can affect physical operation. Fan speed, mode, humidity target, louvre setting
+and the appliance's own temperature/humidity remain live-only; commands do not
+generate history points. The current series has no alias or conversion from
+the retired combined power/fan series.
 With the Caravan sensor association configured, every recorded state requires
 the fresh, qualified comparison, including when Automatic power is disabled. Coverage ends at the earliest expiry of
 either device. Missing comparison evidence produces a gap instead of a claimed Off or On state.

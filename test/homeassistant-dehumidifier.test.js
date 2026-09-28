@@ -4,13 +4,13 @@ import { spawnSync } from 'node:child_process';
 import { dehumidifierAutomations, dehumidifierCommandTemplate, dehumidifierSnapshotTemplate } from '../integrations/homeassistant/dehumidifier.js';
 
 const options = { id: 'example_dehumidifier', label: 'Example dehumidifier', prefix: 'stmq/garage/example_dehumidifier',
-  humidifierEntity: 'humidifier.example_appliance', fanEntity: 'fan.example_appliance', humidityEntity: 'sensor.example_humidity', deviceIdentity: 'a'.repeat(64) };
+  humidifierEntity: 'humidifier.example_appliance', fanSpeedEntity: 'select.example_fan_speed', deviceIdentity: 'a'.repeat(64) };
 
 test('bridge publishes read-only recovery snapshots, source changes and availability without retention', () => {
   const { snapshot, command } = dehumidifierAutomations(options);
   assert.equal(snapshot.id, `${options.id}_state`);
   assert.equal(command.id, `${options.id}_command`);
-  assert.deepEqual(snapshot.triggers[0].entity_id, [options.humidifierEntity, options.fanEntity, options.humidityEntity]);
+  assert.deepEqual(snapshot.triggers[0].entity_id, [options.humidifierEntity, options.fanSpeedEntity]);
   assert.deepEqual(snapshot.triggers.find(trigger => trigger.id === 'periodic'), { trigger: 'time_pattern', seconds: '/30', id: 'periodic' });
   assert.deepEqual(snapshot.triggers.find(trigger => trigger.id === 'query'), { trigger: 'mqtt', topic: `${options.prefix}/get`, payload: '{}', qos: 1, id: 'query' });
   assert.equal(snapshot.triggers.find(trigger => trigger.id === 'reconnect').topic, 'homeassistant/status');
@@ -28,6 +28,7 @@ test('bridge publishes read-only recovery snapshots, source changes and availabi
   assert.equal(command.actions[2].data.topic, `${options.prefix}/get`);
   assert.equal(command.actions[2].data.payload, '{}');
   assert(!dehumidifierSnapshotTemplate.includes('now()'), 'Queries cannot manufacture observation clocks');
+  assert(!dehumidifierSnapshotTemplate.includes('last_reported'), 'HA optimistic changes and partial updates cannot manufacture observations');
   assert(!JSON.stringify(snapshot).includes('update_entity'), 'Status queries cannot trigger a device operation');
 });
 
@@ -42,10 +43,10 @@ test('bridge offers only verified DESD8LW settings and maps commands to native e
   assert.equal(choices.length, 3);
   assert.match(choices[0].sequence[0].action, /humidifier\.turn_on/);
   assert.match(choices[0].sequence[0].action, /humidifier\.turn_off/);
-  assert.equal(choices[1].sequence[0].action, 'fan.set_percentage');
+  assert.equal(choices[1].sequence[0].action, 'select.select_option');
   assert.equal(choices[2].sequence[0].action, 'humidifier.set_humidity');
   const serialized = JSON.stringify(command);
-  for (const unsupported of ['humidifier.set_mode', 'fan.oscillate', 'fan.turn_on', 'switch.turn_off', 'toggle', 'fanSpeed":"auto'])
+  for (const unsupported of ['humidifier.set_mode', 'fan.oscillate', 'fan.turn_on', 'fan.set_percentage', 'switch.turn_off', 'toggle', 'fanSpeed":"auto'])
     assert(!serialized.includes(unsupported));
 });
 
@@ -54,8 +55,8 @@ test('bridge rejects unsafe IDs, topics and incompatible entity domains', () => 
     { id: '' }, { id: 'a'.repeat(91) }, { label: '' }, { label: ' '.repeat(4) },
     { prefix: 'stmq/garage/+' }, { prefix: 'stmq/garage/example/#' }, { prefix: 'example/outside' },
     { humidifierEntity: 'climate.example' }, { humidifierEntity: "humidifier.example'" },
-    { fanEntity: 'switch.example' }, { fanEntity: 'fan.example\n' }, { humidityEntity: 'sensor.example/+' },
-    { humidityEntity: 'binary_sensor.example' },
+    { fanSpeedEntity: 'switch.example' }, { fanSpeedEntity: 'select.example\n' }, { fanSpeedEntity: 'select.example/+' },
+    { fanEntity: 'fan.example' }, { humidityEntity: 'sensor.example' },
     { deviceIdentity: undefined }, { deviceIdentity: 'private-device-id' }, { deviceIdentity: 'g'.repeat(64) },
     { deviceIdentity: 'a'.repeat(63) }, { deviceIdentity: 'a'.repeat(65) },
   ]) assert.throws(() => dehumidifierAutomations({ ...options, ...input }));
@@ -86,7 +87,7 @@ for case in data['cases']:
     env = ImmutableSandboxedEnvironment(undefined=StrictUndefined)
     env.filters.update(to_json=json.dumps, bitwise_and=lambda value, mask: int(value) & mask)
     states = States({key: SimpleNamespace(state=source['state'], attributes=source['attributes'], last_reported=source['last_reported']) for key, source in case['states'].items()})
-    env.globals.update(states=states, as_timestamp=as_timestamp, now=lambda: datetime.fromisoformat(case['now'].replace('Z', '+00:00')))
+    env.globals.update(states=states, device_id=lambda entity: case['devices'].get(entity), as_timestamp=as_timestamp, now=lambda: datetime.fromisoformat(case['now'].replace('Z', '+00:00')))
     rendered = env.from_string(data['template']).render(**case['variables']).strip()
     try: result.append(ast.literal_eval(rendered))
     except (SyntaxError, ValueError): result.append(rendered)
@@ -98,12 +99,14 @@ const stamp = offset => new Date(now + offset).toISOString();
 function fixture(change = {}) {
   const base = {
     now: stamp(0),
+    devices: { [options.humidifierEntity]: 'synthetic-appliance', [options.fanSpeedEntity]: 'synthetic-appliance' },
     states: {
-      [options.humidifierEntity]: { state: 'on', last_reported: stamp(-1000), attributes: { min_humidity: 30, max_humidity: 80, humidity: 55 } },
-      [options.fanEntity]: { state: 'on', last_reported: stamp(-2000), attributes: { supported_features: 49, percentage_step: 100 / 3, percentage: 66 } },
-      [options.humidityEntity]: { state: '53', last_reported: stamp(-3000), attributes: { unit_of_measurement: '%' } },
+      [options.humidifierEntity]: { state: 'on', last_reported: stamp(0), attributes: { min_humidity: 30, max_humidity: 80, humidity: 55,
+        local_observations: { identity: options.deviceIdentity, '1': { value: true, timestamp: now - 1000 },
+          '2': { value: 55, timestamp: now - 4000 }, '4': { value: 'mid', timestamp: now - 2000 }, '6': { value: 53, timestamp: now - 3000 } } } },
+      [options.fanSpeedEntity]: { state: 'medium', last_reported: stamp(0), attributes: { options: ['low', 'medium', 'high'] } },
     },
-    variables: { humidifier_entity: options.humidifierEntity, fan_entity: options.fanEntity, humidity_entity: options.humidityEntity, device_identity: options.deviceIdentity,
+    variables: { humidifier_entity: options.humidifierEntity, fan_speed_entity: options.fanSpeedEntity, device_identity: options.deviceIdentity,
       trigger: { platform: 'mqtt', payload_json: { identity: options.deviceIdentity, power: 'off', requestedAt: now - 100, expiresAt: now + 9900 } },
       this: { attributes: { last_triggered: stamp(-10000) } } },
   };
@@ -111,7 +114,12 @@ function fixture(change = {}) {
     if (value === null) delete base.states[entity];
     else base.states[entity] = { ...base.states[entity], ...value, attributes: { ...base.states[entity]?.attributes, ...value.attributes } };
   }
+  if (Object.hasOwn(change, 'observations')) {
+    const attributes = base.states[options.humidifierEntity].attributes;
+    attributes.local_observations = change.observations === null ? null : { ...attributes.local_observations, ...change.observations };
+  }
   if (change.variables) Object.assign(base.variables, change.variables);
+  if (change.devices) Object.assign(base.devices, change.devices);
   if (change.now) base.now = change.now;
   return base;
 }
@@ -124,7 +132,7 @@ const payload = (value, extra = {}) => ({ variables: { trigger: { platform: 'mqt
 
 test('rendered snapshots preserve independent source clocks across queries and other field updates', jinja, () => {
   const [initial, repeated, fanChanged] = render(dehumidifierSnapshotTemplate, [{}, { now: stamp(60000) },
-    { states: { [options.fanEntity]: { last_reported: stamp(1000), attributes: { percentage: 100 } } } }]);
+    { observations: { '4': { value: 'high', timestamp: now + 1000 } } }]);
   assert.equal(initial.power, 'on');
   assert.equal(initial.identity, options.deviceIdentity);
   assert.equal(initial.fanSpeed, 'medium');
@@ -132,7 +140,7 @@ test('rendered snapshots preserve independent source clocks across queries and o
   assert.equal(initial.humidity, 53);
   assert.equal(initial.temperature, null);
   assert.equal(initial.timestamp, now - 1000);
-  assert.deepEqual(initial.fieldTimestamps, { power: now - 1000, targetHumidity: now - 1000,
+  assert.deepEqual(initial.fieldTimestamps, { power: now - 1000, targetHumidity: now - 4000,
     fanSpeed: now - 2000, humidity: now - 3000, temperature: null });
   assert.deepEqual(repeated, initial, 'Periodic publication and get requests carry the original observations');
   assert.equal(fanChanged.timestamp, now + 1000);
@@ -146,13 +154,27 @@ test('rendered snapshots preserve independent source clocks across queries and o
   assert(!JSON.stringify(initial).includes('example_appliance'), 'Private entity IDs stay out of MQTT payloads');
 });
 
+test('optimistic HA states and unrelated HA timestamps never confirm requested settings or freshen measurements', jinja, () => {
+  const [initial, optimistic] = render(dehumidifierSnapshotTemplate, [{}, {
+    now: stamp(60000), states: {
+      [options.humidifierEntity]: { state: 'off', last_reported: stamp(60000), attributes: { humidity: 80, current_humidity: 90 } },
+      [options.fanSpeedEntity]: { state: 'high', last_reported: stamp(60000) },
+    },
+  }]);
+  assert.deepEqual(optimistic, initial);
+  assert.equal(optimistic.power, 'on');
+  assert.equal(optimistic.targetHumidity, 55);
+  assert.equal(optimistic.fanSpeed, 'medium');
+});
+
 test('rendered snapshots leave missing, restored and unsupported evidence unknown', jinja, () => {
   const [missing, restored, invalid, changedContract, validZero] = render(dehumidifierSnapshotTemplate, [
-    { states: Object.fromEntries([options.humidifierEntity, options.fanEntity, options.humidityEntity].map(id => [id, null])) },
-    { states: Object.fromEntries([options.humidifierEntity, options.fanEntity, options.humidityEntity].map(id => [id, { attributes: { restored: true } }])) },
-    { states: { [options.humidifierEntity]: { state: 'unavailable' }, [options.fanEntity]: { attributes: { percentage: 45 } }, [options.humidityEntity]: { state: 'nan' } } },
-    { states: { [options.humidifierEntity]: { attributes: { min_humidity: 35 } }, [options.fanEntity]: { attributes: { supported_features: 48 } } } },
-    { states: { [options.humidityEntity]: { state: '0' }, [options.humidifierEntity]: { state: 'off', attributes: { humidity: 30 } }, [options.fanEntity]: { attributes: { percentage: 33 } } } },
+    { states: Object.fromEntries([options.humidifierEntity, options.fanSpeedEntity].map(id => [id, null])) },
+    { states: Object.fromEntries([options.humidifierEntity, options.fanSpeedEntity].map(id => [id, { attributes: { restored: true } }])) },
+    { states: { [options.humidifierEntity]: { state: 'unavailable' } } },
+    { states: { [options.humidifierEntity]: { attributes: { min_humidity: 35 } }, [options.fanSpeedEntity]: { attributes: { options: ['low', 'high'] } } } },
+    { observations: { '1': { value: false, timestamp: now }, '2': { value: 30, timestamp: now },
+      '4': { value: 'low', timestamp: now }, '6': { value: 0, timestamp: now } } },
   ]);
   for (const value of [missing, restored, invalid]) {
     assert.equal(value.available, false);
@@ -161,12 +183,25 @@ test('rendered snapshots leave missing, restored and unsupported evidence unknow
   assert.equal(missing.timestamp, null);
   assert.deepEqual(missing.fieldTimestamps, { power: null, targetHumidity: null, fanSpeed: null, humidity: null, temperature: null });
   assert.deepEqual(changedContract.capabilities, { power: ['off', 'on'] });
-  assert.equal(changedContract.fanSpeed, null);
+  assert.equal(changedContract.fanSpeed, 'medium', 'A known raw speed remains a reading even without a native speed control');
   assert.equal(changedContract.targetHumidity, null);
   assert.equal(validZero.humidity, 0);
   assert.equal(validZero.power, 'off');
   assert.equal(validZero.fanSpeed, 'low');
   assert.equal(validZero.targetHumidity, 30);
+});
+
+test('missing observation adapter, different actual device identity and malformed evidence never become observations', jinja, () => {
+  const snapshots = render(dehumidifierSnapshotTemplate, [{ observations: null },
+    { observations: { identity: null } }, { observations: { identity: 'b'.repeat(64) } },
+    { observations: { '1': { value: false, timestamp: 'now' }, '2': { value: 55, timestamp: false },
+      '4': { value: 'low', timestamp: -1 }, '6': { value: 50, timestamp: now + 0.5 } } },
+  ]);
+  for (const result of snapshots) {
+    assert.equal(result.available, false);
+    assert.equal(result.timestamp, null);
+    for (const field of ['power', 'targetHumidity', 'fanSpeed', 'humidity', 'temperature']) assert.equal(result[field], null);
+  }
 });
 
 test('rendered command gate accepts exactly one verified setting within its live deadline', jinja, () => {
@@ -175,7 +210,7 @@ test('rendered command gate accepts exactly one verified setting within its live
   assert.deepEqual(render(dehumidifierCommandTemplate, cases.map(([key, value]) => payload({ [key]: value }))), cases.map(() => true));
   const { command } = dehumidifierAutomations(options);
   const fanAction = command.actions[1].choose[1].sequence[0];
-  assert.deepEqual(render(fanAction.data.percentage, ['low', 'medium', 'high'].map(value => payload({ fanSpeed: value }))), [33, 66, 100]);
+  assert.deepEqual(render(fanAction.data.option, ['low', 'medium', 'high'].map(value => payload({ fanSpeed: value }))), ['low', 'medium', 'high']);
 });
 
 test('a later OFF can run independently while an earlier service is pending; delayed ON cannot replay', jinja, () => {
@@ -213,15 +248,70 @@ test('rendered commands require current nonrestored source state and the request
     { states: { [options.humidifierEntity]: null } },
     { states: { [options.humidifierEntity]: { state: 'unknown' } } },
     { states: { [options.humidifierEntity]: { attributes: { restored: true } } } },
-    { states: { [options.humidifierEntity]: { last_reported: stamp(-180001) } } },
-    { states: { [options.humidifierEntity]: { last_reported: stamp(1) } } },
+    { observations: null }, { observations: { identity: 'b'.repeat(64) } },
+    { observations: { '1': { value: true, timestamp: now - 180000 } } },
+    { observations: { '1': { value: true, timestamp: now + 1 } } },
     ...[
-      { state: 'unavailable' }, { attributes: { restored: true } }, { attributes: { supported_features: 48 } },
-      { attributes: { percentage_step: 25 } }, { last_reported: stamp(-180001) },
-    ].map(value => ({ ...payload({ fanSpeed: 'high' }), states: { [options.fanEntity]: value } })),
+      { state: 'unavailable' }, { attributes: { restored: true } }, { attributes: { options: ['low', 'high'] } },
+      { attributes: { options: ['low', 'medium', 'high', 'auto'] } },
+    ].map(value => ({ ...payload({ fanSpeed: 'high' }), states: { [options.fanSpeedEntity]: value } })),
     { ...payload({ targetHumidity: 55 }), states: { [options.humidifierEntity]: { attributes: { max_humidity: 75 } } } },
   ];
   assert.deepEqual(render(dehumidifierCommandTemplate, cases), cases.map(() => false));
-  const offWithoutHumidity = render(dehumidifierCommandTemplate, [{ states: { [options.humidityEntity]: { state: 'unavailable' } } }]);
-  assert.deepEqual(offWithoutHumidity, [true], 'A missing humidity sensor must not block an explicit native OFF command');
+  const offWithoutHumidityOrFan = render(dehumidifierCommandTemplate, [{ observations: { '4': null, '6': null },
+    states: { [options.fanSpeedEntity]: { state: 'unavailable' } } }]);
+  assert.deepEqual(offWithoutHumidityOrFan, [true], 'Missing humidity or fan evidence must not block an explicit native OFF command');
+});
+
+test('supported native settings can overwrite old or unknown settings with fresh actual device power feedback', jinja, () => {
+  const cases = [
+    { ...payload({ fanSpeed: 'high' }), observations: { '4': { value: 'mid', timestamp: now - 180000 } } },
+    { ...payload({ targetHumidity: 55 }), observations: { '2': { value: 60, timestamp: now - 180000 } } },
+    { ...payload({ fanSpeed: 'high' }), observations: { '4': null } },
+    { ...payload({ targetHumidity: 55 }), observations: { '2': null } },
+  ];
+  assert.deepEqual(render(dehumidifierCommandTemplate, cases), cases.map(() => true));
+  const snapshots = render(dehumidifierSnapshotTemplate, cases);
+  assert.equal(snapshots[0].fanSpeed, 'medium', 'Permission to write never changes the last observed value');
+  assert.equal(snapshots[0].fieldTimestamps.fanSpeed, now - 180000);
+  assert.equal(snapshots[1].targetHumidity, 60);
+  assert.equal(snapshots[1].fieldTimestamps.targetHumidity, now - 180000);
+  assert.equal(snapshots[2].fanSpeed, null);
+  assert.equal(snapshots[3].targetHumidity, null);
+});
+
+test('a native fan-speed control must belong to the observed physical appliance', jinja, () => {
+  const cases = [
+    { devices: { [options.fanSpeedEntity]: 'synthetic-other-appliance' } },
+    { devices: { [options.fanSpeedEntity]: null } },
+    { devices: { [options.humidifierEntity]: null, [options.fanSpeedEntity]: null } },
+  ];
+  for (const snapshot of render(dehumidifierSnapshotTemplate, cases)) {
+    assert.equal(snapshot.available, true, 'A detached speed control does not hide independent power evidence');
+    assert.equal(snapshot.fanSpeed, 'medium');
+    assert.equal(Object.hasOwn(snapshot.capabilities, 'fanSpeed'), false);
+    assert(!JSON.stringify(snapshot).includes('synthetic-appliance'), 'The internal registry ID is not published');
+  }
+  assert.deepEqual(render(dehumidifierCommandTemplate, cases.map(value => ({ ...payload({ fanSpeed: 'high' }), ...value }))), [false, false, false]);
+  assert.deepEqual(render(dehumidifierCommandTemplate, cases), [true, true, true], 'Native OFF remains independent of the optional select association');
+});
+
+test('temporary select outages remove only speed control without refreshing observed values or clocks', jinja, () => {
+  const cases = [{}, { states: { [options.fanSpeedEntity]: { state: 'unavailable' } } },
+    { states: { [options.fanSpeedEntity]: { attributes: { restored: true } } } }, {}];
+  const [initial, unavailable, restored, recovered] = render(dehumidifierSnapshotTemplate, cases);
+  for (const snapshot of [unavailable, restored]) {
+    assert.equal(snapshot.available, true);
+    assert.equal(Object.hasOwn(snapshot.capabilities, 'fanSpeed'), false);
+    assert.deepEqual(snapshot.capabilities.power, ['off', 'on']);
+    assert.deepEqual({ ...snapshot, capabilities: initial.capabilities }, initial,
+      'Native readiness changes capabilities without pretending a fresh device observation');
+  }
+  assert.deepEqual(recovered, initial);
+  const malformed = [null, 'low,medium,high', { low: 1, medium: 2, high: 3 },
+    ['low', 1, 'high'], ['low', 'low', 'high'], ['low', 'medium', 'high', 'auto']]
+    .map(optionsValue => ({ states: { [options.fanSpeedEntity]: { attributes: { options: optionsValue } } } }));
+  for (const snapshot of render(dehumidifierSnapshotTemplate, malformed))
+    assert.equal(Object.hasOwn(snapshot.capabilities, 'fanSpeed'), false);
+  assert.deepEqual(render(dehumidifierCommandTemplate, malformed.map(value => ({ ...payload({ fanSpeed: 'high' }), ...value }))), malformed.map(() => false));
 });

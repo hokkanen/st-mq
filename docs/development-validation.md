@@ -114,6 +114,22 @@ advertised dehumidifier settings, automatic power thresholds and saving,
 matching-reading recording states, and read-only control restrictions in both
 themes at 320, 390 and 1440 px. Commands terminate in synthetic browser fixtures.
 
+The Tuya Local bridge tests render synthetic HA templates and verify independent
+native report clocks, identity, supported controls and request expiry. The pinned
+observation-adapter tests execute actual patched upstream methods and exercise
+installer rejection, private backups and rollback. Profile encoding can also be
+checked against an unpacked public Tuya Local 2026.9.2 source release:
+
+```sh
+STMQ_TUYA_LOCAL_SOURCE=/path/to/tuya-local-2026.9.2 \
+  node --test test/tuya-local-desd8lw-profile.test.js
+```
+
+This extra parser check requires Python PyYAML and otherwise reports an explicit
+skip; it never opens a device connection. Ordinary device and UI tests use
+synthetic observations. Live commissioning results belong in the task record,
+with private IDs and readings excluded from logs and screenshots.
+
 The fullscreen suite checks the page controls, chart entry/exit restoration,
 external fullscreen changes and fallback behavior with synthetic data.
 

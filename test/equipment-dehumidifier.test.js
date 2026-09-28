@@ -32,10 +32,10 @@ function fixture(t, options = {}) {
     command: (setting, value) => capture.setDehumidifier({ deviceId: device.id, setting, value }) };
 }
 
-test('dehumidifier configuration requires dedicated MQTT controls and one recorded running state', () => {
+test('dehumidifier configuration requires dedicated MQTT controls and one recorded binary power state', () => {
   const configured = equipmentConfiguration({ devices: [device] }).devices[0];
-  assert.equal(configured.stateSignal, 'caravan_dehumidifier_running_state');
-  assert.deepEqual(configured.ownedSignals, ['caravan_dehumidifier_running_state']);
+  assert.equal(configured.stateSignal, 'caravan_dehumidifier_active');
+  assert.deepEqual(configured.ownedSignals, ['caravan_dehumidifier_active']);
   for (const invalid of [{ ...device, kind: 'switch' }, { ...device, connection: 'shelly:invented/device' },
     { ...device, mqtt: { ...device.mqtt, timestamp_path: null } },
     { ...device, mqtt: { ...device.mqtt, availability_topic: null } },
@@ -59,20 +59,25 @@ test('future equipment and retained reports cannot enable controls or invent his
   assert.deepEqual(f.publications, []);
 });
 
-test('only the off/fan enum is recorded; settings remain live-only and snapshots never merge', t => {
+test('only binary power is recorded; settings remain live-only and snapshots never merge', t => {
   const f = fixture(t); f.online(); f.report();
   for (const fanSpeed of ['low', 'medium', 'high', 'auto']) {
     f.advance(1000); f.report({ power: 'on', fanSpeed, mode: 'fan_only', targetHumidity: 65, swing: 'oscillate' });
   }
-  assert.deepEqual(f.observations.map(row => row.value), [0, 1, 2, 3, 4]);
-  assert.deepEqual([...new Set(f.observations.map(row => row.signal))], ['caravan_dehumidifier_running_state']);
-  assert.deepEqual(f.observations.at(-1).raw.stateLabels, { 0: 'Off', 1: 'Low', 2: 'Medium', 3: 'High', 4: 'Auto' });
+  assert.deepEqual(f.observations.map(row => row.value), [0, 1, 1, 1, 1]);
+  assert.deepEqual([...new Set(f.observations.map(row => row.signal))], ['caravan_dehumidifier_active']);
+  assert.deepEqual(f.observations.at(-1).raw.stateLabels, { 0: 'Off', 1: 'On' });
   assert.equal(f.observations.at(-1).raw.reportIntervalMs, 120_000);
   assert.equal(f.observations.at(-1).raw.reportGraceMs, 0);
   f.advance(1000); f.rawReport({ power: 'on' });
-  assert.equal(f.observations.at(-1).value, null); assert.equal(f.status().available, false);
+  assert.equal(f.observations.at(-1).value, 1); assert.equal(f.status().available, true);
   assert.equal(f.status().dehumidifier.state.fanSpeed, null);
-  assert.equal(f.status().dehumidifier.runningState, null);
+  assert.equal(f.status().dehumidifier.runningState, 'on');
+  for (const row of f.observations) {
+    for (const field of ['fanSpeed', 'mode', 'targetHumidity', 'swing', 'temperature', 'humidity'])
+      assert.equal(Object.hasOwn(row.raw, field), false, `${field} is live-only`);
+    assert.deepEqual(Object.keys(row.raw.fieldTimestamps), ['power']);
+  }
   f.advance(1000); f.rawReport({ power: 'off' });
   assert.equal(f.observations.at(-1).value, 0); assert.equal(f.status().dehumidifier.runningState, 'off');
 });
@@ -81,7 +86,7 @@ test('expired, invalid, retained and out-of-order source reports never become cu
   const f = fixture(t); f.online(); f.report(); f.advance(1000); f.report({ power: 'on', fanSpeed: 'high' });
   const accepted = f.observations.length;
   f.report({ power: 'off' }, INITIAL); f.report({ power: 'off' }, INITIAL + 1000, true);
-  assert.equal(f.observations.length, accepted); assert.equal(f.status().dehumidifier.runningState, 'high');
+  assert.equal(f.observations.length, accepted); assert.equal(f.status().dehumidifier.runningState, 'on');
   f.capture.receive('invented/dehumidifier/state', JSON.stringify({ ...defaults }));
   assert.equal(f.status().available, false);
   f.report({ power: 'off' }, INITIAL);
@@ -162,7 +167,7 @@ test('history waits for confirmed subscriptions and live availability in either 
   f.advance(1000); f.report({ power: 'on', fanSpeed: 'high' });
   assert.equal(f.observations.length, unavailable, 'Late telemetry cannot record known state while explicitly offline');
   assert.equal(f.status().dehumidifier.available, false);
-  f.online(); assert.equal(f.observations.at(-1).value, 3);
+  f.online(); assert.equal(f.observations.at(-1).value, 1);
 });
 
 test('a conflicting snapshot at an unchanged source time cannot mutate state or confirm a command', async t => {
@@ -223,9 +228,23 @@ test('a later fan or humidity report cannot extend an old power observation dead
   f.advance(110_000); f.report({ power: 'on', humidity: 50,
     fieldTimestamps: { power: INITIAL, fanSpeed: INITIAL + 110_000, humidity: INITIAL + 110_000 } });
   assert.equal(f.status().available, true);
-  assert.equal(f.observations.at(-1).raw.reportIntervalMs, 10_000);
+  assert.equal(f.observations.at(-1).sourceTime, INITIAL);
+  assert.equal(f.observations.at(-1).raw.reportIntervalMs, 120_000);
   assert.equal(f.observations.at(-1).raw.fieldTimestamps.power, INITIAL);
   f.advance(10_000); f.capture.tick();
   assert.equal(f.status().available, false);
   await assert.rejects(f.command('power', 'off'), /unavailable/);
+});
+
+
+test('native capability readiness can change without refreshing device observation clocks', async t => {
+  const f = fixture(t); f.online(); f.report({ capabilities: { power: ['off', 'on'], fanSpeed: ['low', 'medium', 'high'] } });
+  f.advance(1000);
+  f.report({ capabilities: { power: ['off', 'on'] } }, INITIAL);
+  assert.deepEqual(f.status().dehumidifier.capabilities, { power: ['off', 'on'] });
+  assert.equal(f.status().readings.caravan_dehumidifier_active.observedAt, INITIAL);
+  await assert.rejects(f.command('fanSpeed', 'high'), /advertised/);
+  f.report({ capabilities: { power: ['off', 'on'], fanSpeed: ['low', 'medium', 'high'] } }, INITIAL);
+  await f.command('fanSpeed', 'high');
+  assert.equal(f.status().dehumidifier.operation.status, 'published');
 });

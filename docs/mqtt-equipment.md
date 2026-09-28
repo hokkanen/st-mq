@@ -361,8 +361,9 @@ and no historical consumption is reconstructed from an unknown association.
 
 The chart includes the home/garage protection probes through **All home
 temperatures**, door states and Caravan interval energy. The separate **Caravan**
-group adds its air temperature, humidity and combined dehumidifier running state
-(Off, Low, Medium, High or Auto). Unknown state remains a gap. These caravan
+group adds its air temperature, humidity and dehumidifier power (Off or On).
+Dehumidifier fan speed, settings and native sensor values stay live-only.
+Unknown state remains a gap. These caravan
 measurements are excluded from house and garage learning. Actual tariff relay feedback is recorded on changes, separately from requested
 heating control. All four floor override outputs likewise retain exact changes. The
 [garage adapter](garage-adapter.md) records interpreted indoor temperature and

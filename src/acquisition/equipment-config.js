@@ -147,13 +147,15 @@ export function equipmentConfiguration(input = {}) {
     if (!Array.isArray(row.readings ?? []) || row.readings?.length > 32) throw new Error('Equipment readings must be an array of at most 32 mappings');
     const readings = (row.readings ?? []).map(value => reading(value, id));
     if (kind === 'dehumidifier' && readings.length)
-      throw new Error('Dehumidifiers record their combined running state only; settings remain live-only');
+      throw new Error('Dehumidifiers record their power state only; settings remain live-only');
+    if (kind === 'dehumidifier' && row.signal != null && row.signal !== `${id}_active`)
+      throw new Error('Dehumidifier power must use its current <device_id>_active signal');
     if (readings.some(value => !value.record && (protocol !== 'mqtt' || value.key === 'energy_counter')))
       throw new Error('Live-only reading mappings require MQTT and cannot disable cumulative energy accounting');
     if (protocol === 'mqtt' && readings.some(value => value.component) || protocol === 'shelly' && readings.some(value => value.topic || !value.component))
       throw new Error('Equipment mapping must match its selected connection protocol');
     const mainSignal = signal(row.signal || undefined, kind === 'temperature' ? id === 'garage' ? 'garage_temperature' : `${id}_temperature`
-      : kind === 'dehumidifier' ? `${id}_running_state` : kind === 'power' ? `${id}_power` : kind === 'door' ? `${id}_open` : id === 'garage' ? 'garage_relay_active' : `${id}_active`);
+      : kind === 'dehumidifier' ? `${id}_active` : kind === 'power' ? `${id}_power` : kind === 'door' ? `${id}_open` : id === 'garage' ? 'garage_relay_active' : `${id}_active`);
     const stateSignal = ['temperature', 'power'].includes(kind) ? null : mainSignal;
     const powerSignal = kind === 'power' ? mainSignal : null;
     const temperatureSignal = kind === 'power' ? null : kind === 'temperature' ? mainSignal : id === 'garage' ? 'garage_temperature' : `${id}_temperature`;

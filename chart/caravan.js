@@ -190,7 +190,8 @@ export function createCaravanContents({ document, actions, blocked, readingsFor,
     // Device health describes the readings. The nested availability flag also
     // includes command authority, so a replica can still show healthy reports.
     const connection = summaryFor(appliance), live = appliance.available === true;
-    const running = device.runningState === 'off' ? 'Off' : device.runningState ? `On · ${device.runningState} fan` : 'State unknown';
+    const fanLabel = dehumidifierValueAllowed('fanSpeed', reported.fanSpeed) ? ` · ${reported.fanSpeed} fan` : '';
+    const running = device.runningState === 'off' ? 'Off' : device.runningState === 'on' ? `On${fanLabel}` : 'Power unknown';
     state.textContent = live ? `${running} · ${connection.recent}`
       : device.powerOffAvailable && reported.power === 'on' ? `On · Fan setting unavailable · ${connection.recent}`
       : Number.isFinite(device.observedAt ?? appliance.observedAt ?? appliance.lastReportAt)

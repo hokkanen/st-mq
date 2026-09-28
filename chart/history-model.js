@@ -2,7 +2,7 @@ import { CHART_VIEW_BY_KEY } from '../src/domain/chart-views.js';
 import { stackPowerSeries } from './power-stack.js';
 import { isInterpolatedTemperature } from '../src/domain/chart-temperatures.js';
 import { temperatureIntervalKnots } from './temperature-curves.js';
-import { HISTORY_AXIS_BY_KEY, CARAVAN_RUNNING_STATES, GARAGE_INPUT_INFO, GARAGE_COEFFICIENT_INFO, GARAGE_OUTCOME_INFO, SIGNAL_INFO, MODEL_INPUT_INFO, MODEL_COEFFICIENT_INFO, PHASE_ENERGY_SIGNALS, COUNTER_SIGNALS } from '../src/domain/history-series.js';
+import { HISTORY_AXIS_BY_KEY, CARAVAN_POWER_STATES, GARAGE_INPUT_INFO, GARAGE_COEFFICIENT_INFO, GARAGE_OUTCOME_INFO, SIGNAL_INFO, MODEL_INPUT_INFO, MODEL_COEFFICIENT_INFO, PHASE_ENERGY_SIGNALS, COUNTER_SIGNALS } from '../src/domain/history-series.js';
 // Calendar navigation always refers to the house, regardless of browser timezone.
 const calendar = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Helsinki', year: 'numeric', month: '2-digit', day: '2-digit' });
 const hourInFinland = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', hour: '2-digit', hourCycle: 'h23' });
@@ -84,7 +84,7 @@ const seriesInfo = {
   caravan_power: ['Caravan power', 'kW · interval average from recorded meter energy', 'property'],
   caravan_temperature: ['Caravan air', '°C', 'caravan'],
   caravan_humidity: ['Caravan relative humidity', '%', 'outdoor'],
-  caravan_dehumidifier_running_state: ['Caravan dehumidifier', 'state · reported running state', 'garage'],
+  caravan_dehumidifier_active: ['Caravan dehumidifier', 'state · reported power', 'garage'],
   ev2_energy: ['Charger 2 total energy', 'kWh · physical Shelly EVSE meter difference over the recorded interval', 'ev2', 'interval-energy'],
   ev1_session_energy_check: ['Charger 1', 'kWh · finalized session electricity reading', 'ev', 'session'],
   shelly_session_energy_check: ['Charger 2', 'kWh · finalized physical charging session electricity', 'ev2', 'session'],
@@ -197,7 +197,7 @@ export function firewoodPointDetail(key, point = {}) {
 }
 
 export function historyStateLabel(key, value) {
-  if (key === 'caravan_dehumidifier_running_state') return CARAVAN_RUNNING_STATES[value] ?? 'Unknown';
+  if (key === 'caravan_dehumidifier_active') return CARAVAN_POWER_STATES[value] ?? 'Unknown';
   if (/^garage_door[12]_open$/.test(key)) return value === 1 ? 'Open' : value === 0 ? 'Closed' : `Unknown (${value})`;
   if (key === 'operating_mode') return operationModes[value] ?? `Unknown mode (${value})`;
   if (['controller_phase', 'model_controller_phase'].includes(key))
@@ -235,7 +235,7 @@ export function sessionPointDetail(point = {}) {
 const heldReadingKeys = ['property_power', 'charger_power', 'charger2_power',
   ...['property', 'ev1', 'ev2'].flatMap(prefix => [1, 2, 3].map(phase => `${prefix}_current_l${phase}`)),
   'heating_integral', 'indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature', 'garage_temperature_2',
-  'garage_native_indoor_temperature', 'outdoor_temperature', 'caravan_temperature', 'caravan_humidity', 'caravan_dehumidifier_running_state'];
+  'garage_native_indoor_temperature', 'outdoor_temperature', 'caravan_temperature', 'caravan_humidity', 'caravan_dehumidifier_active'];
 
 /** Advance display tails without changing source timestamps or cached history. */
 export function historySeriesAt(payload, now = payload.now) {

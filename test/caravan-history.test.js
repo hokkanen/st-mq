@@ -7,7 +7,7 @@ import { createEquipmentCapture } from '../src/acquisition/equipment.js';
 import { getChartData } from '../src/app/chart-data.js';
 import { getDatabaseOverview } from '../src/app/database-overview.js';
 import { isRecordedDataset } from '../src/storage/recorded-datasets.js';
-import { CARAVAN_RUNNING_STATES, HISTORY_AXES, SIGNAL_INFO } from '../src/domain/history-series.js';
+import { CARAVAN_POWER_STATES, HISTORY_AXES, SIGNAL_INFO } from '../src/domain/history-series.js';
 import { INDOOR_SIGNALS, GARAGE_TEMPERATURE_SIGNALS, indoorWeights } from '../src/domain/indoor-sensors.js';
 import { historyDatasets, historySeriesAt, historyValueLabel } from '../chart/history-model.js';
 import { historyTooltipLabel } from '../chart/history-chart.js';
@@ -15,10 +15,11 @@ import { explorerSelection } from '../chart/series-explorer.js';
 import { recordingRows } from '../chart/recording.js';
 
 const start = Date.parse('2026-09-14T10:00:00Z');
-const stateSignal = 'caravan_dehumidifier_running_state';
+const stateSignal = 'caravan_dehumidifier_active';
 const signals = ['caravan_temperature', 'caravan_humidity', stateSignal];
 const liveSignals = ['caravan_power', 'caravan_current', 'caravan_active', 'blu_ht_battery', 'blu_ht_rssi',
-  'caravan_dehumidifier_power', 'caravan_dehumidifier_fan_speed', 'caravan_dehumidifier_target_humidity'];
+  'caravan_dehumidifier_power', 'caravan_dehumidifier_fan_speed', 'caravan_dehumidifier_target_humidity',
+  'caravan_dehumidifier_temperature', 'caravan_dehumidifier_humidity', 'caravan_dehumidifier_mode', 'caravan_dehumidifier_swing'];
 const report = (signal, value, at = start) => ({ source: 'mqtt-equipment',
   device: signal === stateSignal ? 'caravan_dehumidifier' : 'blu_ht', signal, value,
   unit: signal === stateSignal ? 'state' : signal === 'caravan_temperature' ? '°C' : '%',
@@ -42,7 +43,7 @@ test('caravan catalogue exists without manufacturing telemetry and never joins h
   assert.equal(store.db.prepare('SELECT COUNT(*) n FROM observations').get().n, 0);
 });
 
-test('only caravan air, interval energy and running state record; battery and live equipment values do not', t => {
+test('only caravan air, interval energy and appliance On/Off record; battery and other appliance values do not', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   const recorder = new Recorder(store, { clock: () => start });
   for (const signal of liveSignals) {
@@ -57,8 +58,27 @@ test('only caravan air, interval energy and running state record; battery and li
   const recording = recorder.status(start);
   assert.deepEqual(new Set([...recording.parameters, ...recording.exactParameters].map(row => row.signal)), new Set([...signals, 'caravan_energy']));
   const adaptive = getDatabaseOverview({ store, now: start }).groups.flatMap(group => group.items).find(row => row.id === 'adaptive-observations');
-  assert.equal(adaptive.count, 3, 'Running state has its separate exact-change dataset');
+  assert.equal(adaptive.count, 3, 'Appliance power has its separate exact-change dataset');
   assert.equal(store.db.prepare('SELECT COUNT(*) n FROM observations').get().n, 4);
+});
+
+test('persisted appliance power keeps only necessary identity and qualification lineage from live metadata', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  const recorder = new Recorder(store, { clock: () => start });
+  const lineage = { identity: 'a'.repeat(64), fieldTimestamps: { power: start }, readingsMatch: true, sensorDeviceId: 'blu_ht',
+    airObservedAt: start - 3000, humidityObservedAt: start - 2000, applianceHumidityObservedAt: start - 1000 };
+  const raw = { ...report(stateSignal, 1).raw, ...lineage, fieldTimestamps: { power: start, fanSpeed: start, humidity: start - 1000 },
+    fanSpeed: 'high', mode: 'auto', targetHumidity: 55, swing: 'fixed_90', temperature: 14, humidity: 63,
+    capabilities: { fanSpeed: ['low', 'high'] }, stateLabels: { 0: 'Off', 1: 'On' }, payload: 'appliance live payload' };
+  recorder.record({ ...report(stateSignal, 1), raw });
+  const persisted = store.observations().find(row => row.signal === stateSignal);
+  assert.equal(persisted.value, 1); assert.equal(persisted.unit, 'state');
+  assert.deepEqual(Object.fromEntries(Object.keys(lineage).map(key => [key, persisted.raw[key]])), lineage);
+  assert.deepEqual(Object.keys(persisted.raw).sort(), [...Object.keys(lineage), 'reportIntervalMs', 'reportGraceMs', 'recorder'].sort(),
+    'Live fan, sensor readings, settings and payloads never enter recorded power metadata');
+  recorder.record({ ...report('garage_door1_open', 1), device: 'door1', unit: 'state', raw });
+  const other = store.observations().find(row => row.signal === 'garage_door1_open');
+  assert(Object.keys(lineage).every(key => !Object.hasOwn(other.raw, key)), 'The metadata allowance applies only to Caravan appliance power');
 });
 
 test('caravan temperature and humidity use the same source deadline, with explicit gaps and recovery', t => {
@@ -78,19 +98,19 @@ test('caravan temperature and humidity use the same source deadline, with explic
   }
 });
 
-test('dehumidifier enum transitions, viewport edges and dense plots contain only recorded states or gaps', t => {
+test('dehumidifier On/Off transitions, viewport edges and dense plots contain only recorded states or gaps', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   const recorder = new Recorder(store, { clock: () => start });
-  const expected = [0, 4, 1, 3, 2];
+  const expected = [0, 1];
   for (let i = 0; i < 120; i++) recorder.record(report(stateSignal, expected[i % expected.length], start + i * 1000));
   recorder.record({ ...report(stateSignal, null, start + 120_000), quality: ['missing'] });
   const stored = store.db.prepare('SELECT value FROM observations WHERE signal=? ORDER BY source_time').all(stateSignal);
   assert.equal(stored.length, 121, 'Every transition survives recording');
-  assert.deepEqual(stored.slice(0, 5).map(row => row.value), expected);
+  assert.deepEqual(stored.slice(0, expected.length).map(row => row.value), expected);
   for (const options of [{ points: 100 }, { viewFrom: start + 500, viewTo: start + 10_500 }]) {
     const payload = chart(store, stateSignal, options), points = payload.series[stateSignal];
     assert(points.length > 0);
-    assert(points.every(point => point.y === null || Object.hasOwn(CARAVAN_RUNNING_STATES, point.y)));
+    assert(points.every(point => point.y === null || Object.hasOwn(CARAVAN_POWER_STATES, point.y)));
     assert(!points.some(point => point.interpolated === true));
     const dataset = historyDatasets(payload.series, { leftSignals: [stateSignal], rightSignals: [] }).find(dataset => dataset.key === stateSignal);
     assert.equal(dataset.stepped, true);
@@ -98,7 +118,7 @@ test('dehumidifier enum transitions, viewport edges and dense plots contain only
     if (options.viewFrom) assert.deepEqual(points.find(point => point.x === options.viewFrom)?.y, 0);
     else assert(points.some(point => point.x >= start + 120_000 && point.y === null));
   }
-  for (const [value, label] of Object.entries(CARAVAN_RUNNING_STATES)) {
+  for (const [value, label] of Object.entries(CARAVAN_POWER_STATES)) {
     assert.equal(historyValueLabel(stateSignal, Number(value), 'state'), label);
     const tooltip = historyTooltipLabel({ dataset: { key: stateSignal, label: 'Caravan dehumidifier', unit: 'state' },
       parsed: { x: start, y: Number(value) }, raw: { x: start, y: Number(value) } });
@@ -110,11 +130,14 @@ test('dehumidifier enum transitions, viewport edges and dense plots contain only
   assert.deepEqual(view.tracks, [stateSignal], 'Categorical readings use labelled activity rows, not a numeric value axis');
 });
 
-test('non-enum dehumidifier samples are gaps and never interpreted as fractional fan states', t => {
+test('nonbinary dehumidifier samples are gaps and the retired fan-state series has no current interpretation', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
-  for (const [i, value] of [0, 1.5, 5, 4].entries()) store.observation(report(stateSignal, value, start + i * 60_000));
+  for (const [i, value] of [0, 1.5, 2, 3, 4, 5, 1].entries()) store.observation(report(stateSignal, value, start + i * 60_000));
   const points = chart(store, stateSignal).series[stateSignal];
-  assert(!points.some(point => point.y === 1.5 || point.y === 5));
+  assert(points.every(point => point.y === null || point.y === 0 || point.y === 1));
+  assert.equal(SIGNAL_INFO.caravan_dehumidifier_running_state, undefined);
+  assert.equal(isRecordedDataset(report('caravan_dehumidifier_running_state', 1)), false);
+  assert.throws(() => explorerSelection('caravan_dehumidifier_running_state'), /supported/);
 });
 
 test('caravan meter energy uses adaptive total-power recording with measured lineage and exact increments', t => {
@@ -260,6 +283,11 @@ test('MQTT caravan air and dehumidifier reports reach the recorder with their re
   capture.receive('invented/caravan/dehumidifier/state', JSON.stringify({ power: 'on', mode: 'auto', fanSpeed: 'high',
     targetHumidity: 55, swing: 'fixed_90', identity: 'a'.repeat(64), capabilities: { power: ['off', 'on'] }, timestamp: now }));
   assert.deepEqual(new Set(store.observations().map(row => row.signal)), new Set(signals));
+  const persistedAppliance = store.observations().find(row => row.signal === stateSignal);
+  assert.equal(persistedAppliance.value, 1);
+  assert.equal(persistedAppliance.raw.identity, 'a'.repeat(64));
+  assert.deepEqual(persistedAppliance.raw.fieldTimestamps, { power: now });
+  assert(!['fanSpeed', 'mode', 'targetHumidity', 'swing', 'temperature', 'humidity', 'runningState'].some(key => Object.hasOwn(persistedAppliance.raw, key)));
   for (const signal of signals) {
     const age = signal === stateSignal ? 120_000 : 180_000;
     const stored = store.observations().find(row => row.signal === signal);

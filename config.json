@@ -448,7 +448,7 @@
           "kind": "dehumidifier",
           "enabled": true,
           "connection": "mqtt:stmq/garage/caravan_dehumidifier/state",
-          "signal": "caravan_dehumidifier_running_state",
+          "signal": "caravan_dehumidifier_active",
           "dehumidifier_control": true,
           "temperature_control": {
             "sensor_device_id": "blu_ht"

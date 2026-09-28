@@ -1,0 +1,157 @@
+--- a/device.py
++++ b/device.py
+@@ -6,6 +6,8 @@
+ import logging
+ from asyncio.exceptions import CancelledError
+ from time import time
++from copy import deepcopy
++from hashlib import sha256
+ 
+ import tinytuya
+ from homeassistant.const import (
+@@ -225,6 +227,7 @@
+         self._children.clear()
+         self._force_dps.clear()
+         if self._refresh_task:
++            self._clear_local_observations()
+             self._api.set_socketPersistent(False)
+             if self._api.parent:
+                 self._api.parent.set_socketPersistent(False)
+@@ -269,6 +272,7 @@
+                         log_json(poll),
+                     )
+                     full_poll = poll.pop("full_poll", False)
++                    self._observe_local_dps(poll, full_poll)
+                     self._cached_state = self._cached_state | poll
+                     self._cached_state["updated_at"] = time()
+                     self._remove_properties_from_pending_updates(poll)
+@@ -307,6 +311,7 @@
+         finally:
+             # Ensure the persistent connection is closed when the loop exits
+             # and device appears as unavailable
++            self._clear_local_observations()
+             self._api.set_socketPersistent(False)
+             if self._api.parent:
+                 self._api.parent.set_socketPersistent(False)
+@@ -319,6 +324,7 @@
+     def pause(self):
+         self._temporary_poll = True
+         _LOGGER.debug("%s pausing connection temporarily", self.name, False)
++        self._clear_local_observations()
+         self._api.set_socketPersistent(False)
+         if self._api.parent:
+             self._api.parent.set_socketPersistent(False)
+@@ -354,6 +360,7 @@
+                     # has been established.  Until then, we need to rotate
+                     # the protocol version, which seems to require a fresh
+                     # connection.
++                    self._clear_local_observations()
+                     persist = not self.should_poll
+                     _LOGGER.debug(
+                         "%s persistant connection set to %s", self.name, persist
+@@ -411,6 +418,7 @@
+                         if poll["Err"] in {"901", "902", "905", "906", "914"}:
+                             force_backoff = True
+                             persist = False
++                            self._clear_local_observations()
+                             self._api.set_socketPersistent(False)
+                             if self._api.parent:
+                                 self._api.parent.set_socketPersistent(False)
+@@ -443,6 +451,7 @@
+                 # Close the persistent connection when exiting the loop
+                 persist = False
+                 _LOGGER.debug("%s receive loop interrupted", self.name)
++                self._clear_local_observations()
+                 self._api.set_socketPersistent(False)
+                 if self._api.parent:
+                     self._api.parent.set_socketPersistent(False)
+@@ -455,6 +464,7 @@
+                     t,
+                 )
+                 persist = False
++                self._clear_local_observations()
+                 self._api.set_socketPersistent(False)
+                 if self._api.parent:
+                     self._api.parent.set_socketPersistent(False)
+@@ -465,6 +475,7 @@
+             await asyncio.sleep(5 if force_backoff else 0.1)
+ 
+         # Close the persistent connection when exiting the loop
++        self._clear_local_observations()
+         self._api.set_socketPersistent(False)
+         if self._api.parent:
+             self._api.parent.set_socketPersistent(False)
+@@ -536,6 +547,35 @@
+                 f"Failed to refresh device state for {self.name}.",
+             )
+ 
++    @property
++    def local_observations(self):
++        """Confirmed wire reports, separate from pending command values."""
++        return {
++            "identity": sha256(self.unique_id.encode("utf-8")).hexdigest(),
++            **deepcopy(self._local_observations),
++        }
++
++    def _clear_local_observations(self):
++        changed = bool(getattr(self, "_local_observations", {}))
++        self._local_observations = {}
++        if changed:
++            for entity in self._children:
++                entity.schedule_update_ha_state()
++
++    def _observe_local_dps(self, dps, full_poll=False):
++        if not isinstance(dps, dict):
++            return
++        # Only these four independently reported DESD8LW fields are exported.
++        # Heartbeats, errors and pending command overlays cannot renew them.
++        if full_poll:
++            self._local_observations = {}
++        reported_at = int(time() * 1000)
++        for key in ("1", "2", "4", "6"):
++            if key in dps:
++                self._local_observations[key] = {
++                    "value": deepcopy(dps[key]), "timestamp": reported_at
++                }
++
+     def get_property(self, dps_id):
+         cached_state = self._get_cached_state()
+         return cached_state.get(dps_id)
+@@ -555,6 +595,7 @@
+         self._cached_state[dps_id] = value
+ 
+     def _reset_cached_state(self):
++        self._clear_local_observations()
+         self._cached_state = {"updated_at": 0}
+         self._pending_updates = {}
+         self._last_connection = 0
+@@ -564,6 +605,7 @@
+         new_state = self._api.status()
+         if new_state:
+             if "Err" not in new_state:
++                self._observe_local_dps(new_state.get("dps", {}), True)
+                 self._cached_state = self._cached_state | new_state.get("dps", {})
+                 self._cached_state["updated_at"] = time()
+                 for entity in self._children:
+@@ -713,6 +755,7 @@
+                     connections,
+                 )
+                 # Ensure we have a fresh connection for the next attempt
++                self._clear_local_observations()
+                 self._api.set_socketPersistent(False)
+                 if self._api.parent:
+                     self._api.parent.set_socketPersistent(False)
+--- a/entity.py
++++ b/entity.py
+@@ -115,6 +115,11 @@
+                                 value,
+                             )
+                 attr[a.name] = value
++        if (
++            self._config._device.config_type == "electriq_desd8lw_dehumidifier"
++            and self._config.entity == "humidifier"
++        ):
++            attr["local_observations"] = self._device.local_observations
+         return attr
+ 
+     @property

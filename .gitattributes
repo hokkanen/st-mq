@@ -1,0 +1,4 @@
+# Exact upstream bytes and patch context are part of the verified adapter hashes.
+# CRLF is intentional in the upstream entity fixture; diff context blanks use a space.
+test/fixtures/tuya-local-2026.9.2/*.py -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
+integrations/homeassistant/tuya-local-observation.patch -text whitespace=-blank-at-eol
