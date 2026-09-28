@@ -1,3 +1,32 @@
+Completed 2026-09-28 — Coordinate Garage challenge recovery with conservative Pill clocks
+- Retire the nonce advertised with a correlated challenge rejection, requiring a
+  later unused challenge for numeric and clear retries. Use the existing bounded
+  nonce map; no new timers, queues, stored preferences or permissions. Accept an
+  explicit initial challenge rejection from an unowned Pill without accepting an
+  unowned positive result. Keep predecessor bounds and cleanup obligations.
+- Pill 1.2.6 converts second-resolution UTC conservatively, samples fresh uptime
+  after report UTC, preserves the advertised challenge lifetime and withholds
+  challenges during the existing one-parse/quiet-period ingress guard. Five-second
+  future-timestamp checks retain their original lower-clock bound. No new Pill
+  retained state, timer, persistent record, schema or supervisor behavior.
+- Keep genuine expiry extension, unresolved clock steps, source/request expiry,
+  ownership, restart, qualified temperature evidence and serial-ACK protections.
+  This corrects report-clock and challenge coordination without widening tolerance.
+- Added host rejection/clear/reconnect regressions and an explicit external-artifact
+  integration suite using the actual compiled Pill runtime, adapter, room controller,
+  synthetic UART/MQTT and quantized clocks. No household connections or copied
+  external driver are part of repository tests. F1/F3/F4/F5/F7/F8 reviewed; no old
+  format bridge, migration, schema reset or cached-state authority was added.
+- Validation: 4,067 routine tests passed, one optional upstream check skipped;
+  production build passed. All 17 compiled-Pill integration checks passed, including
+  six simulated minutes of room-control renewals, delayed clear recovery and local
+  cleanup. Pill source/generated/Python validation passed separately. Independent
+  review completed. Installed Pill 1.2.6 and restarted the controller; a 15.69-minute
+  watch observed 46 acknowledged temperature updates, no return to internal sensing,
+  no expiry/challenge faults and no script restarts/errors. Two busy rejections
+  recovered without fallback. Driver peak memory matched its pre-update baseline.
+  Original settings/room target were restored; raw evidence remains private.
+
 Completed 2026-09-28 — Validate asynchronous expiry reports and preserve bounded Shelly evidence
 - Treat the first mixed-clock expiry overrun as unconfirmed evidence while the
   existing command waits. A later report must validate the same or shorter

@@ -34,9 +34,9 @@ const NATIVE_PENDING = ['pending', 'published', 'accepted'];
 const EXTERNAL_BUSY_RETRY_MS = 4000;
 const EXTERNAL_BUSY_MAX_RETRY_MS = 8000;
 const EXTERNAL_BUSY_GRACE_MS = 15_000;
-// The current Pill contract publishes UTC from second-precision sys.unixtime.
-// Its uptime and remaining permission share a loop instant; UTC is read later
-// during publication. An ambiguous first report stays unconfirmed until a
+// The Pill samples second-precision UTC before the uptime used for remaining
+// permission, avoiding publication delay in their combined expiry. A real UTC
+// step can still make a first report ambiguous: keep it unconfirmed until a
 // report validates its unchanged uptime deadline. Neither tolerance adds lease time.
 const EXTERNAL_UTC_QUANTUM_MS = 1000;
 const EXTERNAL_UPTIME_QUANTUM_MS = 1;
@@ -597,7 +597,8 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
       || !['accepted', 'acknowledged', 'rejected', 'uncertain', 'superseded', 'failed'].includes(result.status)
       || ['rejected', 'failed', 'superseded'].includes(externalCommand.status)
       || ['external-owner-changed', 'external-expiry-bound-mismatch', 'external-expiry-unverified'].includes(externalCommand.reason)
-      || externalCommand.temperatureC !== null && state.authority.ownerSession !== hostSession) return;
+      || externalCommand.temperatureC !== null && state.authority.ownerSession !== hostSession
+        && !(result.status === 'rejected' && result.reason === 'challenge' && !state.authority.ownerSession)) return;
     if (['accepted', 'acknowledged'].includes(result.status) && externalCommand.status === 'acknowledged') return;
     externalCommand.status = result.status;
     externalCommand.reason = typeof result.reason === 'string' ? result.reason : null;
@@ -605,6 +606,13 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
     if (result.status === 'rejected') {
       lastExternalSample = externalCommand.previousSample ?? null;
       if (state.externalTemperature?.phase === 'internal') externalNeedsClear = false;
+      // A challenge rejection does not establish admission readiness for a
+      // different nonce advertised in the same report. Retire that nonce too;
+      // both numeric retries and clears need a later, genuinely unused one.
+      // Current Pill reports no challenge during cooldown, so its next usable
+      // report can resume immediately without a host timer or extra backoff.
+      if (externalCommand.reason === 'challenge' && identity(state.challenge?.value)
+        && finiteTime(state.challenge.expiresAt)) consumeChallenge(now);
       if (externalCommand.temperatureC !== null && externalCommand.reason === 'busy') {
         const attempts = (externalBusyRetry?.attempts ?? 0) + 1;
         externalBusyRetry = { since: externalBusyRetry?.since ?? now, attempts,

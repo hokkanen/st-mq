@@ -74,6 +74,24 @@ measurement-existence check must not reconstruct report availability. These
 paths run on the server's main thread: regressions can delay HTTP responses and
 provider downloads even when chart calculations run in a worker.
 
+### Compiled Pill integration
+
+After building the separate `shelly-cn105-mqtt` project, run the actual compiled
+driver against the controller's production adapter with synthetic UART, MQTT,
+storage and clocks:
+
+```sh
+STMQ_PILL_ARTIFACT=/path/to/shelly-cn105-mqtt/dist/driver.js \
+  node --test test/extended/garage-pill-runtime.test.js
+```
+
+This exercises coarse UTC, slow clock reads, delayed processing, challenge
+lifetime, repeated renewals and local expiry/cleanup. It opens no device or
+broker connection and does not copy the external driver into this repository.
+The extended suite explicitly skips these integration cases without the artifact
+path; its ordinary host-only adapter coverage still runs in the routine suite.
+Actual Pill heap usage and firmware scheduling require separate installed checks.
+
 ## Browser suites
 
 Build first with `npm run build`. Browser sweeps are extended/manual checks,

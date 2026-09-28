@@ -252,12 +252,13 @@ the rear measurement's original timestamp. Thermal reserve can shorten the
 requested deadline. The adapter independently caps every numeric command at
 rear measurement time +120 seconds, even if a caller asks for longer.
 
-The current driver publishes UTC state clocks with one-second precision, read
-later than the loop uptime used to calculate remaining lifetime. These fields
-describe different instants. Initial expiry validation allows the UTC reporting
-quantum, at most 1000 ms. If a first report exceeds that bound, its monotonic
-expiry is only an unconfirmed candidate: the mixed clocks alone cannot distinguish
-publication delay from an excessive device lifetime. No acknowledgement, holding
+Driver 1.2.6 reads uptime before the upper bound of its whole-second UTC clock
+when admitting a command. Publication reads the lower UTC bound before a fresh
+uptime. This ordering makes processing delays conservative: they can shorten
+permission, not extend its requested deadline. The host's initial expiry check
+retains the UTC reporting quantum, at most 1000 ms. A real UTC clock step can
+still make a first report ambiguous; its monotonic expiry is then only an
+unconfirmed candidate. No acknowledgement, holding
 permission or additional numeric command is granted until a later fresh report
 validates the same or a shorter monotonic expiry against the original UTC bound.
 An already reported serial ACK remains unconfirmed during this check. Exact fresh
@@ -268,9 +269,9 @@ This wait ends at the earlier of the original 45-second result deadline and the
 requested/source expiry. If validation never succeeds, cleanup is required;
 neither a later corrected report nor reconnect reverses that obligation. A real
 monotonic extension requires cleanup immediately, including before first ACK.
-The tradeoff is bounded time awaiting evidence for an ambiguous first expiry,
-instead of treating differently sampled clocks as proof of a broken local bound.
-There is no larger publication-delay tolerance and no extension of host authority.
+This bounds the wait for evidence after a clock discontinuity without treating
+it alone as proof of a broken local bound. There is no larger clock tolerance
+and no extension of host authority.
 
 A valid pre-ACK report can establish the expiry check but cannot establish serial
 acknowledgement. Once the exact sample's uptime-based expiry is validated,
@@ -307,7 +308,7 @@ location can require earlier clearing. Internal sensing uses the pump's current
 native settings, normally HEAT at 17°C after setup. Protection does not override
 an explicit manual power or mode change.
 
-Pill MQTT-loss behavior remains device-owned. Driver 1.2.5 retains an already
+Pill MQTT-loss behavior remains device-owned. Since 1.2.5, the driver retains an already
 admitted external sample through MQTT/Wi-Fi loss only until its original expiry,
 including completing an admitted serial write while offline. An existing sample
 can continue with missing native settings for at most 90 seconds since the last
@@ -337,6 +338,18 @@ deadline. The Pill enforces the shorter host expiry locally; the host cannot cle
 through a broken link. These fallbacks require a powered, working Pill and serial
 path. Host MQTT loss still invalidates managed OFF intent even though the Pill's
 existing physical OFF lease may continue until its local safety bound.
+
+A correlated `challenge` rejection completes the attempt as rejected, including
+an initial enable while the device is still unowned. It grants no acknowledgement
+or new permission. ST-MQ retires both the request nonce and any nonce advertised
+in that rejection report, so numeric retries and explicit clears require a later
+fresh report with a genuinely unused challenge. The Pill publishes no challenge
+during its command cooldown and retains an advertised challenge until its actual
+expiry or consumption. Its next eligible report can therefore resume admission
+without a new host timer or arbitrary delay. Repeated result reports do not retire
+later nonces; reconnect does not make a retired nonce usable. Existing acknowledged
+permission retains only its original deadline, and a rejected clear retains its
+cleanup obligation until confirmation.
 
 The Pill also refreshes the admitted sample on its serial link every 10 seconds.
 A numeric command arriving during that transaction can be rejected `busy`, even
