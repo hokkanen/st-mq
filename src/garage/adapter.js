@@ -35,8 +35,9 @@ const EXTERNAL_BUSY_RETRY_MS = 4000;
 const EXTERNAL_BUSY_MAX_RETRY_MS = 8000;
 const EXTERNAL_BUSY_GRACE_MS = 15_000;
 // The current Pill contract publishes UTC from second-precision sys.unixtime.
-// Its uptime and remaining permission are floored millisecond values from the
-// same loop instant. These are reporting tolerances, never extra host lease time.
+// Its uptime and remaining permission share a loop instant; UTC is read later
+// during publication. Use UTC only to validate an unanchored deadline, then
+// enforce that sample's monotonic deadline. Neither tolerance adds host lease time.
 const EXTERNAL_UTC_QUANTUM_MS = 1000;
 const EXTERNAL_UPTIME_QUANTUM_MS = 1;
 const nativeCommandSummary = command => command ? { setting: command.setting, value: command.value,
@@ -367,9 +368,14 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
     }
     const known = sameSession(acknowledgedExternal) && matches(acknowledgedExternal) ? acknowledgedExternal : null;
     if (known) bounds.push(known.requestedExpiryAt);
-    const extended = known && finiteTime(state.uptimeMs) && Number.isFinite(known.expiresAtUptime)
+    const monotonic = known && finiteTime(state.uptimeMs) && Number.isFinite(known.expiresAtUptime);
+    const anchored = monotonic && bounds.every(bound => bound >= known.requestedExpiryAt);
+    const extended = monotonic
       && state.uptimeMs + feed.expiresInMs > known.expiresAtUptime + EXTERNAL_UPTIME_QUANTUM_MS;
-    if (!extended && (!bounds.length
+    // Once the exact sample's deadline was validated, a later UTC reading must
+    // not invalidate an unchanged device deadline. New/shorter permissions and
+    // reports without uptime still require independent UTC-bound validation.
+    if (!extended && (anchored || !bounds.length
       || state.observedAt + feed.expiresInMs <= Math.min(...bounds) + EXTERNAL_UTC_QUANTUM_MS)) return;
     // Local expiry is a safety obligation, not just a displayed host bound.
     // A device reporting a later deadline cannot qualify disconnected holding.

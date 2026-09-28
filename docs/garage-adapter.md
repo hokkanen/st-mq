@@ -252,11 +252,21 @@ the rear measurement's original timestamp. Thermal reserve can shorten the
 requested deadline. The adapter independently caps every numeric command at
 rear measurement time +120 seconds, even if a caller asks for longer.
 
-The current driver publishes UTC state clocks with one-second precision. Expiry
-report comparison allows that reporting quantum, at most 1000 ms, while the
-remaining TTL must still decrease with elapsed monotonic time. The original
-requested deadline and host continuation limit remain unchanged. This precision
-allowance adds no outage grace or guarantee about physical heating response.
+The current driver publishes UTC state clocks with one-second precision, read
+later than the loop uptime used to calculate remaining lifetime. These fields
+describe different instants. Initial expiry validation allows the UTC reporting
+quantum, at most 1000 ms. Once the exact sample has an acknowledged, validated
+uptime-based expiry, subsequent reports in that boot/session must preserve or
+shorten that expiry (allowing only 1 ms for flooring). A later UTC read alone
+cannot revoke this already validated deadline. The original requested deadline
+and minimum host continuation limit remain unchanged, including after reconnect.
+
+New samples, a shorter requested bound for the same sample, and reports without
+uptime still require UTC-bound validation. A first report whose UTC-derived
+expiry exceeds that bound remains rejected; the host does not invent a larger
+publication-delay allowance. Restart or lost ownership cannot restore the
+in-memory validation. These reporting rules add no outage grace or guarantee
+about physical heating response.
 
 Retained, future, invalid and stale reports cannot authorize a feed. Repeated
 timestamps, polling, reconnects and retries never restart either source clock.

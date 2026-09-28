@@ -1,3 +1,25 @@
+Completed 2026-09-28 — Preserve validated external-temperature expiry across report clock sampling
+- The Pill samples loop uptime/remaining lifetime before its publication-time
+  UTC clock. Stop reinterpreting later UTC reports as an extended deadline once
+  the exact sample has an acknowledged, validated monotonic expiry.
+- Keep strict initial/new-sample UTC validation, same-sample deadline tightening,
+  missing-uptime validation, real monotonic-extension rejection, session/owner
+  fencing, latched cleanup and the original minimum host holding deadline.
+  No larger clock tolerance, source-age allowance or new device permission.
+- Add adapter regressions for delayed clock sampling, reconnects, an outstanding
+  renewal, tighter permissions and absent uptime. Integration reproduces the
+  100ms publication delay/1099ms apparent UTC overrun, keeps external sensing
+  active without new commands, and clears at the exact original host deadline.
+- Reviewed F1/F3/F4/F5/F7/F8 across driver evidence, host admission/continuation,
+  room control, diagnostics and contracts. No obsolete compatibility paths in
+  this scope; no wire, persistence, configuration, recording or UI changes.
+- Validation: 295 focused tests pass; final adapter safety assertions pass all
+  135 adapter tests. Routine suite: 4,015 pass, zero failures, one optional
+  upstream Tuya Local parser check skipped because its source path is unset.
+  Build passes with the existing bundle-size warning; independent review found
+  no safety defects. Offline fixtures only; no firmware changes, deployment or
+  household commands.
+
 Completed 2026-09-28 — Balanced Caravan controls and four-state dehumidifier history
 - Reorganize the dehumidifier around reported power and paired native humidity/
   fan controls. Keep Automatic power compact with saved enablement and thresholds;

@@ -462,6 +462,72 @@ test('second-precision UTC cannot revoke or extend an unchanged monotonic device
   assert.equal(f.adapter.externalTemperature().continuation, null);
 });
 
+test('later UTC publication cannot revoke a validated monotonic deadline or extend its host hold', async t => {
+  for (const timing of ['active sample', 'previous sample during renewal', 'reconnect']) await t.test(timing, async t => {
+    const f = fixture(t), sample = f.sample();
+    await f.adapter.setExternalTemperature(sample);
+    // Admission at the end of a UTC second leaves 999ms of reporting rounding.
+    f.advance(9000);
+    const active = f.result('acknowledged', { externalTemperature: { ...INTERNAL,
+      phase: 'active', acknowledged: true, restorationPending: true,
+      temperatureC: sample.temperatureC, measuredAt: sample.measuredAt, expiresInMs: 111_999 } });
+    const originalDeadline = f.adapter.externalTemperature().continuation.expiresAt;
+    assert.equal(originalDeadline, sample.requestedExpiryAt);
+    if (timing === 'previous sample during renewal') await f.adapter.setExternalTemperature(f.sample({ temperatureC: 22 }));
+    if (timing === 'reconnect') { f.adapter.setConnected(false); f.adapter.setConnected(true); }
+    f.advance(2000);
+    // Uptime/remaining lifetime are sampled at 10.9s; publication reads UTC at
+    // 11s. The reported UTC expiry is 1099ms late, but device expiry is unchanged.
+    f.state({ authority: active.authority, uptimeMs: TEMPLATE.uptimeMs + 10_900,
+      externalTemperature: { ...active.externalTemperature, expiresInMs: 110_099 } });
+    assert.notEqual(f.adapter.externalTemperature().result.reason, 'external-expiry-bound-mismatch');
+    assert.equal(f.adapter.externalTemperature().continuation.expiresAt, originalDeadline);
+    assert.equal(f.adapter.externalTemperature().continuation.confirmed, true);
+    assert.equal(f.published.some(p => p.command.temperatureC === null), false);
+    f.adapter.setConnected(false);
+    assert.equal(f.adapter.externalTemperature().continuation.expiresAt, originalDeadline);
+    f.advance(originalDeadline - f.now());
+    assert.equal(f.adapter.externalTemperature().continuation, null, 'the original host deadline still ends holding');
+  });
+});
+
+test('monotonic trust cannot bypass a new or tighter bound, or substitute for missing uptime', async t => {
+  for (const change of ['new sample', 'shorter same-sample bound', 'missing uptime']) await t.test(change, async t => {
+    const f = fixture(t), sample = f.sample();
+    await f.adapter.setExternalTemperature(sample);
+    f.advance(); const active = f.result('acknowledged');
+    let reported = active.externalTemperature;
+    if (change === 'new sample') {
+      f.advance(1000);
+      const next = f.sample({ temperatureC: 22 });
+      await f.adapter.setExternalTemperature(next);
+      reported = { ...reported, temperatureC: next.temperatureC, measuredAt: next.measuredAt,
+        expiresInMs: 121_001 };
+    } else if (change === 'shorter same-sample bound') {
+      await f.adapter.setExternalTemperature({ ...sample, requestedExpiryAt: sample.requestedExpiryAt - 10_000 });
+    }
+    f.advance(2000);
+    if (change === 'shorter same-sample bound') reported = { ...reported,
+      expiresInMs: sample.requestedExpiryAt - f.now() };
+    f.state({ authority: active.authority,
+      ...(change === 'missing uptime' ? { uptimeMs: undefined } : {}),
+      externalTemperature: reported });
+    assert.equal(f.adapter.externalTemperature().result.reason, 'external-expiry-bound-mismatch');
+    assert.equal(f.adapter.externalTemperature().continuation, null);
+  });
+});
+
+test('a shorter same-sample deadline can be acknowledged when the device honors it', async t => {
+  const f = fixture(t), sample = f.sample();
+  await f.adapter.setExternalTemperature(sample);
+  f.advance(); f.result('acknowledged');
+  const shorter = { ...sample, requestedExpiryAt: sample.requestedExpiryAt - 10_000 };
+  await f.adapter.setExternalTemperature(shorter);
+  f.advance(); f.result('acknowledged');
+  assert.equal(f.adapter.externalTemperature().result.status, 'acknowledged');
+  assert.equal(f.adapter.externalTemperature().continuation.expiresAt, shorter.requestedExpiryAt);
+});
+
 test('an expiry violation during pending clear does not fence its eventual cleanup acknowledgement', async t => {
   const f = fixture(t);
   await f.adapter.setExternalTemperature(f.sample());
