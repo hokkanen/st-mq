@@ -24,6 +24,12 @@ Charger 2 is disabled and unverified by default because the hardware has not arr
 
 Both charger cards show the physical connection, assigned vehicle or uncertainty, current request, measured/estimated progress, connection cost and control state. The Automatic charging switch governs economic scheduling. Vehicle identification and metering continue with automatic charging OFF. The separately configured Charger 2 limiter can remain active with economic scheduling OFF.
 
+A live local OCPP connection status newer than the last disconnect restores
+Charger 1's physical session and readings even while its transaction is
+unconfirmed. Native scheduling still waits for a confirmed transaction newer
+than that disconnect. Transaction confirmation does not restart the physical
+session or reset its settings, deadline, progress or cost.
+
 Each card’s **How charging works** section explains its scheduling, current
 limits and pause recovery. Easee cloud delays and local OCPP pauses can release
 on the charger without a new command; Shelly pauses need a live application

@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createOcppScheduleAdapter, initialOcppControllerState, normalizeOcppComposite, ocppPauseInstruction } from '../src/charging/ocpp.js';
 import { ChargingRuntime } from '../src/charging/runtime.js';
+import { chargerDisplay } from '../chart/charging.js';
 
 const START = Date.parse('2026-09-24T09:00:00Z'), MINUTE = 60_000, scope = 'a'.repeat(64);
 const plan = (startAt, extra = {}) => ({ id: 'synthetic-plan', startAt, feasible: true, periods: [{ startAt, endAt: null }], ...extra });
@@ -98,6 +99,101 @@ test('unconfirmed transaction after reconnect cannot install a pause', async () 
   const f = fixture(); f.confirmed(false);
   const view = await f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
   assert.equal(view.errorCode, 'transaction-unconfirmed'); assert.equal(writes(f).length, 0);
+});
+
+function disconnectedState() {
+  const state = initialOcppControllerState(scope);
+  state.session = { transactionId: 6, connected: null, connectedAt: START - 3 * MINUTE, lastDisconnectedAt: START - MINUTE };
+  state.vehicleDisconnect = { source: 'easee-stream', readingId: 'synthetic-disconnect',
+    endedConnectedAt: START - 3 * MINUTE, measuredAt: START - 2 * MINUTE,
+    receivedAt: START - 2 * MINUTE, awaitingConnection: true };
+  state.released = true;
+  return state;
+}
+
+test('native physical reconnect restores the charger card without granting transaction control', async t => {
+  const f = fixture({ initialState: disconnectedState() }), states = new Map();
+  f.snapshot({ transactionId: null, transactionStartedAt: null, transactionConfirmed: false, statusAt: START });
+  const config = { input: 'providers', connections: { easee: { charger_id: 'synthetic-card-charger' } } };
+  const store = { getState: key => structuredClone(states.get(key)), setState: (key, value) => states.set(key, structuredClone(value)) };
+  const attach = ({ controller, adapter }, clock) => {
+    const runtime = new ChargingRuntime({ engine: {}, config, store, clock });
+    const item = runtime.chargers.charger1;
+    item.controller = controller; item.adapter = adapter;
+    item.vehicleDisconnect ??= structuredClone(disconnectedState().vehicleDisconnect);
+    t.after(() => runtime.close());
+    return runtime;
+  };
+  const runtime = attach(f, () => f.now);
+  let control = await f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+  let charger = runtime.status().chargers[0];
+  assert.equal(charger.values.connected.value, true);
+  assert.equal(charger.values.connected.source, 'easee-ocpp');
+  assert.equal(charger.values.charging.value, true);
+  assert.equal(charger.values.powerKw.value, 7);
+  assert.equal(chargerDisplay(charger).showMetrics, true);
+  assert.ok(charger.request);
+  assert.equal(control.session.connectedAt, START);
+  assert.equal(control.session.transactionId, null, 'The disconnected transaction must not enter the new physical session');
+  assert.equal(control.vehicleDisconnect.awaitingConnection, true);
+  assert.equal(control.released, false);
+  assert.equal(charger.identification.available, false);
+  assert.equal(f.calls.length, 0, 'Physical charging evidence does not authorize a native profile');
+  const request = structuredClone(charger.request);
+  runtime.persist();
+
+  const restored = fixture({ initialState: f.stored });
+  restored.advance(MINUTE);
+  restored.transaction(8);
+  restored.snapshot({ transactionId: null, transactionStartedAt: null, transactionConfirmed: false, statusAt: START });
+  const restarted = attach(restored, () => restored.now);
+  await restored.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+  charger = restarted.status().chargers[0];
+  assert.deepEqual(charger.request, request, 'Restart and rereading the same status preserve the physical session and deadline');
+  assert.equal(charger.values.connected.value, true);
+  assert.equal(restored.calls.length, 0);
+
+  restored.advance(MINUTE);
+  restored.snapshot({ transactionId: 8, transactionStartedAt: START + 30_000, transactionConfirmed: true, statusAt: START });
+  control = await restored.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+  assert.equal(control.vehicleDisconnect.awaitingConnection, false);
+  assert.equal(control.session.connectedAt, START, 'Transaction confirmation must not start a second physical session');
+  assert.deepEqual(restarted.status().chargers[0].request, request);
+  assert.equal(writes(restored).filter(call => call.action === 'SetChargingProfile').length, 1);
+
+  restarted.chargers.charger1.vehicleDisconnect = { source: 'easee-stream', readingId: 'synthetic-next-disconnect',
+    endedConnectedAt: START, measuredAt: START + MINUTE, receivedAt: START + MINUTE };
+  assert.equal(restarted.status().chargers[0].values.connected.value, false,
+    'A newer disconnect takes effect even before the controller has reconciled it');
+});
+
+test('an old confirmed transaction cannot control a newer physical connection', async () => {
+  const initial = disconnectedState(), f = fixture({ initialState: initial });
+  f.snapshot({ transactionId: 6, transactionStartedAt: initial.session.connectedAt, transactionConfirmed: true });
+  let view = await f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+  assert.equal(view.session.connected, true);
+  assert.equal(view.session.connectedAt, START);
+  assert.equal(view.session.transactionId, null);
+  assert.equal(view.vehicleDisconnect.awaitingConnection, true);
+  f.advance(MINUTE);
+  view = await f.controller.update({ enabled: true });
+  assert.equal(view.session.connectedAt, START);
+  assert.equal(view.session.transactionId, null);
+  assert.equal(f.calls.length, 0);
+});
+
+test('old, unknown and offline OCPP status cannot reopen a disconnected physical session', async () => {
+  for (const patch of [
+    { statusAt: START - MINUTE - 1 }, { statusAt: START - MINUTE },
+    { pluggedIn: null, connectorStatus: 'Unavailable' }, { online: false },
+  ]) {
+    const f = fixture({ initialState: disconnectedState() });
+    f.snapshot({ transactionId: null, transactionStartedAt: null, transactionConfirmed: false, ...patch });
+    const view = await f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+    assert.notEqual(view.session.connected, true);
+    assert.equal(view.vehicleDisconnect.awaitingConnection, true);
+    assert.equal(f.calls.length, 0);
+  }
 });
 
 test('lost install acknowledgement retries identical ID and body with a fixed attempt bound', async () => {
@@ -587,7 +683,7 @@ test('native identification respects manual Stop, current transaction confirmati
   for (const blocked of ['stop', 'transaction', 'session']) {
     const f = fixture({ identification: activeIdentification() });
     if (blocked === 'stop') f.manual({ id: 'native-stop', kind: 'stop', at: START, transactionId: 7 });
-    if (blocked === 'transaction') f.confirmed(false);
+    if (blocked === 'transaction') { f.confirmed(false); f.identify({ ...activeIdentification(), connectedAt: START }); }
     if (blocked === 'session') f.identify({ ...activeIdentification(), connectedAt: START - 2 * MINUTE });
     const view = await f.controller.update({ enabled: false });
     assert.equal(writes(f).length, 0);

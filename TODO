@@ -1,3 +1,20 @@
+Completed 2026-09-28 — Restore Charger 1 card from fresh native connection evidence
+- Separate the observed OCPP physical session from confirmed transaction control.
+  A connected status newer than the latest disconnect restores charging readings
+  and session details while native scheduling still waits for a valid transaction.
+- Keep the physical session and request deadline across restart and later transaction
+  confirmation. Clear the prior transaction and release/execution state on a new
+  physical connection; retain exact-profile cleanup and manual Stop protection.
+- Narrow the runtime disconnect override for available native readings belonging
+  to the newer physical session. Stale/unknown/offline status and a later cloud
+  disconnect cannot reopen it; old confirmed transactions cannot authorize control.
+- F1/F3/F4/F5/F8 reviewed: no schema change, migration, compatibility path, new
+  permission or private fixture. Updated the charging contract and added synthetic
+  controller/runtime/card regressions. Independent review found no blocking issues.
+- Validation: all 1,059 focused charging, charger, OCPP, stream and pairing tests
+  passed; production build and diff checks passed. No live deployment or equipment
+  commands were performed.
+
 Completed 2026-09-28 — Add compact chart interpolation control
 - Add an accessible Interpolation ON/OFF button beside Reset view and Save view
   in the existing legend footer. Keep the same 32px button height and one row,

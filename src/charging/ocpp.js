@@ -326,20 +326,26 @@ export function createOcppChargingController({ adapter, initialState = null, sav
       if (closed || current !== generation) return status();
       if (!snapshot.online || !fresh(snapshot.readAt, clock())) return display('unavailable', 'The local charger connection is unavailable; existing bounded profiles may still apply.', 'offline');
       const prior = state.session;
-      const changedTransaction = prior?.transactionId !== null && prior?.transactionId !== undefined
-        && snapshot.transactionConfirmed && snapshot.transactionId !== prior.transactionId;
       const disconnected = snapshot.pluggedIn === false;
-      const awaiting = state.vehicleDisconnect?.awaitingConnection && !(snapshot.transactionConfirmed
-        && snapshot.transactionStartedAt > state.vehicleDisconnect.measuredAt);
       const lastDisconnectedAt = Math.max(prior?.lastDisconnectedAt ?? -1, state.vehicleDisconnect?.measuredAt ?? -1,
         disconnected ? snapshot.statusAt : -1);
-      const session = { transactionId: snapshot.transactionConfirmed ? snapshot.transactionId : prior?.transactionId ?? null,
-        connected: disconnected ? false : awaiting ? null : snapshot.pluggedIn,
-        connectedAt: disconnected ? null : changedTransaction || prior?.connectedAt == null
-          ? snapshot.transactionStartedAt ?? snapshot.statusAt : prior.connectedAt,
+      const confirmedTransaction = snapshot.transactionConfirmed && snapshot.transactionStartedAt > lastDisconnectedAt;
+      const changedTransaction = prior?.transactionId !== null && prior?.transactionId !== undefined
+        && confirmedTransaction && snapshot.transactionId !== prior.transactionId;
+      const awaiting = state.vehicleDisconnect?.awaitingConnection && !confirmedTransaction;
+      // Physical connection evidence does not require transaction authority. A
+      // newer source-timed status can reopen the card while native control waits
+      // for a confirmed transaction. Never reuse the disconnected session's ID.
+      const physicallyConnected = snapshot.pluggedIn === true && snapshot.statusAt > lastDisconnectedAt;
+      const newConnection = physicallyConnected && (prior?.connectedAt == null || prior.connectedAt <= lastDisconnectedAt);
+      const session = { transactionId: confirmedTransaction ? snapshot.transactionId : newConnection ? null : prior?.transactionId ?? null,
+        connected: disconnected ? false : awaiting && !physicallyConnected ? null : snapshot.pluggedIn,
+        connectedAt: disconnected ? null : newConnection
+          ? confirmedTransaction ? Math.min(snapshot.transactionStartedAt, snapshot.statusAt) : snapshot.statusAt
+          : changedTransaction || prior?.connectedAt == null ? snapshot.transactionStartedAt ?? snapshot.statusAt : prior.connectedAt,
         lastDisconnectedAt: lastDisconnectedAt >= 0 ? lastDisconnectedAt : null };
       await commit({ session, ...(state.vehicleDisconnect && !awaiting ? { vehicleDisconnect: { ...state.vehicleDisconnect, awaitingConnection: false } } : {}),
-        ...(changedTransaction || disconnected ? { execution: null, released: false, provisional: false,
+        ...(newConnection || changedTransaction || disconnected ? { execution: null, released: false, provisional: false,
           manual: state.manual?.kind === 'stop' && !changedTransaction ? state.manual : null } : {}) });
       const event = snapshot.manualEvent;
       if (event && event.id !== state.lastManualEvent?.id && event.at > (state.lastManualEvent?.at ?? -1)
@@ -374,10 +380,10 @@ export function createOcppChargingController({ adapter, initialState = null, sav
       if (!controlRequested()) { await commit({ execution: null }); handoverConfirmed = !state.pending && !state.owned; return display('off', 'Automatic charging is off; external charger restrictions are preserved.'); }
       if (state.manual) return display('yielded', state.manual.kind === 'stop' ? 'A confirmed native stop has priority. Explicitly resume automatic charging when ready.'
         : 'A confirmed native release has priority until unplug or explicit resumption.');
-      if (disconnected || awaiting) return display('disconnected', 'Waiting for a confirmed new charger transaction.');
+      if (disconnected) return display('disconnected', 'Waiting for a vehicle connection.');
       if (!canWrite(current)) throw fail('control-revoked');
       if (['Unavailable', 'Faulted', 'Reserved'].includes(snapshot.connectorStatus)) return display('unavailable', 'The charger is unavailable for automatic native scheduling.');
-      if (!snapshot.transactionConfirmed || snapshot.transactionId === null || snapshot.pluggedIn !== true)
+      if (awaiting || !confirmedTransaction || snapshot.transactionId === null || snapshot.pluggedIn !== true)
         return display('unavailable', 'Waiting for a current transaction confirmed on this connection.', 'transaction-unconfirmed');
       if (identification) {
         await commit({ execution: null, released: false, provisional: false });

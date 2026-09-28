@@ -455,7 +455,14 @@ export class ChargingRuntime {
         && (snapshot.transport === 'ocpp' ? control.ownsInstruction === true
           : control.owned.activeFingerprint === effectiveScheduleFingerprint(snapshot.schedule)))
         result[id].scheduledStartAt = { ...result[id].scheduledStartAt, value: control.owned.startAt };
-      if (['easee-stream', 'bmw-cardata'].includes(item.vehicleDisconnect?.source)
+      // A native physical session can be visible before its transaction is
+      // confirmed for control. A later disconnect still fences it immediately.
+      const nativeReconnected = snapshot?.transport === 'ocpp' && result[id].connected?.available === true
+        && result[id].connected.value === true && control?.session?.connected === true
+        && Number.isSafeInteger(control.session.connectedAt)
+        && control.session.connectedAt > item.vehicleDisconnect?.measuredAt
+        && control.session.connectedAt > (control.session.lastDisconnectedAt ?? -1);
+      if (!nativeReconnected && ['easee-stream', 'bmw-cardata'].includes(item.vehicleDisconnect?.source)
         && (control?.session?.connectedAt === item.vehicleDisconnect.endedConnectedAt || control?.vehicleDisconnect?.awaitingConnection))
         result[id].connected = { value: false, available: true, source: item.vehicleDisconnect.source, measuredAt: item.vehicleDisconnect.measuredAt };
       const connected = result[id].connected?.value, session = control?.session;
