@@ -89,11 +89,18 @@ node scripts/browser-equipment-smoke.js
 node scripts/browser-home-controls-smoke.js
 node scripts/browser-garage-smoke.js
 node scripts/browser-garage-smoke.js --temperature-hold-only
+node scripts/browser-mitsubishi-smoke.js
 node scripts/browser-fullscreen-smoke.js
 node scripts/browser-chart-views-smoke.js
 node scripts/browser-selectors-smoke.js
 node scripts/browser-timing-compat-smoke.js
 ```
+
+The Mitsubishi sweep builds its own temporary UI bundle unless `STMQ_UI_DIST`
+is provided. It checks application dropdown keyboard commit/cancel and real
+mouse/touch selection, all six typed pump controls, confirmation and held-control
+status, reading availability, offline/read-only gating, and both themes at
+320/390/1440px. Pump responses and commands stay inside the browser fixture.
 
 The access suite checks password entry, keyboard and touch visibility controls,
 family/admin permissions, logout and credential revocation. It audits responsive

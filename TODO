@@ -1,3 +1,20 @@
+Completed 2026-09-28 — Restore the full Mitsubishi browser sweep
+- Align the sweep with application listboxes: arrows browse without committing,
+  Enter commits, Escape cancels, and focus stays on the visible trigger unless
+  a pointer setting choice transfers it to the value editor.
+- Use trusted mouse/touch interactions with the rendered options for pump and
+  dynamically added controls. Check popup visibility and expanded state, selected
+  values, focus and responsive bounds of the visible dropdown buttons.
+- Remove obsolete native-menu assumptions and the removed chart-axis dropdown
+  reference. Preserve all six typed command checks, confirmation, dirty edits,
+  reading provenance, held-control help and offline/read-only checks.
+- Reviewed F1/F4/F5/F8 against the current picker and Mitsubishi consumers.
+  No production behavior, configuration, schema or device authority changes.
+- Validation: all 32 focused picker/Mitsubishi tests and the complete synthetic
+  Chromium sweep pass, including 320/390/1440px in both themes and no browser
+  exceptions. The sweep's production build passes with its existing bundle-size
+  warning. Resolves the browser limitation recorded below; no live-device access.
+
 Completed 2026-09-28 — Reconcile Pill-only external-temperature renewal outages
 - Keep the 45-second result timeout visible while holding only a previously
   acknowledged sample within its original expiry and freeze-protection reserve

@@ -86,46 +86,76 @@ try {
   assert.equal(await evaluate("document.getElementById('garage-readings-details').open"),false,'heat pump readings are in their own fold');
   assert.equal(await evaluate("document.getElementById('garage-readings-details').hidden"),false);
   await evaluate("document.getElementById('garage-equipment-details').open=true;document.getElementById('garage-controller-details').open=true;document.getElementById('garage-readings-details').open=true;document.getElementById('garage-native-control-details').open=true");
-  const trustedClick=async selector=>{
+  const trustedClick=async(selector,pointerType='mouse')=>{
     await evaluate(`(()=>{const node=document.querySelector(${JSON.stringify(selector)}),r=node.getBoundingClientRect();if(r.top<0||r.bottom>innerHeight)node.scrollIntoView({block:'center',behavior:'instant'});})()`);
     await pause(50);
     const point=await evaluate(`(()=>{const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();return{x:r.left+r.width/2,y:r.top+r.height/2};})()`);
+    if(pointerType==='touch'){
+      await send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{...point,radiusX:1,radiusY:1}]});
+      await send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
+      return;
+    }
     await send('Input.dispatchMouseEvent',{type:'mouseMoved',...point});
     await send('Input.dispatchMouseEvent',{type:'mousePressed',button:'left',clickCount:1,...point});
     await send('Input.dispatchMouseEvent',{type:'mouseReleased',button:'left',clickCount:1,...point});
   };
-  const pressKey=async key=>{const codes={Home:[36,'Home'],ArrowDown:[40,'ArrowDown']};
+  const pressKey=async key=>{const codes={Home:[36,'Home'],End:[35,'End'],ArrowDown:[40,'ArrowDown'],Enter:[13,'Enter'],Escape:[27,'Escape']};
     const [windowsVirtualKeyCode,code]=codes[key];
     await send('Input.dispatchKeyEvent',{type:'keyDown',key,code,windowsVirtualKeyCode});
     await send('Input.dispatchKeyEvent',{type:'keyUp',key,code,windowsVirtualKeyCode});};
+  const pickerTrigger=id=>`#${id} + .app-select-trigger`;
+  const pickerFocus=id=>`document.activeElement===document.querySelector(${JSON.stringify(pickerTrigger(id))})`;
+  const assertPicker=async(id,open)=>{
+    assert.deepEqual(await evaluate(`(()=>{const button=document.querySelector(${JSON.stringify(pickerTrigger(id))}),popup=document.getElementById(button.getAttribute('aria-controls'));return {expanded:button.getAttribute('aria-expanded'),visible:Boolean(popup&&!popup.hidden&&popup.checkVisibility())};})()`),
+      {expanded:String(open),visible:open},`${id} picker is ${open?'open':'closed'}`);
+  };
+  const choosePicker=async(id,value,pointerType)=>{
+    await trustedClick(pickerTrigger(id),pointerType);
+    await assertPicker(id,true);
+    const option=await evaluate(`(()=>{const select=document.getElementById(${JSON.stringify(id)}),button=select.nextElementSibling,index=[...select.options].findIndex(option=>option.value===${JSON.stringify(value)});return '#'+button.getAttribute('aria-controls')+' [data-index="'+index+'"]';})()`);
+    await trustedClick(option,pointerType);
+    await until(`document.getElementById(${JSON.stringify(id)}).value===${JSON.stringify(value)}`);
+    await assertPicker(id,false);
+  };
   await evaluate("document.getElementById('garage-native-setting').focus()");
   for(const key of ['Home','ArrowDown','ArrowDown'])await pressKey(key);
+  assert.equal(await evaluate("document.getElementById('garage-native-setting').value"),'power','browsing settings does not commit a change');
+  await assertPicker('garage-native-setting',true);
+  await pressKey('Enter');
   await until("document.getElementById('garage-native-setting').value==='targetC'");
-  assert.equal(await evaluate("document.getElementById('garage-native-setting').matches(':open')"),false,'choosing room setting closes the native menu');
-  assert.equal(await evaluate("document.activeElement.id"),'garage-native-setting','keyboard selection keeps focus on the setting selector');
+  await assertPicker('garage-native-setting',false);
+  assert.equal(await evaluate(pickerFocus('garage-native-setting')),true,'keyboard selection keeps focus on the setting selector');
   await trustedClick('#garage-native-temperature');
-  assert.equal(await evaluate("document.getElementById('garage-native-setting').matches(':open')"),false,'temperature input does not reopen the native menu');
+  await assertPicker('garage-native-setting',false);
   assert.equal(await evaluate("document.activeElement.id"),'garage-native-temperature');
   for(const [setting,editor,pointerType] of [['power','garage-native-value','mouse'],['targetC','garage-native-temperature','touch']]){
-    await trustedClick('#garage-native-setting');
-    assert.equal(await evaluate("document.getElementById('garage-native-setting').matches(':open')"),true,'native menu opens before the pointer choice');
-    await evaluate(`(()=>{const selector=document.getElementById('garage-native-setting');selector.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,pointerType:${JSON.stringify(pointerType)}}));selector.value=${JSON.stringify(setting)};selector.dispatchEvent(new Event('change',{bubbles:true}));})()`);
-    await until(`document.activeElement.id===${JSON.stringify(editor)}`);
-    assert.equal(await evaluate("document.getElementById('garage-native-setting').matches(':open')"),false,`${pointerType} setting choice closes the menu and focuses its value editor`);
+    await choosePicker('garage-native-setting',setting,pointerType);
+    await until(editor==='garage-native-value'?pickerFocus(editor):`document.activeElement.id===${JSON.stringify(editor)}`);
   }
-  // Exercise the shared dismissal with real open native menus, including a dynamic control.
+  // Exercise real application pickers, including a control added after initialization.
   await evaluate("document.getElementById('garage-native-setting').value='fan';document.getElementById('garage-native-setting').dispatchEvent(new Event('change'));const select=document.createElement('select');select.id='dynamic-select-smoke';select.innerHTML='<option>First</option><option>Second</option>';document.body.append(select)");
-  for(const id of ['left-axis','garage-native-value','dynamic-select-smoke']) {
+  for(const id of ['garage-native-value','dynamic-select-smoke']) {
     for(const pointerType of ['mouse','touch']) {
-      await trustedClick(`#${id}`);
-      assert.equal(await evaluate(`document.getElementById('${id}').matches(':open')`),true,`${id} menu opens`);
-      await evaluate(`(()=>{const select=document.getElementById('${id}');if('${pointerType}'==='touch')select.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,pointerType:'touch'}));select.selectedIndex=select.selectedIndex===1?2:1;if(select.selectedIndex<0)select.selectedIndex=0;select.dispatchEvent(new Event('change',{bubbles:true}));})()`);
-      assert.equal(await evaluate(`document.getElementById('${id}').matches(':open')`),false,`${id} ${pointerType} selection closes menu`);
-      assert.notEqual(await evaluate('document.activeElement.id'),id);
+      const value=await evaluate(`(()=>{const select=document.getElementById('${id}');return [...select.options].find(option=>!option.disabled&&option.value!==''&&!option.selected).value;})()`);
+      await choosePicker(id,value,pointerType);
+      assert.equal(await evaluate(pickerFocus(id)),true,`${id} ${pointerType} selection retains trigger focus`);
     }
+    const previous=await evaluate(`document.getElementById('${id}').value`);
     await evaluate(`document.getElementById('${id}').focus()`);
     await pressKey('ArrowDown');
-    assert.equal(await evaluate('document.activeElement.id'),id,`${id} keyboard navigation retains focus`);
+    await pressKey('End');
+    await assertPicker(id,true);
+    assert.equal(await evaluate(`document.getElementById('${id}').value`),previous,`${id} keyboard browsing does not commit`);
+    assert.equal(await evaluate(pickerFocus(id)),true,`${id} keyboard navigation retains focus`);
+    await pressKey('Escape');
+    await assertPicker(id,false);
+    assert.equal(await evaluate(`document.getElementById('${id}').value`),previous,`${id} Escape cancels selection`);
+    await pressKey('End');
+    const expected=await evaluate(`document.getElementById('${id}').options[document.getElementById('${id}').options.length-1].value`);
+    await pressKey('Enter');
+    assert.equal(await evaluate(`document.getElementById('${id}').value`),expected,`${id} Enter commits selection`);
+    await assertPicker(id,false);
+    assert.equal(await evaluate(pickerFocus(id)),true,`${id} keyboard commit retains focus`);
   }
   await evaluate("document.getElementById('dynamic-select-smoke').remove()");
   for(const [setting,value] of [['power','off'],['mode','cool'],['fan',2],['vane','swing'],['wideVane','left'],['targetC',22.5]]){
@@ -230,7 +260,7 @@ try {
     await send('Emulation.setDeviceMetricsOverride',{width,height:1000,deviceScaleFactor:1,mobile:false});
     await evaluate(`window.homeEnergyTheme.setTheme('${theme}');document.getElementById('garage-controller-details').scrollIntoView({block:'start',behavior:'instant'})`);
     assert.equal(await evaluate('document.documentElement.scrollWidth<=window.innerWidth'),true,`${width} ${theme} page overflow`);
-    const overflow=await evaluate("(()=>{const root=document.getElementById('garage-controller-details'),bounds=root.getBoundingClientRect();return [...root.querySelectorAll('select,input,table')].filter(node=>node.offsetParent).filter(node=>{const r=node.getBoundingClientRect();return r.left<bounds.left-1||r.right>bounds.right+1;}).map(node=>node.id||node.tagName);})()");
+    const overflow=await evaluate("(()=>{const root=document.getElementById('garage-controller-details'),bounds=root.getBoundingClientRect();return [...root.querySelectorAll('.app-select-trigger,input,table')].filter(node=>node.offsetParent).filter(node=>{const r=node.getBoundingClientRect();return r.left<bounds.left-1||r.right>bounds.right+1;}).map(node=>node.id||node.tagName);})()");
     assert.deepEqual(overflow,[],`${width} ${theme} equipment content stays inside the card`);
     await evaluate("globalThis.pumpSmokeCompressor='stale';globalThis.refreshPumpSmoke()");
     await until("document.getElementById('garage-native-compressor').textContent==='Unknown'");
@@ -269,7 +299,7 @@ try {
   await until("document.getElementById('garage-native-status').textContent.includes('read-only')");
   assert.equal(await evaluate("document.getElementById('garage-native-submit').disabled"),true);
   assert.deepEqual(errors,[]);
-  console.log(JSON.stringify({result:'mitsubishi-browser-smoke-passed',artifacts,checks:['chart axis, pump values and dynamic dropdowns close after mouse/touch selection and retain keyboard focus','readings in their own fold','native room selection closes menu','pointer and touch setting changes close the menu and focus the value editor','all six typed controls','accepted versus native confirmation','dirty edit and focus preserved','compressor running idle and unknown states','supported readings retained through temporary data loss','concise temperature and low-target popup help','active room sensor and offset details','freshness and quality details','never-observed unsupported fields and empty groups omitted','new real zero readings appear and remain through later loss','320/390/1440px both themes','unavailable values remain on one line','offline and read-only gating','no browser exceptions']}));
+  console.log(JSON.stringify({result:'mitsubishi-browser-smoke-passed',artifacts,checks:['pump values and dynamic dropdowns close after real mouse/touch selection and retain keyboard focus','readings in their own fold','keyboard browsing and Escape preserve values; Enter commits and closes the room picker','pointer and touch setting changes close the menu and focus the value editor','all six typed controls','accepted versus native confirmation','dirty edit and focus preserved','compressor running idle and unknown states','supported readings retained through temporary data loss','concise temperature and low-target popup help','active room sensor and offset details','freshness and quality details','never-observed unsupported fields and empty groups omitted','new real zero readings appear and remain through later loss','320/390/1440px both themes','unavailable values remain on one line','offline and read-only gating','no browser exceptions']}));
   await send('Page.close');
 }finally{
   socket?.close();for(const task of pending.values())clearTimeout(task.timer);
