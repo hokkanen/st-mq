@@ -124,7 +124,7 @@ test('replica exposes both saved models without sample histories, live readiness
     assert.equal(learning.recordedAt, at);
   }
   assert.equal(status.readOnly, true);
-  assert.equal(status.garage.adapter.automaticControl, false);
+  assert.equal(status.garage.adapter.pauseControl, false);
   assert.equal(status.garage.adapter.liveControlSupported, false);
   assert.equal(Object.hasOwn(status.garage.settings, 'assumeISave10C'), false);
   assert.equal(Object.hasOwn(status.garage.settings, 'maxPauseHours'), false);
@@ -141,8 +141,8 @@ test('replica exposes both saved models without sample histories, live readiness
   assert.equal(garageDisplayValue.coefficientDetails.length, 6);
   assert.equal(garageDisplayValue.evidenceDetails.find(row => row.key === 'recorded-history-reconstruction').value, 'Recorded master snapshot');
   assert.match(garageDisplayValue.planningDetails.find(row => row.key === 'current-opportunity').value, /Read.only slave/);
-  assert.equal(garageDisplayValue.planningDetails.find(row => row.key === 'pause-window').value, 'Unavailable',
-    'A missing live plan cannot establish that no pause is planned');
+  assert.equal(garageDisplayValue.planningDetails.find(row => row.key === 'reduction-window').value, 'Unavailable',
+    'A missing live plan cannot establish that no reduction is planned');
   const target = { textContent: '', classList: { toggle() {} } }, basis = { textContent: '', hidden: true }, context = { textContent: '' };
   renderGarage({ getElementById: id => ({ 'garage-native-target': target, 'garage-native-target-basis': basis,
     'garage-policy-context': context })[id] }, status);

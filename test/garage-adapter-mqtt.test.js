@@ -60,9 +60,9 @@ test('Shelly CN105 MQTT route monitors before commissioning, then handshakes and
     const receive = () => client.emit('message', settings.stateTopic, Buffer.from(JSON.stringify(state)));
     receive();
     assert.equal(adapter.status().health.pumpCommunicating, true);
-    assert.equal(adapter.status().automaticControl, false);
+    assert.equal(adapter.status().pauseControl, false);
     assert.equal(published.length, 0);
-    state.mode = 'armed'; state.sequence++;
+    state.mode = 'ready'; state.sequence++;
     state.commissioning = { selectivePowerVerified: true, expiryVerified: true, restartVerified: true };
     receive();
     assert.equal(published.length, 0);
@@ -83,7 +83,7 @@ test('Shelly CN105 MQTT route monitors before commissioning, then handshakes and
     assert.equal(published[1].payload.requestedExpiryAt, base + 120_000);
     assert.deepEqual(published[1].options, { qos: 0, retain: false });
     now += 1000; client.emit('offline');
-    assert.equal(adapter.status().automaticControl, false);
+    assert.equal(adapter.status().pauseControl, false);
     assert.equal(adapter.status().restorePending, true);
   } finally { await capture.close({ restore: false }); }
 });

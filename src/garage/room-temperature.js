@@ -20,9 +20,11 @@ const failed = result => ['rejected', 'failed', 'uncertain', 'superseded'].inclu
 export class GarageRoomTemperature {
   constructor({ targetC = null, now = Date.now() } = {}) {
     this.targetC = targetC;
+    this.automaticTarget = null;
     this.startedAt = now;
     this.minimumMeasuredAt = now;
     this.generation = 0;
+    this.deliveredSamples = [];
     this.resumeAtNativeTarget = targetC !== null;
     this.reset();
   }
@@ -41,12 +43,28 @@ export class GarageRoomTemperature {
   select(targetC, now) {
     this.suspended = false;
     this.targetC = targetC;
+    this.automaticTarget = null;
     this.requestedAt = now;
     this.resumeAtNativeTarget = false;
     this.generation++;
     this.reset();
     this.mustClear = true;
     this.ordinary = null; this.ordinaryPending = null;
+  }
+  effectiveTarget(now) {
+    return this.automaticTarget?.until > now ? this.automaticTarget.targetC : this.targetC;
+  }
+  setEffectiveTarget(targetC, until, now) {
+    if (targetC !== null && (!Number.isFinite(targetC) || targetC < 0
+      || !Number.isInteger(targetC * 2) || this.targetC === null || targetC >= this.targetC
+      || !Number.isSafeInteger(until) || until <= now)) throw new Error('Choose a bounded lower external room target.');
+    const next = targetC === null ? null : { targetC, until };
+    if (this.automaticTarget?.targetC === next?.targetC && this.automaticTarget?.until === next?.until) return;
+    this.automaticTarget = next;
+    this.generation++;
+    this.acknowledged = false; this.held = false;
+    // The native setup and active sensor selection stay intact. The next
+    // numeric write adjusts the control offset using its real source timestamp.
   }
   handover(request, now) {
     // Native fan, vane, power and mode commands retain the chosen room target.
@@ -68,10 +86,19 @@ export class GarageRoomTemperature {
     this.suspended = false; this.generation++; this.reset();
     this.resumeAtNativeTarget = this.targetC !== null; this.minimumMeasuredAt = now;
   }
-  status(observation) {
-    return { targetC: this.targetC, phase: this.phase, reason: this.reason,
+  deliveredTarget(external, now) {
+    const proof = external?.continuation;
+    if (!proof?.confirmed || !(proof.expiresAt > now)) return null;
+    const sample = this.deliveredSamples.find(row => row.measuredAt === proof.measuredAt && row.temperatureC === proof.temperatureC);
+    return sample?.targetC ?? null;
+  }
+  status(observation, now = Date.now()) {
+    const effectiveTargetC = this.effectiveTarget(now), automatic = effectiveTargetC !== this.targetC;
+    return { targetC: this.targetC, ownerTargetC: this.targetC, effectiveTargetC,
+      targetSource: automatic ? 'automatic' : 'owner', targetUntil: automatic ? this.automaticTarget.until : null,
+      phase: this.phase, reason: this.reason,
       sourceC: Number.isFinite(observation?.value) ? observation.value : null,
-      measuredAt: observation?.sourceTime ?? null, offsetC: this.targetC === null ? 0 : GARAGE_EXTERNAL_NATIVE_TARGET_C - this.targetC,
+      measuredAt: observation?.sourceTime ?? null, offsetC: effectiveTargetC === null ? 0 : GARAGE_EXTERNAL_NATIVE_TARGET_C - effectiveTargetC,
       suppliedC: this.suppliedC, nativeTargetC: GARAGE_EXTERNAL_NATIVE_TARGET_C, acknowledged: this.acknowledged,
       held: this.held,
       result: this.ordinary ? { ...this.ordinary, status: 'pending', requestedAt: this.requestedAt,
@@ -100,6 +127,7 @@ export class GarageRoomTemperature {
     const epoch = external.sourceEpoch ?? JSON.stringify([external.bootId, external.sessionId]);
     if (this.epoch !== epoch) {
       this.epoch = epoch;
+      this.deliveredSamples = [];
       this.reset(); this.mustClear = true;
       this.minimumMeasuredAt = now;
       this.lastMeasuredAt = null;
@@ -109,7 +137,8 @@ export class GarageRoomTemperature {
     const fresh = sourceUsable && observation?.source !== 'garage-adapter'
       && Number.isSafeInteger(observation?.sourceTime) && observation.sourceTime >= this.startedAt
       && observation.sourceTime <= now && now - observation.sourceTime < GARAGE_EXTERNAL_SOURCE_MAX_AGE_MS;
-    const supplied = fresh && this.targetC !== null ? Math.round((observation.value + GARAGE_EXTERNAL_NATIVE_TARGET_C - this.targetC) * 2) / 2 : null;
+    const effectiveTargetC = this.effectiveTarget(now);
+    const supplied = fresh && effectiveTargetC !== null ? Math.round((observation.value + GARAGE_EXTERNAL_NATIVE_TARGET_C - effectiveTargetC) * 2) / 2 : null;
     const inRange = Number.isFinite(supplied) && supplied >= 8 && supplied <= 39.5;
     const source = fresh ? sourceIdentity ?? JSON.stringify([observation.source, observation.device,
       observation.raw?.temperatureRouteSignature]) : null;
@@ -159,7 +188,7 @@ export class GarageRoomTemperature {
     }
     if (!current()) return;
     if (this.suspended) {
-      this.phase = 'suspended'; this.reason = 'External temperature control is suspended during the heating override.'; return;
+      this.phase = 'suspended'; this.reason = 'External temperature control is suspended while restoring safe native heating.'; return;
     }
     if (this.ordinary) {
       const request = this.ordinary, controls = adapter.nativeControls(now);
@@ -236,10 +265,13 @@ export class GarageRoomTemperature {
       && external.result?.status !== 'rejected') return;
     let result;
     try {
-      // The adapter validates fresh ON/HEAT/17°C here, at sample admission.
+      // The adapter validates fresh HEAT/native17 and native ON here.
       // It leaves a failed renewal's existing permission to expire locally.
+      this.deliveredSamples = [{ measuredAt: observation.sourceTime, temperatureC: supplied, targetC: effectiveTargetC },
+        ...this.deliveredSamples].slice(0, 4);
       result = await adapter.setExternalTemperature({ temperatureC: supplied,
         measuredAt: observation.sourceTime, requestedExpiryAt: Math.min(protection.expiresAt,
+          this.automaticTarget?.until > now ? this.automaticTarget.until : Infinity,
           observation.sourceTime + GARAGE_EXTERNAL_SOURCE_MAX_AGE_MS) }, now);
     } catch (error) {
       if (error.code !== 'external-native-target-required') throw error;

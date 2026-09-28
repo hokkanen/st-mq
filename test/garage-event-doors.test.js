@@ -136,18 +136,18 @@ test('configured unknown and open doors preserve recorded validation evidence', 
 });
 
 test('a door gap with recovered endpoints preserves cost observations but ends the savings qualification', () => {
-  const first = sample(0), model = updateGarageModel(null, first);
+  const first = { ...sample(0), demandReduced: false }, model = updateGarageModel(null, first);
   const initial = startGarageAssessment(model, first);
   initial.previous.rearAt = START - MINUTE;
-  assert.equal(updateGarageAssessment(initial, model, sample(10),
+  assert.equal(updateGarageAssessment(initial, model, { ...sample(10), demandReduced: false },
     { recordedKwh: .01, priceCtPerKwh: 10 }).qualified, true,
   'Accounting continuity starts at the assessment time, independently of temperature source age');
-  const interrupted = updateGarageAssessment(initial, model, sample(10, { doorClosedSince: START + 5 * MINUTE }),
+  const interrupted = updateGarageAssessment(initial, model, { ...sample(10, { doorClosedSince: START + 5 * MINUTE }), demandReduced: false },
     { recordedKwh: .01, priceCtPerKwh: 10 });
   assert.equal(interrupted.qualified, false);
   assert.equal(interrupted.actualKwh, .01);
   assert.equal(interrupted.steps, 1);
-  const recovered = updateGarageAssessment(interrupted, model, sample(20, { doorClosedSince: START + 5 * MINUTE }),
+  const recovered = updateGarageAssessment(interrupted, model, { ...sample(20, { doorClosedSince: START + 5 * MINUTE }), demandReduced: false },
     { recordedKwh: .01, priceCtPerKwh: 10 });
   assert.equal(recovered.qualified, false);
   assert.equal(recovered.actualKwh, .02);

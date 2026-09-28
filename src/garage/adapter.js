@@ -1,6 +1,6 @@
 import { randomUUID, createHash } from 'node:crypto';
 import { GARAGE_FIXTURE_CONTRACT, SHELLY_CN105_CONTRACT, GARAGE_CONTRACT_STATUS, GARAGE_FIELDS, garageAdapterSettings,
-  decodeGarageEnvelope, decodeGarageField, finiteTime, freshField, validFixtureState } from './contract.js';
+  decodeGarageEnvelope, decodeGarageField, finiteTime, freshField, validFixtureState, validateSavedGaragePauseContract } from './contract.js';
 import { isShellyCn105Transport, SHELLY_CN105_COMMISSIONING } from './shelly-cn105.js';
 import { GARAGE_NATIVE_SETTINGS, GARAGE_EXTERNAL_NATIVE_TARGET_C, validateGarageNativeSetting, garageNativeOptions } from './native-settings.js';
 import { createGarageElectrical } from './electrical.js';
@@ -70,6 +70,7 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
   onObservation = () => {}, onEnergy = () => {}, onState = () => {}, onDiagnostic = () => {},
   onEquipmentDiagnostic = () => {}, persisted = null,
   simulationTransport = null, productionTransport = null, hostSession = randomUUID() } = {}) {
+  validateSavedGaragePauseContract(persisted);
   const settings = garageAdapterSettings(input);
   const production = settings.driver === 'shelly-cn105';
   const simulated = !production && simulationTransports.has(simulationTransport);
@@ -105,7 +106,7 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
   // restart or connection loss, even if its old expiry is still in the future.
   let episode = persisted?.episode && identity(persisted.episode.id) ? {
     id: persisted.episode.id, endpointAt: persisted.episode.endpointAt,
-    leaseExpiresAt: persisted.episode.leaseExpiresAt ?? null, purpose: persisted.episode.purpose, status: 'restoring', invalidated: true,
+    leaseExpiresAt: persisted.episode.leaseExpiresAt ?? null, status: 'restoring', invalidated: true,
   } : null;
   let recoveryLockedUntil = finiteTime(persisted?.recoveryLockedUntil) ? persisted.recoveryLockedUntil : 0;
   let lastCommand = null, commands = [], faults = restorePending ? ['restart-reconciliation-required'] : [];
@@ -164,19 +165,20 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
       targetC: verified ? targetC : null, source: verified ? 'device-verified' : 'unavailable',
       nativeTargetC: state?.native.targetC?.value ?? null };
   }
-  function blockers(now, { forRelease = false, purpose = episode?.purpose ?? 'automatic', afterExternalClear = false, allowClaim = false } = {}) {
+  function blockers(now, { forRelease = false, afterExternalClear = false, allowClaim = false } = {}) {
     const reasons = [];
     const baseline = baselineAssessment(now);
     if (!transport) reasons.push(production ? 'adapter-command-route-unavailable' : 'real-adapter-contract-unavailable');
     if (!canControl()) reasons.push('control-authority-unavailable');
-    if (!afterExternalClear && externalBusy(now)) reasons.push('external-temperature-busy');
+    if (!forRelease && !afterExternalClear && externalBusy(now))
+      reasons.push('external-temperature-busy');
     if (!connected || stopped) reasons.push('mqtt-unavailable');
     if (!reconciled || !state || state.retained || state.observedAt > now || now - state.observedAt >= settings.maxAgeMs)
       reasons.push('fresh-session-reconciliation-required');
     // The production protocol permits the current owner to release its managed
     // obligation even after the native baseline has revoked OFF authorization.
     if (!state || (state.authority.ownerSession !== hostSession && !(allowClaim && !state.authority.ownerSession))
-      || (!forRelease || !production) && state.authority[purpose === 'manual' ? 'manualPauseAllowed' : 'controlAllowed'] !== true)
+      || (!forRelease || !production) && state.authority.controlAllowed !== true)
       reasons.push('adapter-authority-unavailable');
     if (!forRelease) {
       if (nativePending(now) || state?.manualPending) reasons.push('manual-setting-pending');
@@ -186,7 +188,7 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
       if (!h.deviceOnline) reasons.push('device-offline');
       if (!h.driverProgressing) reasons.push('driver-not-progressing');
       if (!h.pumpCommunicating) reasons.push('pump-not-communicating');
-      if (purpose === 'automatic' ? state?.mode !== 'armed' : !['armed', 'monitoring'].includes(state?.mode))
+      if (state?.mode !== 'ready')
         reasons.push(`adapter-${state?.mode ?? 'unavailable'}`);
       if (!CAPABILITIES.every(name => state?.capabilities[name] === true))
         reasons.push('essential-capability-unverified');
@@ -209,7 +211,10 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
     if (episode) { episode.invalidated = true; episode.status = 'restoring'; }
     if (restorePending) restorationRequestedAt ??= now;
     if (lastCommand && ['start', 'renew'].includes(lastCommand.action)
-      && !['failed', 'rejected', 'superseded'].includes(lastCommand.status)) lastCommand.status = 'superseded';
+      && !['failed', 'rejected', 'superseded'].includes(lastCommand.status)) {
+      lastCommand.status = 'superseded';
+      lastCommand.reason = reason;
+    }
     fault(reason);
   }
   function processResult(result, now) {
@@ -436,7 +441,8 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
       || feed.temperatureC !== previous.temperatureC || feed.measuredAt !== previous.measuredAt
       || state.observedAt + feed.expiresInMs <= now
       || ['device', 'driver', 'pump'].some(key => state.health[key]?.value === false)
-      || state.native.power?.value !== 'on' || state.native.mode?.value !== 'heat') return null;
+      || state.native.power?.value !== 'on'
+      || state.native.mode?.value !== 'heat') return null;
     const h = health(now);
     // A Pill-only outage does not disconnect the host's broker connection. Its
     // old state cannot confirm the outcome of a timed-out numeric renewal. Keep
@@ -466,8 +472,10 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
       const h = health(now);
       if (!h.deviceOnline || !h.driverProgressing || !h.pumpCommunicating) reasons.push('Fresh driver and heat-pump communication are required.');
       if (['maintenance', 'commissioning'].includes(state?.mode)) reasons.push('The adapter is in maintenance or commissioning.');
-      if (restorePending || state?.restorationPending || state?.lease) reasons.push('Restore the managed pause before using external temperature control.');
-      if (['arming', 'paused', 'recovering', 'unresolved'].includes(state?.driverPhase)) reasons.push('Wait for managed heat-pump recovery.');
+      if (restorePending || state?.restorationPending || state?.lease)
+        reasons.push('Restore the managed pause before using external temperature control.');
+      if (['arming', 'paused', 'recovering', 'unresolved'].includes(state?.driverPhase))
+        reasons.push('Wait for managed heat-pump recovery.');
       if (!configure) {
         if (external?.rearmRequired) reasons.push('Clear external temperature control before rearming.');
         if (['clearing', 'unresolved'].includes(external?.phase)) reasons.push('Wait for external temperature cleanup.');
@@ -509,6 +517,11 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
       retryAt: externalBusyRetry?.retryAt ?? null,
       needsClear: externalNeedsClear,
       continuation: externalContinuation(now),
+      outstandingPermissionExpiresAt: externalBusy(now) ? Math.max(0,
+        acknowledgedExternal?.expiresAt ?? 0,
+        lastExternalSample ? externalExpiry(lastExternalSample) : 0,
+        lifecycle?.phase === 'active' || lifecycle?.phase === 'arming'
+          ? (state?.observedAt ?? 0) + (lifecycle?.expiresInMs ?? 0) : 0) : null,
       sourceEpoch: state ? createHash('sha256').update(JSON.stringify([state.deviceId, state.bootId, state.sessionId])).digest('hex') : null,
       expiresInMs: lifecycle ? Math.max(0, lifecycle.expiresInMs - Math.max(0, now - state.observedAt)) : 0 };
   }
@@ -705,7 +718,7 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
     const reasons = externalBlockers(now, { clear });
     if (reasons.length) throw new Error(reasons[0]);
     // Check the expected native target only when admitting a numeric sample.
-    // The existing blockers already require fresh, matching ON/HEAT readbacks.
+    // Existing blockers require fresh matching HEAT and ON readbacks.
     // Refusal leaves the previous source deadline and device challenge intact;
     // no extra polls, target writes or clear commands are sent by this guard.
     if (!clear && state.native.targetC.value !== GARAGE_EXTERNAL_NATIVE_TARGET_C) {
@@ -713,10 +726,20 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
       error.code = 'external-native-target-required';
       throw error;
     }
-    if (!clear && lastExternalSample && (input.measuredAt < lastExternalSample.measuredAt
-      || input.measuredAt === lastExternalSample.measuredAt
-        && (input.temperatureC !== lastExternalSample.temperatureC || state.externalTemperature?.phase === 'internal')))
-      throw new Error('A newer original sensor measurement is required.');
+    if (!clear && lastExternalSample) {
+      if (input.measuredAt < lastExternalSample.measuredAt
+        || input.measuredAt === lastExternalSample.measuredAt
+          && !['arming', 'active'].includes(state.externalTemperature?.phase))
+        throw new Error('A newer original sensor measurement is required.');
+      if (input.measuredAt === lastExternalSample.measuredAt) {
+        // Changing a target changes the control value, never the source clock
+        // or the existing permission's upper bound.
+        input = { ...input, requestedExpiryAt: Math.min(input.requestedExpiryAt,
+          externalExpiry(lastExternalSample), acknowledgedExternal?.measuredAt === input.measuredAt
+            ? acknowledgedExternal.expiresAt : Infinity) };
+        if (input.requestedExpiryAt <= now) throw new Error('A newer original sensor measurement is required.');
+      }
+    }
     const command = { schema: contractVersion, deviceId: state.deviceId, bootId: state.bootId,
       sessionId: state.sessionId, ownerSession: hostSession, commandId: randomUUID(), sequence: ++sequence,
       challenge: state.challenge.value, action: 'remote-temperature', issuedAt: now,
@@ -736,15 +759,15 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
     publishExternalDiagnostic(now);
     return externalCommandSummary(attempt);
   }
-  async function claimAuthority(now, purpose = 'automatic') {
+  async function claimAuthority(now) {
     if (!live || restorePending || state?.authority.ownerSession || state?.restorationPending || state?.lease
       || claimPending && now < claimPending.deadlineAt) return;
     // A claim changes ownership only. It requires the same commissioned,
     // current baseline as a pause, and never takes ownership from another host.
-    if (blockers(now, { purpose }).some(reason => reason !== 'adapter-authority-unavailable')) return;
+    if (blockers(now).some(reason => reason !== 'adapter-authority-unavailable')) return;
     const command = { schema: contractVersion, deviceId: state.deviceId, bootId: state.bootId,
       sessionId: state.sessionId, ownerSession: hostSession, commandId: randomUUID(),
-      sequence: ++sequence, challenge: state.challenge.value, action: 'claim', purpose, issuedAt: now,
+      sequence: ++sequence, challenge: state.challenge.value, action: 'claim', issuedAt: now,
       deadlineAt: Math.min(state.challenge.expiresAt, now + 30_000) };
     consumeChallenge(now);
     claimPending = command;
@@ -764,7 +787,7 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
     if (deadlineAt <= now) return { status: 'blocked', reasons: ['command-deadline-reached'] };
     const command = { schema: contractVersion, deviceId: state.deviceId, bootId: state.bootId,
       sessionId: state.sessionId, ownerSession: hostSession, episodeId: episode?.id ?? 'restoration',
-      commandId, sequence: ++sequence, challenge, action, purpose: episode?.purpose ?? 'automatic', issuedAt: now, deadlineAt,
+      commandId, sequence: ++sequence, challenge, action, issuedAt: now, deadlineAt,
       ...(action === 'release' ? {} : { endpointAt: episode.endpointAt,
         temperatureEvidenceAt: permission.temperatureEvidenceAt,
         requestedExpiryAt: Math.min(now + state.limits.maximumMs, episode.endpointAt,
@@ -790,7 +813,7 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
     if (!restorePending) return { status: 'idle' };
     invalidate(reason, now); restorationRequestedAt ??= now;
     recordRestoration();
-    // Neither an inactive instance nor a monitoring adapter fights the owner.
+    // The current owner can restore even when admission of new pauses is disabled.
     if (lastCommand?.action === 'release' && ['pending', 'published', 'accepted'].includes(lastCommand.status)
       && now < lastCommand.deadlineAt) return commandSummary(lastCommand);
     if (lastCommand?.action === 'release' && (!health(now).pumpCommunicating || !health(now).driverProgressing
@@ -804,7 +827,9 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
     const current = currentFields(value.commissioning, SHELLY_CN105_COMMISSIONING)
       && Object.values(value.commissioning ?? {}).every(value => typeof value === 'boolean')
       && currentFields(value.baseline, ['verified', 'profile', 'mode', 'targetC', 'fan', 'vane', 'wideVane', 'measuredAt'])
-      && currentFields(value.capabilities, [...CAPABILITIES, 'externalTemperature', 'manualControls', 'targetStep', 'manualOptions']);
+      && currentFields(value.capabilities, [...CAPABILITIES, 'externalTemperature', 'manualControls', 'targetStep', 'manualOptions'])
+      && currentFields(value.authority, ['ownerSession', 'controlAllowed', 'manualControlAllowed'])
+      && !Object.hasOwn(value, 'purpose') && !Object.hasOwn(value.lease ?? {}, 'purpose');
     if (!validFixtureState(value) || !current || value.observedAt > now) {
       acknowledgedExternal = null;
       reconciled = false; invalidate('invalid-adapter-state', now); changed(); return;
@@ -851,7 +876,7 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
       limits: validLimits ? { maximumMs: limits.maximumMs, renewAfterMs: limits.renewAfterMs,
         minimumOnMs: limits.minimumOnMs, restorationDelayMs: limits.restorationDelayMs } : null,
       authority: { ownerSession: value.authority?.ownerSession, controlAllowed: value.authority?.controlAllowed === true,
-        manualControlAllowed: value.authority?.manualControlAllowed === true, manualPauseAllowed: value.authority?.manualPauseAllowed === true },
+        manualControlAllowed: value.authority?.manualControlAllowed === true },
       challenge: identity(value.challenge?.value) ? { value: value.challenge.value, expiresAt: value.challenge.expiresAt } : null,
       restorationPending: value.restorationPending === true,
       lease: identity(value.lease?.episodeId) && finiteTime(value.lease?.expiresAt) && finiteTime(value.lease?.endpointAt)
@@ -926,10 +951,15 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
         // Even a rejected bound is relevant to the worst remaining local OFF
         // permission. Preserve the reported expiry while requesting release.
         episode.leaseExpiresAt = state.lease.expiresAt;
-        if (state.lease.endpointAt > episode.endpointAt || state.lease.expiresAt > episode.endpointAt) invalidate('adapter-endpoint-mismatch', now);
+        // The Pill projects its monotonic deadline through a whole-second UTC
+        // clock. A later projection may increase within the authorized bound.
+        // Retain the earliest projection for our next command, but compare each
+        // report with the actual intent ceiling, not a previous projection.
+        if (state.lease.endpointAt > episode.authorizedEndpointAt
+          || state.lease.expiresAt > episode.authorizedEndpointAt) invalidate('adapter-endpoint-mismatch', now);
         else if (request && state.lease.expiresAt > request.requestedExpiryAt) invalidate('adapter-lease-bound-mismatch', now);
         else if (state.lease.expiresAt <= now) invalidate('adapter-lease-expired', now);
-        else { episode.endpointAt = state.lease.endpointAt; episode.status = 'paused'; }
+        else { episode.endpointAt = Math.min(episode.endpointAt, state.lease.endpointAt); episode.status = 'paused'; }
       }
       const native = state.native.power;
       const releaseConfirmed = lastCommand?.action === 'release' && lastCommand.status === 'native-confirmed'
@@ -1054,7 +1084,11 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
     else receiveTelemetry(value, packet, now);
     return true;
   }
-  async function plannerTick({ now = clock(), valid = false, plan = null, recoveryReady = false, demand = false, purpose = 'automatic' } = {}) {
+  async function plannerTick(input = {}) {
+    if (!input || typeof input !== 'object' || Array.isArray(input)
+      || Object.keys(input).some(key => !['now', 'valid', 'plan', 'recoveryReady', 'demand'].includes(key)))
+      throw new TypeError('Unsupported Garage pause request field');
+    const { now = clock(), valid = false, plan = null, recoveryReady = false, demand = false } = input;
     if (!finiteTime(now)) throw new TypeError('Invalid garage planner clock');
     if (lastTick !== null && now < lastTick) return release({ reason: 'host-clock-regressed', now });
     lastTick = now;
@@ -1063,23 +1097,23 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
       lastCommand.status = 'uncertain'; fault('native-result-unresolved');
       if (lastCommand.action !== 'release') invalidate('native-result-unresolved', now);
     }
-    if (!['manual', 'automatic'].includes(purpose)) throw new TypeError('Unsupported pause purpose');
-    if (valid && !state?.authority.ownerSession) {
-      await claimAuthority(now, purpose);
-      if (claimPending) return { status: 'claiming' };
-    }
-    const reasons = blockers(now, { purpose });
     const desired = valid && plan && identity(plan.id) && finiteTime(plan.pauseFrom) && finiteTime(plan.pauseUntil)
       && plan.pauseUntil > plan.pauseFrom && plan.pauseFrom <= now && now < plan.pauseUntil
       && finiteTime(plan.temperatureEvidenceAt) && plan.temperatureEvidenceAt <= now
       && now - plan.temperatureEvidenceAt < GARAGE_TEMPERATURE_MAX_AGE_MS
       && finiteTime(plan.permissionExpiresAt) && plan.permissionExpiresAt > now;
+    if (desired && recoveryReady && !state?.authority.ownerSession) {
+      await claimAuthority(now);
+      if (claimPending) return { status: 'claiming' };
+    }
+    const reasons = blockers(now);
     if (restorePending) {
-      if (!episode || episode.invalidated || !desired || purpose !== episode.purpose || plan.id !== episode.id || now >= episode.endpointAt
+      if (!episode || episode.invalidated || !desired || plan.id !== episode.id || now >= episode.endpointAt
         || reasons.some(reason => reason !== 'fresh-challenge-required')
         || episode.leaseExpiresAt !== null && now >= episode.leaseExpiresAt)
         return release({ reason: !valid ? 'planner-or-inputs-invalid' : 'pause-no-longer-authorized', now });
       episode.endpointAt = Math.min(episode.endpointAt, plan.pauseUntil);
+      episode.authorizedEndpointAt = Math.min(episode.authorizedEndpointAt, plan.pauseUntil);
       const renewable = episode.status === 'paused' && lastCommand
         && now - lastCommand.requestedAt >= GARAGE_REVALIDATE_MS
         && plan.temperatureEvidenceAt > (lastCommand.temperatureEvidenceAt ?? -Infinity);
@@ -1099,7 +1133,8 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
     if (state?.native.power?.value !== 'on' || !freshField(state?.native.power, now, settings.maxAgeMs)) reasons.push('native-on-unconfirmed');
     if (state?.lease !== null) reasons.push('foreign-or-unresolved-episode');
     if (reasons.length) return { status: 'blocked', reasons: [...new Set(reasons)] };
-    episode = { id: plan.id, endpointAt: plan.pauseUntil, purpose, leaseExpiresAt: null, status: 'starting', invalidated: false,
+    episode = { id: plan.id, endpointAt: plan.pauseUntil, authorizedEndpointAt: plan.pauseUntil,
+      leaseExpiresAt: null, status: 'starting', invalidated: false,
       baselineTargetC: baselineAssessment(now).targetC };
     restorePending = true; obligationAt = now; restorationRequestedAt = null;
     return send('start', now, plan);
@@ -1124,8 +1159,14 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
     return { status: 'observing' };
   }
   function status(now = clock()) {
-    const reasons = blockers(now, { purpose: 'automatic' });
+    const reasons = blockers(now);
     const baseline = baselineAssessment(now);
+    const nativeSettingsReady = health(now).pumpCommunicating && ['on', 'off'].includes(state?.native.power?.value)
+      && state?.native.mode?.value === 'heat' && Number.isFinite(state?.native.targetC?.value)
+      && state.native.targetC.value >= 16 && state.native.targetC.value <= 31
+      && ['power', 'mode', 'targetC'].every(key => freshField(state.native[key], now, 30_001)
+        && state.native[key].measuredAt === state.native.power.measuredAt);
+    const nativeHeatingReady = nativeSettingsReady && state.native.power.value === 'on';
     // Keep unavailable reports and their clocks/quality visible for diagnostics.
     // Qualification still governs control, learning and electrical accounting.
     const telemetry = Object.fromEntries(Object.entries(latest).map(([signal, row]) => {
@@ -1142,10 +1183,9 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
       sourceEpoch: state || telemetryBoot ? createHash('sha256').update(JSON.stringify([
         contractVersion, state?.deviceId ?? telemetryDevice, state?.bootId ?? telemetryBoot, settings.electricalSource])).digest('hex') : null,
       liveControlSupported: live, simulation: simulated, connected, mode: state?.mode ?? 'monitoring',
-      automaticControl: Boolean(transport) && reasons.length === 0, blockedReasons: reasons,
-      manualPauseReasons: blockers(now, { purpose: 'manual', afterExternalClear: true, allowClaim: true }),
-      automaticPauseReasons: blockers(now, { purpose: 'automatic', afterExternalClear: true }), health: health(now),
-      baselineVerified: baseline.verified, baselineAccepted: baseline.accepted,
+      pauseControl: Boolean(transport) && reasons.length === 0, blockedReasons: reasons,
+      pauseReasons: blockers(now, { afterExternalClear: true, allowClaim: true }), health: health(now),
+      baselineVerified: baseline.verified, baselineAccepted: baseline.accepted, nativeSettingsReady, nativeHeatingReady,
       externalTemperature: externalTemperature(now),
       normalHeating: { targetC: baseline.targetC, source: baseline.source, verified: baseline.verified,
         nativeTargetC: baseline.nativeTargetC }, telemetry,
@@ -1162,11 +1202,11 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
         minimumOnMs: state.limits.minimumOnMs, restorationDelayMs: state.limits.restorationDelayMs } : null,
       outstandingPermissionExpiresAt: outstandingPermissionExpiresAt(),
       observedHeatingDelayMs,
-      restorePending, episode: episode ? { id: episode.id, purpose: episode.purpose, endpointAt: episode.endpointAt,
+      restorePending, episode: episode ? { id: episode.id, endpointAt: episode.endpointAt,
         leaseExpiresAt: episode.leaseExpiresAt, status: episode.status } : null,
       phase: restorePending ? episode?.status === 'paused' && !episode.invalidated ? 'paused' : 'restoring'
         : state?.mode === 'maintenance' ? 'maintenance' : now < recoveryLockedUntil ? 'recovery'
-          : reasons.length ? simulated || live && state?.mode === 'armed' ? 'unavailable' : 'monitoring' : 'ready',
+          : reasons.length ? simulated || live && state?.mode === 'ready' ? 'unavailable' : 'monitoring' : 'ready',
       recoveryLockedUntil, lastCommand: commandSummary(lastCommand), commandHistory: commands.map(commandSummary),
       faults: [...faults], electrical: electrical.status() };
   }

@@ -48,14 +48,14 @@ test('real MQTT fixture observations can never arm live control, including forge
   assert.throws(() => garageAdapterSettings({ stateTopic: 'fixture/#' }), /exact MQTT/);
   const f = fixture({ simulationTransport: { send() { throw new Error('must never send'); } } });
   assert.equal(f.adapter.status().liveControlSupported, false);
-  assert.equal(f.adapter.status().automaticControl, false);
+  assert.equal(f.adapter.status().pauseControl, false);
   assert.deepEqual((await f.start()).reasons, ['real-adapter-contract-unavailable']);
   assert.equal(f.adapter.status().contractStatus, 'provisional-fixture-only');
 });
 
 test('a published renewal interval incompatible with the host schedule cannot authorize OFF', async () => {
   const f = fixture({ initialState: { leaseLimits: { ...TEMPLATE.leaseLimits, maximumMs: 600_000, renewAfterMs: 300_000 } } });
-  assert.equal(f.adapter.status().automaticControl, false);
+  assert.equal(f.adapter.status().pauseControl, false);
   assert.ok((await f.start()).reasons.includes('pause-renewal-interval-incompatible'));
   assert.equal(f.sent.length, 0);
 });
@@ -346,7 +346,7 @@ test('an explicit incompatible contract or malformed state immediately revokes p
   for (const patch of [{ schema: 'unimplemented-published-contract/v9' }, { mode: 'unknown-mode' }, { deviceId: 'different-fixture-device' }]) {
     const f = fixture(); await f.start(); f.at(BASE + 1000); f.accepted();
     f.adapter.receive(SETTINGS.stateTopic, JSON.stringify({ ...TEMPLATE, sequence: 99, observedAt: f.now(), ...patch }), {}, f.now());
-    assert.equal(f.adapter.status().automaticControl, false);
+    assert.equal(f.adapter.status().pauseControl, false);
     assert.equal(f.adapter.status().phase, 'restoring');
     assert.equal(f.adapter.status().restorePending, true);
     await f.start();

@@ -68,7 +68,7 @@ execution or actual-time cost from its reference; negative values mean extra cos
 The Garage heating configuration follows Home's current-state, temporary-control,
 price-control pause, strategy-and-limits and separate heat-model structure.
 **Heating strategy & protection** shows Gentle, Balanced or More savings,
-effective minimum benefit, benefit retained, minimum planned OFF time,
+effective minimum benefit, benefit retained, minimum planned reduction time,
 normal-heating dwell, daily limit and independent reference-pipe assumptions.
 **Garage heat model** explains recorded/modelled inputs, learned cooling,
 observed normal power, fixed assumptions and the evidence from later outcomes.
@@ -76,7 +76,7 @@ It keeps decision rules in the strategy section and does not imply a completion
 percentage or validated savings from temperature accuracy alone.
 There are two adjustable thermal coefficients, rear/front cooling per hour.
 **Validated OFF evidence** reports the duration covered by clean episode checks.
-It is never labeled a maximum pause: longer forecasts receive extra uncertainty
+It is never labeled a maximum reduction duration: longer forecasts receive extra uncertainty
 margins, and temperatures plus the pipe reserve determine the safe duration.
 
 The Mitsubishi Heat-pump settings fold includes a persistent **Room setting**
@@ -92,13 +92,13 @@ control uses the pump's current native settings, 17°C if unchanged from setup;
 blocked renewals cannot be presented as an active low-temperature feed. Native frequency
 and activity are not reported as watts. Known charger power has a separate 7.5%
 heat assumption; missing input stays unknown. Future opportunities display their
-planned start and end even before a live OFF lease exists.
+planned start and end even before any effective target is changed.
 
 The pipe reference remains a continuous sensible-heat estimate in kJ/m, with an
 independent state at rear and front. No percent indicates a fixed full allowance.
 Protection or restoration blockers remain visible independently of learning and
 economic qualification. A new cold-door admission reason does not imply that an
-open door automatically cancels an already authorized pause.
+open door automatically cancels an already authorized reduction.
 
 The chart selector includes separate Garage model input and coefficient groups.
 Inputs come from the original normalized immutable garage journal, preserving
@@ -124,7 +124,10 @@ commissioning, meter calibration or evidence of realized savings.
 isolated Chromium profile. Build the browser assets first. Set `STMQ_CHROME_BIN`
 when Chrome/Chromium is not installed at `/opt/google/chrome/chrome`. The smoke
 checks scope arithmetic, disabled release without an owned episode, the new chart
-menu entries, and closed/open layouts at 1440, 390 and 320 pixels. Screenshots are
+menu entries, and closed/open layouts at 1440, 390 and 320 pixels. Synthetic
+manual external-handover states also check that clear-before-OFF and native-ON restoration and fallback
+explanations stay visible, the selection remains requested until confirmation,
+and competing heating buttons stay disabled. Screenshots are
 left in a reported temporary directory for visual review. No existing browser
 session or household service is used.
 
@@ -133,3 +136,14 @@ command outcome distinct. The button area reports external handover, bounded OFF
 publication, confirmation and restoration. A delivery failure remains visible
 after the manual selection is cleared; a fresh power observation alone does not
 claim that a command or queued-work cancellation was confirmed.
+
+Automatic savings have a separate presentation: the saved room setting stays
+visible while details identify the effective lower target, its deadline and
+external-input acknowledgement. Native power remains ON. The browser smoke
+includes both pending and acknowledged automatic target states at 320, 390 and
+1440 pixels in both themes. A planning-only window
+is not shown as an actual reduction request. Reduced-target confirmation requires
+current native ON and a current acknowledged automatic target; native OFF cannot
+confirm it. Manual timed OFF still confirms native OFF and displays its independent
+clear/restore progress. The lower-target electricity and recovery estimates remain
+provisional and separate from historical native-OFF cooling-validation evidence.

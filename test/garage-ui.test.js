@@ -105,7 +105,7 @@ test('Garage heating, equipment and learning have independent closed disclosures
   assert.match(policy, /Freeze protection can restore heating sooner, including after a manual off selection/);
   assert.match(policy, /its original endpoint cannot move later/);
   assert.match(policy, /open or unknown configured door.*only below 2 °C.*at 2 °C or above/);
-  assert.match(policy, /Charging does not restrict pauses or add forecast warmth/);
+  assert.match(policy, /Charging does not restrict reductions or add forecast warmth/);
 });
 
 test('Garage decision explanations describe charging independence and the shared cold-door rule', () => {
@@ -114,8 +114,8 @@ test('Garage decision explanations describe charging independence and the shared
   const rows = Object.fromEntries(display.planningDetails.map(row => [row.key, row]));
   assert.match(rows['current-opportunity'].value, /open or unknown door.*below 2/i);
   assert.match(rows['door-policy'].detail, /At 2°C or above.*Outdoor temperature must be known/);
-  assert.equal(rows['charging-policy'].value, 'No pause restriction or forecast credit');
-  assert.match(rows['charging-policy'].detail, /status and power do not affect pause admission or the planned window/);
+  assert.equal(rows['charging-policy'].value, 'No reduction restriction or forecast credit');
+  assert.match(rows['charging-policy'].detail, /status and power do not affect reduction admission or the planned window/);
 });
 
 test('a bounded wait for temperature evidence is explained without promoting unavailable protection evidence', () => {
@@ -129,7 +129,7 @@ test('a bounded wait for temperature evidence is explained without promoting una
   assert.match(display.reason, /original deadline and protection margin; no renewal/);
   assert.match(Object.fromEntries(display.rows)['Temperature evidence'], /Existing pause held until.*no renewal/);
   assert.equal(display.planningDetails.find(row => row.key === 'current-opportunity').value, 'Pause held · awaiting temperature');
-  assert.equal(garageHeatingRequest(garage), 'Reduction');
+  assert.equal(garageHeatingRequest(garage), 'Off');
   assert.deepEqual(garage, before, 'presentation never changes the actual protection assessment');
   const reason = { textContent: '' }, document = { getElementById: id => id === 'garage-controller-reason' ? reason : null };
   renderGarage(document, { now, automation: { home: { enabled: true }, garage: { enabled: true } }, input: 'mqtt', garage });
@@ -220,7 +220,7 @@ test('Garage settings keep configured values separate from descriptions and live
   const groups = Object.fromEntries(Object.entries(display.settingGroups).map(([key, rows]) => [key, Object.fromEntries(rows)]));
   assert.equal(display.strategy.label, 'Gentle');
   assert.deepEqual(groups.economics, { 'Minimum estimated benefit': 'More than €0.75', 'Benefit retained': '60% of best opportunity' });
-  assert.deepEqual(groups.heating, { 'Minimum planned off time': '1 h', 'Normal heating between pauses': '3 h minimum', 'Maximum pauses per day': '1' });
+  assert.deepEqual(groups.heating, { 'Minimum planned reduction': '1 h', 'Normal heating between reductions': '3 h minimum', 'Maximum reductions per day': '1' });
   assert.deepEqual(groups.protection, { 'Normal room setting': 'Unavailable', 'Protection margin': '1 °C' });
   assert.deepEqual(groups.recovery, { 'Reference pipe diameter': '21 mm', 'Assumed wall thickness': '1 mm', 'Heat transfer': '20 W/m²K', 'Safety factor': '2×', 'Cold allowance': 'Calculated · kJ/m', 'Recovery': 'Continuous' });
   for (const rows of Object.values(display.settingGroups)) for (const [, value, description] of rows) {
@@ -295,9 +295,12 @@ test('Garage pause summary reports current pause, disabled, unavailable and auto
 
 test('Garage current state and overview share the requested power through manual, plan and restoration states', () => {
   assert.equal(garageHeatingRequest({}), 'No request');
-  assert.equal(garageHeatingRequest({ plan: { nextAction: 'available' } }), 'Normal');
-  assert.equal(garageHeatingRequest({ plan: { nextAction: 'pause' } }), 'Reduction');
-  assert.equal(garageHeatingRequest({ adapter: { phase: 'paused', restorePending: true } }), 'Reduction');
+  assert.equal(garageHeatingRequest({ plan: { nextAction: 'normal' } }), 'Normal');
+  assert.equal(garageHeatingRequest({ plan: { nextAction: 'target' } }), 'No request', 'a plan-only forecast is not a device request');
+  assert.equal(garageHeatingRequest({ targetControl: { targetC: 0 } }), 'Reduction');
+  assert.equal(garageHeatingRequest({ heatingControls: { selectedMode: 'off' }, plan: { nextAction: 'normal' } }), 'Off',
+    'an ordinary native OFF selection remains visible while the planner permits normal operation');
+  assert.equal(garageHeatingRequest({ adapter: { phase: 'paused', restorePending: true } }), 'Off');
   assert.equal(garageHeatingRequest({ adapter: { phase: 'restoring', restorePending: true } }), 'Restoring');
   assert.equal(garageHeatingRequest({ heatingControls: { requestedMode: 'off' }, adapter: { phase: 'paused' } }), 'Off');
   assert.equal(garageHeatingRequest({ heatingControls: { requestedMode: 'normal' }, adapter: { restorePending: true } }), 'Normal');
@@ -494,33 +497,33 @@ test('Garage separates validation, sources and planning with honest missing and 
     assert.equal(missing.outcomeDetails.find(row => row.key === key).value, 'Unavailable');
 });
 
-test('future and active pause windows use their selected endpoints, with no preheating', () => {
-  for (const plan of [{ pauseFrom: now + 3600_000, plannedPauseUntil: now + 7200_000, pauseUntil: null },
-    { pauseFrom: now, pauseUntil: now + 3600_000 }]) {
-    const display = garageDisplay({ plan: { ...plan, reason: 'prepare-for-later-price-opportunity' } });
-    const window = display.planningDetails.find(row => row.key === 'pause-window');
+test('future and active target windows use their selected endpoints, with no preheating', () => {
+  for (const plan of [{ reductionFrom: now + 3600_000, plannedReductionUntil: now + 7200_000, reductionUntil: null },
+    { reductionFrom: now, reductionUntil: now + 3600_000 }]) {
+    const display = garageDisplay({ plan: { ...plan, reason: 'wait-for-later-price-opportunity' } });
+    const window = display.planningDetails.find(row => row.key === 'reduction-window');
     assert.notEqual(window.value, 'None');
     assert.match(window.detail, /no preheating/);
-    assert.notEqual(Object.fromEntries(display.rows)['Planned pause endpoint'], 'No pause planned');
+    assert.notEqual(Object.fromEntries(display.rows)['Planned reduction endpoint'], 'No reduction planned');
   }
 });
 
 test('validated OFF evidence is distinct from the planned minimum and has no pause ceiling', () => {
   const display = garageDisplay({ settings: garageSettings(), learning: {
     ...garageModelSummary(createGarageModel()), thermalReady: true, validatedOffHours: 1.5,
-  }, plan: { pauseFrom: now, pauseUntil: now + 30 * 3600_000 } });
+  }, plan: { reductionFrom: now, reductionUntil: now + 30 * 3600_000 } });
   const evidence = display.outcomeDetails.find(row => row.key === 'thermal-pause-duration');
   assert.equal(evidence.title, 'Validated OFF evidence');
   assert.equal(evidence.value, '1.5 h');
-  assert.match(evidence.detail, /does not impose a maximum pause/);
-  const minimum = display.planningDetails.find(row => row.key === 'pause-duration-limits');
-  assert.equal(minimum.title, 'Pause endpoint');
+  assert.match(evidence.detail, /does not impose a maximum reduction duration/);
+  const minimum = display.planningDetails.find(row => row.key === 'reduction-duration-limits');
+  assert.equal(minimum.title, 'Reduction endpoint');
   assert.equal(minimum.value, 'Forecast and protection limited');
-  assert.equal(Object.fromEntries(display.settingGroups.heating)['Minimum planned off time'], '1 h');
-  assert.match(minimum.detail, /no fixed maximum pause/);
-  assert.match(minimum.detail, /Protection can always end a pause before the planned minimum/);
-  assert.notEqual(display.planningDetails.find(row => row.key === 'pause-window').value, 'None');
-  assert.match(display.planningDetails.find(row => row.key === 'restore-policy').detail, /does not cap its total length/);
+  assert.equal(Object.fromEntries(display.settingGroups.heating)['Minimum planned reduction'], '1 h');
+  assert.match(minimum.detail, /no fixed maximum reduction duration/);
+  assert.match(minimum.detail, /Protection can always end a reduction before the planned minimum/);
+  assert.notEqual(display.planningDetails.find(row => row.key === 'reduction-window').value, 'None');
+  assert.match(display.planningDetails.find(row => row.key === 'restore-policy').detail, /does not cap the reduction’s total length/);
 });
 
 test('Garage rendering fills the learning contexts and keeps reconstruction inside evidence', () => {

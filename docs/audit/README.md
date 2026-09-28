@@ -51,7 +51,9 @@ The new Charger 2 is a real MQTT EVSE endpoint; vehicle telemetry is independent
 It remains disabled/uncommissioned by default until the arriving hardware's
 exact identity, firmware, components, permissions and state/limit/readback
 semantics are verified. Synthetic tests do not establish physical commissioning.
-Garage automatic OFF likewise requires installation release-ordering evidence.
+Garage manual timed OFF requires installed selective-power, local-expiry and
+restart evidence plus release-ordering capability. Automatic savings use external
+room-target reductions with their separate readiness checks.
 
 The implementation preserves only the two supported v0.7.5 CSV import formats.
 An incompatible development database or configuration is rejected; existing

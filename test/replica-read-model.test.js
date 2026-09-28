@@ -73,7 +73,7 @@ test('read projection exposes saved settings and equipment evidence without live
   assert.equal(result.garage.adapter.telemetry.indoorTemperature.value, 0, 'Recorded zero does not disappear');
   assert.equal(result.garage.adapter.telemetry.compressorActive.usable, false);
   assert.equal(result.garage.adapter.authority.owned, false);
-  assert.equal(result.garage.adapter.automaticControl, false);
+  assert.equal(result.garage.adapter.pauseControl, false);
   for (const field of Object.values(result.garage.nativeControls.settings)) assert.equal(field.available, false);
   for (const capability of [result.garage.temporary, result.garage.heatingControls, result.heatingTests,
     result.equipmentTests, result.equipmentControls, result.dhwr, result.preheatValves]) assert.equal(capability.available, false);

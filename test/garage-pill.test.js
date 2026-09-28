@@ -51,7 +51,7 @@ test('production driver needs explicit distinct topics and has no configuration 
     simulationTransport: createGarageSimulationTransport(() => { throw Error('wrong contract'); }) } });
   f.state();
   assert.equal(f.adapter.status().liveControlSupported, false);
-  assert.equal(f.adapter.status().automaticControl, false);
+  assert.equal(f.adapter.status().pauseControl, false);
 });
 
 test('monitoring reads the real protocol without claiming ownership or publishing control', async () => {
@@ -63,7 +63,7 @@ test('monitoring reads the real protocol without claiming ownership or publishin
   assert.equal(f.adapter.status().contractVersion, SHELLY_CN105_CONTRACT);
   assert.equal(f.adapter.status().contractStatus, 'supported-driver');
   assert.equal(f.adapter.status().liveControlSupported, true);
-  assert.equal(f.adapter.status().automaticControl, false);
+  assert.equal(f.adapter.status().pauseControl, false);
   assert.deepEqual(f.adapter.status().health, { deviceOnline: true, driverProgressing: true, pumpCommunicating: true });
   assert.equal(f.adapter.status().native.power, 'on');
 });
@@ -160,7 +160,7 @@ test('replacement host remembers a foreign pause expiry until fresh restored ON 
 test('fixture payloads cannot authorize the production route and production payloads cannot authorize fixtures', async () => {
   const f = fixture();
   f.state({ schema: TEMPLATE.schema });
-  assert.equal(f.adapter.status().automaticControl, false);
+  assert.equal(f.adapter.status().pauseControl, false);
   assert.equal(f.published.length, 0);
   const fixtureAdapter = createGarageAdapter({ settings: { stateTopic: SETTINGS.stateTopic } });
   fixtureAdapter.setConnected(true);
@@ -238,7 +238,7 @@ test('current publisher monitoring contract interoperation preserves diagnostic 
   assert.equal(status.native.compressorActive, undefined, 'Diagnostics cannot become qualified native activity');
   assert.equal(status.telemetry.power.usable, false);
   assert.equal(status.health.pumpCommunicating, true);
-  assert.equal(status.automaticControl, false);
+  assert.equal(status.pauseControl, false);
   assert.equal(f.published.length, 0);
 });
 
@@ -396,29 +396,30 @@ test('live unverified electrical readings retain disconnect fencing without powe
 });
 
 
-test('explicit manual pause can claim monitoring but automatic requests cannot use its permission', async () => {
+test('bounded pause uses one installation capability and carries no scheduling purpose', async () => {
   const f = fixture();
-  f.state({ mode: 'monitoring', authority: { ownerSession: null, controlAllowed: false, manualPauseAllowed: true } });
-  assert.equal(f.published.length, 0, 'Monitoring does not claim in the background');
-  assert.equal(f.adapter.status().manualPauseReasons.length, 0);
-  const request = { now: BASE, purpose: 'manual', valid: true, recoveryReady: true,
-    plan: { id: 'manual-monitoring', pauseFrom: BASE, pauseUntil: BASE + 600_000,
+  f.state({ mode: 'ready', authority: { ownerSession: null, controlAllowed: true } });
+  assert.equal(f.published.length, 0, 'Reports do not claim in the background');
+  assert.equal(f.adapter.status().pauseReasons.length, 0);
+  const request = { now: BASE, valid: true, recoveryReady: true,
+    plan: { id: 'bounded-pause', pauseFrom: BASE, pauseUntil: BASE + 600_000,
       temperatureEvidenceAt: BASE, permissionExpiresAt: BASE + 120_000 } };
   assert.equal((await f.adapter.plannerTick(request)).status, 'claiming');
   assert.equal(f.published.at(-1).command.action, 'claim');
-  assert.equal(f.published.at(-1).command.purpose, 'manual');
+  assert.equal(Object.hasOwn(f.published.at(-1).command, 'purpose'), false);
   f.at(BASE + 1000);
-  f.state({ mode: 'monitoring', authority: { ownerSession: 'invented-host', controlAllowed: false, manualPauseAllowed: true } });
+  f.state({ mode: 'ready', authority: { ownerSession: 'invented-host', controlAllowed: true } });
   assert.equal((await f.adapter.plannerTick({ ...request, now: BASE + 1000 })).status, 'published');
   assert.equal(f.published.at(-1).command.action, 'start');
-  assert.equal(f.published.at(-1).command.purpose, 'manual');
+  assert.equal(Object.hasOwn(f.published.at(-1).command, 'purpose'), false);
   assert.ok(f.published.at(-1).command.requestedExpiryAt <= BASE + 120_000);
-  const automatic = fixture();
-  automatic.state({ mode: 'monitoring', authority: { ownerSession: 'invented-host', controlAllowed: false, manualPauseAllowed: true } });
-  const refused = await automatic.start();
+  const disabled = fixture();
+  disabled.state({ mode: 'monitoring', authority: { ownerSession: 'invented-host', controlAllowed: false } });
+  const refused = await disabled.start();
   assert.equal(refused.status, 'blocked');
   assert.ok(refused.reasons.includes('adapter-monitoring'));
-  assert.equal(automatic.published.length, 0);
+  assert.equal(disabled.published.length, 0);
+  await assert.rejects(disabled.adapter.plannerTick({ ...request, purpose: 'manual' }), /Unsupported Garage pause request/);
 });
 
 test('software release-ordering qualification is required independently of installed commissioning', async () => {
@@ -434,13 +435,34 @@ test('mixed retired proof, baseline and capability fields invalidate an otherwis
     { baseline: { ...TEMPLATE.baseline, assumed: true } },
     { baseline: { ...TEMPLATE.baseline, candidateMatched: true } },
     { capabilities: { ...TEMPLATE.capabilities, preserveNativeBaseline: true } },
+    { authority: { ownerSession: 'invented-host', controlAllowed: true, manualPauseAllowed: true } },
+    { mode: 'armed' },
+    { lease: { purpose: 'automatic' } },
   ]) {
-    const f = fixture(); f.state(); assert.equal(f.adapter.status().automaticControl, true);
+    const f = fixture(); f.state(); assert.equal(f.adapter.status().pauseControl, true);
     f.at(BASE + 1000); f.state(patch);
-    assert.equal(f.adapter.status().automaticControl, false);
+    assert.equal(f.adapter.status().pauseControl, false);
     assert.equal(f.adapter.status().targetIdentity, null);
     assert.ok(f.adapter.status().faults.includes('invalid-adapter-state'));
     assert.equal((await f.start()).status, 'blocked');
+    assert.equal(f.published.length, 0);
+  }
+});
+
+
+test('saved retired wire purpose requires explicit reconciliation rather than a compatibility decoder', () => {
+  assert.throws(() => fixture({ adapter: { persisted: { episode: { id: 'retired-pause', purpose: 'manual' } } } }),
+    /Unsupported saved Garage pause contract.*physical restoration/);
+});
+
+
+test('ownership acquisition requires a current bounded pause intention and thermal readiness', async () => {
+  for (const patch of [{ plan: null }, { recoveryReady: false }, { valid: false },
+    { plan: { id: 'expired', pauseFrom: BASE - 1000, pauseUntil: BASE, temperatureEvidenceAt: BASE, permissionExpiresAt: BASE + 1000 } }]) {
+    const f = fixture(); f.state({ authority: { ownerSession: null, controlAllowed: true } });
+    await f.adapter.plannerTick({ now: BASE, valid: true, recoveryReady: true,
+      plan: { id: 'current', pauseFrom: BASE, pauseUntil: BASE + 60000,
+        temperatureEvidenceAt: BASE, permissionExpiresAt: BASE + 60000 }, ...patch });
     assert.equal(f.published.length, 0);
   }
 });

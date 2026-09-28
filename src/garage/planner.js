@@ -3,6 +3,7 @@ import { assessGarageProtection, projectGarageExposure, projectCurrentGarageExpo
 import { predictGarageStep, garageModelSummary, GARAGE_MODEL_ASSUMPTIONS, garageRecoveryHours } from './model.js';
 import { garagePlanningEvidence, garagePlanningMargins, garagePlanningEnergyUncertainty } from './planning-evidence.js';
 import { garagePauseStartReason } from './door-state.js';
+import { predictGarageTargetStep, garageReducedPowerAllowance, GARAGE_TARGET_POLICY_VERSION } from './target-model.js';
 const HOUR = 3_600_000, finite = Number.isFinite;
 const instant = value => typeof value === 'number' ? value : Date.parse(value);
 const validTime = value => finite(value) && Math.abs(value) <= 8.64e15;
@@ -25,14 +26,14 @@ function horizon(now, prices, weather, config) {
       if (!forecast) return rows;
       const end = Math.min(price.end, forecast.end, at + config.stepMinutes * 60_000);
       if (end <= at) return rows;
-      rows.push({ start: at, end, priceCtPerKwh: cents, outdoorC: forecast.outdoorC, available: true }); at = end;
+      rows.push({ start: at, end, priceCtPerKwh: cents, outdoorC: forecast.outdoorC }); at = end;
     }
   }
   return rows;
 }
 
 // Price an arbitrary recovery window without scanning the outlook for every
-// possible pause. Unpublished recovery hours use the highest known price.
+// possible reduction. Unpublished recovery hours use the highest known price.
 function recoveryPrices(steps, maximumPrice) {
   const totals = [0], endAt = steps.at(-1).end;
   for (const step of steps) totals.push(totals.at(-1) + (step.end - step.start) / HOUR * step.priceCtPerKwh);
@@ -48,7 +49,7 @@ function recoveryPrices(steps, maximumPrice) {
   return (at, hours) => Math.max(0, (integral(at + hours * HOUR) - integral(at)) / hours / 100);
 }
 
-/** One contiguous opportunity. No configured maximum duration: uncertainty,
+/** One contiguous lower-target opportunity. No configured maximum duration: uncertainty,
  * copper-pipe reserve, available forecasts and whole-cycle economics determine
  * its endpoint. That endpoint cannot move later once the episode has started. */
 export function planGarage({ now, model, exposure, observation, settings = {}, prices = [], forecast = [],
@@ -57,18 +58,23 @@ export function planGarage({ now, model, exposure, observation, settings = {}, p
   if (!validTime(now)) throw new Error('Garage planner requires numeric UTC time');
   const delayKnown = finite(restorationDelayMs) && restorationDelayMs >= 0;
   const protection = assessGarageProtection(exposure, { now, observation, settings: config, restorationDelayMs: delayKnown ? restorationDelayMs : 0 });
-  const base = { at: now, state: 'normal', reason: 'normal-heating', nextAction: 'available', pauseUntil: null,
-    pauseFrom: null, steps: [], timingBenefitEur: 0, modelBenefitEur: 0, heatDebt: null, uncertainty: null, protection,
+  const normalTargetC = observation?.roomTargetC ?? model?.normalReference?.roomTargetC;
+  const targetC = config.reducedRoomTargetC;
+  const base = { at: now, state: 'normal', reason: 'normal-heating', nextAction: 'normal', reductionUntil: null,
+    reductionFrom: null, steps: [], timingBenefitEur: 0, modelBenefitEur: 0, heatDebt: null, uncertainty: null, protection,
+    policyVersion: GARAGE_TARGET_POLICY_VERSION, normalTargetC, targetC: normalTargetC, targetUntil: null,
     preferenceVersion: GARAGE_PREFERENCE_VERSION, algorithm: model?.algorithm, provisional: true };
   const stop = reason => ({ ...base, reason });
   if (!config.enabled) return stop('automatic-control-disabled');
+  if (!finite(normalTargetC) || normalTargetC < 5 || normalTargetC >= 16) return stop('external-room-target-required');
+  if (normalTargetC <= targetC) return stop('room-target-already-at-reduction-floor');
   if (!delayKnown) return stop('heating-response-bound-unavailable');
   if (!protection.safeToPause) return stop(protection.reasons[0] ?? 'protection-unavailable');
   const active = activeEpisode && !['completed', 'released', 'cancelled'].includes(activeEpisode.state);
   const scheduled = !active && scheduledOpportunity;
   if (scheduled && (scheduled.preferenceVersion !== GARAGE_PREFERENCE_VERSION
-    || !validTime(scheduled.pauseFrom) || !validTime(scheduled.plannedPauseUntil)
-    || scheduled.plannedPauseUntil <= scheduled.pauseFrom))
+    || !validTime(scheduled.reductionFrom) || !validTime(scheduled.plannedReductionUntil)
+    || scheduled.plannedReductionUntil <= scheduled.reductionFrom))
     throw new Error('Unsupported Garage scheduled opportunity');
   const admission = !active && garagePauseStartReason(observation);
   if (admission) return stop(admission);
@@ -76,8 +82,8 @@ export function planGarage({ now, model, exposure, observation, settings = {}, p
   const summary = garageModelSummary(model), evidence = garagePlanningEvidence(model, summary, { now, observation, activeEpisode });
   if (!active && !evidence.eligible) return { ...stop(evidence.reason), evidence };
   const steps = horizon(now, prices, forecast, config);
-  const activeEnd = active ? activeEpisode.authorizedEndAt ?? activeEpisode.pauseUntil ?? activeEpisode.endpointAt : null;
-  for (const boundary of [activeEnd, scheduled?.pauseFrom, scheduled?.plannedPauseUntil].filter(validTime)) {
+  const activeEnd = active ? activeEpisode.authorizedEndAt ?? activeEpisode.reductionUntil ?? activeEpisode.endpointAt : null;
+  for (const boundary of [activeEnd, scheduled?.reductionFrom, scheduled?.plannedReductionUntil].filter(validTime)) {
     const crossing = steps.findIndex(step => step.start < boundary && step.end > boundary);
     if (crossing >= 0) { const step = steps[crossing]; steps.splice(crossing, 1, { ...step, end: boundary }, { ...step, start: boundary }); }
   }
@@ -101,30 +107,33 @@ export function planGarage({ now, model, exposure, observation, settings = {}, p
       && ['rear', 'front'].every(location => !result.exposure.locations[location].uncertain) };
   };
   const recoveryPrice = recoveryPrices(steps, maximumPrice);
-  const elapsedOffHours = active ? Math.max(0, activeEpisode.accounting?.offHours
-    ?? (finite(activeEpisode.pauseStartedAt) ? (now - activeEpisode.pauseStartedAt) / HOUR : 0)) : 0;
+  const elapsedReducedHours = active ? Math.max(0, activeEpisode.accounting?.reducedHours
+    ?? (finite(activeEpisode.reductionStartedAt) ? (now - activeEpisode.reductionStartedAt) / HOUR : 0)) : 0;
   const existingRecoveryKwh = active ? Math.max(0, activeEpisode.accounting?.recoveryAllowanceKwh
-    ?? power * elapsedOffHours * GARAGE_MODEL_ASSUMPTIONS.recoveryEnergyFactor) : 0;
-  const restoringNowCost = existingRecoveryKwh * recoveryPrice(now, Math.max(garageRecoveryHours(elapsedOffHours), config.minOnMs / HOUR));
+    ?? power * elapsedReducedHours * GARAGE_MODEL_ASSUMPTIONS.recoveryEnergyFactor) : 0;
+  const restoringNowCost = existingRecoveryKwh * recoveryPrice(now, Math.max(garageRecoveryHours(elapsedReducedHours), config.minOnMs / HOUR));
   // Keep only the duration/benefit frontier, never every candidate trajectory.
   // A window is dominated when a shorter window saves at least as much.
   const candidates = [];
   const preferMaximum = active || preference.retainedBenefitFraction === 1;
   let hasEconomicCandidate = false, normalState = initial, normalReserve = initialReserve;
   for (let from = 0; from < (active ? 1 : steps.length); from++) {
-    let avoidedKwh = 0, avoidedCostEur = 0, safeThrough = null;
+    let avoidedKwh = 0, avoidedCostEur = 0, safeThrough = null, targetState = normalState;
     for (let to = from; to < steps.length; to++) {
       const step = steps[to], duration = step.end - steps[from].start;
-      if (scheduled && (steps[from].start !== Math.max(now, scheduled.pauseFrom)
-        || step.end > scheduled.plannedPauseUntil)) break;
+      if (scheduled && (steps[from].start !== Math.max(now, scheduled.reductionFrom)
+        || step.end > scheduled.plannedReductionUntil)) break;
       if (active && (!validTime(activeEnd) || step.end > activeEnd)) break;
       const hours = (step.end - step.start) / HOUR;
-      avoidedKwh += power * hours; avoidedCostEur += power * hours * step.priceCtPerKwh / 100;
-      if (scheduled && step.end !== scheduled.plannedPauseUntil) continue;
+      const reduced = predictGarageTargetStep(model, targetState, { outdoorC: step.outdoorC, targetC, normalTargetC, normalPowerKw: power }, hours);
+      targetState = reduced.state;
+      const avoided = Math.max(0, power * hours - reduced.electricityKwh);
+      avoidedKwh += avoided; avoidedCostEur += avoided * step.priceCtPerKwh / 100;
+      if (scheduled && step.end !== scheduled.plannedReductionUntil) continue;
       if (!active && duration < config.minOffMs) continue;
       if (step.end + restorationDelayMs > steps.at(-1).end) break;
       if (safeThrough !== null && step.end + restorationDelayMs > safeThrough) break;
-      const recoveryHours = Math.max(garageRecoveryHours(elapsedOffHours + duration / HOUR), config.minOnMs / HOUR);
+      const recoveryHours = Math.max(garageRecoveryHours(elapsedReducedHours + duration / HOUR), config.minOnMs / HOUR);
       const price = recoveryPrice(step.end, recoveryHours);
       const recoveryKwh = existingRecoveryKwh + avoidedKwh * GARAGE_MODEL_ASSUMPTIONS.recoveryEnergyFactor;
       // For a renewal compare continuing with restoring now: accumulated heat
@@ -177,23 +186,31 @@ export function planGarage({ now, model, exposure, observation, settings = {}, p
   // including accumulated heat debt, within the originally accepted endpoint.
   const best = active ? candidates.at(-1)
     : candidates.find(candidate => candidate.net >= maximumBenefitEur * preference.retainedBenefitFraction);
-  let state = initial, reserve = initialReserve;
+  let state = initial, expectedState = initial, reserve = initialReserve;
   const path = [], until = steps[best.to].end + restorationDelayMs;
   for (let i = 0; i < steps.length && steps[i].start < until; i++) {
-    const step = steps[i], end = Math.min(until, step.end), isOff = i >= best.from;
-    const row = projected(state, reserve, step, end, !isOff);
+    const step = steps[i], end = Math.min(until, step.end), protectionCooling = i >= best.from;
+    const row = projected(state, reserve, step, end, !protectionCooling);
     if (!row.safe) return { ...stop('forecast-protection-requires-heating'), evidence };
     state = row.next.state; reserve = row.reserve;
-    path.push({ ...step, end, at: end, ...row.next, available: !isOff || i > best.to,
+    const reducedHere = protectionCooling && i <= best.to;
+    const expected = reducedHere ? predictGarageTargetStep(model, expectedState,
+      { outdoorC: step.outdoorC, targetC, normalTargetC, normalPowerKw: power }, (end - step.start) / HOUR)
+      : predictGarageStep(model, expectedState, { outdoorC: step.outdoorC, available: true }, (end - step.start) / HOUR);
+    expectedState = expected.state;
+    path.push({ ...step, end, at: end, ...expected,
       rearLowerC: row.next.rearC - row.margin.rearC, frontLowerC: row.next.frontC - row.margin.frontC,
-      phase: !isOff ? 'normal' : i > best.to ? 'restoration-delay' : 'pause' });
+      targetC: reducedHere ? targetC : normalTargetC, demandReduced: reducedHere,
+      phase: !protectionCooling ? 'normal' : i > best.to ? 'restoration-delay' : 'reduction' });
   }
   const immediate = best.from === 0, trial = !summary.thermalReady || best.duration / HOUR > evidence.validatedOffHours;
-  return { ...base, state: immediate ? 'paused-plan' : 'waiting', evidence, learningTrial: active ? activeEpisode.plan?.learningTrial ?? trial : trial,
-    reason: immediate ? active ? 'continue-authorized-economic-episode' : trial ? 'protection-limited-learning-opportunity' : 'credible-price-timing-opportunity'
-      : 'wait-for-later-price-opportunity', nextAction: immediate ? active ? 'renew' : 'pause' : 'available',
-    pauseFrom: steps[best.from].start, pauseUntil: immediate ? steps[best.to].end : null,
-    plannedPauseUntil: steps[best.to].end, nextOpportunityAt: steps[best.from].start, steps: path,
+  return { ...base, state: immediate ? 'reduced-plan' : 'waiting', evidence, forecastExtrapolation: active ? activeEpisode.plan?.forecastExtrapolation ?? trial : trial,
+    reason: immediate ? active ? 'continue-authorized-economic-episode' : trial ? 'protection-limited-target-opportunity' : 'credible-price-timing-opportunity'
+      : 'wait-for-later-price-opportunity', nextAction: immediate ? 'target' : 'normal',
+    targetC: immediate ? targetC : normalTargetC, targetUntil: immediate ? steps[best.to].end : null,
+    plannedTargetC: targetC, poweredIdleAllowanceKw: garageReducedPowerAllowance(power),
+    reductionFrom: steps[best.from].start, reductionUntil: immediate ? steps[best.to].end : null,
+    plannedReductionUntil: steps[best.to].end, nextOpportunityAt: steps[best.from].start, steps: path,
     timingBenefitEur: best.avoidedCostEur - best.recoveryCostEur,
     modelBenefitEur: best.avoidedCostEur - best.recoveryCostEur, scoreEur: best.net,
     avoidedKwh: best.avoidedKwh, recoveryKwh: best.recoveryKwh, recoveryHours: best.recoveryHours,

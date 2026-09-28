@@ -56,7 +56,7 @@ test('obsolete or unversioned saved planning preferences fail before any state o
       const observation = { at: START, rearC: 8, frontC: 8, outdoorC: -5, available: false };
       store.setState('garage:episode:mqtt', { algorithmVersion: GARAGE_ALGORITHM_VERSION,
         frozenModel: model, initialExposure: exposure, accounting: startGarageAssessment(model, observation),
-        plan: { preferenceVersion } });
+        plan: { preferenceVersion, policyVersion: 'garage-room-target-v1' } });
       store.setState('garage:adapter:mqtt', { version: 1, restorePending: true, outstandingPermissionExpiresAt: START + MINUTE });
       store.setState('garage:manual:mqtt', { mode: 'off', expiresAt: START + MINUTE });
       const before = store.db.prepare('SELECT * FROM state ORDER BY key').all();
@@ -76,7 +76,7 @@ test('current restart retains reserve, frozen accounting and restoration while r
     const observation = { at: START, rearAt: START, frontAt: START, rearC: 8, frontC: 8, outdoorC: -5, available: false };
     const episode = { id: 'current-cycle', pauseId: 'current-pause', status: 'active', phase: 'pause',
       algorithmVersion: GARAGE_ALGORITHM_VERSION, frozenModel: model, settings,
-      plan: { preferenceVersion: GARAGE_PREFERENCE_VERSION },
+      plan: { preferenceVersion: GARAGE_PREFERENCE_VERSION, policyVersion: 'garage-room-target-v1' },
       startedAt: START, pauseStartedAt: START, pauseUntil: START + 10 * MINUTE,
       initialObservation: observation, initialExposure: exposure, accounting: startGarageAssessment(model, observation) };
     store.setState('garage:exposure:mqtt', exposure); store.setState('garage:episode:mqtt', episode);
@@ -103,4 +103,16 @@ test('nonfinite exposure cannot become valid protection or be silently replaced'
     store.setState('garage:exposure:mqtt', exposure);
     assert.throws(() => construct(store), /Invalid/);
   } finally { store.close(); }
+});
+
+test('an unsupported target policy cannot create a saved episode that a restart would reject', async () => {
+  const store = new Store(':memory:'); let runtime;
+  try {
+    runtime = construct(store);
+    const before = store.db.prepare('SELECT * FROM state ORDER BY key').all();
+    for (const policyVersion of [undefined, 'old-policy']) assert.throws(() => runtime.startEpisode('rejected',
+      { preferenceVersion: GARAGE_PREFERENCE_VERSION, policyVersion }, {}, START), /Unsupported Garage target policy/);
+    assert.equal(runtime.episode, null);
+    assert.deepEqual(store.db.prepare('SELECT * FROM state ORDER BY key').all(), before);
+  } finally { await runtime?.close({ restore: false }); store.close(); }
 });

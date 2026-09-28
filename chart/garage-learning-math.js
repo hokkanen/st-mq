@@ -9,16 +9,16 @@ const cooling = calculation([
   'Planning subtracts an uncertainty margin from each temperature forecast before projecting pipe warmth. When episode errors are available, the margin uses at least twice the episode forecast error, grows beyond the supported OFF duration and adds a penalty for forecast bias. Without episode errors, it grows by 0.2 °C per forecast hour at the rear and 0.3 °C at the front, with minimum margins of 0.2 °C and 0.3 °C respectively.',
   'Validation freezes the model before an OFF episode, follows cooling and recovery, and checks the measured temperatures. It uses observed ambient conditions, so this tests the cooling response, not future weather-forecast accuracy.']);
 const electricity = calculation([
-  ['avoided energy = normal electrical power × OFF hours', 'kW × hours gives kWh; normal power is a qualified observed average when available, otherwise an explicit assumption.'],
-  ['extra recovery energy = avoided energy × 1.25', 'An assumed electricity allowance in addition to normal heating after the pause. This is not a learned efficiency or measured heat output.'],
-  ['net benefit = avoided cost − recovery cost − uncertainty allowance', 'Each energy interval uses its dated electricity price. Recovery includes accumulated heat debt on a continuing pause.'],
+  ['avoided energy = normal-reference electricity − lower-target electricity', 'The powered pump retains an assumed idle allowance: the greater of 0.1 kW or 25% of normal power, capped at normal power. It may also heat to maintain the lower target. This is an engineering estimate, not measured standby.'],
+  ['extra recovery energy = avoided energy × 1.25', 'An assumed electricity allowance in addition to normal heating after the reduction. This is not a learned efficiency or measured heat output.'],
+  ['net benefit = avoided cost − recovery cost − uncertainty allowance', 'Each energy interval uses its dated electricity price. Recovery includes accumulated heat debt on a continuing reduction.'],
 ], ['A prospective saving must exceed the configured minimum. Missing electrical metering leaves the euro result provisional even when cooling predictions validate.',
-  'Recovery hours beyond published prices use the highest known price, with no negative-price credit. On a continuing pause, the planner compares continuing with restoring now and includes the recovery electricity already owed.',
+  'Recovery hours beyond published prices use the highest known price, with no negative-price credit. On a continuing reduction, the planner compares continuing with restoring now and includes the recovery electricity already owed.',
   'Compressor activity, frequency and room temperature do not establish electrical power or delivered thermal output.']);
 const recovery = calculation([
   ['T_next = T_normal + (T_now − T_normal) × exp(−hours / recovery time)', 'A fixed illustrative air-temperature envelope after native heating becomes available.'],
-  ['recovery pricing hours = max(3, 1.25 × OFF hours, minimum normal-heating hours)', 'The electricity allowance is accounted for over the full pricing period; the three-hour temperature time scale cannot declare recovery complete.'],
-], ['Another pause requires observed recovery at both sensors and in both independent pipe reserves. Native ON only permits heating; it does not prove useful warmth. The illustrative warming curve cannot refill a real-time reserve.',
+  ['recovery pricing hours = max(3, 1.25 × reduction hours, minimum normal-heating hours)', 'The electricity allowance is accounted for over the full pricing period; the three-hour temperature time scale cannot declare recovery complete.'],
+], ['Another reduction requires observed recovery at both sensors and in both independent pipe reserves. Native ON only permits heating; it does not prove useful warmth. The illustrative warming curve cannot refill a real-time reserve.',
   'Normal references start from the selected room setting, or a fresh pump setting when no external setting is selected. Unknown settings leave the estimates unavailable. Settled observations establish each location’s achieved temperature; a new setting restarts reference learning.']);
 const references = calculation([], ['Normal rear and front warmth are the temperatures achieved during clean, settled normal heating. Both initial estimates use the room setting; below 16 °C this is the chosen Garage rear target, not the native 17 °C used for external sensing.',
   'Learning waits for at least eight hours of uninterrupted eligible normal-heating context and a settled rear temperature. Two qualified observation hours establish the references; later updates adapt slowly.',
@@ -27,15 +27,15 @@ const pipe = calculation([
   ['C = water mass × 4180 + copper mass × 385', 'Heat capacity per metre in J/(m·K), calculated from the configured pipe diameter and wall thickness.'],
   ['heat transfer = surface area × coefficient × (air − pipe temperature)', 'Cooling uses twice the nominal conductance; warming uses half. The reserve follows the local temperature trajectory.'],
 ], ['Rear and front pipe estimates have separate histories. This is a conservative reference pipe, not a measurement of plumbing temperature.',
-  'The configured margin, current reserve, local OFF lease and useful-heating delay all constrain permission. Latent heat represents freezing debt, not extra available warmth. Missing fresh evidence requests normal heat.']);
+  'The configured margin, current reserve, expiring external input or manual OFF lease and useful-heating delay all constrain permission. Latent heat represents freezing debt, not extra available warmth. Missing fresh evidence requests normal heat.']);
 const evidence = calculation([
   ['episode RMSE = √(Σ(error² × interval hours) / Σ(interval hours))', 'Temperature error in °C, weighted by each source interval’s duration. The displayed error is the root mean square of these errors across clean validation episodes.'],
   ['supported OFF hours = min(second-longest training duration, longest supported passing validation duration)', 'Validation duration is also limited by the training support available when that episode began.'],
-], ['Complete clean training and validation episodes are separate. A failed clean validation resets the usable passing-validation sequence. Larger uncertainty applies beyond observed durations; evidence is not an arbitrary maximum pause.',
+], ['Complete clean training and validation episodes are separate. A failed clean validation resets the usable passing-validation sequence. Larger uncertainty applies beyond observed durations; evidence is not an arbitrary maximum reduction.',
   'Cooling passes require OFF RMSE no higher than 0.6 °C rear and 0.9 °C front, maximum errors no higher than 1.5 °C and 2 °C respectively, and observed recovery. Ongoing or disturbed episodes cannot establish readiness.']);
 const measurements = calculation([], ['The value retains its source timestamp and quality. Fresh receipt alone does not turn an old measurement into a new observation.',
-  'A missing, unsupported or stale input remains unknown. The planner must satisfy the relevant freshness and device checks again before starting or renewing an OFF permission.'], 'Sources & eligibility');
-const decisions = calculation([], ['A pause is admitted only after price, weather, pump state, door state, local temperature and pipe-reserve checks agree. The decision is recalculated as fresh evidence arrives.',
+  'A missing, unsupported or stale input remains unknown. The planner must satisfy the relevant freshness and device checks again before starting or renewing a reduction.'], 'Sources & eligibility');
+const decisions = calculation([], ['A target reduction is admitted only after price, weather, pump state, door state, local temperature and pipe-reserve checks agree. The decision is recalculated as fresh evidence arrives.',
   'The planned window is conditional, not a guaranteed duration. Protection can restore normal heating early, while a local expiring permission bounds communication failures.'], 'Decision & limits');
 const record = calculation([], ['The committed Garage journal preserves ordered learning inputs, configuration and its initial seed. Matching current software applies the same update function during live learning and replay.',
   'A complete consistent database and matching algorithm are required to reconstruct the model. This does not recreate missing telemetry or prove physical delivery of attempted commands.'], 'Reconstruction & limits');
@@ -50,7 +50,7 @@ export function garageLearningCalculation(key) {
   if (/charger-\d-input|charger-heat-fraction/.test(key)) return calculation([
     ['estimated charger heat = recorded electrical power × 0.075', 'Each charger is assessed separately in kW. This fixed assumption is not measured vehicle heat.'],
   ], ['This estimate describes a possible heat contribution in recorded inputs. It is not added to the cooling or recovery temperature equations, and is not a learned coefficient.',
-    'Charging-disturbed intervals cannot fit clean cooling rates, but charging does not block savings pauses. Charging status and power do not change the planned window or add forecast warmth; actual warmth is reflected in measured temperatures. Missing charger power remains unknown in recorded learning inputs.']);
+    'Charging-disturbed intervals cannot fit clean cooling rates, but charging does not block target reductions. Charging status and power do not change the planned window or add forecast warmth; actual warmth is reflected in measured temperatures. Missing charger power remains unknown in recorded learning inputs.']);
   if (/reconstruction|model-version/.test(key)) return record;
   if (/temperature|heating-availability|doors-and-local/.test(key)) return measurements;
   return decisions;

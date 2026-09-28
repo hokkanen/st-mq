@@ -18,6 +18,14 @@ test('mixed automation renders each permission without assigning global authorit
   }
 });
 
+test('Garage automatic activity uses temperature readiness independently of manual OFF commissioning', () => {
+  const value = status();
+  value.automation.garage.activity = 'automatic';
+  value.garage = { automationReasons: ['Waiting for a fresh rear temperature.'], adapter: { pauseReasons: ['installed-commissioning-required'] } };
+  assert.equal(automationView(value, 'garage').activity,
+    'Automatic · Waiting for a fresh rear temperature.');
+});
+
 function fixture(request) {
   const nodes = new Map();
   for (const feature of ['home', 'garage']) for (const suffix of ['plan', 'automatic', 'activity', 'message']) {

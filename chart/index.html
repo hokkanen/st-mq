@@ -569,13 +569,13 @@
               <details id="garage-settings-details" class="equipment-fold garage-settings heating-policy">
                 <summary><span>Heating strategy &amp; protection</span><small id="garage-strategy-overview">Strategy unavailable</small></summary>
                 <div class="heating-policy-body">
-                  <p class="heating-policy-note">Normal heating is the starting point. The controller can pause the pump during a worthwhile price period, then restore its usual heating. Every strategy keeps the same freezing-protection and recovery requirements.</p>
+                  <p class="heating-policy-note">Normal heating is the starting point. The controller can lower the effective room target during a worthwhile price period, then restore your saved target. Native power remains ON. Every strategy keeps the same freezing-protection and recovery requirements.</p>
                   <section class="heating-policy-section" aria-labelledby="garage-strategy-title">
                     <h5 id="garage-strategy-title">Savings strategy</h5>
-                    <p class="heating-policy-note">Choose how much opportunity is worth taking. A stronger savings preference accepts smaller estimated benefits and may keep heating off longer.</p>
+                    <p class="heating-policy-note">Choose how much opportunity is worth taking. A stronger savings preference accepts smaller estimated benefits and may reduce the target for longer.</p>
                     <ul class="heating-strategy-options" aria-label="Available savings strategies">
-                      <li id="garage-strategy-gentle" class="heating-strategy-option" data-selected="false"><strong>Gentle <span id="garage-strategy-gentle-current" class="heating-strategy-current" hidden>Current</span></strong><p>Require a larger benefit and favour shorter pauses, leaving more time for normal heating.</p></li>
-                      <li id="garage-strategy-balanced" class="heating-strategy-option" data-selected="false"><strong>Balanced <span id="garage-strategy-balanced-current" class="heating-strategy-current" hidden>Current</span></strong><p>Keep most of the estimated benefit while avoiding extra off time for small gains.</p></li>
+                      <li id="garage-strategy-gentle" class="heating-strategy-option" data-selected="false"><strong>Gentle <span id="garage-strategy-gentle-current" class="heating-strategy-current" hidden>Current</span></strong><p>Require a larger benefit and favour shorter reductions, leaving more time for normal heating.</p></li>
+                      <li id="garage-strategy-balanced" class="heating-strategy-option" data-selected="false"><strong>Balanced <span id="garage-strategy-balanced-current" class="heating-strategy-current" hidden>Current</span></strong><p>Keep most of the estimated benefit while avoiding extra reduction time for small gains.</p></li>
                       <li id="garage-strategy-savings" class="heating-strategy-option" data-selected="false"><strong>More savings <span id="garage-strategy-savings-current" class="heating-strategy-current" hidden>Current</span></strong><p>Accept smaller worthwhile opportunities and choose the greatest estimated benefit within the same limits.</p></li>
                     </ul>
                     <p class="heating-policy-note">Edit the savings strategy in configuration, then use Apply configuration in Data &amp; settings. Use Pause price control above to suspend automatic savings.</p>
@@ -583,7 +583,7 @@
                   </section>
                   <section class="heating-policy-section" aria-labelledby="garage-protection-title">
                     <div class="garage-settings-heading"><h5 id="garage-protection-title">Protection boundaries</h5><span id="garage-protection-approval" class="garage-policy-status">Approval unknown</span></div>
-                    <p class="heating-policy-note">Protection estimates warmth in a water-filled copper reference pipe beside each temperature sensor. Rear and front are checked independently; whichever needs heat first limits the pause. This estimate guides protection of pipes and stored liquids, but does not measure their actual temperatures.</p>
+                    <p class="heating-policy-note">Protection estimates warmth in a water-filled copper reference pipe beside each temperature sensor. Rear and front are checked independently; whichever needs heat first limits the reduction. This estimate guides protection of pipes and stored liquids, but does not measure their actual temperatures.</p>
                     <dl id="garage-protection-settings" class="heating-policy-values garage-setting-list"></dl>
                     <section id="garage-live-budgets" class="garage-live-budgets" aria-labelledby="garage-live-budgets-title">
                       <div class="garage-settings-heading"><h5 id="garage-live-budgets-title">Warmth available above the protection margin</h5><span class="garage-live-label">Live estimate</span></div>
@@ -601,26 +601,26 @@
                   <section class="heating-policy-section" aria-labelledby="garage-decision-title">
                     <h5 id="garage-decision-title">How decisions are made</h5>
                     <ol class="heating-policy-steps">
-                      <li><strong>Forecast cooling during a pause.</strong> Fresh rear and front temperatures, the outdoor forecast and the <a class="heating-policy-link" href="#garage-learning-details" data-policy-model-link="garage-learning-details">Garage heat model</a> estimate how the space would cool while heating is off and through the delay before useful heat returns. Less proven forecasts receive larger uncertainty margins.</li>
+                      <li><strong>Forecast cooling during a target reduction.</strong> Fresh rear and front temperatures, the outdoor forecast and the <a class="heating-policy-link" href="#garage-learning-details" data-policy-model-link="garage-learning-details">Garage heat model</a> estimate cooling with a lower room target. Protection separately assumes no heat through the delay before useful heating returns. Less proven forecasts receive larger uncertainty margins.</li>
                       <li><strong>Keep protection ahead of savings.</strong> Only windows that leave enough reserve at both locations through the delay before useful heat returns can qualify. Expected charging warmth never extends the safe window.</li>
-                      <li><strong>Choose a worthwhile pause and keep checking.</strong> Compare electricity avoided at current prices with later recovery electricity and an uncertainty allowance. Choose the shortest qualifying window that keeps the strategy’s share of the best benefit. Reassess as readings and forecasts change; a started pause can end early, but its original endpoint cannot move later.</li>
+                      <li><strong>Choose a worthwhile reduction and keep checking.</strong> Compare normal electricity with lower-target consumption, later recovery and uncertainty. The powered pump retains an assumed idle allowance and may heat to maintain the lower target. Choose the shortest qualifying window that keeps the strategy’s share of the best benefit. Reassess as readings and forecasts change; a started reduction can end early, but its original endpoint cannot move later.</li>
                     </ol>
-                    <p class="heating-policy-note">Flat prices or an insufficient benefit leave normal heating available. There is no fixed maximum off time: protection, forecast coverage and remaining benefit determine the endpoint. Estimated savings depend on the model’s electricity assumptions; they are not measured savings.</p>
+                    <p class="heating-policy-note">Flat prices or an insufficient benefit leave normal heating available. There is no fixed maximum reduction time: protection, forecast coverage and remaining benefit determine the endpoint. Estimated savings depend on the model’s electricity assumptions; they are not measured savings.</p>
                   </section>
                   <section class="heating-policy-section" aria-labelledby="garage-choices-title">
                     <h5 id="garage-choices-title">Control choices</h5>
                     <dl class="heating-policy-values">
                       <div class="heating-policy-setting"><dt>Normal heating</dt><dd>Usual room setting</dd><dd class="heating-policy-setting-help">The pump’s thermostat decides when to heat. Automatic savings never raise the room setting or preheat the garage.</dd></div>
-                      <div class="heating-policy-setting"><dt>Heating off</dt><dd>Protected pause</dd><dd class="heating-policy-setting-help">Available only with approved protection, fresh temperatures and a ready adapter that can restore heating locally when its short off permission expires. Automatic pauses also need an accepted normal-heating setup.</dd></div>
+                      <div class="heating-policy-setting"><dt>Heating off</dt><dd>Manual timed OFF</dd><dd class="heating-policy-setting-help">Available only with approved protection, fresh temperatures and a ready adapter that can restore heating locally when its short off permission expires. External sensing is cleared before OFF. Native ON and fresh source evidence are required before the saved room target resumes.</dd></div>
                     </dl>
-                    <p class="heating-policy-note">New savings pauses wait for settled normal-heating evidence, recovery at both locations, and the configured spacing and daily limit. An open or unknown configured door blocks a new pause only below 2 °C outdoors; at 2 °C or above, either state passes this rule. Outdoor temperature must be known. Charging does not restrict pauses or add forecast warmth. Door changes during a pause trigger a protection reassessment.</p>
-                    <p class="heating-policy-note">Missing temperature evidence or inadequate reserve ends off permission and requests normal heating. Afterward, both local temperatures and pipe reserves must recover. A confirmed ON state alone does not establish recovery.</p>
+                    <p class="heating-policy-note">New target reductions wait for settled normal-heating evidence, recovery at both locations, and the configured spacing and daily limit. An open or unknown configured door blocks a new reduction only below 2 °C outdoors; at 2 °C or above, either state passes this rule. Outdoor temperature must be known. Charging does not restrict reductions or add forecast warmth. Door changes during a reduction trigger a protection reassessment.</p>
+                    <p class="heating-policy-note">Missing temperature evidence or inadequate reserve ends target reduction and requests normal heating. Expired external input returns the pump to internal sensing. Afterward, both local temperatures and pipe reserves must recover. A confirmed ON state alone does not establish recovery.</p>
                     <p class="heating-policy-note">Temporary heating selections above last until the next controller update, normally within 1 minute. Pause price control holds them until its deadline. Freeze protection can restore heating sooner, including after a manual off selection.</p>
                     <dl class="heating-policy-values">
                       <div class="heating-policy-setting"><dt>Current plan</dt><dd id="garage-policy-decision">Unavailable</dd></div>
-                      <div class="heating-policy-setting"><dt>Planned off window</dt><dd id="garage-policy-window">Unavailable</dd></div>
+                      <div class="heating-policy-setting"><dt>Planned target reduction</dt><dd id="garage-policy-window">Unavailable</dd></div>
                     </dl>
-                    <p id="garage-policy-context" class="heating-policy-note">Current operating mode is unavailable.</p>
+                    <p id="garage-policy-context" class="heating-policy-note">Garage automation status is unavailable.</p>
                     <details id="garage-planning-details" class="equipment-fold heating-policy-details"><summary>Timing limits &amp; current decision details</summary>
                       <dl id="garage-heating-settings" class="heating-policy-values garage-setting-list"></dl>
                       <div id="garage-learning-planning"></div>
@@ -638,8 +638,8 @@
                   </div>
                 </summary>
                 <div class="learning-model-purpose">
-                  <p>The model estimates cooling at the rear and front of the garage and keeps evidence from heating pauses. It combines recorded inputs with learned responses and fixed assumptions.</p>
-                  <p>Planning uses those estimates with prices, recovery costs and pipe protection to choose an off window. Heating control manages off permission and restoration. See <a class="heating-policy-link" href="#garage-settings-details" data-policy-model-link="garage-settings-details">Heating strategy &amp; protection</a> for the decision and its rules.</p>
+                  <p>The model estimates cooling at the rear and front of the garage and keeps observed OFF cooling evidence separate from target-control forecasts. It combines recorded inputs with learned responses and fixed assumptions.</p>
+                  <p>Planning uses those estimates with prices, recovery costs and pipe protection to choose a lower-target window. Heating control applies bounded external-temperature input and restores your saved room target; manual timed OFF remains a separate action. See <a class="heating-policy-link" href="#garage-settings-details" data-policy-model-link="garage-settings-details">Heating strategy &amp; protection</a> for the decision and its rules.</p>
                 </div>
                 <details id="garage-outcomes-details" class="learning-section section-fold">
                   <summary><span class="learning-section-title">Learning outcomes</span><small class="learning-section-kind"> · Estimates &amp; checks</small></summary>

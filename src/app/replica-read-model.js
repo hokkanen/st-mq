@@ -151,7 +151,7 @@ function garageSnapshot(snapshot, read) {
       pauseUntil: pause?.expiresAt ?? null, readOnly: true, recorded: true, snapshotAt: at },
     episode: episode ? { id: episode.id, phase: episode.phase, startedAt: episode.startedAt,
       assessment: copy(episode.assessment), readOnly: true, recorded: true, snapshotAt: at } : null,
-    adapter: { liveControlSupported: false, automaticControl: false, phase: 'monitoring', connected: null,
+    adapter: { liveControlSupported: false, pauseControl: false, phase: 'monitoring', connected: null,
       readOnly: true, recorded: true, snapshotAt: at, health: { deviceOnline: null, pumpCommunicating: null },
       authority: { owned: false, claimPending: false },
       restorePending: saved?.restorePending ?? null, blockedReasons: [reason],

@@ -85,8 +85,7 @@
   },
   "authority": {
     "ownerSession": null,
-    "controlAllowed": false,
-    "manualPauseAllowed": false
+    "controlAllowed": false
   },
   "challenge": {
     "value": "625f8d4d-ea60",

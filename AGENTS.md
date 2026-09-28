@@ -235,11 +235,13 @@ permission to act. See [the configuration guide](docs/configuration.md).
   unambiguous pump evidence; retain subsequent explicit room choices without
   expiry or a configured room default. Unrelated fan/vane edits preserve the
   target. Ordinary native power/mode changes must not be undone to resume heating.
-  A bounded heating override instead saves the previous external-control intent,
-  clears external input before OFF and restores that intent only after confirmed
-  heating restoration with fresh measurements. Later independent native edits
-  supersede the saved intent. Retaining a
-  target never authorizes stale external sensor data or cached control permission.
+  Price automation applies a temporary lower effective external target while the
+  pump remains ON; it never replaces the durable room choice or invents a new
+  sensor observation. Protection and expiry bound every reduction. Manual timed
+  OFF preserves the prior room intent, clears external sensing before requesting
+  OFF, then waits for restored native ON and fresh source evidence before resuming
+  that target. A saved target is never a sample to replay. Independent native
+  power/mode edits supersede the saved intent and must not be undone by restoration.
 - Keep the configured H66 assumptions `compressor_integral_a1`,
   `aux_integral_a2`, `compressor_hysteresis_c`, `aux_hysteresis_c` and `a2_basis`:
   the integration cannot read these from the pump. Treat them as declared model

@@ -155,13 +155,67 @@ test('explicit bounded garage controls work with automation disabled and retain 
   assert.equal(f.runtime.heatingControls().available, true);
   await f.runtime.setTemporary({ pauseUntil: new Date(BASE + 10 * MINUTE).toISOString() });
   await f.runtime.setHeating({ mode: 'off' });
-  assert.equal(f.commands[0].purpose, 'manual');
+  assert.equal(Object.hasOwn(f.commands[0], 'purpose'), false);
   f.at(BASE + 1000); f.state(f.commands[0]); await flush();
   assert.equal(f.runtime.heatingControls().confirmed, true);
   f.runtime.safetyTick(); await flush();
   assert.equal(f.commands.length, 1, 'Plan only must not revoke explicit manual permission');
   f.runtime.input = 'offline';
   assert.equal(f.runtime.heatingControls().reason, 'Temporary heating overrides are unavailable with offline input.');
+});
+
+test('a cancelled accepted OFF reports the failed host rule instead of the earlier acceptance reason', async t => {
+  const f = setup(t);
+  f.engine.automationEnabled = () => false;
+  await f.runtime.setTemporary({ pauseUntil: new Date(BASE + 12 * MINUTE).toISOString() });
+  await f.runtime.setHeating({ mode: 'off' });
+  const command = f.commands[0];
+  f.at(BASE + 4500);
+  f.state(command, { native: { power: { value: 'on', measuredAt: f.now() } },
+    result: { commandId: command.commandId, episodeId: command.episodeId, sequence: command.sequence,
+      action: 'start', status: 'accepted', reason: 'persisting-recovery-obligation' } });
+  await flush();
+  assert.equal(f.commands.length, 1, 'Accepted with native ON remains an unconfirmed request');
+  assert.equal(f.runtime.heatingControls().confirmed, false);
+  f.at(BASE + 5500); f.owner(false); f.runtime.safetyTick(); await flush();
+  const event = f.store.db.prepare("SELECT payload FROM events WHERE type='garage-manual-ended' ORDER BY id DESC LIMIT 1").get();
+  assert.deepEqual(JSON.parse(event.payload).reasons, ['control-authority-unavailable']);
+  const result = f.runtime.heatingControls().result;
+  assert.equal(result.status, 'superseded');
+  assert.match(result.reason, /control-authority-unavailable/);
+  assert.doesNotMatch(result.reason, /persisting-recovery-obligation/);
+  assert.equal(f.adapter.status().restorePending, true, 'Authority loss retains the physical restoration obligation');
+});
+
+test('quantized endpoint movement and fresh sensors preserve accepted OFF until native confirmation', async t => {
+  const f = setup(t);
+  f.engine.automationEnabled = () => false;
+  await f.runtime.setTemporary({ pauseUntil: new Date(BASE + 12 * MINUTE).toISOString() });
+  await f.runtime.setHeating({ mode: 'off' });
+  const command = f.commands[0];
+  const accepted = endpointAt => f.state(command, {
+    native: { power: { value: 'on', measuredAt: f.now() } },
+    lease: { episodeId: command.episodeId, endpointAt, expiresAt: command.requestedExpiryAt - 1000 },
+    result: { commandId: command.commandId, episodeId: command.episodeId, sequence: command.sequence,
+      action: 'start', status: 'accepted', reason: 'persisting-recovery-obligation' } });
+  f.at(BASE + 4462); f.temperatures(); f.runtime.safetyTick(); await flush();
+  f.at(BASE + 4670); accepted(command.endpointAt - 839); await flush();
+  f.at(BASE + 5417); accepted(command.endpointAt - 631); await flush();
+  assert.equal(f.commands.length, 1, 'A later clock projection inside the original bound does not release');
+  assert.equal(f.runtime.activeManual().mode, 'off');
+  assert.equal(f.runtime.heatingControls().confirmed, false, 'Acceptance is not native OFF evidence');
+  assert.equal(f.adapter.status().episode.endpointAt, command.endpointAt - 839,
+    'Outgoing permission retains the earliest observed bound');
+  f.at(BASE + 8000); f.state(command, {
+    lease: { episodeId: command.episodeId, endpointAt: command.endpointAt - 500,
+      expiresAt: command.requestedExpiryAt - 1000 } });
+  await flush();
+  assert.equal(f.runtime.heatingControls().confirmed, true);
+  assert.equal(f.commands.length, 1);
+  f.at(BASE + 9000); accepted(command.endpointAt + 1); await flush();
+  assert.equal(f.commands.at(-1).action, 'release', 'A report beyond authorization still requires restoration');
+  assert.equal(f.adapter.status().restorePending, true);
+  assert.match(f.runtime.heatingControls().result.reason, /adapter-endpoint-mismatch/);
 });
 
 test('garage pause survives restart but manual Off permission does not', async t => {
@@ -209,7 +263,7 @@ test('a broker change retains freeze exposure and restoration duties without rev
   assert.equal(adapter.snapshot().restorePending, true);
   assert.equal(adapter.snapshot().episode.invalidated, true);
   assert.equal(adapter.snapshot().episode.status, 'restoring');
-  assert.equal(adapter.status().automaticControl, false);
+  assert.equal(adapter.status().pauseControl, false);
   assert.equal(f.commands.length, commands, 'Restart requires fresh device reconciliation before any restoration');
 });
 

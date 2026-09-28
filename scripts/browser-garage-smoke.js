@@ -107,7 +107,7 @@ try {
     globalThis.fetch = async (input, options) => {
       const response = await originalFetch(input, options);
       if (new URL(input.url ?? String(input), location.href).pathname !== '/api/status'
-        || (!globalThis.learningSmokeValues && !globalThis.garageBudgetSmokeState && !globalThis.chargingSmokeValues && !globalThis.nativePumpSmokeValues && !globalThis.temperatureHoldSmoke)) return response;
+        || (!globalThis.learningSmokeValues && !globalThis.garageBudgetSmokeState && !globalThis.chargingSmokeValues && !globalThis.nativePumpSmokeValues && !globalThis.temperatureHoldSmoke && !globalThis.garageHandoverSmoke && !globalThis.garageTargetSmoke)) return response;
       const status = await response.json();
       if (globalThis.temperatureHoldSmoke) {
         status.garage.temperatureHold = { active: true, expiresAt: status.now + 45_000 };
@@ -127,6 +127,32 @@ try {
           native: { power: 'on', powerAt: at, mode: 'heat', targetC: 10,
             readbacks: Object.fromEntries(['power', 'mode', 'targetC'].map(field => [field, { measuredAt: at }])) } };
         status.garage.heatingControls = { ...status.garage.heatingControls, confirmed: true, selectedMode: 'normal' };
+      }
+      if (globalThis.garageTargetSmoke) {
+        const acknowledged = globalThis.garageTargetSmoke === 'active';
+        status.garage.settings = { ...status.garage.settings, enabled: true };
+        status.automation.garage = { ...status.automation.garage, enabled: true };
+        status.garage.temporary = { ...status.garage.temporary, available: true, pauseActive: false };
+        status.garage.targetControl = { targetC: 0, ownerTargetC: 5, until: status.now + 60_000 };
+        status.garage.roomTemperature = { targetC: 5, ownerTargetC: 5, effectiveTargetC: 0,
+          targetSource: 'automatic', targetUntil: status.now + 60_000, phase: acknowledged ? 'active' : 'preparing',
+          acknowledged, sourceC: 6, suppliedC: 23, offsetC: 17, nativeTargetC: 17 };
+        status.garage.adapter = { ...status.garage.adapter, phase: 'idle', restorePending: false,
+          connected: true, liveControlSupported: true, health: { deviceOnline: true, driverProgressing: true, pumpCommunicating: true },
+          native: { power: 'on', powerAt: status.now, mode: 'heat', targetC: 17,
+            readbacks: Object.fromEntries(['power', 'mode', 'targetC'].map(field => [field, { measuredAt: status.now }])) } };
+        status.garage.episode = null;
+        status.garage.heatingControls = { ...status.garage.heatingControls, requestedMode: null,
+          selectedMode: 'normal', confirmed: true, available: true, normalAvailable: true, offAvailable: true,
+          reason: null, normalReason: null, offReason: null, activity: 'Automatic price control is lowering the effective room target.' };
+      }
+      if (globalThis.garageHandoverSmoke) {
+        const handover = globalThis.garageHandoverSmoke;
+        status.garage.heatingControls = { ...status.garage.heatingControls,
+          available: true, normalAvailable: false, offAvailable: false, busy: true,
+          requestedMode: handover.mode, selectedMode: null, confirmed: false,
+          activity: handover.activity, result: handover.reason ? { status: 'uncertain', reason: handover.reason } : null,
+          normalReason: 'Wait for the current garage request.', offReason: 'Wait for the current garage request.' };
       }
       if (globalThis.learningSmokeValues) {
         const missing = globalThis.learningSmokeValues === 'missing';
@@ -282,7 +308,7 @@ try {
   await evaluate("globalThis.temperatureHoldSmoke=true;globalThis.refreshLearningSmokeStatus()");
   await until("document.getElementById('garage-policy-decision').textContent==='Pause held · awaiting temperature'");
   assert.match(await evaluate("document.getElementById('garage-controller-reason').textContent"),/Waiting for fresh temperature evidence.*original deadline.*no renewal/);
-  assert.match(await evaluate("document.getElementById('garage-requested').textContent"),/Reduction.*held/);
+  assert.match(await evaluate("document.getElementById('garage-requested').textContent"),/Off.*held/);
   assert.equal(await evaluate('globalThis.temperatureHoldAssessment.safeToPause'),false,'Held display does not qualify raw protection');
   assert.equal(await evaluate('globalThis.temperatureHoldAssessment.requiredFresh'),false,'Held display does not invent fresh reports');
   for (const width of [1440, 390, 320]) for (const theme of ['dark', 'light']) {
@@ -608,7 +634,7 @@ try {
   await evaluate("document.querySelector('[data-scope=total]').click()");
   assert.match(await evaluate("document.querySelector('.timing-device[data-device=heatPump]').textContent"), /€2.00/);
   await evaluate("document.querySelector('[data-mode=timing]').click()");
-  assert.match(await evaluate("document.querySelector('.timing-device[data-device=heatPump]').textContent"), /Timing cost saving/);
+  assert.match(await evaluate("document.querySelector('.timing-device[data-device=heatPump]').textContent"), /Timing cost difference/);
   await evaluate("document.querySelector('[data-scope=home]').click(); document.querySelector('[data-mode=model]').click()");
   const learningSections = [
     ['learning-metrics', 'home-outcomes'], ['model-inputs-content', 'home-inputs'],
@@ -972,6 +998,12 @@ try {
     ['charging', 'charger2', 'Charging'], ['progress', 'charger1', 'Charging'], ['reported-progress', 'charger1', 'Charging'],
     ['target-held', 'charger1', 'Scheduled'], ['target-manual84', 'charger1', 'Scheduled'], ['target-manual100', 'charger1', 'Scheduled'],
   ];
+  const garageHandoverCases = [
+    { name: 'clearing-before-off', mode: 'off', activity: 'Clearing external temperature control before timed heating OFF…' },
+    { name: 'restoring-normal', mode: 'normal', activity: 'Restoring native heating before resuming external control with a fresh measurement.' },
+    { name: 'fallback', mode: 'normal', activity: 'Restoring Normal heating with the internal sensor; external control needs fresh evidence.',
+      reason: 'External control needs fresh source evidence. Normal heating is restoring with the internal sensor.' },
+  ];
   for (const width of [320, 390, 1440]) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: width > 600 ? 1100 : 844, deviceScaleFactor: 1, mobile: false });
     for (const theme of ['dark', 'light']) {
@@ -980,6 +1012,41 @@ try {
         document.getElementById('home-control').scrollIntoView({block: 'start'})`);
       await checkDashboardLayout({ evaluate, width });
       await capture(`dashboard-${width}-${theme}`);
+      for (const handover of garageHandoverCases) {
+        await evaluate(`globalThis.garageHandoverSmoke=${JSON.stringify(handover)}; globalThis.refreshLearningSmokeStatus()`);
+        await until(`document.getElementById('garage-control-detail').textContent.includes(${JSON.stringify(handover.activity)})`);
+        assert.equal(await evaluate(`document.getElementById('garage-mode-${handover.mode}').getAttribute('aria-label').endsWith(' · requested')`), true,
+          `${handover.name} shows the selection as requested until native confirmation`);
+        assert.equal(await evaluate("['normal','off'].every(mode=>document.getElementById('garage-mode-'+mode).disabled)"), true,
+          `${handover.name} blocks another heating request during handover`);
+        if (handover.reason) assert.ok(await evaluate(`document.getElementById('garage-control-detail').textContent.includes(${JSON.stringify(handover.reason)})`),
+          'Failed external preparation keeps the actual fallback reason visible');
+        await evaluate(`(() => {
+          const title=document.getElementById('garage-temporary-heating-title');
+          for (let parent=title.parentElement; parent; parent=parent.parentElement)
+            if (parent.tagName==='DETAILS') parent.open=true;
+          title.scrollIntoView({block:'start'});
+        })()`);
+        assert.equal(await evaluate(`(() => {
+          const node=document.getElementById('garage-control-detail'), box=node.getBoundingClientRect();
+          return node.checkVisibility() && box.left>=0 && box.right<=innerWidth
+            && node.scrollWidth<=node.clientWidth+1 && node.scrollHeight<=node.clientHeight+1;
+        })()`), true, `${handover.name} keeps the handover explanation visible at ${width}px in ${theme}`);
+        await capture(`garage-handover-${handover.name}-${width}-${theme}`);
+      }
+      await evaluate("globalThis.garageHandoverSmoke=null; globalThis.refreshLearningSmokeStatus()");
+      for (const targetState of ['active', 'pending']) {
+        await evaluate(`globalThis.garageTargetSmoke=${JSON.stringify(targetState)}; globalThis.refreshLearningSmokeStatus()`);
+        await until("document.getElementById('garage-requested').textContent.includes('Reduction')");
+        assert.equal(await evaluate("document.getElementById('garage-mode-normal').getAttribute('aria-pressed')"), 'false',
+          'Native ON during automatic reduction does not select the Normal override');
+        assert.match(await evaluate("document.getElementById('garage-current-room').textContent"), /5 °C/,
+          'Automatic target preserves the saved owner setting');
+        assert.match(await evaluate("document.getElementById('garage-current-control').textContent"), /Reduced room target/);
+        await evaluate("document.getElementById('garage-current-control').scrollIntoView({block:'center'})");
+        await capture(`garage-target-${targetState}-${width}-${theme}`);
+      }
+      await evaluate("globalThis.garageTargetSmoke=null; globalThis.refreshLearningSmokeStatus()");
       await evaluate("document.getElementById('fireplace-shortcut').click()");
       await capture(`fireplace-${width}-${theme}`);
       await evaluate("document.getElementById('fireplace-close').click()");
@@ -1264,6 +1331,8 @@ try {
   console.log(JSON.stringify({ result: 'garage-browser-smoke-passed', artifacts,
     chargerSummaryHeights: Object.fromEntries(chargerSummaryHeights), chargingStates: chargingCases.length,
     checks: ['Home default', 'separate scope and method controls', 'negative Garage and Total figures',
+      'Automatic lower-target activity preserves the saved owner setting and does not select Normal merely because native power is ON',
+      'Garage external handover preparation and fallback keep requested state, blocked competing controls and visible reasons at 320/390/1440px in both themes',
       'disabled release without an owned episode', 'closed Garage disclosures', '320–1920px layouts including tablet and charger-pair boundaries',
       'equipment rows open with Enter and full-summary pointer clicks and preserve focus and expansion during refresh',
       'shared charger cards, energy-based percentage with source and original vehicle timestamp, 20% starting fallback, confirmed periods, current readiness, TeslaMate reception, seasonal history explanation',

@@ -161,6 +161,9 @@ and can be cancelled independently.
 Each heating section owns its saved automation permission. Charging Automatic
 scheduling and Caravan Automatic power remain independent. The header identifies
 Live, Simulation or History viewer; it does not imply a global control permission.
+The retired `controller.mode` configuration and `STMQ_MODE` environment variable
+are rejected; remove them before startup and choose each feature's permission in
+the dashboard.
 
 Open the **Home** or **Garage** upper summary to find **Heating configuration**
 with current state, **Temporary heating override**, Away/Pause controls,
@@ -330,7 +333,7 @@ Temporary Away and Pause dates use the same calendar with hour/minute fields;
   blank intervals. Wide layouts also show a compact colour key beside the title;
   on phones the key stays inside the fold.
   Garage pump power readback and managed pause have separate rows: power is the
-  saved native on/off report; managed pause records a savings or timed-off control
+  saved native on/off report; managed pause records a manual timed-off control
   pause, not measured savings or proof of automatic control. Requested reduction,
   **Hot-water circulation request**, **Hot-water circulation feedback** and modeled
   fireplace windows remain separate.
@@ -633,34 +636,37 @@ the temperature margin, reference dimensions, heat-transfer estimate and fixed
 safety factor. Cooling and recovery follow measured air temperature continuously;
 there is no fixed refill timer. An open door blocks a new savings pause below
 2°C outside; an existing pause is reassessed against measured protection.
-Savings pauses have a one-hour planned minimum and no fixed maximum; local
-temperatures, forecast pipe reserve, uncertainty, economics and available forecast
-coverage determine their duration. Garage's 0–100 **Savings preference** changes
-the minimum estimated benefit and the fraction of the best benefit a shorter
-pause must retain. The default 50 requires more than €0.50 and retains at least
-80% of the best benefit; 0 requires more than €0.75 and retains 60%, while 100
-requires more than €0.25 and chooses the greatest benefit. These use the shared
-€0.50 baseline and are engineering policy, not learned optimal thresholds.
-Protection and recovery requirements remain independent of the preference.
-The Pill's short renewable OFF permission
-still restores heating on communication loss without limiting the total pause. See
-[protection parameters](docs/garage-protection-defaults.md) for assumptions and
-reporting/restoration deadlines.
-The `shelly-cn105` Pill integration supports native controls and commissioned
-selective pause leases. **Room setting** retains your chosen target down to 5°C
-until you change it, including after restart,
-using the independent Garage rear sensor and the Pill's external temperature
-feature: ST-MQ selects native 17°C heating and the reported external value adds
-`17 − room setting` (+12°C for a 5°C target). Each enable or renewal requires
-fresh ON, HEAT and 17°C readbacks; a failed check stops renewals and the existing
-lease expires. Lost, unaccepted renewals retry when fresh driver evidence and a
-new challenge prove the earlier request can no longer take effect; the original
-90-second sensor deadline remains unchanged. Driver
-capability and its local feature flag are required; economic pauses still need
-fresh native-setting evidence and qualified bounded restoration. External control
-is cleared before a managed OFF request and the saved room target is restored
-using fresh sensors after ON confirmation. Automatic pauses require that feature’s
-automation permission; bounded manual requests are independent.
+Savings periods use a lower external room target while native power stays ON.
+They have a one-hour planned minimum and no fixed maximum; local temperatures,
+forecast pipe reserve, uncertainty, economics and forecast coverage determine the
+endpoint. Garage's **Savings preference** changes the minimum estimated benefit
+and how much of the best opportunity a shorter period must retain. Protection
+and recovery requirements remain independent of that preference. Estimated
+consumption includes a powered-idle allowance, possible lower-target maintenance
+and later recovery. These assumptions are not measured savings or proof that the
+compressor stopped. See [Garage planning](docs/garage.md) and
+[protection parameters](docs/garage-protection-defaults.md).
+
+The `shelly-cn105` Pill integration supports persistent native controls, external
+room-temperature input and separately commissioned timed OFF. **Room setting**
+retains your chosen normal target down to 5°C, including after restart. ST-MQ
+selects native HEAT at 17°C and supplies the independent rear temperature plus
+`17 − effective room target`. Price automation temporarily lowers that effective
+target (default 0°C); it does not overwrite your saved choice. Source timestamps,
+short expiry and pipe protection remain binding when the adjusted value changes.
+Every external enable or renewal needs fresh native ON, HEAT and 17°C evidence.
+No automatic savings period issues an OFF command.
+
+Manual **Heating off** works in Plan only when its installed expiry/restoration
+checks and protection evidence qualify. It saves the room intent, clears external
+sensing, then requests bounded OFF. **Normal** or expiry restores native ON;
+the saved external target resumes with fresh source evidence. This manual
+handover can briefly use the internal thermostat. The two operations remain
+mutually exclusive. The Pill's `pauseEnabled` permission governs timed OFF;
+external-temperature permission governs the room feed; `manualEnabled` governs
+persistent native edits. No command carries manual-versus-automatic policy.
+The buttons report pending, confirmed, unavailable and restoring states.
+Use matching current application and adapter contracts for deployment.
 
 | Data | Primary → backup | Normal collection interval |
 | --- | --- | --- |

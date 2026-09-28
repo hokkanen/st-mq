@@ -11,6 +11,7 @@ import { loadConfig } from '../src/app/config.js';
 import { createAppServer } from '../src/app/server.js';
 import { startMqtt } from '../src/acquisition/mqtt.js';
 import { isolatedGarageAdapter } from './helpers/garage-mqtt.js';
+import { validateSavedGarageHeatingHandover } from '../src/garage/contract.js';
 
 function setup(t, input = 'simulated') {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-app-test-'));
@@ -18,9 +19,25 @@ function setup(t, input = 'simulated') {
   const config = { ...loadConfig({ XDG_CONFIG_HOME: directory }, directory), input };
   config.garage.adapter = isolatedGarageAdapter();
   let at = Date.parse('2026-09-06T03:45:00Z'); // 06:45 Finnish time
-  const engine = new Engine({ store, config, clock: () => at });
-  t.after(() => { store.close(); rmSync(directory, { recursive: true, force: true }); });
-  return { store, engine, config, advance: ms => { at += ms; } };
+  const engines = [];
+  const createEngine = (options = {}) => {
+    const engine = new Engine({ store, config, clock: () => at, ...options });
+    engines.push(engine);
+    return engine;
+  };
+  const engine = createEngine();
+  t.after(async () => {
+    // Worker readers can create SQLite sidecars even after the writer closes.
+    // Drain every simulated restart before removing their shared database.
+    for (const runtime of engines.reverse()) {
+      await runtime.charging.close();
+      await runtime.garage.close({ restore: false });
+      await runtime.closeFireplace();
+      await runtime.executor.close({ restore: false });
+    }
+    store.close(); rmSync(directory, { recursive: true, force: true });
+  });
+  return { store, engine, config, createEngine, advance: ms => { at += ms; } };
 }
 
 test('Plan only records intents without operating the simulated plant', t => {
@@ -34,15 +51,82 @@ test('Plan only records intents without operating the simulated plant', t => {
   assert.equal(engine.status().execution.status, 'plan-only');
 });
 
+test('retired Garage pause state rejects before startup writes or MQTT connection', async t => {
+  const store = new Store(':memory:');
+  t.after(() => store.close());
+  const config = { input: 'mqtt', settings: {}, garage: { enabled: true, adapter: isolatedGarageAdapter() },
+    connections: { mqtt: { address: 'mqtt://invented.invalid', user: 'invented-account' } } };
+  store.setState('garage:adapter:mqtt', { version: 1,
+    episode: { id: 'retired-pause', purpose: 'manual' }, restorePending: true });
+  const before = store.db.prepare('SELECT total_changes() AS changes').get().changes;
+  assert.throws(() => new Engine({ store, config }), /Unsupported saved Garage pause contract/);
+  assert.equal(store.db.prepare('SELECT total_changes() AS changes').get().changes, before,
+    'Unsupported physical-restoration state must remain untouched');
+  let connects = 0;
+  await assert.rejects(startMqtt({ engine: {}, store, config,
+    connect: () => { connects++; throw new Error('Connection must not start'); } }),
+  /Unsupported saved Garage pause contract/);
+  assert.equal(connects, 0);
+  assert.equal(store.db.prepare('SELECT total_changes() AS changes').get().changes, before);
+});
+
+test('retired price-based OFF accounting rejects before startup writes or broker connection', async t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  const config = { input: 'mqtt', settings: {}, garage: { enabled: true, adapter: isolatedGarageAdapter() },
+    connections: { mqtt: { address: 'mqtt://invented.invalid', user: 'invented-account' } } };
+  const saved = { plan: { nextAction: 'pause' }, accounting: { offHours: 1 } };
+  store.setState('garage:episode:mqtt', saved);
+  const before = store.db.prepare('SELECT total_changes() AS changes').get().changes;
+  assert.throws(() => new Engine({ store, config }), /Unsupported saved Garage target episode/);
+  let connects = 0;
+  await assert.rejects(startMqtt({ engine: {}, store, config,
+    connect: () => { connects++; throw Error('Unexpected connection'); } }), /Unsupported saved Garage target episode/);
+  assert.equal(connects, 0);
+  assert.equal(store.db.prepare('SELECT total_changes() AS changes').get().changes, before);
+  assert.deepEqual(store.getState('garage:episode:mqtt'), saved);
+});
+
+test('unsupported Garage handovers reject before startup writes, MQTT wiring or connection', async t => {
+  const current = { version: 2, id: 'synthetic-handover',
+    adapterKey: 'a'.repeat(64), targetIdentity: 'b'.repeat(64), startedAt: 1_800_000_000_000,
+    targetC: 5, phase: 'off', native: { mode: 'heat', targetC: 17, fan: 'auto', vane: 3, wideVane: null } };
+  for (const phase of ['clearing', 'off', 'restoring'])
+    assert.doesNotThrow(() => validateSavedGarageHeatingHandover({ ...current, phase }),
+      'Current manual handover phases retain clear-before-OFF restoration');
+  for (const [name, value] of [
+    ['retired continuous-feed phase', { ...current, phase: 'preparing-off' }],
+    ['unknown top-level field', { ...current, retired: true }],
+    ['unknown native field', { ...current, native: { ...current.native, assumed: true } }],
+    ['malformed native state', { ...current, native: [] }],
+    ['invalid restoration timestamp', { ...current, restorationAt: 'later' }],
+    ['unsupported version', { ...current, version: 0 }],
+  ]) await t.test(name, async t => {
+    const store = new Store(':memory:'); t.after(() => store.close());
+    const config = { input: 'mqtt', settings: {}, garage: { enabled: true, adapter: isolatedGarageAdapter() },
+      connections: { mqtt: { address: 'mqtt://invented.invalid', user: 'invented-account' } } };
+    store.setState('garage:heatingHandover:mqtt', value);
+    const before = store.db.prepare('SELECT total_changes() AS changes').get().changes;
+    assert.throws(() => new Engine({ store, config }), /Unsupported saved Garage heating handover/);
+    assert.equal(store.db.prepare('SELECT total_changes() AS changes').get().changes, before);
+    const engine = {}; let connects = 0;
+    await assert.rejects(startMqtt({ engine, store, config,
+      connect: () => { connects++; throw new Error('Connection must not start'); } }),
+    /Unsupported saved Garage heating handover/);
+    assert.equal(connects, 0); assert.deepEqual(engine, {});
+    assert.equal(store.db.prepare('SELECT total_changes() AS changes').get().changes, before);
+    assert.deepEqual(store.getState('garage:heatingHandover:mqtt'), value);
+  });
+});
+
 test('automatic simulation applies pulse sequence once and restart preserves recency and timed override', async t => {
-  const { engine, store, config, advance } = setup(t);
+  const { engine, store, createEngine, advance } = setup(t);
   engine.updateSettings({ comfort: { maxDropC: 1 } });
   await engine.setAutomation({ feature: 'home', enabled: true });
   assert.ok(engine.plant.state.pulseUntil > engine.clock());
   const pulseUntil = engine.plant.state.pulseUntil;
   advance(15 * 60_000);
   engine.setOverride(120);
-  const restarted = new Engine({ store, config, clock: engine.clock });
+  const restarted = createEngine();
   const result = restarted.tick();
   assert.equal(result.decision.dhwr.requested, false);
   assert.equal(restarted.plant.state.pulseUntil, pulseUntil);
@@ -64,10 +148,10 @@ test('history input cannot enable automation, ingest does not fabricate unknown 
 });
 
 test('corrupt learned JSON cannot delay conservative startup', t => {
-  const { engine, store, config } = setup(t);
+  const { engine, store, createEngine } = setup(t);
   recordLearningContext(store, 'simulated', { phase: 'normal', regime: 'occupied', targetC: 21 }, engine.clock());
   store.db.prepare('INSERT INTO state (key,value,updated_at) VALUES (?,?,?)').run('adaptive:simulated', '{broken', 0);
-  const restarted = new Engine({ store, config, clock: engine.clock });
+  const restarted = createEngine();
   assert.equal(restarted.tick().decision.action, 'normal');
   assert.ok(store.events().some(e => e.type === 'checkpoint-rebuild'));
 });
@@ -131,7 +215,7 @@ test('MQTT requests snapshots on reconnect, preserves retained uncertainty and l
 });
 
 test('permanent settings APIs are read-only and configured price revisions preserve history on restart', async t => {
-  const { engine, store, config, advance } = setup(t);
+  const { engine, store, config, createEngine, advance } = setup(t);
   const token = 'synthetic-test-access-token-24';
   const server = createAppServer({ engine, store, token });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -144,11 +228,11 @@ test('permanent settings APIs are read-only and configured price revisions prese
   assert.equal(saved.periods[0].vatRate, 0.255);
   assert.equal(saved.periods[0].marginCtPerKwh, 0.33);
   assert.deepEqual(await (await fetch(`${base}/api/contract`, { headers })).json(), saved);
-  const restarted = new Engine({ store, config, clock: engine.clock });
+  const restarted = createEngine();
   assert.equal(restarted.contract().periods.length, 1);
   assert.equal(restarted.status().priceStatus, 'simulated');
   advance(3600_000);
-  const changed = new Engine({ store, config: { ...config, priceSettings: { ...config.priceSettings, marginCtPerKwh: 0.4 } }, clock: engine.clock });
+  const changed = createEngine({ config: { ...config, priceSettings: { ...config.priceSettings, marginCtPerKwh: 0.4 } } });
   assert.equal(changed.contract().periods.length, 2);
   assert.equal(changed.contract().periods[0].marginCtPerKwh, 0.33);
   assert.equal(changed.contract().periods[1].marginCtPerKwh, 0.4);

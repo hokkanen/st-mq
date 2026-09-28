@@ -21,9 +21,9 @@ export function createPlant(parameters = {}) {
     rearC: 7, frontC: 6.6, coreC: 7, slabC: 7, deliveredKw: .3 },
   };
 }
-export function plantInputs(plant, hour, { available = true, disturbance = true } = {}) {
+export function plantInputs(plant, hour, { available = true, disturbance = true, roomTargetC = 7, standbyPowerKw = 0 } = {}) {
   const p = plant.parameters, outdoorC = outdoorAt(hour, p);
-  const targetC = 7 + .025 * outdoorC;
+  const targetC = roomTargetC + .025 * outdoorC;
   const demand = targetC - plant.state.rearC;
   const powerKw = available ? clamp((.29 + .014 * Math.max(0, -outdoorC) + p.demand * demand)
     * clamp((demand + .35) / .35, 0, 1), 0, 2.1) : 0;
@@ -33,7 +33,7 @@ export function plantInputs(plant, hour, { available = true, disturbance = true 
   const doorRear = disturbance && p.doors && day % 11 === 4 && minuteOfDay >= 470 && minuteOfDay < 474;
   const ev1Kw = disturbance && p.ev && day % 3 === 0 && hour % 24 >= 20 && hour % 24 < 23 ? 7 : 0;
   const ev2Kw = disturbance && p.ev && day % 4 === 2 && hour % 24 >= 1 && hour % 24 < 4 ? 5 : 0;
-  return { outdoorC, available, powerKw, activity: clamp(powerKw / .8, 0, 1),
+  return { outdoorC, available, powerKw, standbyPowerKw, activity: clamp(powerKw / .8, 0, 1),
     ev1Kw, ev2Kw, doorFront, doorRear, baselineVerified: true, powerQuality: 'simulated' };
 }
 /** Advance physical equations at one minute or finer, with two different slow
@@ -54,7 +54,7 @@ export function stepPlant(plant, input, hours = 1 / 60) {
     coreC: s.coreC + ((s.rearC - s.coreC) / p.memoryHours + .0008 * (input.outdoorC - s.coreC)) * dt,
     slabC: s.slabC + (s.rearC - s.slabC) / p.slabHours * dt,
     deliveredKw: s.deliveredKw + (delivered - s.deliveredKw) * Math.min(1, dt / .09) };
-  return input.powerKw * dt;
+  return (input.powerKw + (input.standbyPowerKw ?? 0)) * dt;
 }
 export function observedPlant(plant, hour, input, random = () => .5) {
   const p = plant.parameters;
@@ -63,7 +63,7 @@ export function observedPlant(plant, hour, input, random = () => .5) {
     return p.quantizationC ? Math.round(noisy / p.quantizationC) * p.quantizationC : noisy;
   };
   return { at: AUDIT_START + hour * HOUR, rearC: measure(plant.state.rearC),
-    frontC: measure(plant.state.frontC), ...input, sourceEpoch: 'independent-plant-v1',
+    frontC: measure(plant.state.frontC), ...input, powerKw: input.powerKw + (input.standbyPowerKw ?? 0), sourceEpoch: 'independent-plant-v1',
     ...(p.activityOnly ? { powerKw: null, powerQuality: null } : {}),
     ...(p.booleanActivity ? { activity: input.activity > .02 } : {}),
     ...(p.doorContacts === false ? { doorFront: null, doorRear: null } : {}) };

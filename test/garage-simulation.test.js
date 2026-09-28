@@ -6,6 +6,17 @@ import { createPlant, plantInputs, stepPlant, observedPlant, randomSource, pause
   AUDIT_START } from './helpers/garage-plant.js';
 import { createGarageModel, updateGarageModel, replayGarageModel, garageRecoveryHours } from '../src/garage/model.js';
 
+test('lower-target plant keeps native power ON and bills standby without inventing compressor heat', () => {
+  const powered = createPlant(), noStandby = structuredClone(powered);
+  const input = plantInputs(powered, 0, { available: true, roomTargetC: 0, standbyPowerKw: .04 });
+  assert.equal(input.available, true); assert.equal(input.powerKw, 0);
+  const energy = stepPlant(powered, input);
+  assert.equal(stepPlant(noStandby, { ...input, standbyPowerKw: 0 }), 0);
+  assert.equal(energy, .04 / 60);
+  assert.deepEqual(powered.state, noStandby.state, 'Standby electricity is not compressor thermal input');
+  assert.equal(observedPlant(powered, 0, input).powerKw, .04);
+});
+
 test('independent plant retains separate slow masses through a local door plunge', () => {
   const warm = createPlant({ doors: true }), cold = createPlant({ doors: true });
   cold.state.coreC = 1; cold.state.slabC = 1;
@@ -88,16 +99,19 @@ test('savings preference changes selected duration and monetary admission withou
   const report = runPlanningAudit({ days: 43, cadenceMinutes: 15 });
   for (const row of report.rows.filter(row => ['flat', 'mild-peak'].includes(row.tariff)
     || row.tariff !== 'exceptional-peak' && row.savingsStrategy !== 'savings')) {
-    assert.equal(row.offHours, 0); assert.equal(row.simulatedBillDifferenceEur, 0);
+    assert.equal(row.reducedHours, 0); assert.equal(row.simulatedBillDifferenceEur, 0);
   }
   const selected = report.rows.find(row => row.tariff === 'exceptional-peak' && row.savingsStrategy === 'balanced');
-  assert.ok(selected.offHours > 2, 'The four-hour tariff opportunity is not capped by the old two-hour policy');
+  assert.ok(selected.reducedHours > 2, 'The four-hour tariff opportunity is not capped by the old two-hour policy');
   assert.ok(selected.simulatedBillDifferenceEur > .5);
   assert.ok(selected.minimumFrontC > 3 && selected.minimumRearC > 3);
   assert.ok(selected.endDebtC.coreC < .2 && selected.endDebtC.slabC < .2);
   const preferences = report.rows.filter(row => row.tariff === 'exceptional-peak');
-  assert.deepEqual(preferences.map(row => row.offHours), [2.5, 3.25, 4]);
+  assert.deepEqual(preferences.map(row => row.reducedHours), [2.5, 3.25, 4]);
   assert.ok(preferences.every(row => row.minimumFrontC > 3 && row.minimumRearC > 3));
-  assert.ok(report.rows.find(row => row.tariff === 'ordinary-peak' && row.savingsStrategy === 'savings').offHours > 0,
-    'Highest preference accepts a smaller opportunity that fails the balanced monetary hurdle');
+  assert.equal(report.rows.find(row => row.tariff === 'ordinary-peak' && row.savingsStrategy === 'savings').reducedHours, 0,
+    'Powered idle and recovery costs can reject the former full-OFF opportunity even at the highest preference');
+  assert.ok(report.rows.every(row => row.nativeOffHours === 0), 'Pricing never switches native power OFF');
+  assert.ok(preferences.every(row => row.reducedElectricityKwh >= row.reducedHours * report.standbyPowerKw - .00001),
+    'The independent plant keeps electronics powered while compressor demand is reduced');
 });

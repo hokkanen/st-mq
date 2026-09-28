@@ -1,3 +1,4 @@
+import { validateSavedGarageTargetEpisode } from '../garage/episodes.js';
 import { createEquipmentCapture } from './equipment.js';
 import { readFileSync } from 'node:fs';
 import mqtt from 'mqtt';
@@ -7,6 +8,7 @@ import { createH66Controller, H66_WRITABLE_REGISTERS } from '../control/h66.js';
 import { DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS, DEFAULT_TEMPERATURE_REPORT_GRACE_MS } from '../domain/temperature-reports.js';
 import { createFloorOverride, floorOverrideConfiguration } from '../control/floor-override.js';
 import { createGarageAdapter } from '../garage/adapter.js';
+import { validateSavedGaragePauseContract, validateSavedGarageHeatingHandover } from '../garage/contract.js';
 import { createShellyCn105Transport } from '../garage/shelly-cn105.js';
 import { teslamateConfiguration } from '../app/config.js';
 import { createShellyEvseAdapter } from '../charging/shelly-evse.js';
@@ -18,6 +20,9 @@ export { decodeMqttTemperature } from './mqtt-temperature.js';
 // Credentials and raw broker errors never enter event logs.
 export async function startMqtt({ engine, store, config, connect = mqtt.connect, canControl = () => true,
   reportStorageFailure = diagnostic => process.stderr.write(`${JSON.stringify(diagnostic)}\n`) }) {
+  validateSavedGaragePauseContract(store.getState?.(`garage:adapter:${config.input}`));
+  validateSavedGarageHeatingHandover(store.getState?.(`garage:heatingHandover:${config.input}`));
+  validateSavedGarageTargetEpisode(store.getState?.(`garage:episode:${config.input}`));
   const settings = { ...(config.h66 ?? {}) };
   const intervalMs = settings.snapshotIntervalMs ?? 60_000;
   const deviceId = settings.deviceId ?? config.deviceId;

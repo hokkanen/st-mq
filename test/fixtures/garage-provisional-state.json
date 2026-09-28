@@ -5,7 +5,7 @@
   "sessionId": "fixture-session-1",
   "sequence": 1,
   "observedAt": 1800000000000,
-  "mode": "armed",
+  "mode": "ready",
   "health": {
     "device": {
       "value": true,
@@ -54,8 +54,7 @@
   },
   "authority": {
     "ownerSession": "fixture-host",
-    "controlAllowed": true,
-    "manualPauseAllowed": true
+    "controlAllowed": true
   },
   "challenge": {
     "value": "fixture-challenge-1",

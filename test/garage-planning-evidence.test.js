@@ -19,18 +19,19 @@ function outlook(values) {
   return { prices: values.map((value, i) => ({ start: now + i * HOUR, end: now + (i + 1) * HOUR, priceCtPerKwh: value })),
     forecast: [{ start: now, end: now + values.length * HOUR, outdoorC: 0, issuedAt: now }] };
 }
-const offHours = plan => (plan.steps ?? []).reduce((hours, row) => hours + (row.available ? 0 : (row.end - row.start) / HOUR), 0);
+const reducedHours = plan => (plan.steps ?? []).reduce((hours, row) => hours + (row.demandReduced ? (row.end - row.start) / HOUR : 0), 0);
 
 test('an initial worthwhile opportunity may exceed two hours when pipe protection supports it', () => {
   const value = model(); value.validation.episodes = [];
   const plan = planGarage({ now, restorationDelayMs: 120_000, exposure: knownGarageReserve(settings, { at: now }),
     model: value, observation, settings, ...outlook([300, 300, 300, 300, ...Array(20).fill(5)]) });
-  assert.equal(plan.learningTrial, true); assert.equal(plan.state, 'waiting');
-  assert.ok(offHours(plan) > 2); assert.ok(plan.scoreEur > settings.minSavingsEur);
+  assert.equal(plan.forecastExtrapolation, true); assert.equal(plan.state, 'waiting');
+  assert.ok(reducedHours(plan) > 2);
+  assert.ok(plan.steps.filter(step => step.demandReduced).every(step => step.electricityKwh > 0)); assert.ok(plan.scoreEur > settings.minSavingsEur);
   assert.equal(plan.evidence.validatedOffHours, 0); assert.equal(plan.evidence.eligible, true);
   const ordinary = planGarage({ now, restorationDelayMs: 120_000, exposure: knownGarageReserve(settings, { at: now }),
     model: value, observation, settings, ...outlook([40, 5, 5, 5, 5, 5, 5, 5]) });
-  assert.equal(offHours(ordinary), 0, 'Learning alone never justifies a small saving');
+  assert.equal(reducedHours(ordinary), 0, 'Learning alone never justifies a small saving');
 });
 
 test('completed experiments improve duration evidence without imposing a permission ceiling', () => {
@@ -48,7 +49,7 @@ test('completed experiments improve duration evidence without imposing a permiss
   assert.equal(garagePlanningEvidence(value, garageModelSummary(value), { observation }).validatedOffHours, 2);
   const plan = planGarage({ now, restorationDelayMs: 120_000, exposure: knownGarageReserve(settings, { at: now }),
     model: value, observation, settings, ...outlook([300, 300, 300, 300, ...Array(20).fill(5)]) });
-  assert.ok(offHours(plan) > plan.evidence.validatedOffHours);
+  assert.ok(reducedHours(plan) > plan.evidence.validatedOffHours);
 });
 
 test('recovery and failed-trial cooldown prevent starting a new experiment', () => {
@@ -112,11 +113,11 @@ test('power and optimistic recovery errors have separate kWh units and conservat
   assert.equal(garagePlanningEnergyUncertainty(value, { heldOut: {} }, 2).kwh, .5);
 });
 
-test('a running one-hour trial cannot extend its original endpoint during renewal', () => {
+test('a running one-hour target reduction cannot extend its original endpoint', () => {
   const value = model(); value.validation.episodes = [];
   const plan = planGarage({ now, restorationDelayMs: 120_000, exposure: knownGarageReserve(settings, { at: now }), model: value,
-    observation: { ...observation, available: false }, settings,
-    activeEpisode: { state: 'paused', pauseStartedAt: now - .75 * HOUR, authorizedEndAt: now + .25 * HOUR },
+    observation: { ...observation, available: true, demandReduced: true }, settings,
+    activeEpisode: { state: 'reducing', reductionStartedAt: now - .75 * HOUR, authorizedEndAt: now + .25 * HOUR },
     ...outlook([300, 5, 5, 5, 5, 5]) });
-  assert.equal(plan.nextAction, 'renew'); assert.equal(plan.pauseUntil, now + .25 * HOUR); assert.equal(offHours(plan), .25);
+  assert.equal(plan.nextAction, 'target'); assert.equal(plan.reductionUntil, now + .25 * HOUR); assert.equal(reducedHours(plan), .25);
 });

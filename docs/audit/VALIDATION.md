@@ -72,7 +72,9 @@ were replaced with current-contract and explicit rejection coverage; test-count
 changes are not a claim that old development formats remain supported.
 
 Physical C2 remains disabled/uncommissioned until the arriving EVSE's exact native
-contract is verified. Garage automatic OFF requires verified release ordering.
+contract is verified. Garage manual timed OFF requires release-ordering capability and installed
+selective-power, local-expiry and restart evidence. Automatic savings use external
+room-target reductions, with separate readiness checks.
 ARM execution, installed Supervisor rendering/install/backup behavior, installed
 systemd/VIP behavior and real device timing remain commissioning checks.
 

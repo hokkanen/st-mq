@@ -58,7 +58,7 @@ function fixture(t, options = {}) {
 
 test('ordinary native controls work in monitoring/shadow with economic control disabled, without an automatic claim or lease', async t => {
   const f = fixture(t);
-  assert.equal(f.adapter.status().automaticControl, false);
+  assert.equal(f.adapter.status().pauseControl, false);
   assert.equal(f.runtime.status().nativeControls.available, true);
   assert.equal(f.published.length, 0);
   await f.runtime.setNativeSettings({ setting: 'power', value: 'off' });
@@ -248,7 +248,7 @@ test('failed persistence prevents publication and concurrent requests cannot sha
 
 test('pending native settings cannot be followed by an automatic lease even with all economic proofs', async t => {
   const f = fixture(t);
-  f.state({ mode: 'armed', authority: { ownerSession: 'invented-owner', controlAllowed: true, manualControlAllowed: true },
+  f.state({ mode: 'ready', authority: { ownerSession: 'invented-owner', controlAllowed: true, manualControlAllowed: true },
     commissioning: { selectivePowerVerified: true, expiryVerified: true, restartVerified: true },
     baseline: { verified: true, profile: 'native-settings', mode: 'heat', targetC: 17, fan: 'auto', vane: 3, measuredAt: BASE },
     capabilities: { preserveNativeSettings: true, releaseOrdering: true } });
@@ -265,7 +265,7 @@ test('a managed pause is restored before ordinary native settings can change', a
   const f = fixture(t);
   f.state({ authority: { ownerSession: 'invented-owner', controlAllowed: false, manualControlAllowed: true },
     restorationPending: true, lease: { episodeId: 'invented-economic', endpointAt: BASE + 120_000, expiresAt: BASE + 60_000 } });
-  await assert.rejects(f.runtime.setNativeSettings({ setting: 'mode', value: 'cool' }), /managed pause to restore/);
+  await assert.rejects(f.runtime.setNativeSettings({ setting: 'mode', value: 'cool' }), /timed OFF restoration/);
   assert.deepEqual(f.published.map(row => row.command.action), ['release']);
 });
 

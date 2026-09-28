@@ -7,7 +7,7 @@ export const GARAGE_HEAT_TRANSFER_SAFETY_FACTOR = 2;
 export const GARAGE_PREFERENCE_VERSION = 'garage-savings-strategy-v1';
 export const DEFAULT_GARAGE_SETTINGS = Object.freeze({
   enabled: false, savingsStrategy: 'balanced',
-  minSavingsEur: .5, maxPausesPerDay: 1,
+  minSavingsEur: .5, maxPausesPerDay: 1, reducedRoomTargetC: 0,
   maxSensorAgeMs: 120_000, minOnMs: 3 * 3_600_000, minOffMs: 3_600_000,
   stepMinutes: 15,
   protection: Object.freeze({ approved: false, version: GARAGE_POLICY_VERSION,
@@ -29,6 +29,8 @@ export function garageSettings(input = {}) {
   for (const key of ['enabled']) if (typeof output[key] !== 'boolean') throw new Error(`Garage ${key} must be boolean`);
   heatingStrategy(output.savingsStrategy);
   number(output, 'minSavingsEur', 0, 100);
+  number(output, 'reducedRoomTargetC', 0, 15.5);
+  if (!Number.isInteger(output.reducedRoomTargetC * 2)) throw new Error('Garage reducedRoomTargetC must use half-degree steps');
   number(output, 'maxPausesPerDay', 1, 4);
   if (!Number.isInteger(output.maxPausesPerDay)) throw new Error('Garage maxPausesPerDay must be a whole number');
   number(output, 'maxSensorAgeMs', 30_000, 4 * 3_600_000);

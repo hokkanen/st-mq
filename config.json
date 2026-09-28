@@ -108,6 +108,7 @@
 
       "minSavingsEur": 0.5,
       "maxPausesPerDay": 1,
+      "reducedRoomTargetC": 0,
       "minOnMs": 10800000,
       "minOffMs": 3600000,
       "stepMinutes": 15,
@@ -592,6 +593,7 @@
 
       "minSavingsEur": "float(0,100)",
       "maxPausesPerDay": "int(1,4)",
+      "reducedRoomTargetC": "float(0,15.5)",
       "minOnMs": "int(0,86400000)",
       "minOffMs": "int(0,10800000)",
       "stepMinutes": "float(5,30)",

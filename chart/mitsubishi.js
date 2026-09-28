@@ -84,17 +84,19 @@ export function mitsubishiRoomTemperature(garage = {}) {
     detail: `Saved room setting: ${mitsubishiValue('targetC', control.targetC)}. This is recorded application intent, not confirmation of the pump’s current target or operating state. Changes and external-temperature control are disabled here.` };
   const held = control.phase === 'holding' || control.held === true;
   const active = !held && control.phase === 'active' && control.acknowledged === true;
-  const basis = active ? 'Garage rear · Active'
+  const automatic = control.targetSource === 'automatic' && Number.isFinite(control.effectiveTargetC);
+  const basis = active ? automatic ? 'Garage rear · Reduced target' : 'Garage rear · Active'
     : held ? 'External sensor · Held'
       : control.phase === 'preparing' || control.phase === 'active' ? 'External sensor · Preparing'
       : control.phase === 'clearing' ? 'External sensor · Clearing' : 'External sensor · Fallback';
   const nativeTarget = mitsubishiValue('targetC', control.nativeTargetC ?? 17);
-  const progress = active ? 'Garage rear control is active.'
+  const progress = active ? automatic ? `Reduced target ${mitsubishiValue('targetC', control.effectiveTargetC)} is active${clock(control.targetUntil) ? ` until ${clock(control.targetUntil)}` : ''}. Native power remains ON.` : 'Garage rear control is active.'
     : held ? 'Holding the previous temperature permission; current control is unconfirmed.'
       : control.phase === 'preparing' || control.phase === 'active' ? 'Waiting for the pump to confirm Garage rear control.'
       : control.phase === 'clearing' ? 'Returning to the pump’s internal sensor.'
         : 'External temperature control is unavailable.';
   const detail = [`Room setting: ${mitsubishiValue('targetC', control.targetC)}. Retained until you change it, including after restart. ${progress}`,
+    automatic ? `Price control temporarily requests ${mitsubishiValue('targetC', control.effectiveTargetC)}. Your saved ${mitsubishiValue('targetC', control.targetC)} room setting returns afterward. This reduces heating demand; it does not guarantee the compressor stays stopped.` : '',
     `Garage rear is the room sensor. External control uses a native pump target of ${nativeTarget}; the controller adds ${mitsubishiValue('targetC', control.offsetC)} to the rear reading to obtain the lower room setting.`,
     `Garage rear: ${mitsubishiValue('targetC', control.sourceC)}.${clock(control.measuredAt) ? ` Measured ${clock(control.measuredAt)}.` : ''} Supplied temperature: ${mitsubishiValue('targetC', control.suppliedC)}.`,
     control.reason ? `Control status: ${roomControlReason(control.reason)}.` : '',

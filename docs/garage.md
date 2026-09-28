@@ -1,9 +1,13 @@
 # Garage heating
 
-Garage supports a persistent room setting and occasional worthwhile heat-pump OFF
-periods. Economic control never preheats or raises the room setting. Two simple cooling rates predict the rear and front air;
-two independent copper-pipe reference temperatures limit the pause. After each
-pause, normal heating and observed recovery must complete before another starts.
+Garage supports a persistent room setting and price-based reductions of the
+effective room target. Native power stays ON during automatic savings; a higher
+adjusted external temperature reduces demand without power cycling. The pump can
+still heat at the lower target, so this is not a guarantee of a stopped compressor.
+Economic control never preheats or raises the saved room setting. Two cooling rates
+predict rear/front air, while independent copper-pipe references limit reduction.
+Normal heating and observed recovery must complete before another cycle starts.
+Manual timed OFF remains a separate control with automatic restoration.
 Home heating, charging schedules and their savings accounting remain separate.
 
 ## Configuration and everyday controls
@@ -30,7 +34,7 @@ cycles; **Pause price control** suspends automatic savings. The decision section
 explain what the controller can do, what makes a cycle worthwhile, the limits
 that always apply, and how predictions from the separate heat model guide
 selection and ongoing checks. Garage shows its effective minimum benefit,
-minimum planned OFF time, minimum normal-heating interval and daily start limit
+minimum planned reduction time, minimum normal-heating interval and daily start limit
 alongside the independent pipe protection assumptions. Both rear and front
 readings are required. The **Garage heat model** below explains recorded inputs,
 learning evidence and model coefficients, keeping those distinct from owner
@@ -41,26 +45,29 @@ configuration**; shared engineering defaults and standard MQTT topics stay in
 `config.json.options.garage`. See the [configuration guide](configuration.md) for
 a minimal override. Public defaults are `enabled:false`,
 `protection.approved:false`, `savingsStrategy:"balanced"`, `minSavingsEur:0.50`, `minOffMs:3600000` (one hour),
-`minOnMs:10800000` (three hours) and `maxPausesPerDay:1`.
+`minOnMs:10800000` (three hours) and `maxPausesPerDay:1` and `reducedRoomTargetC:0`.
+The existing cadence settings describe target reductions: `minOffMs` is their
+minimum planned duration, `minOnMs` the normal-target interval, and
+`maxPausesPerDay` their daily admission limit. They do not count compressor starts.
 
-`enabled` opts the installation into automatic Garage control.
+`enabled` enables the Garage integration. The independent dashboard
+**Plan only / Automatic** choice authorizes economic actuation.
 `protection.approved` records the owner's review and approval of the protection
 assumptions for that installation. Both may be set to `true` in private overrides;
 the unapproved public default does not prohibit an owner's explicit approval.
 Approval does not verify the assumptions or establish adapter readiness. With
 approval false, available observations still update the reference reserve and
-support learning where the evidence qualifies, but heating-OFF permissions and
-actionable savings pauses are blocked. This is not a full automatic-planning
+support learning where the evidence qualifies, but manual heating-OFF permissions and
+actionable target reductions are blocked. This is not a full automatic-planning
 preview. Fresh sensors and every other control requirement still apply after
 approval. The public MQTT topics alone establish no Pill availability or
 commissioning.
 
-There is no fixed maximum pause or artificial planning-horizon cutoff. Local
+There is no fixed maximum reduction duration or artificial planning-horizon cutoff. Local
 temperatures, the predicted pipe reserve and uncertainty, price/weather coverage and remaining
-savings determine how long heating can stay OFF.
+savings determine how long the effective room target can remain reduced.
 The daily limit counts starts in the Finnish calendar day, including unsuccessful
-attempts. A new process must observe the normal-heating dwell again. A reporting
-interruption or OFF state resets that dwell.
+attempts. A new process must observe the normal-heating dwell again. A reporting interruption, target reduction or native OFF state resets that dwell.
 
 Gentle, Balanced and More savings require net benefit greater than 1.5, 1 or 0.5
 times `minSavingsEur`. With the default €0.50 baseline, that is more than €0.75,
@@ -68,10 +75,10 @@ times `minSavingsEur`. With the default €0.50 baseline, that is more than €0
 windows, the planner chooses the shortest retaining at least 60%, 80% or 100% of
 the best net benefit respectively. Equal durations prefer greater benefit, then
 an earlier start. More savings therefore pursues the greatest benefit, with
-shorter duration breaking ties. Gentle favours shorter pauses even when a longer
-pause could save slightly more. These are configured decision policies, not
+shorter duration breaking ties. Gentle favours shorter reductions even when a longer
+reduction could save slightly more. These are configured decision policies, not
 learned optimal values or annual savings percentages. Temperature protection,
-uncertainty, minimum OFF/recovery requirements and daily limits apply at every
+uncertainty, minimum reduction/recovery requirements and daily limits apply at every
 strategy. See [the selection model](garage-model.md#one-opportunity-at-a-time).
 
 **Room setting** in Heat-pump settings accepts a persistent target down to **5°C**
@@ -80,13 +87,22 @@ feature flag is enabled. Targets below 16°C use the independent Garage rear
 sensor, `garage_temperature`. The pump must already be ON in HEAT mode. ST-MQ
 explicitly commands and confirms the native 17°C target and feeds the Pill
 `rear temperature + (17 − room setting)`; a 5°C setting adds
-12°C. The room setting and native 17°C readback are displayed separately. This
-does not use Mitsubishi i-save or assume that a special mode survives OFF/ON.
+12°C. The room setting and native 17°C readback are displayed separately.
+
+Automatic price control temporarily replaces the effective target with configured
+`reducedRoomTargetC`, default **0°C**, while retaining the owner's saved target
+(minimum **5°C**). It uses the same formula and fresh source clocks: for example,
+rear 6°C with effective target 0°C supplies 23°C to the pump at native 17°C.
+The control value is not a room measurement. The display keeps the saved room
+setting visible and identifies the temporary target, deadline and acknowledgement.
+A target at or above the saved target offers no reduction. Current automatic
+target control requires a saved external room target below 16°C; it does not
+silently convert ordinary native room settings into external control.
 
 An empty database starts from a fresh unambiguous pump setting. Subsequent room
 choices are retained as device-bound application state, outside configuration
 and without expiry. Fan and vane adjustments preserve the target through any
-required clear/write/confirm/re-enable sequence. Power off and non-heating modes
+required clear/write/confirm/re-enable sequence. Ordinary native power OFF and non-heating modes
 retain the choice without forcing heating back on. Choosing a room temperature
 of 16°C or higher replaces the lower target and selects native internal sensing.
 
@@ -98,7 +114,7 @@ reserve can require an earlier deadline. Repeated, retained or cached reconnect
 reports cannot refresh these clocks. Each enable or renewal also requires ON,
 HEAT and 17°C readbacks using the existing 30-second freshness requirement.
 A failed native check stops renewals and lets the existing permission expire.
-Pill driver 1.2.5 can continue an already admitted sample for up to 90 seconds
+The Pill can continue an already admitted sample for up to 90 seconds
 since its last valid native settings report, or the original sample expiry if
 earlier. MQTT/Wi-Fi loss alone also leaves that original expiry intact. Known
 incompatible settings or serial-write uncertainty still request immediate cleanup.
@@ -131,41 +147,48 @@ sent clear cannot be reversed. Ownership changes or reboot also require cleanup;
 retries never reset sensor clocks.
 The retained room target resumes after a host restart only once fresh source
 evidence and native setup are established again. The override is cleared through
-the serial path before ordinary native settings or a managed pause can proceed.
-These software checks do not certify physical frost protection or qualify the
-installation's low-heat behavior.
+the serial path before ordinary native settings or manual timed OFF can proceed.
+These software checks do not certify physical frost protection.
 
-The `shelly-cn105` driver supports ordinary Mitsubishi settings and selective
-pause leases. Both automatic and manual pauses require current ordinary HEAT
-settings, installed selective-power/local-expiry/restart evidence, software
-release-ordering capability, healthy communications, device ownership and approved
-freeze protection. The supported external-control baseline is native 17°C; special
-low-temperature mode preservation is not a requirement. Driver deployment and
-installed commissioning remain separate from editing ST-MQ. See the
-[adapter contract](garage-adapter.md).
+The `shelly-cn105` driver supports ordinary Mitsubishi settings, external input
+and separate bounded pause leases. Price automation needs the external-input
+capability, local enablement, fresh native ON/HEAT/17°C, qualified source evidence,
+ownership and protection. It does not require the manual OFF permission or its
+selective-power commissioning checks. Manual timed OFF additionally requires
+installed selective-power/local-expiry/restart evidence, release-ordering
+capability, accepted ordinary HEAT settings and approved freeze protection.
+The supported external baseline is native 17°C; special low-temperature mode
+preservation is not a requirement. Driver deployment and installed qualification
+remain separate from editing this application. See the [adapter contract](garage-adapter.md).
 
 Garage independently chooses **Plan only** or **Automatic**. Plan only computes
-plans and collects evidence; it never sends economic OFF requests. Home heating,
-charging and Caravan have their own automation choices. Native room settings and
-explicit bounded heating selections remain available when automation is off.
+plans and collects evidence without automatic target changes. Home, charging
+and Caravan have their own automation choices. Persistent native room settings
+and explicit bounded heating selections remain available when automation is off.
 
 **Pause price control** suspends economic control until its Finnish local deadline.
 **Normal heating** and **Heating off** are explicit selections under
 **Temporary heating override**, available with live input and control ownership.
 During Pause the selection is held until its deadline; otherwise the next
 controller update, normally within one minute, takes over. Freeze protection can
-restore heating sooner. Manual OFF uses the same qualified bounded lease as an
-automatic pause, with an explicit manual purpose; it never becomes indefinite
-ordinary power OFF.
+restore heating sooner. Manual OFF uses a qualified bounded device-local lease;
+its purpose stays in the application, not in separate driver permissions.
+The request never becomes indefinite ordinary power OFF.
 
-When external temperature control is active, Heating off remembers its room intent,
-clears the external input and waits for serial acknowledgement before requesting
-OFF. Normal, Resume, expiry and restart restore heating first, then resume the
-previous room intent with new sensor data and fresh native confirmation. Independent
-native setting changes inhibit that resumption. Restart retains the price pause
-and restoration obligation, but never resumes a saved OFF permission. The buttons
-show clearing, requesting, confirmed, restoring or specific unconfirmed outcomes.
-Native ON allows the pump's thermostat to work; it is not proof of useful heat.
+When external temperature control is active, manual Heating off first clears it
+and waits for internal-sensor acknowledgement and durable cleanup before OFF.
+The saved room target is retained. Normal, expiry or cancellation restores native
+ON; only fresh ON evidence and a new qualified source sample allow external input
+to resume at the saved target. The automatic saving path avoids this handover
+by changing the external offset while native power remains ON.
+
+Independent native setting changes inhibit resumption. Restart retains the price
+pause and restoration obligation, but neither saved OFF permission nor cached
+sensor data grants control. The buttons show clearing, requesting, confirmed,
+restoring or specific unconfirmed outcomes. Native power readback confirms manual
+ON/OFF; a reduced target also requires current external-input acknowledgement.
+Serial acknowledgement does not prove which sensor the pump uses or that its
+compressor has stopped. Native ON is not proof of useful heat.
 
 Authenticated mutations return the full dashboard status:
 `POST /api/garage/temporary`, `POST /api/garage/heating`,
@@ -176,25 +199,25 @@ the pump. UI polling never renews an OFF permission.
 ## Sensors, doors and protection
 
 `garage_temperature` is rear; `garage_temperature_2` is front. Both must have
-fresh external reports for every automatic pause. Retained packets, repeated
+fresh external reports for every automatic reduction. Retained packets, repeated
 source timestamps and the pump's own room sensor cannot replace them. Configured
 MQTT door contacts retain a confirmed state until an event or availability loss;
 confirmation and original source time remain distinct.
 
-A new savings pause is blocked when any configured door is open **or unknown**
+A new target reduction is blocked when any configured door is open **or unknown**
 and fresh outside temperature is **below 2°C**. At exactly 2°C or above, either
 door state passes this rule. Unknown outdoor temperature still blocks a start.
-Door changes during an existing pause trigger the ordinary protection
+Door changes during an existing reduction trigger the ordinary protection
 reassessment; they are not an unconditional cancellation. Door area alone
 does not establish air exchange: wind, open duration and mixing are missing.
 There is no fitted door coefficient or invented heat-loss calculation. Affected
 intervals are excluded from clean cooling/reference/validation evidence.
 
 When HA or its door bridge is unavailable, unknown doors use the same 2°C rule
-as open doors. An existing accepted pause can also survive a brief transport-only
+as open doors. An already acknowledged external sample can also survive a brief transport-only
 probe outage while both conservative reserve estimates still cover its original
-permission and useful-heating delay. Such an outage alone does not request ON.
-Held readings cannot start or renew a pause. Invalid readings, changed source,
+permission and useful-heating delay. Such an outage alone does not extend external permission.
+Held readings cannot start or renew a reduction. Invalid readings, changed source,
 insufficient reserve or expired evidence request restoration immediately.
 
 Both managed OFF and external-temperature control request local expiry no later
@@ -216,41 +239,47 @@ remain unapproved until the actual installation has been reviewed.
 Missing history grants no assumed warmth, and one location cannot borrow the
 other's reserve. See [protection assumptions](garage-protection-defaults.md).
 
-Permissions are revalidated every minute and bounded by fresh external temperature
-evidence, outstanding possible OFF permission and the driver’s useful-heating
-response allowance. The Pill's short renewable OFF permission protects against
-communication loss; it does not limit the total continuous pause. The independent safety loop can revoke permission but never
-renew it. Persistence precedes OFF publication. Shutdown, lost authority, stale
-inputs and restart retain restoration obligations; restart never resumes OFF.
+Permissions are revalidated every minute and bounded by original measurement
+clocks, protection reserve and useful-heating delay. The short external permission
+does not limit the total reduction duration. The independent safety loop can
+withdraw permission but never renew it. Manual OFF persists its restoration duty
+before publication. Shutdown, lost authority, stale inputs and restart retain
+cleanup obligations; restart never resumes an old OFF lease or external sample.
 
 ## Learning, recovery and reporting
 
 `committed-garage-v7-room-reference` learns only two effective cooling coefficients,
 from clean OFF intervals. Charger heat is **7.5% of qualifying charger energy**
 (or power), shown separately. It never schedules charging for warmth or credits
-future charging when judging safe OFF time. Current, unknown and forecast charging
-status and power do not restrict savings pauses or alter the planned window.
+future charging when judging a safe reduction. Current, unknown and forecast charging
+status and power do not restrict target reductions or alter the planned window.
 Actual warmth is reflected in measured temperatures. Charging-disturbed or unknown
 configured charger input still cannot train clean cooling/reference data or
-establish comparable savings; those evidence rules do not block pause admission.
+establish comparable savings; those evidence rules do not block reduction admission.
 
 Normal electricity uses a qualified observed mean when available, otherwise an
 explicit **0.5 kW assumption**. Compressor activity/frequency is never converted
-to watts, and electrical input does not establish delivered thermal heat. The
+to watts, and electrical input does not establish delivered thermal heat. For lower-target operation the planner includes an engineering idle allowance
+of the greater of 0.1 kW or 25% of normal input, capped at normal input. It also
+estimates maintenance heating at the lower target; neither is measured standby
+or a physical upper bound. Avoided electricity is normal-reference consumption
+minus that lower-target estimate, never an assumed zero-power interval. The
 planner repays **125% of estimated avoided electricity** at subsequent prices,
-spread over at least three hours and at least 1.25 times the OFF duration, and
+spread over at least three hours and at least 1.25 times the reduction duration, and
 deducts prediction uncertainty. This is a
 conservative accounting assumption, not a learned COP or a verified savings claim.
 Flat or small price differences keep normal heating available.
 
 Once normal reference learning qualifies, the first worthwhile opportunity may
-use the initial cooling estimates with explicit uncertainty margins. Completed
-training and held-out cooling/recovery episodes improve the forecast evidence.
+use the initial cooling estimates with explicit uncertainty margins. Clean observed native-OFF training and held-out cooling/recovery episodes improve
+the cooling evidence. A price reduction remains observed native ON and does not
+become an OFF training experiment. Its forecast is explicitly extrapolated from
+that cooling evidence, with separate lower-target electricity assumptions.
 The observed validation duration is shown as evidence, not a permission ceiling;
 forecasts beyond it carry increasing uncertainty. The one-hour planned minimum
 avoids frequent short cycles. Protection can always restore heating sooner.
-Every event has one contiguous OFF interval and a fixed latest endpoint. No new
-pause can start during its recovery. Both actual external temperatures, sustained
+Every automatic event has one contiguous target-reduction interval and a fixed latest endpoint. No new
+reduction can start during its recovery. Both actual external temperatures, sustained
 normal availability and both pipe reserves determine recovery; no hidden building
 core is estimated. A missing-accounting recovery closes without claiming savings.
 
@@ -269,15 +298,15 @@ it. **Heating savings** keeps Home / Garage / Total and preserves missing or
 negative results. See [reporting](garage-reporting.md), [model details](garage-model.md)
 and [independent simulation](garage-simulation-audit.md).
 
-If changed weather makes the frozen pre-pause temperatures unreachable, recovery
+If changed weather makes the frozen pre-reduction temperatures unreachable, recovery
 can close as **incomplete**, with no savings claim, after continuous fresh accepted
 native ON with both actual locations and both certain pipe references above the
 protection margin. That continuous interval must cover the longest of eight hours,
 the configured minimum ON time, the originally planned recovery-pricing period,
-and the recovery allowance for the actual OFF duration (at least three hours and
-1.25 times OFF hours). Longer pauses therefore retain their full recovery obligation. Closing and a normal-reference reset are committed atomically.
+and the recovery allowance for the actual reduction duration (at least three hours and
+1.25 times reduction hours). Longer reductions therefore retain their full recovery obligation. Closing and a normal-reference reset are committed atomically.
 The reset clears reference/electricity observers and their previous input, retires
 active validation as incomplete, and retains learned cooling rates. The same
 context event replays deterministically; new normal-temperature evidence must
-qualify before another economic pause. Brief charging disturbances, changed
+qualify before another economic reduction. Brief charging disturbances, changed
 baseline/source and unqualified electricity never fabricate completed savings.

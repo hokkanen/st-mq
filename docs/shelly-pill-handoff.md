@@ -8,16 +8,21 @@ driver, exact private MQTT topics and commissioning gates. The default synthetic
 - Production state includes installed `selectivePowerVerified`, `expiryVerified`
   and `restartVerified` evidence. Native baseline means fresh ordinary HEAT settings,
   including 17°C used for external-temperature control. Managed pause capabilities
-  include native-setting preservation and software release ordering. Automatic
-  pauses require local arming; explicit bounded manual pauses have separate
-  admission and retain the same expiry/restoration protections. Software race tests
-  do not manufacture installed test evidence.
+  include native-setting preservation and software release ordering. One local
+  `pauseEnabled` permission (default false) governs every managed pause. ST-MQ
+  uses that capability for explicit timed OFF; automatic price control changes
+  external room targets and requires external readiness instead. The Pill receives
+  no manual/automatic `purpose` and stores no such policy.
+  `mode: "ready"` and `authority.controlAllowed` expose qualified pause support;
+  monitoring blocks new managed OFF. The independent `manualEnabled`
+  permission governs ordinary persistent native settings, not a second bounded
+  pause path. Software race tests do not manufacture installed test evidence.
 
 - The consumer needs native baseline-preserving availability/OFF/release,
   finite episode and lease endpoints, separate host/device sessions, replay-safe
   freshness challenges, sequencing and rejection/acceptance/native-confirmation
   evidence. Reboot or manual ON must invalidate previous OFF intent. A root host
-  thermal episode can contain multiple separately identified native pauses.
+  manual timed-OFF operation has its own bounded restoration obligation.
 - Provide actual accepted renewal, expiry, native minimum ON and worst-case
   useful-heating restoration-delay bounds. ST-MQ tracks independent front/rear
   thermal reserves and renews only from its one-minute planner tick. The consumer
@@ -46,8 +51,16 @@ driver, exact private MQTT topics and commissioning gates. The default synthetic
   remain host inputs. Do not move optimization, thermal-reserve policy or EV scheduling
   into the Pill. Both vehicle doors are at the front; door2 is not a rear door.
 
+Deploy the matching current application and adapter contracts together. Remove
+retired `controller.mode` and `STMQ_MODE` from ST-MQ configuration and deployment
+environment, and use the Pill's current `pauseEnabled` configuration instead of
+the retired `armed` field. These inputs are rejected rather than translated.
+Home and Garage default to Plan only and retain separate saved automation
+permissions in ST-MQ. Plan only permits qualified explicit manual heating and
+does not stop a separately saved room-target feed or an owed restoration.
+
 ST-MQ also supports the Pill's external temperature control for persistent
-room settings down to 5°C. The pump must already be ON in HEAT mode. ST-MQ explicitly
+room settings down to 5°C. Initial setup requires the pump ON in HEAT mode. ST-MQ explicitly
 commands and confirms the native 17°C target, then feeds the independent Garage rear
 temperature plus `17 − requested room setting`:
 a 5°C setting adds 12°C. This uses neither Mitsubishi i-save nor an owner
@@ -63,9 +76,13 @@ earlier absolute `requestedExpiryAt` within its 180-second ceiling. Both probes'
 thermal reserve must cover this deadline and the driver's useful-heating delay;
 the reserve can shorten permission further. These checks are independent of the
 host's economic enablement and protection approval. Each external enable or
-renewal also requires ON, HEAT and 17°C readbacks under the existing 30-second
-freshness requirement. A failed native check stops renewals; protection can
-request earlier clearing without overriding an explicit manual power/mode choice.
+renewal also requires HEAT and 17°C readbacks under the existing 30-second
+freshness requirement. Power must be ON; timed OFF and external input are
+mutually exclusive. A failed native check stops renewals. Protection can request
+earlier clearing without undoing an independent manual power/mode choice.
+Automatic savings retain native ON and temporarily reduce the effective target,
+without replacing the durable normal room choice. Same-source target changes
+retain the original measurement timestamp and cannot extend its deadline.
 
 Communication-only sensor outages can hold an existing acknowledged sample,
 never admit or renew one, while its original deadline and both protection reserves
@@ -96,9 +113,13 @@ never reclassified this way. This requires no firmware or wire-format change.
 Expired or invalid source evidence ends the feed; internal-sensor control uses
 current native settings, HEAT at 17°C if unchanged. A saved target resumes after host restart
 only with fresh independent source evidence and native setup. Serial clearing
-of the override must finish before ordinary native settings or a managed pause
-proceed. This host support does not certify physical frost protection or new
-low-heat commissioning evidence. Economic pauses continue to require the
+of the override must finish before ordinary native settings or manual timed OFF
+proceed. Timed OFF saves only the room intent, then clears external sensing before
+admitting OFF. Normal/expiry restores native ON, and fresh measurements authorize
+resuming the saved target. An internal-thermostat interval is possible during this
+manual handover. Automatic target reductions do not clear external input or cycle
+native power. Independent later native edits supersede saved intent. There is no
+low-heat commissioning evidence. Manual timed OFF continues to require the
 independently verified native baseline and installed restoration evidence. Both
 managed OFF and external temperature now request expiry within 120 seconds of
 the older supporting probe report, despite the driver's 180-second ceiling.
@@ -106,10 +127,13 @@ Both can tolerate transport-only probe loss for the remainder of existing
 permission when reserve allows, and neither admits or renews from held evidence.
 Invalid readings or protection failures still require prompt cleanup/restoration.
 
-The release-ordering commissioning result is an additional host requirement from
-A04. It must cover delayed delivery and serial-in-flight OFF, renewed permissions,
-manual ON, expiry, reboot, host restart and owner-session transfer. A release result
-must fence every earlier possible OFF before native confirmation. Manual/watchdog
-cancellation events include `ownerSession`, `episodeId`, `throughSequence` and
-`at`; unrelated periodic ON reports never substitute for this fence. The separate
+`capabilities.releaseOrdering` declares implemented software cancellation fencing;
+there is no separate `releaseOrderingVerified` installation flag. Source and
+compiled-driver tests cover delayed delivery and serial-in-flight OFF, renewed
+permissions, manual ON, expiry, reboot, host restart and owner-session transfer.
+A release result must fence every earlier possible OFF before native confirmation.
+Manual/watchdog cancellation events include `ownerSession`, `episodeId`,
+`throughSequence` and `at`; unrelated periodic ON reports never substitute for
+this fence. Supervised installed qualification must additionally observe actual
+UART recovery, subsequent native ON and device resource use. The separate
 firmware and installation are not commissioned by the repository test suite.

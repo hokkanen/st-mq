@@ -24,18 +24,18 @@ function candidate(values, { outdoorC = 8, priorOnly = false, settings: preferen
     prices: values.map((value, i) => ({ start: NOW + i * HOUR, end: NOW + (i + 1) * HOUR, priceCtPerKwh: value })),
     forecast: [{ start: NOW, end: NOW + values.length * HOUR, outdoorC, issuedAt: NOW }] };
 }
-const duration = plan => (plan.plannedPauseUntil - plan.pauseFrom) / HOUR;
+const duration = plan => (plan.plannedReductionUntil - plan.reductionFrom) / HOUR;
 
 test('temperature-safe opportunities can exceed two, twenty-four and forty-eight hours', () => {
   for (const hours of [6, 30, 60]) {
     const args = candidate([...repeated(hours, 200), ...repeated(hours * 1.25 + 4, 5)]);
     const plan = planGarage(args);
-    assert.equal(plan.nextAction, 'pause');
+    assert.equal(plan.nextAction, 'target');
     assert.equal(duration(plan), hours);
     assert.equal(plan.evidence.validatedOffHours, 2, 'Observed duration describes evidence, never a maximum permission');
-    assert.equal(plan.learningTrial, true);
+    assert.equal(plan.forecastExtrapolation, true);
     assert.ok(plan.scoreEur > args.settings.minSavingsEur);
-    assert.ok(plan.pauseUntil + args.restorationDelayMs <= plan.horizonEndAt);
+    assert.ok(plan.reductionUntil + args.restorationDelayMs <= plan.horizonEndAt);
     assert.equal(Object.hasOwn(args.settings, 'maxPauseHours'), false);
     assert.equal(Object.hasOwn(args.settings, 'maxHorizonHours'), false);
   }
@@ -44,11 +44,11 @@ test('temperature-safe opportunities can exceed two, twenty-four and forty-eight
 test('an unvalidated cooling prior can select a worthwhile six-hour pause when uncertainty-adjusted pipe reserve supports it', () => {
   const args = candidate([...repeated(6, 200), ...repeated(12, 5)], { priorOnly: true });
   const plan = planGarage(args);
-  assert.equal(plan.nextAction, 'pause');
+  assert.equal(plan.nextAction, 'target');
   assert.equal(duration(plan), 6);
   assert.equal(plan.evidence.thermalReady, false);
   assert.equal(plan.evidence.validatedOffHours, 0);
-  assert.equal(plan.learningTrial, true);
+  assert.equal(plan.forecastExtrapolation, true);
   assert.ok(plan.steps.at(-1).frontLowerC < plan.steps.at(-1).frontC - 1,
     'Extrapolation still pays for uncertainty in actual temperature units');
 });
@@ -59,54 +59,54 @@ test('cold forecasts shorten the selected pause through copper-pipe protection i
   const cold = planGarage(candidate(prices, { outdoorC: -15 }));
   assert.equal(duration(warm), 60);
   assert.ok(duration(cold) > 1 && duration(cold) < 12);
-  assert.ok(cold.pauseFrom > NOW, 'Heating remains available until the later safe opportunity');
-  assert.equal(cold.nextAction, 'available');
+  assert.ok(cold.reductionFrom > NOW, 'Heating remains available until the later safe opportunity');
+  assert.equal(cold.nextAction, 'normal');
   assert.ok(cold.steps.every(row => row.frontLowerC > 1 && row.rearLowerC > 1));
   const missing = candidate(prices); missing.observation.frontC = null;
-  assert.equal(planGarage(missing).nextAction, 'available');
+  assert.equal(planGarage(missing).nextAction, 'normal');
 });
 
 test('a short cheap trough cannot price a whole day of recovery as if all extra electricity fit within three hours', () => {
   const args = candidate([...repeated(24, 100), ...repeated(3, 1), ...repeated(30, 90)]);
   const plan = planGarage(args);
-  assert.equal(plan.nextAction, 'available');
-  assert.ok(plan.pauseFrom >= NOW + 20 * HOUR);
+  assert.equal(plan.nextAction, 'normal');
+  assert.ok(plan.reductionFrom >= NOW + 20 * HOUR);
   assert.ok(duration(plan) < 4, 'The selected opportunity is near the trough, not the complete 24-hour plateau');
   const long = planGarage(candidate([...repeated(24, 200), ...repeated(40, 5)]));
   assert.equal(duration(long), 24);
   assert.equal(long.recoveryHours, 30);
-  assert.equal(long.recoveryKwh, 15);
-  assert.equal(long.recoveryCostEur, .75);
+  assert.equal(long.recoveryKwh, 11.25);
+  assert.equal(long.recoveryCostEur, .5625);
 });
 
 test('renewal retains accumulated recovery debt and rejects an extension that only looks worthwhile when that debt is forgotten', () => {
   const args = candidate([...repeated(2, 100), ...repeated(3, 1), ...repeated(40, 90)]);
-  args.observation.available = false;
-  args.activeEpisode = { state: 'paused', pauseStartedAt: NOW - 24 * HOUR,
-    authorizedEndAt: NOW + 2 * HOUR, accounting: { offHours: 24, recoveryAllowanceKwh: 15 } };
+  args.observation.available = true;
+  args.activeEpisode = { state: 'reducing', reductionStartedAt: NOW - 24 * HOUR,
+    authorizedEndAt: NOW + 2 * HOUR, accounting: { reducedHours: 24, recoveryAllowanceKwh: 15 } };
   const withDebt = planGarage(args);
-  assert.equal(withDebt.nextAction, 'available');
+  assert.equal(withDebt.nextAction, 'normal');
   assert.equal(withDebt.reason, 'benefit-below-minimum-saving');
-  args.activeEpisode.pauseStartedAt = NOW;
-  args.activeEpisode.accounting = { offHours: 0, recoveryAllowanceKwh: 0 };
-  assert.equal(planGarage(args).nextAction, 'renew');
+  args.activeEpisode.reductionStartedAt = NOW;
+  args.activeEpisode.accounting = { reducedHours: 0, recoveryAllowanceKwh: 0 };
+  assert.equal(planGarage(args).nextAction, 'target');
 });
 
-test('a valid renewal prices recovery of all earlier OFF hours and preserves its original endpoint', () => {
+test('a valid renewal prices recovery of all earlier reduced-target hours and preserves its original endpoint', () => {
   const args = candidate([...repeated(2, 200), ...repeated(40, 5)]);
-  args.observation.available = false;
-  args.activeEpisode = { state: 'paused', pauseStartedAt: NOW - 24 * HOUR,
-    authorizedEndAt: NOW + 2 * HOUR, accounting: { offHours: 24, recoveryAllowanceKwh: 15 } };
+  args.observation.available = true;
+  args.activeEpisode = { state: 'reducing', reductionStartedAt: NOW - 24 * HOUR,
+    authorizedEndAt: NOW + 2 * HOUR, accounting: { reducedHours: 24, recoveryAllowanceKwh: 15 } };
   const plan = planGarage(args);
-  assert.equal(plan.nextAction, 'renew');
-  assert.equal(plan.pauseUntil, NOW + 2 * HOUR);
+  assert.equal(plan.nextAction, 'target');
+  assert.equal(plan.reductionUntil, NOW + 2 * HOUR);
   assert.equal(plan.existingRecoveryKwh, 15);
-  assert.equal(plan.recoveryKwh, 16.25);
+  assert.equal(plan.recoveryKwh, 15.9375);
   assert.equal(plan.recoveryHours, 32.5);
   const restoreNowCost = 15 * (2 * 2 + 28 * .05) / 30;
-  assert.ok(Math.abs(plan.recoveryCostEur - (16.25 * .05 - restoreNowCost)) < 1e-8);
+  assert.ok(Math.abs(plan.recoveryCostEur - (15.9375 * .05 - restoreNowCost)) < 1e-8);
   args.prices = args.prices.map((row, i) => ({ ...row, priceCtPerKwh: i < 10 ? 200 : 5 }));
-  assert.ok((planGarage(args).pauseUntil ?? NOW) <= args.activeEpisode.authorizedEndAt,
+  assert.ok((planGarage(args).reductionUntil ?? NOW) <= args.activeEpisode.authorizedEndAt,
     'New outlook data never silently lengthens the permission originally accepted by the driver');
 });
 
@@ -120,7 +120,7 @@ test('no duration cap permits a pause across absent, future-issued or insufficie
   ]) {
     const args = candidate([200, ...repeated(12, 5)]);
     change(args);
-    assert.equal(planGarage(args).nextAction, 'available');
+    assert.equal(planGarage(args).nextAction, 'normal');
   }
 });
 
@@ -129,7 +129,7 @@ test('long planning retains only one selected trajectory, stays deterministic an
   const before = JSON.stringify(args);
   const plan = planGarage(args);
   assert.equal(duration(plan), 60);
-  assert.equal(plan.steps.filter((row, i, rows) => !row.available && (i === 0 || rows[i - 1].available)).length, 1);
+  assert.equal(plan.steps.filter((row, i, rows) => row.demandReduced && (i === 0 || !rows[i - 1].demandReduced)).length, 1);
   assert.ok(plan.steps.length <= 60 * 4 + 1, 'Returned storage is proportional to the selected path, not all possible windows');
   assert.ok(JSON.stringify(plan).length < 200_000);
   assert.deepEqual(planGarage(args), plan);

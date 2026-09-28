@@ -8,7 +8,9 @@ guides for current behavior.
 ## Current implementation, 28 September 2026 — independent automation
 
 Home and Garage own separate durable automation permissions. Explicit bounded
-manual heating is independent, including Garage external-temperature handover.
+manual heating is independent. Garage price savings lower the effective external room target while native power
+stays ON. Explicit timed OFF separately clears external input first and resumes
+the saved target after restored native ON and fresh source evidence.
 The global operating mode and obsolete hidden-mode managed-pause gates are removed.
 See [automation and manual heating](automation-and-manual-control.md) for the current
 contract and [TODO](../TODO) for validation and deployment limits.

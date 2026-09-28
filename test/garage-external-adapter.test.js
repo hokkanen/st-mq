@@ -282,7 +282,7 @@ test('external sample preserves source clock, shares the envelope, and requires 
   assert.equal(f.adapter.status().externalTemperature.phase, 'active');
 });
 
-test('external validation rejects stale, fractional, altered and replayed measurements without publication', async t => {
+test('external validation rejects stale, fractional and replayed measurements; target changes preserve the source deadline', async t => {
   const f = fixture(t);
   for (const input of [f.sample({ temperatureC: 7.5 }), f.sample({ temperatureC: 40 }), f.sample({ temperatureC: 20.25 }),
     f.sample({ temperatureC: '21' }), f.sample({ measuredAt: BASE - 120_000 }), f.sample({ measuredAt: BASE + 5001 }),
@@ -291,7 +291,11 @@ test('external validation rejects stale, fractional, altered and replayed measur
   assert.equal(f.published.length, 0);
   await f.adapter.setExternalTemperature(f.sample());
   f.advance(); f.result('acknowledged');
-  await assert.rejects(f.adapter.setExternalTemperature(f.sample({ measuredAt: BASE, temperatureC: 22 })), /newer original/);
+  const priorExpiry = f.adapter.externalTemperature().continuation.expiresAt;
+  await f.adapter.setExternalTemperature(f.sample({ measuredAt: BASE, temperatureC: 22, requestedExpiryAt: BASE + 180_000 }));
+  assert.equal(f.published.at(-1).command.measuredAt, BASE);
+  assert.equal(f.published.at(-1).command.requestedExpiryAt, priorExpiry, 'changing a target cannot extend its real sample permission');
+  f.advance(); f.result('acknowledged');
   await f.adapter.setExternalTemperature({ temperatureC: null });
   f.advance(); f.result('acknowledged');
   await assert.rejects(f.adapter.setExternalTemperature(f.sample({ measuredAt: BASE })), /newer original/);
@@ -812,7 +816,7 @@ test('reboot, disconnect and host restart preserve uncertainty without replay; a
 
 test('assumption fields cannot authorize an unverified pause and are absent from public adapter settings', t => {
   const f = fixture(t);
-  f.state({ mode: 'armed', baseline: { ...TEMPLATE.baseline, assumed: true, accepted: true, candidateMatched: true, measuredAt: BASE },
+  f.state({ mode: 'ready', baseline: { ...TEMPLATE.baseline, assumed: true, accepted: true, candidateMatched: true, measuredAt: BASE },
     capabilities: { assumeISave10C: true } });
   assert.equal(f.adapter.status().baselineAccepted, false);
   assert.equal(Object.hasOwn(f.adapter.status(), 'assumeISave10C'), false);

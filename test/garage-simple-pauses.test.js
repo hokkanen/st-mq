@@ -25,21 +25,21 @@ function candidate(extra = {}) {
     forecast: [{ start: NOW, end: NOW + 10 * HOUR, outdoorC: -5, issuedAt: NOW }], ...extra };
 }
 
-test('one worthwhile continuous pause has no preheat and repays an explicit recovery allowance', () => {
+test('one worthwhile continuous target reduction has no preheat and repays an explicit recovery allowance', () => {
   const args = candidate(), plan = planGarage(args);
-  assert.equal(plan.nextAction, 'pause');
-  assert.equal(plan.pauseUntil, NOW + 2 * HOUR);
+  assert.equal(plan.nextAction, 'target');
+  assert.equal(plan.reductionUntil, NOW + 2 * HOUR);
   assert.equal(plan.recoveryKwh, plan.avoidedKwh * 1.25);
   assert.ok(plan.scoreEur > args.settings.minSavingsEur);
-  assert.equal(plan.steps.filter((row, i, rows) => !row.available && (i === 0 || rows[i - 1].available)).length, 1);
-  assert.ok(plan.steps.every(row => row.rearC <= args.observation.rearC && !Object.hasOwn(row, 'targetC')));
-  assert.ok(plan.steps.at(-1).available, 'thermal cooling includes restart delay while command has returned ON');
+  assert.equal(plan.steps.filter((row, i, rows) => row.demandReduced && (i === 0 || !rows[i - 1].demandReduced)).length, 1);
+  assert.ok(plan.steps.every(row => row.rearC <= args.observation.rearC && Number.isFinite(row.targetC)));
+  assert.ok(!plan.steps.at(-1).demandReduced, 'protection includes the heating response delay after restoring the normal target');
 });
 
 test('minor and flat price differences preserve normal heating', () => {
   for (const series of [[8, 7], [200, 200], [-10, -10]]) {
     const args = candidate(); args.prices = args.prices.map((row, i) => ({ ...row, priceCtPerKwh: series[Math.min(i, 1)] }));
-    assert.equal(planGarage(args).nextAction, 'available');
+    assert.equal(planGarage(args).nextAction, 'normal');
   }
 });
 
@@ -57,12 +57,12 @@ test('open and unknown configured doors share the strictly below 2 C admission l
   assert.equal(garagePauseStartReason({ outdoorC: -10, doors: { unused: { required: false, open: null } } }), null);
   const args = candidate(); args.observation.doorFront = true;
   assert.equal(planGarage(args).reason, 'garage-door-open-or-unknown-below-2c');
-  args.activeEpisode = { state: 'paused', pauseUntil: NOW + 2 * HOUR };
-  assert.equal(planGarage(args).nextAction, 'renew', 'opening reassesses actual protection without unconditional cancellation');
+  args.activeEpisode = { state: 'reducing', reductionUntil: NOW + 2 * HOUR };
+  assert.equal(planGarage(args).nextAction, 'target', 'opening reassesses actual protection without unconditional cancellation');
   Object.assign(args.observation, { doorEvidenceRequired: true, doorFront: null });
-  assert.equal(planGarage(args).nextAction, 'renew', 'unknown doors receive the same ongoing protection treatment');
+  assert.equal(planGarage(args).nextAction, 'target', 'unknown doors receive the same ongoing protection treatment');
   args.observation.frontC = null;
-  assert.equal(planGarage(args).nextAction, 'available', 'ongoing permission never overrides missing protection evidence');
+  assert.equal(planGarage(args).nextAction, 'normal', 'ongoing permission never overrides missing protection evidence');
 });
 
 test('warm unknown doors allow a worthwhile plan, and a scheduled plan rechecks the cold boundary', () => {
@@ -71,7 +71,7 @@ test('warm unknown doors allow a worthwhile plan, and a scheduled plan rechecks 
     doors: { first: { required: true, open: null } } });
   args.forecast = args.forecast.map(row => ({ ...row, outdoorC: 2 }));
   const plan = planGarage(args);
-  assert.equal(plan.nextAction, 'pause');
+  assert.equal(plan.nextAction, 'target');
   args.scheduledOpportunity = plan;
   args.observation.outdoorC = 1.99;
   assert.equal(planGarage(args).reason, 'garage-door-open-or-unknown-below-2c');
@@ -79,22 +79,22 @@ test('warm unknown doors allow a worthwhile plan, and a scheduled plan rechecks 
   assert.equal(planGarage(args).reason, 'outdoor-temperature-unavailable');
 });
 
-test('ongoing pause cannot extend the original endpoint across drifting planner ticks', () => {
+test('ongoing target reduction cannot extend the original endpoint across drifting planner ticks', () => {
   const args = candidate(), endpoint = NOW + 2 * HOUR;
   args.now += 7 * MINUTE;
   Object.assign(args.observation, { at: args.now, rearAt: args.now, frontAt: args.now });
   args.exposure = knownGarageReserve(args.settings, { at: args.now, rearC: 10, frontC: 9 });
-  args.activeEpisode = { state: 'paused', pauseUntil: endpoint };
+  args.activeEpisode = { state: 'reducing', reductionUntil: endpoint };
   const plan = planGarage(args);
-  assert.equal(plan.nextAction, 'renew'); assert.ok(plan.pauseUntil <= endpoint);
-  assert.equal(plan.pauseUntil, endpoint);
+  assert.equal(plan.nextAction, 'target'); assert.ok(plan.reductionUntil <= endpoint);
+  assert.equal(plan.reductionUntil, endpoint);
 });
 
 test('current, unknown and forecast charging do not affect new, scheduled or continuing pauses', () => {
   for (const phase of ['new', 'scheduled', 'continuing']) {
     const args = candidate(), initial = planGarage(args);
     if (phase === 'scheduled') args.scheduledOpportunity = initial;
-    if (phase === 'continuing') args.activeEpisode = { state: 'paused', pauseUntil: initial.pauseUntil };
+    if (phase === 'continuing') args.activeEpisode = { state: 'reducing', reductionUntil: initial.reductionUntil };
     const original = planGarage(args);
     for (const charging of [
       { ev1Active: true, ev1Kw: 11, ev2Active: true, ev2Kw: 22 },
@@ -111,7 +111,7 @@ test('current, unknown and forecast charging do not affect new, scheduled or con
 
 test('forecast must cover the pause and useful-heating delay', () => {
   const args = candidate(); args.forecast[0].end = NOW + HOUR;
-  assert.equal(planGarage(args).nextAction, 'available');
+  assert.equal(planGarage(args).nextAction, 'normal');
 });
 
 function runtimeFixture(t, extra = {}, seed = null) {
@@ -123,8 +123,8 @@ function runtimeFixture(t, extra = {}, seed = null) {
     store.setState('garage:configuration:mqtt', config.garage);
   }
   const runtime = new GarageRuntime({ store, engine, config, clock: () => now, canControl: () => owner });
-  const calls = [], native = { automaticControl: false, health: { pumpCommunicating: true },
-    native: { power: 'on', powerAt: now }, baselineAccepted: true, limits: { restorationDelayMs: MINUTE } };
+  const calls = [], native = { pauseControl: false, health: { pumpCommunicating: true },
+    native: { power: 'on', powerAt: now }, nativeSettingsReady: true, nativeHeatingReady: true, baselineAccepted: true, limits: { restorationDelayMs: MINUTE } };
   runtime.setAdapter({ status: () => native, release: async data => calls.push(data), safetyTick: async () => {} });
   const reports = () => {
     native.native.powerAt = now;
@@ -158,17 +158,17 @@ test('daily limit counts every attempted episode by its Finnish start day, inclu
 test('unmetered completed savings pay the full recovery energy; metered recovery is not charged twice', () => {
   for (const metered of [false, true]) {
     const model = createGarageModel({ seedAt: NOW, roomTargetC: 10 });
-    const first = { at: NOW, rearC: 10, frontC: 10, outdoorC: 0, available: false };
+    const first = { at: NOW, rearC: 10, frontC: 10, outdoorC: 0, available: true, demandReduced: true, roomTargetC: 10, effectiveTargetC: 5 };
     let account = startGarageAssessment(model, first);
     for (let minute = 1; minute <= 240; minute++) {
       const on = minute >= 60;
-      account = updateGarageAssessment(account, model, { ...first, at: NOW + minute * MINUTE, available: on },
+      account = updateGarageAssessment(account, model, { ...first, at: NOW + minute * MINUTE, demandReduced: !on, effectiveTargetC: on ? 10 : 5 },
         { priceCtPerKwh: minute <= 60 ? 100 : 5, recordedKwh: metered ? minute <= 60 ? 0 : 1 / 60 : null });
       if (minute === 60) assert.equal(completeGarageAssessment(account), null);
     }
-    assert.ok(Math.abs(account.recoveryAllowanceKwh - .625) < 1e-8);
+    assert.ok(Math.abs(account.recoveryAllowanceKwh - (metered ? .625 : .46875)) < 1e-8);
     assert.ok(Math.abs(account.recoveryAllowanceKwh - account.recoveryAccountedKwh) < 1e-8);
-    assert.ok(Math.abs(account.actualKwh - (metered ? 3 : 2.125)) < 1e-8);
+    assert.ok(Math.abs(account.actualKwh - (metered ? 3 : 2.09375)) < 1e-8);
     account.actualState = structuredClone(account.referenceState);
     assert.ok(completeGarageAssessment(account));
   }
@@ -176,7 +176,7 @@ test('unmetered completed savings pay the full recovery energy; metered recovery
 
 test('charging, unknown configured charging, baseline loss and source changes retain costs but withhold savings', () => {
   const model = createGarageModel({ seedAt: NOW, roomTargetC: 10 });
-  const first = { at: NOW, rearC: 10, frontC: 9, outdoorC: 0, available: false,
+  const first = { at: NOW, rearC: 10, frontC: 9, outdoorC: 0, available: true, demandReduced: true, roomTargetC: 10, effectiveTargetC: 5,
     baselineAccepted: true, sourceEpoch: 'first' };
   for (const change of [{ ev1Kw: 11 }, { ev2Active: true }, { inputDisturbed: true },
     { ev1Kw: null, evEvidenceRequired: { ev1: true } }, { baselineAccepted: false }, { sourceEpoch: 'changed' }]) {
@@ -190,21 +190,22 @@ test('charging, unknown configured charging, baseline loss and source changes re
 test('invalid observed electricity cannot evade unmetered recovery allowance', () => {
   const model = createGarageModel({ seedAt: NOW, roomTargetC: 10 });
   for (const powerKw of [-1, 9, NaN]) {
-    let account = startGarageAssessment(model, { at: NOW, rearC: 10, frontC: 10, outdoorC: 0, available: false });
+    let account = startGarageAssessment(model, { at: NOW, rearC: 10, frontC: 10, outdoorC: 0, available: true, demandReduced: true, roomTargetC: 10, effectiveTargetC: 5 });
     for (let minute = 1; minute <= 240; minute++) account = updateGarageAssessment(account, model,
-      { at: NOW + minute * MINUTE, rearC: 10, frontC: 10, outdoorC: 0, available: minute >= 60,
+      { at: NOW + minute * MINUTE, rearC: 10, frontC: 10, outdoorC: 0, available: true, demandReduced: minute < 60, roomTargetC: 10, effectiveTargetC: minute < 60 ? 5 : 10,
         powerKw, powerQuality: 'provisional' }, { recordedKwh: -1, priceCtPerKwh: 10 });
-    assert.ok(Math.abs(account.actualKwh - 2.125) < 1e-8);
+    assert.ok(Math.abs(account.actualKwh - 2.09375) < 1e-8);
     assert.equal(account.recordedMs, 0); assert.ok(account.uncertaintyCents > 0);
   }
 });
 
 test('busy tick cannot create a phantom episode or consume a daily start', t => {
   const f = runtimeFixture(t, { minOnMs: 0 }, candidate().model);
-  f.native.automaticControl = true;
+  f.runtime.roomTemperature.targetC = 10; f.runtime.roomTemperature.prepared = true;
+  f.runtime.roomTemperatureTick = () => {};
   f.runtime.manualBusy = true;
   const args = candidate(); f.runtime.tick({ now: NOW, prices: args.prices, forecast: args.forecast });
-  assert.equal(f.runtime.plan.nextAction, 'pause');
+  assert.equal(f.runtime.plan.nextAction, 'target');
   assert.equal(f.runtime.episode, null); assert.equal(f.runtime.pauseStartsToday(), 0);
 });
 
@@ -236,14 +237,14 @@ test('ordinary native OFF and ON boundaries preserve a clean learning episode', 
 test('changed-weather recovery closes without savings after sustained normal operation and resets references in replay', t => {
   const model = candidate().model, f = runtimeFixture(t, {}, model);
   const first = { at: NOW, rearC: 10, frontC: 9, outdoorC: 0, available: true };
-  f.runtime.startEpisode('test-recovery', { preferenceVersion: GARAGE_PREFERENCE_VERSION, pauseUntil: NOW + HOUR }, first, NOW);
+  f.runtime.startEpisode('test-recovery', { preferenceVersion: GARAGE_PREFERENCE_VERSION, policyVersion: 'garage-room-target-v1', targetUntil: NOW + HOUR }, first, NOW);
   f.runtime.episode.phase = 'recovery'; f.runtime.episode.accounting.qualified = false;
   f.runtime.protection = { requiredFresh: true };
   for (let minute = 0; minute <= 480; minute++) {
     const at = NOW + minute * MINUTE; f.at(at);
     f.runtime.exposure = knownGarageReserve(f.config.garage, { at, rearC: 7, frontC: 6 });
     f.runtime.advanceEpisode({ at, rearAt: at, frontAt: at, rearC: 7, frontC: 6, outdoorC: -10,
-      available: true, baselineAccepted: true }, [], at);
+      available: true, demandReduced: false, baselineAccepted: true }, [], at);
     if (minute < 480) assert.ok(f.runtime.episode);
   }
   assert.equal(f.runtime.episode, null);
@@ -259,7 +260,7 @@ test('changed-weather recovery closes without savings after sustained normal ope
 
 test('incomplete recovery reset is atomic when clearing the saved episode fails', t => {
   const model = candidate().model, f = runtimeFixture(t, {}, model);
-  f.runtime.startEpisode('test-atomic-recovery', { preferenceVersion: GARAGE_PREFERENCE_VERSION, pauseUntil: NOW + HOUR },
+  f.runtime.startEpisode('test-atomic-recovery', { preferenceVersion: GARAGE_PREFERENCE_VERSION, policyVersion: 'garage-room-target-v1', targetUntil: NOW + HOUR },
     { at: NOW, rearC: 10, frontC: 9, outdoorC: 0, available: true }, NOW);
   const before = structuredClone(f.runtime.checkpoint), original = f.store.setState;
   f.store.setState = function (key, value) {
@@ -278,7 +279,7 @@ test('sustained normal recovery cannot close on stale inputs, unaccepted baselin
   for (const blocker of ['stale', 'baseline', 'restore', 'pipe']) {
     const model = candidate().model, f = runtimeFixture(t, {}, model);
     const first = { at: NOW, rearC: 10, frontC: 9, outdoorC: 0, available: true };
-    f.runtime.startEpisode(`test-${blocker}`, { preferenceVersion: GARAGE_PREFERENCE_VERSION, pauseUntil: NOW + HOUR }, first, NOW);
+    f.runtime.startEpisode(`test-${blocker}`, { preferenceVersion: GARAGE_PREFERENCE_VERSION, policyVersion: 'garage-room-target-v1', targetUntil: NOW + HOUR }, first, NOW);
     f.runtime.episode.phase = 'recovery'; f.runtime.episode.accounting.qualified = false;
     f.runtime.protection = { requiredFresh: blocker !== 'stale' };
     f.native.restorePending = blocker === 'restore';
@@ -287,22 +288,23 @@ test('sustained normal recovery cannot close on stale inputs, unaccepted baselin
       f.runtime.exposure = knownGarageReserve(f.config.garage, { at, rearC: 7, frontC: 6 });
       if (blocker === 'pipe') f.runtime.exposure.locations.front.uncertain = true;
       f.runtime.advanceEpisode({ at, rearAt: at, frontAt: at, rearC: 7, frontC: 6,
-        outdoorC: -10, available: true, baselineAccepted: blocker !== 'baseline' }, [], at);
+        outdoorC: -10, available: true, demandReduced: false, baselineAccepted: blocker !== 'baseline' }, [], at);
     }
     assert.ok(f.runtime.episode, blocker);
     assert.equal(f.runtime.checkpoint.model.normalReference.initialized, true);
   }
 });
 
-test('a healthy pause beyond seven days retains its evidence until actual restoration', t => {
+test('a healthy target reduction beyond seven days retains its evidence until actual restoration', t => {
   const model = candidate().model, f = runtimeFixture(t, {}, model);
-  const first = { at: NOW, rearC: 10, frontC: 9, outdoorC: 8, available: false,
+  const first = { at: NOW, rearC: 10, frontC: 9, outdoorC: 8, available: true, demandReduced: true, roomTargetC: 10, effectiveTargetC: 5,
     baselineAccepted: true, priceCtPerKwh: 100, priceStartAt: NOW - HOUR, priceEndAt: NOW + HOUR };
-  f.runtime.startEpisode('long-pause-reporting', { preferenceVersion: GARAGE_PREFERENCE_VERSION, pauseUntil: NOW + 24 * HOUR, recoveryHours: 270 }, first, NOW);
-  f.native.native.power = 'off'; f.native.phase = 'paused';
+  f.runtime.startEpisode('long-pause-reporting', { preferenceVersion: GARAGE_PREFERENCE_VERSION, policyVersion: 'garage-room-target-v1', targetUntil: NOW + 24 * HOUR, recoveryHours: 270 }, first, NOW);
+  f.runtime.automaticTarget = { id: 'long-pause-reporting', targetC: 5, until: NOW + 24 * HOUR };
+  f.native.native.power = 'on';
   const episode = f.runtime.episode;
   episode.startedAt = NOW - 8 * 24 * HOUR;
-  episode.accounting.offHours = 8 * 24;
+  episode.accounting.reducedHours = 8 * 24;
   episode.accounting.at = NOW - MINUTE;
   episode.accounting.previous = { ...first, at: NOW - MINUTE };
   f.runtime.advanceEpisode(first, [], NOW);
@@ -313,16 +315,16 @@ test('a healthy pause beyond seven days retains its evidence until actual restor
 
 test('long-pause changed-weather recovery cannot close at the old eight-hour fallback', t => {
   const model = candidate().model, f = runtimeFixture(t, {}, model);
-  f.runtime.startEpisode('long-pause-recovery', { preferenceVersion: GARAGE_PREFERENCE_VERSION, pauseUntil: NOW, recoveryHours: 30 },
+  f.runtime.startEpisode('long-pause-recovery', { preferenceVersion: GARAGE_PREFERENCE_VERSION, policyVersion: 'garage-room-target-v1', targetUntil: NOW, recoveryHours: 30 },
     { at: NOW, rearC: 10, frontC: 9, outdoorC: 0, available: true }, NOW);
   f.runtime.episode.phase = 'recovery'; f.runtime.episode.accounting.qualified = false;
-  f.runtime.episode.accounting.offHours = 24;
+  f.runtime.episode.accounting.reducedHours = 24;
   f.runtime.protection = { requiredFresh: true };
   for (let minute = 0; minute <= 30 * 60; minute++) {
     const at = NOW + minute * MINUTE; f.at(at);
     f.runtime.exposure = knownGarageReserve(f.config.garage, { at, rearC: 7, frontC: 6 });
     f.runtime.advanceEpisode({ at, rearAt: at, frontAt: at, rearC: 7, frontC: 6, outdoorC: -10,
-      available: true, baselineAccepted: true }, [], at);
+      available: true, demandReduced: false, baselineAccepted: true }, [], at);
     if (minute < 30 * 60) assert.ok(f.runtime.episode);
   }
   assert.equal(f.runtime.episode, null);

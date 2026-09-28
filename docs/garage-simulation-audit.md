@@ -1,4 +1,4 @@
-# Garage simple OFF simulation audit
+# Garage cooling and room-target simulation audit
 
 The current audit harness tests `committed-garage-v7-room-reference` against an independent
 simulated garage. It checks short cooling forecasts, deterministic learning,
@@ -7,14 +7,14 @@ measured electricity. These are software experiments, not installed garage
 measurements, Mitsubishi metering verification, pipe-safety validation or realized
 savings.
 
-The recorded results below were produced with `committed-garage-v6-source-clocks`.
-The current harness explicitly supplies the independent plant's room setting;
-it no longer seeds normal warmth from a separate configured baseline. The
-recorded planning results also predate the current `garage-savings-strategy-v1`
-selection policy. The two-rate cooling equations are unchanged, but these
-results do not establish the behavior of the current strategy-dependent selection.
-Current policy is documented in [Garage model](garage-model.md#one-opportunity-at-a-time);
-rerun the planning commands below for results under that policy.
+The short-forecast table below records the earlier
+`committed-garage-v6-source-clocks` run. Those explicit native-OFF learner fixtures
+remain unchanged. The current target-control results use
+`committed-garage-v7-room-reference`, `garage-savings-strategy-v1` and
+`garage-room-target-v1`; they are recorded separately below. Price automation
+changes a room target while native power remains ON. It does not manufacture
+native-OFF learning evidence. Current policy is documented in
+[Garage model](garage-model.md#one-opportunity-at-a-time).
 
 ## Independent plant and evidence
 
@@ -71,39 +71,60 @@ The independent plant's remaining core/slab deficits are retained in the audit
 output. Neither a warm local sensor nor the illustrative three-hour ON envelope
 establishes complete physical recovery or measured savings.
 
-## Conservative decisions and causal bootstrap
+## Current target-control decisions and causal audit
 
-The frozen planning audit trains against the independent plant and evaluates flat,
-mild, ordinary, exceptional and repeated-peak tariffs. It compares one contiguous
-OFF opportunity against unchanged native heating, without preheating or a second
-shutdown. The audited policy used a default €0.50 minimum saving after recovery
-and uncertainty allowances; removing duration ceilings did not remove that
-economic threshold. The current Balanced strategy retains the €0.50 threshold and
-also prefers a shorter window retaining at least 80% of the best benefit.
-Exceptional tariffs are stress inputs, not representative or forecast prices.
+The frozen planning audit trains against the independent plant and compares one
+contiguous lower-target opportunity with the owner's unchanged normal target.
+Native power remains ON in both branches. The independent thermostat may reduce
+compressor demand to zero; the simulated bill still includes a declared **0.04 kW
+standby allowance**, kept separate from compressor heat. This is a fixture
+assumption, not installed standby metering, and differs from the planner's
+conservative powered-idle allowance. The original native-OFF forecast and learning
+fixtures retain their previous thermostat, electrical and thermal behavior.
 
-Bootstrap starts with untouched priors. Only the planner's own choices provide
-OFF observations, with opportunities 56h apart. Pipe reserve starts unknown and
-is earned from live synthetic temperatures; protection reports arrive each
-minute while learning uses five-minute reports. Both frozen and bootstrap
-comparisons declare a **10-minute simulated restoration delay**, not an installed
-heat-pump bound. Activity-only experiments keep normal electricity assumption-based
-while independently gathering temperature evidence.
+The current 43-day training / 15-minute sampling run produced these results for
+an exceptional four-hour 400 ct/kWh peak followed by 7 ct/kWh. These prices are
+stress inputs, not representative or forecast household tariffs. The comparison
+includes 24 additional hours of recovery after the planning horizon.
 
-The current policy imposes no initial one-hour trial ceiling, two-hour extension
-ceiling or maximum total pause. One hour remains the planned minimum. Tests must
-allow opportunities longer than previously validated evidence while checking the
-larger uncertainty margins and pipe reserve. The audit's finite price and weather
-coverage limits each simulated opportunity naturally. Predictions, actual plant
-cost differences and remaining slow-mass deficits are separate outputs; none is
-a household savings claim. The short-forecast results above characterize the
-unchanged two-rate thermal equations and do not establish accuracy for longer
-pauses.
+| Strategy | Lower-target duration | Simulated bill difference | Lowest front air | Remaining core / slab deficit |
+| --- | ---: | ---: | ---: | ---: |
+| Gentle | 2.5h | €6.73 | 5.15°C | 0.033 / 0.030°C |
+| Balanced | 3.25h | €8.74 | 4.91°C | 0.046 / 0.043°C |
+| More savings | 4h | €10.77 | 4.69°C | 0.060 / 0.057°C |
+
+Every selected reduction retains nonzero simulated electricity. Flat, mild and
+40 ct/kWh ordinary-peak cases admit no reduction in this fixture, including the
+highest savings preference: powered-idle, recovery and uncertainty costs can
+reject an opportunity that the previous full-OFF calculation admitted. Preference
+unit tests independently exercise different monetary admission thresholds.
+
+The causal audit starts from untouched priors, with opportunities 56 hours apart.
+Pipe reserve starts unknown and is earned from synthetic temperatures; protection
+reports arrive each minute while learning uses five-minute reports. Lower-target
+and subsequent recovery intervals are marked disturbed for the unchanged learner.
+In the current 42-day, seed-731 run, reductions totalled **58.5 hours and 2.34 kWh**.
+Native OFF hours, completed OFF validation episodes and validated OFF duration
+all remained **zero**; thermal readiness remained false. Thus target opportunities
+can use conservative extrapolation without claiming they learned an OFF curve.
+Boolean compressor activity does not change that boundary or create electricity
+qualification. The model checkpoint was 2,799 bytes in this finite run.
+
+Both planning audits declare a **10-minute simulated heating-response delay**,
+not an installed heat-pump bound. They retain protection's independent no-heat
+trajectory and its uncertainty margins. Price/weather coverage and protection
+limit each opportunity; there is no invented initial trial or total-duration
+ceiling. Predictions, simulated cost differences and remaining slow-mass deficits
+are separate outputs. Neither warm air nor these software results establishes
+pipe safety, complete physical recovery, installed memory qualification or
+household savings. Focused planning, causal-audit and standby-separation tests
+passed for this revised caller; actual native-OFF learning tests also continue to
+pass without changing the learned model equations.
 
 Avoided-power uncertainty is priced at the opportunity spread. Only optimistic
 whole-episode recovery error adds a separate deduction at the recovery tariff.
 Conservative recovery overprediction cannot become a second peak-price penalty
-that permanently suppresses all later opportunities.
+that permanently suppresses later opportunities.
 
 ## Running the checks
 

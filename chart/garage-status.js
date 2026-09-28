@@ -26,34 +26,34 @@ const temperatureHolding = (garage, now) => garage.temperatureHold?.active === t
 const sentences = values => values.map(value => text(value).trim().replace(/[.\s]+$/, '')).filter(Boolean).map(value => `${value}.`).join(' ');
 const opportunity = reason => ({
   'automatic-control-disabled': 'Automatic control is disabled',
-  'protection-limited-learning-opportunity': 'Initial cooling estimates use extra uncertainty margins; pipe protection limits the pause',
-  'continue-authorized-economic-episode': 'Continue the current pause within its original endpoint',
+  'external-room-target-required': 'Choose an external room setting below 16°C before using automatic target reductions',
+  'room-target-already-at-reduction-floor': 'The saved room target is already at the configured reduction floor',
+  'protection-limited-target-opportunity': 'Initial cooling estimates use extra uncertainty margins; pipe protection limits the target reduction',
+  'continue-authorized-economic-episode': 'Continue the current target reduction within its original endpoint',
   'waiting-for-temperature-evidence': 'Waiting for fresh temperature evidence; hold only the existing pause within its original permission and protection margin',
-  'garage-door-open-or-unknown-below-2c': 'An open or unknown door below 2°C outdoors prevents a new pause',
+  'garage-door-open-or-unknown-below-2c': 'An open or unknown door below 2°C outdoors prevents a new reduction',
   'outdoor-temperature-unavailable': 'Waiting for a fresh outdoor temperature',
   'benefit-below-minimum-saving': 'Expected savings do not cover recovery, uncertainty and the minimum benefit',
   'flat-prices-preserve-normal-warmth': 'No useful price difference: keep normal heating',
-  'daily-pause-limit': 'The configured daily pause limit has been reached',
+  'daily-pause-limit': 'The configured daily reduction limit has been reached',
   'price-control-paused': 'Price control is paused; normal heating remains available',
   'manual-heating-off': 'Heating is temporarily OFF by manual request',
   'normal-heating-recovery': 'Waiting for both locations and pipe reserves to recover',
   'minimum-normal-heating-time': 'Waiting for the minimum period of normal heating',
-  'no-native-heating-demand': 'No current heating demand supports a savings pause',
+  'no-native-heating-demand': 'No current heating demand supports a target reduction',
   'insufficient-normal-heating-evidence': 'Waiting for a settled normal-heating reference and accepted pump state',
   'learning-episode-recovering': 'Waiting for the current learning episode to recover',
-  'learning-trial-recovery-interval': 'Waiting between learning trials',
   'benefit-below-warmth-or-prediction-resolution': 'Expected timing benefit does not cover warmth and prediction uncertainty',
-  'credible-price-timing-opportunity': 'Price savings and the forecast pipe reserve support this pause',
-  'prepare-for-later-price-opportunity': 'Normal heating continues until a later price opportunity',
+  'credible-price-timing-opportunity': 'Price savings and the forecast pipe reserve support this target reduction',
+  'wait-for-later-price-opportunity': 'Normal heating continues until a later price opportunity',
 })[reason] ?? text(reason ?? 'Normal heating').replace(/^./, value => value.toUpperCase());
 const opportunitySummary = reason => ({
   'automatic-control-disabled': 'Automatic control disabled',
   'insufficient-normal-heating-evidence': 'Awaiting normal-heating evidence',
   'learning-episode-recovering': 'Awaiting recovery',
-  'learning-trial-recovery-interval': 'Between learning trials',
   'benefit-below-warmth-or-prediction-resolution': 'Insufficient timing benefit',
-  'credible-price-timing-opportunity': 'Price-supported pause',
-  'prepare-for-later-price-opportunity': 'Later price opportunity',
+  'credible-price-timing-opportunity': 'Price-supported target reduction',
+  'wait-for-later-price-opportunity': 'Later price opportunity',
   'waiting-for-temperature-evidence': 'Pause held · awaiting temperature',
 })[reason] ?? opportunity(reason);
 const coefficientNumber = (value, unit) => finite(value)
@@ -76,14 +76,14 @@ function garageCoefficientRows(learning) {
   details.push(
     learningRow('normal-pump-power', 'Normal pump electricity', number(electricity.normalPowerKw ?? assumptions.normalPowerKw, 'kW'),
       'Electricity estimate', electricity.basis === 'observed-normal-power' ? 'Recorded average' : 'Assumed',
-      'Average electrical input used to price heating avoided during a pause and the extra recovery allowance. A fixed estimate is used until two qualified hours establish an observed normal-heating average. Compressor frequency is not converted to watts.',
+      'Average electrical input used to price heating avoided during a target reduction and the extra recovery allowance. A fixed estimate is used until two qualified hours establish an observed normal-heating average. Compressor frequency is not converted to watts.',
       electricity.basis === 'observed-normal-power' ? `${number(electricity.hours, 'h')} qualified normal-heating electricity.` : 'Estimated savings remain assumption-based until dedicated pump electricity is qualified.'),
     learningRow('charger-heat-fraction', 'Charging heat fraction', finite(assumptions.evHeatFraction) ? number(assumptions.evHeatFraction * 100, '%') : 'Unavailable',
       'Fixed assumptions', 'Assumed', '7.5% of recorded charging electricity is reported as estimated garage heat. It is not added to temperature forecasts. Charging observations instead identify disturbed intervals to exclude from cooling-rate learning.'),
     learningRow('recovery-time', 'Recovery temperature time scale', number(assumptions.recoveryTimeHours, 'h'), 'Fixed assumptions', 'Assumed',
-      'Time scale used only for the illustrative temperature forecast after normal heating resumes. The electricity allowance uses a longer period for long pauses. Actual recovery at both locations and their pipe reserves determines readiness for another pause.'),
+      'Time scale used only for the illustrative temperature forecast after normal heating resumes. The electricity allowance uses a longer period for long reductions. Actual recovery at both locations and their pipe reserves determines readiness for another reduction.'),
     learningRow('recovery-energy-factor', 'Recovery electricity allowance', number(assumptions.recoveryEnergyFactor, '×'), 'Fixed assumptions', 'Assumed',
-      'Adds recovery electricity equal to 1.25 times the estimated electricity avoided while OFF, on top of normal heating after the pause. Its pricing period is at least three hours and at least 1.25 times the OFF duration, also respecting the minimum normal-heating time. This fixed allowance is priced before a pause can count as worthwhile.'));
+      'Adds recovery electricity equal to 1.25 times the estimated electricity avoided at the lower target, on top of normal heating after the reduction. Its pricing period is at least three hours and at least 1.25 times the reduction duration, also respecting the minimum normal-heating time. This fixed allowance is priced before a reduction can count as worthwhile.'));
   return { details, rows: details.map(row => [row.title, `${row.value} · ${row.provenance}. ${row.detail}${row.evidence ? ` ${row.evidence}` : ''}`]) };
 }
 
@@ -95,13 +95,13 @@ function garageLearningRows(garage, now) {
     : finite(learning.validatedOffHours) ? 'Not yet established' : 'Unavailable';
   const outcomes = [
     learningRow('temperature-prediction', 'Cooling prediction', thermal === true ? 'Validated' : thermal === false ? 'Awaiting validation' : 'Unavailable',
-      'Cooling forecasts', 'Validation', 'Complete cooling and recovery episodes test the two local cooling forecasts. Initial and fitted estimates can support protection-limited planning before validation; this status does not itself permit a pause.'),
+      'Cooling forecasts', 'Validation', 'Complete cooling and recovery episodes test the two local cooling forecasts. Initial and fitted estimates can support protection-limited planning before validation; this status does not itself permit target reduction.'),
     learningRow('thermal-pause-duration', 'Validated OFF evidence', duration, 'Cooling forecasts', 'Episode checks',
-      'OFF duration covered by retained clean cooling and recovery checks. Longer forecasts receive larger uncertainty margins; this evidence does not impose a maximum pause.'),
+      'OFF duration covered by retained clean cooling and recovery checks. Longer forecasts receive larger uncertainty margins; this evidence does not impose a maximum reduction duration.'),
     learningRow('electricity-prediction', 'Savings estimate basis', electrical === true ? 'Qualified electricity' : learning.electricity ?
       learning.electricity.basis === 'observed-normal-power' ? 'Recorded average + recovery allowance' : 'Assumed electricity + recovery allowance' : 'Unavailable',
       'Savings estimate', electrical === true ? 'Recorded & estimated' : 'Estimated',
-      'Forecast savings price the avoided normal-heating electricity and the recovery allowance. Assumed pump input is shown explicitly; forecast savings are not measured savings.'),
+      'Forecast savings price normal electricity minus the lower-target electricity estimate, plus recovery. The powered pump retains an assumed idle allowance and may heat to maintain the lower target. Assumed pump input is shown explicitly; forecast savings are not measured savings.'),
   ];
   for (const location of ['rear', 'front']) if (reference) outcomes.push(learningRow(`normal-${location}-warmth`,
     `Normal ${location} warmth`, number(reference[`${location}C`], '°C'), 'Normal-heating references',
@@ -109,8 +109,8 @@ function garageLearningRows(garage, now) {
     reference.initialized === true
       ? 'Air temperature learned from settled normal heating. It anchors the recovery forecast and helps the planner judge heating demand and recovery; it is separate from the pump thermostat setting.'
       : finite(reference.roomTargetC)
-        ? `Starting estimate from the ${number(reference.roomTargetC, '°C')} room setting. Both locations start here until enough settled normal-heating observations establish their own achieved temperatures. Changing the room setting restarts this reference learning; an initial estimate does not qualify a new automatic pause.`
-        : 'Choose a room setting in Heat-pump settings, or wait for a fresh pump setting. Without a known setting there is no initial normal-warmth estimate. Settled observations must establish both references before a new automatic pause is eligible.',
+        ? `Starting estimate from the ${number(reference.roomTargetC, '°C')} room setting. Both locations start here until enough settled normal-heating observations establish their own achieved temperatures. Changing the room setting restarts this reference learning; an initial estimate does not qualify a new automatic reduction.`
+        : 'Choose a room setting in Heat-pump settings, or wait for a fresh pump setting. Without a known setting there is no initial normal-warmth estimate. Settled observations must establish both references before a new automatic reduction is eligible.',
     `${number(reference.qualifiedHours, 'h')} qualified normal-heating observations.`));
   const reconstruction = ({ current: 'Up to date', snapshot: 'Recorded master snapshot', rebuilding: 'Rebuilding from recorded history', failed: 'Reconstruction unavailable' })[learning.reconstruction] ?? 'Unavailable';
   const evidenceDetails = [];
@@ -127,7 +127,7 @@ function garageLearningRows(garage, now) {
       validation.active.phase === 'off' ? 'Cooling' : 'Recovery', 'Current episode', 'In progress', 'This episode is assigned to training or validation. A validation episode can extend forecast support only after cooling and recovery finish and the required checks pass.'));
   }
   evidenceDetails.push(learningRow('recorded-history-reconstruction', 'Recorded history reconstruction', reconstruction, 'Model record', 'Recorded history',
-    'The current model is rebuilt from its recorded inputs and selected corrections. A master snapshot is historical evidence, not live pause eligibility.'));
+    'The current model is rebuilt from its recorded inputs and selected corrections. A master snapshot is historical evidence, not live reduction eligibility.'));
   const version = learning.algorithm?.match(/^committed-garage-v(\d+)-/);
   if (version) evidenceDetails.push(learningRow('model-version', 'Model version', `Garage ${version[1]}`, 'Model record', 'Algorithm',
     'Version of the garage algorithm used for learning and replay.'));
@@ -135,7 +135,7 @@ function garageLearningRows(garage, now) {
   const pumpState = mitsubishiReadings(garage, now).find(row => row.key === 'native-power');
   const inputDetails = ['rear', 'front'].map(location => learningRow(`${location}-air-temperature`, `${location === 'rear' ? 'Rear' : 'Front'} air temperature`,
     temperature(observations[location]), 'Temperatures', 'Recorded',
-    'External air reading beside the local pipe. Both locations need fresh readings for every automatic pause; pump indoor temperature is separate diagnostic context.'));
+    'External air reading beside the local pipe. Both locations need fresh readings for every automatic reduction; pump indoor temperature is separate diagnostic context.'));
   inputDetails.push(
     learningRow('outdoor-temperature', 'Outdoor temperature', temperature(observations.outdoor), 'Temperatures',
       observations.outdoor?.source === 'openmeteo' ? 'Modeled' : ['husdata-h66', 'fmi', 'mqtt-temperature', 'shelly-mqtt'].includes(observations.outdoor?.source) ? 'Recorded' : 'Source varies',
@@ -172,26 +172,27 @@ function garagePolicyRows(garage, policy) {
   const planReason = plan.reason ?? plan.reasons?.[0] ?? garage.reason;
   const planningDetails = [
     learningRow('current-opportunity', 'Current decision', planReason ? opportunitySummary(planReason) : 'Unavailable', 'Decision', 'Current plan', planReason ? opportunity(planReason) : 'Waiting for a current planning assessment.'),
-    learningRow('pause-window', 'Planned OFF window', finite(plan.pauseFrom) && finite(plan.plannedPauseUntil ?? plan.pauseUntil) ? `${clock(plan.pauseFrom)} – ${clock(plan.plannedPauseUntil ?? plan.pauseUntil)}` : garage.plan ? 'None' : 'Unavailable',
-      'Decision', 'Current plan', 'One worthwhile price period is selected. Heating stays at its existing setting beforehand and returns to normal afterward; no preheating is requested.'),
-    learningRow('door-policy', 'Door opening', 'Reassess local pipe reserve', 'Pause limits', 'Fixed policy',
-      'Open and unknown configured doors both block a new pause only below 2°C outdoors. At 2°C or above, either state passes this rule. Outdoor temperature must be known. During a pause, door changes recheck protection using the local readings.'),
+    learningRow('reduction-window', 'Planned target reduction', finite(plan.reductionFrom) && finite(plan.plannedReductionUntil ?? plan.reductionUntil) ? `${clock(plan.reductionFrom)} – ${clock(plan.plannedReductionUntil ?? plan.reductionUntil)}` : garage.plan ? 'None' : 'Unavailable',
+      'Decision', 'Current plan', 'One worthwhile price period lowers the effective room target while native power stays ON. Your saved target applies beforehand and afterward; no preheating is requested.'),
+    learningRow('reduced-room-target', 'Price reduction target', number(settings.reducedRoomTargetC, '°C'), 'Decision', 'Configured', 'Temporary effective room target during savings. Your saved room setting stays unchanged; native power remains ON and the pump may heat if needed to maintain this lower target.'),
+    learningRow('door-policy', 'Door opening', 'Reassess local pipe reserve', 'Reduction limits', 'Fixed policy',
+      'Open and unknown configured doors both block a new reduction only below 2°C outdoors. At 2°C or above, either state passes this rule. Outdoor temperature must be known. During a reduction, door changes recheck protection using the local readings.'),
     learningRow('minimum-savings', 'Minimum estimated benefit', configuredStrategy && finite(settings.minSavingsEur) ? `€${benefit(preference.minimumBenefitEur)}` : 'Unavailable',
-      'Pause limits', 'Savings preference', 'A pause must exceed this benefit after recovery electricity and prediction uncertainty allowances. Gentle requires 1.5 times the configured baseline benefit, Balanced uses that baseline and More savings requires half.'),
-    learningRow('pause-duration-limits', 'Pause endpoint', 'Forecast and protection limited',
-      'Pause limits', 'Configured', 'There is no fixed maximum pause. Temperatures, forecast pipe reserve, uncertainty, available price and weather data, and remaining savings determine the endpoint. Protection can always end a pause before the planned minimum.'),
-    learningRow('daily-pause-limit', 'Maximum pauses per day', number(settings.maxPausesPerDay), 'Pause limits', 'Configured',
-      'This cap limits additional pump starts independently of the savings preference.',
+      'Reduction limits', 'Savings preference', 'A reduction must exceed this benefit after recovery electricity and prediction uncertainty allowances. Gentle requires 1.5 times the configured baseline benefit, Balanced uses that baseline and More savings requires half.'),
+    learningRow('reduction-duration-limits', 'Reduction endpoint', 'Forecast and protection limited',
+      'Reduction limits', 'Configured', 'There is no fixed maximum reduction duration. Temperatures, forecast pipe reserve, uncertainty, available price and weather data, and remaining savings determine the endpoint. Protection can always end a reduction before the planned minimum.'),
+    learningRow('daily-pause-limit', 'Maximum reductions per day', number(settings.maxPausesPerDay), 'Reduction limits', 'Configured',
+      'This cap limits target reduction cycles independently of the savings preference. It is not a count of compressor starts.',
       finite(garage.planningLimits?.pausesToday) ? `${number(garage.planningLimits.pausesToday)} starts recorded today, including unconfirmed attempts.` : undefined),
-    learningRow('minimum-normal-heating', 'Normal heating between pauses', number(finite(settings.minOnMs) ? settings.minOnMs / 3_600_000 : null, 'h minimum'),
-      'Pause limits', 'Configured', 'Fresh normal-heating evidence is required for at least this long, including after startup or a reading gap. After a pause, both local temperatures and pipe reserves must also recover.',
+    learningRow('minimum-normal-heating', 'Normal heating between reductions', number(finite(settings.minOnMs) ? settings.minOnMs / 3_600_000 : null, 'h minimum'),
+      'Reduction limits', 'Configured', 'Fresh normal-heating evidence is required for at least this long, including after startup or a reading gap. After a reduction, both local temperatures and pipe reserves must also recover.',
       finite(garage.planningLimits?.normalHeatingReadyAt) ? `Current continuous normal-heating interval reaches its minimum at ${clock(garage.planningLimits.normalHeatingReadyAt)}. All other checks still apply.` : 'Waiting for a fresh continuous normal-heating interval.'),
-    learningRow('charging-policy', 'Charging', 'No pause restriction or forecast credit', 'Pause limits', 'Fixed policy',
-      'Charging status and power do not affect pause admission or the planned window. Any actual warmth is reflected in measured garage temperatures; expected charging heat adds no forecast credit. Charging-disturbed data remains separate from clean cooling and savings evidence.'),
+    learningRow('charging-policy', 'Charging', 'No reduction restriction or forecast credit', 'Reduction limits', 'Fixed policy',
+      'Charging status and power do not affect reduction admission or the planned window. Any actual warmth is reflected in measured garage temperatures; expected charging heat adds no forecast credit. Charging-disturbed data remains separate from clean cooling and savings evidence.'),
     learningRow('protection-policy', 'Freezing protection', policy.approved === true ? 'Owner-approved' : policy.approved === false ? 'Not approved' : 'Approval unknown',
-      'Safeguards', 'Configured', 'The rear and front reference pipes must retain their configured margin through the remaining permission and useful-heating delay. While waiting for fresh temperature evidence, existing permission may remain within its original deadline; invalid or expired evidence requires normal heating. Held readings cannot start or renew a pause.'),
-    learningRow('restore-policy', 'Return to normal heat', 'Short local lease + recovery check', 'Safeguards', 'Device + observed temperatures',
-      'The adapter restores native ON when its short renewable OFF permission expires, no later than two minutes after the older supporting temperature report. Reconnection does not extend it. Fresh renewals can maintain one continuous pause of any thermally permitted duration; this safeguard does not cap its total length. ON readback and useful warmth are separate checks. A failed adapter or serial path can prevent restoration.'),
+      'Safeguards', 'Configured', 'The rear and front reference pipes must retain their configured margin through the remaining permission and useful-heating delay. While waiting for fresh temperature evidence, existing permission may remain within its original deadline; invalid or expired evidence requires normal heating. Held readings cannot start or renew a reduction.'),
+    learningRow('restore-policy', 'Return to normal heat', 'Expiring external input + recovery check', 'Safeguards', 'Device + observed temperatures',
+      'The controller restores your saved room target when the reduction ends. External-temperature permission expires no later than two minutes after the older supporting report; without fresh renewal the adapter returns to internal sensing at its native setting. Reconnection cannot extend it. The short permission does not cap the reduction’s total length. Native ON, acknowledged external input and useful warmth are separate checks. A failed adapter or serial path can prevent cleanup.'),
   ];
   return planningDetails;
 }
@@ -256,23 +257,23 @@ export function garageDisplay(garage = {}, now = Date.now()) {
     ['Adapter contract', `${adapter.contractVersion ?? 'Unavailable'} · ${text(adapter.contractStatus)}`],
     ['Native baseline accepted for control', state(adapter.baselineAccepted ?? adapter.baselineVerified)],
     ['Native baseline independently verified', state(adapter.baselineVerified)],
-    ['Last heating request', adapter.lastCommand ? `${text(({ start: 'pause', renew: 'pause renewal', release: 'restore heating' })[adapter.lastCommand.action])} · ${text(adapter.lastCommand.status)}` : 'No request'],
+    ['Last heating request', adapter.lastCommand ? `${text(({ start: 'manual timed OFF', renew: 'manual OFF renewal', release: 'restore heating' })[adapter.lastCommand.action])} · ${text(adapter.lastCommand.status)}` : 'No request'],
     ['Native command confirmation', finite(adapter.lastCommand?.nativeConfirmedAt) ? clock(adapter.lastCommand.nativeConfirmedAt) : 'Not confirmed'],
     ['Heat response after restore', finite(adapter.lastCommand?.usefulHeatAt) ? clock(adapter.lastCommand.usefulHeatAt) : adapter.lastCommand?.action === 'release' ? 'Awaiting useful heat evidence' : 'No restore assessment'],
     ['Control capability', adapter.liveControlSupported ? 'Installed contract' : 'Monitoring · real contract unavailable'],
-    ['Plan', text(plan.reason ?? garage.reason)], ['Planned pause endpoint', finite(plan.plannedPauseUntil ?? plan.pauseUntil) ? clock(plan.plannedPauseUntil ?? plan.pauseUntil) : 'No pause planned']);
+    ['Plan', text(plan.reason ?? garage.reason)], ['Planned reduction endpoint', finite(plan.plannedReductionUntil ?? plan.reductionUntil) ? clock(plan.plannedReductionUntil ?? plan.reductionUntil) : 'No reduction planned']);
   const policy = settings.protection ?? {};
   const preference = garageSavingsPreference(settings);
   const configuredStrategy = settings.savingsStrategy == null ? null : heatingStrategy(settings.savingsStrategy);
   const settingGroups = {
     economics: [
-      ['Minimum estimated benefit', configuredStrategy && finite(settings.minSavingsEur) ? `More than €${benefit(preference.minimumBenefitEur)}` : 'Unavailable', 'A new pause must clear this threshold after estimated recovery electricity and prediction uncertainty. Gentle uses 1.5 times the configured baseline, Balanced uses the baseline, and More savings uses half.'],
+      ['Minimum estimated benefit', configuredStrategy && finite(settings.minSavingsEur) ? `More than €${benefit(preference.minimumBenefitEur)}` : 'Unavailable', 'A new reduction must clear this threshold after estimated recovery electricity and prediction uncertainty. Gentle uses 1.5 times the configured baseline, Balanced uses the baseline, and More savings uses half.'],
       ['Benefit retained', configuredStrategy ? `${number(preference.retainedBenefitFraction * 100)}% of best opportunity` : 'Unavailable', 'Choose the shortest qualifying safe window retaining at least this share of the greatest estimated benefit. Equal lengths favour greater benefit, then an earlier start.'],
     ],
     heating: [
-      ['Minimum planned off time', number(finite(settings.minOffMs) ? settings.minOffMs / 3_600_000 : null, 'h'), 'A selected pause must be planned for at least this long. Protection can restore heating sooner; there is no fixed maximum duration.'],
-      ['Normal heating between pauses', number(finite(settings.minOnMs) ? settings.minOnMs / 3_600_000 : null, 'h minimum'), 'Fresh normal-heating evidence is required for at least this long. Both locations and their pipe reserves must also recover. The strategy does not relax these checks.'],
-      ['Maximum pauses per day', number(settings.maxPausesPerDay), 'This cap limits additional pump starts independently of the strategy. Pause starts count even if device confirmation is missing; the count uses the Finnish calendar day.'],
+      ['Minimum planned reduction', number(finite(settings.minOffMs) ? settings.minOffMs / 3_600_000 : null, 'h'), 'A selected reduction must be planned for at least this long. Protection can restore heating sooner; there is no fixed maximum duration.'],
+      ['Normal heating between reductions', number(finite(settings.minOnMs) ? settings.minOnMs / 3_600_000 : null, 'h minimum'), 'Fresh normal-heating evidence is required for at least this long. Both locations and their pipe reserves must also recover. The strategy does not relax these checks.'],
+      ['Maximum reductions per day', number(settings.maxPausesPerDay), 'This cap limits target reduction cycles independently of the strategy. Attempts count even if device confirmation is missing; the count uses the Finnish calendar day.'],
     ],
     protection: [
       ['Normal room setting', room ? `${room.value} · ${room.basis}` : number(learning.normalReference?.roomTargetC, '°C'), 'Room setting used by the heat model, from your selection or an unambiguous pump report. It supplies the initial normal-warmth estimate; settled observations later establish each location’s achieved temperature. A new selection applies here while the pump command is pending; the last known setting remains during a reporting gap. Change it in Mitsubishi Heat-pump settings. Below 16 °C uses Garage rear with a native 17 °C target.'],
@@ -297,15 +298,16 @@ export function garageDisplay(garage = {}, now = Date.now()) {
     rows, settingGroups, coefficients: coefficients.rows, coefficientDetails: coefficients.details, ...learningRows, limitations: learning.limitations ?? [] };
 }
 
-/** Both summaries describe the same requested power, independently of confirmation. */
+/** Actual control intent, separate from a plan-only price forecast and confirmation. */
 export function garageHeatingRequest(garage = {}) {
-  const controls = garage.heatingControls ?? {}, adapter = garage.adapter ?? {}, action = garage.plan?.nextAction;
+  const controls = garage.heatingControls ?? {}, adapter = garage.adapter ?? {};
   return controls.requestedMode === 'off' ? 'Off'
     : controls.requestedMode === 'normal' ? 'Normal'
-      : adapter.phase === 'paused' ? 'Reduction'
+      : adapter.phase === 'paused' ? 'Off'
         : adapter.restorePending || garage.episode?.restorationPending || adapter.phase === 'restoring' ? 'Restoring'
-          : ['pause', 'renew', 'hold'].includes(action) ? 'Reduction'
-            : ['available', 'release'].includes(action) || garage.temporary?.pauseActive ? 'Normal' : 'No request';
+          : garage.targetControl || garage.roomTemperature?.targetSource === 'automatic' ? 'Reduction'
+            : controls.selectedMode === 'off' ? 'Off'
+              : controls.selectedMode === 'normal' || garage.plan?.nextAction === 'normal' || garage.temporary?.pauseActive ? 'Normal' : 'No request';
 }
 
 export function garagePauseSummary(status = {}) {
@@ -345,11 +347,11 @@ function renderGarageHeatingState(document, status, requested) {
       detail: room?.detail ?? target.detail });
   }
   const confirmation = garageHeatingConfirmation(status, requested);
-  const name = ({ Normal: 'Normal heating', Off: 'Off', Reduction: 'Heating pause', Restoring: 'Restoring heating' })[requested];
+  const name = ({ Normal: 'Normal heating', Off: 'Off', Reduction: finite(garage.roomTemperature?.effectiveTargetC) ? `Reduced room target · ${number(garage.roomTemperature.effectiveTargetC, '°C')}` : 'Reduced room target', Restoring: 'Restoring heating' })[requested];
   setHeatingStatusDetail(document.getElementById('garage-current-control'), {
     key: 'garage-current-control', title: 'Garage heating control', confirmation,
     label: name ? `${name}${confirmation.state === 'confirmed' ? ' · confirmed' : ' requested · needs attention'}` : 'No current request',
-    detail: 'Heating availability follows the requested pump power. Compressor activity is shown with the heat-pump readings.' });
+    detail: 'Price reductions lower the effective room target while power remains ON. Manual Heating off changes native power. Compressor activity is shown with the heat-pump readings.' });
 }
 
 export function renderGarage(document, status) {
@@ -491,7 +493,7 @@ export function renderGarage(document, status) {
     if (marker) marker.hidden = !selected;
   }
   set('garage-policy-decision', display.planningDetails.find(row => row.key === 'current-opportunity')?.value ?? 'Unavailable');
-  set('garage-policy-window', display.planningDetails.find(row => row.key === 'pause-window')?.value ?? 'Unavailable');
+  set('garage-policy-window', display.planningDetails.find(row => row.key === 'reduction-window')?.value ?? 'Unavailable');
   const controlState = priceControlState(status, { feature: 'garage', enabled: garage.settings?.enabled ?? null, paused: Boolean(garage.temporary?.pauseActive) });
   set('garage-policy-context', status?.readOnly === true || isReadOnlyReplica(status)
     ? 'Read-only view: these settings and estimates do not authorize equipment control.'
@@ -552,9 +554,11 @@ export function createGarageControls({ document, request, onStatus = () => {}, o
     for (const mode of ['normal', 'off']) {
       const node = $(`garage-mode-${mode}`); if (!node) continue;
       node.disabled = locked || controls[`${mode}Available`] !== true;
-      const selected = (controls.requestedMode ?? controls.selectedMode) === mode;
+      const reduced = garageHeatingRequest(status?.garage) === 'Reduction';
+      const selected = !reduced && (controls.requestedMode ?? controls.selectedMode) === mode;
+      const confirmed = garageHeatingConfirmation(status ?? {}, mode === 'off' ? 'Off' : 'Normal').state === 'confirmed';
       node.setAttribute('aria-pressed', String(selected));
-      node.setAttribute('aria-label', `${mode === 'normal' ? 'Normal heating' : 'Heating off'}${selected ? controls.confirmed ? ' · active' : ' · requested' : ''}`);
+      node.setAttribute('aria-label', `${mode === 'normal' ? 'Normal heating' : 'Heating off'}${selected ? confirmed ? ' · active' : ' · requested' : ''}`);
       node.querySelector('.heating-button-state').textContent = selected ? '✓' : '';
     }
     if ($('garage-pause-submit')) $('garage-pause-submit').disabled = locked || !temporary.available || !dirty;

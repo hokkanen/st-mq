@@ -21,7 +21,7 @@ function candidate(savingsStrategy = 'balanced', values = [200, 200, 200, 200, .
     prices: values.map((price, i) => ({ start: NOW + i * HOUR, end: NOW + (i + 1) * HOUR, priceCtPerKwh: price })),
     forecast: [{ start: NOW, end: NOW + values.length * HOUR, outdoorC: 8, issuedAt: NOW }] };
 }
-const hours = plan => (plan.plannedPauseUntil - plan.pauseFrom) / HOUR;
+const hours = plan => (plan.plannedReductionUntil - plan.reductionFrom) / HOUR;
 function advance(args, at) {
   args.now = at;
   Object.assign(args.observation, { at, rearAt: at, frontAt: at });
@@ -42,7 +42,7 @@ test('named strategies share explicit economic rules and never change protection
 test('gentle, balanced and more-savings strategies select progressively longer worthwhile windows', () => {
   const plans = ['gentle', 'balanced', 'savings'].map(value => planGarage(candidate(value)));
   assert.deepEqual(plans.map(hours), [2.5, 3.25, 4]);
-  assert.deepEqual(plans.map(plan => (plan.pauseFrom - NOW) / HOUR), [1.5, .75, 0]);
+  assert.deepEqual(plans.map(plan => (plan.reductionFrom - NOW) / HOUR), [1.5, .75, 0]);
   for (const [index, preference] of ['gentle', 'balanced', 'savings'].entries()) {
     const policy = garageSavingsPreference({ savingsStrategy: preference });
     assert.ok(plans[index].scoreEur >= plans[2].scoreEur * policy.retainedBenefitFraction);
@@ -52,20 +52,20 @@ test('gentle, balanced and more-savings strategies select progressively longer w
 });
 
 test('the monetary hurdle admits smaller opportunities only at higher preferences; gentle still starts sufficiently valuable pauses', () => {
-  for (const [price, expected] of [[100, ['available', 'available', 'pause']],
-    [150, ['available', 'pause', 'pause']], [200, ['pause', 'pause', 'pause']]]) {
+  for (const [price, expected] of [[150, ['normal', 'normal', 'target']],
+    [200, ['normal', 'target', 'target']], [300, ['target', 'target', 'target']]]) {
     assert.deepEqual(['gentle', 'balanced', 'savings'].map(value => planGarage(candidate(value, [price, ...Array(12).fill(5)])).nextAction), expected);
   }
 });
 
 test('equal-length qualifying windows prefer greater benefit, then the earlier start', () => {
-  const equal = planGarage(candidate('gentle', [200, ...Array(10).fill(5), 200, ...Array(16).fill(5)]));
-  assert.equal(hours(equal), 1); assert.equal(equal.pauseFrom, NOW);
+  const equal = planGarage(candidate('gentle', [300, ...Array(10).fill(5), 300, ...Array(16).fill(5)]));
+  assert.equal(hours(equal), 1); assert.equal(equal.reductionFrom, NOW);
   const later = planGarage(candidate('balanced', [150, ...Array(10).fill(5), 200, ...Array(16).fill(5)]));
-  assert.equal(hours(later), 1); assert.equal(later.pauseFrom, NOW + 11 * HOUR);
+  assert.equal(hours(later), 1); assert.equal(later.reductionFrom, NOW + 11 * HOUR);
 });
 
-test('every strategy retains minimum OFF time, forecast coverage, fresh pipes and explicit protection approval', () => {
+test('every strategy retains minimum reduction time, forecast coverage, fresh pipes and explicit protection approval', () => {
   for (const savingsStrategy of ['gentle', 'balanced', 'savings']) for (const change of [
     args => { args.forecast[0].end = NOW + args.settings.minOffMs - MINUTE; },
     args => { args.forecast = []; },
@@ -74,7 +74,7 @@ test('every strategy retains minimum OFF time, forecast coverage, fresh pipes an
     args => { args.restorationDelayMs = null; },
   ]) {
     const args = candidate(savingsStrategy); change(args);
-    assert.equal(planGarage(args).nextAction, 'available');
+    assert.equal(planGarage(args).nextAction, 'normal');
   }
 });
 
@@ -82,21 +82,21 @@ test('scheduled windows stay fixed until admission and renewals do not repeatedl
   for (const preference of ['gentle', 'balanced']) {
     const args = candidate(preference), planned = planGarage(args);
     args.scheduledOpportunity = planned;
-    for (let at = NOW + 7 * MINUTE; at < planned.pauseFrom; at += 7 * MINUTE) {
+    for (let at = NOW + 7 * MINUTE; at < planned.reductionFrom; at += 7 * MINUTE) {
       advance(args, at);
       const waiting = planGarage(args);
       assert.equal(waiting.state, 'waiting');
-      assert.equal(waiting.pauseFrom, planned.pauseFrom); assert.equal(waiting.plannedPauseUntil, planned.plannedPauseUntil);
+      assert.equal(waiting.reductionFrom, planned.reductionFrom); assert.equal(waiting.plannedReductionUntil, planned.plannedReductionUntil);
     }
-    advance(args, planned.pauseFrom);
-    assert.equal(planGarage(args).nextAction, 'pause');
+    advance(args, planned.reductionFrom);
+    assert.equal(planGarage(args).nextAction, 'target');
     args.scheduledOpportunity = null;
-    for (let at = planned.pauseFrom + 7 * MINUTE; at < planned.plannedPauseUntil; at += 7 * MINUTE) {
+    for (let at = planned.reductionFrom + 7 * MINUTE; at < planned.plannedReductionUntil; at += 7 * MINUTE) {
       advance(args, at);
-      args.observation.available = false;
-      args.activeEpisode = { state: 'paused', pauseStartedAt: planned.pauseFrom, authorizedEndAt: planned.plannedPauseUntil };
+      args.observation.available = true;
+      args.activeEpisode = { state: 'reducing', reductionStartedAt: planned.reductionFrom, authorizedEndAt: planned.plannedReductionUntil };
       const ongoing = planGarage(args);
-      assert.equal(ongoing.nextAction, 'renew'); assert.equal(ongoing.pauseUntil, planned.plannedPauseUntil);
+      assert.equal(ongoing.nextAction, 'target'); assert.equal(ongoing.reductionUntil, planned.plannedReductionUntil);
     }
   }
 });
@@ -108,20 +108,18 @@ function runtimeFixture(t, savingsStrategy = 'balanced') {
   store.setState('garage:configuration:mqtt', settings);
   const engine = { latest: {}, lastKnownTemperatures: {}, automationEnabled: () => true };
   const runtime = new GarageRuntime({ store, engine, config: { input: 'mqtt', garage: settings }, clock: () => now });
-  const commands = [], safety = [], native = { automaticControl: true, liveControlSupported: true, phase: 'ready', episode: null,
-    native: { power: 'on', powerAt: now }, health: { pumpCommunicating: true }, baselineAccepted: true,
+  const commands = [], safety = [], native = { pauseControl: true, liveControlSupported: true, phase: 'ready', episode: null,
+    nativeSettingsReady: true, nativeHeatingReady: true, native: { power: 'on', powerAt: now }, health: { pumpCommunicating: true }, baselineAccepted: true,
     limits: { restorationDelayMs: 2 * MINUTE, maxLeaseMs: 180_000 } };
   runtime.setAdapter({ status: () => native, safetyTick: async data => { safety.push(data); },
     nativeControls: () => ({ available: true, busy: false, settings: {
       fan: { available: true, supported: true, value: 'auto', values: ['auto', 'quiet'] } } }),
     setNativeSetting: async () => {},
-    plannerTick: async data => {
-      commands.push(data);
-      if (data.valid) {
-        native.phase = 'paused'; native.native.power = 'off';
-        native.episode = { id: data.plan.id, endpointAt: data.plan.pauseUntil, status: 'paused' };
-      }
-    }, release: async () => {} });
+    plannerTick: async data => { commands.push(data); }, release: async () => {} });
+  // This fixture isolates scheduling; full broker/ACK behavior is covered by room-temperature integration.
+  runtime.roomTemperature.targetC = 10; runtime.roomTemperature.prepared = true;
+  runtime.roomTemperature.deliveredTarget = () => runtime.automaticTarget?.targetC ?? 10;
+  runtime.roomTemperatureTick = () => {};
   const report = at => {
     now = at; native.native.powerAt = at;
     for (const [signal, value] of [['garage_temperature', 10], ['garage_temperature_2', 9], ['outdoor_temperature', 8]])
@@ -139,16 +137,17 @@ test('runtime preserves a waiting opportunity and starts at its selected time ev
   await f.tick(NOW);
   const selected = structuredClone(f.runtime.plan);
   assert.equal(selected.state, 'waiting'); assert.equal(f.runtime.episode, null);
-  assert.equal(f.commands.at(-1).valid, false);
+  assert.equal(f.runtime.automaticTarget, null);
   await f.tick(NOW + 7 * MINUTE);
-  assert.equal(f.runtime.plan.pauseFrom, selected.pauseFrom);
-  await f.tick(selected.pauseFrom);
-  assert.equal(f.runtime.plan.nextAction, 'pause'); assert.equal(f.commands.at(-1).valid, true);
-  assert.equal(f.runtime.episode.pauseUntil, selected.plannedPauseUntil);
-  f.report(selected.pauseFrom + MINUTE); f.runtime.safetyTick();
-  assert.equal(f.safety.at(-1).valid, true, 'Gentle strategy retains automatic safety-loop permission');
-  await f.tick(selected.pauseFrom + MINUTE);
-  assert.equal(f.runtime.plan.nextAction, 'renew'); assert.equal(f.runtime.plan.pauseUntil, selected.plannedPauseUntil);
+  assert.equal(f.runtime.plan.reductionFrom, selected.reductionFrom);
+  await f.tick(selected.reductionFrom);
+  assert.equal(f.runtime.plan.nextAction, 'target'); assert.equal(f.runtime.automaticTarget.targetC, f.runtime.settings.reducedRoomTargetC);
+  assert.equal(f.runtime.episode.pauseUntil, selected.plannedReductionUntil);
+  f.report(selected.reductionFrom + MINUTE); f.runtime.safetyTick();
+  assert.ok(f.runtime.automaticTarget, 'Gentle strategy retains the qualified target reduction');
+  assert.equal(f.commands.length, 0, 'Price automation cannot dispatch a power lease');
+  await f.tick(selected.reductionFrom + MINUTE);
+  assert.equal(f.runtime.plan.nextAction, 'target'); assert.equal(f.runtime.plan.targetUntil, selected.plannedReductionUntil);
 });
 
 test('runtime cancels waiting windows when protection fails, settings change or price control is paused', async t => {
@@ -157,41 +156,42 @@ test('runtime cancels waiting windows when protection fails, settings change or 
   assert.ok(f.runtime.scheduledOpportunity);
   delete f.engine.latest.garage_temperature_2;
   f.runtime.tick({ now: NOW, prices: candidate().prices, forecast: candidate().forecast }); await f.runtime.dispatch;
-  assert.equal(f.runtime.scheduledOpportunity, null); assert.equal(f.commands.at(-1).valid, false);
+  assert.equal(f.runtime.scheduledOpportunity, null); assert.equal(f.runtime.automaticTarget, null);
   await f.tick(NOW);
   f.runtime.settings.savingsStrategy = 'savings';
   await f.tick(NOW);
-  assert.equal(f.runtime.plan.nextAction, 'pause', 'A changed preference selects again instead of inheriting the waiting window');
+  assert.equal(f.runtime.plan.nextAction, 'target', 'A changed preference selects again instead of inheriting the waiting window');
   const paused = runtimeFixture(t);
   await paused.tick(NOW);
   await paused.runtime.setTemporary({ pauseUntil: new Date(NOW + HOUR).toISOString() });
   await paused.tick(NOW + MINUTE);
-  assert.equal(paused.runtime.scheduledOpportunity, null); assert.equal(paused.commands.at(-1).valid, false);
+  assert.equal(paused.runtime.scheduledOpportunity, null); assert.equal(paused.runtime.automaticTarget, null);
 });
 
 test('daily starts and minimum normal-heating time still block opportunities at more-savings strategy', async t => {
   const f = runtimeFixture(t, 'savings');
   f.runtime.settings.minOnMs = 3 * HOUR;
   await f.tick(NOW);
-  assert.equal(f.runtime.plan.reason, 'minimum-normal-heating-time'); assert.equal(f.commands.at(-1).valid, false);
+  assert.equal(f.runtime.plan.reason, 'minimum-normal-heating-time'); assert.equal(f.runtime.automaticTarget, null);
   f.runtime.settings.minOnMs = 0;
   f.store.cycle('garage:mqtt', { id: 'already-attempted', startedAt: NOW - MINUTE, status: 'incomplete', endedAt: NOW });
   await f.tick(NOW);
-  assert.equal(f.runtime.plan.reason, 'daily-pause-limit'); assert.equal(f.commands.at(-1).valid, false);
+  assert.equal(f.runtime.plan.reason, 'daily-pause-limit'); assert.equal(f.runtime.automaticTarget, null);
 });
 
 test('accepted Normal and native selections discard the waiting window before automatic controls expire', async t => {
   for (const action of ['normal', 'native']) {
     const f = runtimeFixture(t);
     await f.tick(NOW);
-    const previousStart = f.runtime.plan.pauseFrom;
+    const previousStart = f.runtime.plan.reductionFrom;
     f.report(NOW + 7 * MINUTE);
     if (action === 'normal') await f.runtime.setHeating({ mode: 'normal' });
-    else await f.runtime.setNativeSettings({ setting: 'fan', value: 'quiet' });
+    else { f.runtime.roomTemperature.targetC = null; await f.runtime.setNativeSettings({ setting: 'fan', value: 'quiet' });
+      f.runtime.roomTemperature.targetC = 10; }
     assert.equal(f.runtime.scheduledOpportunity, null, action);
     await f.tick(NOW + 7 * MINUTE);
     assert.equal(f.runtime.manual, null, 'An unpaused Normal selection ends at the next controller update');
-    assert.notEqual(f.runtime.plan.pauseFrom, previousStart, 'The next update selects afresh');
+    assert.notEqual(f.runtime.plan.reductionFrom, previousStart, 'The next update selects afresh');
   }
 });
 
@@ -200,6 +200,7 @@ test('an asynchronous native request cannot repopulate a discarded waiting windo
   await f.tick(NOW);
   let finish;
   f.runtime.adapter.setNativeSetting = () => new Promise(resolve => { finish = resolve; });
+  f.runtime.roomTemperature.targetC = null;
   const request = f.runtime.setNativeSettings({ setting: 'fan', value: 'quiet' });
   assert.equal(f.runtime.scheduledOpportunity, null);
   assert.equal(f.runtime.manualBusy, true);

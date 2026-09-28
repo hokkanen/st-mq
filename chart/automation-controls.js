@@ -8,7 +8,6 @@ const explain = value => ({
   'unvalidated-heating-energy-model': 'Learning how much electricity heating uses.',
   'missing-or-stale-observations': 'Waiting for fresh temperature readings.',
   'thermal-state-reconciliation': 'Checking heat reserve after startup.',
-  'adapter-monitoring': 'The adapter has not been armed for automatic pauses.',
   'installed-commissioning-required': 'Installed OFF/ON recovery checks are incomplete.',
 })[value] ?? (typeof value === 'string' ? value.replaceAll('-', ' ').replace(/^./, letter => letter.toUpperCase()) : null);
 
@@ -25,7 +24,7 @@ export function automationView(status, feature) {
     }).format(pauseUntil)}. Manual heating choices retain their own duration.` : 'Automatic heating is paused.',
   })[control?.activity] ?? control?.activity;
   if (control?.activity === 'automatic') {
-    const reasons = feature === 'garage' ? status.garage?.adapter?.automaticPauseReasons : status.decision?.reasons;
+    const reasons = feature === 'garage' ? status.garage?.automationReasons : status.decision?.reasons;
     const reason = reasons?.find(value => typeof value === 'string');
     const detail = explain(reason ?? (feature === 'garage' ? status.garage?.reason : null));
     if (detail) activity = `Automatic · ${detail}`;

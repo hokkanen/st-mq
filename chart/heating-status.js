@@ -80,7 +80,7 @@ export function garageHeatingConfirmation(status = {}, requested) {
   const power = typeof native.power === 'object' && native.power !== null ? native.power.value : native.power;
   const at = timestamp(reading.measuredAt ?? native.powerAt);
   const current = garageNativeReadingFresh(garage, 'power', now);
-  const expected = ['Off', 'Reduction'].includes(requested) ? 'off' : ['Normal', 'Restoring'].includes(requested) ? 'on' : null;
+  const expected = requested === 'Off' ? 'off' : ['Normal', 'Reduction', 'Restoring'].includes(requested) ? 'on' : null;
   const reasons = [];
   if (isReadOnlyReplica(status)) reasons.push('Recorded history cannot confirm the current garage state.');
   if (status.input === 'simulated' || adapter.simulation) reasons.push('Simulated state; no physical heating confirmation.');
@@ -89,6 +89,12 @@ export function garageHeatingConfirmation(status = {}, requested) {
   else if (!current) reasons.push('A current qualified pump power readback is unavailable.');
   else if (power !== expected) reasons.push(`Pump power is ${power}; the request needs power ${expected}.`);
   if (garage.heatingControls?.confirmed !== true) reasons.push('The controller has not confirmed the requested pump power.');
+  const room = garage.roomTemperature;
+  if (requested === 'Reduction' && !(room?.targetSource === 'automatic' && room.phase === 'active'
+    && room.acknowledged === true && Number.isFinite(room.effectiveTargetC) && room.effectiveTargetC < room.ownerTargetC
+    && room.targetUntil > now)) reasons.push('The reduced room target is awaiting current external-temperature acknowledgement.');
+  if (requested === 'Normal' && Number.isFinite(room?.targetC) && !(room.phase === 'active' && room.acknowledged === true
+    && room.targetSource !== 'automatic')) reasons.push('The saved room target is awaiting current external-temperature acknowledgement.');
   if (adapter.connected !== true || health.deviceOnline !== true || health.pumpCommunicating !== true || health.driverProgressing !== true)
     reasons.push('Current garage device communication is not confirmed.');
   if (requested === 'Restoring' || garage.episode?.restorationPending || adapter.restorePending && adapter.phase !== 'paused')

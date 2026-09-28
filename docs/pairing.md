@@ -228,10 +228,12 @@ Moving the broker address does not restart applications on the failed computer.
 If Home Assistant and TeslaMate ran there, BMW/Tesla vehicle feeds and HA door
 publishers remain unavailable. Charging retains manual inputs and, for the same
 identified connection, its last known charge estimate plus recorded energy.
-Unknown garage doors block new economic pauses, while independent fresh pipe
-and room probes continue protection; lost protection inputs require restoration.
-An existing bounded Pill OFF lease can expire on the device while the replacement
-host reacquires fresh state. See [charging outages](charging.md#missing-vehicle-feeds-and-takeover)
+Unknown Garage doors block a new target reduction below 2°C outdoors, the same
+rule as an open door. Independent fresh pipe and room evidence continues
+protection; lost protection inputs require restoration. An existing external
+temperature sample or manual timed OFF lease keeps its original local expiry
+while the replacement host reacquires fresh state. Promotion cannot renew either
+permission from copied observations. See [charging outages](charging.md#missing-vehicle-feeds-and-takeover)
 and [garage protection](garage.md#sensors-doors-and-protection).
 
 Home heating restoration still requires a reachable H66 gateway and broker.

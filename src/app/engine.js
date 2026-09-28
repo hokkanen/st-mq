@@ -1,3 +1,4 @@
+import { validateSavedGarageTargetEpisode } from '../garage/episodes.js';
 import { weatherAcquisitionIdentity } from '../acquisition/weather-identity.js';
 import { HeatingAutomation } from './automation.js';
 import { randomUUID } from 'node:crypto';
@@ -29,6 +30,7 @@ import { temperatureReportMaxAge } from '../domain/temperature-reports.js';
 import { OUTDOOR_MAX_AGE_MS } from '../domain/reading-freshness.js';
 import { indoorStatusMetadata, outdoorReadingStatus, temperatureBoundaryStatus, rememberOutdoorReading } from './temperature-status.js';
 import { GarageRuntime } from '../garage/runtime.js';
+import { validateSavedGaragePauseContract, validateSavedGarageHeatingHandover } from '../garage/contract.js';
 import { ChargingRuntime } from '../charging/runtime.js';
 import { isGarageDoorSignal, confirmedGarageDoor, garageDoorContinuity } from '../garage/door-state.js';
 import { rememberGarageTemperature } from '../garage/temperature-evidence.js';
@@ -356,6 +358,9 @@ export class Engine {
   async closeFireplace() { await this.fireplaceRebuild?.close(); }
   constructor({ store, config, clock = Date.now, commandTransport = null, canControl = () => true }) {
     validateSettings(config.settings);
+    validateSavedGaragePauseContract(store.getState(`garage:adapter:${config.input}`));
+    validateSavedGarageHeatingHandover(store.getState(`garage:heatingHandover:${config.input}`));
+    validateSavedGarageTargetEpisode(store.getState(`garage:episode:${config.input}`));
     const previousSettings = store.getState(`settings:${config.input}`);
     if (previousSettings !== null && previousSettings !== undefined) {
       try { validateSettings(previousSettings); }

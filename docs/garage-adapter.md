@@ -6,16 +6,23 @@ observations. Select it explicitly with `garage.adapter.driver: "shelly-cn105"`.
 The default `fixture` driver remains an isolated, read-only consumer of the
 `stmq-garage-fixture/v1` host simulation vocabulary.
 
-Managed pauses require fresh ordinary native settings, the `preserveNativeSettings`
-and `releaseOrdering` capabilities, and installed `selectivePowerVerified`,
-`expiryVerified` and `restartVerified` results. Automatic requests additionally
-require device arming and this feature's Automatic choice. Explicit manual
-requests work in Plan only and device monitoring, using `purpose: "manual"` and
-`authority.manualPauseAllowed`. Both paths retain ownership, thermal protection,
-local expiry, fresh evidence and restoration requirements.
-Permanent external temperature control is a separate ordinary control feature
-with its own two-location freeze-protection assessment. It does not replace
-commissioning evidence or authorize economic pauses.
+Manual timed OFF requires fresh ordinary native settings, the
+`preserveNativeSettings` and `releaseOrdering` capabilities, and installed
+`selectivePowerVerified`, `expiryVerified` and `restartVerified` results. The
+adapter has one installed `pauseEnabled` gate, represented by `mode: "ready"`
+and `authority.controlAllowed`. Explicit timed requests work in Plan only;
+changing the feature's automation choice does not grant or withdraw that manual
+permission. Ownership, thermal protection, local expiry, fresh evidence and
+restoration duties apply to every timed OFF. Device monitoring disables timed
+OFF without disabling qualified ordinary external temperature control.
+
+Automatic savings changes a bounded effective room target through external
+sensing. It never issues a power lease. The owner's durable target remains
+separate: a temporary lower target increases the supplied offset from the real
+rear reading. This path requires the feature's Automatic choice, fresh native
+ON/HEAT/native17, the external capability and installed flag, both reference
+sensors and sufficient freeze reserve. It does not require the three timed-OFF
+commissioning proofs.
 
 ## Connection and evidence
 
@@ -38,7 +45,7 @@ Private configuration selects exact topics and a driver:
 
 All topics are exact and distinct. Empty observation topics mean no subscription.
 Omit `commandTopic` for a telemetry-only connection. A command topic requires the
-production driver and a state topic; it does not arm the device. The default
+production driver and a state topic; it does not enable the installed pause capability. The default
 `driver: "fixture"` rejects command topics.
 The electrical selection is `none`, `native-counter` or `native-power`; the two
 energy paths cannot both contribute. Broker connection and credentials use the
@@ -90,7 +97,10 @@ electricity timing. A zero/missing timestamp is never silently replaced by now.
 
 Public status exposes normalized values, source clocks, qualities, separate
 health, accepted limits, baseline versus native readbacks, phase, restoration,
-command outcomes and a hashed source epoch. It excludes device/session/challenge
+command outcomes and a hashed source epoch. The controller diagnostic label
+reserves Commissioning for missing installed proofs or commissioning mode; a
+temporary busy/disconnected condition is Unavailable with its specific reason.
+It excludes device/session/challenge
 identities. Source epoch changes across adapter boot and source selection so the
 learning journal can avoid fitting an interval across a transition.
 
@@ -105,11 +115,10 @@ reconnect queuing disabled. Receipt and native confirmation come from device
 state, independently of MQTT publication success.
 
 An admitted pause request on a fresh, commissioned and unowned adapter can
-send a `claim` using its
-current one-use challenge and a new host session. An automatic claim requires
-arming; an explicit manual pause may claim in monitoring. The command's `purpose`
-is carried through claim, start, renewal and release. ST-MQ waits for ownership
-readback and a new challenge before OFF. It never takes a foreign owner's session
+send a `claim` using its current one-use challenge and a new host session. The single installed pause gate
+and fresh state must permit the request. Claim, start, renewal and release carry
+no caller-purpose field; the controller uses this bounded-power protocol only for manual timed OFF. ST-MQ
+waits for ownership readback and a new challenge before OFF. It never takes a foreign owner's session
 or leases while disconnected.
 A restarted host waits for the device's owner expiry/reconciliation; an old OFF
 lease is only an unresolved restoration obligation. The device enforces these
@@ -122,11 +131,12 @@ free. Retained reports and an earlier ON measurement cannot clear it.
 These are tests of the host consumer; the injected receiver does not implement
 CN105 decoding or prove that a real device enforces a lease.
 
-The runtime calls `plannerTick({now, valid, plan, recoveryReady, demand, purpose})` with a
+The runtime calls `plannerTick({now, valid, plan, recoveryReady, demand})` with a
 stable plan/episode ID, finite `pauseFrom`/`pauseUntil`, and an independently
 bounded short permission deadline. There is no fixed maximum for the total
-continuous episode: ST-MQ chooses its endpoint from temperatures, pipe reserve,
-uncertainty, economics and available forecast coverage. The Pill retains only
+manual episode beyond its explicit override scope: the endpoint is the Pause
+savings deadline, or the next controller update with a one-minute backstop.
+Temperatures and pipe reserve may shorten its permission. The Pill retains only
 the compact active episode and current permission, so a longer pause does not
 accumulate device-side samples or commands. Only that method can
 start or renew. `safetyTick` can revoke permission and request release, but cannot
@@ -135,6 +145,12 @@ boot, adapter session, host ownership, episode, monotonic command sequence,
 one-use challenge and a short deadline. A renewal uses the original episode and
 can never enlarge its authorized endpoint. The accepted fixture lease limits
 provide maximum lease, renewal interval, minimum ON lock and restoration delay.
+The Pill projects its monotonic deadline through a whole-second UTC clock, so
+successive reported endpoints can move slightly within the authorized endpoint.
+The host validates each report against that authorization, while retaining the
+earliest reported endpoint for subsequent commands. A harmless clock projection
+change does not cancel an accepted OFF request; a report beyond the authorized
+endpoint still requires restoration.
 The host additionally caps permission at two minutes from the older supporting
 rear/front temperature report, with earlier expiry when the thermal reserve
 requires it. A stale report cannot gain a later deadline from repeated planning.
@@ -176,7 +192,7 @@ it. Useful heat response is separate thermal evidence, never inferred from ON,
 publication, compressor frequency or electrical watts.
 
 Host MQTT disconnection, invalid planning/protection, missing authority, watchdog/manual ON,
-reboot and expired permission invalidate economic intent. Reconnect requires new
+reboot and expired permission invalidate timed OFF intent. Reconnect requires new
 session evidence. Restart loads the old episode only as a restoration obligation
 and uses a new host session; completed episode IDs cannot be restarted. Recovery
 locks from the adapter and thermal readiness from the runtime both apply to a
@@ -219,20 +235,20 @@ result. Ordinary controls require master ownership, the live production route,
 fresh state and device/driver/pump health, `authority.manualControlAllowed`, an
 unused current challenge, and no foreign owner or pending command. They are
 available independently of economic enablement, the feature's automation choice
-and automatic commissioning proof. Device maintenance and commissioning modes block them.
+and managed-pause commissioning evidence. Device maintenance and commissioning modes block them.
 
 Each request publishes one `action:"manual"` command with a single-key `settings`
 object and current device/boot/session/host identities, increasing sequence and
 a short deadline. The device atomically takes manual ownership when unowned;
-there is no automatic lease claim beforehand. An existing economic pause must
+there is no automatic lease claim beforehand. An existing managed pause must
 finish restoration before a setting can change. Pending manual work blocks new
-automatic pauses, and manual changes disqualify overlapping savings assessments.
+managed pauses, and manual changes disqualify overlapping savings assessments.
 
 Publication, acceptance and native confirmation remain separate. Confirmation
 requires the matching command result and a later fresh readback of that exact
 setting, value and adapter session. A missing result becomes uncertain after
 45 seconds; disconnect or restart never replays the request. The compact native
-request/result is persisted separately from economic lease obligations. Ordinary
+request/result is persisted separately from timed OFF obligations. Ordinary
 power OFF is the owner's selection and creates no automatic restoration lease.
 
 ## Permanent external room temperature
@@ -245,10 +261,10 @@ For a 5°C setting the offset is +12°C. The requested room target, original sou
 reading, offset, remote value and actual native readback remain distinct status
 values. Both driver capability and the Pill's local feature flag are required.
 
-Before each external-temperature enable or renewal, ST-MQ requires fresh native
-ON, HEAT and 17°C readbacks using the existing 30-second freshness requirement.
-The 17°C target distinguishes this control baseline from the installed pump's
-ambiguous 10°C i-save / 16°C readback. If the check fails, ST-MQ stops renewing;
+Before each external-temperature enable or renewal, ST-MQ requires matching
+HEAT and native17 readbacks no older than 30 seconds, with native power ON.
+External sensing and timed OFF are mutually exclusive. The 17°C target
+identifies the explicit ordinary-heating baseline. If the check fails, ST-MQ stops renewing;
 it does not rewrite native settings or add checks between renewals, and the
 existing external-temperature lease expires. Freeze-protection assessment can
 request earlier clearing. Ordinary targets of 16°C and above still use native control.
@@ -399,8 +415,9 @@ without expiry. Fan and vane commands retain it while any required serial
 clear/write/confirm/re-enable sequence completes. Power or mode edits never
 authorize forcing ON/HEAT. Restart does not replay a cached remote temperature:
 the host must obtain fresh source evidence and reestablish native
-setup before resuming. Native changes and managed pauses wait for serial clearing
-of the external override; MQTT publication alone does not prove it cleared.
+setup before resuming. Ordinary native changes wait for serial clearing of the
+external override; MQTT publication alone does not prove it cleared. Timed OFF
+also waits for serial clear acknowledgement and durable external cleanup.
 The reserve checks do not certify physical frost protection or installed
 selective-power and expiry/restart behavior. Installed qualification remains
 the responsibility of the separate adapter and installation work. Managed OFF
@@ -529,17 +546,57 @@ Host fixtures verify correlation and fencing at the consumer boundary; the adapt
 repository tests serial cancellation races. No dashboard checkbox can substitute
 for either evidence source.
 
-For both manual and automatic OFF, the runtime persists a device-bound external
-handover obligation before clearing an active external source. It waits for the
-serial clear acknowledgement before sending bounded OFF; acceptance or MQTT
-publication alone cannot authorize the transition. The selected room target
-remains durable intent, while saved sensor samples never become renewed authority.
-Normal, Resume, expiry, protection withdrawal and restart restore managed heating
-first. Only fresh native ON after the lease obligation is resolved allows external
-control to prepare again, confirm native 17°C and obtain a new sensor measurement.
-Changed native settings inhibit resumption; an independent owner edit supersedes
-the saved plan. Failed clear cancels OFF and leaves a visible unconfirmed result.
-Pending, requesting, confirmed and restoring states appear beside the buttons.
+Before manual timed OFF, the runtime persists the device-bound owner room
+intent and native profile, suspends its external feed and requests internal
+sensing. START is withheld until serial clear acknowledgement and durable
+external cleanup establish internal sensing. An accepted MQTT command is not
+that evidence. Failed or uncertain clearing cancels timed OFF; a preparation
+wait cannot exceed 45 seconds or its existing manual deadline.
+
+Normal, Resume, manual expiry or a protection withdrawal cancels the OFF
+permission and requests release. External input stays suspended until fresh
+native ON, the cancelled/expired OFF ordering fence, and complete restoration
+are confirmed. Only then can a fresh original sensor measurement resume the
+saved room target through the normal native17 setup. No pre-OFF sample is
+replayed, and no numeric input is admitted while OFF or restoration is active.
+The internal-sensor interval during this separate manual power operation is
+explicit; the external price-saving path never uses this transition.
+
+Restart retains the restoration obligation, never the OFF permission. A changed
+adapter identity or independent native power/mode/target/fan/vane selection
+prevents automatic resumption of obsolete intent. Clearing, requesting,
+confirmed, restoring and failure states appear beside the buttons. Native ON
+remains distinct from useful heat. Serial external ACK establishes delivery,
+not direct native readback of which thermostat sensor the pump selected.
+
+Saved handovers use version 2 with only `clearing`, `off` and `restoring` phases.
+Invalid or retired handovers fail before startup writes or MQTT connection;
+they are not translated or discarded while physical restoration may remain.
+
+### Price-based external target adjustment
+
+The owner's saved room target remains at least 5°C. Automatic savings may use a
+bounded effective target down to 0°C, as configured by `reducedRoomTargetC`,
+without changing that owner setting. The supplied value is always derived from
+the original rear reading plus `17 - effective target`; source temperature and
+measurement time retain their physical meaning. A result outside the adapter's
+8–39.5°C range is rejected, never clamped. Both sensors, original measurement
+expiry, conservative pipe reserve and the heating-response allowance still
+bound permission. Powered-idle electricity and lower-target maintenance remain
+cost assumptions; external ACK never proves compressor OFF or zero watts.
+
+An effective-target change can reuse the same still-fresh original measurement
+only while its numeric permission remains active. The changed value cannot
+extend that measurement's already granted deadline. After clearing, expiry or
+restart, a genuinely newer original measurement is required. Plan only, Pause
+savings and the target endpoint restore owner intent; delivered-target accounting
+continues to describe the previous acknowledged value until the new value is
+acknowledged. Missing acknowledgement is unknown, not successful restoration.
+
+Cancellation records the failed host guard and carries that cause into the button
+result. An earlier acceptance reason, such as pending recovery persistence, is
+not reused as the explanation for failure. These diagnostics contain rule names,
+not temperature readings or device identities.
 
 Explicit **Normal heating** uses ordinary native power ON when the pump is
 unmanaged OFF, requiring its advertised manual capability and fresh readback.

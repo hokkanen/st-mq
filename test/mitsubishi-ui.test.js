@@ -415,3 +415,15 @@ test('read-only Garage exposes recorded zero and false measurements without gran
     assert.doesNotMatch(room.detail, /17 °C|Fallback|Active/);
   }
 });
+
+
+test('Garage room status preserves the owner setting while explaining the acknowledged price target', () => {
+  const room = mitsubishiRoomTemperature({ roomTemperature: { targetC: 5, ownerTargetC: 5,
+    effectiveTargetC: 0, targetSource: 'automatic', targetUntil: now + 60_000,
+    phase: 'active', acknowledged: true, sourceC: 6, suppliedC: 23, offsetC: 17, nativeTargetC: 17 } });
+  assert.equal(room.value, '5 °C');
+  assert.equal(room.basis, 'Garage rear · Reduced target');
+  assert.match(room.progress, /Reduced target 0 °C is active.*Native power remains ON/);
+  assert.match(room.detail, /saved 5 °C room setting returns afterward/);
+  assert.match(room.detail, /does not guarantee the compressor stays stopped/);
+});

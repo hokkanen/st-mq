@@ -3,6 +3,25 @@
 export const GARAGE_FIXTURE_CONTRACT = 'stmq-garage-fixture/v1';
 export const SHELLY_CN105_CONTRACT = 'shelly-cn105/v1';
 export const GARAGE_CONTRACT_STATUS = 'provisional-fixture-only';
+export function validateSavedGaragePauseContract(persisted) {
+  if (persisted?.episode && Object.hasOwn(persisted.episode, 'purpose'))
+    throw new Error('Unsupported saved Garage pause contract; start a fresh development database after resolving physical restoration');
+}
+export function validateSavedGarageHeatingHandover(value) {
+  if (value == null) return;
+  if (typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(key =>
+    !['version', 'id', 'adapterKey', 'targetIdentity', 'startedAt', 'targetC', 'phase', 'native', 'restorationAt'].includes(key))
+    || value.version !== 2
+    || !['clearing', 'off', 'restoring'].includes(value.phase)
+    || typeof value.adapterKey !== 'string' || !/^[a-f0-9]{64}$/.test(value.adapterKey)
+    || typeof value.targetIdentity !== 'string' || !/^[a-f0-9]{64}$/.test(value.targetIdentity)
+    || typeof value.id !== 'string' || !value.id
+    || !value.native || typeof value.native !== 'object' || Array.isArray(value.native)
+    || Object.keys(value.native).some(key => !['mode', 'targetC', 'fan', 'vane', 'wideVane'].includes(key))
+    || !(value.targetC === null || Number.isFinite(value.targetC)) || !finiteTime(value.startedAt)
+    || value.restorationAt !== undefined && !finiteTime(value.restorationAt))
+    throw new Error('Unsupported saved Garage heating handover; start a fresh development database after resolving physical restoration');
+}
 export const GARAGE_FIELDS = Object.freeze({
   indoorTemperature: { signal: 'garage_native_indoor_temperature', unit: 'degC', min: -60, max: 70 },
   outdoorTemperature: { signal: 'garage_native_outdoor_temperature', unit: 'degC', min: -80, max: 70 },
@@ -96,6 +115,6 @@ export function freshField(field, now, maxAgeMs) {
   return field && finiteTime(field.measuredAt) && field.measuredAt <= now && now - field.measuredAt < maxAgeMs;
 }
 export function validFixtureState(value) {
-  return identity(value.sessionId) && ['monitoring', 'commissioning', 'armed', 'maintenance'].includes(value.mode)
+  return identity(value.sessionId) && ['monitoring', 'commissioning', 'ready', 'maintenance'].includes(value.mode)
     && value.health && typeof value.health === 'object' && value.native && typeof value.native === 'object';
 }

@@ -24,7 +24,7 @@ function setup(t, { disk = false, settings = {}, owner = true } = {}) {
   const config = { input: 'mqtt', garage: garageSettings(settings) };
   const engine = { latest: {}, lastKnownTemperatures: {}, automationEnabled: () => true };
   const runtime = new GarageRuntime({ store, engine, config, clock: () => now, canControl: () => authority });
-  const calls = [], status = { automaticControl: false, phase: 'monitoring', native: {}, health: {},
+  const calls = [], status = { pauseControl: false, phase: 'monitoring', native: {}, health: {},
     limits: { maxLeaseMs: 180_000, restorationDelayMs: 120_000 } };
   runtime.setAdapter({ status: () => status,
     plannerTick: async args => { calls.push(['planner', args]); return { status: 'blocked' }; },
@@ -259,7 +259,7 @@ test('a failed group of source corrections retries every boundary without losing
 
 test('completion and clearing the active recovery obligation commit together and remain retryable', async t => {
   const f = setup(t); f.temperatures(); f.runtime.tick(); await f.runtime.dispatch;
-  f.runtime.startEpisode('fixture-pause', { preferenceVersion: GARAGE_PREFERENCE_VERSION, pauseUntil: START + 10 * MINUTE }, f.runtime.read(), START);
+  f.runtime.startEpisode('fixture-pause', { preferenceVersion: GARAGE_PREFERENCE_VERSION, policyVersion: 'garage-room-target-v1', targetUntil: START + 10 * MINUTE }, f.runtime.read(), START);
   const id = f.runtime.episode.id, original = f.store.setState.bind(f.store);
   f.store.setState = (key, value) => {
     if (key === f.runtime.keys.episode && value === null) throw new Error('fixture clearing active episode failure');
@@ -321,7 +321,7 @@ test('front sensor accepts negative Celsius and remains distinct from Home avera
 test('frozen episode accounting preserves negative savings, rejects gaps and cannot complete with front debt', () => {
   const model = createGarageModel({ seedAt: START, roomTargetC: 10 });
   model.state = { rearC: 8, frontC: 7.5, coreC: 8, differenceC: -.5 };
-  const first = { at: START, rearC: 8, frontC: 7.5, outdoorC: 0, available: true, ev1Kw: 0, ev2Kw: 0 };
+  const first = { at: START, rearC: 8, frontC: 7.5, outdoorC: 0, available: true, demandReduced: false, ev1Kw: 0, ev2Kw: 0 };
   let account = startGarageAssessment(model, first);
   account = updateGarageAssessment(account, model, { ...first, at: START + MINUTE }, { recordedKwh: 1, priceCtPerKwh: 20 });
   account.actualState = structuredClone(account.referenceState);
@@ -330,4 +330,18 @@ test('frozen episode accounting preserves negative savings, rejects gaps and can
   account.actualState.frontC -= 1; assert.equal(completeGarageAssessment(account), null);
   const gap = updateGarageAssessment(account, model, { ...first, at: START + 60 * MINUTE }, { priceCtPerKwh: 20 });
   assert.equal(gap.qualified, false); assert.equal(completeGarageAssessment(gap), null);
+});
+
+
+test('external automation readiness is independent of timed OFF commissioning', t => {
+  const f = setup(t, { settings: { enabled: true } });
+  f.status.blockedReasons = ['installed-commissioning-required'];
+  f.runtime.roomTemperature.targetC = 10;
+  f.status.nativeHeatingReady = true;
+  f.runtime.adapter.externalTemperature = () => ({ supported: true, enabled: true });
+  f.runtime.roomTemperatureEvidence = () => ({ rear: { usable: true }, front: { usable: true } });
+  f.runtime.protection = { safeToPause: true };
+  assert.deepEqual(f.runtime.automationReasons(), []);
+  f.runtime.settings.enabled = false;
+  assert.match(f.runtime.automationReasons().join(' '), /disabled in configuration/);
 });

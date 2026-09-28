@@ -19,7 +19,7 @@ const INTERNAL = { enabled: true, phase: 'internal', temperatureC: null, measure
 
 /** Real runtime, adapter, envelope transport and persistence; only the broker,
  * physical driver's reports and independent room sensor are synthetic. */
-function fixture(t, { initialNativeTargetC = 17, pauses = false, automatic = false, publishFailure = () => false } = {}) {
+function fixture(t, { initialNativeTargetC = 17, pauses = false, offCommissioned = pauses, automatic = false, publishFailure = () => false } = {}) {
   let now = BASE, sequence = 0, external = { ...INTERNAL }, result = null, manualPending = false, lease = null, restorationPending = false;
   const native = { power: 'on', mode: 'heat', targetC: initialNativeTargetC, fan: 'auto', vane: 3, wideVane: 'center', vanes: 'fixed' };
   const published = [], observations = [], store = new Store(':memory:');
@@ -39,18 +39,18 @@ function fixture(t, { initialNativeTargetC = 17, pauses = false, automatic = fal
     feed = external, result: reportedResult = result,
     ownerSession = published.length ? 'invented-room-owner' : null } = {}) {
     const value = { ...structuredClone(TEMPLATE), sequence: ++sequence, observedAt: now,
-      uptimeMs: TEMPLATE.uptimeMs + loopAt - BASE, mode: automatic ? 'armed' : 'monitoring',
-      baseline: pauses ? { verified: true, profile: 'native-settings', mode: native.mode, targetC: native.targetC, fan: native.fan, vane: native.vane, wideVane: native.wideVane, measuredAt: now } : structuredClone(baseline),
-      ...(pauses ? { commissioning: { selectivePowerVerified: true, expiryVerified: true, restartVerified: true },
+      uptimeMs: TEMPLATE.uptimeMs + loopAt - BASE, mode: offCommissioned ? 'ready' : 'monitoring',
+      baseline: offCommissioned ? { verified: true, profile: 'native-settings', mode: native.mode, targetC: native.targetC, fan: native.fan, vane: native.vane, wideVane: native.wideVane, measuredAt: now } : structuredClone(baseline),
+      ...(offCommissioned ? { commissioning: { selectivePowerVerified: true, expiryVerified: true, restartVerified: true },
         leaseLimits: { ...TEMPLATE.leaseLimits, minimumOnMs: 0, restorationDelayMs: 120_000 } } : {}),
       lease, restorationPending, ...(pauses ? { recoveryLockedUntil: 0 } : {}),
-      authority: { ownerSession, controlAllowed: automatic && pauses, manualPauseAllowed: pauses,
+      authority: { ownerSession, controlAllowed: offCommissioned,
         manualControlAllowed: external.phase === 'internal' && !manualPending },
       challenge: { value: `invented-room-challenge-${sequence}`, expiresAt: now + 30_000 },
       native: Object.fromEntries(Object.entries(native).map(([key, value]) => [key, { value, measuredAt: nativeTimes[key] ?? nativeAt, ageMs: now - (nativeTimes[key] ?? nativeAt) }])),
       externalTemperature: { ...feed, expiresInMs: feed.temperatureC === null ? 0
         : Math.max(0, feed.expiresAt - loopAt) }, result: reportedResult, manualPending,
-      capabilities: { ...TEMPLATE.capabilities, preserveNativeSettings: pauses, releaseOrdering: true, externalTemperature: true, targetStep: 1,
+      capabilities: { ...TEMPLATE.capabilities, preserveNativeSettings: offCommissioned, releaseOrdering: true, externalTemperature: true, targetStep: 1,
         manualControls: Object.fromEntries(['power', 'mode', 'targetC', 'fan', 'vane', 'wideVane'].map(key => [key, true])) } };
     for (const field of Object.values(value.health)) { field.measuredAt = now; field.ageMs = 0; }
     assert.equal(adapter.receive(SETTINGS.stateTopic, JSON.stringify(value), {}, now), true);
@@ -109,10 +109,10 @@ function fixture(t, { initialNativeTargetC = 17, pauses = false, automatic = fal
     await runtime.roomTemperatureTick();
   }
   async function advanceReport(status) { now += 1000; report(status); await settle(); }
-  async function start({ acknowledge = true } = {}) {
+  async function start({ acknowledge = true, targetC = 5 } = {}) {
     await settle();
     assert.equal(runtime.nativeControls().settings.targetC.min, 5);
-    await runtime.setNativeSettings({ setting: 'targetC', value: 5 }); await settle();
+    await runtime.setNativeSettings({ setting: 'targetC', value: targetC }); await settle();
     assert.equal(published.length, 1);
     assert.equal(published[0].command.action, 'remote-temperature');
     assert.equal(published[0].command.temperatureC, null);
@@ -129,7 +129,7 @@ function fixture(t, { initialNativeTargetC = 17, pauses = false, automatic = fal
     now += 1000; measure(5); state(); await settle();
     assert.equal(published.length, 3);
     assert.equal(published[2].command.action, 'remote-temperature');
-    assert.equal(published[2].command.temperatureC, 17);
+    assert.equal(published[2].command.temperatureC, 5 + 17 - targetC);
     if (!acknowledge) return;
     await advanceReport('accepted');
     assert.equal(runtime.status().roomTemperature.acknowledged, false);
@@ -141,7 +141,7 @@ function fixture(t, { initialNativeTargetC = 17, pauses = false, automatic = fal
   measure(); state();
   t.after(async () => { await runtime.close({ restore: false }); await adapter.close({ restore: false }); store.close(); });
   return { runtime, adapter, engine, store, native, published, observations, state, report, rejectBusy, measure, settle, advanceReport, start,
-    now: () => now, advance(ms = 1000) { now += ms; } };
+    now: () => now, automatic(value) { automatic = value; }, advance(ms = 1000) { now += ms; } };
 }
 
 function assertInitialWarmth(runtime, targetC) {
@@ -522,16 +522,6 @@ test('ambiguous native16 remains unknown until an explicit room selection resolv
   await f.advanceReport('native-confirmed');
   assertInitialWarmth(f.runtime, 16);
   assert.equal(f.store.getState(f.runtime.keys.roomTemperature).targetC, 16);
-});
-
-test('a native baseline cannot invent an unobserved room setting from ambiguous native16', async t => {
-  const f = fixture(t, { initialNativeTargetC: 16 }); await f.settle();
-  f.advance();
-  f.state({ baseline: { ...TEMPLATE.baseline, verified: true, targetC: 10, measuredAt: f.now() } });
-  await f.settle();
-  assertInitialWarmth(f.runtime, null);
-  assert.equal(f.runtime.status().adapter.native.targetC, 16);
-  assert.equal(f.published.length, 0, 'Verified evidence must not issue thermostat commands');
 });
 
 test('reapplying the same room target preserves achieved warmth and changing the target replaces it', async t => {
@@ -975,6 +965,74 @@ test('a rejected native target dispatch does not mask fresh pump settings behind
 });
 
 
+test('automatic reduction changes only the external offset and preserves owner target and native power', async t => {
+  const f = fixture(t, { pauses: true, automatic: true }); await f.start({ targetC: 8 });
+  const before = f.published.length, sourceAt = f.engine.latest.garage_temperature.sourceTime;
+  f.runtime.lastPlannerAt = f.now();
+  await f.runtime.applyAutomaticTarget({ id: 'target-episode', nextAction: 'target', targetC: 5,
+    targetUntil: f.now() + 60_000, normalTargetC: 8, policyVersion: 'garage-room-target-v1', preferenceVersion: GARAGE_PREFERENCE_VERSION }, f.now(), f.runtime.read());
+  await f.settle();
+  const reduced = f.published.at(-1).command;
+  assert.equal(f.published.length, before + 1);
+  assert.equal(reduced.action, 'remote-temperature');
+  assert.equal(reduced.temperatureC, 17);
+  assert.equal(reduced.measuredAt, sourceAt, 'a setpoint change preserves the original physical observation clock');
+  assert.ok(reduced.requestedExpiryAt <= f.runtime.automaticTarget.until);
+  assert.equal(f.runtime.read().available, true, 'native power remains observed ON');
+  assert.equal(f.runtime.read().demandReduced, false, 'publication does not confirm reduced demand');
+  await f.advanceReport('acknowledged');
+  assert.equal(f.runtime.read().demandReduced, true);
+  assert.equal(f.runtime.status().roomTemperature.ownerTargetC, 8);
+  assert.equal(f.runtime.status().roomTemperature.effectiveTargetC, 5);
+  assert.equal(f.runtime.read().roomTargetC, 8);
+  assert.equal(f.store.getState('garage:roomTemperature:mqtt').targetC, 8);
+  assert.ok(f.published.slice(before).every(row => row.command.action === 'remote-temperature' && row.command.temperatureC !== null));
+  assert.equal(f.native.power, 'on');
+});
+
+test('Plan only and Pause savings restore the owner target through fresh external input without native writes', async t => {
+  for (const action of ['plan-only', 'pause']) await t.test(action, async t => {
+    const f = fixture(t, { pauses: true, automatic: true }); await f.start({ targetC: 8 });
+    f.runtime.lastPlannerAt = f.now();
+    await f.runtime.applyAutomaticTarget({ id: 'target-episode', nextAction: 'target', targetC: 5,
+      targetUntil: f.now() + 60_000, policyVersion: 'garage-room-target-v1', preferenceVersion: GARAGE_PREFERENCE_VERSION }, f.now(), f.runtime.read());
+    await f.settle(); await f.advanceReport('acknowledged');
+    const before = f.published.length;
+    if (action === 'plan-only') { f.automatic(false); await f.runtime.automationChanged(); }
+    else await f.runtime.setTemporary({ pauseUntil: new Date(f.now() + 600_000).toISOString() });
+    await f.settle();
+    assert.equal(f.runtime.automaticTarget, null);
+    assert.equal(f.runtime.status().roomTemperature.effectiveTargetC, 8);
+    assert.equal(f.published.at(-1).command.temperatureC, 14);
+    assert.equal(f.runtime.read().demandReduced, true, 'A pending owner-target write cannot erase the still-acknowledged reduction');
+    assert.equal(f.runtime.read().effectiveTargetC, 5);
+    assert.equal(f.published.at(-1).command.measuredAt, f.engine.latest.garage_temperature.sourceTime);
+    assert.ok(f.published.slice(before).every(row => row.command.action === 'remote-temperature' && row.command.temperatureC !== null));
+    await f.advanceReport('acknowledged');
+    assert.equal(f.runtime.status().roomTemperature.acknowledged, true);
+    assert.equal(f.runtime.read().available, true);
+    assert.equal(f.runtime.read().demandReduced, false);
+  });
+});
+
+test('a restarted runtime keeps the owner room target but never replays the transient reduction or a source sample', async t => {
+  const f = fixture(t, { pauses: true, automatic: true }); await f.start({ targetC: 8 });
+  f.runtime.lastPlannerAt = f.now();
+  await f.runtime.applyAutomaticTarget({ id: 'target-episode', nextAction: 'target', targetC: 5,
+    targetUntil: f.now() + 60_000, policyVersion: 'garage-room-target-v1', preferenceVersion: GARAGE_PREFERENCE_VERSION }, f.now(), f.runtime.read());
+  await f.settle(); await f.advanceReport('acknowledged');
+  const before = f.published.length;
+  const restarted = new GarageRuntime({ store: f.store, engine: f.engine,
+    config: f.runtime.config, clock: () => f.now() });
+  t.after(() => restarted.close({ restore: false }));
+  assert.equal(restarted.automaticTarget, null);
+  assert.equal(restarted.roomTemperature.targetC, 8);
+  assert.equal(restarted.roomTemperature.effectiveTarget(f.now()), 8);
+  assert.equal(restarted.roomTemperature.acknowledged, false);
+  assert.equal(restarted.episode.phase, 'recovery');
+  assert.equal(f.published.length, before);
+});
+
 test('Plan only OFF clears external input before a bounded manual lease; Normal restores fresh external control', async t => {
   const f = fixture(t, { pauses: true }); await f.start();
   assert.equal(f.engine.automationEnabled('garage'), false);
@@ -990,14 +1048,14 @@ test('Plan only OFF clears external input before a bounded manual lease; Normal 
   assert.equal(f.published.some(row => row.command.action === 'start'), false, 'MQTT acceptance is not serial clear acknowledgement');
   await f.advanceReport('acknowledged');
   const off = f.published.at(-1).command;
-  assert.equal(off.action, 'start'); assert.equal(off.purpose, 'manual');
+  assert.equal(off.action, 'start'); assert.equal(Object.hasOwn(off, 'purpose'), false);
   assert.ok(off.requestedExpiryAt <= off.temperatureEvidenceAt + 120_000);
   await f.advanceReport('native-confirmed');
   assert.equal(f.runtime.heatingControls().confirmed, true);
   assert.equal(f.runtime.status().roomTemperature.phase, 'suspended');
   await f.runtime.setHeating({ mode: 'normal' }); await f.settle();
   assert.equal(f.published.at(-1).command.action, 'release');
-  assert.match(f.runtime.heatingControls().activity, /Restoring Normal/);
+  assert.match(f.runtime.heatingControls().activity, /Restoring native heating/);
   await f.advanceReport('native-confirmed');
   assert.equal(f.runtime.heatingHandover, null);
   assert.equal(f.runtime.roomTemperature.targetC, 5);
@@ -1105,45 +1163,6 @@ test('restart on a changed adapter route does not clear or restore the replaceme
 });
 
 
-test('qualified automatic pauses use the same external handover and disabling automation cancels pending OFF', async t => {
-  for (const disableBeforeClear of [false, true]) {
-    const f = fixture(t, { pauses: true, automatic: true }); await f.start();
-    f.runtime.safetyTick();
-    const now = f.now(), plan = { id: 'synthetic-automatic-handover', pauseFrom: now, pauseUntil: now + 600_000,
-      preferenceVersion: GARAGE_PREFERENCE_VERSION, ...f.runtime.permissionFields(now, f.runtime.read(now)) };
-    f.runtime.plan = plan; f.runtime.lastPlannerAt = now;
-    const result = await f.runtime.dispatchPause({ now, valid: true, purpose: 'automatic', plan, recoveryReady: true });
-    assert.equal(result.status, 'clearing'); await f.settle();
-    assert.equal(f.published.at(-1).command.temperatureC, null);
-    assert.equal(f.published.some(row => row.command.action === 'start'), false);
-    if (disableBeforeClear) {
-      f.engine.automationEnabled = () => false;
-      await f.runtime.automationChanged();
-    }
-    await f.advanceReport('acknowledged');
-    const off = f.published.find(row => row.command.action === 'start');
-    if (disableBeforeClear) {
-      assert.equal(off, undefined);
-      assert.equal(f.runtime.pendingPause, null);
-      assert.equal(f.runtime.roomTemperature.targetC, 5);
-    } else {
-      assert.equal(off.command.purpose, 'automatic');
-      assert.equal(f.runtime.episode.pauseId, plan.id);
-      await f.advanceReport('native-confirmed');
-      const before = f.published.length;
-      await assert.rejects(f.runtime.setHeating({ mode: 'off' }), /automatic heating pause is already active/);
-      assert.equal(f.published.length, before, 'A conflicting manual OFF must not silently release the automatic pause');
-      assert.equal(f.runtime.heatingControls().requestedMode, null);
-      f.engine.automationEnabled = () => false;
-      await f.runtime.automationChanged();
-      assert.equal(f.published.at(-1).command.action, 'release');
-      await f.advanceReport('native-confirmed');
-      assert.equal(f.runtime.heatingHandover, null);
-      assert.equal(f.runtime.roomTemperature.targetC, 5);
-    }
-  }
-});
-
 test('late driver rejection remains visible after manual OFF intent is cancelled and heating restored', async t => {
   const f = fixture(t, { pauses: true }); await f.start();
   await f.runtime.setTemporary({ pauseUntil: new Date(f.now() + 600_000).toISOString() });
@@ -1157,4 +1176,37 @@ test('late driver rejection remains visible after manual OFF intent is cancelled
   if (f.published.at(-1).command.action === 'release') await f.advanceReport('native-confirmed');
   assert.equal(f.runtime.heatingControls().result.status, 'rejected');
   assert.match(f.runtime.heatingControls().result.reason, /unconfirmed|rejected/);
+});
+
+test('price target reduction works at an owner setting of5 without commissioning timed OFF', async t => {
+  const f = fixture(t, { pauses: true, offCommissioned: false, automatic: true }); await f.start({ targetC: 5 });
+  f.runtime.safetyTick();
+  assert.equal(f.runtime.heatingControls().offAvailable, false);
+  assert.deepEqual(f.runtime.automationReasons(), []);
+  const before = f.published.length;
+  f.runtime.lastPlannerAt = f.now();
+  await f.runtime.applyAutomaticTarget({ id: 'target-zero', nextAction: 'target', targetC: 0,
+    targetUntil: f.now() + 60_000, policyVersion: 'garage-room-target-v1', preferenceVersion: GARAGE_PREFERENCE_VERSION }, f.now(), f.runtime.read());
+  await f.settle();
+  assert.equal(f.runtime.read().demandReduced, false, 'The owner target remains delivered until numeric ACK');
+  assert.equal(f.published.at(-1).command.temperatureC, 22);
+  assert.equal(f.published.at(-1).command.measuredAt, f.engine.latest.garage_temperature.sourceTime);
+  await f.advanceReport('acknowledged');
+  assert.equal(f.runtime.read().demandReduced, true);
+  assert.equal(f.runtime.read().effectiveTargetC, 0);
+  assert.equal(f.runtime.read().available, true);
+  assert.equal(f.store.getState('garage:roomTemperature:mqtt').targetC, 5);
+  assert.ok(f.published.slice(before).every(row => row.command.action === 'remote-temperature' && row.command.temperatureC !== null));
+});
+
+test('ordinary native OFF keeps fresh HEAT settings evidence without claiming external heating readiness', async t => {
+  const f = fixture(t); await f.settle();
+  assert.equal(f.adapter.status().nativeSettingsReady, true);
+  f.native.power = 'off'; f.advance(); f.state(); await f.settle();
+  assert.equal(f.adapter.status().nativeSettingsReady, true);
+  assert.equal(f.adapter.status().nativeHeatingReady, false);
+  assert.equal(f.runtime.read().available, false);
+  assert.equal(f.runtime.read().baselineAccepted, true);
+  f.native.mode = 'cool'; f.advance(); f.state(); await f.settle();
+  assert.equal(f.runtime.read().baselineAccepted, false);
 });

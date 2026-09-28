@@ -220,27 +220,29 @@ test('finite contiguous forecasts continue beyond 600 observations without a dur
   assert.throws(() => forecastGarage(model, { now: start, steps: [{ ...steps[0], end: start + 5 * HOUR }] }), /bounded UTC intervals/);
 });
 
-test('a long pause cannot repay all recovery electricity inside a short cheap window or double-charge recorded input', () => {
+test('a long target reduction cannot repay all recovery electricity inside a short cheap window or double-charge recorded input', () => {
   const model = createGarageModel({ seedAt: start, roomTargetC: 10 });
-  const initial = { at: start, rearC: 10, frontC: 10, outdoorC: 10, available: false };
+  const initial = { at: start, rearC: 10, frontC: 10, outdoorC: 10, available: true,
+    demandReduced: true, roomTargetC: 10, effectiveTargetC: 0 };
   assert.equal(garageRecoveryHours(1), 3);
   assert.equal(garageRecoveryHours(24), 30);
   for (const recorded of [false, true]) {
     let account = startGarageAssessment(model, initial);
     for (let i = 1; i <= 54 * 4; i++) {
-      const hours = i / 4, wasOn = hours > 24;
+      const hours = i / 4, wasRecovering = hours > 24;
       account = updateGarageAssessment(account, model,
-        { ...initial, at: start + hours * HOUR, available: hours >= 24 },
-        { priceCtPerKwh: wasOn ? 5 : 300, recordedKwh: recorded ? wasOn ? .125 : 0 : null });
+        { ...initial, at: start + hours * HOUR, demandReduced: hours < 24, effectiveTargetC: hours < 24 ? 0 : 10 },
+        { priceCtPerKwh: wasRecovering ? 5 : 300, recordedKwh: recorded ? wasRecovering ? .125 : 0 : null });
       if (hours === 27) {
-        assert.equal(account.offHours, 24);
-        assert.equal(account.recoveryAllowanceKwh, 15);
-        assert.equal(account.recoveryAccountedKwh, 1.5);
+        assert.equal(account.reducedHours, 24);
+        assert.equal(Object.hasOwn(account, 'offHours'), false);
+        assert.equal(account.recoveryAllowanceKwh, recorded ? 15 : 11.25);
+        assert.equal(account.recoveryAccountedKwh, recorded ? 1.5 : 1.125);
         assert.equal(completeGarageAssessment(account), null, 'Three warm hours do not erase the remaining recovery allowance');
       }
     }
-    assert.equal(account.recoveryAccountedKwh, 15);
-    assert.equal(account.actualKwh, recorded ? 15 : 30, 'Qualified actual input includes any recovery and is charged only once');
+    assert.equal(account.recoveryAccountedKwh, recorded ? 15 : 11.25);
+    assert.equal(account.actualKwh, recorded ? 15 : 29.25, 'Modeled reduction retains powered idle; qualified actual input includes recovery only once');
     assert.ok(completeGarageAssessment(account));
   }
 });

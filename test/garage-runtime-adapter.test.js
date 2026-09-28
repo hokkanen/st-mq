@@ -1,3 +1,4 @@
+import { addSensorChange } from '../src/app/sensor-changes.js';
 import { knownGarageReserve } from './helpers/garage-reserve-fixture.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -53,7 +54,10 @@ function setup(t, { expensiveHours = 2, totalHours = 12, forecastOutdoorC = 0 } 
   function state(patch = {}) {
     const value = structuredClone(TEMPLATE);
     value.sequence = ++stateSequence; value.observedAt = now;
-    value.baseline.measuredAt = now; value.native.power.measuredAt = now;
+    value.baseline.measuredAt = now;
+    for (const [key, field] of Object.entries({ power: 'on', mode: 'heat', targetC: 17, fan: 'auto', vane: 3, wideVane: 'center' }))
+      value.native[key] = { value: field, measuredAt: now };
+    if (patch.native) patch = { ...patch, native: { ...value.native, ...patch.native } };
     for (const field of Object.values(value.health)) field.measuredAt = now;
     value.challenge = { value: `runtime-fixture-challenge-${stateSequence}`, expiresAt: now + 30_000 };
     adapter.receive('fixture/garage/state', JSON.stringify({ ...value, ...patch }), {}, now);
@@ -69,37 +73,36 @@ function setup(t, { expensiveHours = 2, totalHours = 12, forecastOutdoorC = 0 } 
   const prices = Array.from({ length: totalHours }, (_, i) => i < expensiveHours ? 100 : 1).map((value, i) => ({
     start: BASE + i * HOUR, end: BASE + (i + 1) * HOUR, allInCentsPerKWh: value }));
   const forecast = [{ start: BASE, end: BASE + totalHours * HOUR, outdoorC: forecastOutdoorC, issuedAt: BASE }];
+  async function start(duration = 2 * HOUR) {
+    await runtime.setTemporary({ pauseUntil: new Date(now + duration).toISOString() });
+    await runtime.setHeating({ mode: 'off' }); await flush();
+  }
   async function tick() { runtime.tick({ now, prices, forecast }); await runtime.dispatch; await flush(); }
   temperatures(); adapter.setConnected(true); state();
   t.after(async () => { await runtime.close({ restore: false }); await adapter.close({ restore: false }); store.close(); });
-  return { runtime, adapter, store, engine, commands, state, accepted, temperatures, tick,
+  return { runtime, adapter, store, engine, commands, state, accepted, temperatures, tick, start,
     at(value) { now = value; }, now: () => now, owner(value) { owner = value; } };
 }
 
-test('runtime planner starts and renews the real fixture consumer with one frozen episode and fixed endpoint', async t => {
-  const f = setup(t); await f.tick();
-  assert.equal(f.commands.length, 1);
-  assert.equal(f.commands[0].action, 'start');
-  const id = f.commands[0].episodeId, endpoint = f.commands[0].endpointAt, assessmentId = f.runtime.episode.id;
-  const frozen = structuredClone(f.runtime.episode.frozenModel);
-  assert.equal(f.runtime.episode.pauseId, id);
+test('explicit timed OFF renews the real consumer at a fixed endpoint without economic accounting', async t => {
+  const f = setup(t); await f.start();
+  assert.equal(f.commands.length, 1); assert.equal(f.commands[0].action, 'start');
+  const id = f.commands[0].episodeId, endpoint = f.commands[0].endpointAt;
+  assert.equal(f.runtime.episode, null);
   assert.equal(f.store.getState(f.runtime.keys.adapter).restorePending, true);
   for (let minute = 1; minute <= 5; minute++) {
     f.at(BASE + minute * MINUTE); f.temperatures(); f.accepted(f.commands.at(-1)); await f.tick();
   }
   assert.equal(f.commands.length, 6);
   assert.equal(f.commands[1].action, 'renew');
-  assert.equal(f.commands[1].episodeId, id);
-  assert.equal(f.commands[1].endpointAt, endpoint);
-  assert.deepEqual(f.runtime.episode.frozenModel, frozen);
-  assert.equal(f.runtime.episode.pauseId, id);
-  assert.equal(f.runtime.episode.id, assessmentId);
-  assert.ok(f.runtime.checkpoint.model.at > frozen.at);
+  assert.equal(f.commands[1].episodeId, id); assert.equal(f.commands[1].endpointAt, endpoint);
+  assert.equal(f.runtime.episode, null);
+  assert.equal(f.runtime.pauseStartsToday(), 0, 'Manual power operations are not price-saving cycles');
 });
 
 test('managed OFF holds transport-only probe loss to the original120s deadline without planner renewals', async t => {
   for (const signal of ['garage_temperature', 'garage_temperature_2']) await t.test(signal, async t => {
-    const f = setup(t); f.temperatures(7, 6.7, 5); await f.tick();
+    const f = setup(t); f.temperatures(7, 6.7, 5); await f.start();
     const start = f.commands.at(-1);
     assert.equal(start.action, 'start');
     assert.equal(start.requestedExpiryAt, BASE + 120_000);
@@ -124,7 +127,7 @@ test('managed OFF holds transport-only probe loss to the original120s deadline w
 
 test('managed OFF transport grace is revoked by a sensor fault or insufficient freeze reserve', async t => {
   for (const reason of ['sensor fault', 'exhausted front reserve', 'source replacement', 'colder outdoor evidence']) await t.test(reason, async t => {
-    const f = setup(t); f.temperatures(7, 6.7, 5); await f.tick(); const start = f.commands.at(-1);
+    const f = setup(t); f.temperatures(7, 6.7, 5); await f.start(); const start = f.commands.at(-1);
     f.at(BASE + 1_000); f.accepted(start); await flush();
     f.at(BASE + 10_000);
     f.engine.latest.garage_temperature = { ...f.engine.latest.garage_temperature, value: null,
@@ -169,7 +172,7 @@ test('a timed manual OFF uses the same transport grace and an explicit Normal ch
 });
 
 test('silent temperature reports preserve an existing OFF lease through the60s planner tick but never extend120s', async t => {
-  const f = setup(t); await f.tick(); const start = f.commands.at(-1);
+  const f = setup(t); await f.start(); const start = f.commands.at(-1);
   f.at(BASE + 1_000); f.accepted(start); await flush();
   f.at(BASE + 60_000); f.accepted(start); await f.tick();
   assert.equal(f.commands.length, 1);
@@ -181,7 +184,7 @@ test('silent temperature reports preserve an existing OFF lease through the60s p
 });
 
 test('invalid ingress blocks OFF immediately even when ordinary latest retains a valid older reading', async t => {
-  const f = setup(t); await f.tick(); const start = f.commands.at(-1);
+  const f = setup(t); await f.start(); const start = f.commands.at(-1);
   f.at(BASE + 1_000); f.accepted(start); await flush();
   const original = structuredClone(f.engine.latest.garage_temperature_2);
   f.at(BASE + 10_000);
@@ -195,7 +198,7 @@ test('invalid ingress blocks OFF immediately even when ordinary latest retains a
 
 test('OFF source identity is bound before the first acknowledgement arrives', async t => {
   for (const replacement of [false, true]) await t.test(replacement ? 'replacement' : 'transport loss', async t => {
-    const f = setup(t); f.temperatures(7, 6.7, 5); await f.tick(); const start = f.commands.at(-1);
+    const f = setup(t); f.temperatures(7, 6.7, 5); await f.start(); const start = f.commands.at(-1);
     f.at(BASE + 10_000);
     if (replacement) { f.temperatures(7, 6.7, 5); f.engine.latest.garage_temperature_2.device = 'invented-new-front'; }
     else f.engine.latest.garage_temperature_2 = { ...f.engine.latest.garage_temperature_2, value: null,
@@ -207,45 +210,32 @@ test('OFF source identity is bound before the first acknowledgement arrives', as
   });
 });
 
-test('runtime dispatch uses the same 2 C rule for open and unknown doors, even while charging', async t => {
+test('runtime price planning keeps the 2 C door rule without dispatching native power', async t => {
   for (const outdoor of [1.99, 2, 2.01]) for (const open of [true, null]) {
     await t.test(`${outdoor} C, door ${open === null ? 'unknown' : 'open'}`, async t => {
       const f = setup(t, { forecastOutdoorC: outdoor }), signal = 'garage_door1_open';
       f.runtime.config.connections = { equipment: { devices: [{ enabled: true, ownedSignals: [signal] }] } };
-      const reports = () => {
-        f.temperatures(7, 6.7, outdoor);
-        if (open !== null) f.engine.latest[signal] = { signal, source: 'mqtt-equipment', device: 'invented-door', value: 1,
-          sourceTime: f.now(), receivedAt: f.now(), quality: [], raw: { availabilityConfirmed: true, confirmedAt: f.now() } };
-        for (const phase of [1, 2, 3]) {
-          const name = `ev1_current_l${phase}`;
-          f.engine.latest[name] = { signal: name, source: 'easee', device: 'invented-charger', value: 16,
-            sourceTime: f.now(), receivedAt: f.now(), quality: [] };
-        }
-      };
-      reports(); await f.tick();
-      assert.equal(f.runtime.read().ev1Active, true);
-      assert.equal(f.runtime.read().doorFront, open);
-      if (outdoor < 2) {
-        assert.equal(f.runtime.plan.reason, 'garage-door-open-or-unknown-below-2c');
-        assert.equal(f.commands.length, 0);
-        return;
+      f.runtime.roomTemperature.targetC = 10;
+      f.temperatures(7, 6.7, outdoor);
+      if (open !== null) f.engine.latest[signal] = { signal, source: 'mqtt-equipment', device: 'invented-door', value: 1,
+        sourceTime: f.now(), receivedAt: f.now(), quality: [], raw: { availabilityConfirmed: true, confirmedAt: f.now() } };
+      for (const phase of [1, 2, 3]) {
+        const name = `ev1_current_l${phase}`;
+        f.engine.latest[name] = { signal: name, source: 'easee', device: 'invented-charger', value: 16,
+          sourceTime: f.now(), receivedAt: f.now(), quality: [] };
       }
-      assert.equal(f.runtime.plan.nextAction, 'pause');
-      assert.equal(f.commands.at(-1).action, 'start');
-      const endpoint = f.commands.at(-1).endpointAt;
-      f.at(BASE + MINUTE); reports(); f.accepted(); await f.tick();
-      assert.equal(f.commands.at(-1).action, 'renew');
-      assert.equal(f.commands.at(-1).endpointAt, endpoint);
-      f.at(BASE + MINUTE + 1000); reports();
-      f.engine.latest.garage_temperature_2.value = null;
-      f.accepted(); await flush();
-      assert.equal(f.commands.at(-1).action, 'release', 'Charging and warm weather never replace required probe evidence');
+      await f.tick();
+      assert.equal(f.runtime.read().ev1Active, true); assert.equal(f.runtime.read().doorFront, open);
+      if (outdoor < 2) assert.equal(f.runtime.plan.reason, 'garage-door-open-or-unknown-below-2c');
+      else assert.equal(f.runtime.plan.nextAction, 'target');
+      assert.equal(f.commands.length, 0, 'Price planning never sends power commands');
+      assert.equal(f.runtime.read().available, true);
     });
   }
 });
 
 test('exact external sensor expiry releases an active lease; native ON and health cannot replace front evidence', async t => {
-  const f = setup(t); await f.tick();
+  const f = setup(t); await f.start();
   f.at(BASE + MINUTE); f.temperatures(); f.accepted(); await f.tick();
   f.at(BASE + 3 * MINUTE); f.runtime.lastPlannerAt = f.now();
   f.engine.latest.garage_temperature.sourceTime = f.now();
@@ -264,30 +254,21 @@ test('exact external sensor expiry releases an active lease; native ON and healt
   assert.equal(f.commands.length, count);
 });
 
-test('missing HA door feedback blocks a cold start and a later outage still obeys independent probe protection', async t => {
+test('missing HA door feedback blocks cold price planning; manual OFF still obeys independent probe protection', async t => {
   const f = setup(t), signal = 'garage_door1_open';
+  f.runtime.roomTemperature.targetC = 10;
   f.runtime.config.connections = { equipment: { devices: [{ enabled: true, ownedSignals: [signal] }] } };
   await f.tick();
   assert.equal(f.runtime.read().doorFront, null);
-  assert.equal(f.runtime.read().available, true);
   assert.equal(f.runtime.plan.reason, 'garage-door-open-or-unknown-below-2c');
-  assert.equal(f.commands.length, 0, 'A replacement host missing HA status keeps normal heating available');
-
-  f.engine.latest[signal] = { signal, source: 'mqtt-equipment', device: 'invented-door', value: 0,
-    sourceTime: BASE, receivedAt: BASE, quality: [], raw: { availabilityConfirmed: true, confirmedAt: BASE } };
-  await f.tick();
-  assert.equal(f.commands.at(-1).action, 'start');
-  f.at(BASE + MINUTE); f.temperatures();
-  f.engine.latest[signal] = { ...f.engine.latest[signal], value: null, receivedAt: f.now(), quality: ['bridge-offline'],
-    raw: { availabilityConfirmed: false } };
-  f.accepted(); await f.tick();
-  assert.equal(f.runtime.read().doorFront, null);
-  assert.equal(f.commands.at(-1).action, 'renew', 'Door loss alone does not cancel an already protected pause');
-  assert.equal(f.runtime.episode.accounting.qualified, false, 'An outage cannot establish clean savings evidence');
-
+  assert.equal(f.commands.length, 0);
+  f.runtime.roomTemperature.targetC = null;
+  await f.start();
+  f.at(BASE + MINUTE); f.temperatures(); f.accepted(); await f.tick();
+  assert.equal(f.commands.at(-1).action, 'renew');
   f.at(BASE + MINUTE + 1000); f.temperatures();
   f.engine.latest.garage_temperature_2 = { ...f.engine.latest.garage_temperature_2,
-    value: null, quality: ['mqtt-disconnected'] };
+    value: null, quality: ['sensor-unavailable'] };
   f.accepted(); await flush();
   assert.equal(f.commands.at(-1).action, 'release');
   assert.equal(f.runtime.protection.safeToPause, false);
@@ -295,7 +276,7 @@ test('missing HA door feedback blocks a cold start and a later outage still obey
 });
 
 test('runtime persistence failure requests release through the real consumer and retains the saved obligation', async t => {
-  const f = setup(t); await f.tick(); f.at(BASE + MINUTE); f.temperatures(); f.accepted(); await f.tick();
+  const f = setup(t); await f.start(); f.at(BASE + MINUTE); f.temperatures(); f.accepted(); await f.tick();
   f.at(f.now() + 1000); f.temperatures(); f.accepted(); await flush();
   const original = f.store.setState;
   f.store.setState = () => { throw new Error('runtime fixture persistence failure'); };
@@ -310,7 +291,7 @@ test('runtime persistence failure requests release through the real consumer and
 });
 
 test('runtime authority loss and duplicate close cannot send competing ON or resume a paused episode', async t => {
-  const f = setup(t); await f.tick(); f.at(BASE + MINUTE); f.temperatures(); f.accepted(); await f.tick();
+  const f = setup(t); await f.start(); f.at(BASE + MINUTE); f.temperatures(); f.accepted(); await f.tick();
   f.owner(false); f.runtime.safetyTick(); await flush();
   await f.runtime.close({ restore: true }); await f.adapter.close({ restore: true });
   await f.runtime.close({ restore: true }); await f.adapter.close({ restore: true });
@@ -319,44 +300,31 @@ test('runtime authority loss and duplicate close cannot send competing ON or res
   assert.equal(f.adapter.status().phase, 'restoring');
 });
 
-test('runtime and acquisition graceful close request release once and keep accounting recovery separate', async t => {
-  const f = setup(t); await f.tick(); f.at(BASE + MINUTE); f.temperatures(); f.accepted(); await f.tick();
+test('runtime and acquisition graceful close release manual OFF once without economic accounting', async t => {
+  const f = setup(t); await f.start(); f.at(BASE + MINUTE); f.temperatures(); f.accepted(); await f.tick();
   f.at(f.now() + 1000); f.temperatures(); f.accepted(); await flush();
   await f.runtime.close({ restore: true }); await f.adapter.close({ restore: true });
   assert.equal(f.commands.filter(command => command.action === 'release').length, 1);
-  assert.equal(f.runtime.episode.phase, 'recovery');
+  assert.equal(f.runtime.episode, null);
   assert.equal(f.adapter.status().restorePending, true);
   assert.equal(f.store.getState(f.runtime.keys.adapter).restorePending, true);
 });
 
-test('recovery blocks another pause and preserves frozen accounting and unrecovered front debt', async t => {
-  const f = setup(t); await f.tick(); const first = f.commands[0];
-  const frozen = structuredClone(f.runtime.episode.frozenModel), assessmentId = f.runtime.episode.id;
+test('unresolved manual restoration prevents another OFF and retains the original obligation', async t => {
+  const f = setup(t); await f.start(); const first = f.commands[0];
   f.at(BASE + MINUTE); f.temperatures(); f.accepted(first); await f.tick();
-  f.at(BASE + 2 * MINUTE); f.temperatures(7, 6.2); f.accepted(first);
-  await f.runtime.release('fixture-early-release'); const release = f.commands.at(-1);
-  assert.equal(release.action, 'release');
-  f.accepted(release); await f.tick();
-  assert.equal(f.runtime.episode.phase, 'recovery');
-  assert.equal(f.adapter.status().restorePending, false);
-  for (let minute = 3; minute <= 33; minute++) {
-    f.at(BASE + minute * MINUTE); f.temperatures(7, 6.2); f.state(); await f.tick();
-    if (f.commands.at(-1).action === 'start') break;
-  }
-  const later = f.commands.at(-1);
-  assert.equal(later.action, 'release');
-  assert.equal(f.commands.filter(command => command.action === 'start').length, 1);
-  assert.equal(f.runtime.plan.reason, 'normal-heating-recovery');
-  assert.equal(f.runtime.episode.id, assessmentId);
-  assert.equal(f.runtime.episode.pauseId, first.episodeId);
-  assert.deepEqual(f.runtime.episode.frozenModel, frozen);
-  assert.ok(f.runtime.status().episode.heatDebt.frontC > .25, 'new permission does not erase front recovery debt');
+  await f.runtime.release('fixture-early-release');
+  const count = f.commands.length;
+  await assert.rejects(f.runtime.setHeating({ mode: 'off' }), /return to Normal|not ready|restor/i);
+  assert.equal(f.commands.length, count);
+  assert.equal(f.adapter.status().restorePending, true);
+  assert.equal(f.runtime.episode, null);
+  assert.equal(f.store.getState(f.runtime.keys.adapter).episode.id, first.episodeId);
 });
-
 
 test('a multi-day endpoint uses short host permissions and still restores on sensor expiry', async t => {
   const f = setup(t, { expensiveHours: 60, totalHours: 140, forecastOutdoorC: 5 });
-  await f.tick();
+  await f.start(60 * HOUR);
   const first = f.commands.at(-1);
   assert.equal(first.action, 'start');
   assert.equal(first.endpointAt, BASE + 60 * HOUR);
@@ -369,6 +337,16 @@ test('a multi-day endpoint uses short host permissions and still restores on sen
   assert.ok(renewal.requestedExpiryAt <= f.now() + 3 * MINUTE);
   f.at(BASE + 3 * MINUTE); f.runtime.lastPlannerAt = f.now();
   f.accepted(renewal); await flush();
+  assert.equal(f.commands.at(-1).action, 'release');
+  assert.equal(f.adapter.status().restorePending, true);
+});
+
+test('a committed sensor replacement cancels timed OFF without waiting for another native report', async t => {
+  const f = setup(t); await f.start();
+  f.at(BASE + 1000); f.accepted(); await flush();
+  addSensorChange(f.store, 'mqtt', { signal: 'garage_temperature', reason: 'replacement', requestId: 'manual-source-replaced' }, f.now());
+  f.runtime.syncCorrections(); await flush();
+  assert.equal(f.runtime.activeManual(), null);
   assert.equal(f.commands.at(-1).action, 'release');
   assert.equal(f.adapter.status().restorePending, true);
 });

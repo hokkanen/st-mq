@@ -144,6 +144,41 @@ test('changing low target clears and selects17 again, then requires a new source
   f.advance(); f.measure(7); await f.tick(); assert.equal(f.sent.at(-1).temperatureC, 14);
 });
 
+test('an automatic effective target changes only the offset and retains the owner setting and source clock', async () => {
+  const f = fixture(8); await f.start(); const before = f.sent.length, originalAt = f.observation().sourceTime;
+  const until = f.now() + 45_000;
+  f.controller.setEffectiveTarget(5, until, f.now());
+  await f.tick();
+  assert.equal(f.sent.length, before + 1);
+  assert.equal(f.sent.at(-1).temperatureC, 17);
+  assert.equal(f.sent.at(-1).measuredAt, originalAt);
+  assert.equal(f.sent.at(-1).requestedExpiryAt, until);
+  assert.equal(f.controller.targetC, 8);
+  assert.equal(f.controller.prepared, true);
+  assert.equal(f.controller.status(f.observation(), f.now()).acknowledged, false);
+  f.ack(); await f.tick();
+  assert.equal(f.controller.status(f.observation(), f.now()).effectiveTargetC, 5);
+  f.controller.setEffectiveTarget(null, null, f.now()); await f.tick();
+  assert.equal(f.sent.at(-1).temperatureC, 14);
+  assert.equal(f.sent.at(-1).measuredAt, originalAt);
+  assert.ok(f.sent.slice(before).every(command => Number.isFinite(command.temperatureC)));
+});
+
+test('expired or invalid automatic target choices cannot replace the owner room target', async () => {
+  const f = fixture(8); await f.start();
+  for (const target of [-.5, 8, 9, 5.25, '5'])
+    assert.throws(() => f.controller.setEffectiveTarget(target, f.now() + 30_000, f.now()), /bounded lower/);
+  assert.throws(() => f.controller.setEffectiveTarget(5, f.now(), f.now()), /bounded lower/);
+  const until = f.now() + 30_000;
+  f.controller.setEffectiveTarget(5, until, f.now());
+  f.advance(30_000);
+  assert.equal(f.controller.effectiveTarget(f.now()), 8);
+  assert.equal(f.controller.status(f.observation(), f.now()).targetSource, 'owner');
+  f.controller.select(7, f.now());
+  assert.equal(f.controller.automaticTarget, null);
+  assert.equal(f.controller.targetC, 7);
+});
+
 test('ordinary power and native targets wait for acknowledged internal-sensor handover', async () => {
   for (const request of [{ setting: 'power', value: 'off' }, { setting: 'targetC', value: 19 }]) {
     const f = fixture(); await f.start(); f.controller.cancel(request, f.now());

@@ -1,4 +1,4 @@
-Completed 2026-09-28 — Independent automation and coherent manual heating
+Implemented 2026-09-28 — Independent automation and coherent manual heating
 - Replace the global operating mode with durable, device-bound Home and Garage
   Plan only / Automatic choices. Header identifies Live, Simulation or History
   viewer. Charging and Caravan retain independent existing automation controls.
@@ -6,24 +6,43 @@ Completed 2026-09-28 — Independent automation and coherent manual heating
   remove global status/mode gates from current producers, consumers, tests and
   deployment examples. F1/F3/F4/F5 reviewed across configuration, authority,
   persistence, UI and documentation; feature defaults remain Plan only.
-- Bound explicit Garage Normal/OFF independently of automatic arming. Persist
-  external-temperature handover: confirmed clear before OFF, native ON before
-  fresh external input resumes. Preserve device identity, expiry, protection,
-  restart restoration, native supersession and late failure evidence.
+- Automatic Garage price savings adjust a bounded external room target; native
+  power remains ON. Retain the durable normal room choice independently. A lower
+  default temporary target permits reductions even from the 5°C room setting.
+  Estimate powered consumption, possible target maintenance and recovery rather
+  than treating the period as zero-power OFF. Protection separately assumes no heat.
+- Explicit Garage timed OFF works independently of automatic permission. Save
+  room intent, clear external input, then request OFF; restore native ON before
+  resuming the target with fresh measurements. Never replay old samples. Preserve
+  expiry, device binding, late failure evidence and independent native supersession.
 - Replace obsolete low-heat/i-save gates with current ordinary native settings
   and three installed recovery proofs. Current protocol rejects retired payload
   fields. Companion adapter implements and tests software release ordering through
   queued, partial and completed OFF transactions with UART drain/reconnect.
+- Keep manual/automatic policy only in ST-MQ. The Pill has one `pauseEnabled`
+  capability gate with common qualification for all bounded pauses; remove the
+  wire purpose and distinct manual/automatic pause permissions. Ordinary native
+  `manualEnabled` remains a separate device-command capability. Align adapter,
+  host consumer, replica/UI projections, tests and current configuration docs.
 - Show manual progress and unavailable reasons beside buttons. Home selection
   follows current device state; command confirmation uses dispatch time and
   distinguishes an uncertain receipt from a subsequent observed relay state.
-- Validate 4,100 routine application tests (one optional external Tuya Local
-  source test skipped), all 28 extended tests including 19 compiled-driver
-  interoperability cases, production build and desktop/mobile browser checks in
-  both themes. Companion adapter: 251 JavaScript and 96 Python tests plus build.
-  Documentation links and diff checks pass. No deployment, installed resource
-  qualification or household commands. Active checkouts remain untouched; changes
-  are isolated in feature worktrees for coordinated application/adapter rollout.
+- Final validation: 4,131 routine application tests pass (one optional upstream
+  source check skipped), 9 other extended checks and all 24 compiled Pill cases
+  pass. Final production build, full Garage browser smoke, 64 focused UI checks
+  and 24 final-asset browser scenarios pass. Companion adapter passes 258
+  JavaScript and 96 Python tests. Current database startup accepts a private copy
+  without resetting or migrating production history.
+- Physical Pill build b40545e9b8ec55b8 passes exact-source verification, its
+  174-check isolated device self-test, maximum-identifier admitted OFF/cancel,
+  confirmed OFF/expiry, supervisor recovery after stopping the driver during OFF,
+  and normal/reduced/normal external input while native power remains ON. No
+  unexpected restart or out-of-memory failure was observed. Earlier failed
+  candidates remain documented in the adapter's historical qualification record.
+- Tonight's owner-authorized one-task F5 exception permits supervised testing without
+  recorded freeze reserve and a transient one-minute native ON minimum. No
+  production protection setting or historical temperature evidence is weakened.
+
 
 Completed 2026-09-28 — Restore Charger 1 card from fresh native connection evidence
 - Separate the observed OCPP physical session from confirmed transaction control.
