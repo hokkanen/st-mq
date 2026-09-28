@@ -170,6 +170,15 @@ fragments; complete short cycles receive their own checks. A dip followed by a
 return to the initial temperature cannot score zero error. Coefficient eligibility
 requires independent observed variation and sensitivity, not merely many rows.
 
+Garage's brief probe communication tolerance follows that same
+distinction. A live-process cache can preserve an already acknowledged control
+permission for external temperature or an accepted managed OFF pause for the
+unused part of its original 120-second measurement lifetime,
+subject to both locations' freeze-protection reserve. The recorded availability
+gap remains unknown to learning, and conservative outage assessment cannot
+credit warming. Neither reconnecting nor restarting repairs that history. See
+the [external-temperature contract](garage-adapter.md#permanent-external-room-temperature).
+
 Three kinds of evidence remain distinct:
 
 1. **Conditional thermal validation** supplies observed heat input and checks

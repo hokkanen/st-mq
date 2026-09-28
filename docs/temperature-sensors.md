@@ -70,6 +70,26 @@ restart-recovery path.
 These settings apply to the three indoor MQTT topics. Garage has a two-minute
 expiry for either its single Shelly or MQTT connection; outdoor limits remain separate.
 
+Garage control keeps a separate, nonpersistent copy of
+each qualified front/rear measurement. Only explicit communication loss
+(`device-offline` or `mqtt-disconnected`) may mark it as held for the unused
+portion of its original **120-second** lifetime. The NULL availability transition
+still replaces the live observation and ends recorded coverage. Holding never
+repairs a historical gap, authorizes learning or credits warming. Invalid or
+out-of-range reports, a changed source route and an explicit sensor-change
+boundary revoke the held evidence. Host restart discards it. Reconnection alone,
+retained packets and old cached timestamps cannot make it fresh again.
+
+This hold can preserve only an already acknowledged pump external-temperature
+permission or an accepted active managed OFF pause, with both locations'
+freeze-protection reserve still sufficient.
+The requested deadline is at most 120 seconds after the older supporting report,
+including the interruption. New feed and managed OFF admission or renewal require
+connected, usable evidence. A transport-only probe outage alone does not request
+ON or clear external input; invalid evidence, expired permission and protection
+failures still do. See the
+[external-temperature contract](garage-adapter.md#permanent-external-room-temperature).
+
 The installed room sensors have a 70-minute maximum delay for unchanged values.
 ST-MQ's five-minute grace makes the expiry exactly 75 minutes after the last
 genuine report. Age alone produces no earlier warning. At expiry the room is

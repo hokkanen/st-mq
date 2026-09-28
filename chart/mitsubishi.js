@@ -50,6 +50,31 @@ export function mitsubishiValue(setting, value, unit = mitsubishiSettings[settin
   return `${formatted}${unit && unit !== 'boolean' && unit !== 'raw' ? ` ${unit === 'degC' ? '°C' : unit}` : ''}`;
 }
 
+function roomControlReason(reason) {
+  if (typeof reason !== 'string' || !reason) return null;
+  if (!/^[a-z][a-z0-9:_-]*$/i.test(reason)) return reason.replace(/\.$/, '');
+  const location = reason.startsWith('rear:') ? 'Garage rear' : reason.startsWith('front:') ? 'Garage front' : null;
+  const code = location ? reason.slice(reason.indexOf(':') + 1) : reason;
+  const explanation = {
+    'rear-temperature-unavailable': 'Garage rear temperature is unavailable',
+    'rear-temperature-stale': 'Waiting for a fresh Garage rear temperature',
+    'missing-temperature': 'A required temperature reading is missing',
+    'unqualified-or-stale-temperature': 'Waiting for a fresh, usable temperature reading',
+    'heating-response-bound-unavailable': 'The time needed to restore useful heating is not established',
+    'external-permission-expired': 'The previous temperature permission has expired',
+    'thermal-reserve-exhausted': 'The remaining heat reserve is too small for external control',
+    'restoration-margin-exhausted': 'Heating must recover before the protection margin is reached',
+    'initializing-reserve': 'Waiting for measured warming to establish the protection reserve',
+    'exposure-history-uncertain': 'Waiting for temperature evidence to reestablish the protection reserve',
+    'protection-settings-changed': 'Waiting for fresh evidence under the changed protection settings',
+    'held-exposure-anchor-mismatch': 'The previous temperature evidence no longer supports holding external control',
+    'exposure-state-invalid': 'Usable freeze-protection history is unavailable',
+    'external-protection-unavailable': 'Freeze-protection assessment is unavailable',
+    'fresh-temperature-reserve-required': 'Fresh temperature readings and sufficient heat reserve are required',
+  }[code] ?? 'Waiting for usable temperature and device evidence';
+  return location ? `${location}: ${explanation[0].toLowerCase()}${explanation.slice(1)}` : explanation;
+}
+
 /** The persistent room target remains separate from pump readback. */
 export function mitsubishiRoomTemperature(garage = {}) {
   const control = garage.roomTemperature;
@@ -57,27 +82,36 @@ export function mitsubishiRoomTemperature(garage = {}) {
   if (garage.readOnly === true || control.readOnly === true) return { value: mitsubishiValue('targetC', control.targetC),
     basis: 'Recorded room setting', active: false, progress: 'Live control is unavailable in this view.',
     detail: `Saved room setting: ${mitsubishiValue('targetC', control.targetC)}. This is recorded application intent, not confirmation of the pump’s current target or operating state. Changes and external-temperature control are disabled here.` };
-  const active = control.phase === 'active' && control.acknowledged === true;
+  const held = control.phase === 'holding' || control.held === true;
+  const active = !held && control.phase === 'active' && control.acknowledged === true;
   const basis = active ? 'Garage rear · Active'
-    : control.phase === 'preparing' || control.phase === 'active' ? 'External sensor · Preparing'
+    : held ? 'External sensor · Held'
+      : control.phase === 'preparing' || control.phase === 'active' ? 'External sensor · Preparing'
       : control.phase === 'clearing' ? 'External sensor · Clearing' : 'External sensor · Fallback';
   const nativeTarget = mitsubishiValue('targetC', control.nativeTargetC ?? 17);
   const progress = active ? 'Garage rear control is active.'
-    : control.phase === 'preparing' || control.phase === 'active' ? 'Waiting for the pump to confirm Garage rear control.'
+    : held ? 'Holding the previous temperature permission; current control is unconfirmed.'
+      : control.phase === 'preparing' || control.phase === 'active' ? 'Waiting for the pump to confirm Garage rear control.'
       : control.phase === 'clearing' ? 'Returning to the pump’s internal sensor.'
         : 'External temperature control is unavailable.';
   const detail = [`Room setting: ${mitsubishiValue('targetC', control.targetC)}. Retained until you change it, including after restart. ${progress}`,
     `Garage rear is the room sensor. External control uses a native pump target of ${nativeTarget}; the controller adds ${mitsubishiValue('targetC', control.offsetC)} to the rear reading to obtain the lower room setting.`,
     `Garage rear: ${mitsubishiValue('targetC', control.sourceC)}.${clock(control.measuredAt) ? ` Measured ${clock(control.measuredAt)}.` : ''} Supplied temperature: ${mitsubishiValue('targetC', control.suppliedC)}.`,
-    control.reason ? `Control status: ${words(control.reason)}.` : '',
+    control.reason ? `Control status: ${roomControlReason(control.reason)}.` : '',
+    control.protection?.allowed === false && control.protection.reason
+      ? `Freeze protection: ${roomControlReason(control.protection.reason)}.` : '',
+    held ? 'No new permission is issued during this interruption. The pump may already have returned to internal sensing; fresh device state must confirm its behavior.' : '',
+    held && clock(garage.adapter?.externalTemperature?.continuation?.expiresAt)
+      ? `The previous permission ends by ${clock(garage.adapter.externalTemperature.continuation.expiresAt)}. Reconnecting cannot extend it.` : '',
     control.phase === 'clearing' ? 'Waiting for internal-sensor acknowledgement before the next control step.'
       : !active && control.phase !== 'preparing' && control.phase !== 'active' ? 'The driver returns to its internal temperature sensor when the current permission expires.' : '',
     `Before enabling or renewing external control, the controller confirms fresh pump readings show ON, HEAT and ${nativeTarget}. If that check fails, renewals stop and the current permission expires. Internal temperature control then uses the pump's current settings.`,
-    `Missing or stale sensor readings stop the external feed without erasing your room setting. Fan and vane changes preserve that setting. Power off or another operating mode pauses external heating without turning the pump back on. Choosing a room setting of 16 °C or higher replaces the lower target and uses the pump’s internal sensor.`].filter(Boolean).join('\n\n');
+    'Both Garage front and rear must support the freeze-protection margin and the time needed for useful heating to recover. External permission ends no later than two minutes after the older supporting measurement; protection can require an earlier return to internal sensing.',
+    'A brief connection interruption may hold only the already acknowledged temperature within its original deadline. Missing or stale sensor readings never extend it or erase your room setting. Fan and vane changes preserve that setting. Power off or another operating mode pauses external heating without turning the pump back on. Choosing a room setting of 16 °C or higher replaces the lower target and uses the pump’s internal sensor.'].filter(Boolean).join('\n\n');
   return { value: mitsubishiValue('targetC', control.targetC), basis, detail, active, progress };
 }
 
-export const mitsubishiTemperatureControlHelp = 'Your room setting stays in effect until changed, including after restart. With no saved choice, the controller reads the current pump setting.\n\nBelow 16 °C, Garage rear is the room sensor. The pump stays set to 17 °C, and an offset is added to the supplied temperature to maintain your lower room setting. Settings of 16 °C or higher replace the lower target and use normal pump control.\n\nExternal control requires fresh sensor readings and confirmed pump settings: power on, heating mode and 17 °C. If these checks fail, renewals stop; the pump returns to its internal sensor when the current permission expires. The room setting remains remembered. Fan and vane changes preserve it; powering off or changing mode does not allow the controller to turn heating back on.';
+export const mitsubishiTemperatureControlHelp = 'Your room setting stays in effect until changed, including after restart. With no saved choice, the controller reads the current pump setting.\n\nBelow 16 °C, Garage rear is the room sensor. The pump stays set to 17 °C, and an offset is added to the supplied temperature to maintain your lower room setting. Settings of 16 °C or higher replace the lower target and use normal pump control.\n\nExternal control requires fresh front and rear readings, sufficient freeze-protection reserve and confirmed pump settings: power on, heating mode and 17 °C. Permission ends within two minutes of the older supporting measurement, or earlier if protection requires. A brief connection interruption can hold the previously acknowledged temperature but cannot renew it. Fresh device state must confirm whether external sensing continued.\n\nIf the checks fail, renewals stop and the pump returns to its internal sensor. The room setting remains remembered. Fan and vane changes preserve it; powering off or changing mode does not allow the controller to turn heating back on.';
 
 /** Present reported settings and diagnostic measurements without promoting
  * provisional telemetry to control evidence or interpreting raw units. */

@@ -18,12 +18,14 @@ driver, exact private MQTT topics and commissioning gates. The default synthetic
 - Provide actual accepted renewal, expiry, native minimum ON and worst-case
   useful-heating restoration-delay bounds. ST-MQ tracks independent front/rear
   thermal reserves and renews only from its one-minute planner tick. The consumer
-  now requests no more than three minutes of permission from the older supporting
+  now requests no more than two minutes of permission from the older supporting
   temperature report, with a shorter deadline when reserve requires it. The
   protocol must accept earlier deadlines and expose accepted expiry. A request
   awaiting acknowledgement may already be active and counts as outstanding
   permission. Document real timing rather than treating these fixture tests as
-  evidence of installed firmware behaviour.
+  evidence of installed firmware behaviour. A transport-only probe outage can
+  hold an accepted active pause within its original deadline and qualified reserve,
+  but cannot authorize a start or renewal. No new grace period begins at outage.
 - Publish driver progress separately from device MQTT presence and fresh pump
   communication. Local network-loss recovery depends on a healthy powered Pill
   and usable serial path. Preserve restoration obligations before any possible
@@ -48,25 +50,50 @@ temperature plus `17 − requested room setting`:
 a 5°C setting adds 12°C. This uses neither Mitsubishi i-save nor an owner
 assumption about mode persistence.
 
-The driver must advertise the capability and enable its local feature flag.
-Remote values are 8–39.5°C in 0.5°C steps, based on original usable reports less
-than 90 seconds old. Each external enable or renewal requires ON, HEAT and 17°C
-readbacks under the existing 30-second freshness requirement. A failed native
-check stops host renewals and lets the existing lease expire, with no additional
-host checks or native writes between renewals. This guard requires no Pill driver
-changes or new lease limits; existing local cleanup behavior remains intact.
+The driver must advertise the capability, enable its local feature flag, and
+report `refreshMs: 10000` with `maxSourceAgeMs: 180000`. The old 90-second
+advertisement is unsupported. Remote values are 8–39.5°C in 0.5°C steps. ST-MQ
+requires original usable front and rear reports younger than 120 seconds and
+requests expiry at most 120 seconds after the older report. The wire sample
+retains the rear measurement's original timestamp; the driver must honor an
+earlier absolute `requestedExpiryAt` within its 180-second ceiling. Both probes'
+thermal reserve must cover this deadline and the driver's useful-heating delay;
+the reserve can shorten permission further. These checks are independent of the
+host's economic enablement and protection approval. Each external enable or
+renewal also requires ON, HEAT and 17°C readbacks under the existing 30-second
+freshness requirement. A failed native check stops renewals; protection can
+request earlier clearing without overriding an explicit manual power/mode choice.
+
+Communication-only sensor outages can hold an existing acknowledged sample,
+never admit or renew one, while its original deadline and both protection reserves
+remain valid. This uses live in-memory evidence and does not fill historical gaps
+or infer warmth. Invalid evidence and source changes do not qualify. Pill MQTT
+loss remains a driver decision: immediate cleanup is supported, and ST-MQ does
+not assume a future driver preserves external sensing offline. If it does, it
+must continue honoring the original shorter host deadline locally. After
+reconnection, fresh non-retained same-boot/session/owner state must acknowledge
+the exact sample before it is considered confirmed again. Reboot, ownership
+change, completed cleanup or expiration cannot revive old permission. An
+uncertain in-flight request may be resolved by its correlated ACK or by fresh
+exact acknowledged state and a new unused challenge; otherwise cleanup remains
+required. Reconnect never adds a new 120-second allowance.
 Lost, unaccepted numeric renewals can be retried after 10 seconds only when fresh
 same-session state still acknowledges the exact previous, unexpired sample and
 provides a new unused challenge that fences the earlier envelope. The retry uses
 ordinary admission checks and original source timestamps; accepted writes are
 never reclassified this way. This requires no firmware or wire-format change.
-Missing or stale source evidence ends the feed; internal-sensor control uses
+Expired or invalid source evidence ends the feed; internal-sensor control uses
 current native settings, HEAT at 17°C if unchanged. A saved target resumes after host restart
 only with fresh independent source evidence and native setup. Serial clearing
 of the override must finish before ordinary native settings or a managed pause
-proceed. This host support does not establish physical frost protection or new
+proceed. This host support does not certify physical frost protection or new
 low-heat commissioning evidence. Economic pauses continue to require the
-independently verified native baseline and installed restoration evidence.
+independently verified native baseline and installed restoration evidence. Both
+managed OFF and external temperature now request expiry within 120 seconds of
+the older supporting probe report, despite the driver's 180-second ceiling.
+Both can tolerate transport-only probe loss for the remainder of existing
+permission when reserve allows, and neither admits or renews from held evidence.
+Invalid readings or protection failures still require prompt cleanup/restoration.
 
 The release-ordering commissioning result is an additional host requirement from
 A04. It must cover delayed delivery and serial-in-flight OFF, renewed permissions,

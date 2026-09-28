@@ -195,8 +195,9 @@ test('Selected native garage ignores unselected MQTT topics and never creates an
   let now = initial;
   const engine = new Engine({ store, config, clock: () => now });
   const client = new EventEmitter();
+  const publications = [];
   client.subscribe = (topic, options, done) => done();
-  client.publish = (topic, payload, options, done) => done();
+  client.publish = (topic, payload, options, done) => { publications.push({ topic, payload }); done(); };
   client.end = (force, options, done) => done();
   const acquisition = await startMqtt({ engine, store, config, connect: () => client });
   t.after(async () => {
@@ -206,6 +207,10 @@ test('Selected native garage ignores unselected MQTT topics and never creates an
     store.close(); rmSync(directory, { recursive: true, force: true });
   });
   client.emit('connect');
+  const identification = publications.map(row => { try { return JSON.parse(row.payload); } catch { return null; } })
+    .find(row => row?.method === 'Shelly.GetDeviceInfo');
+  client.emit('message', `${identification.src}/rpc`, Buffer.from(JSON.stringify({ id: identification.id,
+    dst: identification.src, src: 'invented-direct-gateway', result: { id: 'invented-direct-gateway', gen: 2 } })));
   client.emit('message', 'invented-direct-garage/status/temperature:100', Buffer.from('{"id":100,"tC":11}'));
   client.emit('message', 'invented-ha/garage', Buffer.from('18.5'));
   assert.equal(engine.latest.garage_temperature.value, 11);
@@ -218,6 +223,64 @@ test('Selected native garage ignores unselected MQTT topics and never creates an
   assert.equal(store.observations({ signal: 'garage_temperature' }).length, 1);
   client.emit('offline');
   assert.equal(engine.latest.garage_temperature.value, null);
+});
+
+test('Garage temperature routes bind the native Shelly identity and preserve it on transport loss', t => {
+  const f = fixture(t, [garage]); f.capture.setConnected(true);
+  f.status({ 'switch:0': { output: false }, 'temperature:100': { tC: 9 } });
+  const original = f.observations.findLast(row => row.signal === 'garage_temperature');
+  assert.match(original.raw.temperatureRouteSignature, /^[a-f0-9]{64}$/);
+  assert.equal(JSON.stringify(original).includes('fixture-invented-garage'), false);
+  f.now(initial + 10_000); f.capture.receive('invented-garage/online', 'false');
+  assert.equal(f.observations.findLast(row => row.signal === 'garage_temperature').raw.temperatureRouteSignature,
+    original.raw.temperatureRouteSignature);
+  const count = f.observations.length;
+  f.capture.receive('invented-garage/status/temperature:100', '{"id":100,"tC":10}');
+  assert.equal(f.observations.length, count, 'A topic publication without authenticated native identity cannot grant permission');
+  f.now(initial + 20_000); f.capture.receive('invented-garage/online', 'true');
+  f.reply(f.publications.findLast(row => JSON.parse(row.payload).method === 'Shelly.GetDeviceInfo'),
+    { id: 'invented-replacement-gateway', gen: 2 });
+  const changed = f.observations.findLast(row => row.signal === 'garage_temperature');
+  assert.equal(changed.value, null); assert(changed.quality.includes('sensor-identity-changed'));
+  assert.notEqual(changed.raw.temperatureRouteSignature, original.raw.temperatureRouteSignature);
+  f.status({ 'switch:0': { output: false }, 'temperature:100': { tC: 10 } });
+  assert.equal(f.observations.findLast(row => row.signal === 'garage_temperature').value, 10);
+  assert.equal(f.observations.findLast(row => row.signal === 'garage_temperature').raw.temperatureRouteSignature,
+    changed.raw.temperatureRouteSignature);
+});
+
+test('future Shelly temperature notifications explicitly invalidate live evidence', t => {
+  const f = fixture(t, [garage]); f.capture.setConnected(true);
+  f.status({ 'switch:0': { output: false }, 'temperature:100': { tC: 9 } });
+  f.now(initial + 10_000);
+  f.capture.receive('invented-garage/events/rpc', JSON.stringify({ src: 'fixture-invented-garage', method: 'NotifyStatus',
+    params: { ts: (initial + 60_000) / 1000, 'temperature:100': { id: 100, tC: 10 } } }));
+  const reading = f.observations.findLast(row => row.signal === 'garage_temperature');
+  assert.equal(reading.value, null); assert(reading.quality.includes('invalid-source-time'));
+  assert.equal(f.capture.status().devices[0].available, false);
+});
+
+test('a failed identity check invalidates a temperature already held through transport loss', t => {
+  const f = fixture(t, [garage]); f.capture.setConnected(true);
+  f.status({ 'switch:0': { output: false }, 'temperature:100': { tC: 9 } });
+  f.now(initial + 10_000); f.capture.receive('invented-garage/online', 'false');
+  f.now(initial + 20_000); f.capture.receive('invented-garage/online', 'true');
+  f.reply(f.publications.findLast(row => JSON.parse(row.payload).method === 'Shelly.GetDeviceInfo'),
+    { id: '!', gen: 2 });
+  const reading = f.observations.findLast(row => row.signal === 'garage_temperature');
+  assert.equal(reading.value, null); assert(reading.quality.includes('device-identity-unavailable'));
+});
+
+test('an RPC device error is recorded even after a transport-only outage already made readings null', t => {
+  const f = fixture(t, [garage]); f.capture.setConnected(true);
+  f.status({ 'switch:0': { output: false }, 'temperature:100': { tC: 9 } });
+  f.now(initial + 10_000); f.capture.receive('invented-garage/online', 'false');
+  f.now(initial + 20_000); f.capture.receive('invented-garage/online', 'true');
+  const request = JSON.parse(f.publications.findLast(row => JSON.parse(row.payload).method === 'Shelly.GetDeviceInfo').payload);
+  f.capture.receive(`${request.src}/rpc`, JSON.stringify({ id: request.id, dst: request.src,
+    error: { code: -1, message: 'Synthetic device error' } }));
+  const reading = f.observations.findLast(row => row.signal === 'garage_temperature');
+  assert.equal(reading.value, null); assert(reading.quality.includes('device-rpc-error'));
 });
 
 test('A late readback from a timed-out command cannot confirm a newer command with the same output', async t => {

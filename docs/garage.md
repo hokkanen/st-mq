@@ -90,22 +90,40 @@ required clear/write/confirm/re-enable sequence. Power off and non-heating modes
 retain the choice without forcing heating back on. Choosing a room temperature
 of 16°C or higher replaces the lower target and selects native internal sensing.
 
-Remote temperature values use the driver's 8–39.5°C range and 0.5°C steps. Only
-original, usable sensor reports less than 90 seconds old can renew the feed;
-repeated or retained reports do not refresh them. Each external enable or renewal
-also requires ON, HEAT and 17°C readbacks using the existing 30-second freshness
-requirement. A failed native check stops renewals and lets the existing lease
-expire, without new checks or native writes between renewals. The Pill driver is
-unchanged. Missing or stale source evidence ends the feed. The pump's internal
-sensor then controls using its current native settings, HEAT at 17°C if unchanged.
-If a published renewal is lost, a newer live acknowledgement of the previous
-sample and a fresh device challenge permit a retry after 10 seconds, while that
-previous sample remains valid. Retries retain the original sensor clock and all
-native-setting checks; accepted or ambiguous writes still require cleanup.
+Remote temperature values use the driver's 8–39.5°C range and 0.5°C steps. The
+current driver advertises a **180-second ceiling**; the host requests at most
+**120 seconds from the older front/rear measurement**. Both measurements must be
+younger than two minutes to admit or renew external control, and the thermal
+reserve can require an earlier deadline. Repeated, retained or cached reconnect
+reports cannot refresh these clocks. Each enable or renewal also requires ON,
+HEAT and 17°C readbacks using the existing 30-second freshness requirement.
+A failed native check stops renewals and lets the existing permission expire.
+
+Front and rear must each have qualified freeze-protection reserve covering the
+remaining permission and the delay until heating becomes useful. These checks
+apply even when economic control or its protection approval is disabled. Missing
+thermal history, an unknown heating delay or insufficient reserve blocks the
+external override; either location can require earlier clearing. The pump's
+internal sensor then uses the current native settings, normally HEAT at 17°C.
+Manual power and mode choices are respected.
+
+Brief communication interruptions may retain only the previously acknowledged
+sample within its original deadline, provided the conservative reserve assessment
+still permits it. The UI shows **Held** and leaves current control unconfirmed.
+No new permission is issued from disconnected or held readings, and gaps remain
+visible in temperature history and learning. Invalid readings, source changes
+and expired evidence are not connection grace. When the Pill reconnects, fresh
+same-session state must establish whether the sample survived; a driver that
+cleared it immediately is respected. A driver that retains it must still enforce
+the shorter host expiry locally. Reconnection cannot extend the deadline.
+If a published renewal is lost, a fresh acknowledgement of the previous sample
+and a new device challenge can permit a retry after 10 seconds. Exact fresh ACK
+can also resolve a request made uncertain by MQTT loss. Remaining uncertainty,
+ownership changes or reboot require cleanup; retries never reset sensor clocks.
 The retained room target resumes after a host restart only once fresh source
 evidence and native setup are established again. The override is cleared through
 the serial path before ordinary native settings or a managed pause can proceed.
-This control path does not establish physical frost protection or qualify the
+These software checks do not certify physical frost protection or qualify the
 installation's low-heat behavior.
 
 The `shelly-cn105` driver supports ordinary Mitsubishi settings and selective
@@ -152,14 +170,19 @@ There is no fitted door coefficient or invented heat-loss calculation. Affected
 intervals are excluded from clean cooling/reference/validation evidence.
 
 When HA or its door bridge is unavailable, unknown doors use the same 2°C rule
-as open doors. An existing pause can continue
-with fresh independent probes and sufficient reserve. Losing either required
-probe revokes OFF permission; a working command connection requests restoration.
-If the host or MQTT broker fails, the commissioned Pill must restore ON at its
-local permission expiry, at most three minutes after the supporting temperature
-measurement. Restart or promotion never resumes the former host's OFF permission.
-External room-temperature control similarly stops renewal and falls back to the
-pump's internal sensor after its 90-second source deadline. These software
+as open doors. An existing accepted pause can also survive a brief transport-only
+probe outage while both conservative reserve estimates still cover its original
+permission and useful-heating delay. Such an outage alone does not request ON.
+Held readings cannot start or renew a pause. Invalid readings, changed source,
+insufficient reserve or expired evidence request restoration immediately.
+
+Both managed OFF and external-temperature control request local expiry no later
+than **120 seconds after the older supporting front/rear measurement**, shortened
+when protection requires. Both retain the driver's **180-second ceiling** while
+requesting the shorter host deadline. No extra grace starts at disconnect or
+reconnect. If the host or broker fails, the commissioned Pill must honor that
+original local expiry. Restart or promotion never resumes the former host's OFF
+permission. These software
 fallbacks require a working, powered Pill and serial path; native ON alone is
 not proof of useful heat or physical frost protection.
 

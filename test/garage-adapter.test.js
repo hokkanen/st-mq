@@ -39,7 +39,7 @@ function fixture(options = {}) {
     at(value) { now = value; }, owner(value) { owner = value; },
     plan: { id: 'fixture-episode-1', pauseFrom: BASE, pauseUntil: BASE + 1_200_000 },
     start(plan = this.plan) { return adapter.plannerTick({ now, valid: true,
-      plan: { temperatureEvidenceAt: now, permissionExpiresAt: now + 180_000, ...plan }, recoveryReady: true }); } };
+      plan: { temperatureEvidenceAt: now, permissionExpiresAt: now + 120_000, ...plan }, recoveryReady: true }); } };
 }
 
 test('real MQTT fixture observations can never arm live control, including forged configuration', async () => {
@@ -88,7 +88,7 @@ test('only valid planner ticks renew, with the same episode and immutable author
   assert.equal(f.sent[1].action, 'renew');
   assert.equal(f.sent[1].episodeId, f.sent[0].episodeId);
   assert.equal(f.sent[1].endpointAt, f.sent[0].endpointAt);
-  assert.equal(f.sent[1].requestedExpiryAt, BASE + 240_000);
+  assert.equal(f.sent[1].requestedExpiryAt, BASE + 180_000);
   assert.equal(f.sent[1].sequence, 2);
   assert.notEqual(f.sent[1].challenge, f.sent[0].challenge);
   f.at(BASE + 240_000); f.accepted(f.sent[1]);
@@ -328,10 +328,10 @@ test('late asynchronous START publication success cannot replace the newer relea
 
 test('accepted shorter endpoints remain binding and overlong reported leases force unresolved release', async () => {
   const shorter = fixture(); await shorter.start(); shorter.at(BASE + 1000);
-  shorter.accepted(shorter.sent[0], { lease: { episodeId: shorter.plan.id, expiresAt: BASE + 180_000, endpointAt: BASE + 700_000 } });
+  shorter.accepted(shorter.sent[0], { lease: { episodeId: shorter.plan.id, expiresAt: BASE + 120_000, endpointAt: BASE + 700_000 } });
   assert.equal(shorter.adapter.status().episode.endpointAt, BASE + 700_000);
   shorter.at(BASE + 60_000); shorter.accepted(shorter.sent[0], {
-    lease: { episodeId: shorter.plan.id, expiresAt: BASE + 180_000, endpointAt: BASE + 700_000 } });
+    lease: { episodeId: shorter.plan.id, expiresAt: BASE + 120_000, endpointAt: BASE + 700_000 } });
   await shorter.start();
   assert.equal(shorter.sent.at(-1).endpointAt, BASE + 700_000);
   const longer = fixture(); await longer.start(); longer.at(BASE + 1000);
@@ -375,8 +375,8 @@ test('a potentially accepted renewal remains reserved through publication delay,
   const renewing = f.start();
   assert.equal(f.sent.at(-1).action, 'renew');
   const requestedExpiry = f.sent.at(-1).requestedExpiryAt;
-  assert.equal(requestedExpiry, BASE + 240_000);
-  assert.equal(f.adapter.status().episode.leaseExpiresAt, BASE + 180_000);
+  assert.equal(requestedExpiry, BASE + 180_000);
+  assert.equal(f.adapter.status().episode.leaseExpiresAt, BASE + 120_000);
   assert.equal(f.adapter.status().outstandingPermissionExpiresAt, requestedExpiry);
   f.adapter.setConnected(false);
   assert.equal(f.adapter.status().outstandingPermissionExpiresAt, requestedExpiry);
@@ -388,12 +388,12 @@ test('a potentially accepted renewal remains reserved through publication delay,
 
 test('causal acceptance of a shorter local lease replaces the requested upper bound', async () => {
   const f = fixture(); await f.start();
-  assert.equal(f.adapter.status().outstandingPermissionExpiresAt, BASE + 180_000);
-  f.at(BASE + 1000); f.accepted(f.sent[0], { lease: {
-    episodeId: f.plan.id, endpointAt: f.plan.pauseUntil, expiresAt: BASE + 120_000,
-  } });
   assert.equal(f.adapter.status().outstandingPermissionExpiresAt, BASE + 120_000);
-  assert.equal(f.adapter.snapshot().outstandingPermissionExpiresAt, BASE + 120_000);
+  f.at(BASE + 1000); f.accepted(f.sent[0], { lease: {
+    episodeId: f.plan.id, endpointAt: f.plan.pauseUntil, expiresAt: BASE + 60_000,
+  } });
+  assert.equal(f.adapter.status().outstandingPermissionExpiresAt, BASE + 60_000);
+  assert.equal(f.adapter.snapshot().outstandingPermissionExpiresAt, BASE + 60_000);
 });
 
 test('completed OFF commands cannot inflate the reserve of a later shorter episode', async () => {

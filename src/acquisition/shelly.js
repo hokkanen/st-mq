@@ -67,8 +67,21 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
       publishTopic('RPC requests', 'rpc'), { role: 'RPC replies', topic: replyTopic, direction: 'subscribe' },
     ])];
   };
+  const temperatureSignature = (device, signal) => {
+    if (!['garage_temperature', 'garage_temperature_2'].includes(signal)) return null;
+    if (device.generation > 1 && !device.identity) return device.readings[signal]?.temperatureRouteSignature ?? null;
+    return createHash('sha256').update(JSON.stringify({ brokerIdentity, nativeIdentity: device.identity,
+      target: equipmentSignature({ ...device, readings: device.customReadings, protocol: 'shelly', connection: `shelly:${device.prefix}` }),
+      signal })).digest('hex');
+  };
   const emit = (device, signal, value, unit, at, quality = [], raw = {}) => {
     if (scalar(at) && scalar(device.readings[signal]?.observedAt) && at < device.readings[signal].observedAt) return;
+    // A topic alone cannot bind a Garage permission to a native Shelly. Obtain
+    // GetDeviceInfo first; the subsequent status request supplies the reading.
+    if (value !== null && ['garage_temperature', 'garage_temperature_2'].includes(signal)
+      && device.generation > 1 && !device.identity) return;
+    const signature = temperatureSignature(device, signal);
+    if (signature) raw = { ...raw, temperatureRouteSignature: signature };
     const definition = definitions(device).find(row => row.signal === signal);
     const observation = { source: 'shelly-mqtt', device: device.role, signal, value, unit,
       sourceTime: at, receivedAt: engine.clock(), quality,
@@ -86,7 +99,8 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
     device.available = false; device.state = null;
     for (const waiter of [...device.waiters]) reception.afterCommit(() => waiter.reject(error('relay readback unavailable')));
     for (const check of [...device.checks]) reception.afterCommit(() => check.finish('unavailable'));
-    if (!previous && Object.values(device.readings).every(row => row.value === null)) return;
+    // A sensor/identity fault must still supersede a prior transport-only gap.
+    if (!previous && Object.values(device.readings).every(row => row.value === null && row.quality?.includes(reason))) return;
     for (const definition of definitions(device)) if (definition.required || device.readings[definition.signal])
       emit(device, definition.signal, null, definition.unit, null, [reason], { usableForControl: false });
   };
@@ -230,7 +244,7 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
     signature(id) { const device = devices.find(row => row.id === id); return device && (!needsIdentity(device) || device.identity) ? createHash('sha256').update(JSON.stringify({ brokerIdentity, nativeIdentity: device.identity, target: equipmentSignature({ ...device, readings: device.customReadings, protocol: 'shelly', connection: `shelly:${device.prefix}` }) })).digest('hex') : null; },
     setConnected(value) {
       connected = value;
-      for (const device of devices) { device.connected = false; clearIdentity(device); if (!value) unavailable(device, 'mqtt-disconnected'); }
+      for (const device of devices) { device.connected = false; if (!value) unavailable(device, 'mqtt-disconnected'); clearIdentity(device); }
       if (value) { for (const device of devices) { identify(device); device.lastPollAt = -Infinity; } api.tick(engine.clock()); }
       else { for (const request of requests.values()) request.complete?.('unavailable'); requests.clear(); }
     },
@@ -249,7 +263,7 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
       })) return true;
       const suffix = device ? topic.slice(device.prefix.length + 1) : '';
       if (suffix === 'online') {
-        if (body === 'false') { device.connected = false; clearIdentity(device); unavailable(device, 'device-offline'); }
+        if (body === 'false') { device.connected = false; unavailable(device, 'device-offline'); clearIdentity(device); }
         else if (body === 'true' && !packet.retain) { device.connected = true; clearIdentity(device); reception.afterCommit(() => { identify(device); requestStatus(device).catch(() => {}); }); }
         return true;
       }
@@ -278,6 +292,12 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
             && (result.gen === undefined || [2, 3, 4].includes(result.gen))
             && frame.src === result.id;
           request.device.identity = validIdentity ? result.id : null;
+          for (const definition of definitions(request.device)) {
+            const previous = request.device.readings[definition.signal]?.temperatureRouteSignature;
+            const current = temperatureSignature(request.device, definition.signal);
+            if (previous && (!validIdentity || current !== previous)) emit(request.device, definition.signal, null, definition.unit,
+              null, [validIdentity ? 'sensor-identity-changed' : 'device-identity-unavailable'], { usableForControl: false });
+          }
           reception.afterCommit(() => {
             request.complete?.(validIdentity ? 'received' : 'invalid');
             // Initial status can win the identity RPC race and be rejected.
@@ -311,7 +331,8 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
         if (!params || typeof params !== 'object') return true;
         if (params.ts != null) {
           at = Math.round(params.ts * 1000);
-          if (!Number.isSafeInteger(at) || at > receivedAt || receivedAt - at > (maxAge(device) || settings.maxAgeMs)) return true;
+          if (!Number.isSafeInteger(at) || at > receivedAt) { unavailable(device, 'invalid-source-time'); return true; }
+          if (receivedAt - at > (maxAge(device) || settings.maxAgeMs)) return true;
         }
         const full = frame.method === 'NotifyFullStatus', switchValue = params[`${device.kind === 'door' ? 'input' : 'switch'}:${device.switchId}`];
         const temperatureValue = params[`temperature:${device.temperatureId}`];

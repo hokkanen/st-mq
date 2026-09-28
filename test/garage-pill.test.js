@@ -36,7 +36,7 @@ function fixture(options = {}) {
   }
   const start = () => adapter.plannerTick({ now, valid: true, recoveryReady: true,
     plan: { id: 'invented-pause', pauseFrom: BASE, pauseUntil: BASE + 900_000,
-      temperatureEvidenceAt: now, permissionExpiresAt: now + 180_000 } });
+      temperatureEvidenceAt: now, permissionExpiresAt: now + 120_000 } });
   return { adapter, state, published, saved, observations, start,
     at(value) { now = value; }, owner(value) { owner = value; } };
 }
@@ -98,7 +98,7 @@ test('fresh armed state claims an unowned commissioned adapter once and waits fo
   assert.equal(command.action, 'start');
   assert.equal(command.sequence, claim.command.sequence + 1);
   assert.ok(f.saved.some(row => row.restorePending && row.lastCommand.status === 'pending'));
-  assert.equal(command.requestedExpiryAt, BASE + 181_000);
+  assert.equal(command.requestedExpiryAt, BASE + 121_000);
 });
 
 test('retained, expired, foreign-owned, disconnected and inactive state cannot claim the pump', async () => {

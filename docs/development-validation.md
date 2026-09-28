@@ -88,6 +88,7 @@ node scripts/browser-access-smoke.js
 node scripts/browser-equipment-smoke.js
 node scripts/browser-home-controls-smoke.js
 node scripts/browser-garage-smoke.js
+node scripts/browser-garage-smoke.js --temperature-hold-only
 node scripts/browser-fullscreen-smoke.js
 node scripts/browser-chart-views-smoke.js
 node scripts/browser-selectors-smoke.js

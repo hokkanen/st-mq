@@ -9,6 +9,7 @@ import { createGarageModel, updateGarageModel } from '../src/garage/model.js';
 import { appendGarageEntry } from '../src/garage/learning.js';
 import { createGarageAdapter, createGarageSimulationTransport } from '../src/garage/adapter.js';
 import { assignGaragePlanningEvidence } from './helpers/garage-model-fixture.js';
+import { rememberGarageTemperature } from '../src/garage/temperature-evidence.js';
 
 const HOUR = 3_600_000, MINUTE = 60_000, BASE = 1_800_000_000_000;
 const TEMPLATE = JSON.parse(readFileSync(new URL('./fixtures/garage-provisional-state.json', import.meta.url)));
@@ -94,6 +95,116 @@ test('runtime planner starts and renews the real fixture consumer with one froze
   assert.equal(f.runtime.episode.pauseId, id);
   assert.equal(f.runtime.episode.id, assessmentId);
   assert.ok(f.runtime.checkpoint.model.at > frozen.at);
+});
+
+test('managed OFF holds transport-only probe loss to the original120s deadline without planner renewals', async t => {
+  for (const signal of ['garage_temperature', 'garage_temperature_2']) await t.test(signal, async t => {
+    const f = setup(t); f.temperatures(7, 6.7, 5); await f.tick();
+    const start = f.commands.at(-1);
+    assert.equal(start.action, 'start');
+    assert.equal(start.requestedExpiryAt, BASE + 120_000);
+    f.at(BASE + 1_000); f.accepted(start); await flush();
+    f.at(BASE + 10_000);
+    f.engine.latest[signal] = { ...f.engine.latest[signal], value: null, sourceTime: f.now(), receivedAt: f.now(),
+      quality: ['missing', 'mqtt-disconnected'], raw: { timeBasis: 'availability-transition', usableForControl: false } };
+    f.accepted(start); await f.tick();
+    assert.equal(f.commands.length, 1);
+    assert.equal(f.runtime.status().temperatureHold.active, true);
+    assert.equal(f.runtime.protection.safeToPause, false, 'held evidence is never new pause permission');
+    assert.equal(f.runtime.read()[signal === 'garage_temperature' ? 'rearC' : 'frontC'], null);
+    f.at(BASE + 60_000); f.accepted(start); await f.tick();
+    assert.equal(f.commands.length, 1, 'planner cadence cannot renew a held OFF lease');
+    f.at(BASE + 119_999); f.accepted(start); await f.tick();
+    assert.equal(f.commands.length, 1);
+    f.at(BASE + 120_000); f.accepted(start); await f.tick();
+    assert.equal(f.commands.at(-1).action, 'release');
+    assert.equal(f.runtime.status().temperatureHold.active, false);
+  });
+});
+
+test('managed OFF transport grace is revoked by a sensor fault or insufficient freeze reserve', async t => {
+  for (const reason of ['sensor fault', 'exhausted front reserve', 'source replacement', 'colder outdoor evidence']) await t.test(reason, async t => {
+    const f = setup(t); f.temperatures(7, 6.7, 5); await f.tick(); const start = f.commands.at(-1);
+    f.at(BASE + 1_000); f.accepted(start); await flush();
+    f.at(BASE + 10_000);
+    f.engine.latest.garage_temperature = { ...f.engine.latest.garage_temperature, value: null,
+      sourceTime: f.now(), receivedAt: f.now(), quality: ['missing', 'device-offline'],
+      raw: { timeBasis: 'availability-transition', usableForControl: false } };
+    f.accepted(start); await f.tick();
+    assert.equal(f.commands.length, 1);
+    f.at(BASE + 11_000);
+    if (reason === 'sensor fault') f.engine.latest.garage_temperature = {
+      ...f.engine.latest.garage_temperature, sourceTime: f.now(), receivedAt: f.now(), quality: ['sensor-unavailable'] };
+    if (reason === 'exhausted front reserve') Object.assign(f.runtime.exposure.locations.front,
+      { estimatedC: 0, energyJPerM: 0 });
+    if (reason === 'source replacement') {
+      f.temperatures(7, 6.7, 5); f.engine.latest.garage_temperature_2.device = 'invented-replacement';
+    }
+    if (reason === 'colder outdoor evidence') f.engine.latest.outdoor_temperature = {
+      ...f.engine.latest.outdoor_temperature, value: -30, sourceTime: f.now(), receivedAt: f.now() };
+    f.accepted(start); await f.tick();
+    assert.equal(f.commands.at(-1).action, 'release');
+  });
+});
+
+test('a timed manual OFF uses the same transport grace and an explicit Normal choice ends it', async t => {
+  const f = setup(t); f.temperatures(7, 6.7, 5);
+  await f.runtime.setTemporary({ pauseUntil: new Date(BASE + HOUR).toISOString() });
+  await f.runtime.setHeating({ mode: 'off' });
+  const start = f.commands.at(-1);
+  assert.equal(start.action, 'start');
+  assert.equal(start.requestedExpiryAt, BASE + 120_000);
+  f.at(BASE + 1_000); f.accepted(start); await flush();
+  f.at(BASE + 10_000);
+  f.engine.latest.garage_temperature_2 = { ...f.engine.latest.garage_temperature_2, value: null,
+    sourceTime: f.now(), receivedAt: f.now(), quality: ['missing', 'device-offline'],
+    raw: { timeBasis: 'availability-transition', usableForControl: false } };
+  f.accepted(start); await f.tick();
+  assert.equal(f.runtime.activeManual().mode, 'off');
+  assert.equal(f.runtime.status().temperatureHold.active, true);
+  assert.equal(f.commands.length, 1);
+  await f.runtime.setHeating({ mode: 'normal' });
+  assert.equal(f.commands.at(-1).action, 'release');
+  assert.equal(f.runtime.status().temperatureHold.active, false);
+});
+
+test('silent temperature reports preserve an existing OFF lease through the60s planner tick but never extend120s', async t => {
+  const f = setup(t); await f.tick(); const start = f.commands.at(-1);
+  f.at(BASE + 1_000); f.accepted(start); await flush();
+  f.at(BASE + 60_000); f.accepted(start); await f.tick();
+  assert.equal(f.commands.length, 1);
+  assert.equal(f.runtime.status().temperatureHold.active, true);
+  f.at(BASE + 119_999); f.accepted(start); await f.tick();
+  assert.equal(f.commands.length, 1);
+  f.at(BASE + 120_000); f.accepted(start); await f.tick();
+  assert.equal(f.commands.at(-1).action, 'release');
+});
+
+test('invalid ingress blocks OFF immediately even when ordinary latest retains a valid older reading', async t => {
+  const f = setup(t); await f.tick(); const start = f.commands.at(-1);
+  f.at(BASE + 1_000); f.accepted(start); await flush();
+  const original = structuredClone(f.engine.latest.garage_temperature_2);
+  f.at(BASE + 10_000);
+  rememberGarageTemperature(f.engine.garageTemperatureEvidence, { ...original, value: 100,
+    sourceTime: f.now(), receivedAt: f.now(), quality: ['invalid_value'] }, f.now());
+  f.accepted(start); await f.tick();
+  assert.deepEqual(f.engine.latest.garage_temperature_2, original);
+  assert.equal(f.commands.at(-1).action, 'release');
+  assert.equal(f.runtime.pausePermission(f.now(), f.runtime.read()).allowed, false);
+});
+
+test('OFF source identity is bound before the first acknowledgement arrives', async t => {
+  for (const replacement of [false, true]) await t.test(replacement ? 'replacement' : 'transport loss', async t => {
+    const f = setup(t); f.temperatures(7, 6.7, 5); await f.tick(); const start = f.commands.at(-1);
+    f.at(BASE + 10_000);
+    if (replacement) { f.temperatures(7, 6.7, 5); f.engine.latest.garage_temperature_2.device = 'invented-new-front'; }
+    else f.engine.latest.garage_temperature_2 = { ...f.engine.latest.garage_temperature_2, value: null,
+      sourceTime: f.now(), receivedAt: f.now(), quality: ['missing', 'device-offline'],
+      raw: { timeBasis: 'availability-transition', usableForControl: false } };
+    f.accepted(start); await f.tick();
+    assert.equal(f.commands.at(-1).action, replacement ? 'release' : 'start');
+    assert.equal(f.runtime.status().temperatureHold.active, !replacement);
+  });
 });
 
 test('runtime dispatch uses the same 2 C rule for open and unknown doors, even while charging', async t => {

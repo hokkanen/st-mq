@@ -9,8 +9,9 @@ The default `fixture` driver remains an isolated, read-only consumer of the
 Automatic pause control requires fresh device evidence: armed mode, matching native
 profile, essential capabilities and installed selective-power, local-expiry and
 restart-restoration and release-ordering results. Low-heat and baseline verification remain required.
-Permanent external temperature control is a separate ordinary control feature;
-it does not replace commissioning evidence or authorize economic pauses.
+Permanent external temperature control is a separate ordinary control feature
+with its own two-location freeze-protection assessment. It does not replace
+commissioning evidence or authorize economic pauses.
 
 ## Connection and evidence
 
@@ -123,7 +124,7 @@ boot, adapter session, host ownership, episode, monotonic command sequence,
 one-use challenge and a short deadline. A renewal uses the original episode and
 can never enlarge its authorized endpoint. The accepted fixture lease limits
 provide maximum lease, renewal interval, minimum ON lock and restoration delay.
-The host additionally caps permission at three minutes from the older supporting
+The host additionally caps permission at two minutes from the older supporting
 rear/front temperature report, with earlier expiry when the thermal reserve
 requires it. A stale report cannot gain a later deadline from repeated planning.
 Revalidation runs each minute; no network-owned renewal loop is introduced.
@@ -138,8 +139,23 @@ and a pending request that might have been accepted both count. A shorter local
 host deadline is not proof that the device shortened its lease. The runtime no
 longer unconditionally reserves the advertised maximum lease plus another fixed
 delay; it uses the outstanding or proposed permission and the restoration bound.
-Temperature expiry at two minutes and maximum permission at three minutes are
-overlapping deadlines measured from evidence, not sequential grace periods.
+Both probe freshness and issued permission end no later than two minutes after
+the older supporting measurement. The driver's three-minute ceiling does not
+extend the host request. No separate disconnection grace is added afterward.
+
+A transport-only probe outage may hold an already accepted, still-active managed
+pause within its original permission when both conservative thermal reserves
+cover the remaining time and useful-heating delay. The safety loop does not
+restore ON merely because that outage was announced. It never starts or renews
+OFF from held readings. Invalid readings, changed source, exhausted reserve or
+the original deadline still request restoration. Missing history remains a gap
+for learning and cannot credit warming.
+
+The same bounded wait applies when the one-minute planner runs before newer
+qualified measurements arrive, including silent reporting gaps. Existing
+permission is not renewed from the cached evidence. The UI says it is waiting
+for fresh temperature evidence; it does not diagnose every such wait as a lost
+network connection.
 
 An OFF attempt persists a compact restoration obligation before publication.
 Requested, published, accepted, native-confirmed, uncertain, rejected, failed and
@@ -148,7 +164,7 @@ the OFF obligation and any later restore request; an old ON cache cannot settle
 it. Useful heat response is separate thermal evidence, never inferred from ON,
 publication, compressor frequency or electrical watts.
 
-Disconnect, invalid planning/protection, missing authority, watchdog/manual ON,
+Host MQTT disconnection, invalid planning/protection, missing authority, watchdog/manual ON,
 reboot and expired permission invalidate economic intent. Reconnect requires new
 session evidence. Restart loads the old episode only as a restoration obligation
 and uses a new host session; completed episode IDs cannot be restarted. Recovery
@@ -210,8 +226,9 @@ power OFF is the owner's selection and creates no automatic restoration lease.
 
 ## Permanent external room temperature
 
-A room setting below 16°C uses only the independent Garage rear sensor,
-`garage_temperature`. The pump must already be ON in HEAT mode; ST-MQ explicitly
+A room setting below 16°C uses the independent Garage rear sensor,
+`garage_temperature`, for room regulation and both rear and front for freeze
+protection. The pump must already be ON in HEAT mode; ST-MQ explicitly
 commands and confirms the native 17°C target before feeding `rear temperature + (17 − room setting)`.
 For a 5°C setting the offset is +12°C. The requested room target, original source
 reading, offset, remote value and actual native readback remain distinct status
@@ -222,18 +239,62 @@ ON, HEAT and 17°C readbacks using the existing 30-second freshness requirement.
 The 17°C target distinguishes this control baseline from the installed pump's
 ambiguous 10°C i-save / 16°C readback. If the check fails, ST-MQ stops renewing;
 it does not rewrite native settings or add checks between renewals, and the
-existing external-temperature lease expires. The Pill driver is unchanged,
-including its existing local cleanup behavior. Ordinary targets of 16°C and above
-still use native control.
+existing external-temperature lease expires. Freeze-protection assessment can
+request earlier clearing. Ordinary targets of 16°C and above still use native control.
 
-The remote temperature protocol accepts 8–39.5°C in 0.5°C steps. Host renewals
-use the original source timestamp and require a usable independent report less
-than 90 seconds old. Retained, future or stale evidence cannot authorize the
-feed, and repeated timestamps do not extend source freshness. Loss of fresh
-evidence ends the feed. Internal-sensor control uses the pump's current native
-settings; when unchanged from setup, that is HEAT at 17°C. This relies on the
-driver enforcing its local expiry and on a working Pill and serial path. The
-90-second source lifetime is unchanged; no additional lease timer is introduced.
+The current remote-temperature contract accepts 8–39.5°C in 0.5°C steps and
+requires the driver to advertise `refreshMs: 10000` and `maxSourceAgeMs: 180000`.
+The earlier 90-second capability is unsupported. The driver's three-minute
+ceiling does not select the host policy: ST-MQ requires both supporting probe
+measurements to be younger than **120 seconds**, and requests expiry no later
+than **120 seconds after the older measurement**. The numeric command retains
+the rear measurement's original timestamp. Thermal reserve can shorten the
+requested deadline. The adapter independently caps every numeric command at
+rear measurement time +120 seconds, even if a caller asks for longer.
+
+The current driver publishes UTC state clocks with one-second precision. Expiry
+report comparison allows that reporting quantum, at most 1000 ms, while the
+remaining TTL must still decrease with elapsed monotonic time. The original
+requested deadline and host continuation limit remain unchanged. This precision
+allowance adds no outage grace or guarantee about physical heating response.
+
+Retained, future, invalid and stale reports cannot authorize a feed. Repeated
+timestamps, polling, reconnects and retries never restart either source clock.
+A brief sensor-Shelly or host MQTT interruption may preserve only an already
+acknowledged permission within its original deadline. No numeric enable or
+renewal uses a held reading. A changed source or sensor-change boundary, explicit
+invalid reading, device fault, exhausted reserve or expired measurement ends that
+allowance earlier. A genuinely newer report is required to resume admission;
+cached reconnect reports cannot manufacture recovery. Availability gaps remain
+NULL observations in recording and learning, even while this separate live,
+in-memory control evidence is held. The UI labels this state **Held**, without
+claiming that external control is currently confirmed.
+
+External control uses the two-location pipe-reserve assessment independently of
+economic enablement or protection approval. Both references need qualified
+thermal history and enough reserve for the entire requested permission plus
+the time until restored heating is useful. The driver must supply its restoration
+delay bound; observed slower recovery can increase it. Missing history or an
+unknown delay blocks external control. Holding during an outage additionally
+projects conservative cooling from the last qualified in-memory evidence;
+missing reports cannot credit warming or replenish the recorded reserve. Either
+location can require earlier clearing. Internal sensing uses the pump's current
+native settings, normally HEAT at 17°C after setup. Protection does not override
+an explicit manual power or mode change.
+
+Pill MQTT-loss behavior remains device-owned. The driver may clear immediately;
+ST-MQ does not assume it retains a sample offline. If a driver supports retaining
+an acknowledged sample, the host can continue it only after fresh non-retained
+state confirms the same boot/session, owner and exact sample before the original
+deadline. Until then the prior permission is unconfirmed, never renewed. Fresh
+state reporting internal sensing is respected. An interrupted pending request
+remains uncertain unless correlated acknowledgement, or exact fresh acknowledged
+state behind an unused challenge, resolves it. An unaccepted renewal may also
+be fenced by fresh proof of its still-valid predecessor. Remaining uncertainty,
+ownership changes and reboot require cleanup. None of these paths replay a saved
+command or extend a deadline. The Pill must enforce the host's shorter deadline
+locally; the host cannot clear through a broken link. These fallbacks require a
+powered, working Pill and serial path.
 
 The Pill also refreshes the admitted sample on its serial link every 10 seconds.
 A numeric command arriving during that transaction can be rejected `busy`, even
@@ -262,8 +323,9 @@ the previous sample must still be within its original permission. The retry goes
 through the normal ownership, native-setting and source-freshness checks and uses
 the sensor's original timestamp. This prevents a lost QoS 0 renewal from needlessly
 reaching the 45-second uncertain-result cleanup and switching to internal sensing.
-Accepted writes, missing or conflicting evidence, and expired permissions still
-use the existing cleanup path. No Pill firmware change is required.
+Accepted writes cannot be classified as unaccepted renewals. Missing or
+conflicting evidence and expired permissions still require cleanup. The
+reconciliation uses the existing wire contract.
 
 The room target is durable device-bound intent, outside configuration and
 without expiry. Fan and vane commands retain it while any required serial
@@ -272,9 +334,13 @@ authorize forcing ON/HEAT. Restart does not replay a cached remote temperature:
 the host must obtain fresh source evidence and reestablish native
 setup before resuming. Native changes and managed pauses wait for serial clearing
 of the external override; MQTT publication alone does not prove it cleared.
-External control does not establish physical frost protection, low-heat
+The reserve checks do not certify physical frost protection, low-heat
 commissioning or a new economic-pause baseline. Installed qualification remains
-the responsibility of the separate adapter and installation work.
+the responsibility of the separate adapter and installation work. Managed OFF
+uses the same 120-second supporting-measurement deadline and bounded tolerance
+for transport-only probe loss. Both modes can hold existing permission while
+reserve remains sufficient, but neither starts or renews from held evidence.
+The driver keeps its 180-second ceiling and honors the shorter requested expiry.
 
 Before low-temperature use, enable the Pill's external-temperature feature and
 put the pump ON in HEAT mode. Selecting the low room setting in ST-MQ clears

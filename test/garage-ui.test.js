@@ -118,6 +118,28 @@ test('Garage decision explanations describe charging independence and the shared
   assert.match(rows['charging-policy'].detail, /status and power do not affect pause admission or the planned window/);
 });
 
+test('a bounded wait for temperature evidence is explained without promoting unavailable protection evidence', () => {
+  const garage = { settings: garageSettings(), temperatureHold: { active: true, expiresAt: now + 45_000 },
+    plan: { nextAction: 'hold', reason: 'waiting-for-temperature-evidence' },
+    reason: 'protection-required', adapter: { phase: 'paused', native: { power: 'off' } },
+    protection: { safeToPause: false, requiredFresh: false, reasons: ['rear:missing-temperature'],
+      locations: { rear: { uncertain: true, fresh: false } } } };
+  const before = structuredClone(garage), display = garageDisplay(garage, now);
+  assert.match(display.reason, /Waiting for fresh temperature evidence.*Existing OFF permission is held until/);
+  assert.match(display.reason, /original deadline and protection margin; no renewal/);
+  assert.match(Object.fromEntries(display.rows)['Temperature evidence'], /Existing pause held until.*no renewal/);
+  assert.equal(display.planningDetails.find(row => row.key === 'current-opportunity').value, 'Pause held · awaiting temperature');
+  assert.equal(garageHeatingRequest(garage), 'Reduction');
+  assert.deepEqual(garage, before, 'presentation never changes the actual protection assessment');
+  const reason = { textContent: '' }, document = { getElementById: id => id === 'garage-controller-reason' ? reason : null };
+  renderGarage(document, { now, mode: 'active', input: 'mqtt', garage });
+  assert.match(reason.textContent, /Existing OFF permission is held/);
+  assert.doesNotMatch(reason.textContent, /protection-required|waiting-for-temperature-evidence|reports are interrupted/);
+  garage.temperatureHold.expiresAt = now;
+  assert.doesNotMatch(garageDisplay(garage, now).reason, /permission is held/);
+  assert.equal(Object.fromEntries(garageDisplay(garage, now).rows)['Temperature evidence'], undefined);
+});
+
 test('heat-pump metric rows stay visible once in their summaries while controls and explanations stay inside', () => {
   const html = readFileSync(new URL('../chart/index.html', import.meta.url), 'utf8');
   for (const [id, metrics, info] of [

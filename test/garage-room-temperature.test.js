@@ -52,13 +52,17 @@ function fixture(targetC = 5) {
       Object.assign(external, { phase: clearing ? 'internal' : 'active', pending: false, busy: !clearing,
         restorationPending: !clearing, temperatureC: command.temperatureC,
         measuredAt: command.measuredAt ?? null, expiresInMs: clearing ? 0 : command.requestedExpiryAt - now,
+        continuation: clearing ? null : { temperatureC: command.temperatureC, measuredAt: command.measuredAt,
+          expiresAt: command.requestedExpiryAt, confirmed: true },
         acknowledged: true, result: { ...command, status: 'acknowledged' } });
     } else {
       native[command.setting] = command.value;
       controls.result = { ...command, status: 'native-confirmed' };
     }
   }
-  const tick = (sourceUsable = true) => controller.tick({ adapter, observation, now, canControl: true, sourceUsable });
+  const tick = (sourceUsable = true, overrides = {}) => controller.tick({ adapter, observation, now, canControl: true, sourceUsable,
+    protection: { allowed: true, expiresAt: observation.sourceTime + 120_000 },
+    holdProtection: { allowed: true, expiresAt: observation.sourceTime + 120_000 }, ...overrides });
   const advance = (ms = 1000) => { now += ms; };
   function measure(value = observation.value, at = now) { observation = { ...observation, value, sourceTime: at, receivedAt: now }; }
   async function start() {
@@ -76,9 +80,36 @@ test('5°C selects and confirms native17 even when readback is17, then supplies 
   assert.deepEqual(f.sent.map(c => [c.setting ?? 'external', c.value ?? c.temperatureC]),
     [['external', null], ['targetC', 17], ['external', 17]]);
   assert.equal(f.sent[2].measuredAt, f.observation().sourceTime);
-  assert.equal(f.sent[2].requestedExpiryAt, f.observation().sourceTime + 90_000);
+  assert.equal(f.sent[2].requestedExpiryAt, f.observation().sourceTime + 120_000);
   assert.equal(f.controller.status(f.observation()).offsetC, 12);
   assert.equal(f.controller.status(f.observation()).acknowledged, true);
+});
+
+test('a shorter new thermal allowance clears the longer acknowledged permission immediately', async () => {
+  const f = fixture(); await f.start(); const expiry = f.external.continuation.expiresAt;
+  f.advance();
+  await f.tick(true, { holdProtection: { allowed: true, expiresAt: expiry - 30_000 } });
+  assert.equal(f.sent.at(-1).temperatureC, null);
+  assert.equal(f.controller.phase, 'clearing');
+});
+
+test('a held sensor cannot start a new external permission', async () => {
+  const f = fixture(); await f.start(); const count = f.sent.length;
+  f.external.continuation = null;
+  f.external.phase = 'internal'; f.external.restorationPending = false;
+  f.external.temperatureC = null;
+  f.advance();
+  await f.tick(true, { sourceHeld: true });
+  assert.equal(f.sent.length, count);
+  assert.equal(f.controller.phase, 'waiting');
+});
+
+test('a new out-of-range room measurement cannot hold an older feed through a front outage', async () => {
+  const f = fixture(); await f.start();
+  f.advance(); f.measure(35);
+  await f.tick(true, { sourceHeld: true });
+  assert.equal(f.sent.at(-1).temperatureC, null);
+  assert.equal(f.controller.phase, 'clearing');
 });
 
 test('new original measurements refresh active control, repeated polling cannot extend source expiry', async () => {
@@ -87,7 +118,7 @@ test('new original measurements refresh active control, repeated polling cannot 
   f.measure(4.8); await f.tick(); assert.equal(f.sent.length, count + 1);
   assert.equal(f.sent.at(-1).temperatureC, 17, 'round to the driver half-degree input');
   assert.equal(f.sent.at(-1).measuredAt, f.observation().sourceTime);
-  f.ack(); f.advance(90_000); await f.tick();
+  f.ack(); f.advance(120_000); await f.tick();
   assert.equal(f.sent.at(-1).temperatureC, null); assert.equal(f.controller.phase, 'clearing');
   f.ack(); await f.tick(); assert.equal(f.controller.phase, 'waiting');
   const cleared = f.sent.length; await f.tick(); assert.equal(f.sent.length, cleared);
@@ -98,7 +129,7 @@ test('invalid, echoed, stale and out-of-range inputs clear rather than clamp or 
   for (const scenario of ['invalid', 'echo', 'stale', 'range']) {
     const f = fixture(); await f.start(); f.advance();
     if (scenario === 'echo') f.observation().source = 'garage-adapter';
-    if (scenario === 'stale') f.advance(90_000);
+    if (scenario === 'stale') f.advance(120_000);
     if (scenario === 'range') f.measure(35);
     await f.tick(scenario !== 'invalid');
     assert.equal(f.sent.at(-1).temperatureC, null, scenario);
@@ -151,11 +182,11 @@ test('a native target admission failure withholds renewal without clearing or re
     assert.equal(f.controller.inhibited, null, 'baseline mismatch is not a manual-reapply latch');
     assert.match(f.controller.reason, /17|fresh|ON|HEAT/i);
     f.advance(); await f.tick(); assert.deepEqual(f.sent, commands);
-    assert.equal(f.external.measuredAt + 90_000, expiry, 'the active lease retains its original measurement deadline');
+    assert.equal(f.external.measuredAt + 120_000, expiry, 'the active lease retains its original measurement deadline');
     f.advance(); f.readNative({ power: 'on', mode: 'heat', targetC: 17 }); f.external.available = true; f.measure(4); await f.tick();
     assert.equal(f.sent.length, commands.length + 1, 'a later new measurement can resume with valid native evidence');
     assert.equal(f.sent.at(-1).temperatureC, 16);
-    assert.equal(f.sent.at(-1).requestedExpiryAt, f.observation().sourceTime + 90_000);
+    assert.equal(f.sent.at(-1).requestedExpiryAt, f.observation().sourceTime + 120_000);
   });
 });
 
@@ -175,7 +206,7 @@ test('a mismatched baseline cannot extend the original lease even as fresh room 
   f.advance(20_000); f.readNative({ targetC: 16 }); f.measure(4); await f.tick();
   f.advance(expiry - f.now()); f.readNative(); f.measure(4); await f.tick();
   assert.deepEqual(f.sent, commands);
-  assert.equal(f.external.measuredAt + 90_000, f.now(), 'the driver permission expires on its original deadline');
+  assert.equal(f.external.measuredAt + 120_000, f.now(), 'the driver permission expires on its original deadline');
   Object.assign(f.external, { phase: 'internal', temperatureC: null, measuredAt: null,
     expiresInMs: 0, restorationPending: false, acknowledged: false });
   await f.tick(); assert.deepEqual(f.sent, commands);
@@ -325,7 +356,7 @@ test('power OFF and cooling retain room intent without forcing ON or HEAT, then 
     const f = fixture(7); await f.start(); f.controller.handover(request, f.now());
     await f.tick(); f.ack(); f.advance(); await f.tick(); f.ack(); f.advance(); await f.tick();
     const commands = structuredClone(f.sent);
-    for (let i = 0; i < 3; i++) { f.advance(90_000); f.measure(); await f.tick(); }
+    for (let i = 0; i < 3; i++) { f.advance(120_000); f.measure(); await f.tick(); }
     assert.deepEqual(f.sent, commands);
     assert.equal(f.controller.targetC, 7); assert.equal(f.controller.phase, 'waiting');
     f.readNative({ power: 'on', mode: 'heat' }); f.advance(); f.measure(); await f.tick();

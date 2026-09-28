@@ -3,7 +3,7 @@
 export const GARAGE_TEMPERATURE_POLL_MS = 30_000;
 export const GARAGE_TEMPERATURE_MAX_AGE_MS = 4 * GARAGE_TEMPERATURE_POLL_MS;
 export const GARAGE_REVALIDATE_MS = 2 * GARAGE_TEMPERATURE_POLL_MS;
-export const GARAGE_MAX_PERMISSION_MS = 6 * GARAGE_TEMPERATURE_POLL_MS;
+export const GARAGE_MAX_PERMISSION_MS = GARAGE_TEMPERATURE_MAX_AGE_MS;
 const finite = Number.isFinite;
 
 /** Bound a new authorization by both temperature evidence and thermal reserve.
@@ -12,6 +12,7 @@ export function garagePausePermission({ now, observation, protection, heatingDel
   const times = ['rear', 'front'].map(location => observation?.[`${location}At`]);
   const evidenceAt = times.every(finite) ? Math.min(...times) : null;
   if (!finite(now) || !finite(evidenceAt) || times.some(at => at > now) || now - evidenceAt >= GARAGE_TEMPERATURE_MAX_AGE_MS
+    || ['rear', 'front'].some(location => observation?.[`${location}Held`] === true)
     || protection?.requiredFresh !== true || protection?.safeToPause !== true)
     return { allowed: false, reason: 'fresh-temperature-reserve-required', evidenceAt, expiresAt: null };
   if (!finite(heatingDelayMs) || heatingDelayMs < 0 || !finite(maxLeaseMs) || maxLeaseMs <= 0)
