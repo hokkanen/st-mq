@@ -55,7 +55,7 @@ test('live test transport stays idle until a POST and shutdown records an unconf
   const endpoint = `http://127.0.0.1:${app.server.address().port}`;
   const status = await (await fetch(`${endpoint}/api/status`)).json();
   assert.equal(status.heatingTests.available, true);
-  assert.equal(status.liveWrites, false);
+  assert.equal(status.automation.home.enabled, false);
   app.engine.setOverride(60);
   app.engine.tick();
   assert.equal(clients.length, 0, 'Startup, status, temporary controls and automatic ticks never connect the publisher');
@@ -95,8 +95,8 @@ test('live test transport stays idle until a POST and shutdown records an unconf
   assert.match(failureBody.error, /closed|unconfirmed/i);
   assert.equal(pending.client.endCalls, 1);
   assert.equal(stateAtClose.command, 'circulation');
-  assert.equal(stateAtClose.status, 'failed');
-  assert.equal(stateAtClose.sent, false);
+  assert.equal(stateAtClose.status, 'unconfirmed');
+  assert.equal(stateAtClose.sent, null);
   assert.equal(stateAtClose.actual, null);
   assert.equal(executorAtClose.dhwrOutstanding, true, 'A closed transport must retain the OFF obligation for restart');
   assert.equal(executorAtClose.legacyOutstanding, true, 'The earlier heat reduction still requires restoration too');

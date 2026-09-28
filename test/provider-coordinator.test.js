@@ -138,7 +138,7 @@ test('independent polls stay nonblocking, do not overlap and preserve snapshot p
     const second = providers.runDue();
     assert.equal(calls, 1);
     const status = f.engine.tick();
-    assert.equal(status.liveWrites, false);
+    assert.equal(status.automation.home.enabled, false);
     assert.equal(status.decision.action, 'normal');
     assert.equal(status.priceStatus, 'configured');
     assert.ok(status.prices.length > 0);
@@ -239,7 +239,7 @@ test('provider startup serves UI while a device request is pending and closes cl
     assert.equal(response.status, 200);
     const status = await response.json();
     assert.equal(status.providers.temperatures.status, 'running');
-    assert.equal(status.liveWrites, false);
+    assert.equal(status.automation.home.enabled, false);
     assert.equal(status.decision.action, 'normal');
   } finally { await app.close(); }
   assert.equal(cancelled, true);

@@ -54,6 +54,6 @@ test('changing replication or instance role requires restart without replacing t
     writeFileSync(path, JSON.stringify(options), { mode: 0o600 });
     await assert.rejects(app.reloadSettings(), /Restart to apply/);
     assert.equal(app.engine, engine);
-    assert.equal(app.store.getState('settings:simulated')?.mode ?? app.engine.settings.mode, 'shadow');
+    assert.equal(app.engine.automationEnabled('home'), false);
   }
 });

@@ -13,7 +13,7 @@ async function fixture(t) {
   client.subscribe = (_topic, _options, done) => done();
   client.publish = (_topic, _payload, _options, done) => done();
   client.end = (_force, _options, done) => done();
-  const config = { input: 'mqtt', deviceId: DEVICE, settings: { mode: 'shadow' },
+  const config = { input: 'mqtt', deviceId: DEVICE, settings: {  },
     h66: { writeEnabled: true, readbackTimeoutMs: 1000 }, garage: { enabled: false },
     connections: { mqtt: { address: 'mqtt://synthetic.invalid' }, equipment: equipmentConfiguration({ devices: [] }) } };
   const engine = new Engine({ store, config, clock: () => now });

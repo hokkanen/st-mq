@@ -63,8 +63,12 @@ test('Shelly CN105 MQTT route monitors before commissioning, then handshakes and
     assert.equal(adapter.status().automaticControl, false);
     assert.equal(published.length, 0);
     state.mode = 'armed'; state.sequence++;
-    state.commissioning = { selectivePowerVerified: true, lowHeatVerified: true, expiryVerified: true, restartVerified: true, releaseOrderingVerified: true };
+    state.commissioning = { selectivePowerVerified: true, expiryVerified: true, restartVerified: true };
     receive();
+    assert.equal(published.length, 0);
+    await adapter.plannerTick({ now, valid: true, recoveryReady: true, plan: {
+      id: 'invented-pause', pauseFrom: now, pauseUntil: now + 600_000,
+      temperatureEvidenceAt: now, permissionExpiresAt: now + 120_000 } });
     const claim = published[0];
     assert.equal(claim.topic, settings.commandTopic);
     assert.equal(claim.payload.action, 'claim');

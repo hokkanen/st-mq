@@ -101,6 +101,16 @@
             <section id="home-manual-controls" class="zone-section zone-configuration" aria-labelledby="heating-configuration-title">
               <div id="heating-test-details">
                 <div class="zone-section-heading"><h4 id="heating-configuration-title">Heating control</h4><p id="heating-test-status" class="muted home-control-availability"></p></div>
+              <div class="feature-automation" role="group" aria-labelledby="home-automation-title" aria-describedby="home-automation-activity">
+                <h5 id="home-automation-title">Home heating automation</h5>
+                <div class="heating-mode-buttons heating-mode-buttons-two">
+                  <button id="home-automation-plan" class="secondary-button" type="button" data-write-control data-access-path="/api/automation" aria-pressed="false" disabled>Plan only</button>
+                  <button id="home-automation-automatic" class="secondary-button" type="button" data-write-control data-access-path="/api/automation" aria-pressed="false" disabled>Automatic</button>
+                </div>
+                <p id="home-automation-activity" class="muted" role="status">Waiting for automation status</p>
+                <p id="home-automation-message" class="temporary-status" role="status" aria-live="polite"></p>
+              </div>
+
                 <div id="home-h66-summary" class="home-heating-state" role="group" aria-label="Current heating state">
                   <div class="home-state-reading" data-h66-summary="mode"><span>Heat-pump mode</span><strong>Unavailable</strong></div>
                   <div class="home-state-reading"><span>Tariff control</span><strong id="tariff-control-state">—</strong></div>
@@ -519,6 +529,16 @@
           <div class="zone-content equipment-area">
             <section id="garage-manual-controls" class="zone-section zone-configuration" aria-labelledby="garage-heating-configuration-title">
               <div class="zone-section-heading"><h4 id="garage-heating-configuration-title">Heating control</h4><p id="garage-heating-status" class="muted home-control-availability"></p></div>
+              <div class="feature-automation" role="group" aria-labelledby="garage-automation-title" aria-describedby="garage-automation-activity">
+                <h5 id="garage-automation-title">Garage heating automation</h5>
+                <div class="heating-mode-buttons heating-mode-buttons-two">
+                  <button id="garage-automation-plan" class="secondary-button" type="button" data-write-control data-access-path="/api/automation" aria-pressed="false" disabled>Plan only</button>
+                  <button id="garage-automation-automatic" class="secondary-button" type="button" data-write-control data-access-path="/api/automation" aria-pressed="false" disabled>Automatic</button>
+                </div>
+                <p id="garage-automation-activity" class="muted" role="status">Waiting for automation status</p>
+                <p id="garage-automation-message" class="temporary-status" role="status" aria-live="polite"></p>
+              </div>
+
               <div id="garage-heating-state" class="home-heating-state" role="group" aria-label="Current heating state">
                 <div id="garage-current-mode-row" class="home-state-reading" hidden><span>Heat-pump mode</span><strong id="garage-current-mode">Unavailable</strong></div>
                 <div class="home-state-reading"><span>Heating control</span><strong id="garage-current-control">—</strong></div>
@@ -531,6 +551,7 @@
                 <button id="garage-mode-off" data-write-control class="secondary-button" type="button" data-garage-heating-mode="off" aria-pressed="false" disabled><span>Heating off</span><span class="heating-button-state" aria-hidden="true"></span></button>
               </div>
               <p id="garage-hold-warning" class="heating-hold-warning heating-hold-warning-strong" role="status" hidden></p>
+              <p id="garage-control-detail" class="muted" role="status" aria-live="polite"></p>
               <p id="garage-heating-message" class="temporary-status" role="status" aria-live="polite"></p>
               <details id="garage-pause-details" class="equipment-fold temporary-panel">
                 <summary><span>Pause price control</span><small id="garage-pause-overview">Status unavailable</small></summary>

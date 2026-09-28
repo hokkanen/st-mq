@@ -38,14 +38,14 @@ test('reload applies disk settings, rates and recording while preserving tempora
   app.engine.setTemporary({ awayUntil: new Date(now + 2 * 3600_000).toISOString(), pauseUntil: new Date(now + 3600_000).toISOString() });
   const before = app.engine.status();
   now += 60_000;
-  const options = { controller: { mode: 'monitoring', max_drop_c: 0.6, heat_pump_compressor_kw: 4 },
+  const options = { controller: { max_drop_c: 0.6, heat_pump_compressor_kw: 4 },
     electricity: { margin_ct_per_kwh_ex_vat: 0.8 }, recording: { annual_budget_gb: 4 } };
   write(options);
   const original = readFileSync(path, 'utf8');
   const response = await post();
   assert.equal(response.status, 200);
   const status = await response.json();
-  assert.equal(status.mode, 'monitoring');
+  assert.equal(status.automation.home.enabled, false);
   assert.equal(status.settings.comfort.maxDropC, 0.6);
   assert.equal(status.learning.parameters.heatPumpCompressorKw, 4);
   assert.equal(Object.hasOwn(app.engine.recorder.config, 'maxIntervalMs'), false);
@@ -61,7 +61,7 @@ test('reload applies disk settings, rates and recording while preserving tempora
   assert.equal(app.server.address().port, port);
   assert.equal(process.listenerCount('SIGTERM'), listeners);
   assert.equal(readFileSync(path, 'utf8'), original);
-  assert.equal((await (await fetch(`${base}/api/status`)).json()).mode, 'monitoring');
+  assert.equal((await (await fetch(`${base}/api/status`)).json()).automation.home.enabled, false);
   assert.equal(app.store.events().filter(event => event.type === 'settings-reloaded').length, 1);
 });
 
@@ -73,7 +73,7 @@ test('reload validates authentication, JSON and startup settings before touching
   assert.equal((await post({ headers: { ...headers, Origin: 'https://untrusted.invalid' } })).status, 403);
   assert.equal((await post({ headers: { Authorization: headers.Authorization } })).status, 400);
   assert.equal((await post({ body: '{"mode":"active"}' })).status, 400);
-  write({ controller: { ...options.controller, input: 'offline', mode: 'monitoring' } });
+  write({ controller: { ...options.controller, input: 'offline',  } });
   let response = await post();
   assert.equal(response.status, 400);
   assert.match((await response.json()).error, /Restart/);

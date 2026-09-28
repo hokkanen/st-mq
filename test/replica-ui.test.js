@@ -162,7 +162,7 @@ test('a replica renders without Engine status and never presents copied active f
   assert.match(requestTrigger.getAttribute('aria-label'), /Current home state unknown/);
   requestTrigger.click();
   assert.match($('status-detail-popover').textContent, /Current home state unknown/);
-  const status = { ...ready(), liveWrites: true, h66: { connected: true },
+  const status = { ...ready(), automation: { home: { enabled: true } }, h66: { connected: true },
     observations: { indoor: { value: 21.3, observedAt: now - 90_000, source: 'husdata-h66' } },
     lastDecision: { phase: 'reduction' }, recording: { parameters: [] } };
   renderReplicaStatus(document, status);
@@ -248,15 +248,15 @@ test('primary sync notice reports progress and retries without exposing transpor
   assert.equal($('replica-notice').hidden, true);
 });
 
-test('the header separates paired authority from the master’s monitoring or active mode', () => {
+test('the header separates paired authority from the master’s feature automation permissions', () => {
   const { document, $ } = fixture();
-  for (const liveWrites of [false, true]) {
-    const operatingMode = liveWrites ? 'LIVE CONTROL · ACTIVE' : 'LIVE OBSERVATION · MONITORING';
-    $('connection').textContent = operatingMode;
-    renderInstanceRole(document, { liveWrites, topology: 'pair', pair: { role: 'master', canControl: true } });
+  for (const enabled of [false, true]) {
+    const environment = 'Live';
+    $('connection').textContent = environment;
+    renderInstanceRole(document, { automation: { home: { enabled } }, topology: 'pair', pair: { role: 'master', canControl: true } });
     assert.equal($('instance-role').textContent, 'Pair · Master');
     assert.equal($('instance-role').dataset.state, 'master');
-    assert.equal($('connection').textContent, operatingMode, 'master authority must not imply active device control');
+    assert.equal($('connection').textContent, environment, 'master authority must not imply active device control');
   }
   renderInstanceRole(document, { topology: 'standalone' });
   assert.equal($('instance-role').textContent, 'Standalone');
@@ -267,7 +267,7 @@ test('the header separates paired authority from the master’s monitoring or ac
 test('paired slaves use the compact pair section while retaining snapshot and read-only safeguards', () => {
   const { document, controls, sections, $ } = fixture();
   const pair = { role: 'slave', canControl: false };
-  renderReplicaStatus(document, { ...ready(), topology: 'pair', pair, liveWrites: true });
+  renderReplicaStatus(document, { ...ready(), topology: 'pair', pair, automation: { home: { enabled: true } } });
   assert.equal($('instance-role').textContent, 'Pair · Slave');
   assert.equal($('replica-notice').hidden, true, 'paired details replace the duplicate full-size replica notice');
   assert.match($('connection').textContent, /READ-ONLY HISTORY · HISTORY AVAILABLE/);

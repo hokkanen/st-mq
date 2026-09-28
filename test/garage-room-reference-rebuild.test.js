@@ -18,7 +18,7 @@ function fixture(t, { laterTarget = null } = {}) {
   if (laterTarget !== null) appendGarageEntry(store, 'mqtt', 'context', { roomTargetC: laterTarget }, settings,
     START + 1000, { key: 'later-physical-room-setting' });
   let now = START + 2000;
-  const runtime = new GarageRuntime({ store, engine: { latest: {}, settings: { mode: 'shadow' } },
+  const runtime = new GarageRuntime({ store, engine: { latest: {}, automationEnabled: () => false },
     config: { input: 'mqtt', garage: settings }, clock: () => now });
   const state = { connected: false, health: { pumpCommunicating: false }, native: {},
     limits: { restorationDelayMs: 120_000 } };

@@ -20,7 +20,7 @@ function setup(t) {
   let now = START;
   const store = new Store(':memory:');
   const equipment = equipmentConfiguration({ devices: [device] });
-  const config = { input: 'mqtt', settings: { mode: 'shadow' }, connections: { equipment } };
+  const config = { input: 'mqtt', automationEnabled: () => false, connections: { equipment } };
   const engine = new Engine({ store, config, clock: () => now, canControl: () => false });
   const capture = createEquipmentCapture({ engine, store, settings: equipment, publish: async () => {}, canControl: () => false });
   capture.setConnected(true);
@@ -157,7 +157,7 @@ test('previous event-age algorithms are rejected without creating an archive con
   const store = new Store(':memory:');
   try {
     store.setState('garage:checkpoint:mqtt', { algorithmVersion: 'committed-garage-v2-sparse' });
-    const config = { input: 'mqtt', connections: {}, settings: { mode: 'shadow' } };
+    const config = { input: 'mqtt', connections: {}, automationEnabled: () => false };
     assert.throws(() => new Engine({ store, config, clock: () => START }), /Unsupported Garage saved algorithm/);
     assert.equal(store.getState('garage:checkpoint:mqtt').algorithmVersion, 'committed-garage-v2-sparse');
   } finally { store.close(); }

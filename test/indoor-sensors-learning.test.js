@@ -247,7 +247,7 @@ test('changed sensors cannot regain obsolete validation from imported upstairs-o
 test('cold and hot rooms independently block optimization against their own references', async t => {
   const store = new Store(':memory:'); let now = start + W;
   const engine = new Engine({ store, config: { input: 'providers', control: config,
-    settings: { mode: 'shadow', comfort: { maxDropC: 1, maxRiseC: 1 } } }, clock: () => now });
+    settings: { comfort: { maxDropC: 1, maxRiseC: 1 } } }, clock: () => now });
   t.after(async () => { await engine.closeFireplace(); store.close(); });
   const reference = targetC => ({ version: 3, targetC, establishedAt: new Date(start - 86_400_000).toISOString(),
     updatedAt: new Date(start).toISOString(), heatingEvidence: { kind: 'verified-space-heating-activity' } });

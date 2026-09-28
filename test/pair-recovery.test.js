@@ -220,7 +220,7 @@ test('a fresh engine resumes the verified recovery epoch and appends later learn
   sample(f.master, start + 3 * W); replayLearningJournal(f.master, 'mqtt');
   const result = await recover(f, await f.snapshot(donor));
   const before = f.master.db.prepare('SELECT * FROM learning_journal ORDER BY id').all();
-  const engine = new Engine({ store: f.master, config: { input: 'mqtt', settings: { mode: 'shadow' } }, clock: () => start + 4 * W });
+  const engine = new Engine({ store: f.master, config: { input: 'mqtt', settings: {  } }, clock: () => start + 4 * W });
   t.after(() => engine.closeFireplace());
   assert.deepEqual(engine.readAdaptive(start + 4 * W), result.checkpoint);
   engine.tick();
@@ -242,7 +242,7 @@ test('failed recovery keeps control learning available and resumes ordinary back
     onProgress(value) { if (value.phase === 'rebuilding') current = false; } }), /authority changed/);
   assert.equal(f.master.learningEpoch('mqtt'), 'original');
   assert.equal(f.master.getState('fireplace:rebuild:mqtt').status, 'pending');
-  const engine = new Engine({ store: f.master, config: { input: 'mqtt', settings: { mode: 'shadow' } }, clock: () => start + 3 * W });
+  const engine = new Engine({ store: f.master, config: { input: 'mqtt', settings: {  } }, clock: () => start + 3 * W });
   t.after(() => engine.closeFireplace());
   engine.readAdaptive(start + 3 * W);
   for (let attempt = 0; attempt < 200 && f.master.getState('fireplace:rebuild:mqtt').status !== 'current'; attempt++) {

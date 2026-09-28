@@ -20,7 +20,7 @@ async function fixture(t, { role = 'master', pairContext, controlAuthority } = {
   const store = new Store(':memory:'); store.setState('synthetic-history', { retained: true });
   let mutations = 0;
   const fireplace = { available: true, entries: [{ id: 'synthetic', at: Date.now(), removedAt: null }] };
-  const engine = new Proxy({ status: () => ({ now: Date.now(), input: 'mqtt', liveWrites: true, fireplace }),
+  const engine = new Proxy({ status: () => ({ now: Date.now(), input: 'mqtt', fireplace }),
     fireplaceStatus: () => fireplace, clock: Date.now }, {
     get(target, key) { return key in target ? target[key] : () => { mutations++; throw Error('Mutation dispatched'); }; },
   });

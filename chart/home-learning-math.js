@@ -158,7 +158,7 @@ export function economicCalculation(strategyId) {
       `${strategy ? `${strategy.label}: minimum_benefit = ${strategy.minimumHomeBenefitCents} ct and discomfort_weight = ${strategy.homeDiscomfortCentsPerDegreeSquaredHour} ct/(°C²·h). ` : ''}D is the positive additional weighted hot/cold discomfort in °C²·h, summed separately by room and direction. start is 1 for a new intervention against normal operation. These are decision allowances, not actual electricity charges.`),
     equation('Admission and preference', 'admit if B_low > hurdle;  retain B_low ≥ best_B_low × retained_fraction',
       `Physical limits and evidence checks must also pass. From a bounded shortlist, prefer the mildest admitted plan retaining ${strategy ? `${strategy.retainedBenefitFraction * 100}%` : 'the strategy’s required share'} of the best positive conservative benefit. Temperature variation is compared first, then active duration.`),
-  ], ['During continuation the starting minimum and start allowance are omitted; remaining discomfort and duration still count. Gentle is not an off switch. Pause or operating mode controls whether optimization runs.',
+  ], ['During continuation the starting minimum and start allowance are omitted; remaining discomfort and duration still count. Gentle is not an off switch. Pause and Home automation determine whether the heating plan is applied.',
     'The stress directions vary heat response and loss by 15%, initial reserve/slab by 0.5 °C, duty by 0.08, source electricity by its operating-point allowance, and AUX exposure by 50%. These cases are engineering allowances, not calibrated probabilities or a guarantee of annual savings.']);
 }
 

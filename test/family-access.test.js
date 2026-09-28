@@ -23,7 +23,7 @@ async function fixture(t, options = {}) {
   const record = name => (...args) => { calls.push({ name, args }); return { updated: true }; };
   const sensorView = { available: true, canRetryRebuild: true, events: [{ id: 1, canRevert: true }] };
   const engine = { clock: () => INITIAL, config: { input: 'providers' },
-    status: () => ({ mode: 'monitoring', liveWrites: true, sensorChanges: sensorView }),
+    status: () => ({ sensorChanges: sensorView }),
     fireplaceStatus: () => ({ available: true, entries: [] }), sensorChangesStatus: () => sensorView,
     contract: () => ({ periods: [] }),
     equipmentStatus: () => ({ devices: [

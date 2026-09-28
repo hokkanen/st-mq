@@ -21,7 +21,7 @@ const pause = () => new Promise(resolve => setTimeout(resolve, 10));
 function fixture(t) {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-sensor-revert-engine-'));
   const path = join(directory, 'invented.sqlite'), store = new Store(path);
-  const config = { input: 'providers', settings: validateSettings({ mode: 'monitoring' }), control: { learningTrials: false } };
+  const config = { input: 'providers', settings: validateSettings({  }), control: { learningTrials: false } };
   let now = start, engine = new Engine({ store, config, clock: () => now });
   engine.tick = () => {};
   const seed = restoreAdaptiveCheckpoint(null, engine.control);

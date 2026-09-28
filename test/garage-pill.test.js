@@ -78,9 +78,11 @@ test('each independent installed commissioning result gates both OFF and ownersh
   }
 });
 
-test('fresh armed state claims an unowned commissioned adapter once and waits for new authority evidence', async () => {
+test('an explicit automatic request claims an unowned commissioned adapter once and waits for fresh ownership', async () => {
   const f = fixture();
   const first = f.state({ authority: { ownerSession: null, controlAllowed: false } });
+  assert.equal(f.published.length, 0, 'Fresh observations do not acquire command authority');
+  assert.equal((await f.start()).status, 'claiming');
   assert.equal(f.published.length, 1);
   const claim = f.published[0];
   assert.equal(claim.command.action, 'claim');
@@ -89,7 +91,7 @@ test('fresh armed state claims an unowned commissioned adapter once and waits fo
   assert.deepEqual(claim.options, { qos: 0, retain: false, noReplay: true });
   f.adapter.receive(SETTINGS.stateTopic, JSON.stringify(first));
   assert.equal(f.published.length, 1);
-  assert.equal((await f.start()).status, 'blocked');
+  assert.equal((await f.start()).status, 'claiming');
   f.at(BASE + 1000); f.state();
   assert.equal(f.adapter.status().authority.owned, true);
   assert.equal(f.adapter.status().authority.claimPending, false);
@@ -141,6 +143,8 @@ test('replacement host remembers a foreign pause expiry until fresh restored ON 
   assert.equal(f.adapter.status().restorePending, true, 'Retained state cannot establish restoration');
   f.state({ authority: { ownerSession: null, controlAllowed: false } });
   assert.equal(f.adapter.status().restorePending, false);
+  assert.equal(f.published.length, 0);
+  await f.start();
   assert.equal(f.published.length, 1);
   assert.equal(f.published[0].command.action, 'claim');
 
@@ -148,6 +152,8 @@ test('replacement host remembers a foreign pause expiry until fresh restored ON 
   restarted.at(expiry + 2000);
   restarted.state({ authority: { ownerSession: null, controlAllowed: false } });
   assert.equal(restarted.adapter.status().restorePending, false, 'The observed obligation survives another host restart');
+  assert.equal(restarted.published.length, 0);
+  await restarted.start();
   assert.equal(restarted.published[0].command.action, 'claim');
 });
 
@@ -213,7 +219,7 @@ test('current publisher monitoring contract interoperation preserves diagnostic 
   f.adapter.receive(SETTINGS.telemetryTopic, JSON.stringify(telemetry));
   const status = f.adapter.status();
   assert.equal(status.contractVersion, SHELLY_CN105_CONTRACT);
-  assert.equal(status.native.targetC, 10);
+  assert.equal(status.native.targetC, 17);
   assert.equal(status.native.mode, 'heat');
   assert.equal(status.telemetry.indoorTemperature.value, 22.5);
   assert.equal(status.telemetry.outdoorTemperature.value, -5.5);
@@ -387,4 +393,54 @@ test('live unverified electrical readings retain disconnect fencing without powe
   assert.equal(f.adapter.status().telemetry.power.diagnosticAvailable, true);
   assert.equal(f.adapter.status().telemetry.power.usable, false);
   assert(!f.observations.some(row => row.signal === 'garage_power'), 'Live acquisition never archives standalone power');
+});
+
+
+test('explicit manual pause can claim monitoring but automatic requests cannot use its permission', async () => {
+  const f = fixture();
+  f.state({ mode: 'monitoring', authority: { ownerSession: null, controlAllowed: false, manualPauseAllowed: true } });
+  assert.equal(f.published.length, 0, 'Monitoring does not claim in the background');
+  assert.equal(f.adapter.status().manualPauseReasons.length, 0);
+  const request = { now: BASE, purpose: 'manual', valid: true, recoveryReady: true,
+    plan: { id: 'manual-monitoring', pauseFrom: BASE, pauseUntil: BASE + 600_000,
+      temperatureEvidenceAt: BASE, permissionExpiresAt: BASE + 120_000 } };
+  assert.equal((await f.adapter.plannerTick(request)).status, 'claiming');
+  assert.equal(f.published.at(-1).command.action, 'claim');
+  assert.equal(f.published.at(-1).command.purpose, 'manual');
+  f.at(BASE + 1000);
+  f.state({ mode: 'monitoring', authority: { ownerSession: 'invented-host', controlAllowed: false, manualPauseAllowed: true } });
+  assert.equal((await f.adapter.plannerTick({ ...request, now: BASE + 1000 })).status, 'published');
+  assert.equal(f.published.at(-1).command.action, 'start');
+  assert.equal(f.published.at(-1).command.purpose, 'manual');
+  assert.ok(f.published.at(-1).command.requestedExpiryAt <= BASE + 120_000);
+  const automatic = fixture();
+  automatic.state({ mode: 'monitoring', authority: { ownerSession: 'invented-host', controlAllowed: false, manualPauseAllowed: true } });
+  const refused = await automatic.start();
+  assert.equal(refused.status, 'blocked');
+  assert.ok(refused.reasons.includes('adapter-monitoring'));
+  assert.equal(automatic.published.length, 0);
+});
+
+test('software release-ordering qualification is required independently of installed commissioning', async () => {
+  const f = fixture(); f.state({ capabilities: { ...TEMPLATE.capabilities, releaseOrdering: false } });
+  assert.ok((await f.start()).reasons.includes('essential-capability-unverified'));
+  assert.equal(f.published.length, 0);
+});
+
+test('mixed retired proof, baseline and capability fields invalidate an otherwise current production state', async () => {
+  for (const patch of [
+    { commissioning: { selectivePowerVerified: true, expiryVerified: true, restartVerified: true, lowHeatVerified: false } },
+    { commissioning: { selectivePowerVerified: true, expiryVerified: true, restartVerified: true, releaseOrderingVerified: true } },
+    { baseline: { ...TEMPLATE.baseline, assumed: true } },
+    { baseline: { ...TEMPLATE.baseline, candidateMatched: true } },
+    { capabilities: { ...TEMPLATE.capabilities, preserveNativeBaseline: true } },
+  ]) {
+    const f = fixture(); f.state(); assert.equal(f.adapter.status().automaticControl, true);
+    f.at(BASE + 1000); f.state(patch);
+    assert.equal(f.adapter.status().automaticControl, false);
+    assert.equal(f.adapter.status().targetIdentity, null);
+    assert.ok(f.adapter.status().faults.includes('invalid-adapter-state'));
+    assert.equal((await f.start()).status, 'blocked');
+    assert.equal(f.published.length, 0);
+  }
 });

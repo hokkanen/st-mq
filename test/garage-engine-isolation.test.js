@@ -6,7 +6,7 @@ import { Engine } from '../src/app/engine.js';
 test('a garage planning failure revokes its permission while the Home decision still completes', async t => {
   const store = new Store(':memory:');
   let now = 1_800_000_000_000;
-  const engine = new Engine({ store, config: { input: 'simulated', settings: { mode: 'shadow' }, connections: {} }, clock: () => now });
+  const engine = new Engine({ store, config: { input: 'simulated', automationEnabled: () => false, connections: {} }, clock: () => now });
   t.after(async () => { await engine.garage.close({ restore: false }); store.close(); });
   const first = engine.tick();
   assert.ok(first.decision);
@@ -31,7 +31,7 @@ test('a garage planning failure revokes its permission while the Home decision s
 
 test('a garage failure in an instance without authority cannot send a restoration command', async t => {
   const store = new Store(':memory:');
-  const engine = new Engine({ store, config: { input: 'simulated', settings: { mode: 'shadow' }, connections: {} },
+  const engine = new Engine({ store, config: { input: 'simulated', automationEnabled: () => false, connections: {} },
     clock: () => 1_800_000_000_000, canControl: () => false });
   t.after(async () => { await engine.garage.close({ restore: false }); store.close(); });
   let releases = 0;

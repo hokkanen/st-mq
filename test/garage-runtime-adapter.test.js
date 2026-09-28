@@ -35,7 +35,7 @@ function setup(t, { expensiveHours = 2, totalHours = 12, forecastOutdoorC = 0 } 
   appendGarageEntry(store, 'mqtt', 'context', {}, settings, BASE - 1, { key: 'explicit-synthetic-fixture-seed', seed: syntheticSeed(settings) });
   store.setState('garage:configuration:mqtt', settings);
   const config = { input: 'mqtt', garage: { ...settings, adapter: { stateTopic: 'fixture/garage/state' } } };
-  const engine = { latest: {}, lastKnownTemperatures: {}, settings: { mode: 'active' } };
+  const engine = { latest: {}, lastKnownTemperatures: {}, automationEnabled: () => true };
   const runtime = new GarageRuntime({ store, engine, config, clock: () => now, canControl: () => owner });
   const commands = [];
   const adapter = createGarageAdapter({ settings: config.garage.adapter, clock: () => now,

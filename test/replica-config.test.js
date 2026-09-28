@@ -15,12 +15,12 @@ function fixture(t, options = {}) {
 }
 
 test('mirror slave role is local, suppresses live input and does not require producer connections', t => {
-  const read = fixture(t, { mirror: { role: 'slave' }, controller: { topology: 'mirror', input: 'providers', mode: 'active', h66_device: 'invented-device' },
+  const read = fixture(t, { mirror: { role: 'slave' }, controller: { topology: 'mirror', input: 'providers', h66_device: 'invented-device' },
     mqtt: { address: '' }, teslamate: { enabled: true } });
-  const config = read({ STMQ_INPUT: 'mqtt', STMQ_MODE: 'active' });
+  const config = read({ STMQ_INPUT: 'mqtt', });
   assert.equal(config.role, 'slave');
   assert.equal(config.input, 'offline');
-  assert.equal(config.settings.mode, 'monitoring');
+  assert.equal(Object.hasOwn(config.settings, 'mode'), false);
   assert.deepEqual(config.connections, {});
   assert.equal(config.deviceId, undefined);
   assert.equal(config.h66.enabled, false);

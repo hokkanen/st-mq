@@ -13,7 +13,7 @@ const secondToken = 'synthetic-second-addon-web-token';
 const endpoint = server => `http://127.0.0.1:${server.address().port}`;
 const authorization = token => ({ Authorization: `Bearer ${token}` });
 
-function fixture(t, initial = { controller: { input: 'simulated', mode: 'shadow', web_token: '' } }) {
+function fixture(t, initial = { controller: { input: 'simulated', max_drop_c: 1.5, web_token: '' } }) {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-addon-configuration-'));
   const paths = { defaultsPath: fileURLToPath(new URL('../config.json', import.meta.url)),
     privatePath: join(directory, 'supervisor-export.json'), importPath: join(directory, 'secrets.json'),
@@ -99,18 +99,18 @@ test('add-on bootstrap with no token exposes ingress and leaves direct access di
 
 test('startup import is saved before storage/runtime and removed only after successful startup', async t => {
   const f = fixture(t);
-  f.writeImport({ controller: { mode: 'monitoring', web_token: firstToken } });
+  f.writeImport({ controller: { max_drop_c: 0.5, web_token: firstToken } });
   f.hooks.persist = () => {
     assert.equal(existsSync(f.config.dbPath), false);
     assert.equal(existsSync(f.paths.importPath), true);
   };
   f.hooks.complete = () => {
     assert.equal(existsSync(f.config.dbPath), true);
-    assert.equal(f.saved.controller.mode, 'monitoring');
+    assert.equal(f.saved.controller.max_drop_c, 0.5);
     assert.equal(f.posts, 1);
   };
   const app = await f.launch();
-  assert.equal(app.engine.settings.mode, 'monitoring');
+  assert.equal(app.engine.settings.comfort.maxDropC, 0.5);
   assert.equal(app.webAccess.status().direct.enabled, true);
   assert.equal(existsSync(f.paths.importPath), false);
   assert.deepEqual(f.events, ['prepare-startup', 'persist', 'supervisor-save', 'persisted', 'complete']);
@@ -152,13 +152,13 @@ test('ingress import saves Supervisor, applies runtime/token, then cleans up; to
   const originalEngine = app.engine;
   const originalExport = readFileSync(f.paths.privatePath, 'utf8');
   f.events.length = 0;
-  f.writeImport({ controller: { mode: 'monitoring', web_token: firstToken } });
+  f.writeImport({ controller: { max_drop_c: 0.5, web_token: firstToken } });
   f.hooks.persist = () => {
     assert.equal(app.engine, originalEngine);
     assert.equal(app.webAccess.status().direct.enabled, false);
   };
   f.hooks.complete = () => {
-    assert.equal(app.engine.settings.mode, 'monitoring');
+    assert.equal(app.engine.settings.comfort.maxDropC, 0.5);
     assert.notEqual(app.engine, originalEngine);
     assert.equal(app.webAccess.status().direct.enabled, true);
     assert.equal(f.saved.controller.web_token, firstToken);
@@ -177,7 +177,7 @@ test('ingress import saves Supervisor, applies runtime/token, then cleans up; to
   f.writeImport({ controller: { web_token: secondToken } });
   assert.equal((await f.reload()).status, 200);
   assert.equal(app.server, direct);
-  assert.equal(app.engine.settings.mode, 'monitoring');
+  assert.equal(app.engine.settings.comfort.maxDropC, 0.5);
   assert.equal((await fetch(`${base}/api/status`, { headers: authorization(firstToken) })).status, 401);
   assert.equal((await fetch(`${base}/api/status`, { headers: authorization(secondToken) })).status, 200);
   f.writeImport({ controller: { web_token: '' } });
@@ -218,7 +218,7 @@ test('Supervisor save failure retains import and previous runtime; retry enables
   const f = fixture(t);
   const app = await f.launch();
   const originalEngine = app.engine;
-  f.writeImport({ controller: { mode: 'monitoring', web_token: firstToken } });
+  f.writeImport({ controller: { max_drop_c: 0.5, web_token: firstToken } });
   f.faults.save = true;
   const response = await f.reload();
   assert.equal(response.status, 400);
@@ -227,10 +227,10 @@ test('Supervisor save failure retains import and previous runtime; retry enables
   assert.equal(app.engine.executor.closed, false);
   assert.equal(app.webAccess.status().direct.enabled, false);
   assert.equal(existsSync(f.paths.importPath), true);
-  assert.equal(f.saved.controller.mode, 'shadow');
+  assert.equal(f.saved.controller.max_drop_c, 1.5);
   f.faults.save = false;
   assert.equal((await f.reload()).status, 200);
-  assert.equal(app.engine.settings.mode, 'monitoring');
+  assert.equal(app.engine.settings.comfort.maxDropC, 0.5);
   assert.equal(app.webAccess.status().direct.enabled, true);
   assert.equal(existsSync(f.paths.importPath), false);
 });
@@ -238,7 +238,7 @@ test('Supervisor save failure retains import and previous runtime; retry enables
 test('runtime failure after Supervisor save retains import and restores old access for a retry', async t => {
   const f = fixture(t);
   const app = await f.launch();
-  f.writeImport({ controller: { mode: 'monitoring', web_token: firstToken } });
+  f.writeImport({ controller: { max_drop_c: 0.5, web_token: firstToken } });
   const setState = app.store.setState.bind(app.store);
   let fail = true;
   app.store.setState = (key, value) => {
@@ -252,14 +252,14 @@ test('runtime failure after Supervisor save retains import and restores old acce
   let response = await f.reload();
   assert.equal(response.status, 400);
   assert.match((await response.json()).error, /previous configuration was restored/);
-  assert.equal(app.engine.settings.mode, 'shadow');
-  assert.equal(f.saved.controller.mode, 'monitoring');
+  assert.equal(app.engine.settings.comfort.maxDropC, 1.5);
+  assert.equal(f.saved.controller.max_drop_c, 0.5);
   assert.equal(app.webAccess.status().direct.enabled, false);
   assert.equal(existsSync(f.paths.importPath), true);
   response = await f.reload();
   assert.equal(response.status, 200);
   assert.equal(f.posts, 1);
-  assert.equal(app.engine.settings.mode, 'monitoring');
+  assert.equal(app.engine.settings.comfort.maxDropC, 0.5);
   assert.equal(app.webAccess.status().direct.enabled, true);
   assert.equal(existsSync(f.paths.importPath), false);
 });
@@ -267,12 +267,12 @@ test('runtime failure after Supervisor save retains import and restores old acce
 test('cleanup failure keeps applied runtime and reports pending cleanup; retry does not save twice', async t => {
   const f = fixture(t);
   const app = await f.launch();
-  f.writeImport({ controller: { mode: 'monitoring', web_token: firstToken } });
+  f.writeImport({ controller: { max_drop_c: 0.5, web_token: firstToken } });
   f.faults.cleanup = true;
   let response = await f.reload();
   assert.equal(response.status, 200);
   assert.equal((await response.json()).settingsReload.result.cleanupPending, true);
-  assert.equal(app.engine.settings.mode, 'monitoring');
+  assert.equal(app.engine.settings.comfort.maxDropC, 0.5);
   assert.equal(app.webAccess.status().direct.enabled, true);
   assert.equal(f.saved.controller.web_token, firstToken);
   assert.equal(existsSync(f.paths.importPath), true);

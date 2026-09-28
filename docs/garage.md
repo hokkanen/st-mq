@@ -136,24 +136,36 @@ These software checks do not certify physical frost protection or qualify the
 installation's low-heat behavior.
 
 The `shelly-cn105` driver supports ordinary Mitsubishi settings and selective
-pause leases. Automatic pauses additionally require local arming, fresh matching
-native mode/fan/vanes, selective power, local expiry and restart-restoration
-commissioning, healthy communications, active host authority and approved
-protection. Economic pauses still require the independently verified native
-baseline; external temperature control does not supply that commissioning
-evidence. Driver configuration, deployment and live commissioning are separate
-from editing ST-MQ. See [adapter contract](garage-adapter.md).
+pause leases. Both automatic and manual pauses require current ordinary HEAT
+settings, installed selective-power/local-expiry/restart evidence, software
+release-ordering capability, healthy communications, device ownership and approved
+freeze protection. The supported external-control baseline is native 17°C; special
+low-temperature mode preservation is not a requirement. Driver deployment and
+installed commissioning remain separate from editing ST-MQ. See the
+[adapter contract](garage-adapter.md).
+
+Garage independently chooses **Plan only** or **Automatic**. Plan only computes
+plans and collects evidence; it never sends economic OFF requests. Home heating,
+charging and Caravan have their own automation choices. Native room settings and
+explicit bounded heating selections remain available when automation is off.
 
 **Pause price control** suspends economic control until its Finnish local deadline.
-**Normal heating** and **Heating off** are explicit manual selections under
-**Temporary heating override**. These controls require Active operating mode and
-live input; this does not mean the compressor must already be heating. During
-Pause the selection is held until its deadline; otherwise the next controller
-update, normally within one minute, takes over. Freeze protection can restore
-heating sooner. Manual OFF still needs the adapter's lease,
-authority, restoration and freezing-protection checks. Restart retains the price
-pause but restores an owned OFF request. Native ON is a request to allow the
-pump's own thermostat to work, not a claim that it is producing heat.
+**Normal heating** and **Heating off** are explicit selections under
+**Temporary heating override**, available with live input and control ownership.
+During Pause the selection is held until its deadline; otherwise the next
+controller update, normally within one minute, takes over. Freeze protection can
+restore heating sooner. Manual OFF uses the same qualified bounded lease as an
+automatic pause, with an explicit manual purpose; it never becomes indefinite
+ordinary power OFF.
+
+When external temperature control is active, Heating off remembers its room intent,
+clears the external input and waits for serial acknowledgement before requesting
+OFF. Normal, Resume, expiry and restart restore heating first, then resume the
+previous room intent with new sensor data and fresh native confirmation. Independent
+native setting changes inhibit that resumption. Restart retains the price pause
+and restoration obligation, but never resumes a saved OFF permission. The buttons
+show clearing, requesting, confirmed, restoring or specific unconfirmed outcomes.
+Native ON allows the pump's thermostat to work; it is not proof of useful heat.
 
 Authenticated mutations return the full dashboard status:
 `POST /api/garage/temporary`, `POST /api/garage/heating`,

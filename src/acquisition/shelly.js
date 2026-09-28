@@ -7,7 +7,18 @@ import { GARAGE_TEMPERATURE_POLL_MS, GARAGE_TEMPERATURE_MAX_AGE_MS } from '../ga
 
 const scalar = value => typeof value === 'number' && Number.isFinite(value);
 const valid = (value, min, max) => scalar(value) && value >= min && value <= max;
-const error = message => new Error(`Shelly ${message}`);
+const ERROR_CODES = {
+  'MQTT unavailable': 'MQTT_UNAVAILABLE',
+  'publication failed': 'MQTT_UNAVAILABLE',
+  'heating operation already in progress': 'MQTT_BUSY',
+  'switch operation already in progress': 'MQTT_BUSY',
+  'control authority unavailable': 'MQTT_AUTHORITY_LOST',
+  'device identity unavailable': 'SHELLY_IDENTITY_UNAVAILABLE',
+  'relay readback unavailable': 'SHELLY_READBACK_UNAVAILABLE',
+  'relay readback timed out; delivery unconfirmed': 'SHELLY_READBACK_TIMEOUT',
+  'relay command failed; delivery unconfirmed': 'SHELLY_COMMAND_UNCONFIRMED',
+};
+const error = message => Object.assign(new Error(`Shelly ${message}`), { code: ERROR_CODES[message] ?? 'SHELLY_CONTROL_FAILED' });
 const stateName = device => device.stateSignal;
 const hasTemperature = device => device.hasTemperature === true;
 const metered = device => device.metered === true;

@@ -68,7 +68,7 @@ test('fast unsaved polls stay live while the house learner receives only recorde
   knownContext(store);
   const now = start + LEARNING_WINDOW_MS;
   const engine = new Engine({ store, config: { input: 'mqtt', control: config,
-    settings: { mode: 'shadow' } }, clock: () => now });
+    settings: {  } }, clock: () => now });
   for (const at of [start, now]) {
     record(store, 'indoor_temperature', 21, at);
     record(store, 'outdoor_temperature', 0, at);
@@ -422,7 +422,7 @@ test('checkpoint digest rejects plausible model/state corruption and rebuilds fr
     assert.equal(validLearningCheckpoint(changed), false);
     assert.deepEqual(replayLearningJournal(store, 'mqtt', changed), original);
   }
-  const engine = new Engine({ store, config: { input: 'mqtt', control: config, settings: { mode: 'shadow' } },
+  const engine = new Engine({ store, config: { input: 'mqtt', control: config, settings: {  } },
     clock: () => start + 15 * MINUTE });
   const changed = structuredClone(original); changed.model.parameters.lossPerHour *= 2;
   store.setState('adaptive:mqtt', changed);

@@ -1,11 +1,25 @@
 const recent = (result, now) => Number.isFinite(result?.at) && result.at <= now && now - result.at < 60_000;
 const failed = result => ['failed', 'unconfirmed'].includes(result?.status) || Boolean(result?.error);
 
+/** Current device evidence wins over a prior request when choosing the active button. */
+export function heatingModeSelection(status = {}) {
+  const actual = status.observations?.actual;
+  if (actual?.verified === true && actual.stale !== true) return { phase: actual.phase ?? actual.mode, confirmed: true };
+  const requested = actual?.requestedPhase ?? (actual?.source === 'mqtt-request' && actual.stale !== true ? actual.phase ?? actual.mode : null);
+  return { phase: requested, confirmed: false };
+}
+
 /** Saved request records are history; only current manual ownership keeps a notice alive. */
 export function heatingRequestResult(status = {}, result = status.heatingTests?.lastResult) {
   const now = status.now ?? Date.now();
   if (!result) return null;
-  if (failed(result)) return recent(result, now) ? result : null;
+  if (failed(result)) {
+    if (!recent(result, now)) return null;
+    const actual = status.observations?.actual;
+    const fresh = result.command !== 'circulation' && actual?.verified === true && actual.stale === false
+      && Number.isFinite(result.requestedAt) && actual.observedAt >= result.requestedAt && actual.observedAt <= now;
+    return { ...result, observedPhase: fresh ? actual.phase ?? actual.mode : null };
+  }
   if (result.command === 'circulation') {
     const dhwr = status.dhwr ?? {};
     return dhwr.active && !(dhwr.requestedAt > result.at)
@@ -15,7 +29,7 @@ export function heatingRequestResult(status = {}, result = status.heatingTests?.
   if (result.command === 'preheat' && status.h66 && !status.h66.manualPreheat) return null;
   const actual = status.observations?.actual ?? {}, observedAt = actual.observedAt ?? actual.receivedAt;
   const confirmed = actual.verified === true && actual.stale === false
-    && (actual.phase ?? actual.mode) === result.command && observedAt >= result.at && observedAt <= now;
+    && (actual.phase ?? actual.mode) === result.command && Number.isFinite(result.requestedAt) && observedAt >= result.requestedAt && observedAt <= now;
   if (result.holdUntil != null) {
     const hold = status.decision?.manualHold, pause = status.override;
     if (!(hold?.until > now) || !(pause?.expiresAt > now) || hold.phase !== result.command

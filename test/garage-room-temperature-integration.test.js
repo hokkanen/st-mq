@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { createGarageAdapter } from '../src/garage/adapter.js';
 import { createShellyCn105Transport } from '../src/garage/shelly-cn105.js';
 import { SHELLY_CN105_CONTRACT } from '../src/garage/contract.js';
+import { GARAGE_PREFERENCE_VERSION } from '../src/garage/settings.js';
 import { GarageRuntime } from '../src/garage/runtime.js';
 import { Store } from '../src/storage/store.js';
 import { mitsubishiControl } from '../chart/mitsubishi.js';
@@ -18,34 +19,38 @@ const INTERNAL = { enabled: true, phase: 'internal', temperatureC: null, measure
 
 /** Real runtime, adapter, envelope transport and persistence; only the broker,
  * physical driver's reports and independent room sensor are synthetic. */
-function fixture(t, { initialNativeTargetC = 17 } = {}) {
-  let now = BASE, sequence = 0, external = { ...INTERNAL }, result = null, manualPending = false;
+function fixture(t, { initialNativeTargetC = 17, pauses = false, automatic = false, publishFailure = () => false } = {}) {
+  let now = BASE, sequence = 0, external = { ...INTERNAL }, result = null, manualPending = false, lease = null, restorationPending = false;
   const native = { power: 'on', mode: 'heat', targetC: initialNativeTargetC, fan: 'auto', vane: 3, wideVane: 'center', vanes: 'fixed' };
   const published = [], observations = [], store = new Store(':memory:');
-  const engine = { latest: {}, lastKnownTemperatures: {}, settings: { mode: 'shadow' } };
+  const engine = { latest: {}, lastKnownTemperatures: {}, automationEnabled: () => automatic };
   const runtime = new GarageRuntime({ store, engine,
-    config: { input: 'mqtt', garage: { enabled: false, adapter: SETTINGS } }, clock: () => now });
+    config: { input: 'mqtt', garage: { enabled: pauses, minOnMs: 0, protection: { approved: pauses }, adapter: SETTINGS } }, clock: () => now });
   const adapter = createGarageAdapter({ settings: SETTINGS, hostSession: 'invented-room-owner', clock: () => now,
     onObservation: row => observations.push(row),
     onDiagnostic: (row, at) => store.event('garage-external-temperature-diagnostic', row, at),
     onState: snapshot => runtime.adapterChanged(snapshot),
     productionTransport: createShellyCn105Transport({ settings: SETTINGS, publish: async (topic, payload, options) => {
       published.push({ topic, command: JSON.parse(payload), options });
+      if (publishFailure(published.at(-1).command)) throw new Error('Synthetic publication failure');
     } }) });
   runtime.setAdapter(adapter); adapter.setConnected(true);
   function state({ nativeAt = now, nativeTimes = {}, baseline = TEMPLATE.baseline, loopAt = now,
     feed = external, result: reportedResult = result,
     ownerSession = published.length ? 'invented-room-owner' : null } = {}) {
     const value = { ...structuredClone(TEMPLATE), sequence: ++sequence, observedAt: now,
-      uptimeMs: TEMPLATE.uptimeMs + loopAt - BASE, mode: 'monitoring',
-      baseline: structuredClone(baseline),
-      authority: { ownerSession, controlAllowed: false,
+      uptimeMs: TEMPLATE.uptimeMs + loopAt - BASE, mode: automatic ? 'armed' : 'monitoring',
+      baseline: pauses ? { verified: true, profile: 'native-settings', mode: native.mode, targetC: native.targetC, fan: native.fan, vane: native.vane, wideVane: native.wideVane, measuredAt: now } : structuredClone(baseline),
+      ...(pauses ? { commissioning: { selectivePowerVerified: true, expiryVerified: true, restartVerified: true },
+        leaseLimits: { ...TEMPLATE.leaseLimits, minimumOnMs: 0, restorationDelayMs: 120_000 } } : {}),
+      lease, restorationPending, ...(pauses ? { recoveryLockedUntil: 0 } : {}),
+      authority: { ownerSession, controlAllowed: automatic && pauses, manualPauseAllowed: pauses,
         manualControlAllowed: external.phase === 'internal' && !manualPending },
       challenge: { value: `invented-room-challenge-${sequence}`, expiresAt: now + 30_000 },
       native: Object.fromEntries(Object.entries(native).map(([key, value]) => [key, { value, measuredAt: nativeTimes[key] ?? nativeAt, ageMs: now - (nativeTimes[key] ?? nativeAt) }])),
       externalTemperature: { ...feed, expiresInMs: feed.temperatureC === null ? 0
         : Math.max(0, feed.expiresAt - loopAt) }, result: reportedResult, manualPending,
-      capabilities: { ...TEMPLATE.capabilities, externalTemperature: true, targetStep: 1,
+      capabilities: { ...TEMPLATE.capabilities, preserveNativeSettings: pauses, releaseOrdering: true, externalTemperature: true, targetStep: 1,
         manualControls: Object.fromEntries(['power', 'mode', 'targetC', 'fan', 'vane', 'wideVane'].map(key => [key, true])) } };
     for (const field of Object.values(value.health)) { field.measuredAt = now; field.ageMs = 0; }
     assert.equal(adapter.receive(SETTINGS.stateTopic, JSON.stringify(value), {}, now), true);
@@ -66,6 +71,12 @@ function fixture(t, { initialNativeTargetC = 17 } = {}) {
     if (command.action === 'manual') {
       manualPending = status === 'accepted';
       if (status === 'native-confirmed') Object.assign(native, command.settings);
+    } else if (['start', 'renew', 'release'].includes(command.action)) {
+      result.episodeId = command.episodeId;
+      const release = command.action === 'release';
+      if (status === 'native-confirmed') native.power = release ? 'on' : 'off';
+      restorationPending = !release;
+      lease = release ? null : { episodeId: command.episodeId, endpointAt: command.endpointAt, expiresAt: command.requestedExpiryAt };
     } else {
       assert.equal(command.action, 'remote-temperature');
       manualPending = false;
@@ -513,12 +524,12 @@ test('ambiguous native16 remains unknown until an explicit room selection resolv
   assert.equal(f.store.getState(f.runtime.keys.roomTemperature).targetC, 16);
 });
 
-test('a device-verified low-heat profile resolves native16 to its actual room target', async t => {
+test('a native baseline cannot invent an unobserved room setting from ambiguous native16', async t => {
   const f = fixture(t, { initialNativeTargetC: 16 }); await f.settle();
   f.advance();
   f.state({ baseline: { ...TEMPLATE.baseline, verified: true, targetC: 10, measuredAt: f.now() } });
   await f.settle();
-  assertInitialWarmth(f.runtime, 10);
+  assertInitialWarmth(f.runtime, null);
   assert.equal(f.runtime.status().adapter.native.targetC, 16);
   assert.equal(f.published.length, 0, 'Verified evidence must not issue thermostat commands');
 });
@@ -961,4 +972,189 @@ test('a rejected native target dispatch does not mask fresh pump settings behind
   f.adapter.setNativeSetting = send;
   f.advance(); f.native.targetC = 22; f.state(); await f.settle();
   assertInitialWarmth(f.runtime, 22);
+});
+
+
+test('Plan only OFF clears external input before a bounded manual lease; Normal restores fresh external control', async t => {
+  const f = fixture(t, { pauses: true }); await f.start();
+  assert.equal(f.engine.automationEnabled('garage'), false);
+  await f.runtime.setTemporary({ pauseUntil: new Date(f.now() + 600_000).toISOString() });
+  f.advance(); f.state(); await f.settle();
+  assert.equal(f.runtime.heatingControls().offAvailable, true);
+  await f.runtime.setHeating({ mode: 'off' }); await f.settle();
+  assert.equal(f.published.at(-1).command.action, 'remote-temperature');
+  assert.equal(f.published.at(-1).command.temperatureC, null);
+  assert.match(f.runtime.heatingControls().activity, /Clearing external/);
+  assert.equal(f.published.some(row => row.command.action === 'start'), false);
+  await f.advanceReport('accepted');
+  assert.equal(f.published.some(row => row.command.action === 'start'), false, 'MQTT acceptance is not serial clear acknowledgement');
+  await f.advanceReport('acknowledged');
+  const off = f.published.at(-1).command;
+  assert.equal(off.action, 'start'); assert.equal(off.purpose, 'manual');
+  assert.ok(off.requestedExpiryAt <= off.temperatureEvidenceAt + 120_000);
+  await f.advanceReport('native-confirmed');
+  assert.equal(f.runtime.heatingControls().confirmed, true);
+  assert.equal(f.runtime.status().roomTemperature.phase, 'suspended');
+  await f.runtime.setHeating({ mode: 'normal' }); await f.settle();
+  assert.equal(f.published.at(-1).command.action, 'release');
+  assert.match(f.runtime.heatingControls().activity, /Restoring Normal/);
+  await f.advanceReport('native-confirmed');
+  assert.equal(f.runtime.heatingHandover, null);
+  assert.equal(f.runtime.roomTemperature.targetC, 5);
+  assert.equal(f.published.at(-1).command.action, 'remote-temperature');
+  assert.equal(f.published.at(-1).command.temperatureC, null);
+  await f.advanceReport('acknowledged');
+  assert.deepEqual(f.published.at(-1).command.settings, { targetC: 17 });
+  await f.advanceReport('native-confirmed');
+  assert.equal(f.published.at(-1).command.action, 'manual', 'An old saved measurement cannot revive external control');
+  f.advance(); f.measure(6); f.state(); await f.settle();
+  assert.equal(f.published.at(-1).command.temperatureC, 18);
+  assert.equal(f.published.at(-1).command.measuredAt, f.now());
+  await f.advanceReport('acknowledged');
+  assert.equal(f.runtime.status().roomTemperature.acknowledged, true);
+});
+
+test('failed external clear cancels OFF and retains visible uncertainty without an unbounded power command', async t => {
+  let failClear = false;
+  const f = fixture(t, { pauses: true, publishFailure: command => failClear && command.action === 'remote-temperature' && command.temperatureC === null });
+  await f.start();
+  await f.runtime.setTemporary({ pauseUntil: new Date(f.now() + 600_000).toISOString() });
+  failClear = true;
+  await f.runtime.setHeating({ mode: 'off' }); await f.settle();
+  assert.equal(f.published.some(row => row.command.action === 'start'), false);
+  assert.equal(f.published.some(row => row.command.settings?.power === 'off'), false);
+  assert.equal(f.runtime.activeManual(), null);
+  assert.equal(f.runtime.heatingControls().result.status, 'uncertain');
+  assert.match(f.runtime.heatingControls().result.reason, /handover was not confirmed/);
+  assert.equal(f.runtime.roomTemperature.targetC, 5);
+});
+
+test('Resume and expiry end external OFF handover; independent native edits prevent automatic resumption', async t => {
+  for (const ending of ['resume', 'expiry']) {
+    const f = fixture(t, { pauses: true }); await f.start();
+    await f.runtime.setTemporary({ pauseUntil: new Date(f.now() + 60_000).toISOString() });
+    await f.runtime.setHeating({ mode: 'off' }); await f.settle();
+    await f.advanceReport('acknowledged'); await f.advanceReport('native-confirmed');
+    if (ending === 'resume') await f.runtime.setTemporary({ pauseUntil: null });
+    else { f.advance(60_000); f.measure(); f.state(); f.runtime.expireControls(f.now()); await f.runtime.dispatch; }
+    await f.settle();
+    assert.equal(f.published.at(-1).command.action, 'release');
+    f.native.targetC = 20;
+    await f.advanceReport('native-confirmed');
+    assert.equal(f.runtime.heatingHandover, null);
+    assert.match(f.runtime.roomTemperature.inhibited, /pump settings changed/);
+    assert.equal(f.runtime.roomTemperature.targetC, 5, 'Saved owner room intent is retained, but grants no permission to overwrite a new native setting');
+    const count = f.published.length;
+    f.advance(); f.measure(); f.state(); await f.settle();
+    assert.equal(f.published.slice(count).some(row => row.command.temperatureC != null || row.command.settings?.targetC === 17), false);
+  }
+});
+
+test('restart retains the external restoration obligation without restarting OFF or cached temperature input', async t => {
+  const f = fixture(t, { pauses: true }); await f.start();
+  await f.runtime.setTemporary({ pauseUntil: new Date(f.now() + 600_000).toISOString() });
+  await f.runtime.setHeating({ mode: 'off' }); await f.settle();
+  await f.advanceReport('acknowledged'); await f.advanceReport('native-confirmed');
+  const persisted = f.store.getState(f.runtime.keys.heatingHandover);
+  assert.equal(persisted.phase, 'off'); assert.equal(persisted.targetC, 5);
+  await f.runtime.close({ restore: false });
+  const restarted = new GarageRuntime({ store: f.store, engine: f.engine, config: f.runtime.config, clock: f.now });
+  try {
+    assert.equal(restarted.activeManual(), null);
+    assert.equal(restarted.heatingHandover.phase, 'restoring');
+    assert.equal(restarted.roomTemperature.suspended, true);
+    assert.equal(restarted.roomTemperature.targetC, 5);
+    const count = f.published.length;
+    await restarted.roomTemperatureTick();
+    assert.equal(f.published.length, count);
+    assert.equal(restarted.heatingHandover.phase, 'restoring');
+    assert.equal(restarted.roomTemperature.lastMeasuredAt, undefined);
+  } finally { await restarted.close({ restore: false }); }
+});
+
+
+test('uncertain bounded OFF publication keeps its restoration obligation and visible failure', async t => {
+  let failStart = false;
+  const f = fixture(t, { pauses: true, publishFailure: command => failStart && command.action === 'start' });
+  await f.start(); await f.runtime.setTemporary({ pauseUntil: new Date(f.now() + 600_000).toISOString() });
+  await f.runtime.setHeating({ mode: 'off' }); await f.settle();
+  failStart = true; await f.advanceReport('acknowledged');
+  assert.equal(f.adapter.status().restorePending, true);
+  assert.equal(f.runtime.activeManual(), null);
+  assert.match(f.runtime.heatingControls().result.reason, /delivery is unconfirmed/);
+  assert.equal(f.published.filter(row => row.command.action === 'start').length, 1);
+  assert.equal(f.published.some(row => row.command.settings?.power === 'off'), false);
+});
+
+test('restart on a changed adapter route does not clear or restore the replacement device', async t => {
+  const f = fixture(t, { pauses: true }); await f.start();
+  await f.runtime.setTemporary({ pauseUntil: new Date(f.now() + 600_000).toISOString() });
+  await f.runtime.setHeating({ mode: 'off' }); await f.settle();
+  await f.advanceReport('acknowledged'); await f.advanceReport('native-confirmed');
+  await f.runtime.close({ restore: false });
+  const config = structuredClone(f.runtime.config); config.garage.adapter.commandTopic = 'invented/replacement/command';
+  const restarted = new GarageRuntime({ store: f.store, engine: f.engine, config, clock: f.now });
+  try {
+    const count = f.published.length;
+    restarted.setAdapter(f.adapter);
+    await restarted.roomTemperatureTick();
+    assert.equal(f.published.length, count);
+    assert.equal(restarted.roomTemperature.targetC, null);
+    assert.match(restarted.heatingControls().activity, /previous heat-pump connection/);
+  } finally { await restarted.close({ restore: false }); }
+});
+
+
+test('qualified automatic pauses use the same external handover and disabling automation cancels pending OFF', async t => {
+  for (const disableBeforeClear of [false, true]) {
+    const f = fixture(t, { pauses: true, automatic: true }); await f.start();
+    f.runtime.safetyTick();
+    const now = f.now(), plan = { id: 'synthetic-automatic-handover', pauseFrom: now, pauseUntil: now + 600_000,
+      preferenceVersion: GARAGE_PREFERENCE_VERSION, ...f.runtime.permissionFields(now, f.runtime.read(now)) };
+    f.runtime.plan = plan; f.runtime.lastPlannerAt = now;
+    const result = await f.runtime.dispatchPause({ now, valid: true, purpose: 'automatic', plan, recoveryReady: true });
+    assert.equal(result.status, 'clearing'); await f.settle();
+    assert.equal(f.published.at(-1).command.temperatureC, null);
+    assert.equal(f.published.some(row => row.command.action === 'start'), false);
+    if (disableBeforeClear) {
+      f.engine.automationEnabled = () => false;
+      await f.runtime.automationChanged();
+    }
+    await f.advanceReport('acknowledged');
+    const off = f.published.find(row => row.command.action === 'start');
+    if (disableBeforeClear) {
+      assert.equal(off, undefined);
+      assert.equal(f.runtime.pendingPause, null);
+      assert.equal(f.runtime.roomTemperature.targetC, 5);
+    } else {
+      assert.equal(off.command.purpose, 'automatic');
+      assert.equal(f.runtime.episode.pauseId, plan.id);
+      await f.advanceReport('native-confirmed');
+      const before = f.published.length;
+      await assert.rejects(f.runtime.setHeating({ mode: 'off' }), /automatic heating pause is already active/);
+      assert.equal(f.published.length, before, 'A conflicting manual OFF must not silently release the automatic pause');
+      assert.equal(f.runtime.heatingControls().requestedMode, null);
+      f.engine.automationEnabled = () => false;
+      await f.runtime.automationChanged();
+      assert.equal(f.published.at(-1).command.action, 'release');
+      await f.advanceReport('native-confirmed');
+      assert.equal(f.runtime.heatingHandover, null);
+      assert.equal(f.runtime.roomTemperature.targetC, 5);
+    }
+  }
+});
+
+test('late driver rejection remains visible after manual OFF intent is cancelled and heating restored', async t => {
+  const f = fixture(t, { pauses: true }); await f.start();
+  await f.runtime.setTemporary({ pauseUntil: new Date(f.now() + 600_000).toISOString() });
+  await f.runtime.setHeating({ mode: 'off' }); await f.settle();
+  await f.advanceReport('acknowledged');
+  assert.equal(f.published.at(-1).command.action, 'start');
+  await f.advanceReport('rejected');
+  assert.equal(f.runtime.heatingControls().result.status, 'rejected');
+  assert.match(f.runtime.heatingControls().result.reason, /unconfirmed|rejected/);
+  assert.equal(f.runtime.heatingControls().confirmed, false);
+  if (f.published.at(-1).command.action === 'release') await f.advanceReport('native-confirmed');
+  assert.equal(f.runtime.heatingControls().result.status, 'rejected');
+  assert.match(f.runtime.heatingControls().result.reason, /unconfirmed|rejected/);
 });

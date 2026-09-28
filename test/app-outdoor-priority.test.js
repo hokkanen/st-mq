@@ -13,7 +13,7 @@ const beginning = Date.parse('2026-09-08T09:00:00Z');
 async function setup(t, { input = 'mqtt', maxAgeMs = 5 * MINUTE } = {}) {
   const store = new Store(':memory:');
   let now = beginning;
-  const config = { input, settings: { mode: 'shadow' }, deviceId: 'synthetic-h66',
+  const config = { input, settings: {  }, deviceId: 'synthetic-h66',
     h66: { maxAgeMs, writeEnabled: false }, connections: { mqtt: { address: 'mqtt://fixture.invalid' }, geoloc: { latitude: 60, longitude: 25 } } };
   const engine = new Engine({ store, config, clock: () => now });
   const client = new EventEmitter();

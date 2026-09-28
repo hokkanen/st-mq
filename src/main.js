@@ -140,6 +140,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
       // Paired handover carries that same native session to the next master.
       if (restore && !preserveOcpp) for (const acquisition of acquisitions)
         await attempt(() => acquisition.restoreOcpp?.());
+      await engine?.automationChangePromise?.catch(() => {});
       await attempt(() => engine?.charging?.close());
       await attempt(() => engine?.garage?.close({ restore }));
       if (engine) engine.onTemporaryChange = null;
@@ -282,7 +283,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
         || !isDeepStrictEqual(next.pair, config.pair))
         throw new Error('Input, topology, role, mirror, pair, network access or storage settings changed. Restart to apply these changes; no settings were updated.');
       const native = engine.h66Status?.();
-      if (engine.heatingTestBusy || engine.dispatchPending || engine.executor.pending
+      if (engine.heatingTestBusy || engine.dispatchPending || engine.executor.pending || engine.automationChangePending
         || engine.equipmentTests?.status().busy
         || native?.phase === 'test' || Object.values(native?.controls ?? {}).some(control => control.reason === 'A setting transition is in progress.'))
         throw new Error('Wait for the current heating operation or native setting test to finish before updating settings.');
@@ -302,7 +303,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
       }
       requireRunning();
       const previous = config;
-      const savedKeys = [`contract:${config.input}`, 'providers:health', 'provider:market',
+      const savedKeys = [`contract:${config.input}`, `automation:${config.input}`, 'providers:health', 'provider:market',
         'provider:weather', 'provider:observations', 'electricity:acquisition'];
       const previousState = savedKeys.map(key => [key, store.getState(key)]);
       let stopped = false, accessTransaction;
@@ -470,7 +471,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
     authority?.start();
     engine.onTemporaryChange = schedule;
     schedule();
-    console.log(JSON.stringify({ event: 'ready', input: config.input, mode: engine.settings.mode, liveWrites: engine.status().liveWrites, manualHeatingTests: engine.heatingTests().available,
+    console.log(JSON.stringify({ event: 'ready', input: config.input, environment: engine.environment(), manualHeatingTests: engine.heatingTests().available,
       address: webAccess.server.address(), startupMs: Math.round(performance.now() - started) }));
     finishStartup();
     return { store, get engine() { return engine; }, get server() { return webAccess.server; }, webAccess, mirror: replication, close, reloadSettings, revokeControl };

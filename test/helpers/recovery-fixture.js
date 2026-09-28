@@ -90,7 +90,7 @@ export async function learningCatchup(t, windows) {
 
 export async function energyCatchup(t, intervals) {
   const f = fixture(t), donor = await f.donor();
-  f.master.setState('controller:sentinel', { mode: 'active', currentAction: 'normal' });
+  f.master.setState('controller:sentinel', { automationEnabled: true, currentAction: 'normal' });
   donor.transaction(() => {
     for (let i = 1; i <= intervals; i++) for (let phase = 1; phase <= 3; phase++) {
       const at = start + i * 5 * 60_000;
@@ -105,7 +105,7 @@ export async function energyCatchup(t, intervals) {
   } });
   assert.equal(result.report.imported, intervals * 3);
   assert.ok(beats > 5); assert.ok(writes > 0);
-  assert.deepEqual(f.master.getState('controller:sentinel'), { mode: 'active', currentAction: 'normal' });
+  assert.deepEqual(f.master.getState('controller:sentinel'), { automationEnabled: true, currentAction: 'normal' });
   const energy = f.master.db.prepare("SELECT COUNT(*) n,SUM(value) kwh FROM observations WHERE unit='kWh'").get();
   assert.equal(energy.n, intervals * 3); assert.ok(Math.abs(energy.kwh - intervals * 0.3) < 1e-8);
 }

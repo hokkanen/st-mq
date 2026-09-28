@@ -14,7 +14,7 @@ function setup(t, { input = 'offline', cached = null } = {}) {
   t.after(() => store.close());
   if (cached) store.setState('provider:observations', cached);
   let now = beginning;
-  const config = { input, connections, settings: { mode: 'shadow', comfort: { maxDropC: 1 } } };
+  const config = { input, connections, settings: { comfort: { maxDropC: 1 } } };
   const engine = new Engine({ store, config, clock: () => now });
   return { store, engine, config, setTime: value => { now = value; } };
 }

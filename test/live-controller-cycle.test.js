@@ -11,15 +11,17 @@ import { createH66Controller } from '../src/control/h66.js';
 import { createH66Decoder, auxiliaryPowerFromOutput } from '../src/domain/telemetry.js';
 
 const HOUR = 3_600_000;
-function setup(t, { mode = 'active', delayed = false, store = new Store(':memory:') } = {}) {
+function setup(t, { automationEnabled = true, delayed = false, store = new Store(':memory:') } = {}) {
   let now = Date.parse('2026-09-07T21:00Z'), acknowledge;
-  const commands = [], config = { input:'mqtt', settings:validateSettings({mode,comfort:{targetC:21,maxDropC:2,maxRiseC:2}}), control:{...CONTROL_DEFAULTS,learningTrials:false} };
+  const commands = [], config = { input:'mqtt', settings:validateSettings({comfort:{targetC:21,maxDropC:2,maxRiseC:2}}), control:{...CONTROL_DEFAULTS,learningTrials:false} };
   const transport = { targetIdentity: { tariff: 'a'.repeat(64), dhwr: 'b'.repeat(64) }, publish: batch => {
     commands.push([...batch]);
     if (delayed) return new Promise(resolve => { acknowledge = () => resolve({status:'mqtt',sent:true,actual:null}); });
     return Promise.resolve({status:'mqtt',sent:true,actual:null});
   } };
   const engine = new Engine({store,config,clock:()=>now,commandTransport:transport});
+  engine.automation.set('home', automationEnabled);
+  engine.automation.set('home', automationEnabled);
   const ingest = (signal,value) => engine.ingest({source:signal==='outdoor_temperature'?'fmi':'synthetic',device:'fixture',signal,value,unit:'degC',sourceTime:now,receivedAt:now,quality:[],raw:null});
   const intervals = Array.from({length:24},(_,i)=>({start:now+i*900000,end:now+(i+1)*900000,outdoorC:10,price:i===0?2000:1,solarRadiationWm2:0}));
   store.setState('provider:market',{fetchedAt:now,intervals:intervals.map(row=>({...row,spotCtPerKwh:row.price,unit:'c/kWh',vatIncluded:false}))});
@@ -74,7 +76,7 @@ test('native setting tests remain active for their bounded interval across contr
 });
 
 test('direct native settings survive automatic controller updates without an expiry', async t => {
-  const r = setup(t, { mode: 'shadow' }), native = r.native();
+  const r = setup(t, { automationEnabled: false }), native = r.native();
   r.engine.tick(); await r.settle();
   await assert.rejects(r.engine.setH66Setting({ register: '0203', value: 20, durationMinutes: 2 }), /Choose an H66/);
   const changed = await r.engine.setH66Setting({ register: '0203', value: 20 });
@@ -95,7 +97,7 @@ test('direct native settings survive automatic controller updates without an exp
 });
 
 test('ending a price-control pause preserves permanent native edits made during it', async t => {
-  const r = setup(t, { mode: 'shadow' }), native = r.native();
+  const r = setup(t, { automationEnabled: false }), native = r.native();
   r.engine.setOverride(15); await r.settle();
   await r.engine.setH66Setting({ register: '0212', value: 46 });
   assert.equal(native.values['0212'], 46);
@@ -111,7 +113,7 @@ test('ending a price-control pause preserves permanent native edits made during 
 test('a restarted interrupted live cycle is incomplete while relay restoration remains durable',async t=>{
   const r=setup(t);r.plan();r.engine.tick();await r.settle();assert.ok(r.engine.cycles.active());
   clearTimeout(r.engine.executor.timer);
-  const restarted=new Engine({store:r.store,config:{...r.config,settings:validateSettings({mode:'shadow'})},clock:()=>r.now,commandTransport:r.transport});
+  const restarted=new Engine({store:r.store,config:{...r.config,settings:validateSettings()},clock:()=>r.now,commandTransport:r.transport});
   t.after(()=>{clearTimeout(restarted.executor.timer);restarted.executor.closed=true;});
   assert.equal(restarted.cycles.active(),null);assert.equal(restarted.applied.at,null);
   assert.equal(r.store.cycles({input:'mqtt'})[0].status,'incomplete');
@@ -120,7 +122,7 @@ test('a restarted interrupted live cycle is incomplete while relay restoration r
 });
 
 test('history baseline arriving after startup is adopted without replacing live temperature records',async t=>{
-  const r=setup(t,{mode:'shadow'});r.engine.tick();const cursor=r.engine.checkpoint.cursor;
+  const r=setup(t,{automationEnabled: false});r.engine.tick();const cursor=r.engine.checkpoint.cursor;
   const history=restoreAdaptiveCheckpoint(null);history.algorithmVersion=LEARNING_ALGORITHM;history.baselineC=21.4;history.comfortReference={targetC:21.4};
   r.store.setState('adaptive:history',history);r.engine.tick();
   assert.equal(r.engine.checkpoint.baselineC,21.4);assert.equal(r.engine.checkpoint.cursor,cursor);
@@ -129,7 +131,7 @@ test('history baseline arriving after startup is adopted without replacing live 
 });
 
 test('corrupt checkpoint replays persisted samples and corrupt background JSON cannot break live status',async t=>{
-  const r=setup(t,{mode:'shadow'});
+  const r=setup(t,{automationEnabled: false});
   for(let i=0;i<3;i++)appendLearningRecord(r.store,'mqtt','sample',{timestamp:r.now-(3-i)*900000,indoorC:21.2,outdoorC:10,phase:'normal',regime:'occupied',quality:[]});
   r.store.db.prepare('INSERT INTO state(key,value,updated_at) VALUES(?,?,?)').run('adaptive:mqtt','{broken',0);
   r.store.db.prepare('INSERT INTO state(key,value,updated_at) VALUES(?,?,?)').run('adaptive:history','{broken',0);
@@ -141,7 +143,7 @@ test('corrupt checkpoint replays persisted samples and corrupt background JSON c
 });
 
 test('manual ROOM change resets the indoor reference while preserving learned physics and excluding old history',async t=>{
-  const r=setup(t,{mode:'shadow'});const native=r.native();r.engine.tick();
+  const r=setup(t,{automationEnabled: false});const native=r.native();r.engine.tick();
   r.engine.checkpoint.baselineC=21.4;r.engine.checkpoint.comfortReference={targetC:21.4};
   r.store.setState('adaptive:history',structuredClone(r.engine.checkpoint));const parameters=structuredClone(r.engine.checkpoint.model.parameters);
   r.advance(60_000);native.receive('0203',18);r.engine.tick();

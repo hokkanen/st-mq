@@ -75,7 +75,7 @@ try {
           status.garage.errors = [{ section: 'roomTemperature', message: 'Saved Garage room setting unavailable' }];
           status.garage.error = 'Some saved Garage data is unavailable. Other recorded data remains readable.';
         }
-        if (pair.role === 'master') { status.input = 'providers'; status.mode = 'monitoring'; status.liveWrites = false; }
+        if (pair.role === 'master') { status.input = 'providers'; status.automation = { home: { enabled: false }, garage: { enabled: false } }; }
         response.writeHead(result.status, headers); response.end(JSON.stringify(status));
       } else { response.writeHead(result.status, headers); response.end(Buffer.from(await result.arrayBuffer())); }
     } catch { if (!response.headersSent) json(500, { error: 'Synthetic browser fixture failure' }); else response.end(); }

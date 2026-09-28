@@ -221,7 +221,7 @@ test('dated contract edits invalidate chart pricing without filling uncovered hi
   const priced = await read();
   assert.ok(priced.series.all_in_price.some(p => Math.abs(p.y - (-5 + .5 + 2 + 2.66) * 1.25) < 0.000001));
   assert.ok(priced.series.spot_price.some(p => p.y === -5));
-  assert.equal((await fetch(`${base}/api/status`, { headers }).then(r => r.json())).liveWrites, false);
+  assert.equal((await fetch(`${base}/api/status`, { headers }).then(r => r.json())).automation.home.enabled, false);
 });
 
 test('Finnish DST chart days preserve 23 and 25 hours with explicit selected bounds', async t => {

@@ -12,10 +12,10 @@ const sensors = (ids = ['indoor', 'downstairs', 'bedroom', 'garage']) => ({ devi
   id, kind: 'temperature', signal: `${id}_temperature`, connection: `mqtt:invented/${id}`, area: id === 'garage' ? 'garage' : 'home',
 })) });
 
-test('default startup is shadow with simulated devices, no provider connections and no real comfort target', () => {
+test('default startup has no global mode with simulated devices, no provider connections and no real comfort target', () => {
   const cfg = loadConfig({}, '/missing-repository');
   assert.equal(cfg.input, 'simulated');
-  assert.equal(cfg.settings.mode, 'shadow');
+  assert.equal(Object.hasOwn(cfg.settings, 'mode'), false);
   assert.equal(cfg.settings.comfort.targetC, null);
   assert.deepEqual(cfg.connections, {});
   assert.equal(cfg.dbPath, '/missing-repository/var/simulation.sqlite');
@@ -251,13 +251,13 @@ test('explicit standalone options configure permanent settings without enabling 
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const path = join(directory, 'options.json');
   writeFileSync(path, JSON.stringify({ options: {
-    controller: { input: 'simulated', mode: 'monitoring', max_drop_c: 0.7, web_token: 'synthetic-token-is-long-enough' },
+    controller: { input: 'simulated', max_drop_c: 0.7, web_token: 'synthetic-token-is-long-enough' },
     electricity: { margin_ct_per_kwh_ex_vat: 0.8, vat_percent: 10, transfer_tariff: 'seasonal',
       winter_day_transfer_ct_per_kwh_ex_vat: 5, effective_date: '2026-01-01' },
     entsoe: { token: 'synthetic-should-not-be-exposed' },
   } }));
   const config = loadConfig({ STMQ_CONFIG: path, STMQ_HOST: '0.0.0.0', STMQ_DATABASE_DIR: join(directory, 'shared') }, directory);
-  assert.equal(config.settings.mode, 'monitoring');
+  assert.equal(Object.hasOwn(config.settings, 'mode'), false);
   assert.equal(config.settings.comfort.maxDropC, 0.7);
   assert.deepEqual(config.connections, {});
   assert.equal(config.priceSettings.marginCtPerKwh, 0.8);
@@ -266,8 +266,8 @@ test('explicit standalone options configure permanent settings without enabling 
   assert.equal(config.priceSettings.transferRates.vatIncluded, false);
   assert.equal(config.dbPath, join(directory, 'shared/simulation.sqlite'));
   assert.equal(Object.hasOwn(config,'legacyDbPath'),false);
-  const overridden = loadConfig({ STMQ_CONFIG: path, STMQ_MODE: 'shadow', STMQ_MAX_DROP_C: '1.2' }, directory);
-  assert.equal(overridden.settings.mode, 'shadow');
+  const overridden = loadConfig({ STMQ_CONFIG: path, STMQ_MAX_DROP_C: '1.2' }, directory);
+  assert.equal(Object.hasOwn(overridden.settings, 'mode'), false);
   assert.equal(overridden.settings.comfort.maxDropC, 1.2);
 });
 
@@ -276,13 +276,13 @@ test('standalone secrets use XDG config and repository options are no longer rea
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   mkdirSync(join(directory, 'st-mq'));
   mkdirSync(join(directory, 'data'));
-  writeFileSync(join(directory, 'data/options.json'), JSON.stringify({ controller: { mode: 'active' } }));
+  writeFileSync(join(directory, 'data/options.json'), JSON.stringify({ controller: { max_drop_c: 0.1 } }));
   const path = join(directory, 'st-mq/secrets.json');
-  writeFileSync(path, JSON.stringify({ controller: { mode: 'monitoring', max_drop_c: 0.6 },
+  writeFileSync(path, JSON.stringify({ controller: { max_drop_c: 0.6 },
     electricity: { tax_ct_per_kwh_ex_vat: 2.3 }, entsoe: { token: 'synthetic' } }));
   const config = loadConfig({ XDG_CONFIG_HOME: directory }, directory);
   assert.equal(config.input, 'simulated');
-  assert.equal(config.settings.mode, 'monitoring');
+  assert.equal(Object.hasOwn(config.settings, 'mode'), false);
   assert.equal(config.settings.comfort.maxDropC, 0.6);
   assert.equal(config.priceSettings.taxCtPerKwh, 2.3);
   assert.deepEqual(config.connections, {});
@@ -295,7 +295,7 @@ test('public defaults are reread before private overrides and explicit values su
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   mkdirSync(join(directory, '.config/st-mq'), { recursive: true });
   const manifest = JSON.parse(readFileSync(new URL('../config.json', import.meta.url), 'utf8'));
-  manifest.options.controller.mode = 'monitoring';
+  manifest.options.controller.max_drop_c = 0.9;
   manifest.options.controller.learning_trials = true;
   manifest.options.electricity.tax_ct_per_kwh_ex_vat = 4;
   writeFileSync(join(directory, 'config.json'), JSON.stringify(manifest));
@@ -303,15 +303,16 @@ test('public defaults are reread before private overrides and explicit values su
   writeFileSync(privatePath, JSON.stringify({ controller: { learning_trials: false, compressor_integral_a1: null },
     electricity: { tax_ct_per_kwh_ex_vat: 0 } }));
   const config = loadConfig({ HOME: directory }, directory);
-  assert.equal(config.settings.mode, 'monitoring');
+  assert.equal(Object.hasOwn(config.settings, 'mode'), false);
   assert.equal(config.control.learningTrials, false);
   assert.equal(config.control.compressorIntegralA1, null);
   assert.equal(config.priceSettings.taxCtPerKwh, 0);
-  manifest.options.controller.mode = 'shadow';
+  manifest.options.controller.max_drop_c = 0.5;
   writeFileSync(join(directory, 'config.json'), JSON.stringify(manifest));
   const transaction = await configurationSource(config).prepare();
-  assert.equal(transaction.config.settings.mode, 'shadow');
+  assert.equal(Object.hasOwn(transaction.config.settings, 'mode'), false);
   assert.equal(transaction.config.control.learningTrials, false);
+  assert.equal(transaction.config.settings.comfort.maxDropC, 0.5);
   await transaction.persist();
   await transaction.complete();
   assert.equal(readFileSync(privatePath, 'utf8').includes('learning_trials'), true);
@@ -394,9 +395,9 @@ test('live MQTT can run without H66 and threshold configuration keeps native def
   const directory=mkdtempSync(join(tmpdir(),'stmq-live-config-'));
   t.after(()=>rmSync(directory,{recursive:true,force:true}));
   const path=join(directory,'options.json');
-  writeFileSync(path,JSON.stringify({controller:{input:'mqtt',mode:'active',compressor_integral_a1:-60,compressor_hysteresis_c:10},mqtt:{address:'mqtt://synthetic.invalid'}}));
+  writeFileSync(path,JSON.stringify({controller:{input:'mqtt',compressor_integral_a1:-60,compressor_hysteresis_c:10},mqtt:{address:'mqtt://synthetic.invalid'}}));
   const cfg=loadConfig({STMQ_CONFIG:path},directory);
-  assert.equal(cfg.input,'mqtt');assert.equal(cfg.settings.mode,'active');assert.equal(cfg.h66.enabled,false);
+  assert.equal(cfg.input,'mqtt');assert.equal(Object.hasOwn(cfg.settings, 'mode'), false);assert.equal(cfg.h66.enabled,false);
   assert.equal(cfg.control.auxIntegralA2,-990);assert.equal(cfg.control.auxHysteresisC,30);
   assert.equal(cfg.control.compressorIntegralA1,-60);assert.equal(cfg.control.compressorHysteresisC,10);
   const defaults=loadConfig({},'/missing-repository');
@@ -423,4 +424,19 @@ test('sparse charging defaults load and reload solely from configuration', async
   assert.equal(transaction.config.charging.defaults.readyBy, '09:00');
   assert.equal(transaction.config.charging.defaults.minimumSoc, 80);
   assert.deepEqual(transaction.config.charging.chargers.charger1, {});
+});
+
+
+test('retired global mode settings fail before granting any feature permission', t => {
+  assert.throws(() => validateSettings({ mode: 'active' }), /Unknown heating setting: mode/);
+  assert.throws(() => loadConfig({ STMQ_MODE: 'active' }, '/missing-repository'), /Retired environment setting: STMQ_MODE/);
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-retired-mode-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const path = join(directory, 'fixture.json');
+  for (const addon of [undefined, '1']) {
+    const source = JSON.stringify({ controller: { mode: 'shadow' } });
+    writeFileSync(path, source);
+    assert.throws(() => loadConfig({ STMQ_CONFIG: path, STMQ_ADDON: addon }, directory), /Retired configuration field: controller.mode/);
+    assert.equal(readFileSync(path, 'utf8'), source);
+  }
 });

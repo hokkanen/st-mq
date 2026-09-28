@@ -166,7 +166,7 @@ test('an unrelated configuration change preserves a learned reference establishe
   store.setState('garage:configuration:mqtt', settings);
   let runtime;
   try {
-    runtime = new GarageRuntime({ store, engine: { latest: {}, settings: { mode: 'shadow' } },
+    runtime = new GarageRuntime({ store, engine: { latest: {}, automationEnabled: () => false },
       config: { input: 'mqtt', garage: { ...settings, savingsStrategy: 'gentle' } }, clock: () => START + HOUR });
     assert.equal(runtime.status().learning.normalReference.roomTargetC, 7);
     assert.equal(runtime.status().learning.normalReference.rearC, 7.4);

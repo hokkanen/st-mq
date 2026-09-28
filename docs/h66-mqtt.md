@@ -40,15 +40,14 @@ An illustrative partial configuration uses a deliberately invented identifier:
 {
   "controller": {
     "input": "providers",
-    "mode": "shadow",
     "h66_device": "EXAMPLE_H66_DEVICE"
   }
 }
 ```
 
 Both `providers` and `mqtt` input support H66. Preserve the installation's chosen
-live input and keep `shadow` or `monitoring` while commissioning; those modes do
-not start automatic heating commands. They still permit explicit manual tests.
+live input and keep Home heating on **Plan only** while commissioning; it does
+not start automatic heating commands. Explicit manual controls remain available.
 
 Save private settings in the configured private configuration file, or save
 add-on options in Home Assistant. Choose **Data & settings → Connections &

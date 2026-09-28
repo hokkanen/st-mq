@@ -116,7 +116,7 @@ test('forecast must cover the pause and useful-heating delay', () => {
 
 function runtimeFixture(t, extra = {}, seed = null) {
   const store = new Store(':memory:'); let now = NOW, owner = true;
-  const engine = { latest: {}, lastKnownTemperatures: {}, settings: { mode: 'active' } };
+  const engine = { latest: {}, lastKnownTemperatures: {}, automationEnabled: () => true };
   const config = { input: 'mqtt', garage: garageSettings({ enabled: true, savingsStrategy: 'savings', protection: { approved: true }, ...extra }) };
   if (seed) {
     appendGarageEntry(store, 'mqtt', 'context', {}, config.garage, NOW - 1, { key: 'explicit-test-seed', seed });

@@ -142,7 +142,7 @@ test('restart restores report coverage separately from temperature age and expir
   const recorder = new Recorder(store);
   for (let minute = 0; minute <= 180; minute += 15) recorder.record(report(minute));
   store.close(); store = new Store(path); now = start + 181 * MINUTE;
-  engine = new Engine({ store, config: { input: 'providers', settings: { mode: 'shadow' } }, clock: () => now });
+  engine = new Engine({ store, config: { input: 'providers', settings: {  } }, clock: () => now });
   const initial = engine.status().observations;
   assert.equal(initial.upstairs.observedAt, start);
   assert.equal(initial.upstairs.stale, false);

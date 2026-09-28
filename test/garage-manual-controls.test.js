@@ -16,7 +16,7 @@ function setup(t, { live = false, approved = true } = {}) {
   const store = new Store(':memory:');
   const config = { input: 'mqtt', garage: { enabled: true, savingsStrategy: 'gentle', minOnMs: 0,
     protection: { approved }, adapter: { stateTopic: 'fixture/garage/state' } } };
-  const engine = { latest: {}, lastKnownTemperatures: {}, settings: { mode: 'active' } };
+  const engine = { latest: {}, lastKnownTemperatures: {}, automationEnabled: () => true };
   const runtime = new GarageRuntime({ store, engine, config, clock: () => now, canControl: () => owner });
   const commands = [];
   const adapter = createGarageAdapter({ settings: config.garage.adapter, clock: () => now, hostSession: 'fixture-host',
@@ -149,17 +149,19 @@ test('unsupported live garage adapter never sends manual commands; price-control
   assert.equal(f.commands.length, 0);
 });
 
-test('temporary override availability distinguishes operating mode from offline input', async t => {
+test('explicit bounded garage controls work with automation disabled and retain offline fencing', async t => {
   const f = setup(t);
-  for (const mode of ['shadow', 'monitoring']) {
-    f.engine.settings.mode = mode;
-    assert.equal(f.runtime.heatingControls().available, false);
-    assert.equal(f.runtime.heatingControls().reason, 'Temporary heating overrides require Active mode.');
-  }
+  f.engine.automationEnabled = () => false;
+  assert.equal(f.runtime.heatingControls().available, true);
+  await f.runtime.setTemporary({ pauseUntil: new Date(BASE + 10 * MINUTE).toISOString() });
+  await f.runtime.setHeating({ mode: 'off' });
+  assert.equal(f.commands[0].purpose, 'manual');
+  f.at(BASE + 1000); f.state(f.commands[0]); await flush();
+  assert.equal(f.runtime.heatingControls().confirmed, true);
+  f.runtime.safetyTick(); await flush();
+  assert.equal(f.commands.length, 1, 'Plan only must not revoke explicit manual permission');
   f.runtime.input = 'offline';
   assert.equal(f.runtime.heatingControls().reason, 'Temporary heating overrides are unavailable with offline input.');
-  f.runtime.input = 'mqtt'; f.engine.settings.mode = 'active';
-  assert.equal(f.runtime.heatingControls().available, true);
 });
 
 test('garage pause survives restart but manual Off permission does not', async t => {

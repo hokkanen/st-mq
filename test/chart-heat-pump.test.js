@@ -155,7 +155,7 @@ test('simulation and different devices cannot supply missing physical equipment 
 test('engine preserves nominal settings on first use and changes without writing a standalone power series', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   let now = start;
-  const engineConfig = { input: 'simulated', control: config, settings: { mode: 'shadow' } };
+  const engineConfig = { input: 'simulated', control: config, settings: {} };
   let engine = new Engine({ store, config: engineConfig, clock: () => now });
   engine.tick(); now += MINUTE; engine.tick();
   engine = new Engine({ store, config: engineConfig, clock: () => now }); engine.tick();

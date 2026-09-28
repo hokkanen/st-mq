@@ -16,7 +16,7 @@ async function fixture(t, saved, ownership) {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-charging-replica-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const dbPath = join(directory, 'snapshot.sqlite'), store = new Store(dbPath);
-  store.event('decision', { input: 'mqtt', mode: 'monitoring' }, snapshotAt);
+  store.event('decision', { input: 'mqtt',  }, snapshotAt);
   store.setState('charging:mqtt', saved);
   if (ownership) store.setState('charging:mqtt:charger1:synthetic-association:ownership', ownership);
   store.close();

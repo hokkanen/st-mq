@@ -4,7 +4,7 @@ import { homeHeatingConfirmation, garageHeatingConfirmation, garageNativeReading
 import { currentPriceDisplay } from '../chart/current-price.js';
 
 const now = Date.parse('2026-09-15T12:00:00Z');
-const home = () => ({ now, input: 'providers', mode: 'active', liveWrites: true, decision: { phase: 'normal' },
+const home = () => ({ now, input: 'providers', automation: { home: { enabled: true }, garage: { enabled: true } }, decision: { phase: 'normal' },
   observations: { actual: { mode: 'normal', source: 'device-readback', verified: true, observedAt: now - 1000 } } });
 const garage = () => ({ now, input: 'providers', garage: { settings: { maxSensorAgeMs: 120_000 }, heatingControls: { confirmed: true },
   adapter: { connected: true, health: { deviceOnline: true, pumpCommunicating: true, driverProgressing: true },
@@ -52,7 +52,7 @@ test('Home confirmation retains simulation, pending delivery, restoration, alarm
 
 test('Home manual requests are confirmed from relay feedback while automatic control is disabled', () => {
   const status = home();
-  status.mode = 'shadow';
+  status.automation.home.enabled = false;
   status.decision.phase = 'normal';
   Object.assign(status.observations.actual, { source: 'equipment-state-readback', stale: false,
     requestedPhase: 'reduction', phase: 'reduction', mode: 'reduction' });

@@ -57,7 +57,7 @@ test('configuration startup and reload accept named strategies and reject retire
 
 test('retired persisted home settings are rejected before any database mutation', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
-  store.setState('settings:offline', { mode: 'shadow', savingsAggressiveness: 50 });
+  store.setState('settings:offline', { savingsAggressiveness: 50 });
   const before = store.db.prepare('SELECT * FROM state ORDER BY key').all();
   assert.throws(() => new Engine({ store, config: { input: 'offline', settings: validateSettings() } }), /saved heating settings.*fresh development database/);
   assert.deepEqual(store.db.prepare('SELECT * FROM state ORDER BY key').all(), before);

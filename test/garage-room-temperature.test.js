@@ -288,7 +288,7 @@ test('missing startup sensor data still establishes the native17 fallback withou
 
 test('runtime persists device-bound room settings across restart and explicit native-range replacements', async t => {
   const store = new Store(':memory:'); t.after(() => store.close());
-  const f = fixture(null), engine = { latest: {}, settings: { mode: 'shadow' } };
+  const f = fixture(null), engine = { latest: {}, automationEnabled: () => false };
   const options = { engine, store, config: { input: 'mqtt', garage: { enabled: false } }, clock: f.now };
   const runtime = new GarageRuntime(options); runtime.setAdapter(f.adapter);
   t.after(() => runtime.close({ restore: false }));
@@ -315,7 +315,7 @@ test('runtime persists device-bound room settings across restart and explicit na
 
 test('room settings remain unchanged after two hours, the next day and restart', async t => {
   const store = new Store(':memory:'); t.after(() => store.close());
-  const f = fixture(null), options = { store, engine: { latest: {}, settings: { mode: 'shadow' } },
+  const f = fixture(null), options = { store, engine: { latest: {}, automationEnabled: () => false },
     config: { input: 'mqtt', garage: {} }, clock: f.now };
   const runtime = new GarageRuntime(options); runtime.setAdapter(f.adapter);
   t.after(() => runtime.close({ restore: false }));
@@ -370,7 +370,7 @@ test('power OFF and cooling retain room intent without forcing ON or HEAT, then 
 
 test('a changed adapter starts without applying old room intent or changing its historical record', async t => {
   const store = new Store(':memory:'); t.after(() => store.close());
-  const f = fixture(null), options = { store, engine: { latest: {}, settings: { mode: 'shadow' } },
+  const f = fixture(null), options = { store, engine: { latest: {}, automationEnabled: () => false },
     config: { input: 'mqtt', garage: {} }, clock: f.now };
   const runtime = new GarageRuntime(options); runtime.setAdapter(f.adapter);
   t.after(() => runtime.close({ restore: false }));
@@ -398,7 +398,7 @@ test('a changed adapter starts without applying old room intent or changing its 
 
 test('MQTT route changes start with inactive saved intent, while password rotation preserves the equipment binding', async t => {
   const store = new Store(':memory:'); t.after(() => store.close());
-  const f = fixture(null), options = { store, engine: { latest: {}, settings: { mode: 'shadow' } },
+  const f = fixture(null), options = { store, engine: { latest: {}, automationEnabled: () => false },
     config: { input: 'mqtt', garage: {}, connections: { mqtt: { address: 'mqtt://invented-first', user: 'invented-owner' } } }, clock: f.now };
   const runtime = new GarageRuntime(options); runtime.setAdapter(f.adapter);
   t.after(() => runtime.close({ restore: false }));
@@ -423,7 +423,7 @@ test('MQTT route changes start with inactive saved intent, while password rotati
 test('paired providers can change to the local broker without replaying low or native-range intent', async t => {
   for (const targetC of [7, 18]) await t.test(`${targetC} C`, async t => {
     const store = new Store(':memory:'); t.after(() => store.close());
-    const f = fixture(null), options = { store, engine: { latest: {}, settings: { mode: 'shadow' } },
+    const f = fixture(null), options = { store, engine: { latest: {}, automationEnabled: () => false },
       config: { input: 'providers', garage: {}, topology: 'pair', pair: {},
         connections: { mqtt: { address: 'mqtt://invented-shared-broker', user: 'invented-owner' } } }, clock: f.now };
     const runtime = new GarageRuntime(options); runtime.setAdapter(f.adapter);
@@ -466,7 +466,7 @@ test('retired timed overrides, unbound settings and room configuration fail befo
     const store = new Store(':memory:'); t.after(() => store.close());
     store.setState('garage:roomTemperature:mqtt', saved);
     const original = store.setState; store.setState = () => { throw new Error('unexpected mutation'); };
-    assert.throws(() => new GarageRuntime({ store, engine: { latest: {}, settings: { mode: 'shadow' } },
+    assert.throws(() => new GarageRuntime({ store, engine: { latest: {}, automationEnabled: () => false },
       config: { input: 'mqtt', garage: {} }, clock: () => BASE }), /Unsupported saved Garage room setting/);
     store.setState = original;
   }
@@ -475,7 +475,7 @@ test('retired timed overrides, unbound settings and room configuration fail befo
 
 test('runtime rejects stale preference API, unsupported low target, replicas and failed persistence', async t => {
   const store = new Store(':memory:'); t.after(() => store.close());
-  const f = fixture(null), engine = { latest: {}, settings: { mode: 'shadow' } };
+  const f = fixture(null), engine = { latest: {}, automationEnabled: () => false };
   let owner = true;
   const runtime = new GarageRuntime({ engine, store, config: { input: 'mqtt', garage: {} }, clock: f.now, canControl: () => owner });
   runtime.setAdapter(f.adapter); t.after(() => runtime.close({ restore: false }));

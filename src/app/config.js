@@ -21,18 +21,16 @@ export function configurationSource(config) { return configurationSources.get(co
 
 export function validateSettings(input = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Heating settings must be an object');
-  const fields = ['mode', 'savingsStrategy', 'preheatRoomBoostC', 'comfort', 'occupancy', 'recoveryHoldMinutes'];
+  const fields = ['savingsStrategy', 'preheatRoomBoostC', 'comfort', 'occupancy', 'recoveryHoldMinutes'];
   for (const key of Object.keys(input)) if (!fields.includes(key)) throw new Error(`Unknown heating setting: ${key}`);
   if (input.recoveryHoldMinutes !== undefined && (!Number.isInteger(input.recoveryHoldMinutes)
     || input.recoveryHoldMinutes < 1 || input.recoveryHoldMinutes > 240)) throw new Error('Invalid recovery hold');
   const settings = {
-    mode: input.mode ?? 'shadow',
     savingsStrategy: heatingStrategy(input.savingsStrategy).id,
     preheatRoomBoostC: input.preheatRoomBoostC ?? 5,
     comfort: { targetC: null, maxDropC: 1.5, maxRiseC: 1.5, severeDropC: 2, ...(input.comfort ?? {}) },
     occupancy: input.occupancy ?? { mode: 'occupied' },
   };
-  if (!['monitoring', 'shadow', 'active'].includes(settings.mode)) throw new Error('Invalid operating mode');
   const { targetC, maxDropC, maxRiseC } = settings.comfort;
   if (targetC !== null && (!Number.isFinite(targetC) || targetC < 15 || targetC > 26)) throw new Error('Comfort target must be 15–26 °C or unset');
   if (!Number.isFinite(maxDropC) || maxDropC < 0 || maxDropC > 2) throw new Error('Preferred drop must be 0–2 °C');
@@ -88,6 +86,8 @@ export function acquisitionConfiguration(input = {}) {
 }
 
 function rejectRetiredTopologyEnvironment(env) {
+  if (Object.hasOwn(env, 'STMQ_MODE'))
+    throw new Error('Retired environment setting: STMQ_MODE. Choose automation separately for Home and Garage in the dashboard.');
   if (Object.hasOwn(env, 'STMQ_ROLE'))
     throw new Error('Retired environment setting: STMQ_ROLE. Use STMQ_MIRROR_ROLE for mirror topology; pair roles are managed through manual promotion and handover.');
   if (Object.hasOwn(env, 'STMQ_PAIR_ROLE'))
@@ -330,7 +330,7 @@ function buildConfiguration(options, env, cwd, configuration, source, { bootstra
       auxRatedKw: options.controller?.auxiliary_rated_kw ?? 9, compressorOnlyMode: 2 },
     h66Verification: !mirrorSlave && verification ? resolve(addon ? '/config' : cwd, verification) : undefined,
     settings: validateSettings({ savingsStrategy: options.controller?.savings_strategy,
-      preheatRoomBoostC: options.controller?.preheat_room_boost_c ?? 5, mode: mirrorSlave ? 'monitoring' : env.STMQ_MODE ?? options.controller?.mode ?? 'shadow',
+      preheatRoomBoostC: options.controller?.preheat_room_boost_c ?? 5,
       comfort: { targetC: null, maxRiseC: options.controller?.max_rise_c ?? 1.5, maxDropC: env.STMQ_MAX_DROP_C == null ? options.controller?.max_drop_c ?? 1.5 : Number(env.STMQ_MAX_DROP_C) } }) };
   config.pair = pairConfiguration(options.pair, env, config);
   if (config.topology === 'pair' && config.connections.easee?.local_ocpp?.enabled) {

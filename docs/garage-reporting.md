@@ -127,3 +127,9 @@ checks scope arithmetic, disabled release without an owned episode, the new char
 menu entries, and closed/open layouts at 1440, 390 and 320 pixels. Screenshots are
 left in a reported temporary directory for visual review. No existing browser
 session or household service is used.
+
+Manual heating feedback keeps requested selection, fresh native readback and
+command outcome distinct. The button area reports external handover, bounded OFF
+publication, confirmation and restoration. A delivery failure remains visible
+after the manual selection is cleared; a fresh power observation alone does not
+claim that a command or queued-work cancellation was confirmed.

@@ -27,7 +27,7 @@ function fixture(t, { signal = 'indoor_temperature', mapping, clockRequired = tr
     connection: 'mqtt:invented/temperature', mqtt: clockRequired ? { timestamp_path: 'measured_at' } : {},
     readings: mapping ? [{ key: 'temperature', signal, unit: 'degC', required: true, ...mapping }] : [] }] });
   const store = new Store(':memory:');
-  const engine = new Engine({ store, config: { input: 'mqtt', connections: { equipment }, settings: { mode: 'shadow' } }, clock: () => now });
+  const engine = new Engine({ store, config: { input: 'mqtt', connections: { equipment }, settings: {  } }, clock: () => now });
   const capture = createEquipmentCapture({ store, engine, settings: equipment, publish: async () => {} });
   capture.setConnected(true);
   t.after(async () => { capture.close(); await engine.garage.close({ restore: false }); await engine.charging.close();

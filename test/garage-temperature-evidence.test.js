@@ -108,7 +108,7 @@ function engineFixture(t) {
   const store = new Store(':memory:');
   let now = start;
   const engine = new Engine({ store, clock: () => now,
-    config: { input: 'mqtt', settings: { mode: 'shadow' }, connections: {} } });
+    config: { input: 'mqtt', automationEnabled: () => false, connections: {} } });
   t.after(async () => {
     await engine.garage.close({ restore: false }); await engine.charging.close();
     await engine.closeFireplace(); await engine.executor.close({ restore: false }); store.close();

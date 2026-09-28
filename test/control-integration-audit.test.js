@@ -12,16 +12,17 @@ import { createH66Decoder } from '../src/domain/telemetry.js';
 const MINUTE = 60_000, HOUR = 60 * MINUTE;
 const nextTurn = () => new Promise(resolve => setImmediate(resolve));
 
-function setup(t, { delayed = false, mode = 'active', startAt = Date.parse('2026-09-07T21:00:00Z') } = {}) {
+function setup(t, { delayed = false, automationEnabled = true, startAt = Date.parse('2026-09-07T21:00:00Z') } = {}) {
   const store = new Store(':memory:'), commands = [], pending = [], circulation = [];
   let now = startAt, indoorC = 21.2;
-  const config = { input: 'mqtt', settings: validateSettings({ mode, comfort: { targetC: 21, maxDropC: 2, maxRiseC: 2 } }),
+  const config = { input: 'mqtt', settings: validateSettings({ comfort: { targetC: 21, maxDropC: 2, maxRiseC: 2 } }),
     control: { ...CONTROL_DEFAULTS, learningTrials: false } };
   const transport = { targetIdentity: { tariff: 'a'.repeat(64), dhwr: 'b'.repeat(64) }, publish(batch) {
     commands.push({ at: now, batch: [...batch] });
     return delayed ? new Promise(resolve => pending.push(resolve)) : Promise.resolve({ status: 'mqtt', sent: true, actual: null });
   }, publishDhwr:async on=>{circulation.push({at:now,on});return {status:'mqtt',sent:true};} };
   const engine = new Engine({ store, config, commandTransport: transport, clock: () => now });
+  engine.automation.set('home', automationEnabled);
   const ingest = (signal, value) => engine.ingest({ source: signal === 'outdoor_temperature' ? 'fmi' : 'synthetic',
     device: 'invented-house', signal, value, unit: 'degC', sourceTime: now, receivedAt: now, quality: [] });
   const intervals = Array.from({ length: 24 }, (_, index) => ({ start: now + index * 15 * MINUTE,
@@ -208,7 +209,7 @@ test('an expiry-timer AUX release stays latched when fresh warm observations arr
   const r=setup(t);r.plan();
   const first=r.engine.tick();await r.settle();
   const native=r.native();
-  await r.engine.executor.execute({...first.decision,recoveryAuxRestrictionAllowed:true},{mode:'active',now:r.now});
+  await r.engine.executor.execute({...first.decision,recoveryAuxRestrictionAllowed:true},{automationEnabled: true,now:r.now});
   assert.equal(r.engine.cycles.active()?.plan.executionOwner,r.engine.executor.status().recoveryOnExpiry.owner);
   r.advance(15*MINUTE);native.refresh();
   t.mock.timers.tick(15*MINUTE);await nextTurn();
@@ -225,14 +226,14 @@ test('an expiry-timer AUX release stays latched when fresh warm observations arr
 });
 
 test('settings updates retain the configured preheat and recovery policy for display',async t=>{
-  const r=setup(t,{mode:'shadow'});
+  const r=setup(t,{automationEnabled: false});
   r.engine.updateSettings({...r.engine.settings,preheatRoomBoostC:1});await r.settle();
   assert.equal(r.engine.settings.preheatRoomBoostC,r.engine.control.preheatRoomBoostC);
   assert.equal(r.engine.settings.recoveryHoldMinutes,r.engine.control.recoveryHoldMinutes);
 });
 
 test('old algorithm history is refused both at startup and when a background seed arrives', async t => {
-  const r = setup(t, { mode: 'shadow' });
+  const r = setup(t, { automationEnabled: false });
   const history = restoreAdaptiveCheckpoint(null, r.config.control);
   history.algorithmVersion = 'committed-house-v2';
   history.baselineC = 24; history.comfortReference = { targetC: 24 };

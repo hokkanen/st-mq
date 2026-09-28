@@ -13,7 +13,7 @@ assert.equal(spawnSync('arping', ['-V'], { stdio: 'ignore' }).status, 0);
 // Invalid arguments must fail without issuing any network mutation.
 assert.equal(spawnSync('/usr/local/bin/st-mq-vip', ['invalid'], { stdio: 'ignore' }).status, 1);
 const config = loadConfig({ XDG_CONFIG_HOME: '/missing-replica-fixture', STMQ_TOPOLOGY: 'mirror', STMQ_MIRROR_ROLE: 'slave',
-  STMQ_INPUT: 'mqtt', STMQ_MODE: 'active', STMQ_PORT: '0', STMQ_HOST: '127.0.0.1',
+  STMQ_INPUT: 'mqtt', STMQ_PORT: '0', STMQ_HOST: '127.0.0.1',
   STMQ_DATA_DIR: '/tmp/replica-smoke-unused', STMQ_MIRROR_DIR: '/tmp/replica-smoke-waiting' });
 const app = await start({ config });
 try {
@@ -23,7 +23,8 @@ try {
   const status = await response.json();
   assert.equal(status.role, 'slave');
   assert.equal(status.sync.state, 'waiting');
-  assert.equal(status.liveWrites, false);
+  assert.equal(status.automation.home.enabled, false);
+  assert.equal(status.automation.garage.enabled, false);
   assert.equal(app.engine, undefined);
   assert.equal((await fetch(`${endpoint}/`)).status, 200);
   assert.equal((await fetch(`${endpoint}/api/heating-test`, { method: 'POST',

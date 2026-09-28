@@ -12,7 +12,7 @@ const payload = { requestId: 'invented-api-change', signal: 'indoor_temperature'
 async function fixture(t, { input = 'providers', ...serverOptions } = {}) {
   const store = new Store(':memory:');
   let now = initial;
-  const engine = new Engine({ store, config: { input, settings: validateSettings({ mode: 'monitoring' }) }, clock: () => now });
+  const engine = new Engine({ store, config: { input, settings: validateSettings({  }) }, clock: () => now });
   const token = 'synthetic-sensor-api-access-token';
   const server = createAppServer({ engine, store, token, ...serverOptions });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));

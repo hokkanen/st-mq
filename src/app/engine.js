@@ -1,4 +1,5 @@
 import { weatherAcquisitionIdentity } from '../acquisition/weather-identity.js';
+import { HeatingAutomation } from './automation.js';
 import { randomUUID } from 'node:crypto';
 import { dhwrEligible } from '../control/dhwr.js';
 import { restoreAdaptiveCheckpoint } from '../control/adaptive-learning.js';
@@ -354,14 +355,17 @@ export class Engine {
   }
   async closeFireplace() { await this.fireplaceRebuild?.close(); }
   constructor({ store, config, clock = Date.now, commandTransport = null, canControl = () => true }) {
+    validateSettings(config.settings);
     const previousSettings = store.getState(`settings:${config.input}`);
     if (previousSettings !== null && previousSettings !== undefined) {
       try { validateSettings(previousSettings); }
       catch { throw new Error('Unsupported saved heating settings; start a fresh development database'); }
     }
+    this.automation = new HeatingAutomation({ store, config, targetIdentity: feature => this.automationTarget(feature) });
     this.store = store;
     this.config = config;
     this.clock = clock;
+    this.canControl = canControl;
     const { exportDirectory, ...recorderConfig } = config.recording ?? {};
     this.recorder = new Recorder(store, { config: recorderConfig, clock });
     if (['mqtt', 'providers'].includes(config.input)) {
@@ -446,6 +450,7 @@ export class Engine {
     }
     this.garage = new GarageRuntime({ engine: this, store, config, clock, canControl });
     this.charging = new ChargingRuntime({ engine: this, store, config, clock, canControl });
+    this.automation.save();
   }
   ingest(observation) {
     if (observation?.signal === 'indoor_temperature' && observation.source?.startsWith('husdata'))
@@ -536,18 +541,83 @@ export class Engine {
   }
   updateSettings(input) {
     const next = validateSettings(input);
-    const leavingActive = this.settings.mode === 'active' && next.mode !== 'active';
-    if (next.mode === 'active' && this.config.input !== 'simulated' && !this.executor.commandTransport) throw new Error('Active control requires a configured MQTT command transport; offline input cannot control equipment');
     this.store.setState(`settings:${this.config.input}`, next);
     this.store.setState(`occupancy:${this.config.input}`, next.occupancy);
     this.store.event('settings-changed', { previous: this.settings, next }, this.clock());
     this.settings = { ...next, preheatRoomBoostC: this.control.preheatRoomBoostC,
       recoveryHoldMinutes: this.control.recoveryHoldMinutes };
-    if (leavingActive) {
-      this.dispatchPending = Promise.resolve(this.dispatchPending).then(() => this.executor.restore({now:this.clock(),reason:'automatic-control-disabled'}))
-        .catch(() => this.store.event('restoration-pending',{reason:'mode-changed'},this.clock())).finally(() => { this.dispatchPending = null; });
-    }
     return this.tick();
+  }
+  environment() { return this.config.input === 'simulated' ? 'simulation' : this.config.input === 'offline' ? 'history' : 'live'; }
+  automationTarget(feature) {
+    if (this.config.input === 'simulated') return this.automation.features[feature].identity;
+    const target = feature === 'home' ? this.executor?.commandTransport?.targetIdentity?.tariff
+      : this.garage?.adapter?.status(this.clock())?.targetIdentity;
+    return typeof target === 'string' && /^[a-f0-9]{64}$/.test(target) ? target : null;
+  }
+  automationEnabled(feature) {
+    return this.automation.features[feature]?.enabled === true && this.canControl() && this.config.input !== 'offline'
+      && this.automationTarget(feature) === this.automation.features[feature].targetIdentity
+      && (feature === 'garage' ? this.garage?.settings.enabled === true : Boolean(this.plant || this.executor?.commandTransport));
+  }
+  automationStatus() {
+    return Object.fromEntries(['home', 'garage'].map(feature => {
+      const control = this.automation.features[feature], garage = feature === 'garage';
+      const reason = !this.canControl() ? 'This computer is read-only.'
+        : this.config.input === 'offline' ? 'Automation is unavailable in the history viewer.'
+          : garage && !this.garage?.settings.enabled ? 'Garage heating is not enabled in configuration.'
+            : !garage && !this.plant && !this.executor.commandTransport ? 'Configure a heating command connection before enabling automation.'
+              : !this.automationTarget(feature) ? 'Waiting for the heating equipment identity to be confirmed.'
+                : control.enabled && this.automationTarget(feature) !== control.targetIdentity ? 'The heating equipment changed; its automation permission is no longer valid.' : null;
+      const pause = garage ? this.garage?.temporary : this.store.getState(`override:${this.config.input}`);
+      const activity = reason ? 'unavailable' : !control.enabled ? 'plan-only' : pause?.expiresAt > this.clock() ? 'paused' : 'automatic';
+      return [feature, { ...control, available: reason === null, reason, activity,
+        ...(activity === 'paused' ? { pausedUntil: pause.expiresAt } : {}) }];
+    }));
+  }
+  setAutomation(input) {
+    if (this.automationChangePromise)
+      return Promise.reject(Object.assign(new Error('Wait for the current automation change to finish.'), { statusCode: 409 }));
+    const operation = this.applyAutomation(input);
+    this.automationChangePromise = operation;
+    operation.finally(() => { if (this.automationChangePromise === operation) this.automationChangePromise = null; }).catch(() => {});
+    return operation;
+  }
+  async applyAutomation(input) {
+    if (!input || typeof input !== 'object' || Array.isArray(input)
+      || Object.keys(input).sort().join(',') !== 'enabled,feature'
+      || !['home', 'garage'].includes(input.feature) || typeof input.enabled !== 'boolean')
+      throw new Error('Choose a heating feature and an automation permission.');
+    const { feature, enabled } = input, current = this.automationStatus()[feature];
+    if (!this.canControl() || this.config.input === 'offline' || enabled && !current.available)
+      throw Object.assign(new Error(current.reason ?? 'Heating automation is unavailable.'), { statusCode: 409 });
+    if (this.automationChangePending)
+      throw Object.assign(new Error('Wait for the current automation change to finish.'), { statusCode: 409 });
+    if (current.enabled === enabled) return this.status();
+    this.automationChangePending = true;
+    try {
+      this.automation.set(feature, enabled);
+      this.store.event('heating-automation-changed', { feature, enabled, identity: current.identity }, this.clock());
+      this.latestStatus = null;
+      if (!enabled && feature === 'home') {
+        this.pendingPlan = null; this.store.setState(`pending-plan:${this.config.input}`, null);
+        if (this.cycles.active()) this.cycles.cancel(this.clock(), 'automatic-control-disabled');
+        await this.dispatchPending;
+        // A dispatch admitted before this edit may have completed meanwhile.
+        if (this.cycles.active()) this.cycles.cancel(this.clock(), 'automatic-control-disabled');
+        const state = this.executor.status();
+        // Manual choices and independently timed circulation retain their scope.
+        if (!state.manualPause && !state.manualTemporary && !this.heatingTestBusy) {
+          this.dispatchPending = this.executor.restore({ now: this.clock(), reason: 'automatic-control-disabled', preserveManualDhwr: true })
+            .catch(() => this.store.event('restoration-pending', { reason: 'automatic-control-disabled' }, this.clock()));
+          await this.dispatchPending;
+          this.dispatchPending = null;
+        }
+      }
+      if (feature === 'garage') await this.garage.automationChanged?.();
+    } finally { this.automationChangePending = false; }
+    this.tick(); this.onTemporaryChange?.();
+    return this.status();
   }
   contract() { return this.store.getState(`contract:${this.config.input}`); }
   addContractPeriod(input) {
@@ -564,7 +634,7 @@ export class Engine {
     return this.setTemporary({ pauseUntil: minutes ? new Date(this.clock() + minutes * 60_000).toISOString() : null });
   }
   heatingTests() {
-    const available = ['mqtt', 'providers'].includes(this.config.input) && Boolean(this.executor.commandTransport);
+    const available = this.canControl() && ['mqtt', 'providers'].includes(this.config.input) && Boolean(this.executor.commandTransport);
     const native = this.h66?.status(this.clock()), room = native?.manualPreheat?.baseValue ?? native?.readings?.['0203']?.value;
     const roomMaximum = Math.min(35, native?.controls?.['0203']?.max ?? 35);
     const request = preheatRoomRequest({ roomSettingC: room, roomSettingMaximumC: roomMaximum }, this.control);
@@ -573,6 +643,7 @@ export class Engine {
       && Number.isFinite(room) && Number.isFinite(roomBoostC)
       && (roomBoostC > 0 || this.floorOverride?.status(this.clock()).available === true);
     return { available, reason: available ? 'Sends a real command to the configured MQTT broker.'
+      : !this.canControl() ? 'This computer is read-only.'
       : ['simulated', 'offline'].includes(this.config.input) ? 'Real MQTT tests are unavailable in simulation and offline mode.'
         : 'Configure an MQTT broker to enable real device tests.',
     preheatAvailable, preheatRoomBoostC: preheatAvailable ? roomBoostC : null,
@@ -718,12 +789,13 @@ export class Engine {
     if (!capability.available) throw new Error(capability.reason);
     if (input.command === 'preheat' && !capability.preheatAvailable) throw new Error(capability.preheatReason);
     if (this.heatingTestBusy) throw new Error('An MQTT test is already in progress.');
+    if (this.automationChangePending) throw new Error('Wait for the current automation change to finish.');
     if (this.dispatchPending || input.command !== 'circulation' && this.cycles.active())
       throw new Error('Wait for the current heating cycle or transition to finish before running a manual test.');
     this.heatingTestBusy = true;
-    const command = input.command;
+    const command = input.command, requestedAt = this.clock();
     try {
-      const now = this.clock(), override = this.expireTemporary(now);
+      const now = requestedAt, override = this.expireTemporary(now);
       const pause = override ? { id: pauseIdentity(override), expiresAt: override.expiresAt } : null;
       this.store.event('heating-test-requested', { input: this.config.input, command }, this.clock());
       // The automatic schedule stays Normal during a pause; the executor owns
@@ -731,8 +803,8 @@ export class Engine {
       // still not a physical readback.
       const execution = await this.executor.execute(command === 'preheat'
         ? { phase: 'preheat', commands: ['normal'], roomSettingC: capability.preheatTargetC, roomBoostC: capability.preheatRoomBoostC } : { commands: [command] },
-      { mode: this.settings.mode, now, manualTest: true, pause });
-      const result = { command, ...execution, at: this.clock() };
+      { automationEnabled: this.automationEnabled('home'), now, manualTest: true, pause });
+      const result = { command, ...execution, requestedAt, at: this.clock() };
       this.store.setState(`heating-test:${this.config.input}`, result);
       this.store.event('heating-test-sent', { input: this.config.input, ...result }, result.at);
       if (command === 'circulation') this.recordDhwr(this.executor.status().pulseUntil, result.at);
@@ -743,7 +815,11 @@ export class Engine {
       return result;
     } catch (error) {
       const message = heatingErrorMessage(error?.code);
-      const result = { command, status: 'failed', sent: false, actual: null, at: this.clock(), error: message };
+      const code = message === heatingErrorMessage(undefined) ? 'EXECUTOR_UNCONFIRMED' : error.code;
+      const unconfirmed = ['SHELLY_READBACK_TIMEOUT', 'SHELLY_READBACK_UNAVAILABLE', 'SHELLY_COMMAND_UNCONFIRMED',
+        'MQTT_TIMEOUT', 'MQTT_UNAVAILABLE', 'MQTT_CLOSED', 'EXECUTOR_UNCONFIRMED'].includes(code);
+      const result = { command, status: unconfirmed ? 'unconfirmed' : 'failed', sent: unconfirmed ? null : false,
+        code, actual: null, requestedAt, at: this.clock(), error: message };
       this.store.setState(`heating-test:${this.config.input}`, result);
       this.store.event('heating-test-failed', { input: this.config.input, ...result }, result.at);
       throw new Error(message);
@@ -857,6 +933,7 @@ export class Engine {
   tick() {
     if (this.suspended) return structuredClone(this.latestStatus);
     const now = this.clock(), input = this.config.input;
+    this.automation.reconcileTargets();
     recordHeatPumpConfiguration(this.store, input, this.control, now);
     this.recorder.flush(now);
     const priorExecutor = this.executor.status?.();
@@ -866,10 +943,10 @@ export class Engine {
         roomBoostC: priorExecutor.phase === 'preheat' ? this.applied.roomBoostC ?? 0 : 0, verified: false };
       this.store.setState(`applied:${input}`, this.applied);
     }
-    if (!this.dispatchPending && this.settings.mode !== 'active' && this.startupRestorationPending) {
+    if (!this.dispatchPending && !this.automationEnabled('home') && this.startupRestorationPending) {
       this.startupRestorationPending = false;
-      this.dispatchPending = this.executor.restore({ now, reason: 'restart-in-observation-mode' })
-        .catch(() => this.store.event('restoration-pending', { reason: 'restart-in-observation-mode' }, this.clock()))
+      this.dispatchPending = this.executor.restore({ now, reason: 'restart-with-automation-disabled' })
+        .catch(() => this.store.event('restoration-pending', { reason: 'restart-with-automation-disabled' }, this.clock()))
         .finally(() => { this.dispatchPending = null; });
     }
     const override = this.expireTemporary(now);
@@ -1109,7 +1186,7 @@ export class Engine {
         if (decision.plan && decision.phase === 'normal') this.pendingPlan = decision.plan;
       } else decision = { ...normal('waiting-for-scheduled-cycle'), plan: this.pendingPlan };
     }
-    if (this.settings.mode !== 'active' && cycle) { this.cycles.cancel(now, 'automatic-control-disabled'); cycle = null; decision = normal('automatic-control-disabled'); }
+    if (!this.automationEnabled('home') && cycle) { this.cycles.cancel(now, 'automatic-control-disabled'); cycle = null; decision = normal('automatic-control-disabled'); }
     const cycleSchedule = this.cycles.active()?.executionSchedule ?? decision.plan?.schedule;
     decision.owner = this.cycles.active()?.plan.executionOwner ?? this.cycles.active()?.id ?? `plan:${decision.plan?.generatedAt ?? now}`;
     if (decision.phase === 'recovery') {
@@ -1216,11 +1293,11 @@ export class Engine {
       if (this.latestStatus?.now === now) { this.latestStatus.execution = execution; this.latestStatus.learning.episode = this.cycles.active(); }
       return execution;
     };
-    let execution = this.dispatchPending ? { status:'pending', sent:false, actual:null } : this.heatingTestBusy || h66.phase === 'test' && h66.lastTest?.expiresAt > now
+    let execution = this.dispatchPending || this.automationChangePending ? { status:'pending', sent:false, actual:null } : this.heatingTestBusy || h66.phase === 'test' && h66.lastTest?.expiresAt > now
       ? { status:'manual-test-in-progress', sent:false, actual:null }
       : ownsTemporarySettings || ownsPausedSettings && !holdManualSettings
-        ? this.executor.restoreManual({ now, reason: 'manual-settings-ended-or-reset', decision, mode: this.settings.mode })
-        : holdManualSettings ? this.executor.maintainPause(now) : this.executor.execute(decision,{mode:this.settings.mode,now});
+        ? this.executor.restoreManual({ now, reason: 'manual-settings-ended-or-reset', decision, automationEnabled: this.automationEnabled('home') })
+        : holdManualSettings ? this.executor.maintainPause(now) : this.executor.execute(decision,{automationEnabled:this.automationEnabled('home'),now});
     if (execution?.then) {
       this.dispatchPending = execution.then(onExecution).catch(() => {
         this.store.event('control-execution-failed',{input,phase:decision.phase,reason:'Command or native-setting readback failed; restoration remains pending'},this.clock());
@@ -1238,15 +1315,15 @@ export class Engine {
     }
     const metrics = this.cycles.metrics(checkpoint.baselineC);
     if (input !== 'offline') this.cycles.snapshot(metrics,now,checkpoint.model.trainedAt ?? 'prior-v1');
-    this.store.event('decision',{input,mode:this.settings.mode,action:decision.action,phase:decision.phase,reasons:decision.reasons,
-      commands:decision.commands,execution:execution.status,liveWrites:this.settings.mode==='active'&&input!=='simulated'&&Boolean(this.executor.commandTransport)},now);
+    this.store.event('decision',{input,automationEnabled:this.automationEnabled('home'),action:decision.action,phase:decision.phase,reasons:decision.reasons,
+      commands:decision.commands,execution:execution.status},now);
     const visibleCheckpoint = { ...checkpoint, samples:undefined };
     const visiblePlan = decision.plan ? { ...decision.plan, model:undefined, intervals:undefined,
       prediction:{...decision.plan.prediction,trajectory:undefined},referencePrediction:{...decision.plan.referencePrediction,trajectory:undefined} } : null;
     const visibleCycle = this.cycles.active();
     const episodeStatus = visibleCycle ? {id:visibleCycle.id,status:visibleCycle.status,startedAt:visibleCycle.startedAt,
       actual:visibleCycle.actual,stableSince:visibleCycle.stableSince,referenceLabel:visibleCycle.plan.referenceLabel,adjustments:visibleCycle.adjustments} : null;
-    this.latestStatus = { now,input,mode:this.settings.mode,liveWrites:this.settings.mode==='active'&&input!=='simulated'&&Boolean(this.executor.commandTransport),
+    this.latestStatus = { now,input,environment:this.environment(),automation:this.automationStatus(),
       runtimeTiming:this.runtimeTiming?.() ?? null,
       settings:this.settings,demoComfortTargetC:this.plant&&checkpoint.baselineC===null?21:null,observations,override,decision:{...decision,plan:visiblePlan},execution,
       comfortRooms:this.comfortRooms(checkpoint),
@@ -1271,6 +1348,7 @@ export class Engine {
     const result = structuredClone(this.latestStatus);
     const now = this.clock();
     result.now = now;
+    result.automation = this.automationStatus();
     result.runtimeTiming = this.runtimeTiming?.() ?? null;
     result.heatingTests = this.heatingTests();
     result.preheatValves = this.preheatValveStatus();

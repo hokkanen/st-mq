@@ -463,9 +463,9 @@ Absolute versus A1-relative A2 semantics are explicit configuration. These are
 assumptions used in prediction, not settings read from `8105` and not new writes
 to the pump's installer menu.
 
-Normal active operation may send heating/H66 commands only with live input and
-the required fresh controls. Monitoring and shadow do not automatically actuate
-equipment. Explicit manual tests are separate authorization: a timed test captures
+Home Automatic may send heating/H66 commands only with live input and
+the required fresh controls. Home Plan only computes the plan without automatic
+heating commands. Garage, charging and Caravan have independent automation choices. Explicit manual tests are separate authorization: a timed test captures
 the current baseline, writes the selected register, checks readback and restores
 the baseline after expiry. Failed readback and pending restoration are visible;
 broker acknowledgement alone is not device confirmation. Restarts retain restore

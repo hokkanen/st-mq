@@ -4,7 +4,7 @@ import { homePlannedChange, renderHomePlannedChange } from '../chart/heating-pla
 
 const now = Date.parse('2026-09-15T12:00:00Z');
 const hour = 3_600_000;
-const scheduled = () => ({ now, input: 'providers', mode: 'active', liveWrites: true,
+const scheduled = () => ({ now, input: 'providers', automation: { home: { enabled: true } },
   decision: { phase: 'normal', plan: { schedule: {
     preheatStart: now + hour, preheatEnd: now + 2 * hour,
     reductionStart: now + 2 * hour, reductionEnd: now + 4 * hour,
@@ -44,7 +44,7 @@ test('Home schedule times identify a different Helsinki date', () => {
   assert.equal(homePlannedChange(status).value, 'Preheat at 16 Sept, 16:00');
 });
 
-test('pause, monitoring, simulation and shadow plans retain their actual authority', () => {
+test('pause, simulation and plan-only previews retain their actual authority', () => {
   const status = scheduled();
   status.override = { expiresAt: now + hour };
   status.decision.manualHold = { phase: 'reduction', until: now + hour };
@@ -52,10 +52,8 @@ test('pause, monitoring, simulation and shadow plans retain their actual authori
   assert.equal(homePlannedChange(status).value, 'Until 16:00');
   delete status.override;
   delete status.decision.manualHold;
-  status.mode = 'monitoring';
-  assert.equal(homePlannedChange(status).value, 'Monitoring only');
-  status.mode = 'shadow'; status.liveWrites = false;
-  assert.equal(homePlannedChange(status).label, 'Next shadow change');
+  status.automation.home.enabled = false;
+  assert.equal(homePlannedChange(status).label, 'Next preview change');
   assert.match(homePlannedChange(status).detail, /no automatic commands/);
   status.input = 'simulated';
   assert.equal(homePlannedChange(status).label, 'Next simulated change');

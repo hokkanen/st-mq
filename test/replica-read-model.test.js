@@ -11,7 +11,7 @@ import { replicaReadModel } from '../src/app/replica-read-model.js';
 const at = Date.parse('2026-05-07T12:00:00Z');
 const hash = path => createHash('sha256').update(readFileSync(path)).digest('hex');
 const config = {
-  settings: { mode: 'active', comfort: { maxDropC: 1 } }, recording: { annualBudgetBytes: 2e9 },
+  settings: { comfort: { maxDropC: 1 } }, recording: { annualBudgetBytes: 2e9 },
   connections: { mqtt: { address: 'mqtt://private-config-marker.invalid', pw: 'fixture-private-config-marker' },
     equipment: { devices: [{ id: 'fixture-door', label: 'Fixture door', area: 'garage', kind: 'door',
       protocol: 'mqtt', source: 'MQTT', enabled: true, controlsCover: true,
@@ -35,7 +35,7 @@ const observation = (source, device, signal, value, extra = {}) => ({ source, de
 
 test('read projection exposes saved settings and equipment evidence without live authority or database changes', t => {
   const snapshot = fixture(t, store => {
-    store.setState('settings:mqtt', { mode: 'active', comfort: { maxDropC: .5 } });
+    store.setState('settings:mqtt', { comfort: { maxDropC: .5 } });
     store.setState('providers:health', { market: { status: 'ok', lastSuccessAt: at - 60_000,
       connected: true, healthy: true, recording: true }, temperatures: { status: 'ok' } });
     store.setState('garage:roomTemperature:mqtt', { targetC: 10, adapterKey: 'a'.repeat(64) });
@@ -50,7 +50,7 @@ test('read projection exposes saved settings and equipment evidence without live
     store.observation(observation('mqtt-equipment', 'fixture-door', 'garage_door', 0));
   });
   const result = replicaReadModel(snapshot, config);
-  assert.equal(result.settings.mode, 'active', 'Historical configured mode is readable but cannot establish authority');
+  assert.equal(Object.hasOwn(result.settings, 'mode'), false, 'Read models contain no global control permission');
   assert.equal(result.settings.comfort.maxDropC, .5);
   assert.equal(result.readView.settingsSource, 'recorded-snapshot');
   assert.equal(result.readView.liveAvailable, false);
@@ -156,7 +156,7 @@ test('malformed or retired room intent is unavailable without hiding unrelated r
 });
 
 test('malformed or unsupported Home settings are unavailable without interpreting them or hiding history', t => {
-  for (const saved of [{ mode: 'active', retiredRoomPreference: 23 }, { comfort: { maxDropC: 'invalid' } }, 'malformed-json']) {
+  for (const saved of [{ retiredRoomPreference: 23 }, { comfort: { maxDropC: 'invalid' } }, 'malformed-json']) {
     const snapshot = fixture(t, store => {
       store.setState('settings:mqtt', saved);
       if (saved === 'malformed-json') store.db.prepare('UPDATE state SET value=? WHERE key=?')

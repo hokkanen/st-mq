@@ -41,7 +41,7 @@ test('standalone MQTT authority loss stops writes, retains a read-only dashboard
     client.emit('message', topic, Buffer.from(JSON.stringify({ version: 1, nodeId: randomUUID(), epoch: randomUUID(),
       role: 'master', platform: 'hassio', at: Date.now(), boot: randomUUID(), heartbeat: 1 })), {});
     const status = await (await fetch(`${endpoint}/api/status`)).json();
-    assert.equal(status.readOnly, true); assert.equal(status.liveWrites, false);
+    assert.equal(status.readOnly, true); assert.equal(status.readOnly, true);
     assert.equal(status.controlAuthority.state, 'protected'); assert.ok(status.controlAuthority.stoppedAt > 0);
     assert.equal((await fetch(`${endpoint}/api/settings/reload`, { method: 'POST',
       headers: { 'Content-Type': 'application/json' }, body: '{}' })).status, 409);

@@ -22,15 +22,13 @@ export function homePlannedChange(status = {}) {
   const pauseUntil = status.override?.expiresAt;
   if (Number.isFinite(pauseUntil) && pauseUntil > now) return display('Price control paused', `Until ${plannedTime(pauseUntil, now)}`,
     'The controller will reassess the heating plan when the pause ends. Temporary heating selections return to their previous settings.', pauseUntil);
-  if (status.mode === 'monitoring') return display('Heating plan', 'Monitoring only',
-    'Automatic heating control is disabled.');
 
   const simulated = status.input === 'simulated';
-  const shadow = !simulated && status.liveWrites !== true;
-  const planLabel = simulated ? 'Simulation plan' : shadow ? 'Shadow plan' : 'Heating plan';
-  const nextLabel = simulated ? 'Next simulated change' : shadow ? 'Next shadow change' : 'Next planned change';
+  const planOnly = status.automation?.home?.enabled !== true;
+  const planLabel = simulated ? 'Simulation plan' : planOnly ? 'Heating preview' : 'Heating plan';
+  const nextLabel = simulated ? 'Next simulated change' : planOnly ? 'Next preview change' : 'Next planned change';
   const provenance = simulated ? 'Simulation only; no commands are sent to the home.'
-    : shadow ? 'This operating mode sends no automatic commands.'
+    : planOnly ? 'Home heating is set to Plan only; this plan sends no automatic commands.'
       : 'The controller rechecks the plan as conditions change.';
   if (decision.phase === 'recovery') return display(planLabel, 'Recovery in progress',
     `Recovery ends when the house has recovered; there is no fixed end time. ${provenance}`);

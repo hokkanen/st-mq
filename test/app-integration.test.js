@@ -23,22 +23,21 @@ function setup(t, input = 'simulated') {
   return { store, engine, config, advance: ms => { at += ms; } };
 }
 
-test('shadow and monitoring record intents without operating the simulated plant', t => {
+test('Plan only records intents without operating the simulated plant', t => {
   const { engine, store } = setup(t);
   const result = engine.tick();
-  assert.equal(result.liveWrites, false);
+  assert.equal(result.automation.home.enabled, false);
   assert.equal(result.execution.sent, false);
   assert.equal(result.decision.dhwr.requested, true);
   assert.equal(engine.plant.state.pulseUntil, 0);
   assert.equal(store.events().some(e => e.type === 'simulated-command-readback'), false);
-  engine.updateSettings({ mode: 'monitoring' });
-  assert.equal(engine.status().execution.status, 'monitoring');
+  assert.equal(engine.status().execution.status, 'plan-only');
 });
 
-test('active simulation applies pulse sequence once and restart preserves recency and timed override', t => {
+test('automatic simulation applies pulse sequence once and restart preserves recency and timed override', async t => {
   const { engine, store, config, advance } = setup(t);
-  config.settings = { ...config.settings, mode: 'active' };
-  engine.updateSettings({ mode: 'active', comfort: { maxDropC: 1 } });
+  engine.updateSettings({ comfort: { maxDropC: 1 } });
+  await engine.setAutomation({ feature: 'home', enabled: true });
   assert.ok(engine.plant.state.pulseUntil > engine.clock());
   const pulseUntil = engine.plant.state.pulseUntil;
   advance(15 * 60_000);
@@ -53,9 +52,9 @@ test('active simulation applies pulse sequence once and restart preserves recenc
   assert.ok(store.events().some(e => e.type === 'override-expired'));
 });
 
-test('physical inputs cannot activate control, ingest does not fabricate unknown source timestamps', t => {
+test('history input cannot enable automation, ingest does not fabricate unknown source timestamps', async t => {
   const { engine, store } = setup(t, 'offline');
-  assert.throws(() => engine.updateSettings({ mode: 'active' }), /offline input cannot control equipment/);
+  await assert.rejects(engine.setAutomation({ feature: 'home', enabled: true }), /history viewer/);
   engine.ingest({ source: 'mqtt', device: 'h66', signal: 'indoor_temperature', value: 21, unit: 'degC', sourceTime: null, receivedAt: engine.clock(), quality: ['unknown-source-time'] });
   const status = engine.tick();
   assert.equal(store.latestObservation('indoor_temperature').sourceTime, null);
@@ -85,7 +84,7 @@ test('authenticated API serves authoritative state, bounded history and persiste
   assert.equal((await fetch(`${base}/api/status`)).status, 401);
   const status = await (await fetch(`${base}/api/status`, { headers })).json();
   assert.equal(status.input, 'simulated');
-  assert.equal(status.liveWrites, false);
+  assert.equal(status.automation.home.enabled, false);
   assert.equal(JSON.stringify(status).includes('connections'), false);
   assert.equal((await fetch(`${base}/api/history?limit=999999`, { headers })).status, 400);
   assert.equal((await fetch(`${base}/api/history?from=0`, { headers })).status, 400);
@@ -171,7 +170,7 @@ test('temporary controls API checks authentication, JSON and atomic Finnish date
   const status = await response.json();
   assert.equal(status.settings.occupancy.returnAt, '2026-09-08T07:00:00.000Z');
   assert.equal(status.override.expiresAt, Date.parse('2026-09-07T09:00Z'));
-  assert.equal(status.liveWrites, false);
+  assert.equal(status.automation.home.enabled, false);
   assert.equal((await fetch(endpoint, { method: 'POST', headers, body: JSON.stringify({ awayUntilLocal: null, pauseUntilLocal: '2026-09-05T00:00' }) })).status, 400);
   assert.equal(engine.status().settings.occupancy.mode, 'away');
 });

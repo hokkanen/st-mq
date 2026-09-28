@@ -58,15 +58,14 @@ export class Executor {
   }
   expired(name, wallEnd) { return this.remaining(name, wallEnd) <= 0; }
   status() { return { ...copy(this.state), busy: Boolean(this.pending), restorationPending: this.restartRestore }; }
-  execute(decision, { mode, now = this.clock(), manualTest = false, pause = null }) {
-    if (!['monitoring', 'shadow', 'active'].includes(mode)) throw new Error('Invalid execution mode');
+  execute(decision, { automationEnabled = false, now = this.clock(), manualTest = false, pause = null }) {
+    if (typeof automationEnabled !== 'boolean') throw new Error('Invalid heating automation permission');
     if (manualTest) {
       if (!['mqtt', 'providers'].includes(this.input) || !this.commandTransport) throw new Error('Real MQTT tests require live input and a configured MQTT broker.');
       this.validateCommands(decision.commands);
       return this.exclusive(() => this.manual(decision.commands, now, pause, decision));
     }
-    if (mode === 'monitoring') return { status: 'monitoring', sent: false, actual: null };
-    if (mode === 'shadow') return { status: 'shadow', sent: false, actual: null };
+    if (!automationEnabled) return { status: 'plan-only', sent: false, actual: null };
     if (this.input === 'simulated') {
       this.plant.state.phase = decision.phase ?? decision.action;
       this.plant.state.roomBoostC = decision.roomBoostC ?? 0;
@@ -75,7 +74,7 @@ export class Executor {
       return this.sendCommands(decision.commands, { now });
     }
     if (!['mqtt', 'providers'].includes(this.input) || !this.commandTransport)
-      throw failure('EXECUTOR_UNAVAILABLE', 'Active control requires live input and a configured heating-command transport.');
+      throw failure('EXECUTOR_UNAVAILABLE', 'Automatic heating requires live input and a configured heating-command transport.');
     this.validateCommands(decision.commands);
     return this.exclusive(() => this.executePhysical(decision, now));
   }
@@ -482,10 +481,10 @@ export class Executor {
       status: restorationPending ? 'pending' : 'mqtt', restorationPending, native, nativeError,
       ...(dhwrError ? { dhwrError } : {}), roomBoostC: 0 });
   }
-  restoreManual({ now = this.clock(), reason = 'manual-ended', decision = null, mode = null } = {}) {
+  restoreManual({ now = this.clock(), reason = 'manual-ended', decision = null, automationEnabled = false } = {}) {
     return this.exclusive(async () => {
       const restored = await this.restoreManualInternal({ now, reason });
-      if (restored.restorationPending || !decision || mode !== 'active') return restored;
+      if (restored.restorationPending || !decision || !automationEnabled) return restored;
       return this.executePhysical(decision, this.clock());
     });
   }

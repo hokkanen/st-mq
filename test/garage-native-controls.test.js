@@ -19,7 +19,7 @@ function fixture(t, options = {}) {
   const published = [], saved = [], observations = [];
   const store = new Store(':memory:');
   const config = { input: 'mqtt', garage: { enabled: false, adapter: SETTINGS } };
-  const engine = { latest: {}, lastKnownTemperatures: {}, settings: { mode: 'shadow' } };
+  const engine = { latest: {}, lastKnownTemperatures: {}, automationEnabled: () => false };
   const runtime = new GarageRuntime({ store, engine, config, clock: () => now, canControl: () => owner });
   const adapter = createGarageAdapter({ settings: SETTINGS, hostSession: 'invented-owner', clock: () => now,
     canControl: () => owner, persisted: options.persisted,
@@ -249,9 +249,9 @@ test('failed persistence prevents publication and concurrent requests cannot sha
 test('pending native settings cannot be followed by an automatic lease even with all economic proofs', async t => {
   const f = fixture(t);
   f.state({ mode: 'armed', authority: { ownerSession: 'invented-owner', controlAllowed: true, manualControlAllowed: true },
-    commissioning: { selectivePowerVerified: true, lowHeatVerified: true, expiryVerified: true, restartVerified: true, releaseOrderingVerified: true },
-    baseline: { verified: true, profile: 'existing-low-heat', targetC: 10, fan: 'auto', vanes: 'fixed', measuredAt: BASE },
-    capabilities: { preserveNativeBaseline: true } });
+    commissioning: { selectivePowerVerified: true, expiryVerified: true, restartVerified: true },
+    baseline: { verified: true, profile: 'native-settings', mode: 'heat', targetC: 17, fan: 'auto', vane: 3, measuredAt: BASE },
+    capabilities: { preserveNativeSettings: true, releaseOrdering: true } });
   await f.adapter.setNativeSetting({ setting: 'power', value: 'off' });
   const result = await f.adapter.plannerTick({ now: BASE, valid: true, recoveryReady: true,
     plan: { id: 'invented-plan', pauseFrom: BASE, pauseUntil: BASE + 600_000,
@@ -363,7 +363,7 @@ test('ordinary Mitsubishi HTTP route uses shared write authorization and returns
 });
 
 test('explicit Normal heating from unmanaged OFF publishes ordinary ON with correlated readback', async t => {
-  const f = fixture(t); f.runtime.settings.enabled = true; f.engine.settings.mode = 'active';
+  const f = fixture(t); f.runtime.settings.enabled = true; f.engine.automationEnabled = () => true;
   f.state({ native: { power: { value: 'off', measuredAt: BASE } } });
   assert.equal(f.adapter.status().restorePending, false);
   await f.runtime.setHeating({ mode: 'normal' });
@@ -377,7 +377,7 @@ test('explicit Normal heating from unmanaged OFF publishes ordinary ON with corr
 });
 
 test('unmanaged OFF Normal rejects missing power capability before persisting manual intent', async t => {
-  const f = fixture(t); f.runtime.settings.enabled = true; f.engine.settings.mode = 'active';
+  const f = fixture(t); f.runtime.settings.enabled = true; f.engine.automationEnabled = () => true;
   f.state({ native: { power: { value: 'off', measuredAt: BASE } }, capabilities: { manualControls: { power: false } } });
   assert.equal(f.runtime.heatingControls().normalAvailable, false);
   await assert.rejects(f.runtime.setHeating({ mode: 'normal' }), /not supported/);

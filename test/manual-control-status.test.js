@@ -2,12 +2,25 @@ import test from 'node:test';
 import { isReadOnlyReplica } from '../chart/replica-status.js';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { heatingRequestResult, h66RequestResult, circulationStopPending } from '../chart/manual-control-status.js';
+import { heatingRequestResult, heatingModeSelection, h66RequestResult, circulationStopPending } from '../chart/manual-control-status.js';
 
 const at = Date.parse('2026-09-16T10:48:00Z');
+test('a relay change after an unconfirmed command selects the observed mode without inventing an acknowledgement', () => {
+  const status = { now: at + 1000, heatingTests: { lastResult: {
+    command: 'reduction', at, requestedAt: at - 100, sent: null, status: 'unconfirmed', error: 'Command readback timed out',
+  } }, observations: { actual: { requestedPhase: 'normal', phase: 'reduction', mode: 'reduction',
+    verified: true, stale: false, observedAt: at + 500 } } };
+  assert.deepEqual(heatingModeSelection(status), { phase: 'reduction', confirmed: true });
+  const result = heatingRequestResult(status);
+  assert.equal(result.status, 'unconfirmed');
+  assert.equal(result.observedPhase, 'reduction');
+  status.observations.actual.stale = true;
+  assert.equal(heatingModeSelection(status).confirmed, false);
+  assert.equal(heatingRequestResult(status).observedPhase, null);
+});
 function heating(command = 'preheat', paused = true) {
   const expiresAt = at + (paused ? 3600_000 : 60_000);
-  return { now: at + 1000, heatingTests: { lastResult: { command, at, status: 'mqtt', sent: true,
+  return { now: at + 1000, heatingTests: { lastResult: { command, at, requestedAt: at - 100, status: 'mqtt', sent: true,
     expiresAt, holdUntil: paused ? expiresAt : null } },
   override: paused ? { id: 'pause-one', createdAt: at - 1000, expiresAt } : null,
   decision: { manualHold: paused ? { phase: command, until: expiresAt } : null },
@@ -145,14 +158,16 @@ test('polling removes identical old notices, updates circulation feedback and pr
       classList: { toggle() {}, remove() {}, add() {} }, setAttribute() {}, querySelector() { return {}; } });
     return nodes.get(id);
   };
-  const renderer = new Function('$', 'heatingRequestResult', 'circulationStopPending', 'isReadOnlyReplica', `
+  const renderer = new Function('$', 'heatingRequestResult', 'circulationStopPending', 'isReadOnlyReplica', 'heatingModeSelection', `
     let lastStatus, heatingTestBusy = false, circulationStopAt;
-    const controlErrors = new Map(), heatingResults = new Map(), time = value => String(value), decimal = String;
+    const controlErrors = new Map(), heatingResults = new Map(), heatingErrorRequests = new Map(), time = value => String(value), decimal = String;
     const heatingCommandLabel = command => command, homeHeatingWarning = () => '', garageHeatingWarning = () => '';
     const setStatusDetail = () => {};
     ${functions}
-    return (status, busy = false) => { lastStatus = status; heatingTestBusy = busy; renderHeatingTests(status); };
-  `)($, heatingRequestResult, circulationStopPending, isReadOnlyReplica);
+    const render = (status, busy = false) => { lastStatus = status; heatingTestBusy = busy; renderHeatingTests(status); };
+    render.fail = attempt => { heatingErrorRequests.set('heating-test-message', attempt); showControlError('heating-test-message', attempt.error); };
+    return render;
+  `)($, heatingRequestResult, circulationStopPending, isReadOnlyReplica, heatingModeSelection);
   const status = heating();
   renderer(status);
   assert.match($('heating-test-message').textContent, /held until/);
@@ -186,4 +201,21 @@ test('polling removes identical old notices, updates circulation feedback and pr
   assert.match($('dhwr-message').textContent, /Device confirmed/);
   circulation.dhwr.active = false; renderer(circulation);
   assert.equal($('dhwr-message').textContent, '');
+  const failure = heating('reduction');
+  Object.assign(failure.heatingTests.lastResult, { status: 'unconfirmed', sent: null, error: 'Relay command timed out' });
+  Object.assign(failure.observations.actual, { phase: 'reduction', verified: true, stale: false, observedAt: at + 100 });
+  failure.execution = { restorationPending: true };
+  renderer.fail({ command: 'reduction', previousResultAt: at - 500, error: 'Relay command timed out' });
+  renderer(failure);
+  assert.match($('heating-test-message').textContent, /Relay command timed out.*Latest device report: reduction.*Restoring previous heating settings/,
+    'The raw HTTP error gives way to its matching saved result and fresh device state, even during restoration');
+});
+
+
+test('a qualifying report during dispatch confirms the request before the completion receipt time', () => {
+  const status = heating('reduction');
+  Object.assign(status.observations.actual, { phase: 'reduction', verified: true, stale: false,
+    observedAt: at - 50 });
+  assert(status.observations.actual.observedAt < status.heatingTests.lastResult.at);
+  assert.equal(heatingRequestResult(status).confirmed, true);
 });

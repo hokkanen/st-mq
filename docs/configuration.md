@@ -90,7 +90,7 @@ through Home Assistant authentication, independently of these passwords.
 
 Family reads all application data with credentials concealed, and may record
 firewood, remove entries within 15 minutes, operate DHWR, Away/Pause and temporary
-heating, garage doors and all EV card controls. Every other write, export and
+heating, Home and Garage automation, garage doors and all EV card controls. Every other write, export and
 download requires admin. These permissions do not change equipment authority,
 restoration or freeze protection. The role is not configurable; see the
 [complete access policy](../README.md#connections-and-access).
@@ -112,6 +112,36 @@ rejected. The server account needs write permission to the destination.
 **Download database** saves a copy through the browser. Both actions create a
 complete SQLite snapshot with the same timestamped filename format. See
 [database exports](recording.md#single-file-database-export) for details.
+
+## Heating automation and manual controls
+
+Home and Garage each have a durable **Plan only / Automatic** dashboard choice.
+Both start at Plan only. The choices are stored in the database, bound separately
+to the configured equipment and broker/account identity, and survive restart.
+A changed command destination or confirmed physical device starts at Plan only
+and inherits no permission. Restart and reconnect wait for a fresh matching
+device identity; a changed boot/session alone does not change the choice.
+There is no corresponding configuration default and no global operating mode.
+Garage's configured `enabled` remains the installation opt-in; it does not select
+Automatic or bypass adapter readiness and protection checks.
+
+The header identifies **Live**, **Simulation**, or **History viewer**. Simulation
+permissions operate only the simulated plant. History and replica views cannot
+change permissions or send commands. Home's choice does not affect Garage,
+charging scheduling, or Caravan automatic power.
+
+Explicit manual heating commands remain available with Plan only when their
+normal live connection, readiness and protection checks pass. Changing automatic
+permission does not cancel valid manual choices or their expiry/restoration
+obligations. Disabling Automatic ends automatic reductions and restores their
+owned changes. A temporary price-control pause retains its explicit deadline;
+resuming it does not independently enable Automatic.
+
+`POST /api/automation` accepts exactly `{ "feature": "home", "enabled": true }`
+or the corresponding Garage choice. `GET /api/status` includes per-feature
+`automation` permissions, availability, activity and hashed route/device identities.
+Admin and family may change these choices. Retired global-mode configuration,
+environment and settings payloads are rejected rather than translated.
 
 ## Charging defaults and dashboard overrides
 
@@ -231,9 +261,10 @@ same topology. Only mirror mode has a configured master/slave role, `mirror.role
 | `pair` | Saved pair authority; fresh empty installations start as slaves | Local future-controller settings and `pair` connection, storage and virtual-IP settings; explicit promotion establishes the first master. **Pair · Master** or **Pair · Slave** reflects the actual runtime role. |
 
 `STMQ_TOPOLOGY` overrides topology. `STMQ_MIRROR_ROLE` overrides `mirror.role`.
-Pair and standalone modes have no configured role. `controller.mode` continues
-to choose the heating/control mode; master authority alone does not enable
-automatic control.
+Pair and standalone topologies have no configured role. Master authority alone
+does not enable automatic control: each feature has its own dashboard permission.
+`controller.mode` and `STMQ_MODE` are retired and rejected, including during
+Home Assistant bootstrap; remove them from private configuration before startup.
 
 [Mirror mode](replication.md) uses SSH and fixed local roles. [Pair mode](pairing.md)
 uses the encrypted HTTP peer protocol and manual role changes. Fresh pair installations without local history

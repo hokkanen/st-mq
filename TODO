@@ -1,3 +1,30 @@
+Completed 2026-09-28 — Independent automation and coherent manual heating
+- Replace the global operating mode with durable, device-bound Home and Garage
+  Plan only / Automatic choices. Header identifies Live, Simulation or History
+  viewer. Charging and Caravan retain independent existing automation controls.
+- Reject retired configuration/environment fields instead of translating them;
+  remove global status/mode gates from current producers, consumers, tests and
+  deployment examples. F1/F3/F4/F5 reviewed across configuration, authority,
+  persistence, UI and documentation; feature defaults remain Plan only.
+- Bound explicit Garage Normal/OFF independently of automatic arming. Persist
+  external-temperature handover: confirmed clear before OFF, native ON before
+  fresh external input resumes. Preserve device identity, expiry, protection,
+  restart restoration, native supersession and late failure evidence.
+- Replace obsolete low-heat/i-save gates with current ordinary native settings
+  and three installed recovery proofs. Current protocol rejects retired payload
+  fields. Companion adapter implements and tests software release ordering through
+  queued, partial and completed OFF transactions with UART drain/reconnect.
+- Show manual progress and unavailable reasons beside buttons. Home selection
+  follows current device state; command confirmation uses dispatch time and
+  distinguishes an uncertain receipt from a subsequent observed relay state.
+- Validate 4,100 routine application tests (one optional external Tuya Local
+  source test skipped), all 28 extended tests including 19 compiled-driver
+  interoperability cases, production build and desktop/mobile browser checks in
+  both themes. Companion adapter: 251 JavaScript and 96 Python tests plus build.
+  Documentation links and diff checks pass. No deployment, installed resource
+  qualification or household commands. Active checkouts remain untouched; changes
+  are isolated in feature worktrees for coordinated application/adapter rollout.
+
 Completed 2026-09-28 — Restore Charger 1 card from fresh native connection evidence
 - Separate the observed OCPP physical session from confirmed transaction control.
   A connected status newer than the latest disconnect restores charging readings

@@ -5,7 +5,15 @@ Current development validation and reproducible commands are recorded in
 describe historical checkpoints; use [README](../README.md) and the feature
 guides for current behavior.
 
-## Current implementation, 7 September 2026 — 0.9.0
+## Current implementation, 28 September 2026 — independent automation
+
+Home and Garage own separate durable automation permissions. Explicit bounded
+manual heating is independent, including Garage external-temperature handover.
+The global operating mode and obsolete hidden-mode managed-pause gates are removed.
+See [automation and manual heating](automation-and-manual-control.md) for the current
+contract and [TODO](../TODO) for validation and deployment limits.
+
+## Historical implementation, 7 September 2026 — 0.9.0
 
 The owner authorized the full active controller and UI implementation after the
 planning discussion. The dated sections below describe earlier releases and are
@@ -33,7 +41,7 @@ Supplied CSVs are owner data and must be preserved.
 
 ## Reviewable stages
 
-1. **Offline safety and data foundation.** Default simulated/shadow startup,
+1. **Offline safety and data foundation.** Default simulated startup with preview plans,
    an explicit legacy live gate, deterministic Node tests, versioned SQLite,
    bounded idempotent CSV import, provenance, quality checks and backup/export.
 2. **Verified semantics and conservative decisions.** Effective-dated all-in
@@ -49,7 +57,7 @@ Supplied CSVs are owner data and must be preserved.
 
 Development starts offline. No deployment, external automation messages or live
 heat-pump writes are authorized. The existing controller is retained for a
-separately authorized migration. A shadow plan is not proof of bill savings.
+separately authorized migration. A preview plan is not proof of bill savings.
 The house's learned comfort reference, contract charges/effective dates, installed H66
 register scaling and actual equipment behavior remain unverified. No battery
 dispatch or assumed battery savings enter the controller.
@@ -88,8 +96,9 @@ require the owner to enter a target, or ratchet the reference down with cooling.
   stable reference inference and bounded chronological learning/checkpoints.
 - **Integrated offline application:** committed as `36fdd96`. One backend owns decisions and simulated
   execution, SQLite state, authenticated HTTP interface and the revised chart.
-  Timed overrides and DHWR recency survive restart. Monitoring and shadow never
-  issue commands. Active mode operates only the simulator. The legacy publisher
+  Timed overrides and DHWR recency survived restart. The initial development
+  controller restricted automatic writes to the simulator; current feature-specific
+  permissions are documented in the feature guides. The legacy publisher
   now fails before reading configuration unless its separate live gate is set.
 - **Packaging:** Node 22 Alpine container built locally on x86_64; container smoke
   verifies startup, built UI, persistent override and restart with networking
@@ -160,7 +169,7 @@ against unchanged electricity consumption.
 5. Add return-aware away behavior, richer planned/actual signal history, bill
    reporting and appropriate retention after useful data volume is measured.
 6. Run ARM64 image/runtime checks and a representative Pi soak test; then assess
-   shadow prediction quality before any separately authorized live deployment.
+   preview prediction quality before any separately authorized live deployment.
 
 ### Repeatable validation
 

@@ -40,9 +40,9 @@ function snapshot(directory, generation, value = 21, sourceAt = at) {
   const dbPath = join(directory, `${generation}.sqlite`), store = new Store(dbPath);
   store.observation({ source: 'test-fixture', device: 'synthetic-sensor', signal: 'indoor_temperature',
     value, unit: 'degC', sourceTime: sourceAt - 60_000, receivedAt: sourceAt - 60_000 });
-  store.event('decision', { input: 'mqtt', mode: 'active', phase: 'reduction', commands: ['reduction'] }, sourceAt);
+  store.event('decision', { input: 'mqtt', phase: 'reduction', commands: ['reduction'] }, sourceAt);
   // Copied settings and outstanding obligations must never activate on a viewer.
-  store.setState('settings:mqtt', { mode: 'active' });
+  store.setState('settings:mqtt', { comfort: { maxDropC: 0.5 } });
   store.setState('executor:home', { version: 1, legacyOutstanding: true, phase: 'reduction' });
   store.setState('h66:control:synthetic-device', { version: 1, baseline: { '0203': 20 }, obligations: { '0203': { value: 20 } } });
   store.db.prepare(`INSERT INTO energy_audits(source,device,signal,source_time,received_at,value,quality)
@@ -57,7 +57,7 @@ function snapshot(directory, generation, value = 21, sourceAt = at) {
 
 const configuration = directory => ({ topology: 'mirror', role: 'slave', input: 'mqtt', addon: false,
   host: '127.0.0.1', port: 0, token: '', mirror: { directory, intervalMs: 60_000 },
-  settings: { mode: 'active' }, connections: { mqtt: { address: 'mqtt://127.0.0.1:1' } },
+  settings: { comfort: { maxDropC: 0.5 } }, connections: { mqtt: { address: 'mqtt://127.0.0.1:1' } },
   h66: { enabled: true, writeEnabled: true } });
 
 async function viewer(t, directory, readPublication, extra = {}) {
@@ -123,7 +123,7 @@ test('replica exposes both saved models without sample histories, live readiness
     assert.equal(learning.snapshotAt, at);
     assert.equal(learning.recordedAt, at);
   }
-  assert.equal(status.liveWrites, false);
+  assert.equal(status.readOnly, true);
   assert.equal(status.garage.adapter.automaticControl, false);
   assert.equal(status.garage.adapter.liveControlSupported, false);
   assert.equal(Object.hasOwn(status.garage.settings, 'assumeISave10C'), false);
@@ -178,7 +178,7 @@ test('replica infers the primary input from a Garage journal when decisions and 
   assert.equal(status.lastDecision, null);
   assert.equal(status.learning.adaptive.model.parameters.lossPerHour, .031);
   assert.equal(status.garage.learning.coefficients.rear.find(row => row.name === 'coolingPerHour').value, .026);
-  assert.equal(status.liveWrites, false);
+  assert.equal(status.readOnly, true);
   assert.equal(digest(publication.dbPath), publication.digest);
 });
 
@@ -257,9 +257,9 @@ test('read-only Store never migrates, deletes, creates a missing database or per
   const directory = fixture(t), publication = snapshot(directory, 'readonly');
   const store = new Store(publication.dbPath, { readOnly: true });
   assert.equal(store.readOnly, true);
-  assert.equal(store.getState('settings:mqtt').mode, 'active');
+  assert.equal(store.getState('settings:mqtt').comfort.maxDropC, 0.5);
   assert.equal(store.db.prepare('SELECT COUNT(*) count FROM energy_audits').get().count, 1);
-  assert.throws(() => store.setState('settings:mqtt', { mode: 'monitoring' }), /readonly/i);
+  assert.throws(() => store.setState('settings:mqtt', { comfort: { maxDropC: 1 } }), /readonly/i);
   assert.throws(() => store.db.exec('DELETE FROM events'), /readonly/i);
   store.close();
   assert.equal(digest(publication.dbPath), publication.digest);
@@ -280,7 +280,7 @@ test('main replica startup bypasses legacy migration and providers and removes i
   const directory = fixture(t), legacy = snapshot(directory, 'st-mq');
   const databaseDir = join(directory, 'database');
   const config = loadConfig({ HOME: directory, XDG_CONFIG_HOME: join(directory, 'configuration'),
-    STMQ_TOPOLOGY: 'mirror', STMQ_MIRROR_ROLE: 'slave', STMQ_INPUT: 'mqtt', STMQ_MODE: 'active', STMQ_DATA_DIR: directory,
+    STMQ_TOPOLOGY: 'mirror', STMQ_MIRROR_ROLE: 'slave', STMQ_INPUT: 'mqtt', STMQ_DATA_DIR: directory,
     STMQ_DATABASE_DIR: databaseDir, STMQ_PORT: '0' }, directory);
   const signalCounts = Object.fromEntries(['SIGINT', 'SIGTERM'].map(signal => [signal, process.listenerCount(signal)]));
   const app = await start({ config, clock: () => at,
@@ -316,7 +316,7 @@ test('viewer starts before first snapshot and denies every mutation without open
   assert.equal(result.status, 200);
   assert.equal(result.body.instance.role, 'slave');
   assert.equal(result.body.sync.state, 'waiting');
-  assert.equal(result.body.liveWrites, false);
+  assert.equal(result.body.readOnly, true);
   assert.equal(app.store, null);
   assert.equal((await request(chartPath)).status, 503);
   for (const path of ['/api/temporary', '/api/override', '/api/fireplace', '/api/fireplace/remove', '/api/sensor-changes',
@@ -480,7 +480,7 @@ test('verified snapshots remain unchanged and viewer replaces charts and history
   assert.equal(initial.body.input, 'mqtt');
   assert.equal(initial.body.observations.indoor.value, 21);
   assert.equal(initial.body.lastDecision.phase, 'reduction');
-  assert.equal(initial.body.liveWrites, false);
+  assert.equal(initial.body.readOnly, true);
   assert.equal(initial.body.sync.digest, first.digest);
   assert.equal((await request(chartPath)).body.series.indoor_temperature[0].y, 21);
   assert.equal((await request('/api/recording-overview')).status, 200);

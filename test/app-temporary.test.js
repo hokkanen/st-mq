@@ -34,10 +34,10 @@ test('away and pause are atomic, persistent, independent and expire without rest
   assert.equal(engine.nextTemporaryDeadline(), Date.parse('2026-09-08T07:00Z'));
   assert.throws(() => engine.setTemporary({ awayUntil: null, pauseUntilLocal: '2026-03-29T03:30' }));
   assert.equal(engine.status().settings.occupancy.mode, 'away', 'Invalid combined edit did not cancel absence');
-  store.setState('settings:offline', { mode: 'monitoring', comfort: { maxDropC: 2 }, occupancy: { mode: 'occupied' } });
+  store.setState('settings:offline', { comfort: { maxDropC: 2 }, occupancy: { mode: 'occupied' } });
   const restarted = new Engine({ store, config, clock: () => now });
   assert.equal(restarted.status().settings.comfort.maxDropC, 0.8);
-  assert.equal(restarted.status().mode, 'shadow');
+  assert.equal(restarted.status().automation.home.enabled, false);
   assert.equal(restarted.status().settings.occupancy.mode, 'away');
   assert.equal(restarted.status().override.expiresAt, status.override.expiresAt);
   now = status.override.expiresAt;

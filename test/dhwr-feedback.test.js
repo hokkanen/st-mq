@@ -149,7 +149,7 @@ test('DHWR remains usable without feedback configuration', () => {
 function externalPump(t, publishDhwr) {
   const store = new Store(':memory:');
   const engine = new Engine({ store, clock: () => INITIAL, commandTransport: { targetIdentity: { tariff: 'a'.repeat(64), dhwr: 'b'.repeat(64) }, publishDhwr, close: async () => {} },
-    config: { input: 'mqtt', settings: validateSettings({ mode: 'shadow' }) } });
+    config: { input: 'mqtt', settings: validateSettings({  }) } });
   const state = { value: 1, unit: 'state', observedAt: INITIAL, stale: false };
   engine.equipment = { status: () => ({ devices: [{ id: 'dhwr', available: true, readings: { dhwr_active: state } }] }) };
   t.after(async () => { await engine.executor.close({ restore: false }); await engine.closeFireplace(); store.close(); });

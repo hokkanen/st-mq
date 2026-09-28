@@ -99,7 +99,8 @@ test('a stale stored promise cannot bypass current evidence at dispatch',()=>{
 test('an admitted trial retains its bounded safety rule on the following engine tick',t=>{
   const store=new Store(':memory:');let clock=now;
   const engine=new Engine({store,clock:()=>clock,config:{input:'simulated',
-    settings:{mode:'active',comfort:{targetC:21,maxDropC:2,maxRiseC:2}},control:{trialBudgetCentsPerDay:100,maxTrialCostCents:100}}});
+    settings:{comfort:{targetC:21,maxDropC:2,maxRiseC:2}},control:{trialBudgetCentsPerDay:100,maxTrialCostCents:100}}});
+  engine.automation.set('home', true);
   t.after(()=>{clearTimeout(engine.executor.timer);engine.executor.closed=true;store.close();});
   const cp=restoreAdaptiveCheckpoint(null);cp.baselineC=21;
   cp.samples=Array.from({length:4},(_,i)=>({...sample(now-(5-i)*H/4,now-(4-i)*H/4,1.5),

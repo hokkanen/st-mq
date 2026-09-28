@@ -16,9 +16,9 @@ The default icon and all three reusable SVG/PNG designs are in
 
 The controller provides SQLite history, adaptive thermal learning, complete
 preheat/reduction/recovery planning, a monitoring dashboard and H66 readback/control.
-**Default startup uses simulated devices in shadow mode.** With live input,
-configured transport and active mode, the controller can operate heating and
-supported H66 settings. Explicit manual MQTT and timed H66 tests are also available.
+**Default startup uses simulated devices with heating set to Plan only.** With live
+input and a configured transport, each feature can independently be enabled for
+automation. Explicit manual controls have separate authorization and restoration. Explicit manual MQTT and timed H66 tests are also available.
 Market, weather, MQTT temperature, TeslaMate and Easee acquisition plus dated contract
 setup are integrated. Charger 1 accepts any car, using manual battery values until
 BMW or Tesla is identified, and can use opt-in cloud Easee schedules or native
@@ -134,29 +134,33 @@ overridden by the permanent private `~/.config/st-mq/secrets.json` file (or
 Simulation and offline modes do not connect to providers. The server serves the completed UI build; it does not
 rebuild historical CSVs or run a permanent Vite build watcher.
 
-The Home Energy UI has monitoring, shadow and active modes, combined
-history and price/weather outlooks, requested/actual state, stale-data indication, learning
+See [automation and manual heating](docs/automation-and-manual-control.md) for
+the shared permission, handover and restoration rules.
+
+The Home Energy UI has independent Home and Garage **Plan only / Automatic**
+controls, combined history and price/weather outlooks, requested/actual state, stale-data indication, learning
 health, explicit occupancy and timed normal-heating overrides. The default 21 °C
 **demo** target is confined to simulation, not inferred as the real house's target.
-Away/Pause deadlines persist. Monitoring and shadow do not automatically apply
-the heating schedule; explicit manual changes still carry restoration obligations.
+Away/Pause deadlines persist. Plan only computes but does not automatically apply
+that feature’s heating schedule; explicit manual changes still carry restoration obligations.
 **Away until** removes the occupied temperature-drop requirement until the chosen
 return time. The planner compares cost with continuous native operation, including
 recovery and auxiliary energy. Occupied requirements resume at the return time
 within the available forecast horizon; forecasts are never invented beyond it.
 The existing evidence/freshness gates still apply. **Pause until** first changes the
-automatic schedule to normal heating. Heating modes and native parameters
-selected afterwards are held until the pause ends or
+automatic schedule to normal heating. Temporary heating modes selected afterwards are held until the pause ends or
 **Resume now** is selected. Their previous settings are then restored and automatic
 scheduling resumes if enabled. Applying a new pause deadline starts again from
-normal heating. Outside Pause, all these manual changes revert on the next
+normal heating. Outside Pause, temporary heating overrides revert on the next
 controller update, normally within one minute, with a one-minute expiry as a
-fallback. Repeated edits retain the original restoration values. Pause deadlines
+fallback. Persistent native parameter edits are independent and remain in effect.
+Repeated temporary edits retain the original restoration values. Pause deadlines
 survive restarts; manually held equipment settings retain the existing restart
 and connection-loss restoration rules. Both temporary controls use Finnish time
 and can be cancelled independently.
-Live active mode applies the plan; monitoring and shadow show it without automatic
-equipment commands.
+Each heating section owns its saved automation permission. Charging Automatic
+scheduling and Caravan Automatic power remain independent. The header identifies
+Live, Simulation or History viewer; it does not imply a global control permission.
 
 Open the **Home** or **Garage** upper summary to find **Heating configuration**
 with current state, **Temporary heating override**, Away/Pause controls,
@@ -200,10 +204,10 @@ is unconfirmed.
 
 **Adjust heat-pump parameters** offers ROOM (`0203`), DHW start (`0212`), DHW stop
 (`0208`) and operating-mode (`2201`) changes when the connection and fresh writable
-readbacks are ready. The current baseline is saved and restored when the manual
-change expires under the Pause rules above.
+readbacks are ready. These are persistent native parameter edits; they become the baseline for later
+automatic changes. Bounded heating-mode overrides retain separate restoration duties.
 The UI distinguishes a sent request from device readback and a pending restore.
-These are real manual commands with live input, including in shadow mode.
+These are real manual commands with live input, including with heating automation set to Plan only.
 
 For UI development run `npm start` and `npm run dev` in separate terminals. Vite
 proxies `/api` to the backend. `npm run preview` alone does not provide the API.
@@ -435,7 +439,7 @@ Home's upper summary shows the indoor average, outdoor
 temperature, heating request and all-in electricity price; Garage's shows its rear
 temperature, doors, heating request and the same price. A compact row below Home's
 readings shows the next planned heating change and its Finnish local time, or the
-current pause, recovery or no-plan state. Shadow and simulated plans are labeled.
+current pause, recovery or no-plan state. Plan-only previews and simulated plans are labeled.
 The equipment and connections fold headers keep their height when toggled;
 small desktop column differences use spacing between sections, with larger
 differences retaining their natural height. Each upper summary opens
@@ -549,7 +553,6 @@ node scripts/benchmark-history.js var/st-mq.sqlite
 | Variable | Default / purpose |
 | --- | --- |
 | `STMQ_INPUT` | `simulated`; also `offline`, `mqtt`, or `providers` |
-| `STMQ_MODE` | `shadow`; also `monitoring`, or `active` with supported live transport or simulation |
 | `STMQ_DATA_DIR` | `./var`, or `/data/st-mq` in the add-on |
 | `STMQ_DATABASE_DIR` | Same as data directory on Linux; `/config/st-mq` in HA |
 | `STMQ_PORT` | `1234` |
@@ -609,7 +612,7 @@ freshness basis, with the source timestamp still unknown. Retained, duplicate an
 invalid messages are handled explicitly. A documented C60 profile does not prove
 installed-device semantics. See [learning and H66 control](docs/learning-and-control.md).
 
-Start live collection in the default heating shadow mode with:
+Start live collection with Home and Garage initially set to Plan only:
 
 ```sh
 STMQ_INPUT=providers npm start
@@ -654,8 +657,10 @@ lease expires. Lost, unaccepted renewals retry when fresh driver evidence and a
 new challenge prove the earlier request can no longer take effect; the original
 90-second sensor deadline remains unchanged. Driver
 capability and its local feature flag are required; economic pauses still need
-independently verified baseline and restoration evidence. Provider input in shadow mode observes
-and plans; active mode can use a configured command transport.
+fresh native-setting evidence and qualified bounded restoration. External control
+is cleared before a managed OFF request and the saved room target is restored
+using fresh sensors after ON confirmation. Automatic pauses require that feature’s
+automation permission; bounded manual requests are independent.
 
 | Data | Primary → backup | Normal collection interval |
 | --- | --- | --- |
@@ -734,8 +739,7 @@ name the live stream and REST backup while retaining reading-quality warnings.
 Charger voltage terminal mapping requires explicit verification before voltage
 weights are used. Easee acquisition can refresh authentication tokens. Separately
 enabling **Automatic charging** in the dashboard permits
-automatic scheduling writes, including while heating is in monitoring or shadow
-mode; it is off by default. Automatic charging and shared charger priority are
+automatic scheduling writes, independently of the Home and Garage automation choices; it is off by default. Automatic charging and shared charger priority are
 saved UI choices, retained across restart and unplugging for the same equipment.
 The four shared and vehicle-specific ready-by and battery defaults are
 configuration-owned; **Save for this session** cannot replace them. **Charge now**
@@ -886,7 +890,8 @@ AUX earlier. The deadline is fixed when reduction ends and survives restarts.
 Normal DHW settings and circulation eligibility return at expiry. To restore them
 earlier, pause price control; this selects Normal heating and restores the captured
 native settings. Start a timed circulation run separately if needed.
-`controller.input` and `controller.mode` are also configuration-owned.
+`controller.input` is configuration-owned. Home and Garage automation choices
+are stored separately, bound to the current equipment, and default to Plan only.
 
 The optional `electricity.effective_date` is a Finnish calendar date. First-use
 rates begin today if no date is supplied; subsequent changes begin when loaded.

@@ -40,7 +40,6 @@
 
     "controller": {
       "input": "simulated",
-      "mode": "shadow",
       "topology": "standalone",
       "web_token": "",
       "web_family_token": "",
@@ -521,7 +520,6 @@
 
     "controller": {
       "input": "list(simulated|offline|mqtt|providers)",
-      "mode": "list(monitoring|shadow|active)",
       "topology": "list(standalone|mirror|pair)",
       "web_token": "password",
       "web_family_token": "password",

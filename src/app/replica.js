@@ -233,7 +233,9 @@ export async function startReplica({ config, clock = Date.now,
       downstairs_temperature: observations.downstairs, bedroom_temperature: observations.bedroom }, learningConfig);
     observations.indoor = temperatureBoundaryStatus(observations.indoor, checkpoint?.measurementEpochAt, now, { clearValue: true });
     return { ...recorded, role: 'slave', instance: { role: 'slave', readOnly: true }, readOnly: true,
-      mode: 'monitoring', liveWrites: false, now, input: snapshot?.input ?? 'offline',
+      environment: 'history', automation: Object.fromEntries(['home', 'garage'].map(feature => [feature, {
+        ...recorded.automation?.[feature], enabled: recorded.automation?.[feature]?.enabled === true,
+        available: false, activity: 'unavailable', reason: 'This computer is read-only.' }])), now, input: snapshot?.input ?? 'offline',
       sync: { state, generation: publication?.generation ?? null,
         snapshotAt: publication?.sourceAt ?? null, lastSuccessAt: publication?.verifiedAt ?? null,
         verifiedAt: publication?.verifiedAt ?? null, digest: publication?.digest ?? null,

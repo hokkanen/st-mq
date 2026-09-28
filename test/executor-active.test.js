@@ -37,7 +37,7 @@ function rig(t, { native = true, saved = new Map(), publishLegacy, publishDhwr, 
     elapse(ms) { elapsed += ms; },
     advance(ms) { now += ms; if (h66) for (const [index, value] of Object.entries(values)) receive(index, value); },
     run(phase, duration = 1_800_000, extra = {}) { return executor.execute({ phase, action: phase === 'reduction' ? 'reduction' : 'normal',
-      commands: phase === 'reduction' ? ['reduction'] : ['normal'], roomBoostC: 5, expiresAt: now + duration, ...extra }, { mode: 'active', now }); } };
+      commands: phase === 'reduction' ? ['reduction'] : ['normal'], roomBoostC: 5, expiresAt: now + duration, ...extra }, { automationEnabled: true, now }); } };
 }
 
 test('active base control works without H66 and refreshes idempotently', async t => {
@@ -124,7 +124,7 @@ test('recovery deadline starts at tariff acknowledgement and survives executor r
   r.advance(20*60000);
   const restarted=new Executor({input:'mqtt',store:r.store,h66:r.h66,commandTransport:r.transport,clock:()=>r.now});
   t.after(()=>{clearTimeout(restarted.timer);restarted.closed=true;});
-  const result=await restarted.execute({phase:'recovery',commands:['normal'],expiresAt:r.now+3600000,...hold},{mode:'active',now:r.now});
+  const result=await restarted.execute({phase:'recovery',commands:['normal'],expiresAt:r.now+3600000,...hold},{automationEnabled: true,now:r.now});
   assert.equal(result.recoveryHoldUntil,first.recoveryHoldUntil);
   assert.equal(r.h66.status().expiresAt,first.recoveryHoldUntil);
 });
@@ -134,7 +134,7 @@ test('an explicit circulation pulse survives automatic recovery holding',async t
   await r.run('reduction');
   const hold={recoveryHoldActive:true,recoveryCompressorOnly:true,owner:'manual-hot-water-cycle'};
   await r.run('recovery',3600000,hold);
-  await r.executor.execute({commands:['circulation']},{mode:'active',manualTest:true,now:r.now});
+  await r.executor.execute({commands:['circulation']},{automationEnabled: true,manualTest:true,now:r.now});
   const until=r.executor.status().pulseUntil;
   await r.run('recovery',3600000,hold);
   assert.equal(r.executor.status().pulseUntil,until);
@@ -200,7 +200,7 @@ test('restart restores a previous reduction before processing a new command', as
   await r.run('reduction'); clearTimeout(r.executor.timer);
   const restarted = new Executor({ input: 'mqtt', store: r.store, commandTransport: r.transport, clock: () => r.now });
   t.after(() => { clearTimeout(restarted.timer); restarted.closed = true; });
-  await restarted.execute({ phase: 'normal', commands: ['normal'] }, { mode: 'active', now: r.now });
+  await restarted.execute({ phase: 'normal', commands: ['normal'] }, { automationEnabled: true, now: r.now });
   assert.deepEqual(r.log.map(entry => entry.commands), [['reduction'], ['normal']]);
   assert.equal(restarted.status().restorationPending, false);
 });
@@ -211,12 +211,12 @@ test('a lost ON acknowledgement requires an acknowledged OFF before reduction af
     if (fail && on) throw Object.assign(new Error('synthetic failure'), { code: 'MQTT_TIMEOUT' });
     return { status: 'mqtt', sent: true, actual: null };
   } });
-  await assert.rejects(r.executor.execute({ commands: ['circulation'] }, { mode: 'shadow', manualTest: true, now: r.now }), { code: 'MQTT_TIMEOUT' });
+  await assert.rejects(r.executor.execute({ commands: ['circulation'] }, { automationEnabled: false, manualTest: true, now: r.now }), { code: 'MQTT_TIMEOUT' });
   assert.equal(r.saved.get('executor:home').dhwrOutstanding, true);
   fail = false;
   const restarted = new Executor({ input: 'mqtt', store: r.store, commandTransport: r.transport, clock: () => r.now });
   t.after(() => { clearTimeout(restarted.timer); restarted.closed = true; });
-  const result = await restarted.execute({ phase: 'reduction', commands: ['reduction'] }, { mode: 'active', now: r.now });
+  const result = await restarted.execute({ phase: 'reduction', commands: ['reduction'] }, { automationEnabled: true, now: r.now });
   assert.equal(result.phase, 'reduction');
   assert.deepEqual(r.log.map(entry => entry.commands ?? entry.dhwr), [true, false, ['reduction']]);
   assert.equal(restarted.status().dhwrOutstanding, false);
@@ -246,18 +246,18 @@ test('PUBACK latency extends the conservative pulse end before reduction is allo
   assert.equal((await r.run('reduction')).phase, 'reduction');
 });
 
-test('monitoring and shadow are synchronous and tests cannot overlap an active write', async t => {
+test('Plan only is synchronous and manual tests cannot overlap an active write', async t => {
   let acknowledge;
   const r = rig(t, { native: false, publishLegacy: () => new Promise(resolve => { acknowledge = resolve; }) });
-  for (const mode of ['monitoring', 'shadow']) {
+  {
     for (const command of ['reduction', 'circulation']) {
-      const result = r.executor.execute({ commands: [command] }, { mode, now: r.now });
+      const result = r.executor.execute({ commands: [command] }, { automationEnabled: false, now: r.now });
       assert.equal(result.sent, false); assert.equal(typeof result.then, 'undefined');
     }
   }
   assert.equal(r.log.length, 0);
   const pending = r.run('reduction');
-  await assert.rejects(r.executor.execute({ commands: ['normal'] }, { mode: 'shadow', manualTest: true, now: r.now }), { code: 'EXECUTOR_BUSY' });
+  await assert.rejects(r.executor.execute({ commands: ['normal'] }, { automationEnabled: false, manualTest: true, now: r.now }), { code: 'EXECUTOR_BUSY' });
   acknowledge({ status: 'mqtt', sent: true, actual: null }); await pending;
 });
 
@@ -271,7 +271,7 @@ test('shutdown restores owned native settings and the tariff relay', async t => 
 test('the configured DHWR duration controls manual runs independently of preheat exposure', async t => {
   const r = rig(t, { config: { dhwrPulseMinutes: 3 } });
   const start = r.now;
-  await r.executor.execute({ commands: ['circulation'] }, { mode: 'shadow', manualTest: true, now: r.now });
+  await r.executor.execute({ commands: ['circulation'] }, { automationEnabled: false, manualTest: true, now: r.now });
   assert.equal(r.executor.status().pulseUntil, start + 3 * 60_000);
   await r.executor.restore();
   assert.deepEqual(r.log.filter(row => typeof row.dhwr === 'boolean').map(row => row.dhwr), [true, false]);
@@ -303,7 +303,7 @@ test('manual DHWR expiry sends OFF and retries an unconfirmed OFF without a new 
     if (!on && ++stops === 1) throw Object.assign(new Error('Synthetic timeout'), { code: 'MQTT_TIMEOUT' });
     return { status: 'mqtt', sent: true, actual: null };
   } });
-  await r.executor.execute({ commands: ['circulation'] }, { mode: 'monitoring', manualTest: true, now: r.now });
+  await r.executor.execute({ commands: ['circulation'] }, { automationEnabled: false, manualTest: true, now: r.now });
   r.advance(60_000); t.mock.timers.tick(60_000);
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(stops, 1);
@@ -344,13 +344,13 @@ test('shutdown stops an uncertain ON and demotion preserves its obligation witho
     if (on) throw Object.assign(new Error('Synthetic timeout'), { code: 'MQTT_TIMEOUT' });
     return { status: 'mqtt', sent: true, actual: null };
   } });
-  await assert.rejects(shutdown.executor.execute({ commands: ['circulation'] }, { mode: 'shadow', manualTest: true, now: shutdown.now }), { code: 'MQTT_TIMEOUT' });
+  await assert.rejects(shutdown.executor.execute({ commands: ['circulation'] }, { automationEnabled: false, manualTest: true, now: shutdown.now }), { code: 'MQTT_TIMEOUT' });
   await shutdown.executor.close();
   assert.deepEqual(shutdown.log.map(row => row.dhwr), [true, false]);
   assert.equal(shutdown.saved.get('executor:home').dhwrOutstanding, false);
 
   const demoted = rig(t, { native: false });
-  await demoted.executor.execute({ commands: ['circulation'] }, { mode: 'shadow', manualTest: true, now: demoted.now });
+  await demoted.executor.execute({ commands: ['circulation'] }, { automationEnabled: false, manualTest: true, now: demoted.now });
   await demoted.executor.close({ restore: false });
   assert.deepEqual(demoted.log.map(row => row.dhwr), [true]);
   assert.equal(demoted.saved.get('executor:home').dhwrOutstanding, true);
@@ -363,8 +363,8 @@ test('shutdown stops an uncertain ON and demotion preserves its obligation witho
 
 test('a manual DHWR request cannot erase an outstanding tariff reduction', async t => {
   const r = rig(t, { native: false });
-  await r.executor.execute({ commands: ['reduction'] }, { mode: 'shadow', manualTest: true, now: r.now });
-  await r.executor.execute({ commands: ['circulation'] }, { mode: 'shadow', manualTest: true, now: r.now });
+  await r.executor.execute({ commands: ['reduction'] }, { automationEnabled: false, manualTest: true, now: r.now });
+  await r.executor.execute({ commands: ['circulation'] }, { automationEnabled: false, manualTest: true, now: r.now });
   assert(r.saved.get('executor:home').legacyOutstanding || r.log.some(row => row.commands?.includes('normal')),
     'Starting a separate circulation switch cannot forget restoring the heat reduction relay');
   await r.executor.close();
@@ -380,7 +380,7 @@ test('failed early DHWR stop retries without waiting for the original run deadli
     if (!on && ++stops === 1) throw Object.assign(new Error('Synthetic timeout'), { code: 'MQTT_TIMEOUT' });
     return { status: 'mqtt', sent: true, actual: null };
   } });
-  await r.executor.execute({ commands: ['circulation'] }, { mode: 'shadow', manualTest: true, now: r.now });
+  await r.executor.execute({ commands: ['circulation'] }, { automationEnabled: false, manualTest: true, now: r.now });
   assert.equal((await r.executor.restore()).restorationPending, true);
   r.advance(10_000); t.mock.timers.tick(10_000);
   await new Promise(resolve => setImmediate(resolve));
@@ -393,7 +393,7 @@ test('short ROOM lease expires without ending a separately requested normal-serv
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const r = rig(t);
   const start = r.now;
-  await r.executor.execute({ commands: ['circulation'] }, { mode: 'shadow', manualTest: true, now: r.now });
+  await r.executor.execute({ commands: ['circulation'] }, { automationEnabled: false, manualTest: true, now: r.now });
   await r.run('preheat', 2 * 60_000);
   assert.equal(r.executor.status().pulseUntil, start + 10 * 60_000);
   assert.equal(r.h66.status().expiresAt, start + 2 * 60_000);
@@ -416,7 +416,7 @@ test('floor override and ROOM share only the preheat deadline and release before
     async release(request) { floorCalls.push({ ...request, operation: 'release' }); return { restorationPending: false }; } };
   const r = rig(t, { floorOverride });
   const start = r.now, end = start + 90_000;
-  await r.executor.execute({ commands: ['circulation'] }, { mode: 'shadow', manualTest: true, now: r.now });
+  await r.executor.execute({ commands: ['circulation'] }, { automationEnabled: false, manualTest: true, now: r.now });
   await r.run('preheat', end - r.now, { floorOverride: true, owner: 'synthetic-pooled-treatment' });
   assert.equal(floorCalls[0].operation, 'lease'); assert.equal(floorCalls[0].until, end);
   assert.equal(r.h66.status().expiresAt, end);
@@ -455,7 +455,7 @@ test('expired reduction after native readback restores instead of dispatching la
 
 test('current DHWR obligation stays on its original target across restart and input-mode changes', async t => {
   const r = rig(t, { native: false });
-  await r.executor.execute({ commands: ['circulation'] }, { mode: 'active', manualTest: true, now: r.now });
+  await r.executor.execute({ commands: ['circulation'] }, { automationEnabled: true, manualTest: true, now: r.now });
   await r.executor.close({ restore: false });
   const count = r.log.length;
   r.transport.targetIdentity.dhwr = 'c'.repeat(64);
@@ -481,7 +481,7 @@ test('an unsupported unscoped Executor state rejects before mutation or command'
 test('a one-minute circulation run ends after elapsed time despite repeated wall-clock rollback', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const r = rig(t, { native: false, config: { dhwrPulseMinutes: 1 } });
-  await r.executor.execute({ commands: ['circulation'] }, { mode: 'active', manualTest: true, now: r.now });
+  await r.executor.execute({ commands: ['circulation'] }, { automationEnabled: true, manualTest: true, now: r.now });
   r.advance(-3_600_000); r.elapse(30_000); t.mock.timers.tick(30_000);
   r.advance(-3_600_000); r.elapse(30_000); t.mock.timers.tick(30_000);
   await new Promise(resolve => setImmediate(resolve));
@@ -495,7 +495,7 @@ test('elapsed expiry with unavailable OFF delivery retains the original stop obl
     if (!on) throw Object.assign(new Error('synthetic unavailable'), { code: 'MQTT_UNAVAILABLE' });
     return { sent: true };
   } });
-  await r.executor.execute({ commands: ['circulation'] }, { mode: 'active', manualTest: true, now: r.now });
+  await r.executor.execute({ commands: ['circulation'] }, { automationEnabled: true, manualTest: true, now: r.now });
   const binding = r.executor.status().targetBindings.dhwr;
   r.advance(-3_600_000); r.elapse(60_000); t.mock.timers.tick(60_000);
   await new Promise(resolve => setImmediate(resolve));

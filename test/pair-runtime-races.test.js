@@ -29,7 +29,7 @@ async function fixture(t, { runtimeFactory, recoveryModule, snapshotSource } = {
   const root = await mkdtemp(join(tmpdir(), 'stmq-pair-runtime-race-'));
   const dbPath = join(root, 'source.sqlite'); await writeFile(dbPath, 'synthetic placeholder');
   const config = { dbPath, dataDir: root, databaseDir: root, input: 'mqtt', role: 'master', port: 0, host: '127.0.0.1', token: '',
-    settings: { mode: 'monitoring' }, connections: { mqtt: { address: 'mqtt://127.0.0.1' } },
+    settings: {  }, connections: { mqtt: { address: 'mqtt://127.0.0.1' } },
     topology: 'pair', pair: { snapshotDirectory: join(root, 'pair-snapshots'), directory: join(root, 'pair'), timeoutMs: 30000, vip: {} } };
   let hooks, controlling = true, closed = false;
   const instances = [], gates = [];

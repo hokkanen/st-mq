@@ -61,7 +61,7 @@ test('stale or disconnected operation stays modelled and simulated energy stays 
 test('live model evidence remains available without persisting it as original power history', t => {
   const store = new Store(':memory:');
   t.after(() => store.close());
-  const engine = new Engine({ store, config: { input: 'providers', settings: { mode: 'shadow' } }, clock: () => now });
+  const engine = new Engine({ store, config: { input: 'providers', settings: {  } }, clock: () => now });
   for (const [signal, value] of [['indoor_temperature', 21], ['outdoor_temperature', 0]]) engine.ingest({
     source: signal === 'outdoor_temperature' ? 'fmi' : 'mqtt-temperature', device: 'synthetic-house', signal, value,
     unit: 'degC', sourceTime: now, receivedAt: now, quality: [],

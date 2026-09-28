@@ -76,14 +76,14 @@ test('a slow temporary-control POST spanning a completed reload dispatches only 
   const original = old.setTemporary.bind(old);
   old.setTemporary = value => { oldMutations++; return original(value); };
   const pending = await beginSlowPost(app, base, '/api/temporary');
-  write({ controller: { mode: 'monitoring', max_drop_c: 0.5 } });
+  write({ controller: { max_drop_c: 0.5 } });
   assert.equal((await post('/api/settings/reload')).status, 200);
   assert.notEqual(app.engine, old);
   const awayUntil = new Date(Date.now() + 3600_000).toISOString();
   const response = await pending.finish({ awayUntil });
   assert.equal(response.status, 200);
   assert.equal(oldMutations, 0);
-  assert.equal(response.body.mode, 'monitoring');
+  assert.equal(response.body.automation.home.enabled, false);
   assert.equal(response.body.settings.comfort.maxDropC, 0.5);
   assert.equal(app.engine.settings.occupancy.returnAt, awayUntil);
 });
@@ -130,7 +130,7 @@ test('shutdown during a delayed config read prevents reconnection and active dis
     mqttOptions: { connect: mqtt.connect },
     readConfig: async () => { entered.resolve(); await release.promise; return next; },
   });
-  write({ controller: { input: 'mqtt', mode: 'active' },
+  write({ controller: { input: 'mqtt' },
     mqtt: { address: 'mqtt://invented-second.invalid' }, equipment: { devices: [{ id: 'indoor', kind: 'temperature', connection: 'mqtt:' + 'invented/second' }] } });
   next = read();
   const old = app.engine;

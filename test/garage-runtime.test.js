@@ -22,7 +22,7 @@ function setup(t, { disk = false, settings = {}, owner = true } = {}) {
   const store = new Store(directory ? join(directory, 'test.sqlite') : ':memory:');
   let now = START, authority = owner;
   const config = { input: 'mqtt', garage: garageSettings(settings) };
-  const engine = { latest: {}, lastKnownTemperatures: {}, settings: { mode: 'active' } };
+  const engine = { latest: {}, lastKnownTemperatures: {}, automationEnabled: () => true };
   const runtime = new GarageRuntime({ store, engine, config, clock: () => now, canControl: () => authority });
   const calls = [], status = { automaticControl: false, phase: 'monitoring', native: {}, health: {},
     limits: { maxLeaseMs: 180_000, restorationDelayMs: 120_000 } };
@@ -308,7 +308,7 @@ test('electrical interval retries deduplicate missing provenance while keeping d
 
 test('front sensor accepts negative Celsius and remains distinct from Home average and rear history', async t => {
   const store = new Store(':memory:');
-  const config = { input: 'mqtt', settings: { mode: 'shadow' }, connections: {} };
+  const config = { input: 'mqtt', automationEnabled: () => false, connections: {} };
   const engine = new Engine({ store, config, clock: () => START });
   t.after(async () => { await engine.garage.close({ restore: false }); store.close(); });
   for (const [signal, value] of [['indoor_temperature', 21], ['garage_temperature', 6], ['garage_temperature_2', -1]])

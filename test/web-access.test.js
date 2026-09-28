@@ -14,7 +14,7 @@ const configuration = changes => ({ addon: true, token: '', host: '127.0.0.1', p
 
 async function setup(t, config = configuration(), extra = {}) {
   const mutations = [];
-  const engine = { status: () => ({ mode: 'monitoring' }),
+  const engine = { status: () => ({ environment: 'history' }),
     setTemporary: input => { mutations.push(input); return { updated: true }; } };
   const access = createWebAccess({ config, engine, store: {},
     chartService: { overview: async () => ({ rows: [] }) }, ...extra });
@@ -51,7 +51,7 @@ for (const address of ['172.30.32.2', '::ffff:172.30.32.2']) {
     const response = await fetch(`${base}/api/status`, { headers });
     assert.equal(response.status, 200);
     assert.match(response.headers.get('content-security-policy'), /frame-ancestors 'self'/);
-    assert.equal((await response.json()).mode, 'monitoring');
+    assert.equal((await response.json()).environment, 'history');
     assert.equal((await fetch(`${base}/api/status`, { headers: { ...headers, Origin: 'http://untrusted.invalid' } })).status, 403);
   });
 }
@@ -163,7 +163,7 @@ test('a reserved startup listener rejects API requests until the controller is r
   let starting = true, reads = 0;
   const { access, mutations } = await setup(t, configuration({ addon: false }), {
     settingsReloadStatus: () => ({ busy: starting }),
-    getEngine: () => { reads++; assert.equal(starting, false); return { status: () => ({ mode: 'monitoring' }) }; },
+    getEngine: () => { reads++; assert.equal(starting, false); return { status: () => ({ environment: 'history' }) }; },
   });
   const base = endpoint(access.server);
   assert.equal((await fetch(`${base}/api/status`)).status, 503);
@@ -182,7 +182,7 @@ test('an occupied ingress port identifies the ingress setting and leaves no dire
   t.after(() => new Promise(resolve => blocker.close(resolve)));
   const port = blocker.address().port;
   const access = createWebAccess({ config: configuration({ token: firstToken, ingressPort: port }),
-    engine: { status: () => ({ mode: 'monitoring' }) }, store: {},
+    engine: { status: () => ({ environment: 'history' }) }, store: {},
     chartService: { overview: async () => ({ rows: [] }) } });
   t.after(() => access.close());
   await assert.rejects(access.start(), error => {
@@ -205,7 +205,7 @@ test('invalid direct credentials and binding changes fail without changing activ
 });
 
 test('standalone createAppServer remains compatible with a fixed token', async t => {
-  const server = createAppServer({ token: firstToken, engine: { status: () => ({ mode: 'monitoring' }) },
+  const server = createAppServer({ token: firstToken, engine: { status: () => ({ environment: 'history' }) },
     chartService: { overview: async () => ({}) }, store: {} });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => { server.closeAllConnections(); return new Promise(resolve => server.close(resolve)); });

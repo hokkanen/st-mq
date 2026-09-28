@@ -106,7 +106,7 @@ function runtimeFixture(t, savingsStrategy = 'balanced') {
   const settings = garageSettings({ ...args.settings, minOnMs: 0 });
   appendGarageEntry(store, 'mqtt', 'context', {}, settings, NOW - 1, { key: 'test-planning-seed', seed: args.model });
   store.setState('garage:configuration:mqtt', settings);
-  const engine = { latest: {}, lastKnownTemperatures: {}, settings: { mode: 'active' } };
+  const engine = { latest: {}, lastKnownTemperatures: {}, automationEnabled: () => true };
   const runtime = new GarageRuntime({ store, engine, config: { input: 'mqtt', garage: settings }, clock: () => now });
   const commands = [], safety = [], native = { automaticControl: true, liveControlSupported: true, phase: 'ready', episode: null,
     native: { power: 'on', powerAt: now }, health: { pumpCommunicating: true }, baselineAccepted: true,

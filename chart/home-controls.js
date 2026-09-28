@@ -1,3 +1,4 @@
+import { isReadOnlyReplica } from './replica-status.js';
 import { HEATING_STRATEGIES } from '../src/domain/heating-strategy.js';
 
 const finnishInput = new Intl.DateTimeFormat('en-GB', {
@@ -21,14 +22,17 @@ export function temporaryValues(status) {
     pauseUntilLocal: status.override?.expiresAt > status.now ? finnishDateTime(status.override.expiresAt) : '' };
 }
 
-/** Configured price control is not actively commanding equipment in every mode. */
-export function priceControlState(status = {}, { enabled = true, paused = false, away = false } = {}) {
+/** Automation permission belongs to the selected feature; manual commands are independent. */
+export function priceControlState(status = {}, { feature = 'home', enabled = true, paused = false, away = false } = {}) {
+  if (isReadOnlyReplica(status)) return { label: 'Recorded', state: 'muted' };
+  if (status.input === 'offline') return { label: 'History viewer', state: 'muted' };
   if (paused) return { label: 'Paused', state: 'paused' };
-  if (enabled === false) return { label: 'Disabled', state: 'muted' };
-  if (status.input === 'offline') return { label: 'Offline', state: 'muted' };
-  if (enabled !== true || !status.mode) return { label: '—', state: 'muted' };
-  if (status.mode !== 'active') return { label: status.mode[0].toUpperCase() + status.mode.slice(1), state: 'muted' };
-  return { label: away ? 'Away' : 'Active', state: 'active' };
+  if (enabled !== true) return { label: 'Unavailable', state: 'muted' };
+  const automation = status.automation?.[feature];
+  if (!automation) return { label: 'Unavailable', state: 'muted' };
+  if (!automation.enabled) return { label: 'Plan only', state: 'muted' };
+  if (automation.available === false) return { label: 'Automatic · unavailable', state: 'muted' };
+  return { label: away ? 'Away · Automatic' : 'Automatic', state: 'active' };
 }
 
 export function activeRates(status) {

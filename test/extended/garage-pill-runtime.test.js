@@ -14,11 +14,13 @@ const prefix = 'synthetic/pill-integration';
 const settings = { driver: 'shelly-cn105', stateTopic: `${prefix}/state`,
   telemetryTopic: `${prefix}/telemetry`, commandTopic: `${prefix}/command` };
 
-function installation(t, { phase = 0, readDelay = 0 } = {}) {
+function installation(t, { phase = 0, readDelay = 0, commissioned = false } = {}) {
   let uptime = 10000 + phase, callback, wallOffset = 0, commandDelay = 0, withhold = false;
   const pending = [], reports = [], commands = [], events = [];
+  let pumpOn = true;
   const storage = { cn105_config: { prefix, profile: 'msz-ge', manualEnabled: true,
     externalTemperatureEnabled: true, armed: false } };
+  if (commissioned) storage.cn105_proof = { selectivePowerVerified: true, expiryVerified: true, restartVerified: true };
   const context = vm.createContext({
     Shelly: {
       getDeviceInfo: () => ({ id: 'synthetic-pill', ver: 'synthetic-firmware' }),
@@ -66,10 +68,11 @@ function installation(t, { phase = 0, readDelay = 0 } = {}) {
     const p = context.CN105_PENDING;
     if (!p || p.offset !== p.bytes.length) return;
     if (p.kind === 'connect') callback(context.CN105.frame(0x7a, [0]));
+    else if (p.kind === 'power') { pumpOn = p.effect.on; callback(context.CN105.frame(0x61, [0])); }
     else if (p.kind === 'external' || p.kind === 'manual') callback(context.CN105.frame(0x61, [0]));
     else if (p.kind === 'info') {
       const fields = Array(16).fill(0); fields[0] = p.info;
-      if (p.info === 2) Object.assign(fields, { 3: 1, 4: 1, 5: 14, 6: 0, 7: 3 });
+      if (p.info === 2) Object.assign(fields, { 3: pumpOn ? 1 : 0, 4: 1, 5: 14, 6: 0, 7: 3 });
       callback(context.CN105.frame(0x62, fields));
     } else assert.fail(`Unexpected actuation ${p.kind}`);
   }
@@ -185,4 +188,68 @@ test('the room controller sustains external sensing through quantized-clock rene
     assert.ok(h.commands.filter(c => typeof c.temperatureC === 'number').length >= 8,
       'multiple real host renewals traverse the production Pill handler');
     assert.equal(h.events.some(e => /expiry|challenge/.test(e.reason)), false);
+  });
+
+test('compiled Pill supports external handover to manual bounded OFF and fresh restoration while automatic arming is disabled',
+  { skip: !artifact && 'Set STMQ_PILL_ARTIFACT to the built Pill driver' }, async t => {
+    const h = installation(t, { commissioned: true });
+    h.run(305000); h.publish(); // Exercise the real five-minute native ON guard.
+    assert.equal(h.context.CN105_POLICY.armed, false);
+    assert.equal(h.adapter.status().baselineVerified, true);
+    assert.equal(h.adapter.status().normalHeating.targetC, 17);
+    const sample = h.sample();
+    await h.adapter.setExternalTemperature(sample); h.run(15000); h.publish();
+    assert.equal(h.adapter.externalTemperature().result.status, 'acknowledged');
+    assert.deepEqual(h.adapter.status().manualPauseReasons, []);
+    const plan = () => ({ id: 'manual-bounded-episode', pauseFrom: h.now(), pauseUntil: h.now() + 120000,
+      temperatureEvidenceAt: h.now(), permissionExpiresAt: h.now() + 90000 });
+    const busy = await h.adapter.plannerTick({ now: h.now(), valid: true, recoveryReady: true, plan: plan(), purpose: 'manual' });
+    assert.equal(busy.status, 'blocked');
+    assert.ok(busy.reasons.includes('external-temperature-busy'));
+    assert.equal(h.commands.some(command => command.action === 'start'), false);
+    await h.adapter.setExternalTemperature({ temperatureC: null }); h.run(10000); h.publish();
+    assert.equal(h.adapter.externalTemperature().result.status, 'acknowledged');
+    assert.equal(h.storage.cn105_external.external_pending, false);
+    const started = await h.adapter.plannerTick({ now: h.now(), valid: true, recoveryReady: true, plan: plan(), purpose: 'manual' });
+    assert.ok(['published', 'accepted', 'pending'].includes(started.status), JSON.stringify(started));
+    h.run(15000); h.publish();
+    assert.equal(h.context.CN105_POLICY.lease.purpose, 'manual');
+    assert.equal(h.adapter.status().phase, 'paused');
+    assert.equal(h.adapter.status().restorePending, true);
+    assert.equal(h.storage.cn105_restore.restoration_pending, true);
+    assert.equal(h.context.CN105_NATIVE.power.value, 'OFF');
+    const startCommand = h.commands.find(command => command.action === 'start');
+    assert.equal(startCommand.purpose, 'manual');
+    assert.ok(h.commands.findIndex(command => command.action === 'remote-temperature' && command.temperatureC === null)
+      < h.commands.indexOf(startCommand));
+    await h.adapter.release({ reason: 'manual-normal', now: h.now() }); h.run(15000); h.publish();
+    assert.equal(h.context.CN105_NATIVE.power.value, 'ON');
+    assert.equal(h.storage.cn105_restore.restoration_pending, false);
+    assert.equal(h.adapter.status().restorePending, false);
+    const fresh = h.sample(); assert.ok(fresh.measuredAt > sample.measuredAt);
+    await h.adapter.setExternalTemperature(fresh); h.run(15000); h.publish();
+    assert.equal(h.adapter.externalTemperature().result.status, 'acknowledged');
+    assert.equal(h.context.CN105_POLICY.external.measured, fresh.measuredAt);
+    assert.equal(h.context.CN105_NATIVE.target_c.value, 17);
+    assert.equal(h.context.CN105_POLICY.armed, false, 'manual ownership does not arm automatic pauses');
+  });
+
+test('compiled Pill admits an unowned manual pause without arming automation and restores on permission expiry',
+  { skip: !artifact && 'Set STMQ_PILL_ARTIFACT to the built Pill driver' }, async t => {
+    const h = installation(t, { commissioned: true }); h.run(305000); h.publish();
+    const plan = { id: 'manual-expiry', pauseFrom: h.now(), pauseUntil: h.now() + 120000,
+      temperatureEvidenceAt: h.now(), permissionExpiresAt: h.now() + 60000 };
+    const tick = () => h.adapter.plannerTick({ now: h.now(), valid: true, recoveryReady: true, plan, purpose: 'manual' });
+    assert.equal((await tick()).status, 'claiming');
+    assert.equal(h.commands.at(-1).action, 'claim'); assert.equal(h.commands.at(-1).purpose, 'manual');
+    h.run(3000); h.publish();
+    assert.equal((await tick()).status, 'published'); h.run(15000); h.publish();
+    assert.equal(h.adapter.status().phase, 'paused'); assert.equal(h.context.CN105_NATIVE.power.value, 'OFF');
+    const commands = h.commands.length;
+    h.run(70000); h.publish();
+    assert.equal(h.context.CN105_NATIVE.power.value, 'ON');
+    assert.equal(h.storage.cn105_restore.restoration_pending, false);
+    assert.equal(h.adapter.status().restorePending, false);
+    assert.equal(h.commands.length, commands, 'device restores without another controller command');
+    assert.equal(h.context.CN105_POLICY.armed, false);
   });

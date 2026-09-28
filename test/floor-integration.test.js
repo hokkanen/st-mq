@@ -31,10 +31,10 @@ function executorFixture(t) {
   return { executor, calls, decision, pending: value => { releasePending = value; } };
 }
 
-test('shadow and monitoring decisions never invoke floor leases or device transports', async t => {
+test('Plan only decisions never invoke floor leases or device transports', async t => {
   const f = executorFixture(t);
-  for (const mode of ['shadow', 'monitoring']) {
-    const result = await f.executor.execute(f.decision, { mode, now: NOW });
+  {
+    const result = await f.executor.execute(f.decision, { automationEnabled: false, now: NOW });
     assert.equal(result.sent, false);
   }
   assert.deepEqual(f.calls, []);
@@ -42,24 +42,24 @@ test('shadow and monitoring decisions never invoke floor leases or device transp
 
 test('active pooled preheat leases before ROOM and preserves one owner through changed planning deadlines', async t => {
   const f = executorFixture(t);
-  await f.executor.execute(f.decision, { mode: 'active', now: NOW });
+  await f.executor.execute(f.decision, { automationEnabled: true, now: NOW });
   assert.equal(f.calls[0].kind, 'lease');
   assert.equal(f.calls.find(row => row.kind === 'native').roomBoostC, 5);
   assert.equal(f.calls.some(row => row.kind === 'dhwr'), false);
-  await f.executor.execute({ ...f.decision, expiresAt: NOW + 1_800_000 }, { mode: 'active', now: NOW });
+  await f.executor.execute({ ...f.decision, expiresAt: NOW + 1_800_000 }, { automationEnabled: true, now: NOW });
   assert.deepEqual(f.calls.filter(row => row.kind === 'lease').map(row => row.owner), ['cycle-one', 'cycle-one']);
 });
 
 test('automatic reduction waits for floor release readback before changing heating regime', async t => {
   const f = executorFixture(t); f.pending(true);
-  const result = await f.executor.execute({ ...f.decision, phase: 'reduction', commands: ['reduction'] }, { mode: 'active', now: NOW });
+  const result = await f.executor.execute({ ...f.decision, phase: 'reduction', commands: ['reduction'] }, { automationEnabled: true, now: NOW });
   assert.equal(result.restorationPending, true);
   assert.deepEqual(f.calls.map(row => row.kind), ['release']);
 });
 
 test('manual replacement cannot bypass an unconfirmed floor release', async t => {
   const f = executorFixture(t); f.pending(true);
-  const result = await f.executor.execute({ phase: 'reduction', commands: ['reduction'] }, { mode: 'active', now: NOW,
+  const result = await f.executor.execute({ phase: 'reduction', commands: ['reduction'] }, { automationEnabled: true, now: NOW,
     manualTest: true, pause: { id: 'manual-one', expiresAt: NOW + 600_000 } }).catch(error => error);
   assert(result.restorationPending || result.code, 'Pending release must be exposed');
   assert.equal(f.calls.some(row => row.kind === 'tariff' && row.commands.includes('reduction')), false);
@@ -67,7 +67,7 @@ test('manual replacement cannot bypass an unconfirmed floor release', async t =>
 
 test('ROOM-only treatment cannot be reported while release of the pooled override is unconfirmed', async t => {
   const f = executorFixture(t); f.pending(true);
-  const result = await f.executor.execute({ ...f.decision, floorOverride: false }, { mode: 'active', now: NOW }).catch(error => error);
+  const result = await f.executor.execute({ ...f.decision, floorOverride: false }, { automationEnabled: true, now: NOW }).catch(error => error);
   assert(result.restorationPending || result.code, 'Pending release must be exposed');
   assert.equal(f.calls.some(row => row.kind === 'native' && row.phase === 'preheat'), false);
 });
@@ -142,7 +142,7 @@ test('disabled replacement configuration retains old subscriptions and releases 
 
 test('a new manual preheat activation gets a fresh owner while maintenance renews that same activation', async t => {
   const f = executorFixture(t);
-  const options = { mode: 'active', now: NOW, manualTest: true, pause: { id: 'same-pause', expiresAt: NOW + 600_000 } };
+  const options = { automationEnabled: true, now: NOW, manualTest: true, pause: { id: 'same-pause', expiresAt: NOW + 600_000 } };
   await f.executor.execute(f.decision, options);
   await f.executor.execute({ phase: 'normal', commands: ['normal'] }, options);
   await f.executor.execute(f.decision, options);

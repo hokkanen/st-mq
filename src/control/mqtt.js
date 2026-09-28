@@ -4,6 +4,15 @@ import { gateMqttPublications } from './mqtt-publication-gate.js';
 
 export const HEATING_COMMANDS = Object.freeze(['reduction', 'normal', 'circulation']);
 const MESSAGES = {
+  SHELLY_IDENTITY_UNAVAILABLE: 'The tariff relay identity has not been confirmed. Wait for a fresh device report.',
+  SHELLY_READBACK_UNAVAILABLE: 'Tariff relay feedback became unavailable. The command may have reached the relay; check its reported state.',
+  SHELLY_READBACK_TIMEOUT: 'The tariff relay did not confirm this command before the timeout. It may already have changed; check its reported state.',
+  SHELLY_COMMAND_UNCONFIRMED: 'The tariff relay command could not be confirmed. It may have reached the device; check its reported state.',
+  SHELLY_CONTROL_FAILED: 'The tariff relay request failed. Check its current availability and reported state.',
+  FLOOR_PENDING: 'Waiting for the previous floor-heating override to be restored.',
+  EXECUTOR_BUSY: 'A heating request is already in progress. Wait for its result.',
+  EXECUTOR_UNCONFIRMED: 'The heating request could not be confirmed. Check the reported equipment state.',
+
   MQTT_COMMAND_INVALID: 'Choose normal heating, reduced heating, or circulation.',
   MQTT_RELAY_UNAVAILABLE: 'Configure a direct tariff relay with live device readback before requesting heating.',
   MQTT_CONNECTION_FAILED: 'Could not connect to the MQTT broker. Check the broker address and connection settings. No command was sent.',
@@ -44,7 +53,7 @@ function connectionFailure(error) {
 }
 export function heatingErrorMessage(code) {
   return Object.hasOwn(MESSAGES, code) ? MESSAGES[code]
-    : 'MQTT test failed. Delivery is unconfirmed; check the broker connection.';
+    : 'The heating request could not be confirmed. Check the reported equipment state.';
 }
 
 // A new, short-lived connection owns each explicit batch. Nothing is retained,

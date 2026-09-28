@@ -5,11 +5,14 @@ contract. See [garage adapter setup](garage-adapter.md) for the explicit product
 driver, exact private MQTT topics and commissioning gates. The default synthetic
 `stmq-garage-fixture/v1` driver cannot publish real commands.
 
-- Production state includes all five installed commissioning results:
-  `selectivePowerVerified`, `lowHeatVerified`, `expiryVerified`, and
-  `restartVerified`, plus `releaseOrderingVerified`. Every result, the baseline and essential capabilities must
-  be verified before ST-MQ claims an armed adapter or requests OFF. The adapter
-  independently enforces its commissioned mode. Monitoring never claims it.
+- Production state includes installed `selectivePowerVerified`, `expiryVerified`
+  and `restartVerified` evidence. Native baseline means fresh ordinary HEAT settings,
+  including 17°C used for external-temperature control. Managed pause capabilities
+  include native-setting preservation and software release ordering. Automatic
+  pauses require local arming; explicit bounded manual pauses have separate
+  admission and retain the same expiry/restoration protections. Software race tests
+  do not manufacture installed test evidence.
+
 - The consumer needs native baseline-preserving availability/OFF/release,
   finite episode and lease endpoints, separate host/device sessions, replay-safe
   freshness challenges, sequencing and rejection/acceptance/native-confirmation

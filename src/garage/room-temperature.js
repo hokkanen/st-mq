@@ -39,6 +39,7 @@ export class GarageRoomTemperature {
     this.held = false;
   }
   select(targetC, now) {
+    this.suspended = false;
     this.targetC = targetC;
     this.requestedAt = now;
     this.resumeAtNativeTarget = false;
@@ -58,6 +59,14 @@ export class GarageRoomTemperature {
   cancel(request, now) {
     this.targetC = null;
     this.handover(request, now);
+  }
+  suspend(now) {
+    this.generation++; this.reset(); this.mustClear = true; this.suspended = true;
+    this.minimumMeasuredAt = now;
+  }
+  resume(now) {
+    this.suspended = false; this.generation++; this.reset();
+    this.resumeAtNativeTarget = this.targetC !== null; this.minimumMeasuredAt = now;
   }
   status(observation) {
     return { targetC: this.targetC, phase: this.phase, reason: this.reason,
@@ -149,6 +158,9 @@ export class GarageRoomTemperature {
       }
     }
     if (!current()) return;
+    if (this.suspended) {
+      this.phase = 'suspended'; this.reason = 'External temperature control is suspended during the heating override.'; return;
+    }
     if (this.ordinary) {
       const request = this.ordinary, controls = adapter.nativeControls(now);
       this.phase = 'preparing';

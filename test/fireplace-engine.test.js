@@ -16,7 +16,7 @@ const pause = () => new Promise(resolve => setTimeout(resolve, 10));
 function fixture(t) {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-fireplace-engine-'));
   const path = join(directory, 'invented.sqlite'), store = new Store(path);
-  const config = { input: 'mqtt', settings: validateSettings({ mode: 'monitoring', comfort: { targetC: 21 } }),
+  const config = { input: 'mqtt', settings: validateSettings({ comfort: { targetC: 21 } }),
     control: { learningTrials: false } };
   let now = start, engine = new Engine({ store, config, clock: () => now });
   const observer = new DatabaseSync(path, { readOnly: true });

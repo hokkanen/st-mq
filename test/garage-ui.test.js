@@ -16,13 +16,13 @@ test('Garage Heat control badge follows its own pause and configuration', () => 
   const badge = { textContent: '', parentElement: { dataset: {} } };
   const document = { getElementById: id => id === 'garage-control-price' ? badge : null };
   for (const [garage, expected, state] of [
-    [undefined, '—', 'muted'],
-    [{ settings: { enabled: false } }, 'Disabled', 'muted'],
-    [{ settings: { enabled: true } }, 'Active', 'active'],
+    [undefined, 'Unavailable', 'muted'],
+    [{ settings: { enabled: false } }, 'Unavailable', 'muted'],
+    [{ settings: { enabled: true } }, 'Automatic', 'active'],
     [{ settings: { enabled: true }, temporary: { pauseActive: true } }, 'Paused', 'paused'],
-    [{ settings: { enabled: true }, temporary: { pauseActive: false } }, 'Active', 'active'],
+    [{ settings: { enabled: true }, temporary: { pauseActive: false } }, 'Automatic', 'active'],
   ]) {
-    renderGarage(document, { now, mode: 'active', garage, override: { expiresAt: now + 60_000 } });
+    renderGarage(document, { now, automation: { home: { enabled: true }, garage: { enabled: true } }, garage, override: { expiresAt: now + 60_000 } });
     assert.equal(badge.textContent, expected);
     assert.equal(badge.parentElement.dataset.state, state);
   }
@@ -132,7 +132,7 @@ test('a bounded wait for temperature evidence is explained without promoting una
   assert.equal(garageHeatingRequest(garage), 'Reduction');
   assert.deepEqual(garage, before, 'presentation never changes the actual protection assessment');
   const reason = { textContent: '' }, document = { getElementById: id => id === 'garage-controller-reason' ? reason : null };
-  renderGarage(document, { now, mode: 'active', input: 'mqtt', garage });
+  renderGarage(document, { now, automation: { home: { enabled: true }, garage: { enabled: true } }, input: 'mqtt', garage });
   assert.match(reason.textContent, /Existing OFF permission is held/);
   assert.doesNotMatch(reason.textContent, /protection-required|waiting-for-temperature-evidence|reports are interrupted/);
   garage.temperatureHold.expiresAt = now;
@@ -265,28 +265,28 @@ test('Garage strategy selection updates the active label without inventing a def
   }
 });
 
-test('Garage policy distinguishes automatic planning from paused, disabled and monitoring control', () => {
+test('Garage policy distinguishes automatic planning from paused, disabled and plan-only control', () => {
   const context = { textContent: '' }, document = { getElementById: id => id === 'garage-policy-context' ? context : null };
   for (const [status, expected] of [
-    [{ mode: 'shadow', garage: { settings: { enabled: true } } }, /Shadow mode: automatic decisions do not command/],
-    [{ mode: 'active', garage: { settings: { enabled: false } } }, /Automatic price control is disabled/],
-    [{ mode: 'active', input: 'offline', garage: { settings: { enabled: true } } }, /Offline input/],
-    [{ mode: 'active', garage: { settings: { enabled: true }, temporary: { pauseActive: true } } }, /Price control is paused.*Freeze protection/],
-    [{ mode: 'active', garage: { settings: { enabled: true } } }, /subject to equipment and protection checks/],
-    [{}, /Current operating mode is unavailable/],
+    [{ automation: { home: { enabled: false }, garage: { enabled: false } }, garage: { settings: { enabled: true } } }, /Plan only: Garage plans do not send automatic commands/],
+    [{ automation: { home: { enabled: true }, garage: { enabled: true } }, garage: { settings: { enabled: false } } }, /Garage integration is disabled/],
+    [{ automation: { home: { enabled: true }, garage: { enabled: true } }, input: 'offline', garage: { settings: { enabled: true } } }, /History viewer/],
+    [{ automation: { home: { enabled: true }, garage: { enabled: true } }, garage: { settings: { enabled: true }, temporary: { pauseActive: true } } }, /Price control is paused.*Freeze protection/],
+    [{ automation: { home: { enabled: true }, garage: { enabled: true } }, garage: { settings: { enabled: true } } }, /subject to equipment and protection checks/],
+    [{}, /Garage automation status is unavailable/],
   ]) {
     renderGarage(document, status);
     assert.match(context.textContent, expected);
   }
 });
 
-test('Garage pause summary reports current pause, disabled, unavailable and operating mode truthfully', () => {
-  const active = { now, mode: 'active', input: 'mqtt', garage: { settings: { enabled: true } } };
+test('Garage pause summary reports current pause, disabled, unavailable and automation permission truthfully', () => {
+  const active = { now, automation: { home: { enabled: true }, garage: { enabled: true } }, input: 'mqtt', garage: { settings: { enabled: true } } };
   assert.equal(garagePauseSummary(active), 'Not paused');
   assert.equal(garagePauseSummary({}), 'Status unavailable');
-  assert.equal(garagePauseSummary({ ...active, mode: 'shadow' }), 'Inactive in shadow mode');
+  assert.equal(garagePauseSummary({ ...active, automation: { home: { enabled: false }, garage: { enabled: false } } }), 'Plan only');
   assert.equal(garagePauseSummary({ ...active, input: 'offline' }), 'Unavailable offline');
-  assert.equal(garagePauseSummary({ ...active, garage: { settings: { enabled: false } } }), 'Automatic control disabled');
+  assert.equal(garagePauseSummary({ ...active, garage: { settings: { enabled: false } } }), 'Garage integration unavailable');
   assert.match(garagePauseSummary({ ...active, garage: { ...active.garage,
     temporary: { pauseActive: true, pauseUntil: now + 60_000 } } }), /^Paused until /);
   assert.equal(garagePauseSummary({ ...active, garage: { ...active.garage,
@@ -394,7 +394,7 @@ test('garage manual feedback clears on the controller update or a replacement ma
     const requested = { ...f.initial, garage: { ...f.initial.garage,
       heatingControls: { ...f.initial.garage.heatingControls, requestedMode: 'normal', holdUntil: now + 60_000, confirmed: true } } };
     f.reply(requested); await f.trigger('garage-mode-normal');
-    assert.match(f.nodes.get('garage-heating-message').textContent, /next update/);
+    assert.match(f.nodes.get('garage-heating-message').textContent, /next controller update/);
     f.panel.update(superseded ? { ...requested, now: now + 1000, garage: { ...requested.garage,
       adapter: { restorePending: true, simulation: true },
       heatingControls: { ...requested.garage.heatingControls, requestedMode: 'off' } } } : { ...f.initial, now: now + 1000 });

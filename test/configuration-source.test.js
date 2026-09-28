@@ -8,15 +8,15 @@ import { configurationPaths, createConfigurationSource, mergeOptions, parseOptio
 function fixture(t) {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-supervisor-import-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
-  const defaults = { controller: { web_token: '', mode: 'shadow', learning_trials: true, compressor_integral_a1: -100 },
+  const defaults = { controller: { web_token: '', max_drop_c: 1.5, learning_trials: true, compressor_integral_a1: -100 },
     mqtt: { address: 'mqtt://synthetic.invalid', user: '', pw: '' },
     easee: { user: '', pw: '', charger_voltage_ids: [190, 191] } };
-  const schema = { controller: { web_token: 'password', mode: 'list(shadow|monitoring|active)', learning_trials: 'bool', compressor_integral_a1: 'int(-1000,-1)?' },
+  const schema = { controller: { web_token: 'password', max_drop_c: 'float(0,2)', learning_trials: 'bool', compressor_integral_a1: 'int(-1000,-1)?' },
     mqtt: { address: 'str', user: 'str', pw: 'password' }, easee: { user: 'str?', pw: 'password?', charger_voltage_ids: ['int(190,199)'] } };
   const paths = { defaultsPath: join(directory, 'config.json'), privatePath: join(directory, 'supervisor-options.json'),
     importPath: join(directory, 'secrets.json'), receiptPath: join(directory, 'private/configuration-import.json') };
   writeFileSync(paths.defaultsPath, JSON.stringify({ options: defaults, schema }));
-  writeFileSync(paths.privatePath, JSON.stringify({ controller: { mode: 'monitoring' } }));
+  writeFileSync(paths.privatePath, JSON.stringify({ controller: { max_drop_c: 0.5 } }));
   const state = { current: mergeOptions(defaults, { mqtt: { user: 'synthetic-existing-user', pw: 'synthetic-existing-password' } }),
     requests: [], failSave: false, failRead: false, changeReadback: false, failAfterSave: false, secretValues: {} };
   const resolveReferences = value => typeof value === 'string' && value.startsWith('!secret ')
@@ -39,7 +39,7 @@ function fixture(t) {
     state.lastSavedOptions = JSON.parse(request.body).options;
     assert.equal(JSON.stringify(state.lastSavedOptions).includes(':null'), false, 'Supervisor rejects explicit null, including optional fields');
     state.current = resolveReferences(state.lastSavedOptions);
-    if (state.changeReadback) state.current.controller.mode = 'active';
+    if (state.changeReadback) state.current.controller.max_drop_c = 1;
     if (state.failAfterSave) throw new Error('synthetic-network-timeout-after-save');
     return { ok: true, json: async () => ({ result: 'ok', data: {} }) };
   };
@@ -98,9 +98,9 @@ test('HA import validates before saving, merges current options and deletes only
 
 test('HA reload with no import reads fresh Supervisor settings instead of stale options export', async t => {
   const f = fixture(t);
-  f.state.current.controller.mode = 'active';
+  f.state.current.controller.max_drop_c = 1;
   const transaction = await f.source.prepare();
-  assert.equal(transaction.config.options.controller.mode, 'active');
+  assert.equal(transaction.config.options.controller.max_drop_c, 1);
   assert.equal(transaction.imported, false);
   await transaction.persist();
   assert.deepEqual(await transaction.complete(), { cleanupPending: false });
@@ -243,7 +243,7 @@ test('concurrent settings edits and replacement uploads are preserved', async t 
   const f = fixture(t);
   f.upload({ mqtt: { pw: 'synthetic-imported-password' } });
   const first = await f.source.prepare();
-  f.state.current.controller.mode = 'active';
+  f.state.current.controller.max_drop_c = 1;
   await assert.rejects(first.persist(), /settings changed/);
   assert.equal(f.posts(), 0);
   const second = await f.source.prepare();
@@ -253,18 +253,18 @@ test('concurrent settings edits and replacement uploads are preserved', async t 
   const third = await f.source.prepare();
   await third.persist();
   const replacement = `${f.paths.importPath}.upload`;
-  writeFileSync(replacement, JSON.stringify({ controller: { mode: 'monitoring' } }));
+  writeFileSync(replacement, JSON.stringify({ controller: { max_drop_c: 0.5 } }));
   renameSync(replacement, f.paths.importPath);
   assert.deepEqual(await third.complete(), { cleanupPending: true });
   assert.equal(existsSync(f.paths.importPath), true);
-  assert.deepEqual(JSON.parse(readFileSync(f.paths.importPath, 'utf8')), { controller: { mode: 'monitoring' } });
+  assert.deepEqual(JSON.parse(readFileSync(f.paths.importPath, 'utf8')), { controller: { max_drop_c: 0.5 } });
 });
 
 test('startup can use Supervisor export during outage only if no pending import exists', async t => {
   const f = fixture(t);
   f.state.failRead = true;
   const startup = await f.source.prepare({ startup: true });
-  assert.equal(startup.config.options.controller.mode, 'monitoring');
+  assert.equal(startup.config.options.controller.max_drop_c, 0.5);
   await assert.rejects(f.source.prepare(), /could not be reached/);
   f.upload({ mqtt: { user: 'synthetic-imported-user' } });
   await assert.rejects(f.source.prepare({ startup: true }), /could not be reached/);
@@ -287,7 +287,7 @@ test('standalone validates defaults and private overrides, then retains its perm
     buildConfig: (options, configuration) => ({ options, configuration }) });
   const transaction = await source.prepare();
   assert.equal(transaction.config.configuration.environment, 'ubuntu');
-  assert.equal(transaction.config.options.controller.mode, 'monitoring');
+  assert.equal(transaction.config.options.controller.max_drop_c, 0.5);
   await transaction.persist();
   await transaction.complete();
   assert.equal(existsSync(f.paths.privatePath), true);

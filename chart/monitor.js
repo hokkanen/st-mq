@@ -1,3 +1,4 @@
+import { createAutomationControls } from './automation-controls.js';
 import { createReadOnlyControls, assertDashboardWrite } from './dashboard-access.js';
 import { createSelectPickers } from './select-picker.js';
 import { createDatePicker } from './date-picker.js';
@@ -32,7 +33,7 @@ import { homeHeatingWarning, garageHeatingWarning } from './heating-warning.js';
 import { createOcppSetupAction, ocppSetupRevision } from './ocpp-setup.js';
 import { createDashboardLayout } from './dashboard-layout.js';
 import { createPageFullscreen } from './page-fullscreen.js';
-import { heatingRequestResult, h66RequestResult, circulationStopPending } from './manual-control-status.js';
+import { heatingRequestResult, heatingModeSelection, h66RequestResult, circulationStopPending } from './manual-control-status.js';
 
 const $ = id => document.getElementById(id);
 const selectPickers = createSelectPickers(document);
@@ -81,6 +82,7 @@ let circulationStopAt;
 let dismissedH66Request;
 const controlErrors = new Map();
 const heatingResults = new Map();
+const heatingErrorRequests = new Map();
 let refreshSequence = 0;
 let lastReplicaSnapshot;
 const dirtyTemporary = new Set();
@@ -164,6 +166,11 @@ const equipmentPanel = createEquipmentPanel({ document, request: api,
   onBusy: busy => { equipmentBusy = busy; updateTemporaryButtons(false); },
   onChange: snapshot => garageDoors.update(snapshot),
   blocked: () => temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy });
+const automationControls = createAutomationControls({ document, request: api,
+  beforeRequest: () => { ++refreshSequence; }, onStatus: result => render(result),
+  onBusy: busy => { equipmentBusy = busy; updateTemporaryButtons(false); },
+  afterRequest: () => refresh(),
+  blocked: () => temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy || equipmentBusy });
 const garageControls = createGarageControls({ document, request: api,
   beforeRequest: () => { ++refreshSequence; }, onStatus: result => render(result),
   onBusy: busy => { equipmentBusy = busy; updateTemporaryButtons(false); },
@@ -241,6 +248,7 @@ function updateTemporaryButtons(updateEquipment = true) {
   if (localSetup) localSetup.disabled = busy || ocppSetupRevision(lastStatus) === null;
   if (updateEquipment) equipmentPanel.refreshControls();
   garageControls.refreshControls();
+  automationControls.refreshControls();
   mitsubishiControls.refreshControls();
 }
 function renderTemporary(s) {
@@ -254,11 +262,11 @@ function renderTemporary(s) {
   $('temporary-overview').textContent = (isReadOnlyReplica(s) ? 'Recorded · ' : '') + [saved.awayUntilLocal ? `Away until ${time(s.settings.occupancy.returnAt)}` : 'At home',
     saved.pauseUntilLocal ? `Paused until ${time(s.override.expiresAt)}`
       : s.input === 'offline' ? 'Unavailable offline'
-        : s.mode === 'active' ? 'Not paused' : s.mode ? `${priceControlState(s).label} mode` : 'Status unavailable'].join(' · ');
+        : s.automation?.home?.enabled ? 'Not paused' : 'Plan only'].join(' · ');
   $('override-scope').textContent = isReadOnlyReplica(s) ? 'Saved settings for inspection. Away and pause changes are disabled in this read-only view.' : s.input === 'simulated'
     ? 'These changes apply to the simulation only.'
-    : s.liveWrites ? 'Away and pause update the active heating plan. Starting a pause requests Normal heating, then holds any changes you make until the pause ends.'
-      : 'Away and pause update the controller’s plan. This operating mode sends no automatic commands.';
+    : s.automation?.home?.enabled ? 'Away and pause update the active heating plan. Starting a pause requests Normal heating, then holds any changes you make until the pause ends.'
+      : 'Away and pause update the controller’s plan. Home automation is set to Plan only.';
   updateTemporaryButtons();
 }
 function showHeatingTestResult(result) {
@@ -271,6 +279,7 @@ function showHeatingTestResult(result) {
   message.textContent = failed
     ? `${heatingCommandLabel(result.command)} · ${result.error ?? 'The MQTT command could not be confirmed as sent.'}`
     : `${heatingCommandLabel(result.command)} sent at ${time(result.at)}. ${result.confirmed === true ? 'Device confirmed.' : confirmation}`;
+  if (failed && result.observedPhase) message.textContent += ` Latest device report: ${heatingCommandLabel(result.observedPhase)}. This confirms the current state, not the failed command acknowledgement.`;
   if (!failed && result.command !== 'circulation') {
     const holdUntil = result.holdUntil;
     message.textContent += holdUntil
@@ -294,12 +303,11 @@ function clearControlMessage(id) {
 function renderHeatingTests(s) {
   const capability = s.heatingTests;
   const actual = s.observations?.actual;
-  const phase = actual?.requestedPhase ?? actual?.phase ?? actual?.mode;
-  const current = actual?.requestedPhase || actual?.stale !== true && (actual?.verified === true || actual?.source === 'mqtt-request');
-  const selected = current ? ({ normal: 'test-normal', recovery: 'test-normal',
-    preheat: 'test-preheat', reduction: 'test-reduction' })[phase] : null;
+  const selection = heatingModeSelection(s), phase = selection.phase;
+  const selected = ({ normal: 'test-normal', recovery: 'test-normal',
+    preheat: 'test-preheat', reduction: 'test-reduction' })[phase] ?? null;
   for (const [id, name] of [['test-normal', 'Normal heating'], ['test-preheat', 'Preheat'], ['test-reduction', 'Reduced heating']]) {
-    const button = $(id), state = id === selected ? actual.stale !== true && actual.verified === true && (actual.phase ?? actual.mode) === phase ? 'Active' : 'Requested' : '';
+    const button = $(id), state = id === selected ? selection.confirmed ? 'Active' : 'Requested' : '';
     button.setAttribute('aria-pressed', String(id === selected));
     button.setAttribute('aria-label', `${name}${state ? ` · ${state}${state === 'Requested' ? ', awaiting device confirmation' : ''}` : ''}`);
     button.dataset.modeState = state.toLowerCase();
@@ -332,11 +340,20 @@ function renderHeatingTests(s) {
     for (const id of ['heating-test-message', 'dhwr-message']) {
       clearControlMessage(id);
       const result = heatingResults.has(id) ? heatingRequestResult(s, heatingResults.get(id)) : null;
+      const attempt = heatingErrorRequests.get(id);
+      if (result && attempt && result.command === attempt.command && result.at > attempt.previousResultAt
+        && result.error === attempt.error) {
+        controlErrors.delete(id); heatingErrorRequests.delete(id);
+      }
       if (result && !controlErrors.has(id)) showHeatingTestResult(result);
       if (!result) heatingResults.delete(id);
     }
     if (!controlErrors.has('heating-test-message') && (s.execution?.restorationPending
-      || s.preheatValves?.restorationPending)) $('heating-test-message').textContent = 'Restoring previous heating settings. Waiting for device confirmation.';
+      || s.preheatValves?.restorationPending)) {
+      const failure = heatingRequestResult(s, heatingResults.get('heating-test-message'))?.error;
+      const restore = 'Restoring previous heating settings. Waiting for device confirmation.';
+      $('heating-test-message').textContent = failure ? `${$('heating-test-message').textContent} ${restore}` : restore;
+    }
     if (!controlErrors.has('dhwr-message')) {
       if (s.dhwr?.restorationPending) $('dhwr-message').textContent = 'Stopping circulation. Restoration is still pending.';
       else if (circulationStopPending(s, circulationStopAt)) $('dhwr-message').textContent = 'Stop sent. Waiting for a new device report to verify the request.';
@@ -679,6 +696,7 @@ function render(s) {
   lastStatus = s;
   readOnlyControls.update(s);
   garageControls.update(s);
+  automationControls.update(s);
   mitsubishiControls.update(s);
   chargingPanel.update(s);
   $('error').hidden = true;
@@ -686,11 +704,10 @@ function render(s) {
   const replica = renderReplicaStatus(document, s, { formatTime: time });
   renderHomePlannedChange(document, s);
   sensorChangePanel.update(isReadOnlyReplica(s) ? { ...s.sensorChanges, available: false, readOnly: true } : s.sensorChanges);
-  $('connection').textContent = `${s.input === 'simulated' ? 'SIMULATION' : s.liveWrites ? 'LIVE CONTROL' : s.input !== 'offline' ? 'LIVE OBSERVATION' : 'READ-ONLY'} · ${(s.mode ?? 'monitoring').toUpperCase()}`;
+  $('connection').textContent = replica || s.input === 'offline' ? 'History viewer' : s.input === 'simulated' ? 'Simulation' : 'Live';
   $('context').textContent = s.input === 'simulated' ? 'Simulated devices and example prices. This workspace sends no commands to your home.'
     : s.input === 'offline' ? 'Imported household history. No live device connection is open.'
-      : s.liveWrites ? 'Learning from the house and controlling heating through preheating, reduction and recovery.'
-        : 'Observing the house and planning heating. This operating mode sends no automatic commands.';
+      : 'Live observations. Each feature shows its automation permission and current activity.';
   for (const key of ['indoor', 'outdoor']) {
     const obs = s.observations?.[key] ?? {};
     const readingStatus = temperatureReadingStatus(obs, { now: s.now, formatTime: time, outdoor: key === 'outdoor' });
@@ -708,11 +725,13 @@ function render(s) {
   const manualHold = s.decision.manualHold?.until > s.now ? s.decision.manualHold : null;
   const requested = label(manualHold?.phase ?? s.observations?.actual?.requestedPhase ?? s.decision.phase ?? (s.decision.action === 'normal' ? 'Normal' : 'Reduction')).replace(/^./, value => value.toUpperCase())
     + (manualHold ? ' · held' : '');
-  const controlMode = replica ? 'Recorded controller decision · current control state unavailable' : s.mode === 'monitoring' ? 'Monitoring · no automatic commands'
-    : s.input === 'simulated' && s.mode === 'active' ? 'Simulation · applying this plan'
-      : s.input === 'simulated' ? 'Simulation · shadow plan' : s.liveWrites
-        ? manualHold ? 'Active · holding manual heating settings' : 'Active · applying the heating plan'
-        : 'Shadow plan · no automatic commands';
+  const controlMode = replica ? 'Recorded controller decision · current control state unavailable'
+    : s.input === 'simulated' ? `Simulation · ${s.automation?.home?.enabled ? 'applying this plan' : 'plan only'}`
+      : manualHold ? 'Holding manual heating settings'
+        : s.automation?.home?.available === false ? s.automation.home.reason || 'Automatic heating is unavailable'
+          : s.automation?.home?.activity === 'paused' ? 'Automatic heating is paused'
+        : s.automation?.home?.enabled ? 'Automatic · applying the heating plan'
+          : 'Plan only · no automatic heating commands';
   const decisionTitle = manualHold
     ? 'Manual heating selection held'
     : ({ normal: 'Normal heating is available', preheat: 'Building heat reserve before the reduction', reduction: 'Reducing heating during the selected interval', recovery: 'Recovering the house’s heat reserve' })[s.decision.phase ?? s.decision.action] ?? 'Heating plan';
@@ -942,6 +961,8 @@ async function testHeating(command) {
   $('heating-test-buttons').setAttribute('aria-busy', 'true');
   const message = $(command === 'circulation' ? 'dhwr-message' : 'heating-test-message');
   controlErrors.delete(message.id);
+  heatingErrorRequests.delete(message.id);
+  const previousResultAt = lastStatus.heatingTests?.lastResult?.at ?? -Infinity;
   if (command === 'circulation') circulationStopAt = undefined;
   message.classList.remove('form-error');
   message.textContent = `Sending ${heatingCommandLabel(command)}…`;
@@ -951,6 +972,7 @@ async function testHeating(command) {
     // Keep the success visible even if the subsequent status refresh fails.
     if (lastStatus.heatingTests) lastStatus.heatingTests.lastResult = result;
   } catch (error) {
+    heatingErrorRequests.set(message.id, { command, previousResultAt, error: error.message });
     showControlError(message.id, error.message);
   } finally {
     heatingTestBusy = false;

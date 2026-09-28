@@ -68,7 +68,7 @@ export function homeHeatingConfirmation(status = {}) {
   const confirmation = result(reasons, known
     ? `Actual heating mode: ${words(actual.mode)}${actual.source === 'mqtt-request' ? ' · requested, unverified' : current && actual.verified === true ? ' · current readback' : ' · current state unconfirmed'}.`
     : 'Actual heating state: unknown.');
-  if (status.mode && status.mode !== 'active') confirmation.detail += '\n\nAutomatic heating control is disabled; device feedback still verifies manual requests.';
+  if (status.automation?.home?.enabled !== true) confirmation.detail += '\n\nAutomatic heating control is disabled; device feedback still verifies manual requests.';
   return confirmation;
 }
 

@@ -188,6 +188,13 @@ permission to act. See [the configuration guide](docs/configuration.md).
 
 ### Configuration ownership and dashboard controls
 
+- Home and Garage automatic heating permissions are independent durable dashboard
+  control choices bound to their current equipment identities, defaulting to Plan
+  only. Charging Automatic scheduling and Caravan Automatic power retain their
+  independent ownership. There is no global operating mode. The environment
+  (live, simulation or history viewer) describes data/connection scope, not an
+  automatic actuation permission. Explicit manual heating overrides are separately
+  authorized, bounded actions with restoration duties regardless of automation.
 - Configured controller defaults belong exclusively to configuration. Dashboard
   edits must never rewrite those defaults or create persistent database
   preferences that replace them. Reloading or restarting must derive defaults
@@ -227,7 +234,11 @@ permission to act. See [the configuration guide](docs/configuration.md).
   lower target through native readback. On an empty database use fresh,
   unambiguous pump evidence; retain subsequent explicit room choices without
   expiry or a configured room default. Unrelated fan/vane edits preserve the
-  target. Power/mode changes must not be undone to resume heating. Retaining a
+  target. Ordinary native power/mode changes must not be undone to resume heating.
+  A bounded heating override instead saves the previous external-control intent,
+  clears external input before OFF and restores that intent only after confirmed
+  heating restoration with fresh measurements. Later independent native edits
+  supersede the saved intent. Retaining a
   target never authorizes stale external sensor data or cached control permission.
 - Keep the configured H66 assumptions `compressor_integral_a1`,
   `aux_integral_a2`, `compressor_hysteresis_c`, `aux_hysteresis_c` and `a2_basis`:
@@ -282,7 +293,7 @@ Details: [recording and provenance](docs/recording.md),
 
 ## F5. Explicit control authority and restoration
 
-- Keep one authorized owner of equipment commands. Monitoring/shadow operation,
+- Keep one authorized owner of equipment commands. Plan-only automation,
   read-only replicas, copied database state and restored checkpoints do not grant
   actuation permission. Pair promotion is explicit, never automatic after timeout.
 - Bind control choices and permission to the current equipment/session identity

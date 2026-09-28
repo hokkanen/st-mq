@@ -160,7 +160,7 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
         const started = await startReplica({ config: { ...config, role: 'slave', input: 'offline',
           // The read model needs local equipment mappings and defaults. The
           // viewer never constructs acquisition or control from this config.
-          h66: { ...config.h66, enabled: false, writeEnabled: false }, settings: { ...config.settings, mode: 'monitoring' },
+          h66: { ...config.h66, enabled: false, writeEnabled: false }, settings: { ...config.settings },
           }, snapshotDirectory: directory, clock, pairContext: context, installSignalHandlers: false });
         if (closed || closing || signal.aborted) await started.close(); else runtime = started;
       })();

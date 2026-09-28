@@ -87,7 +87,7 @@ try {
   // synthetic status is varied, and every mutating browser request is blocked.
   await send('Page.addScriptToEvaluateOnNewDocument', { source: `
     globalThis.homeFixture = { paused: false, savingsStrategy: 'balanced', reads: 0, mutations: [],
-      garageReading: 'unseen', mode: 'active', garageAvailable: true, garagePaused: false, garageExternal: false };
+      garageReading: 'unseen', automatic: true, garageAvailable: true, garagePaused: false, garageExternal: false };
     const nativeFetch = globalThis.fetch.bind(globalThis);
     globalThis.fetch = async (input, options = {}) => {
       const method = options.method ?? (input instanceof Request ? input.method : 'GET');
@@ -99,7 +99,7 @@ try {
       if (!new URL(typeof input === 'string' ? input : input.url, location.href).pathname.endsWith('/api/status')) return response;
       const status = await response.json();
       homeFixture.reads++;
-      status.mode = homeFixture.mode;
+      status.automation = { home: { enabled: homeFixture.automatic, available: true }, garage: { enabled: homeFixture.automatic, available: true } };
       status.settings.savingsStrategy = homeFixture.savingsStrategy;
       status.settings.preheatRoomBoostC = 5;
       status.settings.comfort.maxDropC = 1.5;
@@ -112,7 +112,7 @@ try {
       status.garage.settings.savingsStrategy = homeFixture.savingsStrategy;
       status.garage.heatingControls = { available: homeFixture.garageAvailable, normalAvailable: homeFixture.garageAvailable,
         offAvailable: homeFixture.garageAvailable, confirmed: homeFixture.garageReading === 'fresh',
-        requestedMode: 'normal', reason: homeFixture.garageAvailable ? null : 'Temporary heating overrides require Active mode.' };
+        requestedMode: 'normal', reason: homeFixture.garageAvailable ? null : 'Fresh pump state is unavailable.' };
       status.garage.temporary = { available: homeFixture.garageAvailable, pauseActive: homeFixture.garagePaused,
         pauseUntil: homeFixture.garagePaused ? status.now + 3_600_000 : null };
       status.garage.adapter = { connected: true, health: { deviceOnline: true, driverProgressing: true, pumpCommunicating: true },
@@ -213,16 +213,21 @@ try {
   await evaluate(`homeFixture.garageReading = 'stale'; homeFixture.garageExternal = false; await homeFixture.poll()`);
   assert.equal(await evaluate(`document.getElementById('garage-current-mode').textContent`), 'Unavailable');
   assert.equal(await evaluate(`document.getElementById('garage-current-room').textContent`), 'Unavailable', 'Stale native targets are not current settings');
-  await evaluate(`homeFixture.mode = 'shadow'; homeFixture.garageAvailable = false; await homeFixture.poll()`);
-  assert.deepEqual(await evaluate(`['control-price', 'garage-control-price'].map(id => document.getElementById(id).textContent)`), ['Shadow', 'Shadow']);
-  assert.equal(await evaluate(`document.getElementById('garage-pause-overview').textContent`), 'Inactive in shadow mode');
+  await evaluate(`homeFixture.automatic = false; await homeFixture.poll()`);
+  assert.equal(await evaluate(`document.getElementById('garage-mode-off').disabled`), false,
+    'Plan only still permits an available manual OFF request');
+  assert.equal(await evaluate(`document.getElementById('test-reduction').disabled`), false,
+    'Home manual reduction stays available with Plan only');
+  await evaluate(`homeFixture.automatic = false; homeFixture.garageAvailable = false; await homeFixture.poll()`);
+  assert.deepEqual(await evaluate(`['control-price', 'garage-control-price'].map(id => document.getElementById(id).textContent)`), ['Plan only', 'Plan only']);
+  assert.equal(await evaluate(`document.getElementById('garage-pause-overview').textContent`), 'Plan only');
   assert.match(await evaluate(`document.getElementById('garage-heating-help').textContent`), /next controller update.*Pause price control.*Freeze protection/,
     'Unavailable controls retain their duration and protection explanation');
   await evaluate(`document.querySelector('#garage-heating-status button').click()`);
-  assert.match(await evaluate(`document.getElementById('status-detail-popover').textContent`), /require Active mode/,
-    'Availability explains operating mode separately from override duration');
+  assert.match(await evaluate(`document.getElementById('status-detail-popover').textContent`), /Fresh pump state is unavailable/,
+    'Availability explains device readiness separately from automation and override duration');
   await evaluate(`document.querySelector('#status-detail-popover .status-detail-close').click();
-    homeFixture.mode = 'active'; homeFixture.garageAvailable = true; homeFixture.garageReading = 'fresh';
+    homeFixture.automatic = true; homeFixture.garageAvailable = true; homeFixture.garageReading = 'fresh';
     homeFixture.garageExternal = 'active'; await homeFixture.poll()`);
   for (const width of [1280, 360]) for (const theme of ['dark', 'light']) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: 1100, deviceScaleFactor: 1, mobile: false });

@@ -268,6 +268,7 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
     ['fireplace', "key LIKE 'fireplace:%'", 'Fireplace reconstruction progress', 'Current correction revision, background reconstruction status and progress. A replacement model is activated after reconstruction completes.'],
     ['recovery', "key LIKE 'recovery:%'", 'History recovery progress', 'Current manual recovery progress and its accepted, conflicting and skipped record counts. The complete reconstructed model is published after catching up live learning.'],
     ['settings', "key LIKE 'settings:%' OR key LIKE 'occupancy:%' OR key LIKE 'override:%'", 'Settings and temporary overrides', 'Current operating settings, occupancy and expiring manual overrides; credentials remain in external configuration.'],
+    ['automation', "key LIKE 'automation:%'", 'Heating automation choices', 'Independent Home and Garage automatic-control permissions, bound to current equipment identity. Plan only is the initial choice.'],
     ['control', "key LIKE 'executor:%' OR key LIKE 'h66:%' OR key LIKE 'applied:%' OR key LIKE 'pending-plan:%' OR key LIKE 'phase-snapshot:%' OR key LIKE 'dhwr:%' OR key LIKE 'heating-test:%' OR key LIKE 'cycle:%' OR key LIKE 'trials:%' OR key LIKE 'native-room-reference:%'", 'Control execution and active plans', 'Execution/readback/restoration state, native room reference, active cycle, pending plan, phase coverage and bounded trial allowance.'],
     ['floor', "key='floor-override:v1'", 'Floor override restoration', 'Current ownership, sequence, outstanding release obligations and latest result. Individual contact history is listed under exact measurements.'],
     ['equipment-tests', "key='equipment-tests:v1'", 'Equipment tests and manual operations', 'Current bounded equipment operation, restoration requirement and latest test result.'],
@@ -287,7 +288,7 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
   add('settings', 'Current settings and checkpoints', 'These entries keep the application running across restarts. Counts are current entries, and date ranges are their last updates—not a complete history of earlier states.',
     [...stateCategories.map(([id, , label, description]) => item(`state-${id}`, label, description, state.get(id), {
       ...currentOptions, ...(id === 'settings' ? { fields: fields(
-        ['Operating settings', 'Controller mode, comfort target and permitted temperature drop.'],
+        ['Operating settings', 'Configured comfort target and permitted temperature drop.'],
         ['Occupancy', 'Occupied/away mode and planned return time.'],
         ['Temporary overrides', 'Override action and expiry; cleared state may remain as an explicit null entry.'],
         ['Last update', 'When each current settings document was last changed.']) } : id === 'charging' ? { fields: fields(

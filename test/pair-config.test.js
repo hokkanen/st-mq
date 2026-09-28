@@ -10,7 +10,7 @@ function fixture(t, options = {}, env = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'stmq-pair-config-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const path = join(dir, 'secrets.json');
-  writeFileSync(path, JSON.stringify({ controller: { input: 'mqtt', topology: 'pair', mode: 'active', h66_device: 'invented-gateway' },
+  writeFileSync(path, JSON.stringify({ controller: { input: 'mqtt', topology: 'pair', h66_device: 'invented-gateway' },
     mqtt: { address: 'mqtt://127.0.0.1' }, pair: { pair_id: 'synthetic-pair',
       token: 'synthetic-pairing-token-with-more-than-32-characters', peer_url: 'http://192.0.2.2:1244',
       vip_address: '192.0.2.100', vip_interface: 'eth0' }, ...options }), { mode: 0o600 });
@@ -30,7 +30,7 @@ test('paired standby retains private future controller settings but starts with 
   assert.equal(config.pair.replicaDirectory, undefined);
   assert.equal(config.connections.pair, undefined);
   assert.equal(config.deviceId, 'invented-gateway');
-  assert.equal(config.settings.mode, 'active');
+  assert.equal(Object.hasOwn(config.settings, 'mode'), false);
 });
 
 test('Home Assistant deployment determines conflict preference and direct VIP helper', t => {

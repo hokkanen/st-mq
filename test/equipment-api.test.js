@@ -33,7 +33,7 @@ async function serverFixture(t, serverOptions = {}) {
   const store = new Store(':memory:');
   let now = INITIAL, confirmation = true;
   const calls = [], checks = [];
-  const engine = new Engine({ store, config: { input: 'mqtt', settings: validateSettings({ mode: 'shadow' }) }, clock: () => now });
+  const engine = new Engine({ store, config: { input: 'mqtt', settings: validateSettings({  }) }, clock: () => now });
   const device = { id: 'caravan', label: 'Synthetic caravan', area: 'garage', kind: 'switch', available: true,
     controls: { switch: true, tariff: false }, readings: { caravan_active: { value: 0, unit: 'state', stale: false, observedAt: now } } };
   engine.equipment = {
@@ -104,10 +104,10 @@ test('recheck accepts only configured selection and cannot accept command fields
   assert.deepEqual(f.checks, [{ deviceId: 'caravan' }, {}]); assert.deepEqual(f.calls, []);
 });
 
-test('explicit shadow-mode switch tests persist and confirm both the test and restoration through HTTP', async t => {
+test('explicit Plan only switch tests persist and confirm both the test and restoration through HTTP', async t => {
   const f = await serverFixture(t);
   const started = await f.post('/api/equipment/test', TEST, { headers: { ...f.headers, Origin: f.base } });
-  assert.equal(started.status, 200); assert.equal(started.body.mode, 'shadow');
+  assert.equal(started.status, 200); assert.equal(started.body.automation.home.enabled, false);
   assert.equal(started.body.equipmentTests.active.status, 'active');
   assert.equal(started.body.equipmentTests.lastResult.confirmed, true);
   assert.equal(started.headers.get('cache-control'), 'no-store');
@@ -240,7 +240,7 @@ async function runtimeFixture(t, devices = [native()]) {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-equipment-api-'));
   const path = join(directory, 'settings.json');
   let now = INITIAL;
-  const options = { controller: { input: 'mqtt', mode: 'shadow', web_token: TOKEN },
+  const options = { controller: { input: 'mqtt', web_token: TOKEN },
     mqtt: { address: 'mqtt://synthetic-equipment.invalid' }, teslamate: { enabled: false },
     equipment: { devices: [] } };
   const write = (selected = devices, patch = {}) => writeFileSync(path, JSON.stringify({ ...options, ...patch,
@@ -301,7 +301,7 @@ test('generic equipment recheck publishes only its explicitly configured read re
   assert.equal(f.app.store.getState(KEY), null);
 });
 
-test('explicit shadow-mode door HTTP controls publish configured commands without optimistic position or unsupported Stop', async t => {
+test('explicit Plan only door HTTP controls publish configured commands without optimistic position or unsupported Stop', async t => {
   const f = await runtimeFixture(t, [{ id: 'garage_door1', label: 'Synthetic garage door', area: 'garage', kind: 'door',
     connection: 'mqtt:invented-door/state', cover_control: true,
     mqtt: { command_topic: 'invented-door/cover', open_payload: 'open', close_payload: 'closed',
@@ -316,7 +316,7 @@ test('explicit shadow-mode door HTTP controls publish configured commands withou
     assert.equal((await f.post('/api/equipment/cover', input)).status, 400);
   assert.equal(f.mqtt.events.filter(row => row.type === 'publish').length, 0);
   const opened = await f.post('/api/equipment/cover', { deviceId: 'garage_door1', action: 'open' });
-  assert.equal(opened.status, 200); assert.equal(opened.body.mode, 'shadow');
+  assert.equal(opened.status, 200); assert.equal(opened.body.automation.home.enabled, false);
   const device = opened.body.equipment.devices[0];
   assert.deepEqual(device.controls.cover, { open: true, close: true, stop: false });
   assert.equal(device.cover.state, 'closed'); assert.equal(device.cover.operation.status, 'published');

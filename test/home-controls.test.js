@@ -26,17 +26,14 @@ test('saved controls show only unexpired away and pause deadlines', () => {
   assert.deepEqual(temporaryValues({ ...status, now: now + 7200_000 }), { awayUntilLocal: '', pauseUntilLocal: '' });
 });
 
-test('Home and Garage price badges distinguish active operation from shadow, monitoring and offline input', () => {
-  for (const [status, options, label, state] of [
-    [{ mode: 'active', input: 'mqtt' }, {}, 'Active', 'active'],
-    [{ mode: 'active', input: 'simulated' }, { away: true }, 'Away', 'active'],
-    [{ mode: 'shadow', input: 'mqtt' }, {}, 'Shadow', 'muted'],
-    [{ mode: 'monitoring', input: 'mqtt' }, {}, 'Monitoring', 'muted'],
-    [{ mode: 'active', input: 'offline' }, {}, 'Offline', 'muted'],
-    [{ mode: 'active', input: 'mqtt' }, { enabled: false }, 'Disabled', 'muted'],
-    [{ mode: 'active', input: 'mqtt' }, { paused: true }, 'Paused', 'paused'],
-    [{}, {}, '—', 'muted'],
-  ]) assert.deepEqual(priceControlState(status, options), { label, state });
+test('Home and Garage automation badges are independent of each other and the environment', () => {
+  const status = { input: 'mqtt', automation: { home: { enabled: false }, garage: { enabled: true } } };
+  assert.deepEqual(priceControlState(status), { label: 'Plan only', state: 'muted' });
+  assert.deepEqual(priceControlState(status, { feature: 'garage' }), { label: 'Automatic', state: 'active' });
+  assert.equal(priceControlState(status, { feature: 'garage', paused: true }).label, 'Paused');
+  assert.equal(priceControlState(status, { enabled: false }).label, 'Unavailable');
+  assert.equal(priceControlState({ ...status, input: 'offline' }).label, 'History viewer');
+  assert.equal(priceControlState({}).label, 'Unavailable');
 });
 
 test('rate report selects the active dated snapshot instead of future or configured rates', () => {

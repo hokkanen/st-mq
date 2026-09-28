@@ -64,7 +64,7 @@ export class GarageRuntime {
       try { garageSettings(previous); }
       catch { throw new Error('Unsupported saved Garage settings; start a fresh development database'); }
     }
-    this.keys = Object.fromEntries(['checkpoint', 'exposure', 'episode', 'adapter', 'temporary', 'manual', 'roomTemperature'].map(name => [name, `garage:${name}:${this.input}`]));
+    this.keys = Object.fromEntries(['checkpoint', 'exposure', 'episode', 'adapter', 'temporary', 'manual', 'roomTemperature', 'heatingHandover'].map(name => [name, `garage:${name}:${this.input}`]));
     this.context = garageCorrectionContext(store, this.input);
     const readState = key => {
       try { return store.getState(key); }
@@ -122,6 +122,22 @@ export class GarageRuntime {
     }
     this.selectedRoomTargetC = roomBindingChanged ? null
       : this.roomTemperature.targetC ?? this.journalRoomTargetC ?? this.selectedRoomTargetC;
+    this.heatingHandover = readState(this.keys.heatingHandover);
+    if (this.heatingHandover != null && (Object.keys(this.heatingHandover).some(key =>
+      !['version', 'id', 'purpose', 'adapterKey', 'targetIdentity', 'startedAt', 'targetC', 'phase', 'native', 'restorationAt'].includes(key))
+      || this.heatingHandover.version !== 1
+      || !['clearing', 'off', 'restoring'].includes(this.heatingHandover.phase)
+      || typeof this.heatingHandover.adapterKey !== 'string' || !/^[a-f0-9]{64}$/.test(this.heatingHandover.adapterKey)
+      || typeof this.heatingHandover.targetIdentity !== 'string' || !/^[a-f0-9]{64}$/.test(this.heatingHandover.targetIdentity)
+      || typeof this.heatingHandover.id !== 'string' || !['manual', 'automatic'].includes(this.heatingHandover.purpose)
+      || !this.heatingHandover.native || typeof this.heatingHandover.native !== 'object' || Array.isArray(this.heatingHandover.native)
+      || !(this.heatingHandover.targetC === null || finite(this.heatingHandover.targetC)) || !finite(this.heatingHandover.startedAt)))
+      throw new Error('Unsupported saved Garage heating handover; start a fresh development database');
+    if (this.heatingHandover) {
+      // Saved intent is only a cleanup obligation; OFF permission never restarts.
+      this.heatingHandover.phase = 'restoring';
+      if (this.heatingHandover.adapterKey === this.roomAdapterKey) this.roomTemperature.suspend(clock());
+    }
     this.temporary = readState(this.keys.temporary);
     if (!finite(this.temporary?.expiresAt) || this.temporary.expiresAt <= clock()) this.temporary = null;
     // Restarts retain price-control pauses, but never resume an OFF permission.
@@ -195,15 +211,16 @@ export class GarageRuntime {
       : !this.canControl() ? 'Garage control authority is unavailable.'
         : !this.settings.enabled ? 'Garage control is disabled.'
           : this.input === 'offline' ? 'Temporary heating overrides are unavailable with offline input.'
-            : this.engine.settings.mode !== 'active' ? 'Temporary heating overrides require Active mode.'
             : this.closed ? 'Garage control is closed.' : null;
     const busy = Boolean(this.manualBusy || this.dispatch);
-    const blockers = (adapter?.blockedReasons ?? []).filter(value =>
+    const blockers = (adapter?.manualPauseReasons ?? adapter?.blockedReasons ?? []).filter(value =>
       !(value === 'fresh-challenge-required' && manual?.mode === 'off' && adapter?.phase === 'paused'));
     const recoveryUntil = Math.max(adapter?.recoveryLockedUntil ?? 0,
       this.episode?.phase === 'recovery' ? (this.episode.recoveryStartedAt ?? now) + this.settings.minOnMs : 0);
     const permission = this.pausePermission(now, this.read(now));
-    const offReason = reason ?? (this.protection?.safeToPause !== true || !permission.allowed
+    const offReason = reason ?? (adapter?.phase === 'paused' && adapter.episode?.purpose === 'automatic'
+      ? 'An automatic heating pause is already active. Select Normal before starting a manual heating override.'
+      : this.protection?.safeToPause !== true || !permission.allowed
       ? 'Heating off requires fresh garage temperatures and available freeze-protection margin.'
       : blockers.length ? `Garage adapter is not ready: ${blockers.join(', ')}.`
         : adapter?.restorePending && adapter?.phase !== 'paused'
@@ -213,13 +230,16 @@ export class GarageRuntime {
     const freshPower = adapter?.health?.pumpCommunicating && finite(adapter?.native?.powerAt)
       && now >= adapter.native.powerAt && now - adapter.native.powerAt < (this.config.garage?.adapter?.maxAgeMs ?? 2 * MINUTE);
     const selectedMode = manual?.mode ?? (freshPower ? power === 'off' ? 'off' : power === 'on' ? 'normal' : null : null);
-    const confirmed = Boolean(freshPower && (selectedMode === 'normal' ? power === 'on' : selectedMode === 'off' && power === 'off'));
+    const result = this.heatingCommandResult(now);
+    const confirmed = Boolean(!['failed', 'uncertain', 'rejected', 'superseded', 'blocked'].includes(result?.status)
+      && !['clearing', 'restoring'].includes(this.heatingHandover?.phase) && freshPower && (selectedMode === 'normal' ? power === 'on' : selectedMode === 'off' && power === 'off'));
     const nativePower = this.adapter?.nativeControls?.(now, { afterExternalClear: true })?.settings?.power;
-    const normalReason = reason ?? (!adapter?.restorePending && power !== 'on' && !nativePower?.available
+    const normalReason = reason ?? (!adapter?.restorePending && (power !== 'on' || !freshPower) && !nativePower?.available
       ? nativePower?.reason ?? 'Use the native power control when ordinary Mitsubishi power control is available.' : null);
     return { available: reason === null, normalAvailable: normalReason === null && !busy, normalReason,
       offAvailable: offReason === null && !busy, reason, offReason, busy,
       selectedMode, requestedMode: manual?.mode ?? null, confirmed,
+      activity: this.heatingActivity(now), result,
       holdUntil: manual?.expiresAt ?? null, paused: Boolean(pause), manualChanged: manual?.mode === 'off',
       warning: manual?.mode === 'off' && pause ? 'Price control is paused. Heating stays off until the pause ends, unless freeze protection requires heating.' : null };
   }
@@ -279,6 +299,7 @@ export class GarageRuntime {
     try {
       this.store.event('garage-native-setting-requested', request, now);
       if (this.manual) { this.manual = null; this.saveManual(); }
+      if (this.heatingHandover) { this.heatingHandover = null; this.saveHeatingHandover(); this.roomTemperature.resume(now); }
       this.plan = null; this.scheduledOpportunity = null; this.lastPlannerAt = null;
       if (this.episode?.accounting) {
         this.episode.accounting.qualified = false; this.episode.reason = 'manual-native-setting'; this.saveEpisode();
@@ -349,33 +370,155 @@ export class GarageRuntime {
         this.store.setState(this.keys.manual, next); this.store.event('garage-manual-requested', next, now);
       });
       this.manual = next; this.scheduledOpportunity = null; this.armControlDeadline();
+      this.heatingResult = { status: 'pending', reason: null };
+      this.lastPlannerAt = now;
       if (this.episode?.accounting) {
         this.episode.accounting.qualified = false; this.episode.reason = 'manual-heating-selection'; this.saveEpisode();
       }
       if (input.mode === 'normal') {
-        if (adapter.restorePending) await this.release('manual-normal', { preserveManual: true });
+        if (adapter.restorePending || this.heatingHandover && adapter.native?.power === 'on') await this.release('manual-normal', { preserveManual: true });
         else if (adapter.native?.power !== 'on') {
+          if (this.heatingHandover) { this.heatingHandover = null; this.saveHeatingHandover(); this.roomTemperature.resume(now); }
           const request = { setting: 'power', value: 'on' }, external = this.adapter.externalTemperature?.(now);
           if (this.roomTemperature.targetC !== null || this.roomTemperature.mustClear
             || external?.restorationPending || external?.phase && external.phase !== 'internal') {
             this.roomTemperature.handover(request, now);
             void this.roomTemperatureTick();
-          } else await this.adapter.setNativeSetting(request, now);
-        }
+          } else this.heatingResult = await this.adapter.setNativeSetting(request, now);
+        } else this.heatingResult = { status: 'native-confirmed', reason: null };
       }
       else {
         this.lastPlannerAt = now;
         this.bindPauseTemperature(this.manual.id, now);
-        const result = await this.adapter.plannerTick({ now, valid: true,
+        const result = await this.dispatchPause({ now, valid: true, purpose: 'manual',
           plan: { id: this.manual.id, pauseFrom: now, pauseUntil: this.manual.expiresAt,
             ...this.permissionFields(now, this.read(now)) }, recoveryReady: true });
-        if (result?.status === 'blocked') {
+        if (['blocked', 'failed', 'rejected', 'uncertain', 'superseded'].includes(result?.status)) {
           this.manual = null; this.saveManual();
-          throw new Error(`Garage heating off was blocked: ${(result.reasons ?? []).join(', ')}.`);
+          this.heatingResult = { status: result.status, reason: result.reasons?.join(', ') || 'Heating OFF delivery is unconfirmed. Restoration remains active.' };
+          throw new Error(this.heatingResult.reason);
         }
       }
       return this.status();
-    } finally { this.manualBusy = false; }
+    } catch (error) {
+      this.heatingResult = { status: 'uncertain', reason: error.message };
+      await this.release('manual-request-failed').catch(() => {});
+      throw error;
+    } finally { this.manualBusy = false; void this.roomTemperatureTick(); }
+  }
+  saveHeatingHandover() { this.store.setState(this.keys.heatingHandover, this.heatingHandover); }
+  heatingCommandResult(now = this.clock()) {
+    if (['failed', 'rejected', 'uncertain', 'superseded', 'blocked'].includes(this.heatingResult?.status)) return this.heatingResult;
+    const state = this.adapter?.status(now), manual = this.activeManual(now);
+    if (state?.restorePending || manual?.mode === 'off') return state?.lastCommand ?? this.heatingResult ?? null;
+    if (manual?.mode === 'normal') {
+      const native = this.adapter?.nativeControls?.(now)?.result;
+      if (native?.setting === 'power' && native.value === 'on' && native.requestedAt >= manual.at) return native;
+      if (state?.lastCommand?.action === 'release' && state.lastCommand.requestedAt >= manual.at) return state.lastCommand;
+    }
+    return this.heatingResult ?? null;
+  }
+  heatingActivity(now = this.clock()) {
+    const state = this.adapter?.status(now), handover = this.heatingHandover;
+    if (this.heatingResult?.status === 'claiming') return 'Claiming the heat-pump control session…';
+    if (handover && handover.adapterKey !== this.roomAdapterKey) return 'The previous heat-pump connection has an unresolved restoration obligation.';
+    if (handover?.phase === 'clearing') return 'Clearing external temperature control before heating OFF…';
+    if (handover?.phase === 'restoring' || state?.restorePending && state.phase !== 'paused')
+      return 'Restoring Normal heating; external temperature control resumes after confirmation.';
+    if (this.heatingResult && ['failed', 'rejected', 'uncertain', 'blocked', 'superseded'].includes(this.heatingResult.status))
+      return this.heatingResult.reason;
+    if (this.activeManual(now)?.mode === 'off') return state?.phase === 'paused' && state.native?.power === 'off'
+      ? 'Heating OFF confirmed.' : 'Requesting heating OFF…';
+    if (this.activeManual(now)?.mode === 'normal' && state?.native?.power !== 'on') return 'Requesting Normal heating…';
+    if (this.roomTemperature.targetC !== null && !this.roomTemperature.acknowledged) return this.roomTemperature.reason;
+    return null;
+  }
+  reconcileHeatingHandover(now) {
+    const handover = this.heatingHandover, state = this.adapter?.status(now);
+    if (!handover || handover.adapterKey !== this.roomAdapterKey) return;
+    if (state?.targetIdentity && state.targetIdentity !== handover.targetIdentity) {
+      this.roomTemperature.inhibited = 'The connected heat pump changed. Apply a room setting to this device explicitly.'; return;
+    }
+    this.roomTemperature.suspended = true;
+    if (handover.phase !== 'restoring' && (!this.pendingPause && !state?.restorePending
+      && this.activeManual(now)?.id !== handover.id)) {
+      handover.phase = 'restoring'; this.saveHeatingHandover();
+    }
+    if (handover.phase !== 'restoring' || state?.restorePending) return;
+    const native = state?.native;
+    const fresh = state?.connected && state.health?.pumpCommunicating && finite(native?.powerAt)
+      && native.powerAt >= Math.max(handover.startedAt, handover.restorationAt ?? 0) && now - native.powerAt < (this.config.garage?.adapter?.maxAgeMs ?? 2 * MINUTE);
+    if (!fresh || native.power !== 'on') return;
+    const unchanged = handover.adapterKey === this.roomAdapterKey && handover.targetC === this.roomTemperature.targetC
+      && ['mode', 'targetC', 'fan', 'vane', 'wideVane'].every(key => handover.native[key] == null || native[key] === handover.native[key]);
+    this.heatingHandover = null; this.saveHeatingHandover();
+    this.roomTemperature.resume(now);
+    if (!unchanged) this.roomTemperature.inhibited = 'The pump settings changed. Apply the room setting again to resume external control.';
+    if (!['failed', 'rejected', 'uncertain', 'blocked', 'superseded'].includes(this.heatingResult?.status))
+      this.heatingResult = { status: 'native-confirmed', reason: unchanged ? null : this.roomTemperature.inhibited };
+  }
+  async continueHeatingHandover(now) {
+    if (!this.pendingPause || this.heatingHandover && !['clearing', 'off'].includes(this.heatingHandover.phase)) return;
+    const external = this.adapter?.externalTemperature?.(now);
+    if (external?.result?.temperatureC === null && ['uncertain', 'failed', 'rejected'].includes(external.result.status)) {
+      await this.release('external-clear-unconfirmed');
+      this.heatingResult = { status: external.result.status, reason: 'External temperature handover was not confirmed. Heating OFF was cancelled; waiting to restore external control.' };
+      return;
+    }
+    if (this.heatingHandover && this.roomTemperature.mustClear) return;
+    const request = this.pendingPause, manual = this.activeManual(now);
+    const validIntent = request.purpose === 'manual' ? manual?.mode === 'off' && manual.id === request.plan.id
+      : this.engine.automationEnabled?.('garage') === true && !manual && !this.activePause(now);
+    if (!validIntent || request.plan.pauseUntil <= now || !this.protection?.safeToPause
+      || !this.pausePermission(now, this.read(now)).allowed || !this.canControl()) {
+      await this.release('heating-handover-no-longer-authorized'); return;
+    }
+    return this.dispatchPause({ ...request, now, plan: { ...request.plan, ...this.permissionFields(now, this.read(now)) } });
+  }
+  async dispatchPause(request) {
+    const { now, valid, plan, purpose = 'automatic' } = request;
+    if (!valid) {
+      if (this.heatingHandover) {
+        this.heatingHandover.phase = 'restoring'; this.heatingHandover.restorationAt ??= this.clock();
+        try { this.saveHeatingHandover(); } catch { /* Existing cleanup must continue despite storage failure. */ }
+      }
+      this.pendingPause = null;
+      return this.adapter?.plannerTick(request);
+    }
+    const external = this.adapter?.externalTemperature?.(now), state = this.adapter?.status(now);
+    const needsHandover = this.roomTemperature.targetC !== null || external?.restorationPending
+      || external?.phase && external.phase !== 'internal';
+    if (!this.heatingHandover && needsHandover) {
+      this.heatingHandover = { version: 1, id: plan.id, purpose, adapterKey: this.roomAdapterKey, targetIdentity: state?.targetIdentity ?? this.roomAdapterKey,
+        startedAt: now, targetC: this.roomTemperature.targetC, phase: 'clearing',
+        native: Object.fromEntries(['mode', 'targetC', 'fan', 'vane', 'wideVane'].map(key => [key, state?.native?.[key] ?? null])) };
+      this.saveHeatingHandover(); this.roomTemperature.suspend(now);
+    }
+    if (this.heatingHandover?.phase === 'restoring') return { status: 'blocked', reasons: ['heating-restoration-pending'] };
+    if (this.heatingHandover?.phase === 'clearing') {
+      this.pendingPause = request;
+      if (this.roomTemperature.mustClear) { void this.roomTemperatureTick(); return { status: 'clearing' }; }
+      this.heatingHandover.phase = 'off'; this.saveHeatingHandover();
+    }
+    this.pendingPause = null;
+    if (purpose === 'automatic' && !this.episode && state?.automaticControl && !state.restorePending)
+      this.startEpisode(plan.id, this.plan, this.read(now), now);
+    this.bindPauseTemperature(plan.id, now);
+    const result = await this.adapter?.plannerTick(request);
+    if (result?.status === 'claiming') this.pendingPause = request;
+    this.heatingResult = { ...result, status: result?.status ?? 'uncertain', reason: result?.reason || result?.reasons?.join(', ') || (['failed', 'rejected', 'uncertain', 'superseded'].includes(result?.status) ? 'Heating OFF delivery is unconfirmed. Restoration remains active.' : null) };
+    if (['blocked', 'uncertain', 'failed', 'rejected', 'superseded'].includes(result?.status)) {
+      if (this.heatingHandover) {
+        this.heatingHandover.phase = 'restoring'; this.heatingHandover.restorationAt ??= this.clock();
+        try { this.saveHeatingHandover(); } catch { /* Existing cleanup must continue despite storage failure. */ }
+      }
+      if (purpose === 'manual' && this.manual?.id === plan.id) { this.manual = null; this.saveManual(); }
+    }
+    return result;
+  }
+  async automationChanged() {
+    if (this.engine.automationEnabled?.('garage') !== true && !this.activeManual()) await this.release('automation-disabled');
+    return this.status();
   }
   setAdapter(adapter) { this.adapter = adapter; this.syncRoomReference(this.clock()); }
   roomReferenceTarget(now = this.clock()) {
@@ -399,11 +542,9 @@ export class GarageRuntime {
     const targetC = adapter?.native?.targetC;
     if (fresh && finite(targetC) && targetC >= 8 && targetC <= GARAGE_NATIVE_SETTINGS.targetC.max
       && Number.isInteger(targetC * 2)) {
-      // A reported 16°C can also represent the pump's i-save mode. An explicit
-      // owner selection or verified low-heat profile resolves that ambiguity.
-      if (targetC === 16 && this.selectedRoomTargetC !== 16)
-        return adapter.normalHeating?.verified === true && finite(adapter.normalHeating.targetC)
-          ? adapter.normalHeating.targetC : null;
+      // A remotely selected special mode can share the native 16°C encoding.
+      // Only an explicit ordinary room choice disambiguates that observation.
+      if (targetC === 16 && this.selectedRoomTargetC !== 16) return null;
       return targetC;
     }
     return this.journalRoomTargetC !== undefined ? this.journalRoomTargetC : this.selectedRoomTargetC;
@@ -515,14 +656,18 @@ export class GarageRuntime {
   }
   roomTemperatureTick() {
     if (this.closed || this.roomDispatch || this.manualBusy || this.dispatch) return;
-    if (this.roomTemperature.targetC === null && !this.roomTemperature.mustClear && !this.roomTemperature.ordinary) return;
+    if (this.heatingHandover && (this.heatingHandover.adapterKey !== this.roomAdapterKey
+      || this.adapter?.status(this.clock())?.targetIdentity !== this.heatingHandover.targetIdentity)) return;
+    if (!this.pendingPause && !this.heatingHandover && this.roomTemperature.targetC === null && !this.roomTemperature.mustClear && !this.roomTemperature.ordinary) return;
     this.roomDispatch = Promise.resolve().then(() => {
-      const now = this.clock(), evidence = this.roomTemperatureEvidence(now);
+      const now = this.clock();
+      this.reconcileHeatingHandover(now);
+      const evidence = this.roomTemperatureEvidence(now);
       const { protection, holdProtection, held } = this.roomTemperatureProtection(now, evidence);
       return this.roomTemperature.tick({ adapter: this.adapter, observation: evidence.rear.observation, now,
         canControl: this.canControl() && ['mqtt', 'providers'].includes(this.input),
         sourceUsable: evidence.rear.usable, sourceHeld: held, sourceIdentity: evidence.signature,
-        protection, holdProtection });
+        protection, holdProtection }).then(() => this.continueHeatingHandover(now));
     }).catch(async () => {
       this.roomTemperature.phase = 'blocked';
       this.roomTemperature.reason = 'External temperature control could not complete. Waiting for fresh device state.';
@@ -563,6 +708,14 @@ export class GarageRuntime {
       .get(garageInput(this.input), day.valueOf(), day.clone().add(1, 'day').valueOf()).n;
   }
   adapterChanged(snapshot) {
+    const command = snapshot.lastCommand;
+    if (command && command.action !== 'release' && ['failed', 'rejected', 'uncertain', 'superseded'].includes(command.status)
+      && (this.manual?.mode === 'off' || this.heatingHandover || this.heatingResult?.action === command.action
+        && command.requestedAt >= (this.heatingResult.requestedAt ?? Infinity))) {
+      this.heatingResult = { ...command, reason: command.reason
+        ? `Heating OFF was ${command.status}: ${command.reason}. Restoration remains active.`
+        : 'Heating OFF delivery is unconfirmed. Restoration remains active.' };
+    }
     const digest = garageDigest(snapshot);
     if (digest === this.adapterStateDigest) return;
     this.store.setState(this.keys.adapter, snapshot);
@@ -832,8 +985,9 @@ export class GarageRuntime {
       const canHold = Boolean(sameSource && this.settings.protection.approved && continuation
         && guard.holdProtection?.allowed && guard.holdProtection.expiresAt >= expiresAt
         && (guard.held || !this.protection.safeToPause || !this.pausePermission(now, observation).allowed));
-      const valid = this.canControl() && this.engine.settings.mode === 'active' && this.input !== 'offline'
-        && this.settings.enabled && (manualPermission || !manual && !pause)
+      const valid = this.canControl() && this.input !== 'offline'
+        && this.settings.enabled && (manualPermission || manual?.mode === 'off' && (this.heatingHandover?.phase === 'clearing' || this.pendingPause?.purpose === 'manual')
+          || !manual && !pause && this.engine.automationEnabled?.('garage') === true)
         && sameSource && (this.protection.safeToPause && evidence.rear.usable && evidence.front.usable
           && !evidence.rear.held && !evidence.front.held || canHold)
         && this.lastPlannerAt !== null && now >= this.lastPlannerAt
@@ -934,9 +1088,9 @@ export class GarageRuntime {
         reasons: [manual?.mode === 'off' ? 'manual-heating-off' : 'price-control-paused'] };
       if (!this.dispatch && !this.manualBusy) {
         const valid = manual?.mode === 'off' && this.protection?.safeToPause === true
-          && this.canControl() && this.engine.settings.mode === 'active' && this.settings.enabled && this.input !== 'offline'
+          && this.canControl() && this.settings.enabled && this.input !== 'offline'
           && this.pausePermission(now, observation).allowed;
-        this.dispatch = Promise.resolve(this.adapter?.plannerTick({ now, valid,
+        this.dispatch = Promise.resolve(this.dispatchPause({ now, valid, purpose: 'manual',
           plan: valid ? { id: manual.id, pauseFrom: manual.at, pauseUntil: manual.expiresAt,
             ...this.permissionFields(now, observation) } : null,
           recoveryReady: this.protection?.safeToPause === true })).catch(() => {})
@@ -955,7 +1109,7 @@ export class GarageRuntime {
       || (this.settings.minOnMs > 0 && (!finite(this.normalHeatingSince)
         || now - this.normalHeatingSince < this.settings.minOnMs) ? 'minimum-normal-heating-time' : null));
     const settingsDigest = garageDigest(this.settings);
-    const canSchedule = this.canControl() && this.engine.settings.mode === 'active' && this.input !== 'offline'
+    const canSchedule = this.canControl() && this.engine.automationEnabled?.('garage') === true && this.input !== 'offline'
       && this.settings.enabled && this.learningStatus === 'current' && !this.manualBusy;
     if (!canSchedule || activePause || ongoingRecovery || admissionReason || this.scheduledOpportunity?.settingsDigest !== settingsDigest)
       this.scheduledOpportunity = null;
@@ -976,18 +1130,18 @@ export class GarageRuntime {
     this.lastPlannerAt = now;
     const pause = ['pause', 'renew'].includes(this.plan.nextAction);
     const recoveryReady = !this.episode || Boolean(activePause && !this.episode.restarted);
-    const valid = this.canControl() && this.engine.settings.mode === 'active' && this.input !== 'offline'
+    const valid = this.canControl() && this.engine.automationEnabled?.('garage') === true && this.input !== 'offline'
       && this.settings.enabled
       && this.learningStatus === 'current' && this.protection?.safeToPause === true && pause
       && this.pausePermission(now, observation).allowed;
     if (this.dispatch || this.manualBusy) return this.status(now);
-    let id = activePause?.id ?? randomUUID();
+    let id = activePause?.id ?? this.heatingHandover?.id ?? randomUUID();
     if (valid && !this.episode && adapterStatus?.automaticControl && !adapterStatus.restorePending)
       this.startEpisode(id, this.plan, observation, now);
     if (this.episode?.phase === 'pause') id = this.episode.pauseId ?? this.episode.id;
     const adapterPlan = { id, pauseFrom: now, pauseUntil: this.plan.pauseUntil, ...this.permissionFields(now, observation) };
     if (valid && recoveryReady) this.bindPauseTemperature(id, now);
-    this.dispatch = Promise.resolve(this.adapter?.plannerTick({ now, valid: valid && recoveryReady, plan: adapterPlan,
+    this.dispatch = Promise.resolve(this.dispatchPause({ now, valid: valid && recoveryReady, plan: adapterPlan,
       recoveryReady: this.protection?.safeToPause === true && recoveryReady,
       demand: finite(observation.rearC) && finite(planningModel.normalReference.interceptC)
         && observation.rearC < planningModel.normalReference.interceptC - 1 })).then(result => {
@@ -1118,13 +1272,25 @@ export class GarageRuntime {
     this.episode = null;
   }
   async release(reason = 'owner-cancelled', { preserveManual = false } = {}) {
-    if (!preserveManual && this.manual) { this.manual = null; this.saveManual(); }
+    if (!preserveManual && this.manual) {
+      this.manual = null;
+      try { this.saveManual(); } catch { /* Saved OFF is never resumed after restart. Continue restoring now. */ }
+    }
+    this.pendingPause = null;
+    if (this.heatingHandover) {
+        this.heatingHandover.phase = 'restoring'; this.heatingHandover.restorationAt ??= this.clock();
+        try { this.saveHeatingHandover(); } catch { /* Existing cleanup must continue despite storage failure. */ }
+      }
     this.plan = null; this.scheduledOpportunity = null; this.lastPlannerAt = null;
     if (this.episode) {
       this.episode.phase = 'recovery';
       try { this.saveEpisode(); } catch { /* An existing restore obligation still needs its ON request. */ }
     }
-    if (this.canControl()) await this.adapter?.release({ reason, now: this.clock() });
+    if (this.canControl()) {
+      const result = await this.adapter?.release({ reason, now: this.clock() });
+      if (result && result.status !== 'idle') this.heatingResult = { status: result.status, reason: result.reasons?.join(', ') ?? null };
+    }
+    void this.roomTemperatureTick();
     return this.status();
   }
   status(now = this.clock()) {

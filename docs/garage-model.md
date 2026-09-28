@@ -46,7 +46,8 @@ Returning to an earlier setting starts fresh normal-reference learning; there is
 no separate cache for each setting. Reapplying the same setting preserves that
 evidence. The saved room
 target, native thermostat readback and measured local temperatures remain
-distinct; an external temperature offset does not verify a low-heat baseline.
+distinct; an external temperature offset does not itself qualify the installed
+selective-power and restoration behavior.
 
 The ON trajectory approaches the observed normal references with a fixed
 three-hour time constant. This is illustrative continuation, not modeled delivered

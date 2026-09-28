@@ -10,7 +10,7 @@ import { startGarageAssessment } from '../src/garage/episodes.js';
 import { garageInput, replayGarageJournal } from '../src/garage/learning.js';
 const START = Date.parse('2026-01-01T00:00:00Z'), MINUTE = 60_000;
 const settings = garageSettings({ enabled: true, minOnMs: 30 * MINUTE, protection: { approved: true } });
-const construct = store => new GarageRuntime({ store, engine: { latest: {}, settings: { mode: 'active' } },
+const construct = store => new GarageRuntime({ store, engine: { latest: {}, automationEnabled: () => true },
   config: { input: 'mqtt', garage: settings }, clock: () => START });
 
 test('unsupported Garage saved exposure and algorithms fail before source mutation', () => {

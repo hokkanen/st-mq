@@ -169,9 +169,8 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
             ...(current.fireplace ? { fireplace: fireplaceStatus(current.fireplace, current.now ?? engine.clock()) } : {}),
             ...(current.sensorChanges ? { sensorChanges: sensorChangesStatus(current.sensorChanges) } : {}), settingsReload: settingsReloadStatus(),
             ...(sync ? { sync } : {}), ...(controlAuthority ? { controlAuthority: controlAuthority.status(),
-              ...(!controlAuthority.canControl() ? { readOnly: true, liveWrites: false } : {}) } : {}),
+              ...(!controlAuthority.canControl() ? { readOnly: true } : {}) } : {}),
             ...(pairContext ? { pair: pairContext.status(),
-              liveWrites: pairContext.canControl() && Boolean((readContext ? engine : getEngine()).status().liveWrites),
               readOnly: writesBlocked() } : {}) };
         };
         const mutate = async action => {
@@ -250,6 +249,8 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
             return json(200, status());
           });
         }
+        if (req.method === 'POST' && url.pathname === '/api/automation')
+          return await mutate(async (current, input) => { await current.setAutomation(input); return json(200, status()); });
         if (req.method === 'POST' && url.pathname === '/api/charging/settings')
           return await mutate(async (current, input) => { await current.charging.setSettings(input); return json(200, status()); });
         const chargerAction = url.pathname.match(/^\/api\/charging\/chargers\/([^/]+)\/(settings|control|resume|charge-now|identify)$/);

@@ -16,7 +16,7 @@ const sourceCount = store => store.db.prepare("SELECT COUNT(*) n FROM learning_j
 
 function fixture(t) {
   const store = new Store(':memory:');
-  const config = { input: 'providers', settings: validateSettings({ mode: 'monitoring' }),
+  const config = { input: 'providers', settings: validateSettings({  }),
     control: { learningTrials: false, indoorSensorWeights: { indoor_temperature: 0.5, bedroom_temperature: 0.5 } } };
   const engine = new Engine({ store, config, clock: () => now });
   const seed = restoreAdaptiveCheckpoint(null, engine.control);

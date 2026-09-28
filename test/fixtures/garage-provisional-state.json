@@ -7,18 +7,34 @@
   "observedAt": 1800000000000,
   "mode": "armed",
   "health": {
-    "device": { "value": true, "measuredAt": 1800000000000 },
-    "driver": { "value": true, "measuredAt": 1800000000000 },
-    "pump": { "value": true, "measuredAt": 1800000000000 }
+    "device": {
+      "value": true,
+      "measuredAt": 1800000000000
+    },
+    "driver": {
+      "value": true,
+      "measuredAt": 1800000000000
+    },
+    "pump": {
+      "value": true,
+      "measuredAt": 1800000000000
+    }
   },
-  "native": { "power": { "value": "on", "measuredAt": 1800000000000 } },
+  "native": {
+    "power": {
+      "value": "on",
+      "measuredAt": 1800000000000
+    }
+  },
   "baseline": {
     "verified": true,
     "measuredAt": 1800000000000,
-    "profile": "existing-low-heat",
-    "targetC": 10,
+    "profile": "native-settings",
+    "targetC": 17,
     "fan": "auto",
-    "vanes": "fixed"
+    "mode": "heat",
+    "vane": 3,
+    "wideVane": null
   },
   "capabilities": {
     "boundedPause": true,
@@ -27,7 +43,8 @@
     "restorePersistence": true,
     "nativeConfirmation": true,
     "challenge": true,
-    "preserveNativeBaseline": true
+    "preserveNativeSettings": true,
+    "releaseOrdering": true
   },
   "leaseLimits": {
     "maximumMs": 180000,
@@ -35,8 +52,15 @@
     "minimumOnMs": 0,
     "restorationDelayMs": 120000
   },
-  "authority": { "ownerSession": "fixture-host", "controlAllowed": true },
-  "challenge": { "value": "fixture-challenge-1", "expiresAt": 1800000030000 },
+  "authority": {
+    "ownerSession": "fixture-host",
+    "controlAllowed": true,
+    "manualPauseAllowed": true
+  },
+  "challenge": {
+    "value": "fixture-challenge-1",
+    "expiresAt": 1800000030000
+  },
   "lease": null,
   "restorationPending": false,
   "recoveryLockedUntil": 0

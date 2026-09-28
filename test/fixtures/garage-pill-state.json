@@ -41,7 +41,7 @@
       "ageMs": 1000
     },
     "targetC": {
-      "value": 10,
+      "value": 17,
       "measuredAt": 1800000059000,
       "ageMs": 1000
     },
@@ -58,11 +58,13 @@
   },
   "baseline": {
     "verified": false,
-    "profile": "existing-low-heat",
-    "targetC": 10,
+    "profile": "native-settings",
+    "targetC": 17,
     "fan": "auto",
-    "vanes": "fixed",
-    "measuredAt": 1800000059000
+    "measuredAt": 1800000059000,
+    "mode": "heat",
+    "vane": 3,
+    "wideVane": null
   },
   "commissioning": {},
   "capabilities": {
@@ -72,7 +74,8 @@
     "restorePersistence": true,
     "nativeConfirmation": true,
     "challenge": true,
-    "preserveNativeBaseline": false
+    "preserveNativeSettings": false,
+    "releaseOrdering": true
   },
   "leaseLimits": {
     "maximumMs": 180000,
@@ -82,7 +85,8 @@
   },
   "authority": {
     "ownerSession": null,
-    "controlAllowed": false
+    "controlAllowed": false,
+    "manualPauseAllowed": false
   },
   "challenge": {
     "value": "625f8d4d-ea60",

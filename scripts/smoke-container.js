@@ -31,7 +31,7 @@ async function seedAddon() {
   assert.equal(existsSync('/config/st-mq/st-mq.sqlite'), false);
   const options = JSON.parse(readFileSync('/st-mq/config.json', 'utf8')).options;
   const now = Date.now();
-  options.controller = { ...options.controller, input: 'offline', mode: 'shadow',
+  options.controller = { ...options.controller, input: 'offline',
     web_token: 'synthetic-container-test-token-no-household-access', max_drop_c: 0.7 };
   options.electricity = { ...options.electricity, margin_ct_per_kwh_ex_vat: 0.37, effective_date: '' };
   writeJson('/data/options.json', options, { flag: 'wx' });
@@ -78,7 +78,8 @@ async function probeAddon({ restarted = false, restored = false } = {}) {
   for (const path of assetPaths) assert.equal((await fetch(new URL(path, base))).status, 200, path);
   assert.equal((await fetch(`${base}/data/options.json`)).status, 404);
   const status = await fetch(`${base}/api/status`, { headers }).then(response => response.json());
-  assert.equal(status.liveWrites, false);
+  assert.equal(status.automation.home.enabled, false);
+  assert.equal(status.automation.garage.enabled, false);
   assert.equal(status.input, 'offline');
   assert.equal(status.settings.comfort.maxDropC, 0.7, 'Options control the preferred drop');
   assert.equal(status.contract.periods.at(-1).marginCtPerKwh, 0.37, 'Options control actual price layers');
@@ -113,7 +114,8 @@ async function probeAddon({ restarted = false, restored = false } = {}) {
     const updated = await response.json();
     assert.equal(updated.settings.occupancy.mode, 'away');
     assert.equal(updated.override.mode, 'normal');
-    assert.equal(updated.liveWrites, false);
+    assert.equal(updated.automation.home.enabled, false);
+  assert.equal(updated.automation.garage.enabled, false);
     for (const path of ['/api/settings', '/api/contract']) {
       assert.equal((await fetch(`${base}${path}`, { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: '{}' })).status, 405);
     }
@@ -197,7 +199,8 @@ try {
   assert.ok(themePath, 'Prepaint theme asset is included');
   assert.equal((await fetch(new URL(themePath, base))).status, 200);
   const state = await (await fetch(`${base}/api/status`, { headers })).json();
-  assert.equal(state.liveWrites, false);
+  assert.equal(state.automation.home.enabled, false);
+  assert.equal(state.automation.garage.enabled, false);
   assert.equal(state.input, 'simulated');
   const chartResponse = await fetch(`${base}/api/chart`, { headers });
   assert.equal(chartResponse.status, 200);
@@ -219,7 +222,8 @@ try {
   const base = `http://127.0.0.1:${app.server.address().port}`;
   const headers = config.token ? { Authorization: `Bearer ${config.token}` } : {};
   const status = await fetch(`${base}/api/status`, { headers }).then(response => response.json());
-  assert.equal(status.liveWrites, false);
+  assert.equal(status.automation.home.enabled, false);
+  assert.equal(status.automation.garage.enabled, false);
   assert.equal(status.providers.market.status, 'fallback');
   assert.equal(status.providers.market.source, 'elering');
   assert.equal(status.providers.weather.source, 'fmi');

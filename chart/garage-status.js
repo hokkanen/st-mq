@@ -310,11 +310,12 @@ export function garageHeatingRequest(garage = {}) {
 
 export function garagePauseSummary(status = {}) {
   const garage = status.garage ?? {}, temporary = garage.temporary ?? {};
+  if (isReadOnlyReplica(status)) return 'Recorded pause';
   if (temporary.pauseActive && temporary.pauseUntil > status.now) return `Paused until ${clock(temporary.pauseUntil)}`;
-  if (garage.settings?.enabled === false) return 'Automatic control disabled';
+  if (garage.settings?.enabled === false) return 'Garage integration unavailable';
   if (status.input === 'offline') return 'Unavailable offline';
-  if (status.mode && status.mode !== 'active') return `Inactive in ${text(status.mode)} mode`;
-  if (garage.settings?.enabled !== true) return 'Status unavailable';
+  if (garage.settings?.enabled !== true || !status.automation?.garage) return 'Status unavailable';
+  if (!status.automation.garage.enabled) return 'Plan only';
   return 'Not paused';
 }
 
@@ -363,7 +364,7 @@ export function renderGarage(document, status) {
   const now = status?.now ?? Date.now();
   const control = document.getElementById('garage-control-price');
   if (control) {
-    const price = priceControlState(status, { enabled: garage.settings?.enabled ?? null, paused: Boolean(garage.temporary?.pauseActive) });
+    const price = priceControlState(status, { feature: 'garage', enabled: garage.settings?.enabled ?? null, paused: Boolean(garage.temporary?.pauseActive) });
     control.textContent = price.label; control.parentElement.dataset.state = price.state;
   }
   const devices = status?.equipment?.devices ?? [];
@@ -491,16 +492,16 @@ export function renderGarage(document, status) {
   }
   set('garage-policy-decision', display.planningDetails.find(row => row.key === 'current-opportunity')?.value ?? 'Unavailable');
   set('garage-policy-window', display.planningDetails.find(row => row.key === 'pause-window')?.value ?? 'Unavailable');
-  const controlState = priceControlState(status, { enabled: garage.settings?.enabled ?? null, paused: Boolean(garage.temporary?.pauseActive) });
+  const controlState = priceControlState(status, { feature: 'garage', enabled: garage.settings?.enabled ?? null, paused: Boolean(garage.temporary?.pauseActive) });
   set('garage-policy-context', status?.readOnly === true || isReadOnlyReplica(status)
     ? 'Read-only view: these settings and estimates do not authorize equipment control.'
     : controlState.state === 'paused'
     ? 'Price control is paused; the heating selection above applies. Freeze protection still limits off permission.'
-    : controlState.label === 'Disabled' ? 'Automatic price control is disabled.'
-      : controlState.label === 'Offline' ? 'Offline input: automatic equipment control is unavailable.'
-        : status?.mode && status.mode !== 'active' ? `${controlState.label} mode: automatic decisions do not command the equipment.`
+    : garage.settings?.enabled === false ? 'Garage integration is disabled.'
+      : status.input === 'offline' ? 'History viewer: automatic equipment control is unavailable.'
+        : status.automation?.garage && !status.automation.garage.enabled ? 'Plan only: Garage plans do not send automatic commands. Manual heating controls remain independent.'
           : controlState.state === 'active' ? 'The plan remains subject to equipment and protection checks. Heating control above shows the current request and device feedback.'
-            : 'Current operating mode is unavailable.');
+            : 'Garage automation status is unavailable.');
   const approved = garage.settings?.protection?.approved;
   set('garage-protection-approval', approved === true ? 'Owner-approved' : approved === false ? 'Not approved' : 'Approval unknown');
   for (const [group, rows] of Object.entries(display.settingGroups)) {
@@ -571,12 +572,18 @@ export function createGarageControls({ document, request, onStatus = () => {}, o
       : 'Changes reset on the next controller update, normally within 1 minute. Pause price control to hold them longer.'} Freeze protection can restore heating sooner.`;
     setStatusDetail($('garage-heating-status'), { key: 'garage-heating-availability', title: 'Garage heating control',
       label: controls.available ? 'Control available' : 'Control unavailable',
-      detail: controls.available ? 'These controls require Active operating mode and a live or simulated input. Requests are confirmed by current pump power readback.'
+      detail: controls.available ? 'Manual heating requests are independent of automatic planning. Fresh pump readback confirms the request; equipment and freeze-protection checks still apply.'
         : controls.reason ?? 'Waiting for the garage heating connection.' });
     const normal = $('garage-mode-normal');
     if (normal) normal.title = controls.normalAvailable ? '' : controls.normalReason ?? controls.reason ?? 'Normal heating is unavailable.';
     const off = $('garage-mode-off');
     if (off) off.title = controls.offAvailable ? '' : controls.offReason ?? controls.reason ?? 'Heating off is unavailable.';
+    const availability = $('garage-control-detail');
+    if (availability) {
+      const failure = controls.result?.reason;
+      availability.textContent = [controls.activity, failure, !controls.normalAvailable && controls.normalReason,
+        !controls.offAvailable && controls.offReason].filter(Boolean).filter((value, index, rows) => rows.indexOf(value) === index).join(' ');
+    }
     const warning = garageHeatingWarning(status, clock), node = $('garage-hold-warning');
     if (node) { node.hidden = !warning; node.textContent = warning; }
     if (!busy) for (const [target, notice] of notices) {
@@ -610,16 +617,20 @@ export function createGarageControls({ document, request, onStatus = () => {}, o
       action: mode === 'off' ? 'Turn heating off' : 'Apply normal heating' })) return;
     if (!status?.garage?.heatingControls?.[`${mode}Available`]) return;
     const heatingMessage = result => {
-      const next = result.garage?.heatingControls, held = next?.paused && next.holdUntil > result.now;
-      return `${mode === 'off' ? 'Heating off' : 'Normal heating'} requested. ${held
-        ? `Held until ${clock(next.holdUntil)} or Resume now.` : 'Automatic control takes over on its next update, normally within 1 minute.'} ${next?.confirmed ? 'Device confirmed.' : 'Check the reported pump state for confirmation.'}`;
+      const next = result.garage?.heatingControls;
+      if (next?.result && ['failed', 'unconfirmed', 'uncertain', 'rejected'].includes(next.result.status))
+        return next.result.reason || 'The heating request could not be confirmed. Check the current pump state.';
+      const held = next?.paused && next.holdUntil > result.now;
+      return `${next?.activity ? `${next.activity} ` : ''}${mode === 'off' ? 'Heating off' : 'Normal heating'} requested. ${held
+        ? `Held until ${clock(next.holdUntil)} or Resume now.` : 'The temporary override ends on the next controller update, normally within 1 minute. Previous heating returns; automatic planning applies only if enabled.'} ${next?.confirmed ? 'Device confirmed.' : 'Check the reported pump state for confirmation.'}`;
     };
     await send('/api/garage/heating', { mode }, $('garage-heating-message'), 'Applying garage heating…', heatingMessage, (next, requested) => {
       const controls = next.garage?.heatingControls;
       if (controls?.requestedMode === mode && controls.holdUntil === requested.garage?.heatingControls?.holdUntil
         && controls.holdUntil > next.now) return heatingMessage(next);
       if (controls?.requestedMode && controls.holdUntil > next.now) return '';
-      return restorationPending(next) ? 'Temporary heating request ended. Waiting for normal heating confirmation.' : '';
+      return restorationPending(next) ? 'Temporary heating request ended. Waiting for normal heating confirmation.'
+        : controls?.result?.reason || '';
     });
   };
   const pauseMessage = (next, requested) => {

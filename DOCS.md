@@ -1,9 +1,10 @@
 # Home Assistant add-on setup
 
-The 0.9.0 application starts with **simulated devices and shadow plans**. Default
-startup launches no live controller or provider. Active MQTT control is available
-when selected in configuration. See [learning and control](docs/learning-and-control.md)
+The 0.9.0 application starts with **simulated devices and Plan only heating**. Default
+startup launches no live controller or provider. Live automation is enabled separately in each feature after configuring its connection. See [learning and control](docs/learning-and-control.md)
 for the algorithm, native-setting restoration and equipment testing limits.
+[Automation and manual heating](docs/automation-and-manual-control.md) explains
+the independent feature controls and Garage external-temperature handover.
 
 1. Build/install ST-MQ through the repository's existing add-on mechanism on
    `aarch64` (Raspberry Pi 5) or `amd64`.
@@ -12,7 +13,7 @@ for the algorithm, native-setting restoration and equipment testing limits.
    Assistant login. Set an admin password of at least 24 characters in `web_token`
    for direct access on the mapped port 1234. Optionally set a different family
    password of at least 24 characters in `web_family_token`. Leave
-   `controller.input: simulated` and `controller.mode: shadow` for initial review.
+   `controller.input: simulated` for initial review; Home and Garage default to Plan only.
 3. Start the add-on and choose **Open Web UI** in Home Assistant. Ingress needs no
    separate application password. Direct access, when enabled, asks for either
    configured password and selects its role. The **Home Energy** UI clearly labels simulation.
@@ -29,10 +30,10 @@ for the algorithm, native-setting restoration and equipment testing limits.
    application image.
 6. Choose `controller.input: offline` to view imported history without device
    connections. Choose `providers` or `mqtt` for live temperatures and prices.
-   Start in `shadow` to calculate plans or `monitoring` to observe. Configure the
+   Keep Home and Garage on **Plan only** while reviewing plans. Configure the
    current direct equipment relay route in [equipment setup](docs/mqtt-equipment.md)
    and verify its device identity, command acceptance and fresh state readback, or
-   commission H66 native control as described below. Only then enable `active`.
+   commission H66 native control as described below. Then enable **Automatic** for the intended feature only.
    Disable the former heat/action automation; the current application does not
    publish heating commands through that protocol.
    Configure local indoor temperature subscriptions under `mqtt`: smoke channel 1
@@ -247,7 +248,7 @@ equipment** in Garage contain readbacks and manual tests; Garage's chargers sit
 directly below its heating summary. Home's upper summary includes indoor and
 outdoor temperatures, heating request and all-in price. Below those readings, a
 compact row shows the next selected heating-plan change in Finnish local time.
-It identifies paused, shadow, simulated and read-only states and does not assign
+It identifies paused, Plan only, simulated and read-only states and does not assign
 a fixed end time to recovery. Equipment and connections headers retain their
 height when toggled; desktop balancing adds only bounded gaps between sections.
 **Tariff control** appears
@@ -276,8 +277,7 @@ adds no coefficient storage. Historical coefficient chart axes separately replay
 the saved journal with its matching algorithm.
 Both charger cards open their
 schedule, readings and preferences. Charger 1's **Automatic charging** is off by
-default and separately permits native Easee schedules, including while heating
-is in monitoring or shadow mode. Charger 2 observes TeslaMate and has no command
+default and separately permits native Easee schedules, independently of the heating automation permissions. Charger 2 observes TeslaMate and has no command
 adapter. See [charging](docs/charging.md).
 **Data & settings** summarizes provider health; each provider row opens its series
 and source details. Its **Connections & configuration** fold contains MQTT setup,

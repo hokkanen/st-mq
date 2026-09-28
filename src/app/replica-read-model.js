@@ -1,4 +1,5 @@
 import { validateSettings } from './config.js';
+import { validateHeatingAutomationState } from './automation.js';
 import { assembleOutlook } from './contract.js';
 import { Recorder } from '../storage/recorder.js';
 import { H66_DOCUMENTATION, H66_REGISTERS } from '../domain/telemetry.js';
@@ -178,6 +179,13 @@ export function replicaReadModel(snapshot, config) {
     savedSettings = null; settings = validateSettings(config.settings ?? {});
   }
   const read = observationReader(snapshot), unavailable = { available: false, busy: false, reason, readOnly: true };
+  let automationState = null, automationError = null;
+  try { automationState = validateHeatingAutomationState(state(`automation:${input}`)); }
+  catch { automationError = 'Saved heating automation choices are unavailable in this snapshot.'; }
+  const automation = Object.fromEntries(['home', 'garage'].map(feature => [feature, {
+    ...copy(automationState?.features[feature]), enabled: automationState?.features[feature]?.enabled ?? false,
+    available: false, activity: 'unavailable', reason: automationError ?? reason, recorded: true, readOnly: true, snapshotAt: at,
+    ...(automationError ? { error: automationError } : {}) }]));
   const providers = Object.fromEntries(Object.entries(state('providers:health') ?? {}).map(([name, saved]) =>
     [name, { ...copy(saved), recordedStatus: saved.status, status: 'snapshot', readOnly: true, recorded: true,
       snapshotAt: at, connected: null, healthy: null, reason, recording: false,
@@ -194,7 +202,7 @@ export function replicaReadModel(snapshot, config) {
   // records, samples, extends coverage or prunes an existing recorder state.
   const recording = store ? new Recorder(store, { config: recordingConfiguration, clock: () => at }).status(at)
     : { parameters: [], exactParameters: [], measuredDatabaseBytes: 0 };
-  return { settings, readView: { source: 'verified-snapshot', snapshotAt: at, liveAvailable: false,
+  return { settings, automation, readView: { source: 'verified-snapshot', snapshotAt: at, liveAvailable: false,
     settingsSource: savedSettings ? 'recorded-snapshot' : 'local-configuration',
     equipmentConfigurationSource: 'local-configuration',
     message: 'Recorded data and settings are read-only. Live connections and device control are unavailable.',

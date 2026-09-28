@@ -12,7 +12,7 @@ function setup(t, { room = 20, boostC = 5, writableMaximum, circulation = true, 
   const writes = [], commands = [], switches = [];
   const transport = { targetIdentity: { tariff: 'a'.repeat(64), dhwr: 'b'.repeat(64) }, close: async () => {}, publish: async batch => { commands.push(batch); return { status: 'mqtt', sent: true }; },
     ...(circulation ? { publishDhwr: async on => { switches.push(on); return { status: 'mqtt', sent: true }; } } : {}) };
-  const engine = new Engine({ store, config: { input: 'providers', settings: { mode: 'shadow' },
+  const engine = new Engine({ store, config: { input: 'providers', settings: {  },
     control: { preheatRoomBoostC: boostC } }, clock: () => now, commandTransport: transport });
   const deviceId = 'fixture-max-preheat', decoder = createH66Decoder({ deviceId });
   let controller;

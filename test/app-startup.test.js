@@ -26,7 +26,7 @@ test('standalone entry starts offline promptly, serves built UI, survives restar
     const response = await fetch(`http://127.0.0.1:${app.server.address().port}/api/status`);
     const status = await response.json();
     assert.equal(status.input, 'simulated');
-    assert.equal(status.liveWrites, false);
+    assert.equal(status.automation.home.enabled, false);
     assert.equal(status.settingsReload.configuration.environment, 'ubuntu');
     assert.equal(status.settingsReload.configuration.privatePath, join(directory, 'st-mq/secrets.json'));
     assert.equal(status.settingsReload.configuration.defaultsPath, config.configuration.defaultsPath);
@@ -48,7 +48,7 @@ test('deployment metadata uses an explicit Node base, persistent storage and bot
   const addon = JSON.parse(readFileSync('config.json', 'utf8'));
   assert.deepEqual(addon.arch, ['aarch64', 'amd64']);
   assert.equal(addon.options.controller.input, 'simulated');
-  assert.equal(addon.options.controller.mode, 'shadow');
+  assert.equal(Object.hasOwn(addon.options.controller, 'mode'), false);
   assert.ok(addon.map.includes('addon_config:rw'));
   assert.ok(addon.map.includes('share:rw'));
   assert.equal(addon.backup, 'cold');
@@ -121,7 +121,7 @@ test('H66 observations coexist with weather and prices and acquisition only requ
     assert.equal(status.observations.outdoor.source, 'fmi');
     assert.ok(status.prices.length > 0);
     assert.ok(status.forecast.length > 0);
-    assert.equal(status.liveWrites, false);
+    assert.equal(status.automation.home.enabled, false);
   } finally { await app.close(); }
   assert.equal(closed, 1);
 });
