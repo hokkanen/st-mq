@@ -1,3 +1,33 @@
+Completed 2026-09-28 — Caravan dehumidifier control, evidence and HA bridge
+- Keep automatic power as saved, device-bound dashboard intent: enabled with
+  1°C OFF / 2°C ON initially, editable thresholds and a disable switch. Native
+  power becomes manual when disabled; native settings remain device commands.
+- Require two minutes of fresh, independently advancing humidity agreement
+  within 10 percentage points of Shelly BLU before automation or caravan state
+  recording. Optional appliance temperature adds a 4°C comparison. Preserve
+  gaps on mismatch, unavailable evidence and recovery; never infer location.
+- Require advertised native capabilities and a physical identity digest. Bind
+  saved choices and expiring commands to that identity; replacement cannot
+  inherit old intent. Protective OFF can supersede pending ON and uses fresh
+  power even if fan telemetry expires. Independent field clocks prevent cached
+  HA snapshots from renewing old humidity or confirming another setting.
+- Add Home Assistant MQTT automation generation for the verified humidifier,
+  fan and humidity entity contract. Reject unsupported/multiple settings, wrong
+  identity, expired/future requests and replays; preserve original HA report
+  times. Remove assumed UI capabilities and timeless command payloads without
+  adding compatibility aliases, migrations or learning changes.
+- Reviewed F1/F3/F4/F5/F7/F8 across producers, state, API, UI, recording and
+  documentation. Private HA discovery/configuration remains outside Git.
+- Validation: 3,985 routine tests pass with no skips; production build passes
+  with its existing bundle warning. Caravan and access browser suites pass in
+  both themes at narrow/mobile/desktop widths; screenshots inspected. Full
+  equipment browser coverage stops at an unrelated garage-door modal assertion.
+  Actual HA template rendering passes; no physical command confirmation claimed.
+- Installation follow-up: Tuya Local installed through HACS without restarting
+  HA; owner completed QR authentication and the device local key was retrieved.
+  Local commissioning awaits the appliance LAN address. No cloud-dependent
+  dehumidifier bridge was installed as a fallback and no appliance commands sent.
+
 Completed 2026-09-28 — Restore the full Mitsubishi browser sweep
 - Align the sweep with application listboxes: arrows browse without committing,
   Enter commits, Escape cancels, and focus stays on the visible trigger unless

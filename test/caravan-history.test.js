@@ -258,7 +258,7 @@ test('MQTT caravan air and dehumidifier reports reach the recorder with their re
   assert.equal(device.readings.blu_ht_rssi.value, -81);
   capture.receive('invented/caravan/dehumidifier/availability', 'online');
   capture.receive('invented/caravan/dehumidifier/state', JSON.stringify({ power: 'on', mode: 'auto', fanSpeed: 'high',
-    targetHumidity: 55, swing: 'fixed_90', timestamp: now }));
+    targetHumidity: 55, swing: 'fixed_90', identity: 'a'.repeat(64), capabilities: { power: ['off', 'on'] }, timestamp: now }));
   assert.deepEqual(new Set(store.observations().map(row => row.signal)), new Set(signals));
   for (const signal of signals) {
     const age = signal === stateSignal ? 120_000 : 180_000;

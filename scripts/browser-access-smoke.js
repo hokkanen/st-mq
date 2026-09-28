@@ -60,6 +60,9 @@ try {
         controls: { switch: true }, readings: { caravan_active: reading(1, 'state'), caravan_power: reading(0.35, 'kW') } },
       { id: 'caravan_dehumidifier', label: 'Caravan dehumidifier', area: 'garage', kind: 'dehumidifier', available: true,
         controls: { dehumidifier: true }, readings: {}, dehumidifier: { available: true, observedAt: now, runningState: 'low',
+          capabilities: { power: ['off', 'on'], targetHumidity: [30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80], fanSpeed: ['low', 'medium', 'high'] },
+          temperatureControl: { configured: true, enabled: true, canEdit: true, offAtC: 1, onAtC: 2, comparison: 'humidity',
+            recording: false, readingsMatch: false, reason: 'readings-mismatch', humidity: 63, applianceHumidity: 40 },
           state: { power: 'on', mode: 'dehumidify', targetHumidity: 55, fanSpeed: 'low', swing: 'fixed_90' } } },
     ] };
     status.equipmentControls = { available: true, busy: false };
@@ -255,7 +258,8 @@ try {
       }
     }
     for (const selector of ['#home-equipment-readings [data-device-id="synthetic-relay"] .equipment-switch-buttons button',
-      '#home-equipment-readings [data-device-id="synthetic-cover"] [data-cover-action]', '.caravan-dehumidifier-controls button,.caravan-dehumidifier-controls select']) {
+      '#home-equipment-readings [data-device-id="synthetic-cover"] [data-cover-action]', '.caravan-dehumidifier-controls button,.caravan-dehumidifier-controls select',
+      '.caravan-temperature-control input,.caravan-temperature-control button']) {
       const states = await evaluate(`[...document.querySelectorAll(${JSON.stringify(selector)})].map(node=>node.disabled)`);
       assert(states.length > 0);
       assert.equal(states.every(Boolean), role === 'family', `${role}: ${selector}`);

@@ -423,6 +423,7 @@ const caravanAir = () => ({ id: 'blu_ht', label: 'Caravan air', area: 'garage', 
 const dehumidifier = (live = false) => ({ id: 'caravan_dehumidifier', label: 'Caravan dehumidifier', area: 'garage',
   kind: 'dehumidifier', available: live, controls: { dehumidifier: true }, readings: {},
   dehumidifier: { available: live, state: live ? { power: 'off', mode: 'auto', targetHumidity: 55, fanSpeed: 'low', swing: 'fixed_90' } : {},
+    capabilities: Object.fromEntries(Object.entries(DEHUMIDIFIER_OPTIONS).map(([setting, options]) => [setting, options.map(([value]) => value)])),
     runningState: live ? 'off' : null, operation: null } });
 
 test('Caravan groups air and pending dehumidifier with energy, preserving disclosure and showing only reported values', () => {
@@ -438,9 +439,9 @@ test('Caravan groups air and pending dehumidifier with energy, preserving disclo
   assert.equal(air.querySelector('.caravan-air-metrics').textContent, 'Temperature14.1 °CRelative humidity63 %');
   assert.match(air.querySelector('.caravan-sensor-details').textContent, /Battery100 %Bluetooth signal-81 dBm/);
   const appliance = caravan.querySelector('.caravan-dehumidifier');
-  assert.match(appliance.textContent, /electriQ DESD8LW.*Awaiting first MQTT report/);
+  assert.match(appliance.textContent, /electriQ DESD8LW.*Awaiting first device report/);
   assert(descendants(appliance).filter(node => ['SELECT', 'BUTTON'].includes(node.tagName)).every(node => node.disabled));
-  assert.deepEqual(DEHUMIDIFIER_OPTIONS.targetHumidity.map(option => option[0]), [35, 40, 45, 50, 55, 60, 65, 70, 75, 80]);
+  assert.deepEqual(DEHUMIDIFIER_OPTIONS.targetHumidity.map(option => option[0]), [30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80]);
   caravan.open = true;
   const next = structuredClone(initial); next.equipment.devices[2] = dehumidifier(true); panel.update(next);
   assert.equal(deviceNode(document, 'garage-equipment-readings', 'caravan'), caravan); assert.equal(caravan.open, true);
@@ -500,6 +501,114 @@ test('dehumidifier commands validate allowed values, require live authority and 
   device.dehumidifier.operation = { setting: 'power', value: 'on', requestedAt: now, status: 'unconfirmed' };
   assert.match(dehumidifierResult(device, now), /no confirming device report/);
   assert.equal(dehumidifierResult(device, now + 60_000), '');
+});
+
+test('dehumidifier controls follow reported capabilities and automatic power rejects manual commands', async () => {
+  const device = dehumidifier(true), calls = [], document = equipmentDocument();
+  device.dehumidifier.capabilities = { power: ['off', 'on'], fanSpeed: ['low', 'medium', 'high'], targetHumidity: [30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80] };
+  device.dehumidifier.temperatureControl = { configured: true, enabled: true, canEdit: true, offAtC: 1, onAtC: 2,
+    recording: false, readingsMatch: false, reason: 'readings-mismatch', temperatureC: 14.1, humidity: 63, applianceTemperatureC: 22, applianceHumidity: 35 };
+  const current = status({ equipment: { devices: [caravanAir(), device] } });
+  const panel = createEquipmentPanel({ document, request: async (path, body) => { calls.push({ path, body }); return current; } }); panel.update(current);
+  const appliance = deviceNode(document, 'garage-equipment-readings', 'caravan').querySelector('.caravan-dehumidifier');
+  assert.equal(appliance.querySelector('.caravan-setting-mode').hidden, true);
+  assert.equal(appliance.querySelector('.caravan-setting-swing').hidden, true);
+  const fan = descendants(appliance).find(node => node.dataset.setting === 'fanSpeed');
+  assert.equal(fan.children.find(option => option.value === 'auto').hidden, true);
+  assert(appliance.querySelector('.caravan-power-buttons').children.every(button => button.disabled));
+  assert.match(appliance.querySelector('.caravan-recording').textContent, /Recording paused.*does not match Shelly BLU/);
+  assert.doesNotMatch(appliance.textContent, /inside|outside|located|in caravan/i);
+  const actions = createEquipmentActions({ request: async (path, body) => { calls.push({ path, body }); return current; } }); actions.update(current);
+  for (const [setting, value] of [['power', 'on'], ['mode', 'heater'], ['fanSpeed', 'auto'], ['swing', 'fixed_45']])
+    assert.equal(await actions.dehumidifier(device.id, setting, value), false);
+  assert.deepEqual(calls, []);
+  assert.equal(await actions.dehumidifier(device.id, 'targetHumidity', 30), true);
+  delete device.dehumidifier.capabilities; actions.update(current);
+  assert.equal(await actions.dehumidifier(device.id, 'fanSpeed', 'medium'), false, 'Missing capabilities cannot grant controls');
+});
+
+test('automatic power edits validate hysteresis, preserve draft through polling and save explicit device intent', async () => {
+  const device = dehumidifier(true), calls = [], document = equipmentDocument();
+  device.dehumidifier.temperatureControl = { configured: true, enabled: true, canEdit: true, offAtC: 1, onAtC: 2,
+    recording: true, readingsMatch: true, reason: 'warm', temperatureC: 14, humidity: 60, applianceTemperatureC: 15, applianceHumidity: 58 };
+  const current = status({ equipment: { devices: [device] } });
+  const panel = createEquipmentPanel({ document, request: async (path, body) => {
+    calls.push({ path, body }); Object.assign(device.dehumidifier.temperatureControl, body); return current;
+  } }); panel.update(current);
+  const appliance = deviceNode(document, 'garage-equipment-readings', 'caravan').querySelector('.caravan-dehumidifier');
+  const policy = appliance.querySelector('.caravan-temperature-control'), save = policy.querySelector('button');
+  const input = setting => descendants(policy).find(node => node.dataset.setting === setting);
+  assert.equal(input('automaticPower').checked, true); assert.equal(input('offAtC').value, '1'); assert.equal(input('onAtC').value, '2');
+  assert.equal(save.disabled, true);
+  input('onAtC').value = '1.2'; input('onAtC').listeners.get('input')();
+  assert.equal(save.disabled, true); assert.match(policy.querySelector('.caravan-policy-message').textContent, /at least 0.5/);
+  input('onAtC').value = '3'; input('onAtC').listeners.get('input')();
+  input('automaticPower').checked = false; input('automaticPower').listeners.get('input')();
+  panel.update(current); assert.equal(input('onAtC').value, '3', 'Status refresh keeps the draft'); assert.equal(save.disabled, false);
+  await policy.listeners.get('submit')({ preventDefault() {} });
+  assert.deepEqual(calls, [{ path: '/api/equipment/dehumidifier/temperature-control', body: { deviceId: device.id, enabled: false, offAtC: 1, onAtC: 3 } }]);
+  assert.equal(save.disabled, true); assert.match(appliance.querySelector('.equipment-control-result').textContent, /settings saved/);
+  assert.equal(appliance.querySelector('.caravan-recording').children[0].textContent, 'Recording active', 'Manual power does not remove recording checks');
+  assert.equal(appliance.querySelector('.caravan-power-buttons').children[1].disabled, false);
+  panel.update({ ...current, role: 'slave' });
+  assert([input('automaticPower'), input('offAtC'), input('onAtC'), save].every(node => node.disabled));
+});
+
+test('manual power off stays available with fresh power evidence when the fan setting is unavailable', async () => {
+  const device = dehumidifier(), calls = [], document = equipmentDocument();
+  Object.assign(device.dehumidifier, { powerOffAvailable: true, state: { power: 'on' }, observedAt: now });
+  const current = status({ equipment: { devices: [device] } });
+  const request = async (path, body) => { calls.push({ path, body }); return current; };
+  const panel = createEquipmentPanel({ document, request }); panel.update(current);
+  const appliance = deviceNode(document, 'garage-equipment-readings', 'caravan').querySelector('.caravan-dehumidifier');
+  const buttons = appliance.querySelector('.caravan-power-buttons').children;
+  assert.equal(buttons[0].disabled, false); assert.equal(buttons[1].disabled, true);
+  assert.match(appliance.querySelector('.caravan-section-status').textContent, /On.*Fan setting unavailable/);
+  const actions = createEquipmentActions({ request }); actions.update(current);
+  assert.equal(await actions.dehumidifier(device.id, 'power', 'on'), false);
+  assert.equal(await actions.dehumidifier(device.id, 'fanSpeed', 'low'), false);
+  assert.equal(await actions.dehumidifier(device.id, 'power', 'off'), true);
+  assert.deepEqual(calls, [{ path: '/api/equipment/dehumidifier', body: { deviceId: device.id, setting: 'power', value: 'off' } }]);
+  actions.update({ ...current, role: 'slave' }); assert.equal(await actions.dehumidifier(device.id, 'power', 'off'), false);
+  device.dehumidifier.temperatureControl = { enabled: true }; actions.update(current);
+  assert.equal(await actions.dehumidifier(device.id, 'power', 'off'), false, 'Automatic power retains sole ownership');
+});
+
+test('automatic power actions reject malformed thresholds and remain editable during appliance outages only with authority', async () => {
+  const device = dehumidifier(), calls = [];
+  device.dehumidifier.temperatureControl = { configured: true, enabled: true, canEdit: true, offAtC: 1, onAtC: 2 };
+  const current = status({ equipment: { devices: [device] } });
+  const actions = createEquipmentActions({ request: async (path, body) => { calls.push({ path, body }); return current; } }); actions.update(current);
+  for (const values of [null, undefined, {}, [], { enabled: 'true', offAtC: 1, onAtC: 2 }, { enabled: true, offAtC: 2, onAtC: 1 },
+    { enabled: true, offAtC: 1, onAtC: 1.4 }, { enabled: true, offAtC: 1.01, onAtC: 2 },
+    { enabled: true, offAtC: -11, onAtC: 2 }, { enabled: true, offAtC: 1, onAtC: Infinity }])
+    assert.equal(await actions.dehumidifierTemperatureControl(device.id, values), false);
+  assert.equal(await actions.dehumidifierTemperatureControl(device.id, { enabled: false, offAtC: 1, onAtC: 2 }), true);
+  assert.equal(calls.length, 1);
+  device.dehumidifier.temperatureControl.canEdit = false; actions.update(current);
+  assert.equal(await actions.dehumidifierTemperatureControl(device.id, { enabled: true, offAtC: 1, onAtC: 2 }), false);
+});
+
+test('recording explains humidity agreement, qualification and missing evidence without inferring device location', () => {
+  const device = dehumidifier(true), document = equipmentDocument();
+  device.dehumidifier.temperatureControl = { configured: true, enabled: true, canEdit: true, offAtC: 1, onAtC: 2,
+    comparison: 'humidity', requiredMatchingMs: 120000, maxHumidityDifference: 10, temperatureC: 14, humidity: 60,
+    applianceTemperatureC: null, applianceHumidity: 58, recording: false, readingsMatch: true, reason: 'checking-readings' };
+  const panel = createEquipmentPanel({ document, request: async () => {} }), current = status({ equipment: { devices: [device] } });
+  panel.update(current);
+  const appliance = deviceNode(document, 'garage-equipment-readings', 'caravan').querySelector('.caravan-dehumidifier');
+  assert.match(appliance.querySelector('.caravan-recording').textContent, /Recording paused.*Humidity match.*2 minutes/);
+  assert.match(appliance.querySelector('.caravan-comparison').textContent, /Dehumidifier 58 %.*Shelly BLU 60 %.*10 humidity points/);
+  assert.doesNotMatch(appliance.querySelector('.caravan-comparison').textContent, /Temperature|Unavailable/);
+  for (const [reason, expected] of [['appliance-unavailable', /fresh dehumidifier readings/],
+    ['air-unavailable', /fresh Shelly BLU temperature and humidity/], ['appliance-readings-unavailable', /fresh dehumidifier humidity/],
+    ['readings-mismatch', /Humidity does not match Shelly BLU/]]) {
+    Object.assign(device.dehumidifier.temperatureControl, { reason, readingsMatch: false }); panel.update(current);
+    assert.match(appliance.querySelector('.caravan-recording').textContent, expected);
+    assert.doesNotMatch(appliance.querySelector('.caravan-recording').textContent, /inside|outside|located|in caravan/i);
+  }
+  Object.assign(device.dehumidifier.temperatureControl, { recording: true, readingsMatch: true, reason: 'warm', enabled: false }); panel.update(current);
+  assert.match(appliance.querySelector('.caravan-recording').textContent, /Recording active.*Humidity match/);
 });
 
 test('equipment readings honor categorical state labels and never coerce unknown running states to Off', () => {

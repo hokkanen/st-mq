@@ -169,6 +169,11 @@ Home Heat control actions Normal, Reduction and Preheat retain their separate
 temporary behavior. The H66 assumptions `compressor_integral_a1`,
 `aux_integral_a2`, `compressor_hysteresis_c`, `aux_hysteresis_c` and `a2_basis`
 remain in configuration because the integration cannot read those settings.
+Caravan dehumidifier Automatic power and its OFF/ON thresholds are durable
+application choices bound to the configured appliance and Shelly BLU connection.
+Their initial values are enabled, 1°C OFF and 2°C ON; configuration owns only the
+sensor/actuator wiring. Disabling Automatic power exposes manual native power
+without disabling the independent humidity-agreement recording gate.
 Native heat-pump and dehumidifier controls directly change the device's settings;
 local charger setup explicitly configures the device connection. Those actions
 are labeled separately and do not change controller configuration defaults.

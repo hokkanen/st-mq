@@ -2,7 +2,7 @@ import { isReadOnlyReplica } from './replica-status.js';
 import { setStatusDetail } from './status-details.js';
 import { temperatureReadingStatus } from './temperature-status.js';
 import { TEMPERATURE_SENSORS } from '../src/domain/indoor-sensors.js';
-import { createCaravanContents, dehumidifierControlAllowed, dehumidifierValueAllowed } from './caravan.js';
+import { createCaravanContents, dehumidifierCommandAllowed, temperatureControlAllowed, temperatureControlValueAllowed } from './caravan.js';
 
 const clock = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', month: 'short', day: 'numeric',
   hour: '2-digit', minute: '2-digit', timeZoneName: 'shortOffset' });
@@ -181,7 +181,8 @@ export function createEquipmentActions({ request, onChange = () => {}, onStatus 
   async function send(path, body, success) {
     if (!status || isReadOnlyReplica(status) || busy) return false;
     actionKind = path.endsWith('/recheck') ? 'recheck' : path.endsWith('/switch') ? 'control'
-      : path.endsWith('/dehumidifier') ? 'dehumidifier' : path.endsWith('/cover') ? 'cover' : 'test';
+      : path.endsWith('/dehumidifier') ? 'dehumidifier' : path.endsWith('/dehumidifier/temperature-control') ? 'dehumidifier-temperature-control'
+        : path.endsWith('/cover') ? 'cover' : 'test';
     actionDeviceId = body.deviceId ?? status.equipmentTests?.active?.deviceId ?? null;
     messageAt = status.now ?? Date.now();
     busy = true; error = false; message = path.endsWith('/recheck') ? 'Checking configured connections…' : 'Applying request…';
@@ -232,8 +233,14 @@ export function createEquipmentActions({ request, onChange = () => {}, onStatus 
     },
     dehumidifier(deviceId, setting, value) {
       const device = status?.equipment?.devices?.find(device => device.id === deviceId);
-      if (!dehumidifierControlAllowed(status, device, busy) || !dehumidifierValueAllowed(setting, value)) return Promise.resolve(false);
+      if (!dehumidifierCommandAllowed(status, device, setting, value, busy)) return Promise.resolve(false);
       return send('/api/equipment/dehumidifier', { deviceId, setting, value }, 'Request sent; awaiting a live device report.');
+    },
+    dehumidifierTemperatureControl(deviceId, values) {
+      const device = status?.equipment?.devices?.find(device => device.id === deviceId);
+      if (!temperatureControlAllowed(status, device, busy) || !temperatureControlValueAllowed(values)) return Promise.resolve(false);
+      const { enabled, offAtC, onAtC } = values;
+      return send('/api/equipment/dehumidifier/temperature-control', { deviceId, enabled, offAtC, onAtC }, 'Power control settings saved for this dehumidifier.');
     },
     test(deviceId, on, durationMinutes) {
       const device = status?.equipment?.devices?.find(device => device.id === deviceId);

@@ -459,7 +459,8 @@
             "timestamp_path": "timestamp",
             "request_topic": "stmq/garage/caravan_dehumidifier/get",
             "request_payload": "{}",
-            "availability_topic": "stmq/garage/caravan_dehumidifier/availability"
+            "availability_topic": "stmq/garage/caravan_dehumidifier/availability",
+            "bridge_availability_topic": "homeassistant/status"
           },
           "readings": []
         }

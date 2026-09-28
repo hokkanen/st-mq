@@ -86,6 +86,7 @@ These scripts start their own disposable Chrome processes:
 ```sh
 node scripts/browser-access-smoke.js
 node scripts/browser-equipment-smoke.js
+node scripts/browser-equipment-smoke.js --caravan-only
 node scripts/browser-home-controls-smoke.js
 node scripts/browser-garage-smoke.js
 node scripts/browser-garage-smoke.js --temperature-hold-only
@@ -107,6 +108,11 @@ family/admin permissions, logout and credential revocation. It audits responsive
 layouts in both themes, including narrow and short login viewports. To retain
 synthetic screenshots and the geometry report, set
 `STMQ_ACCESS_SCREENSHOT_DIR=/tmp/access-layout` when running the script.
+
+The equipment suite's `--caravan-only` option checks the Caravan disclosure,
+advertised dehumidifier settings, automatic power thresholds and saving,
+matching-reading recording states, and read-only control restrictions in both
+themes at 320, 390 and 1440 px. Commands terminate in synthetic browser fixtures.
 
 The fullscreen suite checks the page controls, chart entry/exit restoration,
 external fullscreen changes and fallback behavior with synthetic data.

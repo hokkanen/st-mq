@@ -12,6 +12,7 @@ const directory=mkdtempSync(join(tmpdir(),'stmq-equipment-browser-'));
 let app, socket, browser, id=0;
 const pending=new Map(),errors=[];
 const garageDoorsOnly=process.argv.includes('--garage-doors');
+const caravanOnly=process.argv.includes('--caravan-only');
 try {
   writeFileSync(join(directory,'options.json'),'{}');
   const config=loadConfig({STMQ_CONFIG:join(directory,'options.json'),STMQ_DATA_DIR:directory,STMQ_PORT:'0',STMQ_INPUT:'simulated'},directory);
@@ -20,7 +21,7 @@ try {
     market:{source:'entsoe',status:'ok',lastSuccessAt:Date.parse('2026-09-07T12:00:00Z')},
     weather:{source:'fmi',status:'ok',lastSuccessAt:Date.parse('2026-09-07T12:00:00Z')}
   });
-  let endpoint=process.argv.slice(2).find(arg=>arg!=='--garage-doors');
+  let endpoint=process.argv.slice(2).find(arg=>!['--garage-doors','--caravan-only'].includes(arg));
   if(!endpoint) {
     const profile=join(directory,'chrome');mkdirSync(profile);
     browser=spawn(process.env.STMQ_CHROME_BIN??'/opt/google/chrome/chrome',['--headless','--no-sandbox','--disable-gpu',
@@ -52,9 +53,9 @@ try {
   await send('Page.navigate',{url:`http://127.0.0.1:${app.server.address().port}/`});
   await until("document.getElementById('updated')?.textContent.startsWith('Updated')");
   mkdirSync('var',{recursive:true});
-  await checkEquipmentBrowser({evaluate,command,context:'cdp',until,garageDoorsOnly});
+  await checkEquipmentBrowser({evaluate,command,context:'cdp',until,garageDoorsOnly,caravanOnly});
   assert.deepEqual(errors,[]);
-  console.log(garageDoorsOnly ? 'Garage door browser checks passed: modal navigation, focus, pending commands, live reports, authority, and both themes at desktop, mobile and landscape sizes.' : 'Equipment browser checks passed: charger phase availability, local OCPP setup placement and keyboard disclosure, flat vehicle feeds with MQTT diagnostics, mocked equipment controls, Caravan layout, DHWR feedback and five responsive viewports.');
+  console.log(caravanOnly ? 'Caravan browser checks passed: supported settings, automatic power drafts and saving, recording states, authority, and both themes at 320/390/1440px.' : garageDoorsOnly ? 'Garage door browser checks passed: modal navigation, focus, pending commands, live reports, authority, and both themes at desktop, mobile and landscape sizes.' : 'Equipment browser checks passed: charger phase availability, local OCPP setup placement and keyboard disclosure, flat vehicle feeds with MQTT diagnostics, mocked equipment controls, Caravan layout, DHWR feedback and five responsive viewports.');
 } finally {
   socket?.close();for(const p of pending.values())clearTimeout(p.timer);await app?.close();
   if(browser&&browser.exitCode===null) {browser.kill();await new Promise(resolve=>browser.once('exit',resolve));}

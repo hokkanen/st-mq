@@ -91,7 +91,7 @@ async function checkFloorPreheatingBrowser({ evaluate, command, context, refresh
 }
 
 /** All device actions below terminate in a browser fixture, never at hardware. */
-export async function checkEquipmentBrowser({ evaluate, command, context, until, garageDoorsOnly = false }) {
+export async function checkEquipmentBrowser({ evaluate, command, context, until, garageDoorsOnly = false, caravanOnly = false }) {
   const settle = () => evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve(true))))');
   const refresh = async () => {
     const count = await evaluate('window.equipmentUiFixture.responses');
@@ -152,6 +152,10 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until,
           fixture.devices.find(device=>device.id===body.deviceId).dehumidifier.operation={...body,status:'published',requestedAt:fixture.now};
           return new Response(JSON.stringify(fixture.response(fixture.base)),{status:200});
         }
+        if(path.endsWith('/dehumidifier/temperature-control')) {
+          Object.assign(fixture.devices.find(device=>device.id===body.deviceId).dehumidifier.temperatureControl,body);
+          return new Response(JSON.stringify(fixture.response(fixture.base)),{status:200});
+        }
         if(path.endsWith('/heating-test')) {fixture.dhwr.active=true;fixture.dhwr.confirmed=false;fixture.dhwr.requestedAt=fixture.now;fixture.dhwr.expiresAt=fixture.now+600000;fixture.heatingResult={command:body.command,sent:true,at:fixture.now,status:'sent'};return new Response(JSON.stringify(fixture.heatingResult),{status:200});}
         if(path.endsWith('/stop')) {fixture.dhwr.active=false;fixture.dhwr.confirmed=false;fixture.dhwr.requestedAt=fixture.now;if(fixture.dhwr.feedback.power) fixture.dhwr.feedback.power.value=0;if(fixture.dhwr.feedback.state){fixture.dhwr.actualOn=false;fixture.dhwr.feedback.state.value=0;}}
         return new Response(JSON.stringify(fixture.response(fixture.base)),{status:200});
@@ -161,6 +165,8 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until,
   })()`);
   try {
     await refresh();
+    const caravan = '#garage-equipment-readings [data-device-id=caravan]';
+    if (!caravanOnly) {
     await checkGarageDoorBrowser({ evaluate, command, context, refresh, settle, until });
     if (garageDoorsOnly) return;
     await checkFloorPreheatingBrowser({ evaluate, command, context, refresh, settle });
@@ -248,7 +254,6 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until,
     assert.equal(await evaluate("document.querySelector('#garage-equipment-readings [data-device-id=door1] .status-detail-label').textContent"), 'Closed');
     assert.equal(await evaluate("document.getElementById('garage-equipment-readings').textContent.includes('By the back wall')"), true);
     assert.equal(await evaluate('window.equipmentUiFixture.calls.length'), 0, 'Monitoring sends no commands');
-    const caravan = '#garage-equipment-readings [data-device-id=caravan]';
     assert.equal(await evaluate(`document.querySelector('${caravan}').tagName`), 'DETAILS');
     assert.equal(await evaluate(`document.querySelector('${caravan}').open`), false, 'Equipment starts as a compact summary');
     assert.equal(await evaluate(`document.querySelector('${caravan} .equipment-device-body').checkVisibility()`), false);
@@ -457,7 +462,9 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until,
       const settings=await command('browsingContext.captureScreenshot',{context,origin:'viewport'});
       writeFileSync(`var/data-settings-${width}.png`,Buffer.from(settings.data,'base64'));
     }
-    // Air and the upcoming appliance belong inside the existing Caravan fold.
+    }
+    await evaluate(`document.getElementById('garage-equipment-details').open=true;document.querySelector('${caravan}').open=true;true`);
+    // Air and the integrated appliance belong inside the existing Caravan fold.
     await evaluate(`(() => { const f=window.equipmentUiFixture, at=f.now;
       const reading=(label,value,unit)=>({label,value,unit,observedAt:at,stale:false});
       f.devices.find(device=>device.id==='caravan').label='Caravan energy';
@@ -467,7 +474,10 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until,
         topics:[{role:'Air readings',topic:'invented/caravan/air/state',direction:'subscribe'}]},
         {id:'caravan_dehumidifier',label:'Caravan dehumidifier',area:'garage',kind:'dehumidifier',source:'MQTT',available:false,
           model:'electriQ DESD8LW',controls:{dehumidifier:true},readings:{},
-          dehumidifier:{available:false,state:{},runningState:null,operation:null},
+          dehumidifier:{available:false,state:{},runningState:null,operation:null,
+            capabilities:{power:['off','on'],targetHumidity:[30,35,40,45,50,55,60,65,70,75,80],fanSpeed:['low','medium','high']},
+            temperatureControl:{configured:true,enabled:true,canEdit:false,offAtC:1,onAtC:2,comparison:'humidity',
+              recording:false,readingsMatch:false,reason:'appliance-unavailable',humidity:63,applianceHumidity:null}},
           topics:[{role:'State',topic:'invented/caravan/dehumidifier/state',direction:'subscribe'}]});
       const response=f.response; f.response=base=>{const next=response(base);next.equipment.topicGroups.push({id:'garage-adapter',
         topics:[{role:'Heat pump',topic:'invented/garage/pump/state',direction:'subscribe'}]});return next;};return true;})()`);
@@ -476,22 +486,27 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until,
     assert.equal(await evaluate("document.querySelectorAll('#home-equipment-readings [data-device-id=blu_ht], #garage-equipment-readings > [data-device-id=blu_ht]').length"), 0);
     assert.match(await evaluate(`document.querySelector('${caravan} .caravan-air-metrics').textContent`), /14.1 °C.*63 %/);
     assert.equal(await evaluate(`document.querySelector('${caravan} .caravan-sensor-details').open`), false);
-    assert.match(await evaluate(`document.querySelector('${appliance}').textContent`), /electriQ DESD8LW.*Awaiting first MQTT report/);
+    assert.match(await evaluate(`document.querySelector('${appliance}').textContent`), /electriQ DESD8LW.*Awaiting first device report/);
     assert.equal(await evaluate(`Array.from(document.querySelectorAll('${appliance} button, ${appliance} select')).every(node=>node.disabled)`), true);
     assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('#equipment-connections [data-connection-area=garage] .equipment-connection-fold')).map(node=>node.dataset.deviceId)"),
       ['connection:garage-adapter:garage','garage-probes','blu_ht','caravan_dehumidifier','caravan','door1','door2','connection:shelly-evse:garage']);
     assert.equal(await evaluate(`document.querySelector('${caravan}').open`), true, 'Adding Caravan devices preserves the open fold');
-    for (const [width,height] of [[1440,1100],[390,1000],[320,900]]) {
+    for (const theme of ['dark','light']) for (const [width,height] of [[1440,1100],[390,1000],[320,900]]) {
+      await evaluate(`document.documentElement.dataset.theme='${theme}';true`);
       await command('browsingContext.setViewport',{context,viewport:{width,height},devicePixelRatio:1}); await settle();
       await evaluate(`document.querySelector('${caravan}').scrollIntoView({block:'start'});true`); await settle();
       assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, `Caravan does not overflow at ${width}px`);
-      assert.equal(await evaluate(`(() => {const card=document.querySelector('${caravan}').getBoundingClientRect();return [...document.querySelectorAll('${appliance} select, ${appliance} button')].every(node=>{const box=node.getBoundingClientRect();return box.left>=card.left&&box.right<=card.right&&box.height>=36;});})()`), true, `Appliance controls fit at ${width}px`);
+      assert.equal(await evaluate(`(() => {const card=document.querySelector('${caravan}').getBoundingClientRect();return [...document.querySelectorAll('${appliance} select, ${appliance} button, ${appliance} input[type=number]')].filter(node=>node.checkVisibility()).every(node=>{const box=node.getBoundingClientRect();return box.left>=card.left&&box.right<=card.right&&box.height>=36;});})()`), true, `Appliance controls fit at ${width}px in ${theme}`);
       const screenshot=await command('browsingContext.captureScreenshot',{context,origin:'viewport'});
-      writeFileSync(`var/caravan-${width}.png`,Buffer.from(screenshot.data,'base64'));
+      writeFileSync(`var/caravan-${theme}-${width}.png`,Buffer.from(screenshot.data,'base64'));
     }
     await evaluate(`(() => {const d=window.equipmentUiFixture.devices.find(d=>d.id==='caravan_dehumidifier');d.available=true;
-      Object.assign(d.dehumidifier,{available:true,state:{power:'off',mode:'auto',targetHumidity:55,fanSpeed:'low',swing:'fixed_90'},runningState:'off'});return true;})()`);
+      Object.assign(d.dehumidifier,{available:true,state:{power:'off',targetHumidity:55,fanSpeed:'low'},runningState:'off'});
+      Object.assign(d.dehumidifier.temperatureControl,{canEdit:true,applianceHumidity:40,reason:'readings-mismatch'});return true;})()`);
     await refresh();
+    assert.equal(await evaluate(`document.querySelector('${appliance} .caravan-setting-mode').checkVisibility()||document.querySelector('${appliance} .caravan-setting-swing').checkVisibility()`), false, 'Unsupported native settings are omitted');
+    assert.match(await evaluate(`document.querySelector('${appliance} .caravan-recording').textContent`), /Recording paused.*Humidity does not match Shelly BLU/);
+    assert.equal(await evaluate(`[...document.querySelectorAll('${appliance} .caravan-power-buttons button')].every(button=>button.disabled)`), true, 'Automatic power owns the power buttons');
     assert.equal(await evaluate(`document.querySelector('${fan}').value`), 'low');
     const dehumidifierCalls = await evaluate('window.equipmentUiFixture.calls.length');
     await evaluate(`document.querySelector('${fan}').value='high';document.querySelector('${fan}').dispatchEvent(new Event('change',{bubbles:true}));true`);
@@ -505,8 +520,26 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until,
     assert.equal(await evaluate(`document.querySelector('${fan}').value`), 'high');
     assert.equal(await evaluate(`document.querySelector('${fan}').disabled`), false);
     assert.match(await evaluate(`document.querySelector('${appliance} .equipment-control-result').textContent`), /device reported/);
+    const policy = `${appliance} .caravan-temperature-control`;
+    await evaluate(`(() => {const input=document.querySelector('${policy} [data-setting=onAtC]');input.value='1.2';input.dispatchEvent(new Event('input',{bubbles:true}));return true;})()`);
+    assert.equal(await evaluate(`document.querySelector('${policy} button').disabled`), true, 'Overlapping hysteresis thresholds cannot be saved');
+    await evaluate(`(() => {const input=document.querySelector('${policy} [data-setting=onAtC]');input.value='3';input.dispatchEvent(new Event('input',{bubbles:true}));return true;})()`);
+    await refresh();
+    assert.equal(await evaluate(`document.querySelector('${policy} [data-setting=onAtC]').value`), '3', 'Polling preserves the threshold draft');
+    const settingsCalls = await evaluate('window.equipmentUiFixture.calls.length');
+    await evaluate(`document.querySelector('${policy} [data-setting=automaticPower]').click();document.querySelector('${policy} button').click();true`);
+    await until(`window.equipmentUiFixture.calls.length===${settingsCalls + 1}`); await settle();
+    assert.deepEqual(await evaluate('window.equipmentUiFixture.calls.at(-1)'),
+      {path:'/api/equipment/dehumidifier/temperature-control',body:{deviceId:'caravan_dehumidifier',enabled:false,offAtC:1,onAtC:3}});
+    assert.equal(await evaluate(`document.querySelector('${appliance} .caravan-power-buttons button:last-child').disabled`), false, 'Disabling automatic power restores native manual controls');
+    for (const [reason,readingsMatch,recording,label] of [['checking-readings',true,false,'Recording paused'],['warm',true,true,'Recording active'],['air-unavailable',false,false,'Recording paused']]) {
+      await evaluate(`Object.assign(window.equipmentUiFixture.devices.find(d=>d.id==='caravan_dehumidifier').dehumidifier.temperatureControl,${JSON.stringify({reason,readingsMatch,recording,applianceHumidity:60})});true`); await refresh();
+      assert.equal(await evaluate(`document.querySelector('${appliance} .caravan-recording strong').textContent`), label);
+      assert.doesNotMatch(await evaluate(`document.querySelector('${appliance} .caravan-recording').textContent`), /inside|outside|located/i);
+    }
     await evaluate("window.equipmentUiFixture.status.role='slave';true"); await refresh();
     assert.equal(await evaluate(`document.querySelector('${fan}').disabled`), true, 'Replica remains read-only');
+    assert.equal(await evaluate(`[...document.querySelectorAll('${policy} input, ${policy} button')].every(node=>node.disabled)`), true, 'Replica cannot edit durable power settings');
     await evaluate("window.equipmentUiFixture.status={};window.equipmentUiFixture.observations={};window.equipmentUiFixture.devices=[];true"); await refresh();
     assert.match(await evaluate("document.getElementById('garage-equipment-readings').textContent"), /No garage devices enabled/);
     assert.equal(await evaluate("document.querySelectorAll('#equipment-connections [data-device-id=caravan], #equipment-connections [data-device-id=garage-probes], #equipment-connections [data-device-id=door1], #equipment-connections [data-device-id=door2]').length"), 0);

@@ -9,6 +9,9 @@ const device = { id: 'caravan_dehumidifier', area: 'garage', kind: 'dehumidifier
   connection: 'mqtt:invented/dehumidifier/state', dehumidifier_control: true,
   mqtt: { command_topic: 'invented/dehumidifier/set', timestamp_path: 'timestamp',
     availability_topic: 'invented/dehumidifier/availability' } };
+const capabilities = { power: ['off', 'on'], mode: ['auto', 'dehumidify', 'heater', 'fan_only'],
+  targetHumidity: Array.from({ length: 11 }, (_, i) => 30 + i * 5), fanSpeed: ['low', 'medium', 'high', 'auto'],
+  swing: ['fixed_90', 'fixed_45', 'oscillate'] };
 const defaults = { power: 'off', mode: 'auto', targetHumidity: 55, fanSpeed: 'low', swing: 'fixed_90' };
 function fixture(t, options = {}) {
   const store = new Store(':memory:'), observations = [], publications = [];
@@ -19,7 +22,7 @@ function fixture(t, options = {}) {
     publish: async (topic, payload, options) => { publications.push({ topic, payload, options }); }, ...options });
   t.after(() => { capture.close(); store.close(); });
   const rawReport = (state, at = now, retain = false) => capture.receive('invented/dehumidifier/state',
-    JSON.stringify({ ...state, timestamp: new Date(at).toISOString() }), { retain });
+    JSON.stringify({ identity: 'a'.repeat(64), capabilities, ...state, timestamp: new Date(at).toISOString() }), { retain });
   capture.setConnected(true); capture.confirmSubscriptions(capture.topics);
   return { capture, observations, publications, rawReport,
     report: (state = {}, at = now, retain = false) => rawReport({ ...defaults, ...state }, at, retain),
@@ -106,7 +109,7 @@ test('setting requests enforce supported values, authority and explicit field se
     { deviceId: device.id, setting: ['power'], value: 'on' },
     { deviceId: device.id, setting: 'power', value: true },
     { deviceId: device.id, setting: 'power', value: 'on', topic: 'invented/arbitrary' },
-    ...[30, 36, 81, '55'].map(value => ({ deviceId: device.id, setting: 'targetHumidity', value })),
+    ...[25, 36, 81, '55'].map(value => ({ deviceId: device.id, setting: 'targetHumidity', value })),
     { deviceId: device.id, setting: 'mode', value: 'cool' },
     { deviceId: device.id, setting: 'fanSpeed', value: 'off' },
     { deviceId: device.id, setting: 'swing', value: '90' }])
@@ -117,7 +120,8 @@ test('setting requests enforce supported values, authority and explicit field se
   for (const [setting, value] of [['power', 'on'], ['mode', 'heater'], ['targetHumidity', 80], ['fanSpeed', 'auto'], ['swing', 'fixed_45']]) {
     const previous = f.status().dehumidifier.state;
     await f.command(setting, value);
-    assert.deepEqual(f.publications.at(-1), { topic: device.mqtt.command_topic, payload: JSON.stringify({ [setting]: value }),
+    assert.deepEqual(f.publications.at(-1), { topic: device.mqtt.command_topic, payload: JSON.stringify({ [setting]: value, identity: 'a'.repeat(64), requestedAt: f.status().dehumidifier.operation.requestedAt,
+      expiresAt: f.status().dehumidifier.operation.requestedAt + 10_000 }),
       options: { qos: 1, retain: false, noReplay: true } });
     assert.deepEqual(f.status().dehumidifier.state, previous, 'Broker publications do not change reported settings');
     await assert.rejects(f.command('power', 'off'), /in progress/);
@@ -180,4 +184,48 @@ test('telemetry arriving during publication confirms only after broker acknowled
   assert.equal(f.status().dehumidifier.operation.status, 'publishing');
   acknowledge(); const result = await pending;
   assert.equal(result.confirmed, true); assert.equal(f.status().dehumidifier.operation.status, 'observed');
+});
+
+test('native capabilities alone authorize settings, including 30% and excluding unsupported modes or Auto fan', async t => {
+  const f = fixture(t); f.online();
+  const native = { power: ['off', 'on'], targetHumidity: [30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80],
+    fanSpeed: ['low', 'medium', 'high'] };
+  f.report({ capabilities: native });
+  assert.deepEqual(f.status().dehumidifier.capabilities, native);
+  for (const [setting, value] of [['mode', 'auto'], ['swing', 'fixed_90'], ['fanSpeed', 'auto']])
+    await assert.rejects(f.command(setting, value), /advertised/);
+  await f.command('targetHumidity', 30);
+  assert.equal(JSON.parse(f.publications.at(-1).payload).targetHumidity, 30);
+  f.advance(1000); f.report({ targetHumidity: 30, capabilities: native });
+  for (const invalid of [undefined, null, [], { power: ['on', 'on'] }, { power: ['on', 'invalid'] },
+    { arbitraryService: ['start'] }, { power: ['off', 'on'], fanSpeed: [] }]) {
+    f.advance(1000); f.report({ capabilities: invalid });
+    assert.deepEqual(f.status().dehumidifier.capabilities, {});
+    await assert.rejects(f.command('power', 'on'), /advertised/);
+  }
+});
+
+test('independent setting clocks govern command confirmation even when another field has a newer report', async t => {
+  const f = fixture(t); f.online(); f.report();
+  f.advance(1000); await f.command('targetHumidity', 70);
+  f.advance(1000); f.report({ targetHumidity: 70,
+    fieldTimestamps: { power: INITIAL + 2000, targetHumidity: INITIAL + 500, fanSpeed: INITIAL + 2000 } });
+  assert.equal(f.status().dehumidifier.state.targetHumidity, 70);
+  assert.equal(f.status().dehumidifier.operation.status, 'published');
+  f.advance(1000); f.report({ targetHumidity: 70,
+    fieldTimestamps: { power: INITIAL + 3000, targetHumidity: INITIAL + 3000, fanSpeed: INITIAL + 3000 } });
+  assert.equal(f.status().dehumidifier.operation.status, 'observed');
+  assert.equal(f.status().dehumidifier.operation.observedAt, INITIAL + 3000);
+});
+
+test('a later fan or humidity report cannot extend an old power observation deadline', async t => {
+  const f = fixture(t); f.online(); f.report({ power: 'on' });
+  f.advance(110_000); f.report({ power: 'on', humidity: 50,
+    fieldTimestamps: { power: INITIAL, fanSpeed: INITIAL + 110_000, humidity: INITIAL + 110_000 } });
+  assert.equal(f.status().available, true);
+  assert.equal(f.observations.at(-1).raw.reportIntervalMs, 10_000);
+  assert.equal(f.observations.at(-1).raw.fieldTimestamps.power, INITIAL);
+  f.advance(10_000); f.capture.tick();
+  assert.equal(f.status().available, false);
+  await assert.rejects(f.command('power', 'off'), /unavailable/);
 });

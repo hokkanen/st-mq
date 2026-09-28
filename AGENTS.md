@@ -211,6 +211,11 @@ permission to act. See [the configuration guide](docs/configuration.md).
   effect visible. Historical records, restoration obligations, commissioning and
   pairing state are not configuration defaults; preserve their appropriate
   persistence and safety duties.
+- Caravan dehumidifier Automatic power and its OFF/ON thresholds are durable
+  dashboard control choices bound to the appliance and comparison-sensor
+  connection. Configuration owns the wiring, not replacement threshold defaults.
+  Disabling automatic power does not disable the independent recording evidence
+  gate or grant authority to stale device/sensor observations.
 - Ordinary heat-pump parameter edits are persistent device commands. Read the
   actual settings from the pump; do not impose an application expiry or mirror
   readable native settings into controller configuration. Successful edits

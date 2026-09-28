@@ -15,6 +15,7 @@ import { loadConfig, validateSettings } from '../src/app/config.js';
 import { start } from '../src/main.js';
 import { CONTROL_SCOPE } from '../src/control/authority.js';
 import { idleIdentityClient, identityConnection } from './helpers/identity-mqtt.js';
+import { bluHtEquipment } from '../integrations/shelly/blu-ht.js';
 
 const INITIAL = Date.parse('2026-09-13T10:00:00Z');
 const KEY = 'equipment-tests:v1', TOKEN = 'synthetic-equipment-api-access-token';
@@ -24,6 +25,7 @@ const ROUTES = [
   ['/api/equipment/switch', { deviceId: 'caravan', on: true }], ['/api/equipment/h66', { register: '0203', value: 21 }],
   ['/api/equipment/cover', { deviceId: 'garage_door1', action: 'open' }],
   ['/api/equipment/dehumidifier', { deviceId: 'caravan_dehumidifier', setting: 'power', value: 'on' }],
+  ['/api/equipment/dehumidifier/temperature-control', { deviceId: 'caravan_dehumidifier', enabled: false }],
 ];
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
@@ -331,7 +333,9 @@ test('dehumidifier HTTP controls wait for live MQTT feedback and expose confirme
   const command = { deviceId: 'caravan_dehumidifier', setting: 'targetHumidity', value: 60 }, client = f.mqtt.clients[0];
   assert.equal((await f.post('/api/equipment/dehumidifier', command)).status, 400);
   const report = (targetHumidity, timestamp) => client.emit('message', 'invented-dehumidifier/state', Buffer.from(JSON.stringify({
+    identity: 'a'.repeat(64),
     power: 'off', mode: 'auto', targetHumidity, fanSpeed: 'low', swing: 'fixed_90', timestamp: new Date(timestamp).toISOString(),
+    capabilities: { power: ['off', 'on'], targetHumidity: [55, 60], fanSpeed: ['low'] },
   })), { retain: false });
   report(55, INITIAL); client.emit('message', 'invented-dehumidifier/online', Buffer.from('online'), { retain: false });
   f.mqtt.events.length = 0;
@@ -342,11 +346,38 @@ test('dehumidifier HTTP controls wait for live MQTT feedback and expose confirme
   assert.equal(changed.body.equipment.devices[0].dehumidifier.operation.status, 'published');
   assert.equal((await f.post('/api/equipment/dehumidifier', command)).status, 400);
   assert.deepEqual(f.mqtt.events.filter(row => row.type === 'publish').map(row => ({ topic: row.topic, payload: row.payload, options: row.publication })),
-    [{ topic: 'invented-dehumidifier/set', payload: '{"targetHumidity":60}', options: { qos: 1, retain: false } }]);
+    [{ topic: 'invented-dehumidifier/set', payload: JSON.stringify({ targetHumidity: 60, identity: 'a'.repeat(64), requestedAt: INITIAL, expiresAt: INITIAL + 10_000 }), options: { qos: 1, retain: false } }]);
   f.advance(1000); report(60, INITIAL + 1000);
   assert.equal(f.app.engine.status().equipment.devices[0].dehumidifier.operation.status, 'observed');
   client.emit('message', 'invented-dehumidifier/online', Buffer.from('offline'), { retain: false });
   assert.equal((await f.post('/api/equipment/dehumidifier', { ...command, setting: 'power', value: 'on' })).status, 400);
+});
+
+test('dehumidifier automatic power choices are editable without device feedback and do not write configuration', async t => {
+  const f = await runtimeFixture(t, [bluHtEquipment({ prefix: 'invented/air' }), {
+    id: 'caravan_dehumidifier', area: 'garage', kind: 'dehumidifier',
+    connection: 'mqtt:invented-dehumidifier/state', dehumidifier_control: true,
+    temperature_control: { sensor_device_id: 'blu_ht' },
+    mqtt: { command_topic: 'invented-dehumidifier/set', timestamp_path: 'timestamp', availability_topic: 'invented-dehumidifier/online' },
+  }]);
+  const route = '/api/equipment/dehumidifier/temperature-control';
+  for (const invalid of [null, {}, { deviceId: 'unknown', enabled: false },
+    { deviceId: 'caravan_dehumidifier', offAtC: 3, onAtC: 2 },
+    { deviceId: 'caravan_dehumidifier', enabled: 'false' },
+    { deviceId: 'caravan_dehumidifier', enabled: false, topic: 'invented/other' }])
+    assert.equal((await f.post(route, invalid)).status, 400);
+  const client = f.mqtt.clients[0];
+  client.emit('message', 'invented-dehumidifier/state', Buffer.from(JSON.stringify({ identity: 'a'.repeat(64),
+    power: 'off', fanSpeed: 'low', humidity: 50, timestamp: INITIAL,
+    capabilities: { power: ['off', 'on'], fanSpeed: ['low'] },
+  })), { retain: false });
+  client.emit('message', 'invented-dehumidifier/online', Buffer.from('offline'), { retain: false });
+  const changed = await f.post(route, { deviceId: 'caravan_dehumidifier', enabled: false, offAtC: 1.5, onAtC: 3 });
+  assert.equal(changed.status, 200);
+  const policy = changed.body.equipment.devices.find(row => row.id === 'caravan_dehumidifier').dehumidifier.temperatureControl;
+  assert.equal(policy.enabled, false); assert.equal(policy.offAtC, 1.5); assert.equal(policy.onAtC, 3);
+  assert.equal(policy.recording, false);
+  assert.equal(f.mqtt.events.filter(row => row.type === 'publish' && row.topic.endsWith('/set')).length, 0);
 });
 
 test('configuration reload confirms restoration through the old route before closing it and subscribing to the new route', async t => {

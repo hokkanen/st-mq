@@ -633,6 +633,11 @@ export class Engine {
     await this.equipment.setDehumidifier(input);
     return this.status();
   }
+  async dehumidifierTemperatureControl(input) {
+    if (!this.equipment?.setDehumidifierTemperatureControl) throw new Error('Dehumidifier temperature control is unavailable.');
+    await this.equipment.setDehumidifierTemperatureControl(input);
+    return this.status();
+  }
   async recheckEquipment(input = {}) {
     if (!input || typeof input !== 'object' || Array.isArray(input)
       || Object.keys(input).some(key => key !== 'deviceId')

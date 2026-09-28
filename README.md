@@ -69,8 +69,9 @@ Home and Garage equipment uses explicit `shelly:<prefix>` or `mqtt:<state topic>
 connections, with public topic defaults and private broker credentials. See
 [MQTT equipment and device setup](docs/mqtt-equipment.md) for garage probes, doors,
 Caravan metering, air monitoring, connection checks and timed switch tests.
-The [Caravan dehumidifier](docs/caravan-dehumidifier.md) has MQTT controls ready
-for its future bridge and records one combined power/fan state. Independent MQTT feeds
+The [Caravan dehumidifier](docs/caravan-dehumidifier.md) uses a Home Assistant MQTT bridge, shows only advertised native controls, and
+records one combined power/fan state after fresh humidity agrees with Shelly BLU.
+Automatic power and its OFF/ON thresholds are saved dashboard choices. Independent MQTT feeds
 remain separate; ST-MQ never guesses a protocol or switches sources automatically.
 
 See [indoor temperatures and sensor changes](docs/temperature-sensors.md) for the

@@ -21,14 +21,28 @@ const fail = message => new Error(`Equipment ${message}`);
 const DEHUMIDIFIER_SETTINGS = {
   power: ['off', 'on'], mode: ['auto', 'dehumidify', 'heater', 'fan_only'],
   fanSpeed: ['low', 'medium', 'high', 'auto'], swing: ['fixed_90', 'fixed_45', 'oscillate'],
-  targetHumidity: Array.from({ length: 10 }, (_, index) => 35 + index * 5),
+  targetHumidity: Array.from({ length: 11 }, (_, index) => 30 + index * 5),
 };
 const RUNNING_STATES = ['off', 'low', 'medium', 'high', 'auto'];
 const runningStateLabels = Object.fromEntries(RUNNING_STATES.map((state, index) => [index, state[0].toUpperCase() + state.slice(1)]));
 const dehumidifierState = input => Object.fromEntries(Object.entries(DEHUMIDIFIER_SETTINGS)
   .map(([key, allowed]) => [key, allowed.includes(input?.[key]) ? input[key] : null]));
+function dehumidifierCapabilities(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)
+    || Object.entries(input).some(([key, values]) => !Object.hasOwn(DEHUMIDIFIER_SETTINGS, key)
+      || !Array.isArray(values) || !values.length || new Set(values).size !== values.length
+      || values.some(value => !DEHUMIDIFIER_SETTINGS[key].includes(value)))) return {};
+  return Object.fromEntries(Object.entries(input).map(([key, values]) => [key, [...values]]));
+}
 const dehumidifierMetadata = (device, value) => ({ stateLabels: runningStateLabels, runningState: RUNNING_STATES[value] ?? null,
   maxAgeMs: device.maxAgeMs, reportIntervalMs: device.maxAgeMs, reportGraceMs: 0 });
+const defaultTemperatureControl = { enabled: true, offAtC: 1, onAtC: 2 };
+const validDehumidifierIdentity = identity => typeof identity === 'string' && /^[a-f0-9]{64}$/.test(identity);
+const validTemperatureControl = value => value && typeof value === 'object' && !Array.isArray(value)
+  && Object.keys(value).length === 3 && Object.keys(value).every(key => Object.hasOwn(defaultTemperatureControl, key))
+  && typeof value.enabled === 'boolean' && [value.offAtC, value.onAtC].every(temperature => scalar(temperature)
+    && temperature >= -10 && temperature <= 30 && Math.abs(temperature * 10 - Math.round(temperature * 10)) < 1e-8)
+  && value.onAtC - value.offAtC >= 0.5 - 1e-8;
 
 /** One broker, explicit per-device protocol selection, independent capabilities.
  * Event-only contacts preserve last-reported values without inventing heartbeats. */
@@ -48,7 +62,9 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     online: null, bridgeOnline: null, liveSinceConnect: false, lastAt: null, heartbeatAt: null, waiters: new Set(), checks: new Set(), check: null, invalid: false,
     subscriptionStatus: 'unconfirmed', subscriptionRefresh: null, lastReceivedAt: null, lastLiveAt: null, lastRetainedAt: null,
     coverOperation: null, dehumidifierState: dehumidifierState(null), dehumidifierReport: null, dehumidifierOperation: null,
-    temperatureGuard: { demand: false, managed: false, lastAttemptAt: null, lastAttemptPower: null }, recordingLocation: false }));
+    temperatureGuard: { settings: { ...defaultTemperatureControl }, demand: false, managed: false,
+      lastAttemptAt: null, lastAttemptPower: null, recordingSince: null,
+      matchingSince: null, matchedAirAt: null, matchedApplianceAt: null, qualified: false, boundIdentity: null }, recordingLocation: false }));
   const admission = createMqttAdmission();
   const brokerDigest = createHash('sha256').update(JSON.stringify(brokerIdentity)).digest('hex');
   const temperatures = devices.filter(canonicalTemperature);
@@ -152,9 +168,20 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     && (!age(device) || now - reading.observedAt < age(device))
     && !reading.quality?.some(flag => /invalid|missing|retained|stale|future|disconnected|offline|unavailable/.test(flag)));
   const availabilityConfirmed = device => device.bridgeOnline !== false && (!device.mqtt.availabilityTopic || device.online === true);
+  const fieldFresh = (device, field, now) => {
+    const at = device.dehumidifierReport?.fieldTimestamps[field];
+    return scalar(at) && at >= 0 && at <= now && now - at < device.maxAgeMs;
+  };
+  const powerFeedbackReady = (device, now) => connected && !closed && device.liveSinceConnect && availabilityConfirmed(device)
+    && device.subscriptionStatus === 'subscribed' && validDehumidifierIdentity(device.dehumidifierReport?.identity)
+    && fieldFresh(device, 'power', now) && ['on', 'off'].includes(device.dehumidifierState.power)
+    && (!device.mqtt.heartbeatMs || scalar(device.heartbeatAt) && now - device.heartbeatAt <= device.mqtt.heartbeatMs);
   const healthy = (device, now) => connected && device.liveSinceConnect && availabilityConfirmed(device) && !device.invalid
     && !['failed', 'disconnected'].includes(device.subscriptionStatus)
-    && (device.kind !== 'dehumidifier' || device.subscriptionStatus === 'subscribed')
+    && (device.kind !== 'dehumidifier' || device.subscriptionStatus === 'subscribed'
+      && validDehumidifierIdentity(device.dehumidifierReport?.identity))
+    && (device.kind !== 'dehumidifier' || fieldFresh(device, 'power', now)
+      && (device.dehumidifierState.power === 'off' || fieldFresh(device, 'fanSpeed', now)))
     && (!device.mqtt.heartbeatMs || scalar(device.heartbeatAt) && now - device.heartbeatAt <= device.mqtt.heartbeatMs)
     && definitions(device).filter(row => row.required).every(definition => fresh(device, device.readings[definition.signal], now));
   function temperatureGuardStatus(device, now) {
@@ -164,46 +191,89 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     const report = device.dehumidifierReport;
     const airFresh = sensor && healthy(sensor, now) && fresh(sensor, air, now) && fresh(sensor, humidity, now)
       && humidity.value >= 0 && humidity.value <= 100;
-    const colocated = Boolean(airFresh && healthy(device, now) && scalar(report?.temperature)
-      && report.temperature >= -60 && report.temperature <= 70 && scalar(report.humidity)
-      && report.humidity >= 0 && report.humidity <= 100
-      && Math.abs(air.value - report.temperature) <= 4 && Math.abs(humidity.value - report.humidity) <= 20);
-    return { enabled: true, sensorDeviceId: device.temperatureControl.sensorDeviceId,
-      offAtC: 1, onAtC: 2, temperatureC: airFresh ? air.value : null, colocated,
-      recording: colocated, desiredPower: device.temperatureGuard.demand ? 'on' : 'off',
+    const temperatureCompared = report?.temperature !== null && report?.temperature !== undefined;
+    const identityKnown = validDehumidifierIdentity(report?.identity);
+    const applianceReadingsFresh = identityKnown && healthy(device, now) && fieldFresh(device, 'humidity', now)
+      && scalar(report?.humidity) && report.humidity >= 0 && report.humidity <= 100
+      && (!temperatureCompared || fieldFresh(device, 'temperature', now) && scalar(report.temperature)
+        && report.temperature >= -60 && report.temperature <= 70);
+    const readingsMatch = Boolean(airFresh && applianceReadingsFresh
+      && (!temperatureCompared || Math.abs(air.value - report.temperature) <= 4)
+      && Math.abs(humidity.value - report.humidity) <= 10);
+    const policy = device.temperatureGuard.settings;
+    return { configured: true, ...policy, canEdit: !closed && canControl() && validDehumidifierIdentity(device.temperatureGuard.boundIdentity),
+      sensorDeviceId: device.temperatureControl.sensorDeviceId,
+      temperatureC: airFresh ? air.value : null, humidity: airFresh ? humidity.value : null,
+      applianceTemperatureC: fieldFresh(device, 'temperature', now) && scalar(report?.temperature) ? report.temperature : null,
+      applianceHumidity: fieldFresh(device, 'humidity', now) && scalar(report?.humidity) ? report.humidity : null,
+      comparison: temperatureCompared ? 'temperature-humidity' : 'humidity',
+      maxTemperatureDifferenceC: 4, maxHumidityDifference: 10, readingsMatch,
+      qualified: readingsMatch && device.temperatureGuard.qualified,
+      matchingForMs: readingsMatch && scalar(device.temperatureGuard.matchingSince) ? now - device.temperatureGuard.matchingSince : 0,
+      requiredMatchingMs: 120_000,
+      recording: readingsMatch && device.temperatureGuard.qualified && device.record !== false && scalar(device.temperatureGuard.recordingSince)
+        && device.readings[device.stateSignal].observedAt >= device.temperatureGuard.recordingSince,
+      desiredPower: policy.enabled ? device.temperatureGuard.demand ? 'on' : 'off' : null,
       reason: !healthy(device, now) ? 'appliance-unavailable' : !airFresh ? 'air-unavailable'
-        : !colocated ? 'location-unconfirmed' : air.value <= 1 ? 'cold' : air.value >= 2 ? 'warm' : 'hysteresis' };
+        : !identityKnown ? 'identity-unavailable' : !applianceReadingsFresh ? 'appliance-readings-unavailable' : !readingsMatch ? 'readings-mismatch'
+          : !device.temperatureGuard.qualified ? 'checking-readings' : !policy.enabled ? 'disabled'
+          : air.value <= policy.offAtC ? 'cold' : air.value >= policy.onAtC ? 'warm' : 'hysteresis' };
   }
   function recordDehumidifierLocation(device, now) {
     const location = temperatureGuardStatus(device, now);
     if (!location) return true;
-    if (!location.colocated && device.recordingLocation) {
-      engine.ingest({ ...identity(device), signal: device.stateSignal, value: null, unit: 'state',
+    const state = device.temperatureGuard;
+    if (!location.readingsMatch) {
+      state.matchingSince = null; state.matchedAirAt = null; state.matchedApplianceAt = null; state.qualified = false;
+    } else {
+      const sensor = devices.find(row => row.id === device.temperatureControl.sensorDeviceId);
+      const airAt = Math.min(sensor.readings.caravan_temperature.observedAt, sensor.readings.caravan_humidity.observedAt);
+      const applianceAt = device.dehumidifierReport.fieldTimestamps.humidity;
+      if (state.matchingSince === null) state.matchingSince = now;
+      if (state.matchedAirAt === null || airAt > state.matchedAirAt && applianceAt > state.matchedApplianceAt) {
+        if (state.matchedAirAt !== null && now - state.matchingSince >= 120_000) state.qualified = true;
+        state.matchedAirAt = airAt; state.matchedApplianceAt = applianceAt;
+      }
+    }
+    const qualified = location.readingsMatch && state.qualified;
+    if (!qualified && device.recordingLocation) {
+      if (device.record !== false) engine.ingest({ ...identity(device), signal: device.stateSignal, value: null, unit: 'state',
         sourceTime: null, receivedAt: now, quality: ['location-unconfirmed'],
         raw: { timeBasis: 'availability-transition', ...dehumidifierMetadata(device, null) } });
       if (device.readings[device.stateSignal]) device.readings[device.stateSignal].availabilityConfirmed = false;
     }
-    device.recordingLocation = location.colocated;
-    return location.colocated;
+    if (!qualified) state.recordingSince = null;
+    else if (!device.recordingLocation) state.recordingSince = now;
+    device.recordingLocation = qualified;
+    // After a mismatch, only a new appliance observation may resume history.
+    // A later BLU reading cannot move an old appliance sample past the gap.
+    return qualified && device.readings[device.stateSignal].observedAt >= state.recordingSince;
   }
   function controlTemperature(device, now) {
     const guard = temperatureGuardStatus(device, now);
-    if (!guard) return;
+    if (!guard?.enabled) return;
     const state = device.temperatureGuard;
-    if (guard.colocated) {
-      state.managed = true;
+    if (guard.qualified) {
+      if (!closed && canControl()) state.managed = true;
       if (guard.temperatureC <= guard.offAtC) state.demand = false;
       else if (guard.temperatureC >= guard.onAtC) state.demand = true;
     } else state.demand = false;
     // Loss of room evidence stops an appliance previously managed here. A
     // newly discovered appliance elsewhere receives no commands.
-    if (!state.managed || !healthy(device, now) || !canControl() || closed
-      || ['publishing', 'published'].includes(device.dehumidifierOperation?.status)) return;
     const value = state.demand ? 'on' : 'off';
-    if (device.dehumidifierState.power === value || state.lastAttemptPower === value
+    if (!state.managed || !(value === 'off' ? powerFeedbackReady(device, now) : healthy(device, now)) || !canControl() || closed) return;
+    const operation = device.dehumidifierOperation;
+    const pending = ['publishing', 'published'].includes(operation?.status);
+    const uncertainOn = operation?.setting === 'power' && operation.value === 'on' && operation.status !== 'observed';
+    if (pending && (value !== 'off' || operation.setting === 'power' && operation.value === 'off')) return;
+    if (device.dehumidifierState.power === value && !(value === 'off' && uncertainOn) || state.lastAttemptPower === value
       && state.lastAttemptAt !== null && now - state.lastAttemptAt < 30_000) return;
     state.lastAttemptAt = now; state.lastAttemptPower = value;
-    reception.afterCommit(() => { void commandDehumidifier(device, 'power', value, 'temperature').catch(() => {}); });
+    reception.afterCommit(() => {
+      const current = temperatureGuardStatus(device, engine.clock());
+      if (!current?.enabled || value === 'on' && (!current.qualified || !device.temperatureGuard.demand)) return;
+      void commandDehumidifier(device, 'power', value, 'temperature').catch(() => {});
+    });
   }
   function confirmDoor(device, now) {
     if (device.kind !== 'door' || !healthy(device, now)) return;
@@ -234,19 +304,30 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     if (located && !reading.availabilityConfirmed) {
       reading.availabilityConfirmed = true;
       const sensor = devices.find(row => row.id === device.temperatureControl?.sensorDeviceId);
+      const report = device.dehumidifierReport;
+      const applianceDeadline = Math.min(...['power', ...(device.dehumidifierState.power === 'on' ? ['fanSpeed'] : [])]
+        .map(field => report.fieldTimestamps[field] + device.maxAgeMs));
       const locationDeadline = sensor ? Math.min(...['caravan_temperature', 'caravan_humidity']
-        .map(signal => sensor.readings[signal].observedAt + age(sensor)), reading.observedAt + device.maxAgeMs) : null;
+        .map(signal => sensor.readings[signal].observedAt + age(sensor)), applianceDeadline,
+        report.fieldTimestamps.humidity + device.maxAgeMs,
+        ...(report.temperature === null || report.temperature === undefined ? [] : [report.fieldTimestamps.temperature + device.maxAgeMs])) : applianceDeadline;
       if (device.record !== false) engine.ingest({ ...identity(device), signal: device.stateSignal, value: reading.value,
         unit: reading.unit, sourceTime: reading.observedAt, receivedAt: now, quality: reading.quality,
         raw: { timeBasis: 'mqtt-live-status', ...dehumidifierMetadata(device, reading.value), availabilityConfirmed: true,
-          ...(locationDeadline === null ? {} : { reportIntervalMs: locationDeadline - reading.observedAt,
-            colocated: true, sensorDeviceId: sensor.id }) } });
+          identity: report.identity, fieldTimestamps: { ...report.fieldTimestamps },
+          reportIntervalMs: locationDeadline - reading.observedAt,
+          ...(sensor ? { readingsMatch: true, sensorDeviceId: sensor.id,
+            airObservedAt: sensor.readings.caravan_temperature.observedAt,
+            humidityObservedAt: sensor.readings.caravan_humidity.observedAt,
+            applianceHumidityObservedAt: report.fieldTimestamps.humidity } : {}) } });
     }
     const operation = device.dehumidifierOperation, report = device.dehumidifierReport;
     if (!operation || operation.status === 'observed' || !report
-      || report.receivedAt < operation.requestedAt || report.observedAt < operation.requestedAt
+      || report.identity !== operation.identity
+      || report.receivedAt < operation.requestedAt || !fieldFresh(device, operation.setting, now)
+      || report.fieldTimestamps[operation.setting] < operation.requestedAt
       || device.dehumidifierState[operation.setting] !== operation.value) return;
-    operation.observedAt = report.observedAt;
+    operation.observedAt = report.fieldTimestamps[operation.setting];
     if (operation.acknowledgedAt !== undefined) { operation.status = 'observed'; delete operation.error; }
   }
   function signature(id) {
@@ -254,6 +335,19 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     if (!config) return null;
     const target = config.protocol === 'shelly' ? native.signature(id) : equipmentSignature(config);
     return target ? createHash('sha256').update(`${brokerDigest}:${target}`).digest('hex') : null;
+  }
+  const temperatureControlKey = device => `equipment:dehumidifier-temperature-control:v1:${device.id}`;
+  const temperatureControlSignature = device => createHash('sha256').update(JSON.stringify({
+    appliance: signature(device.id), sensorDeviceId: device.temperatureControl.sensorDeviceId,
+    sensor: signature(device.temperatureControl.sensorDeviceId) })).digest('hex');
+  for (const device of devices.filter(row => row.temperatureControl)) {
+    const saved = store.getState?.(temperatureControlKey(device));
+    if (saved?.signature !== temperatureControlSignature(device)) continue;
+    if (!validTemperatureControl(saved.settings) || !validDehumidifierIdentity(saved.identity)
+      || Object.keys(saved).some(key => !['signature', 'identity', 'settings'].includes(key)))
+      throw fail('saved dehumidifier temperature control is invalid');
+    device.temperatureGuard.settings = { ...saved.settings };
+    device.temperatureGuard.boundIdentity = saved.identity;
   }
   for (const device of devices.filter(row => row.kind === 'door')) {
     const saved = store.getState?.(`equipment:door:v1:${device.id}`);
@@ -307,23 +401,54 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     if (invalidTime) { unavailable(device, 'invalid-source-time', receivedAt); return; }
     let updated = false, invalid = false; const reported = new Set();
     if (device.kind === 'dehumidifier') {
-      if (device.dehumidifierReport && at < device.dehumidifierReport.observedAt) return;
+      const snapshot = mapping.statePath ? property(input, mapping.statePath) : input;
+      const physicalIdentity = validDehumidifierIdentity(snapshot?.identity) ? snapshot.identity : null;
+      if (!physicalIdentity) { unavailable(device, 'invalid-device-identity', receivedAt); completeChecks(device, receivedAt); return; }
+      if (device.dehumidifierReport && (at < device.dehumidifierReport.observedAt
+        || at === device.dehumidifierReport.observedAt && physicalIdentity !== device.dehumidifierReport.identity)) return;
+      const previousIdentity = device.temperatureGuard.boundIdentity;
+      if (physicalIdentity && physicalIdentity !== previousIdentity) {
+        if (previousIdentity) {
+          unavailable(device, 'device-replaced', receivedAt);
+          device.dehumidifierReport = null; device.dehumidifierState = dehumidifierState(null); device.dehumidifierOperation = null;
+          Object.assign(device.temperatureGuard, { settings: { ...defaultTemperatureControl }, demand: false, managed: false,
+            lastAttemptAt: null, lastAttemptPower: null, recordingSince: null,
+            matchingSince: null, matchedAirAt: null, matchedApplianceAt: null, qualified: false });
+          device.recordingLocation = false;
+        }
+        device.temperatureGuard.boundIdentity = physicalIdentity;
+        if (device.temperatureControl) store.setState(temperatureControlKey(device), {
+          signature: temperatureControlSignature(device), identity: physicalIdentity, settings: device.temperatureGuard.settings });
+      }
       // Each report is a complete snapshot. Never combine a new power value
       // with a fan setting left over from an older message.
       const state = dehumidifierState(mapping.statePath ? property(input, mapping.statePath) : input);
       const reportedSnapshot = mapping.statePath ? property(input, mapping.statePath) : input;
-      if (at === device.dehumidifierReport?.observedAt && (JSON.stringify(state) !== JSON.stringify(device.dehumidifierState)
-        || reportedSnapshot?.temperature !== device.dehumidifierReport.temperature || reportedSnapshot?.humidity !== device.dehumidifierReport.humidity)) return;
+      const capabilities = dehumidifierCapabilities(reportedSnapshot?.capabilities);
+      const fieldTimestamps = Object.fromEntries([...Object.keys(DEHUMIDIFIER_SETTINGS), 'temperature', 'humidity'].map(field => {
+        const clock = reportedSnapshot?.fieldTimestamps === undefined ? at : sourceTime(reportedSnapshot.fieldTimestamps?.[field]);
+        return [field, scalar(clock) && clock >= 0 && clock <= at ? clock : null];
+      }));
+      const prior = device.dehumidifierReport;
+      if (prior && Object.keys(fieldTimestamps).some(field => {
+        const previousAt = prior.fieldTimestamps[field], incomingAt = fieldTimestamps[field];
+        const previousValue = Object.hasOwn(DEHUMIDIFIER_SETTINGS, field) ? device.dehumidifierState[field] : prior[field];
+        const incomingValue = Object.hasOwn(DEHUMIDIFIER_SETTINGS, field) ? state[field] : reportedSnapshot?.[field];
+        return scalar(incomingAt) && scalar(previousAt) && (incomingAt < previousAt
+          || incomingAt === previousAt && incomingValue !== previousValue);
+      })) return;
+      if (at === prior?.observedAt && JSON.stringify(capabilities) !== JSON.stringify(prior.capabilities)) return;
       const runningState = state.power === 'off' ? 'off' : state.power === 'on' ? state.fanSpeed : null;
       const value = runningState === null ? null : RUNNING_STATES.indexOf(runningState);
       const definition = definitions(device)[0];
-      const stale = receivedAt - at >= device.maxAgeMs;
+      const stateFields = ['power', ...(state.power === 'on' ? ['fanSpeed'] : [])];
+      const stale = stateFields.some(field => fieldTimestamps[field] === null || receivedAt - fieldTimestamps[field] >= device.maxAgeMs);
       updated = record(device, definition, stale ? null : value, at, receivedAt,
         stale ? ['stale-report'] : value === null ? ['invalid-value'] : []);
       if (updated) {
         const report = mapping.statePath ? property(input, mapping.statePath) : input;
         device.dehumidifierState = state; device.dehumidifierReport = { observedAt: at, receivedAt,
-          temperature: report?.temperature, humidity: report?.humidity };
+          temperature: report?.temperature, humidity: report?.humidity, capabilities, fieldTimestamps, identity: physicalIdentity };
         reported.add(definition.signal);
       }
       invalid = stale || value === null;
@@ -417,13 +542,25 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     return { confirmed: true, status: 'confirmed', deviceId: device.id, on, sent: true, acknowledgement: 'mqtt-live-state' };
   }
   async function commandDehumidifier(device, setting, value, origin) {
-    if (closed || !canControl() || !healthy(device, engine.clock())) throw fail('dehumidifier control is unavailable');
-    if (device.dehumidifierOperation && ['publishing', 'published'].includes(device.dehumidifierOperation.status))
-      throw fail('dehumidifier operation already in progress; wait for its live report');
-    const operation = { setting, value, origin, status: 'publishing', requestedAt: engine.clock() };
+    if (closed || !canControl() || !validDehumidifierIdentity(device.dehumidifierReport?.identity)
+      || !(setting === 'power' && value === 'off' ? powerFeedbackReady(device, engine.clock()) : healthy(device, engine.clock())))
+      throw fail('dehumidifier control is unavailable');
+    if (!device.dehumidifierReport?.capabilities[setting]?.includes(value))
+      throw fail('the dehumidifier has not advertised support for this setting');
+    if (device.dehumidifierOperation && ['publishing', 'published'].includes(device.dehumidifierOperation.status)) {
+      if (origin !== 'temperature' || setting !== 'power' || value !== 'off')
+        throw fail('dehumidifier operation already in progress; wait for its live report');
+      // A cold boundary or missing room evidence must not wait for a pending
+      // ON acknowledgement. MQTT publishes retain their original request order.
+      device.dehumidifierOperation.status = 'unconfirmed';
+      device.dehumidifierOperation.error = 'Superseded by temperature protection OFF.';
+    }
+    const operation = { setting, value, origin, identity: device.dehumidifierReport.identity, status: 'publishing', requestedAt: engine.clock() };
     device.dehumidifierOperation = operation;
     try {
-      await publish(device.mqtt.commandTopic, JSON.stringify({ [setting]: value }), { qos: 1, retain: false, noReplay: true });
+      await publish(device.mqtt.commandTopic, JSON.stringify({ [setting]: value,
+        identity: operation.identity, requestedAt: operation.requestedAt, expiresAt: operation.requestedAt + Math.min(readbackTimeoutMs, 10_000) }),
+      { qos: 1, retain: false, noReplay: true });
       operation.acknowledgedAt = engine.clock();
       if (operation.status === 'publishing') operation.status = operation.observedAt !== undefined ? 'observed' : 'published';
       if (closed || !canControl() || !connected) {
@@ -533,8 +670,32 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
         throw fail('choose a configured dehumidifier and a supported setting value');
       const device = devices.find(row => row.id === input.deviceId);
       if (!device?.controlsDehumidifier) throw fail('dehumidifier control is not configured');
-      if (device.temperatureControl && input.setting === 'power') throw fail('power is managed by caravan temperature control');
+      if (device.temperatureControl && device.temperatureGuard.settings.enabled && input.setting === 'power')
+        throw fail('power is managed by caravan temperature control');
       return commandDehumidifier(device, input.setting, input.value, 'manual');
+    },
+    async setDehumidifierTemperatureControl(input) {
+      if (!input || typeof input !== 'object' || Array.isArray(input)
+        || Object.keys(input).some(key => !['deviceId', ...Object.keys(defaultTemperatureControl)].includes(key))
+        || typeof input.deviceId !== 'string' || Object.keys(input).length < 2)
+        throw fail('choose a configured dehumidifier and temperature control settings');
+      const device = devices.find(row => row.id === input.deviceId);
+      if (!device?.temperatureControl) throw fail('dehumidifier temperature control is not configured');
+      if (closed || !canControl()) throw fail('control authority unavailable');
+      if (!validDehumidifierIdentity(device.temperatureGuard.boundIdentity)) throw fail('dehumidifier identity is not yet known');
+      const { deviceId, ...patch } = input;
+      const policy = { ...device.temperatureGuard.settings, ...patch };
+      if (!validTemperatureControl(policy))
+        throw fail('temperature thresholds must be between -10 and 30 °C in 0.1 °C steps, with ON at least 0.5 °C above OFF');
+      store.setState(temperatureControlKey(device), { signature: temperatureControlSignature(device),
+        identity: device.temperatureGuard.boundIdentity, settings: policy });
+      if (policy.enabled !== device.temperatureGuard.settings.enabled) {
+        device.temperatureGuard.managed = false; device.temperatureGuard.demand = false;
+        device.temperatureGuard.lastAttemptAt = null; device.temperatureGuard.lastAttemptPower = null;
+      }
+      device.temperatureGuard.settings = policy;
+      controlTemperature(device, engine.clock());
+      return { deviceId, temperatureControl: temperatureGuardStatus(device, engine.clock()) };
     },
     async setCover(input) {
       if (!input || typeof input !== 'object' || Array.isArray(input)
@@ -650,8 +811,12 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
           state: device.readings[device.stateSignal]?.coverState ?? null,
           operation: device.coverOperation ? { ...device.coverOperation } : null } } : {}),
         ...(device.kind === 'dehumidifier' ? { dehumidifier: {
-          available: device.controlsDehumidifier && !closed && canControl() && healthy(device, now),
+          available: device.controlsDehumidifier && !closed && canControl() && healthy(device, now)
+            && validDehumidifierIdentity(device.dehumidifierReport?.identity),
+          powerOffAvailable: device.controlsDehumidifier && canControl() && powerFeedbackReady(device, now),
           state: { ...device.dehumidifierState },
+          capabilities: structuredClone(device.dehumidifierReport?.capabilities ?? {}),
+          measurements: { temperature: device.dehumidifierReport?.temperature ?? null, humidity: device.dehumidifierReport?.humidity ?? null },
           temperatureControl: temperatureGuardStatus(device, now),
           runningState: healthy(device, now) ? RUNNING_STATES[device.readings[device.stateSignal]?.value] ?? null : null,
           observedAt: device.dehumidifierReport?.observedAt ?? null,
