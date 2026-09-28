@@ -282,19 +282,36 @@ location can require earlier clearing. Internal sensing uses the pump's current
 native settings, normally HEAT at 17°C after setup. Protection does not override
 an explicit manual power or mode change.
 
-Pill MQTT-loss behavior remains device-owned. The driver may clear immediately;
-ST-MQ does not assume it retains a sample offline. If a driver supports retaining
-an acknowledged sample, the host can continue it only after fresh non-retained
-state confirms the same boot/session, owner and exact sample before the original
-deadline. Until then the prior permission is unconfirmed, never renewed. Fresh
-state reporting internal sensing is respected. An interrupted pending request
-remains uncertain unless correlated acknowledgement, or exact fresh acknowledged
-state behind an unused challenge, resolves it. An unaccepted renewal may also
-be fenced by fresh proof of its still-valid predecessor. Remaining uncertainty,
-ownership changes and reboot require cleanup. None of these paths replay a saved
-command or extend a deadline. The Pill must enforce the host's shorter deadline
-locally; the host cannot clear through a broken link. These fallbacks require a
-powered, working Pill and serial path.
+Pill MQTT-loss behavior remains device-owned. Driver 1.2.5 retains an already
+admitted external sample through MQTT/Wi-Fi loss only until its original expiry,
+including completing an admitted serial write while offline. An existing sample
+can continue with missing native settings for at most 90 seconds since the last
+valid settings report, matching the managed OFF baseline timeout. New numeric
+admission and renewal still require native settings no older than 30 seconds.
+Known incompatible settings, uncertain serial writes and other local safety
+failures still request cleanup immediately. Neither timeout restarts on reconnect.
+
+ST-MQ does not assume offline execution succeeded. Fresh non-retained state must
+confirm the same boot/session, owner and exact sample before its original deadline.
+Until then the previously acknowledged permission is unconfirmed, never renewed;
+fresh state reporting internal sensing is respected. A correlated acknowledgement,
+or exact fresh acknowledged state behind an unused challenge, can resolve an
+interrupted request. An unaccepted renewal can also be fenced by fresh proof of
+its still-valid predecessor; accepted writes cannot be inferred unaccepted.
+
+The 45-second result timeout remains visible even when only the Pill disconnects
+and the host's broker connection stays established. Without a post-timeout device
+report, an acknowledged predecessor with sufficient freeze reserve can remain
+held to its original expiry while ST-MQ awaits reconciliation. Timeout alone does
+not latch a clear that would defeat a valid returning ACK. A first sample without
+acknowledged coverage still requires cleanup at the result timeout. Fresh evidence
+that cannot resolve the request, expired coverage, known faults, changed sources,
+manual handovers and restart still require cleanup; an already sent clear is never
+reversed by a later numeric ACK. No path replays a saved command or extends a
+deadline. The Pill enforces the shorter host expiry locally; the host cannot clear
+through a broken link. These fallbacks require a powered, working Pill and serial
+path. Host MQTT loss still invalidates managed OFF intent even though the Pill's
+existing physical OFF lease may continue until its local safety bound.
 
 The Pill also refreshes the admitted sample on its serial link every 10 seconds.
 A numeric command arriving during that transaction can be rejected `busy`, even
@@ -322,10 +339,11 @@ and supplies a fresh unused challenge. The challenge fences the earlier envelope
 the previous sample must still be within its original permission. The retry goes
 through the normal ownership, native-setting and source-freshness checks and uses
 the sensor's original timestamp. This prevents a lost QoS 0 renewal from needlessly
-reaching the 45-second uncertain-result cleanup and switching to internal sensing.
-Accepted writes cannot be classified as unaccepted renewals. Missing or
-conflicting evidence and expired permissions still require cleanup. The
-reconciliation uses the existing wire contract.
+switching to internal sensing. Accepted writes cannot be classified as unaccepted
+renewals. Beyond the 45-second result timeout, missing reports permit only the
+bounded predecessor hold described above; conflicting evidence and expired
+permissions still require cleanup. The reconciliation uses the existing wire
+contract.
 
 The room target is durable device-bound intent, outside configuration and
 without expiry. Fan and vane commands retain it while any required serial

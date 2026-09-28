@@ -98,6 +98,10 @@ reserve can require an earlier deadline. Repeated, retained or cached reconnect
 reports cannot refresh these clocks. Each enable or renewal also requires ON,
 HEAT and 17°C readbacks using the existing 30-second freshness requirement.
 A failed native check stops renewals and lets the existing permission expire.
+Pill driver 1.2.5 can continue an already admitted sample for up to 90 seconds
+since its last valid native settings report, or the original sample expiry if
+earlier. MQTT/Wi-Fi loss alone also leaves that original expiry intact. Known
+incompatible settings or serial-write uncertainty still request immediate cleanup.
 
 Front and rear must each have qualified freeze-protection reserve covering the
 remaining permission and the delay until heating becomes useful. These checks
@@ -113,13 +117,18 @@ still permits it. The UI shows **Held** and leaves current control unconfirmed.
 No new permission is issued from disconnected or held readings, and gaps remain
 visible in temperature history and learning. Invalid readings, source changes
 and expired evidence are not connection grace. When the Pill reconnects, fresh
-same-session state must establish whether the sample survived; a driver that
-cleared it immediately is respected. A driver that retains it must still enforce
-the shorter host expiry locally. Reconnection cannot extend the deadline.
+same-session state must establish whether the sample survived. The driver enforces
+the shorter host expiry locally; observed cleanup is always respected.
+Reconnection cannot extend the deadline.
 If a published renewal is lost, a fresh acknowledgement of the previous sample
 and a new device challenge can permit a retry after 10 seconds. Exact fresh ACK
-can also resolve a request made uncertain by MQTT loss. Remaining uncertainty,
-ownership changes or reboot require cleanup; retries never reset sensor clocks.
+can also resolve a request made uncertain by MQTT loss or a 45-second result
+timeout during Pill-only silence. An acknowledged predecessor can remain **Held**
+under its original expiry and freeze protection while awaiting that fresh reply.
+The timeout stays visible and grants no new permission. Without acknowledged
+coverage, or with fresh conflicting evidence, cleanup is required; an already
+sent clear cannot be reversed. Ownership changes or reboot also require cleanup;
+retries never reset sensor clocks.
 The retained room target resumes after a host restart only once fresh source
 evidence and native setup are established again. The override is cleared through
 the serial path before ordinary native settings or a managed pause can proceed.

@@ -67,16 +67,24 @@ request earlier clearing without overriding an explicit manual power/mode choice
 Communication-only sensor outages can hold an existing acknowledged sample,
 never admit or renew one, while its original deadline and both protection reserves
 remain valid. This uses live in-memory evidence and does not fill historical gaps
-or infer warmth. Invalid evidence and source changes do not qualify. Pill MQTT
-loss remains a driver decision: immediate cleanup is supported, and ST-MQ does
-not assume a future driver preserves external sensing offline. If it does, it
-must continue honoring the original shorter host deadline locally. After
+or infer warmth. Invalid evidence and source changes do not qualify. Pill driver
+1.2.5 retains an already admitted sample through MQTT/Wi-Fi loss until its original
+shorter host deadline, with no new disconnect timer or renewal. An admitted serial
+write can complete offline. Missing native settings allow continuation for up to
+90 seconds since the last valid settings report; admission/renewal still require
+settings no older than 30 seconds. Known incompatible settings and uncertain serial
+writes continue to request immediate cleanup. After
 reconnection, fresh non-retained same-boot/session/owner state must acknowledge
 the exact sample before it is considered confirmed again. Reboot, ownership
 change, completed cleanup or expiration cannot revive old permission. An
 uncertain in-flight request may be resolved by its correlated ACK or by fresh
-exact acknowledged state and a new unused challenge; otherwise cleanup remains
-required. Reconnect never adds a new 120-second allowance.
+exact acknowledged state and a new unused challenge. The same reconciliation
+handles a 45-second result timeout when only the Pill disconnects. Until a fresh
+post-timeout report arrives, an acknowledged predecessor can remain unconfirmed
+within its original expiry and protection reserve. Initial requests without
+acknowledged coverage still require cleanup at timeout. Conflicting evidence,
+expired coverage, explicit faults and pending clears cannot be revived by this
+path. Reconnect never adds a new 120-second allowance.
 Lost, unaccepted numeric renewals can be retried after 10 seconds only when fresh
 same-session state still acknowledges the exact previous, unexpired sample and
 provides a new unused challenge that fences the earlier envelope. The retry uses

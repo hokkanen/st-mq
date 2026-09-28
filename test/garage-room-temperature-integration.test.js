@@ -34,7 +34,7 @@ function fixture(t, { initialNativeTargetC = 17 } = {}) {
     } }) });
   runtime.setAdapter(adapter); adapter.setConnected(true);
   function state({ nativeAt = now, nativeTimes = {}, baseline = TEMPLATE.baseline,
-    feed = external,
+    feed = external, result: reportedResult = result,
     ownerSession = published.length ? 'invented-room-owner' : null } = {}) {
     const value = { ...structuredClone(TEMPLATE), sequence: ++sequence, observedAt: now, mode: 'monitoring',
       baseline: structuredClone(baseline),
@@ -43,7 +43,7 @@ function fixture(t, { initialNativeTargetC = 17 } = {}) {
       challenge: { value: `invented-room-challenge-${sequence}`, expiresAt: now + 30_000 },
       native: Object.fromEntries(Object.entries(native).map(([key, value]) => [key, { value, measuredAt: nativeTimes[key] ?? nativeAt, ageMs: now - (nativeTimes[key] ?? nativeAt) }])),
       externalTemperature: { ...feed, expiresInMs: feed.temperatureC === null ? 0
-        : Math.max(0, feed.expiresAt - now) }, result, manualPending,
+        : Math.max(0, feed.expiresAt - now) }, result: reportedResult, manualPending,
       capabilities: { ...TEMPLATE.capabilities, externalTemperature: true, targetStep: 1,
         manualControls: Object.fromEntries(['power', 'mode', 'targetC', 'fan', 'vane', 'wideVane'].map(key => [key, true])) } };
     for (const field of Object.values(value.health)) { field.measuredAt = now; field.ageMs = 0; }
@@ -96,7 +96,7 @@ function fixture(t, { initialNativeTargetC = 17 } = {}) {
     await runtime.roomTemperatureTick();
   }
   async function advanceReport(status) { now += 1000; report(status); await settle(); }
-  async function start() {
+  async function start({ acknowledge = true } = {}) {
     await settle();
     assert.equal(runtime.nativeControls().settings.targetC.min, 5);
     await runtime.setNativeSettings({ setting: 'targetC', value: 5 }); await settle();
@@ -117,6 +117,7 @@ function fixture(t, { initialNativeTargetC = 17 } = {}) {
     assert.equal(published.length, 3);
     assert.equal(published[2].command.action, 'remote-temperature');
     assert.equal(published[2].command.temperatureC, 17);
+    if (!acknowledge) return;
     await advanceReport('accepted');
     assert.equal(runtime.status().roomTemperature.acknowledged, false);
     await advanceReport('acknowledged');
@@ -201,6 +202,95 @@ test('host MQTT loss waits for fresh Pill evidence and never renews a held permi
     assert.equal(f.runtime.status().roomTemperature.phase, survives ? 'holding' : 'waiting');
     assert.equal(Boolean(f.adapter.externalTemperature().continuation), survives);
   });
+});
+
+test('a timed-out renewal waits within acknowledged coverage for exact fresh Pill reconciliation', async t => {
+  for (const disconnect of ['Pill only', 'host MQTT']) for (const reply of ['new ACK', 'predecessor ACK'])
+    await t.test(`${disconnect}: ${reply}`, async t => {
+      const f = fixture(t); await f.start(); const previous = f.published.at(-1).command;
+      f.advance(15_000); f.measure(4); f.state(); await f.settle();
+      const renewal = f.published.at(-1).command, commands = structuredClone(f.published);
+      if (disconnect === 'host MQTT') f.adapter.setConnected(false);
+      f.advance(46_000); await f.settle();
+      assert.deepEqual(f.published, commands);
+      assert.equal(f.adapter.externalTemperature().result.status, 'uncertain', 'the 45-second result timeout still applies');
+      assert.equal(f.runtime.status().roomTemperature.phase, 'holding');
+      assert.equal(f.runtime.status().roomTemperature.acknowledged, false);
+      assert.equal(f.runtime.roomTemperature.mustClear, false);
+      assert.equal(f.adapter.externalTemperature().continuation.expiresAt, previous.requestedExpiryAt);
+      assert.equal(f.adapter.externalTemperature().continuation.confirmed, false);
+      if (disconnect === 'host MQTT') f.adapter.setConnected(true);
+      const command = reply === 'new ACK' ? renewal : previous;
+      f.state({ result: null, feed: { ...INTERNAL, phase: 'active', acknowledged: true, restorationPending: true,
+        temperatureC: command.temperatureC, measuredAt: command.measuredAt, expiresAt: command.requestedExpiryAt } });
+      await f.settle();
+      assert.ok(f.published.slice(commands.length).every(({ command }) => command.temperatureC !== null), 'reconciliation does not clear the feed');
+      if (reply === 'new ACK') {
+        assert.deepEqual(f.published, commands, 'exact current state acknowledges without replay or a correlated result');
+        assert.equal(f.runtime.status().roomTemperature.phase, 'active');
+        assert.equal(f.adapter.externalTemperature().continuation.expiresAt, renewal.requestedExpiryAt);
+      } else {
+        assert.equal(f.published.length, commands.length + 1);
+        const retry = f.published.at(-1).command;
+        assert.equal(retry.temperatureC, renewal.temperatureC);
+        assert.equal(retry.measuredAt, renewal.measuredAt);
+        assert.equal(retry.requestedExpiryAt, renewal.requestedExpiryAt, 'fresh challenge does not refresh the sensor age');
+      }
+    });
+});
+
+test('a first sample without acknowledged coverage still requires cleanup after its result timeout', async t => {
+  const f = fixture(t); await f.start({ acknowledge: false });
+  const sample = f.published.at(-1).command;
+  f.advance(46_000); await f.settle();
+  assert.equal(f.adapter.externalTemperature().continuation, null);
+  assert.equal(f.runtime.status().roomTemperature.phase, 'clearing');
+  assert.equal(f.runtime.roomTemperature.mustClear, true);
+  f.state({ result: null, feed: { ...INTERNAL, phase: 'active', acknowledged: true, restorationPending: true,
+    temperatureC: sample.temperatureC, measuredAt: sample.measuredAt, expiresAt: sample.requestedExpiryAt } });
+  await f.settle();
+  assert.equal(f.published.at(-1).command.temperatureC, null, 'a late ACK cannot reverse already-required initial cleanup');
+});
+
+test('timeout waiting never overrides source changes, freeze reserve, expiry or an explicit handover', async t => {
+  for (const change of ['source change', 'freeze reserve', 'expiry', 'explicit handover']) await t.test(change, async t => {
+    const f = fixture(t); await f.start(); const previous = f.published.at(-1).command;
+    f.advance(15_000); f.measure(4); f.state(); await f.settle();
+    const renewal = f.published.at(-1).command;
+    f.advance(46_000); await f.settle();
+    assert.equal(f.runtime.status().roomTemperature.phase, 'holding');
+    if (change === 'source change') f.engine.latest.garage_temperature.device = 'invented-replacement-rear';
+    if (change === 'freeze reserve') {
+      f.runtime.exposure.locations.front.energyJPerM = 0;
+      f.runtime.exposure.locations.front.estimatedC = 0;
+    }
+    if (change === 'expiry') f.advance(previous.requestedExpiryAt - f.now());
+    if (change === 'explicit handover') f.runtime.roomTemperature.handover({ setting: 'power', value: 'off' }, f.now());
+    await f.settle();
+    assert.notEqual(f.runtime.status().roomTemperature.phase, 'holding');
+    f.state({ result: null, feed: { ...INTERNAL, phase: 'active', acknowledged: true, restorationPending: true,
+      temperatureC: renewal.temperatureC, measuredAt: renewal.measuredAt, expiresAt: renewal.requestedExpiryAt } });
+    await f.settle();
+    assert.equal(f.published.at(-1).command.temperatureC, null, 'late acknowledgement cannot override required cleanup');
+    const clear = f.published.at(-1).command;
+    f.advance(); f.state({ result: null, feed: { ...INTERNAL, phase: 'active', acknowledged: true, restorationPending: true,
+      temperatureC: renewal.temperatureC, measuredAt: renewal.measuredAt, expiresAt: renewal.requestedExpiryAt } });
+    await f.settle();
+    assert.equal(f.published.at(-1).command.commandId, clear.commandId, 'a sent clear is not undone by repeated old ACK state');
+  });
+});
+
+test('missing native settings prevent renewal after 30 seconds without clearing a continuing driver permission', async t => {
+  const f = fixture(t); await f.start(); const nativeAt = f.now(), commands = structuredClone(f.published);
+  for (const age of [31_000, 60_000, 89_000]) {
+    f.advance(nativeAt + age - f.now()); f.measure(); f.state({ nativeAt }); await f.settle();
+    assert.deepEqual(f.published, commands);
+    assert.equal(f.adapter.externalTemperature().available, false);
+    assert.equal(f.adapter.externalTemperature().continuation.confirmed, true);
+  }
+  f.advance(1001); f.state({ nativeAt, feed: { ...INTERNAL, acknowledged: true } }); await f.settle();
+  assert.equal(f.adapter.externalTemperature().continuation, null, 'driver cleanup at its 90-second context limit is respected');
+  assert.deepEqual(f.published, commands);
 });
 
 test('freeze reserve and useful-heating delay guard explicit room targets even with economic control disabled', async t => {

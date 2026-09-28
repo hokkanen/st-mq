@@ -493,6 +493,55 @@ test('fresh state after reconnect resolves an uncertain exact acknowledged sampl
   });
 });
 
+test('a Pill-only result timeout reconciles exact current ACK state for published or accepted requests', async t => {
+  for (const accepted of [false, true]) await t.test(accepted ? 'accepted' : 'published', async t => {
+    const f = fixture(t), sample = f.sample();
+    await f.adapter.setExternalTemperature(sample);
+    if (accepted) { f.advance(); f.result('accepted'); }
+    f.advance(46_000);
+    assert.equal(f.adapter.externalTemperature().result.reason, 'external-result-timeout');
+    assert.equal(f.adapter.externalTemperature().continuation, null, 'a request is not acknowledged coverage');
+    f.state({ authority: { ownerSession: 'owner' }, externalTemperature: { ...INTERNAL,
+      phase: 'active', acknowledged: true, restorationPending: true, temperatureC: sample.temperatureC,
+      measuredAt: sample.measuredAt, expiresInMs: sample.requestedExpiryAt - f.now() } });
+    assert.equal(f.adapter.externalTemperature().result.status, 'acknowledged');
+    assert.equal(f.adapter.externalTemperature().continuation.confirmed, true);
+    assert.equal(f.adapter.externalTemperature().continuation.expiresAt, sample.requestedExpiryAt);
+    assert.equal(f.published.length, 1);
+  });
+});
+
+test('exact ACK state cannot revive explicit write faults, failed requests, expired permission or a sent clear', async t => {
+  for (const failure of ['uncertain', 'failed', 'superseded', 'expired', 'clear']) await t.test(failure, async t => {
+    const f = fixture(t), sample = f.sample();
+    await f.adapter.setExternalTemperature(sample);
+    if (failure === 'clear') {
+      f.advance(); f.result('acknowledged');
+      await f.adapter.setExternalTemperature({ temperatureC: null });
+    } else if (failure !== 'expired') { f.advance(); f.result(failure, {}, { reason: 'external-write-uncertain' }); }
+    f.advance(failure === 'expired' ? 120_000 : 46_000);
+    f.state({ authority: { ownerSession: 'owner' }, externalTemperature: { ...INTERNAL,
+      phase: 'active', acknowledged: true, restorationPending: true, temperatureC: sample.temperatureC,
+      measuredAt: sample.measuredAt, expiresInMs: Math.max(0, sample.requestedExpiryAt - f.now()) } });
+    assert.notEqual(f.adapter.externalTemperature().result.status, 'acknowledged');
+    assert.equal(f.adapter.externalTemperature().continuation, null);
+  });
+});
+
+test('a timed-out accepted renewal cannot be disproved by its predecessor ACK', async t => {
+  const f = fixture(t);
+  await f.adapter.setExternalTemperature(f.sample());
+  f.advance(); const previous = f.result('acknowledged');
+  await f.adapter.setExternalTemperature(f.sample({ temperatureC: 22 }));
+  f.advance(); f.result('accepted', { externalTemperature: f.remainingFeed(previous) });
+  f.advance(46_000);
+  assert.equal(f.adapter.externalTemperature().continuation.confirmed, false);
+  f.state({ authority: previous.authority, externalTemperature: f.remainingFeed(previous) });
+  assert.equal(f.adapter.externalTemperature().result.status, 'uncertain');
+  assert.equal(f.adapter.externalTemperature().result.reason, 'external-result-timeout');
+  assert.equal(f.published.length, 2, 'accepted work cannot be retried as a lost publication');
+});
+
 test('reconnect never invents acknowledgement from cleared, foreign, retained, changed or expired state', async t => {
   const scenarios = [
     { name: 'internal sensing', feed: () => ({ ...INTERNAL }) },
@@ -504,7 +553,7 @@ test('reconnect never invents acknowledgement from cleared, foreign, retained, c
     { name: 'unacknowledged value', feed: () => ({ acknowledged: false }) },
     { name: 'rearm required', feed: () => ({ rearmRequired: true }) },
     { name: 'retained report', packet: { retain: true } },
-    { name: 'pre-connection report', patch: f => ({ observedAt: f.now() - 1 }) },
+    { name: 'pre-reconciliation report', patch: () => ({ observedAt: BASE + 1 }) },
     { name: 'host expiry', delay: 120_000 },
     { name: 'requested expiry', requestedExpiryAt: BASE + 5000 },
     { name: 'device expiry', feed: () => ({ expiresInMs: 0 }) },
@@ -512,17 +561,21 @@ test('reconnect never invents acknowledgement from cleared, foreign, retained, c
     { name: 'driver fault', patch: f => ({ health: { ...TEMPLATE.health,
       driver: { value: false, measuredAt: f.now() } } }) },
   ];
-  for (const scenario of scenarios) await t.test(scenario.name, async t => {
-    const f = fixture(t), sample = f.sample(scenario.requestedExpiryAt ? { requestedExpiryAt: scenario.requestedExpiryAt } : {});
-    await f.adapter.setExternalTemperature(sample);
-    f.adapter.setConnected(false); f.advance(scenario.delay ?? 10_000); f.adapter.setConnected(true);
-    f.state({ authority: { ownerSession: 'owner' }, externalTemperature: { ...INTERNAL,
-      phase: 'active', acknowledged: true, restorationPending: true, temperatureC: sample.temperatureC,
-      measuredAt: sample.measuredAt, expiresInMs: 180_000, ...scenario.feed?.(f) }, ...scenario.patch?.(f) }, scenario.packet);
-    assert.equal(f.adapter.externalTemperature().result.status, 'uncertain');
-    assert.equal(f.adapter.externalTemperature().continuation, null);
-    assert.equal(f.published.length, 1);
-  });
+  for (const connection of ['host MQTT loss', 'Pill-only timeout']) for (const scenario of scenarios)
+    await t.test(`${connection}: ${scenario.name}`, async t => {
+      const f = fixture(t), sample = f.sample(scenario.requestedExpiryAt ? { requestedExpiryAt: scenario.requestedExpiryAt } : {});
+      await f.adapter.setExternalTemperature(sample);
+      if (connection === 'host MQTT loss') f.adapter.setConnected(false);
+      f.advance(scenario.delay ?? (connection === 'host MQTT loss' ? 10_000 : 46_000));
+      if (connection === 'host MQTT loss') f.adapter.setConnected(true);
+      f.state({ authority: { ownerSession: 'owner' }, externalTemperature: { ...INTERNAL,
+        phase: 'active', acknowledged: true, restorationPending: true, temperatureC: sample.temperatureC,
+        measuredAt: sample.measuredAt, expiresInMs: Math.max(0, sample.requestedExpiryAt - f.now()),
+        ...scenario.feed?.(f) }, ...scenario.patch?.(f) }, scenario.packet);
+      assert.equal(f.adapter.externalTemperature().result.status, 'uncertain');
+      assert.equal(f.adapter.externalTemperature().continuation, null);
+      assert.equal(f.published.length, 1);
+    });
 });
 
 test('an unaccepted renewal interrupted by MQTT can be fenced by fresh proof of its predecessor', async t => {

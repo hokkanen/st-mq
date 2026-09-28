@@ -394,8 +394,14 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
       || ['device', 'driver', 'pump'].some(key => state.health[key]?.value === false)
       || state.native.power?.value !== 'on' || state.native.mode?.value !== 'heat') return null;
     const h = health(now);
+    // A Pill-only outage does not disconnect the host's broker connection. Its
+    // old state cannot confirm the outcome of a timed-out numeric renewal. Keep
+    // only the acknowledged predecessor, unconfirmed and at its original bound,
+    // until a post-timeout report can reconcile the request or require cleanup.
+    const awaitingReport = NATIVE_PENDING.includes(externalCommand?.status)
+      && now >= externalCommand.confirmBy && state.observedAt < externalCommand.confirmBy;
     return { temperatureC: previous.temperatureC, measuredAt: previous.measuredAt, expiresAt: previous.expiresAt,
-      confirmed: Boolean(fresh && externalCommand?.status !== 'uncertain'
+      confirmed: Boolean(fresh && !awaitingReport && externalCommand?.status !== 'uncertain'
         && h.deviceOnline && h.driverProgressing && h.pumpCommunicating) };
   }
   function externalBusy(now) {
@@ -579,11 +585,13 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
   }
   function reconcileExternalAcknowledgement(now) {
     const attempt = externalCommand, feed = state?.externalTemperature, h = health(now);
-    // Transport loss leaves an in-flight write uncertain. The driver's current
-    // ACK of this exact sample, in the same owned session and behind a fresh
-    // challenge, resolves that uncertainty without replaying the command.
-    if (!externalStateFresh(now) || !canControl() || attempt?.status !== 'uncertain'
-      || attempt.reason !== 'mqtt-disconnected' || attempt.temperatureC === null
+    // Host MQTT loss or a timed-out request during Pill-only silence leaves the
+    // write unconfirmed. Exact current ACK evidence can resolve either without
+    // replay. Explicit write faults and clears never enter this recovery path.
+    const unresolved = attempt?.status === 'uncertain' && attempt.reason === 'mqtt-disconnected'
+      || NATIVE_PENDING.includes(attempt?.status) && now >= attempt.confirmBy
+        && state.observedAt >= attempt.confirmBy;
+    if (!externalStateFresh(now) || !canControl() || !unresolved || attempt.temperatureC === null
       || state.bootId !== attempt.bootId || state.sessionId !== attempt.sessionId
       || state.authority.ownerSession !== hostSession || state.sequence <= attempt.stateSequence
       || state.observedAt < attempt.requestedAt || externalExpiry(attempt) <= now

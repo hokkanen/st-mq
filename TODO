@@ -1,3 +1,24 @@
+Completed 2026-09-28 — Reconcile Pill-only external-temperature renewal outages
+- Keep the 45-second result timeout visible while holding only a previously
+  acknowledged sample within its original expiry and freeze-protection reserve
+  when no post-timeout Pill report exists. A Pill-only outage no longer latches
+  cleanup before a returning exact ACK can resolve the renewal.
+- Reconcile exact fresh same-session/owner ACK state after a timeout, including
+  a lost result payload. Retain challenge fencing and unchanged deadlines;
+  only unaccepted renewals can be disproved by an acknowledged predecessor.
+- Preserve initial-sample timeout cleanup, native admission freshness, manual
+  handovers, known write faults, source/epoch changes, freeze limits, expiry and
+  already-sent clears. No new timer, stored permission, wire shape or replay path.
+- Document Pill 1.2.5's bounded MQTT retention and native-settings continuation
+  (90 seconds) separately from numeric admission (30 seconds), the host's
+  120-second source bound and existing host-MQTT managed-OFF invalidation.
+- Reviewed F1/F3/F4/F5/F6/F7/F8 producers, consumers, state, UI and contracts.
+  No legacy compatibility, migration, learning or observation changes.
+- Validation: 230 focused adapter/room unit and integration tests and all 3,956
+  routine tests pass, with no skips; production build passes with its existing
+  bundle-size warning. These host suites use synthetic fixtures; installed Pill
+  validation is recorded separately in the driver repository's release status.
+
 Completed 2026-09-28 — Shared Garage temperature permission and outage policy
 - Bound external-temperature and managed OFF requests to 120 seconds from the
   older supporting front/rear measurement, shortened by thermal reserve and
