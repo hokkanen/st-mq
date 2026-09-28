@@ -328,7 +328,7 @@ test('room control status distinguishes acknowledgement, preparation and fallbac
     garage.roomTemperature.reason = 'rear-temperature-unavailable';
     const pending = mitsubishiRoomTemperature(garage);
     assert.equal(pending.active, false); assert.equal(pending.basis, `External sensor · ${basis}`);
-    assert.match(pending.detail, /Rear temperature unavailable/);
+    assert.match(pending.detail, /Garage rear temperature is unavailable/);
   }
   garage.roomTemperature.phase = 'active'; garage.roomTemperature.acknowledged = false;
   assert.equal(mitsubishiRoomTemperature(garage).basis, 'External sensor · Preparing');
@@ -336,6 +336,31 @@ test('room control status distinguishes acknowledgement, preparation and fallbac
   assert.equal(mitsubishiRoomTemperature({}), null);
   assert.match(mitsubishiResult({ setting: 'targetC', value: 5, status: 'acknowledged' }), /acknowledged by the driver/);
   assert.doesNotMatch(mitsubishiResult({ setting: 'targetC', value: 5, status: 'acknowledged' }), /Confirmed by the pump/);
+});
+
+test('held room control remains unconfirmed and explains its original deadline and protection failures', () => {
+  const garage = fixture().garage;
+  garage.roomTemperature = { targetC: 5, phase: 'holding', held: true, sourceHeld: true,
+    acknowledged: true, sourceC: 5.25, measuredAt: now - 30_000, offsetC: 12,
+    suppliedC: 17.5, nativeTargetC: 17, reason: 'front:thermal-reserve-exhausted' };
+  garage.adapter.externalTemperature = { continuation: { expiresAt: now + 90_000, confirmed: false } };
+  const room = mitsubishiRoomTemperature(garage);
+  assert.equal(room.active, false, 'held evidence cannot present an active confirmation');
+  assert.equal(room.basis, 'External sensor · Held');
+  assert.match(room.progress, /current control is unconfirmed/);
+  assert.match(room.detail, /previous permission ends by/);
+  assert.match(room.detail, /Reconnecting cannot extend it/);
+  assert.match(room.detail, /Both Garage front and rear/);
+  assert.match(room.detail, /two minutes after the older supporting measurement/);
+  assert.match(room.detail, /Garage front: the remaining heat reserve is too small/);
+  assert.doesNotMatch(room.detail, /thermal-reserve-exhausted|ST-MQ/);
+  garage.roomTemperature.reason = 'future-internal-diagnostic-code';
+  assert.match(mitsubishiRoomTemperature(garage).detail, /Waiting for usable temperature and device evidence/);
+  assert.doesNotMatch(mitsubishiRoomTemperature(garage).detail, /future-internal-diagnostic-code/);
+  garage.roomTemperature.reason = 'Waiting for qualified freeze-protection evidence.';
+  garage.roomTemperature.protection = { allowed: false, reason: 'heating-response-bound-unavailable' };
+  assert.match(mitsubishiRoomTemperature(garage).detail, /Freeze protection: The time needed to restore useful heating is not established/);
+  assert.doesNotMatch(mitsubishiRoomTemperature(garage).detail, /heating-response-bound-unavailable/);
 });
 
 test('external room targets remain visible but cannot be submitted from read-only replicas', async () => {

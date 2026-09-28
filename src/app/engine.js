@@ -30,6 +30,7 @@ import { indoorStatusMetadata, outdoorReadingStatus, temperatureBoundaryStatus, 
 import { GarageRuntime } from '../garage/runtime.js';
 import { ChargingRuntime } from '../charging/runtime.js';
 import { isGarageDoorSignal, confirmedGarageDoor, garageDoorContinuity } from '../garage/door-state.js';
+import { rememberGarageTemperature } from '../garage/temperature-evidence.js';
 
 const OBSERVATION_MAX_AGE_MS = OUTDOOR_MAX_AGE_MS;
 const pauseIdentity = override => override?.id ?? (Number.isFinite(override?.createdAt) ? String(override.createdAt) : null);
@@ -402,6 +403,7 @@ export class Engine {
     this.executor = new Executor({ input: config.input, store, plant: this.plant, commandTransport, config: this.control, clock });
     this.startupRestorationPending = this.executor.status().restorationPending;
     this.latest = Object.create(null);
+    this.garageTemperatureEvidence = Object.create(null);
     this.garageDoorStates = Object.create(null);
     this.lastKnownTemperatures = Object.create(null);
     this.temperatureAttempts = Object.create(null);
@@ -472,15 +474,16 @@ export class Engine {
   ingestEnergy(interval) { return interval.signal === 'garage_energy' ? this.garage.ingestEnergy(interval) : this.recorder.recordEnergy(interval); }
   ingestionCheckpoint() {
     return structuredClone(Object.fromEntries(['latest', 'outdoorCandidates', 'lastKnownTemperatures',
-      'temperatureAttempts', 'garageDoorStates'].map(key => [key, this[key]])));
+      'temperatureAttempts', 'garageDoorStates', 'garageTemperatureEvidence'].map(key => [key, this[key]])));
   }
   restoreIngestionCheckpoint(checkpoint) {
-    for (const key of ['latest', 'outdoorCandidates', 'lastKnownTemperatures', 'temperatureAttempts', 'garageDoorStates'])
+    for (const key of ['latest', 'outdoorCandidates', 'lastKnownTemperatures', 'temperatureAttempts', 'garageDoorStates', 'garageTemperatureEvidence'])
       this[key] = checkpoint[key];
   }
   rememberObservation(observation, now) {
     if (observation?.signal === 'indoor_temperature' && observation.source?.startsWith('husdata')) return;
     if (!acceptsGarageObservation(this.config, observation)) return;
+    rememberGarageTemperature(this.garageTemperatureEvidence, observation, now);
     if (HELD_TEMPERATURE_SIGNALS.includes(observation?.signal)) {
       const prior = this.lastKnownTemperatures[observation.signal];
       const previousAttempt = this.temperatureAttempts[observation.signal];

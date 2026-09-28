@@ -21,11 +21,14 @@ const native = value => value && typeof value === 'object' ? value.value : value
 const temperature = reading => finite(reading?.value) ? `${number(reading.value, '°C')}${reading.stale ? ' · stale' : ''}` : 'Unavailable';
 const state = value => value === true ? 'Yes' : value === false ? 'No' : 'Unknown';
 const clock = value => finite(value) ? new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(value) : 'Unknown';
+const temperatureHolding = (garage, now) => garage.temperatureHold?.active === true
+  && finite(garage.temperatureHold.expiresAt) && garage.temperatureHold.expiresAt > now;
 const sentences = values => values.map(value => text(value).trim().replace(/[.\s]+$/, '')).filter(Boolean).map(value => `${value}.`).join(' ');
 const opportunity = reason => ({
   'automatic-control-disabled': 'Automatic control is disabled',
   'protection-limited-learning-opportunity': 'Initial cooling estimates use extra uncertainty margins; pipe protection limits the pause',
   'continue-authorized-economic-episode': 'Continue the current pause within its original endpoint',
+  'waiting-for-temperature-evidence': 'Waiting for fresh temperature evidence; hold only the existing pause within its original permission and protection margin',
   'garage-door-open-or-unknown-below-2c': 'An open or unknown door below 2°C outdoors prevents a new pause',
   'outdoor-temperature-unavailable': 'Waiting for a fresh outdoor temperature',
   'benefit-below-minimum-saving': 'Expected savings do not cover recovery, uncertainty and the minimum benefit',
@@ -51,6 +54,7 @@ const opportunitySummary = reason => ({
   'benefit-below-warmth-or-prediction-resolution': 'Insufficient timing benefit',
   'credible-price-timing-opportunity': 'Price-supported pause',
   'prepare-for-later-price-opportunity': 'Later price opportunity',
+  'waiting-for-temperature-evidence': 'Pause held · awaiting temperature',
 })[reason] ?? opportunity(reason);
 const coefficientNumber = (value, unit) => finite(value)
   ? `${new Intl.NumberFormat('en-GB', { maximumFractionDigits: 4 }).format(value)} ${unit}` : 'Unavailable';
@@ -185,9 +189,9 @@ function garagePolicyRows(garage, policy) {
     learningRow('charging-policy', 'Charging', 'No pause restriction or forecast credit', 'Pause limits', 'Fixed policy',
       'Charging status and power do not affect pause admission or the planned window. Any actual warmth is reflected in measured garage temperatures; expected charging heat adds no forecast credit. Charging-disturbed data remains separate from clean cooling and savings evidence.'),
     learningRow('protection-policy', 'Freezing protection', policy.approved === true ? 'Owner-approved' : policy.approved === false ? 'Not approved' : 'Approval unknown',
-      'Safeguards', 'Configured', 'The rear and front reference pipes must retain their configured margin through the remaining permission and useful-heating delay. Missing fresh evidence requests normal heating.'),
+      'Safeguards', 'Configured', 'The rear and front reference pipes must retain their configured margin through the remaining permission and useful-heating delay. While waiting for fresh temperature evidence, existing permission may remain within its original deadline; invalid or expired evidence requires normal heating. Held readings cannot start or renew a pause.'),
     learningRow('restore-policy', 'Return to normal heat', 'Short local lease + recovery check', 'Safeguards', 'Device + observed temperatures',
-      'The adapter restores native ON when its short renewable OFF permission expires. Renewals can maintain one continuous pause of any thermally permitted duration; this communication safeguard does not cap its total length. ON readback and useful warmth are separate checks. A failed adapter or serial path can prevent restoration.'),
+      'The adapter restores native ON when its short renewable OFF permission expires, no later than two minutes after the older supporting temperature report. Reconnection does not extend it. Fresh renewals can maintain one continuous pause of any thermally permitted duration; this safeguard does not cap its total length. ON readback and useful warmth are separate checks. A failed adapter or serial path can prevent restoration.'),
   ];
   return planningDetails;
 }
@@ -230,7 +234,9 @@ export function garageDisplay(garage = {}, now = Date.now()) {
   const plan = garage.plan ?? {}, learning = garage.learning ?? {};
   const episode = garage.episode ?? {};
   const room = mitsubishiRoomTemperature(garage);
+  const temperatureHeld = temperatureHolding(garage, now);
   const rows = [];
+  if (temperatureHeld) rows.push(['Temperature evidence', `Existing pause held until ${clock(garage.temperatureHold.expiresAt)} · no renewal`]);
   for (const location of ['rear', 'front']) {
     const label = location === 'rear' ? 'Rear air · near pipe' : 'Front air · near door';
     const local = locations[location] ?? {}, observation = garage.observations?.[location];
@@ -284,7 +290,8 @@ export function garageDisplay(garage = {}, now = Date.now()) {
   const coefficients = garageCoefficientRows(learning);
   const learningRows = garageLearningRows(garage, now);
   return { status: text(garage.status ?? (settings.enabled ? 'commissioning' : 'monitoring')),
-    reason: text(garage.reason ?? 'Automatic control awaits the implemented adapter contract and installed commissioning')
+    reason: temperatureHeld ? `Waiting for fresh temperature evidence. Existing OFF permission is held until ${clock(garage.temperatureHold.expiresAt)} within its original deadline and protection margin; no renewal is issued`
+      : text(garage.reason ?? 'Automatic control awaits the implemented adapter contract and installed commissioning')
       .trim().replace(/^./, value => value.toUpperCase()),
     strategy: configuredStrategy, planningDetails: garagePolicyRows(garage, policy),
     rows, settingGroups, coefficients: coefficients.rows, coefficientDetails: coefficients.details, ...learningRows, limitations: learning.limitations ?? [] };
@@ -297,7 +304,7 @@ export function garageHeatingRequest(garage = {}) {
     : controls.requestedMode === 'normal' ? 'Normal'
       : adapter.phase === 'paused' ? 'Reduction'
         : adapter.restorePending || garage.episode?.restorationPending || adapter.phase === 'restoring' ? 'Restoring'
-          : ['pause', 'renew'].includes(action) ? 'Reduction'
+          : ['pause', 'renew', 'hold'].includes(action) ? 'Reduction'
             : ['available', 'release'].includes(action) || garage.temporary?.pauseActive ? 'Normal' : 'No request';
 }
 
@@ -448,10 +455,11 @@ export function renderGarage(document, status) {
   detail('garage-pump-reading-info', 'Reading details', 'Mitsubishi heat-pump readings', [power, mode, target, compressor].map(reading => reading.detail).join('\n\n'));
   const controls = garage.heatingControls ?? {};
   const held = controls.paused && controls.holdUntil > now;
+  const temperatureHeld = temperatureHolding(garage, now);
   const requested = garageHeatingRequest(garage);
   set('garage-requested-label', isReadOnlyReplica(status) ? 'RECORDED HEATING REQUEST' : 'HEATING REQUEST');
   setHeatingStatusDetail(document.getElementById('garage-requested'), { key: 'garage-requested',
-    label: isReadOnlyReplica(status) && requested === 'No request' ? 'Not recorded' : `${requested}${held ? ' · held' : ''}`, title: 'Garage heating request',
+    label: isReadOnlyReplica(status) && requested === 'No request' ? 'Not recorded' : `${requested}${held || temperatureHeld ? ' · held' : ''}`, title: 'Garage heating request',
     confirmation: garageHeatingConfirmation(status, requested),
     detail: `${display.reason}.${held ? ` Manual heating selection is held until ${clock(controls.holdUntil)} or Resume now.` : ''} The request describes the heating plan.` });
   renderGarageHeatingState(document, status, requested);

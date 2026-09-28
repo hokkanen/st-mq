@@ -17,6 +17,7 @@ import { checkDashboardBalance } from './lib/dashboard-balance-browser-checks.js
 
 // --dashboard-only exercises responsive column balancing with offline providers.
 const dashboardOnly = process.argv.includes('--dashboard-only');
+const temperatureHoldOnly = process.argv.includes('--temperature-hold-only');
 const directory = mkdtempSync(join(tmpdir(), 'stmq-garage-browser-'));
 const artifacts = mkdtempSync(join(tmpdir(), 'stmq-garage-screenshots-'));
 const profile = join(directory, 'chrome'); mkdirSync(profile);
@@ -106,8 +107,16 @@ try {
     globalThis.fetch = async (input, options) => {
       const response = await originalFetch(input, options);
       if (new URL(input.url ?? String(input), location.href).pathname !== '/api/status'
-        || (!globalThis.learningSmokeValues && !globalThis.garageBudgetSmokeState && !globalThis.chargingSmokeValues && !globalThis.nativePumpSmokeValues)) return response;
+        || (!globalThis.learningSmokeValues && !globalThis.garageBudgetSmokeState && !globalThis.chargingSmokeValues && !globalThis.nativePumpSmokeValues && !globalThis.temperatureHoldSmoke)) return response;
       const status = await response.json();
+      if (globalThis.temperatureHoldSmoke) {
+        status.garage.temperatureHold = { active: true, expiresAt: status.now + 45_000 };
+        status.garage.plan = { nextAction: 'hold', reason: 'waiting-for-temperature-evidence' };
+        status.garage.adapter.phase = 'paused';
+        status.garage.protection = { ...status.garage.protection, safeToPause: false, requiredFresh: false,
+          reasons: ['rear:missing-temperature'] };
+        globalThis.temperatureHoldAssessment = status.garage.protection;
+      }
       if (globalThis.nativePumpSmokeValues) {
         const at = status.now, reading = value => ({ value, available: true, observedAt: at });
         status.h66 = { ...status.h66, connected: true, brokerConnected: true,
@@ -269,7 +278,26 @@ try {
   assert.equal(await evaluate("document.getElementById('error').hidden"), true);
   await until("document.getElementById('charger1-setting-capacityKwh') !== null");
   assert.deepEqual(await evaluate("['control-title','garage-title'].map(id=>document.getElementById(id).textContent)"), ['Home', 'Garage']);
-  if (dashboardOnly) {
+  await until("typeof globalThis.refreshLearningSmokeStatus === 'function'");
+  await evaluate("globalThis.temperatureHoldSmoke=true;globalThis.refreshLearningSmokeStatus()");
+  await until("document.getElementById('garage-policy-decision').textContent==='Pause held · awaiting temperature'");
+  assert.match(await evaluate("document.getElementById('garage-controller-reason').textContent"),/Waiting for fresh temperature evidence.*original deadline.*no renewal/);
+  assert.match(await evaluate("document.getElementById('garage-requested').textContent"),/Reduction.*held/);
+  assert.equal(await evaluate('globalThis.temperatureHoldAssessment.safeToPause'),false,'Held display does not qualify raw protection');
+  assert.equal(await evaluate('globalThis.temperatureHoldAssessment.requiredFresh'),false,'Held display does not invent fresh reports');
+  for (const width of [1440, 390, 320]) for (const theme of ['dark', 'light']) {
+    await send('Emulation.setDeviceMetricsOverride', { width, height: 1000, deviceScaleFactor: 1, mobile: false });
+    await evaluate(`window.homeEnergyTheme.setTheme('${theme}')`);
+    await pause(50);
+    assert.equal(await evaluate('document.documentElement.scrollWidth<=window.innerWidth'),true,`${width}px ${theme} held pause fits`);
+  }
+  await evaluate('globalThis.temperatureHoldSmoke=false;globalThis.refreshLearningSmokeStatus()');
+  await until("!document.getElementById('garage-controller-reason').textContent.includes('Existing OFF permission is held')");
+  await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1100, deviceScaleFactor: 1, mobile: false });
+  if (temperatureHoldOnly) {
+    assert.deepEqual(errors,[]);
+    console.log(JSON.stringify({result:'garage-temperature-hold-browser-passed',checks:['held managed OFF summary','waiting for temperature evidence','original expiry and no renewal','raw protection remains unqualified','320/390/1440px both themes','no browser exceptions']}));
+  } else if (dashboardOnly) {
     await checkDashboardBalance({ evaluate, until });
     for (const width of [1920, 1440, 1366, 1280, 1252, 1251, 1024, 900, 820, 801, 800, 768, 540, 390, 320]) {
       await send('Emulation.setDeviceMetricsOverride', { width, height: width > 800 ? 1000 : 844, deviceScaleFactor: 1, mobile: false });

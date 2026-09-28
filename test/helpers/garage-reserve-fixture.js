@@ -7,6 +7,6 @@ export function knownGarageReserve(settings, { at, rearC = 7, frontC = 6.7, rear
   exposure.at = at;
   for (const [location, value, air] of [['rear', rearC, rearAirC], ['front', frontC, frontAirC]])
     Object.assign(exposure.locations[location], { energyJPerM: capacity * value, estimatedC: value,
-      stateAt: at, lastAt: at, lastC: air, uncertain: false, unknownMinutes: 0 });
+      stateAt: at, lastAt: at, lastC: air, uncertain: false, uncertaintyReason: null, unknownMinutes: 0 });
   return exposure;
 }

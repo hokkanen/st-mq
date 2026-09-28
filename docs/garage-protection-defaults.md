@@ -91,7 +91,7 @@ from cached readings. Forecasts begin at the decision time, so predicted recover
 cannot be interpolated backward into the time since the last genuine report.
 
 The planner revalidates at its **1-minute** cadence. A requested Pill permission
-is capped at **3 minutes from the older supporting temperature report**, and can
+is capped at **2 minutes from the older supporting temperature report**, and can
 be shorter when the thermal reserve requires it. Evidence deadlines overlap;
 they are not three sequential waits. UI polling, broker traffic and repeat
 revalidation of old temperature evidence cannot extend that deadline.
@@ -115,16 +115,54 @@ exposure time: sustained cold can require immediate restoration.
 
 For example, a uniform initial 4°C reference exposed continuously to −10°C air
 reaches the 1°C margin after approximately **2 minutes 8 seconds** with these
-assumptions. This does not permit a three-minute pause, and a sufficient
-heating-response delay can make immediate restoration necessary. Cold outdoor air
+assumptions. This does not automatically permit a two-minute pause once the
+useful-heating delay is included; that delay can require immediate restoration. Cold outdoor air
 entering a garage does not imply that both adjacent sensors immediately measure
 the outdoor temperature.
 
-The actual published Pill protocol and installed timing evidence are still
-missing from this repository. These rules are implemented and tested at the
-explicit `stmq-garage-fixture/v1` consumer boundary; they are not a claim that
-deployed firmware has been configured to these intervals. See the
+The production consumer uses the separate driver's `shelly-cn105/v1` contract;
+isolated tests also exercise the `stmq-garage-fixture/v1` boundary. Passing those
+tests does not establish installed timing or commissioning. See the
 [adapter boundary](garage-adapter.md) and [Pill handoff](shelly-pill-handoff.md).
+
+## External-temperature permission and connection gaps
+
+Low room settings use the rear probe for regulation, with **both front and rear**
+required for this same pipe-reserve assessment. This protection applies even if
+automatic price control or its owner approval is disabled. It does not approve
+economic pauses. Unknown thermal history, an unavailable useful-heating delay or
+insufficient reserve prevents the external override. The reported driver delay
+is increased by any observed slower recovery, never shortened by a fast cycle.
+
+| Permission | Required age for admission/renewal | Latest requested expiry | Explicit probe communication loss |
+| --- | --- | --- | --- |
+| External temperature | Both connected reports younger than 120 seconds | Older report +120 seconds, or earlier for reserve | Hold only an existing acknowledged permission while its original deadline and reserve remain valid. |
+| Managed OFF | Both connected reports younger than 120 seconds | Older report +120 seconds, or earlier for reserve | Hold only an accepted active pause while its original deadline and reserve remain valid. |
+
+The driver retains its 180-second ceilings but must honor the shorter absolute
+host deadline in both modes. Neither mode admits or renews from held readings.
+A transport-only probe outage alone does not request ON or clear external input.
+The local timer, rather than a host restoration command
+that might be unable to reach it, bounds operation during disconnection. Any
+future driver MQTT grace must fit inside that same original deadline. Fresh
+state after reconnection establishes whether the old sample remained active;
+the host does not assume it survived.
+
+A held sample is control evidence from before a transport outage, not a new
+measurement. The hold assessment can use the last qualified in-memory exposure
+anchor without changing the recorded reserve. It projects cooling at the coldest
+of the local reading, reference estimate and qualified outside temperature;
+missing qualified outside evidence uses the −40°C bound. It never credits
+warming during the gap. The reserve must still cover the entire remaining
+permission and useful-heating delay. An unsafe front or rear location, an
+invalid reading, source change or expired deadline requests clearing external
+input or restoring a managed OFF pause.
+
+Internal sensing uses the pump's current native settings, normally HEAT at 17°C
+after low-temperature setup. Explicit manual power/mode choices are respected.
+These checks do not establish physical frost protection when the Pill, pump or
+serial path fails. Neither native ON nor a serial acknowledgement proves useful
+heat has reached the reference objects.
 
 ## Persistence, initialization and learning
 

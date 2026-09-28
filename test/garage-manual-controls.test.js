@@ -26,7 +26,8 @@ function setup(t, { live = false, approved = true } = {}) {
   runtime.exposure = knownGarageReserve(runtime.settings, { at: BASE });
   function temperatures(rear = 9, front = 8) {
     for (const [signal, value] of [['garage_temperature', rear], ['garage_temperature_2', front], ['outdoor_temperature', 0]])
-      engine.latest[signal] = { value, sourceTime: now, receivedAt: now, quality: [], source: 'fixture-temperature', device: signal };
+      engine.latest[signal] = { signal, value, unit: 'degC', sourceTime: now, receivedAt: now,
+        quality: ['good'], source: 'fixture-temperature', device: signal, raw: {} };
   }
   function state(command = null, patch = {}) {
     const value = structuredClone(TEMPLATE);
@@ -61,7 +62,7 @@ test('garage pause selects Normal; manual Off uses bounded renewed leases withou
   const first = f.commands.at(-1);
   assert.equal(first.action, 'start');
   assert.equal(first.endpointAt, BASE + 30 * MINUTE);
-  assert.equal(first.requestedExpiryAt, BASE + 3 * MINUTE);
+  assert.equal(first.requestedExpiryAt, BASE + 2 * MINUTE);
   assert.equal(f.runtime.episode, null, 'manual selection must not create an economic savings assessment');
   for (let minute = 1; minute <= 5; minute++) {
     f.at(BASE + minute * MINUTE); f.temperatures(); f.state(f.commands.at(-1)); await f.tick();
@@ -128,7 +129,9 @@ test('freeze protection overrides manual Off during a price-control pause', asyn
   await f.runtime.setTemporary({ pauseUntil: new Date(BASE + 30 * MINUTE).toISOString() });
   await f.runtime.setHeating({ mode: 'off' });
   f.at(BASE + 1000); f.state(f.commands[0]); await flush();
-  f.at(BASE + MINUTE); f.temperatures(-10, 8); f.state(f.commands[0]); f.runtime.safetyTick(); await flush();
+  // Cooling must exhaust reserve within the remaining permission plus the
+  // qualified useful-heating delay, despite the shorter120s host cap.
+  f.at(BASE + MINUTE); f.temperatures(-20, 8); f.state(f.commands[0]); f.runtime.safetyTick(); await flush();
   assert.equal(f.commands.at(-1).action, 'release');
   assert.equal(f.runtime.status().temporary.pauseActive, true);
   assert.equal(f.runtime.status().heatingControls.manualChanged, false);

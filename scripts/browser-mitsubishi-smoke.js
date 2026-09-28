@@ -194,7 +194,7 @@ try {
   assert.match(controlHelp,/16 °C or higher replace the lower target and use normal pump control/);
   assert.match(controlHelp,/stays in effect until changed, including after restart/);
   assert.match(controlHelp,/Fan and vane changes preserve it/);
-  assert.match(controlHelp,/fresh sensor readings.*power on, heating mode and 17 °C/s);
+  assert.match(controlHelp,/fresh front and rear readings.*power on, heating mode and 17 °C/s);
   assert.match(controlHelp,/checks fail.*renewals stop.*internal sensor/s);
   assert.doesNotMatch(controlHelp,/ST-MQ/i);
   await evaluate("document.querySelector('.status-detail-close').click()");
@@ -215,6 +215,16 @@ try {
   assert.doesNotMatch(activeHelp,/Temporary until|two hours|configured room target/);
   assert.doesNotMatch(activeHelp,/ST-MQ/i);
   await evaluate("document.querySelector('.status-detail-close').click()");
+  await evaluate("globalThis.pumpSmokeRoom={...globalThis.pumpSmokeRoom,phase:'holding',held:true,acknowledged:false,reason:'front:thermal-reserve-exhausted'};globalThis.refreshPumpSmoke()");
+  await until("document.getElementById('garage-native-target-basis').textContent==='External sensor · Held'");
+  assert.match(await evaluate("document.getElementById('garage-room-temperature-status').textContent"),/current control is unconfirmed/);
+  await evaluate("document.querySelector('#garage-native-temperature-details .status-detail-trigger').click()");
+  const heldHelp=await evaluate("document.getElementById('status-detail-popover').textContent");
+  assert.match(heldHelp,/two minutes after the older supporting measurement/);
+  assert.match(heldHelp,/Garage front: the remaining heat reserve is too small/);
+  assert.doesNotMatch(heldHelp,/thermal-reserve-exhausted/);
+  await evaluate("document.querySelector('.status-detail-close').click();globalThis.pumpSmokeRoom={...globalThis.pumpSmokeRoom,phase:'active',held:false,acknowledged:true,reason:null};globalThis.refreshPumpSmoke()");
+  await until("document.getElementById('garage-native-target-basis').textContent==='Garage rear · Active'");
   assert.doesNotMatch(await evaluate("document.body.innerText"),/ST-MQ/i);
   for(const width of [1440,390,320])for(const theme of ['dark','light']){
     await send('Emulation.setDeviceMetricsOverride',{width,height:1000,deviceScaleFactor:1,mobile:false});

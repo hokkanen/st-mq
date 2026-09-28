@@ -74,9 +74,9 @@ test('Shelly CN105 MQTT route monitors before commissioning, then handshakes and
     receive();
     await adapter.plannerTick({ now, valid: true, recoveryReady: true, plan: {
       id: 'invented-pause', pauseFrom: now, pauseUntil: now + 600_000,
-      temperatureEvidenceAt: now, permissionExpiresAt: now + 180_000 } });
+      temperatureEvidenceAt: now, permissionExpiresAt: now + 120_000 } });
     assert.equal(published[1].payload.action, 'start');
-    assert.equal(published[1].payload.requestedExpiryAt, base + 180_000);
+    assert.equal(published[1].payload.requestedExpiryAt, base + 120_000);
     assert.deepEqual(published[1].options, { qos: 0, retain: false });
     now += 1000; client.emit('offline');
     assert.equal(adapter.status().automaticControl, false);

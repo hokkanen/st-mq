@@ -7,13 +7,14 @@ import { SHELLY_CN105_CONTRACT } from '../src/garage/contract.js';
 import { GarageRuntime } from '../src/garage/runtime.js';
 import { Store } from '../src/storage/store.js';
 import { mitsubishiControl } from '../chart/mitsubishi.js';
+import { knownGarageReserve } from './helpers/garage-reserve-fixture.js';
 
 const TEMPLATE = JSON.parse(readFileSync(new URL('./fixtures/garage-pill-state.json', import.meta.url)));
 const BASE = TEMPLATE.observedAt;
 const SETTINGS = { driver: 'shelly-cn105', stateTopic: 'invented/room/state',
   telemetryTopic: 'invented/room/telemetry', commandTopic: 'invented/room/command' };
 const INTERNAL = { enabled: true, phase: 'internal', temperatureC: null, measuredAt: null, expiresInMs: 0,
-  refreshMs: 10_000, maxSourceAgeMs: 90_000, acknowledged: false, restorationPending: false, rearmRequired: false, reason: null };
+  refreshMs: 10_000, maxSourceAgeMs: 180_000, acknowledged: false, restorationPending: false, rearmRequired: false, reason: null };
 
 /** Real runtime, adapter, envelope transport and persistence; only the broker,
  * physical driver's reports and independent room sensor are synthetic. */
@@ -33,6 +34,7 @@ function fixture(t, { initialNativeTargetC = 17 } = {}) {
     } }) });
   runtime.setAdapter(adapter); adapter.setConnected(true);
   function state({ nativeAt = now, nativeTimes = {}, baseline = TEMPLATE.baseline,
+    feed = external,
     ownerSession = published.length ? 'invented-room-owner' : null } = {}) {
     const value = { ...structuredClone(TEMPLATE), sequence: ++sequence, observedAt: now, mode: 'monitoring',
       baseline: structuredClone(baseline),
@@ -40,16 +42,20 @@ function fixture(t, { initialNativeTargetC = 17 } = {}) {
         manualControlAllowed: external.phase === 'internal' && !manualPending },
       challenge: { value: `invented-room-challenge-${sequence}`, expiresAt: now + 30_000 },
       native: Object.fromEntries(Object.entries(native).map(([key, value]) => [key, { value, measuredAt: nativeTimes[key] ?? nativeAt, ageMs: now - (nativeTimes[key] ?? nativeAt) }])),
-      externalTemperature: { ...external, expiresInMs: external.temperatureC === null ? 0
-        : Math.max(0, external.measuredAt + 90_000 - now) }, result, manualPending,
+      externalTemperature: { ...feed, expiresInMs: feed.temperatureC === null ? 0
+        : Math.max(0, feed.expiresAt - now) }, result, manualPending,
       capabilities: { ...TEMPLATE.capabilities, externalTemperature: true, targetStep: 1,
         manualControls: Object.fromEntries(['power', 'mode', 'targetC', 'fan', 'vane', 'wideVane'].map(key => [key, true])) } };
     for (const field of Object.values(value.health)) { field.measuredAt = now; field.ageMs = 0; }
     assert.equal(adapter.receive(SETTINGS.stateTopic, JSON.stringify(value), {}, now), true);
   }
   function measure(value = 5) {
+    engine.latest.garage_temperature_2 = { signal: 'garage_temperature_2', source: 'mqtt-equipment', device: 'invented-room-front',
+      value: 5, unit: 'degC', sourceTime: now, receivedAt: now, quality: ['good'], raw: {} };
+    engine.latest.outdoor_temperature = { signal: 'outdoor_temperature', source: 'fmi', device: 'invented-outdoor',
+      value: 5, sourceTime: now, receivedAt: now, quality: ['good'], raw: {} };
     engine.latest.garage_temperature = { signal: 'garage_temperature', source: 'mqtt-equipment', device: 'invented-room-rear',
-      value, sourceTime: now, receivedAt: now, quality: ['good'], raw: {} };
+      value, unit: 'degC', sourceTime: now, receivedAt: now, quality: ['good'], raw: {} };
   }
   function report(status) {
     const command = published.at(-1).command;
@@ -66,6 +72,7 @@ function fixture(t, { initialNativeTargetC = 17 } = {}) {
           ...(status === 'acknowledged' ? {} : { phase: 'clearing', restorationPending: true }) }
         : { ...INTERNAL, phase: status === 'acknowledged' ? 'active' : 'arming', restorationPending: true,
           temperatureC: command.temperatureC, measuredAt: command.measuredAt,
+          expiresAt: command.requestedExpiryAt,
           expiresInMs: Math.max(0, command.requestedExpiryAt - now), acknowledged: status === 'acknowledged' };
     }
     state();
@@ -116,6 +123,7 @@ function fixture(t, { initialNativeTargetC = 17 } = {}) {
     assert.equal(runtime.status().roomTemperature.phase, 'active');
     assert.equal(runtime.status().roomTemperature.acknowledged, true);
   }
+  runtime.exposure = knownGarageReserve(runtime.settings, { at: now, rearC: 7, frontC: 7 });
   measure(); state();
   t.after(async () => { await runtime.close({ restore: false }); await adapter.close({ restore: false }); store.close(); });
   return { runtime, adapter, engine, store, native, published, observations, state, report, rejectBusy, measure, settle, advanceReport, start,
@@ -131,6 +139,105 @@ function assertInitialWarmth(runtime, targetC) {
   assert.equal(reference.samples, 0);
   assert.equal(runtime.read().roomTargetC, targetC, 'Live learning records the same room setting');
 }
+
+function loseSensor(f, signal = 'garage_temperature', reason = 'device-offline') {
+  f.engine.latest[signal] = { ...f.engine.latest[signal], value: null,
+    sourceTime: f.now(), receivedAt: f.now(), quality: ['missing', reason],
+    raw: { timeBasis: 'availability-transition', usableForControl: false } };
+}
+
+test('transport-only sensor loss holds the acknowledged feed to its original deadline without filling history', async t => {
+  for (const signal of ['garage_temperature', 'garage_temperature_2']) await t.test(signal, async t => {
+    const f = fixture(t); await f.start();
+    const commands = structuredClone(f.published), permission = commands.at(-1).command;
+    f.advance(10_000); loseSensor(f, signal); f.state(); await f.settle();
+    assert.deepEqual(f.published, commands);
+    assert.equal(f.runtime.status().roomTemperature.phase, 'holding');
+    assert.equal(f.runtime.status().roomTemperature.acknowledged, false);
+    assert.equal(f.engine.latest[signal].value, null, 'control holding must preserve the unavailable observation');
+    assert.equal(f.runtime.read()[signal === 'garage_temperature' ? 'rearC' : 'frontC'], null,
+      'learning and freeze history continue to see the real acquisition gap');
+    f.advance(permission.requestedExpiryAt - f.now() - 1); f.state(); await f.settle();
+    assert.deepEqual(f.published, commands);
+    assert.equal(f.runtime.status().roomTemperature.phase, 'holding');
+    f.advance(1); f.state(); await f.settle();
+    assert.equal(f.published.length, commands.length + 1);
+    assert.equal(f.published.at(-1).command.temperatureC, null);
+    assert.equal(f.runtime.status().roomTemperature.targetC, 5);
+  });
+});
+
+test('a front sensor outage prevents renewal even when newer rear readings arrive', async t => {
+  const f = fixture(t); await f.start(); const commands = structuredClone(f.published);
+  f.advance(10_000); loseSensor(f, 'garage_temperature_2');
+  const missing = f.engine.latest.garage_temperature_2;
+  f.measure(4); f.engine.latest.garage_temperature_2 = missing; f.state(); await f.settle();
+  assert.deepEqual(f.published, commands);
+  assert.equal(f.runtime.status().roomTemperature.phase, 'holding');
+  assert.equal(f.runtime.status().roomTemperature.suppliedC, 17, 'a hold keeps the acknowledged value');
+});
+
+test('a real sensor fault during a transport hold clears immediately', async t => {
+  const f = fixture(t); await f.start();
+  f.advance(); loseSensor(f); f.state(); await f.settle();
+  assert.equal(f.runtime.status().roomTemperature.phase, 'holding');
+  f.advance(); loseSensor(f, 'garage_temperature', 'sensor-unavailable'); f.state(); await f.settle();
+  assert.equal(f.published.at(-1).command.temperatureC, null);
+  assert.equal(f.runtime.status().roomTemperature.phase, 'clearing');
+});
+
+test('host MQTT loss waits for fresh Pill evidence and never renews a held permission', async t => {
+  for (const survives of [true, false]) await t.test(survives ? 'driver retains feed' : 'driver clears feed', async t => {
+    const f = fixture(t); await f.start(); const commands = structuredClone(f.published);
+    f.advance(10_000); f.adapter.setConnected(false); loseSensor(f); loseSensor(f, 'garage_temperature_2');
+    await f.settle();
+    assert.deepEqual(f.published, commands);
+    assert.equal(f.runtime.status().roomTemperature.phase, 'holding');
+    assert.equal(f.adapter.externalTemperature().continuation.confirmed, false);
+    f.advance(); f.adapter.setConnected(true); await f.settle();
+    assert.deepEqual(f.published, commands, 'reconnecting alone grants no new authority');
+    f.state(survives ? {} : { feed: { ...INTERNAL, acknowledged: true } }); await f.settle();
+    assert.deepEqual(f.published, commands, 'cached sensor evidence cannot restart or renew the feed');
+    assert.equal(f.runtime.status().roomTemperature.phase, survives ? 'holding' : 'waiting');
+    assert.equal(Boolean(f.adapter.externalTemperature().continuation), survives);
+  });
+});
+
+test('freeze reserve and useful-heating delay guard explicit room targets even with economic control disabled', async t => {
+  for (const scenario of ['unknown reserve', 'exhausted front reserve']) await t.test(scenario, async t => {
+    const f = fixture(t); await f.start();
+    assert.equal(f.runtime.settings.enabled, false);
+    assert.equal(f.runtime.settings.protection.approved, false);
+    f.advance();
+    if (scenario === 'unknown reserve') f.runtime.exposure.locations.front.uncertain = true;
+    else {
+      f.runtime.exposure.locations.front.energyJPerM = 0;
+      f.runtime.exposure.locations.front.estimatedC = 0;
+    }
+    await f.settle();
+    assert.equal(f.published.at(-1).command.temperatureC, null);
+    assert.equal(f.runtime.status().roomTemperature.targetC, 5);
+  });
+});
+
+test('front sensor replacement clears the old permission even when replacement readings are warm and fresh', async t => {
+  const f = fixture(t); await f.start();
+  f.advance(); f.measure(); f.engine.latest.garage_temperature_2.device = 'invented-replacement-front';
+  f.state(); await f.settle();
+  assert.equal(f.published.at(-1).command.temperatureC, null);
+  assert.equal(f.runtime.status().roomTemperature.acknowledged, false);
+});
+
+test('recurring protection-assessment failure still attempts explicit cleanup', async t => {
+  const f = fixture(t); await f.start(); const count = f.published.length;
+  f.runtime.roomTemperatureProtection = () => { throw new Error('invented assessment failure'); };
+  f.advance(); await f.settle();
+  assert.equal(f.published.length, count + 1);
+  assert.equal(f.published.at(-1).command.temperatureC, null);
+  await f.settle();
+  assert.equal(f.published.length, count + 1, 'pending cleanup must not flood commands');
+  assert.equal(f.runtime.status().roomTemperature.acknowledged, false);
+});
 
 function appendRoomSample(f, { rearC, frontC, available = true }) {
   const at = f.now();
@@ -317,7 +424,7 @@ test('real runtime and Pill adapter select5 through clearACK, forced native17 co
   const commands = f.published.map(row => row.command);
   assert.equal(commands[0].measuredAt, undefined); assert.equal(commands[0].requestedExpiryAt, undefined);
   assert.equal(commands[2].measuredAt, f.engine.latest.garage_temperature.sourceTime);
-  assert.equal(commands[2].requestedExpiryAt, commands[2].measuredAt + 90_000);
+  assert.equal(commands[2].requestedExpiryAt, commands[2].measuredAt + 120_000);
   assert.equal(new Set(commands.map(command => command.challenge)).size, commands.length);
   assert.deepEqual(commands.map(command => command.sequence), [1, 2, 3]);
   for (const { command, topic, options } of f.published) {
@@ -338,10 +445,10 @@ test('fresh independent room measurements renew through active externalBusy and 
   assert.equal(f.published.length, 4, 'active external control must permit the next independent room reading');
   assert.equal(f.published[3].command.temperatureC, 16);
   assert.equal(f.published[3].command.measuredAt, f.engine.latest.garage_temperature.sourceTime);
-  assert.equal(f.published[3].command.requestedExpiryAt, f.engine.latest.garage_temperature.sourceTime + 90_000);
+  assert.equal(f.published[3].command.requestedExpiryAt, f.engine.latest.garage_temperature.sourceTime + 120_000);
   await f.advanceReport('acknowledged');
   assert.equal(f.runtime.status().roomTemperature.phase, 'active');
-  f.advance(90_000); f.state(); await f.settle();
+  f.advance(120_000); f.state(); await f.settle();
   assert.equal(f.published.length, 5);
   assert.equal(f.published[4].command.temperatureC, null, 'stale room input clears the external temperature');
   await f.advanceReport('acknowledged');
@@ -373,7 +480,7 @@ test('brief busy renewals coalesce fresh room readings during cooldown without c
   assert.equal(retry.action, 'remote-temperature');
   assert.equal(retry.temperatureC, latest.value + 12);
   assert.equal(retry.measuredAt, latest.sourceTime);
-  assert.equal(retry.requestedExpiryAt, latest.sourceTime + 90_000);
+  assert.equal(retry.requestedExpiryAt, latest.sourceTime + 120_000);
   assert.notEqual(retry.measuredAt, f.now(), 'retry time cannot replace the original sensor timestamp');
   assert.equal(retry.issuedAt, f.now());
   assert.equal(retry.sequence, rejected.sequence + 1);
@@ -471,7 +578,7 @@ test('a dropped external renewal retries on a new challenge without clearing or 
   assert.equal(f.runtime.status().roomTemperature.phase, 'active');
   assert.equal(f.runtime.status().roomTemperature.acknowledged, true);
   assert.equal(f.adapter.externalTemperature().temperatureC, 16);
-  assert.equal(f.now() + f.adapter.externalTemperature().expiresInMs, source.sourceTime + 90_000);
+  assert.equal(f.now() + f.adapter.externalTemperature().expiresInMs, source.sourceTime + 120_000);
   assert.deepEqual(f.observations, []);
 });
 
@@ -524,13 +631,14 @@ test('an accepted external renewal waits for its acknowledgement without being c
   assert.deepEqual(f.published, commands);
 });
 
-test('device setting reports between renewals do not issue commands or invalidate the current room sample', async t => {
+test('device setting reports between renewals do not issue commands, and OFF or cooling withdraw active status', async t => {
   const f = fixture(t); await f.start(); const commands = structuredClone(f.published);
   for (const values of [{ targetC: 16 }, { power: 'off' }, { mode: 'cool' }, { targetC: null }]) {
     f.advance(); Object.assign(f.native, values); f.state(); await f.settle();
     assert.deepEqual(f.published, commands, JSON.stringify(values));
-    assert.equal(f.runtime.status().roomTemperature.phase, 'active');
-    assert.equal(f.runtime.status().roomTemperature.acknowledged, true);
+    const heating = f.native.power === 'on' && f.native.mode === 'heat';
+    assert.equal(f.runtime.status().roomTemperature.phase, heating ? 'active' : 'waiting');
+    assert.equal(f.runtime.status().roomTemperature.acknowledged, heating);
   }
   f.advance(); Object.assign(f.native, { targetC: 17, power: 'on', mode: 'heat' });
   f.state({ nativeAt: f.now() - 30_001 }); await f.settle();
@@ -554,17 +662,17 @@ test('real adapter renewals enforce ON HEAT 17°C evidence without adding clear 
       f.state(stateOptions); await f.settle();
       assert.deepEqual(f.published, commands, 'a failed admission check must not publish any command');
       assert.equal(f.runtime.status().roomTemperature.phase, 'waiting');
-      assert.equal(f.adapter.externalTemperature().measuredAt + 90_000, expiry);
+      assert.equal(f.adapter.externalTemperature().measuredAt + 120_000, expiry);
       f.advance(); Object.assign(f.native, { power: 'on', mode: 'heat', targetC: 17 });
       f.measure(4); f.state(); await f.settle();
       assert.equal(f.published.length, commands.length + 1);
       assert.equal(f.published.at(-1).command.temperatureC, 16);
-      assert.equal(f.published.at(-1).command.requestedExpiryAt, f.engine.latest.garage_temperature.sourceTime + 90_000);
+      assert.equal(f.published.at(-1).command.requestedExpiryAt, f.engine.latest.garage_temperature.sourceTime + 120_000);
     });
   }
 });
 
-test('withheld renewals leave the original 90-second permission to expire', async t => {
+test('withheld renewals leave the original 120-second permission to expire', async t => {
   const f = fixture(t); await f.start(); const commands = structuredClone(f.published);
   const expiry = f.published.at(-1).command.requestedExpiryAt;
   f.advance(20_000); f.native.targetC = 16; f.measure(4); f.state(); await f.settle();
@@ -574,7 +682,7 @@ test('withheld renewals leave the original 90-second permission to expire', asyn
   assert.equal(f.runtime.status().roomTemperature.phase, 'waiting');
   f.advance(); f.native.targetC = 17; f.measure(4); f.state(); await f.settle();
   assert.equal(f.published.length, commands.length + 1);
-  assert.equal(f.published.at(-1).command.requestedExpiryAt, f.engine.latest.garage_temperature.sourceTime + 90_000);
+  assert.equal(f.published.at(-1).command.requestedExpiryAt, f.engine.latest.garage_temperature.sourceTime + 120_000);
 });
 
 test('real adapter admits renewal with native readbacks exactly 30 seconds old', async t => {
