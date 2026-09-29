@@ -37,7 +37,7 @@ test('public garage topics remain subscribed for monitoring before owner approva
   const reader = await startMqtt({ engine, store, config, connect: () => client });
   t.after(async () => { await reader.close({ restore: false }); store.close(); });
   client.emit('connect');
-  const expected = ['stmq/vehicles/bmw', 'heatpump/garage/state', 'heatpump/garage/telemetry'];
+  const expected = ['stmq/vehicles/bmw', 'heatpump/garage/state', 'heatpump/garage/telemetry', 'heatpump/garage/sender/state'];
   assert.deepEqual(client.subscriptions, expected);
   client.emit('offline');
   client.subscriptions.length = 0;
@@ -53,7 +53,7 @@ test('standalone entry receives indoor and garage MQTT temperatures without an H
   let now = initial;
   const config = { ...loadConfig({ XDG_CONFIG_HOME: directory, STMQ_DATA_DIR: directory, STMQ_PORT: '0' }, directory), input: 'mqtt', deviceId: null,
     connections: { ...fixture.connections, mqtt: { address: 'mqtt://example.invalid' }, equipment: equipmentConfiguration({ devices: [{ id: 'indoor_temperature', kind: 'temperature', signal: 'indoor_temperature', connection: 'mqtt:invented/indoor' }, { id: 'garage_temperature', kind: 'temperature', signal: 'garage_temperature', connection: 'mqtt:invented/garage' }] }) } };
-  config.garage.adapter = isolatedGarageAdapter();
+  config.garage.adapter = isolatedGarageAdapter(); config.garage.sender = { stateTopic: '', commandTopic: '' };
   const app = await start({ config, clock: () => now, mqttOptions: {
     connect: (_address, options) => options?.clientId?.startsWith('stmq-identity-') ? broker() : client,
   }, providerOptions: fixture.providerOptions });
@@ -93,7 +93,7 @@ test('H66 broker loss records all twenty-eight recorded signals once and preserv
   let now = initial;
   const config = { ...loadConfig({ XDG_CONFIG_HOME: directory }, directory), input: 'mqtt', deviceId: 'invented-h66',
     connections: { mqtt: { address: 'mqtt://example.invalid' }, equipment: equipmentConfiguration({ devices: [{ id: 'garage_temperature', kind: 'temperature', signal: 'garage_temperature', connection: 'mqtt:invented/garage' }] }) } };
-  config.garage.adapter = isolatedGarageAdapter();
+  config.garage.adapter = isolatedGarageAdapter(); config.garage.sender = { stateTopic: '', commandTopic: '' };
   const engine = new Engine({ store, config, clock: () => now }), client = broker();
   const reader = await startMqtt({ engine, store, config, connect: () => client });
   t.after(async () => { await reader.close(); store.close(); rmSync(directory, { recursive: true, force: true }); });
@@ -127,7 +127,7 @@ test('temperature subscription rejection records failure without exposing broker
   const store = new Store(join(directory, 'test.sqlite'));
   const config = { ...loadConfig({ XDG_CONFIG_HOME: directory }, directory), input: 'mqtt', deviceId: null,
     connections: { mqtt: { address: 'mqtt://example.invalid' }, equipment: equipmentConfiguration({ devices: [{ id: 'garage_temperature', kind: 'temperature', signal: 'garage_temperature', connection: 'mqtt:invented/garage' }] }) } };
-  config.garage.adapter = isolatedGarageAdapter();
+  config.garage.adapter = isolatedGarageAdapter(); config.garage.sender = { stateTopic: '', commandTopic: '' };
   const engine = new Engine({ store, config, clock: () => initial }), client = broker({ rejectedTopic: 'invented/garage' });
   const reader = await startMqtt({ engine, store, config, connect: () => client });
   t.after(async () => { await reader.close(); store.close(); rmSync(directory, { recursive: true, force: true }); });
@@ -142,7 +142,7 @@ test('Downstairs and Bedroom MQTT temperatures are recorded independently across
   const store = new Store(':memory:');
   const config = { ...loadConfig({ HOME: '/missing-stmq-test-home' }, '/missing-repository'), input: 'mqtt', deviceId: null,
     connections: { mqtt: { address: 'mqtt://example.invalid' }, equipment: equipmentConfiguration({ devices: [{ id: 'downstairs_temperature', kind: 'temperature', signal: 'downstairs_temperature', connection: 'mqtt:invented/downstairs' }, { id: 'bedroom_temperature', kind: 'temperature', signal: 'bedroom_temperature', connection: 'mqtt:invented/bedroom' }] }) } };
-  config.garage.adapter = isolatedGarageAdapter();
+  config.garage.adapter = isolatedGarageAdapter(); config.garage.sender = { stateTopic: '', commandTopic: '' };
   const engine = new Engine({ store, config, clock: () => initial }), client = broker();
   const reader = await startMqtt({ engine, store, config, connect: () => client });
   t.after(async () => { await reader.close(); store.close(); });
@@ -165,7 +165,7 @@ test('configured Upstairs MQTT sensor owns room history and model input alongsid
     // This isolated fixture replaces the public equipment list with one room.
     control: { ...defaults.control, indoorSensorWeights: { indoor_temperature: 1 } },
     connections: { mqtt: { address: 'mqtt://example.invalid' }, equipment: equipmentConfiguration({ devices: [{ id: 'indoor_temperature', kind: 'temperature', signal: 'indoor_temperature', connection: 'mqtt:invented/smoke/1/temperature' }] }) } };
-  config.garage.adapter = isolatedGarageAdapter();
+  config.garage.adapter = isolatedGarageAdapter(); config.garage.sender = { stateTopic: '', commandTopic: '' };
   let now = initial;
   const engine = new Engine({ store, config, clock: () => now }), client = broker();
   const reader = await startMqtt({ engine, store, config, connect: () => client });

@@ -1,12 +1,12 @@
-import { GARAGE_FIXTURE_CONTRACT } from './contract.js';
+import { SHELLY_CN105_CONTRACT } from './contract.js';
 const HOUR = 3_600_000;
 const MAX_TIMING_INTERVAL_MS = 15 * 60_000;
 
 /** One selected electrical path. Fast telemetry does not imply fast counter
  * updates, and a compressor-frequency reading never becomes electrical power. */
 export function createGarageElectrical({ source = 'none', onEnergy = () => {}, persisted = null,
-  contractVersion = GARAGE_FIXTURE_CONTRACT } = {}) {
-  const provisional = contractVersion === GARAGE_FIXTURE_CONTRACT;
+  contractVersion = SHELLY_CN105_CONTRACT } = {}) {
+  const provisional = false;
   let previous = null;
   let lastEnd = Number.isSafeInteger(persisted?.lastEnd) ? persisted.lastEnd : null;
   let lastIssue = null;

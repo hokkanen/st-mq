@@ -79,7 +79,7 @@ reply can establish availability. ST-MQ resets bridge status on its own reconnec
 Both default door entries use `max_age_seconds: 0`, `mqtt.state_path: "value"`,
 `mqtt.timestamp_path: "timestamp"`, their command/availability topics and
 `mqtt.bridge_availability_topic: "homeassistant/status"`. Confirmed event-driven
-contacts remain usable in equipment display and the garage model without an age
+contacts remain usable in equipment display and history without an age
 expiry. Source, bridge and broker outages invalidate them immediately. Recovery
 requires a live source availability report and a live snapshot, preserving the
 original source timestamp while starting a new availability span. A query timeout

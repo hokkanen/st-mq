@@ -19,7 +19,7 @@ test('live test transport stays idle until a POST and shutdown records an unconf
   const config = { ...loadConfig({ XDG_CONFIG_HOME: directory, STMQ_PORT: '0', STMQ_DATA_DIR: directory }, directory),
     input: 'providers', dbPath: join(directory, 'st-mq.sqlite'), legacyDbPath: join(directory, 'st-mq.sqlite'),
     connections: { ...fixture.connections, mqtt: connection } };
-  config.garage.adapter = isolatedGarageAdapter();
+  config.garage.adapter = isolatedGarageAdapter(); config.garage.sender = { stateTopic: '', commandTopic: '' };
   const clients = [], packets = [], published = new EventEmitter();
   const connect = (address, options) => {
     if (identityConnection(options)) return idleIdentityClient();

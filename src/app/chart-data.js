@@ -1,7 +1,6 @@
-import { addGarageHistory } from './chart-garage.js';
 import { DailyTimingBenchmark } from './daily-timing-benchmark.js';
 export { DailyTimingBenchmark } from './daily-timing-benchmark.js';
-import { getGarageModelBenefit, getGarageTimingBenefit, buildHeatingSavings } from './garage-reporting.js';
+import { getGarageTimingBenefit, buildHeatingSavings } from './garage-reporting.js';
 import { isRecordedDataset } from '../storage/recorded-datasets.js';
 import { H66_MAX_AGE_MS } from '../domain/reading-freshness.js';
 import { isInterpolatedTemperature } from '../domain/chart-temperatures.js';
@@ -13,7 +12,7 @@ import { createHistoricalPricing } from './chart-prices.js';
 import { historicalSpotIntervals } from './historical-spot-prices.js';
 import { resolveMarketIntervals } from '../domain/market-authority.js';
 import { auxiliaryPowerFromOutput } from '../domain/telemetry.js';
-import { HISTORY_AXIS_BY_KEY, CARAVAN_DEHUMIDIFIER_STATES, GARAGE_INPUT_INFO, GARAGE_COEFFICIENT_INFO, GARAGE_OUTCOME_INFO, ENERGY_SIGNALS, AUDIT_SIGNALS, COUNTER_SIGNALS, SESSION_CHECK_INFO, MODEL_INPUT_INFO, MODEL_COEFFICIENT_INFO, RECORDED_EVIDENCE_SIGNALS } from '../domain/history-series.js';
+import { HISTORY_AXIS_BY_KEY, CARAVAN_DEHUMIDIFIER_STATES, ENERGY_SIGNALS, AUDIT_SIGNALS, COUNTER_SIGNALS, SESSION_CHECK_INFO, MODEL_INPUT_INFO, MODEL_COEFFICIENT_INFO, RECORDED_EVIDENCE_SIGNALS } from '../domain/history-series.js';
 import { addChargingSessionChecks } from './chart-session-checks.js';
 import { addModelInputs } from './chart-model-inputs.js';
 import { addModelCoefficients } from './chart-model-coefficients.js';
@@ -203,6 +202,13 @@ function qualityReader() {
 
 function valueOf(row, flags) {
   if (!Number.isFinite(row.value) || flags.some(flag => BAD.has(flag))) return null;
+  if (/^garage_(room_target|effective_target|ble_temperature|pipe_(rear|front)_temperature|native_power|external_enabled|frost_active|frost_available|away_mode)$/.test(row.signal)) {
+    if (flags.some(flag => ['unknown', 'stale', 'retained', 'unsupported'].includes(flag))) return null;
+    if (/(_target|_temperature)$/.test(row.signal)) {
+      if (!['degC', '°C'].includes(row.unit) || row.value < -60 || row.value > 70) return null;
+      if (row.signal.endsWith('_target') && (row.value < 0 || row.value > 31)) return null;
+    } else if (row.unit !== 'state' || ![0, 1].includes(row.value)) return null;
+  }
   if (row.signal.endsWith('_temperature') && !['degC', '°C'].includes(row.unit)) return null;
   if (row.signal === 'caravan_humidity' && (row.unit !== '%' || row.value < 0 || row.value > 100)) return null;
   if (row.signal === 'caravan_dehumidifier_state' && (row.unit !== 'state' || !Object.hasOwn(CARAVAN_DEHUMIDIFIER_STATES, row.value))) return null;
@@ -463,7 +469,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
   let telemetry = new Map(), previousTelemetryAt = null;
   const learningMetadata = {};
   const requested = new Set(projecting && _priceProjection ? ['spot_price']
-    : [...names.filter(name => !Object.hasOwn(GARAGE_INPUT_INFO, name) && !Object.hasOwn(GARAGE_COEFFICIENT_INFO, name) && !Object.hasOwn(GARAGE_OUTCOME_INFO, name) && !Object.hasOwn(MODEL_INPUT_INFO, name) && !Object.hasOwn(MODEL_COEFFICIENT_INFO, name) && !Object.hasOwn(SESSION_CHECK_INFO, name) && !AUDIT_SIGNALS.includes(name) && !FIREWOOD_OUTCOME_NAMES.includes(name) && !['caravan_energy', 'caravan_power', 'property_power', 'charger2_power', 'heat_pump_power', 'outdoor_forecast', 'solar_forecast', 'all_in_price', ...ENERGY_SIGNALS].includes(name)),
+    : [...names.filter(name => !Object.hasOwn(MODEL_INPUT_INFO, name) && !Object.hasOwn(MODEL_COEFFICIENT_INFO, name) && !Object.hasOwn(SESSION_CHECK_INFO, name) && !AUDIT_SIGNALS.includes(name) && !FIREWOOD_OUTCOME_NAMES.includes(name) && !['caravan_energy', 'caravan_power', 'property_power', 'charger2_power', 'heat_pump_power', 'outdoor_forecast', 'solar_forecast', 'all_in_price', ...ENERGY_SIGNALS].includes(name)),
       ...(aggregatePower ? PHASES : []),
       ...(!projecting ? ['garage_compressor_active', 'spot_price', 'requested_heat_mode', 'auxiliary_output', ...H66_SIGNALS] : []),
       ...(names.includes('auxiliary_power') ? ['auxiliary_output'] : [])]);
@@ -818,7 +824,6 @@ export function getChartData({ store, input = 'offline', contract = null, market
   const chargingSessions = addChargingSessionChecks({ store, range, now, envelopes });
   const modelInputs = addModelInputs({ store, range, now, input, envelopes,
     indoorLine: detail ? lines.model_indoor_temperature : undefined });
-  const garageHistory = addGarageHistory({ store, range, now, input, envelopes, referenceRange: detail ? selection : range });
   const modelCoefficients = addModelCoefficients({ store, range, now, input, envelopes });
   const fireplaceInputs = addFireplaceInputs({ store, range, now, input, envelopes, shading });
   const needsFirewood = !detail || selectedHas(FIREWOOD_OUTCOME_NAMES);
@@ -925,11 +930,10 @@ export function getChartData({ store, input = 'offline', contract = null, market
   const heatingBenefit = detail ? null : getHeatingBenefit({ store, input, range, now });
   const heatingSavings = detail ? null : buildHeatingSavings({ range, now,
     homeModel: heatingBenefit, homeTiming: timingBenefit.heatPump,
-    garageModel: getGarageModelBenefit({ store, input, range, now }),
     garageTiming: getGarageTimingBenefit({ store, input, range, now, prices: priced }) });
   return { range, now, input, ...(view === undefined ? { left } : { view }), series, shading, operatingModes,
     ...(detail ? { selection } : { timingBenefit, heatingBenefit, heatingSavings, firewoodBenefit: firewood.summary }),
-    meta: { ...(detail ? { detail: true } : {}), ...(relatedSampling ? { relatedSampling } : {}), warnings, priceAssumptions, rawRows, invalidRows, lastReadings, learning: learningMetadata, modelInputs, modelCoefficients, garageHistory, fireplaceInputs, firewoodOutcomes, recordedEnergy, chargingSessions, heatPumpEnergy, historyBasis: 'original-recorded-history',
+    meta: { ...(detail ? { detail: true } : {}), ...(relatedSampling ? { relatedSampling } : {}), warnings, priceAssumptions, rawRows, invalidRows, lastReadings, learning: learningMetadata, modelInputs, modelCoefficients, fireplaceInputs, firewoodOutcomes, recordedEnergy, chargingSessions, heatPumpEnergy, historyBasis: 'original-recorded-history',
     returnedPoints: Object.values(series).reduce((sum, rows) => sum + rows.length, 0),
     elapsedMs: Math.round((performance.now() - started) * 100) / 100,
     powerEstimate: powerNames.length ? 'Recorded phase or total energy divided by its interval duration; coherent current snapshots, including v0.7.5 CSV imports, use 230 V. Phase allocation and energy integration are estimates.' : null,

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { CHART_VIEWS, CHART_VIEW_BY_KEY, selectedChartView, chartSelectionKey,
   readChartPreferences, chartViewPreferences, setChartVisibility, chartSubjectAvailability } from '../chart/chart-views.js';
-import { HISTORY_AXES, MODEL_COEFFICIENT_INFO, SIGNAL_INFO, MODEL_INPUT_INFO, GARAGE_INPUT_INFO } from '../src/domain/history-series.js';
+import { HISTORY_AXES, MODEL_COEFFICIENT_INFO, SIGNAL_INFO, MODEL_INPUT_INFO } from '../src/domain/history-series.js';
 import { EXPLORER_SERIES_BY_KEY, filterExplorerSeries } from '../chart/series-explorer.js';
 import { chartQuery, historyDatasets, createChartLoader } from '../chart/history-model.js';
 import { historyValueScales } from '../chart/history-chart.js';
@@ -27,7 +27,7 @@ test('interpolation defaults on and is a global browser preference independent o
 
 test('view catalogue covers every original signal through a view or searchable explorer without invalid units', () => {
   const supported = new Set(HISTORY_AXES.flatMap(axis => axis.signals));
-  const definitions = { ...SIGNAL_INFO, ...MODEL_INPUT_INFO, ...GARAGE_INPUT_INFO };
+  const definitions = { ...SIGNAL_INFO, ...MODEL_INPUT_INFO };
   assert.equal(new Set(CHART_VIEWS.map(view => view.key)).size, CHART_VIEWS.length);
   for (const view of CHART_VIEWS) {
     assert.equal(new Set([...view.leftSignals, ...view.rightSignals]).size, view.leftSignals.length + view.rightSignals.length, view.key);
@@ -114,24 +114,15 @@ test('stored per-view fields cannot override global price choices', () => {
   assert.equal(visibility.spot_price, undefined);
 });
 
-test('home and garage learning separate inputs, coefficients and outcomes without duplicate diagnostics', () => {
-  for (const prefix of ['Home', 'Garage']) for (const section of ['learning', 'coefficients', 'outcomes'])
-    assert(CHART_VIEWS.some(view => view.group === `${prefix} ${section}`));
-  const home = CHART_VIEWS.filter(view => /^Home (learning|coefficients|outcomes)$/.test(view.group));
-  const garage = CHART_VIEWS.filter(view => /^Garage (learning|coefficients|outcomes)$/.test(view.group));
-  assert.equal(home.length, 10);
-  assert.equal(garage.length, 7);
-  assert.equal(CHART_VIEW_BY_KEY.garage_inputs.group, 'Garage', 'The existing electrical comparison remains in place');
-  assert.equal(CHART_VIEW_BY_KEY.learning_auxiliary, undefined);
-  assert.equal(CHART_VIEW_BY_KEY.learning_treatment, undefined);
-  assert(EXPLORER_SERIES_BY_KEY.model_auxiliary_power, 'Saved auxiliary input remains available with its own electrical unit');
+test('Home learning remains available while Garage exposes measurements and local control history', () => {
+  for (const section of ['learning', 'coefficients', 'outcomes'])
+    assert(CHART_VIEWS.some(view => view.group === `Home ${section}`));
+  assert(!CHART_VIEWS.some(view => /^Garage (learning|coefficients|outcomes)$/.test(view.group)));
+  assert.equal(CHART_VIEW_BY_KEY.garage_energy.group, 'Garage');
+  assert(!Object.keys(EXPLORER_SERIES_BY_KEY).some(key => /^garage_(model|coefficient|outcome)_/.test(key)));
+  assert(EXPLORER_SERIES_BY_KEY.model_auxiliary_power);
   assert(CHART_VIEW_BY_KEY.learning_temperatures.leftSignals.includes('model_room_boost'));
-  assert.equal(CHART_VIEW_BY_KEY.learning_temperatures.defaults.model_room_boost, false);
   assert.match(CHART_VIEW_BY_KEY.learning_benefit.description, /rolling mean/);
-  assert.match(CHART_VIEW_BY_KEY.garage_benefit.description, /provisional/);
-  assert.equal(CHART_VIEW_BY_KEY.garage_benefit.unit, '€/episode');
-  assert.equal(CHART_VIEW_BY_KEY.garage_error.unit, 'Δ°C');
-  assert(CHART_VIEW_BY_KEY.garage_references.rightSignals.includes('garage_outcome_front_reference'));
 });
 
 test('home activity rows share the requested order and keep equipment feedback distinct from requests', () => {
@@ -149,7 +140,7 @@ test('home activity rows share the requested order and keep equipment feedback d
   assert.equal(property.defaults.compressorHome, true);
   assert(!property.tracks.includes('garage_model_managed_pause'));
   assert(property.tracks.includes('compressorGarage'));
-  assert(CHART_VIEW_BY_KEY.garage.tracks.includes('garage_model_managed_pause'));
+  assert(CHART_VIEW_BY_KEY.garage.tracks.includes('compressorGarage'));
   assert.equal(CHART_VIEW_BY_KEY.control.tracks[1], 'heating_pump_active');
   assert.equal(CHART_VIEW_BY_KEY.control.defaults.heating_pump_active, true);
   assert(CHART_VIEW_BY_KEY.hot_water.tracks.includes('dhwr'));

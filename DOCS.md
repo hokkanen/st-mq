@@ -4,7 +4,7 @@ The 0.9.0 application starts with **simulated devices and Plan only heating**. D
 startup launches no live controller or provider. Live automation is enabled separately in each feature after configuring its connection. See [learning and control](docs/learning-and-control.md)
 for the algorithm, native-setting restoration and equipment testing limits.
 [Automation and manual heating](docs/automation-and-manual-control.md) explains
-the independent feature controls and Garage external-temperature handover.
+the independent feature controls and Garage local temperature regulation.
 
 1. Build/install ST-MQ through the repository's existing add-on mechanism on
    `aarch64` (Raspberry Pi 5) or `amd64`.
@@ -13,7 +13,7 @@ the independent feature controls and Garage external-temperature handover.
    Assistant login. Set an admin password of at least 24 characters in `web_token`
    for direct access on the mapped port 1234. Optionally set a different family
    password of at least 24 characters in `web_family_token`. Leave
-   `controller.input: simulated` for initial review; Home and Garage default to Plan only.
+   `controller.input: simulated` for initial review; Home defaults to Plan only; Garage control is disabled by default.
 3. Start the add-on and choose **Open Web UI** in Home Assistant. Ingress needs no
    separate application password. Direct access, when enabled, asks for either
    configured password and selects its role. The **Home Energy** UI clearly labels simulation.
@@ -30,10 +30,10 @@ the independent feature controls and Garage external-temperature handover.
    application image.
 6. Choose `controller.input: offline` to view imported history without device
    connections. Choose `providers` or `mqtt` for live temperatures and prices.
-   Keep Home and Garage on **Plan only** while reviewing plans. Configure the
+   Keep Home on **Plan only** while reviewing plans. Configure the
    current direct equipment relay route in [equipment setup](docs/mqtt-equipment.md)
    and verify its device identity, command acceptance and fresh state readback, or
-   commission H66 native control as described below. Then enable **Automatic** for the intended feature only.
+   commission H66 native control as described below. Then enable Home **Automatic** if desired. Configure Garage manual control separately.
    Disable the former heat/action automation; the current application does not
    publish heating commands through that protocol.
    Configure local indoor temperature subscriptions under `mqtt`: smoke channel 1
@@ -184,10 +184,10 @@ excluded. Full cycles count on their Finnish completion date, even if they began
 before the selection; active, incomplete and unsupported cycles do not contribute.
 Assessment counts describe this scope, not elapsed-time coverage. Home's execution
 electricity uses a temperature-dependent heat-pump source estimate, not a separate
-meter. Garage compares completed episodes with its own frozen normal-heating
-reference and remains provisional. Total adds compatible Home and Garage amounts;
-missing components are identified in a partial total. These totals differ from
-the Learning view's rolling €/cycle mean and charger session cost estimates.
+meter. Garage has no model estimate. Its electrical timing comparison uses
+qualified dedicated measurements without claiming automatic-control savings.
+These totals differ from the Learning view's rolling €/cycle mean and charger
+session cost estimates.
 
 Heating's **Timing cost** and Charging hold the included daily energy fixed and
 compare its cost at the recorded times with each full Finnish day's
@@ -253,25 +253,20 @@ a fixed end time to recovery. Equipment and connections headers retain their
 height when toggled; desktop balancing adds only bounded gaps between sections.
 **Tariff control** appears
 above **Recirculation** inside Home's heating configuration; an unverified request
-does not confirm the relay state. Garage's equivalent summary shows **Heat-pump
-mode**, **Heating control** and **Room setting**, with current native feedback
-and saved external-setting availability kept distinct. Both configurations use
-the same order: current state, **Temporary heating override**, Away/Pause,
-preferences, then learning. Preferences are **Savings & comfort** for Home and
-**Savings & protection** for Garage. Temporary override explanations describe
-their lifetime independently of availability; Garage requires Active operating
-mode and live input, and freeze protection can restore heating sooner.
+does not confirm the relay state. Garage separates its saved and effective room
+targets from native pump feedback. It has persistent **Normal / Away**, a normal
+target editor, native controls and independent **Frost protection**. Sender
+settings and pipe estimates appear when the Gen3 sender is connected. A target
+increase shows moisture guidance for roughly 24 hours; the selected mode has no
+expiry. The BLU H&T development feed supplies temperature only.
 
-Both display a configured 0–100 **Savings preference**, where zero is most
-conservative and **Pause price control** suspends savings. Use **Apply
-configuration** for permanent preference changes. Garage shows its effective
-minimum benefit, benefit retained, minimum planned OFF time, normal-heating
-interval and daily pause limit. The preference does not relax protection or
-recovery checks. Home shows an **Overall comfort reference** and expandable
-**Room references & limits**: individual learned references share the same
-configured drop/rise allowances, with the overall reference as fallback.
+Home retains **Temporary heating override**, Away/Pause, **Savings & comfort**
+and learning. Its 0–100 **Savings preference** and **Pause price control** affect
+economic control; permanent changes use **Apply configuration**. Home's
+**Overall comfort reference** and **Room references & limits** show learned
+references with configured drop/rise allowances.
 
-Each learning summary opens learning outcomes, model inputs and current
+The Home learning summary opens learning outcomes, model inputs and current
 coefficients. Current coefficients come from existing learning state; the UI
 adds no coefficient storage. Historical coefficient chart axes separately replay
 the saved journal with its matching algorithm.

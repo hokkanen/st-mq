@@ -403,8 +403,8 @@ test('Home/Garage/Total changes only heating scope and keeps both comparison con
   const { root, document } = dom(), panel = createTimingBenefit(root);
   const data = { ...payload, heatingSavings: {
     home: { model: { status: 'estimated', valueEuro: 3 }, timing: timing(1) },
-    garage: { model: { status: 'estimated', valueEuro: -1, provisional: true }, timing: timing(-0.5,'garage') },
-    total: { model: { status: 'estimated', valueEuro: 2, provisional: true }, timing: timing(0.5,'total') },
+    garage: { timing: timing(-0.5,'garage') },
+    total: { timing: timing(0.5,'total') },
   }, firewoodBenefit: estimate, timingBenefit: { charger: timing(2,'charger') } };
   panel.render(data);
   const [heating, charger, fireplace] = root.children[0].children, overview = heating.children[0].children[0];
@@ -414,7 +414,8 @@ test('Home/Garage/Total changes only heating scope and keeps both comparison con
   assert.equal(home.attributes['aria-pressed'], 'true'); assert.match(heating.textContent, /€3.00/);
   const fold = heating.children[1]; fold.open = true;
   garage.focus(); garage.click(); assert.equal(document.activeElement, garage); assert.equal(fold.open, true);
-  assert.match(heating.textContent, /-€1.00.*Provisional/);
+  assert.match(heating.textContent, /Timing cost difference.*-€0.50/);
+  assert.equal(comparisons.children[0].disabled, true, 'Garage has no learned model savings');
   comparisons.children[1].click(); assert.match(heating.textContent, /Timing cost difference.*-€0.50/);
   total.click(); assert.match(heating.textContent, /Timing cost difference.*€0.50/);
   home.click(); assert.match(heating.textContent, /Timing cost difference.*€1.00/);
@@ -453,6 +454,7 @@ test('visible rate assumptions follow Heating scope and Fireplace while shared c
     assert.match(heating.textContent, /Assumed rates/);
     assert.doesNotMatch(root.textContent, /no device comparison here includes/);
   }
+  scopes.children[0].click();
   findByLabel(heating, 'Heating cost comparison').children[0].click();
   panel.render({ ...data, meta: {}, firewoodBenefit: { ...estimate, priceAssumptions: assumed } });
   assert.match(root.children[0].children[2].textContent, /Assumed rates/);

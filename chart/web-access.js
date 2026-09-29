@@ -9,9 +9,9 @@ export function webRequestAllowed(access, path, data, status) {
   if (access?.role !== 'family') return data === undefined && path === '/api/status';
   if (data === undefined) return !/^\/api\/(?:database-export|downloads)(?:[/?]|$)/.test(path);
   if (['/api/fireplace', '/api/fireplace/remove', '/api/temporary', '/api/dhwr/stop',
-    '/api/garage/temporary', '/api/garage/release', '/api/charging/settings', '/api/automation'].includes(path)) return true;
+    '/api/charging/settings', '/api/automation'].includes(path)) return true;
   if (path === '/api/heating-test') return ['normal', 'reduction', 'preheat', 'circulation'].includes(data.command);
-  if (path === '/api/garage/heating') return ['normal', 'off'].includes(data.mode);
+  if (path === '/api/garage/heating') return ['normal', 'away'].includes(data.mode);
   if (/^\/api\/charging\/chargers\/[^/]+\/(?:settings|control|charge-now|resume|target|identify)$/.test(path)) return true;
   if (path === '/api/equipment/cover') {
     const device = status?.equipment?.devices?.find(device => device.id === data.deviceId);

@@ -72,7 +72,7 @@ try {
           status.charging = { available: false, readOnly: true, settings: null, controls: null, chargers: [], vehicleFeeds: [], error: 'Saved charging data unavailable' };
           status.readView.settingsError = 'Saved Home settings unavailable';
           status.readView.configurationMessage = 'Saved Home settings unavailable. Shown defaults come from this computer.';
-          status.garage.errors = [{ section: 'roomTemperature', message: 'Saved Garage room setting unavailable' }];
+          status.garage.errors = [{ section: 'manual-mode', message: 'Saved Garage room setting unavailable' }];
           status.garage.error = 'Some saved Garage data is unavailable. Other recorded data remains readable.';
         }
         if (pair.role === 'master') { status.input = 'providers'; status.automation = { home: { enabled: false }, garage: { enabled: false } }; }

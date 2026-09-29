@@ -148,89 +148,12 @@ comprehensive decision-input archives without an agreed scope and storage budget
 Retrospective firewood benefit remains a read-only estimate under the corrected
 model; it is separate from a forecast saved before execution or measured savings.
 
-## Separate Garage learning
+## Garage control and original history
 
-`committed-garage-v7-room-reference` uses Garage's saved seed and current
-`garage:<input>` journal. The same ordered update function drives live learning,
-checkpoint continuation, source corrections and worker reconstruction. Front and
-rear keep their original report clocks. Fresh held reports wait for a joined
-interval; each location uses its own elapsed duration and matching observed
-ambient/native support. Held reports never add thermal evidence. Frozen validation
-uses those same source intervals. Whole-cycle electrical qualification requires
-qualified measurements during both OFF and recovery, including measured zero.
-
-Room-setting changes are committed source context. Initial rear/front normal
-references use that setting; unknown settings remain unknown. A change clears
-normal-temperature and electricity evidence and validation without replacing
-the cooling rates. Replay retains the selected target through sensor corrections
-and reference resets. Initial estimates remain at the selected setting until the
-required observation period establishes achieved rear/front temperatures. Older
-development algorithms are rejected rather than reinterpreted with these seeds.
-
-Only this current algorithm and `garage-thermal-reserve-v1` state are accepted.
-Retired settings, exposure shapes, algorithm seeds and frozen episodes are
-rejected with explicit fresh-development-database guidance. There is no old-model
-interpreter, exposure converter or archived-episode continuation. Read-only v0.7.5
-CSV import remains the only historical software-format boundary and cannot
-invent absent front/native/OFF evidence.
-
-Current same-version restart and correction rebuilds retain the frozen episode,
-pipe-energy state and actual physical restoration obligation. A corrupt derived
-checkpoint can be reconstructed from a valid current journal; physical state is
-never cleared as a checkpoint repair. Successful worker publication is atomic,
-while a failed write retains the previous checkpoint and revokes Garage pause
-permission. Home control remains independent of Garage learning failures.
-
-Door inputs retain their original timestamps and separate live confirmation.
-Opening, outage, invalid state or source restart interrupts the known-closed
-interval even if it recovers before the next temperature report. Such intervals
-do not train or qualify clean thermal validation. Door state does not replace
-either independent near-pipe temperature or authorize extra thermal reserve.
-
-Planning uses `garage-savings-strategy-v1`: the configured Gentle, Balanced or
-More savings strategy changes the new-start benefit hurdle and selects the
-shortest safe window retaining the required fraction of the best benefit.
-Gentle still permits sufficiently worthwhile pauses. This planning-semantic change leaves
-`committed-garage-v7-room-reference` learning and `garage-thermal-reserve-v1`
-protection unchanged. Persisted episode plans with an incompatible preference
-version are rejected with fresh-development-database guidance; no old-policy
-interpreter or plan migration is retained.
-
-Contiguous published price/weather coverage, growing uncertainty beyond measured
-evidence, short renewable permission and a fixed original endpoint remain.
-The selected future window is retained only in memory and revalidated with fixed
-start/end times. Settings changes, manual/price pause, recovery, start blockers
-or invalid economics/protection clear it for reselection when eligible. A late
-start must still meet the minimum OFF duration and current new-start threshold
-within the retained endpoint. Restart replans; pending windows carry no persisted
-control authority and need no new reconstruction state.
-Continuation maximizes positive remaining benefit against restoration now,
-including already accrued recovery debt, without reapplying new-start preference
-selection. Recovery electricity uses an
-explicit 125% allowance over at least three hours and 1.25 times the OFF duration.
-Completion requires actual temperatures, normal operation and both pipe reserves.
-Changed-weather recovery can close as incomplete without savings after the
-required continuous warm-native window; its reference reset is a current context
-event that replays deterministically.
-
-Permanent room targets remain owner intent rather than native readback. External
-room-temperature override must clear before an ordinary power/setting command.
-An explicit Normal selection can issue ordinary native ON from unmanaged OFF;
-background release only restores an existing managed obligation. Periodic ON alone
-cannot discharge possible queued OFF work. See [Garage adapter](garage-adapter.md)
-for causal release/expiry/cancellation fences and firmware qualification.
-
-The current thermal solver uses a passive envelope/ground partition and a
-positivity-preserving second-order step bounded by every room, reserve and slab
-row. Integrated energy uses the same averaged fluxes as state evolution. Model
-version 4 and `committed-house-v13-scoped-sensor-changes` identify these semantics;
-version 3 fits are not reused or converted.
-
-`model.validation` describes the latest sufficiently supported current holdout,
-including the retained incumbent when a replacement candidate is rejected.
-Contradictory evidence revokes thermal, action and fireplace readiness while
-retaining coefficients as an unvalidated fallback. `lastAcceptedValidation`
-retains the historical successful check without granting current authority.
-Insufficient data alone does not claim a failed check. Error envelopes count
-actual sampled endpoints; unsupported shorter horizons inherit a later bound and
-a conservative engineering floor, never invented subhour observations.
+Garage has no learned heat model or automatic savings planner. Its manual mode,
+normal target and warm-up advisory are current device-bound state. The Pill and
+Gen3 sender retain their local target/protection state independently. Neither a
+model reset nor a copied database authorizes commands or manufactures protection
+reserve. Original measurements and generic historical journal/events remain
+unchanged; there is no old Garage algorithm interpreter or coefficient replay.
+Home's reconstruction guarantee above is unchanged.

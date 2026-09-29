@@ -13,11 +13,11 @@ import { initialAdaptiveModel } from '../src/control/adaptive-learning.js';
 
 const floorMapping = { storage: { topic_prefix: 'invented-floor-storage' }, living: { topic_prefix: 'invented-floor-living' } };
 
-test('home and garage default to balanced and reject numeric or unknown strategy contracts', () => {
+test('Home defaults to Balanced and Garage rejects every automatic savings strategy', () => {
   assert.equal(validateSettings().savingsStrategy, 'balanced');
-  assert.equal(garageSettings().savingsStrategy, 'balanced');
+  assert.equal(Object.hasOwn(garageSettings(), 'savingsStrategy'), false);
   assert.equal(heatingStrategy().id, 'balanced');
-  for (const { id } of HEATING_STRATEGIES) assert.equal(garageSettings({ savingsStrategy: id }).savingsStrategy, id);
+  for (const { id } of HEATING_STRATEGIES) assert.throws(() => garageSettings({ savingsStrategy: id }), /Unknown garage setting/);
   for (const value of [0, 50, 100, 'conservative', 'Balanced', '', null, false, {}]) {
     assert.throws(() => garageSettings({ savingsStrategy: value }));
     assert.throws(() => heatingStrategy(value));
@@ -34,15 +34,15 @@ test('configuration startup and reload accept named strategies and reject retire
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const path = join(directory, 'fixture.json');
   const write = value => writeFileSync(path, JSON.stringify(value), { mode: 0o600 });
-  write({ controller: { savings_strategy: 'gentle' }, garage: { savingsStrategy: 'savings' } });
+  write({ controller: { savings_strategy: 'gentle' }, garage: { awayTargetC: 5 } });
   const config = loadConfig({ STMQ_CONFIG: path }, directory);
   assert.equal(config.settings.savingsStrategy, 'gentle');
-  assert.equal(config.garage.savingsStrategy, 'savings');
+  assert.equal(config.garage.awayTargetC, 5);
   const source = configurationSource(config);
-  write({ controller: { savings_strategy: 'savings' }, garage: { savingsStrategy: 'gentle' } });
+  write({ controller: { savings_strategy: 'savings' }, garage: { awayTargetC: 3 } });
   const prepared = await source.prepare();
   assert.equal(prepared.config.settings.savingsStrategy, 'savings');
-  assert.equal(prepared.config.garage.savingsStrategy, 'gentle');
+  assert.equal(prepared.config.garage.awayTargetC, 3);
   for (const value of [
     { controller: { savings_aggressiveness: 50 } }, { garage: { aggressiveness: 50 } },
     { controller: { savings_strategy: 50 } }, { garage: { savingsStrategy: 'unknown' } },

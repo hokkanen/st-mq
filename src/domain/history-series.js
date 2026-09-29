@@ -53,13 +53,22 @@ export const SIGNAL_INFO = Object.freeze(Object.fromEntries([
   ['indoor_temperature', { label: 'Upstairs', unit: '°C', group: 'Home temperatures', role: 'House input', kind: 'Recorded' }],
   ['downstairs_temperature', { label: 'Downstairs', unit: '°C', group: 'Home temperatures', role: 'House input', kind: 'Recorded' }],
   ['bedroom_temperature', { label: 'Bedroom', unit: '°C', group: 'Home temperatures', role: 'House input', kind: 'Recorded' }],
-  ['caravan_energy', { label: 'Caravan energy', unit: 'kWh', group: 'Electricity', role: 'History only', kind: 'Recorded', detail: 'Measured meter-counter increments over adaptive recording intervals; excluded from house and garage learning' }],
-  ['caravan_temperature', { label: 'Caravan air temperature', unit: '°C', group: 'Caravan', role: 'History only', kind: 'Recorded', detail: 'Shelly BLU air temperature; excluded from house and garage learning' }],
+  ['caravan_energy', { label: 'Caravan energy', unit: 'kWh', group: 'Electricity', role: 'History only', kind: 'Recorded', detail: 'Measured meter-counter increments over adaptive recording intervals; excluded from house learning' }],
+  ['caravan_temperature', { label: 'Caravan air temperature', unit: '°C', group: 'Caravan', role: 'History only', kind: 'Recorded', detail: 'Shelly BLU air temperature; excluded from house learning' }],
   ['caravan_humidity', { label: 'Caravan relative humidity', unit: '%', group: 'Caravan', role: 'History only', kind: 'Recorded', detail: 'Shelly BLU relative humidity; battery and Bluetooth signal remain live details' }],
   ['caravan_dehumidifier_state', { label: 'Caravan dehumidifier state', unit: 'state', group: 'Caravan', role: 'History only', kind: 'Recorded', detail: 'Reported appliance state: Off, Low, Medium or High. The fan level requires reported power on and fresh fan readback; missing evidence remains a gap. This does not prove water removal, and commands do not create readings' }],
-  ['garage_temperature_2', { label: 'Garage front temperature', unit: '°C', group: 'Home temperatures', role: 'Garage protection input', kind: 'Recorded', detail: 'Front pipe-location sensor; separate exposure and garage learning input' }],
+  ['garage_temperature_2', { label: 'Garage front temperature', unit: '°C', group: 'Home temperatures', role: 'Garage protection input', kind: 'Recorded', detail: 'Front pipe-location air measurement; separate from estimated pipe temperature' }],
   ...[1, 2].map(index => [`garage_door${index}_open`, { label: `Garage door ${index}`, unit: 'state', group: 'Equipment states', role: 'History only', kind: 'Recorded', detail: 'Reported open or closed state; no age-based change is inferred for an event-only contact' }]),
   ['garage_temperature', { label: 'Garage rear temperature', unit: '°C', group: 'Home temperatures', role: 'Garage protection input', kind: 'Recorded' }],
+  ['garage_room_target', { label: 'Garage saved room target', unit: '°C', group: 'Garage heat pump', role: 'Control readback', kind: 'Recorded', detail: 'Durable room target reported by the Pill; separate from its native thermostat and measured air temperature' }],
+  ['garage_effective_target', { label: 'Garage effective room target', unit: '°C', group: 'Garage heat pump', role: 'Control readback', kind: 'Recorded', detail: 'Effective target reported by the Pill, including an independent protection override when active; not measured temperature' }],
+  ['garage_ble_temperature', { label: 'Garage Bluetooth room sensor', unit: '°C', group: 'Garage heat pump', role: 'Room control input', kind: 'Recorded', detail: 'Unmodified temperature from the Pill’s configured Bluetooth sensor; the source may be a commissioning sensor rather than a pipe-location probe' }],
+  ...['rear', 'front'].map(location => [`garage_pipe_${location}_temperature`, { label: `Garage ${location} pipe estimate`, unit: '°C', group: 'Garage protection', role: 'Protection estimate', kind: 'Estimated', detail: 'Conservative pipe temperature estimated by the local sender; not a direct pipe measurement. Unknown history remains a gap.' }]),
+  ['garage_native_power', { label: 'Garage heat-pump power setting', unit: 'state', group: 'Garage heat pump', role: 'Equipment readback', kind: 'Recorded', detail: 'Native ON/OFF readback; ON makes heating available but does not establish compressor operation' }],
+  ['garage_external_enabled', { label: 'Garage local room regulation', unit: 'state', group: 'Garage heat pump', role: 'Control readback', kind: 'Recorded', detail: 'Pill readback of local room regulation enablement; its temperature input still requires fresh Bluetooth reports' }],
+  ['garage_frost_active', { label: 'Garage frost override', unit: 'state', group: 'Garage protection', role: 'Control readback', kind: 'Recorded', detail: 'Independent frost override reported by the Pill; missing protection data is unknown rather than inactive' }],
+  ['garage_frost_available', { label: 'Garage frost protection available', unit: 'state', group: 'Garage protection', role: 'Protection readback', kind: 'Recorded', detail: 'The Pill has a usable commissioned frost feed. Unavailable does not mean no freezing risk.' }],
+  ['garage_away_mode', { label: 'Garage temperature selection', unit: 'state', group: 'Garage heat pump', role: 'Saved selection', kind: 'Recorded', detail: 'Application choice: Normal or Away. This is durable user intent, not proof that the target reached the Pill or that heating is running.' }],
   ['garage_native_indoor_temperature', { label: 'Pump interpreted indoor temperature', unit: '°C', group: 'Garage heat pump', role: 'History only', kind: 'Recorded', detail: 'Temperature reported by the pump; it may reflect its internal sensor or the supplied external value and native processing, not an independent room measurement' }],
   ['garage_compressor_frequency', { label: 'Compressor frequency', unit: 'Hz', group: 'Garage heat pump', role: 'History only', kind: 'Recorded', detail: 'Native compressor frequency; not electrical power' }],
   ['garage_compressor_active', { label: 'Compressor running', unit: 'state', group: 'Garage heat pump', role: 'History only', kind: 'Recorded', detail: 'Native compressor operation; missing or expired reports remain unknown' }],
@@ -104,52 +113,6 @@ export const MODEL_COEFFICIENT_INFO = Object.freeze(Object.fromEntries([
 ].map(([signal, label, unit, color, parameter, digits, detail]) => [signal,
   { label, unit, color, parameter, digits, detail, kind: 'Calculated', group: 'Model coefficients' }])));
 
-// Garage uses its own journal, fitted model and protection locations.
-export const GARAGE_INPUT_INFO = Object.freeze(Object.fromEntries([
-  ['rear', 'Rear protection input', '°C', 'rearC', 'rear'],
-  ['front', 'Front protection input', '°C', 'frontC', 'front'],
-  ['difference', 'Front–rear difference input', '°C', 'differenceC'],
-  ['outdoor', 'Outdoor input', '°C', 'outdoorC', 'outdoor'],
-  ['power', 'Qualified electrical input', 'kW', 'powerKw'],
-  ['activity', 'Compressor activity input', 'fraction', 'activity', undefined,
-    'Recorded compressor activity from 0 to 1; reported off/on is 0/1. This describes equipment activity, not measured watts or delivered heat.'],
-  ['available', 'Pump power readback', 'state', 'available', undefined,
-    'Fresh native pump On/Off readback sampled when the garage learning input was recorded. This is not compressor activity or a continuous archive of native power reports.'],
-  ['managed_pause', 'Managed heating pause', 'state', 'managedPause', undefined,
-    'Saved confirmed managed-pause phase, including managed savings or timed-off periods. This does not distinguish automatic from manual pauses or measure money saved. Missing samples remain unknown.'],
-  ['ev1', 'Charger 1 input', 'kW', 'ev1Kw'], ['ev2', 'Charger 2 input', 'kW', 'ev2Kw'],
-  ['ev1_active', 'Charger 1 activity input', 'fraction', 'ev1Active', undefined,
-    'Recorded charger 1 activity from 0 to 1; reported off/on is 0/1. Indicates charging disturbance when electrical input is unavailable; it is not converted into heat.'],
-  ['ev2_active', 'Charger 2 activity input', 'fraction', 'ev2Active', undefined,
-    'Recorded charger 2 activity from 0 to 1; reported off/on is 0/1. Indicates charging disturbance when electrical input is unavailable; it is not converted into heat.'],
-].map(([name, label, unit, field, location, detail]) => [`garage_model_${name}`, { label: `Garage · ${label}`,
-  unit, field, location, color: location === 'outdoor' ? 'outdoor' : name.startsWith('ev') ? 'ev' : name === 'managed_pause' ? 'heatOff' : 'garage',
-  kind: 'Calculated', group: 'Garage model inputs', detail: detail ?? 'Original normalized garage learning input; missing or unqualified evidence remains unknown.' }])));
-export const GARAGE_COEFFICIENT_INFO = Object.freeze(Object.fromEntries([
-  ['rear', 'coolingPerHour', 'Cooling rate', '1/h'],
-  ['front', 'coolingPerHour', 'Cooling rate', '1/h'],
-  ['native', 'normalPowerKw', 'Normal electricity estimate', 'kW'],
-].map(([location, parameter, label, unit]) => [`garage_coefficient_${location}_${parameter}`, {
-  label: `Garage ${location} · ${label}`, location, parameter, unit, digits: 4, color: 'garage', fixed: location === 'native',
-  kind: 'Calculated', group: 'Garage model coefficients', detail: 'Versioned garage model replay; fitted cooling, observed electricity and initial assumptions remain distinct.' }])));
-
-export const GARAGE_OUTCOME_INFO = Object.freeze(Object.fromEntries([
-  ...['rear', 'front'].map(location => [`garage_outcome_${location}_reference`, {
-    label: `Garage ${location} · Achieved normal temperature`, unit: '°C', location, outcome: 'reference',
-    color: location === 'rear' ? 'garage' : 'garageFront', kind: 'Calculated',
-    detail: 'Replayed achieved temperature during qualified normal heating. The selected room setting is not shown as measured achievement; resets remain gaps until a new reference qualifies.',
-  }]),
-  ...['rear', 'front'].map(location => [`garage_outcome_${location}_error`, {
-    label: `Garage ${location} · Held-out cooling error`, unit: 'Δ°C', location, outcome: 'error',
-    color: location === 'rear' ? 'garage' : 'garageFront', kind: 'Calculated',
-    detail: 'Rolling root mean square prediction error across clean held-out OFF episodes, including failed validation. Lower is better; no eligible episodes remains unknown.',
-  }]),
-  ['garage_outcome_benefit', {
-    label: 'Garage · Assessed episode benefit', unit: '€/episode', outcome: 'benefit', color: 'learning', kind: 'episode',
-    detail: 'Frozen normal-reference assessment at each completed garage episode. Negative and zero estimates remain visible; the result is provisional and separate from electricity timing comparisons.',
-  }],
-].map(([signal, info]) => [signal, { ...info, group: 'Garage model outcomes' }])));
-
 export const RIGHT_AXIS_SIGNALS = Object.freeze(['model_indoor_temperature', 'garage_temperature', 'outdoor_temperature', 'outdoor_forecast', 'all_in_price', 'spot_price']);
 
 const basic = [
@@ -178,7 +141,6 @@ export const HISTORY_AXES = Object.freeze([
   ...Object.entries(SIGNAL_INFO).map(([signal, info]) => ({
     key: signal === 'heating_integral' ? 'integral' : signal, ...info, signals: [signal],
   })),
-  ...Object.entries({ ...GARAGE_INPUT_INFO, ...GARAGE_COEFFICIENT_INFO, ...GARAGE_OUTCOME_INFO }).map(([signal, info]) => ({ key: signal, ...info, signals: [signal] })),
   ...Object.entries(SESSION_CHECK_INFO).map(([signal, info]) => ({ key: signal, ...info, signals: [signal] })),
   ...Object.entries(MODEL_INPUT_INFO).map(([signal, info]) => ({ key: signal, ...info, signals: [signal] })),
   ...Object.entries(MODEL_COEFFICIENT_INFO).map(([signal, info]) => ({ key: signal, ...info, signals: [signal] })),
@@ -194,4 +156,4 @@ export const HISTORY_AXES = Object.freeze([
     group: key === 'solar_forecast' ? 'Weather' : 'Electricity', kind: key === 'solar_forecast' ? 'Forecast' : 'Calculated' })),
 ]);
 export const HISTORY_AXIS_BY_KEY = Object.freeze(Object.fromEntries(HISTORY_AXES.map(axis => [axis.key, axis])));
-export const HISTORY_GROUPS = Object.freeze(['Electricity', 'Home temperatures', 'Caravan', 'Garage heat pump', 'Heating', 'Ground loop', 'Hot water', 'Equipment states', 'Settings', 'Runtime counters', 'Control', 'Weather', 'Model inputs', 'Model coefficients', 'Learning', 'Meter checks', 'Garage model inputs', 'Garage model coefficients', 'Garage model outcomes']);
+export const HISTORY_GROUPS = Object.freeze(['Electricity', 'Home temperatures', 'Caravan', 'Garage heat pump', 'Garage protection', 'Heating', 'Ground loop', 'Hot water', 'Equipment states', 'Settings', 'Runtime counters', 'Control', 'Weather', 'Model inputs', 'Model coefficients', 'Learning', 'Meter checks']);

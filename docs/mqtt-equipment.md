@@ -91,7 +91,7 @@ offline tests alone do not establish that the Shelly hardware needs replacement.
 
 The garage addon uses external sensor 100 as the existing rear probe. Sensor 101
 is the front probe: its absence does not erase the rear reading, but both fresh
-protection readings are required for [garage pauses](garage.md). Set its physical label
+probes are required by the independent [local frost sender](garage.md). Set its physical label
 once installed, and change the component mapping if the device assigns a different
 ID. The relay's internal electronics temperature is not the garage temperature.
 There is one garage temperature entry. Its connection selects either the native
@@ -106,8 +106,8 @@ mappings cannot replace those built-in signals. For standard MQTT, a mapping who
 signal matches a built-in power/current reading replaces its field path while
 preserving the unit. An optional reading that has never arrived does not invalidate
 unrelated measurements. Home indoor signals
-retain their existing reporting and learning contract. Garage readings feed their
-own learning/protection model and never enter the Home temperature average.
+retain their existing reporting and learning contract. Garage readings are displayed and recorded separately. Local protection runs
+on the sender and Pill; these readings never enter the Home temperature average.
 
 ## Configure a Shelly
 
@@ -227,8 +227,6 @@ source state's timestamp. A missing or invalid configured timestamp invalidates
 the reading instead of substituting the bridge's publication time. A live response
 can restore an event-only last-known state without establishing a new physical
 measurement. Bridge availability and sensor availability remain separate evidence.
-The garage model uses the same event-driven validity and records closed-door
-continuity, so brief openings or outages cannot disappear between samples.
 
 Controllable MQTT doors require `cover_control: true`, a separate
 `mqtt.command_topic`, distinct `mqtt.open_payload` / `mqtt.close_payload`, and
@@ -365,7 +363,7 @@ Off, Low, Medium or High. Off requires fresh native power off; a fan level
 requires fresh power on and a matching fan report. Separate settings and native
 sensor values stay live-only. Unknown, stale or unsupported state remains a gap,
 as does missing humidity agreement with the Caravan Shelly BLU. These caravan
-measurements are excluded from house and garage learning. Actual tariff relay feedback is recorded on changes, separately from requested
+measurements are excluded from Home learning. Actual tariff relay feedback is recorded on changes, separately from requested
 heating control. All four floor override outputs likewise retain exact changes. The
 [garage adapter](garage-adapter.md) records interpreted indoor temperature and
 compressor frequency adaptively, compressor/defrost states on exact changes and

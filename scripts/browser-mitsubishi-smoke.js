@@ -48,7 +48,7 @@ try {
     const pumpFixture=status=>{
       const at=status.now,stale=globalThis.pumpSmokeOffline,values=globalThis.pumpSmokeValues;
       const choices={power:['on','off'],mode:['heat','cool','auto','dry','fan'],fan:['auto','quiet',1,2,3,4],vane:['auto',1,2,3,4,5,'swing'],wideVane:['far-left','left','center','right','far-right','split','swing']};
-      status.readOnly=globalThis.pumpSmokeReadOnly;status.garage.roomTemperature=globalThis.pumpSmokeRoom;
+      status.readOnly=globalThis.pumpSmokeReadOnly;status.garage.requestedTargetC=globalThis.pumpSmokeRoom?.targetC??null;status.garage.targetConfirmed=globalThis.pumpSmokeRoom?.confirmed===true;
       status.garage.adapter={...status.garage.adapter,connected:!stale,health:{deviceOnline:!stale,pumpCommunicating:!stale,driverProgressing:!stale},
         native:{...values,powerAt:at,readbacks:Object.fromEntries(Object.entries(values).map(([key,value])=>[key,{value,measuredAt:at}]))},
         telemetry:{indoorTemperature:{value:21.25,sourceTime:at,receivedAt:at,supported:true,usable:true,unit:'degC',quality:[],accuracyVerified:false},
@@ -63,8 +63,8 @@ try {
       if(globalThis.pumpSmokeMissingReadings){status.garage.adapter.native={};status.garage.adapter.telemetry={};}
       status.garage.nativeControls={available:!stale,reason:stale?'Pump connection unavailable':null,
         busy:false,pending:globalThis.pumpSmokeResult?.status==='accepted',result:globalThis.pumpSmokeResult,
-        settings:Object.fromEntries(Object.entries(values).map(([key,value])=>[key,{value:key==='targetC'&&globalThis.pumpSmokeRoom?globalThis.pumpSmokeRoom.targetC:value,measuredAt:at,supported:true,usable:!stale,available:!stale,
-          ...(key==='targetC'?{min:8,max:31,step:.5}:{values:choices[key]})}]))};
+        settings:Object.fromEntries(Object.entries(values).map(([key,value])=>[key,{value,measuredAt:at,supported:true,usable:!stale,available:!stale&&!(key==='targetC'&&globalThis.pumpSmokeRoom),reason:key==='targetC'&&globalThis.pumpSmokeRoom?'Room temperature is controlled by the Pill. Use the Normal target.':null,
+          ...(key==='targetC'?{min:16,max:31,step:.5}:{values:choices[key]})}]))};
       return status;
     };
     globalThis.fetch=async(input,options)=>{
@@ -220,41 +220,20 @@ try {
   assert.equal(await evaluate("document.getElementById('garage-native-temperature-help').textContent.trim().split(/\\s+/).length<=25"),true);
   await evaluate("document.querySelector('#garage-native-temperature-details .status-detail-trigger').click()");
   const controlHelp=await evaluate("document.getElementById('status-detail-popover').textContent");
-  assert.match(controlHelp,/Below 16 °C.*Garage rear.*17 °C.*offset/s);
-  assert.match(controlHelp,/16 °C or higher replace the lower target and use normal pump control/);
-  assert.match(controlHelp,/stays in effect until changed, including after restart/);
-  assert.match(controlHelp,/Fan and vane changes preserve it/);
-  assert.match(controlHelp,/fresh front and rear readings.*power on, heating mode and 17 °C/s);
-  assert.match(controlHelp,/checks fail.*renewals stop.*internal sensor/s);
-  assert.doesNotMatch(controlHelp,/ST-MQ/i);
+  assert.match(controlHelp,/native thermostat setting is separate from the Garage room target/);
+  assert.match(controlHelp,/Normal or Away.*Normal target editor/s);
+  assert.match(controlHelp,/Native power and operating-mode changes remain in effect/);
   await evaluate("document.querySelector('.status-detail-close').click()");
-  assert.equal(await evaluate("document.activeElement.closest('#garage-native-temperature-details')?.id"),'garage-native-temperature-details');
-  await evaluate(`globalThis.pumpSmokeRoom={targetC:10,nativeTargetC:17,offsetC:7,sourceC:10,suppliedC:17,measuredAt:${now},phase:'active',acknowledged:true};globalThis.pumpSmokeValues={...globalThis.pumpSmokeValues,power:'on',mode:'heat',targetC:17};globalThis.pumpSmokeResult={setting:'targetC',value:10,status:'acknowledged'};globalThis.refreshPumpSmoke()`);
-  await until("document.getElementById('garage-native-target-basis').textContent==='Garage rear · Active'");
-  assert.equal(await evaluate("document.getElementById('garage-native-target').textContent"),'10 °C');
+  await evaluate(`globalThis.pumpSmokeRoom={targetC:10,confirmed:true};globalThis.pumpSmokeValues={...globalThis.pumpSmokeValues,power:'off',mode:'heat',targetC:17};globalThis.pumpSmokeResult=null;globalThis.refreshPumpSmoke()`);
+  await until("document.getElementById('garage-room-temperature-status').textContent.includes('Room setting 10 °C')");
+  assert.equal(await evaluate("document.getElementById('garage-native-target').textContent"),'17 °C');
   assert.equal(await evaluate("document.getElementById('garage-native-reported').textContent"),'17 °C');
-  await evaluate("document.getElementById('garage-native-setting').dispatchEvent(new Event('change'))");
-  assert.equal(await evaluate("document.getElementById('garage-native-temperature').value"),'10');
-  assert.match(await evaluate("document.getElementById('garage-room-temperature-status').textContent"),/Room setting 10 °C.*Garage rear control is active/);
-  await evaluate("document.querySelector('#garage-native-temperature-details .status-detail-trigger').click()");
-  const activeHelp=await evaluate("document.getElementById('status-detail-popover').textContent");
-  assert.match(activeHelp,/Room setting: 10 °C.*native pump target of 17 °C.*adds 7 °C/s);
-  assert.match(activeHelp,/Garage rear: 10 °C.*Supplied temperature: 17 °C/s);
-  assert.match(activeHelp,/fresh pump readings show ON, HEAT and 17 °C.*check fails.*renewals stop/s);
-  assert.match(activeHelp,/16 °C or higher.*replaces the lower target/s);
-  assert.doesNotMatch(activeHelp,/Temporary until|two hours|configured room target/);
-  assert.doesNotMatch(activeHelp,/ST-MQ/i);
-  await evaluate("document.querySelector('.status-detail-close').click()");
-  await evaluate("globalThis.pumpSmokeRoom={...globalThis.pumpSmokeRoom,phase:'holding',held:true,acknowledged:false,reason:'front:thermal-reserve-exhausted'};globalThis.refreshPumpSmoke()");
-  await until("document.getElementById('garage-native-target-basis').textContent==='External sensor · Held'");
-  assert.match(await evaluate("document.getElementById('garage-room-temperature-status').textContent"),/current control is unconfirmed/);
-  await evaluate("document.querySelector('#garage-native-temperature-details .status-detail-trigger').click()");
-  const heldHelp=await evaluate("document.getElementById('status-detail-popover').textContent");
-  assert.match(heldHelp,/two minutes after the older supporting measurement/);
-  assert.match(heldHelp,/Garage front: the remaining heat reserve is too small/);
-  assert.doesNotMatch(heldHelp,/thermal-reserve-exhausted/);
-  await evaluate("document.querySelector('.status-detail-close').click();globalThis.pumpSmokeRoom={...globalThis.pumpSmokeRoom,phase:'active',held:false,acknowledged:true,reason:null};globalThis.refreshPumpSmoke()");
-  await until("document.getElementById('garage-native-target-basis').textContent==='Garage rear · Active'");
+  assert.equal(await evaluate("document.getElementById('garage-native-power').textContent"),'Off');
+  assert.equal(await evaluate("document.getElementById('garage-native-submit').disabled"),true,
+    'Native thermostat edit is unavailable while Pill owns room regulation');
+  assert.match(await evaluate("document.getElementById('garage-room-temperature-status').textContent"),/Room setting 10 °C.*Pill confirmed/);
+  await evaluate("globalThis.pumpSmokeRoom.confirmed=false;globalThis.refreshPumpSmoke()");
+  await until("document.getElementById('garage-room-temperature-status').textContent.includes('Waiting for Pill confirmation')");
   assert.doesNotMatch(await evaluate("document.body.innerText"),/ST-MQ/i);
   for(const width of [1440,390,320])for(const theme of ['dark','light']){
     await send('Emulation.setDeviceMetricsOverride',{width,height:1000,deviceScaleFactor:1,mobile:false});
@@ -299,7 +278,7 @@ try {
   await until("document.getElementById('garage-native-status').textContent.includes('read-only')");
   assert.equal(await evaluate("document.getElementById('garage-native-submit').disabled"),true);
   assert.deepEqual(errors,[]);
-  console.log(JSON.stringify({result:'mitsubishi-browser-smoke-passed',artifacts,checks:['pump values and dynamic dropdowns close after real mouse/touch selection and retain keyboard focus','readings in their own fold','keyboard browsing and Escape preserve values; Enter commits and closes the room picker','pointer and touch setting changes close the menu and focus the value editor','all six typed controls','accepted versus native confirmation','dirty edit and focus preserved','compressor running idle and unknown states','supported readings retained through temporary data loss','concise temperature and low-target popup help','active room sensor and offset details','freshness and quality details','never-observed unsupported fields and empty groups omitted','new real zero readings appear and remain through later loss','320/390/1440px both themes','unavailable values remain on one line','offline and read-only gating','no browser exceptions']}));
+  console.log(JSON.stringify({result:'mitsubishi-browser-smoke-passed',artifacts,checks:['pump values and dynamic dropdowns close after real mouse/touch selection and retain keyboard focus','readings in their own fold','keyboard browsing and Escape preserve values; Enter commits and closes the setting picker','pointer and touch setting changes close the menu and focus the value editor','all six typed controls','accepted versus native confirmation','dirty edit and focus preserved','compressor running idle and unknown states','supported readings retained through temporary data loss','native thermostat and room target explanation','Pill room-target ownership and independent native OFF','freshness and quality details','never-observed unsupported fields and empty groups omitted','new real zero readings appear and remain through later loss','320/390/1440px both themes','unavailable values remain on one line','offline and read-only gating','no browser exceptions']}));
   await send('Page.close');
 }finally{
   socket?.close();for(const task of pending.values())clearTimeout(task.timer);

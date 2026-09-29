@@ -503,7 +503,7 @@
             <div class="dashboard-heading">
               <h2 id="garage-title">Garage<span class="zone-expand" aria-hidden="true"></span></h2>
               <div class="home-heading-actions">
-                <span class="control-badge"><span>Heat control</span><strong id="garage-control-price">—</strong></span>
+                <span class="control-badge"><span>Mode</span><strong id="garage-control-mode">—</strong></span>
                 <button id="garage-chart-shortcut" class="chart-shortcut secondary-button" type="button" aria-label="Open history chart in fullscreen" title="Open chart in fullscreen" aria-expanded="false" aria-controls="history">
                   <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4v16h16M7 14l4-5 4 3 5-7"/></svg>
                 </button>
@@ -517,7 +517,7 @@
               </div>
               <div class="overview-doors"><p class="overview-label">Doors</p><strong id="garage-door-summary"><button id="garage-doors-shortcut" class="status-detail-trigger" type="button" aria-label="Garage doors: Unknown. Show controls" aria-haspopup="dialog" aria-expanded="false" aria-controls="garage-doors-dialog"><span id="garage-doors-label" class="status-detail-label">Unknown</span></button></strong></div>
               <div class="overview-request">
-                <p id="garage-requested-label" class="overview-label">Heating request</p>
+                <p id="garage-requested-label" class="overview-label">Room target</p>
                 <strong id="garage-requested" role="status">—</strong>
                 <div class="overview-price">
                   <p id="garage-price-label" class="overview-label">All-in price</p>
@@ -529,140 +529,54 @@
           <div class="zone-content equipment-area">
             <section id="garage-manual-controls" class="zone-section zone-configuration" aria-labelledby="garage-heating-configuration-title">
               <div class="zone-section-heading"><h4 id="garage-heating-configuration-title">Heating control</h4><p id="garage-heating-status" class="muted home-control-availability"></p></div>
-              <div class="feature-automation" role="group" aria-labelledby="garage-automation-title" aria-describedby="garage-automation-activity">
-                <h5 id="garage-automation-title">Garage heating automation</h5>
-                <div class="heating-mode-buttons heating-mode-buttons-two">
-                  <button id="garage-automation-plan" class="secondary-button" type="button" data-write-control data-access-path="/api/automation" aria-pressed="false" disabled>Plan only</button>
-                  <button id="garage-automation-automatic" class="secondary-button" type="button" data-write-control data-access-path="/api/automation" aria-pressed="false" disabled>Automatic</button>
-                </div>
-                <p id="garage-automation-activity" class="muted" role="status">Waiting for automation status</p>
-                <p id="garage-automation-message" class="temporary-status" role="status" aria-live="polite"></p>
+              <p id="garage-heating-help" class="muted zone-control-help">Choose a steady temperature. Normal and Away stay selected until you change them, including across restarts.</p>
+              <div id="garage-heating-buttons" class="heating-mode-buttons heating-mode-buttons-two garage-mode-buttons" role="group" aria-label="Garage temperature mode" aria-describedby="garage-heating-help">
+                <button id="garage-mode-normal" data-write-control data-access-path="/api/garage/heating" class="secondary-button" type="button" aria-pressed="false" disabled><span>Normal</span><strong id="garage-mode-normal-target">—</strong><span class="heating-button-state" aria-hidden="true"></span></button>
+                <button id="garage-mode-away" data-write-control data-access-path="/api/garage/heating" class="secondary-button" type="button" aria-pressed="false" disabled><span>Away</span><strong id="garage-mode-away-target">—</strong><span class="heating-button-state" aria-hidden="true"></span></button>
               </div>
-
-              <div id="garage-heating-state" class="home-heating-state" role="group" aria-label="Current heating state">
-                <div id="garage-current-mode-row" class="home-state-reading" hidden><span>Heat-pump mode</span><strong id="garage-current-mode">Unavailable</strong></div>
-                <div class="home-state-reading"><span>Heating control</span><strong id="garage-current-control">—</strong></div>
-                <div id="garage-current-room-row" class="home-state-reading" hidden><span>Room setting</span><strong id="garage-current-room">Unavailable</strong></div>
+              <p id="garage-target-confirmation" class="muted" role="status">Waiting for Pill confirmation</p>
+              <p id="garage-warming-warning" class="heating-hold-warning heating-hold-warning-strong garage-warming-warning" role="status" aria-live="polite" hidden></p>
+              <div id="garage-heating-state" class="home-heating-state" role="group" aria-label="Current garage heating state">
+                <div class="home-state-reading"><span>Selected temperature</span><strong id="garage-current-control">Unavailable</strong></div>
+                <div class="home-state-reading"><span>Effective target</span><strong id="garage-current-room">Unavailable</strong></div>
+                <div class="home-state-reading"><span>Bluetooth room sensor</span><strong id="garage-bluetooth-temperature">Unavailable</strong></div>
+                <div class="home-state-reading"><span>Heat-pump mode</span><strong id="garage-current-mode">Unavailable</strong></div>
               </div>
-              <h5 id="garage-temporary-heating-title" class="home-control-subtitle">Temporary heating override</h5>
-              <p id="garage-heating-help" class="muted zone-control-help">Changes reset on the next controller update, normally within 1 minute. Pause price control to hold them longer. Freeze protection can restore heating sooner.</p>
-              <div id="garage-heating-buttons" class="heating-mode-buttons heating-mode-buttons-two" role="group" aria-labelledby="garage-temporary-heating-title" aria-describedby="garage-heating-help garage-hold-warning garage-heating-status">
-                <button id="garage-mode-normal" data-write-control class="secondary-button" type="button" data-garage-heating-mode="normal" aria-pressed="false" disabled><span>Normal heating</span><span class="heating-button-state" aria-hidden="true"></span></button>
-                <button id="garage-mode-off" data-write-control class="secondary-button" type="button" data-garage-heating-mode="off" aria-pressed="false" disabled><span>Heating off</span><span class="heating-button-state" aria-hidden="true"></span></button>
-              </div>
-              <p id="garage-hold-warning" class="heating-hold-warning heating-hold-warning-strong" role="status" hidden></p>
-              <p id="garage-control-detail" class="muted" role="status" aria-live="polite"></p>
+              <form id="garage-target-form" class="garage-target-form" aria-describedby="garage-target-help garage-heating-message">
+                <label for="garage-normal-target">Normal temperature · °C</label>
+                <div class="garage-target-input"><input id="garage-normal-target" data-write-control data-access-path="/api/garage/heating" type="number" min="0" max="31" step="0.5" required disabled><button id="garage-target-submit" data-write-control data-access-path="/api/garage/heating" class="secondary-button" type="submit" disabled>Save &amp; select Normal</button></div>
+                <p id="garage-target-help" class="muted">Away uses the preset shown above. Selecting a temperature keeps the heat pump’s power setting; use Heat-pump settings to turn it on or off.</p>
+              </form>
+              <p id="garage-control-detail" class="muted" role="status"></p>
               <p id="garage-heating-message" class="temporary-status" role="status" aria-live="polite"></p>
-              <details id="garage-pause-details" class="equipment-fold temporary-panel">
-                <summary><span>Pause price control</span><small id="garage-pause-overview">Status unavailable</small></summary>
-                <form id="garage-pause-form" data-write-control class="temporary-form">
-                  <p class="muted form-timezone">All dates and times below are in Finland · Europe/Helsinki.</p>
-                  <div class="temporary-field">
-                    <label for="garage-pause-until">Pause until</label>
-                    <div class="temporary-input-row"><input id="garage-pause-until" type="text" data-date-picker="datetime-local" aria-describedby="garage-pause-status garage-pause-help"><button id="garage-resume-now" class="secondary-button" type="button" disabled>Resume now</button></div>
-                    <p id="garage-pause-status" class="temporary-status">Price control is not paused.</p>
-                    <p id="garage-pause-help" class="muted">Starting a pause requests Normal heating. Any heating selection made afterwards stays until the pause ends or you select Resume now.</p>
-                  </div>
-                  <div class="temporary-actions"><button id="garage-pause-submit" type="submit" disabled>Apply changes</button><p id="garage-pause-message" class="muted" role="status" aria-live="polite"></p></div>
-                </form>
-              </details>
-              <details id="garage-settings-details" class="equipment-fold garage-settings heating-policy">
-                <summary><span>Heating strategy &amp; protection</span><small id="garage-strategy-overview">Strategy unavailable</small></summary>
-                <div class="heating-policy-body">
-                  <p class="heating-policy-note">Normal heating is the starting point. The controller can lower the effective room target during a worthwhile price period, then restore your saved target. Native power remains ON. Every strategy keeps the same freezing-protection and recovery requirements.</p>
-                  <section class="heating-policy-section" aria-labelledby="garage-strategy-title">
-                    <h5 id="garage-strategy-title">Savings strategy</h5>
-                    <p class="heating-policy-note">Choose how much opportunity is worth taking. A stronger savings preference accepts smaller estimated benefits and may reduce the target for longer.</p>
-                    <ul class="heating-strategy-options" aria-label="Available savings strategies">
-                      <li id="garage-strategy-gentle" class="heating-strategy-option" data-selected="false"><strong>Gentle <span id="garage-strategy-gentle-current" class="heating-strategy-current" hidden>Current</span></strong><p>Require a larger benefit and favour shorter reductions, leaving more time for normal heating.</p></li>
-                      <li id="garage-strategy-balanced" class="heating-strategy-option" data-selected="false"><strong>Balanced <span id="garage-strategy-balanced-current" class="heating-strategy-current" hidden>Current</span></strong><p>Keep most of the estimated benefit while avoiding extra reduction time for small gains.</p></li>
-                      <li id="garage-strategy-savings" class="heating-strategy-option" data-selected="false"><strong>More savings <span id="garage-strategy-savings-current" class="heating-strategy-current" hidden>Current</span></strong><p>Accept smaller worthwhile opportunities and choose the greatest estimated benefit within the same limits.</p></li>
-                    </ul>
-                    <p class="heating-policy-note">Edit the savings strategy in configuration, then use Apply configuration in Data &amp; settings. Use Pause price control above to suspend automatic savings.</p>
-                    <details class="equipment-fold heating-policy-details"><summary>How the strategy weighs savings</summary><dl id="garage-economics-settings" class="heating-policy-values garage-setting-list"></dl></details>
-                  </section>
-                  <section class="heating-policy-section" aria-labelledby="garage-protection-title">
-                    <div class="garage-settings-heading"><h5 id="garage-protection-title">Protection boundaries</h5><span id="garage-protection-approval" class="garage-policy-status">Approval unknown</span></div>
-                    <p class="heating-policy-note">Protection estimates warmth in a water-filled copper reference pipe beside each temperature sensor. Rear and front are checked independently; whichever needs heat first limits the reduction. This estimate guides protection of pipes and stored liquids, but does not measure their actual temperatures.</p>
-                    <dl id="garage-protection-settings" class="heating-policy-values garage-setting-list"></dl>
-                    <section id="garage-live-budgets" class="garage-live-budgets" aria-labelledby="garage-live-budgets-title">
-                      <div class="garage-settings-heading"><h5 id="garage-live-budgets-title">Warmth available above the protection margin</h5><span class="garage-live-label">Live estimate</span></div>
-                      <div class="garage-budget-grid">
-                        <div class="garage-budget-location"><span>Rear · near pipe</span><strong id="garage-settings-budget-rear">—</strong><small id="garage-settings-budget-rear-remaining">Assessment unavailable</small></div>
-                        <div class="garage-budget-location"><span>Front · near door</span><strong id="garage-settings-budget-front">—</strong><small id="garage-settings-budget-front-remaining">Assessment unavailable</small></div>
-                      </div>
-                      <p class="heating-policy-note">Stored warmth per metre of the reference pipe, not a countdown. Heating resumes while enough reserve remains for the pump to restore useful heat. Select a value for its evidence.</p>
-                    </section>
-                    <details id="garage-recovery-details" class="equipment-fold heating-policy-details"><summary>Reference &amp; recovery details</summary>
-                      <p class="heating-policy-note">These fixed protection assumptions are separate from the learned cooling forecast. Owner approval records acceptance of this reference for the installation; it does not verify the equipment or the temperatures of everything stored inside.</p>
-                      <dl id="garage-recovery-settings" class="heating-policy-values garage-setting-list"></dl>
-                    </details>
-                  </section>
-                  <section class="heating-policy-section" aria-labelledby="garage-decision-title">
-                    <h5 id="garage-decision-title">How decisions are made</h5>
-                    <ol class="heating-policy-steps">
-                      <li><strong>Forecast cooling during a target reduction.</strong> Fresh rear and front temperatures, the outdoor forecast and the <a class="heating-policy-link" href="#garage-learning-details" data-policy-model-link="garage-learning-details">Garage heat model</a> estimate cooling with a lower room target. Protection separately assumes no heat through the delay before useful heating returns. Less proven forecasts receive larger uncertainty margins.</li>
-                      <li><strong>Keep protection ahead of savings.</strong> Only windows that leave enough reserve at both locations through the delay before useful heat returns can qualify. Expected charging warmth never extends the safe window.</li>
-                      <li><strong>Choose a worthwhile reduction and keep checking.</strong> Compare normal electricity with lower-target consumption, later recovery and uncertainty. The powered pump retains an assumed idle allowance and may heat to maintain the lower target. Choose the shortest qualifying window that keeps the strategy’s share of the best benefit. Reassess as readings and forecasts change; a started reduction can end early, but its original endpoint cannot move later.</li>
-                    </ol>
-                    <p class="heating-policy-note">Flat prices or an insufficient benefit leave normal heating available. There is no fixed maximum reduction time: protection, forecast coverage and remaining benefit determine the endpoint. Estimated savings depend on the model’s electricity assumptions; they are not measured savings.</p>
-                  </section>
-                  <section class="heating-policy-section" aria-labelledby="garage-choices-title">
-                    <h5 id="garage-choices-title">Control choices</h5>
-                    <dl class="heating-policy-values">
-                      <div class="heating-policy-setting"><dt>Normal heating</dt><dd>Usual room setting</dd><dd class="heating-policy-setting-help">The pump’s thermostat decides when to heat. Automatic savings never raise the room setting or preheat the garage.</dd></div>
-                      <div class="heating-policy-setting"><dt>Heating off</dt><dd>Manual timed OFF</dd><dd class="heating-policy-setting-help">Available only with approved protection, fresh temperatures and a ready adapter that can restore heating locally when its short off permission expires. External sensing is cleared before OFF. Native ON and fresh source evidence are required before the saved room target resumes.</dd></div>
-                    </dl>
-                    <p class="heating-policy-note">New target reductions wait for settled normal-heating evidence, recovery at both locations, and the configured spacing and daily limit. An open or unknown configured door blocks a new reduction only below 2 °C outdoors; at 2 °C or above, either state passes this rule. Outdoor temperature must be known. Charging does not restrict reductions or add forecast warmth. Door changes during a reduction trigger a protection reassessment.</p>
-                    <p class="heating-policy-note">Missing temperature evidence or inadequate reserve ends target reduction and requests normal heating. Expired external input returns the pump to internal sensing. Afterward, both local temperatures and pipe reserves must recover. A confirmed ON state alone does not establish recovery.</p>
-                    <p class="heating-policy-note">Temporary heating selections above last until the next controller update, normally within 1 minute. Pause price control holds them until its deadline. Freeze protection can restore heating sooner, including after a manual off selection.</p>
-                    <dl class="heating-policy-values">
-                      <div class="heating-policy-setting"><dt>Current plan</dt><dd id="garage-policy-decision">Unavailable</dd></div>
-                      <div class="heating-policy-setting"><dt>Planned target reduction</dt><dd id="garage-policy-window">Unavailable</dd></div>
-                    </dl>
-                    <p id="garage-policy-context" class="heating-policy-note">Garage automation status is unavailable.</p>
-                    <details id="garage-planning-details" class="equipment-fold heating-policy-details"><summary>Timing limits &amp; current decision details</summary>
-                      <dl id="garage-heating-settings" class="heating-policy-values garage-setting-list"></dl>
-                      <div id="garage-learning-planning"></div>
-                    </details>
-                  </section>
+              <details id="garage-protection-details" class="equipment-fold garage-protection">
+                <summary><span>Freeze protection</span><small id="garage-protection-status" class="equipment-device-status">Unavailable</small></summary>
+                <p id="garage-protection-detail" class="muted">Waiting for protection status. A temperature reading alone does not establish pipe protection.</p>
+                <div class="garage-protection-grid">
+                  <section class="garage-protection-location" aria-labelledby="garage-rear-protection-title"><h5 id="garage-rear-protection-title">Rear · near pipe</h5><dl class="equipment-readings"><dt>Air temperature</dt><dd id="garage-protection-rear">Unavailable</dd><dt>Estimated pipe</dt><dd id="garage-pipe-rear">Unavailable</dd><dt>Reserve above margin</dt><dd id="garage-reserve-rear">Unavailable</dd></dl><p id="garage-pipe-rear-status" class="muted"></p></section>
+                  <section class="garage-protection-location" aria-labelledby="garage-front-protection-title"><h5 id="garage-front-protection-title">Front · near door</h5><dl class="equipment-readings"><dt>Air temperature</dt><dd id="garage-protection-front">Unavailable</dd><dt>Estimated pipe</dt><dd id="garage-pipe-front">Unavailable</dd><dt>Reserve above margin</dt><dd id="garage-reserve-front">Unavailable</dd></dl><p id="garage-pipe-front-status" class="muted"></p></section>
                 </div>
+                <p class="muted">Protection is separate from Normal and Away. When available, it can start heating or temporarily raise the target to protect the pipes. Your selected temperature remains saved. Pipe temperature and reserve are conservative estimates, not additional sensor readings.</p>
+                <details id="garage-protection-settings-details" class="equipment-fold">
+                  <summary>Protection settings</summary>
+                  <p id="garage-protection-settings-status" class="muted" role="status">Waiting for the sender’s settings.</p>
+                  <form id="garage-protection-form" class="garage-protection-form" data-write-control data-admin-only data-access-path="/api/garage/protection" aria-describedby="garage-protection-settings-help garage-protection-message">
+                    <label class="garage-protection-approved"><input id="garage-protection-approved" type="checkbox" disabled> Installation parameters are approved</label>
+                    <div class="garage-protection-fields">
+                      <label for="garage-protection-marginC">Protection margin · °C<input id="garage-protection-marginC" type="number" min="0.1" max="5" step="0.1" required disabled></label>
+                      <label for="garage-protection-pipeOutsideDiameterMm">Pipe outside diameter · mm<input id="garage-protection-pipeOutsideDiameterMm" type="number" min="6" max="100" step="0.1" required disabled></label>
+                      <label for="garage-protection-pipeWallMm">Pipe wall thickness · mm<input id="garage-protection-pipeWallMm" type="number" min="0.3" max="10" step="0.1" required disabled></label>
+                      <label for="garage-protection-heatTransferWPerM2K">Heat transfer · W/(m²·K)<input id="garage-protection-heatTransferWPerM2K" type="number" min="1" max="100" step="0.1" required disabled></label>
+                    </div>
+                    <p id="garage-protection-settings-help" class="muted">These are the settings reported by the local sender. Changes apply there and must be confirmed by its readback. The two locations keep independent reserve estimates. If approval is cleared, the commissioned Pill treats protection as unavailable and requests fallback heating.</p>
+                    <button id="garage-protection-submit" class="secondary-button" type="submit" disabled>Apply protection settings</button>
+                    <p id="garage-protection-message" class="temporary-status" role="status" aria-live="polite"></p>
+                  </form>
+                </details>
               </details>
-              <details id="garage-learning-details" class="dashboard-disclosure learning-groups learning-model-details">
-                <summary>
-                  <div class="learning-model-overview" aria-labelledby="garage-learning-label">
-                    <h3 id="garage-learning-label" class="learning-model-label">Garage heat model</h3>
-                    <p id="garage-learning-title" class="model-headline">Collecting observations</p>
-                    <p id="garage-learning-overview" class="muted"></p>
-                    <div id="garage-learning-progress" class="learning-progress"></div>
-                  </div>
-                </summary>
-                <div class="learning-model-purpose">
-                  <p>The model estimates cooling at the rear and front of the garage and keeps observed OFF cooling evidence separate from target-control forecasts. It combines recorded inputs with learned responses and fixed assumptions.</p>
-                  <p>Planning uses those estimates with prices, recovery costs and pipe protection to choose a lower-target window. Heating control applies bounded external-temperature input and restores your saved room target; manual timed OFF remains a separate action. See <a class="heating-policy-link" href="#garage-settings-details" data-policy-model-link="garage-settings-details">Heating strategy &amp; protection</a> for the decision and its rules.</p>
-                </div>
-                <details id="garage-outcomes-details" class="learning-section section-fold">
-                  <summary><span class="learning-section-title">Learning outcomes</span><small class="learning-section-kind"> · Estimates &amp; checks</small></summary>
-                  <div class="learning-section-body">
-                    <p id="garage-learning-context" class="learning-intro"></p>
-                    <div id="garage-learning-outcomes"></div>
-                    <details id="garage-validation-details" class="learning-support"><summary>Validation &amp; evidence</summary><div id="garage-learning-evidence"></div><p id="garage-learning-limitations" class="learning-note"></p>
-                      <details id="garage-reconstruction-details" class="learning-support"><summary>Reconstructing the model</summary>
-                        <p class="learning-note"><strong>Exactly reproducible:</strong> cooling coefficients, normal warmth references, learning evidence and state at a committed Garage learning point.</p>
-                        <p class="learning-note"><strong>Required:</strong> the complete Garage learning journal, its saved configuration and initial seed, selected current corrections and matching learning software. Keep a consistent full database backup; observation CSV files alone are insufficient.</p>
-                        <p class="learning-note"><strong>Outside this guarantee:</strong> missing measurements, physical command delivery, every historical control choice and actual savings. An observed return to ON and recovery of local warmth remain separate evidence.</p>
-                      </details>
-                    </details>
-                  </div>
-                </details>
-                <details id="garage-inputs-details" class="learning-section section-fold">
-                  <summary><span class="learning-section-title">Model inputs</span><small class="learning-section-kind"> · Recorded &amp; estimated</small></summary>
-                  <div class="learning-section-body"><p id="garage-input-context" class="learning-intro"></p><div id="garage-learning-inputs"></div></div>
-                </details>
-                <details id="garage-coefficients-details" class="learning-section section-fold">
-                  <summary><span class="learning-section-title">Model coefficients</span><small class="learning-section-kind"> · Learned &amp; assumed</small></summary>
-                  <div class="learning-section-body"><p id="garage-coefficient-context" class="learning-intro"></p><div id="garage-learning-coefficients"></div></div>
-                </details>
+              <details class="equipment-fold garage-temperature-help">
+                <summary>Warming a cold garage</summary>
+                <p class="muted">Stored items and surfaces warm more slowly than the air. After increasing the target, avoid bringing in wet or snowy vehicles or adding substantial moisture for roughly 24 hours, and longer if contents are still cold. Extra moisture can condense on those cold surfaces.</p>
               </details>
             </section>
           </div>
@@ -684,7 +598,7 @@
                   <div class="garage-native-overview pump-native-overview">
                     <div class="equipment-value"><span>Power</span><strong id="garage-native-power" class="muted">—</strong></div>
                     <div class="equipment-value"><span>Compressor</span><strong id="garage-native-compressor" class="muted">Unknown</strong></div>
-                    <div class="equipment-value"><span>Room setting</span><strong id="garage-native-target" class="muted">—</strong><small id="garage-native-target-basis" hidden></small></div>
+                    <div class="equipment-value"><span>Native thermostat</span><strong id="garage-native-target" class="muted">—</strong></div>
                   </div>
                 </summary>
                 <div class="equipment-device-body">
@@ -696,7 +610,7 @@
                     <form id="garage-native-form" class="h66-test-form mitsubishi-test-form" aria-describedby="garage-native-status garage-native-message">
                       <label>Setting<select id="garage-native-setting">
                         <option value="power">Power</option><option value="mode">Operating mode</option>
-                        <option value="targetC">Room setting</option><option value="fan">Fan setting</option>
+                        <option value="targetC">Native thermostat</option><option value="fan">Fan setting</option>
                         <option value="vane">Vertical vane</option><option value="wideVane">Horizontal vane</option>
                       </select></label>
                       <label id="garage-native-value-field" data-write-control data-admin-only>Value<select id="garage-native-value" required disabled><option value="">Select a value</option></select></label>
@@ -704,7 +618,7 @@
                       <p class="equipment-control-state"><span>Reported pump setting</span><strong id="garage-native-reported">Unavailable</strong></p>
                       <button id="garage-native-submit" data-write-control data-admin-only class="secondary-button" type="submit" disabled>Apply setting</button>
                     </form>
-                    <p id="garage-native-temperature-help" class="muted" hidden>Below 16 °C, Garage rear guides heating while the pump is set to 17 °C. <span id="garage-native-temperature-details">How it works</span></p>
+                    <p id="garage-native-temperature-help" class="muted" hidden>The native thermostat is separate from the selected Garage room target. <span id="garage-native-temperature-details">How it works</span></p>
                     <p id="garage-native-status" class="muted">Waiting for a supported native control connection.</p>
                     <p id="garage-native-message" class="temporary-status" role="status" aria-live="polite"></p>
                   </details>
@@ -713,17 +627,7 @@
                     <p id="garage-native-readings-help" class="muted">Select a value for its source, freshness and quality.</p>
                     <div id="garage-native-readings" aria-describedby="garage-native-readings-help"></div>
                   </details>
-                  <details id="garage-automatic-details" class="equipment-fold">
-                    <summary>Automatic savings &amp; protection</summary>
-                    <p id="garage-controller-reason" class="muted"></p>
-                    <dl id="garage-controller-readings" class="equipment-readings"></dl>
-                    <p class="muted">The two pipe-location sensors protect independently. Pump temperatures are separate equipment readings. Qualified native electricity remains provisional unless checked.</p>
-                    <div class="equipment-inline-controls">
-                      <button id="garage-release" data-write-control class="secondary-button" type="button" aria-describedby="garage-release-help" disabled>End automatic savings episode</button>
-                      <p id="garage-release-help" class="muted">Ends the current savings episode and waits for normal heating to resume.</p>
-                      <p id="garage-release-message" class="temporary-status" role="status" aria-live="polite"></p>
-                    </div>
-                  </details>
+                  <p id="garage-controller-reason" class="muted"></p>
                 </div>
               </details>
               <div id="garage-equipment-readings" class="equipment-device-list"></div>

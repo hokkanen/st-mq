@@ -5,15 +5,15 @@ Current development validation and reproducible commands are recorded in
 describe historical checkpoints; use [README](../README.md) and the feature
 guides for current behavior.
 
-## Current implementation, 28 September 2026 — independent automation
+## Current implementation, 29 September 2026 — local Garage control
 
-Home and Garage own separate durable automation permissions. Explicit bounded
-manual heating is independent. Garage price savings lower the effective external room target while native power
-stays ON. Explicit timed OFF separately clears external input first and resumes
-the saved target after restored native ON and fresh source evidence.
-The global operating mode and obsolete hidden-mode managed-pause gates are removed.
-See [automation and manual heating](automation-and-manual-control.md) for the current
-contract and [TODO](../TODO) for validation and deployment limits.
+Garage now has permanent Normal/Away targets and independent local frost
+protection. The Pill uses native BTHome components, durable target intent and
+one-shot native commands. ST-MQ shows and configures the future Gen3 sender;
+its pipe protection remains autonomous. The learned Garage building model,
+economic scheduling and expiring Garage controls are retired. Home learning
+and its independent automation permission remain intact. See [Garage](garage.md)
+and [TODO](../TODO) for validation and hardware limits.
 
 ## Historical implementation, 7 September 2026 — 0.9.0
 

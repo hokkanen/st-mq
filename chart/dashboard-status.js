@@ -36,44 +36,6 @@ export function learningOverview(learning = {}) {
   return { status, title, summary, usableSamples, acceptedFits };
 }
 
-/** Garage reports complete cooling/recovery evidence separately from control.
- * Observed OFF duration describes validation coverage, never a pause ceiling. */
-export function garageLearningOverview(learning = {}) {
-  const trainedIntervals = count(learning?.trainedIntervals);
-  const completedEpisodes = count(learning?.validation?.completedEpisodes);
-  const thermalReady = learning?.thermalReady === true;
-  const reportedHours = learning?.validatedOffHours;
-  const validatedOffHours = Number.isFinite(reportedHours) && reportedHours >= 0
-    ? thermalReady ? reportedHours : learning?.thermalReady === false ? 0 : null : null;
-  let status = 'unavailable', title = 'Awaiting model status', summary = 'Learning status is not available yet.';
-  if (learning?.reconstruction === 'failed') {
-    status = 'attention'; title = 'Rebuild needs attention';
-    summary = 'The model could not finish updating from recorded observations.';
-  } else if (learning?.reconstruction === 'rebuilding') {
-    status = 'rebuilding'; title = 'Rebuilding model';
-    summary = 'Updating the garage model from recorded observations.';
-  } else if (thermalReady && validatedOffHours > 0) {
-    status = 'provisional'; title = 'Temperature model validated';
-    const duration = new Intl.NumberFormat('en-GB', { maximumFractionDigits: 2 }).format(validatedOffHours);
-    summary = `Cooling checks cover ${duration} h OFF. Longer pauses use extra uncertainty margins and must satisfy pipe protection. ` + (learning?.electricalReady === true
-      ? 'Electricity and recovery-energy checks have also passed. Savings remain estimates.'
-      : learning?.electricalReady === false
-        ? 'Electricity and recovery-energy predictions still need validation.'
-        : 'Electricity and recovery-energy validation is not reported yet.');
-  } else if (learning?.status === 'learning' || learning?.status === 'validated-provisional') {
-    status = trainedIntervals === 0 ? 'initial' : 'learning';
-    title = trainedIntervals === 0 ? 'Initial estimates' : 'Learning from observations';
-    summary = trainedIntervals === 0
-      ? 'The garage model is collecting evidence before refining its starting estimates.'
-      : 'Complete cooling and recovery episodes test forecast accuracy. Pipe protection limits each pause; electricity is validated separately.';
-  }
-  if (learning?.reconstruction === 'snapshot' && status !== 'unavailable') {
-    status = 'snapshot'; title = 'Recorded master model';
-    summary = 'Saved temperature and electricity evidence from the master snapshot. Live pause eligibility is unavailable here.';
-  }
-  return { status, title, summary, completedEpisodes, validatedOffHours };
-}
-
 const isFilePath = path => typeof path === 'string' && path.startsWith('/') && path.length > 1 && !path.endsWith('/');
 function configurationLocation(configuration) {
   const addon = configuration?.environment === 'home-assistant';

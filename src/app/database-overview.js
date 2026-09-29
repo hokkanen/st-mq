@@ -202,7 +202,7 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
         ['Energy components', 'Margin and electricity tax excluding VAT; VAT rate.'],
         ['Network transfer', 'Tariff selection and dated day/night/seasonal transfer rates.']) })]);
 
-  const journal = grouped('learning_journal', "CASE WHEN input LIKE 'garage:%' THEN 'garage:' ELSE '' END || kind", 'at');
+  const journal = grouped('learning_journal', "CASE WHEN input IN ('mqtt','providers','simulated','offline') THEN kind ELSE 'inactive-scope' END", 'at');
   const cycles = aggregate('learning_cycles', 'started_at', 'COALESCE(ended_at,started_at)');
   const cycleFacts = db.prepare(`SELECT SUM(status='completed') completed,SUM(status='incomplete') incomplete,
     SUM(json_type(CASE WHEN json_valid(payload) THEN payload ELSE '{}' END,'$.assessment')='object') assessed FROM learning_cycles`).get();
@@ -216,14 +216,11 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
       ['Sensor and control transitions', 'Sensor replacement/calibration and correction, pooled floor override mode, requested phase, room boost and occupancy changes.'],
       ['Learning configuration', 'Saved control/thermal assumptions associated with this context.'],
       ['Replay versions', 'Algorithm and configuration versions, forecast reference when present, and initial model seed when required.']) }));
-  for (const kind of ['sample', 'context']) learningItems.push(item(`garage-journal-${kind}`,
-    kind === 'sample' ? 'Garage learning samples' : 'Garage learning context',
-    kind === 'sample' ? 'Original normalized garage inputs: rear/front/outdoor temperatures, electrical and compressor evidence, charger disturbances, native availability and protection context.'
-      : 'Versioned garage configuration, room-target reference, sensor changes and deterministic reconstruction seed.', journal.get(`garage:${kind}`), {
-      dateBasis: 'journal time', writeBehavior: kind === 'sample' ? 'On each completed garage learning tick.' : 'When garage configuration, sensor epoch or reference context changes.',
-      fields: fields(['Physical inputs', 'Temperatures in °C, electrical input in kW, compressor and charger activity as fractions; missing evidence stays unknown.'],
-        ['Configuration and provenance', 'Saved configuration, current algorithm, source timing and original seed; not a repeated adaptive measurement.']) }));
-  for (const [kind, values] of journal) if (!['sample', 'episode', 'context', 'garage:sample', 'garage:context'].includes(kind)) {
+  const inactiveJournal = journal.get('inactive-scope');
+  if (inactiveJournal) learningItems.push(item('journal-inactive', 'Inactive journal scopes',
+    'Retained original entries outside the current Home learning scopes. They are counted without interpreting obsolete models.',
+    inactiveJournal, { writeBehavior: 'No current writer or replay; retained audit records.', fields: [] }));
+  for (const [kind, values] of journal) if (!['sample', 'episode', 'context', 'inactive-scope'].includes(kind)) {
     inventoryIssues.push('An unrecognized learning journal kind needs a recording description.');
     learningItems.push(item(`journal-unrecognized-${opaqueId(kind)}`, `Unrecognized journal kind · ${opaqueId(kind)}`,
       'This distinct journal kind is counted separately; it has no current writer description.', values, {
@@ -268,7 +265,7 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
     ['fireplace', "key LIKE 'fireplace:%'", 'Fireplace reconstruction progress', 'Current correction revision, background reconstruction status and progress. A replacement model is activated after reconstruction completes.'],
     ['recovery', "key LIKE 'recovery:%'", 'History recovery progress', 'Current manual recovery progress and its accepted, conflicting and skipped record counts. The complete reconstructed model is published after catching up live learning.'],
     ['settings', "key LIKE 'settings:%' OR key LIKE 'occupancy:%' OR key LIKE 'override:%'", 'Settings and temporary overrides', 'Current operating settings, occupancy and expiring manual overrides; credentials remain in external configuration.'],
-    ['automation', "key LIKE 'automation:%'", 'Heating automation choices', 'Independent Home and Garage automatic-control permissions, bound to current equipment identity. Plan only is the initial choice.'],
+    ['automation', "key LIKE 'automation:%'", 'Heating automation choices', 'Home automatic-control permission bound to current equipment identity. Plan only is the initial choice.'],
     ['control', "key LIKE 'executor:%' OR key LIKE 'h66:%' OR key LIKE 'applied:%' OR key LIKE 'pending-plan:%' OR key LIKE 'phase-snapshot:%' OR key LIKE 'dhwr:%' OR key LIKE 'heating-test:%' OR key LIKE 'cycle:%' OR key LIKE 'trials:%' OR key LIKE 'native-room-reference:%'", 'Control execution and active plans', 'Execution/readback/restoration state, native room reference, active cycle, pending plan, phase coverage and bounded trial allowance.'],
     ['floor', "key='floor-override:v1'", 'Floor override restoration', 'Current ownership, sequence, outstanding release obligations and latest result. Individual contact history is listed under exact measurements.'],
     ['equipment-tests', "key='equipment-tests:v1'", 'Equipment tests and manual operations', 'Current bounded equipment operation, restoration requirement and latest test result.'],
@@ -277,7 +274,7 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
     ['charging-ownership', "key LIKE 'charging:%:ownership' OR key LIKE 'charging:%:ownership:ocpp'", 'Charger ownership and restoration', 'Device-bound control permission, native baseline and unfinished current-limit restoration.'],
     ['charging', "key LIKE 'charging:%' OR key LIKE 'shelly-evse:%'", 'Charging choices, sessions and device state', 'Device-bound Automatic charging and shared priority choices survive restart and unplugging. Physical connections, energy baselines, vehicle observations, session edits, schedules and charger-controller state are also retained. Battery and ready-by defaults remain configured.'],
     ['easee-ocpp', "key LIKE 'easee:ocpp%'", 'Charger 1 OCPP setup', 'Current native OCPP setup verification, saved restoration baseline and control readiness.'],
-    ['garage', "key LIKE 'garage:%'", 'Garage control and learning state', 'Current model checkpoint, protection exposure, active episode, adapter restoration, temporary price-control pause and device-bound room target.'],
+    ['garage', "key LIKE 'garage:%'", 'Garage control state', 'Device-bound Normal/Away selection, normal target, warm-up advisory and recorded pump and frost-sender status. Modes have no expiry; local protection remains independent.'],
     ['pairing', "key='pairing-lineage'", 'Paired database lineage', 'Current pairing lineage used to identify a published database and fence slave ownership; private identifiers are omitted.'],
     ['simulation', "key LIKE 'simulation:%'", 'Simulation state', 'Current simulated plant state for resuming a simulation.'],
   ];
@@ -311,9 +308,9 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
     ['settings', "type IN ('settings-changed','configured-rates-applied','contract-period-added','occupancy-changed','occupancy-expired','override-changed','override-expired')", 'Settings and override changes', 'Changes to settings, contract rates and temporary operating instructions.'],
     ['cycles', "type LIKE 'cycle-%'", 'Cycle events', 'Cycle planning, progression, interruption and completion notifications.'],
     ['execution', "type LIKE 'h66-%' OR type LIKE 'floor-%' OR type LIKE 'heating-test-%' OR type LIKE 'control-%' OR type='restoration-pending' OR type='simulated-command-readback'", 'Equipment execution and readback events', 'Requests, confirmations, failures, restoration and manual-test outcomes.'],
-    ['garage-feed', "type='garage-external-temperature-diagnostic'", 'Garage external-temperature problems', 'Only abnormal feed conditions and recovery from them. Successful renewals and normal external-temperature values are not recorded.'],
+    ['garage-feed', "type='garage-external-temperature-diagnostic'", 'Garage external-temperature problems', 'Local sensor, temperature-control or frost-feed faults and recovery. Fresh measurements remain separate from saved targets.'],
     ['garage-diagnostics', "type='garage-pump-diagnostic'", 'Garage native diagnostic bytes', 'Changes to raw native diagnostic bytes and their availability after genuine observation. These bytes are not interpreted as a diagnosed fault.'],
-    ['garage', "type LIKE 'garage-%'", 'Garage control changes', 'Native-setting requests, room-target changes, manual control and temporary price-control changes.'],
+    ['garage', "type LIKE 'garage-%'", 'Garage control changes', 'Native-setting requests, Normal/Away selections, target changes, warm-up advisories and protection-setting requests.'],
     ['sensors', "type LIKE 'sensor-%' OR type='indoor-baseline-reset'", 'Sensor and temperature-reference changes', 'Sensor replacement, movement, calibration, correction and baseline boundaries used during reconstruction.'],
     ['mqtt', "type LIKE 'mqtt-%'", 'MQTT connection and acquisition events', 'Connection, subscription and transport failures or recovery, separate from scalar sensor coverage.'],
     ['learning', "type LIKE 'learning-%' OR type LIKE 'checkpoint-%' OR type='scheduled-cycle-rejected'", 'Learning and planning diagnostics', 'Learning worker faults, checkpoint reconstruction and rejected scheduled cycles.'],

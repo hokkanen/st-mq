@@ -23,7 +23,7 @@ test('curated view datasets contain only their selected quantities and preserve 
 });
 
 test('axis strokes do not change interpolation and forecast or price patterns take precedence', () => {
-  const keys = ['bedroom_temperature', 'garage_native_indoor_temperature', 'garage_model_front', 'room_setting',
+  const keys = ['bedroom_temperature', 'garage_native_indoor_temperature', 'garage_pipe_front_temperature', 'room_setting',
     'learning_indoor_temperature', 'outdoor_forecast', 'solar_forecast', 'solar_radiation', 'model_solar_radiation', 'spot_price'];
   const series = Object.fromEntries(keys.map(key => [key, observations]));
   for (const axis of ['left', 'right']) {
@@ -36,7 +36,7 @@ test('axis strokes do not change interpolation and forecast or price patterns ta
       assert.equal(row.spanGaps, false);
       assert.equal(row.data, observations, 'Display styles never rewrite source samples');
     }
-    for (const key of ['bedroom_temperature', 'garage_native_indoor_temperature', 'garage_model_front', 'outdoor_forecast', 'room_setting', 'learning_indoor_temperature']) {
+    for (const key of ['bedroom_temperature', 'garage_native_indoor_temperature', 'garage_pipe_front_temperature', 'outdoor_forecast', 'room_setting', 'learning_indoor_temperature']) {
       assert.equal(data.find(row => row.key === key).cubicInterpolationMode, 'monotone');
       assert.equal(data.find(row => row.key === key).stepped, false);
     }
@@ -97,7 +97,7 @@ test('disabled interpolation makes every connected series stepped while preservi
       }
     }
   }
-  assert.deepEqual([...markerKinds].sort(), ['audit', 'daily', 'episode', 'event', 'interval-energy', 'session']);
+  assert.deepEqual([...markerKinds].sort(), ['audit', 'daily', 'event', 'interval-energy', 'session']);
   assert.deepEqual(series, before, 'Changing display modes does not rewrite any source observations');
 });
 
@@ -168,8 +168,8 @@ test('comparable equipment roles have distinct colours within each view', () => 
     assert.equal(new Set(rows.map(row => row.borderColor)).size, keys.length, keys.join(', '));
   }
   for (const keys of [
-    ['garage_temperature', 'garage_model_rear', 'garage_coefficient_rear_coolingPerHour'],
-    ['garage_temperature_2', 'garage_model_front', 'garage_coefficient_front_coolingPerHour'],
+    ['garage_temperature', 'garage_pipe_rear_temperature'],
+    ['garage_temperature_2', 'garage_pipe_front_temperature'],
     ['property_power', 'caravan_power', 'caravan_energy'],
   ]) {
     const rows = historyDatasets({}, descriptor(keys));

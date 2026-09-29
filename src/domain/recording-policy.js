@@ -50,7 +50,7 @@ export function recordingPolicy(observation = {}, { kind } = {}) {
   else if (signal === 'garage_energy') id = 'interval';
   else if (EVENT_SIGNALS.has(signal)) id = 'event';
   else if (kind === 'state' || observation.recordingPolicy === 'change-only' || ['state', 'code'].includes(unit)
-    || EXACT.test(signal ?? '') || HELD_TEMPERATURE_SIGNALS.includes(signal) || signal === 'auxiliary_power') id = 'change-only';
+    || ['garage_room_target', 'garage_effective_target'].includes(signal) || EXACT.test(signal ?? '') || HELD_TEMPERATURE_SIGNALS.includes(signal) || signal === 'auxiliary_power') id = 'change-only';
   else id = 'adaptive-value';
   return { id, ...RECORDING_POLICIES[id] };
 }
@@ -66,8 +66,13 @@ const names = {
   controller_phase: 'Requested controller phase', dhwr_request: 'Hot-water circulation request',
   dhwr_active: 'Hot-water circulation feedback', garage_energy: 'Garage heat-pump energy',
   heat_savings_active: 'Tariff-control relay feedback',
-  garage_native_defrost: 'Garage defrost state',
+  garage_native_defrost: 'Garage defrost state', garage_native_power: 'Garage native power setting',
   garage_native_energy: 'Garage native energy counter',
+  garage_room_target: 'Pill saved room target', garage_effective_target: 'Pill effective room target',
+  garage_external_enabled: 'Pill local temperature regulation enabled', garage_frost_active: 'Pill frost protection active',
+  garage_frost_available: 'Pill frost protection available', garage_away_mode: 'Requested Garage Away mode',
+  garage_ble_temperature: 'Pill Bluetooth sensor input', garage_pipe_rear_temperature: 'Rear pipe temperature estimate',
+  garage_pipe_front_temperature: 'Front pipe temperature estimate',
   learning_profit: 'Space-heating benefit after recovery', learning_aux_profit: 'Space-heating benefit with auxiliary recovery',
   learning_recovery_error: 'Space-heating recovery-cost prediction error', learning_indoor_temperature: 'Learned normal indoor temperature',
   ...Object.fromEntries(['living', 'storage'].flatMap(group => [0, 1].map(output =>

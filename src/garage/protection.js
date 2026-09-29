@@ -1,5 +1,5 @@
 import { garageSettings, GARAGE_POLICY_VERSION, GARAGE_HEAT_TRANSFER_SAFETY_FACTOR } from './settings.js';
-import { GARAGE_TEMPERATURE_MAX_AGE_MS } from './permission.js';
+import { GARAGE_TEMPERATURE_MAX_AGE_MS } from '../domain/temperature-reports.js';
 export { GARAGE_HEAT_TRANSFER_SAFETY_FACTOR } from './settings.js';
 
 const MINUTE = 60_000, finite = Number.isFinite, locations = ['rear', 'front'];

@@ -182,7 +182,7 @@ test('DHWR power remains a monitoring-only watts feed and permits explicit JSON 
 test('provider MQTT acquisition loads the default DHWR topic and exposes live feedback without any pump publications', async t => {
   const store = new Store(':memory:'), client = new EventEmitter(), subscriptions = [], publications = [];
   const config = loadConfig({ HOME: '/missing-synthetic-home', STMQ_INPUT: 'providers' }, '/missing-synthetic-repository');
-  config.garage.adapter = isolatedGarageAdapter();
+  config.garage.adapter = isolatedGarageAdapter(); config.garage.sender = { stateTopic: '', commandTopic: '' };
   const dhwr = config.connections.equipment.devices.find(row => row.id === 'dhwr');
   config.connections = { mqtt: { address: 'mqtt://synthetic.invalid', dhwr_topic: config.connections.mqtt.dhwr_topic },
     equipment: { ...config.connections.equipment, devices: [dhwr], ownedSignals: dhwr.ownedSignals } };

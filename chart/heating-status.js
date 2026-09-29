@@ -11,20 +11,6 @@ const result = (reasons, actual) => ({ state: reasons.length ? 'attention' : 'co
   summary: reasons.length ? `Needs attention: ${reasons[0]}` : 'Confirmed by current device readback.',
   detail: [actual, ...reasons, 'Device settings and heating availability do not confirm compressor activity.'].filter(Boolean).join('\n\n') });
 
-/** Power confirmation already enforces the controller's configured adapter age.
- * Other fields use its two-minute default because that setting is not exposed;
- * the independently adjustable room-sensor age never extends native freshness. */
-export function garageNativeReadingFresh(garage = {}, field, now) {
-  const adapter = garage.adapter ?? {}, native = adapter.native ?? adapter.readbacks ?? {}, health = adapter.health ?? {};
-  const reading = native.readbacks?.[field] ?? (native[field] && typeof native[field] === 'object' ? native[field] : {});
-  const at = timestamp(reading.measuredAt ?? (field === 'power' ? native.powerAt : null));
-  const confirmed = field === 'power' ? garage.heatingControls?.confirmed : null;
-  const current = confirmed === true ? Number.isFinite(at) && at <= now : fresh(at, now, 120_000);
-  return current && reading.stale !== true && reading.available !== false && reading.usable !== false
-    && adapter.connected !== false && health.deviceOnline !== false && health.pumpCommunicating !== false
-    && confirmed !== false;
-}
-
 /** A sent MQTT request and an H66 compressor reading cannot confirm the tariff relay. */
 export function homeHeatingConfirmation(status = {}) {
   const now = status.now ?? Date.now(), decision = status.decision ?? {}, actual = status.observations?.actual ?? {};
@@ -70,43 +56,6 @@ export function homeHeatingConfirmation(status = {}) {
     : 'Actual heating state: unknown.');
   if (status.automation?.home?.enabled !== true) confirmation.detail += '\n\nAutomatic heating control is disabled; device feedback still verifies manual requests.';
   return confirmation;
-}
-
-/** Confirm requested availability/off only from fresh native power and healthy reporting. */
-export function garageHeatingConfirmation(status = {}, requested) {
-  const garage = status.garage ?? {}, adapter = garage.adapter ?? {}, native = adapter.native ?? adapter.readbacks ?? {};
-  const now = status.now ?? Date.now(), health = adapter.health ?? {}, command = adapter.lastCommand ?? {};
-  const reading = native.readbacks?.power ?? (native.power && typeof native.power === 'object' ? native.power : {});
-  const power = typeof native.power === 'object' && native.power !== null ? native.power.value : native.power;
-  const at = timestamp(reading.measuredAt ?? native.powerAt);
-  const current = garageNativeReadingFresh(garage, 'power', now);
-  const expected = requested === 'Off' ? 'off' : ['Normal', 'Reduction', 'Restoring'].includes(requested) ? 'on' : null;
-  const reasons = [];
-  if (isReadOnlyReplica(status)) reasons.push('Recorded history cannot confirm the current garage state.');
-  if (status.input === 'simulated' || adapter.simulation) reasons.push('Simulated state; no physical heating confirmation.');
-  if (!expected) reasons.push('No current garage heating request is available.');
-  if (!['on', 'off'].includes(power)) reasons.push('Pump power state is unknown.');
-  else if (!current) reasons.push('A current qualified pump power readback is unavailable.');
-  else if (power !== expected) reasons.push(`Pump power is ${power}; the request needs power ${expected}.`);
-  if (garage.heatingControls?.confirmed !== true) reasons.push('The controller has not confirmed the requested pump power.');
-  const room = garage.roomTemperature;
-  if (requested === 'Reduction' && !(room?.targetSource === 'automatic' && room.phase === 'active'
-    && room.acknowledged === true && Number.isFinite(room.effectiveTargetC) && room.effectiveTargetC < room.ownerTargetC
-    && room.targetUntil > now)) reasons.push('The reduced room target is awaiting current external-temperature acknowledgement.');
-  if (requested === 'Normal' && Number.isFinite(room?.targetC) && !(room.phase === 'active' && room.acknowledged === true
-    && room.targetSource !== 'automatic')) reasons.push('The saved room target is awaiting current external-temperature acknowledgement.');
-  if (adapter.connected !== true || health.deviceOnline !== true || health.pumpCommunicating !== true || health.driverProgressing !== true)
-    reasons.push('Current garage device communication is not confirmed.');
-  if (requested === 'Restoring' || garage.episode?.restorationPending || adapter.restorePending && adapter.phase !== 'paused')
-    reasons.push('Normal heating restoration is pending.');
-  if (garage.heatingControls?.busy || ['pending', 'published'].includes(command.status)
-    || Number.isFinite(command.requestedAt) && (!Number.isFinite(at) || at < command.requestedAt))
-    reasons.push('The heating request is awaiting a new native power readback.');
-  if (failed(command.status)) reasons.push('The latest heating request failed or remains unresolved.');
-  if (adapter.faults?.length) reasons.push(`Garage control needs attention: ${adapter.faults.map(words).join(', ')}.`);
-  return result(reasons, ['on', 'off'].includes(power)
-    ? `Pump power: ${power}${current ? ' · current native readback' : ' · last reported; current state unknown'}.`
-    : 'Pump power state: unknown.');
 }
 
 export function setHeatingStatusDetail(root, { confirmation, ...options }) {

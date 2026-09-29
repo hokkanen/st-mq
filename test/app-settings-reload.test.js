@@ -15,7 +15,7 @@ async function setup(t, options = {}, overrides = {}) {
   // Keep current equipment/H66 reload fixtures independent of the public equipment
   // catalogue and garage adapter; those routes have their own integration tests.
   const write = value => writeFileSync(path, JSON.stringify({ equipment: { devices: [] },
-    garage: { adapter: isolatedGarageAdapter() },
+    garage: { adapter: isolatedGarageAdapter(), sender: { stateTopic: '', commandTopic: '' } },
     teslamate: { enabled: false }, ...value }));
   write(options);
   const config = loadConfig({ STMQ_CONFIG: path, STMQ_DATA_DIR: directory, STMQ_PORT: '0' }, directory);

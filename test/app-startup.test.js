@@ -107,7 +107,7 @@ test('H66 observations coexist with weather and prices and acquisition only requ
   fake.end = (force, options, done) => { closed++; done(); };
   const config = { ...loadConfig({ XDG_CONFIG_HOME: directory, STMQ_PORT: '0', STMQ_DATA_DIR: directory }, directory), input: 'mqtt', deviceId: 'fixture-h66',
     connections: { ...fixture.connections, mqtt: { address: 'mqtt://fixture.invalid' } } };
-  config.garage.adapter = isolatedGarageAdapter();
+  config.garage.adapter = isolatedGarageAdapter(); config.garage.sender = { stateTopic: '', commandTopic: '' };
   const app = await start({ config, clock: () => now, providerOptions: fixture.providerOptions,
     mqttOptions: { connect: (_address, options) => identityConnection(options) ? idleIdentityClient() : fake } });
   try {
@@ -137,28 +137,4 @@ test('pause expires on its deadline between regular controller ticks', async t =
     assert.equal(app.store.getState('override:simulated'), null, 'Timer clears the persisted override without a status request');
     assert.equal(app.store.events().filter(e => e.type === 'override-expired').length, 1);
   } finally { await app.close(); }
-});
-
-test('initial startup installs the independent garage safety loop and closure cancels it', async t => {
-  const directory = mkdtempSync(join(tmpdir(), 'stmq-garage-safety-startup-'));
-  t.after(() => rmSync(directory, { recursive: true, force: true }));
-  const intervals = [], cleared = [], realSetInterval = globalThis.setInterval, realClearInterval = globalThis.clearInterval;
-  t.mock.method(globalThis, 'setInterval', (callback, delay, ...args) => {
-    const handle = realSetInterval(callback, delay, ...args);
-    if (delay === 5000) intervals.push({ callback, handle });
-    return handle;
-  });
-  t.mock.method(globalThis, 'clearInterval', handle => { cleared.push(handle); return realClearInterval(handle); });
-  const config = loadConfig({ XDG_CONFIG_HOME: directory, STMQ_DATA_DIR: directory, STMQ_PORT: '0' }, directory);
-  const app = await start({ config, installSignalHandlers: false });
-  let calls = 0;
-  try {
-    assert.equal(intervals.length, 1, 'The first startup must not depend on a settings reload to install safety polling');
-    t.mock.method(app.engine.garage, 'safetyTick', () => { calls++; });
-    intervals[0].callback();
-    assert.equal(calls, 1, 'The independent callback checks garage safety between minute planner ticks');
-  } finally { await app.close(); }
-  assert.ok(cleared.includes(intervals[0].handle));
-  intervals[0].callback();
-  assert.equal(calls, 1, 'A late callback cannot operate the stopped runtime');
 });

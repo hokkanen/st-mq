@@ -1,4 +1,43 @@
-Implemented 2026-09-28 — Independent automation and coherent manual heating
+Implemented 2026-09-29 — Manual Garage targets and local Pill regulation
+- Owner explicitly retired automatic Garage savings to avoid routine temperature
+  rises while stored contents remain cold. Amend F2/F3/F5/F6 accordingly: Home
+  retains reconstructible learning; Garage has durable equipment-bound Normal
+  and Away with no expiry. Away uses its configured preset and Normal its saved
+  target. Warn on increases about added moisture for roughly 24 hours, longer
+  while contents remain cold.
+- Replace host-managed temperature leases with the Pill v2 local BTHome loop,
+  persistent real target and one-shot native commands. Native OFF survives
+  maintenance and restarts. Fresh HEAT regulation confirms native 17°C first;
+  sensor timeout clears external sensing and selects 16°C while preserving power.
+- Keep independent frost protection visible/configurable through the Gen3 sender
+  MQTT contract. The sender owns separate front/rear pipe-reserve estimates and
+  Bluetooth protection demand; the Pill owns pump commands. The BLU H&T test
+  feed provides temperature only. Real sender installation and end-to-end frost
+  hardware qualification remain pending the Gen3 device.
+- Remove the Garage learned building model, price planner, outcome writer,
+  model charts, expiring controls, obsolete fields, scripts and tests. Keep raw
+  temperature/door/pump/energy history and Home learning intact. Count original
+  unsupported journal scopes as inactive audit history without interpreting them.
+  Back up the live database before retiring only obsolete Garage control/cache
+  state and its removed automation choice; retain Home's existing Plan-only choice.
+- Polish manual controls, separate selected/effective/native targets, sender
+  settings and stale/unknown protection. Preserve native dirty drafts on readback
+  loss, read-only replicas, source clocks, native zero/false and Home controls.
+- Validation: main regression suite passed (3,492 passes, one optional skip),
+  all 9 extended checks passed, targeted follow-ups cover final review fixes.
+  Production build and Garage/Mitsubishi/Home/chart browser suites passed.
+  Live tests covered durable target and native commands, sensor timeout/recovery,
+  stopped-driver restart, MQTT outage and MQTT-disabled reboot; native OFF was
+  preserved. The isolated on-device protocol test passed 180 checks. Actual Plus1
+  probe events, including unchanged readings, were observed at 60–65-second cadence.
+- Live dashboard mode changes were confirmed by the Pill and raising the target
+  displayed the moisture warning, with native OFF preserved. Status, chart and
+  database inventory endpoints returned successfully. Existing unrelated Home
+  circulation/operational-state inventory warnings remain honestly identified.
+- Source and installed firmware verification, final build identity and device
+  memory measurements are recorded in the companion driver's status document.
+
+Historical implementation 2026-09-28 — Independent automation and coherent manual heating
 - Replace the global operating mode with durable, device-bound Home and Garage
   Plan only / Automatic choices. Header identifies Live, Simulation or History
   viewer. Charging and Caravan retain independent existing automation controls.

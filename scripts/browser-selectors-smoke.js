@@ -189,7 +189,7 @@ try {
     input.value = '2026-09-08T25:00'; input.dispatchEvent(new Event('input', { bubbles: true }));
     const rejected = !input.checkValidity(); input.value = ''; return rejected && input.checkValidity(); })()`), true,
   'Invalid typed times are rejected and clearing restores validity');
-  for (const id of ['pause-until', 'garage-pause-until']) {
+  for (const id of ['pause-until']) {
     assert.equal(await evaluate(`document.getElementById('${id}').type === 'text'
       && document.getElementById('${id}').getAttribute('aria-haspopup') === 'dialog'`), true,
     `${id} uses the shared app date/time control`);

@@ -1,4 +1,3 @@
-import { validateSavedGarageTargetEpisode } from '../garage/episodes.js';
 import { createEquipmentCapture } from './equipment.js';
 import { readFileSync } from 'node:fs';
 import mqtt from 'mqtt';
@@ -8,7 +7,8 @@ import { createH66Controller, H66_WRITABLE_REGISTERS } from '../control/h66.js';
 import { DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS, DEFAULT_TEMPERATURE_REPORT_GRACE_MS } from '../domain/temperature-reports.js';
 import { createFloorOverride, floorOverrideConfiguration } from '../control/floor-override.js';
 import { createGarageAdapter } from '../garage/adapter.js';
-import { validateSavedGaragePauseContract, validateSavedGarageHeatingHandover } from '../garage/contract.js';
+import { createGarageSender, validateGarageSenderSnapshot } from '../garage/sender.js';
+import { validateGarageAdapterSnapshot } from '../garage/contract.js';
 import { createShellyCn105Transport } from '../garage/shelly-cn105.js';
 import { teslamateConfiguration } from '../app/config.js';
 import { createShellyEvseAdapter } from '../charging/shelly-evse.js';
@@ -20,9 +20,8 @@ export { decodeMqttTemperature } from './mqtt-temperature.js';
 // Credentials and raw broker errors never enter event logs.
 export async function startMqtt({ engine, store, config, connect = mqtt.connect, canControl = () => true,
   reportStorageFailure = diagnostic => process.stderr.write(`${JSON.stringify(diagnostic)}\n`) }) {
-  validateSavedGaragePauseContract(store.getState?.(`garage:adapter:${config.input}`));
-  validateSavedGarageHeatingHandover(store.getState?.(`garage:heatingHandover:${config.input}`));
-  validateSavedGarageTargetEpisode(store.getState?.(`garage:episode:${config.input}`));
+  validateGarageAdapterSnapshot(store.getState?.(`garage:adapter:${config.input}`));
+  validateGarageSenderSnapshot(store.getState?.(`garage:sender:${config.input}`));
   const settings = { ...(config.h66 ?? {}) };
   const intervalMs = settings.snapshotIntervalMs ?? 60_000;
   const deviceId = settings.deviceId ?? config.deviceId;
@@ -182,8 +181,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     temperatureReportGraceMs: config.connections.mqtt.temperatureReportGraceMs ?? DEFAULT_TEMPERATURE_REPORT_GRACE_MS }) : null;
   const shelly = equipment;
   if (equipment) engine.equipment = equipment;
-  // The fixture remains read-only. The explicit production driver requires
-  // installed commissioning evidence and a fresh device ownership handshake.
+  // Local regulation belongs to the Pill; MQTT carries explicit owner edits.
   const garage = engine.garage || config.garage?.adapter ? createGarageAdapter({
     settings: config.garage?.adapter, clock: () => engine.clock(), canControl,
     productionTransport: createShellyCn105Transport({ settings: config.garage?.adapter, publish }),
@@ -203,9 +201,20 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
   if (garage) {
     engine.garage?.setAdapter?.(garage);
     if (garage.topics.length) topicGroups.push({ id: 'garage-adapter',
-      label: config.garage?.adapter?.driver === 'shelly-cn105' ? 'Garage adapter · Shelly CN105' : 'Garage adapter · provisional monitoring', source: 'MQTT',
+      label: 'Garage adapter · Shelly CN105', source: 'MQTT',
       topics: [...garage.topics.map(topic => ({ role: 'Native telemetry subscription', topic, direction: 'subscribe' })),
-        ...(config.garage?.adapter?.commandTopic ? [{ role: 'Commissioned lease commands', topic: config.garage.adapter.commandTopic, direction: 'publish' }] : [])] });
+        ...(config.garage?.adapter?.commandTopic ? [{ role: 'Explicit pump and room-target commands', topic: config.garage.adapter.commandTopic, direction: 'publish' }] : [])] });
+  }
+  const garageSender = config.garage?.sender ? createGarageSender({ settings: config.garage.sender,
+    publish, clock: () => engine.clock(), canControl,
+    persisted: store.getState?.(`garage:sender:${config.input}`),
+    onState: snapshot => engine.garage?.senderChanged?.(snapshot),
+    onObservation: observation => engine.ingest(observation) }) : null;
+  if (garageSender) {
+    engine.garage?.setSender?.(garageSender);
+    if (garageSender.topics.length) topicGroups.push({ id: 'garage-sender', label: 'Garage local frost protection', source: 'MQTT',
+      topics: [...garageSender.topics.map(topic => ({ role: 'Sender status and protection readback', topic, direction: 'subscribe' })),
+        ...(config.garage.sender.commandTopic ? [{ role: 'Explicit protection settings', topic: config.garage.sender.commandTopic, direction: 'publish' }] : [])] });
   }
   const requestSnapshot = async () => {
     if (!decoder) return;
@@ -245,6 +254,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     connected = true; disconnectedRecorded = false; h66?.setConnected(true);
     subscribeChargingSoc();
     garage?.setConnected(true);
+    garageSender?.setConnected(true);
     let floorSubscriptions = floorOverride.topics.length, floorSubscriptionFailed = false;
     for (const topic of floorOverride.topics) client.subscribe(topic, { qos: 1 }, (error, granted) => {
       if (!currentSubscription()) return;
@@ -302,6 +312,10 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       if (!currentSubscription()) return;
       if (subscriptionRejected(topic, error, granted)) { garage.subscriptionFailed(); report('mqtt-garage-subscribe-error'); }
     });
+    for (const topic of garageSender?.topics ?? []) client.subscribe(topic, { qos: 1 }, (error, granted) => {
+      if (!currentSubscription()) return;
+      if (subscriptionRejected(topic, error, granted)) { garageSender.subscriptionFailed(); report('mqtt-garage-sender-subscribe-error'); }
+    });
   };
   client.on('connect', connectedHandler);
   client.on('error', () => report('mqtt-error'));
@@ -313,6 +327,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     engine.charging?.setMqttStatus({ connected: false, subscribed: false, reason: 'mqtt-disconnected' });
     shelly?.setConnected(false);
     garage?.setConnected(false);
+    garageSender?.setConnected(false);
     floorOverride.setConnected(false);
     for (const finish of [...pendingPublications]) finish(new Error('MQTT disconnected'));
     for (const finish of [...pendingSubscriptions]) finish(new Error('MQTT disconnected'));
@@ -348,6 +363,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       if (chargingTesla?.receive(topic, payload, packet, engine.clock())) return;
       if (floorOverride.ingest(topic, payload, packet, engine.clock())) return;
       if (garage?.receive(topic, payload, packet, engine.clock())) return;
+      if (garageSender?.receive(topic, payload, packet, engine.clock())) return;
       if (equipmentSubscriptionBuffer) {
         const matched = shelly.topics.filter(subscription => subscription.endsWith('/#')
           ? topic.startsWith(subscription.slice(0, -1)) : subscription === topic);
@@ -421,7 +437,8 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       await floorOverride.close({ restore: false });
       if (engine.floorOverride === floorOverride) engine.floorOverride = null;
       if (engine.executor?.floorOverride === floorOverride) engine.executor.floorOverride = null;
-      await garage?.close({ restore: restore && canControl(), now: engine.clock() });
+      await garage?.close();
+      await garageSender?.close();
       if (garage) engine.garage?.setAdapter?.(null);
       shelly?.close();
       if (engine.equipment === equipment) engine.equipment = null;

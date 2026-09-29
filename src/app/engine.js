@@ -1,4 +1,3 @@
-import { validateSavedGarageTargetEpisode } from '../garage/episodes.js';
 import { weatherAcquisitionIdentity } from '../acquisition/weather-identity.js';
 import { HeatingAutomation } from './automation.js';
 import { randomUUID } from 'node:crypto';
@@ -30,10 +29,12 @@ import { temperatureReportMaxAge } from '../domain/temperature-reports.js';
 import { OUTDOOR_MAX_AGE_MS } from '../domain/reading-freshness.js';
 import { indoorStatusMetadata, outdoorReadingStatus, temperatureBoundaryStatus, rememberOutdoorReading } from './temperature-status.js';
 import { GarageRuntime } from '../garage/runtime.js';
-import { validateSavedGaragePauseContract, validateSavedGarageHeatingHandover } from '../garage/contract.js';
+import { validateGarageAdapterSnapshot } from '../garage/contract.js';
+import { validateGarageModeState } from '../garage/room-temperature.js';
+import { garageSettings } from '../garage/settings.js';
+import { validateGarageSenderSnapshot } from '../garage/sender.js';
 import { ChargingRuntime } from '../charging/runtime.js';
-import { isGarageDoorSignal, confirmedGarageDoor, garageDoorContinuity } from '../garage/door-state.js';
-import { rememberGarageTemperature } from '../garage/temperature-evidence.js';
+import { isGarageDoorSignal, confirmedGarageDoor } from '../garage/door-state.js';
 
 const OBSERVATION_MAX_AGE_MS = OUTDOOR_MAX_AGE_MS;
 const pauseIdentity = override => override?.id ?? (Number.isFinite(override?.createdAt) ? String(override.createdAt) : null);
@@ -358,9 +359,11 @@ export class Engine {
   async closeFireplace() { await this.fireplaceRebuild?.close(); }
   constructor({ store, config, clock = Date.now, commandTransport = null, canControl = () => true }) {
     validateSettings(config.settings);
-    validateSavedGaragePauseContract(store.getState(`garage:adapter:${config.input}`));
-    validateSavedGarageHeatingHandover(store.getState(`garage:heatingHandover:${config.input}`));
-    validateSavedGarageTargetEpisode(store.getState(`garage:episode:${config.input}`));
+    validateGarageAdapterSnapshot(store.getState(`garage:adapter:${config.input}`));
+    validateGarageModeState(store.getState(`garage:mode:${config.input}`));
+    validateGarageSenderSnapshot(store.getState(`garage:sender:${config.input}`));
+    const savedGarageSettings = store.getState(`garage:configuration:${config.input}`);
+    if (savedGarageSettings != null) garageSettings(savedGarageSettings);
     const previousSettings = store.getState(`settings:${config.input}`);
     if (previousSettings !== null && previousSettings !== undefined) {
       try { validateSettings(previousSettings); }
@@ -412,8 +415,6 @@ export class Engine {
     this.executor = new Executor({ input: config.input, store, plant: this.plant, commandTransport, config: this.control, clock });
     this.startupRestorationPending = this.executor.status().restorationPending;
     this.latest = Object.create(null);
-    this.garageTemperatureEvidence = Object.create(null);
-    this.garageDoorStates = Object.create(null);
     this.lastKnownTemperatures = Object.create(null);
     this.temperatureAttempts = Object.create(null);
     this.temperatureReportPolicies = Object.create(null);
@@ -478,22 +479,20 @@ export class Engine {
       && (result.rejectedSourceTime || result.reason === 'out-of-order-receipt');
     this.rememberObservation(rejectedTime ? { ...observation,
       quality: [...new Set([...(observation.quality ?? []), 'out-of-order-source-time'])] } : observation, now);
-    if (['garage_temperature', 'garage_temperature_2'].includes(observation.signal) || isGarageDoorSignal(observation.signal)) this.garage?.queueSafety();
     return result;
   }
   ingestEnergy(interval) { return interval.signal === 'garage_energy' ? this.garage.ingestEnergy(interval) : this.recorder.recordEnergy(interval); }
   ingestionCheckpoint() {
     return structuredClone(Object.fromEntries(['latest', 'outdoorCandidates', 'lastKnownTemperatures',
-      'temperatureAttempts', 'garageDoorStates', 'garageTemperatureEvidence'].map(key => [key, this[key]])));
+      'temperatureAttempts'].map(key => [key, this[key]])));
   }
   restoreIngestionCheckpoint(checkpoint) {
-    for (const key of ['latest', 'outdoorCandidates', 'lastKnownTemperatures', 'temperatureAttempts', 'garageDoorStates', 'garageTemperatureEvidence'])
+    for (const key of ['latest', 'outdoorCandidates', 'lastKnownTemperatures', 'temperatureAttempts'])
       this[key] = checkpoint[key];
   }
   rememberObservation(observation, now) {
     if (observation?.signal === 'indoor_temperature' && observation.source?.startsWith('husdata')) return;
     if (!acceptsGarageObservation(this.config, observation)) return;
-    rememberGarageTemperature(this.garageTemperatureEvidence, observation, now);
     if (HELD_TEMPERATURE_SIGNALS.includes(observation?.signal)) {
       const prior = this.lastKnownTemperatures[observation.signal];
       const previousAttempt = this.temperatureAttempts[observation.signal];
@@ -518,10 +517,6 @@ export class Engine {
       this.selectOutdoor(now);
     } else {
       remember(this.latest, observation, now);
-      if (isGarageDoorSignal(observation?.signal) && this.latest[observation.signal] === observation) {
-        this.garageDoorStates ??= Object.create(null);
-        this.garageDoorStates[observation.signal] = garageDoorContinuity(this.garageDoorStates[observation.signal], observation, now);
-      }
     }
   }
   outdoorUsable(observation, now) {
@@ -555,30 +550,27 @@ export class Engine {
   }
   environment() { return this.config.input === 'simulated' ? 'simulation' : this.config.input === 'offline' ? 'history' : 'live'; }
   automationTarget(feature) {
-    if (this.config.input === 'simulated') return this.automation.features[feature].identity;
-    const target = feature === 'home' ? this.executor?.commandTransport?.targetIdentity?.tariff
-      : this.garage?.adapter?.status(this.clock())?.targetIdentity;
+    if (feature !== 'home') return null;
+    if (this.config.input === 'simulated') return this.automation.features.home.identity;
+    const target = this.executor?.commandTransport?.targetIdentity?.tariff;
     return typeof target === 'string' && /^[a-f0-9]{64}$/.test(target) ? target : null;
   }
   automationEnabled(feature) {
-    return this.automation.features[feature]?.enabled === true && this.canControl() && this.config.input !== 'offline'
-      && this.automationTarget(feature) === this.automation.features[feature].targetIdentity
-      && (feature === 'garage' ? this.garage?.settings.enabled === true : Boolean(this.plant || this.executor?.commandTransport));
+    return feature === 'home' && this.automation.features.home.enabled === true && this.canControl() && this.config.input !== 'offline'
+      && this.automationTarget(feature) === this.automation.features.home.targetIdentity
+      && Boolean(this.plant || this.executor?.commandTransport);
   }
   automationStatus() {
-    return Object.fromEntries(['home', 'garage'].map(feature => {
-      const control = this.automation.features[feature], garage = feature === 'garage';
-      const reason = !this.canControl() ? 'This computer is read-only.'
-        : this.config.input === 'offline' ? 'Automation is unavailable in the history viewer.'
-          : garage && !this.garage?.settings.enabled ? 'Garage heating is not enabled in configuration.'
-            : !garage && !this.plant && !this.executor.commandTransport ? 'Configure a heating command connection before enabling automation.'
-              : !this.automationTarget(feature) ? 'Waiting for the heating equipment identity to be confirmed.'
-                : control.enabled && this.automationTarget(feature) !== control.targetIdentity ? 'The heating equipment changed; its automation permission is no longer valid.' : null;
-      const pause = garage ? this.garage?.temporary : this.store.getState(`override:${this.config.input}`);
-      const activity = reason ? 'unavailable' : !control.enabled ? 'plan-only' : pause?.expiresAt > this.clock() ? 'paused' : 'automatic';
-      return [feature, { ...control, available: reason === null, reason, activity,
-        ...(activity === 'paused' ? { pausedUntil: pause.expiresAt } : {}) }];
-    }));
+    const control = this.automation.features.home;
+    const reason = !this.canControl() ? 'This computer is read-only.'
+      : this.config.input === 'offline' ? 'Automation is unavailable in the history viewer.'
+        : !this.plant && !this.executor.commandTransport ? 'Configure a heating command connection before enabling automation.'
+          : !this.automationTarget('home') ? 'Waiting for the heating equipment identity to be confirmed.'
+            : control.enabled && this.automationTarget('home') !== control.targetIdentity ? 'The heating equipment changed; its automation permission is no longer valid.' : null;
+    const pause = this.store.getState(`override:${this.config.input}`);
+    const activity = reason ? 'unavailable' : !control.enabled ? 'plan-only' : pause?.expiresAt > this.clock() ? 'paused' : 'automatic';
+    return { home: { ...control, available: reason === null, reason, activity,
+      ...(activity === 'paused' ? { pausedUntil: pause.expiresAt } : {}) } };
   }
   setAutomation(input) {
     if (this.automationChangePromise)
@@ -591,7 +583,7 @@ export class Engine {
   async applyAutomation(input) {
     if (!input || typeof input !== 'object' || Array.isArray(input)
       || Object.keys(input).sort().join(',') !== 'enabled,feature'
-      || !['home', 'garage'].includes(input.feature) || typeof input.enabled !== 'boolean')
+      || input.feature !== 'home' || typeof input.enabled !== 'boolean')
       throw new Error('Choose a heating feature and an automation permission.');
     const { feature, enabled } = input, current = this.automationStatus()[feature];
     if (!this.canControl() || this.config.input === 'offline' || enabled && !current.available)
@@ -619,7 +611,6 @@ export class Engine {
           this.dispatchPending = null;
         }
       }
-      if (feature === 'garage') await this.garage.automationChanged?.();
     } finally { this.automationChangePending = false; }
     this.tick(); this.onTemporaryChange?.();
     return this.status();
@@ -981,7 +972,7 @@ export class Engine {
       outlook = assembleOutlook(this.store.getState('provider:market'), this.store.getState('provider:weather'), this.contract(), now);
     }
     this.temperatureObservations(observations, now);
-    try { this.garage.tick({ now, prices: outlook.prices, forecast: outlook.forecast }); }
+    try { this.garage.tick({ now }); }
     catch { this.garage.fail('garage-runtime-unavailable'); }
     this.charging.tick({ now, prices: outlook.prices, weather: outlook.forecast });
     const h66 = this.h66Status?.() ?? { available: false, connected: false, controlsReady: false,

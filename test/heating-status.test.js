@@ -1,15 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { homeHeatingConfirmation, garageHeatingConfirmation, garageNativeReadingFresh } from '../chart/heating-status.js';
+import { homeHeatingConfirmation } from '../chart/heating-status.js';
 import { currentPriceDisplay } from '../chart/current-price.js';
 
 const now = Date.parse('2026-09-15T12:00:00Z');
 const home = () => ({ now, input: 'providers', automation: { home: { enabled: true }, garage: { enabled: true } }, decision: { phase: 'normal' },
   observations: { actual: { mode: 'normal', source: 'device-readback', verified: true, observedAt: now - 1000 } } });
-const garage = () => ({ now, input: 'providers', garage: { settings: { maxSensorAgeMs: 120_000 }, heatingControls: { confirmed: true },
-  adapter: { connected: true, health: { deviceOnline: true, pumpCommunicating: true, driverProgressing: true },
-    native: { power: 'on', powerAt: now - 1000 } } } });
-
 test('Home confirmation requires current verified evidence matching the requested phase', () => {
   assert.equal(homeHeatingConfirmation(home()).state, 'confirmed');
   const mismatch = home(); mismatch.observations.actual.mode = 'reduction';
@@ -65,61 +61,6 @@ test('Home manual requests are confirmed from relay feedback while automatic con
   assert.equal(homeHeatingConfirmation(status).state, 'attention');
 });
 
-test('Garage confirmation requires fresh matching native power and healthy communication', () => {
-  assert.equal(garageHeatingConfirmation(garage(), 'Normal').state, 'confirmed');
-  const status = garage(); status.garage.adapter.native.power = 'off';
-  assert.equal(garageHeatingConfirmation(status, 'Off').state, 'confirmed');
-  assert.match(garageHeatingConfirmation(status, 'Normal').detail, /power is off; the request needs power on/);
-  for (const at of [undefined, now + 1, now - 120_000]) {
-    status.garage.adapter.native.powerAt = at;
-    status.garage.heatingControls.confirmed = false;
-    assert.equal(garageHeatingConfirmation(status, 'Off').state, 'attention');
-  }
-  for (const field of ['deviceOnline', 'pumpCommunicating', 'driverProgressing']) {
-    const unhealthy = garage(); unhealthy.garage.adapter.health[field] = false;
-    assert.equal(garageHeatingConfirmation(unhealthy, 'Normal').state, 'attention');
-  }
-  const disconnected = garage(); disconnected.garage.adapter.connected = false;
-  assert.match(garageHeatingConfirmation(disconnected, 'Normal').detail, /communication is not confirmed/);
-  const unqualified = garage(); unqualified.garage.adapter.native.readbacks = { power: { measuredAt: now, usable: false } };
-  assert.equal(garageHeatingConfirmation(unqualified, 'Normal').state, 'attention');
-});
-
-test('Garage matching power cannot hide simulation, pending commands, faults or restoration', () => {
-  for (const patch of [{ simulation: true }, { restorePending: true }, { faults: ['native-result-unresolved'] },
-    { lastCommand: { status: 'published', requestedAt: now - 5000 } },
-    { lastCommand: { status: 'accepted', requestedAt: now } },
-    { lastCommand: { status: 'failed' } }]) {
-    const status = garage(); Object.assign(status.garage.adapter, patch);
-    assert.equal(garageHeatingConfirmation(status, 'Normal').state, 'attention', JSON.stringify(patch));
-  }
-  assert.equal(garageHeatingConfirmation({ ...garage(), role: 'slave' }, 'Normal').state, 'attention');
-  const paused = garage(); Object.assign(paused.garage.adapter, { phase: 'paused', restorePending: true });
-  paused.garage.adapter.native.power = 'off';
-  assert.equal(garageHeatingConfirmation(paused, 'Off').state, 'confirmed', 'a valid OFF lease has a future restoration obligation');
-  assert.match(garageHeatingConfirmation(garage(), 'Normal').detail, /do not confirm compressor activity/);
-});
-
-test('Garage room-sensor age cannot extend native power freshness or override controller confirmation', () => {
-  const status = garage();
-  status.garage.settings.maxSensorAgeMs = 10 * 60_000;
-  status.garage.adapter.native.powerAt = now - 5 * 60_000;
-  status.garage.heatingControls.confirmed = false;
-  assert.equal(garageHeatingConfirmation(status, 'Normal').state, 'attention');
-  assert.equal(garageNativeReadingFresh(status.garage, 'power', now), false);
-  assert.doesNotMatch(garageHeatingConfirmation(status, 'Normal').detail, /current native readback/);
-  status.garage.adapter.native.powerAt = now - 45_000;
-  status.garage.heatingControls.confirmed = false;
-  assert.equal(garageHeatingConfirmation(status, 'Normal').state, 'attention', 'the backend enforces a shorter configured adapter age');
-  assert.equal(garageNativeReadingFresh(status.garage, 'power', now), false);
-  assert.doesNotMatch(garageHeatingConfirmation(status, 'Normal').detail, /current native readback/);
-  delete status.garage.heatingControls;
-  assert.equal(garageHeatingConfirmation(status, 'Normal').state, 'attention', 'missing authoritative confirmation cannot become green');
-  status.garage.adapter.native.powerAt = now - 5 * 60_000;
-  status.garage.heatingControls = { confirmed: true };
-  assert.equal(garageHeatingConfirmation(status, 'Normal').state, 'confirmed', 'a longer backend adapter age remains authoritative');
-});
-
 test('both heating summaries use the same current all-in rate, spot fallback and simulation provenance', () => {
   const status = { now, prices: [
     { start: now - 900_000, end: now, allInCentsPerKWh: 99 },
@@ -134,24 +75,4 @@ test('both heating summaries use the same current all-in rate, spot fallback and
   assert.equal(missing.value, '—'); assert.equal(missing.unit, ''); assert.match(missing.detail, /Waiting for market prices/);
   const simulation = currentPriceDisplay({ ...status, input: 'simulated' });
   assert.equal(simulation.label, 'EXAMPLE ALL-IN PRICE'); assert.match(simulation.detail, /Synthetic simulation data/);
-});
-
-
-test('Garage automatic reduction needs native ON and the acknowledged effective target, not an OFF readback', () => {
-  const status = garage();
-  status.garage.roomTemperature = { targetC: 5, ownerTargetC: 5, effectiveTargetC: 0,
-    targetSource: 'automatic', targetUntil: now + 60_000, phase: 'active', acknowledged: true };
-  assert.equal(garageHeatingConfirmation(status, 'Reduction').state, 'confirmed');
-  assert.equal(garageHeatingConfirmation(status, 'Normal').state, 'attention', 'the normal target has not returned');
-  for (const patch of [{ acknowledged: false }, { phase: 'holding' }, { targetSource: 'owner' },
-    { effectiveTargetC: 5 }, { targetUntil: now }]) {
-    const pending = structuredClone(status); Object.assign(pending.garage.roomTemperature, patch);
-    assert.equal(garageHeatingConfirmation(pending, 'Reduction').state, 'attention', JSON.stringify(patch));
-  }
-  status.garage.adapter.native.power = 'off';
-  assert.equal(garageHeatingConfirmation(status, 'Reduction').state, 'attention');
-  status.garage.adapter.native.power = 'on';
-  status.garage.roomTemperature = { targetC: 5, ownerTargetC: 5, effectiveTargetC: 5,
-    targetSource: 'owner', phase: 'active', acknowledged: true };
-  assert.equal(garageHeatingConfirmation(status, 'Normal').state, 'confirmed');
 });

@@ -63,7 +63,7 @@ const fixture = `<!doctype html><html><head><meta charset="utf-8"><meta name="vi
         summary: 'Cooling from the indoor–outdoor temperature difference.', detail: 'A larger value means faster cooling.',
         calculation: { equations: [{ label: 'Loss rate', expression: 'cooling = loss × (Tᵢ − Tₒ)',
           legend: 'Tᵢ and Tₒ: indoor and outdoor temperatures in °C.' }] } },
-      { key: 'unchanged', title: 'Garage learning row', value: '12 h', detail: 'An ordinary row without calculations.' }];
+      { key: 'unchanged', title: 'Equipment reading', value: '12 h', detail: 'An ordinary row without calculations.' }];
     globalThis.renderRows = () => renderLearningRows(document.getElementById('rows'), rows);
     renderRows();
     globalThis.learningFixture = ${JSON.stringify(learning)};

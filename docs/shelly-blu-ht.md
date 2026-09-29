@@ -12,7 +12,11 @@ Regenerate and reinstall the bridge script when adopting this current configurat
 ST-MQ does not subscribe to the former Home topic.
 `caravan_temperature` (°C) and `caravan_humidity` (% RH) are recorded and available
 in chart history. Battery and Bluetooth signal strength are live diagnostics only.
-This sensor is not an input to Home learning, its indoor average, or Garage protection.
+This sensor is not an input to Home learning, its indoor average, or pipe protection.
+It can simultaneously act as the Pill temperature test source through native
+BTHome components. Bluetooth advertisements can be received by both gateways;
+the MQTT bridge need not be removed. This test connection is temporary and must
+be replaced with the actual Garage sender before relying on room regulation.
 
 ## Gateway setup
 

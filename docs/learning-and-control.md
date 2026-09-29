@@ -70,7 +70,8 @@ follows these controls, with the reconstruction explanation under **Learning out
 Validation & evidence → Reconstructing the model**. Home reports
 counts of usable observations and accepted model updates. These counts describe
 current evidence; missing values remain unknown and no completion percentage is
-inferred. The **Home heat model** and **Garage heat model** summaries each open learning details.
+inferred. The **Home heat model** summary opens learning details. Garage has manual
+temperatures and independent local protection, with no learned heat model.
 Both explain the model's role before the nested sections: the model estimates a
 response, planning combines that response with prices and comfort or protection
 requirements, and control sends the allowed commands. Links lead back to each
@@ -91,7 +92,7 @@ Both use the same expandable rows: the name, value or unit, and provenance stay 
 explanations and supporting evidence open underneath. Inputs and coefficients are grouped by
 their role. **Validation & evidence** keeps detailed checks alongside the outcomes without
 equating Home's conditional temperature, equipment-response and frozen-forecast checks with
-Garage's cooling-and-recovery episode validation. Status refreshes preserve open explanations,
+Home’s cycle validation. Status refreshes preserve open explanations,
 keyboard focus and the sensor-change forms within Home's temperature inputs.
 Current coefficients include their value, unit, explanation and provenance:
 fitted in the accepted model, retained while awaiting evidence, initial estimate
@@ -118,9 +119,7 @@ learning. The first request can take longer because it replays earlier learning.
 The **View** menu groups compatible comparisons with their relevant temperature
 context and labeled activity rows. Saved temperatures and references, thermal
 inputs, electrical inputs, activity fractions and coefficients keep their own
-units and meanings. Both Garage cooling coefficients share one ordered replay
-and retain independent coefficient timelines; selecting another coefficient
-does not repeat the same learning. **Series explorer** can isolate every
+units and meanings. Home coefficients share the supported ordered replay. **Series explorer** can isolate every
 supported saved input or coefficient by its label or signal identifier. The
 shared electricity-price controls remain available across views. Observed
 temperature history stays distinct from the original normalized inputs used
@@ -170,14 +169,9 @@ fragments; complete short cycles receive their own checks. A dip followed by a
 return to the initial temperature cannot score zero error. Coefficient eligibility
 requires independent observed variation and sensitivity, not merely many rows.
 
-Garage's brief probe communication tolerance follows that same
-distinction. A live-process cache can preserve an already acknowledged control
-permission for external temperature or an accepted managed OFF pause for the
-unused part of its original 120-second measurement lifetime,
-subject to both locations' freeze-protection reserve. The recorded availability
-gap remains unknown to learning, and conservative outage assessment cannot
-credit warming. Neither reconnecting nor restarting repairs that history. See
-the [external-temperature contract](garage-adapter.md#permanent-external-room-temperature).
+Garage temperature freshness is enforced locally by the Pill. Native BTHome
+receipt times distinguish new reports from cache reads. ST-MQ does not renew
+Garage temperature leases or run its pipe model; see [Garage control](garage.md).
 
 Three kinds of evidence remain distinct:
 
@@ -300,9 +294,7 @@ A new cycle's conservative benefit must exceed the strategy's minimum of 50,
 the already committed start hurdle. Among admitted choices, the mildest retaining
 at least 60%, 80% or 100% of the best positive conservative benefit is selected.
 Gentle can still start a sufficiently worthwhile cycle. Use **Pause price
-control** to suspend economic control. Garage shares the same named strategies,
-with its own economic threshold and preference for shorter OFF windows; see
-[Garage selection](garage-model.md#one-opportunity-at-a-time).
+control** to suspend economic control. Garage uses permanent manual targets instead; see [Garage heating](garage.md).
 
 These decision rules consume the heat model's thermal predictions, uncertainty
 and action evidence. They are not fitted model coefficients: choosing another
@@ -465,7 +457,7 @@ to the pump's installer menu.
 
 Home Automatic may send heating/H66 commands only with live input and
 the required fresh controls. Home Plan only computes the plan without automatic
-heating commands. Garage, charging and Caravan have independent automation choices. Explicit manual tests are separate authorization: a timed test captures
+heating commands. Garage has independent manual modes; charging and Caravan have separate automation choices. Explicit manual tests are separate authorization: a timed test captures
 the current baseline, writes the selected register, checks readback and restores
 the baseline after expiry. Failed readback and pending restoration are visible;
 broker acknowledgement alone is not device confirmation. Restarts retain restore

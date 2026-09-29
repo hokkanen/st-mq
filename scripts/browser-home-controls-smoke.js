@@ -87,7 +87,7 @@ try {
   // synthetic status is varied, and every mutating browser request is blocked.
   await send('Page.addScriptToEvaluateOnNewDocument', { source: `
     globalThis.homeFixture = { paused: false, savingsStrategy: 'balanced', reads: 0, mutations: [],
-      garageReading: 'unseen', automatic: true, garageAvailable: true, garagePaused: false, garageExternal: false };
+      automatic: true };
     const nativeFetch = globalThis.fetch.bind(globalThis);
     globalThis.fetch = async (input, options = {}) => {
       const method = options.method ?? (input instanceof Request ? input.method : 'GET');
@@ -99,7 +99,7 @@ try {
       if (!new URL(typeof input === 'string' ? input : input.url, location.href).pathname.endsWith('/api/status')) return response;
       const status = await response.json();
       homeFixture.reads++;
-      status.automation = { home: { enabled: homeFixture.automatic, available: true }, garage: { enabled: homeFixture.automatic, available: true } };
+      status.automation = { home: { enabled: homeFixture.automatic, available: true } };
       status.settings.savingsStrategy = homeFixture.savingsStrategy;
       status.settings.preheatRoomBoostC = 5;
       status.settings.comfort.maxDropC = 1.5;
@@ -108,22 +108,6 @@ try {
         { id: 'bedroom', label: 'Bedroom', referenceC: 20, referenceSource: 'room', minC: 18.5, maxC: 21.5, limitsApply: true },
         { id: 'office', label: 'Office', referenceC: 21, referenceSource: 'overall', minC: 19.5, maxC: 22.5, limitsApply: true },
       ];
-      status.garage.settings.enabled = true;
-      status.garage.settings.savingsStrategy = homeFixture.savingsStrategy;
-      status.garage.heatingControls = { available: homeFixture.garageAvailable, normalAvailable: homeFixture.garageAvailable,
-        offAvailable: homeFixture.garageAvailable, confirmed: homeFixture.garageReading === 'fresh',
-        requestedMode: 'normal', reason: homeFixture.garageAvailable ? null : 'Fresh pump state is unavailable.' };
-      status.garage.temporary = { available: homeFixture.garageAvailable, pauseActive: homeFixture.garagePaused,
-        pauseUntil: homeFixture.garagePaused ? status.now + 3_600_000 : null };
-      status.garage.adapter = { connected: true, health: { deviceOnline: true, driverProgressing: true, pumpCommunicating: true },
-        native: ['fresh', 'stale'].includes(homeFixture.garageReading) ? {
-          power: 'on', mode: 'heat', targetC: 17, powerAt: status.now,
-          readbacks: Object.fromEntries(['power', 'mode', 'targetC'].map(key => [key,
-            { measuredAt: status.now - (homeFixture.garageReading === 'stale' ? 180_000 : 0) }])),
-        } : {} };
-      status.garage.roomTemperature = homeFixture.garageExternal ? { targetC: 5,
-        phase: homeFixture.garageExternal === 'active' ? 'active' : 'waiting',
-        acknowledged: homeFixture.garageExternal === 'active', offsetC: 12 } : { targetC: null };
       status.override = homeFixture.paused ? { expiresAt: status.now + 3_600_000 } : null;
       status.decision.manualHold = homeFixture.paused
         ? { until: status.override.expiresAt, phase: 'preheat', changed: true } : null;
@@ -194,79 +178,40 @@ try {
   await keyPress(' ');
   assert.equal(await evaluate(`document.getElementById('home-preferences-details').open`), false,
     'Space closes native preferences disclosure');
-  await evaluate(`document.getElementById('garage-heating-details').open = true`);
-  assert.equal(await evaluate(`document.getElementById('garage-current-mode-row').hidden
-    && document.getElementById('garage-current-room-row').hidden`), true, 'Never-observed native fields are omitted');
-  assert.match(await evaluate(`document.getElementById('garage-current-control').textContent`), /Normal heating requested · needs attention/,
-    'Simulation is not presented as physical confirmation');
-  await evaluate(`homeFixture.garageReading = 'fresh'; homeFixture.garageExternal = 'active'; await homeFixture.poll()`);
-  assert.equal(await evaluate(`document.getElementById('garage-current-mode').textContent`), 'Heat');
-  assert.equal(await evaluate(`document.getElementById('garage-current-room').textContent`), '5 °C · Garage rear · Active');
-  assert.equal(await evaluate(`document.getElementById('garage-pause-overview').textContent`), 'Not paused');
-  assert.equal(await evaluate(`document.getElementById('garage-heating-state').checkVisibility()
-    && !document.getElementById('garage-settings-details').open`), true, 'Current state precedes folded preferences');
-  await evaluate(`homeFixture.garageReading = 'missing'; homeFixture.garageExternal = 'fallback'; await homeFixture.poll()`);
-  assert.equal(await evaluate(`document.getElementById('garage-current-mode-row').hidden`), false,
-    'Previously observed fields stay visible when reports disappear');
-  assert.equal(await evaluate(`document.getElementById('garage-current-mode').textContent`), 'Unavailable');
-  assert.equal(await evaluate(`document.getElementById('garage-current-room').textContent`), '5 °C · External sensor · Fallback');
-  await evaluate(`homeFixture.garageReading = 'stale'; homeFixture.garageExternal = false; await homeFixture.poll()`);
-  assert.equal(await evaluate(`document.getElementById('garage-current-mode').textContent`), 'Unavailable');
-  assert.equal(await evaluate(`document.getElementById('garage-current-room').textContent`), 'Unavailable', 'Stale native targets are not current settings');
   await evaluate(`homeFixture.automatic = false; await homeFixture.poll()`);
-  assert.equal(await evaluate(`document.getElementById('garage-mode-off').disabled`), false,
-    'Plan only still permits an available manual OFF request');
   assert.equal(await evaluate(`document.getElementById('test-reduction').disabled`), false,
     'Home manual reduction stays available with Plan only');
-  await evaluate(`homeFixture.automatic = false; homeFixture.garageAvailable = false; await homeFixture.poll()`);
-  assert.deepEqual(await evaluate(`['control-price', 'garage-control-price'].map(id => document.getElementById(id).textContent)`), ['Plan only', 'Plan only']);
-  assert.equal(await evaluate(`document.getElementById('garage-pause-overview').textContent`), 'Plan only');
-  assert.match(await evaluate(`document.getElementById('garage-heating-help').textContent`), /next controller update.*Pause price control.*Freeze protection/,
-    'Unavailable controls retain their duration and protection explanation');
-  await evaluate(`document.querySelector('#garage-heating-status button').click()`);
-  assert.match(await evaluate(`document.getElementById('status-detail-popover').textContent`), /Fresh pump state is unavailable/,
-    'Availability explains device readiness separately from automation and override duration');
-  await evaluate(`document.querySelector('#status-detail-popover .status-detail-close').click();
-    homeFixture.automatic = true; homeFixture.garageAvailable = true; homeFixture.garageReading = 'fresh';
-    homeFixture.garageExternal = 'active'; await homeFixture.poll()`);
+  await evaluate(`homeFixture.automatic = true; await homeFixture.poll()`);
   for (const width of [1280, 360]) for (const theme of ['dark', 'light']) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: 1100, deviceScaleFactor: 1, mobile: false });
     await evaluate(`if (document.documentElement.dataset.theme !== '${theme}') document.getElementById('theme-toggle').click();
       document.getElementById('home-preferences-details').open = true;
-      document.getElementById('home-room-references-details').open = true;
-      document.getElementById('garage-settings-details').open = true`);
+      document.getElementById('home-room-references-details').open = true`);
     const layout = await evaluate(`({ page: document.documentElement.scrollWidth, viewport: innerWidth,
       overflow: [...document.querySelectorAll('#home-preferences-details *')].filter(element => element.scrollWidth > element.clientWidth + 1)
         .map(element => ({ name: element.id || element.tagName, scroll: element.scrollWidth, client: element.clientWidth })),
-      rows: [...document.querySelectorAll('#home-manual-controls .home-state-reading, #home-preferences-details .home-preferences-body, #heating-test-buttons, #garage-manual-controls .home-state-reading, #garage-settings-details .garage-setting')]
+      rows: [...document.querySelectorAll('#home-manual-controls .home-state-reading, #home-preferences-details .home-preferences-body, #heating-test-buttons')]
         .map(element => ({ name: element.id || element.className, scroll: element.scrollWidth, client: element.clientWidth })) })`);
     assert.equal(layout.page <= layout.viewport && layout.rows.every(row => row.scroll <= row.client + 1), true,
       `Heating controls and preferences fit ${width}px ${theme} without horizontal overflow: ${JSON.stringify(layout)}`);
-    const margins = await evaluate(`['temporary-details', 'home-preferences-details', 'garage-pause-details', 'garage-settings-details']
+    const margins = await evaluate(`['temporary-details', 'home-preferences-details']
       .map(id => { const style = getComputedStyle(document.getElementById(id));
         return [style.marginInlineStart, style.marginTop, style.borderTopWidth]; })`);
     assert(margins.every(row => JSON.stringify(row) === JSON.stringify(margins[0])),
-      'Both control sections use matching nested indentation, spacing and dividers');
+      'Home preferences use matching nested indentation, spacing and dividers');
     assert.equal(margins[0][0], width === 360 ? '16px' : '24px');
-    assert.equal(await evaluate(`Array.from(document.querySelectorAll('#garage-heating-settings .garage-setting')).every(row => {
-      const help = row.querySelector('.garage-setting-help'), label = row.querySelector('dt');
-      return help.clientWidth >= row.clientWidth * .95 && label.clientWidth >= row.clientWidth * .4;
-    })`), true, 'Garage descriptions span the row and long values cannot squeeze their labels');
     assert.match(await evaluate(`document.getElementById('home-room-references').textContent`), /Bedroom20 °C · Learned room reference.*18.5 °C – 21.5 °C.*Office21 °C · Overall reference/);
-    assert.match(await evaluate(`document.getElementById('garage-settings-details').textContent`), /More savings/);
     await screenshot(`${width === 360 ? 'mobile' : 'desktop'}-${theme}-preferences`);
-    await screenshot(`${width === 360 ? 'mobile' : 'desktop'}-${theme}-garage-preferences`, 'garage-control');
   }
   for (const [policyId, modelId] of [
     ['home-preferences-details', 'learning-panel-details'],
-    ['garage-settings-details', 'garage-learning-details'],
   ]) {
     assert.equal(await evaluate(`(() => {
       const policy = document.getElementById('${policyId}');
       const choices = [...policy.querySelectorAll('.heating-strategy-option')];
       return choices.length === 3 && choices.filter(choice => choice.dataset.selected === 'true').length === 1
         && choices.find(choice => choice.dataset.selected === 'true').textContent.includes('More savings');
-    })()`), true, 'Both sections show the three strategies and identify the configured choice');
+    })()`), true, 'Home preferences show the three strategies and identify the configured choice');
     await evaluate(`document.getElementById('${modelId}').open = false;
       document.querySelector('#${policyId} [data-policy-model-link]').focus()`);
     await keyPress('Enter');
@@ -293,9 +238,7 @@ try {
       document.querySelector('#${modelId} > .learning-section').open = false`);
   }
   console.log(`Home controls screenshots available: ${artifacts}`);
-  await evaluate(`homeFixture.paused = true; homeFixture.garagePaused = true; await homeFixture.poll()`);
-  assert.match(await evaluate(`document.getElementById('garage-pause-overview').textContent`), /^Paused until/);
-  assert.match(await evaluate(`document.getElementById('garage-heating-help').textContent`), /held until.*Resume now.*Freeze protection/);
+  await evaluate(`homeFixture.paused = true; await homeFixture.poll()`);
   assert.match(await evaluate(`document.getElementById('heating-test-help').textContent`), /held until.*Resume now.*previous settings return/);
   assert.doesNotMatch(await evaluate(`document.getElementById('heating-test-help').textContent`), /1 minute/);
   assert.equal(await evaluate(`document.getElementById('test-preheat').getAttribute('aria-pressed')`), 'true',

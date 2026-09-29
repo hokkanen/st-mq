@@ -8,6 +8,7 @@ import { configurationPaths, createConfigurationSource, readConfigurationOptions
 import { pairConfiguration } from '../pairing/config.js';
 import { garageSettings } from '../garage/settings.js';
 import { garageAdapterSettings } from '../garage/contract.js';
+import { garageSenderSettings } from '../garage/sender.js';
 import { floorOverrideConfiguration } from '../control/floor-override.js';
 import { chargingConfiguration } from '../charging/config.js';
 import { localOcppConfiguration } from '../acquisition/easee-ocpp.js';
@@ -316,8 +317,8 @@ function buildConfiguration(options, env, cwd, configuration, source, { bootstra
     host, port, token, familyToken, ingressPort, ingressHost: env.STMQ_INGRESS_HOST ?? '0.0.0.0', configuration,
     connections, priceSettings: configuredPriceSettings(options.electricity),
     charging: chargingConfiguration(options.charging),
-    garage: { ...garageSettings(Object.fromEntries(Object.entries(options.garage ?? {}).filter(([key]) => key !== 'adapter'))),
-      adapter: garageAdapterSettings(options.garage?.adapter) },
+    garage: { ...garageSettings(Object.fromEntries(Object.entries(options.garage ?? {}).filter(([key]) => !['adapter', 'sender'].includes(key)))),
+      adapter: garageAdapterSettings(options.garage?.adapter), sender: garageSenderSettings(options.garage?.sender) },
     mirror: mirrorConfiguration(options.mirror, env, { topology, dataDir, databaseDir }),
     deviceId: mirrorSlave ? undefined : (env.STMQ_H66_DEVICE ?? options.controller?.h66_device) || undefined,
     floorPreheat,

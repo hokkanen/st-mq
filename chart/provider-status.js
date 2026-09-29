@@ -140,7 +140,7 @@ export function providerSeries(job, health = {}) {
       : 'Configured temperature adapter';
     return ['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature', 'outdoor_temperature'].map(signal =>
       seriesRow([signal], SIGNAL_INFO[signal].label, '°C', signal === 'garage_temperature'
-        ? 'Rear garage protection sensor, recorded separately for garage learning.' : signal === 'outdoor_temperature'
+        ? 'Rear pipe-location air sensor, recorded separately from the sender’s pipe estimate.' : signal === 'outdoor_temperature'
           ? 'Optional configured sensor, recorded for history. Live outdoor control selects FMI or Open-Meteo.'
           : 'Individual indoor sensor, recorded separately and included in the home model average when configured and usable.', source));
   }
@@ -164,7 +164,7 @@ function temperatureDisplay(status, entries, options) {
     const label = allowed.includes(source) ? temperatureSourceLabel(source) : null;
     const readingStatus = temperatureReadingStatus(reading, { ...options, outdoor: key === 'outdoor' });
     const detail = indoorKeys.includes(key) ? 'Individual indoor temperature, recorded separately and included in the home model average when configured and usable.'
-      : key === 'garage' ? 'Rear garage protection sensor. Its history supports garage learning; front protection is separate.'
+      : key === 'garage' ? 'Rear pipe-location air measurement. Separate sender estimates determine pipe protection; a temperature alone does not establish protection readiness.'
         : 'Uses an FMI nearby station, with an Open-Meteo model estimate as backup.';
     const signal = key === 'upstairs' ? 'indoor_temperature' : `${key}_temperature`;
     const row = withStatus(seriesRow([signal], SIGNAL_INFO[signal].label, '°C', `${detail} ${readingStatus.detail}`, label), {
@@ -187,7 +187,7 @@ function temperatureDisplay(status, entries, options) {
     || entries.some(([key, health]) => describeProvider(key, health, options).attention)));
   const backup = observations.outdoor?.source === 'openmeteo';
   const state = attention ? 'Needs attention' : available ? backup ? 'Using backup' : 'Available' : 'Waiting for readings';
-  const details = ['The indoor average and outdoor reading support home control. Individual indoor sensors are recorded separately. Garage rear and front readings support independent garage protection and learning.'];
+  const details = ['The indoor average and outdoor reading support home control. Individual indoor sensors are recorded separately. Garage rear and front air readings are recorded separately from the sender’s independent pipe estimates and protection status.'];
   const averageStatus = temperatureReadingStatus(observations.indoor, options);
   if (averageStatus.attention || !averageStatus.usable && observations.indoor?.missingMembers?.length) details.push(`Average indoor: ${averageStatus.detail}`);
   for (const [key, health] of entries) {
@@ -332,7 +332,7 @@ function detailedDatasets(group, status, options) {
     const reading = observed ?? (Number.isFinite(fallback?.value) || Number.isFinite(fallback?.observedAt) ? fallback : { configured: sensor?.configured });
     const readingStatus = temperatureReadingStatus(reading, options);
     const row = withStatus(seriesRow(['garage_temperature_2'], SIGNAL_INFO.garage_temperature_2.label, '°C',
-      `Front garage protection sensor, recorded separately for garage learning. ${readingStatus.detail}`, providerName(reading.source)), {
+      `Front pipe-location air sensor, recorded separately from the sender’s pipe estimate. ${readingStatus.detail}`, providerName(reading.source)), {
       state: readingStatus.attention ? 'Needs attention' : readingStatus.usable ? 'Available'
         : reading.configured === false ? 'Not configured' : 'Waiting for readings', attention: readingStatus.attention,
     });

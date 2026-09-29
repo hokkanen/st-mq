@@ -104,16 +104,8 @@
 
     "garage": {
       "enabled": false,
-      "savingsStrategy": "balanced",
-
-      "minSavingsEur": 0.5,
-      "maxPausesPerDay": 1,
-      "reducedRoomTargetC": 0,
-      "minOnMs": 10800000,
-      "minOffMs": 3600000,
-      "stepMinutes": 15,
-
-      "maxSensorAgeMs": 120000,
+      "awayTargetC": 5,
+      "maxSensorAgeMs": 180000,
 
       "protection": {
         "approved": false,
@@ -131,6 +123,11 @@
         "commandTopic": "heatpump/garage/command",
         "maxAgeMs": 120000,
         "electricalSource": "none"
+      },
+      "sender": {
+        "stateTopic": "heatpump/garage/sender/state",
+        "commandTopic": "heatpump/garage/sender/command",
+        "maxAgeMs": 180000
       }
     },
 
@@ -589,15 +586,7 @@
 
     "garage": {
       "enabled": "bool",
-      "savingsStrategy": "list(gentle|balanced|savings)",
-
-      "minSavingsEur": "float(0,100)",
-      "maxPausesPerDay": "int(1,4)",
-      "reducedRoomTargetC": "float(0,15.5)",
-      "minOnMs": "int(0,86400000)",
-      "minOffMs": "int(0,10800000)",
-      "stepMinutes": "float(5,30)",
-
+      "awayTargetC": "float(0,31)",
       "maxSensorAgeMs": "int(30000,14400000)",
 
       "protection": {
@@ -610,12 +599,17 @@
       },
 
       "adapter": {
-        "driver": "list(fixture|shelly-cn105)",
+        "driver": "list(shelly-cn105)",
         "stateTopic": "str?",
         "telemetryTopic": "str?",
         "commandTopic": "str?",
         "maxAgeMs": "int(1000,600000)",
         "electricalSource": "list(none|native-counter|native-power)"
+      },
+      "sender": {
+        "stateTopic": "str?",
+        "commandTopic": "str?",
+        "maxAgeMs": "int(30000,600000)"
       }
     },
 

@@ -85,8 +85,8 @@ STMQ_PILL_ARTIFACT=/path/to/shelly-cn105-mqtt/dist/driver.js \
   node --test test/extended/garage-pill-runtime.test.js
 ```
 
-This exercises coarse UTC, slow clock reads, delayed processing, challenge
-lifetime, repeated renewals and local expiry/cleanup. It opens no device or
+This exercises persistent targets, current boot/challenge fencing, local Bluetooth
+freshness, native command confirmation and independent protection overrides. It opens no device or
 broker connection and does not copy the external driver into this repository.
 The extended suite explicitly skips these integration cases without the artifact
 path; its ordinary host-only adapter coverage still runs in the routine suite.
@@ -246,9 +246,6 @@ from synthetic fixtures go to ignored `var/` or reported temporary paths.
 ```sh
 docker build -t st-mq:validation .
 bash scripts/test-addon-container.sh st-mq:validation linux/amd64
-node scripts/garage-simulation-audit.js --json /tmp/stmq-garage-model.json
-node scripts/garage-planning-simulation.js --json /tmp/stmq-garage-planning.json
-node scripts/garage-planning-simulation.js --bootstrap --json /tmp/stmq-garage-bootstrap.json
 node scripts/garage-pipe-simulation.js
 ```
 

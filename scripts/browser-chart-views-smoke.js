@@ -7,14 +7,10 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { start } from '../src/main.js';
 import { loadConfig } from '../src/app/config.js';
-import { Store } from '../src/storage/store.js';
 import { CHART_VIEWS } from '../src/domain/chart-views.js';
 import { EXPLORER_SERIES } from '../chart/series-explorer.js';
 import { seedChartFixture } from './lib/chart-fixture.js';
 import { addFireplace } from '../src/app/fireplace.js';
-import { appendGarageEntry } from '../src/garage/learning.js';
-import { createGarageModel, GARAGE_ALGORITHM_VERSION } from '../src/garage/model.js';
-import { garageSettings } from '../src/garage/settings.js';
 
 const directory = mkdtempSync(join(tmpdir(), 'stmq-chart-views-browser-'));
 const now = Date.parse('2026-09-07T12:00:00Z');
@@ -25,43 +21,6 @@ try {
   writeFileSync(join(directory, 'options.json'), '{}');
   const config = loadConfig({ STMQ_CONFIG: join(directory, 'options.json'), STMQ_DATA_DIR: directory,
     STMQ_PORT: '0', STMQ_INPUT: 'simulated' }, directory);
-  // Build the Garage journal before application startup, which adds its own
-  // current context. This preserves the seed boundary and chronological replay.
-  const fixtureStore = new Store(config.dbPath);
-  try {
-    fixtureStore.transaction(() => {
-      // A current-format saved seed supplies achieved reference and independent
-      // validation evidence. It is artificial chart evidence, never live state.
-      const seed = createGarageModel({ seedAt: now - 30 * 60_000, roomTargetC: 12 });
-      Object.assign(seed.normalReference, { initialized: true, interceptC: 12.1, frontC: 11.6,
-        samples: 120, qualifiedHours: 2.5 });
-      seed.validation.episodes = [{ id: 0, role: 'validation', clean: true, complete: true,
-        startedAt: now - 6 * 3600_000, endedAt: now - 2 * 3600_000,
-        offHours: 1, recoveryHours: 3, thermalPassed: true, trainingSupportHours: 1,
-        offRearRmse: .2, offFrontRmse: .3, rearRmse: .25, frontRmse: .4,
-        rearBias: -.05, frontBias: -.1 }];
-      seed.validation.nextId = 1;
-      for (let index = 0; index < 6; index++) {
-        const at = now - (30 - index) * 60_000;
-        appendGarageEntry(fixtureStore, 'simulated', 'sample', {
-          at, rearAt: at, rearC: 12, frontAt: at, frontC: 11.5, outdoorAt: at, outdoorC: 3,
-          available: [true, false, false, true, null, true][index], managedPause: [false, true, false, false, null, false][index],
-          powerKw: .4, powerQuality: 'simulated', ev1Kw: 0, ev2Kw: 0,
-        }, garageSettings(), at, index === 0 ? { seed } : {});
-      }
-      for (const [index, profitCents] of [125, -35].entries()) {
-        fixtureStore.cycle('garage:simulated', {
-          id: `invented-chart-garage-episode-${index}`, status: 'completed',
-          startedAt: now - (8 - index * 2) * 3600_000, endedAt: now - (4 - index * 2) * 3600_000,
-          algorithmVersion: GARAGE_ALGORITHM_VERSION,
-          assessment: { algorithmVersion: GARAGE_ALGORITHM_VERSION, stage: 'completed',
-            basis: 'garage-frozen-normal-reference', includesGarageOnly: true, provisional: true,
-            profitCents, uncertaintyCents: 20, referenceCostCents: 250, actualCostCents: 250 - profitCents,
-            electricityBasis: index ? 'modeled-native-electricity' : 'qualified-recorded-electricity' },
-        });
-      }
-    });
-  } finally { fixtureStore.close(); }
   app = await start({ config, clock: () => now });
   seedChartFixture(app.store, now);
   addFireplace(app.store, 'simulated', { kg: 5, requestId: 'invented-chart-views-fire' }, now - 3 * 3600_000);
@@ -80,6 +39,14 @@ try {
         ['garage_native_indoor_temperature', 14 + Math.sin(index / 18), 'degC'],
         ['garage_compressor_frequency', index % 50 < 35 ? 24 + index % 17 : 0, 'Hz'],
         ['garage_compressor_active', index % 50 < 35 ? 1 : 0, 'state'],
+        ['garage_native_power', index % 50 < 35 ? 1 : 0, 'state'],
+        ['garage_away_mode', index < 70 ? 1 : 0, 'state'],
+        ['garage_room_target', index < 70 ? 5 : 12, 'degC'],
+        ['garage_effective_target', index < 70 ? 5 : 12, 'degC'],
+        ['garage_frost_available', 1, 'state'],
+        ['garage_frost_active', 0, 'state'],
+        ['garage_pipe_front_temperature', 10 + Math.sin(index / 24), 'degC'],
+        ['garage_pipe_rear_temperature', 11 + Math.sin(index / 26), 'degC'],
         ['garage_native_defrost', index % 60 > 55 ? 1 : 0, 'state'],
         ['garage_door1_open', index % 70 > 65 ? 1 : 0, 'state'],
         ['garage_door2_open', 0, 'state'],
@@ -121,26 +88,6 @@ try {
     assert(new Set(periodicFixture.series[key].filter(point => Number.isFinite(point.y)).map(point => point.y)).size > 10,
       `${key}: source readings change gradually across enough reports to inspect their curve`);
   }
-  const outcomeFixtures = Object.fromEntries(await Promise.all(['garage_references', 'garage_error', 'garage_benefit'].map(async view => {
-    const response = await fetch(`http://127.0.0.1:${app.server.address().port}/api/chart?view=${view}&start=2026-09-07&end=2026-09-07&points=800`);
-    assert.equal(response.status, 200, `${view}: the synthetic outcome projection is available`);
-    return [view, await response.json()];
-  })));
-  for (const [key, expected] of [['garage_outcome_rear_reference', 12.1], ['garage_outcome_front_reference', 11.6]]) {
-    const points = outcomeFixtures.garage_references.series[key].filter(point => Number.isFinite(point.y));
-    assert(points.length && points.every(point => point.y === expected && point.modelOutcome === true
-      && point.outcomeBasis === 'continuously-available-achieved-reference'), `${key}: the fixture supplies achieved, replayed references`);
-  }
-  for (const [key, expected] of [['garage_outcome_rear_error', .2], ['garage_outcome_front_error', .3]]) {
-    const points = outcomeFixtures.garage_error.series[key].filter(point => Number.isFinite(point.y));
-    assert(points.length && points.every(point => Math.abs(point.y - expected) < 1e-12 && point.modelOutcome === true
-      && point.evidenceCount === 1), `${key}: the fixture supplies independent held-out evidence`);
-  }
-  assert.deepEqual(outcomeFixtures.garage_benefit.series.garage_outcome_benefit.map(point => point.y), [1.25, -.35],
-    'Completed Garage assessments preserve benefit and extra cost as individual outcomes');
-  assert(outcomeFixtures.garage_benefit.series.garage_outcome_benefit.every(point => point.modelOutcome === true
-    && point.provisional === true && !point.displayBoundary && !point.carriedForward),
-  'Episode outcomes retain their provisional provenance without fabricated chart tails');
   let endpoint = process.argv[2];
   if (!endpoint) {
     const profile = join(directory, 'chrome'); mkdirSync(profile);
@@ -704,8 +651,7 @@ try {
   assert.match(await evaluate("document.getElementById('chart-series-picker').textContent"), /Explore chart/);
   assert.deepEqual(await evaluate("[...document.querySelectorAll('#chart-series [data-view-key]')].map(option => option.dataset.viewKey)"),
     CHART_VIEWS.map(view => view.key));
-  for (const [group, count] of [['Home learning', 4], ['Home coefficients', 4], ['Home outcomes', 2],
-    ['Garage learning', 2], ['Garage coefficients', 2], ['Garage outcomes', 3]]) {
+  for (const [group, count] of [['Home learning', 4], ['Home coefficients', 4], ['Home outcomes', 2]]) {
     await searchViews(group);
     const groupResults = await evaluate(`(() => {
       let group;
@@ -717,7 +663,7 @@ try {
     assert.deepEqual(groupResults,
       CHART_VIEWS.filter(view => view.group === group).map(view => view.key), `${group}: the matching learning section is discoverable`);
     assert.equal(groupResults.length, count,
-      `${group}: useful comparisons retain deliberate Home and Garage detail`);
+      `${group}: Home learning comparisons remain discoverable`);
   }
   assert(!CHART_VIEWS.some(view => ['learning_auxiliary', 'learning_treatment'].includes(view.key)),
     'The streamlined Home catalogue removes the separate auxiliary and treatment views');
@@ -1016,55 +962,26 @@ try {
     'The explorer keeps the original Caravan energy intervals separately available');
 
   await choose('view', 'garage');
-  for (const key of ['garage_model_available', 'garage_model_managed_pause']) {
+  for (const key of ['garage_native_power', 'garage_away_mode']) {
     assert.equal(await shown(key), true, `${key}: garage operation context is visible by default`);
     assert.equal(await evaluate(`document.querySelector('[data-activity-key="${key}"] .mode-segment[data-value="0"]') !== null
       && document.querySelector('[data-activity-key="${key}"] .mode-segment[data-value="1"]') !== null`), true,
     `${key}: known off/on states remain separately inspectable`);
   }
-  assert.match(await evaluate("document.querySelector('[data-activity-key=garage_model_available]').textContent"), /Pump power readback/);
-  assert.match(await evaluate("document.querySelector('[data-activity-key=garage_model_managed_pause]').textContent"), /Managed.*pause/);
+  assert.match(await evaluate("document.querySelector('[data-activity-key=garage_native_power]').textContent"), /Garage heat-pump power setting/);
+  assert.match(await evaluate("document.querySelector('[data-activity-key=garage_away_mode]').textContent"), /Garage temperature selection/);
   await toggle('garage_native_indoor_temperature');
   assert.equal(await shown('garage_native_indoor_temperature'), true);
   assert.match(await evaluate("document.getElementById('chart-notes').textContent"), /native readback.*not an independent protection probe/);
   await evaluate("document.querySelector('.history-panel').scrollIntoView({block:'start'}); true");
   await capture('garage-dark');
-  await choose('view', 'garage_references');
-  for (const key of ['garage_outcome_rear_reference', 'garage_outcome_front_reference']) {
-    assert.equal(await shown(key), true, `${key}: achieved references are visible by default`);
-    assert.equal(await evaluate(`document.querySelector('[data-chart-key="${key}"]').closest('[data-axis]').dataset.axis`), 'right',
-      `${key}: absolute reference temperature shares the °C axis with saved room readings`);
+  await choose('view', 'garage_control');
+  for (const key of ['garage_room_target', 'garage_effective_target']) {
+    assert.equal(await shown(key), true, `${key}: device target readbacks are visible`);
     assert((await drawnPaths(key)).some(path => path.path.some(command => ['lineTo', 'bezierCurveTo'].includes(command.method))),
-      `${key}: saved reference evidence actually renders in the chart`);
+      `${key}: recorded device targets render on the temperature chart`);
   }
-  await capture('garage-references-dark');
-  await choose('view', 'garage_error');
-  for (const key of ['garage_outcome_rear_error', 'garage_outcome_front_error']) {
-    assert.equal(await shown(key), true, `${key}: both locations have visible held-out forecast errors`);
-    assert.equal(await evaluate(`document.querySelector('[data-chart-key="${key}"]').closest('[data-axis]').dataset.axis`), 'left',
-      `${key}: temperature error uses its own difference axis`);
-    assert.match(await evaluate(`document.querySelector('[data-chart-key="${key}"]').title`), /Δ°C/);
-    assert((await drawnPaths(key)).some(path => path.path.some(command => command.method === 'lineTo')),
-      `${key}: reconstructed held-out error draws supported evidence`);
-  }
-  await capture('garage-errors-dark');
-  await choose('view', 'garage_benefit');
-  assert.equal(await evaluate("document.querySelector('[data-chart-key=garage_outcome_benefit] .chart-legend-swatch').dataset.kind"), 'episode');
-  assert.match(await evaluate("document.querySelector('[data-chart-key=garage_outcome_benefit]').title"), /€\/episode/);
-  const benefitPaths = await drawnPaths('garage_outcome_benefit');
-  const benefitMarkers = benefitPaths.flatMap(path => path.path.filter(command => command.method === 'arc' && command.args[2] >= 4));
-  assert.equal(benefitMarkers.length, 2, 'Each completed pause and recovery has one visible episode marker');
-  assert(benefitPaths.every(path => path.path.every(command => !['lineTo', 'bezierCurveTo'].includes(command.method))),
-    'Individual episode outcomes have no connecting line or invented duration');
-  const [benefitX, benefitY] = benefitMarkers[0].args;
-  assert.equal(await evaluate(`window.chartDrawing.some(row => row.method === 'fill' && ['rgba(0, 0, 0, 0)', '#00000000'].includes(row.color)
-    && row.path.some(command => command.method === 'arc' && command.args[0] === ${benefitX} && command.args[1] === ${benefitY}))`), true,
-  'Provisional episode markers are hollow');
-  const benefitPoint = await evaluate(`(() => { const r=document.getElementById('history').getBoundingClientRect(); return {x:r.left+${benefitX}+2,y:r.top+${benefitY}+1}; })()`);
-  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...benefitPoint }); await settle();
-  assert.match(await evaluate("window.chartLabels.join(' ')"), /completed episode estimate.*provisional model estimate/,
-    'Inspecting an episode clearly identifies its provisional model assessment');
-  await capture('garage-benefit-dark');
+  await capture('garage-control-dark');
   await choose('view', 'garage');
   await pickerMode('series');
   assert.equal(await pickerOpen(), true, 'The selection button opens the explorer and its catalogue switch keeps it open');
@@ -1263,7 +1180,7 @@ try {
     for (const theme of ['dark', 'light']) {
       if (await evaluate('document.documentElement.dataset.theme') !== theme)
         await evaluate("document.getElementById('theme-toggle').click(); true");
-      for (const key of ['power', 'garage', 'heating_water', 'temperatures', 'garage_references', 'garage_error', 'garage_benefit', 'explorer']) {
+      for (const key of ['power', 'garage', 'heating_water', 'temperatures', 'garage_control', 'garage_energy', 'explorer']) {
         if (key === 'explorer') await choose('series', 'garage_native_indoor_temperature');
         else await choose('view', key);
         await evaluate("document.querySelector('.history-panel').scrollIntoView({block:'start'}); true");
@@ -1414,7 +1331,7 @@ try {
   await checkPickerFits('Phone with a short available viewport');
   await capture('picker-short-phone'); await pressKey('Escape');
   assert.deepEqual(errors, [], 'All view selections and cursor interactions have no uncaught browser exceptions');
-  console.log(`Chart views browser checks passed: ${CHART_VIEWS.length} named views, ${EXPLORER_SERIES.length} searchable explorer choices, balanced Home/Garage learning groups, achieved references and held-out errors, isolated provisional episode markers and provenance, unified view/series browsing without chart changes, separate searches, centered modal keyboard/touch/focus without automatic search keyboards, periodic temperature Bézier geometry, persistent interpolation toggle with step-only rendering and restored original curves/lines, compact accessible legend footer including save failure, solid solar history and dash-dot forecast, charger phase fills, visibility isolation, garage readback, crosshair bounds and touch, dark/light themes, 320/390px portrait, and aligned landscape/tablet headers with long selected labels.`);
+  console.log(`Chart views browser checks passed: ${CHART_VIEWS.length} named views, ${EXPLORER_SERIES.length} searchable explorer choices, Home learning groups, Garage target and protection history without learned outcomes, unified view/series browsing without chart changes, separate searches, centered modal keyboard/touch/focus without automatic search keyboards, periodic temperature Bézier geometry, persistent interpolation toggle with step-only rendering and restored original curves/lines, compact accessible legend footer including save failure, solid solar history and dash-dot forecast, charger phase fills, visibility isolation, garage readback, crosshair bounds and touch, dark/light themes, 320/390px portrait, and aligned landscape/tablet headers with long selected labels.`);
   console.log(`Screenshots: ${screenshots.join(', ')}`);
 } finally {
   socket?.close(); for (const request of pending.values()) clearTimeout(request.timer);

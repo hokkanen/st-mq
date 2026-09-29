@@ -157,7 +157,7 @@ test('dashboard groups measured temperatures and forecasts under their actual so
   assert.deepEqual(grouped.series.map(row => row.source), ['MQTT', 'MQTT', 'FMI', 'FMI', 'FMI']);
   assert.deepEqual(grouped.series.flatMap(row => row.signals), ['indoor_temperature', 'garage_temperature', 'outdoor_temperature',
     'outdoor_forecast', 'solar_radiation', 'solar_forecast']);
-  assert.match(grouped.series[1].detail, /Rear garage protection sensor.*front protection is separate/);
+  assert.match(grouped.series[1].detail, /Rear pipe-location air measurement.*does not establish protection readiness/);
   assert.match(grouped.display.detail, /Temperature downloads · MQTT: Last successful download 10:00/);
   assert.match(grouped.display.detail, /Outdoor downloads · FMI: Observed at a nearby weather station. Last successful download 10:00/);
 });

@@ -144,7 +144,8 @@ requirements will be decided explicitly; do not build speculative machinery now.
 ## F2. Reconstructible learning and reversible corrections
 
 - Apply [the reconstruction contract](docs/reconstruction-and-versioning.md) to
-  both Home and Garage within the current supported journal/algorithm. F1 governs
+  Home within the current supported journal/algorithm. Garage has no learned heat
+  model or economic controller. F1 governs
   incompatible development formats; reconstruction does not require old interpreters.
 - Given the intact committed learning journal, saved seed and configuration,
   selected source-correction revisions and matching algorithm/software, replay
@@ -188,10 +189,11 @@ permission to act. See [the configuration guide](docs/configuration.md).
 
 ### Configuration ownership and dashboard controls
 
-- Home and Garage automatic heating permissions are independent durable dashboard
-  control choices bound to their current equipment identities, defaulting to Plan
-  only. Charging Automatic scheduling and Caravan Automatic power retain their
-  independent ownership. There is no global operating mode. The environment
+- Home automatic heating permission is a durable dashboard control choice bound
+  to its current equipment identity, defaulting to Plan only. Garage has manual
+  Normal/Away selections and independent device-local frost protection. Charging
+  Automatic scheduling and Caravan Automatic power retain independent ownership. There is no global operating
+  mode. The environment
   (live, simulation or history viewer) describes data/connection scope, not an
   automatic actuation permission. Explicit manual heating overrides are separately
   authorized, bounded actions with restoration duties regardless of automation.
@@ -229,19 +231,26 @@ permission to act. See [the configuration guide](docs/configuration.md).
   establish the baseline for later automatic control. Home Heat control actions
   Normal, Reduction and Preheat, and explicit timed tests, retain their bounded
   behavior and restoration duties separately from parameter edits.
-- Garage's low-temperature room target is durable device-bound application
-  intent, because external sensing uses native 17°C and cannot expose the chosen
-  lower target through native readback. On an empty database use fresh,
-  unambiguous pump evidence; retain subsequent explicit room choices without
-  expiry or a configured room default. Unrelated fan/vane edits preserve the
-  target. Ordinary native power/mode changes must not be undone to resume heating.
-  Price automation applies a temporary lower effective external target while the
-  pump remains ON; it never replaces the durable room choice or invents a new
-  sensor observation. Protection and expiry bound every reduction. Manual timed
-  OFF preserves the prior room intent, clears external sensing before requesting
-  OFF, then waits for restored native ON and fresh source evidence before resuming
-  that target. A saved target is never a sample to replay. Independent native
-  power/mode edits supersede the saved intent and must not be undone by restoration.
+- Garage Normal/Away is durable device-bound application intent without expiry.
+  Configuration owns the predefined Away target; the explicit normal target and
+  mode selection survive restart. ST-MQ sends the resulting real target and
+  external-control enable to the Pill. The Pill persists these, regulates from
+  native BTHome temperature components and does not need mode labels. Ordinary
+  power/mode/fan/vane edits are one-shot device commands without automatic replay
+  or restoration. Temperature maintenance preserves OFF and never enforces HEAT;
+  non-HEAT suspends/clears the offset and fresh HEAT recovery resumes the target.
+  In HEAT, sensor timeout clears the offset and selects native 16°C preserving
+  power. Successful external regulation first confirms native 17°C and sends
+  measured temperature + 17°C - effective target. Freshness is received sensor
+  evidence, never repeatedly reading a cache or a stored target.
+- Garage frost protection runs independently in the Gen3 probe sender and Pill.
+  The sender retains conservative front/rear pipe-reserve state and settings;
+  the Pill applies a minimum target and explicit HEAT/ON rescue. Protection cannot
+  overwrite the saved user target. ST-MQ displays and configures the sender over
+  MQTT; unavailable or stale protection remains unknown. There is one pump-command
+  owner. The BLU H&T development setup supplies temperature but no pipe protection.
+  Warn when manual target/mode changes raise temperature; approximately 24 hours
+  is moisture-avoidance guidance, not a guarantee that stored objects are warm.
 - Keep the configured H66 assumptions `compressor_integral_a1`,
   `aux_integral_a2`, `compressor_hysteresis_c`, `aux_hysteresis_c` and `a2_basis`:
   the integration cannot read these from the pump. Treat them as declared model
@@ -261,9 +270,9 @@ permission to act. See [the configuration guide](docs/configuration.md).
   `options` and `schema` in the same section and field order. Use the section map
   in [docs/configuration.md](docs/configuration.md); update it for new sections.
   Change field paths when the current design needs it, updating all current callers, examples and tests together. Reject retired paths; do not add aliases or migrations for development configurations.
-- Public Garage enablement and protection approval default to false. Test the
-  explicit private opt-in independently; owner approval is installation state,
-  not evidence of adapter readiness.
+- Public Garage enablement and sender protection approval default to false.
+  Test explicit private opt-in independently; approval is installation intent,
+  not evidence of adapter readiness or fresh local protection.
 - Feature tests must explicitly configure the synthetic integrations relevant
   to their scenario instead of inheriting unrelated public device subscriptions.
   Keep separate coverage for intended public defaults and sparse override merging.
@@ -307,8 +316,9 @@ Details: [recording and provenance](docs/recording.md),
   restart, failure, model repair and correction. Reconcile with fresh actual state
   and respect independent manual device changes. Model resets do not erase physical
   obligations; a command acknowledgement alone does not prove restoration.
-- Preserve qualified device-local expiry/fencing where supported. Do not claim a
-  software retry can restore equipment through a broken link. Economic preferences
+- Preserve device-local freshness and command fencing. Garage permanent targets
+  and one-shot device edits have no leases; source timeout and local frost rescue
+  remain independent. Do not claim a software retry can restore equipment through a broken link. Economic preferences
   and learned confidence cannot relax hard comfort/equipment protection limits.
 - Use controlled offline fixtures for ordinary development. A coding request alone
   does not authorize deployment, household probing or live equipment commands;
@@ -332,7 +342,7 @@ absence as ordinary occupied-operation savings. State uncertainty and distinguis
 engineering assumptions, simulated benefit and supported outcome evidence.
 
 Details: [learning and control](docs/learning-and-control.md),
-[Garage learning](docs/garage-model.md), [firewood estimates](docs/fireplace.md).
+[Garage manual heating](docs/garage.md), [firewood estimates](docs/fireplace.md).
 
 <a id="f7"></a>
 

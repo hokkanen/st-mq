@@ -504,10 +504,10 @@ unobserved chart options or mix exact contacts into the adaptive table.
 - Garage compressor activity and reported defrost: exact state changes. Native
   interpreted temperature and compressor frequency belong in Adaptive measurements. Garage power
   remains live input only. Qualified dedicated garage energy intervals and saved
-  garage learning inputs retain their own independent history.
+  original control events retain their own independent history.
 - External temperature feed: no numeric history and no routine renewal events.
   Diagnostic events record abnormal onset, changed reason and recovery once.
-  Current command/restoration state remains durable separately.
+  Durable local targets and one-shot command results remain distinct.
 - Calculated outputs, requests, market/weather snapshots, manual inputs, learning
   journals, session checks, imported rows and provenance, source corrections,
   recovery records, bounded statistics and overwritten operational state each
@@ -636,40 +636,10 @@ diagnostics beyond the named views and retains entries with no records in the
 current installation or date range. It is a catalogue of defined chart meanings,
 not access to every numeric database field or current-state JSON value.
 
-Home and Garage each have **learning**, **coefficients** and **outcomes** view
-groups. Home retains extra detail for hydronic heat, solar gain and fireplace
-response, whose coefficients have different units. The Home saved-temperature
-view includes control phase, valve feedback and optional ROOM boost. Saved
-auxiliary electricity remains available as **Space-heating auxiliary input** in
-All series; it is not mixed onto the thermal-kW axis. Garage electrical inputs
-stays in its existing Garage group, alongside its operational temperatures and
-compressor comparison.
-
-Garage outcomes are read-only projections of existing evidence:
-
-- **Normal warmth references** reconstructs rear/front references only after
-  qualified normal-heating observations establish them. Original saved probe
-  inputs provide a comparison; a selected room setting alone cannot create an
-  achieved reference. Longer dashes distinguish each reference from its probe
-  input while retaining the same rear/front colour.
-- **Cooling prediction error** shows rolling rear/front OFF RMSE in Δ°C, from
-  clean held-out episodes in the model's bounded validation history, including
-  failed checks. The forecasts froze the model before each episode and used
-  observed outdoor conditions; this does not validate weather forecasts.
-- **Assessed pause benefit** shows one hollow €/episode point at the completion
-  of a qualified pause and recovery. It compares that episode with its frozen
-  normal-heating reference and preserves uncertainty and recorded/modeled
-  electricity provenance. Negative and zero estimates remain valid. Incomplete,
-  unsupported or unassessed episodes do not become zero-valued points.
-
-References and prediction errors use the same supported, corrected journal
-replay as Garage coefficients. Completed money assessments retain their original
-frozen basis and remain provisional; they are not recomputed from today's model.
-They differ from Home's saved rolling mean benefit and mean absolute
-recovery-cost error. These projections add no recording channels, stored model
-snapshots, schema changes or learning behavior. See the
-[learning-view review](audit/CHART-LEARNING-BALANCE-2026-09.md) for the selection
-rationale.
+Home retains learning inputs, coefficients and outcome views. Garage shows
+original temperatures, compressor/native equipment evidence, measured electrical
+history and manual target/protection state. It produces no learned coefficients,
+normal-warmth estimates, cooling prediction errors or savings episode assessments.
 
 Search filters labels, units and canonical signal identifiers. Switching modes
 or searching leaves the current chart unchanged; choosing a result applies it
@@ -817,7 +787,7 @@ The local Upstairs, Bedroom and Downstairs sensors are recorded separately from
 H66 acquisition. H66 indoor register `0008` is ignored and cannot supply a fallback.
 The house model uses the configured indoor average described below.
 Garage rear and front temperatures are additional to those 29 and feed the
-separate [garage learner and protection controller](garage.md).
+separate [garage manual control and local protection](garage.md).
 Collecting another temperature does not add a free house-model coefficient.
 
 The house model fits a small regularized thermal response. Ordinary operation can
@@ -1095,8 +1065,8 @@ completion date, including recovery and excluding domestic hot water. Its eviden
 is assessed-cycle counts, not elapsed-time coverage. Home's execution electricity
 uses a temperature-dependent heat-pump source estimate; Home timing instead uses
 recorded operation and dated nominal powers, including hot-water operation. Neither
-is a dedicated meter reading. Garage's completed-episode reference remains
-provisional. These period totals differ from the Learning view's rolling €/cycle
+is a dedicated meter reading. Garage provides recorded electrical timing only;
+there is no Garage model-savings assessment. These period totals differ from the Learning view's rolling €/cycle
 mean and from charger session costs.
 
 Timing coverage means included time divided by selected elapsed time; future
@@ -1223,7 +1193,7 @@ charger timing comparisons or heating learning.
 ## Chart and storage review (September 2026)
 
 The explorer separates everyday electricity, room, caravan and garage pump views
-from Home/Garage saved learning inputs, replayed coefficients and equipment
+from Home saved learning inputs, replayed coefficients and equipment
 diagnostics. Each choice states its unit and basis. A plot is not a promise of
 another database channel: power, phase-current estimates, indoor average,
 front–rear difference, coefficients, fireplace response and compressor activity rows

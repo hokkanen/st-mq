@@ -67,7 +67,7 @@ test('overview distinguishes saved/null values, imports, shared forecasts, journ
     store.event('heat-pump-power-config', { input: privateMarker, version: 1, heatPumpCompressorKw: 2, circulationKw: 0.1, auxRatedKw: 6 }, at);
     store.event('decision', { personal: privateMarker }, at);
     store.event(privateMarker, { personal: privateMarker }, at);
-    for (const kind of ['sample', 'episode', 'context']) store.appendLearningJournal('fixture-input', {
+    for (const kind of ['sample', 'episode', 'context']) store.appendLearningJournal('providers', {
       kind, at, algorithmVersion: 'fixture-algorithm', configVersion: { private: privateMarker },
       forecastVersion: { private: privateMarker }, key: kind, payload: { private: privateMarker },
     });
@@ -196,13 +196,13 @@ test('saved adaptive datasets remain individually discoverable without recorder 
   }
 });
 
-test('garage journals, state families and individual event types have separate truthful counts', t => {
+test('inactive journals, state families and individual event types have separate truthful counts', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   for (const input of ['providers', 'garage:providers']) for (const kind of ['sample', 'context'])
     store.appendLearningJournal(input, { kind, at, algorithmVersion: 'fixture', key: kind, payload: {} });
   for (const key of ['floor-override:v1', 'equipment-tests:v1', 'equipment:door:v1:private-door',
     'shelly:caravan-energy:v2', 'mqtt:equipment-energy:v1:private-meter', 'charging:providers',
-    'charging:providers:charger1:private-association:ownership:ocpp', 'easee:ocpp', 'garage:roomTemperature:providers'])
+    'charging:providers:charger1:private-association:ownership:ocpp', 'easee:ocpp', 'garage:mode:providers'])
     store.setState(key, { secret: 'private-synthetic-state-payload' });
   for (const type of ['garage-external-temperature-diagnostic', 'garage-external-temperature-diagnostic',
     'garage-room-target-changed', 'mqtt-connected', 'mqtt-disconnected', 'h66-native-setting-confirmed'])
@@ -211,7 +211,7 @@ test('garage journals, state families and individual event types have separate t
   const overview = getDatabaseOverview({ store, now: at }), rows = items(overview);
   assert.equal(overview.catalogueComplete, true);
   assert.equal(rows.get('journal-sample').count, 1);
-  assert.equal(rows.get('garage-journal-sample').count, 1);
+  assert.equal(rows.get('journal-inactive').count, 2);
   assert.equal(rows.get('state-floor').count, 1);
   assert.equal(rows.get('state-equipment-energy').count, 2);
   assert.equal(rows.get('state-charging-ownership').count, 1);

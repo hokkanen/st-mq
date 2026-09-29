@@ -9,8 +9,6 @@ import { clipChartSeries } from '../chart/chart-resolution.js';
 import { temperatureIntervalKnots } from '../chart/temperature-curves.js';
 import { LEARNING_ALGORITHM } from '../src/app/committed-learning.js';
 import { currentHomeSample } from './helpers/home-learning-fixture.js';
-import { appendGarageEntry } from '../src/garage/learning.js';
-import { garageSettings } from '../src/garage/settings.js';
 
 const minute = 60_000;
 const date = '2026-01-15';
@@ -180,23 +178,23 @@ test('disabled interpolation uses original scalar values at detail boundaries an
   }
 });
 
-test('fetched garage temperature detail keeps surrounding saved samples and sampling gaps', t => {
+test('fetched garage temperature detail keeps original samples and sensor gaps', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
-  for (const [at, value] of [[0, 8], [1, 9], [2, 11], [3, 10], [8, 9]]) appendGarageEntry(store, 'providers', 'sample', {
-    at: start + at * minute, rearAt: start + at * minute, rearC: value, frontAt: start + at * minute,
-    frontC: value + 1, outdoorAt: start + at * minute, outdoorC: value - 10, available: true,
-  }, garageSettings(), start + at * minute);
-  for (const key of ['garage_model_rear', 'garage_model_front', 'garage_model_outdoor', 'garage_model_difference']) {
+  const recorder = new Recorder(store);
+  for (const [at, value] of [[0, 8], [1, 9], [2, 11], [3, 10], [8, 9]])
+    for (const [signal, delta] of [['garage_temperature', 0], ['garage_temperature_2', 1]])
+      recorder.record({ source: 'shelly-mqtt', device: 'synthetic-garage', signal, value: value + delta, unit: 'degC',
+        sourceTime: start + at * minute, receivedAt: start + at * minute, quality: [],
+        raw: { reportIntervalMs: minute, reportGraceMs: 0 } });
+  for (const key of ['garage_temperature', 'garage_temperature_2']) {
     const options = { store, input: 'providers', now: start + 9 * minute, startDate: date, left: key };
     const view = { from: start + 1.2 * minute, to: start + 1.8 * minute };
     const overview = getChartData(options), detail = getChartData({ ...options, viewFrom: view.from, viewTo: view.to });
     const a = rendered(t, overview.series, key, view), b = rendered(t, detail.series, key, view);
     for (const at of [1.2, 1.5, 1.8]) assert(Math.abs(a.value(at) - b.value(at)) < 1e-7, key);
-    if (key === 'garage_model_rear') {
-      const gap = { from: start + 5 * minute, to: start + 6 * minute };
-      const missing = getChartData({ ...options, viewFrom: gap.from, viewTo: gap.to });
-      assert.equal(rendered(t, missing.series, key, gap).value(5.5), undefined);
-    }
+    const gap = { from: start + 5 * minute, to: start + 6 * minute };
+    const missing = getChartData({ ...options, viewFrom: gap.from, viewTo: gap.to });
+    assert.equal(rendered(t, missing.series, key, gap).value(5.5), undefined);
   }
 });
 

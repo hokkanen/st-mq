@@ -14,20 +14,20 @@ function setup(t, { input = 'simulated', canControl = () => true, commandTranspo
   return { engine, store, config };
 }
 
-test('Home and Garage choices start Plan only and persist independently for unchanged equipment', async t => {
+test('Home starts Plan only and persists for unchanged equipment; Garage has no automatic permission', async t => {
   const { engine, store, config } = setup(t);
-  assert.deepEqual(Object.values(engine.status().automation).map(row => row.enabled), [false, false]);
+  assert.deepEqual(Object.values(engine.status().automation).map(row => row.enabled), [false]);
   assert.equal(engine.status().environment, 'simulation');
   await engine.setAutomation({ feature: 'home', enabled: true });
   assert.equal(engine.automationEnabled('home'), true);
-  assert.equal(engine.automationEnabled('garage'), false);
+  assert.equal(engine.status().automation.garage, undefined);
   const restarted = new HeatingAutomation({ store, config });
   assert.equal(restarted.features.home.enabled, true);
-  assert.equal(restarted.features.garage.enabled, false);
-  await engine.setAutomation({ feature: 'garage', enabled: true });
+  assert.equal(restarted.features.garage, undefined);
+  await assert.rejects(engine.setAutomation({ feature: 'garage', enabled: true }), /home|unsupported|feature/i);
   await engine.setAutomation({ feature: 'home', enabled: false });
   assert.equal(engine.automationEnabled('home'), false);
-  assert.equal(engine.automationEnabled('garage'), true);
+
   assert.equal(Object.hasOwn(engine.settings, 'mode'), false);
   assert.equal(Object.hasOwn(engine.status(), 'mode'), false);
   assert.equal(Object.hasOwn(engine.status(), 'liveWrites'), false);
@@ -36,17 +36,17 @@ test('Home and Garage choices start Plan only and persist independently for unch
 test('device destination changes invalidate only the affected heating permission', async t => {
   const { engine, store, config } = setup(t);
   await engine.setAutomation({ feature: 'home', enabled: true });
-  await engine.setAutomation({ feature: 'garage', enabled: true });
+  await assert.rejects(engine.setAutomation({ feature: 'garage', enabled: true }), /home|unsupported|feature/i);
   const changedGarage = new HeatingAutomation({ store, config: { ...config, garage: { ...config.garage,
     adapter: { commandTopic: 'invented/replacement' } } } });
   assert.equal(changedGarage.features.home.enabled, true);
-  assert.equal(changedGarage.features.garage.enabled, false);
+  assert.equal(changedGarage.features.garage, undefined);
   const changedHome = new HeatingAutomation({ store, config: { ...config, deviceId: 'invented-new-home' } });
   assert.equal(changedHome.features.home.enabled, false);
-  assert.equal(changedHome.features.garage.enabled, true);
+
   const changedBroker = new HeatingAutomation({ store, config: { ...config,
     connections: { mqtt: { ...config.connections.mqtt, address: 'mqtt://replacement.invalid' } } } });
-  assert.deepEqual(Object.values(changedBroker.features).map(row => row.enabled), [false, false]);
+  assert.deepEqual(Object.values(changedBroker.features).map(row => row.enabled), [false]);
   assert.equal(JSON.stringify(engine.automationStatus()).includes('invented'), false);
 });
 
@@ -62,7 +62,7 @@ test('read-only authority and history cannot grant automation or manual heating 
   await assert.rejects(engine.setAutomation({ feature: 'home', enabled: false }), /read-only/);
   const history = setup(t, { input: 'offline' }).engine;
   assert.equal(history.status().environment, 'history');
-  await assert.rejects(history.setAutomation({ feature: 'garage', enabled: true }), /history viewer/);
+  await assert.rejects(history.setAutomation({ feature: 'home', enabled: true }), /history viewer/);
 });
 
 test('disabling automation preserves an explicit paused manual reduction and its restoration scope', async t => {
@@ -102,7 +102,7 @@ test('automation API permits family choices and rejects retired or ambiguous pay
   assert.equal(response.status, 200);
   const status = await response.json();
   assert.equal(status.automation.home.enabled, true);
-  assert.equal(status.automation.garage.enabled, false);
+  assert.equal(status.automation.garage, undefined);
   for (const payload of [{ mode: 'active' }, { feature: 'home', enabled: 'true' },
     { feature: 'garage', enabled: true, mode: 'active' }, { feature: 'charging', enabled: true }, null])
     assert.equal((await post(payload)).status, 400);

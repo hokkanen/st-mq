@@ -33,17 +33,21 @@ const observation = (source, device, signal, value, extra = {}) => ({ source, de
   unit: 'state', sourceTime: at - 20_000, receivedAt: at - 10_000,
   quality: ['good'], raw: { supported: true, timeBasis: 'source-measured' }, ...extra });
 
+const mode = { version: 1, mode: 'normal', normalTargetC: 10, awayTargetC: 5,
+  changedAt: at - 5000, warmingWarning: null, adapterKey: 'a'.repeat(64), targetIdentity: 'b'.repeat(64) };
+const adapter = (native, observedAt = at - 5000, receivedAt = observedAt) => ({ version: 2,
+  contractVersion: 'shelly-cn105/v2', deviceId: 'synthetic-pill', observedAt, receivedAt,
+  control: { targetC: 10, externalEnabled: true, effectiveTargetC: 10, status: 'active',
+    sensorTemperatureC: 9, sensorAgeMs: 1000, externalTemperatureC: 16, frostAvailable: false, frostActive: false }, native, health: {},
+  lastCommand: null, electrical: null, faultRaw: null });
+
 test('read projection exposes saved settings and equipment evidence without live authority or database changes', t => {
   const snapshot = fixture(t, store => {
     store.setState('settings:mqtt', { comfort: { maxDropC: .5 } });
     store.setState('providers:health', { market: { status: 'ok', lastSuccessAt: at - 60_000,
       connected: true, healthy: true, recording: true }, temperatures: { status: 'ok' } });
-    store.setState('garage:roomTemperature:mqtt', { targetC: 10, adapterKey: 'a'.repeat(64) });
-    store.setState('garage:adapter:mqtt', { version: 1, restorePending: true,
-      acceptedEvidence: { nativePower: { value: 'off', measuredAt: at - 5000 } },
-      lastCommand: { action: 'pause', status: 'accepted', acceptedAt: at - 5000 },
-      commandHistory: [{ action: 'pause', status: 'accepted' }], faults: [] });
-    store.setState('garage:temporary:mqtt', { expiresAt: at + 60_000 });
+    store.setState('garage:mode:mqtt', mode);
+    store.setState('garage:adapter:mqtt', adapter({ power: { value: 'off', measuredAt: at - 5000 } }));
     store.observation(observation('husdata-h66', 'fixture-pump', 'room_setting', 20, { unit: '°C' }));
     store.observation(observation('garage-adapter', 'garage-heat-pump', 'garage_compressor_active', 0));
     store.observation(observation('garage-adapter', 'garage-heat-pump', 'garage_native_indoor_temperature', 0, { unit: 'degC' }));
@@ -64,18 +68,18 @@ test('read projection exposes saved settings and equipment evidence without live
   assert.equal(result.h66.readings['0203'].observedAt, at - 20_000);
   assert.equal(result.h66.readings['0203'].available, false);
   assert.equal(result.h66.controlsReady, false);
-  assert.equal(result.garage.roomTemperature.targetC, 10);
-  assert.equal(result.garage.roomTemperature.acknowledged, false);
-  assert.equal(result.garage.adapter.restorePending, true, 'Restoration obligations remain visible as recorded evidence');
+  assert.equal(result.garage.requestedTargetC, 10);
+  assert.equal(result.garage.targetConfirmed, false);
+  assert.equal(result.garage.mode, 'normal');
   assert.equal(result.garage.adapter.native.power, 'off');
   assert.equal(result.garage.adapter.native.readbacks.power.available, false);
   assert.equal(result.garage.adapter.telemetry.compressorActive.value, false, 'Recorded false does not disappear');
   assert.equal(result.garage.adapter.telemetry.indoorTemperature.value, 0, 'Recorded zero does not disappear');
   assert.equal(result.garage.adapter.telemetry.compressorActive.usable, false);
   assert.equal(result.garage.adapter.authority.owned, false);
-  assert.equal(result.garage.adapter.pauseControl, false);
+  assert.equal(result.garage.heatingControls.available, false);
   for (const field of Object.values(result.garage.nativeControls.settings)) assert.equal(field.available, false);
-  for (const capability of [result.garage.temporary, result.garage.heatingControls, result.heatingTests,
+  for (const capability of [result.garage.heatingControls, result.heatingTests,
     result.equipmentTests, result.equipmentControls, result.dhwr, result.preheatValves]) assert.equal(capability.available, false);
   const door = result.equipment.devices[0];
   assert.equal(door.readings.garage_door.value, 0);
@@ -97,13 +101,12 @@ test('read projection respects both evidence clocks and the recorded equipment i
     store.observation(observation('mqtt-equipment', 'fixture-door', 'garage_door', 0));
     store.observation(observation('mqtt-equipment', 'replacement-door', 'garage_door', 1,
       { sourceTime: at - 1000, receivedAt: at - 1000 }));
-    store.setState('garage:adapter:mqtt', { version: 1,
-      acceptedEvidence: { nativePower: { value: 'on', measuredAt: at + 1 } } });
+    store.setState('garage:adapter:mqtt', adapter({ power: { value: 'on', measuredAt: at + 1 } }));
   });
   const result = replicaReadModel(snapshot, config);
   assert.equal(result.h66.readings['0203'].value, 20);
   assert.equal(result.equipment.devices[0].readings.garage_door.value, 0);
-  assert.equal(result.garage.adapter.native, undefined);
+  assert.equal(result.garage.adapter.native.power, null);
   assert.equal(hash(snapshot.path), snapshot.digest);
 });
 
@@ -131,8 +134,8 @@ test('missing snapshot labels local defaults explicitly and invents no saved rea
   assert.match(result.readView.configurationMessage, /No Home settings were saved/);
   assert.deepEqual(result.h66.readings, {});
   assert.deepEqual(result.providers, {});
-  assert.equal(result.garage.roomTemperature.targetC, null);
-  assert.equal(result.garage.adapter.native, undefined);
+  assert.equal(result.garage.requestedTargetC, null);
+  assert.equal(result.garage.adapter.native.power, null);
   assert.deepEqual(result.garage.adapter.telemetry, {});
   assert.deepEqual(result.equipment.devices[0].readings, {});
   assert.deepEqual(result.recording.parameters, []);
@@ -143,12 +146,12 @@ test('malformed or retired room intent is unavailable without hiding unrelated r
   for (const saved of [{ targetC: 10, adapterKey: 'invalid' }, { targetC: 10, adapterKey: 'a'.repeat(64), expiresAt: at },
     { targetC: 4, adapterKey: 'a'.repeat(64) }]) {
     const snapshot = fixture(t, store => {
-      store.setState('garage:roomTemperature:mqtt', saved);
+      store.setState('garage:mode:mqtt', saved);
       store.observation(observation('husdata-h66', 'fixture-pump', 'room_setting', 20));
     });
     const result = replicaReadModel(snapshot, config);
-    assert.equal(result.garage.roomTemperature.targetC, null);
-    assert.match(result.garage.roomTemperature.error, /unavailable/);
+    assert.equal(result.garage.requestedTargetC, null);
+    assert(result.garage.errors.some(error => error.section === 'mode'));
     assert.equal(result.garage.nativeControls.settings.targetC.available, false);
     assert.equal(result.h66.readings['0203'].value, 20);
     assert.equal(hash(snapshot.path), snapshot.digest);

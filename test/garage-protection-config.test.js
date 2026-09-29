@@ -6,8 +6,6 @@ import { join } from 'node:path';
 import { readConfigurationOptions, validateOptionFields } from '../src/app/configuration-source.js';
 import { configurationSource, loadConfig } from '../src/app/config.js';
 import { garageSettings, GARAGE_POLICY_VERSION } from '../src/garage/settings.js';
-import { createGarageModel } from '../src/garage/model.js';
-import { applyGarageEntry, garageDigest } from '../src/garage/learning.js';
 
 const document = JSON.parse(readFileSync(new URL('../config.json', import.meta.url)));
 const oldPolicy = { approved: true, version: 'garage-exposure-v2', floorC: 2, hardMinimumC: -1,

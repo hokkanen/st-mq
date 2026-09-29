@@ -2,7 +2,7 @@ import { CHART_VIEW_BY_KEY } from '../src/domain/chart-views.js';
 import { stackPowerSeries } from './power-stack.js';
 import { isInterpolatedTemperature } from '../src/domain/chart-temperatures.js';
 import { temperatureIntervalKnots } from './temperature-curves.js';
-import { HISTORY_AXIS_BY_KEY, CARAVAN_DEHUMIDIFIER_STATES, GARAGE_INPUT_INFO, GARAGE_COEFFICIENT_INFO, GARAGE_OUTCOME_INFO, SIGNAL_INFO, MODEL_INPUT_INFO, MODEL_COEFFICIENT_INFO, PHASE_ENERGY_SIGNALS, COUNTER_SIGNALS } from '../src/domain/history-series.js';
+import { HISTORY_AXIS_BY_KEY, CARAVAN_DEHUMIDIFIER_STATES, SIGNAL_INFO, MODEL_INPUT_INFO, MODEL_COEFFICIENT_INFO, PHASE_ENERGY_SIGNALS, COUNTER_SIGNALS } from '../src/domain/history-series.js';
 // Calendar navigation always refers to the house, regardless of browser timezone.
 const calendar = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Helsinki', year: 'numeric', month: '2-digit', day: '2-digit' });
 const hourInFinland = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', hour: '2-digit', hourCycle: 'h23' });
@@ -129,8 +129,8 @@ Object.assign(seriesInfo, {
   garage_native_energy: ['Garage pump meter counter', 'kWh · native cumulative counter observation; not interval consumption', 'garagePump', 'audit'],
   garage_energy: ['Garage pump energy', 'kWh · original recording interval; inspect the point for its measurement basis', 'garagePump', 'interval-energy'],
 });
-for (const [signal, info] of Object.entries({ ...MODEL_INPUT_INFO, ...MODEL_COEFFICIENT_INFO, ...GARAGE_INPUT_INFO, ...GARAGE_COEFFICIENT_INFO, ...GARAGE_OUTCOME_INFO }))
-  seriesInfo[signal] = [info.label, `${info.unit} · ${info.detail}`, info.color, signal === 'firewood_load' ? 'event' : info.kind === 'episode' ? 'episode' : 'line'];
+for (const [signal, info] of Object.entries({ ...MODEL_INPUT_INFO, ...MODEL_COEFFICIENT_INFO }))
+  seriesInfo[signal] = [info.label, `${info.unit} · ${info.detail}`, info.color, signal === 'firewood_load' ? 'event' : 'line'];
 
 // The same physical quantity keeps its colour across views and saved inputs.
 for (const [key, color] of Object.entries({
@@ -141,14 +141,12 @@ for (const [key, color] of Object.entries({
   learning_aux_profit: 'auxiliary', compressor_hours: 'compressorSpace', dhw_hours: 'compressorDhw',
   auxiliary_3kw_hours: 'auxiliary', auxiliary_6kw_hours: 'garagePump',
   dhw_temperature: 'compressorDhw', dhw_start_setting: 'brineIn', dhw_stop_setting: 'supply',
-  garage_native_indoor_temperature: 'garagePump', garage_model_front: 'garageFront',
-  garage_model_difference: 'garagePump', garage_coefficient_front_coolingPerHour: 'garageFront',
-  garage_model_ev1: 'ev', garage_model_ev1_active: 'ev', garage_model_ev2: 'ev2', garage_model_ev2_active: 'ev2',
+  garage_native_indoor_temperature: 'garagePump', garage_ble_temperature: 'garagePump',
+  garage_pipe_front_temperature: 'garageFront', garage_pipe_rear_temperature: 'garage',
+  garage_room_target: 'reference', garage_effective_target: 'auxiliary',
 })) if (seriesInfo[key]) seriesInfo[key][2] = color;
 
 const forecastSignals = new Set(['outdoor_forecast', 'solar_forecast']);
-const garageReferenceSignals = new Set(Object.entries(GARAGE_OUTCOME_INFO)
-  .filter(([, info]) => info.unit === '°C').map(([key]) => key));
 export const chartLinePatterns = Object.freeze({
   solid: Object.freeze([]), temperature: Object.freeze([6, 4]),
   reference: Object.freeze([12, 4]), forecast: Object.freeze([8, 3, 2, 3]), price: Object.freeze([1, 3]),
@@ -160,14 +158,13 @@ export function historySeriesStyle(key, axis, kind = 'line', { interpolation: en
   const temperatureUnit = temperature || seriesInfo[key]?.[1].split(' · ')[0] === '°C';
   const forecast = kind === 'forecast' || forecastSignals.has(key);
   const price = key.endsWith('_price');
-  const pointsOnly = ['event', 'daily', 'session', 'episode', 'interval-energy', 'audit'].includes(kind);
+  const pointsOnly = ['event', 'daily', 'session', 'interval-energy', 'audit'].includes(kind);
   const interpolation = !enabled ? 'step' : temperature || key === 'caravan_humidity' ? 'monotone'
     : key === 'heating_integral' ? 'linear' : 'step';
   return {
     forecast, interpolation, showLine: !pointsOnly,
     borderDash: forecast ? chartLinePatterns.forecast : price ? chartLinePatterns.price
-      : garageReferenceSignals.has(key) ? chartLinePatterns.reference
-        : axis === 'right' && temperatureUnit ? chartLinePatterns.temperature : chartLinePatterns.solid,
+      : axis === 'right' && temperatureUnit ? chartLinePatterns.temperature : chartLinePatterns.solid,
     stepped: pointsOnly || interpolation !== 'step' ? false : price ? 'before' : true,
     cubicInterpolationMode: interpolation === 'monotone' ? 'monotone' : 'default',
   };
@@ -203,8 +200,11 @@ export function historyStateLabel(key, value) {
   if (['controller_phase', 'model_controller_phase'].includes(key))
     return ['Normal', 'Preheat', 'Tariff reduction', 'Recovery'][value] ?? `Unknown phase (${value})`;
   if (key === 'dhw_routing') return value === 0 ? 'Space heating' : value === 1 ? 'Hot water' : `Unknown route (${value})`;
-  if (key === 'garage_model_available') return value === 1 ? 'Pump on' : value === 0 ? 'Pump off' : 'Unknown';
-  if (key === 'garage_model_managed_pause') return value === 1 ? 'Managed heating pause' : value === 0 ? 'No managed pause' : 'Unknown';
+  if (key === 'garage_away_mode') return value === 1 ? 'Away selected' : value === 0 ? 'Normal selected' : 'Unknown';
+  if (key === 'garage_native_power') return value === 1 ? 'Pump on' : value === 0 ? 'Pump off' : 'Unknown';
+  if (key === 'garage_external_enabled') return value === 1 ? 'Enabled' : value === 0 ? 'Disabled' : 'Unknown';
+  if (key === 'garage_frost_available') return value === 1 ? 'Available' : value === 0 ? 'Unavailable' : 'Unknown';
+  if (key === 'garage_frost_active') return value === 1 ? 'Protection override' : value === 0 ? 'No override' : 'Unknown';
   if (['compressor_active', 'garage_compressor_active', 'heating_pump_active', 'alarm_active'].includes(key)) return value === 1 ? 'Active' : value === 0 ? 'Inactive' : `Unknown (${value})`;
   if (key === 'model_valve_override') return ['Normal valve mode', 'Pooled override confirmed', 'Partial override', 'Unconfirmed override'][value] ?? 'Unknown valve mode';
   if (key === 'dhwr_request') return value === 1 ? 'On requested' : value === 0 ? 'Off requested' : `Unknown (${value})`;
@@ -216,7 +216,7 @@ export function historyStateLabel(key, value) {
 export function historyValueLabel(key, value, unit) {
   const state = historyStateLabel(key, value);
   if (state) return state;
-  const digits = (MODEL_COEFFICIENT_INFO[key] ?? GARAGE_COEFFICIENT_INFO[key])?.digits;
+  const digits = MODEL_COEFFICIENT_INFO[key]?.digits;
   return `${new Intl.NumberFormat('en-GB', { minimumFractionDigits: digits ?? 0, maximumFractionDigits: digits ?? 2 }).format(value)} ${unit.split(' · ')[0]}`;
 }
 
@@ -312,8 +312,7 @@ export function historyDatasets(series = {}, descriptor, preferences = {}, palet
     const original = interpolation ? points : points.map(point => point.displayBoundary && point.interpolated
       ? { ...point, y: Number.isFinite(point.y) && Number.isFinite(point.heldValue) ? point.heldValue : null, interpolated: false }
       : point);
-    const data = kind === 'episode' ? original.filter(point => !point.displayBoundary && !point.carriedForward && !point.displayContext && !point.interpolated)
-      : ['audit', 'session', 'interval-energy'].includes(kind) ? original.filter(point => !point.displayBoundary && !point.carriedForward)
+    const data = ['audit', 'session', 'interval-energy'].includes(kind) ? original.filter(point => !point.displayBoundary && !point.carriedForward)
       : interpolation && temperature && original.some(point => point.periodicCoverage || point.interpolated || Number.isFinite(point.intervalStart) && Number.isFinite(point.intervalEnd))
         ? temperatureIntervalKnots(original) : original;
     const stackBase = stackBases.get(key);
@@ -321,7 +320,7 @@ export function historyDatasets(series = {}, descriptor, preferences = {}, palet
     const style = historySeriesStyle(key, axis, kind, { interpolation });
     const color = phaseColor(palette[colorKey] ?? defaultPalette[colorKey] ?? palette.learning, key);
     const chargerPhase = /^(ev[12])_current_l[123]$/.exec(key)?.[1];
-    const circles = ['session', 'episode', 'interval-energy', 'audit'].includes(kind);
+    const circles = ['session', 'interval-energy', 'audit'].includes(kind);
     const genuine = point => !point.displayBoundary && !point.carriedForward;
     const isolated = (point, index) => genuine(point) && Number.isFinite(point.y)
       && !Number.isFinite(data[index - 1]?.y) && !Number.isFinite(data[index + 1]?.y);

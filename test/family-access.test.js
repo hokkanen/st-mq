@@ -35,7 +35,7 @@ async function fixture(t, options = {}) {
     ] }),
     charging: Object.fromEntries(['setSettings', 'setChargerSettings', 'setControl', 'resume', 'chargeNow', 'identifyVehicle']
       .map(name => [name, record(`charging.${name}`)])),
-    garage: Object.fromEntries(['release', 'setTemporary', 'setHeating', 'setNativeSettings']
+    garage: Object.fromEntries(['setHeating', 'setNativeSettings', 'setProtectionSettings']
       .map(name => [name, record(`garage.${name}`)])),
     ocppSetup: { adopt: record('ocppSetup.adopt') },
     ...Object.fromEntries(['setTemporary', 'testHeating', 'stopDhwr', 'coverEquipment', 'changeFireplace',
@@ -79,7 +79,7 @@ test('both passwords identify their access role and family retains ordinary read
   assert.deepEqual(f.calls, []);
 });
 
-test('family can operate home Away, Pause and heating, garage Pause and heating, and DHWR', async t => {
+test('family can operate home Away, Pause and heating, garage Normal and Away, and DHWR', async t => {
   const f = await fixture(t);
   const until = new Date(INITIAL + 2 * 60 * MINUTE).toISOString();
   const actions = [
@@ -90,17 +90,17 @@ test('family can operate home Away, Pause and heating, garage Pause and heating,
     ['/api/temporary', { awayUntil: until, pauseUntil: until }, 'setTemporary'],
     ...['normal', 'reduction', 'preheat', 'circulation'].map(command => ['/api/heating-test', { command }, 'testHeating']),
     ['/api/dhwr/stop', {}, 'stopDhwr'],
-    ['/api/garage/temporary', { pauseUntil: until }, 'garage.setTemporary'],
-    ['/api/garage/temporary', { pauseUntil: null }, 'garage.setTemporary'],
-    ['/api/garage/release', {}, 'garage.release'],
     ['/api/garage/heating', { mode: 'normal' }, 'garage.setHeating'],
-    ['/api/garage/heating', { mode: 'off' }, 'garage.setHeating'],
+    ['/api/garage/heating', { mode: 'away' }, 'garage.setHeating'],
   ];
   for (const [path, input, name] of actions) {
     assert.equal((await f.post(path, input)).status, 200, `${path} ${JSON.stringify(input)}`);
     assert.equal(f.calls.at(-1).name, name);
   }
   assert.equal(f.calls.length, actions.length);
+  for (const path of ['/api/garage/temporary', '/api/garage/release', '/api/garage/protection'])
+    assert.equal((await f.post(path, {})).status, 403, `${path} is not a household mode action`);
+  assert.equal((await f.post('/api/garage/heating', { mode: 'off' })).status, 403);
 });
 
 test('family may use every charging card route but not charger commissioning', async t => {
@@ -196,7 +196,7 @@ test('admin and trusted Home Assistant ingress retain administrative controls', 
 test('family permissions preserve controller ownership protection', async t => {
   const f = await fixture(t, { server: { controlAuthority: { canControl: () => false, status: () => ({ protected: true }) } } });
   for (const [path, input] of [['/api/temporary', { pauseUntil: null }], ['/api/heating-test', { command: 'circulation' }],
-    ['/api/garage/heating', { mode: 'off' }], ['/api/equipment/cover', { deviceId: 'garage_door1', action: 'open' }],
+    ['/api/garage/heating', { mode: 'away' }], ['/api/equipment/cover', { deviceId: 'garage_door1', action: 'open' }],
     ['/api/charging/chargers/charger1/charge-now', {}], ['/api/charging/chargers/charger1/identify', {}]]) {
     assert.equal((await f.post(path, input)).status, 409, path);
   }

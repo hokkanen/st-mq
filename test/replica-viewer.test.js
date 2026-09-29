@@ -15,10 +15,7 @@ import { Recorder } from '../src/storage/recorder.js';
 import { applyLearningRecord, LEARNING_ALGORITHM} from '../src/app/committed-learning.js';
 import { appendLearningRecord } from './helpers/home-learning-fixture.js';
 import { restoreAdaptiveCheckpoint } from '../src/control/adaptive-learning.js';
-import { appendGarageEntry, applyGarageEntry } from '../src/garage/learning.js';
-import { createGarageModel, GARAGE_ALGORITHM_VERSION } from '../src/garage/model.js';
 import { garageSettings } from '../src/garage/settings.js';
-import { garageDisplay, garageReleaseAvailable, renderGarage } from '../chart/garage-status.js';
 import { mitsubishiControl } from '../chart/mitsubishi.js';
 
 const at = Date.parse('2026-01-15T12:00:00+02:00');
@@ -84,20 +81,15 @@ function recordLearningModels(publication, { recordedAt = publication.sourceAt, 
   checkpoint.model.version = homeModelVersion;
   if (!matching) checkpoint.algorithmVersion = 'invented-unsupported-home-algorithm';
   store.setState('adaptive:mqtt', checkpoint);
-  const garageSeed = createGarageModel({ seedAt: recordedAt });
-  garageSeed.rear.values[0] = .026;
-  const settings = garageSettings({ enabled: true });
-  store.setState('garage:configuration:mqtt', settings);
-  const entry = appendGarageEntry(store, 'mqtt', 'context', {}, settings, recordedAt, { seed: garageSeed });
-  const garage = applyGarageEntry(null, entry);
-  if (!matching) garage.algorithmVersion = 'invented-unsupported-garage-algorithm';
-  store.setState('garage:checkpoint:mqtt', garage);
+  store.setState('garage:configuration:mqtt', garageSettings({ enabled: true }));
+  store.setState('garage:mode:mqtt', { version: 1, adapterKey: 'a'.repeat(64), targetIdentity: 'b'.repeat(64),
+    mode: 'away', normalTargetC: 10, awayTargetC: 5, changedAt: recordedAt, warmingWarning: null });
   store.close();
   const raw = new DatabaseSync(publication.dbPath); raw.exec('PRAGMA journal_mode=DELETE'); raw.close();
   publication.digest = digest(publication.dbPath); publication.bytes = readFileSync(publication.dbPath).length;
 }
 
-test('replica exposes both saved models without sample histories, live readiness, commands or writes', async t => {
+test('replica exposes saved Home learning and manual Garage intent without live readiness, commands or writes', async t => {
   const directory = fixture(t), publication = snapshot(directory, 'saved-models');
   recordLearningModels(publication);
   let now = at;
@@ -115,43 +107,24 @@ test('replica exposes both saved models without sample histories, live readiness
   assert.equal(Object.hasOwn(status.learning.adaptive, 'samples'), false);
   assert.equal(Object.hasOwn(status.learning.adaptive, 'episodeArchive'), false);
   assert.doesNotMatch(JSON.stringify(status.learning), /invented-.*marker/);
-  assert.equal(status.garage.learning.coefficients.rear.find(row => row.name === 'coolingPerHour').value, .026);
-  assert.equal(status.garage.learning.algorithm, GARAGE_ALGORITHM_VERSION);
-  for (const learning of [status.learning, status.garage.learning]) {
-    assert.equal(learning.reconstruction, 'snapshot');
-    assert.equal(learning.readOnly, true);
-    assert.equal(learning.snapshotAt, at);
-    assert.equal(learning.recordedAt, at);
-  }
+  assert.equal(status.learning.reconstruction, 'snapshot');
+  assert.equal(status.learning.readOnly, true);
+  assert.equal(status.learning.snapshotAt, at);
+  assert.equal(status.learning.recordedAt, at);
   assert.equal(status.readOnly, true);
-  assert.equal(status.garage.adapter.pauseControl, false);
+  assert.equal(status.garage.mode, 'away');
+  assert.equal(status.garage.requestedTargetC, 5);
+  assert.equal(status.garage.targetConfirmed, false);
   assert.equal(status.garage.adapter.liveControlSupported, false);
-  assert.equal(Object.hasOwn(status.garage.settings, 'assumeISave10C'), false);
-  assert.equal(Object.hasOwn(status.garage.settings, 'maxPauseHours'), false);
-  assert.equal(Object.hasOwn(status.garage.settings, 'maxHorizonHours'), false);
-  assert.equal(status.garage.adapter.baselineVerified, undefined);
-  assert.equal(status.garage.adapter.native, undefined);
-  assert.equal(status.garage.plan, undefined, 'A viewer never advertises a new savings opportunity');
-  assert.equal(status.garage.planningLimits, undefined, 'Live normal-heating dwell and daily start eligibility are not projected');
-  assert.equal(garageReleaseAvailable(status), false);
+  assert.equal(status.garage.heatingControls.available, false);
+  assert.equal(status.garage.protection.available, false);
+  assert.equal(status.garage.protection.active, null);
+  assert.equal(status.garage.learning, undefined);
+  assert.equal(status.garage.plan, undefined);
   assert.equal(mitsubishiControl(status, 'power').available, false);
-  const garageDisplayValue = garageDisplay(status.garage, status.now);
-  for (const section of ['outcomeDetails', 'inputDetails', 'coefficientDetails', 'planningDetails'])
-    assert(garageDisplayValue[section].length > 0, `${section} is available as a recorded model explanation`);
-  assert.equal(garageDisplayValue.coefficientDetails.length, 6);
-  assert.equal(garageDisplayValue.evidenceDetails.find(row => row.key === 'recorded-history-reconstruction').value, 'Recorded master snapshot');
-  assert.match(garageDisplayValue.planningDetails.find(row => row.key === 'current-opportunity').value, /Read.only slave/);
-  assert.equal(garageDisplayValue.planningDetails.find(row => row.key === 'reduction-window').value, 'Unavailable',
-    'A missing live plan cannot establish that no reduction is planned');
-  const target = { textContent: '', classList: { toggle() {} } }, basis = { textContent: '', hidden: true }, context = { textContent: '' };
-  renderGarage({ getElementById: id => ({ 'garage-native-target': target, 'garage-native-target-basis': basis,
-    'garage-policy-context': context })[id] }, status);
-  assert.equal(target.textContent, '—', 'Missing native readback cannot invent a room setting');
-  assert.equal(basis.hidden, true);
-  assert.match(context.textContent, /Read-only view.*do not authorize equipment control/);
-  for (const path of ['/api/garage/native', '/api/garage/heating', '/api/garage/release', '/api/garage/temporary'])
+  for (const path of ['/api/garage/native', '/api/garage/heating', '/api/garage/protection'])
     assert.equal((await request(path, { method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ setting: 'targetC', value: 5 }) })).status, 405, `${path} remains read-only`);
+      body: JSON.stringify({ mode: 'normal' }) })).status, 405, `${path} remains read-only`);
   assert.equal(app.engine, undefined);
   assert.equal((await request('/api/override', { method: 'POST' })).status, 405);
   now += 7 * 86_400_000;
@@ -160,13 +133,13 @@ test('replica exposes both saved models without sample histories, live readiness
   assert.equal(digest(publication.dbPath), publication.digest);
 });
 
-test('replica infers the primary input from a Garage journal when decisions and contracts are absent', async t => {
+test('replica infers the primary input from the Home journal and ignores unsupported scopes', async t => {
   const directory = fixture(t), publication = snapshot(directory, 'garage-journal-input');
   recordLearningModels(publication);
   const store = new Store(publication.dbPath);
   store.db.exec("DELETE FROM events WHERE type='decision'");
   assert.equal(store.db.prepare("SELECT COUNT(*) n FROM state WHERE key LIKE 'contract:%'").get().n, 0);
-  assert.equal(store.db.prepare('SELECT input FROM learning_journal ORDER BY id DESC LIMIT 1').get().input, 'garage:mqtt');
+  assert.equal(store.db.prepare('SELECT input FROM learning_journal ORDER BY id DESC LIMIT 1').get().input, 'mqtt');
   store.appendLearningJournal('garage:unsupported-scope', { kind: 'context', at,
     algorithmVersion: 'invented-unsupported-algorithm', payload: { value: {} } });
   store.close();
@@ -174,10 +147,10 @@ test('replica infers the primary input from a Garage journal when decisions and 
   publication.digest = digest(publication.dbPath); publication.bytes = readFileSync(publication.dbPath).length;
   const { request } = await viewer(t, directory, async () => publication);
   const status = (await request('/api/status')).body;
-  assert.equal(status.input, 'mqtt', 'Unsupported journal scopes cannot conceal the latest known Garage input');
+  assert.equal(status.input, 'mqtt', 'Unsupported journal scopes cannot conceal the latest known Home input');
   assert.equal(status.lastDecision, null);
   assert.equal(status.learning.adaptive.model.parameters.lossPerHour, .031);
-  assert.equal(status.garage.learning.coefficients.rear.find(row => row.name === 'coolingPerHour').value, .026);
+  assert.equal(status.garage.mode, 'away');
   assert.equal(status.readOnly, true);
   assert.equal(digest(publication.dbPath), publication.digest);
 });
@@ -189,7 +162,7 @@ test('replica does not substitute priors for missing, unsupported or post-public
   const missing = (await request('/api/status')).body;
   assert.equal(missing.learning.status, 'unavailable');
   assert.equal(missing.learning.adaptive, null);
-  assert.equal(missing.garage.learning.status, 'unavailable');
+  assert.equal(missing.garage.mode, null);
   for (const [generation, options] of [
     ['unsupported-models', { matching: false }], ['future-models', { recordedAt: at + 60_000 }],
     ['archived-home-shape', { homeModelVersion: 3 }],
@@ -200,13 +173,8 @@ test('replica does not substitute priors for missing, unsupported or post-public
     assert.equal(status.learning.status, 'unavailable');
     assert.equal(status.learning.adaptive, null);
     assert.equal(status.learning.recordedAt, null);
-    if (options.homeModelVersion === 3) {
-      assert.equal(status.garage.learning.recordedAt, at, 'An unsupported Home shape does not conceal a compatible Garage model');
-    } else {
-      assert.equal(status.garage.learning.status, 'unavailable');
-      assert.equal(status.garage.learning.coefficients, undefined);
-      assert.equal(status.garage.learning.recordedAt, null);
-    }
+    assert.equal(status.garage.mode, options.recordedAt > at ? null : 'away',
+      'Home compatibility does not hide valid Garage intent; post-publication intent is excluded');
     assert.equal(digest(publication.dbPath), publication.digest);
   }
 });
@@ -228,7 +196,7 @@ test('replica refuses server-side database saves without changing the verified s
 test('malformed saved Garage sections do not hide independent protected dashboard evidence', async t => {
   const directory = fixture(t), publication = snapshot(directory, 'invalid-garage-sections');
   const source = new Store(publication.dbPath);
-  const sections = ['configuration', 'exposure', 'adapter', 'temporary', 'episode', 'checkpoint', 'roomTemperature'];
+  const sections = ['configuration', 'adapter', 'mode', 'sender'];
   for (const key of [...sections.map(section => `garage:${section}:mqtt`), 'adaptive:mqtt']) {
     source.setState(key, null);
     source.db.prepare('UPDATE state SET value=? WHERE key=?').run('{invalid', key);
@@ -241,13 +209,11 @@ test('malformed saved Garage sections do not hide independent protected dashboar
   assert.equal(response.status, 200);
   assert.equal(status.observations.upstairs.value, 21);
   assert.equal(status.readOnly, true);
-  assert.equal(status.garage.adapter.restorePending, null, 'Malformed obligations remain unknown, never cleared');
-  assert.equal(status.garage.roomTemperature.targetC, null);
-  assert.equal(status.garage.exposure, null);
+  assert.equal(status.garage.adapter.control, null);
+  assert.equal(status.garage.requestedTargetC, null);
+  assert.equal(status.garage.protection.active, null);
   assert.deepEqual(status.garage.settings, {});
-  for (const section of ['configuration', 'exposure', 'adapter', 'temporary', 'episode'])
-    assert(status.garage.errors.some(error => error.section === section));
-  assert.match(status.garage.learning.error, /unavailable/);
+  for (const section of sections) assert(status.garage.errors.some(error => error.section === section));
   assert.match(status.learning.error, /unavailable/);
   assert.equal((await request('/api/recording-overview')).status, 200);
   assert.equal(digest(publication.dbPath), publication.digest);

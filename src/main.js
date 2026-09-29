@@ -55,7 +55,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
   await prepareStorage(config);
   const store = new Store(config.dbPath);
   const runtimeTiming = createRuntimeTiming();
-  let engine, webAccess, learning, chartService, commandTransport, replication, authority, timer, garageSafetyTimer, closed = false, reloadPending = null;
+  let engine, webAccess, learning, chartService, commandTransport, replication, authority, timer, closed = false, reloadPending = null;
   let runtimeUsable = true, starting = true, configurationResult = null;
   let authorityStopping = null, controlRevoked = false;
   const acquisitions = [];
@@ -85,7 +85,6 @@ export async function start({ config = loadConfig(), readConfig = configurationR
     runtimeUsable = false;
     if (engine) engine.suspended = true;
     clearTimeout(timer);
-    clearInterval(garageSafetyTimer);
     for (const [signal, handler] of signalHandlers) process.removeListener(signal, handler);
     shutdownSignal?.removeEventListener('abort', abortStartup);
     closePending = (async () => {
@@ -110,7 +109,6 @@ export async function start({ config = loadConfig(), readConfig = configurationR
   function stopRuntime({ restore = true, preserveOcpp = false } = {}) {
     restore = restore && canControl();
     clearTimeout(timer);
-    clearInterval(garageSafetyTimer);
     // Revocation starts before any slow feature cleanup. MQTT queues cannot wait
     // for a charging HTTP response before learning that this controller lost authority.
     const revoked = [];
@@ -185,7 +183,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
     const hasMqttObservations = Boolean(engine.charging?.mqttRoutes().length) || config.h66?.deviceId || config.deviceId
       || config.connections.teslamate?.enabled === true
       || engine.charging?.configuration?.chargers?.charger2?.enabled === true
-      || Boolean(config.garage?.adapter?.stateTopic || config.garage?.adapter?.telemetryTopic)
+      || Boolean(config.garage?.adapter?.stateTopic || config.garage?.adapter?.telemetryTopic || config.garage?.sender?.stateTopic)
       || config.connections.equipment?.devices?.length > 0;
     if (['mqtt','providers'].includes(config.input) && hasMqttObservations && config.connections.mqtt?.address) {
       const { startMqtt } = await import('./acquisition/mqtt.js');
@@ -209,17 +207,9 @@ export async function start({ config = loadConfig(), readConfig = configurationR
       canControl: () => canControl() && ['mqtt', 'providers'].includes(config.input) });
     engine.equipmentTests.tick();
   }
-  function startGarageSafety() {
-    clearInterval(garageSafetyTimer);
-    garageSafetyTimer = setInterval(() => {
-      if (!closed && runtimeUsable && canControl()) engine.garage.safetyTick();
-    }, 5000);
-    garageSafetyTimer.unref?.();
-  }
   function startBackground() {
     requireRunning();
     engine.tick();
-    startGarageSafety();
     // Start UI and conservative control before bounded historical reconstruction.
     learning = config.input !== 'simulated' ? startHistoryLearning({ store, config: engine.control }) : null;
     engine.onTemporaryChange = schedule;
@@ -292,8 +282,6 @@ export async function start({ config = loadConfig(), readConfig = configurationR
       // Restore owned equipment settings through the old connections before any
       // broker or device changes can discard that restoration path.
       try {
-        await engine.garage.release('settings-reload');
-        if (engine.garage.adapter?.status(clock()).restorePending) throw new Error('pending');
         await engine.equipmentTests?.restore();
         const result = await engine.executor.restore({ now: clock(), reason: 'settings-reload' });
         if (result.restorationPending) throw new Error('pending');
@@ -450,7 +438,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
     requireRunning();
     await createRuntime();
     requireRunning();
-    if (canControl()) { engine.tick(); startGarageSafety(); }
+    if (canControl()) { engine.tick(); }
     requireRunning();
     if (canControl()) await startProviderRuntime();
     requireRunning();

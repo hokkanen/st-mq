@@ -3,7 +3,7 @@ export const FAMILY_FIREWOOD_REMOVAL_MS = 15 * 60_000;
 const reads = new Set(['/api/status', '/api/pair', '/api/fireplace', '/api/sensor-changes',
   '/api/recording-overview', '/api/energy-audits', '/api/chart', '/api/contract', '/api/events', '/api/history']);
 const writes = new Set(['/api/automation', '/api/fireplace', '/api/fireplace/remove', '/api/temporary', '/api/override',
-  '/api/heating-test', '/api/dhwr/stop', '/api/garage/release', '/api/garage/temporary',
+  '/api/heating-test', '/api/dhwr/stop',
   '/api/garage/heating', '/api/equipment/cover', '/api/charging/settings']);
 
 // New endpoints receive no family write or download authority by default.
@@ -20,7 +20,7 @@ export function familyActionAllowed(path, input, engine) {
   }
   if (path === '/api/heating-test')
     return ['normal', 'reduction', 'preheat', 'circulation'].includes(input?.command);
-  if (path === '/api/garage/heating') return ['normal', 'off'].includes(input?.mode);
+  if (path === '/api/garage/heating') return ['normal', 'away'].includes(input?.mode);
   // Input shape and current device/session authority are checked by each owner.
   return true;
 }

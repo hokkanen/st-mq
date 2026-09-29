@@ -41,7 +41,7 @@ test('standalone MQTT authority loss stops writes, retains a read-only dashboard
     client.emit('message', topic, Buffer.from(JSON.stringify({ version: 1, nodeId: randomUUID(), epoch: randomUUID(),
       role: 'master', platform: 'hassio', at: Date.now(), boot: randomUUID(), heartbeat: 1 })), {});
     const status = await (await fetch(`${endpoint}/api/status`)).json();
-    assert.equal(status.readOnly, true); assert.equal(status.readOnly, true);
+    assert.equal(status.readOnly, true, JSON.stringify(status));
     assert.equal(status.controlAuthority.state, 'protected'); assert.ok(status.controlAuthority.stoppedAt > 0);
     assert.equal((await fetch(`${endpoint}/api/settings/reload`, { method: 'POST',
       headers: { 'Content-Type': 'application/json' }, body: '{}' })).status, 409);
@@ -58,7 +58,7 @@ test('standalone MQTT authority loss stops writes, retains a read-only dashboard
   try {
     assert.equal(restarted.engine, undefined); assert.equal(connections, previousConnections);
     const status = await (await fetch(`http://127.0.0.1:${restarted.server.address().port}/api/status`)).json();
-    assert.equal(status.controlAuthority.state, 'protected'); assert.equal(status.readOnly, true);
+    assert.equal(status.readOnly, true, JSON.stringify(status)); assert.equal(status.controlAuthority.state, 'protected');
   } finally { await restarted.close(); }
 });
 
@@ -98,6 +98,6 @@ test('authority loss invalidates a delayed settings reload without recreating ac
   await new Promise(resolve => setTimeout(resolve, 20));
   assert.equal(app.store.db.prepare('SELECT total_changes() n').get().n, changes);
   const status = await (await fetch(`http://127.0.0.1:${app.server.address().port}/api/status`)).json();
-  assert.equal(status.controlAuthority.state, 'protected'); assert.equal(status.readOnly, true);
+  assert.equal(status.readOnly, true, JSON.stringify(status)); assert.equal(status.controlAuthority.state, 'protected');
   await assert.rejects(app.reloadSettings(), /authority was revoked/);
 });

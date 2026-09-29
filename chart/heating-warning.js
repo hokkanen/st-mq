@@ -6,11 +6,9 @@ export function homeHeatingWarning(status, formatTime) {
   return `${selection} will stay until ${formatTime(hold.until)} or Resume now. Automatic price control is paused; room temperatures may change. Previous settings return when the pause ends.`;
 }
 
-export function garageHeatingWarning(status, formatTime) {
-  const controls = status?.garage?.heatingControls;
-  if (!(controls?.paused && controls.manualChanged && controls.holdUntil > status.now)) return '';
-  const off = (controls.requestedMode ?? controls.selectedMode) === 'off';
-  return `${off ? 'Heating is held off' : 'Manual heating is held'} until ${formatTime(controls.holdUntil)} or Resume now. ${off
-    ? 'A cold garage can freeze pipes and stored equipment. Freeze protection may restore heating sooner.'
-    : 'Automatic price control is paused.'} Normal heating returns when the pause ends.`;
+export function garageHeatingWarning(status) {
+  const warning = status?.garage?.warmingWarning;
+  if (!warning || !Number.isFinite(warning.since) || warning.since > (status.now ?? Date.now())) return '';
+  if (Number.isFinite(warning.until) && warning.until <= (status.now ?? Date.now())) return '';
+  return warning.message || 'The temperature target has increased. Stored items and surfaces may stay cold: avoid wet or snowy vehicles and substantial moisture for roughly 24 hours, and longer if contents remain cold.';
 }

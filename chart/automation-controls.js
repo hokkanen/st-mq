@@ -24,13 +24,12 @@ export function automationView(status, feature) {
     }).format(pauseUntil)}. Manual heating choices retain their own duration.` : 'Automatic heating is paused.',
   })[control?.activity] ?? control?.activity;
   if (control?.activity === 'automatic') {
-    const reasons = feature === 'garage' ? status.garage?.automationReasons : status.decision?.reasons;
+    const reasons = status.decision?.reasons;
     const reason = reasons?.find(value => typeof value === 'string');
-    const detail = explain(reason ?? (feature === 'garage' ? status.garage?.reason : null));
+    const detail = explain(reason);
     if (detail) activity = `Automatic · ${detail}`;
   }
-  const manual = feature === 'garage' ? status?.garage?.heatingControls?.activity
-    : status?.decision?.manualHold?.until > status?.now ? 'A temporary manual heating selection is held.' : null;
+  const manual = status?.decision?.manualHold?.until > status?.now ? 'A temporary manual heating selection is held.' : null;
   if (manual && control?.activity !== 'unavailable') activity = [activity, manual].filter(Boolean).join(' ');
   return {
     enabled: control?.enabled === true,
@@ -49,7 +48,7 @@ export function createAutomationControls({ document, request, onStatus, blocked 
   const $ = id => document.getElementById(id);
   let status, busy = false;
   const refreshControls = () => {
-    for (const feature of ['home', 'garage']) {
+    for (const feature of ['home']) {
       const view = automationView(status, feature);
       for (const [suffix, enabled] of [['plan', false], ['automatic', true]]) {
         const button = $(`${feature}-automation-${suffix}`);
@@ -61,13 +60,13 @@ export function createAutomationControls({ document, request, onStatus, blocked 
   };
   const update = next => {
     status = next;
-    for (const feature of ['home', 'garage']) {
+    for (const feature of ['home']) {
       const activity = $(`${feature}-automation-activity`);
       if (activity) activity.textContent = automationView(status, feature).activity;
     }
     refreshControls();
   };
-  for (const feature of ['home', 'garage']) for (const [suffix, enabled] of [['plan', false], ['automatic', true]]) {
+  for (const feature of ['home']) for (const [suffix, enabled] of [['plan', false], ['automatic', true]]) {
     $(`${feature}-automation-${suffix}`)?.addEventListener('click', async () => {
       const view = automationView(status, feature);
       if (busy || blocked() || !(view.available || !enabled && view.canDisable)) return;

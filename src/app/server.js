@@ -260,17 +260,10 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
             const method = { settings: 'setChargerSettings', control: 'setControl', resume: 'resume', 'charge-now': 'chargeNow', identify: 'identifyVehicle' }[action];
             await current.charging[method](id, input); return json(200, status());
           });
-        if (req.method === 'POST' && url.pathname === '/api/garage/release')
-          return await mutate(async (current, input) => {
-            if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length)
-              return json(400, { error: 'End a garage pause with an empty JSON object.' });
-            await current.garage.release('owner-cancelled');
-            return json(200, status());
-          });
-        if (req.method === 'POST' && url.pathname === '/api/garage/temporary')
-          return await mutate(async (current, input) => { await current.garage.setTemporary(input); return json(200, status()); });
         if (req.method === 'POST' && url.pathname === '/api/garage/heating')
           return await mutate(async (current, input) => { await current.garage.setHeating(input); return json(200, status()); });
+        if (req.method === 'POST' && url.pathname === '/api/garage/protection')
+          return await mutate(async (current, input) => { await current.garage.setProtection(input); return json(200, status()); });
         if (req.method === 'POST' && url.pathname === '/api/garage/native')
           return await mutate(async (current, input) => { await current.garage.setNativeSettings(input); return json(200, status()); });
         if (req.method === 'POST' && url.pathname === '/api/equipment/recheck')

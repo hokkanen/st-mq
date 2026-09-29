@@ -12,7 +12,7 @@ Using this reference does not establish that every container or fitting cools
 more slowly, or that the pipe wall cannot begin freezing before the estimated
 bulk temperature reaches zero.
 
-## Parameters shown in Savings & protection
+## Parameters shown in Frost protection
 
 | Parameter | Initial value | Meaning |
 | --- | ---: | --- |
@@ -22,21 +22,10 @@ bulk temperature reaches zero.
 | Heat transfer | 20 W/m²·K | Initial estimate of heat exchange with the adjacent air. |
 | Safety factor | 2, fixed | Counts heat loss twice as fast and credits heat gain half as fast. |
 
-The room setting selected through the UI supplies initial normal-warmth estimates;
-there is no separate configured normal-heating temperature. Without a selected
-setting, an unambiguous fresh pump setting can supply the reference. Savings
-strategy defaults to Balanced. Every strategy retains the same protection requirements. Automatic operation is
-disabled and the protection policy is unapproved by default. The heat-transfer
-coefficient and safety factor are engineering assumptions, not values learned
-from the garage or an installed safety certificate.
-
-The old air-temperature hard limit, fixed degree-minute allowance, recovery
-temperature, recovery dwell and constant refill rate are removed. A new pause
-requires known outside temperature; open and unknown configured doors both
-block a new pause below 2°C and both pass this rule at 2°C or above. Door openings or outages during an existing pause
-trigger ordinary temperature/reserve reassessment rather than unconditional
-cancellation. Door disturbances also exclude affected intervals from ordinary
-thermal fitting, baseline qualification and clean validation evidence.
+The geometry and heat-transfer values are explicit engineering assumptions,
+not fitted building-model coefficients. The sender's enabled protection settings
+are validated and persisted locally; ST-MQ shows confirmed sender readback.
+The shared installation default is unapproved until explicitly commissioned.
 
 ## Continuous thermal calculation
 
@@ -76,154 +65,29 @@ recovery starts immediately when air is warmer than the reference. A brief warm
 report credits only the heat transferred during that interval; it cannot reset
 the reserve. Neither another location warming nor native ON replenishes it.
 
-## Reporting and pause permission
+## Local sender and recovery
 
-Shelly status is requested every **30 seconds**, and protection is reassessed on
-valid temperature evidence. Unchanged valid reports count; retained packets,
-duplicates, invalid readings and unrelated device traffic do not refresh a probe.
-A status response confirms the device's reported value, not necessarily a new
-hardware conversion at that instant. Both required locations must be fresh for a
-new pause or renewal. The maximum temperature age is **2 minutes**; protection
-can restore earlier if the thermal reserve is insufficient. Missing outside
-temperature does not establish that freezing is impossible.
-Between reports, assessment may project further cooling but cannot credit warming
-from cached readings. Forecasts begin at the decision time, so predicted recovery
-cannot be interpolated backward into the time since the last genuine report.
+The Gen3 sender runs this calculation independently for both probes. Neither
+location can donate reserve to the other. Freshness follows genuine probe reports;
+repeating cached values or receiving a new target cannot create warmth. A short
+door-related air plunge spends reserve according to actual elapsed exposure.
 
-The planner revalidates at its **1-minute** cadence. A requested Pill permission
-is capped at **2 minutes from the older supporting temperature report**, and can
-be shorter when the thermal reserve requires it. Evidence deadlines overlap;
-they are not three sequential waits. UI polling, broker traffic and repeat
-revalidation of old temperature evidence cannot extend that deadline.
-Two minutes without a planner revalidation also revokes the host's permission.
-The adapter's published renewal interval must permit the one-minute schedule.
+The sender persists settings and conservatively handles reboot or acquisition
+gaps. Missing history is unknown: it cannot initialize a warm reference merely
+from a warm current reading. Protection demand accounts for useful-heating delay,
+uses bounded target increases and hysteresis, and remains active until measured
+recovery justifies release. Stored protection state is separate from the removed
+Garage building model; there is no learned economic controller.
 
-Before an OFF request or renewal, the projected reserve must cover cooling until
-the requested permission expires and the subsequent delay until heating becomes
-useful near the reference. Runtime checks also cover already accepted permission
-and requests that may have been accepted while acknowledgement is pending.
-Reducing a host deadline does not by itself shorten an outstanding device lease.
-The planner continues its cooling forecast through the restoration delay, with
-no assumed EV heat and with the same growing forecast uncertainty margins.
-There is no unconditional 15-minute reserve assembled from a maximum lease and
-an unrelated restoration constant.
+The sender broadcasts room temperature, minimum target, rescue and validity over
+Bluetooth. The Pill preserves the saved user target, applies the required floor,
+and explicitly selects HEAT/ON for rescue. ST-MQ displays the sender's actual
+status/settings and can send settings changes over MQTT; broker/controller loss
+must not stop local protection. Configured feed loss is a distinct fault policy.
+With no sender installed, the dashboard reports protection unavailable.
 
-The useful-heating delay must be supplied by the adapter's qualified restoration
-bound and installation evidence. Native ON, command acceptance and local warming
-are separate events. A maximum communication interval is not guaranteed cold
-exposure time: sustained cold can require immediate restoration.
-
-For example, a uniform initial 4°C reference exposed continuously to −10°C air
-reaches the 1°C margin after approximately **2 minutes 8 seconds** with these
-assumptions. This does not automatically permit a two-minute pause once the
-useful-heating delay is included; that delay can require immediate restoration. Cold outdoor air
-entering a garage does not imply that both adjacent sensors immediately measure
-the outdoor temperature.
-
-The production consumer uses the separate driver's `shelly-cn105/v1` contract;
-isolated tests also exercise the `stmq-garage-fixture/v1` boundary. Passing those
-tests does not establish installed timing or commissioning. See the
-[adapter boundary](garage-adapter.md) and [Pill handoff](shelly-pill-handoff.md).
-
-## External-temperature permission and connection gaps
-
-Low room settings use the rear probe for regulation, with **both front and rear**
-required for this same pipe-reserve assessment. This protection applies even if
-automatic price control or its owner approval is disabled. It does not approve
-economic pauses. Unknown thermal history, an unavailable useful-heating delay or
-insufficient reserve prevents the external override. The reported driver delay
-is increased by any observed slower recovery, never shortened by a fast cycle.
-
-| Permission | Required age for admission/renewal | Latest requested expiry | Explicit probe communication loss |
-| --- | --- | --- | --- |
-| External temperature | Both connected reports younger than 120 seconds | Older report +120 seconds, or earlier for reserve | Hold only an existing acknowledged permission while its original deadline and reserve remain valid. |
-| Managed OFF | Both connected reports younger than 120 seconds | Older report +120 seconds, or earlier for reserve | Hold only an accepted active pause while its original deadline and reserve remain valid. |
-
-The driver retains its 180-second ceilings but must honor the shorter absolute
-host deadline in both modes. Neither mode admits or renews from held readings.
-A transport-only probe outage alone does not request ON or clear external input.
-The local timer, rather than a host restoration command
-that might be unable to reach it, bounds operation during disconnection. Any
-future driver MQTT grace must fit inside that same original deadline. Fresh
-state after reconnection establishes whether the old sample remained active;
-the host does not assume it survived.
-
-A held sample is control evidence from before a transport outage, not a new
-measurement. The hold assessment can use the last qualified in-memory exposure
-anchor without changing the recorded reserve. It projects cooling at the coldest
-of the local reading, reference estimate and qualified outside temperature;
-missing qualified outside evidence uses the −40°C bound. It never credits
-warming during the gap. The reserve must still cover the entire remaining
-permission and useful-heating delay. An unsafe front or rear location, an
-invalid reading, source change or expired deadline requests clearing external
-input or restoring a managed OFF pause.
-
-Internal sensing uses the pump's current native settings, normally HEAT at 17°C
-after low-temperature setup. Explicit manual power/mode choices are respected.
-These checks do not establish physical frost protection when the Pill, pump or
-serial path fails. Neither native ON nor a serial acknowledgement proves useful
-heat has reached the reference objects.
-
-## Persistence, initialization and learning
-
-The two reference temperatures are operational protection state, separate from
-the learned garage model, its slow building-memory estimate and frozen episode
-accounting. Changing economic preference, replacing a learned checkpoint,
-reconnecting or restarting must not create fresh thermal reserve. Missing history
-cannot be repaid by assuming warmth during the gap. Startup without usable
-thermal history requires measured recovery before a pause can be authorized.
-
-Without valid saved thermal history, initialization starts from the fully frozen
-reference at **−40°C**, the lower supported air-temperature bound. This is a
-conservative unknown-history state, not a claim that the garage or pipe was
-actually that cold. One warm air reading cannot establish that the contents are
-liquid and warm. Continuous genuine reports repay the initial sensible and
-thawing debt at the same temperature-dependent warming rate as ordinary recovery.
-At constant 4°C air the default reference needs approximately 10.9 hours to reach
-the 1°C margin; at 6°C it needs 7.4 hours, and at 10°C about 4.6 hours. These are
-calculated initialization times, not a separate lockout timer. Heating remains
-available while the reserve is being established.
-
-Ordinary missing-report intervals **do not restart this fully frozen assumption**.
-They debit only the elapsed conservative heat loss, using the coldest of the
-previous local reading, a valid returning local reading and qualified outside air.
-The outside reading must already cover the start of the gap and remain within
-its 30-minute freshness window through the end. A fresh warm return reading
-cannot establish past conditions. Without that evidence, the −40°C bound is used. No warming is
-credited during missing history. A new genuine interval can resolve uncertainty
-once its remaining heat reserve is positive; cached reports cannot do so.
-
-Old degree-minute debt is not numerically convertible into this heat reserve.
-The policy version marks an explicit operational boundary; old protection
-records keep their historical meaning. The transition does not reinterpret an
-old learning journal, reset learned garage coefficients or forgive an outstanding
-restoration obligation. Changes to geometry, margin or heat-transfer settings
-also cannot manufacture additional stored joules: the transition retains at most
-the previous usable reserve, preserves possible frozen debt, and requires new
-temperature evidence. See [reconstruction and versioning](reconstruction-and-versioning.md).
-
-Freeze-protection recovery remains separate from whole-garage recovery. A positive
-local reserve alone does not establish comparable building warmth, complete a
-pause-and-recovery episode or qualify a savings claim.
-
-## Independent sensitivity audit and installation checks
-
-`node scripts/garage-pipe-simulation.js` retains a separate physical sensitivity
-audit. Its 432 combinations vary wall thickness, insulation, effective surface
-transfer, initial water temperature and cold-air temperature. Eighteen repeated
-door-pulse scenarios vary duration, recovery and starting temperature. Insulation
-is a comparison only; this installation's reference is bare pipe.
-
-That audit also calculates full phase-change time, using water latent heat of
-333,550 J/kg. **Full freezing time is not time before freezing begins, time to
-damage or an operational exposure allowance.** Local wall ice or a plug can
-precede full phase change. The model omits internal water gradients, fittings,
-support conduction, connected warm sections and local radiation/draft geometry.
-The [Copper Development Association handbook](https://www.copper.org/applications/plumbing/cth/design-installation/cth_3design_gencon.html)
-distinguishes tolerance of some expansion from permission to freeze water lines.
-
-Validate the assumed heat transfer with a temporary contact probe on the copper,
-recorded alongside the air sensor during ordinary cooling and reheating. Measure
-the delay from requesting heat to useful local warming. Garage air history can
-describe exposure and reporting cadence, but cannot identify the pipe's response
-or certify that every stored liquid follows the same reference.
+The reference assumptions do not certify every pipe or stored container. Sensor
+placement, useful-heating delay, radio reception and pump operation need actual
+installation validation. Software tests and normal native ON readback do not prove
+that useful heat reached a pipe. The BLU H&T development feed does not supply the
+two required locations or pipe-reserve state.

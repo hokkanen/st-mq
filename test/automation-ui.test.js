@@ -4,31 +4,20 @@ import { automationView, createAutomationControls } from '../chart/automation-co
 
 const status = () => ({ input: 'providers', automation: {
   home: { enabled: false, available: true, activity: 'Plan only' },
-  garage: { enabled: true, available: true, activity: 'Waiting for cheaper electricity' },
 } });
 
-test('mixed automation renders each permission without assigning global authority', () => {
+test('Home automation remains independent of the manual Garage selection', () => {
   const value = status();
   assert.equal(automationView(value, 'home').enabled, false);
-  assert.equal(automationView(value, 'garage').enabled, true);
-  assert.equal(automationView(value, 'garage').activity, 'Waiting for cheaper electricity');
   for (const patch of [{ input: 'offline' }, { role: 'slave' }]) {
-    assert.equal(automationView({ ...value, ...patch }, 'garage').available, false);
-    assert.match(automationView({ ...value, ...patch }, 'garage').activity, /Recorded/);
+    assert.equal(automationView({ ...value, ...patch }, 'home').available, false);
+    assert.match(automationView({ ...value, ...patch }, 'home').activity, /Recorded/);
   }
-});
-
-test('Garage automatic activity uses temperature readiness independently of manual OFF commissioning', () => {
-  const value = status();
-  value.automation.garage.activity = 'automatic';
-  value.garage = { automationReasons: ['Waiting for a fresh rear temperature.'], adapter: { pauseReasons: ['installed-commissioning-required'] } };
-  assert.equal(automationView(value, 'garage').activity,
-    'Automatic · Waiting for a fresh rear temperature.');
 });
 
 function fixture(request) {
   const nodes = new Map();
-  for (const feature of ['home', 'garage']) for (const suffix of ['plan', 'automatic', 'activity', 'message']) {
+  for (const feature of ['home']) for (const suffix of ['plan', 'automatic', 'activity', 'message']) {
     nodes.set(`${feature}-automation-${suffix}`, { disabled: false, textContent: '', attrs: {},
       classList: { add() {}, remove() {} }, setAttribute(name, value) { this.attrs[name] = value; },
       addEventListener(name, handler) { this[name] = handler; } });
@@ -39,7 +28,7 @@ function fixture(request) {
   return { panel, node: id => nodes.get(id) };
 }
 
-test('one feature change sends only its permission and leaves the other selection intact', async () => {
+test('Home automation sends only its own persistent permission', async () => {
   const calls = [];
   const f = fixture(async (path, body) => {
     calls.push([path, body]); const next = status(); next.automation.home.enabled = true; return next;
@@ -47,7 +36,6 @@ test('one feature change sends only its permission and leaves the other selectio
   await f.node('home-automation-automatic').click();
   assert.deepEqual(calls, [['/api/automation', { feature: 'home', enabled: true }]]);
   assert.equal(f.node('home-automation-automatic').attrs['aria-pressed'], 'true');
-  assert.equal(f.node('garage-automation-automatic').attrs['aria-pressed'], 'true');
   assert.match(f.node('home-automation-message').textContent, /saved/);
 });
 

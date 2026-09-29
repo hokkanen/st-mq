@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createGarageAdapter } from '../src/garage/adapter.js';
-import { GARAGE_FIXTURE_CONTRACT } from '../src/garage/contract.js';
+import { SHELLY_CN105_CONTRACT } from '../src/garage/contract.js';
 
 const BASE = 1_800_000_000_000;
 function fixture(source = 'none', options = {}) {
@@ -16,7 +16,7 @@ function fixture(source = 'none', options = {}) {
       accuracyVerified: false, meterScope: 'garage-heat-pump-only', ...extra };
   }
   function receive(fields, packet = {}, extra = {}) {
-    return adapter.receive('fixture/garage/telemetry', JSON.stringify({ schema: GARAGE_FIXTURE_CONTRACT,
+    return adapter.receive('fixture/garage/telemetry', JSON.stringify({ schema: SHELLY_CN105_CONTRACT,
       deviceId: 'invented-fixture', bootId: 'fixture-boot', sequence: ++sequence, observedAt: now, fields, ...extra }), packet, now);
   }
   return { adapter, energy, observations, receive, field, at(value) { now = value; }, now: () => now,
@@ -91,7 +91,7 @@ test('qualified counter updates produce one dedicated interval, retaining accura
   assert.equal(row.raw.coveredMs, 120_000);
   assert.equal(row.raw.energyBasis, 'counter-delta');
   assert.equal(row.raw.meterScope, 'garage-heat-pump-only');
-  assert.equal(row.raw.provisional, true);
+  assert.equal(row.raw.provisional, false);
   assert.equal(row.raw.accuracyVerified, false);
   assert.equal(row.raw.timingEligible, true);
   f.counter(10.02);
@@ -186,7 +186,7 @@ test('failed electrical storage can retry the same telemetry frame without losin
   let fail = true; const recorded = [];
   const f = fixture('native-power', { onEnergy: row => { if (fail) throw new Error('fixture storage failure'); recorded.push(row); } });
   f.power(600); f.at(BASE + 60_000);
-  const payload = JSON.stringify({ schema: GARAGE_FIXTURE_CONTRACT, deviceId: 'invented-fixture', bootId: 'fixture-boot',
+  const payload = JSON.stringify({ schema: SHELLY_CN105_CONTRACT, deviceId: 'invented-fixture', bootId: 'fixture-boot',
     sequence: 2, observedAt: f.now(), fields: { power: f.field(600, 'W') } });
   assert.throws(() => f.adapter.receive('fixture/garage/telemetry', payload, {}, f.now()), /storage failure/);
   fail = false; f.adapter.receive('fixture/garage/telemetry', payload, {}, f.now());

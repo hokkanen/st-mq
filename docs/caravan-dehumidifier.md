@@ -225,7 +225,7 @@ The Caravan plug records `caravan_energy` as measured interval kWh through the
 shared adaptive recorder. It automatically balances recording frequency against
 load changes, just like property and charging energy; instantaneous power, current
 and plug state remain live-only. Daily totals still update on each meter report. None of these
-Caravan series enters the Home or Garage heating learner.
+Caravan series enters the Home heating learner.
 
 The public `config.json` supplies all topics. If private configuration replaces
 `equipment.devices`, copy the public caravan entries into that list as well;

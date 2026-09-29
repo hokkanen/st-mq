@@ -2,13 +2,13 @@ import assert from 'node:assert/strict';
 
 export async function checkDashboardDisclosures({ evaluate, keyPress, until }) {
   const folds = ['home-heat-pump-details', 'garage-heating-details',
-    'home-equipment-details', 'garage-equipment-details', 'connections-details', 'learning-panel-details', 'garage-learning-details'];
+    'home-equipment-details', 'garage-equipment-details', 'connections-details', 'learning-panel-details'];
   assert.deepEqual(await evaluate(`Array.from(document.querySelectorAll('.controller-column'))
     .map(column => [...column.querySelectorAll(':scope > article')].map(card => card.id))`),
   [['home-control', 'providers-controls'], ['garage-control']],
   'Desktop columns pair Home with Data & settings, with Garage on the right');
   assert.deepEqual(await evaluate(`[...document.querySelectorAll('#home-control .control-badge > span, #garage-control .control-badge > span')]
-    .map(node => node.textContent.trim())`), ['Heat control', 'Heat control']);
+    .map(node => node.textContent.trim())`), ['Heat control', 'Mode']);
   assert.equal(await evaluate(`document.getElementById('charging-devices').closest('#garage-control') !== null
     && document.getElementById('charging-devices').closest('details') === null
     && document.querySelectorAll('#garage-equipment-details [id^=charger]').length === 0`), true,
@@ -39,8 +39,7 @@ export async function checkDashboardDisclosures({ evaluate, keyPress, until }) {
     });
   })()`), true, 'Main dashboard and provider folds use arrow markers');
   for (const id of folds) {
-    const parent = id === 'learning-panel-details' ? 'home-heat-pump-details'
-      : id === 'garage-learning-details' ? 'garage-heating-details' : null;
+    const parent = id === 'learning-panel-details' ? 'home-heat-pump-details' : null;
     if (parent) await evaluate(`document.getElementById('${parent}').open=true`);
     await evaluate(`document.querySelector('#${id} > summary').focus()`);
     await keyPress('Enter');

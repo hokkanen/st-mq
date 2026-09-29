@@ -1,1409 +1,179 @@
-import { validateSavedGarageHeatingHandover } from './contract.js';
-import { garagePausePermission, GARAGE_REVALIDATE_MS } from './permission.js';
-import { Worker } from 'node:worker_threads';
-import { randomUUID } from 'node:crypto';
-import moment from 'moment-timezone';
-import { temporaryUpdate } from '../app/temporary.js';
-import { pendingEnergyObservations } from '../storage/pending-energy.js';
-import { garageSettings, GARAGE_POLICY_VERSION, GARAGE_PREFERENCE_VERSION } from './settings.js';
-import { GARAGE_NATIVE_SETTINGS, GARAGE_EXTERNAL_NATIVE_TARGET_C, validateGarageNativeSetting } from './native-settings.js';
-import { GarageRoomTemperature, GARAGE_ROOM_MIN_C, GARAGE_EXTERNAL_SOURCE_MAX_AGE_MS, validateGarageRoomState } from './room-temperature.js';
-import { rememberGarageTemperature, garageTemperatureEvidence } from './temperature-evidence.js';
-import { assessGarageTemperaturePermission } from './temperature-protection.js';
-import { GARAGE_EXTERNAL_SOURCE_MAX_AGE_MS as GARAGE_TEMPERATURE_MAX_AGE_MS } from './external-limits.js';
-import { GARAGE_ALGORITHM_VERSION, GARAGE_MODEL_ASSUMPTIONS, garageRecoveryHours, createGarageModel, garageModelSummary } from './model.js';
-import { confirmedGarageDoor, garagePauseStartReason } from './door-state.js';
-import { createGarageExposure, reconcileGarageExposure, updateGarageExposure, assessGarageProtection, validGarageExposure } from './protection.js';
-import { planGarage } from './planner.js';
-import { GARAGE_TARGET_POLICY_VERSION } from './target-model.js';
-import { validateSavedGarageTargetEpisode, startGarageAssessment, updateGarageAssessment, completeGarageAssessment, garageRecoveryDebt } from './episodes.js';
-import { appendGarageEntry, applyGarageEntry, garageInput, garageDigest, garageCorrectionContext,
-  garageJournalHead, replayGarageJournal, validGarageCheckpoint } from './learning.js';
+import { createHash } from 'node:crypto';
+import { garageSettings } from './settings.js';
+import { validateGarageNativeSetting } from './native-settings.js';
+import { validateGarageModeState, validGarageTarget, GARAGE_WARMING_WARNING } from './room-temperature.js';
+import { confirmedGarageDoor, GARAGE_DOOR_SIGNALS } from './door-state.js';
+import { temperatureReportMaxAge } from '../domain/temperature-reports.js';
 
-const MINUTE = 60_000, HOUR = 60 * MINUTE;
 const finite = Number.isFinite;
-const instant = value => typeof value === 'number' ? value : Date.parse(value);
-const allowed = new Set(['good', 'simulated', 'historical', 'converted_fahrenheit']);
-const usable = (row, now, maxAge) => row && finite(row.value) && finite(row.sourceTime) && row.sourceTime <= now
-  && finite(row.receivedAt) && row.receivedAt <= now && row.sourceTime <= row.receivedAt && now - row.sourceTime < maxAge
-  && !row.raw?.retained && !row.raw?.auditOnly && (row.quality ?? []).every(flag => allowed.has(flag));
+const copy = value => structuredClone(value);
 const observationView = (row, now, maxAge) => ({ value: finite(row?.value) ? row.value : null,
-  observedAt: row?.sourceTime ?? null, source: row?.source ?? null, stale: !usable(row, now, maxAge) });
-const outdoorObservation = row => row?.source === 'openmeteo'
-  ? { ...row, quality: (row.quality ?? []).filter(flag => flag !== 'estimated') } : row;
-const heatingFailureReason = command => {
-  const detail = command.reason || command.reasons?.join(', ');
-  const summary = command.status === 'uncertain' || detail === 'command-publication-uncertain'
-    ? 'Heating OFF delivery is unconfirmed' : `Heating OFF was ${command.status}`;
-  return `${summary}${detail ? ` (${detail})` : ''}. Restoration remains active.`;
-};
-// Freeze reserve and recovered building warmth are separate obligations. Use
-// the existing comparable-service tolerance when checking a cycle's reserve;
-// exact equality would make exponential recovery take forever.
-function reserveRecovered(exposure, initial, marginC) {
-  return ['rear', 'front'].every(location => {
-    const row = exposure.locations[location], before = initial?.locations?.[location];
-    return !row.uncertain && finite(row.estimatedC) && row.estimatedC > marginC
-      && (initial?.version !== GARAGE_POLICY_VERSION || !finite(before?.estimatedC)
-        || row.estimatedC >= before.estimatedC - .25);
-  });
-}
-function sustainedNormalRecovery(episode, observation, native, protection, exposure, settings, now) {
-  const warm = observation.available === true && observation.baselineAccepted === true
-    && observation.demandReduced === false && !native?.restorePending && protection?.requiredFresh && ['rear', 'front'].every(location =>
-      observation[`${location}C`] > settings.protection.marginC && !exposure.locations[location].uncertain
-      && exposure.locations[location].estimatedC > settings.protection.marginC);
-  const continuous = finite(episode.normalRecoveryLastAt) && now >= episode.normalRecoveryLastAt
-    && now - episode.normalRecoveryLastAt <= settings.maxSensorAgeMs;
-  episode.normalRecoverySince = warm ? continuous ? episode.normalRecoverySince ?? now : now : null;
-  episode.normalRecoveryLastAt = now;
-  return warm && now - episode.normalRecoverySince >= Math.max(8 * HOUR, settings.minOnMs,
-    garageRecoveryHours(episode.accounting?.reducedHours ?? 0) * HOUR, (episode.plan?.recoveryHours ?? 0) * HOUR);
-}
+  observedAt: row?.sourceTime ?? null, source: row?.source ?? null,
+  stale: !row || !finite(row.sourceTime) || row.sourceTime > now || !finite(row.receivedAt) || row.receivedAt > now
+    || now - row.sourceTime >= Math.min(maxAge, temperatureReportMaxAge(row) ?? maxAge)
+    || row.raw?.retained === true || row.raw?.auditOnly === true
+    || (row.quality ?? []).some(flag => !['good', 'simulated', 'historical', 'converted_fahrenheit', 'estimated'].includes(flag)) });
 
-/** Garage owns no broker or native timer. Only planner ticks authorize adapter
- * renewals; the independent short safety loop may revoke permission. */
+/** Manual, equipment-bound intent. Pill readback describes actual regulation;
+ * neither a saved mode nor a reconnect grants permission to send commands. */
 export class GarageRuntime {
   constructor({ engine, store, config, clock = Date.now, canControl = () => true }) {
     this.engine = engine; this.store = store; this.config = config; this.clock = clock; this.canControl = canControl;
-    const { adapter: _adapter, ...owner } = config.garage ?? {};
-    this.settings = garageSettings(owner); this.input = config.input;
-    validateSavedGarageTargetEpisode(store.getState(`garage:episode:${this.input}`));
-    const settingsKey = `garage:configuration:${this.input}`, previous = store.getState(settingsKey);
-    if (previous !== null && previous !== undefined) {
-      try { garageSettings(previous); }
-      catch { throw new Error('Unsupported saved Garage settings; start a fresh development database'); }
-    }
-    this.keys = Object.fromEntries(['checkpoint', 'exposure', 'episode', 'adapter', 'temporary', 'manual', 'roomTemperature', 'heatingHandover'].map(name => [name, `garage:${name}:${this.input}`]));
-    this.context = garageCorrectionContext(store, this.input);
-    const readState = key => {
-      try { return store.getState(key); }
-      catch (error) {
-        // A derived checkpoint may be reconstructed from the current journal;
-        // exposure and physical restoration state are never discarded this way.
-        if (key !== this.keys.checkpoint || !(error instanceof SyntaxError)) throw error;
-        this.corruptState = true; return null;
-      }
-    };
-    const roomState = readState(this.keys.roomTemperature);
-    this.roomAdapterKey = garageDigest({ adapter: config.garage?.adapter ?? null,
-      broker: { address: config.connections?.mqtt?.address ?? null, user: config.connections?.mqtt?.user ?? null } });
-    validateGarageRoomState(roomState);
-    // A current-format setting bound to another route is valid history, not a
-    // corrupt database. Keep its record, but never apply its intent to newly
-    // configured equipment or let it seed that equipment's normal reference.
-    const roomBindingChanged = roomState != null && roomState.adapterKey !== this.roomAdapterKey;
-    if (readState(`garage:roomRestoration:${this.input}`) != null)
-      throw new Error('Unsupported saved Garage room restoration; start a fresh development database');
-    this.selectedRoomTargetC = roomBindingChanged ? null : roomState?.targetC ?? null;
-    this.roomTemperature = new GarageRoomTemperature({ now: clock(), targetC:
-      this.selectedRoomTargetC !== null && this.selectedRoomTargetC < 16 ? this.selectedRoomTargetC : null });
-    const savedExposure = readState(this.keys.exposure);
-    if (savedExposure != null && (typeof savedExposure !== 'object' || Array.isArray(savedExposure)))
-      throw new Error('Invalid saved Garage exposure; start a fresh development database');
-    this.exposure = reconcileGarageExposure(savedExposure, this.settings);
-    if (!validGarageExposure(this.exposure, clock(), this.settings))
-      throw new Error('Invalid saved Garage exposure; start a fresh development database');
-    this.episode = readState(this.keys.episode);
-    this.checkpoint = readState(this.keys.checkpoint);
-    if (this.checkpoint && (this.checkpoint.algorithmVersion !== GARAGE_ALGORITHM_VERSION
-        || this.checkpoint.model?.algorithm && this.checkpoint.model.algorithm !== GARAGE_ALGORITHM_VERSION)
-      || this.episode && (this.episode.algorithmVersion !== GARAGE_ALGORITHM_VERSION
-        || this.episode.frozenModel?.algorithm !== GARAGE_ALGORITHM_VERSION
-        || this.episode.accounting?.algorithmVersion !== GARAGE_ALGORITHM_VERSION
-        || this.episode.initialExposure?.version !== GARAGE_POLICY_VERSION))
-      throw new Error('Unsupported Garage saved algorithm; start a fresh development database');
-    if (this.episode && this.episode.plan?.preferenceVersion !== GARAGE_PREFERENCE_VERSION)
-      throw new Error('Unsupported Garage saved planning preference; start a fresh development database');
-    if (store.db.prepare('SELECT 1 FROM learning_journal WHERE input=? AND algorithm_version<>? LIMIT 1')
-      .get(garageInput(this.input), GARAGE_ALGORITHM_VERSION))
-      throw new Error('Unsupported Garage journal algorithm; start a fresh development database');
-    // A rebuilding checkpoint can lag current room intent. Retain only the
-    // latest committed source value, not another model or a per-setting cache.
-    const roomSource = store.db.prepare(`SELECT payload FROM learning_journal
-      WHERE input=? AND algorithm_version=? AND (json_type(payload,'$.value.roomTargetC') IS NOT NULL
-        OR json_type(payload,'$.seed.normalReference.roomTargetC') IS NOT NULL)
-      ORDER BY id DESC LIMIT 1`).get(garageInput(this.input), GARAGE_ALGORITHM_VERSION);
-    if (roomSource) {
-      const payload = JSON.parse(roomSource.payload);
-      this.journalRoomTargetC = Object.hasOwn(payload.value, 'roomTargetC')
-        ? payload.value.roomTargetC : payload.seed.normalReference.roomTargetC;
-      createGarageModel({ roomTargetC: this.journalRoomTargetC });
-    }
-    this.selectedRoomTargetC = roomBindingChanged ? null
-      : this.roomTemperature.targetC ?? this.journalRoomTargetC ?? this.selectedRoomTargetC;
-    this.heatingHandover = readState(this.keys.heatingHandover);
-    validateSavedGarageHeatingHandover(this.heatingHandover);
-    if (this.heatingHandover) {
-      // Saved intent is only a cleanup obligation; OFF permission never restarts.
-      this.heatingHandover.phase = 'restoring';
-      if (this.heatingHandover.adapterKey === this.roomAdapterKey) this.roomTemperature.suspend(clock());
-    }
-    this.temporary = readState(this.keys.temporary);
-    if (!finite(this.temporary?.expiresAt) || this.temporary.expiresAt <= clock()) this.temporary = null;
-    // Restarts retain price-control pauses, but never resume an OFF permission.
-    this.manual = null;
-    if (readState(this.keys.manual)) store.setState(this.keys.manual, null);
-    this.automaticTarget = null;
-    // Restart never resumes permission. Frozen accounting and heat debt remain.
-    if (this.episode) {
-      this.episode.restarted = true; this.episode.phase = 'recovery';
-      this.saveEpisode();
-    }
-    const last = this.checkpoint?.cursor ? store.learningJournal({ input: garageInput(this.input),
-      after: this.checkpoint.cursor - 1, limit: 1, algorithmVersion: GARAGE_ALGORITHM_VERSION })[0] : null;
-    if (!validGarageCheckpoint(this.checkpoint, last, this.context)) this.checkpoint = null;
-    this.learningStatus = 'current'; this.plan = null; this.lastPlannerAt = null; this.closed = false;
-    const head = garageJournalHead(store, this.input);
-    if (head && this.checkpoint?.cursor !== head) this.startRebuild();
-    if (roomBindingChanged && this.journalRoomTargetC != null) {
-      // Append the current boundary without rewriting observations, learned
-      // history, exposure, or outstanding physical restoration obligations.
-      this.append('context', { normalReferenceReset: true, roomTargetC: null },
-        `room-association:${randomUUID()}`);
-    }
-    if (garageDigest(previous) !== garageDigest(this.settings)) {
-      this.append('context', { configurationChanged: true,
-        ...(this.selectedRoomTargetC !== null || !head ? { roomTargetC: this.selectedRoomTargetC } : {}) },
-        `configuration:${clock()}:${garageDigest(this.settings)}`);
-      store.setState(settingsKey, this.settings);
-    }
-    this.armControlDeadline();
+    const { adapter: _adapter, sender: _sender, ...settings } = config.garage ?? {};
+    this.settings = garageSettings(settings); this.input = config.input;
+    this.keys = { mode: `garage:mode:${this.input}`, adapter: `garage:adapter:${this.input}`, sender: `garage:sender:${this.input}` };
+    this.adapterKey = createHash('sha256').update(JSON.stringify({ adapter: Object.fromEntries(
+      ['driver', 'stateTopic', 'telemetryTopic', 'commandTopic'].map(key => [key, config.garage?.adapter?.[key] ?? null])),
+      broker: { address: config.connections?.mqtt?.address ?? null, user: config.connections?.mqtt?.user ?? null } })).digest('hex');
+    const saved = validateGarageModeState(store.getState(this.keys.mode));
+    this.selection = saved?.adapterKey === this.adapterKey ? saved : null;
+    this.closed = false; this.busy = false;
+    store.setState(`garage:configuration:${this.input}`, this.settings);
   }
-  activePause(now = this.clock()) { return this.temporary?.expiresAt > now ? this.temporary : null; }
-  armControlDeadline() {
-    clearTimeout(this.controlTimer);
-    if (this.closed) return;
-    const ends = [this.temporary?.expiresAt, this.manual?.expiresAt, this.automaticTarget?.until].filter(finite);
-    if (!ends.length) return;
-    this.controlTimer = setTimeout(() => {
-      try { this.expireControls(this.clock()); }
-      catch { void this.release('manual-expiry-persistence-failed').catch(() => {}); }
-      this.armControlDeadline();
-      void this.roomTemperatureTick();
-    }, Math.min(2_147_483_647, Math.max(1, Math.min(...ends) - this.clock())));
-    this.controlTimer.unref?.();
+  setAdapter(adapter) { this.adapter = adapter; this.sync(); }
+  setSender(sender) { this.sender = sender; }
+  adapterChanged(snapshot) {
+    this.store.setState(this.keys.adapter, snapshot);
+    this.sync();
   }
-  expireControls(now, { automaticUpdate = false } = {}) {
-    if (this.temporary && this.temporary.expiresAt <= now) {
-      this.temporary = null; this.store.setState(this.keys.temporary, null);
+  senderChanged(snapshot) { this.store.setState(this.keys.sender, snapshot); }
+  sync(now = this.clock()) {
+    const adapter = this.adapter?.status(now), control = adapter?.control;
+    if (!adapter?.targetIdentity || !control || !validGarageTarget(control.targetC)) return;
+    if (this.selection && this.selection.targetIdentity !== adapter.targetIdentity) {
+      // Keep the earlier record until an explicit selection replaces it. It is
+      // history belonging to other equipment, never this device's intent.
+      this.identityChanged = true; return;
     }
-    if (this.automaticTarget && this.automaticTarget.until <= now)
-      void this.restoreRoomTarget('automatic-target-expired').catch(() => {});
-    if (this.manual && (!this.activeManual(now) || automaticUpdate && !this.manual.pauseId)) {
-      const previous = this.manual; this.manual = null; this.saveManual();
-      this.store.event('garage-manual-ended', { mode: previous.mode, reason: automaticUpdate ? 'controller-update' : 'expiry' }, now);
-      if (previous.mode === 'off') this.queueRelease('manual-selection-ended');
+    this.identityChanged = false;
+    if (!this.selection) {
+      this.selection = { version: 1, adapterKey: this.adapterKey, targetIdentity: adapter.targetIdentity,
+        mode: 'normal', normalTargetC: control.targetC, awayTargetC: this.settings.awayTargetC,
+        changedAt: now, warmingWarning: null };
+      this.store.setState(this.keys.mode, this.selection);
     }
+    if (this.lastEffectiveTargetC !== undefined && control.effectiveTargetC > this.lastEffectiveTargetC)
+      this.warn(this.lastEffectiveTargetC, control.effectiveTargetC, now);
+    this.lastEffectiveTargetC = control.effectiveTargetC;
+  }
+  warn(fromC, toC, now) {
+    if (!this.selection || !validGarageTarget(fromC) || !validGarageTarget(toC) || toC <= fromC) return;
+    this.selection = { ...this.selection, warmingWarning: { fromC, toC, since: now,
+      until: now + 86_400_000, message: GARAGE_WARMING_WARNING } };
+    this.store.setState(this.keys.mode, this.selection);
+  }
+  controlReason(now = this.clock()) {
+    if (!this.settings.enabled) return 'Garage control is disabled in configuration.';
+    if (!this.canControl() || this.input === 'offline') return 'This instance is read-only.';
+    if (this.closed) return 'Garage control is closed.';
+    if (this.busy) return 'Wait for the current garage request to finish.';
+    return this.adapter?.status(now).blockedReasons[0] ?? (!this.adapter ? 'Waiting for the Pill connection.' : null);
+  }
+  async setHeating(input) {
+    if (!input || typeof input !== 'object' || Array.isArray(input)
+      || Object.keys(input).some(key => !['mode', 'targetC'].includes(key))
+      || !['normal', 'away'].includes(input.mode)
+      || Object.hasOwn(input, 'targetC') && (input.mode !== 'normal' || !validGarageTarget(input.targetC)))
+      throw new Error('Choose Normal or Away, with an optional Normal target between 0 and 31°C in half-degree steps.');
+    const now = this.clock(); this.sync(now);
+    const reason = this.controlReason(now);
+    if (reason) throw Object.assign(new Error(reason), { statusCode: 409 });
+    const adapter = this.adapter.status(now), previous = this.identityChanged ? null : this.selection;
+    const normalTargetC = input.targetC ?? previous?.normalTargetC ?? adapter.control?.targetC;
+    if (!validGarageTarget(normalTargetC)) throw new Error('Wait for the Pill room target or choose a Normal temperature.');
+    const targetC = input.mode === 'away' ? this.settings.awayTargetC : normalTargetC;
+    const fromC = adapter.control?.effectiveTargetC ?? (previous?.mode === 'away' ? previous.awayTargetC : previous?.normalTargetC);
+    this.busy = true;
+    try {
+      const result = await this.adapter.setControl({ targetC, externalEnabled: true }, now);
+      const next = { version: 1, adapterKey: this.adapterKey, targetIdentity: adapter.targetIdentity,
+        mode: input.mode, normalTargetC, awayTargetC: this.settings.awayTargetC, changedAt: now,
+        warmingWarning: previous?.warmingWarning ?? null };
+      this.store.transaction(() => {
+        this.store.setState(this.keys.mode, next);
+        this.store.event('garage-mode-changed', { mode: input.mode, targetC, previousTargetC: fromC ?? null,
+          commandId: result.commandId, status: result.status }, now);
+      });
+      this.selection = next; this.identityChanged = false;
+      this.engine.ingest({ source: 'stmq', device: adapter.targetIdentity, signal: 'garage_away_mode',
+        value: input.mode === 'away' ? 1 : 0, unit: 'state', sourceTime: now, receivedAt: now, quality: ['good'],
+        raw: { requested: true, commandId: result.commandId, usableForControl: false } });
+      this.warn(fromC, targetC, now);
+
+      return this.status(now);
+    } finally { this.busy = false; }
   }
   nativeControls(now = this.clock()) {
-    const external = this.adapter?.externalTemperature?.(now);
-    const room = this.roomTemperature;
-    const handover = room.targetC !== null || room.mustClear || external?.restorationPending || external?.phase && external.phase !== 'internal';
-    const controls = this.adapter?.nativeControls?.(now, { afterExternalClear: Boolean(handover) }) ?? { available: false, busy: false, pending: false, result: null,
-      reason: 'The installed adapter does not support ordinary Mitsubishi controls.',
-      settings: Object.fromEntries(Object.keys(GARAGE_NATIVE_SETTINGS).map(key => [key, { supported: false,
-        available: false, value: null, measuredAt: null, usable: false }])) };
-    const target = controls.settings.targetC;
-    if (target?.supported && external?.configurable && [1, .5].includes(target.step)) {
-      controls.settings.targetC = { ...target, min: GARAGE_ROOM_MIN_C,
-        available: true, reason: null };
-      controls.available = true;
-    }
-    if (room.targetC !== null && target) {
-      controls.settings.targetC = { ...controls.settings.targetC, value: room.targetC };
-    }
-    if (room.ordinary || room.targetC !== null && (!controls.result || controls.result.setting === 'targetC'))
-      controls.result = this.roomTemperatureStatus(now).result;
-    const reason = !this.canControl() ? 'This instance does not own device control.'
-      : !['mqtt', 'providers'].includes(this.input) ? 'Ordinary Mitsubishi controls require a live connection.'
-        : this.closed ? 'Garage control is closed.'
-          : this.manualBusy ? 'Wait for the current garage request to finish.' : null;
-    return { ...controls, available: reason === null && controls.available,
-      busy: Boolean(controls.busy || this.manualBusy), reason: reason ?? controls.reason,
+    const controls = this.adapter?.nativeControls(now) ?? { available: false, settings: {}, reason: 'Waiting for the Pill connection.' };
+    const reason = this.controlReason(now);
+    return { ...controls, available: !reason && controls.available, busy: this.busy || controls.busy,
+      reason: reason ?? controls.reason,
       settings: Object.fromEntries(Object.entries(controls.settings).map(([key, value]) => [key,
         reason ? { ...value, available: false, reason } : value])) };
   }
   async setNativeSettings(input) {
-    const now = this.clock(), controls = this.nativeControls(now);
-    const lower = input?.setting === 'targetC' && finite(input.value) && input.value < 16;
-    // Native bounds stay unchanged. Only this owner-facing room intent can use
-    // the external sensor path below the ordinary Mitsubishi range.
-    const request = validateGarageNativeSetting(lower ? { ...input, value: 16 } : input, controls.settings.targetC?.step ?? 1);
-    if (lower) {
-      if (input.value < GARAGE_ROOM_MIN_C || !Number.isInteger(input.value / (controls.settings.targetC?.step ?? 1))
-        || controls.settings.targetC?.min !== GARAGE_ROOM_MIN_C) throw new Error('The external room setting is outside its supported values.');
-      request.value = input.value;
-    }
-    if (!this.canControl() || this.closed || !['mqtt', 'providers'].includes(this.input))
-      throw new Error(controls.reason ?? 'Ordinary Mitsubishi controls are unavailable.');
-    if (controls.busy) throw new Error('Wait for the current garage request to finish.');
-    const choices = controls.settings[request.setting]?.values;
-    if (choices && !choices.includes(request.value)) throw new Error('The connected heat pump does not support this setting value.');
-    if (this.adapter?.status(now).restorePending) {
-      await this.release('native-setting-requested');
-      throw new Error('Wait for timed OFF restoration before changing native settings.');
-    }
-    if (!controls.settings[request.setting]?.available)
-      throw new Error(controls.settings[request.setting]?.reason ?? controls.reason);
-    this.manualBusy = true;
+    const request = validateGarageNativeSetting(input, .5), now = this.clock(), reason = this.controlReason(now);
+    if (reason) throw Object.assign(new Error(reason), { statusCode: 409 });
+    this.busy = true;
     try {
-      this.store.event('garage-native-setting-requested', request, now);
-      if (this.manual) { this.manual = null; this.saveManual(); }
-      if (this.heatingHandover) { this.heatingHandover = null; this.saveHeatingHandover(); this.roomTemperature.resume(now); }
-      this.plan = null; this.scheduledOpportunity = null; this.lastPlannerAt = null;
-      await this.restoreRoomTarget('manual-native-setting');
-      if (this.episode?.accounting) {
-        this.episode.accounting.qualified = false; this.episode.reason = 'manual-native-setting'; this.saveEpisode();
-      }
-      const external = this.adapter?.externalTemperature?.(now);
-      if (lower) {
-        this.saveRoomTarget(request.value, now);
-        this.roomTemperature.select(request.value, now);
-      } else if (this.roomTemperature.targetC !== null || this.roomTemperature.mustClear
-        || external?.restorationPending || external?.phase && external.phase !== 'internal') {
-        if (request.setting === 'targetC') {
-          this.saveRoomTarget(request.value, now);
-          this.roomTemperature.cancel(request, now);
-        } else this.roomTemperature.handover(request, now);
-      } else {
-        if (request.setting === 'targetC') this.saveRoomTarget(request.value, now);
-        try { await this.adapter.setNativeSetting(request, now); }
-        catch (error) {
-          // A rejected dispatch has no pending command that may mask newer
-          // device evidence. Uncertain publications are adapter result states.
-          if (request.setting === 'targetC') {
-            this.roomTargetRequestedAt = null;
-            this.syncRoomReference(this.clock());
-          }
-          throw error;
-        }
-      }
-      return this.status();
-    } finally { this.manualBusy = false; void this.roomTemperatureTick(); }
-  }
-  async setTemporary(input) {
-    if (!input || typeof input !== 'object' || Array.isArray(input)
-      || Object.keys(input).length !== 1 || !Object.keys(input).every(key => ['pauseUntil', 'pauseUntilLocal'].includes(key)))
-      throw new Error('Choose a garage Pause savings deadline.');
-    const now = this.clock(), changes = temporaryUpdate(input, now);
-    if (!this.settings.enabled || !this.canControl() || this.closed) throw new Error('Garage price control is unavailable.');
-    if (this.manualBusy || this.dispatch) throw new Error('Wait for the current garage request to finish.');
-    this.manualBusy = true;
-    try {
-      const next = changes.pauseUntil === null ? null : { id: randomUUID(), createdAt: now, expiresAt: changes.pauseUntil };
-      this.store.transaction(() => {
-        this.store.setState(this.keys.temporary, next); this.store.setState(this.keys.manual, null);
-        this.store.event('garage-price-control-pause-changed', { pause: next }, now);
-      });
-      this.temporary = next; this.manual = null; this.scheduledOpportunity = null;
-      this.armControlDeadline();
-      await this.release('price-control-pause-changed');
-      return this.status();
-    } finally { this.manualBusy = false; }
-  }
-  async automationChanged() {
-    if (this.engine.automationEnabled?.('garage') !== true) await this.restoreRoomTarget('automation-disabled');
-    return this.status();
-  }
-  async restoreRoomTarget(reason = 'automatic-target-ended') {
-    if (this.automaticTarget) {
-      this.automaticTarget = null;
-      this.roomTemperature.setEffectiveTarget(null, null, this.clock());
-      if (this.episode?.phase === 'pause') {
-        this.episode.phase = 'recovery'; this.episode.recoveryStartedAt ??= this.clock();
-        this.episode.reason = reason; this.saveEpisode();
-      }
-    }
-    this.armControlDeadline();
-    void this.roomTemperatureTick();
-  }
-  applyAutomaticTarget(plan, now, observation) {
-    const ownerTargetC = this.roomTemperature.targetC;
-    if (plan.nextAction !== 'target' || !finite(ownerTargetC) || ownerTargetC >= 16
-      || !finite(plan.targetC) || plan.targetC < 0 || plan.targetC >= ownerTargetC
-      || !Number.isInteger(plan.targetC * 2) || !Number.isSafeInteger(plan.targetUntil) || plan.targetUntil <= now)
-      return this.restoreRoomTarget('normal-target-planned');
-    const prior = this.automaticTarget;
-    const until = Math.min(plan.targetUntil, prior?.until ?? Infinity);
-    const id = prior?.id ?? plan.id ?? randomUUID();
-    if (!this.episode) this.startEpisode(id, plan, observation, now);
-    this.automaticTarget = { id, targetC: plan.targetC, until, ownerTargetC, startedAt: prior?.startedAt ?? now,
-      sourceSignature: prior?.sourceSignature ?? this.roomTemperatureEvidence(now).signature };
-    this.roomTemperature.setEffectiveTarget(plan.targetC, until, now);
-    this.armControlDeadline();
-    void this.roomTemperatureTick();
-  }
-  activeManual(now = this.clock()) {
-    const manual = this.manual, pause = this.activePause(now);
-    return manual?.expiresAt > now && (!manual.pauseId || manual.pauseId === pause?.id) ? manual : null;
-  }
-  saveManual() { this.store.setState(this.keys.manual, this.manual); this.armControlDeadline(); }
-  queueRelease(reason) {
-    if (this.dispatch) {
-      void this.dispatch.finally(() => { if (!this.closed) this.queueRelease(reason); }).catch(() => {});
-      return;
-    }
-    this.dispatch = this.release(reason).catch(() => {}).finally(() => { this.dispatch = null; });
-  }
-  heatingControls(now = this.clock()) {
-    const adapter = this.adapter?.status(now), pause = this.activePause(now), manual = this.activeManual(now);
-    const supported = adapter?.liveControlSupported === true || adapter?.simulation === true;
-    const reason = !supported ? 'Garage monitoring is available; direct heat-pump control is not available on this installation yet.'
-      : !this.canControl() ? 'Garage control authority is unavailable.'
-        : !this.settings.enabled ? 'Garage control is disabled.'
-          : this.input === 'offline' ? 'Temporary heating overrides are unavailable with offline input.'
-            : this.closed ? 'Garage control is closed.' : null;
-    const busy = Boolean(this.manualBusy || this.dispatch);
-    const blockers = (adapter?.pauseReasons ?? adapter?.blockedReasons ?? []).filter(value =>
-      !(value === 'external-temperature-busy' && this.roomTemperature.targetC !== null) &&
-      !(value === 'fresh-challenge-required' && (manual?.mode === 'off' && adapter?.phase === 'paused'
-        || this.roomTemperature.targetC !== null && adapter?.externalTemperature?.pending)));
-    const recoveryUntil = adapter?.recoveryLockedUntil ?? 0;
-    const permission = this.pausePermission(now, this.read(now));
-    const offReason = reason ?? (this.protection?.safeToPause !== true || !permission.allowed
-      ? 'Heating off requires fresh garage temperatures and available freeze-protection margin.'
-      : blockers.length ? `Garage adapter is not ready: ${blockers.join(', ')}.`
-        : adapter?.restorePending && adapter?.phase !== 'paused'
-          ? 'Wait for the garage heat pump to return to Normal heating.'
-          : now < recoveryUntil ? 'The garage minimum heating recovery time has not elapsed.' : null);
-    const power = adapter?.native?.power;
-    const freshPower = adapter?.health?.pumpCommunicating && finite(adapter?.native?.powerAt)
-      && now >= adapter.native.powerAt && now - adapter.native.powerAt < (this.config.garage?.adapter?.maxAgeMs ?? 2 * MINUTE);
-    const selectedMode = manual?.mode ?? (freshPower ? power === 'off' ? 'off' : power === 'on' ? 'normal' : null : null);
-    const result = this.heatingCommandResult(now);
-    const confirmed = Boolean(!['failed', 'uncertain', 'rejected', 'superseded', 'blocked'].includes(result?.status)
-      && !['clearing', 'restoring'].includes(this.heatingHandover?.phase) && freshPower && (selectedMode === 'normal' ? power === 'on' : selectedMode === 'off' && power === 'off'));
-    const nativePower = this.adapter?.nativeControls?.(now, { afterExternalClear: true })?.settings?.power;
-    const normalReason = reason ?? (!adapter?.restorePending && (power !== 'on' || !freshPower) && !nativePower?.available
-      ? nativePower?.reason ?? 'Use the native power control when ordinary Mitsubishi power control is available.' : null);
-    return { available: reason === null, normalAvailable: normalReason === null && !busy, normalReason,
-      offAvailable: offReason === null && !busy, reason, offReason, busy,
-      selectedMode, requestedMode: manual?.mode ?? null, confirmed,
-      activity: this.heatingActivity(now), result,
-      holdUntil: manual?.expiresAt ?? null, paused: Boolean(pause), manualChanged: manual?.mode === 'off',
-      warning: manual?.mode === 'off' && pause ? 'Price control is paused. Heating stays off until the pause ends, unless freeze protection requires heating.' : null };
-  }
-  async setHeating(input) {
-    if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length !== 1
-      || !['normal', 'off'].includes(input.mode)) throw new Error('Choose Normal heating or Heating off.');
-    this.expireControls(this.clock()); this.safetyTick();
-    const now = this.clock(), controls = this.heatingControls(now);
-    if (controls.busy) throw new Error('Wait for the current garage request to finish.');
-    if (input.mode === 'off' ? !controls.offAvailable : !controls.normalAvailable)
-      throw new Error(input.mode === 'off' ? controls.offReason : controls.normalReason);
-    this.manualBusy = true;
-    try {
-      const pause = this.activePause(now), prior = this.activeManual(now);
-      const adapter = this.adapter.status(now);
-      const next = { id: input.mode === 'off' && adapter.phase === 'paused' ? adapter.episode.id
-        : prior?.mode === input.mode ? prior.id : randomUUID(), mode: input.mode,
-        at: now, pauseId: pause?.id ?? null, expiresAt: pause?.expiresAt ?? Math.min(prior?.expiresAt ?? Infinity, now + MINUTE) };
-      if (input.mode === 'off' && adapter.phase === 'paused') next.expiresAt = Math.min(next.expiresAt, adapter.episode.endpointAt);
-      this.store.transaction(() => {
-        this.store.setState(this.keys.manual, next); this.store.event('garage-manual-requested', next, now);
-      });
-      this.manual = next; this.scheduledOpportunity = null; this.armControlDeadline();
-      this.heatingResult = { status: 'pending', reason: null };
-      this.lastPlannerAt = now;
-      if (this.episode?.accounting) {
-        this.episode.accounting.qualified = false; this.episode.reason = 'manual-heating-selection'; this.saveEpisode();
-      }
-      await this.restoreRoomTarget('manual-heating-selection');
-      if (input.mode === 'normal') {
-        if (adapter.restorePending || this.heatingHandover && adapter.native?.power === 'on') await this.release('manual-normal', { preserveManual: true });
-        else if (adapter.native?.power !== 'on') {
-          if (this.heatingHandover) { this.heatingHandover = null; this.saveHeatingHandover(); this.roomTemperature.resume(now); }
-          const request = { setting: 'power', value: 'on' }, external = this.adapter.externalTemperature?.(now);
-          if (this.roomTemperature.targetC !== null || this.roomTemperature.mustClear
-            || external?.restorationPending || external?.phase && external.phase !== 'internal') {
-            this.roomTemperature.handover(request, now);
-            void this.roomTemperatureTick();
-          } else this.heatingResult = await this.adapter.setNativeSetting(request, now);
-        } else this.heatingResult = { status: 'native-confirmed', reason: null };
-      }
-      else {
-        this.lastPlannerAt = now;
-        this.bindPauseTemperature(this.manual.id, now);
-        const result = await this.dispatchPause({ now, valid: true, plan: { id: this.manual.id, pauseFrom: now, pauseUntil: this.manual.expiresAt,
-            ...this.permissionFields(now, this.read(now)) }, recoveryReady: true });
-        if (['blocked', 'failed', 'rejected', 'uncertain', 'superseded'].includes(result?.status)) {
-          this.manual = null; this.saveManual();
-          this.heatingResult = { status: result.status, reason: result.reasons?.join(', ') || 'Heating OFF delivery is unconfirmed. Restoration remains active.' };
-          throw new Error(this.heatingResult.reason);
-        }
-      }
-      return this.status();
-    } catch (error) {
-      this.heatingResult = { status: 'uncertain', reason: error.message };
-      await this.release('manual-request-failed').catch(() => {});
-      throw error;
-    } finally { this.manualBusy = false; void this.roomTemperatureTick(); }
-  }
-  saveHeatingHandover() { this.store.setState(this.keys.heatingHandover, this.heatingHandover); }
-  heatingCommandResult(now = this.clock()) {
-    if (['failed', 'rejected', 'uncertain', 'superseded', 'blocked'].includes(this.heatingResult?.status)) return this.heatingResult;
-    const state = this.adapter?.status(now), manual = this.activeManual(now);
-    if (state?.restorePending || manual?.mode === 'off') return state?.lastCommand ?? this.heatingResult ?? null;
-    if (manual?.mode === 'normal') {
-      const native = this.adapter?.nativeControls?.(now)?.result;
-      if (native?.setting === 'power' && native.value === 'on' && native.requestedAt >= manual.at) return native;
-      if (state?.lastCommand?.action === 'release' && state.lastCommand.requestedAt >= manual.at) return state.lastCommand;
-    }
-    return this.heatingResult ?? null;
-  }
-  heatingActivity(now = this.clock()) {
-    const state = this.adapter?.status(now), handover = this.heatingHandover;
-    if (this.heatingResult?.status === 'claiming') return 'Claiming the heat-pump control session…';
-    if (handover && handover.adapterKey !== this.roomAdapterKey) return 'The previous heat-pump connection has an unresolved restoration obligation.';
-    if (handover?.phase === 'clearing') return 'Clearing external temperature control before timed heating OFF…';
-    if (handover?.phase === 'restoring' || state?.restorePending && state.phase !== 'paused')
-      return 'Restoring native heating before resuming external control with a fresh measurement.';
-    if (this.heatingResult && ['failed', 'rejected', 'uncertain', 'blocked', 'superseded'].includes(this.heatingResult.status))
-      return this.heatingResult.reason;
-    if (this.activeManual(now)?.mode === 'off') return state?.phase === 'paused' && state.native?.power === 'off'
-      ? 'Heating OFF confirmed.' : 'Requesting heating OFF…';
-    if (this.activeManual(now)?.mode === 'normal' && state?.native?.power !== 'on') return 'Requesting Normal heating…';
-    if (this.roomTemperature.targetC !== null && !this.roomTemperature.acknowledged) return this.roomTemperature.reason;
-    return null;
-  }
-  reconcileHeatingHandover(now) {
-    const handover = this.heatingHandover, state = this.adapter?.status(now);
-    if (!handover || handover.adapterKey !== this.roomAdapterKey) return;
-    if (state?.targetIdentity && state.targetIdentity !== handover.targetIdentity) {
-      this.roomTemperature.inhibited = 'The connected heat pump changed. Apply a room setting to this device explicitly.'; return;
-    }
-    const unchanged = handover.adapterKey === this.roomAdapterKey && handover.targetC === this.roomTemperature.targetC
-      && ['mode', 'targetC', 'fan', 'vane', 'wideVane'].every(key => handover.native[key] == null || state?.native?.[key] === handover.native[key]);
-    if (!unchanged && state?.health?.pumpCommunicating) {
-      this.roomTemperature.inhibited = 'The pump settings changed. Apply the room setting again to resume external control.';
-      this.roomTemperature.mustClear = true;
-    }
-    if (handover.phase !== 'restoring' && (!this.pendingPause && !state?.restorePending
-      && this.activeManual(now)?.id !== handover.id)) {
-      handover.phase = 'restoring'; this.saveHeatingHandover();
-    }
-    const external = this.adapter?.externalTemperature?.(now);
-    if (handover.phase !== 'restoring' || state?.restorePending
-      || external && (external.phase !== 'internal' || external.restorationPending || external.pending)) return;
-    const native = state?.native;
-    const fresh = state?.connected && state.health?.pumpCommunicating && finite(native?.powerAt)
-      && native.powerAt >= Math.max(handover.startedAt, handover.restorationAt ?? 0) && now - native.powerAt < (this.config.garage?.adapter?.maxAgeMs ?? 2 * MINUTE);
-    if (!fresh || native.power !== 'on') return;
-    this.heatingHandover = null; this.saveHeatingHandover();
-    // A timed OFF suspends external sensing. Restoration needs fresh native ON
-    // and then a new original source measurement; no old sample is replayed.
-    if (this.roomTemperature.suspended) this.roomTemperature.resume(now);
-    if (!unchanged) this.roomTemperature.inhibited = 'The pump settings changed. Apply the room setting again to resume external control.';
-    if (!['failed', 'rejected', 'uncertain', 'blocked', 'superseded'].includes(this.heatingResult?.status))
-      this.heatingResult = { status: 'native-confirmed', reason: unchanged ? null : this.roomTemperature.inhibited };
-  }
-  async continueHeatingHandover(now) {
-    if (!this.pendingPause || this.heatingHandover && !['clearing', 'off'].includes(this.heatingHandover.phase)) return;
-    const request = this.pendingPause, manual = this.activeManual(now);
-    const external = this.adapter?.externalTemperature?.(now);
-    if (this.heatingHandover?.phase === 'clearing' && (now - this.heatingHandover.startedAt >= 45_000
-      || ['uncertain', 'failed', 'rejected', 'superseded'].includes(external?.result?.status))) {
-      this.heatingResult = { status: 'uncertain', reason: 'External temperature handover was not confirmed. Timed OFF was cancelled.' };
-      await this.release('external-clear-unconfirmed'); return;
-    }
-    if (manual?.mode !== 'off' || manual.id !== request.plan.id || request.plan.pauseUntil <= now
-      || !this.protection?.safeToPause || !this.pausePermission(now, this.read(now)).allowed || !this.canControl()) {
-      await this.release('heating-handover-no-longer-authorized'); return;
-    }
-    if (!this.externalClearedForPause(now)) return;
-    return this.dispatchPause({ ...request, now, plan: { ...request.plan, ...this.permissionFields(now, this.read(now)) } });
-  }
-  async dispatchPause(request) {
-    const { now, valid, plan } = request;
-    if (!valid) return this.release('manual-permission-ended');
-    const external = this.adapter?.externalTemperature?.(now), state = this.adapter?.status(now);
-    const needsHandover = this.roomTemperature.targetC !== null || external?.restorationPending
-      || external?.phase && external.phase !== 'internal';
-    if (!this.heatingHandover && needsHandover) {
-      this.heatingHandover = { version: 2, id: plan.id, adapterKey: this.roomAdapterKey,
-        targetIdentity: state?.targetIdentity ?? this.roomAdapterKey, startedAt: now,
-        targetC: this.roomTemperature.targetC, phase: 'clearing',
-        native: Object.fromEntries(['mode', 'targetC', 'fan', 'vane', 'wideVane'].map(key => [key, state?.native?.[key] ?? null])) };
-      this.saveHeatingHandover();
-      this.roomTemperature.suspend(now);
-    }
-    if (this.heatingHandover?.phase === 'restoring') return { status: 'blocked', reasons: ['heating-restoration-pending'] };
-    if (this.heatingHandover?.phase === 'clearing') {
-      this.pendingPause = request;
-      if (!this.externalClearedForPause(now)) { void this.roomTemperatureTick(); return { status: 'clearing' }; }
-      this.heatingHandover.phase = 'off'; this.saveHeatingHandover();
-    }
-    this.pendingPause = null;
-    this.bindPauseTemperature(plan.id, now);
-    const result = await this.adapter?.plannerTick(request);
-    if (result?.status === 'claiming') this.pendingPause = request;
-    this.heatingResult = { ...result, status: result?.status ?? 'uncertain',
-      reason: ['failed', 'rejected', 'uncertain', 'superseded'].includes(result?.status)
-        ? heatingFailureReason(result) : result?.reason || result?.reasons?.join(', ') || null };
-    if (['blocked', 'uncertain', 'failed', 'rejected', 'superseded'].includes(result?.status)) {
-      if (this.heatingHandover) {
-        this.heatingHandover.phase = 'restoring'; this.heatingHandover.restorationAt ??= this.clock();
-        try { this.saveHeatingHandover(); } catch { /* Continue the physical restoration obligation. */ }
-      }
-      if (this.manual?.id === plan.id) { this.manual = null; this.saveManual(); }
-    }
-    return result;
-  }
-  pausePermission(now, observation) {
-    const evidence = this.roomTemperatureEvidence(now), episode = this.adapter?.status(now)?.episode;
-    const qualified = evidence.rear.usable && evidence.front.usable && !evidence.rear.held && !evidence.front.held
-      && (!episode || this.pauseTemperatureIdentity?.id === episode.id
-        && this.pauseTemperatureIdentity.signature === evidence.signature);
-    return garagePausePermission({ now, observation, protection: { ...this.protection,
-      requiredFresh: qualified && this.protection?.requiredFresh === true },
-      heatingDelayMs: this.heatingResponseDelay(now), maxLeaseMs: this.adapter?.status(now)?.limits?.maxLeaseMs });
-  }
-  bindPauseTemperature(id, now) {
-    if (this.pauseTemperatureIdentity?.id === id) return;
-    const evidence = this.roomTemperatureEvidence(now);
-    this.pauseTemperatureIdentity = { id, signature: evidence.signature };
-    this.temperaturePermissionProtection(now, evidence, { continuation: null,
-      sourceEpoch: `${this.adapter?.status(now)?.sourceEpoch}:${id}`, anchorKey: 'pauseProtectionAnchor' });
-  }
-  permissionFields(now, observation) {
-    const permission = this.pausePermission(now, observation);
-    return { temperatureEvidenceAt: permission.evidenceAt, permissionExpiresAt: permission.allowed ? permission.expiresAt : null };
-  }
-  externalClearedForPause(now) {
-    const external = this.adapter?.externalTemperature?.(now);
-    return !external || external.phase === 'internal' && !external.restorationPending && !external.pending
-      && !external.rearmRequired && !this.roomTemperature.mustClear;
-  }
-  async release(reason = 'owner-cancelled', { preserveManual = false } = {}) {
-    if (!preserveManual && this.manual) {
-      this.manual = null;
-      try { this.saveManual(); } catch { /* Never resume saved OFF permission after restart. */ }
-    }
-    this.pendingPause = null;
-    if (this.heatingHandover) {
-      this.heatingHandover.phase = 'restoring'; this.heatingHandover.restorationAt ??= this.clock();
-      try { this.saveHeatingHandover(); } catch { /* Continue the physical restoration obligation. */ }
-    }
-    await this.restoreRoomTarget(reason);
-    if (this.canControl()) {
-      const result = await this.adapter?.release({ reason, now: this.clock() });
-      if (result && result.status !== 'idle'
-        && !['failed', 'rejected', 'uncertain', 'superseded'].includes(this.heatingResult?.status))
-        this.heatingResult = { status: result.status, reason: result.reasons?.join(', ') ?? null };
-    }
-    void this.roomTemperatureTick();
-    return this.status();
-  }
-  setAdapter(adapter) { this.adapter = adapter; this.syncRoomReference(this.clock()); }
-  roomReferenceTarget(now = this.clock()) {
-    if (this.roomTemperature.targetC !== null) return this.roomTemperature.targetC;
-    if (this.roomTemperature.ordinary?.setting === 'targetC') return this.roomTemperature.ordinary.value;
-    if (this.roomTemperature.mustClear || this.roomTemperature.ordinary) return null;
-    const result = this.adapter?.nativeControls?.(now)?.result;
-    // The old readback must not replace a new choice while its command is pending.
-    if (this.roomTargetRequestedAt != null && (!result || result.requestedAt < this.roomTargetRequestedAt
-      || result.setting === 'targetC' && result.value === this.selectedRoomTargetC
-        && ['pending', 'published', 'accepted'].includes(result.status))) return this.selectedRoomTargetC;
-    const adapter = this.adapter?.status(now), reading = adapter?.native?.readbacks?.targetC;
-    const external = adapter?.externalTemperature ?? this.adapter?.externalTemperature?.(now);
-    if (external?.phase && external.phase !== 'internal' || external?.restorationPending) return null;
-    const quality = Array.isArray(reading?.quality) ? reading.quality : reading?.quality ? [reading.quality] : [];
-    const fresh = adapter?.connected === true && adapter.health?.pumpCommunicating === true
-      && adapter.health?.deviceOnline !== false && reading?.supported !== false && reading?.usable !== false
-      && reading?.available !== false && reading?.stale !== true && finite(reading?.measuredAt)
-      && reading.measuredAt <= now && now - reading.measuredAt < (this.config.garage?.adapter?.maxAgeMs ?? 2 * MINUTE)
-      && !quality.some(value => /retained|stale|invalid|unavailable|unsupported|unknown/i.test(value));
-    const targetC = adapter?.native?.targetC;
-    if (fresh && finite(targetC) && targetC >= 8 && targetC <= GARAGE_NATIVE_SETTINGS.targetC.max
-      && Number.isInteger(targetC * 2)) {
-      // A remotely selected special mode can share the native 16°C encoding.
-      // Only an explicit ordinary room choice disambiguates that observation.
-      if (targetC === 16 && this.selectedRoomTargetC !== 16) return null;
-      return targetC;
-    }
-    return this.journalRoomTargetC !== undefined ? this.journalRoomTargetC : this.selectedRoomTargetC;
-  }
-  syncRoomReference(now) {
-    const roomTargetC = this.roomReferenceTarget(now);
-    if (roomTargetC === (this.journalRoomTargetC ?? null)) return;
-    this.append('context', { normalReferenceReset: true, roomTargetC }, `room-reference:${randomUUID()}`, now);
-    this.plan = null; this.scheduledOpportunity = null;
-    if (this.episode?.accounting) {
-      this.episode.accounting.qualified = false; this.saveEpisode();
-    }
-  }
-  roomTemperatureStatus(now = this.clock()) {
-    const evidence = this.roomTemperatureEvidence(now);
-    const observation = evidence.rear.observation;
-    const status = this.roomTemperature.status(observation, now);
-    const external = this.adapter?.externalTemperature?.(now);
-    status.sourceHeld = evidence.rear.held;
-    status.sourceExpiresAt = evidence.rear.expiresAt;
-    status.protection = this.externalProtection ?? null;
-    if (status.held && (!evidence.rear.usable || !evidence.front.usable || !external?.continuation
-      || !this.canControl() || this.closed)) {
-      status.held = false; status.phase = 'waiting'; status.acknowledged = false;
-      status.reason = 'The held temperature permission is no longer usable. Waiting for fresh sensor and device state.';
-    }
-    if (status.acknowledged && (!this.canControl() || this.closed
-      || !evidence.rear.usable || !evidence.front.usable || evidence.rear.held || evidence.front.held
-      || !external?.continuation?.confirmed
-      || external?.phase !== 'active' || !external.acknowledged || !(external.expiresInMs > 0)
-      || this.adapter?.status(now).health?.pumpCommunicating !== true)) {
-      status.acknowledged = false; status.phase = 'waiting';
-      status.reason = 'External control is no longer confirmed. Waiting for fresh sensor and device state.';
-      if (status.result) status.result = { ...status.result, status: 'saved', reason: status.reason };
-    }
-    return status;
-  }
-  roomTemperatureEvidence(now) {
-    const cache = this.engine.garageTemperatureEvidence ??= {};
-    const result = {};
-    for (const [location, signal] of [['rear', 'garage_temperature'], ['front', 'garage_temperature_2']]) {
-      // Real ingress also records invalid attempts that ordinary latest excludes.
-      // Idempotent sync supports isolated runtimes without restoring disk samples.
-      rememberGarageTemperature(cache, this.engine.latest[signal], now);
-      const boundary = Math.max(this.roomTemperature.startedAt,
-        ...this.context.changes.filter(change => change.signal === signal && change.revertedAt === null
-          && change.at <= now).map(change => change.at));
-      result[location] = garageTemperatureEvidence(cache, signal, now, { notBefore: boundary });
-      result[location].boundary = boundary;
-    }
-    const outdoor = outdoorObservation(this.engine.latest.outdoor_temperature);
-    result.observation = { at: now,
-      ...Object.fromEntries(['rear', 'front'].flatMap(location => {
-        const evidence = result[location], row = evidence.observation;
-        return [[`${location}C`, evidence.usable ? row.value : null], [`${location}At`, row?.sourceTime ?? null],
-          [`${location}Usable`, evidence.usable], [`${location}Held`, evidence.held]];
-      })),
-      outdoorC: usable(outdoor, now, 30 * MINUTE) ? outdoor.value : null,
-      outdoorAt: outdoor?.sourceTime ?? null };
-    result.signature = garageDigest(['rear', 'front'].map(location => {
-      const row = result[location].observation;
-      return [row?.source, row?.device, row?.raw?.temperatureRouteSignature, result[location].boundary];
-    }));
-    return result;
-  }
-  temperaturePermissionProtection(now, evidence, { continuation, sourceEpoch, anchorKey }) {
-    const held = evidence.rear.held || evidence.front.held;
-    const expiresAt = Math.min(...['rear', 'front'].map(location =>
-      (evidence[location].observation?.sourceTime ?? -Infinity) + GARAGE_EXTERNAL_SOURCE_MAX_AGE_MS));
-    const assess = (exposure, observation, deadline) => assessGarageTemperaturePermission(exposure, {
-      now, observation, settings: this.settings, expiresAt: deadline, heatingDelayMs: this.heatingResponseDelay(now) });
-    const protection = assess(this.exposure, evidence.observation, expiresAt);
-    const signature = `${sourceEpoch}:${evidence.signature}`;
-    if (!held && protection.allowed) this[anchorKey] = {
-      signature, exposure: updateGarageExposure(this.exposure, evidence.observation, this.settings),
-      observation: structuredClone(evidence.observation), expiresAt, transportGap: false };
-    const anchor = this[anchorKey];
-    if (anchor && (anchor.signature !== signature || now >= anchor.expiresAt
-      || !evidence.rear.usable || !evidence.front.usable)) this[anchorKey] = null;
-    if (held && this[anchorKey]) anchor.transportGap = true;
-    let holdProtection = continuation ? assess(this.exposure, evidence.observation, continuation.expiresAt) : null;
-    // The recorded reserve honestly debits acquisition gaps. Existing permission
-    // can additionally be checked against its last qualified, in-memory anchor,
-    // using conservative cooling only; it cannot authorize another permission.
-    if (continuation && this[anchorKey]?.transportGap && !holdProtection?.allowed
-      && holdProtection?.reasons?.length > 0
-      && holdProtection.reasons.every(reason => /^((rear|front):)?(exposure-history-uncertain|held-exposure-anchor-mismatch)$/.test(reason))) {
-      const heldObservation = { ...anchor.observation, at: now };
-      if (finite(heldObservation.outdoorC) && finite(evidence.observation.outdoorC))
-        heldObservation.outdoorC = Math.min(heldObservation.outdoorC, evidence.observation.outdoorC);
-      for (const location of ['rear', 'front']) {
-        heldObservation[`${location}Held`] = true;
-        heldObservation[`${location}C`] = Math.min(anchor.observation[`${location}C`], evidence.observation[`${location}C`]);
-      }
-      holdProtection = assess(anchor.exposure, heldObservation, continuation.expiresAt);
-    }
-    return { protection, holdProtection, held };
-  }
-  roomTemperatureProtection(now, evidence) {
-    const external = this.adapter?.externalTemperature?.(now), continuation = external?.continuation;
-    const result = this.temperaturePermissionProtection(now, evidence, {
-      continuation, sourceEpoch: external?.sourceEpoch, anchorKey: 'externalProtectionAnchor' });
-    const { protection, holdProtection } = result;
-    this.externalProtection = { allowed: protection.allowed, reason: protection.reason,
-      expiresAt: protection.expiresAt, holdingAllowed: holdProtection?.allowed === true
-        && holdProtection.expiresAt >= continuation?.expiresAt,
-      limitingLocation: protection.protection?.limitingLocation ?? null };
-    return result;
-  }
-  roomTemperatureTick() {
-    if (this.closed || this.roomDispatch || this.manualBusy || this.dispatch) return;
-    if (this.heatingHandover && (this.heatingHandover.adapterKey !== this.roomAdapterKey
-      || this.adapter?.status(this.clock())?.targetIdentity !== this.heatingHandover.targetIdentity)) return;
-    if (!this.pendingPause && !this.heatingHandover && this.roomTemperature.targetC === null && !this.roomTemperature.mustClear && !this.roomTemperature.ordinary) return;
-    this.roomDispatch = Promise.resolve().then(() => {
-      const now = this.clock();
-      this.reconcileHeatingHandover(now);
-      const evidence = this.roomTemperatureEvidence(now);
-      const { protection, holdProtection, held } = this.roomTemperatureProtection(now, evidence);
-      return this.roomTemperature.tick({ adapter: this.adapter, observation: evidence.rear.observation, now,
-        canControl: this.canControl() && ['mqtt', 'providers'].includes(this.input),
-        sourceUsable: evidence.rear.usable, sourceHeld: held, sourceIdentity: evidence.signature,
-        protection, holdProtection }).then(() => this.continueHeatingHandover(now));
-    }).catch(async () => {
-      this.roomTemperature.phase = 'blocked';
-      this.roomTemperature.reason = 'External temperature control could not complete. Waiting for fresh device state.';
-      // An assessment/storage failure must never extend an existing override.
-      this.roomTemperature.mustClear = true;
-      this.externalProtectionAnchor = null;
-      this.roomTemperature.held = false;
-      this.roomTemperature.acknowledged = false;
-      // A recurring assessment failure must still try cleanup, independently of
-      // that assessment. If transport is unavailable, the original local expiry
-      // remains the backstop; a failed attempt grants no new permission.
-      try {
-        const now = this.clock(), external = this.adapter?.externalTemperature?.(now);
-        if (this.canControl() && ['mqtt', 'providers'].includes(this.input) && !this.closed
-          && external?.clearAvailable && !external.pending) {
-          const result = await this.adapter.setExternalTemperature({ temperatureC: null }, now);
-          this.roomTemperature.clearSentAt = result.requestedAt ?? now;
-        }
-      } catch { /* Keep the unresolved cleanup obligation for the next tick. */ }
-    }).finally(() => { this.roomDispatch = null; });
-    return this.roomDispatch;
-  }
-  saveRoomTarget(targetC, now) {
-    const checkpoint = this.checkpoint, journalRoomTargetC = this.journalRoomTargetC;
-    try {
-      this.store.transaction(() => {
-        this.store.setState(this.keys.roomTemperature, { targetC, adapterKey: this.roomAdapterKey });
-        this.append('context', { normalReferenceReset: targetC !== this.journalRoomTargetC,
-          roomTargetC: targetC }, `room-target:${randomUUID()}`, now);
-        this.store.event('garage-room-target-changed', { targetC }, now);
-      });
-    } catch (error) { this.checkpoint = checkpoint; this.journalRoomTargetC = journalRoomTargetC; throw error; }
-    this.selectedRoomTargetC = targetC; this.roomTargetRequestedAt = targetC === null ? null : now;
-  }
-  pauseStartsToday(now = this.clock()) {
-    const day = moment.tz(now, 'Europe/Helsinki').startOf('day');
-    return this.store.db.prepare('SELECT COUNT(*) AS n FROM learning_cycles WHERE input=? AND started_at>=? AND started_at<?')
-      .get(garageInput(this.input), day.valueOf(), day.clone().add(1, 'day').valueOf()).n;
-  }
-  adapterChanged(snapshot) {
-    const command = snapshot.lastCommand;
-    if (command && command.action !== 'release' && ['failed', 'rejected', 'uncertain', 'superseded'].includes(command.status)
-      && (this.manual?.mode === 'off' || this.heatingHandover || this.heatingResult?.action === command.action
-        && command.requestedAt >= (this.heatingResult.requestedAt ?? Infinity))) {
-      this.heatingResult = { ...command, reason: heatingFailureReason(command) };
-    }
-    const digest = garageDigest(snapshot);
-    if (digest === this.adapterStateDigest) return;
-    this.store.setState(this.keys.adapter, snapshot);
-    this.adapterStateDigest = digest;
-    // Incoming packets can revoke a pause, but can never renew it.
-    this.queueSafety();
-  }
-  queueSafety() {
-    if (this.safetyQueued || this.closed) return;
-    this.safetyQueued = true;
-    queueMicrotask(() => { this.safetyQueued = false; if (!this.closed) this.safetyTick(); });
-  }
-  append(kind, value, key, at = this.clock()) {
-    let checkpoint = this.checkpoint;
-    const entry = this.store.transaction(() => {
-      const entry = appendGarageEntry(this.store, this.input, kind, value, this.settings, at, { key });
-      if (this.learningStatus === 'current') {
-        checkpoint = applyGarageEntry(this.checkpoint, entry, this.context);
-        this.store.setState(this.keys.checkpoint, checkpoint);
-      }
-      return entry;
-    });
-    this.checkpoint = checkpoint;
-    if (Object.hasOwn(entry.payload.value, 'roomTargetC')) this.journalRoomTargetC = entry.payload.value.roomTargetC;
-    else if (entry.payload.seed) this.journalRoomTargetC = entry.payload.seed.normalReference.roomTargetC;
-    return entry;
-  }
-  startRebuild() {
-    if (this.worker || this.closed) return;
-    this.learningStatus = 'rebuilding';
-    // In-memory stores are used only by deterministic tests and cannot be opened
-    // in another worker. Production history always rebuilds off the control loop.
-    if (this.store.path === ':memory:') {
-      const checkpoint = replayGarageJournal(this.store, this.input, { context: this.context });
-      if (checkpoint) this.store.setState(this.keys.checkpoint, checkpoint);
-      this.checkpoint = checkpoint;
-      this.learningStatus = 'current'; return;
-    }
-    const context = structuredClone(this.context), epoch = this.store.learningEpoch(garageInput(this.input));
-    const worker = new Worker(new URL('./worker.js', import.meta.url), { workerData: {
-      path: this.store.path, input: this.input, context } });
-    this.worker = worker;
-    worker.on('message', message => {
-      if (this.worker !== worker || this.closed) return;
-      try {
-        if (message.error) throw new Error('Garage reconstruction failed');
-        if (context.revision !== this.context.revision || epoch !== this.store.learningEpoch(garageInput(this.input))) {
-          this.worker = null; void worker.terminate(); this.startRebuild(); return;
-        }
-        if ((message.checkpoint?.cursor ?? 0) !== garageJournalHead(this.store, this.input)) {
-          worker.postMessage({ type: 'catch-up' }); return;
-        }
-        this.store.transaction(() => {
-          if (message.checkpoint) this.store.setState(this.keys.checkpoint, message.checkpoint);
-        });
-        // Publish only after the whole durable transaction has succeeded.
-        this.checkpoint = message.checkpoint; this.learningStatus = 'current';
-      } catch {
-        this.learningStatus = 'failed'; this.queueSafety();
-      }
-      this.worker = null; void worker.terminate();
-    });
-    worker.on('error', () => { if (this.worker === worker) { this.worker = null; this.learningStatus = 'failed'; } });
-    worker.postMessage({ type: 'catch-up' });
-  }
-  syncCorrections() {
-    const next = garageCorrectionContext(this.store, this.input);
-    if (next.revision === this.context.revision) return;
-    const previous = this.context, checkpoint = this.checkpoint, journalRoomTargetC = this.journalRoomTargetC; this.context = next;
-    try {
-      this.store.transaction(() => {
-        for (const change of next.changes.filter(row => !previous.changes.some(old => old.id === row.id)))
-          this.append('context', { sensorChangeId: change.id }, `sensor:${change.id}`, change.at);
-      });
-    } catch (error) {
-      // All newly discovered boundaries must remain retryable as a group.
-      this.context = previous; this.checkpoint = checkpoint; this.journalRoomTargetC = journalRoomTargetC; throw error;
-    }
-    if (next.changes.some(change => change.revertedAt !== null
-      && previous.changes.find(old => old.id === change.id)?.revertedAt !== change.revertedAt)) {
-      if (this.worker) { void this.worker.terminate(); this.worker = null; }
-      this.startRebuild();
-    }
-    if (this.episode) {
-      this.episode.phase = 'recovery'; this.episode.reason = 'sensor-source-corrected';
-      if (this.episode.accounting) this.episode.accounting.qualified = false;
-      this.saveEpisode();
-    }
-    this.plan = null;
-    void this.release('sensor-source-changed').catch(() => {});
-  }
-  read(now = this.clock()) {
-    const latest = this.engine.latest;
-    const rear = latest.garage_temperature, front = latest.garage_temperature_2;
-    const outdoor = latest.outdoor_temperature;
-    const native = this.adapter?.status(now), nativeState = native?.native ?? {};
-    const deliveredTargetC = this.roomTemperature.deliveredTarget(native?.externalTemperature, now);
-    const demandReduced = this.roomTemperature.targetC === null
-      ? native?.nativeHeatingReady === true ? false : null
-      : deliveredTargetC === null ? null : deliveredTargetC < this.roomTemperature.targetC;
-    const row = { at: now, rearC: usable(rear, now, this.settings.maxSensorAgeMs) ? rear.value : null,
-      frontC: usable(front, now, this.settings.maxSensorAgeMs) ? front.value : null,
-      rearAt: rear?.sourceTime ?? null, frontAt: front?.sourceTime ?? null,
-      rearUsable: usable(rear, now, this.settings.maxSensorAgeMs) === true,
-      frontUsable: usable(front, now, this.settings.maxSensorAgeMs) === true,
-      outdoorC: usable(outdoorObservation(outdoor), now, 30 * MINUTE) ? outdoor.value : null,
-      outdoorAt: outdoor?.sourceTime ?? null,
-      outdoorSource: outdoor?.source ?? null,
-      available: nativeState.power === 'on' || nativeState.power === true ? true
-        : nativeState.power === 'off' || nativeState.power === false ? false : null,
-      baselineVerified: native?.nativeSettingsReady === true,
-      baselineAccepted: native?.nativeSettingsReady === true,
-      baselineBasis: native?.nativeSettingsReady === true ? 'fresh-native-settings' : 'unavailable',
-      roomTargetC: this.roomReferenceTarget(now),
-      sourceEpoch: garageDigest({ adapter: native?.sourceEpoch ?? null, roomTargetC: this.roomReferenceTarget(now),
-        rear: [rear?.source ?? null, rear?.device ?? null, rear?.raw?.temperatureRouteSignature ?? null],
-        front: [front?.source ?? null, front?.device ?? null, front?.raw?.temperatureRouteSignature ?? null], outdoor: outdoor?.source ?? null }),
-      demandReduced, deliveredTargetC,
-      effectiveTargetC: deliveredTargetC,
-      recovering: this.episode?.phase === 'recovery',
-      powerKw: null, activity: null, ev1Kw: null, ev2Kw: null, ev1Active: null, ev2Active: null,
-      provenance: { rear: rear?.source ?? null, front: front?.source ?? null,
-        nativeContract: native?.contractVersion ?? null, outdoor: outdoor?.source ?? null } };
-    row.evEvidenceRequired = {
-      ev1: Boolean(this.config.connections?.easee?.enabled || this.config.connections?.easee?.charger_id
-        || this.config.connections?.easee?.chargers?.length
-        || latest.ev1_current_l1 || latest.ev1_energy_l1),
-      ev2: Boolean(this.engine.charging?.configuration?.chargers?.charger2?.enabled
-        || this.config.charging?.chargers?.charger2?.enabled
-        || latest.ev2_energy?.source === 'shelly-evse'),
-    };
-    if (!native?.health?.pumpCommunicating || !finite(nativeState.powerAt) || nativeState.powerAt > now
-      || now - nativeState.powerAt >= (this.config.garage?.adapter?.maxAgeMs ?? 2 * MINUTE)) row.available = null;
-    const telemetry = native?.telemetry ?? {};
-    const power = telemetry.powerKw ?? telemetry.electricalPower ?? telemetry.power;
-    if (power?.supported && power?.usable === true && finite(power.value) && finite(power.sourceTime)
-      && power.sourceTime <= now && now - power.sourceTime < 2 * MINUTE
-      && !(power.quality ?? []).some(flag => /unverified|unknown|invalid|retained|stale/.test(flag))) {
-      row.powerKw = power.unit === 'W' ? power.value / 1000 : power.unit === 'kW' ? power.value : null;
-      row.powerQuality = power.accuracyVerified ? 'verified' : 'provisional';
-      row.powerAt = power.sourceTime; row.powerSource = 'garage-adapter';
-    }
-    const activity = telemetry.compressorActive;
-    if (activity?.usable === true && finite(activity?.sourceTime) && activity.sourceTime <= now && now - activity.sourceTime < 2 * MINUTE)
-      row.activity = typeof activity.value === 'boolean' ? activity.value : [0, 1].includes(activity.value) ? Boolean(activity.value) : null;
-    if (row.activity !== null) row.activityAt = activity.sourceTime;
-    for (const [prefix, target] of [['ev1', 'ev1Kw'], ['ev2', 'ev2Kw']]) {
-      const signals = prefix === 'ev1' ? ['ev1_energy_l1', 'ev1_energy_l2', 'ev1_energy_l3'] : ['ev2_energy'];
-      const pending = pendingEnergyObservations(this.store, { now, input: this.input, prefix,
-        ...(this.input !== 'simulated' && prefix === 'ev2' ? { source: 'shelly-evse' } : {}) });
-      const values = signals.map(signal => {
-        const stored = this.store.db.prepare(`SELECT o.* FROM observations o
-        WHERE o.signal=? AND o.source_time<=? AND o.received_at<=? AND o.import_id IS NULL
-          AND COALESCE(json_extract(CASE WHEN json_valid(o.raw) THEN o.raw ELSE '{}' END,'$.timeBasis'),'')<>'completed-hour'
-          AND ${this.input === 'simulated' ? "o.source='simulation'" : prefix === 'ev2' ? "o.source='shelly-evse'" : "o.source<>'simulation'"}
-        ORDER BY o.source_time DESC,o.id DESC LIMIT 1`).get(signal, now, now);
-        return [stored, ...pending.filter(row => row.signal === signal)].filter(Boolean)
-          .sort((a, b) => b.source_time - a.source_time || b.received_at - a.received_at)[0];
-      });
-      if (values.some(value => !value)) continue;
-      const intervals = values.map(value => ({ ...value, raw: JSON.parse(value.raw ?? '{}'), quality: JSON.parse(value.quality) }));
-      if (intervals.every(value => finite(value.value) && value.value >= 0 && value.unit === 'kWh'
-        && value.raw.intervalEnd > value.raw.intervalStart && value.raw.intervalEnd <= now && now - value.raw.intervalEnd <= 5 * MINUTE
-        && value.raw.intervalStart === intervals[0].raw.intervalStart && value.raw.intervalEnd === intervals[0].raw.intervalEnd
-        && value.source === intervals[0].source && value.device === intervals[0].device
-        && !value.quality.some(flag => /missing|gap|invalid|stale|retained/.test(flag)))) {
-        row[target] = intervals.reduce((sum, value) => sum + value.value, 0) * HOUR / (intervals[0].raw.intervalEnd - intervals[0].raw.intervalStart);
-        row[`${prefix}Active`] = row[target] > 0.05;
-        row.provenance[prefix] = { source: intervals[0].source, intervalStart: intervals[0].raw.intervalStart,
-          intervalEnd: intervals[0].raw.intervalEnd, observationIds: intervals.filter(value => value.id != null).map(value => value.id),
-          ...(intervals.some(value => value.raw.pending) ? { pendingEnergy: true } : {}) };
-      }
-    }
-    if (row.ev1Active === null) {
-      const phases = [1, 2, 3].map(phase => latest[`ev1_current_l${phase}`]);
-      const valid = phases.every(value => usable(value && { ...value, quality: (value.quality ?? [])
-        .filter(flag => ['current_snapshot_not_energy', 'device_telemetry_confirmed'].includes(flag) === false) }, now, 5 * MINUTE));
-      if (valid && Math.max(...phases.map(value => value.sourceTime)) - Math.min(...phases.map(value => value.sourceTime)) <= 30_000) {
-        row.ev1Active = phases.some(value => value.value > .5);
-        row.provenance.ev1 = { source: 'easee-current-activity', observedAt: Math.min(...phases.map(value => value.sourceTime)), basis: 'activity-only-no-watts' };
-      }
-    }
-    if (row.ev2Active === null) {
-      const adapter = this.engine.charging?.chargers?.charger2?.adapter;
-      const ev = adapter?.normalize?.(adapter.snapshot(), { now });
-      const physical = adapter?.liveCurrents?.();
-      const currentsFresh = physical?.healthy && physical.currents?.length === 3 && physical.times?.length === 3
-        && physical.currents.every(value => finite(value) && value >= 0)
-        && physical.times.every(at => finite(at) && at <= now && now - at < 3 * MINUTE);
-      const charging = ev?.charging;
-      const chargingFresh = ev?.providerConnected && charging?.available && typeof charging.value === 'boolean'
-        && finite(charging.receivedAt) && charging.receivedAt <= now && now - charging.receivedAt < 3 * MINUTE;
-      if (currentsFresh || chargingFresh) {
-        row.ev2Active = Boolean(currentsFresh && physical.currents.some(value => value > .5)
-          || chargingFresh && charging.value);
-        row.provenance.ev2 = { source: 'shelly-evse-current-activity',
-          observedAt: Math.min(...[...(currentsFresh ? physical.times : []), ...(chargingFresh ? [charging.receivedAt] : [])]),
-          basis: 'activity-only-no-watts' };
-      }
-    }
-    row.doors = {};
-    for (const [signal, id] of [['garage_door1_open', 'door1'], ['garage_door2_open', 'door2']]) {
-      const door = latest[signal];
-      const continuity = this.engine.garageDoorStates?.[signal];
-      const configured = this.config.connections?.equipment?.devices?.find(device => device.ownedSignals?.includes(signal));
-      const required = configured ? configured.enabled !== false : Boolean(door);
-      const confirmed = confirmedGarageDoor(door, now);
-      row.doors[id] = { open: confirmed ? Boolean(door.value) : null, observedAt: door?.sourceTime ?? null,
-        required, confirmedAt: confirmed ? door.raw.confirmedAt : null,
-        availableSince: confirmed ? continuity?.availableSince ?? door.raw.confirmedAt : null,
-        closedSince: confirmed && door.value === 0 ? continuity?.closedSince ?? door.raw.confirmedAt : null };
-    }
-    const doors = Object.values(row.doors).filter(door => door.required);
-    row.doorEvidenceRequired = doors.length > 0;
-    row.doorFront = doors.some(door => door.open === true) ? true : doors.every(door => door.open === false) ? false : null;
-    row.doorClosedSince = doors.length && doors.every(door => finite(door.closedSince))
-      ? Math.max(...doors.map(door => door.closedSince)) : null;
-    return row;
-  }
-  captureSample(now, observation) {
-    const signature = garageDigest([observation.rearAt, observation.frontAt]);
-    if (signature === this.lastInputSignature || now - (this.checkpoint?.lastSampleAt ?? -Infinity) < MINUTE
-      || !finite(observation.rearC) && !finite(observation.frontC)) return;
-    const last = this.checkpoint?.model?.previous;
-    const sample = { ...observation, inputDisturbed: this.inputDisturbed === true || this.nativeIntervalTransitions > 1
-        || Boolean(this.automaticTarget || this.episode?.phase === 'recovery'),
-      rearGap: finite(last?.rearAt) && observation.rearAt - last.rearAt > this.settings.maxSensorAgeMs,
-      frontGap: finite(last?.frontAt) && observation.frontAt - last.frontAt > this.settings.maxSensorAgeMs };
-    this.append('sample', sample, `sample:${now}`, now);
-    this.inputDisturbed = false;
-    this.nativeIntervalTransitions = 0;
-    this.lastInputSignature = signature;
-  }
-  safetyTick() {
-    if (this.closed) return;
-    const now = this.clock();
-    void this.roomTemperatureTick();
-    try {
-      this.syncRoomReference(now);
-      const observation = this.read(now);
-      // Retain short disturbances seen by the safety loop until the next
-      // committed temperature interval. Replay needs only this eligibility bit,
-      // not a new stream of polling snapshots.
-      this.inputDisturbed ||= observation.doorFront === true
-        || observation.doorEvidenceRequired && observation.doorFront === null
-        || ['ev1', 'ev2'].some(id => observation[`${id}Active`] === true || observation[`${id}Kw`] > .1
-          || observation.evEvidenceRequired[id] && observation[`${id}Active`] === null && observation[`${id}Kw`] === null);
-      if (this.lastObservedAvailability !== undefined && observation.available !== this.lastObservedAvailability)
-        this.nativeIntervalTransitions = (this.nativeIntervalTransitions ?? 0) + 1;
-      this.lastObservedAvailability = observation.available;
-      this.observeNormalAvailability(now, observation);
-      this.exposure = updateGarageExposure(this.exposure, observation, this.settings);
-      this.store.setState(this.keys.exposure, this.exposure);
-      this.protection = assessGarageProtection(this.exposure, { now, observation, settings: this.settings,
-        restorationDelayMs: this.restorationDelay(now) });
-      if (this.heatingResponseDelay(now) === null) {
-        this.protection.safeToPause = false;
-        this.protection.reasons.push('heating-response-bound-unavailable');
-      }
-      if (this.automaticTarget) {
-        const evidence = this.roomTemperatureEvidence(now);
-        const valid = this.engine.automationEnabled?.('garage') === true && this.canControl()
-          && this.settings.enabled && this.learningStatus === 'current' && !this.activePause(now) && !this.activeManual(now)
-          && !this.adapter?.status(now)?.restorePending && !this.heatingHandover
-          && this.automaticTarget.until > now && this.automaticTarget.ownerTargetC === this.roomTemperature.targetC
-          && this.automaticTarget.sourceSignature === evidence.signature
-          && this.protection.safeToPause && evidence.rear.usable && evidence.front.usable
-          && !this.roomTemperature.inhibited && finite(this.lastPlannerAt)
-          && now >= this.lastPlannerAt && now - this.lastPlannerAt < GARAGE_TEMPERATURE_MAX_AGE_MS;
-        if (!valid) void this.restoreRoomTarget('automatic-target-no-longer-authorized').catch(() => {});
-      }
-      const manual = this.activeManual(now), pause = this.activePause(now), native = this.adapter?.status(now);
-      const manualPermission = manual?.mode === 'off' && native?.episode?.id === manual.id
-        && ['starting', 'paused'].includes(native.episode.status);
-      const evidence = this.roomTemperatureEvidence(now), episode = native?.episode;
-      const expiresAt = Math.max(native?.outstandingPermissionExpiresAt ?? 0, episode?.leaseExpiresAt ?? 0,
-        native?.externalTemperature?.outstandingPermissionExpiresAt ?? 0);
-      const continuation = native?.phase === 'paused' && episode?.status === 'paused'
-        && episode.endpointAt > now && expiresAt > now
-        ? { expiresAt } : null;
-      if (!episode) this.pauseTemperatureIdentity = null;
-      const sameSource = !episode || this.pauseTemperatureIdentity?.id === episode.id
-        && this.pauseTemperatureIdentity.signature === evidence.signature;
-      const guard = this.temperaturePermissionProtection(now, evidence, {
-        continuation, sourceEpoch: `${native?.sourceEpoch}:${episode?.id}`, anchorKey: 'pauseProtectionAnchor' });
-      const canHold = Boolean(sameSource && this.settings.protection.approved && continuation
-        && guard.holdProtection?.allowed && guard.holdProtection.expiresAt >= expiresAt
-        && (guard.held || !this.protection.safeToPause || !this.pausePermission(now, observation).allowed));
-      const authorized = manualPermission || manual?.mode === 'off'
-        && (this.manualBusy || this.heatingHandover?.phase === 'clearing' || this.pendingPause?.plan.id === manual.id);
-      // Keep the failed rule, rather than an earlier successful device response,
-      // as the explanation for a cancelled request. Only code reasons are
-      // recorded here; sensor values and device identities remain private.
-      const reasons = [];
-      if (!this.canControl()) reasons.push('control-authority-unavailable');
-      if (this.input === 'offline') reasons.push('offline-input');
-      if (!this.settings.enabled) reasons.push('garage-disabled');
-      if (!authorized) reasons.push('manual-episode-unavailable');
-      if (!sameSource) reasons.push(this.pauseTemperatureIdentity?.id === episode?.id
-        ? 'pause-temperature-source-changed' : 'pause-temperature-episode-unbound');
-      if (!canHold) {
-        if (!this.protection.safeToPause) reasons.push(...(this.protection.reasons.length
-          ? this.protection.reasons : ['freeze-protection-unavailable']));
-        for (const location of ['rear', 'front']) {
-          if (!evidence[location].usable) reasons.push(`${location}:${evidence[location].reason ?? 'temperature-unavailable'}`);
-          else if (evidence[location].held) reasons.push(`${location}:temperature-held-without-permission`);
-        }
-      }
-      if (this.lastPlannerAt === null) reasons.push('planner-permission-unavailable');
-      else if (now < this.lastPlannerAt) reasons.push('planner-clock-regressed');
-      else if (now - this.lastPlannerAt >= GARAGE_TEMPERATURE_MAX_AGE_MS) reasons.push('planner-permission-expired');
-      if (this.closed) reasons.push('runtime-closed');
-      const valid = reasons.length === 0;
-      this.pauseTemperatureHold = { active: Boolean(valid && canHold), expiresAt: valid && canHold ? expiresAt : null };
-      if (manual?.mode === 'off' && !valid) {
-        this.manual = null; this.saveManual();
-        this.store.event('garage-manual-ended', { mode: 'off', reason: reasons[0], reasons }, now);
-      }
-      Promise.resolve(this.adapter?.safetyTick?.({ now, valid, reason: valid ? null : reasons.join(', ') })).catch(() => {});
+      const prior = this.adapter.status(now).native;
+      const result = await this.adapter.setNativeSetting(request, now);
+      this.store.event('garage-native-setting-requested', { ...request, commandId: result.commandId, status: result.status }, now);
+      if (request.setting === 'targetC') this.warn(prior.targetC, request.value, now);
 
-    } catch {
-      this.protection = { safeToPause: false, reasons: ['exposure-persistence-unavailable'] };
-      // An unavailable database cannot authorize another reduced-target permission.
-      void this.restoreRoomTarget('exposure-persistence-unavailable').catch(() => {});
-      Promise.resolve(this.adapter?.safetyTick?.({ now, valid: false, reason: 'exposure-persistence-unavailable' })).catch(() => {});
-    }
+      return result;
+    } finally { this.busy = false; }
   }
-  observeNormalAvailability(now, observation) {
-    const native = this.adapter?.status(now);
-    const continuous = finite(this.lastNormalCheckAt) && now >= this.lastNormalCheckAt
-      && now - this.lastNormalCheckAt < GARAGE_TEMPERATURE_MAX_AGE_MS;
-    this.normalHeatingSince = observation.available === true && observation.baselineAccepted === true
-      && observation.demandReduced === false && !native?.restorePending && !this.automaticTarget && this.episode?.phase !== 'recovery' ? continuous ? this.normalHeatingSince ?? now : now : null;
-    this.lastNormalCheckAt = now;
+  async setProtection(input) {
+    if (!this.canControl() || this.input === 'offline' || this.closed) throw new Error('This instance is read-only.');
+    if (!this.sender) throw new Error('The frost-protection sender is not connected.');
+    const result = await this.sender.setConfiguration(input);
+    this.store.event('garage-protection-setting-requested', { settings: input, commandId: result.commandId }, this.clock());
+    return result;
   }
-  heatingResponseDelay(now) {
-    const state = this.adapter?.status(now), configured = state?.limits?.restorationDelayMs;
-    if (!finite(configured) || configured < 0) return null;
-    // Observed slower recovery may increase the published engineering allowance;
-    // a quick cycle cannot prove that a later restart or defrost will be quick.
-    const measured = (state?.commandHistory ?? []).filter(command => command.action === 'release'
-      && finite(command.usefulHeatAt) && finite(command.requestedAt) && command.usefulHeatAt >= command.requestedAt)
-      .map(command => command.usefulHeatAt - command.requestedAt);
-    return Math.max(configured, state?.observedHeatingDelayMs ?? 0, ...measured);
-  }
-  restorationDelay(now, { renewal = false } = {}) {
-    const state = this.adapter?.status(now);
-    const expiry = Math.max(state?.outstandingPermissionExpiresAt ?? now, state?.episode?.leaseExpiresAt ?? now,
-      state?.externalTemperature?.outstandingPermissionExpiresAt ?? now);
-    return Math.max(0, expiry - now, renewal ? GARAGE_REVALIDATE_MS : 0) + (this.heatingResponseDelay(now) ?? 0);
-  }
-  fail(reason = 'garage-runtime-unavailable') {
-    this.lastError = reason; this.plan = null; this.scheduledOpportunity = null; this.lastPlannerAt = null;
-    this.protection = { safeToPause: false, reasons: [reason] };
-    // Restore the owner target without interfering with Home's control loop.
-    void this.release(reason).catch(() => {});
-  }
-  tick({ prices = [], forecast = [], now = this.clock() } = {}) {
-    if (this.closed) return this.status(now);
-    this.expireControls(now, { automaticUpdate: true });
-    this.syncCorrections(); this.safetyTick();
-    const observation = this.read(now);
-    observation.inputDisturbed = this.inputDisturbed === true;
-    const currentPrice = prices.find(price => instant(price.start) <= now && instant(price.end) > now);
-    Object.assign(observation, { priceCtPerKwh: currentPrice?.allInCentsPerKWh ?? null,
-      priceStartAt: currentPrice ? instant(currentPrice.start) : null, priceEndAt: currentPrice ? instant(currentPrice.end) : null });
-    this.captureSample(now, observation);
-    if (this.learningStatus === 'failed') this.startRebuild();
-    this.advanceEpisode(observation, prices, now);
-    const manual = this.activeManual(now);
-    if (manual?.mode === 'off') {
-      this.lastPlannerAt = now;
-      if (this.pauseTemperatureHold?.active) {
-        this.plan = { nextAction: 'hold', reason: 'waiting-for-temperature-evidence',
-          pauseUntil: this.pauseTemperatureHold.expiresAt };
-        return this.status(now);
-      }
-      const valid = this.protection?.safeToPause === true && this.canControl() && this.settings.enabled
-        && this.input !== 'offline' && this.pausePermission(now, observation).allowed;
-      if (!this.dispatch && !this.manualBusy) this.dispatch = this.dispatchPause({ now, valid,
-        plan: { id: manual.id, pauseFrom: manual.at, pauseUntil: manual.expiresAt,
-          ...this.permissionFields(now, observation) }, recoveryReady: true })
-        .catch(() => this.release('manual-renewal-failed')).finally(() => { this.dispatch = null; });
-      return this.status(now);
-    }
-    const pricePause = this.activePause(now);
-    if (pricePause) {
-      this.scheduledOpportunity = null; this.lastPlannerAt = now;
-      this.plan = { nextAction: 'normal', targetC: this.roomTemperature.targetC,
-        reason: 'price-control-paused' };
-      void this.restoreRoomTarget('price-control-paused').catch(() => {});
-      return this.status(now);
-    }
-    const activePause = this.episode?.phase === 'pause' && this.automaticTarget
-      ? { ...this.episode, id: this.automaticTarget.id, state: 'paused',
-        authorizedEndAt: this.automaticTarget.until } : null;
-    const ongoingRecovery = this.episode && !activePause;
-    const planningModel = this.episode ? { ...this.episode.frozenModel, state: this.episode.accounting.actualState }
-      : this.checkpoint?.model ?? createGarageModel({ seedAt: now, roomTargetC: observation.roomTargetC });
-    const admissionReason = !activePause && (garagePauseStartReason(observation)
-      || (this.pauseStartsToday(now) >= this.settings.maxPausesPerDay ? 'daily-pause-limit' : null)
-      || (this.settings.minOnMs > 0 && (!finite(this.normalHeatingSince)
-        || now - this.normalHeatingSince < this.settings.minOnMs) ? 'minimum-normal-heating-time' : null));
-    const settingsDigest = garageDigest(this.settings);
-    const canSchedule = this.canControl() && this.engine.automationEnabled?.('garage') === true && this.input !== 'offline'
-      && this.settings.enabled && this.learningStatus === 'current' && !this.manualBusy && !this.activeManual(now)
-      && !this.adapter?.status(now)?.restorePending && !this.heatingHandover;
-    if (!canSchedule || activePause || ongoingRecovery || admissionReason || this.scheduledOpportunity?.settingsDigest !== settingsDigest)
-      this.scheduledOpportunity = null;
-    const planningInput = { now, observation, model: planningModel,
-      exposure: this.exposure, settings: this.settings, prices, forecast,
-      activeEpisode: activePause, restorationDelayMs: this.restorationDelay(now, { renewal: true }) };
-    this.plan = ongoingRecovery || admissionReason ? { nextAction: 'normal', targetUntil: null,
-      reason: ongoingRecovery ? 'normal-heating-recovery' : admissionReason } : planGarage({ ...planningInput,
-        scheduledOpportunity: this.scheduledOpportunity?.plan });
-    if (this.scheduledOpportunity && !['waiting', 'reduced-plan'].includes(this.plan.state)) {
-      this.scheduledOpportunity = null;
-      this.plan = planGarage(planningInput);
-    }
-    this.scheduledOpportunity = canSchedule && ['waiting', 'reduced-plan'].includes(this.plan.state)
-      ? { plan: this.plan, settingsDigest } : null;
-    this.lastError = null;
-    this.lastPlannerAt = now;
-    const evidence = this.roomTemperatureEvidence(now);
-    const valid = canSchedule && this.protection?.safeToPause === true && this.plan.nextAction === 'target'
-      && evidence.rear.usable && evidence.front.usable && !evidence.rear.held && !evidence.front.held
-      && this.roomTemperature.prepared && !this.roomTemperature.inhibited;
-    if (this.manualBusy) return this.status(now);
-    if (valid) void Promise.resolve(this.applyAutomaticTarget(this.plan, now, observation)).catch(() => this.fail('automatic-target-dispatch-failed'));
-    else void this.restoreRoomTarget('normal-target-required').catch(() => {});
-    return this.status(now);
-  }
-  ingestEnergy(observation) {
-    if (observation.signal !== 'garage_energy' || observation.unit !== 'kWh' || !finite(observation.value) || observation.value < 0
-      || !finite(observation.raw?.intervalStart) || observation.raw.intervalEnd !== observation.sourceTime
-      || observation.raw.intervalEnd <= observation.raw.intervalStart || observation.receivedAt < observation.sourceTime)
-      throw new TypeError('Invalid garage electrical interval');
-    const input = this.input, source = input === 'simulated' ? 'simulation' : observation.source;
-    return this.store.transaction(() => {
-      const previous = this.store.db.prepare(`SELECT id FROM observations WHERE signal='garage_energy' AND source=?
-        AND source_time=? AND json_extract(raw,'$.intervalStart')=? AND json_extract(raw,'$.sourceId') IS ? LIMIT 1`)
-        .get(source, observation.sourceTime, observation.raw.intervalStart, observation.raw.sourceId ?? null);
-      if (previous) return { saved: false, reason: 'duplicate-garage-energy' };
-      const row = { ...observation, source, device: 'garage_heat_pump' };
-      const id = this.store.observation(row);
-      return { saved: true, observation: { ...row, id } };
-    });
-  }
-  startEpisode(id, plan, observation, now) {
-    if (plan?.preferenceVersion !== GARAGE_PREFERENCE_VERSION)
-      throw new Error('Unsupported Garage planning preference');
-    if (plan?.policyVersion !== GARAGE_TARGET_POLICY_VERSION)
-      throw new Error('Unsupported Garage target policy');
-    this.episode = { id: randomUUID(), pauseId: id, status: 'active', phase: 'pause', startedAt: now, pauseStartedAt: now, endedAt: null,
-      algorithmVersion: GARAGE_ALGORITHM_VERSION, settings: structuredClone(this.settings),
-      frozenModel: structuredClone(this.checkpoint.model), initialObservation: structuredClone(observation),
-      controlKind: 'external-target', plan: structuredClone(plan), pauseUntil: plan.targetUntil, assessment: null,
-      accounting: startGarageAssessment(this.checkpoint.model, observation),
-      initialExposure: structuredClone(this.exposure), usefulHeatReferenceC: observation.rearC };
-    this.saveEpisode();
-    this.scheduledOpportunity = null;
-  }
-  saveEpisode() {
-    this.store.transaction(() => {
-      this.store.setState(this.keys.episode, this.episode);
-      if (this.episode) this.store.cycle(garageInput(this.input), this.episode);
-    });
-  }
-  advanceEpisode(observation, prices, now) {
-    if (!this.episode) return;
-    const episode = this.episode, native = this.adapter?.status(now);
-    if (!episode.accounting) { this.finishEpisode('incomplete', 'unsupported-accounting-version'); return; }
-    const currentPrice = observation.priceCtPerKwh;
-    const previous = episode.accounting.previous;
-    const previousEnd = Math.min(now, previous.priceEndAt ?? episode.accounting.at);
-    const priceSegments = [];
-    if (previousEnd > episode.accounting.at) priceSegments.push({ start: episode.accounting.at,
-      end: previousEnd, priceCtPerKwh: previous.priceCtPerKwh });
-    if (previousEnd < now && observation.priceStartAt <= previousEnd) priceSegments.push({ start: previousEnd,
-      end: now, priceCtPerKwh: currentPrice });
-    episode.accounting = updateGarageAssessment(episode.accounting, episode.frozenModel, observation,
-      { priceSegments, recordedKwh: this.recordedEnergy(episode.accounting.at, now) });
-    if (episode.restarted || now >= episode.pauseUntil || !this.automaticTarget) {
-      episode.phase = 'recovery'; episode.recoveryStartedAt ??= now;
-      episode.recoveryNadirs ??= {};
-      for (const location of ['rear', 'front']) if (finite(observation[`${location}C`]))
-        episode.recoveryNadirs[location] = Math.min(episode.recoveryNadirs[location] ?? observation[`${location}C`], observation[`${location}C`]);
-    }
-    if (episode.phase === 'recovery' && observation.available === true && observation.baselineAccepted === true && observation.demandReduced === false && !native?.restorePending && !this.automaticTarget
-      && this.protection?.requiredFresh
-      && reserveRecovered(this.exposure, episode.initialExposure, this.settings.protection.marginC)) {
-      const continuous = finite(episode.lastRecoveryAt) && now - episode.lastRecoveryAt <= this.settings.maxSensorAgeMs;
-      episode.normalSince = continuous ? episode.normalSince ?? now : now;
-      episode.lastRecoveryAt = now;
-      const assessment = completeGarageAssessment(episode.accounting);
-      if (assessment && now - episode.normalSince >= this.settings.minOnMs) {
-        this.finishEpisode('completed', 'comparable-thermal-state-restored', assessment); return;
-      }
-      if (!episode.accounting.qualified && observation.rearC >= episode.initialObservation.rearC
-        && observation.frontC >= episode.initialObservation.frontC) {
-        episode.warmSince = continuous ? episode.warmSince ?? now : now;
-        if (now - episode.warmSince >= this.settings.minOnMs) {
-          this.finishEpisode('incomplete', 'warmth-restored-with-accounting-gaps'); return;
-        }
-      } else episode.warmSince = null;
-    } else { episode.normalSince = null; episode.lastRecoveryAt = null; episode.warmSince = null; }
-    if (episode.phase === 'recovery'
-      && sustainedNormalRecovery(episode, observation, native, this.protection, this.exposure, this.settings, now)) {
-      this.finishEpisode('incomplete', 'sustained-normal-operation-reference-reset', null, { resetNormalReference: true }); return;
-    }
-    if (episode.phase === 'recovery' && finite(episode.recoveryStartedAt)
-      && now - episode.recoveryStartedAt > Math.max(7 * 24, garageRecoveryHours(episode.accounting.reducedHours ?? 0)) * HOUR) {
-      // A reporting timeout never erases physical debt or permits another pause.
-      episode.accounting.qualified = false; episode.reason = 'recovery-evidence-timeout';
-    }
-    this.saveEpisode();
-  }
-  recordedEnergy(from, to) {
-    if (to <= from || to - from > 15 * MINUTE) return null;
-    let cursor = from, energy = 0;
-    const rows = this.store.db.prepare(`SELECT value,unit,raw,quality,source_time FROM observations WHERE signal='garage_energy'
-      AND source_time>? AND source_time<=? AND received_at<=? AND import_id IS NULL
-      AND ${this.input === 'simulated' ? "source='simulation'" : "source<>'simulation'"} ORDER BY source_time,id`)
-      .all(from, to, this.clock());
-    for (const row of rows) {
-      const raw = JSON.parse(row.raw ?? '{}'), quality = JSON.parse(row.quality ?? '[]');
-      if (raw.intervalStart !== cursor || raw.intervalEnd <= cursor || raw.intervalEnd > to || raw.timingEligible !== true
-        || raw.intervalEnd !== row.source_time || raw.coveredMs !== raw.intervalEnd - raw.intervalStart
-        || !['counter-delta', 'power-trapezoid'].includes(raw.energyBasis)
-        || !Array.isArray(quality) || quality.some(flag => /missing|gap|invalid|stale|retained|unknown/.test(flag))
-        || raw.meterScope !== 'garage-heat-pump-only' || !finite(row.value) || row.value < 0 || row.unit !== 'kWh') return null;
-      cursor = raw.intervalEnd; energy += row.value;
-    }
-    return cursor === to ? energy : null;
-  }
-  finishEpisode(status, reason, assessment = null, { resetNormalReference = false } = {}) {
-    if (!this.episode) return;
-    const completed = { ...this.episode, status, endedAt: this.clock(), reason, assessment };
-    const checkpoint = this.checkpoint, journalRoomTargetC = this.journalRoomTargetC;
-    try {
-      this.store.transaction(() => {
-        if (resetNormalReference) this.append('context', { normalReferenceReset: true, reason },
-          `normal-reference-reset:${completed.id}`);
-        this.store.cycle(garageInput(this.input), completed);
-        this.store.setState(this.keys.episode, null);
-      });
-    } catch (error) { this.checkpoint = checkpoint; this.journalRoomTargetC = journalRoomTargetC; throw error; }
-    this.episode = null;
-  }
-  automationReasons(now = this.clock()) {
-    const state = this.adapter?.status(now), external = this.adapter?.externalTemperature?.(now);
-    const evidence = this.roomTemperatureEvidence(now), reasons = [];
-    if (!this.canControl() || !['mqtt', 'providers'].includes(this.input)) reasons.push('Live control authority is unavailable.');
-    if (!this.settings.enabled) reasons.push('Garage automation is disabled in configuration.');
-    if (!external?.supported || !external.enabled) reasons.push('Enable external temperature control on the heat-pump adapter.');
-    if (!(this.roomTemperature.targetC > this.settings.reducedRoomTargetC && this.roomTemperature.targetC < 16))
-      reasons.push('Choose an external room target above the configured reduced target.');
-    if (state?.nativeHeatingReady !== true) reasons.push('Waiting for fresh native ON and HEAT settings.');
-    if (!evidence.rear.usable || !evidence.front.usable) reasons.push('Waiting for fresh Garage temperatures.');
-    if (!this.protection?.safeToPause) reasons.push('Waiting for sufficient freeze-protection reserve.');
-    if (this.activeManual(now) || this.heatingHandover || state?.restorePending) reasons.push('A manual heating override or restoration is active.');
-    return reasons;
-  }
+  tick({ now = this.clock() } = {}) { this.sync(now); }
+  ingestEnergy(observation) { return this.engine.recorder.recordEnergy(observation); }
+  fail(reason) { this.lastError = reason; }
   status(now = this.clock()) {
-    const raw = this.engine.latest;
-    const adapter = this.adapter?.status(now);
-    const input = this.read(now);
-    const temperature = signal => raw[signal] ? observationView(raw[signal], now, this.settings.maxSensorAgeMs)
-      : { ...observationView(this.engine.lastKnownTemperatures?.[signal], now, this.settings.maxSensorAgeMs), stale: true };
-    const pause = this.activePause(now);
-    return { settings: structuredClone(this.settings),
-      roomTemperature: this.roomTemperatureStatus(now),
-      planningLimits: { pausesToday: this.pauseStartsToday(now), maxPausesPerDay: this.settings.maxPausesPerDay,
-        doorStartBelowC: 2, recoveryRequired: Boolean(this.episode?.phase === 'recovery'),
-        normalHeatingSince: this.normalHeatingSince ?? null,
-        normalHeatingReadyAt: finite(this.normalHeatingSince) ? this.normalHeatingSince + this.settings.minOnMs : null },
-      temporary: { available: this.settings.enabled && this.canControl() && !this.closed,
-        pauseActive: Boolean(pause), pauseUntil: pause?.expiresAt ?? null,
-        pauseUntilLocal: pause ? moment.tz(pause.expiresAt, 'Europe/Helsinki').format('YYYY-MM-DDTHH:mm') : null },
-      heatingControls: this.heatingControls(now),
-      temperatureHold: this.pauseTemperatureHold ?? { active: false, expiresAt: null },
-      automationReasons: this.automationReasons(now),
-      targetControl: this.automaticTarget ? { ...this.automaticTarget } : null,
-      nativeControls: this.nativeControls(now),
-      runtimeFault: this.lastError ?? null,
-      status: this.roomTemperatureStatus(now).phase,
-      reason: !adapter ? 'adapter-contract-unavailable' : adapter.contractStatus === 'supported-driver'
-        ? adapter.blockedReasons[0] ?? 'native-adapter-ready' : 'provisional-adapter-contract',
-      observations: { rear: temperature('garage_temperature'), front: temperature('garage_temperature_2'),
-        outdoor: observationView(outdoorObservation(raw.outdoor_temperature), now, 30 * MINUTE),
-        charging: Object.fromEntries(['ev1', 'ev2'].map(id => [id, {
-          powerKw: input[`${id}Kw`], active: input[`${id}Active`],
-          heatKw: finite(input[`${id}Kw`]) ? input[`${id}Kw`] * GARAGE_MODEL_ASSUMPTIONS.evHeatFraction : null,
-          known: finite(input[`${id}Kw`]), required: input.evEvidenceRequired[id],
-        }])) },
-      exposure: structuredClone(this.exposure), protection: structuredClone(this.protection ?? null),
-      learning: { ...garageModelSummary(this.checkpoint?.model ?? createGarageModel({ seedAt: now, roomTargetC: input.roomTargetC })),
-        reconstruction: this.learningStatus, journalCursor: this.checkpoint?.cursor ?? 0, algorithmVersion: GARAGE_ALGORITHM_VERSION },
-      adapter: adapter ?? { phase: 'unavailable', contractStatus: 'missing', liveControlSupported: false,
-        blockedReasons: ['Adapter contract is not installed'] },
-      plan: structuredClone(this.plan), episode: this.episode ? { id: this.episode.id, phase: this.episode.phase,
-        startedAt: this.episode.startedAt, restarted: Boolean(this.episode.restarted),
-        heatDebt: garageRecoveryDebt(this.episode.accounting), assessment: this.episode.assessment } : null };
+    const adapter = this.adapter?.status(now), control = adapter?.control;
+    const changed = this.selection && adapter?.targetIdentity && adapter.targetIdentity !== this.selection.targetIdentity;
+    const selection = changed ? null : this.selection;
+    const requestedTargetC = selection ? selection.mode === 'away' ? selection.awayTargetC : selection.normalTargetC : null;
+    const reason = this.controlReason(now);
+    const row = signal => observationView(this.engine.latest[signal] ?? this.engine.lastKnownTemperatures?.[signal], now, this.settings.maxSensorAgeMs);
+    const regulationReason = {
+      starting: 'The Pill is initializing local temperature regulation.',
+      disabled: 'Local room regulation is disabled on the Pill.',
+      'sensor-stale': 'The Bluetooth temperature is unavailable. The Pill has selected its native 16°C fallback; the saved room target is unchanged.',
+      'sensor-range': 'The Bluetooth temperature cannot be used for local regulation. The Pill has selected its native 16°C fallback.',
+      'frost-unavailable': 'The configured frost feed is unavailable. The Pill has selected its native 16°C fallback.',
+      'native-stale': 'The Pill is waiting for fresh heat-pump readback.',
+      'suspended-mode': 'Local room regulation is suspended by the heat pump’s native operating mode.',
+      'setting-native-target': 'The Pill is preparing the native thermostat for local room regulation.',
+      'frost-rescue': 'Local frost rescue is selecting heating and a protective target.',
+    }[control?.status] ?? null;
+    const sender = this.sender?.status(now);
+    const protection = { available: control?.frostAvailable === true, active: control?.frostActive === true,
+      status: !control?.frostAvailable ? 'unavailable' : control.frostActive ? 'active' : 'ready',
+      reason: !control?.frostAvailable ? 'Local frost protection is unavailable. A commissioned Gen3 sender and fresh protection feed are required.'
+        : control.frostActive ? 'The Pill is applying the sender’s frost-protection demand.' : 'Local frost protection is ready.',
+      locations: sender?.protection?.locations ?? null, settings: sender?.settings ?? null,
+      settingsAvailable: sender?.settingsAvailable === true, settingsReason: sender?.settingsReason ?? 'The Gen3 sender is not connected.',
+      configuredSettings: copy(this.settings.protection), sender: sender ?? null };
+    return { settings: copy(this.settings), status: control?.status ?? 'unavailable', reason: this.lastError ?? reason,
+      mode: selection?.mode ?? null, normalTargetC: selection?.normalTargetC ?? null,
+      awayTargetC: this.settings.awayTargetC,
+      requestedTargetC, effectiveTargetC: control?.effectiveTargetC ?? null,
+      targetConfirmed: Boolean(control && control.externalEnabled && control.targetC === requestedTargetC),
+      changedAt: selection?.changedAt ?? null,
+      warmingWarning: selection?.warmingWarning?.until > now ? copy(selection.warmingWarning) : null,
+      controlAvailable: !reason, controlReason: reason, regulationReason,
+      nativeControls: this.nativeControls(now), protection,
+      observations: { rear: row('garage_temperature'), front: row('garage_temperature_2'), outdoor: row('outdoor_temperature') },
+      doors: Object.fromEntries(GARAGE_DOOR_SIGNALS.map(signal => { const observed = this.engine.latest[signal];
+        return [signal, { open: confirmedGarageDoor(observed, now) ? observed.value === 1 : null,
+          observedAt: observed?.sourceTime ?? null }]; })),
+      adapter: adapter ?? { phase: 'unavailable', contractStatus: 'missing', connected: false, blockedReasons: ['Waiting for the Pill connection.'] } };
   }
-  async close({ restore = true } = {}) {
-    if (this.closed) return;
-    this.closed = true;
-    clearTimeout(this.controlTimer);
-    await this.roomDispatch;
-    if (restore && this.canControl() && this.adapter?.externalTemperature?.(this.clock())?.clearAvailable
-      && (this.roomTemperature.targetC !== null || this.adapter.externalTemperature(this.clock()).restorationPending))
-      await this.adapter.setExternalTemperature({ temperatureC: null }, this.clock()).catch(() => {});
-    if (restore && this.canControl()) await this.release('application-shutdown').catch(() => {});
-    await this.dispatch?.catch(() => {});
-    const worker = this.worker; this.worker = null;
-    await worker?.terminate();
-  }
+  async close() { this.closed = true; }
 }

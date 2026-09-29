@@ -13,7 +13,6 @@ import { sensorBoundaries } from './sensor-inputs.js';
 import { lastIndoorReading, indoorReadingAttention, indoorReportStatus } from './indoor-readings.js';
 import { indoorStatusMetadata, recordedOutdoorObservation, recordedTemperatureAttempt,
   temperatureBoundaryStatus } from './temperature-status.js';
-import { garageModelSummary, GARAGE_ALGORITHM_VERSION } from '../garage/model.js';
 import { LEARNING_ALGORITHM } from './committed-learning.js';
 import { chargingSettings } from '../charging/settings.js';
 import { CHARGER_DEFINITIONS } from '../charging/model.js';
@@ -95,10 +94,10 @@ function recordedInput(store) {
   const row = store.db.prepare("SELECT payload,at FROM events WHERE type='decision' ORDER BY id DESC LIMIT 1").get();
   const decision = row ? { ...JSON.parse(row.payload), at: row.at } : null;
   if (INPUTS.has(decision?.input)) return { input: decision.input, decision };
-  const scopes = [...INPUTS].flatMap(input => [input, `garage:${input}`]);
+  const scopes = [...INPUTS];
   const journal = store.db.prepare(`SELECT input FROM learning_journal WHERE input IN (${scopes.map(() => '?').join(',')})
     ORDER BY id DESC LIMIT 1`).get(...scopes);
-  const input = journal?.input.replace(/^garage:/, '');
+  const input = journal?.input;
   if (INPUTS.has(input)) return { input, decision };
   const contract = store.db.prepare("SELECT key FROM state WHERE key IN ('contract:mqtt','contract:providers','contract:simulated') ORDER BY key LIMIT 1").get();
   return { input: contract ? contract.key.slice('contract:'.length) : 'offline', decision };
@@ -209,18 +208,6 @@ export async function startReplica({ config, clock = Date.now,
       : Math.max(now - publication.verifiedAt, now - publication.sourceAt) > staleAfterMs ? 'stale' : 'ready';
     const homeState = snapshotState(snapshot, `adaptive:${snapshot?.input}`);
     const checkpoint = homeState.value;
-    const garageState = snapshotState(snapshot, `garage:checkpoint:${snapshot?.input}`);
-    const garageCheckpoint = garageState.value;
-    const garageRecordedAt = publishedCheckpointAt(snapshot, `garage:${snapshot?.input}`, garageCheckpoint?.cursor, GARAGE_ALGORITHM_VERSION, now);
-    let garageModel = garageCheckpoint?.algorithmVersion === GARAGE_ALGORITHM_VERSION
-      && garageCheckpoint.model?.algorithm === GARAGE_ALGORITHM_VERSION && garageRecordedAt !== null
-      ? garageCheckpoint.model : null;
-    let garageSummary;
-    try { garageSummary = garageModelSummary(garageModel); }
-    catch {
-      garageModel = null; garageSummary = garageModelSummary(null);
-      garageState.error = 'The saved Garage model is unavailable in this snapshot.';
-    }
     const learningConfig = checkpoint?.learningConfiguration ?? {};
     const boundaries = snapshot ? sensorBoundaries(snapshot.store, snapshot.input, snapshot.publication.sourceAt) : {};
     const observations = Object.fromEntries([['upstairs', 'indoor_temperature'], ['downstairs', 'downstairs_temperature'],
@@ -233,7 +220,7 @@ export async function startReplica({ config, clock = Date.now,
       downstairs_temperature: observations.downstairs, bedroom_temperature: observations.bedroom }, learningConfig);
     observations.indoor = temperatureBoundaryStatus(observations.indoor, checkpoint?.measurementEpochAt, now, { clearValue: true });
     return { ...recorded, role: 'slave', instance: { role: 'slave', readOnly: true }, readOnly: true,
-      environment: 'history', automation: Object.fromEntries(['home', 'garage'].map(feature => [feature, {
+      environment: 'history', automation: Object.fromEntries(['home'].map(feature => [feature, {
         ...recorded.automation?.[feature], enabled: recorded.automation?.[feature]?.enabled === true,
         available: false, activity: 'unavailable', reason: 'This computer is read-only.' }])), now, input: snapshot?.input ?? 'offline',
       sync: { state, generation: publication?.generation ?? null,
@@ -245,9 +232,6 @@ export async function startReplica({ config, clock = Date.now,
       charging,
       garage: { ...recorded.garage, status: 'monitoring', reason: recorded.garage.error ?? 'Read-only slave; recorded master evidence',
         observations: { rear: observations.garage, front: observations.garageFront, outdoor: observations.outdoor },
-        learning: { ...garageSummary, reconstruction: 'snapshot', readOnly: true,
-          snapshotAt: publication?.sourceAt ?? null, recordedAt: garageModel ? garageRecordedAt : null,
-          ...(garageState.error ? { error: garageState.error } : {}) },
       },
       sensorChanges: snapshot ? sensorChangesView(snapshot.store, snapshot.input,
         { now: snapshot.publication.sourceAt, config: learningConfig, readOnly: true,

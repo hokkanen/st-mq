@@ -13,46 +13,11 @@ function timeRange(start, end) {
     : `${dateTime.format(start)} – ${dateTime.format(end)}`;
 }
 
-const outcomeBases = new Map([
-  ['continuously-available-achieved-reference', 'achieved normal-heating reference; not a thermostat setting'],
-  ['rolling-clean-held-out-off-episode-rmse', 'rolling clean held-out OFF-episode RMSE; lower is better'],
-  ['garage-frozen-normal-reference', 'frozen normal-reference model estimate; positive is benefit, negative is extra cost'],
-]);
-const outcomeElectricityBases = new Map([
-  ['qualified-recorded-electricity', 'qualified recorded electricity'],
-  ['recorded-and-modeled-electricity', 'recorded and modelled electricity'],
-  ['modeled-native-electricity', 'modelled native electricity'],
-]);
-const outcomeNumber = new Intl.NumberFormat('en-GB', { maximumFractionDigits: 2 });
-function garageOutcomeDetails(key, raw) {
-  const episode = key === 'garage_outcome_benefit';
-  const details = [episode ? 'completed episode estimate' : 'replayed model outcome',
-    outcomeBases.get(raw.outcomeBasis) ?? 'outcome basis unavailable'];
-  if (raw.inputSource) details.push(raw.inputSource);
-  if (Number.isFinite(raw.modelUpdatedAt)) details.push(`model updated ${dateTime.format(raw.modelUpdatedAt)}`);
-  if (/^[a-f\d]{64}$/.test(raw.correctionRevision)) details.push(`correction revision ${raw.correctionRevision.slice(0, 12)}`);
-  if (Number.isFinite(raw.evidenceCount)) details.push(`${outcomeNumber.format(raw.evidenceCount)} ${key.endsWith('_error')
-    ? 'clean held-out OFF validation episodes' : 'normal-heating samples'}`);
-  if (Number.isFinite(raw.evidenceHours)) details.push(`${outcomeNumber.format(raw.evidenceHours)} h ${key.endsWith('_error')
-    ? 'held-out OFF evidence' : 'qualified normal-heating evidence'}`);
-  if (episode) {
-    if (raw.provisional === true) details.push('provisional model estimate');
-    details.push(outcomeElectricityBases.get(raw.electricityBasis) ?? 'electricity basis unavailable');
-    for (const [field, label] of [['referenceCostEuro', 'frozen reference cost'], ['actualCostEuro', 'assessed actual cost'],
-      ['uncertaintyEuro', 'model uncertainty']])
-      if (Number.isFinite(raw[field])) details.push(`${label} ${outcomeNumber.format(raw[field])} €`);
-  }
-  return details;
-}
-
 /** Only committed input quality describes learning eligibility. A raw sensor,
  * forecast or model result cannot tell whether an observation trained a model. */
 export function historyLearningLabel(key, point = {}) {
-  if (point.sessionCheck || point.auditOnly || key.startsWith('caravan_')) return 'not used for learning';
+  if (point.sessionCheck || point.auditOnly || key.startsWith('caravan_') || key.startsWith('garage_')) return 'not used for learning';
   if (!point.modelInput || key === 'model_fireplace_release') return '';
-  if (point.garageModelInput) return point.inputQualified === true
-    ? 'qualified recorded input; fitting depends on the interval and episode'
-    : point.inputQualified === false ? 'input unavailable or unqualified' : 'input qualification unavailable';
   return point.learningUsable === true ? 'recorded input quality usable; thermal fitting needs observed heat, sunshine and fresh endpoints'
     : point.learningUsable === false ? 'recorded input quality excluded' : 'recorded input quality unavailable';
 }
@@ -95,16 +60,19 @@ export function historyTooltipLabel(item) {
     if (Number.isFinite(raw.evidenceHours)) details.push(`input evidence at that update: ${new Intl.NumberFormat('en-GB',
       { maximumFractionDigits: 2 }).format(raw.evidenceHours)} h`);
   }
-  if (raw.modelOutcome) details.push(...garageOutcomeDetails(key, raw));
   const firewood = firewoodPointDetail(key, raw);
   if (firewood) details.push(firewood);
   else if (raw.modelInput) details.push(raw.savedIndoorAverage ? 'saved indoor average'
-    : raw.garageModelInput ? 'saved garage input' : 'saved learning input');
+    : 'saved learning input');
   else if (key.startsWith('learning_')) details.push('model assessment');
   else if (key === 'heat_pump_power') details.push('reconstructed estimate');
   else if (key === 'caravan_energy') {
     details.push('meter energy over the recorded interval');
   }
+  else if (/^garage_pipe_(rear|front)_temperature$/.test(key)) details.push('sender pipe estimate; not a direct measurement');
+  else if (['garage_room_target', 'garage_effective_target'].includes(key)) details.push('Pill target readback; not measured room temperature');
+  else if (key === 'garage_ble_temperature') details.push('configured Bluetooth source; may be a commissioning sensor');
+  else if (key === 'garage_away_mode') details.push('saved mode choice; not confirmation of heating');
   else if (key === 'garage_native_energy') details.push('cumulative native meter counter; not interval consumption');
   else if (key === 'garage_energy') {
     details.push(raw.basis === 'counter-delta' ? 'native meter difference over the recorded interval'

@@ -28,24 +28,18 @@ code constants follow the software's versioning contract.
 
 ## Keep the private file small
 
-For an installation whose owner has enabled Garage control and approved the
-protection assumptions, the complete Garage override is:
+Garage manual control can be enabled with this sparse installation override:
 
 ```json
-{
-  "garage": {
-    "enabled": true,
-    "protection": {
-      "approved": true
-    }
-  }
-}
+{"garage":{"enabled":true}}
 ```
 
-Merge that section into your existing file, keeping credentials and other
-intentional overrides. It inherits the public driver, MQTT topics, sensor
-requirements and protection parameters. Approval does not commission the Pill or
-make an unavailable adapter ready; see [Garage heating](garage.md).
+It inherits public adapter topics and the Away preset. Sender MQTT topics default to `heatpump/garage/sender/state` and
+`heatpump/garage/sender/command`. Configure the sender with that prefix, or set
+`garage.sender.stateTopic` and `commandTopic` to its actual topics. Review and
+apply the protection settings in the Frost protection panel. Approval stored in application defaults
+is not evidence that the sender accepted it. The panel reports actual sender
+settings and freshness. See [Garage heating](garage.md).
 
 Only write the leaves you need to change. Leave default topics, timing values,
 equipment lists and empty credential placeholders out of the private file.
@@ -90,7 +84,7 @@ through Home Assistant authentication, independently of these passwords.
 
 Family reads all application data with credentials concealed, and may record
 firewood, remove entries within 15 minutes, operate DHWR, Away/Pause and temporary
-heating, Home and Garage automation, garage doors and all EV card controls. Every other write, export and
+heating, Home automation and Garage manual modes, garage doors and all EV card controls. Every other write, export and
 download requires admin. These permissions do not change equipment authority,
 restoration or freeze protection. The role is not configurable; see the
 [complete access policy](../README.md#connections-and-access).
@@ -115,33 +109,22 @@ complete SQLite snapshot with the same timestamped filename format. See
 
 ## Heating automation and manual controls
 
-Home and Garage each have a durable **Plan only / Automatic** dashboard choice.
-Both start at Plan only. The choices are stored in the database, bound separately
-to the configured equipment and broker/account identity, and survive restart.
-A changed command destination or confirmed physical device starts at Plan only
-and inherits no permission. Restart and reconnect wait for a fresh matching
-device identity; a changed boot/session alone does not change the choice.
-There is no corresponding configuration default and no global operating mode.
-Garage's configured `enabled` remains the installation opt-in; it does not select
-Automatic or bypass adapter readiness and protection checks.
+Home has a durable **Plan only / Automatic** choice, bound to the equipment
+identity and initially Plan only. Garage instead has persistent manual Normal/Away
+selections with no expiry. Configuration owns its Away preset; the normal target
+is an explicit device-bound choice. The Pill retains the requested target and
+regulates locally. Changing a Garage mode does not replay native power/mode edits.
 
-The header identifies **Live**, **Simulation**, or **History viewer**. Simulation
-permissions operate only the simulated plant. History and replica views cannot
-change permissions or send commands. Home's choice does not affect Garage,
-charging scheduling, or Caravan automatic power.
+The environment is Live, Simulation or History viewer. Read-only views cannot
+change controls. Home automation, charging and Caravan power permissions remain
+independent. `POST /api/automation` accepts Home only; Garage mode controls use
+`POST /api/garage/heating`. Garage enablement and sender wiring are installation
+configuration; fresh adapter evidence is still needed to send a request.
 
-Explicit manual heating commands remain available with Plan only when their
-normal live connection, readiness and protection checks pass. Changing automatic
-permission does not cancel valid manual choices or their expiry/restoration
-obligations. Disabling Automatic ends automatic reductions and restores their
-owned changes. A temporary price-control pause retains its explicit deadline;
-resuming it does not independently enable Automatic.
-
-`POST /api/automation` accepts exactly `{ "feature": "home", "enabled": true }`
-or the corresponding Garage choice. `GET /api/status` includes per-feature
-`automation` permissions, availability, activity and hashed route/device identities.
-Admin and family may change these choices. Retired global-mode configuration,
-environment and settings payloads are rejected rather than translated.
+The Frost protection panel displays the Gen3 sender's confirmed configuration and
+state. Explicit edits go to the sender and are confirmed by readback. Network loss
+does not expire the sender's protection or Pill's selected target. The BLU H&T
+test source has no two-probe protection. See [Garage heating](garage.md).
 
 ## Charging defaults and dashboard overrides
 
@@ -191,10 +174,10 @@ See [charging](charging.md).
 
 Heat-pump parameter edits remain in effect until deliberately changed. Native
 readback is authoritative; readable pump settings are not controller defaults.
-Garage initially reads a fresh unambiguous native setting. A chosen lower room
-target is retained as device-bound application state because external sensing
-uses a native 17°C target. It has no expiry or configured temperature fallback.
-Fresh native/sensor evidence is still required to activate the external feed.
+Garage reads the Pill’s confirmed real target separately from native 17°C.
+Normal/Away selection has no expiry. Local external-temperature activation needs
+fresh Bluetooth evidence; sensor failure has an explicit native 16°C fallback
+that preserves power. The sender’s independent frost rescue may select HEAT/ON.
 Home Heat control actions Normal, Reduction and Preheat retain their separate
 temporary behavior. The H66 assumptions `compressor_integral_a1`,
 `aux_integral_a2`, `compressor_hysteresis_c`, `aux_hysteresis_c` and `a2_basis`
@@ -210,29 +193,11 @@ are labeled separately and do not change controller configuration defaults.
 
 ## Heating strategies and limits
 
-Home `controller.savings_strategy` and Garage `garage.savingsStrategy` choose
-`gentle`, `balanced` or `savings`, displayed as **Gentle**, **Balanced** and
-**More savings**. Both default to Balanced. Change the owning configuration
-source and choose **Apply configuration**. The **Heating strategy & comfort**
-and **Heating strategy & protection** sections explain the current strategy,
-its decision rules and independent limits. **Pause price control** temporarily
-suspends automatic savings; every named strategy can still start worthwhile
-heating changes.
-
-| Strategy | Home minimum benefit before other burdens | Garage threshold multiplier | Benefit retained |
-| --- | --- | --- | --- |
-| Gentle | 50 cents | 1.5 × `minSavingsEur` | At least 60% of best qualifying benefit |
-| Balanced | 30 cents | 1 × `minSavingsEur` | At least 80% |
-| More savings | 10 cents | 0.5 × `minSavingsEur` | Greatest qualifying benefit |
-
-These are decision policies, not predicted annual savings. Home additionally
-prices temperature variation and cycle duration. Garage chooses the shortest
-qualifying safe pause retaining the selected share of benefit. Garage
-`minSavingsEur` is the threshold at Balanced, after estimated recovery cost and
-uncertainty: the default €0.50 gives effective thresholds of €0.75, €0.50 and
-€0.25 respectively. `minOffMs`, `minOnMs`, `maxPausesPerDay`, both rear/front
-sensors and protection requirements remain independent constraints. See
-[Garage policy](garage-model.md#one-opportunity-at-a-time).
+Home `controller.savings_strategy` selects Gentle, Balanced or More savings;
+Balanced is the default. The minimum benefit before other burdens is respectively
+50, 30 or 10 cents. These are decision rules, not annual savings predictions.
+Home's Heating strategy & comfort panel explains the policy and independent limits.
+Garage has no savings strategy or economic temperature changes.
 
 Home's shared `controller.max_drop_c` and `controller.max_rise_c` apply around
 each participating room's learned reference, falling back to the overall comfort
@@ -294,7 +259,7 @@ larger sections without adding another configuration format.
 
 | Sections, in file order | Settings they own |
 | --- | --- |
-| `controller`, `garage`, `charging`, `electricity` | Topology, Home operation/heating and web access passwords, Garage policy/adapter, charger/vehicle sources and permanent charging defaults, electricity tariffs. |
+| `controller`, `garage`, `charging`, `electricity` | Topology, Home operation/heating and web access passwords, Garage presets, local-protection sender and pump adapter, charger/vehicle sources and permanent charging defaults, electricity tariffs. |
 | `geoloc`, `mqtt`, `entsoe`, `easee`, `teslamate` | Location, broker access and provider connections. `easee.local_ocpp` contains the authenticated local charger listener and explicit authorization tags; see [Easee setup](charging-easee.md#direct-local-ocpp-telemetry-firmware-344-or-later). |
 | `equipment` | The current MQTT/Shelly equipment inventory and device mappings. |
 | `acquisition`, `recording` | Provider polling/freshness and recording/storage settings. |

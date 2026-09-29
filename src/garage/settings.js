@@ -1,15 +1,9 @@
-import { heatingStrategy } from '../domain/heating-strategy.js';
-
 /** Owner policy and versioned engineering choices. The air-driven pipe model
  * is an operational approximation, not a certified first-ice prediction. */
 export const GARAGE_POLICY_VERSION = 'garage-thermal-reserve-v1';
 export const GARAGE_HEAT_TRANSFER_SAFETY_FACTOR = 2;
-export const GARAGE_PREFERENCE_VERSION = 'garage-savings-strategy-v1';
 export const DEFAULT_GARAGE_SETTINGS = Object.freeze({
-  enabled: false, savingsStrategy: 'balanced',
-  minSavingsEur: .5, maxPausesPerDay: 1, reducedRoomTargetC: 0,
-  maxSensorAgeMs: 120_000, minOnMs: 3 * 3_600_000, minOffMs: 3_600_000,
-  stepMinutes: 15,
+  enabled: false, awayTargetC: 5, maxSensorAgeMs: 180_000,
   protection: Object.freeze({ approved: false, version: GARAGE_POLICY_VERSION,
     marginC: 1, pipeOutsideDiameterMm: 21, pipeWallMm: 1, heatTransferWPerM2K: 20 }),
 });
@@ -27,15 +21,9 @@ export function garageSettings(input = {}) {
   const protection = { ...DEFAULT_GARAGE_SETTINGS.protection, ...supplied };
   const output = { ...DEFAULT_GARAGE_SETTINGS, ...input, protection };
   for (const key of ['enabled']) if (typeof output[key] !== 'boolean') throw new Error(`Garage ${key} must be boolean`);
-  heatingStrategy(output.savingsStrategy);
-  number(output, 'minSavingsEur', 0, 100);
-  number(output, 'reducedRoomTargetC', 0, 15.5);
-  if (!Number.isInteger(output.reducedRoomTargetC * 2)) throw new Error('Garage reducedRoomTargetC must use half-degree steps');
-  number(output, 'maxPausesPerDay', 1, 4);
-  if (!Number.isInteger(output.maxPausesPerDay)) throw new Error('Garage maxPausesPerDay must be a whole number');
+  number(output, 'awayTargetC', 0, 31);
+  if (!Number.isInteger(output.awayTargetC * 2)) throw new Error('Garage awayTargetC must use half-degree steps');
   number(output, 'maxSensorAgeMs', 30_000, 4 * 3_600_000);
-  number(output, 'minOnMs', 0, 24 * 3_600_000); number(output, 'minOffMs', 0, 3 * 3_600_000);
-  number(output, 'stepMinutes', 5, 30);
   const policy = output.protection;
   if (typeof policy.approved !== 'boolean') throw new Error('Garage protection approval must be boolean');
   if (policy.version !== GARAGE_POLICY_VERSION) throw new Error('Unsupported garage protection policy version');
@@ -44,12 +32,4 @@ export function garageSettings(input = {}) {
   if (policy.pipeWallMm * 2 >= policy.pipeOutsideDiameterMm)
     throw new Error('Garage pipe wall must leave a positive water diameter');
   return output;
-}
-
-/** Savings strategies change economic selection; the separate price-control
- * pause suspends it. Protection and recovery limits never scale. */
-export function garageSavingsPreference(settings = {}) {
-  const config = garageSettings(settings), strategy = heatingStrategy(config.savingsStrategy);
-  return { minimumBenefitEur: config.minSavingsEur * strategy.garageMinimumBenefitMultiplier,
-    retainedBenefitFraction: strategy.retainedBenefitFraction };
 }

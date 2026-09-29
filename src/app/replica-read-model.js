@@ -5,10 +5,10 @@ import { Recorder } from '../storage/recorder.js';
 import { H66_DOCUMENTATION, H66_REGISTERS } from '../domain/telemetry.js';
 import { GARAGE_FIELDS } from '../garage/contract.js';
 import { GARAGE_NATIVE_SETTINGS } from '../garage/native-settings.js';
-import { validateGarageRoomState } from '../garage/room-temperature.js';
+import { validateGarageModeState } from '../garage/room-temperature.js';
 import { garageSettings } from '../garage/settings.js';
-import { GARAGE_ALGORITHM_VERSION } from '../garage/model.js';
-import { validGarageExposure } from '../garage/protection.js';
+import { validateGarageSenderSnapshot } from '../garage/sender.js';
+import { validateGarageAdapterSnapshot } from '../garage/contract.js';
 
 const reason = 'Read-only view. Recorded values are available; live equipment state and controls are unavailable.';
 const copy = value => structuredClone(value);
@@ -88,77 +88,62 @@ function equipmentSnapshot(config, read, snapshot) {
 }
 
 function garageSnapshot(snapshot, read) {
-  const at = snapshot?.publication.sourceAt ?? null;
-  const errors = [];
+  const at = snapshot?.publication.sourceAt ?? null, errors = [];
   const state = name => {
     const result = snapshotState(snapshot, `garage:${name}:${snapshot?.input}`);
     if (result.error) errors.push({ section: name, message: result.error });
     return result.value;
   };
-  let saved = state('adapter'), pause = state('temporary'), settings = state('configuration'), exposure = state('exposure');
   const invalid = section => errors.push({ section, message: 'The saved data in this section is unavailable in this snapshot.' });
-  if (saved !== null && (typeof saved !== 'object' || Array.isArray(saved) || saved.version !== 1)) {
-    invalid('adapter'); saved = null;
-  }
-  if (pause !== null && (typeof pause !== 'object' || Array.isArray(pause) || !Number.isFinite(pause.expiresAt))) {
-    invalid('temporary'); pause = null;
-  }
+  let saved = state('adapter'), settings = state('configuration'), mode = state('mode'), sender = state('sender');
+  try { validateGarageAdapterSnapshot(saved); } catch { invalid('adapter'); saved = null; }
+  try { sender = validateGarageSenderSnapshot(sender); } catch { invalid('sender'); sender = null; }
   if (settings !== null) try { settings = garageSettings(settings); }
   catch { invalid('configuration'); settings = null; }
-  if (exposure !== null && (!settings || !validGarageExposure(exposure, at, settings))) {
-    invalid('exposure'); exposure = null;
+  try { validateGarageModeState(mode); }
+  catch { invalid('mode'); mode = null; }
+  const beforeBoundary = value => Number.isFinite(value) && value <= at;
+  if (saved && (!beforeBoundary(saved.observedAt) || !beforeBoundary(saved.receivedAt))) {
+    invalid('adapter'); saved = null;
   }
-  let room = null, roomError = null;
-  try { room = state('roomTemperature'); validateGarageRoomState(room); }
-  catch {
-    // A malformed control preference cannot grant authority or conceal all
-    // unrelated recorded history from this protected, read-only dashboard.
-    room = null; roomError = 'The saved room setting is unavailable in this snapshot.';
+  if (mode && !beforeBoundary(mode.changedAt)) { invalid('mode'); mode = null; }
+  if (sender?.state && (!beforeBoundary(sender.state.observedAt) || !beforeBoundary(sender.state.receivedAt))) {
+    invalid('sender'); sender = null;
   }
-  const nativePower = saved?.acceptedEvidence?.nativePower;
-  const receivedAt = saved?.acceptedEvidence?.receivedAt;
-  const power = saved?.version === 1 && nativePower && Number.isFinite(nativePower.measuredAt) && nativePower.measuredAt <= at
-    && !(Number.isFinite(receivedAt) && receivedAt > at)
-    ? { ...copy(nativePower), receivedAt: receivedAt ?? null, source: 'garage-adapter',
-      quality: saved.acceptedEvidence.retained ? ['retained'] : [], available: false,
-      usable: false, stale: true, recorded: true, readOnly: true, snapshotAt: at } : null;
-  const readbacks = power ? { power } : {};
+  const readbacks = Object.fromEntries(Object.entries(saved?.native ?? {}).flatMap(([key, value]) =>
+    value && beforeBoundary(value.measuredAt) ? [[key, { ...copy(value), source: 'garage-adapter',
+      available: false, usable: false, stale: true, recorded: true, readOnly: true, snapshotAt: at }]] : []));
   const telemetry = Object.fromEntries(Object.entries(GARAGE_FIELDS).flatMap(([key, definition]) => {
     const row = read(definition.signal, 'garage-adapter', 'garage-heat-pump');
-    if (!row) return [];
-    return [[key, { ...row, unit: definition.unit,
+    return row ? [[key, { ...row, unit: definition.unit,
       value: definition.boolean && [0, 1].includes(row.value) ? Boolean(row.value) : row.value,
-      diagnosticAvailable: false }]];
+      diagnosticAvailable: false }]] : [];
   }));
-  const targetC = Number.isFinite(room?.targetC) ? room.targetC : null;
+  const requestedTargetC = mode ? mode.mode === 'away' ? mode.awayTargetC : mode.normalTargetC : null;
   const nativeSettings = Object.fromEntries(Object.keys(GARAGE_NATIVE_SETTINGS).map(key => [key, {
-    supported: key === 'targetC' ? targetC !== null : Boolean(readbacks[key]), available: false,
-    value: key === 'targetC' ? targetC : readbacks[key]?.value ?? null,
+    supported: Boolean(readbacks[key]), available: false, value: readbacks[key]?.value ?? null,
     measuredAt: readbacks[key]?.measuredAt ?? null, usable: false, reason,
   }]));
-  let episode = state('episode');
-  if (episode !== null && (typeof episode !== 'object' || Array.isArray(episode)
-    || episode.algorithmVersion !== GARAGE_ALGORITHM_VERSION)) { invalid('episode'); episode = null; }
-  return { readOnly: true, recorded: true, snapshotAt: at, settings: settings ?? {}, exposure,
+  return { readOnly: true, recorded: true, snapshotAt: at, settings: settings ?? {},
+    mode: mode?.mode ?? null, normalTargetC: mode?.normalTargetC ?? null, awayTargetC: mode?.awayTargetC ?? null,
+    requestedTargetC, effectiveTargetC: saved?.control?.effectiveTargetC ?? null, targetConfirmed: false,
+    warmingWarning: copy(mode?.warmingWarning ?? null),
+    protection: { status: 'unavailable', available: false, active: null, reason,
+      recorded: true, readOnly: true, snapshotAt: at,
+      sender: { available: false, settingsAvailable: false, settingsReason: reason,
+        settings: copy(sender?.state?.config ?? null), protection: copy(sender?.state?.protection ?? null),
+        result: copy(sender?.lastCommand ?? null), observedAt: sender?.state?.observedAt ?? null,
+        recorded: true, readOnly: true, snapshotAt: at } },
     errors, ...(errors.length ? { error: 'Some saved Garage data is unavailable. Other recorded data remains readable.' } : {}),
-    roomTemperature: { targetC, phase: 'unavailable', acknowledged: false, readOnly: true, recorded: true,
-      snapshotAt: at, reason: roomError ?? 'Saved room setting. Live external-temperature control is unavailable in this view.',
-      ...(roomError ? { error: roomError } : {}) },
     nativeControls: { available: false, busy: false, pending: false, reason, result: null, settings: nativeSettings },
-    heatingControls: { available: false, normalAvailable: false, offAvailable: false, confirmed: false,
-      busy: false, reason, normalReason: reason, offReason: reason },
-    temporary: { available: false, pauseActive: Boolean(pause?.expiresAt > at),
-      pauseUntil: pause?.expiresAt ?? null, readOnly: true, recorded: true, snapshotAt: at },
-    episode: episode ? { id: episode.id, phase: episode.phase, startedAt: episode.startedAt,
-      assessment: copy(episode.assessment), readOnly: true, recorded: true, snapshotAt: at } : null,
-    adapter: { liveControlSupported: false, pauseControl: false, phase: 'monitoring', connected: null,
+    heatingControls: { available: false, normalAvailable: false, awayAvailable: false,
+      confirmed: false, busy: false, reason },
+    adapter: { liveControlSupported: false, phase: 'monitoring', connected: null,
       readOnly: true, recorded: true, snapshotAt: at, health: { deviceOnline: null, pumpCommunicating: null },
-      authority: { owned: false, claimPending: false },
-      restorePending: saved?.restorePending ?? null, blockedReasons: [reason],
-      ...(power ? { native: { power: power.value, powerAt: power.measuredAt, readbacks } } : {}),
-      telemetry, lastCommand: copy(saved?.lastCommand ?? null),
-      commandHistory: copy(saved?.commandHistory ?? []), faults: copy(saved?.faults ?? []),
-      outstandingPermissionExpiresAt: saved?.outstandingPermissionExpiresAt ?? null },
+      authority: { owned: false }, blockedReasons: [reason],
+      native: { power: readbacks.power?.value ?? null, powerAt: readbacks.power?.measuredAt ?? null, readbacks },
+      control: saved?.control ? { ...copy(saved.control), available: false, recorded: true, readOnly: true } : null,
+      telemetry, lastCommand: copy(saved?.lastCommand ?? null) },
   };
 }
 
@@ -182,7 +167,7 @@ export function replicaReadModel(snapshot, config) {
   let automationState = null, automationError = null;
   try { automationState = validateHeatingAutomationState(state(`automation:${input}`)); }
   catch { automationError = 'Saved heating automation choices are unavailable in this snapshot.'; }
-  const automation = Object.fromEntries(['home', 'garage'].map(feature => [feature, {
+  const automation = Object.fromEntries(['home'].map(feature => [feature, {
     ...copy(automationState?.features[feature]), enabled: automationState?.features[feature]?.enabled ?? false,
     available: false, activity: 'unavailable', reason: automationError ?? reason, recorded: true, readOnly: true, snapshotAt: at,
     ...(automationError ? { error: automationError } : {}) }]));

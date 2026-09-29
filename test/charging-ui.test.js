@@ -31,13 +31,13 @@ function bmwTarget({ conflict = true, connectedAt = now - 60_000, rawValue = 100
       raw: { value: rawValue, measuredAt: now, receivedAt: now, readingId: 'target-raw' } } };
 }
 
-test('garage keeps cold budgets in settings and renders shared charger cards above more equipment', () => {
+test('garage keeps pipe protection separate and renders shared charger cards above more equipment', () => {
   const html = readFileSync(new URL('../chart/index.html', import.meta.url), 'utf8');
   assert(!html.includes('id="home-heat-pump-title"'));
   assert.match(html, /id="garage-title">Garage<span class="zone-expand" aria-hidden="true"><\/span><\/h2>/);
   assert.equal((html.match(/data-h66-summary="mode"/g) ?? []).length, 1);
   assert(!html.includes('home-tariff-status'));
-  assert(!html.includes('id="garage-budget-front"')); assert(html.includes('id="garage-settings-budget-front"'));
+  assert(!html.includes('id="garage-budget-front"')); assert(html.includes('id="garage-reserve-front"'));
   assert(html.indexOf('id="garage-control"') < html.indexOf('id="charging-devices"'));
   assert(html.indexOf('id="charging-devices"') < html.indexOf('id="garage-equipment-details"'));
   assert.equal(html.split('id="charging-devices"').length - 1, 1, 'Chargers are mounted once in the Garage card');

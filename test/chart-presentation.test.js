@@ -130,25 +130,12 @@ test('tooltips retain truthful source, interval and derived-input distinctions f
   assert(!fireplace.includes('saved learning input'), 'Calculated manual-event projection is not a saved learning observation');
 });
 
-test('Garage coefficient tooltips distinguish fixed priors and time-weighted evidence from interval counts', () => {
-  const label = (coefficientStatus, evidenceHours) => historyTooltipLabel({
-    dataset: { key: 'garage_coefficient_rear_lossPerHour', label: 'Garage rear · Heat loss', unit: '1/h' },
-    parsed: { x: 1, y: .022 }, raw: { modelCoefficient: true, coefficientStatus, evidenceHours },
-  });
-  assert.match(label('fixed-prior', 0), /Fixed assumption/);
-  assert.match(label('fitted', 12.75), /input evidence at that update: 12.75 h/);
-  assert.doesNotMatch(label('fitted', 12.75), /intervals|samples/);
-  assert.match(label('retained', 3.5), /Retained from an earlier fit/);
-});
-
-test('Garage input tooltips distinguish qualified values from independent fitting or episode evidence', () => {
-  const point = { modelInput: true, garageModelInput: true, inputQualified: true };
-  const item = { dataset: { key: 'garage_model_activity', label: 'Compressor activity input', unit: 'fraction' },
-    parsed: { x: 1, y: .4 }, raw: point };
-  const text = historyTooltipLabel(item);
-  assert.match(text, /0.4 fraction · saved garage input · qualified recorded input; fitting depends on the interval and episode/);
-  assert.doesNotMatch(text, /recorded input quality usable; thermal fitting needs observed heat, sunshine and fresh endpoints|kW|40 %/);
-  assert.equal(historyLearningLabel('garage_model_activity', { ...point, inputQualified: false }), 'input unavailable or unqualified');
+test('Garage target and pipe estimate tooltips keep control and inference distinct from measurements', () => {
+  const label = key => historyTooltipLabel({ dataset: { key, label: key, unit: '°C' }, parsed: { x: 1, y: 5 }, raw: {} });
+  assert.match(label('garage_pipe_front_temperature'), /sender pipe estimate; not a direct measurement/);
+  assert.match(label('garage_room_target'), /target readback; not measured room temperature/);
+  assert.match(label('garage_ble_temperature'), /configured Bluetooth source; may be a commissioning sensor/);
+  assert.equal(historyLearningLabel('garage_temperature'), 'not used for learning');
 });
 
 test('saved indoor average tooltip identifies held rooms, genuine observation times and excluded learning', () => {

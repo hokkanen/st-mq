@@ -1,622 +1,173 @@
-import { randomUUID } from 'node:crypto';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { garageDisplay, garageHeatingRequest, garagePauseSummary, garageReleaseAvailable, createGarageControls, renderGarage } from '../chart/garage-status.js';
+import { garageDisplay, createGarageControls } from '../chart/garage-status.js';
+import { garageHeatingWarning } from '../chart/heating-warning.js';
 import { heatingScopeDisplay } from '../chart/heating-scope.js';
 import { heatingDisplay } from '../chart/heating-benefit.js';
 import { timingDisplay } from '../chart/timing-model.js';
 import { buildHeatingSavings } from '../src/app/garage-reporting.js';
-import { createGarageModel, garageModelSummary, GARAGE_ALGORITHM_VERSION } from '../src/garage/model.js';
-import { garageSettings } from '../src/garage/settings.js';
 
-const range = { from: Date.parse('2026-09-08T00:00:00+03:00'), to: Date.parse('2026-09-09T00:00:00+03:00') }, now = range.to;
-
-test('Garage Heat control badge follows its own pause and configuration', () => {
-  const badge = { textContent: '', parentElement: { dataset: {} } };
-  const document = { getElementById: id => id === 'garage-control-price' ? badge : null };
-  for (const [garage, expected, state] of [
-    [undefined, 'Unavailable', 'muted'],
-    [{ settings: { enabled: false } }, 'Unavailable', 'muted'],
-    [{ settings: { enabled: true } }, 'Automatic', 'active'],
-    [{ settings: { enabled: true }, temporary: { pauseActive: true } }, 'Paused', 'paused'],
-    [{ settings: { enabled: true }, temporary: { pauseActive: false } }, 'Automatic', 'active'],
-  ]) {
-    renderGarage(document, { now, automation: { home: { enabled: true }, garage: { enabled: true } }, garage, override: { expiresAt: now + 60_000 } });
-    assert.equal(badge.textContent, expected);
-    assert.equal(badge.parentElement.dataset.state, state);
-  }
-});
-
-test('Home remains default and preserves existing model/timing values without mutating payload', () => {
-  const payload = { range, now, heatingBenefit: { status: 'estimated', valueEuro: 4.5, counts: { assessed: 3 } },
-    timingBenefit: { heatPump: { value: -0.25, coverage: 0.1 } } };
-  const before = structuredClone(payload);
-  const home = heatingScopeDisplay(payload);
-  assert.equal(home.amount, heatingDisplay(payload.heatingBenefit, payload).amount);
-  assert.equal(heatingScopeDisplay(payload, 'home', 'timing').amount, timingDisplay('heatPump', payload.timingBenefit.heatPump, payload).amount);
-  assert.equal(heatingScopeDisplay(payload, 'garage').available, false);
-  assert.deepEqual(payload, before);
-});
-
-test('Garage and Total presentation keeps provisional missing coverage and counterfactual boundaries explicit', () => {
-  const heatingSavings = buildHeatingSavings({ range, now,
-    homeModel: { status: 'estimated', valueEuro: 2, counts: { assessed: 1 } }, garageModel: { status: 'unavailable', valueEuro: null },
-    homeTiming: { value: -0.1,coverageDetails:{elapsedMs:86400000,includedMs:3600000,powerMs:3600000},
-      evidence:{energyBasis:'reconstructed-equipment',sources:[{key:'observed',durationMs:3600000,share:1}]} }, garageTiming: { value: null } });
-  const payload = { heatingSavings, range, now };
-  const total = heatingScopeDisplay(payload, 'total');
-  assert.equal(total.amount, '€2.00'); assert.match(total.qualification, /Partial total · Garage unavailable/);
-  assert.match(total.breakdown.join(' '), /Home: €2.00 · 1 assessed cycle\. Garage: Unavailable · 0 assessed cycles\./);
-  assert.match(total.explanations.join(' '), /frozen normal-heating reference.*recovery.*provisional.*never added/);
-  const timing = heatingScopeDisplay(payload, 'total', 'timing');
-  assert.equal(timing.key,'heatPump','Changing scope must keep the mounted Heating card identity');
-  assert.equal(timing.amount, '-€0.10'); assert.match(timing.coverageExplanation, /missing evidence is never zero/);
-});
-
-test('current qualified Garage intervals remain available while the Home renderer rejects that different evidence scope',()=>{
-  const result={value:.5,sourceQuality:'verified-electrical',coverageDetails:{elapsedMs:86400000,includedMs:3600000},
-    evidence:{energyBasis:'recorded-intervals',timeBasis:'recorded-interval-time',sources:[{key:'measured',durationMs:3600000,share:1}]}};
-  const payload={range,now,heatingSavings:{garage:{timing:result}}};
-  const garage=heatingScopeDisplay(payload,'garage','timing');
-  assert.equal(garage.key,'heatPump');
-  assert.equal(garage.available,true);assert.equal(garage.amount,'€0.50');assert.equal(garage.basis,'Verified electrical intervals');
-  assert.match(garage.sources[0].explanation,/Dedicated garage electrical intervals/);
-  assert.equal(timingDisplay('heatPump',result,payload).available,false);
-});
-
-test('Garage automatic details show independent budgets, health and unresolved recovery without duplicate native readings', () => {
-  const omittedCredential = randomUUID();
-  const status = { settings: { savingsStrategy: 'balanced', protection: { approved: true, marginC: 1 } },
-    observations: { rear: { value: 5.7 }, front: { value: 6.2, stale: true } },
-    protection: { limitingLocation: 'front', locations: { rear: { remainingKjPerM: 6.3, estimatedC: 5.5 }, front: { remainingKjPerM: 2.1, estimatedC: 2.5, uncertain: true } } },
-    adapter: { contractVersion: 'stmq-garage-fixture/v1', contractStatus: 'provisional-fixture-only', liveControlSupported: false,
-      native: { power: 'on' }, health: { deviceOnline: true, driverProgressing: false, pumpCommunicating: false }, restorePending: true,
-      telemetry: { garage_native_indoor_temperature: { value: 0, supported: true, usable: true },
-        garage_native_outdoor_temperature: { value: -7, supported: true, usable: false, quality: ['stale'] },
-        garage_power: { value: 500, supported: false, usable: false } },
-      episode: { leaseExpiresAt: now + 120_000 }, password: omittedCredential, topics: ['hidden-example'] },
-    learning: { trainedIntervals: 0, heldOut: { rear: { n: 0, mae: null, bias: null } },
-      coefficients: { rear: [{ name: 'coolingPerHour', value: 0.022, unit: '1/h', basis: 'prior', evidence: 0 }] } } };
-  const display = garageDisplay(status, now), rows = Object.fromEntries(display.rows);
-  assert.equal(rows['Rear allowance remaining'], '6.3 kJ/m'); assert.match(rows['Front allowance remaining'], /2\.1 kJ\/m.*uncertain/);
-  assert.equal(rows['Rear reference estimate'], '5.5 °C');
-  assert.equal(rows['Limiting protection location'], 'front'); assert.match(rows['Front air · near door'], /stale/);
-  assert.equal(rows['Pump indoor temperature'], undefined); assert.equal(rows['Pump outdoor temperature'], undefined);
-  assert.equal(rows['Electrical power'], undefined); assert.equal(rows['Device online'], 'Yes'); assert.equal(rows['Driver progressing'], 'No');
-  assert.equal(rows['Local lease remaining'], '2 min'); assert.match(rows.Recovery, /Restoration pending/);
-  assert.match(display.coefficients[0][1], /0\.022 1\/h · Initial estimate.*0 h clean cooling observations/);
-  assert(!JSON.stringify(display).includes(omittedCredential));
-  assert(!JSON.stringify(display).includes('hidden-example')); assert(!JSON.stringify(display).includes('Estimated building warmth'));
-});
-
-test('Garage heating, equipment and learning have independent closed disclosures', () => {
-  const html = readFileSync(new URL('../chart/index.html', import.meta.url), 'utf8');
-  for (const id of ['garage-heating-details', 'garage-equipment-details', 'garage-controller-details', 'garage-settings-details', 'garage-learning-details']) {
-    const tag = html.match(new RegExp(`<details[^>]+id="${id}"[^>]*>`))[0];
-    assert(!/\sopen(?:\s|>|=)/.test(tag));
-  }
-  assert.match(html, /Learning outcomes<\/span><small[^>]*> · Estimates &amp; checks/); assert.match(html, /Heating strategy &amp; protection/);
-  assert.match(html, /Edit the savings strategy in configuration, then use Apply configuration/);
-  const policy = html.slice(html.indexOf('<details id="garage-settings-details"'), html.indexOf('<details id="garage-learning-details"'));
-  for (const title of ['Savings strategy', 'Protection boundaries', 'How decisions are made', 'Control choices']) assert(policy.includes(`>${title}</h5>`));
-  assert(policy.includes('id="garage-planning-details"'), 'Decision policies belong with the strategy, outside heat learning');
-  assert.match(policy, /href="#garage-learning-details" data-policy-model-link/);
-  assert.match(policy, /Freeze protection can restore heating sooner, including after a manual off selection/);
-  assert.match(policy, /its original endpoint cannot move later/);
-  assert.match(policy, /open or unknown configured door.*only below 2 °C.*at 2 °C or above/);
-  assert.match(policy, /Charging does not restrict reductions or add forecast warmth/);
-});
-
-test('Garage decision explanations describe charging independence and the shared cold-door rule', () => {
-  const display = garageDisplay({ settings: garageSettings(),
-    plan: { reason: 'garage-door-open-or-unknown-below-2c' } });
-  const rows = Object.fromEntries(display.planningDetails.map(row => [row.key, row]));
-  assert.match(rows['current-opportunity'].value, /open or unknown door.*below 2/i);
-  assert.match(rows['door-policy'].detail, /At 2°C or above.*Outdoor temperature must be known/);
-  assert.equal(rows['charging-policy'].value, 'No reduction restriction or forecast credit');
-  assert.match(rows['charging-policy'].detail, /status and power do not affect reduction admission or the planned window/);
-});
-
-test('a bounded wait for temperature evidence is explained without promoting unavailable protection evidence', () => {
-  const garage = { settings: garageSettings(), temperatureHold: { active: true, expiresAt: now + 45_000 },
-    plan: { nextAction: 'hold', reason: 'waiting-for-temperature-evidence' },
-    reason: 'protection-required', adapter: { phase: 'paused', native: { power: 'off' } },
-    protection: { safeToPause: false, requiredFresh: false, reasons: ['rear:missing-temperature'],
-      locations: { rear: { uncertain: true, fresh: false } } } };
-  const before = structuredClone(garage), display = garageDisplay(garage, now);
-  assert.match(display.reason, /Waiting for fresh temperature evidence.*Existing OFF permission is held until/);
-  assert.match(display.reason, /original deadline and protection margin; no renewal/);
-  assert.match(Object.fromEntries(display.rows)['Temperature evidence'], /Existing pause held until.*no renewal/);
-  assert.equal(display.planningDetails.find(row => row.key === 'current-opportunity').value, 'Pause held · awaiting temperature');
-  assert.equal(garageHeatingRequest(garage), 'Off');
-  assert.deepEqual(garage, before, 'presentation never changes the actual protection assessment');
-  const reason = { textContent: '' }, document = { getElementById: id => id === 'garage-controller-reason' ? reason : null };
-  renderGarage(document, { now, automation: { home: { enabled: true }, garage: { enabled: true } }, input: 'mqtt', garage });
-  assert.match(reason.textContent, /Existing OFF permission is held/);
-  assert.doesNotMatch(reason.textContent, /protection-required|waiting-for-temperature-evidence|reports are interrupted/);
-  garage.temperatureHold.expiresAt = now;
-  assert.doesNotMatch(garageDisplay(garage, now).reason, /permission is held/);
-  assert.equal(Object.fromEntries(garageDisplay(garage, now).rows)['Temperature evidence'], undefined);
-});
-
-test('heat-pump metric rows stay visible once in their summaries while controls and explanations stay inside', () => {
-  const html = readFileSync(new URL('../chart/index.html', import.meta.url), 'utf8');
-  for (const [id, metrics, info] of [
-    ['home-pump-device', ['home-pump-state', 'home-pump-dhw', 'home-pump-room'], 'home-pump-reading-info'],
-    ['garage-controller-details', ['garage-native-power', 'garage-native-target'], 'garage-pump-reading-info'],
-  ]) {
-    const equipment = html.slice(html.indexOf(`<details id="${id}"`)), summary = equipment.slice(0, equipment.indexOf('</summary>'));
-    assert.match(summary, /class="[^"]*pump-native-overview/);
-    for (const metric of metrics) {
-      assert(summary.includes(`id="${metric}"`), `${metric} remains visible when folded`);
-      assert.equal(html.split(`id="${metric}"`).length - 1, 1, `${metric} has one permanent value`);
-      assert(summary.includes(`id="${metric}" class="muted">—</strong>`), 'Unknown compact values use a quiet dash instead of breaking a long word');
-    }
-    assert(!summary.includes('-preview') && !summary.includes('<button'));
-    assert(equipment.indexOf(`id="${info}"`) > equipment.indexOf('</summary>'));
-  }
-  assert.match(html, /id="home-pump-state-age" hidden/);
-  assert(!html.includes('home-pump-preview') && !html.includes('garage-pump-preview'));
-  const mitsubishi=html.slice(html.indexOf('<details id="garage-controller-details"'));
-  assert.match(mitsubishi.slice(0,mitsubishi.indexOf('</summary>')), /id="garage-native-compressor" class="muted">Unknown<\/strong>/);
-  assert.equal(html.split('id="garage-native-compressor"').length-1,1);
-  assert(!html.includes('id="garage-native-mode"'), 'Mode is available in details rather than the compact summary');
-});
-
-test('Mitsubishi summary preserves compressor state through running, idle and lost telemetry', () => {
-  const node={textContent:'',classList:{toggle(){}}};
-  const document={getElementById:id=>id==='garage-native-compressor'?node:undefined};
-  const garage={adapter:{connected:true,telemetry:{}}};
-  for(const [value,expected] of [[true,'Running'],[false,'Idle'],[null,'Unknown']]){
-    garage.adapter.telemetry.compressorActive={value,supported:true,sourceTime:now};
-    renderGarage(document,{now,garage});
-    assert.equal(node.textContent,expected);
-  }
-  renderGarage(document,{now,garage:{}});
-  assert.equal(node.textContent,'Unknown');
-});
-
-test('Away and Pause use the same disclosure style as Garage settings inside heating configuration', () => {
-  const html = readFileSync(new URL('../chart/index.html', import.meta.url), 'utf8');
-  for (const [id, configuration, equipment] of [
-    ['temporary-details', 'home-manual-controls', 'home-equipment-section'],
-    ['garage-pause-details', 'garage-manual-controls', 'garage-equipment-section'],
-  ]) {
-    const tag = html.match(new RegExp(`<details id="${id}"[^>]*>`))[0];
-    assert.match(tag, /class="equipment-fold /); assert(!tag.includes('section-fold'));
-    assert(!/\sopen(?:\s|>|=)/.test(tag));
-    assert(html.indexOf(`id="${configuration}"`) < html.indexOf(`id="${id}"`));
-    assert(html.indexOf(`id="${id}"`) < html.indexOf(`id="${equipment}"`));
-  }
-  assert(!html.includes('zone-availability-fold'));
-  const overview = html.slice(html.indexOf('<details id="garage-heating-details"'), html.indexOf('id="garage-manual-controls"'));
-  assert(overview.includes('id="garage-door-summary"'));
-  assert(!overview.includes('Cold allowance'));
-  assert(!html.includes('id="garage-budget-rear"') && !html.includes('id="garage-budget-front"'));
-  for (const location of ['rear', 'front']) assert(html.includes(`id="garage-settings-budget-${location}"`));
-});
-
-test('permanent Mitsubishi summary values remain plain text and stop claiming stale readings', () => {
-  const nodes = new Map(['power', 'mode', 'target'].map(field => [`garage-native-${field}`, {
-    textContent: '', stale: false, classList: { toggle(name, value) { nodes.get(`garage-native-${field}`)[name] = value; } },
-  }]));
-  const document = { getElementById: id => nodes.get(id) };
-  const garage = { settings: { maxSensorAgeMs: 120_000 }, adapter: { connected: true, health: { deviceOnline: true, pumpCommunicating: true },
-    native: { power: 'on', mode: 'heat', targetC: 10, readbacks: Object.fromEntries(['power', 'mode', 'targetC'].map(field => [field, { measuredAt: now }])) } } };
-  renderGarage(document, { garage, now });
-  assert.deepEqual([...nodes.values()].map(node => node.textContent), ['On', 'Heat', '10 °C']);
-  assert([...nodes.values()].every(node => !node.stale));
-  renderGarage(document, { garage, now: now + 120_000 });
-  assert([...nodes.values()].every(node => node.textContent === '—' && node.stale && node.muted));
-  renderGarage(document, { garage: { ...garage, adapter: { ...garage.adapter, connected: false } }, now });
-  assert([...nodes.values()].every(node => node.textContent === '—' && node.stale && node.muted));
-});
-
-test('Garage settings keep configured values separate from descriptions and live exposure', () => {
-  const settings = garageSettings({ savingsStrategy: 'gentle' });
-  const garage = { settings, protection: { locations: { rear: { remainingKjPerM: 0 }, front: { remainingKjPerM: 12 } } } };
-  const before = structuredClone(garage), display = garageDisplay(garage);
-  const groups = Object.fromEntries(Object.entries(display.settingGroups).map(([key, rows]) => [key, Object.fromEntries(rows)]));
-  assert.equal(display.strategy.label, 'Gentle');
-  assert.deepEqual(groups.economics, { 'Minimum estimated benefit': 'More than €0.75', 'Benefit retained': '60% of best opportunity' });
-  assert.deepEqual(groups.heating, { 'Minimum planned reduction': '1 h', 'Normal heating between reductions': '3 h minimum', 'Maximum reductions per day': '1' });
-  assert.deepEqual(groups.protection, { 'Normal room setting': 'Unavailable', 'Protection margin': '1 °C' });
-  assert.deepEqual(groups.recovery, { 'Reference pipe diameter': '21 mm', 'Assumed wall thickness': '1 mm', 'Heat transfer': '20 W/m²K', 'Safety factor': '2×', 'Cold allowance': 'Calculated · kJ/m', 'Recovery': 'Continuous' });
-  for (const rows of Object.values(display.settingGroups)) for (const [, value, description] of rows) {
-    assert(description.length > 30); assert(value.length < 30);
-  }
-  assert.deepEqual(garage, before);
-  assert.deepEqual(garageDisplay({ settings, protection: {} }).settingGroups, display.settingGroups);
-  const missing = garageDisplay().settingGroups;
-  assert(missing.heating.every(([, value]) => value === 'Unavailable'));
-  assert(missing.protection.every(([, value]) => value === 'Unavailable'));
-  assert(missing.economics.every(([, value]) => value === 'Unavailable'));
-  assert.equal(garageDisplay().strategy, null, 'A missing configuration must not claim Balanced is active');
-  const html = readFileSync(new URL('../chart/index.html', import.meta.url), 'utf8');
-  assert.match(html, /water-filled copper reference pipe/);
-  assert(!html.includes('garage-settings-budget-rear-meter'));
-});
-
-test('Garage preference displays effective thresholds for the same policy the planner uses', () => {
-  for (const [savingsStrategy, label, minimum, retained] of [['gentle', 'Gentle', .75, 60], ['balanced', 'Balanced', .5, 80], ['savings', 'More savings', .25, 100]]) {
-    const display = garageDisplay({ settings: garageSettings({ savingsStrategy }) });
-    const rows = Object.fromEntries(display.settingGroups.economics);
-    assert.equal(display.strategy.label, label);
-    assert.equal(rows['Minimum estimated benefit'], `More than €${minimum}`);
-    assert.equal(rows['Benefit retained'], `${retained}% of best opportunity`);
-    assert.equal(display.planningDetails.find(row => row.key === 'minimum-savings').value, `€${minimum}`);
-  }
-  const configured = Object.fromEntries(garageDisplay({ settings: garageSettings({ savingsStrategy: 'savings', minSavingsEur: 2 }) }).settingGroups.economics);
-  assert.equal(configured['Minimum estimated benefit'], 'More than €1');
-});
-
-test('Garage strategy selection updates the active label without inventing a default for missing status', () => {
-  const nodes = new Map(['garage-strategy-overview', ...['gentle', 'balanced', 'savings'].flatMap(id => [`garage-strategy-${id}`, `garage-strategy-${id}-current`])]
-    .map(id => [id, { textContent: '', dataset: {}, hidden: false }]));
-  const document = { getElementById: id => nodes.get(id) };
-  for (const savingsStrategy of ['gentle', 'balanced', 'savings', undefined]) {
-    renderGarage(document, { garage: { settings: savingsStrategy ? garageSettings({ savingsStrategy }) : {} } });
-    for (const id of ['gentle', 'balanced', 'savings']) {
-      assert.equal(nodes.get(`garage-strategy-${id}`).dataset.selected, String(id === savingsStrategy));
-      assert.equal(nodes.get(`garage-strategy-${id}-current`).hidden, id !== savingsStrategy);
-    }
-    if (!savingsStrategy) assert.equal(nodes.get('garage-strategy-overview').textContent, 'Strategy unavailable');
-  }
-});
-
-test('Garage policy distinguishes automatic planning from paused, disabled and plan-only control', () => {
-  const context = { textContent: '' }, document = { getElementById: id => id === 'garage-policy-context' ? context : null };
-  for (const [status, expected] of [
-    [{ automation: { home: { enabled: false }, garage: { enabled: false } }, garage: { settings: { enabled: true } } }, /Plan only: Garage plans do not send automatic commands/],
-    [{ automation: { home: { enabled: true }, garage: { enabled: true } }, garage: { settings: { enabled: false } } }, /Garage integration is disabled/],
-    [{ automation: { home: { enabled: true }, garage: { enabled: true } }, input: 'offline', garage: { settings: { enabled: true } } }, /History viewer/],
-    [{ automation: { home: { enabled: true }, garage: { enabled: true } }, garage: { settings: { enabled: true }, temporary: { pauseActive: true } } }, /Price control is paused.*Freeze protection/],
-    [{ automation: { home: { enabled: true }, garage: { enabled: true } }, garage: { settings: { enabled: true } } }, /subject to equipment and protection checks/],
-    [{}, /Garage automation status is unavailable/],
-  ]) {
-    renderGarage(document, status);
-    assert.match(context.textContent, expected);
-  }
-});
-
-test('Garage pause summary reports current pause, disabled, unavailable and automation permission truthfully', () => {
-  const active = { now, automation: { home: { enabled: true }, garage: { enabled: true } }, input: 'mqtt', garage: { settings: { enabled: true } } };
-  assert.equal(garagePauseSummary(active), 'Not paused');
-  assert.equal(garagePauseSummary({}), 'Status unavailable');
-  assert.equal(garagePauseSummary({ ...active, automation: { home: { enabled: false }, garage: { enabled: false } } }), 'Plan only');
-  assert.equal(garagePauseSummary({ ...active, input: 'offline' }), 'Unavailable offline');
-  assert.equal(garagePauseSummary({ ...active, garage: { settings: { enabled: false } } }), 'Garage integration unavailable');
-  assert.match(garagePauseSummary({ ...active, garage: { ...active.garage,
-    temporary: { pauseActive: true, pauseUntil: now + 60_000 } } }), /^Paused until /);
-  assert.equal(garagePauseSummary({ ...active, garage: { ...active.garage,
-    temporary: { pauseActive: true, pauseUntil: now - 1 } } }), 'Not paused');
-});
-
-test('Garage current state and overview share the requested power through manual, plan and restoration states', () => {
-  assert.equal(garageHeatingRequest({}), 'No request');
-  assert.equal(garageHeatingRequest({ plan: { nextAction: 'normal' } }), 'Normal');
-  assert.equal(garageHeatingRequest({ plan: { nextAction: 'target' } }), 'No request', 'a plan-only forecast is not a device request');
-  assert.equal(garageHeatingRequest({ targetControl: { targetC: 0 } }), 'Reduction');
-  assert.equal(garageHeatingRequest({ heatingControls: { selectedMode: 'off' }, plan: { nextAction: 'normal' } }), 'Off',
-    'an ordinary native OFF selection remains visible while the planner permits normal operation');
-  assert.equal(garageHeatingRequest({ adapter: { phase: 'paused', restorePending: true } }), 'Off');
-  assert.equal(garageHeatingRequest({ adapter: { phase: 'restoring', restorePending: true } }), 'Restoring');
-  assert.equal(garageHeatingRequest({ heatingControls: { requestedMode: 'off' }, adapter: { phase: 'paused' } }), 'Off');
-  assert.equal(garageHeatingRequest({ heatingControls: { requestedMode: 'normal' }, adapter: { restorePending: true } }), 'Normal');
-});
-
-
-test('End garage pause requires an owned restoration obligation, supported capability and writable role', () => {
-  const status = { garage: { adapter: { restorePending: true, simulation: true } } };
-  assert.equal(garageReleaseAvailable(status), true);
-  assert.equal(garageReleaseAvailable({ garage: { adapter: { restorePending: true, liveControlSupported: true } } }), true);
-  for (const value of [undefined, {}, { garage: { adapter: { simulation: true } } },
-    { garage: { adapter: { restorePending: true, liveControlSupported: false } } },
-    { ...status, role: 'slave' }, { ...status, role: 'protected' }, { ...status, readOnly: true },
-    { ...status, topology: 'pair', pair: { role: 'master', canControl: false } }])
-    assert.equal(garageReleaseAvailable(value), false);
-});
-
-test('garage release uses the empty safe request, rejects double clicks and awaits native recovery evidence', async () => {
-  const nodes = new Map(['garage-release', 'garage-release-message'].map(id => [id, {
-    disabled: true, textContent: '', attributes: new Map(), listeners: new Map(),
-    classList: { add() {}, remove() {} },
-    setAttribute(key, value) { this.attributes.set(key, value); }, removeAttribute(key) { this.attributes.delete(key); },
-    addEventListener(key, value) { this.listeners.set(key, value); }, removeEventListener(key) { this.listeners.delete(key); },
-  }]));
-  const button = nodes.get('garage-release'), message = nodes.get('garage-release-message');
-  const calls = [], busy = []; let resolve, returned;
-  const status = { garage: { adapter: { restorePending: true, simulation: true } } };
-  const panel = createGarageControls({ document: { getElementById: id => nodes.get(id) },
-    request: async (path, payload) => { calls.push([path, payload]); return new Promise(done => { resolve = done; }); },
-    onBusy: value => busy.push(value), onStatus: value => { returned = value; } });
-  assert.equal(button.disabled, true);
-  panel.update(status); assert.equal(button.disabled, false);
-  const pending = button.listeners.get('click')();
-  assert.equal(button.disabled, true); assert.equal(button.attributes.get('aria-busy'), 'true');
-  await button.listeners.get('click')(); assert.deepEqual(calls, [['/api/garage/release', {}]]);
-  resolve(status); await pending;
-  assert.equal(returned, status); assert.match(message.textContent, /Waiting for heating confirmation/);
-  assert.deepEqual(busy, [true, false]); assert.equal(button.disabled, false);
-  panel.update({ ...status, role: 'slave' }); await button.listeners.get('click')();
-  assert.equal(calls.length, 1); assert.equal(button.disabled, true);
-  panel.close(); assert.equal(button.listeners.has('click'), false);
-});
-
-function garageControlFixture() {
-  const ids = ['garage-release', 'garage-release-message', 'garage-pause-form', 'garage-pause-until',
-    'garage-heating-message', 'garage-pause-message', 'garage-mode-normal', 'garage-mode-off', 'garage-resume-now'];
-  const nodes = new Map(ids.map(id => [id, {
-    textContent: '', value: '', listeners: new Map(), classes: new Set(),
-    classList: { add(name) { nodes.get(id).classes.add(name); }, remove(name) { nodes.get(id).classes.delete(name); } },
-    setAttribute() {}, removeAttribute() {}, querySelector() { return { textContent: '' }; },
-    addEventListener(event, handler) { this.listeners.set(event, handler); }, removeEventListener(event) { this.listeners.delete(event); },
-  }]));
-  const initial = { now, garage: { adapter: { restorePending: false, simulation: true },
-    heatingControls: { available: true, normalAvailable: true, offAvailable: true, requestedMode: null },
-    temporary: { available: true, pauseActive: false } } };
-  let response = initial;
-  const document = { getElementById: id => nodes.get(id), defaultView: { HTMLDialogElement: class {} },
-    body: { append() {} }, createElement() {
-      return Object.assign(new EventTarget(), { setAttribute() {}, append() {}, focus() {}, remove() {},
-        showModal() { queueMicrotask(() => this.close('apply')); },
-        close(value) { this.returnValue = value; this.dispatchEvent(new Event('close')); } });
-    } };
-  const panel = createGarageControls({ document,
-    request: async () => { if (response instanceof Error) throw response; return response; } });
+const now = Date.parse('2026-09-29T12:00:00Z'), day = 86400_000;
+const range = { from: now - day, to: now };
+function fixture() {
+  const ids = ['garage-mode-normal', 'garage-mode-away', 'garage-mode-normal-target', 'garage-mode-away-target',
+    'garage-target-form', 'garage-normal-target', 'garage-target-submit', 'garage-heating-message', 'garage-warming-warning',
+    'garage-control-mode', 'garage-current-control', 'garage-current-room', 'garage-target-confirmation',
+    'garage-bluetooth-temperature', 'garage-heating-status', 'garage-control-detail', 'garage-protection-status', 'garage-protection-detail',
+    'garage-protection-rear', 'garage-protection-front', 'garage-pipe-rear', 'garage-pipe-front', 'garage-reserve-rear',
+    'garage-reserve-front', 'garage-pipe-rear-status', 'garage-pipe-front-status', 'garage-protection-form',
+    'garage-protection-approved', 'garage-protection-marginC', 'garage-protection-pipeOutsideDiameterMm',
+    'garage-protection-pipeWallMm', 'garage-protection-heatTransferWPerM2K', 'garage-protection-submit',
+    'garage-protection-settings-status', 'garage-protection-message'];
+  const nodes = new Map(ids.map(id => [id, { textContent: '', value: '', checked: false, hidden: false,
+    dataset: {}, attributes: new Map(), listeners: new Map(), classList: { add() {}, remove() {}, toggle() {} },
+    setAttribute(key, value) { this.attributes.set(key, value); }, querySelector() { return this.marker ??= { textContent: '' }; },
+    addEventListener(key, handler) { this.listeners.set(key, handler); }, removeEventListener(key) { this.listeners.delete(key); } }]));
+  const initial = { now, input: 'providers', garage: { mode: 'normal', normalTargetC: 10, awayTargetC: 5,
+    requestedTargetC: 10, effectiveTargetC: 10, targetConfirmed: true, controlAvailable: true,
+    protection: { available: false, active: false, status: 'unavailable', settingsAvailable: false } } };
+  const requests = [], busy = []; let response = initial;
+  const panel = createGarageControls({ document: { getElementById: id => nodes.get(id) }, onBusy: value => busy.push(value),
+    request: async (path, payload) => { requests.push([path, payload]); if (response instanceof Error) throw response; return response; } });
   panel.update(initial);
-  return { panel, nodes, initial, reply(value) { response = value; },
-    async trigger(id, event = 'click') { nodes.get(id).listeners.get(event)({ preventDefault() {} }); await new Promise(setImmediate); } };
+  return { nodes, initial, panel, requests, busy, reply(value) { response = value; },
+    async trigger(id, kind = 'click') { nodes.get(id).listeners.get(kind)?.({ preventDefault() {} }); await new Promise(setImmediate); } };
 }
 
-test('garage manual feedback follows confirmation and clears after hold expiry and restoration', async () => {
-  const f = garageControlFixture(), deadline = now + 3600_000;
-  const paused = { ...f.initial, garage: { ...f.initial.garage,
-    temporary: { available: true, pauseActive: true, pauseUntil: deadline } } };
-  const held = { ...paused, garage: { ...paused.garage, adapter: { restorePending: true, simulation: true },
-    heatingControls: { ...paused.garage.heatingControls, requestedMode: 'off', holdUntil: deadline, paused: true, confirmed: false } } };
-  f.panel.update(paused); f.reply(held); await f.trigger('garage-mode-off');
-  const message = f.nodes.get('garage-heating-message');
-  assert.match(message.textContent, /Held until.*Check the reported pump state/);
-  const confirmed = { ...held, garage: { ...held.garage, heatingControls: { ...held.garage.heatingControls, confirmed: true } } };
-  f.panel.update(confirmed); assert.match(message.textContent, /Device confirmed/);
-  const restoring = { ...f.initial, now: deadline, garage: { ...f.initial.garage,
-    adapter: { restorePending: true, simulation: true } } };
-  f.panel.update(restoring);
-  assert.match(message.textContent, /Waiting for normal heating confirmation/);
-  assert.doesNotMatch(message.textContent, /Held until|Device confirmed/);
-  f.panel.update({ ...f.initial, now: deadline + 60_000 }); assert.equal(message.textContent, '');
-  f.panel.update(restoring); assert.equal(message.textContent, '', 'Completed feedback cannot return with a later restoration');
-  f.panel.close();
+test('manual Normal and Away send durable selections without lease, expiry, or native power commands', async () => {
+  const f = fixture();
+  assert.equal(f.nodes.get('garage-mode-normal').attributes.get('aria-pressed'), 'true');
+  const away = { ...f.initial, garage: { ...f.initial.garage, mode: 'away', requestedTargetC: 5, targetConfirmed: false } };
+  f.reply(away); await f.trigger('garage-mode-away');
+  assert.deepEqual(f.requests, [['/api/garage/heating', { mode: 'away' }]]);
+  assert.equal(f.nodes.get('garage-mode-away').attributes.get('aria-pressed'), 'true');
+  assert.match(f.nodes.get('garage-heating-message').textContent, /Away selected.*Waiting for Pill confirmation/);
+  f.panel.update({ ...away, now: now + 2 * day });
+  assert.equal(f.nodes.get('garage-mode-away').attributes.get('aria-pressed'), 'true');
+  assert.deepEqual(f.busy, [true, false]);
+  f.panel.close(); assert.equal(f.nodes.get('garage-mode-normal').listeners.has('click'), false);
 });
 
-test('garage manual feedback clears on the controller update or a replacement manual request', async () => {
-  for (const superseded of [false, true]) {
-    const f = garageControlFixture();
-    const requested = { ...f.initial, garage: { ...f.initial.garage,
-      heatingControls: { ...f.initial.garage.heatingControls, requestedMode: 'normal', holdUntil: now + 60_000, confirmed: true } } };
-    f.reply(requested); await f.trigger('garage-mode-normal');
-    assert.match(f.nodes.get('garage-heating-message').textContent, /next controller update/);
-    f.panel.update(superseded ? { ...requested, now: now + 1000, garage: { ...requested.garage,
-      adapter: { restorePending: true, simulation: true },
-      heatingControls: { ...requested.garage.heatingControls, requestedMode: 'off' } } } : { ...f.initial, now: now + 1000 });
-    assert.equal(f.nodes.get('garage-heating-message').textContent, '');
-    f.panel.close();
+test('target edits preserve drafts during polling, select Normal explicitly, and validate half-degree bounds', async () => {
+  const f = fixture(), input = f.nodes.get('garage-normal-target');
+  input.value = '8.5'; await f.trigger('garage-normal-target', 'input');
+  f.panel.update({ ...f.initial, garage: { ...f.initial.garage, normalTargetC: 9 } });
+  assert.equal(input.value, '8.5');
+  f.reply({ ...f.initial, garage: { ...f.initial.garage, normalTargetC: 8.5, requestedTargetC: 8.5 } });
+  await f.trigger('garage-target-form', 'submit');
+  assert.deepEqual(f.requests, [['/api/garage/heating', { mode: 'normal', targetC: 8.5 }]]);
+  assert.equal(f.nodes.get('garage-target-submit').disabled, true);
+  for (const invalid of ['', '-0.5', '31.5', '8.1']) {
+    input.value = invalid; await f.trigger('garage-normal-target', 'input'); await f.trigger('garage-target-form', 'submit');
   }
+  assert.equal(f.requests.length, 1); assert.match(f.nodes.get('garage-heating-message').textContent, /0 to 31/);
 });
 
-test('garage pause and resume feedback drops obsolete heating claims and ends with restoration', async () => {
-  const f = garageControlFixture(), deadline = now + 3600_000;
-  const paused = { ...f.initial, garage: { ...f.initial.garage,
-    temporary: { available: true, pauseActive: true, pauseUntil: deadline } } };
-  f.nodes.get('garage-pause-until').value = '2026-09-09T04:00';
-  await f.trigger('garage-pause-until', 'input'); f.reply(paused); await f.trigger('garage-pause-form', 'submit');
-  const message = f.nodes.get('garage-pause-message'); assert.match(message.textContent, /Pause saved/);
-  f.panel.update({ ...paused, garage: { ...paused.garage,
-    heatingControls: { ...paused.garage.heatingControls, requestedMode: 'off', holdUntil: deadline, paused: true } } });
-  assert.match(message.textContent, /Price control paused until/); assert.doesNotMatch(message.textContent, /Normal heating is requested/);
-  const restoring = { ...f.initial, garage: { ...f.initial.garage, adapter: { restorePending: true, simulation: true } } };
-  f.reply(restoring); await f.trigger('garage-resume-now');
-  f.panel.update(restoring); assert.match(message.textContent, /Waiting for normal heating confirmation/);
-  f.panel.update(f.initial); assert.equal(message.textContent, '');
-  f.panel.close();
-});
-
-test('garage release keeps unresolved and failed requests visible but clears completed feedback', async () => {
-  const f = garageControlFixture(), pending = { ...f.initial, garage: { ...f.initial.garage,
-    adapter: { restorePending: true, simulation: true } } };
-  const message = f.nodes.get('garage-release-message');
-  f.panel.update(pending); f.reply(pending); await f.trigger('garage-release');
-  f.panel.update(pending); assert.match(message.textContent, /Waiting for heating confirmation/);
-  f.panel.update(f.initial); assert.equal(message.textContent, '');
-  f.panel.update(pending); assert.equal(message.textContent, '');
-  f.reply(new Error('Heating restoration could not be confirmed.')); await f.trigger('garage-release');
-  f.panel.update(pending);
-  assert.equal(message.textContent, 'Heating restoration could not be confirmed.');
-  assert(message.classes.has('form-error'));
-  f.panel.close();
-});
-
-
-test('Garage exposes two learned cooling rates and four explicit electricity and recovery assumptions', () => {
-  const model = createGarageModel(), initial = garageDisplay({ learning: garageModelSummary(model) });
-  const rows = Object.fromEntries(initial.coefficientDetails.map(row => [row.key, row]));
-  assert.equal(initial.coefficients.length, 6);
-  assert.equal(rows['rear-cooling-rate'].value, '0.03 1/h');
-  assert.equal(rows['front-cooling-rate'].value, '0.04 1/h');
-  assert.equal(rows['rear-cooling-rate'].provenance, 'Initial estimate');
-  assert.match(rows['rear-cooling-rate'].calculation.equations[0].expression, /exp/);
-  assert.equal(rows['charger-heat-fraction'].value, '7.5 %');
-  assert.equal(rows['normal-pump-power'].value, '0.5 kW');
-  assert.equal(rows['normal-pump-power'].provenance, 'Assumed');
-  assert.equal(rows['recovery-time'].value, '3 h');
-  assert.equal(rows['recovery-energy-factor'].value, '1.25 ×');
-  assert(!initial.inputDetails.some(row => /building warmth|memory|core/.test(row.title)));
-  model.rear.active[0] = true; model.rear.fitted[0] = true; model.rear.evidence[0] = 8;
-  model.native.active[0] = true; model.native.hours = 6; model.native.values[0] = .42;
-  const summary = garageModelSummary(model), before = structuredClone(summary);
-  const learned = garageDisplay({ learning: summary }).coefficientDetails;
-  assert.equal(learned.find(row => row.key === 'rear-cooling-rate').provenance, 'Learned');
-  assert.match(learned.find(row => row.key === 'rear-cooling-rate').evidence, /8 h clean cooling observations/);
-  assert.equal(learned.find(row => row.key === 'normal-pump-power').provenance, 'Recorded average');
-  assert.equal(learned.find(row => row.key === 'normal-pump-power').value, '0.42 kW');
-  assert.deepEqual(summary, before);
-});
-
-test('Garage separates validation, sources and planning with honest missing and zero inputs', () => {
-  const model = createGarageModel();
-  const garage = { observations: { rear: { value: 0, stale: false }, front: { value: 1, stale: true },
-      charging: { ev1: { known: true, powerKw: 0, heatKw: 0 }, ev2: { known: false } } },
-    settings: garageSettings(), roomTemperature: { targetC: 5, phase: 'active', acknowledged: true, offsetC: 12 }, learning: garageModelSummary(model) };
-  const before = structuredClone(garage), display = garageDisplay(garage);
-  const inputs = Object.fromEntries(display.inputDetails.map(row => [row.key, row]));
-  assert.equal(inputs['rear-air-temperature'].value, '0 °C');
-  assert.equal(inputs['front-air-temperature'].value, '1 °C · stale');
-  assert.equal(inputs['outdoor-temperature'].value, 'Unavailable');
-  assert.equal(inputs['outdoor-temperature'].available, false);
-  assert.equal(inputs['charger-1-input'].value, '0 kW');
-  assert.match(inputs['charger-1-input'].evidence, /0 kW estimated heat/);
-  assert.equal(inputs['charger-2-input'].value, 'Unavailable');
-  assert.match(inputs['charger-2-input'].evidence, /Unknown is not treated as zero/);
-  assert.equal(inputs['local-allowance-recovery'], undefined, 'Derived pipe protection belongs with the strategy, not model source inputs');
-  assert(display.evidenceDetails.some(row => row.key === 'rear-cooling-error'));
-  assert(!display.outcomeDetails.some(row => row.key === 'rear-cooling-error'));
-  assert(display.planningDetails.some(row => row.key === 'daily-pause-limit' && row.value === '1'));
-  assert.equal(Object.fromEntries(display.rows)['Normal heating setting basis'], '5 °C · Garage rear · Active');
-  for (const rows of [display.outcomeDetails, display.evidenceDetails, display.inputDetails, display.coefficientDetails, display.planningDetails]) {
-    assert.equal(new Set(rows.map(row => row.key)).size, rows.length);
-    assert(rows.every(row => row.title && row.value && row.provenance && row.detail));
-    assert(rows.every(row => row.calculation?.paragraphs?.length >= 1), 'Every Garage entry offers methodology and limits');
+test('unavailable and read-only views cannot send a mode or target change', async () => {
+  const f = fixture();
+  for (const patch of [{ input: 'offline' }, { role: 'slave' }, { readOnly: true },
+    { garage: { ...f.initial.garage, controlAvailable: false } }]) {
+    f.panel.update({ ...f.initial, ...patch });
+    assert.equal(f.nodes.get('garage-mode-away').disabled, true);
+    await f.trigger('garage-mode-away');
   }
-  assert.deepEqual(garage, before);
-  for (const [source, provenance] of [['fmi', 'Recorded'], ['husdata-h66', 'Recorded'], ['openmeteo', 'Modeled']])
-    assert.equal(garageDisplay({ observations: { outdoor: { value: 0, source } } }).inputDetails.find(row => row.key === 'outdoor-temperature').provenance, provenance);
-  const missing = garageDisplay();
-  for (const key of ['temperature-prediction', 'thermal-pause-duration', 'electricity-prediction'])
-    assert.equal(missing.outcomeDetails.find(row => row.key === key).value, 'Unavailable');
+  assert.equal(f.requests.length, 0);
 });
 
-test('future and active target windows use their selected endpoints, with no preheating', () => {
-  for (const plan of [{ reductionFrom: now + 3600_000, plannedReductionUntil: now + 7200_000, reductionUntil: null },
-    { reductionFrom: now, reductionUntil: now + 3600_000 }]) {
-    const display = garageDisplay({ plan: { ...plan, reason: 'wait-for-later-price-opportunity' } });
-    const window = display.planningDetails.find(row => row.key === 'reduction-window');
-    assert.notEqual(window.value, 'None');
-    assert.match(window.detail, /no preheating/);
-    assert.notEqual(Object.fromEntries(display.rows)['Planned reduction endpoint'], 'No reduction planned');
-  }
+test('condensation warning is visible after warming and disappears only after the advisory period', () => {
+  const f = fixture(), warmingWarning = { since: now, until: now + day, message: 'Avoid wet or snowy vehicles for roughly 24 hours, and longer while contents remain cold.' };
+  const status = { ...f.initial, garage: { ...f.initial.garage, warmingWarning } };
+  f.panel.update(status);
+  assert.equal(f.nodes.get('garage-warming-warning').hidden, false);
+  assert.match(f.nodes.get('garage-warming-warning').textContent, /wet or snowy/);
+  assert.equal(garageHeatingWarning({ ...status, now: now + day }), '');
+  assert.equal(garageHeatingWarning({ ...status, now: now - 1 }), '');
+  f.panel.update({ ...status, now: now + day });
+  assert.equal(f.nodes.get('garage-warming-warning').hidden, true);
+  assert.equal(f.nodes.get('garage-mode-normal').disabled, false, 'An advisory is not a confirmation gate');
 });
 
-test('validated OFF evidence is distinct from the planned minimum and has no pause ceiling', () => {
-  const display = garageDisplay({ settings: garageSettings(), learning: {
-    ...garageModelSummary(createGarageModel()), thermalReady: true, validatedOffHours: 1.5,
-  }, plan: { reductionFrom: now, reductionUntil: now + 30 * 3600_000 } });
-  const evidence = display.outcomeDetails.find(row => row.key === 'thermal-pause-duration');
-  assert.equal(evidence.title, 'Validated OFF evidence');
-  assert.equal(evidence.value, '1.5 h');
-  assert.match(evidence.detail, /does not impose a maximum reduction duration/);
-  const minimum = display.planningDetails.find(row => row.key === 'reduction-duration-limits');
-  assert.equal(minimum.title, 'Reduction endpoint');
-  assert.equal(minimum.value, 'Forecast and protection limited');
-  assert.equal(Object.fromEntries(display.settingGroups.heating)['Minimum planned reduction'], '1 h');
-  assert.match(minimum.detail, /no fixed maximum reduction duration/);
-  assert.match(minimum.detail, /Protection can always end a reduction before the planned minimum/);
-  assert.notEqual(display.planningDetails.find(row => row.key === 'reduction-window').value, 'None');
-  assert.match(display.planningDetails.find(row => row.key === 'restore-policy').detail, /does not cap the reduction’s total length/);
+test('missing frost demand is unavailable and confirmed override leaves selected target distinct', () => {
+  assert.equal(garageDisplay({ protection: { active: true } }).protection, 'Unavailable');
+  const display = garageDisplay({ mode: 'away', requestedTargetC: 5, effectiveTargetC: 10,
+    protection: { available: true, active: true } });
+  assert.equal(display.mode, 'Away'); assert.equal(display.target, '5 °C'); assert.equal(display.effectiveTarget, '10 °C');
+  assert.equal(display.protection, 'Heating override active');
+  assert.match(display.protectionDetail, /choice remains saved/);
 });
 
-test('Garage rendering fills the learning contexts and keeps reconstruction inside evidence', () => {
-  const nodes = new Map(['garage-learning-context', 'garage-input-context', 'garage-coefficient-context'].map(id => [id, { textContent: '' }]));
-  renderGarage({ getElementById: id => nodes.get(id) }, { garage: { learning: garageModelSummary(createGarageModel()) }, now });
-  assert.match(nodes.get('garage-learning-context').textContent, /cooling and recovery checks/);
-  assert.match(nodes.get('garage-input-context').textContent, /Missing readings remain unknown/);
-  assert.match(nodes.get('garage-coefficient-context').textContent, /rear and front cooling rates are fitted independently/);
-  assert.match(nodes.get('garage-coefficient-context').textContent, /electrical average can replace assumed pump power/);
-  assert.equal(garageDisplay({ learning: { reconstruction: 'snapshot' } }).evidenceDetails.find(row => row.key === 'recorded-history-reconstruction').value, 'Recorded master snapshot');
+test('pipe estimates require fresh certain sender evidence and retain valid zero reserve', () => {
+  const f = fixture(), protection = { available: true, active: true, sender: { available: true },
+    locations: { rear: { airC: 0, estimatedC: 1, remainingKjPerM: 0 }, front: { airC: 2, estimatedC: 2, remainingKjPerM: 0.001 } } };
+  const status = { ...f.initial, garage: { ...f.initial.garage, protection } };
+  f.panel.update(status);
+  assert.equal(f.nodes.get('garage-protection-rear').textContent, '0 °C');
+  assert.equal(f.nodes.get('garage-reserve-rear').textContent, '0 kJ/m');
+  assert.equal(f.nodes.get('garage-reserve-front').textContent, '<0.01 kJ/m');
+  protection.locations.front.uncertain = true; f.panel.update(status);
+  assert.equal(f.nodes.get('garage-pipe-front').textContent, 'Unavailable');
+  protection.sender.available = false; f.panel.update(status);
+  assert.equal(f.nodes.get('garage-reserve-rear').textContent, 'Unavailable');
 });
 
-test('Garage strategy uses the model room setting during pending commands, reporting gaps and ambiguous native reports', () => {
-  for (const [roomTargetC, nativeTargetC, expected] of [[20, 17, '20 °C'], [22, null, '22 °C'], [null, 16, 'Unavailable']]) {
-    const display = garageDisplay({ learning: garageModelSummary(createGarageModel({ roomTargetC })),
-      adapter: { connected: true, health: { deviceOnline: true, pumpCommunicating: true },
-        native: { targetC: nativeTargetC, readbacks: { targetC: { measuredAt: now } } } } }, now);
-    assert.equal(display.settingGroups.protection.find(row => row[0] === 'Normal room setting')[1], expected);
-  }
+test('protection settings stay separate, require actual readback, preserve drafts and await confirmation', async () => {
+  const f = fixture();
+  assert.equal(f.nodes.get('garage-protection-marginC').value, '');
+  assert.equal(f.nodes.get('garage-protection-submit').disabled, true);
+  const settings = { approved: true, version: 'garage-thermal-reserve-v1', marginC: 1, pipeOutsideDiameterMm: 20,
+    pipeWallMm: 2, heatTransferWPerM2K: 5 };
+  const status = { ...f.initial, garage: { ...f.initial.garage, protection: { settingsAvailable: true, settings } } };
+  f.panel.update(status); f.reply(status);
+  f.nodes.get('garage-protection-marginC').value = '1.5'; await f.trigger('garage-protection-marginC', 'input');
+  f.panel.update(status); assert.equal(f.nodes.get('garage-protection-marginC').value, '1.5');
+  await f.trigger('garage-protection-form', 'submit');
+  assert.deepEqual(f.requests, [['/api/garage/protection', { ...settings, marginC: 1.5 }]]);
+  assert.match(f.nodes.get('garage-protection-message').textContent, /Wait for.*confirmed readback/);
 });
 
-test('Garage model distinguishes source evidence, initial references and fitted values still awaiting validation', () => {
-  const model = createGarageModel({ roomTargetC: 7 });
-  const initial = garageDisplay({ learning: garageModelSummary(model) }, now);
-  const initialReference = initial.outcomeDetails.find(row => row.key === 'normal-rear-warmth');
-  assert.equal(initialReference.value, '7 °C');
-  assert.equal(initialReference.provenance, 'From room setting');
-  assert.match(initialReference.detail, /Starting estimate from the 7 °C room setting/);
-  const unknown = garageDisplay({ learning: garageModelSummary(createGarageModel()) }, now);
-  for (const row of unknown.outcomeDetails.filter(row => row.key.endsWith('-warmth'))) {
-    assert.equal(row.value, 'Unavailable');
-    assert.equal(row.provenance, 'Room setting unavailable');
-    assert.equal(row.available, false);
-  }
-  assert.equal(initial.inputDetails.find(row => row.key === 'heat-pump-input').value, '0 h qualified');
-  model.rear.active[0] = true; model.rear.values[0] = .02;
-  model.native.active[0] = true; model.native.values[0] = .4; model.native.hours = 3;
-  model.normalReference.initialized = true; model.normalReference.interceptC = 8; model.normalReference.qualifiedHours = 2;
-  const garage = { learning: garageModelSummary(model), observations: { charging: {
-    ev1: { known: true, powerKw: 2, heatKw: .15 }, ev2: { known: false, required: false },
-  } }, adapter: { connected: true, health: { deviceOnline: true, pumpCommunicating: true },
-    native: { power: 'off', powerAt: now, readbacks: { power: { measuredAt: now } } } } };
-  const learned = garageDisplay(garage, now);
-  assert.equal(learned.coefficientDetails.find(row => row.key === 'rear-cooling-rate').provenance, 'Learned');
-  assert.equal(learned.outcomeDetails.find(row => row.key === 'temperature-prediction').value, 'Awaiting validation');
-  assert.equal(learned.outcomeDetails.find(row => row.key === 'normal-rear-warmth').provenance, 'Learned');
-  assert.match(learned.outcomeDetails.find(row => row.key === 'normal-rear-warmth').detail, /anchors the recovery forecast/);
-  assert.equal(learned.inputDetails.find(row => row.key === 'heat-pump-input').value, '3 h qualified');
-  assert.equal(learned.coefficientDetails.find(row => row.key === 'normal-pump-power').value, '0.4 kW');
-  assert.equal(learned.inputDetails.find(row => row.key === 'charger-1-input').value, '2 kW');
-  assert.match(learned.inputDetails.find(row => row.key === 'charger-1-input').evidence, /0.15 kW estimated heat/);
-  assert.equal(learned.inputDetails.find(row => row.key === 'charger-2-input').value, 'Not required');
-  assert.equal(learned.inputDetails.find(row => row.key === 'heating-availability').value, 'Off');
-  const stale = garageDisplay(garage, now + 180_000).inputDetails.find(row => row.key === 'heating-availability');
-  assert.equal(stale.value, 'Unavailable');
-  assert.equal(stale.available, false);
-  const cooling = learned.coefficientDetails.find(row => row.key === 'rear-cooling-rate').calculation;
-  assert.match(cooling.paragraphs.join(' '), /twice the episode forecast error/);
-  assert.match(cooling.paragraphs.join(' '), /supported OFF duration/);
-  const charging = learned.coefficientDetails.find(row => row.key === 'charger-heat-fraction').calculation;
-  assert.match(charging.paragraphs.join(' '), /not added to the cooling or recovery temperature equations/);
-  const recovery = learned.coefficientDetails.find(row => row.key === 'recovery-energy-factor').calculation;
-  assert.match(recovery.equations.map(row => row.expression).join(' '), /extra recovery energy = avoided energy × 1.25/);
+test('Garage markup has durable controls and independent protection without retired automatic or model controls', () => {
+  const html = readFileSync(new URL('../chart/index.html', import.meta.url), 'utf8');
+  const garage = html.slice(html.indexOf('<article id="garage-control"'), html.indexOf('id="garage-equipment-readings"'));
+  for (const id of ['garage-mode-normal', 'garage-mode-away', 'garage-target-form', 'garage-protection-details', 'garage-protection-form'])
+    assert(garage.includes(`id="${id}"`));
+  assert.doesNotMatch(garage, /garage-(automation|pause|learning|release)|Automatic savings|Savings strategy|Temporary heating override/);
+  assert.match(garage, /roughly 24 hours.*longer if contents are still cold/);
+  assert.match(garage, /including across restarts/);
 });
 
-test('saved external room setting identifies active and fallback control while native 17°C remains unchanged', () => {
-  const nodes = new Map(['garage-native-target', 'garage-native-target-basis'].map(id => [id,
-    { textContent: '', hidden: true, classList: { toggle() {} } }]));
-  const garage = { settings: {}, roomTemperature: { targetC: 5, phase: 'active', acknowledged: true, offsetC: 12 },
-    adapter: { connected: true, health: { deviceOnline: true, pumpCommunicating: true }, baselineVerified: false, baselineAccepted: true,
-      native: { targetC: 17, readbacks: { targetC: { measuredAt: now } } } } };
-  const document = { getElementById: id => nodes.get(id) };
-  renderGarage(document, { now, garage });
-  assert.equal(nodes.get('garage-native-target').textContent, '5 °C');
-  assert.equal(nodes.get('garage-native-target-basis').textContent, 'Garage rear · Active');
-  assert.equal(nodes.get('garage-native-target-basis').hidden, false);
-  assert.equal(garage.adapter.native.targetC, 17);
-  const rows = Object.fromEntries(garageDisplay(garage).rows);
-  assert.equal(rows['Native baseline independently verified'], 'No');
-  assert.equal(rows['Native baseline accepted for control'], 'Yes');
-  garage.roomTemperature.phase = 'waiting'; garage.roomTemperature.acknowledged = false;
-  renderGarage(document, { now, garage: { roomTemperature: garage.roomTemperature } });
-  assert.equal(nodes.get('garage-native-target').textContent, '5 °C', 'The saved target stays visible while waiting for an input');
-  assert.equal(nodes.get('garage-native-target-basis').textContent, 'External sensor · Fallback');
-  garage.roomTemperature = { targetC: null, phase: 'disabled' };
-  renderGarage(document, { now, garage });
-  assert.equal(nodes.get('garage-native-target').textContent, '17 °C');
-  assert.equal(nodes.get('garage-native-target-basis').hidden, true);
+test('Home savings values are unchanged and Garage only presents observed electrical timing', () => {
+  const payload = { range, now, heatingBenefit: { status: 'estimated', valueEuro: 4.5, counts: { assessed: 3 } },
+    timingBenefit: { heatPump: { value: -0.25, coverage: 0.1 } } };
+  assert.equal(heatingScopeDisplay(payload).amount, heatingDisplay(payload.heatingBenefit, payload).amount);
+  assert.equal(heatingScopeDisplay(payload, 'home', 'timing').amount, timingDisplay('heatPump', payload.timingBenefit.heatPump, payload).amount);
+  const heatingSavings = buildHeatingSavings({ range, now, homeModel: payload.heatingBenefit,
+    homeTiming: payload.timingBenefit.heatPump, garageTiming: { value: .5, sourceQuality: 'verified-electrical',
+      coverageDetails: { elapsedMs: day, includedMs: 3600_000 }, evidence: { energyBasis: 'recorded-intervals',
+        timeBasis: 'recorded-interval-time', sources: [{ key: 'measured', durationMs: 3600_000, share: 1 }] } } });
+  assert.equal(heatingSavings.garage.model, undefined); assert.equal(heatingSavings.total.model, undefined);
+  const display = heatingScopeDisplay({ range, now, heatingSavings }, 'garage', 'model');
+  assert.equal(display.amount, '€0.50'); assert.match(display.energyExplanation, /does not attribute savings to Garage control/);
 });
 
-test('automatic garage details omit absent native diagnostics instead of unavailable placeholders', () => {
-  const rows=Object.fromEntries(garageDisplay({},now).rows);
-  for(const label of ['Native power','Native mode','Native target','Pump indoor temperature','Pump outdoor temperature',
-    'Electrical power','Native cumulative energy','Compressor frequency','Compressor / fan / defrost'])
-    assert.equal(Object.hasOwn(rows,label),false,label);
+test('local regulation fallback remains visible while mode commands are still available', async () => {
+  const f = fixture(), reason = 'Bluetooth room sensor is stale. The Pill is using its fallback target.';
+  f.panel.update({ ...f.initial, garage: { ...f.initial.garage, regulationReason: reason } });
+  assert.equal(f.nodes.get('garage-control-detail').textContent, reason);
+  assert.equal(f.nodes.get('garage-mode-away').disabled, false);
+  await f.trigger('garage-mode-away');
+  assert.equal(f.requests.length, 1);
+});
+
+
+test('Bluetooth input ages after the Pill report and stale fallback air is labelled', () => {
+  const f = fixture(), garage = { ...f.initial.garage,
+    adapter: { connected: true, observedAt: now - 30_000, control: { sensorTemperatureC: 0, sensorAgeMs: 160_000 } },
+    observations: { rear: { value: 5, stale: true } },
+    protection: { sender: { available: true }, locations: { rear: { airC: null, uncertain: true } } } };
+  f.panel.update({ ...f.initial, garage });
+  assert.equal(f.nodes.get('garage-bluetooth-temperature').textContent, 'Unavailable');
+  assert.equal(f.nodes.get('garage-protection-rear').textContent, '5 °C · stale');
+  garage.adapter.control.sensorAgeMs = 140_000; f.panel.update({ ...f.initial, garage });
+  assert.equal(f.nodes.get('garage-bluetooth-temperature').textContent, '0 °C');
 });

@@ -90,10 +90,8 @@ An initially absent bridge status does not prevent a live child reply. Retained
 bridge online provides context but cannot restore a contact by itself. Neither
 availability signal establishes a new physical contact observation.
 
-Doors use event-driven availability throughout equipment display, the garage
-model and history. Their last confirmed state does not expire after five minutes.
-Outages make the current state unknown; a live source-online report and snapshot
-can recover it without replacing the original source clock or erasing the gap.
-The model records door continuity so brief openings or outages between temperature
-reports still exclude affected learning and validation. The new garage algorithm
-starts an explicit epoch; archived learning is not reinterpreted.
+Doors use event-driven availability in equipment display and history. Their
+last confirmed state has no age expiry. Outages make current state unknown;
+a live source-online report and snapshot can recover it without changing the
+original source clock or erasing the gap. Door observations do not drive an
+automatic Garage heat model.

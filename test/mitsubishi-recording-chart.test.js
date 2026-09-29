@@ -52,15 +52,18 @@ function fixture(t, { disk = false } = {}) {
     at(offset) { now = BASE + offset; },
     send(fields, { packet = {}, envelope = {} } = {}) {
       adapter.receive('synthetic/cn105/telemetry', JSON.stringify({
-        schema: 'shelly-cn105/v1', deviceId: 'synthetic-pump', bootId: 'synthetic-boot-a',
+        schema: 'shelly-cn105/v2', deviceId: 'synthetic-pump', bootId: 'synthetic-boot-a',
         sequence: ++sequence, observedAt: now, fields, ...envelope,
       }), packet, now);
     },
     state(extra = {}) {
       adapter.receive('synthetic/cn105/state', JSON.stringify({
-        schema: 'shelly-cn105/v1', deviceId: 'synthetic-pump', bootId: 'synthetic-boot-a',
-        sessionId: 'synthetic-session', sequence: ++sequence, observedAt: now, mode: 'monitoring',
-        health: Object.fromEntries(['device', 'driver', 'pump'].map(key => [key, { value: true, measuredAt: now }])),
+        schema: 'shelly-cn105/v2', deviceId: 'synthetic-pump', bootId: 'synthetic-boot-a',
+        sessionId: 'synthetic-session', sequence: ++sequence, observedAt: now,
+        challenge: { value: `challenge-${sequence}` },
+        control: { targetC: 10, externalEnabled: true, effectiveTargetC: 10, status: 'active', sensorTemperatureC: 9,
+          sensorAgeMs: 100, externalTemperatureC: 16, frostAvailable: false, frostActive: false },
+        health: { nativeFresh: true, pumpAgeMs: 100 }, readback: { complete: true, ageMs: 100 },
         native: { power: { value: 'on', measuredAt: now } }, ...extra,
       }), {}, now);
     },
@@ -91,7 +94,7 @@ test('publisher-shaped on/off reports survive SQLite reopen and draw the compres
   assert.deepEqual(rows.map(row => [row.value, row.unit, row.sourceTime]), [[1, 'state', BASE], [0, 'state', BASE + MINUTE]]);
   assert(rows.every(row => row.quality.includes('observed-unverified') && row.raw.usableForControl === false));
   assert(rows.every(row => row.raw.diagnosticAvailable === true && row.raw.accuracyVerified === false
-    && row.raw.contractVersion === 'shelly-cn105/v1' && row.raw.supported === true));
+    && row.raw.contractVersion === 'shelly-cn105/v2' && row.raw.supported === true));
   assert(rows.every(row => row.raw.recorder.status === 'fresh'));
   assert.equal(f.adapter.status(BASE + MINUTE).telemetry.compressorActive.usable, false,
     'recording a diagnostic never promotes it into a control/learning input');
@@ -171,7 +174,7 @@ test('missing reports stay gaps when fresh running resumes and retained or dupli
   f.send({ compressorActive: publishedField(true, BASE) });
   f.at(4 * MINUTE);
   f.send({ compressorActive: publishedField(false, BASE + 4 * MINUTE) }, { packet: { retain: true } });
-  assert.equal(f.results.at(-1).reason, 'retained-periodic-report');
+  assert.equal(f.rows().length, 1, 'retained periodic reports do not reach the recorder');
   f.send({ compressorActive: publishedField(false, BASE + 4 * MINUTE) }, { packet: { dup: true } });
   assert.equal(f.rows().length, 1);
   f.at(5 * MINUTE);
@@ -221,23 +224,21 @@ test('a new adapter boot ends previous compressor evidence even if its first pac
   assert.equal(f.rows().at(-1).value, 0);
 });
 
-test('explicit communication health loss ends shading while unrelated native settings cannot extend it', async t => {
-  for (const key of ['device', 'driver', 'pump']) await t.test(key, t => {
-    const f = fixture(t);
-    f.state();
-    f.send({ compressorActive: publishedField(true, BASE) });
-    f.at(30_000);
-    f.state({ health: { [key]: { value: false, measuredAt: BASE + 30_000 } } });
-    f.at(45_000);
-    f.state({ native: { power: { value: 'off', measuredAt: BASE + 45_000 },
-      targetC: { value: 'invalid', measuredAt: BASE + 45_000 } } });
-    f.at(MINUTE);
-    const chart = f.chart();
-    assert.deepEqual(chart.shading.compressorGarage, [{ start: BASE, end: BASE + 30_000 }]);
-    assert(chart.series[ACTIVE].some(point => point.x === BASE + 30_000 && point.y === null));
-    assert(!chart.series[ACTIVE].some(point => point.y === 0), 'power setting is not compressor activity');
-    assert.equal(f.rows().at(-1).value, null);
-  });
+test('explicit pump communication loss ends shading while unrelated native settings cannot extend it', t => {
+  const f = fixture(t);
+  f.state();
+  f.send({ compressorActive: publishedField(true, BASE) });
+  f.at(30_000);
+  f.state({ health: { nativeFresh: false, pumpAgeMs: 120_000 } });
+  f.at(45_000);
+  f.state({ native: { power: { value: 'off', measuredAt: BASE + 45_000 },
+    targetC: { value: 'invalid', measuredAt: BASE + 45_000 } } });
+  f.at(MINUTE);
+  const chart = f.chart();
+  assert.deepEqual(chart.shading.compressorGarage, [{ start: BASE, end: BASE + 30_000 }]);
+  assert(chart.series[ACTIVE].some(point => point.x === BASE + 30_000 && point.y === null));
+  assert(!chart.series[ACTIVE].some(point => point.y === 0), 'power setting is not compressor activity');
+  assert.equal(f.rows().at(-1).value, null);
 });
 
 test('a retained packet cannot cause the recorder to discard a subsequent real disconnect', t => {

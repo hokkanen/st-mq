@@ -14,7 +14,7 @@ import { activeRates, rateRows, temporaryValues, priceControlState, renderHomePo
 import { learningDisplay, h66Control, h66HomeSummary, h66EquipmentSummary, h66ReadingStatus, h66ReadingValue, h66Registers, h66ReadingGroups, renderModelInputs } from './learning-status.js';
 import { renderRecording, renderEnergyAudits, recordingOverviewRefresh } from './recording.js';
 import { bindDatabaseExport } from './database-export.js';
-import { learningOverview, garageLearningOverview, settingsReloadScope } from './dashboard-status.js';
+import { learningOverview, settingsReloadScope } from './dashboard-status.js';
 import { createFireplacePanel } from './fireplace.js';
 import { createSensorChangePanel } from './sensor-changes.js';
 import { applicationUrl, usesHomeAssistantLogin, authenticationMessage, createPollingRequest,
@@ -29,7 +29,7 @@ import { setStatusDetail, closeStatusDetails } from './status-details.js';
 import { priceStatuses, renderCurrentPrice } from './current-price.js';
 import { homeHeatingConfirmation, setHeatingStatusDetail } from './heating-status.js';
 import { renderHomePlannedChange } from './heating-plan.js';
-import { homeHeatingWarning, garageHeatingWarning } from './heating-warning.js';
+import { homeHeatingWarning } from './heating-warning.js';
 import { createOcppSetupAction, ocppSetupRevision } from './ocpp-setup.js';
 import { createDashboardLayout } from './dashboard-layout.js';
 import { createPageFullscreen } from './page-fullscreen.js';
@@ -325,9 +325,7 @@ function renderHeatingTests(s) {
   const warning = homeHeatingWarning(s, time);
   $('home-hold-warning').hidden = !warning;
   $('home-hold-warning').textContent = warning;
-  const garageWarning = garageHeatingWarning(s, time);
-  const held = [warning && `Home settings held until ${time(s.decision.manualHold.until)}`,
-    garageWarning && `Garage heating ${s.garage.heatingControls.requestedMode === 'off' ? 'held off' : 'held'} until ${time(s.garage.heatingControls.holdUntil)}`].filter(Boolean);
+  const held = [warning && `Home settings held until ${time(s.decision.manualHold.until)}`].filter(Boolean);
   $('heating-held-summary').hidden = !held.length;
   $('heating-held-summary').textContent = `${held.join(' · ')}. Price control is paused; review the held settings below or select Resume now.`;
   setStatusDetail($('heating-test-status'), { key: 'manual-heating-availability', title: 'Heating control',
@@ -528,10 +526,8 @@ function renderProviders(s) {
 function renderLearning(s) {
   const display = learningDisplay(s.learning, { settings: s.settings, preheatValves: s.preheatValves });
   const overview = learningOverview(s.learning);
-  const garageOverview = garageLearningOverview(s.garage?.learning);
   for (const [prefix, model, metrics] of [
     ['learning', overview, [[overview.usableSamples, 'usable temperature intervals'], [overview.acceptedFits, 'accepted model updates']]],
-    ['garage-learning', garageOverview, [[garageOverview.completedEpisodes, 'completed cooling / recovery episodes'], [garageOverview.validatedOffHours, 'OFF hours covered by validation']]],
   ]) {
     $(`${prefix}-title`).textContent = model.title;
     $(`${prefix}-overview`).textContent = model.summary;

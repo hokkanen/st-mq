@@ -1,8 +1,8 @@
 import { HISTORY_AXES, SIGNAL_INFO, ENERGY_SIGNALS, CARAVAN_DEHUMIDIFIER_STATES, SESSION_CHECK_INFO, MODEL_INPUT_INFO,
-  MODEL_COEFFICIENT_INFO, GARAGE_INPUT_INFO, GARAGE_COEFFICIENT_INFO, GARAGE_OUTCOME_INFO } from '../src/domain/history-series.js';
+  MODEL_COEFFICIENT_INFO } from '../src/domain/history-series.js';
 
 const definitions = { ...SIGNAL_INFO, ...SESSION_CHECK_INFO, ...MODEL_INPUT_INFO,
-  ...MODEL_COEFFICIENT_INFO, ...GARAGE_INPUT_INFO, ...GARAGE_COEFFICIENT_INFO, ...GARAGE_OUTCOME_INFO };
+  ...MODEL_COEFFICIENT_INFO };
 const descriptions = {
   model_fireplace_release: 'Calculated from corrected firewood additions; fuel-equivalent release, not measured heat.',
   controller_phase: 'Requested heating phase, bounded by the next request or expiry; not proof of equipment operation.',
@@ -25,12 +25,9 @@ function meaning(signal, info) {
   if (signal === 'firewood_load') return ['manual-addition', 'Corrected manual addition'];
   if (signal === 'model_fireplace_release') return ['fireplace-release', 'Calculated fireplace release'];
   if (signal.startsWith('firewood_')) return [signal, 'Retrospective daily model estimate'];
-  if (MODEL_COEFFICIENT_INFO[signal] || GARAGE_COEFFICIENT_INFO[signal]) return [`coefficient:${info.unit}`, 'Replayed model coefficient'];
-  if (GARAGE_OUTCOME_INFO[signal]) return info.kind === 'episode'
-    ? ['completed-garage-episode', 'Completed frozen episode estimate']
-    : [info.unit === '°C' ? 'temperature' : 'garage-validation-error', 'Replayed model outcome'];
-  if (['model_room_boost', 'garage_model_difference'].includes(signal)) return ['saved-temperature-difference', 'Saved temperature difference'];
-  if (MODEL_INPUT_INFO[signal] || GARAGE_INPUT_INFO[signal]) return [`saved-input:${info.unit}`, 'Saved learning input'];
+  if (MODEL_COEFFICIENT_INFO[signal]) return [`coefficient:${info.unit}`, 'Replayed model coefficient'];
+  if (signal === 'model_room_boost') return ['saved-temperature-difference', 'Saved temperature difference'];
+  if (MODEL_INPUT_INFO[signal]) return [`saved-input:${info.unit}`, 'Saved learning input'];
   if (signal.startsWith('learning_')) return [signal === 'learning_indoor_temperature' ? 'temperature' : `assessed-cycle:${info.unit}`, 'Saved model assessment'];
   if (signal === 'solar_radiation') return ['historical-solar-estimate', 'Historical solar estimate'];
   if (signal.includes('forecast')) return [`forecast:${info.unit}`, 'Weather forecast'];
@@ -70,9 +67,12 @@ export function explorerActivityTrack(key) {
         : key.startsWith('alarm_') ? 'auxiliary' : key.startsWith('caravan_') ? 'garage'
           : definitions[key]?.color ?? 'learning';
   const states = key === 'dhw_routing' ? [[0, 'Space heating', 'compressorSpace'], [1, 'Hot water', 'compressorDhw']]
-    : key === 'garage_model_available' ? [[0, 'Pump off', 'muted'], [1, 'Pump on', color]]
-      : key === 'garage_model_managed_pause' ? [[0, 'No managed pause', 'muted'], [1, 'Managed heating pause', color]]
-        : ['controller_phase', 'model_controller_phase'].includes(key)
+    : key === 'garage_away_mode' ? [[0, 'Normal selected', 'reference'], [1, 'Away selected', color]]
+      : key === 'garage_native_power' ? [[0, 'Pump off', 'muted'], [1, 'Pump on', color]]
+        : key === 'garage_frost_active' ? [[0, 'No override', 'muted'], [1, 'Protection override', 'auxiliary']]
+          : key === 'garage_frost_available' ? [[0, 'Unavailable', 'auxiliary'], [1, 'Available', 'reference']]
+            : key === 'garage_external_enabled' ? [[0, 'Disabled', 'muted'], [1, 'Enabled', color]]
+    : ['controller_phase', 'model_controller_phase'].includes(key)
           ? [[0, 'Normal', 'reference'], [1, 'Preheat', 'auxiliary'], [2, 'Reduction', 'heatOff'], [3, 'Recovery', 'learning']]
           : key === 'model_valve_override' ? [[0, 'Normal valve mode', 'reference'], [1, 'Override confirmed', color],
             [2, 'Partial override', 'auxiliary'], [3, 'Unconfirmed override', 'muted', 'unknown']]

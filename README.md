@@ -137,11 +137,11 @@ rebuild historical CSVs or run a permanent Vite build watcher.
 See [automation and manual heating](docs/automation-and-manual-control.md) for
 the shared permission, handover and restoration rules.
 
-The Home Energy UI has independent Home and Garage **Plan only / Automatic**
+The Home Energy UI has Home **Plan only / Automatic** and Garage **Normal / Away**
 controls, combined history and price/weather outlooks, requested/actual state, stale-data indication, learning
 health, explicit occupancy and timed normal-heating overrides. The default 21 °C
 **demo** target is confined to simulation, not inferred as the real house's target.
-Away/Pause deadlines persist. Plan only computes but does not automatically apply
+Home Away/Pause deadlines persist. Plan only computes but does not automatically apply
 that feature’s heating schedule; explicit manual changes still carry restoration obligations.
 **Away until** removes the occupied temperature-drop requirement until the chosen
 return time. The planner compares cost with continuous native operation, including
@@ -158,26 +158,24 @@ Repeated temporary edits retain the original restoration values. Pause deadlines
 survive restarts; manually held equipment settings retain the existing restart
 and connection-loss restoration rules. Both temporary controls use Finnish time
 and can be cancelled independently.
-Each heating section owns its saved automation permission. Charging Automatic
+Home owns its saved automation permission; Garage owns its manual mode. Charging Automatic
 scheduling and Caravan Automatic power remain independent. The header identifies
 Live, Simulation or History viewer; it does not imply a global control permission.
 The retired `controller.mode` configuration and `STMQ_MODE` environment variable
 are rejected; remove them before startup and choose each feature's permission in
 the dashboard.
 
-Open the **Home** or **Garage** upper summary to find **Heating configuration**
-with current state, **Temporary heating override**, Away/Pause controls,
-preferences and learning in that order. Preferences are **Savings & comfort**
-for Home and **Savings & protection** for Garage. Both display their configured
-**Savings preference** as 0–100; zero is conservative, and Pause suspends savings.
-Changes to permanent preferences use **Apply configuration**. Equipment is in separate
-**Sensors & Equipment** (Home) and **Sensors & More equipment** (Garage) folds.
-Garage's two chargers sit directly below its heating summary. Each heat pump has
-an overview followed by its detailed readings; the ground-source heat pump also
-contains **Adjust heat-pump parameters**. Home shows **Tariff control** directly
-above **Recirculation**, separating a request from confirmed equipment state.
-Garage shows **Heat-pump mode**, **Heating control** and **Room setting**, keeping
-fresh device feedback, a request and the saved external setting distinct.
+Open the **Home** or **Garage** summary for its heating controls. Home retains
+**Temporary heating override**, Away/Pause, **Savings & comfort** and learning.
+Garage offers persistent **Normal / Away**, an editable normal target, native
+pump controls and separate **Frost protection**. Raising the selected target shows
+a moisture warning for approximately 24 hours. The sender settings and pipe
+estimates are available through the protection panel when connected.
+Each heat pump has an overview and detailed readings. Garage's chargers sit
+below its heating summary. Equipment remains in **Sensors & Equipment** (Home)
+and **Sensors & More equipment** (Garage). Home shows **Tariff control** above
+**Recirculation**, separating requests from confirmed state. Garage separates
+the saved room target, the locally effective target and native pump readback.
 Connection links end each equipment section. Selection marks sit beside the
 button labels. The equipment inventory includes individual room and protection
 sensors, tariff relays and native Shelly devices. The Caravan fold groups air
@@ -254,16 +252,10 @@ Temporary Away and Pause dates use the same calendar with hour/minute fields;
   interpreted indoor temperature** available in its legend. Saved inputs,
   coefficients, cycle outcomes and interval-energy evidence have their own views
   with explicit units and evidence descriptions.
-  Home and Garage both separate **learning**, **coefficients** and **outcomes**.
-  Home keeps four input comparisons and four coefficients with distinct units,
-  plus two outcome views. Saved temperatures also includes optional ROOM boost
-  and the saved control phase; **Space-heating auxiliary input** remains in
-  All series. Garage separates saved temperatures/activity, two coefficient
-  comparisons, achieved normal warmth references, held-out cooling error and
-  provisional benefit per completed pause and recovery. Its existing electrical
-  inputs view stays under Garage. Home benefit is a rolling mean per cycle;
-  Garage benefit uses individual completion points, with uncertainty and the
-  electricity basis on inspection. Neither is metered savings.
+  Home separates learning inputs, coefficients and outcomes. Garage retains
+  measured temperatures, compressor/native equipment evidence, electrical input
+  and explicit mode/target/protection changes; it has no learned heat model or
+  automatic savings outcome views.
   Caravan power uses each measured energy interval's average kW, with its original
   duration and gaps preserved; recorded kWh remains available in interval energy
   and the explorer.
@@ -332,9 +324,9 @@ Temporary Away and Pause dates use the same calendar with hour/minute fields;
   blank. Every row title expands to explain its evidence, colours, patterns and
   blank intervals. Wide layouts also show a compact colour key beside the title;
   on phones the key stays inside the fold.
-  Garage pump power readback and managed pause have separate rows: power is the
-  saved native on/off report; managed pause records a manual timed-off control
-  pause, not measured savings or proof of automatic control. Requested reduction,
+  Garage power, Normal/Away selection and frost demand have separate rows.
+  Power is native on/off readback; the selected mode is application intent,
+  and frost demand is independent local protection. Requested Home reduction,
   **Hot-water circulation request**, **Hot-water circulation feedback** and modeled
   fireplace windows remain separate.
   Open **Legend** to select series and rows for this view. The list scrolls while
@@ -447,7 +439,7 @@ The equipment and connections fold headers keep their height when toggled;
 small desktop column differences use spacing between sections, with larger
 differences retaining their natural height. Each upper summary opens
 **Heating configuration**, including manual heating and temporary controls.
-Home offers Away/Pause; Garage offers **Pause price control**. Home's **Fireplace**
+Home offers Away/Pause; Garage offers persistent **Normal / Away**. Home's **Fireplace**
 button opens a window for recording firewood and reviewing recent entries.
 **Sensors & Equipment** spans Home's width and contains its readings and equipment controls.
 Garage's two expandable chargers sit above **Sensors & More equipment**.
@@ -460,8 +452,8 @@ cannot operate a door.
 Tariff requests remain explicitly unverified when relay readback
 is unavailable; stale H66 readings are not presented as current settings.
 
-**Home learning** and **Garage learning** sit in their respective **Heating configuration**,
-after temporary controls and savings preferences. Home reports counts
+**Home learning** sits in Home’s **Heating configuration**, after temporary
+controls and savings preferences. It reports counts
 of usable observations and accepted model updates. Missing counts remain unknown.
 Each learning summary opens its **calculated outcomes**,
 **model inputs** and **current model coefficients** sections. Coefficients show values,
@@ -591,11 +583,10 @@ Family can perform only these writes:
 
 - Record firewood and remove any entry within 15 minutes of its being recorded.
 - Start and stop DHWR circulation.
-- Set, change or cancel Away and home/garage Pause, and use temporary Home
-  Normal/Reduction/Preheat and Garage Normal/protected Off controls, including
-  while Away or Pause is active. Existing expiry, restoration and freeze
-  protection rules still apply; Garage freeze protection can override Off while
-  paused.
+- Set, change or cancel Home Away/Pause and use temporary Home
+  Normal/Reduction/Preheat with their existing expiry and restoration rules.
+- Select Garage Normal/Away and its normal temperature. The selection has no
+  expiry; native pump edits and local frost protection remain separate.
 - Open, close and stop configured garage doors where supported.
 - Use all EV charging card controls, including persistent automatic charging and
   charger priority choices and changes scoped to the current physical session.
@@ -615,7 +606,7 @@ freshness basis, with the source timestamp still unknown. Retained, duplicate an
 invalid messages are handled explicitly. A documented C60 profile does not prove
 installed-device semantics. See [learning and H66 control](docs/learning-and-control.md).
 
-Start live collection with Home and Garage initially set to Plan only:
+Start live collection with Home initially set to Plan only and Garage control explicitly configured:
 
 ```sh
 STMQ_INPUT=providers npm start
@@ -629,33 +620,21 @@ bidding zone. Indoor and garage temperatures arrive on configured local MQTT top
 in both `providers` and `mqtt` input modes. Smoke channel 1 is Upstairs, channel 2
 is Bedroom and channel 3 is Downstairs. These three MQTT sensors are the indoor
 inputs; there is no H66 indoor sensor or fallback. Garage rear/front protection
-and learned scheduling are independent of Home; see [Garage heating](docs/garage.md).
-Freezing protection tracks separate local heat reserves for pipes and stored
-liquids, using a water-filled copper pipe as the reference. **Savings & protection** shows
-the temperature margin, reference dimensions, heat-transfer estimate and fixed
-safety factor. Cooling and recovery follow measured air temperature continuously;
-there is no fixed refill timer. An open door blocks a new savings pause below
-2°C outside; an existing pause is reassessed against measured protection.
-Savings periods use a lower external room target while native power stays ON.
-They have a one-hour planned minimum and no fixed maximum; local temperatures,
-forecast pipe reserve, uncertainty, economics and forecast coverage determine the
-endpoint. Garage's **Savings preference** changes the minimum estimated benefit
-and how much of the best opportunity a shorter period must retain. Protection
-and recovery requirements remain independent of that preference. Estimated
-consumption includes a powered-idle allowance, possible lower-target maintenance
-and later recovery. These assumptions are not measured savings or proof that the
-compressor stopped. See [Garage planning](docs/garage.md) and
-[protection parameters](docs/garage-protection-defaults.md).
+are independent of Home; see [Garage heating](docs/garage.md). Garage has manually
+selected Normal/Away temperatures without expiry. Normal restores the saved normal
+target; Away holds the configured preset. Temperature increases show a condensation
+advisory. The Gen3 probe sender runs independent front/rear pipe protection and
+communicates its state/settings to the application. Its Bluetooth demand lets the
+Pill rescue heating without a broker or controller connection. The Frost protection
+panel keeps unavailable evidence distinct from safe or active protection.
 
-The `shelly-cn105` Pill integration supports persistent native controls, external
-room-temperature input and separately commissioned timed OFF. **Room setting**
-retains your chosen normal target down to 5°C, including after restart. ST-MQ
-selects native HEAT at 17°C and supplies the independent rear temperature plus
-`17 − effective room target`. Price automation temporarily lowers that effective
-target (default 0°C); it does not overwrite your saved choice. Source timestamps,
-short expiry and pipe protection remain binding when the adjusted value changes.
-Every external enable or renewal needs fresh native ON, HEAT and 17°C evidence.
-No automatic savings period issues an OFF command.
+The `shelly-cn105/v2` Pill integration retains a real target locally and regulates
+from native Bluetooth BTHome components. Power, mode, fan and vane commands are
+one-shot edits with readback; there are no timed OFF leases. Local temperature
+maintenance preserves OFF and suspends outside HEAT. A stale sensor triggers
+explicit internal-sensor fallback; frost demand separately selects HEAT/ON.
+A BLU H&T can test the temperature path, but it cannot supply two-probe protection.
+See [Garage adapter](docs/garage-adapter.md).
 
 Manual **Heating off** works in Plan only when its installed expiry/restoration
 checks and protection evidence qualify. It saves the room intent, clears external
@@ -745,7 +724,7 @@ name the live stream and REST backup while retaining reading-quality warnings.
 Charger voltage terminal mapping requires explicit verification before voltage
 weights are used. Easee acquisition can refresh authentication tokens. Separately
 enabling **Automatic charging** in the dashboard permits
-automatic scheduling writes, independently of the Home and Garage automation choices; it is off by default. Automatic charging and shared charger priority are
+automatic scheduling writes, independently of the Home automation and Garage manual mode choices; it is off by default. Automatic charging and shared charger priority are
 saved UI choices, retained across restart and unplugging for the same equipment.
 The four shared and vehicle-specific ready-by and battery defaults are
 configuration-owned; **Save for this session** cannot replace them. **Charge now**
@@ -896,7 +875,7 @@ AUX earlier. The deadline is fixed when reduction ends and survives restarts.
 Normal DHW settings and circulation eligibility return at expiry. To restore them
 earlier, pause price control; this selects Normal heating and restores the captured
 native settings. Start a timed circulation run separately if needed.
-`controller.input` is configuration-owned. Home and Garage automation choices
+`controller.input` is configuration-owned. Home automation and Garage manual mode choices
 are stored separately, bound to the current equipment, and default to Plan only.
 
 The optional `electricity.effective_date` is a Finnish calendar date. First-use

@@ -3,7 +3,7 @@ import { createMqttReception } from './mqtt-reception.js';
 import { randomUUID, createHash } from 'node:crypto';
 import { createCaravanEnergy } from './shelly-energy.js';
 import { equipmentSignature, equipmentMeterIdentity } from './equipment-config.js';
-import { GARAGE_TEMPERATURE_POLL_MS, GARAGE_TEMPERATURE_MAX_AGE_MS } from '../garage/permission.js';
+import { GARAGE_TEMPERATURE_POLL_MS, GARAGE_TEMPERATURE_MAX_AGE_MS } from '../domain/temperature-reports.js';
 
 const scalar = value => typeof value === 'number' && Number.isFinite(value);
 const valid = (value, min, max) => scalar(value) && value >= min && value <= max;
