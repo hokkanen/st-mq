@@ -72,3 +72,59 @@ their original timestamps and units. Generic original journal/event records are
 not deleted or reinterpreted when the retired learning writer is removed.
 
 Read-only replicas display recorded evidence without granting device control.
+
+The Pill's **Bluetooth room sensor** is its live local-regulation input. Its intended
+permanent source is the rear feed, already recorded as `garage_temperature`.
+The temporary Caravan BLU H&T used for commissioning is not a rear-probe
+measurement. Its Pill readback remains in current diagnostic state, with the
+reported sensor age, but creates no separate temperature history or chart legend
+entry. The rear/front acquisition sources keep their own timestamps and coverage.
+
+**Saved room target** is the target retained by the Pill after a Normal/Away
+selection; it is not necessarily the saved Normal target while Away is selected.
+**Effective room target** includes the independent frost-protection minimum.
+For example, a saved 5°C target and an 8°C protection minimum produce an 8°C
+effective target without changing the saved 5°C request. Neither is the native
+17°C thermostat used during active local regulation.
+
+The state legend entries describe separate facts:
+
+- **Local room regulation** reports whether the Pill's external room regulation
+  is enabled. It does not prove that regulation is currently active: sensor
+  freshness, native mode and pump communication still matter.
+- **Frost protection available** reports whether the Pill has a usable protection
+  feed. A temperature-only BLU H&T cannot provide it. False means protection is
+  unavailable, not that temperatures are safe; missing readback remains unknown.
+- **Frost override** reports an active independent protection override of the
+  ordinary target/operation. Rescue may explicitly select HEAT and ON.
+- **Defrost** is the pump's native reported defrost cycle, separate from protecting
+  the garage's pipes against freezing.
+
+### Recorded Garage series
+
+These are the 19 current Garage history signals. Actual stored rows depend on
+configured sources and received evidence; unsupported/missing readings are not
+invented. Current adapter/sender snapshots and command events are separate from
+these time series.
+
+| Database signal | Meaning |
+| --- | --- |
+| `garage_temperature` | Rear air temperature |
+| `garage_temperature_2` | Front air temperature |
+| `garage_door1_open` | Door 1 open/closed |
+| `garage_door2_open` | Door 2 open/closed |
+| `garage_room_target` | Pill saved room target |
+| `garage_effective_target` | Pill effective target including protection |
+| `garage_away_mode` | Saved Normal/Away selection |
+| `garage_external_enabled` | Pill local room regulation enabled |
+| `garage_frost_available` | Pill protection feed available |
+| `garage_frost_active` | Pill frost override active |
+| `garage_pipe_rear_temperature` | Sender's estimated rear pipe temperature |
+| `garage_pipe_front_temperature` | Sender's estimated front pipe temperature |
+| `garage_native_power` | Native ON/OFF setting, not measured watts |
+| `garage_native_indoor_temperature` | Pump-interpreted indoor temperature |
+| `garage_compressor_frequency` | Reported compressor frequency, Hz |
+| `garage_compressor_active` | Reported compressor running state |
+| `garage_native_defrost` | Reported pump defrost state |
+| `garage_native_energy` | Cumulative native energy counter, kWh; audit only |
+| `garage_energy` | Qualified dedicated interval electricity, kWh |

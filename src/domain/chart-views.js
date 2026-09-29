@@ -3,7 +3,7 @@ import { MODEL_COEFFICIENT_INFO, PHASE_ENERGY_SIGNALS } from './history-series.j
 // A view declares its subject, compatible quantities and intentional context.
 // The same definition bounds server queries and drives the chart controls.
 const home = ['model_indoor_temperature', 'indoor_temperature', 'bedroom_temperature', 'downstairs_temperature', 'outdoor_temperature', 'outdoor_forecast'];
-const garage = ['garage_temperature', 'garage_temperature_2', 'garage_room_target', 'garage_effective_target', 'garage_ble_temperature', 'garage_native_indoor_temperature', 'outdoor_temperature', 'outdoor_forecast'];
+const garage = ['garage_temperature', 'garage_temperature_2', 'garage_room_target', 'garage_effective_target', 'garage_native_indoor_temperature', 'outdoor_temperature', 'outdoor_forecast'];
 const property = ['model_indoor_temperature', 'garage_temperature', 'outdoor_temperature', 'outdoor_forecast'];
 const homeRows = ['controller_phase', 'operatingMode', 'compressorHome', 'dhwr_active', 'fireplace'];
 const garageRows = ['garage_away_mode', 'garage_native_power', 'garage_frost_active', 'compressorGarage', 'garage_door1_open', 'garage_door2_open', 'garage_native_defrost'];
@@ -62,10 +62,10 @@ view('garage', 'Garage temperatures & compressor', 'Garage', 'Compare measured f
   ['garage_compressor_frequency'], garage, garageRows, ['garage_compressor_frequency', 'garage_temperature', 'garage_temperature_2', ...garageRows]);
 view('garage_energy', 'Garage electricity', 'Garage', 'Dedicated heat-pump electricity over each recorded interval. Values retain their original measurement basis and accuracy qualification.', 'kWh / interval',
   ['garage_energy'], garage, garageRows, ['garage_energy', 'garage_temperature', 'garage_temperature_2', 'compressorGarage']);
-view('garage_control', 'Garage targets & protection', 'Garage', 'Compare saved and effective targets with the Bluetooth input and independent pipe estimates. Mode is a saved selection; protection status and pump operation are separate readbacks.', '', [],
-  ['garage_room_target', 'garage_effective_target', 'garage_ble_temperature', 'garage_pipe_rear_temperature', 'garage_pipe_front_temperature', 'garage_temperature', 'garage_temperature_2'],
+view('garage_control', 'Garage targets & protection', 'Garage', 'Compare saved and effective targets with rear/front measurements and independent pipe estimates. Mode is a saved selection; protection status and pump operation are separate readbacks.', '', [],
+  ['garage_room_target', 'garage_effective_target', 'garage_pipe_rear_temperature', 'garage_pipe_front_temperature', 'garage_temperature', 'garage_temperature_2'],
   ['garage_away_mode', 'garage_external_enabled', 'garage_frost_available', 'garage_frost_active', 'garage_native_power', 'compressorGarage'],
-  ['garage_room_target', 'garage_effective_target', 'garage_ble_temperature', 'garage_away_mode', 'garage_frost_available', 'garage_frost_active']);
+  ['garage_room_target', 'garage_effective_target', 'garage_temperature', 'garage_away_mode', 'garage_frost_available', 'garage_frost_active']);
 view('caravan', 'Caravan climate', 'Caravan', 'Air temperature, relative humidity and reported dehumidifier state: Off, Low, Medium or High. A powered fan setting does not prove water removal.', '%',
   ['caravan_humidity'], ['caravan_temperature', 'outdoor_temperature', 'outdoor_forecast'], ['caravan_dehumidifier_state'], ['caravan_humidity', 'caravan_temperature', 'caravan_dehumidifier_state']);
 view('caravan_power', 'Caravan power', 'Caravan', 'Average electrical load calculated from measured energy over each recorded interval, with air temperature and dehumidifier Off/Low/Medium/High state. This is not instantaneous power.', 'kW',

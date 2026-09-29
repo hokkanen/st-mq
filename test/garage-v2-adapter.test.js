@@ -67,12 +67,14 @@ test('read-only authority, retired drivers and persisted formats fail closed', a
   assert.equal(f.publications.length, 0);
 });
 
-test('Pill source temperature retains its own clock and never masquerades as a garage probe', () => {
+test('Pill source temperature stays in diagnostic readback without a duplicate history stream', () => {
   const f = garageV2Fixture(); f.update({ control: { sensorTemperatureC: 0, sensorAgeMs: 60_000 } });
-  const row = f.observations.find(row => row.signal === 'garage_ble_temperature');
-  assert.equal(row.value, 0); assert.equal(row.sourceTime, GARAGE_TEST_AT - 60_000);
+  assert.equal(f.adapter.status().control.sensorTemperatureC, 0);
+  assert.equal(f.adapter.status().control.sensorAgeMs, 60_000);
   assert.equal(f.observations.some(row => row.signal === 'garage_temperature'), false);
   assert.equal(f.observations.find(row => row.signal === 'garage_native_power').value, 0);
+  f.adapter.setConnected(false);
+  assert.equal(f.observations.some(row => row.signal === 'garage_ble_temperature'), false);
 });
 
 test('malformed current snapshots reject before startup mutates the database', t => {

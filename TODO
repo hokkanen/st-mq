@@ -1,3 +1,20 @@
+Implemented 2026-09-29 — Remove duplicate Garage Bluetooth history
+- F1/F3/F4: remove the Pill Bluetooth input observation writer, disconnect rows,
+  chart catalogue/view entries, colour and tooltip handling. Record rear air
+  temperature only through its canonical acquisition feed; do not relabel the
+  temporary Caravan commissioning sensor as a rear-probe measurement.
+- Retain current Pill input/age diagnostics, local regulation, target/protection
+  readback, original rear/front source clocks and unrelated Caravan recording.
+  No development-history migration or database cleanup is introduced.
+- Explain saved/effective targets, regulation, frost availability/override and
+  native defrost; document all 19 current Garage history signals in docs/garage.md.
+- Validation: all 93 focused offline tests and production build passed. Browser
+  runs passed Garage target/readback checks, then failed broader legend tests:
+  fullscreen fireplace focus at 932×430, or the Save view confirmation on retry.
+  The unchanged 5f454f8 baseline reproduced the same fireplace focus failure.
+  Follow-up: resolve broad chart-suite legend focus/save checks; the complete
+  browser sweep is not green. Build retains its existing bundle-size warning.
+
 Implemented 2026-09-29 — Manual Garage targets and local Pill regulation
 - Owner explicitly retired automatic Garage savings to avoid routine temperature
   rises while stored contents remain cold. Amend F2/F3/F5/F6 accordingly: Home

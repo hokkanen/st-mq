@@ -164,20 +164,18 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
         value: native.power.value === 'on' ? 1 : 0, unit: 'state', sourceTime: native.power.measuredAt, receivedAt,
         quality: freshField(native.power, receivedAt, settings.maxAgeMs) ? ['good'] : ['stale'],
         raw: { usableForControl: false, contractVersion: SHELLY_CN105_CONTRACT, reportIntervalMs: 10_000, reportGraceMs: settings.maxAgeMs - 10_000 } });
+      // The Bluetooth input is live diagnostic readback of the rear feed (or a
+      // temporary commissioning sensor), not another temperature history stream.
       for (const [name, signal, unit] of [['targetC', 'garage_room_target', 'degC'],
         ['effectiveTargetC', 'garage_effective_target', 'degC'], ['externalEnabled', 'garage_external_enabled', 'state'],
-        ['frostActive', 'garage_frost_active', 'state'], ['frostAvailable', 'garage_frost_available', 'state'],
-        ['sensorTemperatureC', 'garage_ble_temperature', 'degC']]) {
-        const sensor = name === 'sensorTemperatureC';
-        const sourceTime = sensor && control.sensorAgeMs !== null ? value.observedAt - Math.floor(control.sensorAgeMs) : value.observedAt;
-        const stale = sensor && (control.sensorAgeMs === null || control.sensorAgeMs >= 180_000 || sourceTime < 0);
+        ['frostActive', 'garage_frost_active', 'state'], ['frostAvailable', 'garage_frost_available', 'state']]) {
         onObservation({ source: 'garage-adapter', device: value.deviceId, signal,
           value: typeof control[name] === 'boolean' ? Number(control[name]) : control[name], unit,
-          sourceTime: sourceTime >= 0 ? sourceTime : value.observedAt, receivedAt,
-          quality: stale || control[name] === null ? ['unknown'] : ['good'],
-          recordingPolicy: sensor ? undefined : 'change-only',
-          raw: { usableForControl: false, contractVersion: SHELLY_CN105_CONTRACT, sensorInput: sensor,
-            reportIntervalMs: sensor ? 30_000 : 10_000, reportGraceMs: sensor ? 150_000 : Math.max(0, settings.maxAgeMs - 10_000) } });
+          sourceTime: value.observedAt, receivedAt,
+          quality: control[name] === null ? ['unknown'] : ['good'],
+          recordingPolicy: 'change-only',
+          raw: { usableForControl: false, contractVersion: SHELLY_CN105_CONTRACT,
+            reportIntervalMs: 10_000, reportGraceMs: Math.max(0, settings.maxAgeMs - 10_000) } });
       }
       const result = value.result;
       if (lastCommand && result?.commandId === lastCommand.commandId
@@ -241,11 +239,11 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
       electrical.reset('MQTT connection changed');
       if (!connected) {
         if (before) for (const signal of ['garage_room_target', 'garage_effective_target', 'garage_external_enabled',
-          'garage_frost_active', 'garage_frost_available', 'garage_ble_temperature', 'garage_native_power'])
+          'garage_frost_active', 'garage_frost_available', 'garage_native_power'])
           onObservation({ source: 'garage-adapter', device: before.deviceId, signal, value: null,
-            unit: ['garage_room_target', 'garage_effective_target', 'garage_ble_temperature'].includes(signal) ? 'degC' : 'state',
+            unit: ['garage_room_target', 'garage_effective_target'].includes(signal) ? 'degC' : 'state',
             sourceTime: clock(), receivedAt: clock(), quality: ['mqtt-disconnected', 'unavailable'],
-            recordingPolicy: signal === 'garage_ble_temperature' ? undefined : 'change-only', raw: { usableForControl: false } });
+            recordingPolicy: 'change-only', raw: { usableForControl: false } });
       }
       if (!connected && pending(lastCommand)) lastCommand = { ...lastCommand, status: 'uncertain', reason: 'MQTT disconnected.' };
       changed();

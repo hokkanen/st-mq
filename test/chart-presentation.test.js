@@ -134,7 +134,6 @@ test('Garage target and pipe estimate tooltips keep control and inference distin
   const label = key => historyTooltipLabel({ dataset: { key, label: key, unit: '°C' }, parsed: { x: 1, y: 5 }, raw: {} });
   assert.match(label('garage_pipe_front_temperature'), /sender pipe estimate; not a direct measurement/);
   assert.match(label('garage_room_target'), /target readback; not measured room temperature/);
-  assert.match(label('garage_ble_temperature'), /configured Bluetooth source; may be a commissioning sensor/);
   assert.equal(historyLearningLabel('garage_temperature'), 'not used for learning');
 });
 

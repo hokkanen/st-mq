@@ -36,19 +36,22 @@ test('native garage compressor shading and interpreted temperature respect recor
 
 test('retired Garage learned series and views are rejected while actual observations remain supported', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
-  for (const left of ['garage_model_rear', 'garage_coefficient_rear_coolingPerHour', 'garage_outcome_benefit']) {
+  for (const left of ['garage_model_rear', 'garage_coefficient_rear_coolingPerHour', 'garage_outcome_benefit', 'garage_ble_temperature']) {
     assert.equal(HISTORY_AXIS_BY_KEY[left], undefined);
     assert.throws(() => getChartData({ store, input: 'providers', startDate: range.startDate, now: range.to, left }), /supported|Unknown|Invalid/i);
   }
   for (const view of ['garage_temperatures', 'garage_cooling', 'garage_benefit']) assert.equal(CHART_VIEW_BY_KEY[view], undefined);
   for (const signal of ['garage_temperature', 'garage_temperature_2', 'garage_compressor_frequency', 'garage_energy'])
     assert(HISTORY_AXIS_BY_KEY[signal]);
+  for (const view of Object.values(CHART_VIEW_BY_KEY))
+    assert(![...view.leftSignals, ...view.rightSignals, ...view.tracks, ...Object.keys(view.defaults)].includes('garage_ble_temperature'));
+  assert.equal(CHART_VIEW_BY_KEY.garage_control.defaults.garage_temperature, true);
 });
 
-test('Garage targets, Bluetooth readings and pipe estimates retain original deadlines and reject unknown numbers', t => {
+test('Garage targets and pipe estimates retain original deadlines and reject unknown numbers', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   const recorder = new Recorder(store), at = range.from + MINUTE;
-  const signals = ['garage_room_target', 'garage_effective_target', 'garage_ble_temperature',
+  const signals = ['garage_room_target', 'garage_effective_target',
     'garage_pipe_rear_temperature', 'garage_pipe_front_temperature', 'garage_native_power',
     'garage_external_enabled', 'garage_frost_active', 'garage_frost_available', 'garage_away_mode'];
   const isTemperature = signal => /(_target|_temperature)$/.test(signal);
@@ -77,7 +80,7 @@ test('Garage control chart validates state, temperature and target units and bou
   for (const [signal, value, unit, quality] of [
     ['garage_room_target', 32, 'degC', []], ['garage_effective_target', -1, 'degC', []],
     ['garage_room_target', 10, 'W', []], ['garage_pipe_front_temperature', 100, 'degC', []],
-    ['garage_pipe_rear_temperature', 5, 'degC', ['stale']], ['garage_ble_temperature', 5, 'degC', ['retained']],
+    ['garage_pipe_rear_temperature', 5, 'degC', ['stale']], ['garage_pipe_front_temperature', 5, 'degC', ['retained']],
     ['garage_frost_active', 2, 'state', []], ['garage_frost_available', 1, 'boolean', []],
   ]) {
     at += MINUTE;

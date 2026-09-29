@@ -71,7 +71,6 @@ export function historyTooltipLabel(item) {
   }
   else if (/^garage_pipe_(rear|front)_temperature$/.test(key)) details.push('sender pipe estimate; not a direct measurement');
   else if (['garage_room_target', 'garage_effective_target'].includes(key)) details.push('Pill target readback; not measured room temperature');
-  else if (key === 'garage_ble_temperature') details.push('configured Bluetooth source; may be a commissioning sensor');
   else if (key === 'garage_away_mode') details.push('saved mode choice; not confirmation of heating');
   else if (key === 'garage_native_energy') details.push('cumulative native meter counter; not interval consumption');
   else if (key === 'garage_energy') {

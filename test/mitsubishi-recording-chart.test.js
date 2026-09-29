@@ -80,6 +80,18 @@ function fixture(t, { disk = false } = {}) {
   };
 }
 
+test('Pill Bluetooth input creates no separate temperature rows on reports or disconnect', t => {
+  const f = fixture(t);
+  f.state();
+  f.at(30_000); f.state();
+  assert.equal(f.adapter.status().control.sensorTemperatureC, 9);
+  f.adapter.setConnected(false);
+  assert.deepEqual(f.rows('garage_ble_temperature'), []);
+  assert.deepEqual(f.rows('garage_temperature'), [], 'a commissioning sensor is not relabelled as a rear probe');
+  assert(f.rows('garage_room_target').some(row => row.value === 10));
+  assert.equal(f.rows('garage_room_target').at(-1).value, null, 'target availability still ends at disconnect');
+});
+
 test('publisher-shaped on/off reports survive SQLite reopen and draw the compressor state and shading', t => {
   const f = fixture(t, { disk: true });
   f.send({ compressorActive: publishedField(true, BASE), compressorFrequency: publishedField(38, BASE) });

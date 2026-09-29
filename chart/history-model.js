@@ -141,7 +141,7 @@ for (const [key, color] of Object.entries({
   learning_aux_profit: 'auxiliary', compressor_hours: 'compressorSpace', dhw_hours: 'compressorDhw',
   auxiliary_3kw_hours: 'auxiliary', auxiliary_6kw_hours: 'garagePump',
   dhw_temperature: 'compressorDhw', dhw_start_setting: 'brineIn', dhw_stop_setting: 'supply',
-  garage_native_indoor_temperature: 'garagePump', garage_ble_temperature: 'garagePump',
+  garage_native_indoor_temperature: 'garagePump',
   garage_pipe_front_temperature: 'garageFront', garage_pipe_rear_temperature: 'garage',
   garage_room_target: 'reference', garage_effective_target: 'auxiliary',
 })) if (seriesInfo[key]) seriesInfo[key][2] = color;
