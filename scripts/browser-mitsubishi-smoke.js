@@ -63,7 +63,7 @@ try {
       if(globalThis.pumpSmokeMissingReadings){status.garage.adapter.native={};status.garage.adapter.telemetry={};}
       status.garage.nativeControls={available:!stale,reason:stale?'Pump connection unavailable':null,
         busy:false,pending:globalThis.pumpSmokeResult?.status==='accepted',result:globalThis.pumpSmokeResult,
-        settings:Object.fromEntries(Object.entries(values).map(([key,value])=>[key,{value,measuredAt:at,supported:true,usable:!stale,available:!stale&&!(key==='targetC'&&globalThis.pumpSmokeRoom),reason:key==='targetC'&&globalThis.pumpSmokeRoom?'Room temperature is controlled by the Pill. Use the Normal target.':null,
+        settings:Object.fromEntries(Object.entries(values).map(([key,value])=>[key,{value,measuredAt:at,supported:true,usable:!stale,available:!stale&&!(key==='targetC'&&globalThis.pumpSmokeRoom),reason:key==='targetC'&&globalThis.pumpSmokeRoom?'Local room regulation is enabled. Use the Normal target.':null,
           ...(key==='targetC'?{min:16,max:31,step:.5}:{values:choices[key]})}]))};
       return status;
     };
@@ -230,11 +230,11 @@ try {
   assert.equal(await evaluate("document.getElementById('garage-native-reported').textContent"),'17 °C');
   assert.equal(await evaluate("document.getElementById('garage-native-power').textContent"),'Off');
   assert.equal(await evaluate("document.getElementById('garage-native-submit').disabled"),true,
-    'Native thermostat edit is unavailable while Pill owns room regulation');
-  assert.match(await evaluate("document.getElementById('garage-room-temperature-status').textContent"),/Room setting 10 °C.*Pill confirmed/);
+    'Native thermostat edit is unavailable while the heat-pump controller owns room regulation');
+  assert.match(await evaluate("document.getElementById('garage-room-temperature-status').textContent"),/Room setting 10 °C.*heat-pump controller confirmed/);
   await evaluate("globalThis.pumpSmokeRoom.confirmed=false;globalThis.refreshPumpSmoke()");
-  await until("document.getElementById('garage-room-temperature-status').textContent.includes('Waiting for Pill confirmation')");
-  assert.doesNotMatch(await evaluate("document.body.innerText"),/ST-MQ/i);
+  await until("document.getElementById('garage-room-temperature-status').textContent.includes('Waiting for heat-pump controller confirmation')");
+  assert.doesNotMatch(await evaluate("document.body.innerText"),/ST-MQ|\bPill\b|\bGen3\b/i);
   for(const width of [1440,390,320])for(const theme of ['dark','light']){
     await send('Emulation.setDeviceMetricsOverride',{width,height:1000,deviceScaleFactor:1,mobile:false});
     await evaluate(`window.homeEnergyTheme.setTheme('${theme}');document.getElementById('garage-controller-details').scrollIntoView({block:'start',behavior:'instant'})`);
@@ -278,7 +278,7 @@ try {
   await until("document.getElementById('garage-native-status').textContent.includes('read-only')");
   assert.equal(await evaluate("document.getElementById('garage-native-submit').disabled"),true);
   assert.deepEqual(errors,[]);
-  console.log(JSON.stringify({result:'mitsubishi-browser-smoke-passed',artifacts,checks:['pump values and dynamic dropdowns close after real mouse/touch selection and retain keyboard focus','readings in their own fold','keyboard browsing and Escape preserve values; Enter commits and closes the setting picker','pointer and touch setting changes close the menu and focus the value editor','all six typed controls','accepted versus native confirmation','dirty edit and focus preserved','compressor running idle and unknown states','supported readings retained through temporary data loss','native thermostat and room target explanation','Pill room-target ownership and independent native OFF','freshness and quality details','never-observed unsupported fields and empty groups omitted','new real zero readings appear and remain through later loss','320/390/1440px both themes','unavailable values remain on one line','offline and read-only gating','no browser exceptions']}));
+  console.log(JSON.stringify({result:'mitsubishi-browser-smoke-passed',artifacts,checks:['pump values and dynamic dropdowns close after real mouse/touch selection and retain keyboard focus','readings in their own fold','keyboard browsing and Escape preserve values; Enter commits and closes the setting picker','pointer and touch setting changes close the menu and focus the value editor','all six typed controls','accepted versus native confirmation','dirty edit and focus preserved','compressor running idle and unknown states','supported readings retained through temporary data loss','native thermostat and room target explanation','Heat-pump controller room-target ownership and independent native OFF','freshness and quality details','never-observed unsupported fields and empty groups omitted','new real zero readings appear and remain through later loss','320/390/1440px both themes','unavailable values remain on one line','offline and read-only gating','no browser exceptions']}));
   await send('Page.close');
 }finally{
   socket?.close();for(const task of pending.values())clearTimeout(task.timer);

@@ -79,12 +79,12 @@ export function createGarageSender({ settings: input = {}, publish, clock = Date
   function status(now = clock()) {
     const available = connected && state && !state.retained && state.observedAt <= now && now - state.observedAt < settings.maxAgeMs;
     if (lastCommand?.status === 'published' && now - lastCommand.requestedAt >= 30_000)
-      lastCommand = { ...lastCommand, status: 'uncertain', reason: 'Sender confirmation timed out.' };
+      lastCommand = { ...lastCommand, status: 'uncertain', reason: 'Local frost-protection unit confirmation timed out.' };
     const reason = !canControl() ? 'This instance is read-only.'
-      : !available ? 'Waiting for fresh Gen3 sender state.'
-        : !publish || !settings.commandTopic ? 'The sender settings connection is unavailable.'
-          : usedChallenge === state.challenge ? 'Waiting for a fresh sender challenge.'
-            : lastCommand?.status === 'published' ? 'Waiting for sender confirmation.' : null;
+      : !available ? 'Waiting for fresh local frost-protection unit status.'
+        : !publish || !settings.commandTopic ? 'The local frost-protection settings connection is unavailable.'
+          : usedChallenge === state.challenge ? 'Waiting for the local frost-protection unit to accept another command.'
+            : lastCommand?.status === 'published' ? 'Waiting for local frost-protection unit confirmation.' : null;
     return { available: Boolean(available), settingsAvailable: reason === null, settingsReason: reason,
       observedAt: state?.observedAt ?? null, receivedAt: state?.receivedAt ?? null,
       settings: available ? structuredClone(state.config) : null,
@@ -105,7 +105,7 @@ export function createGarageSender({ settings: input = {}, publish, clock = Date
     if (state && `${state.deviceId}:${state.bootId}` !== identity) {
       retiredBoots.add(`${state.deviceId}:${state.bootId}`); usedChallenge = null;
       if (retiredBoots.size > 16) retiredBoots.delete(retiredBoots.values().next().value);
-      if (lastCommand?.status === 'published') lastCommand = { ...lastCommand, status: 'uncertain', reason: 'Sender restarted.' };
+      if (lastCommand?.status === 'published') lastCommand = { ...lastCommand, status: 'uncertain', reason: 'The local frost-protection unit restarted.' };
     }
     state = { deviceId: value.deviceId, bootId: value.bootId, sequence: value.sequence,
       observedAt: value.observedAt, receivedAt, retained: packet.retain === true, challenge: value.challenge, config, protection };
@@ -134,7 +134,7 @@ export function createGarageSender({ settings: input = {}, publish, clock = Date
       usedChallenge = state.challenge; lastCommand = { commandId: command.commandId, requestedAt: now, status: 'published', reason: null };
       onState(snapshot());
       try { await publish(settings.commandTopic, JSON.stringify(command), { qos: 0, retain: false, noReplay: true }); }
-      catch { lastCommand = { ...lastCommand, status: 'uncertain', reason: 'Sender settings delivery is unconfirmed.' }; onState(snapshot());
+      catch { lastCommand = { ...lastCommand, status: 'uncertain', reason: 'Local frost-protection settings delivery is unconfirmed.' }; onState(snapshot());
         throw Object.assign(new Error(lastCommand.reason), { statusCode: 503 }); }
       return { ...lastCommand };
     },

@@ -143,6 +143,8 @@ test('garage interval energy exposes original boundaries and provisional basis w
   put(store, 'garage_energy', 0.04, start + MINUTE, { source: 'garage-adapter', unit: 'kWh',
     raw: { ...raw, intervalStart: start, intervalEnd: start + MINUTE, meterScope: 'whole-property' } });
   const points = query(store, { left: 'garage_energy' }).series.garage_energy;
+  assert.deepEqual(query(store, { view: 'garage_control' }).series.garage_energy, points,
+    'The protection and electricity view preserves the original interval evidence');
   const first = points.find(point => point.x === start);
   assert.equal(first.y, 0.02);
   assert.equal(first.intervalStart, start - MINUTE);

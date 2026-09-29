@@ -69,8 +69,8 @@ export function explorerActivityTrack(key) {
   const states = key === 'dhw_routing' ? [[0, 'Space heating', 'compressorSpace'], [1, 'Hot water', 'compressorDhw']]
     : key === 'garage_away_mode' ? [[0, 'Normal selected', 'reference'], [1, 'Away selected', color]]
       : key === 'garage_native_power' ? [[0, 'Pump off', 'muted'], [1, 'Pump on', color]]
-        : key === 'garage_frost_active' ? [[0, 'No override', 'muted'], [1, 'Protection override', 'auxiliary']]
-          : key === 'garage_frost_available' ? [[0, 'Unavailable', 'auxiliary'], [1, 'Available', 'reference']]
+        : key === 'garage_frost_active' ? [[0, 'No override', 'muted'], [1, 'Protection override', color]]
+          : key === 'garage_frost_available' ? [[0, 'Unavailable', 'auxiliary'], [1, 'Available', color]]
             : key === 'garage_external_enabled' ? [[0, 'Disabled', 'muted'], [1, 'Enabled', color]]
     : ['controller_phase', 'model_controller_phase'].includes(key)
           ? [[0, 'Normal', 'reference'], [1, 'Preheat', 'auxiliary'], [2, 'Reduction', 'heatOff'], [3, 'Recovery', 'learning']]

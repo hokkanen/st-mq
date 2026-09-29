@@ -67,6 +67,7 @@ export const defaultPalette = Object.freeze({
   text: '#e0ede6', muted: '#9bb4a5', border: '#334d3e', grid: '#243c30',
   property: '#e99583', ev: '#66c7bd', ev2: '#b99bdc', auxiliary: '#e47f79', phase1: '#dfc16c', phase2: '#66c7bd', phase3: '#cf94c7',
   indoor: '#81ca99', upstairs: '#e99583', downstairs: '#e5cb75', bedroom: '#d3b7ed', garage: '#c57739', garageFront: '#f4cd95', garagePump: '#bb8bd0', caravan: '#58c8d1', outdoor: '#83b8da', integral: '#80cbb3', price: '#ffffff', spot: '#b7c4bd',
+  garagePipeRear: '#73a8f4', garagePipeFront: '#e28abc',
   supply: '#df9980', return: '#d5bb7d', brineIn: '#70c3bd', brineOut: '#86adda', reference: '#b6c6b7',
   heatOff: '#7891a7', compressorSpace: '#d5c456', compressorDhw: '#83b8da', dhwr: '#e47f79', learning: '#c0a0df', solar: '#dfc16c',
   firewood: '#d8aa75', fireplace: '#b79b28',
@@ -141,10 +142,10 @@ for (const [key, color] of Object.entries({
   learning_aux_profit: 'auxiliary', compressor_hours: 'compressorSpace', dhw_hours: 'compressorDhw',
   auxiliary_3kw_hours: 'auxiliary', auxiliary_6kw_hours: 'garagePump',
   dhw_temperature: 'compressorDhw', dhw_start_setting: 'brineIn', dhw_stop_setting: 'supply',
-  garage_native_indoor_temperature: 'garagePump',
-  garage_pipe_front_temperature: 'garageFront', garage_pipe_rear_temperature: 'garage',
-  garage_room_target: 'reference', garage_effective_target: 'auxiliary',
 })) if (seriesInfo[key]) seriesInfo[key][2] = color;
+// Shared signal metadata also drives state tracks, so their legend swatches and
+// scalar/explorer representations retain one colour throughout the catalogue.
+for (const [key, info] of Object.entries(SIGNAL_INFO)) if (info.color) seriesInfo[key][2] = info.color;
 
 const forecastSignals = new Set(['outdoor_forecast', 'solar_forecast']);
 export const chartLinePatterns = Object.freeze({

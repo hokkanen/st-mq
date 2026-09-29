@@ -289,14 +289,14 @@ test('room target confirmation is separate from native settings and keeps zero v
   assert.deepEqual(garage, before);
   garage.targetConfirmed = false;
   assert.equal(mitsubishiRoomTemperature(garage).active, false);
-  assert.match(mitsubishiRoomTemperature(garage).progress, /Waiting for Pill confirmation/);
+  assert.match(mitsubishiRoomTemperature(garage).progress, /Waiting for heat-pump controller confirmation/);
   assert.equal(mitsubishiRoomTemperature({}), null);
 });
 
-test('Pill ownership disables native thermostat edits while allowing independent fan and power settings', async () => {
+test('Heat-pump controller ownership disables native thermostat edits while allowing independent fan and power settings', async () => {
   const f = panelFixture(), status = structuredClone(f.status);
   Object.assign(status.garage, { requestedTargetC: 5, targetConfirmed: true });
-  Object.assign(status.garage.nativeControls.settings.targetC, { available: false, reason: 'Room temperature is controlled by the Pill. Use the Normal target.' });
+  Object.assign(status.garage.nativeControls.settings.targetC, { available: false, reason: 'Local room regulation is enabled. Use the Normal target.' });
   f.panel.update(status); f.change('targetC');
   assert.equal(f.nodes.get('garage-native-submit').disabled, true);
   assert.equal(f.nodes.get('garage-native-temperature').value, '22', 'The native editor shows only native readback');

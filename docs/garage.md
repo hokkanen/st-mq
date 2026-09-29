@@ -71,6 +71,16 @@ that comparison does not claim automation savings. Historical observations keep
 their original timestamps and units. Generic original journal/event records are
 not deleted or reinterpreted when the retired learning writer is removed.
 
+**Garage temperatures & compressor** places heat-pump defrost above the door activity
+rows. **Garage protection & electricity** combines saved/effective targets, pipe
+estimates, frost-protection state and interval electricity; there is no separate
+Garage electricity view. The same series retain their colours in every view and
+in the series explorer, with distinct front/rear air and pipe-estimate colours.
+User-facing descriptions name the heat-pump controller and local frost-protection
+unit by role rather than by integration hardware. Selecting Normal or Away shows
+pending confirmation until controller readback confirms the target; polling
+refreshes that feedback without implying the compressor is running.
+
 Read-only replicas display recorded evidence without granting device control.
 
 The Pill's **Bluetooth room sensor** is its live local-regulation input. Its intended

@@ -164,6 +164,29 @@ try {
       ...(key === 'Enter' ? { text: '\r', unmodifiedText: '\r' } : {}) });
     await send('Input.dispatchKeyEvent', { type: 'keyUp', key, code, windowsVirtualKeyCode, nativeVirtualKeyCode: windowsVirtualKeyCode }); await settle();
   };
+  const garageColors = new Map();
+  const checkGarageColors = async label => {
+    const current = await evaluate(`(() => ({ theme: document.documentElement.dataset.theme,
+      swatches: [...document.querySelectorAll('[data-chart-key]')]
+        .filter(node => node.dataset.chartKey.startsWith('garage_') || node.dataset.chartKey === 'compressorGarage')
+        .map(node => ({ key: node.dataset.chartKey, color: getComputedStyle(node.querySelector('.chart-legend-swatch')).color }))
+    }))()`);
+    for (const { key, color } of current.swatches) {
+      const identity = `${current.theme}:${key === 'compressorGarage' ? 'garage_compressor_active' : key}`;
+      if (garageColors.has(identity)) assert.equal(color, garageColors.get(identity), `${label}: ${key} retains its colour across views and explorer`);
+      else garageColors.set(identity, color);
+    }
+    const protectionTemperatures = current.swatches.filter(({ key }) => ['garage_temperature', 'garage_temperature_2',
+      'garage_pipe_front_temperature', 'garage_pipe_rear_temperature', 'garage_room_target', 'garage_effective_target'].includes(key));
+    if (protectionTemperatures.some(({ key }) => key.startsWith('garage_pipe_')))
+      assert.equal(new Set(protectionTemperatures.map(({ color }) => color)).size, protectionTemperatures.length,
+        `${label}: Garage probes, pipe estimates and targets remain distinguishable in the ${current.theme} theme`);
+    assert.equal(await evaluate(`(() => [...document.querySelectorAll('#chart-activity [data-activity-key^="garage_"]')].every(row => {
+      const legend = document.querySelector('[data-chart-key="' + row.dataset.activityKey + '"] .chart-legend-swatch');
+      const activeKey = row.querySelectorAll('.activity-description .activity-key-swatch')[1];
+      return activeKey && getComputedStyle(legend).color === activeKey.style.backgroundColor;
+    }))()`), true, `${label}: Garage state legends match their active-state colour keys`);
+  };
   const choose = async (kind, value) => {
     await searchCatalogue('', kind === 'view' ? 'views' : 'series');
     await evaluate(`document.querySelector('#chart-series [data-${kind}-key="${value}"]').click(); true`);
@@ -171,6 +194,7 @@ try {
     await until(`document.getElementById('history').dataset.ready === 'true'
       && document.getElementById('history').dataset.${kind} === ${JSON.stringify(value)}`);
     await settle();
+    await checkGarageColors(`${kind}: ${value}`);
   };
   const toggle = async key => {
     await evaluate(`document.querySelector('[data-chart-key="${key}"]').click(); true`); await settle();
@@ -962,6 +986,11 @@ try {
     'The explorer keeps the original Caravan energy intervals separately available');
 
   await choose('view', 'garage');
+  assert.equal(await evaluate("document.querySelector('[data-chart-key=garage_frost_active]') === null"), true,
+    'Garage temperatures and compressor leaves frost override in the protection view');
+  assert.deepEqual(await evaluate("[...document.querySelectorAll('#chart-activity [data-activity-key]')].map(row => row.dataset.activityKey).slice(-3)"),
+    ['garage_native_defrost', 'garage_door1_open', 'garage_door2_open'], 'Heat-pump defrost precedes both garage doors');
+  assert.match(await evaluate("document.querySelector('[data-activity-key=garage_native_defrost]').textContent"), /Garage heat-pump defrost.*Native heat-pump defrost reports/s);
   for (const key of ['garage_native_power', 'garage_away_mode']) {
     assert.equal(await shown(key), true, `${key}: garage operation context is visible by default`);
     assert.equal(await evaluate(`document.querySelector('[data-activity-key="${key}"] .mode-segment[data-value="0"]') !== null
@@ -976,12 +1005,16 @@ try {
   await evaluate("document.querySelector('.history-panel').scrollIntoView({block:'start'}); true");
   await capture('garage-dark');
   await choose('view', 'garage_control');
+  assert.equal(await evaluate("document.getElementById('chart-series-selected').textContent"), 'Garage protection & electricity');
+  assert.equal(await shown('garage_energy'), true, 'Original garage electricity intervals are visible in the protection view');
+  assert.equal(await evaluate("document.querySelector('.chart-legend-group[data-axis=left] [data-chart-key=garage_energy] .chart-legend-swatch').dataset.kind"), 'interval-energy');
   for (const key of ['garage_room_target', 'garage_effective_target']) {
     assert.equal(await shown(key), true, `${key}: device target readbacks are visible`);
     assert((await drawnPaths(key)).some(path => path.path.some(command => ['lineTo', 'bezierCurveTo'].includes(command.method))),
       `${key}: recorded device targets render on the temperature chart`);
   }
   await capture('garage-control-dark');
+  for (const row of EXPLORER_SERIES.filter(row => row.key.startsWith('garage_'))) await choose('series', row.key);
   await choose('view', 'garage');
   await pickerMode('series');
   assert.equal(await pickerOpen(), true, 'The selection button opens the explorer and its catalogue switch keeps it open');
@@ -1180,7 +1213,7 @@ try {
     for (const theme of ['dark', 'light']) {
       if (await evaluate('document.documentElement.dataset.theme') !== theme)
         await evaluate("document.getElementById('theme-toggle').click(); true");
-      for (const key of ['power', 'garage', 'heating_water', 'temperatures', 'garage_control', 'garage_energy', 'explorer']) {
+      for (const key of ['power', 'garage', 'heating_water', 'temperatures', 'garage_control', 'explorer']) {
         if (key === 'explorer') await choose('series', 'garage_native_indoor_temperature');
         else await choose('view', key);
         await evaluate("document.querySelector('.history-panel').scrollIntoView({block:'start'}); true");

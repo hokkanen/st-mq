@@ -67,7 +67,7 @@ export class GarageRuntime {
     if (!this.canControl() || this.input === 'offline') return 'This instance is read-only.';
     if (this.closed) return 'Garage control is closed.';
     if (this.busy) return 'Wait for the current garage request to finish.';
-    return this.adapter?.status(now).blockedReasons[0] ?? (!this.adapter ? 'Waiting for the Pill connection.' : null);
+    return this.adapter?.status(now).blockedReasons[0] ?? (!this.adapter ? 'Waiting for the heat-pump controller connection.' : null);
   }
   async setHeating(input) {
     if (!input || typeof input !== 'object' || Array.isArray(input)
@@ -80,7 +80,7 @@ export class GarageRuntime {
     if (reason) throw Object.assign(new Error(reason), { statusCode: 409 });
     const adapter = this.adapter.status(now), previous = this.identityChanged ? null : this.selection;
     const normalTargetC = input.targetC ?? previous?.normalTargetC ?? adapter.control?.targetC;
-    if (!validGarageTarget(normalTargetC)) throw new Error('Wait for the Pill room target or choose a Normal temperature.');
+    if (!validGarageTarget(normalTargetC)) throw new Error('Wait for the saved room target to be reported or choose a Normal temperature.');
     const targetC = input.mode === 'away' ? this.settings.awayTargetC : normalTargetC;
     const fromC = adapter.control?.effectiveTargetC ?? (previous?.mode === 'away' ? previous.awayTargetC : previous?.normalTargetC);
     this.busy = true;
@@ -104,7 +104,7 @@ export class GarageRuntime {
     } finally { this.busy = false; }
   }
   nativeControls(now = this.clock()) {
-    const controls = this.adapter?.nativeControls(now) ?? { available: false, settings: {}, reason: 'Waiting for the Pill connection.' };
+    const controls = this.adapter?.nativeControls(now) ?? { available: false, settings: {}, reason: 'Waiting for the heat-pump controller connection.' };
     const reason = this.controlReason(now);
     return { ...controls, available: !reason && controls.available, busy: this.busy || controls.busy,
       reason: reason ?? controls.reason,
@@ -126,7 +126,7 @@ export class GarageRuntime {
   }
   async setProtection(input) {
     if (!this.canControl() || this.input === 'offline' || this.closed) throw new Error('This instance is read-only.');
-    if (!this.sender) throw new Error('The frost-protection sender is not connected.');
+    if (!this.sender) throw new Error('The local frost-protection unit is not connected.');
     const result = await this.sender.setConfiguration(input);
     this.store.event('garage-protection-setting-requested', { settings: input, commandId: result.commandId }, this.clock());
     return result;
@@ -142,23 +142,23 @@ export class GarageRuntime {
     const reason = this.controlReason(now);
     const row = signal => observationView(this.engine.latest[signal] ?? this.engine.lastKnownTemperatures?.[signal], now, this.settings.maxSensorAgeMs);
     const regulationReason = {
-      starting: 'The Pill is initializing local temperature regulation.',
-      disabled: 'Local room regulation is disabled on the Pill.',
-      'sensor-stale': 'The Bluetooth temperature is unavailable. The Pill has selected its native 16°C fallback; the saved room target is unchanged.',
-      'sensor-range': 'The Bluetooth temperature cannot be used for local regulation. The Pill has selected its native 16°C fallback.',
-      'frost-unavailable': 'The configured frost feed is unavailable. The Pill has selected its native 16°C fallback.',
-      'native-stale': 'The Pill is waiting for fresh heat-pump readback.',
+      starting: 'The heat-pump controller is initializing local temperature regulation.',
+      disabled: 'Local room regulation is disabled on the heat-pump controller.',
+      'sensor-stale': 'The Bluetooth temperature is unavailable. The heat-pump controller has selected its native 16°C fallback; the saved room target is unchanged.',
+      'sensor-range': 'The Bluetooth temperature cannot be used for local regulation. The heat-pump controller has selected its native 16°C fallback.',
+      'frost-unavailable': 'The configured frost-protection feed is unavailable. The heat-pump controller has selected its native 16°C fallback.',
+      'native-stale': 'The heat-pump controller is waiting for fresh heat-pump readback.',
       'suspended-mode': 'Local room regulation is suspended by the heat pump’s native operating mode.',
-      'setting-native-target': 'The Pill is preparing the native thermostat for local room regulation.',
+      'setting-native-target': 'The heat-pump controller is preparing the native thermostat for local room regulation.',
       'frost-rescue': 'Local frost rescue is selecting heating and a protective target.',
     }[control?.status] ?? null;
     const sender = this.sender?.status(now);
     const protection = { available: control?.frostAvailable === true, active: control?.frostActive === true,
       status: !control?.frostAvailable ? 'unavailable' : control.frostActive ? 'active' : 'ready',
-      reason: !control?.frostAvailable ? 'Local frost protection is unavailable. A commissioned Gen3 sender and fresh protection feed are required.'
-        : control.frostActive ? 'The Pill is applying the sender’s frost-protection demand.' : 'Local frost protection is ready.',
+      reason: !control?.frostAvailable ? 'Local frost protection is unavailable. A commissioned local frost-protection unit and fresh protection feed are required.'
+        : control.frostActive ? 'The heat-pump controller is applying the local frost-protection demand.' : 'Local frost protection is ready.',
       locations: sender?.protection?.locations ?? null, settings: sender?.settings ?? null,
-      settingsAvailable: sender?.settingsAvailable === true, settingsReason: sender?.settingsReason ?? 'The Gen3 sender is not connected.',
+      settingsAvailable: sender?.settingsAvailable === true, settingsReason: sender?.settingsReason ?? 'The local frost-protection unit is not connected.',
       configuredSettings: copy(this.settings.protection), sender: sender ?? null };
     return { settings: copy(this.settings), status: control?.status ?? 'unavailable', reason: this.lastError ?? reason,
       mode: selection?.mode ?? null, normalTargetC: selection?.normalTargetC ?? null,
@@ -173,7 +173,7 @@ export class GarageRuntime {
       doors: Object.fromEntries(GARAGE_DOOR_SIGNALS.map(signal => { const observed = this.engine.latest[signal];
         return [signal, { open: confirmedGarageDoor(observed, now) ? observed.value === 1 : null,
           observedAt: observed?.sourceTime ?? null }]; })),
-      adapter: adapter ?? { phase: 'unavailable', contractStatus: 'missing', connected: false, blockedReasons: ['Waiting for the Pill connection.'] } };
+      adapter: adapter ?? { phase: 'unavailable', contractStatus: 'missing', connected: false, blockedReasons: ['Waiting for the heat-pump controller connection.'] } };
   }
   async close() { this.closed = true; }
 }

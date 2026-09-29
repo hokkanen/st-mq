@@ -42,11 +42,41 @@ test('manual Normal and Away send durable selections without lease, expiry, or n
   f.reply(away); await f.trigger('garage-mode-away');
   assert.deepEqual(f.requests, [['/api/garage/heating', { mode: 'away' }]]);
   assert.equal(f.nodes.get('garage-mode-away').attributes.get('aria-pressed'), 'true');
-  assert.match(f.nodes.get('garage-heating-message').textContent, /Away selected.*Waiting for Pill confirmation/);
+  assert.match(f.nodes.get('garage-heating-message').textContent, /Away selected.*Waiting for heat-pump controller confirmation/);
   f.panel.update({ ...away, now: now + 2 * day });
   assert.equal(f.nodes.get('garage-mode-away').attributes.get('aria-pressed'), 'true');
   assert.deepEqual(f.busy, [true, false]);
   f.panel.close(); assert.equal(f.nodes.get('garage-mode-normal').listeners.has('click'), false);
+});
+
+test('selection feedback follows polled confirmation and marks recorded confirmation unavailable', async () => {
+  const f = fixture(), message = f.nodes.get('garage-heating-message');
+  const away = { ...f.initial, garage: { ...f.initial.garage, mode: 'away', requestedTargetC: 5, targetConfirmed: false } };
+  f.reply(away); await f.trigger('garage-mode-away');
+  assert.equal(message.textContent, 'Away selected. Waiting for heat-pump controller confirmation.');
+  const confirmed = { ...away, garage: { ...away.garage, targetConfirmed: true } };
+  f.panel.update(confirmed);
+  assert.equal(message.textContent, 'Away selected. Confirmed by the heat-pump controller.');
+  assert.equal(f.nodes.get('garage-target-confirmation').textContent, 'Confirmed by the heat-pump controller');
+  f.panel.update(away);
+  assert.equal(message.textContent, 'Away selected. Waiting for heat-pump controller confirmation.');
+  f.panel.update({ ...confirmed, readOnly: true });
+  assert.equal(message.textContent, 'Away selected. Recorded selection · live confirmation unavailable.');
+  assert.equal(f.requests.length, 1, 'Status updates must not resend the selection');
+});
+
+test('polling preserves target validation and request errors after a successful selection', async () => {
+  const f = fixture(), message = f.nodes.get('garage-heating-message');
+  await f.trigger('garage-mode-normal');
+  assert.match(message.textContent, /Confirmed by the heat-pump controller/);
+  f.nodes.get('garage-normal-target').value = '8.1';
+  await f.trigger('garage-normal-target', 'input'); await f.trigger('garage-target-form', 'submit');
+  f.panel.update(f.initial);
+  assert.equal(message.textContent, 'Choose a Normal target from 0 to 31 °C in 0.5 °C steps.');
+  f.reply(new Error('The heat-pump controller is unavailable.'));
+  await f.trigger('garage-mode-away');
+  f.panel.update(f.initial);
+  assert.equal(message.textContent, 'The heat-pump controller is unavailable.');
 });
 
 test('target edits preserve drafts during polling, select Normal explicitly, and validate half-degree bounds', async () => {
@@ -123,7 +153,7 @@ test('protection settings stay separate, require actual readback, preserve draft
   f.panel.update(status); assert.equal(f.nodes.get('garage-protection-marginC').value, '1.5');
   await f.trigger('garage-protection-form', 'submit');
   assert.deepEqual(f.requests, [['/api/garage/protection', { ...settings, marginC: 1.5 }]]);
-  assert.match(f.nodes.get('garage-protection-message').textContent, /Wait for.*confirmed readback/);
+  assert.match(f.nodes.get('garage-protection-message').textContent, /Wait for the local protection unit to confirm/);
 });
 
 test('Garage markup has durable controls and independent protection without retired automatic or model controls', () => {
@@ -151,7 +181,7 @@ test('Home savings values are unchanged and Garage only presents observed electr
 });
 
 test('local regulation fallback remains visible while mode commands are still available', async () => {
-  const f = fixture(), reason = 'Bluetooth room sensor is stale. The Pill is using its fallback target.';
+  const f = fixture(), reason = 'Bluetooth room sensor is stale. The heat-pump controller is using its fallback target.';
   f.panel.update({ ...f.initial, garage: { ...f.initial.garage, regulationReason: reason } });
   assert.equal(f.nodes.get('garage-control-detail').textContent, reason);
   assert.equal(f.nodes.get('garage-mode-away').disabled, false);
@@ -160,7 +190,7 @@ test('local regulation fallback remains visible while mode commands are still av
 });
 
 
-test('Bluetooth input ages after the Pill report and stale fallback air is labelled', () => {
+test('Bluetooth input ages after the controller report and stale fallback air is labelled', () => {
   const f = fixture(), garage = { ...f.initial.garage,
     adapter: { connected: true, observedAt: now - 30_000, control: { sensorTemperatureC: 0, sensorAgeMs: 160_000 } },
     observations: { rear: { value: 5, stale: true } },

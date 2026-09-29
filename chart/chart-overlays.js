@@ -1,3 +1,6 @@
+import { SIGNAL_INFO } from '../src/domain/history-series.js';
+
+const garageCompressorColor = SIGNAL_INFO.garage_compressor_active.color;
 const dateTime = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki',
   day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZoneName: 'shortOffset' });
 
@@ -29,10 +32,10 @@ export const activityTracks = Object.freeze([
       { label: 'Routing unknown', color: 'muted', pattern: 'unknown', description: 'The compressor is running, but its heating destination is unknown.' },
       { label: 'Unknown', color: 'muted', pattern: 'blank', description: 'No compressor state was recorded.' },
     ] },
-  { key: 'compressorGarage', label: 'Compressor · garage', color: 'garage',
+  { key: 'compressorGarage', label: 'Compressor · garage', color: garageCompressorColor,
     detail: 'Reported garage compressor operation. Blank intervals include stopped or unavailable readings.',
     missingLabel: 'No running interval recorded; stopped and unavailable readings may both be blank',
-    legend: [{ label: 'Running', color: 'garage' },
+    legend: [{ label: 'Running', color: garageCompressorColor },
       { label: 'No interval', color: 'muted', pattern: 'blank', description: 'Stopped or unavailable; these intervals do not establish which.' }] },
   { key: 'heatOff', label: 'Tariff reduction request', color: 'heatOff',
     detail: 'Requested tariff reduction; this does not establish whether the compressor was running.',

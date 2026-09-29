@@ -118,11 +118,35 @@ test('Home learning remains available while Garage exposes measurements and loca
   for (const section of ['learning', 'coefficients', 'outcomes'])
     assert(CHART_VIEWS.some(view => view.group === `Home ${section}`));
   assert(!CHART_VIEWS.some(view => /^Garage (learning|coefficients|outcomes)$/.test(view.group)));
-  assert.equal(CHART_VIEW_BY_KEY.garage_energy.group, 'Garage');
+  assert.equal(CHART_VIEW_BY_KEY.garage_control.group, 'Garage');
   assert(!Object.keys(EXPLORER_SERIES_BY_KEY).some(key => /^garage_(model|coefficient|outcome)_/.test(key)));
   assert(EXPLORER_SERIES_BY_KEY.model_auxiliary_power);
   assert(CHART_VIEW_BY_KEY.learning_temperatures.leftSignals.includes('model_room_boost'));
   assert.match(CHART_VIEW_BY_KEY.learning_benefit.description, /rolling mean/);
+});
+
+test('Garage views separate compressor context from protection while retaining original electricity evidence', () => {
+  const temperatures = CHART_VIEW_BY_KEY.garage, protection = CHART_VIEW_BY_KEY.garage_control;
+  assert(!temperatures.tracks.includes('garage_frost_active'));
+  assert(!Object.hasOwn(temperatures.defaults, 'garage_frost_active'));
+  assert(temperatures.tracks.indexOf('garage_native_defrost') < temperatures.tracks.indexOf('garage_door1_open'));
+  assert(temperatures.tracks.indexOf('garage_native_defrost') < temperatures.tracks.indexOf('garage_door2_open'));
+  assert.equal(protection.label, 'Garage protection & electricity');
+  assert.deepEqual(protection.leftSignals, ['garage_energy']);
+  assert.equal(protection.unit, 'kWh / interval');
+  assert.equal(protection.defaults.garage_energy, true);
+  assert(protection.tracks.includes('garage_frost_active'));
+  assert(protection.rightSignals.includes('garage_pipe_front_temperature'));
+  assert(protection.rightSignals.includes('garage_pipe_rear_temperature'));
+  assert(!Object.hasOwn(CHART_VIEW_BY_KEY, 'garage_energy'));
+  assert.throws(() => selectedChartView({ view: 'garage_energy' }), /Choose a chart view/);
+  assert.throws(() => chartQuery({ view: 'garage_energy', startDate: '2026-09-07', endDate: '2026-09-07' }));
+  assert.equal(EXPLORER_SERIES_BY_KEY.garage_energy.basis, 'Recording-interval energy');
+  const restored = readChartPreferences({ getItem: () => JSON.stringify({ view: 'garage_energy', views: { garage_energy: { garage_energy: false } } }) });
+  assert.equal(restored.view, 'power');
+  assert(!Object.hasOwn(restored.views, 'garage_energy'));
+  assert.match(SIGNAL_INFO.garage_native_defrost.label, /heat-pump defrost/);
+  assert.doesNotMatch(Object.entries(SIGNAL_INFO).filter(([key]) => key.startsWith('garage_')).map(([, info]) => `${info.label} ${info.detail}`).join(' '), /\b(Pill|Gen3)\b/);
 });
 
 test('home activity rows share the requested order and keep equipment feedback distinct from requests', () => {

@@ -69,8 +69,8 @@ export function historyTooltipLabel(item) {
   else if (key === 'caravan_energy') {
     details.push('meter energy over the recorded interval');
   }
-  else if (/^garage_pipe_(rear|front)_temperature$/.test(key)) details.push('sender pipe estimate; not a direct measurement');
-  else if (['garage_room_target', 'garage_effective_target'].includes(key)) details.push('Pill target readback; not measured room temperature');
+  else if (/^garage_pipe_(rear|front)_temperature$/.test(key)) details.push('local frost-protection pipe estimate; not a direct measurement');
+  else if (['garage_room_target', 'garage_effective_target'].includes(key)) details.push('Heat-pump controller target readback; not measured room temperature');
   else if (key === 'garage_away_mode') details.push('saved mode choice; not confirmation of heating');
   else if (key === 'garage_native_energy') details.push('cumulative native meter counter; not interval consumption');
   else if (key === 'garage_energy') {

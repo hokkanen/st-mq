@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import { historyDatasets, historySeriesAt, defaultPalette } from '../chart/history-model.js';
 import { historyTooltipLabel } from '../chart/history-tooltips.js';
 import { CHART_VIEW_BY_KEY } from '../src/domain/chart-views.js';
-import { HISTORY_AXIS_BY_KEY } from '../src/domain/history-series.js';
+import { HISTORY_AXIS_BY_KEY, SIGNAL_INFO } from '../src/domain/history-series.js';
+import { explorerSelection, explorerActivityTrack } from '../chart/series-explorer.js';
+import { activityTracks } from '../chart/chart-overlays.js';
 import { temperatureIntervalKnots } from '../chart/temperature-curves.js';
 
 const observations = [{ x: 0, y: 15 }, { x: 10, y: 17 }, { x: 20, y: null }, { x: 30, y: 16 }];
@@ -161,6 +163,7 @@ test('comparable equipment roles have distinct colours within each view', () => 
     ['supply_temperature', 'return_temperature', 'heating_setpoint', 'maximum_supply_setting'],
     ['model_indoor_temperature', 'model_target_temperature', 'learning_indoor_temperature'],
     ['garage_temperature', 'garage_temperature_2', 'caravan_temperature'],
+    ['garage_temperature', 'garage_temperature_2', 'garage_pipe_rear_temperature', 'garage_pipe_front_temperature', 'garage_room_target', 'garage_effective_target'],
     ['heating_pump_speed', 'brine_pump_speed'], ['learning_profit', 'learning_aux_profit'],
     ['compressor_hours', 'dhw_hours', 'auxiliary_3kw_hours', 'auxiliary_6kw_hours'],
   ]) {
@@ -168,8 +171,6 @@ test('comparable equipment roles have distinct colours within each view', () => 
     assert.equal(new Set(rows.map(row => row.borderColor)).size, keys.length, keys.join(', '));
   }
   for (const keys of [
-    ['garage_temperature', 'garage_pipe_rear_temperature'],
-    ['garage_temperature_2', 'garage_pipe_front_temperature'],
     ['property_power', 'caravan_power', 'caravan_energy'],
   ]) {
     const rows = historyDatasets({}, descriptor(keys));
@@ -178,6 +179,29 @@ test('comparable equipment roles have distinct colours within each view', () => 
   for (const view of Object.values(CHART_VIEW_BY_KEY).filter(view => [...view.leftSignals, ...view.rightSignals].includes('caravan_temperature'))) {
     assert.equal(historyDatasets({}, view).find(row => row.key === 'caravan_temperature').borderColor, defaultPalette.caravan, view.key);
   }
+});
+
+test('every Garage series keeps its colour across named views, explorer, and active-state legend keys', () => {
+  for (const [key, info] of Object.entries(SIGNAL_INFO).filter(([key]) => key.startsWith('garage_'))) {
+    assert(defaultPalette[info.color], `${key}: declares a supported shared colour`);
+    if (info.unit === 'state') {
+      const track = explorerActivityTrack(key);
+      assert.equal(track.color, info.color, key);
+      assert.equal(track.colors[1], track.color, `${key}: active row and series legend match`);
+      assert.equal(track.legend.find(entry => entry.value === 1).color, track.color, key);
+    } else {
+      const views = [...Object.values(CHART_VIEW_BY_KEY).filter(view => [...view.leftSignals, ...view.rightSignals].includes(key)), explorerSelection(key)];
+      for (const view of views) {
+        const row = historyDatasets({}, view).find(row => row.key === key);
+        assert.equal(row.borderColor, defaultPalette[info.color], `${view.key}: ${key}`);
+        assert.equal(row.pointBorderColor, row.borderColor, `${view.key}: point and line match`);
+      }
+    }
+  }
+  const compressor = activityTracks.find(track => track.key === 'compressorGarage');
+  const native = explorerActivityTrack('garage_compressor_active');
+  assert.equal(compressor.color, native.color);
+  assert.equal(compressor.legend.find(entry => entry.label === 'Running').color, native.colors[1]);
 });
 
 test('garage interval and counter tooltips preserve their distinct quantity and evidence', () => {

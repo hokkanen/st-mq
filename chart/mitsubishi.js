@@ -58,11 +58,11 @@ export function mitsubishiRoomTemperature(garage = {}) {
     detail: 'Saved room target from recorded history; not confirmation of current pump settings or heating.' };
   return { value: mitsubishiValue('targetC', garage.requestedTargetC), basis: 'Selected room target',
     active: garage.targetConfirmed === true,
-    progress: garage.targetConfirmed === true ? 'Pill confirmed the selected target.' : 'Waiting for Pill confirmation.',
+    progress: garage.targetConfirmed === true ? 'The heat-pump controller confirmed the selected target.' : 'Waiting for heat-pump controller confirmation.',
     detail: `Selected room target: ${mitsubishiValue('targetC', garage.requestedTargetC)}. It stays selected until changed. The native thermostat setting and reported control temperature can differ while local temperature control is active. This selection does not confirm that the compressor is running.` };
 }
 
-export const mitsubishiTemperatureControlHelp = 'The native thermostat setting is separate from the Garage room target. Choose Normal or Away in Heating control to set the room target. While local room regulation is enabled, use the Normal target editor; the native thermostat is managed by the Pill. Native power and operating-mode changes remain in effect; selecting a room target does not turn an OFF pump on.';
+export const mitsubishiTemperatureControlHelp = 'The native thermostat setting is separate from the Garage room target. Choose Normal or Away in Heating control to set the room target. While local room regulation is enabled, use the Normal target editor; the native thermostat is managed by the heat-pump controller. Native power and operating-mode changes remain in effect; selecting a room target does not turn an OFF pump on.';
 
 /** Present reported settings and diagnostic measurements without promoting
  * provisional telemetry to control evidence or interpreting raw units. */

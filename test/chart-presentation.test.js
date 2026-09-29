@@ -132,8 +132,8 @@ test('tooltips retain truthful source, interval and derived-input distinctions f
 
 test('Garage target and pipe estimate tooltips keep control and inference distinct from measurements', () => {
   const label = key => historyTooltipLabel({ dataset: { key, label: key, unit: '°C' }, parsed: { x: 1, y: 5 }, raw: {} });
-  assert.match(label('garage_pipe_front_temperature'), /sender pipe estimate; not a direct measurement/);
-  assert.match(label('garage_room_target'), /target readback; not measured room temperature/);
+  assert.match(label('garage_pipe_front_temperature'), /local frost-protection pipe estimate; not a direct measurement/);
+  assert.match(label('garage_room_target'), /Heat-pump controller target readback; not measured room temperature/);
   assert.equal(historyLearningLabel('garage_temperature'), 'not used for learning');
 });
 

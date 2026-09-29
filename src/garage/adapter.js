@@ -52,13 +52,13 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
   }
   function blockers(now) {
     const reasons = [];
-    if (!transport) reasons.push('Pill command connection is unavailable.');
+    if (!transport) reasons.push('The heat-pump controller connection is unavailable.');
     if (!canControl()) reasons.push('This instance is read-only.');
-    if (!fresh(now)) reasons.push('Waiting for a fresh Pill state.');
+    if (!fresh(now)) reasons.push('Waiting for fresh heat-pump controller status.');
     if (!health(now).pumpCommunicating) reasons.push('Waiting for heat-pump communication.');
     if (!state?.challenge || state.challenge === usedChallenge) reasons.push('Waiting for a fresh command challenge.');
     if (pending(lastCommand) && now - lastCommand.requestedAt >= 30_000) {
-      lastCommand = { ...lastCommand, status: 'uncertain', reason: 'Pill confirmation timed out.' }; changed();
+      lastCommand = { ...lastCommand, status: 'uncertain', reason: 'Heat-pump controller confirmation timed out.' }; changed();
     }
     if (pending(lastCommand)) reasons.push('Waiting for the previous command confirmation.');
     return reasons;
@@ -93,7 +93,7 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
         value: view.native[key] ?? null, usable: view.health.pumpCommunicating === true && view.native[key] != null, supported: key === 'targetC' || state?.manualControls?.includes(key) === true,
         measuredAt: state?.native[key]?.measuredAt ?? null, available: available && !(key === 'targetC' && state?.control.externalEnabled)
           && (key === 'targetC' || state?.manualControls?.includes(key)) && (definition.values ? options[key] !== null : true),
-        reason: key === 'targetC' && state?.control.externalEnabled ? 'Room temperature is controlled by the Pill. Use the Normal target.' : view.blockedReasons[0] ?? null,
+        reason: key === 'targetC' && state?.control.externalEnabled ? 'Local room regulation is enabled. Use the Normal target.' : view.blockedReasons[0] ?? null,
         ...(definition.values ? { values: options[key] ?? [] } : { min: definition.min, max: definition.max, step: .5 }) }])) };
   }
   async function send(action, fields, now) {
@@ -136,9 +136,9 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
     if (activeSignature && activeSignature !== signature) {
       retiredBoots.add(activeSignature);
       if (retiredBoots.size > 16) retiredBoots.delete(retiredBoots.values().next().value);
-      invalidateTelemetry('Pill restarted', receivedAt);
-      state = null; latest = {}; electrical.reset('Pill restarted'); usedChallenge = null;
-      if (pending(lastCommand)) lastCommand = { ...lastCommand, status: 'uncertain', reason: 'Pill restarted.' };
+      invalidateTelemetry('Heat-pump controller restarted', receivedAt);
+      state = null; latest = {}; electrical.reset('Heat-pump controller restarted'); usedChallenge = null;
+      if (pending(lastCommand)) lastCommand = { ...lastCommand, status: 'uncertain', reason: 'The heat-pump controller restarted.' };
     }
     if (topic === settings.stateTopic) {
       const control = decodeGarageControl(value.control);
@@ -218,7 +218,7 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
   return { topics, receive, snapshot, status, nativeControls,
     setControl(input, now = clock()) {
       if (!input || Object.keys(input).sort().join(',') !== 'externalEnabled,targetC'
-        || !validTarget(input.targetC) || typeof input.externalEnabled !== 'boolean') throw new Error('Choose a valid Pill room target.');
+        || !validTarget(input.targetC) || typeof input.externalEnabled !== 'boolean') throw new Error('Choose a valid room temperature target.');
       return send('control', input, now);
     },
     setNativeSetting(input, now = clock()) {

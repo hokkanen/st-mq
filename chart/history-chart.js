@@ -28,6 +28,7 @@ const paletteVariables = {
   heatOff: '--chart-heat-off', auxiliary: '--chart-auxiliary', compressorSpace: '--chart-compressor-space', compressorDhw: '--chart-compressor-dhw', dhwr: '--chart-dhwr', learning: '--chart-learning', solar: '--chart-solar',
   firewood: '--chart-firewood', fireplace: '--chart-fireplace',
   reference: '--chart-reference', garageFront: '--chart-garage-front', garagePump: '--chart-garage-pump', supply: '--chart-supply', return: '--chart-return', brineIn: '--chart-brine-in', brineOut: '--chart-brine-out',
+  garagePipeRear: '--chart-garage-pipe-rear', garagePipeFront: '--chart-garage-pipe-front',
 };
 export function historyRenderFingerprint(overview, selection) {
   return JSON.stringify({ range: overview.range, input: overview.input, series: overview.series,

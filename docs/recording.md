@@ -1213,13 +1213,16 @@ The retained data has distinct responsibilities:
 | Native garage compressor activity and defrost | Exact observed state changes; no inferred fault or defrost interpretation from arbitrary diagnostic bytes. |
 | External feed diagnostics | Abnormal onset, changed reason and recovery events; no numeric feed series or healthy renewal log. |
 
-The Garage view offers native compressor activity, supported defrost reports and
-door contacts as separate activity rows. **Pump power readback** uses the saved
-fresh native on/off report. **Managed pause** records that savings control or a
-timed-off request held the pump paused; it does not prove measured savings or an
-automatic-only cause. These two saved-input rows keep reported power distinct
-from the recorded reason for a control pause. Native states follow their recorded
-availability deadlines; unknown periods remain unknown, never inferred off.
+**Garage temperatures & compressor** offers native compressor activity, heat-pump
+defrost reports and door contacts as separate activity rows, with defrost above
+the doors. **Garage protection & electricity** combines saved/effective targets,
+pipe estimates, protection states and recorded electricity intervals. Frost
+override appears there, separately from the heat pump's defrost cycle. There is
+no separate Garage electricity view; its energy series remains available in the
+combined view and series explorer. Garage series retain the same colours in all
+views, including distinct front/rear pipe-estimate colours. Native states follow
+their recorded availability deadlines; unknown periods remain unknown, never
+inferred off.
 The pump's interpreted indoor reading is available beside the front/rear probes
 and independently in the explorer's **All series** mode. It may incorporate its external feed
 and is not relabeled as a physical room sensor. Hot-water circulation requests

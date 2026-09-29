@@ -9,7 +9,7 @@ import { garageAdapterSettings, validateGarageAdapterSnapshot } from '../src/gar
 test('v2 requires fresh native readback and retained state never grants authority', async () => {
   const f = garageV2Fixture();
   assert.equal(f.update({}, { retain: true }), false);
-  await assert.rejects(f.adapter.setControl({ targetC: 5, externalEnabled: true }), /fresh Pill/);
+  await assert.rejects(f.adapter.setControl({ targetC: 5, externalEnabled: true }), /fresh heat-pump controller status/);
   assert.equal(f.update({ health: { nativeFresh: false } }), true);
   await assert.rejects(f.adapter.setControl({ targetC: 5, externalEnabled: true }), /communication/);
   f.update(); assert.equal(f.adapter.status().controlAvailable, true);

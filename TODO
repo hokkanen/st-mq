@@ -1,3 +1,24 @@
+Implemented 2026-09-29 — Garage chart clarity and current target confirmation
+- F1/F3/F4/F5: use hardware-neutral heat-pump controller and local frost-protection
+  unit terminology in user-facing status, errors, settings, chart and recording
+  descriptions; retain actual protocol identifiers and command authority.
+- Keep heat-pump defrost above doors in Garage temperatures & compressor, remove
+  its frost-override row, and combine interval electricity with target/protection
+  data in Garage protection & electricity. Remove the redundant Garage electricity
+  view without an alias; retain its recorded energy and explorer series.
+- Use distinct pipe-estimate colours and shared Garage colours across views,
+  explorer, legend swatches and activity intervals in both themes.
+- Refresh selection feedback from current readback on polling, so Away confirmation
+  replaces the pending message. Preserve command errors, read-only restrictions,
+  uncertain/unknown states and the distinction between a target and heating.
+- Align chart documentation, removing retired managed-pause presentation wording.
+- Validation: focused Garage/backend/chart/recording tests and production build
+  passed. Garage and Mitsubishi browser suites passed, including pending-to-confirmed
+  Away feedback and narrow layouts. The complete chart browser sweep passed all
+  37 named views and 118 explorer choices, with Garage colour consistency checked
+  across views in both themes. Build retains its existing bundle-size warning.
+  Final full offline regression: 3,497 passed, one optional skip, zero failures.
+
 Implemented 2026-09-29 — Remove duplicate Garage Bluetooth history
 - F1/F3/F4: remove the Pill Bluetooth input observation writer, disconnect rows,
   chart catalogue/view entries, colour and tooltip handling. Record rear air

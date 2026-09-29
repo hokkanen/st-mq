@@ -534,7 +534,7 @@
                 <button id="garage-mode-normal" data-write-control data-access-path="/api/garage/heating" class="secondary-button" type="button" aria-pressed="false" disabled><span>Normal</span><strong id="garage-mode-normal-target">—</strong><span class="heating-button-state" aria-hidden="true"></span></button>
                 <button id="garage-mode-away" data-write-control data-access-path="/api/garage/heating" class="secondary-button" type="button" aria-pressed="false" disabled><span>Away</span><strong id="garage-mode-away-target">—</strong><span class="heating-button-state" aria-hidden="true"></span></button>
               </div>
-              <p id="garage-target-confirmation" class="muted" role="status">Waiting for Pill confirmation</p>
+              <p id="garage-target-confirmation" class="muted" role="status">Waiting for heat-pump controller confirmation</p>
               <p id="garage-warming-warning" class="heating-hold-warning heating-hold-warning-strong garage-warming-warning" role="status" aria-live="polite" hidden></p>
               <div id="garage-heating-state" class="home-heating-state" role="group" aria-label="Current garage heating state">
                 <div class="home-state-reading"><span>Selected temperature</span><strong id="garage-current-control">Unavailable</strong></div>
@@ -559,7 +559,7 @@
                 <p class="muted">Protection is separate from Normal and Away. When available, it can start heating or temporarily raise the target to protect the pipes. Your selected temperature remains saved. Pipe temperature and reserve are conservative estimates, not additional sensor readings.</p>
                 <details id="garage-protection-settings-details" class="equipment-fold">
                   <summary>Protection settings</summary>
-                  <p id="garage-protection-settings-status" class="muted" role="status">Waiting for the sender’s settings.</p>
+                  <p id="garage-protection-settings-status" class="muted" role="status">Waiting for reported protection settings.</p>
                   <form id="garage-protection-form" class="garage-protection-form" data-write-control data-admin-only data-access-path="/api/garage/protection" aria-describedby="garage-protection-settings-help garage-protection-message">
                     <label class="garage-protection-approved"><input id="garage-protection-approved" type="checkbox" disabled> Installation parameters are approved</label>
                     <div class="garage-protection-fields">
@@ -568,7 +568,7 @@
                       <label for="garage-protection-pipeWallMm">Pipe wall thickness · mm<input id="garage-protection-pipeWallMm" type="number" min="0.3" max="10" step="0.1" required disabled></label>
                       <label for="garage-protection-heatTransferWPerM2K">Heat transfer · W/(m²·K)<input id="garage-protection-heatTransferWPerM2K" type="number" min="1" max="100" step="0.1" required disabled></label>
                     </div>
-                    <p id="garage-protection-settings-help" class="muted">These are the settings reported by the local sender. Changes apply there and must be confirmed by its readback. The two locations keep independent reserve estimates. If approval is cleared, the commissioned Pill treats protection as unavailable and requests fallback heating.</p>
+                    <p id="garage-protection-settings-help" class="muted">These are the settings reported by the local frost-protection unit. Changes apply there and must be confirmed by its readback. The two locations keep independent reserve estimates. If approval is cleared, the heat-pump controller treats the configured protection as unavailable and requests fallback heating.</p>
                     <button id="garage-protection-submit" class="secondary-button" type="submit" disabled>Apply protection settings</button>
                     <p id="garage-protection-message" class="temporary-status" role="status" aria-live="polite"></p>
                   </form>

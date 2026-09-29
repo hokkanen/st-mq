@@ -99,7 +99,7 @@ try {
       status.garage = { settings: { enabled: true }, mode: f.mode, normalTargetC: f.normalTargetC, awayTargetC: 5,
         requestedTargetC: f.targetC, effectiveTargetC: f.protection === 'active' ? 14 : f.targetC,
         targetConfirmed: f.confirmed && !f.offline, controlAvailable: !f.offline,
-        controlReason: f.offline ? 'The Pill connection is unavailable.' : null,
+        controlReason: f.offline ? 'The heat-pump controller connection is unavailable.' : null,
         warmingWarning: f.warming ? { since: status.now, until: status.now + 86400000,
           message: 'The target has increased. Avoid wet or snowy vehicles and substantial moisture for roughly 24 hours, and longer if contents are still cold.' } : null,
         observations: { rear: { value: 6.5, sourceTime: status.now, receivedAt: status.now, stale: false, quality: [] },
@@ -117,7 +117,7 @@ try {
         nativeControls: { available: !f.offline, settings: {
           power: { available: !f.offline, usable: !f.offline, supported: true, value: 'off', values: ['on', 'off'] },
           targetC: { available: false, usable: !f.offline, supported: true, value: 16, min: 16, max: 31, step: .5,
-            reason: 'Room temperature is controlled by the Pill. Use the Normal target.' } } } };
+            reason: 'Local room regulation is enabled. Use the Normal target.' } } } };
       return status;
     };
     globalThis.fetch = async (input, options = {}) => {
@@ -155,9 +155,14 @@ try {
   assert.equal(await evaluate(`document.getElementById('garage-protection-status').textContent`), 'Unavailable');
   assert.equal(await evaluate(`document.getElementById('garage-protection-marginC').value`), '');
   assert.equal(await evaluate(`document.getElementById('garage-protection-submit').disabled`), true);
-  await evaluate(`document.getElementById('garage-mode-away').click()`);
+  await evaluate(`garageFixture.confirmed = false; document.getElementById('garage-mode-away').click()`);
   await until(`document.getElementById('garage-mode-away').getAttribute('aria-pressed') === 'true'`);
   assert.equal(await evaluate(`document.getElementById('garage-current-control').textContent`), 'Away · 5 °C');
+  assert.match(await evaluate(`document.getElementById('garage-heating-message').textContent`),
+    /Away selected.*Waiting for heat-pump controller confirmation/);
+  await evaluate(`garageFixture.confirmed = true; garageFixture.poll()`);
+  await until(`document.getElementById('garage-heating-message').textContent.includes('Confirmed by the heat-pump controller')`);
+  assert.doesNotMatch(await evaluate(`document.getElementById('garage-heating-message').textContent`), /Waiting/);
   assert.equal(await evaluate(`document.getElementById('garage-warming-warning').hidden`), true);
   await evaluate(`document.getElementById('garage-mode-normal').focus()`); await keyPress('Enter');
   await until(`!document.getElementById('garage-warming-warning').hidden`);
@@ -205,9 +210,10 @@ try {
   await until(`document.getElementById('garage-control-detail').textContent.includes('Recorded selection')`);
   assert.equal(await evaluate(`document.getElementById('garage-protection-submit').disabled`), true);
   assert.equal(await evaluate(`garageFixture.calls.length`), 4);
+  assert.doesNotMatch(await evaluate(`document.getElementById('garage-control').textContent`), /\b(?:Pill|Gen3)\b/i);
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ result: 'garage-manual-browser-smoke-passed', artifacts,
-    checks: ['Normal/Away keyboard and pointer changes', 'Persistent target edits and polling focus',
+    checks: ['Normal/Away keyboard and pointer changes', 'Away confirmation replaces pending feedback after polling', 'Persistent target edits and polling focus',
       'Condensation advisory without confirmation gate', 'Native OFF remains OFF', 'Missing protection stays unavailable',
       'Separate sender settings and confirmed estimates', 'Uncertain/stale estimates remain unavailable',
       '320/390/768/1440px layouts in both themes', 'Read-only controls', 'No browser exceptions'] }));

@@ -6,7 +6,7 @@ const home = ['model_indoor_temperature', 'indoor_temperature', 'bedroom_tempera
 const garage = ['garage_temperature', 'garage_temperature_2', 'garage_room_target', 'garage_effective_target', 'garage_native_indoor_temperature', 'outdoor_temperature', 'outdoor_forecast'];
 const property = ['model_indoor_temperature', 'garage_temperature', 'outdoor_temperature', 'outdoor_forecast'];
 const homeRows = ['controller_phase', 'operatingMode', 'compressorHome', 'dhwr_active', 'fireplace'];
-const garageRows = ['garage_away_mode', 'garage_native_power', 'garage_frost_active', 'compressorGarage', 'garage_door1_open', 'garage_door2_open', 'garage_native_defrost'];
+const garageRows = ['garage_away_mode', 'garage_native_power', 'compressorGarage', 'garage_native_defrost', 'garage_door1_open', 'garage_door2_open'];
 const water = ['supply_temperature', 'return_temperature', 'heating_setpoint', 'maximum_supply_setting'];
 const saved = ['model_indoor_temperature', 'model_outdoor_temperature', 'model_target_temperature'];
 const views = [];
@@ -26,7 +26,7 @@ view('session_checks', 'Charging session checks', 'Electricity', 'Final meter re
   ['ev1_session_energy_check', 'shelly_session_energy_check'], property, [], ['ev1_session_energy_check', 'shelly_session_energy_check']);
 view('temperatures', 'Property temperatures', 'Temperatures & weather', 'Compare the three home rooms and both garage probes on one temperature scale.', '', [],
   ['indoor_temperature', 'bedroom_temperature', 'downstairs_temperature', ...property, 'garage_temperature_2', 'caravan_temperature'],
-  ['controller_phase', 'operatingMode', 'compressorHome', 'fireplace', ...garageRows],
+  ['controller_phase', 'operatingMode', 'compressorHome', 'fireplace', 'garage_frost_active', ...garageRows],
   ['indoor_temperature', 'bedroom_temperature', 'downstairs_temperature', 'garage_temperature', 'garage_temperature_2', 'controller_phase', 'compressorHome']);
 view('home_temperatures', 'Home temperatures & comfort', 'Temperatures & weather', 'Compare rooms with the saved indoor average and comfort reference.', '', [],
   [...home, 'model_target_temperature', 'learning_indoor_temperature'], homeRows,
@@ -58,14 +58,12 @@ view('room_influence', 'Room influence', 'Home controls & diagnostics', 'The rec
 view('runtime', 'Lifetime runtime counters', 'Home controls & diagnostics', 'Reported cumulative runtime. These are lifetime counters, not hours consumed within the selected dates.', 'h',
   ['compressor_hours', 'dhw_hours', 'auxiliary_3kw_hours', 'auxiliary_6kw_hours'], [], [], ['compressor_hours', 'dhw_hours', 'auxiliary_3kw_hours', 'auxiliary_6kw_hours']);
 view('alarms', 'Pump alarms', 'Home controls & diagnostics', 'Recorded alarm codes with a separate alarm activity row. Missing readback remains unknown.', 'code', ['alarm_code'], [], ['alarm_active', 'operatingMode'], ['alarm_code', 'alarm_active']);
-view('garage', 'Garage temperatures & compressor', 'Garage', 'Compare measured front and rear temperatures with compressor frequency, door state and defrost. The pump control temperature is a separate diagnostic.', 'Hz',
+view('garage', 'Garage temperatures & compressor', 'Garage', 'Compare measured front and rear temperatures with compressor frequency, heat-pump defrost and door state. The pump control temperature is a separate diagnostic.', 'Hz',
   ['garage_compressor_frequency'], garage, garageRows, ['garage_compressor_frequency', 'garage_temperature', 'garage_temperature_2', ...garageRows]);
-view('garage_energy', 'Garage electricity', 'Garage', 'Dedicated heat-pump electricity over each recorded interval. Values retain their original measurement basis and accuracy qualification.', 'kWh / interval',
-  ['garage_energy'], garage, garageRows, ['garage_energy', 'garage_temperature', 'garage_temperature_2', 'compressorGarage']);
-view('garage_control', 'Garage targets & protection', 'Garage', 'Compare saved and effective targets with rear/front measurements and independent pipe estimates. Mode is a saved selection; protection status and pump operation are separate readbacks.', '', [],
+view('garage_control', 'Garage protection & electricity', 'Garage', 'Compare saved and effective targets with rear/front measurements, pipe estimates and dedicated heat-pump electricity over each recorded interval. Energy retains its measurement basis and accuracy qualification. Mode is a saved selection; protection and pump operation are separate readbacks.', 'kWh / interval', ['garage_energy'],
   ['garage_room_target', 'garage_effective_target', 'garage_pipe_rear_temperature', 'garage_pipe_front_temperature', 'garage_temperature', 'garage_temperature_2'],
   ['garage_away_mode', 'garage_external_enabled', 'garage_frost_available', 'garage_frost_active', 'garage_native_power', 'compressorGarage'],
-  ['garage_room_target', 'garage_effective_target', 'garage_temperature', 'garage_away_mode', 'garage_frost_available', 'garage_frost_active']);
+  ['garage_energy', 'garage_room_target', 'garage_effective_target', 'garage_temperature', 'garage_away_mode', 'garage_frost_available', 'garage_frost_active']);
 view('caravan', 'Caravan climate', 'Caravan', 'Air temperature, relative humidity and reported dehumidifier state: Off, Low, Medium or High. A powered fan setting does not prove water removal.', '%',
   ['caravan_humidity'], ['caravan_temperature', 'outdoor_temperature', 'outdoor_forecast'], ['caravan_dehumidifier_state'], ['caravan_humidity', 'caravan_temperature', 'caravan_dehumidifier_state']);
 view('caravan_power', 'Caravan power', 'Caravan', 'Average electrical load calculated from measured energy over each recorded interval, with air temperature and dehumidifier Off/Low/Medium/High state. This is not instantaneous power.', 'kW',

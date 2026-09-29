@@ -28,7 +28,7 @@ test('sender settings are readback-owned and command publication cannot masquera
   assert.equal(f.sender.status().result.status, 'published');
   assert.deepEqual(f.publications[0].config, desired);
   assert.deepEqual(f.publications[0].settings, { qos: 0, retain: false, noReplay: true });
-  await assert.rejects(f.sender.setConfiguration(desired), /challenge|confirmation/);
+  await assert.rejects(f.sender.setConfiguration(desired), /accept another command|confirmation/);
   f.receive({ config: desired, result: { commandId: f.publications[0].commandId, status: 'applied' } });
   assert.equal(f.sender.status().settings.approved, true);
   assert.equal(f.sender.status().result.status, 'applied');
@@ -38,7 +38,7 @@ test('retained status is recorded but does not authorize settings or provide cur
   const f = fixture(); assert.equal(f.receive({}, { retain: true }), true);
   assert.equal(f.snapshots.length, 1); assert.equal(f.observations.length, 0);
   assert.equal(f.sender.status().available, false); assert.equal(f.sender.status().protection, null);
-  await assert.rejects(f.sender.setConfiguration(f.config), /fresh Gen3/);
+  await assert.rejects(f.sender.setConfiguration(f.config), /fresh local frost-protection unit status/);
   f.receive(); assert.equal(f.sender.status().available, true);
   assert.equal(f.observations[0].signal, 'garage_pipe_rear_temperature');
   assert.deepEqual(f.observations[0].quality, ['estimated']);
