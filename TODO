@@ -1,3 +1,18 @@
+Implemented 2026-09-30 — Matching disclosure triangles and MQTT equipment polish
+- Give Energy cost comparisons and Recording details the same fixed-size CSS
+  triangle in both open and closed states, suppressing the native summary marker.
+  Indent How comparisons work below Recorded energy checks by 24px.
+- Show Garage local frost protection as Sender · Shelly and place Charger 2
+  immediately before Caravan air in the Garage MQTT list.
+- F1/F4/F7: presentation only; retain disclosure controls, configured topics,
+  connection evidence and unknown states. No configuration, storage, actuation
+  or compatibility changes; replace the mismatched glyph/native marker styling.
+- Validation: 52 focused Node tests and production build passed. Isolated Chrome
+  checks confirm equal triangle dimensions/styles in both states and themes at
+  320/390/1440px, plus the method fold indentation. The full isolated equipment
+  browser suite passed with the updated Charger 2 order. Existing bundle-size
+  advisory remains.
+
 Implemented 2026-09-30 — Raise the Home silhouette's upper roof
 - Raise the upper ridge by 32 SVG units and the right eave by 26, making the
   stepped roof and pitch closer to the west elevation. Expand the viewport

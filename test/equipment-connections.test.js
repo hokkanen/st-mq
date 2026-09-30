@@ -266,15 +266,16 @@ test('Garage MQTT order puts local frost protection directly below heat pump bef
   ].map(device => ({ ...device, area: 'garage', topics: [] }));
   const protectionTopics = [topic('Sender status and protection readback', 'invented/protection/state'),
     topic('Configured protection parameters', 'invented/protection/command', 'publish')];
-  const rows = equipmentConnections({ equipment: { devices, topicGroups: [
+  const rows = equipmentConnections({ providers: { 'shelly-evse': { enabled: true } }, equipment: { devices, topicGroups: [
     { id: 'garage-sender', label: 'Garage local frost protection', source: 'MQTT', topics: protectionTopics },
     { id: 'garage-adapter', topics: [topic('Status', 'invented/pump/state')] },
   ] } });
   assert.deepEqual(rows.filter(device => device.area === 'garage').map(device => device.id),
-    ['connection:garage-adapter:garage', 'connection:garage-sender:garage', 'garage-probes', 'blu_ht', 'caravan_dehumidifier', 'caravan', 'door1', 'door2']);
+    ['connection:garage-adapter:garage', 'connection:garage-sender:garage', 'garage-probes', 'connection:shelly-evse:garage', 'blu_ht', 'caravan_dehumidifier', 'caravan', 'door1', 'door2']);
   const protection = rows.find(device => device.id === 'connection:garage-sender:garage');
   assert.equal(protection.label, 'Garage local frost protection');
-  assert.equal(protection.source, 'MQTT');
+  assert.equal(protection.kind, 'sender');
+  assert.equal(protection.source, 'Shelly');
   assert.deepEqual(protection.topics, protectionTopics);
   assert.deepEqual(equipmentConnectionSummary(protection), { label: 'Configured', state: 'pending', recent: 'No live report yet' });
 });

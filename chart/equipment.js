@@ -7,7 +7,7 @@ import { createCaravanContents, dehumidifierCommandAllowed, temperatureControlAl
 
 const clock = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', month: 'short', day: 'numeric',
   hour: '2-digit', minute: '2-digit', timeZoneName: 'shortOffset' });
-const labels = { temperature: 'Temperatures', door: 'Door', switch: 'Switch', power: 'Power meter', metered_switch: 'Energy meter', dehumidifier: 'Dehumidifier', heat_pump: 'Heat pump', vehicle: 'Vehicle', charger: 'Charger', floor_override: 'Floor override' };
+const labels = { temperature: 'Temperatures', door: 'Door', switch: 'Switch', power: 'Power meter', metered_switch: 'Energy meter', dehumidifier: 'Dehumidifier', heat_pump: 'Heat pump', vehicle: 'Vehicle', charger: 'Charger', sender: 'Sender', floor_override: 'Floor override' };
 const pretty = text => String(text ?? '').replaceAll(/[_-]/g, ' ');
 const recentResult = actionReceiptRecent;
 function equipmentStateReading(device, now) {
@@ -511,6 +511,8 @@ export function equipmentConnections(status = {}, devices = equipmentDevices(sta
         row.recent = 'Delivery is confirmed separately';
         row.connectionDetail = group.id === 'dhwr' ? 'Hot-water circulation uses this timed ON/OFF command route.'
           : 'Heating mode requests use this command route; a configured topic does not confirm device delivery.';
+      } else if (group.id === 'garage-sender') {
+        Object.assign(row, { kind: 'sender', source: 'Shelly' });
       } else if (group.id === 'garage-adapter') {
         const native = status.garage?.adapter ?? {};
         const communicating = native.connected === true && native.health?.deviceOnline === true
@@ -547,7 +549,7 @@ export function equipmentConnections(status = {}, devices = equipmentDevices(sta
 }
 
 function garageEquipmentOrder(device) {
-  return device.kind === 'heat_pump' ? 0 : device.id === 'connection:garage-sender:garage' ? 0.5 : device.id === 'blu_ht' ? 2 : device.kind === 'temperature' ? 1
+  return device.kind === 'heat_pump' ? 0 : device.id === 'connection:garage-sender:garage' ? 0.5 : device.kind === 'charger' ? 1.5 : device.id === 'blu_ht' ? 2 : device.kind === 'temperature' ? 1
     : device.id === 'caravan' ? 3 : device.kind === 'door' ? 4 + Number(device.id.match(/door([12])$/)?.[1] ?? 0) / 10
       : device.kind === 'dehumidifier' ? 2.5 : 6;
 }

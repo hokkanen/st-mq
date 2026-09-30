@@ -521,7 +521,7 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until,
     assert.match(await evaluate(`document.querySelector('${appliance}').textContent`), /electriQ DESD8LW.*Awaiting first device report/);
     assert.equal(await evaluate(`Array.from(document.querySelectorAll('${appliance} button, ${appliance} select')).every(node=>node.disabled)`), true);
     assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('#equipment-connections [data-connection-area=garage] .equipment-connection-fold')).map(node=>node.dataset.deviceId)"),
-      ['connection:garage-adapter:garage','garage-probes','blu_ht','caravan_dehumidifier','caravan','door1','door2','connection:shelly-evse:garage']);
+      ['connection:garage-adapter:garage','garage-probes','connection:shelly-evse:garage','blu_ht','caravan_dehumidifier','caravan','door1','door2']);
     assert.equal(await evaluate(`document.querySelector('${caravan}').open`), true, 'Adding Caravan devices preserves the open fold');
     assert.equal(await evaluate(`document.querySelector('${policyDetails}').open||document.querySelector('${recordingDetails}').open`), false, 'Policy editing and recording evidence start collapsed');
     await evaluate(`(() => {const d=window.equipmentUiFixture.devices.find(d=>d.id==='caravan_dehumidifier');d.available=true;

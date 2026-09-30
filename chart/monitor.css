@@ -484,8 +484,11 @@ input[data-date-picker] { padding-right: 32px; background-image: url("data:image
 #recording-details > summary + * { margin-top: 0; }
 .comparison-heading { margin: 0; font: inherit; }
 #comparison-toggle { display: flex; align-items: center; width: 100%; margin: 0; border: 0; border-radius: 0; background: transparent; color: var(--text); text-align: left; }
-#comparison-toggle::before { content: '\25B6'; flex: 0 0 1em; margin-right: .4em; font-size: .75em; color: var(--muted); }
-#comparison-toggle[aria-expanded="true"]::before { content: '\25BC'; color: var(--accent); }
+#recording-details > summary { display: flex; align-items: center; list-style: none; }
+#recording-details > summary::marker { content: ''; }
+#recording-details > summary::-webkit-details-marker { display: none; }
+#recording-details > summary::before, #comparison-toggle::before { content: ''; flex: 0 0 10px; height: 10px; margin-right: 8px; background: var(--muted); clip-path: polygon(15% 0, 100% 50%, 15% 100%); }
+#recording-details[open] > summary::before, #comparison-toggle[aria-expanded="true"]::before { transform: rotate(90deg); background: var(--accent); }
 #comparison-content, .timing-detail-content, .timing-explanations-content { margin-inline-start: 24px; }
 .timing-benefit { padding: 4px 0 8px; }
 .timing-intro { margin: 0 auto 24px; text-align: center; }
@@ -1044,7 +1047,7 @@ details details { margin-inline-start: 24px; }
 details.energy-check-details { margin: 8px 0 0; border: 0; font-size: 12px; line-height: 1.6; }
 .energy-check-details > summary { padding: 6px 0; font-size: 12px; }
 .energy-check-details > p { margin: 6px 0; color: var(--muted); max-width: 75ch; overflow-wrap: anywhere; }
-#energy-audit-content > .energy-check-details { padding-top: 8px; border-top: 1px solid var(--border); }
+#energy-audit-content > .energy-check-details { margin-inline-start: 24px; padding-top: 8px; border-top: 1px solid var(--border); }
 @media(max-width: 640px) {
   .energy-check { grid-template-columns: minmax(0, 1fr); gap: 8px; }
   details details { margin-inline-start: 16px; }
