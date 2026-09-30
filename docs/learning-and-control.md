@@ -60,8 +60,10 @@ The **Installed heat-pump model** row holds the source equations, worked example
 manufacturer link and limitations, using the same calculation disclosure as other parameters.
 
 Each dashboard includes its learning summary alongside the heating and pause controls.
-Home shows **Automatic / Pause**, **Schedule & away**, current heat-pump, tariff
-and circulation state, then the folded **Manual heating override**.
+Home shows **Automatic / Paused**, followed by a compact status strip for
+heat-pump compressor activity, price control and hot-water circulation. Pump mode
+and confirmation appear as secondary text; selecting a value explains its source
+and uncertainty. **Schedule & away** and **Manual heating override** follow as folds.
 **Heating strategy & comfort** holds
 the normal-temperature reference, occupied drop/rise limits, savings preference
 and ROOM increase; its closed summary shows the configured room limits. Permanent
@@ -301,7 +303,7 @@ A new cycle's conservative benefit must exceed the strategy's minimum of 50,
 °C²-hour, 2 cents per extra active hour and 2 cents to start. Continuation excludes
 the already committed start hurdle. Among admitted choices, the mildest retaining
 at least 60%, 80% or 100% of the best positive conservative benefit is selected.
-Gentle can still start a sufficiently worthwhile cycle. Use **Pause** to suspend economic control. Garage uses permanent manual targets instead; see [Garage heating](garage.md).
+Gentle can still start a sufficiently worthwhile cycle. Use **Paused** to suspend economic control. Garage uses permanent manual targets instead; see [Garage heating](garage.md).
 
 These decision rules consume the heat model's thermal predictions, uncertainty
 and action evidence. They are not fitted model coefficients: choosing another
@@ -366,7 +368,7 @@ restart on each controller update. Restoration obligations survive interruption;
 loss of control can require earlier full restoration. Separate transports do not
 guarantee atomic compressor switching.
 
-For hot water before the deadline, use **Pause**, which selects
+For hot water before the deadline, use **Paused**, which selects
 Normal heating and restores the captured native DHW settings. Start a timed
 circulation run if needed. **Normal heating** in Manual heating override also
 restores the owned tariff, DHW and auxiliary settings through the same phase path.

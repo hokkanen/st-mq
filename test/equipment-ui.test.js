@@ -212,6 +212,8 @@ test('DHWR operation follows power feedback and requests still need new reports'
   assert.equal(summary.feedbackLabel, 'Needs attention');
   assert.equal(summary.attention, true);
   assert.match(summary.summary, /Off · power reported · needs attention/);
+  assert.equal(summary.summaryValue, 'Off');
+  assert.equal(summary.summaryNote, 'Needs attention');
   assert.match(summary.request, /Waiting for a new power report/);
   status.dhwr.active = false;
   status.dhwr.actualOn = true;
@@ -224,8 +226,18 @@ test('DHWR operation follows power feedback and requests still need new reports'
   assert.equal(summary.power.value, '38.25 W');
   assert.equal(summary.state.value, 'On');
   assert.equal(summary.summary, 'On · power reported');
+  assert.equal(summary.summaryValue, 'On');
+  assert.equal(summary.summaryNote, 'Power reported');
   assert.equal(summary.feedbackLabel, 'Power available');
   assert.equal(summary.request, 'No circulation requested');
+  status.dhwr.restorationPending = true;
+  summary = dhwrReadingSummary(status);
+  assert.equal(summary.summaryValue, 'Stop pending');
+  assert.equal(summary.summaryNote, 'On · power reported');
+  const requested = dhwrReadingSummary({ dhwr: { active: true } });
+  assert.equal(requested.summaryValue, 'On requested');
+  assert.equal(requested.summaryNote, 'Not confirmed');
+  assert.equal(dhwrReadingSummary({}).summaryValue, 'Unknown');
 });
 
 test('change-only DHWR power identifies the last report and stays distinct from missing or invalidated readings', () => {

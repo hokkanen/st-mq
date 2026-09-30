@@ -83,7 +83,13 @@ refreshes that feedback without implying the compressor is running.
 
 Read-only replicas display recorded evidence without granting device control.
 
-The Pill's **Bluetooth room sensor** is its live local-regulation input. Its intended
+Heating control shows matching mode cards followed by heat-pump compressor
+activity, effective target and independent freeze protection. The saved target
+stays in the overview and mode buttons; it does not need a second summary row.
+Select a status value for confirmation, source and availability details.
+
+The **Regulation input** under **Heat-pump readings** is the Pill's live
+local-regulation input. Its intended
 permanent source is the rear feed, already recorded as `garage_temperature`.
 The temporary Caravan BLU H&T used for commissioning is not a rear-probe
 measurement. Its Pill readback remains in current diagnostic state, with the

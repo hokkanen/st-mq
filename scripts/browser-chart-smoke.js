@@ -1093,7 +1093,8 @@ try {
   assert.equal(requestedHeating.mode, 'normal');
   assert.equal(requestedHeating.source, 'equipment-state-readback');
   assert.equal(requestedHeating.verified, true, 'A matching device report confirms the direct relay command');
-  assert.match(await evaluate("document.getElementById('tariff-control-state').textContent"), /Normal heating · confirmed/);
+  assert.equal(await evaluate("document.getElementById('tariff-control-state').textContent"), 'Normal');
+  assert.equal(await evaluate("document.getElementById('tariff-control-note').textContent"), 'Device confirmed');
   acknowledgeHeating = null;
   // Normal heat is allowed during the preceding DHWR pulse; reduction would
   // wait for the existing run before publishing and never exercise broker-error handling.

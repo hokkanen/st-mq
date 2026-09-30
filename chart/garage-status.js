@@ -11,6 +11,7 @@ const finite = Number.isFinite;
 const number = value => finite(value) ? `${new Intl.NumberFormat('en-GB', { maximumFractionDigits: 1 }).format(value)} °C` : 'Unavailable';
 const words = value => typeof value === 'string' ? value.replaceAll('-', ' ').replace(/^./, letter => letter.toUpperCase()) : '';
 const modeName = mode => ({ normal: 'Normal', away: 'Away' })[mode] ?? 'Not selected';
+const regulationInputs = new WeakMap();
 
 export function garageDisplay(garage = {}) {
   const protection = garage.protection ?? {};
@@ -95,20 +96,44 @@ export function renderGarage(document, status = {}) {
   }
   const compressor = mitsubishiCompressor(garage, now);
   detail('garage-native-compressor', compressor.value, 'Compressor operation', compressor.detail, !compressor.available);
-  set('garage-current-control', `${display.mode} · ${display.target}`);
-  set('garage-current-room', display.effectiveTarget);
+  detail('garage-heating-operation', compressor.value, 'Garage heat-pump operation', compressor.detail, !compressor.available);
+  detail('garage-current-room', display.effectiveTarget, 'Effective garage target',
+    `${readOnly ? 'Recorded selected' : 'Selected'} target: ${display.target}. ${display.mode}. ${readOnly ? 'Live confirmation is unavailable.' : `${display.confirmation}.`} `
+      + `The effective target includes any independent freeze-protection minimum without changing your saved selection. `
+      + 'It is a control target, not measured room temperature or proof that the compressor is running.', !finite(garage.effectiveTargetC));
   const sensor = adapter.control;
   const sensorAge = finite(sensor?.sensorAgeMs) && finite(adapter.observedAt)
     ? sensor.sensorAgeMs + Math.max(0, now - adapter.observedAt) : null;
-  set('garage-bluetooth-temperature', adapter.connected === true && sensor && finite(sensor.sensorTemperatureC) && finite(sensorAge)
-    && sensorAge >= 0 && sensorAge < 180_000 ? number(sensor.sensorTemperatureC) : 'Unavailable');
+  const sensorAvailable = adapter.connected === true && finite(sensor?.sensorTemperatureC) && finite(sensorAge)
+    && sensorAge >= 0 && sensorAge < 180_000;
+  const regulationRow = document.getElementById('garage-regulation-reading');
+  if (regulationRow && finite(sensor?.sensorTemperatureC)) regulationInputs.set(regulationRow, {
+    temperatureC: sensor.sensorTemperatureC, sensorAgeMs: sensor.sensorAgeMs, observedAt: adapter.observedAt,
+  });
+  const lastSensor = regulationRow ? regulationInputs.get(regulationRow) : null;
+  const reportedTemperature = sensor?.sensorTemperatureC ?? lastSensor?.temperatureC;
+  const reportedAge = sensorAge ?? (finite(lastSensor?.sensorAgeMs) && finite(lastSensor?.observedAt)
+    ? lastSensor.sensorAgeMs + Math.max(0, now - lastSensor.observedAt) : null);
+  if (regulationRow) regulationRow.hidden = !lastSensor;
+  detail('garage-regulation-temperature', sensorAvailable ? number(sensor.sensorTemperatureC) : 'Unavailable', 'Garage regulation input',
+    'Temperature input reported by the heat-pump controller for local room regulation. '
+      + 'It can come from a different source than the Garage rear sensor and is not an independent room measurement. '
+      + (finite(reportedTemperature) ? `Last reported input: ${number(reportedTemperature)}. ` : 'No temperature input has been reported. ')
+      + (finite(reportedAge) && reportedAge >= 0 ? `Reported sensor age including time since the controller report: ${Math.floor(reportedAge / 1000)} seconds. ` : 'Sensor age is unavailable. ')
+      + 'The input becomes unavailable after 180 seconds without a fresh report.'
+      + (adapter.connected !== true ? ' The heat-pump controller is not connected.' : ''), !sensorAvailable);
   set('garage-target-confirmation', readOnly ? 'Recorded selection · live confirmation unavailable' : display.confirmation);
   set('garage-mode-normal-target', display.normalTarget);
   set('garage-mode-away-target', display.awayTarget);
   set('garage-protection-status', display.protection);
   const protection = document.getElementById('garage-protection-status');
   if (protection) protection.dataset.state = display.protectionState;
-  set('garage-protection-detail', [display.protectionDetail, words(garage.protection?.reason)].filter(Boolean).join(' '));
+  const protectionDetail = [display.protectionDetail, words(garage.protection?.reason)].filter(Boolean).join(' ');
+  set('garage-protection-detail', protectionDetail);
+  detail('garage-protection-summary', display.protection === 'Heating override active' ? 'Override active' : display.protection,
+    'Garage freeze protection', protectionDetail, garage.protection?.available !== true);
+  const protectionSummary = document.getElementById('garage-protection-summary');
+  if (protectionSummary) protectionSummary.dataset.state = display.protectionState;
   for (const location of ['rear', 'front']) {
     const pipe = garage.protection?.locations?.[location];
     const reading = garage.observations?.[location];
@@ -134,6 +159,10 @@ export function renderGarage(document, status = {}) {
   detail('garage-pump-reading-info', 'Reading details', 'Mitsubishi heat-pump readings',
     'Reported pump settings and compressor operation are separate from the selected room target. The pump control temperature can include an offset and is not an independent room measurement. Electrical readings retain their original quality.');
   renderMitsubishiReadings(document, status);
+  if (regulationRow && !regulationRow.hidden) {
+    const readingsFold = document.getElementById('garage-readings-details');
+    if (readingsFold) readingsFold.hidden = false;
+  }
   renderCurrentPrice(document, status, 'garage-');
 }
 

@@ -574,7 +574,14 @@ export function dhwrReadingSummary(status) {
   const summary = dhwr.restorationPending ? ['Stop delivery pending', reported].filter(Boolean).join(' · ')
     : dhwr.attention ? [reported || (dhwr.active ? 'On requested' : 'Off requested'), 'needs attention'].join(' · ')
     : reported || (dhwr.active ? 'On requested · state unknown' : 'No request · state unknown');
-  return { state, power, summary, attention: dhwr.attention === true,
+  return { state, power, summary,
+    summaryValue: dhwr.restorationPending ? 'Stop pending'
+      : typeof dhwr.actualOn === 'boolean' ? dhwr.actualOn ? 'On' : 'Off' : dhwr.active ? 'On requested' : 'Unknown',
+    summaryNote: dhwr.restorationPending ? reported || 'Delivery not confirmed'
+      : dhwr.attention ? 'Needs attention'
+        : typeof dhwr.actualOn === 'boolean' ? powerBasis ? 'Power reported' : 'Device reported'
+          : dhwr.active ? 'Not confirmed' : 'No device readback',
+    attention: dhwr.attention === true,
     powerLabel: eventOnly ? 'Last reported power' : 'Live power',
     powerReportedAt: eventOnly && Number.isFinite(feedback.power.observedAt) ? `Reported ${clock.format(feedback.power.observedAt)}` : '',
     feedbackLabel: dhwr.attention ? 'Needs attention' : !feedback.configured ? 'Feedback not configured' : powerOnly

@@ -7,7 +7,7 @@ control. History viewers and read-only replicas cannot send equipment commands.
 
 | Feature | Dashboard choice | Scope |
 | --- | --- | --- |
-| Home heating | Automatic / Pause | Home heating plan and automatic circulation |
+| Home heating | Automatic / Paused | Home heating plan and automatic circulation |
 | Garage heating | Normal / Away | Permanent real room target; no automatic schedule |
 | Charging | Automatic charging Off / On | Each charger's scheduling permission |
 | Caravan | Automatic power Off / On | Independent dehumidifier control |

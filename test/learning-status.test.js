@@ -243,6 +243,13 @@ test('home H66 summary combines current DHW bounds without treating tariff reque
   assert.equal(rows.dhw.value, '40–50 °C');
   assert.equal(rows.tariff.value, 'Reduction requested · unverified');
   assert.equal(rows.tariff.available, false);
+  assert.equal(rows.tariff.summaryValue, 'Reduce requested');
+  assert.equal(rows.tariff.summaryNote, 'Not confirmed');
+  status.observations.actual.verified = true;
+  const confirmed = h66HomeSummary(status).find(row => row.key === 'tariff');
+  assert.equal(confirmed.summaryValue, 'Reduced');
+  assert.equal(confirmed.summaryNote, 'Device confirmed');
+  assert.equal(h66HomeSummary({ ...status, input: 'simulated' }).find(row => row.key === 'tariff').summaryNote, 'Simulated');
   assert.equal(rows.tariffSetting.value, '2 °C');
   assert.equal(rows.compressor.value, 'On');
   assert.equal(rows.destination.value, 'Space heating');
@@ -313,6 +320,8 @@ test('missing, stale and invalid H66 summary readings remain unknown', () => {
     assert.match(rows[key].value, /Unavailable/);
   }
   assert.equal(rows.tariff.value, 'Unknown · no device readback');
+  assert.equal(rows.tariff.summaryValue, 'Unknown');
+  assert.equal(rows.tariff.summaryNote, 'No device readback');
   assert.equal(h66HomeSummary({}).find(row => row.key === 'tariff').value, 'Unknown · no device readback');
 });
 

@@ -68,7 +68,7 @@ try {
     throw new Error(`UI did not settle: ${expression}; errors: ${errors.join(', ')}`);
   };
   const keyPress = async key => {
-    const [code, windowsVirtualKeyCode] = { Enter: ['Enter', 13], ' ': ['Space', 32], Tab: ['Tab', 9] }[key];
+    const [code, windowsVirtualKeyCode] = { Enter: ['Enter', 13], ' ': ['Space', 32], Tab: ['Tab', 9], Escape: ['Escape', 27] }[key];
     await send('Input.dispatchKeyEvent', { type: 'keyDown', key, code, windowsVirtualKeyCode,
       ...(key === 'Enter' ? { nativeVirtualKeyCode: 13, text: '\r', unmodifiedText: '\r' } : {}) });
     await send('Input.dispatchKeyEvent', { type: 'keyUp', key, code, windowsVirtualKeyCode });
@@ -134,6 +134,18 @@ try {
       status.observations.actual = { ...status.observations.actual, source: 'simulation', verified: homeFixture.confirmed !== false, observedAt: status.now,
         stale: false, mode: 'normal', phase: homeFixture.manualPhase ?? (homeFixture.paused ? 'preheat' : 'normal'),
         requestedPhase: homeFixture.manualPhase ?? (homeFixture.paused ? 'preheat' : 'normal') };
+      if (homeFixture.tariffScenario === 'requested') status.observations.actual = {
+        source: 'mqtt-request', verified: false, stale: false, mode: 'reduction', requestedPhase: 'reduction' };
+      if (homeFixture.tariffScenario === 'unknown') status.observations.actual = {
+        source: 'mqtt', verified: false, stale: true, mode: null, requestedPhase: null };
+      status.dhwr = { active: false, actualOn: false, confirmed: true, feedback: {
+        configured: true, available: true, basis: 'power', stateConfigured: true, powerConfigured: true,
+        state: { value: 0, unit: 'state', stale: false, observedAt: status.now },
+        power: { value: 0, unit: 'W', stale: false, observedAt: status.now } } };
+      if (homeFixture.circulationScenario === 'requested') status.dhwr = {
+        active: true, actualOn: null, confirmed: false, feedback: { configured: true, available: false } };
+      if (homeFixture.circulationScenario === 'unknown') status.dhwr = {
+        active: false, actualOn: null, confirmed: false, feedback: { configured: true, available: false } };
       status.h66 = { ...status.h66, manualPreheat: homeFixture.manualPhase === 'preheat' ? { confirmed: true } : null, connected: true, brokerConnected: true, enabled: true,
         readings: Object.fromEntries(Object.entries({ '2201': 1, '0203': 20, '0212': 45,
           '0208': 55, '1A01': 1, '1A07': 0, '3104': 0, '1A20': 0 })
@@ -152,14 +164,44 @@ try {
   await evaluate(`document.getElementById('home-heat-pump-details').open = true`);
   assert.equal(await evaluate(`document.getElementById('home-preferences-details').open`), false,
     'Permanent preferences start folded');
+  assert.equal(await evaluate(`document.querySelector('#home-automation-pause > span').textContent`), 'Paused');
   assert.equal(await evaluate(`(() => {
     const preferences = document.getElementById('home-preferences-details');
-    return ['tariff-control-state', 'dhwr'].every(id => {
+    const summary = document.querySelector('#home-manual-controls .heating-summary');
+    return summary.querySelectorAll(':scope > .heating-summary-reading').length === 3
+      && Boolean(summary.compareDocumentPosition(document.getElementById('temporary-details')) & Node.DOCUMENT_POSITION_FOLLOWING)
+      && ['home-heating-operation', 'tariff-control-state', 'dhwr'].every(id => {
       const element = document.getElementById(id);
-      return !preferences.contains(element) && element.checkVisibility() && element.textContent.trim() !== '—';
+      return summary.contains(element) && !preferences.contains(element) && element.checkVisibility() && element.textContent.trim() !== '—';
     }) && document.querySelector('[data-h66-summary="mode"]').checkVisibility()
       && !document.getElementById('home-savings-strategy').checkVisibility();
-  })()`), true, 'Current heat-pump, tariff and circulation states remain visible outside folded preferences');
+  })()`), true, 'Three current heating readings remain visible before the optional controls');
+  assert.deepEqual(await evaluate(`['home-heating-operation', 'tariff-control-state', 'dhwr']
+    .map(id => document.getElementById(id).textContent)`), ['Running', 'Normal', 'Off']);
+  assert.match(await evaluate(`document.getElementById('tariff-control-note').textContent`), /simulated/i);
+  assert.match(await evaluate(`document.getElementById('dhwr-note').textContent`), /power reported/i);
+  for (const [id, evidence] of [['home-heating-operation', /compressor/i],
+    ['tariff-control-state', /relay.*device report/i], ['dhwr', /power|water flow/i]]) {
+    await evaluate(`document.querySelector('#${id} .status-detail-trigger').focus()`);
+    await keyPress('Enter');
+    assert.equal(await evaluate(`document.querySelector('#${id} .status-detail-trigger').getAttribute('aria-expanded')`), 'true');
+    assert.match(await evaluate(`document.getElementById('status-detail-popover').textContent`), evidence,
+      `${id} exposes the reading evidence by keyboard`);
+    await keyPress('Escape');
+    assert.equal(await evaluate(`document.activeElement === document.querySelector('#${id} .status-detail-trigger')`), true,
+      `${id} regains keyboard focus after its explanation closes`);
+  }
+  await evaluate(`homeFixture.tariffScenario = 'requested'; homeFixture.circulationScenario = 'requested'; await homeFixture.poll()`);
+  assert.equal(await evaluate(`document.getElementById('tariff-control-state').textContent`), 'Reduce requested');
+  assert.equal(await evaluate(`document.getElementById('tariff-control-note').textContent`), 'Not confirmed');
+  assert.equal(await evaluate(`document.getElementById('dhwr').textContent`), 'On requested');
+  assert.equal(await evaluate(`document.getElementById('dhwr-note').textContent`), 'Not confirmed');
+  assert.doesNotMatch(await evaluate(`document.getElementById('dhwr').textContent + ' ' + document.getElementById('dhwr-note').textContent`), /reported|device confirmed/i,
+    'A circulation request does not claim physical feedback');
+  await evaluate(`homeFixture.tariffScenario = 'unknown'; homeFixture.circulationScenario = 'unknown'; await homeFixture.poll()`);
+  assert.deepEqual(await evaluate(`['tariff-control-state', 'dhwr'].map(id => document.getElementById(id).textContent)`),
+    ['Unknown', 'Unknown'], 'Missing physical evidence remains unknown in the compact readings');
+  await evaluate(`delete homeFixture.tariffScenario; delete homeFixture.circulationScenario; await homeFixture.poll()`);
   assert.match(await evaluate(`document.getElementById('heating-test-help').textContent`), /next controller update.*1 minute.*Preheat.*lease deadline/);
   assert.equal(await evaluate(`document.getElementById('home-comfort-limits').textContent`), '−1.5 / +1.5 °C');
   assert.equal(await evaluate(`(() => {
@@ -203,27 +245,47 @@ try {
   assert.equal(await evaluate(`document.getElementById('test-reduction').disabled`), false,
     'Home manual reduction stays available while paused');
   await evaluate(`homeFixture.automatic = true; await homeFixture.poll()`);
-  for (const width of [1280, 360]) for (const theme of ['dark', 'light']) {
+  for (const width of [320, 360, 390, 768, 1280]) for (const theme of ['dark', 'light']) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: 1100, deviceScaleFactor: 1, mobile: false });
     await evaluate(`if (document.documentElement.dataset.theme !== '${theme}') document.getElementById('theme-toggle').click();
       document.getElementById('home-preferences-details').open = true;
-      document.getElementById('home-room-references-details').open = true`);
+      document.getElementById('home-room-references-details').open = true;
+      document.getElementById('garage-heating-details').open = true`);
     const layout = await evaluate(`({ page: document.documentElement.scrollWidth, viewport: innerWidth,
       overflow: [...document.querySelectorAll('#home-preferences-details *')].filter(element => element.scrollWidth > element.clientWidth + 1)
         .map(element => ({ name: element.id || element.tagName, scroll: element.scrollWidth, client: element.clientWidth })),
-      rows: [...document.querySelectorAll('#home-manual-controls .home-state-reading, #home-preferences-details .home-preferences-body, #heating-test-buttons')]
+      rows: [...document.querySelectorAll('.heating-summary, .heating-summary-reading, #home-preferences-details .home-preferences-body, #heating-test-buttons')]
         .map(element => ({ name: element.id || element.className, scroll: element.scrollWidth, client: element.clientWidth })) })`);
     assert.equal(layout.page <= layout.viewport && layout.rows.every(row => row.scroll <= row.client + 1), true,
       `Heating controls and preferences fit ${width}px ${theme} without horizontal overflow: ${JSON.stringify(layout)}`);
+    const balance = await evaluate(`['home', 'garage'].map(area => {
+      const root = document.getElementById(area + '-manual-controls');
+      const buttons = [...root.querySelectorAll('.heating-mode-buttons-two > button')];
+      const summary = root.querySelector('.heating-summary'), style = getComputedStyle(summary);
+      return { buttons: buttons.map(button => { const box = button.getBoundingClientRect();
+          return { height: box.height, top: box.top, width: box.width }; }),
+        columns: style.gridTemplateColumns.split(' ').length,
+        labels: [...summary.querySelectorAll(':scope > .heating-summary-reading > span')].map(node => node.textContent) };
+    })`);
+    assert.equal(balance[0].buttons[0].height, balance[1].buttons[0].height,
+      `${width}px ${theme} Home and Garage mode cards have matching heights`);
+    for (const area of balance) {
+      assert.equal(area.buttons[0].top, area.buttons[1].top, 'Primary choices stay side by side');
+      assert.equal(area.buttons[0].height, area.buttons[1].height, 'Primary choices share a height');
+      assert(Math.abs(area.buttons[0].width - area.buttons[1].width) <= 1, 'Primary choices share equal width');
+      assert.equal(area.labels.length, 3, 'Both areas keep three current heating readings');
+    }
+    assert.equal(balance[0].columns, balance[1].columns, 'Both heating summaries use the same responsive layout');
     const margins = await evaluate(`['temporary-details', 'home-preferences-details']
       .map(id => { const style = getComputedStyle(document.getElementById(id));
         return [style.marginInlineStart, style.marginTop, style.borderTopWidth]; })`);
     assert(margins.every(row => JSON.stringify(row) === JSON.stringify(margins[0])),
       'Home preferences use matching nested indentation, spacing and dividers');
-    assert.equal(margins[0][0], width === 360 ? '16px' : '24px');
+    assert.equal(margins[0][0], width <= 640 ? '16px' : '24px');
     assert.match(await evaluate(`document.getElementById('home-room-references').textContent`), /Bedroom20 °C · Learned room reference.*18.5 °C – 21.5 °C.*Office21 °C · Overall reference/);
-    await screenshot(`${width === 360 ? 'mobile' : 'desktop'}-${theme}-preferences`);
+    await screenshot(`${width}-${theme}-preferences`);
   }
+  await evaluate(`document.getElementById('garage-heating-details').open = false`);
   for (const [policyId, modelId] of [
     ['home-preferences-details', 'learning-panel-details'],
   ]) {

@@ -78,7 +78,7 @@ try {
   const screenshot = async (name, id = 'garage-control') => {
     await evaluate('window.scrollTo(0, 0)');
     const clip = await evaluate(`(() => {
-      const box = document.getElementById('${id}').getBoundingClientRect();
+      const box = (${id ? `document.getElementById('${id}')` : `document.querySelector('.controller-panels')`}).getBoundingClientRect();
       return { x: box.x, y: box.y, width: box.width, height: box.height, scale: 1 };
     })()`);
     const shot = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, clip });
@@ -110,7 +110,7 @@ try {
           locations: { rear: { airC: 6.5, estimatedC: 5, remainingKjPerM: 6, uncertain: false },
             front: { airC: 4, estimatedC: 1.5, remainingKjPerM: 0, uncertain: f.uncertain } } },
         adapter: { connected: !f.offline, observedAt: status.now, health: { deviceOnline: !f.offline, pumpCommunicating: !f.offline },
-          control: { sensorTemperatureC: 6.5, sensorAgeMs: 10000 },
+          control: { sensorTemperatureC: 7.2, sensorAgeMs: f.sensorAgeMs ?? 10000 },
           native: { power: 'off', mode: 'heat', targetC: 16, powerAt: status.now,
             readbacks: Object.fromEntries(Object.entries({ power: 'off', mode: 'heat', targetC: 16 }).map(([key, value]) => [key, { value, measuredAt: status.now }])) },
           telemetry: { compressorActive: { value: false, sourceTime: status.now, unit: 'boolean', supported: true, usable: true, quality: [] } } },
@@ -152,12 +152,57 @@ try {
   await checkDashboardDisclosures({ evaluate, keyPress, until });
   assert.equal(await evaluate(`document.getElementById('garage-heating-details').open`), false);
   await evaluate(`document.getElementById('garage-heating-details').open = true`);
+  assert.equal(await evaluate(`(() => {
+    const summary = document.querySelector('#garage-manual-controls .heating-summary');
+    return summary.querySelectorAll(':scope > .heating-summary-reading').length === 3
+      && ['garage-heating-operation', 'garage-current-room', 'garage-protection-summary'].every(id =>
+        summary.contains(document.getElementById(id)) && document.getElementById(id).checkVisibility())
+      && Boolean(summary.compareDocumentPosition(document.getElementById('garage-target-details')) & Node.DOCUMENT_POSITION_FOLLOWING)
+      && !summary.contains(document.getElementById('garage-regulation-temperature'));
+  })()`), true, 'Garage exposes operation, effective target and protection before the optional controls');
+  assert.equal(await evaluate(`document.getElementById('garage-heating-operation').textContent`), 'Idle',
+    'Selected heating mode does not imply the compressor is running');
+  assert.equal(await evaluate(`document.getElementById('garage-protection-summary').textContent`), 'Unavailable');
+  assert.doesNotMatch(await evaluate(`document.getElementById('garage-manual-controls').textContent`), /Bluetooth room sensor/i);
+  for (const [id, evidence] of [['garage-heating-operation', /compressor/i],
+    ['garage-current-room', /control target.*not measured room temperature/i],
+    ['garage-protection-summary', /unavailable.*temperature reading alone/i]]) {
+    await evaluate(`document.querySelector('#${id} .status-detail-trigger').focus()`);
+    await keyPress('Enter');
+    assert.equal(await evaluate(`document.querySelector('#${id} .status-detail-trigger').getAttribute('aria-expanded')`), 'true');
+    assert.match(await evaluate(`document.getElementById('status-detail-popover').textContent`), evidence,
+      `${id} explains its evidence by keyboard`);
+    await keyPress('Escape');
+    assert.equal(await evaluate(`document.activeElement === document.querySelector('#${id} .status-detail-trigger')`), true);
+  }
+  await evaluate(`document.getElementById('home-heat-pump-details').open = true`);
+  await screenshot('home-garage-1440-dark', null);
+  await evaluate(`document.getElementById('home-heat-pump-details').open = false`);
+  await evaluate(`for (const id of ['garage-equipment-details', 'garage-controller-details', 'garage-readings-details'])
+    document.getElementById(id).open = true`);
+  assert.equal(await evaluate(`document.getElementById('garage-regulation-temperature').checkVisibility()`), true);
+  assert.equal(await evaluate(`document.getElementById('garage-regulation-temperature').textContent`), '7.2 °C');
+  assert.equal(await evaluate(`document.getElementById('garage-temperature').textContent`), '6.5 °C',
+    'The controller regulation input does not replace the independent rear observation');
+  await evaluate(`document.querySelector('#garage-regulation-temperature .status-detail-trigger').focus()`);
+  await keyPress('Enter');
+  assert.match(await evaluate(`document.getElementById('status-detail-popover').textContent`),
+    /different source.*not an independent room measurement/i);
+  await keyPress('Escape');
+  await evaluate(`garageFixture.sensorAgeMs = 180000; garageFixture.poll()`);
+  await until(`document.getElementById('garage-regulation-temperature').textContent === 'Unavailable'`);
+  assert.equal(await evaluate(`document.getElementById('garage-temperature').textContent`), '6.5 °C',
+    'An expired regulation input does not invalidate the separate current rear reading');
+  await evaluate(`delete garageFixture.sensorAgeMs; garageFixture.poll();
+    for (const id of ['garage-equipment-details', 'garage-controller-details', 'garage-readings-details'])
+      document.getElementById(id).open = false`);
   assert.equal(await evaluate(`document.getElementById('garage-protection-status').textContent`), 'Unavailable');
   assert.equal(await evaluate(`document.getElementById('garage-protection-marginC').value`), '');
   assert.equal(await evaluate(`document.getElementById('garage-protection-submit').disabled`), true);
   await evaluate(`garageFixture.confirmed = false; document.getElementById('garage-mode-away').click()`);
   await until(`document.getElementById('garage-mode-away').getAttribute('aria-pressed') === 'true'`);
-  assert.equal(await evaluate(`document.getElementById('garage-current-control').textContent`), 'Away · 5 °C');
+  assert.equal(await evaluate(`document.getElementById('garage-current-room').textContent`), '5 °C');
+  assert.equal(await evaluate(`document.getElementById('garage-mode-away-target').textContent`), '5 °C');
   assert.match(await evaluate(`document.getElementById('garage-heating-message').textContent`),
     /Away selected.*Waiting for heat-pump controller confirmation/);
   await evaluate(`garageFixture.confirmed = true; garageFixture.poll()`);
@@ -182,6 +227,7 @@ try {
   ]);
   await evaluate(`garageFixture.protection = 'active'; garageFixture.poll(); document.getElementById('garage-protection-details').open = true; document.getElementById('garage-protection-settings-details').open = true`);
   await until(`document.getElementById('garage-protection-status').textContent === 'Heating override active'`);
+  assert.equal(await evaluate(`document.getElementById('garage-protection-summary').textContent`), 'Override active');
   assert.equal(await evaluate(`document.getElementById('garage-current-room').textContent`), '14 °C');
   assert.equal(await evaluate(`document.getElementById('garage-reserve-front').textContent`), '0 kJ/m');
   await evaluate(`document.getElementById('garage-protection-marginC').value = '1.5'; document.getElementById('garage-protection-marginC').dispatchEvent(new Event('input')); document.getElementById('garage-protection-submit').click()`);
@@ -196,17 +242,23 @@ try {
     await checkDashboardLayout({ evaluate, width });
     const overflow = await evaluate(`(() => {
       const garage = document.getElementById('garage-control'), box = garage.getBoundingClientRect();
-      return [...garage.querySelectorAll('button,input,label,p,dl')].filter(node => {
+      return [...garage.querySelectorAll('button,input,label,p,dl,.heating-summary-reading')].filter(node => {
         if (!node.getClientRects().length) return false;
         const rect = node.getBoundingClientRect(); return rect.left < box.left - 1 || rect.right > box.right + 1;
       }).map(node => node.id || node.tagName);
     })()`);
     assert.deepEqual(overflow, [], `${width}px ${theme} controls stay within the Garage card`);
+    assert.equal(await evaluate(`(() => {
+      const rows = [...document.querySelectorAll('#garage-heating-state > .heating-summary-reading')];
+      return rows.length === 3 && rows.every(row => row.scrollWidth <= row.clientWidth + 1);
+    })()`), true, `${width}px ${theme} keeps the three heating readings unclipped`);
     await screenshot(`garage-${width}-${theme}`);
   }
   await evaluate(`garageFixture.offline = true; garageFixture.poll()`);
   await until(`document.getElementById('garage-mode-away').disabled`);
   assert.equal(await evaluate(`document.getElementById('garage-pipe-rear').textContent`), 'Unavailable');
+  assert.equal(await evaluate(`document.getElementById('garage-heating-operation').textContent`), 'Unknown',
+    'A lost pump connection never presents stale idle feedback as current');
   await evaluate(`garageFixture.offline = false; garageFixture.readOnly = true; garageFixture.poll()`);
   await until(`document.getElementById('garage-control-detail').textContent.includes('Recorded selection')`);
   assert.equal(await evaluate(`document.getElementById('garage-protection-submit').disabled`), true);
@@ -216,6 +268,7 @@ try {
   console.log(JSON.stringify({ result: 'garage-manual-browser-smoke-passed', artifacts,
     checks: ['Normal/Away keyboard and pointer changes', 'Away confirmation replaces pending feedback after polling', 'Persistent target edits and polling focus',
       'Condensation advisory without confirmation gate', 'Native OFF remains OFF', 'Missing protection stays unavailable',
+      'Three concise heating readings and keyboard evidence', 'Distinct rear observation and expiring controller regulation input',
       'Separate sender settings and confirmed estimates', 'Uncertain/stale estimates remain unavailable',
       '320/390/768/1440px layouts in both themes', 'Read-only controls', 'No browser exceptions'] }));
   await send('Page.close');

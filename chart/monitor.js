@@ -638,22 +638,19 @@ function renderH66TestResult(s) {
 function renderH66(s) {
   const h66 = s.h66 ?? {}, summary = h66HomeSummary(s), root = $('home-h66-summary');
   const tariff = summary.find(row => row.key === 'tariff');
-  setStatusDetail($('tariff-control-state'), { key: 'home-tariff-control', label: tariff.value,
-    title: tariff.title, detail: tariff.detail });
-  for (const key of ['mode']) {
-    const row = summary.find(row => row.key === key);
-    let detail = root.querySelector(`[data-h66-summary=${key}]`);
-    if (!detail) {
-      detail = document.createElement('div'); detail.className = 'home-state-reading'; detail.dataset.h66Summary = key;
-      detail.append(document.createElement('span'), document.createElement('strong')); root.append(detail);
-    }
-    const [title, value] = detail.children;
-    title.textContent = 'Heat-pump mode';
-    value.classList.toggle('muted', !row.available);
-    setStatusDetail(value, { key: `home-h66-${key}`, label: row.available ? row.value : 'Unavailable',
-      title: title.textContent, detail: row.detail });
-  }
+  setStatusDetail($('tariff-control-state'), { key: 'home-tariff-control', label: tariff.summaryValue,
+    title: tariff.title, detail: `${tariff.value}. ${tariff.detail}` });
+  $('tariff-control-state').classList.toggle('stale', !tariff.available);
+  $('tariff-control-note').textContent = tariff.summaryNote;
+  const mode = summary.find(row => row.key === 'mode');
+  setStatusDetail($('home-pump-mode'), { key: 'home-h66-mode', label: mode.available ? `${mode.value} mode` : 'Mode unavailable',
+    title: 'Heat-pump mode', detail: mode.detail });
   const pumpReadings = h66EquipmentSummary(s);
+  const operation = pumpReadings.find(row => row.key === 'state');
+  setStatusDetail($('home-heating-operation'), { key: 'home-heating-operation',
+    label: operation.available ? operation.value.replace(/ for .+$/, '') : 'Unknown',
+    title: 'Heat-pump compressor', detail: `${operation.value}. ${operation.detail}` });
+  $('home-heating-operation').classList.toggle('stale', !operation.available);
   for (const row of pumpReadings) {
     const equipmentValue = $(`home-pump-${row.key}`);
     const state = row.key === 'state' && row.available ? row.value.match(/^(Running|Idle)(?: (for .+))?$/) : null;
@@ -796,7 +793,9 @@ function render(s) {
   $('control-price').textContent = controlPrice.label;
   $('control-price').parentElement.dataset.state = controlPrice.state;
   const dhwr = dhwrReadingSummary(s);
-  $('dhwr').textContent = dhwr.summary;
+  setStatusDetail($('dhwr'), { key: 'home-circulation', label: dhwr.summaryValue,
+    title: 'Hot-water circulation', detail: `${dhwr.summary}. ${dhwr.state.detail}\n\n${dhwr.request}. Electrical feedback does not confirm water flow.` });
+  $('dhwr-note').textContent = dhwr.summaryNote;
   $('dhwr').classList.toggle('stale', dhwr.attention);
   const reference = s.decision.comfort?.targetC ?? s.settings?.comfort?.targetC;
   const referenceSource = s.decision.comfort?.source === 'explicit-setting' || s.settings?.comfort?.targetC != null ? 'configured' : 'learned';

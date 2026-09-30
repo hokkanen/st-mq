@@ -13,25 +13,60 @@ const range = { from: now - day, to: now };
 function fixture() {
   const ids = ['garage-mode-normal', 'garage-mode-away', 'garage-mode-normal-target', 'garage-mode-away-target',
     'garage-target-form', 'garage-normal-target', 'garage-target-submit', 'garage-heating-message', 'garage-warming-warning',
-    'garage-control-mode', 'garage-current-control', 'garage-current-room', 'garage-target-confirmation',
-    'garage-bluetooth-temperature', 'garage-heating-status', 'garage-control-detail', 'garage-protection-status', 'garage-protection-detail',
+    'garage-control-mode', 'garage-current-room', 'garage-target-confirmation', 'garage-heating-operation', 'garage-current-mode',
+    'garage-regulation-temperature', 'garage-regulation-reading', 'garage-readings-details', 'garage-protection-summary',
+    'garage-heating-status', 'garage-control-detail', 'garage-protection-status', 'garage-protection-detail',
     'garage-protection-rear', 'garage-protection-front', 'garage-pipe-rear', 'garage-pipe-front', 'garage-reserve-rear',
     'garage-reserve-front', 'garage-pipe-rear-status', 'garage-pipe-front-status', 'garage-protection-form',
     'garage-protection-approved', 'garage-protection-marginC', 'garage-protection-pipeOutsideDiameterMm',
     'garage-protection-pipeWallMm', 'garage-protection-heatTransferWPerM2K', 'garage-protection-submit',
     'garage-protection-settings-status', 'garage-protection-message'];
-  const nodes = new Map(ids.map(id => [id, { textContent: '', value: '', checked: false, hidden: false,
-    dataset: {}, attributes: new Map(), listeners: new Map(), classList: { add() {}, remove() {}, toggle() {} },
-    setAttribute(key, value) { this.attributes.set(key, value); }, querySelector() { return this.marker ??= { textContent: '' }; },
-    addEventListener(key, handler) { this.listeners.set(key, handler); }, removeEventListener(key) { this.listeners.delete(key); } }]));
+  const document = { addEventListener() {}, documentElement: { clientWidth: 390, clientHeight: 640 },
+    defaultView: { addEventListener() {}, innerWidth: 390, innerHeight: 640 } };
+  class Node {
+    constructor() {
+      Object.assign(this, { ownerDocument: document, ownText: '', value: '', checked: false, hidden: false,
+        dataset: {}, style: {}, className: '', children: [], isConnected: true,
+        attributes: new Map(), listeners: new Map(), classes: new Set() });
+      this.classList = { add: key => this.classes.add(key), remove: key => this.classes.delete(key),
+        toggle: (key, value) => value ? this.classes.add(key) : this.classes.delete(key) };
+    }
+    get textContent() { return this.ownText + this.children.map(child => child.textContent).join(''); }
+    set textContent(value) { this.children = []; this.ownText = String(value); }
+    append(...children) { this.children.push(...children); }
+    replaceChildren(...children) { this.ownText = ''; this.children = children; }
+    setAttribute(key, value) { this.attributes.set(key, value); }
+    querySelector(selector) {
+      for (const child of this.children) {
+        if (selector === `#${child.id}` || child.className.split(' ').some(name => selector === `.${name}`)) return child;
+        const nested = child.querySelector(selector); if (nested) return nested;
+      }
+      return null;
+    }
+    addEventListener(key, handler) { this.listeners.set(key, handler); }
+    removeEventListener(key) { this.listeners.delete(key); }
+    getBoundingClientRect() { return { left: 20, top: 20, right: 300, bottom: 50, width: 280, height: 30 }; }
+    focus() { document.activeElement = this; }
+  }
+  const nodes = new Map(ids.map(id => [id, new Node()]));
+  document.getElementById = id => nodes.get(id);
+  document.createElement = () => new Node();
+  document.body = new Node();
+  for (const id of ['garage-mode-normal', 'garage-mode-away']) {
+    const marker = new Node(); marker.className = 'heating-button-state'; nodes.get(id).append(marker);
+  }
   const initial = { now, input: 'providers', garage: { mode: 'normal', normalTargetC: 10, awayTargetC: 5,
     requestedTargetC: 10, effectiveTargetC: 10, targetConfirmed: true, controlAvailable: true,
     protection: { available: false, active: false, status: 'unavailable', settingsAvailable: false } } };
   const requests = [], busy = []; let response = initial;
-  const panel = createGarageControls({ document: { getElementById: id => nodes.get(id) }, onBusy: value => busy.push(value),
+  const panel = createGarageControls({ document, onBusy: value => busy.push(value),
     request: async (path, payload) => { requests.push([path, payload]); if (response instanceof Error) throw response; return response; } });
   panel.update(initial);
   return { nodes, initial, panel, requests, busy, reply(value) { response = value; },
+    detailText(id) {
+      nodes.get(id).querySelector('.status-detail-trigger').listeners.get('click')();
+      return document.body.querySelector('.status-detail-body').textContent;
+    },
     async trigger(id, kind = 'click') { nodes.get(id).listeners.get(kind)?.({ preventDefault() {} }); await new Promise(setImmediate); } };
 }
 
@@ -128,6 +163,29 @@ test('missing frost demand is unavailable and confirmed override leaves selected
   assert.match(display.protectionDetail, /choice remains saved/);
 });
 
+test('heating summary separates reported operation, effective target and independent protection', () => {
+  const f = fixture();
+  assert.equal(f.nodes.get('garage-heating-operation').textContent, 'Unknown');
+  assert.equal(f.nodes.get('garage-protection-summary').textContent, 'Unavailable');
+  const garage = { ...f.initial.garage, mode: 'away', requestedTargetC: 5, effectiveTargetC: 8,
+    adapter: { connected: true, native: { readbacks: { mode: { value: 'heat', measuredAt: now } } },
+      telemetry: { compressorActive: { value: false, sourceTime: now, supported: true, quality: [] } } },
+    protection: { available: true, active: true } };
+  f.panel.update({ ...f.initial, garage });
+  assert.equal(f.nodes.get('garage-heating-operation').textContent, 'Idle', 'A reported idle compressor differs from an unknown one');
+  assert.equal(f.nodes.get('garage-current-mode').textContent, 'Heat');
+  assert.equal(f.nodes.get('garage-current-room').textContent, '8 °C');
+  assert.equal(f.nodes.get('garage-protection-summary').textContent, 'Override active');
+  assert.equal(f.nodes.get('garage-protection-status').textContent, 'Heating override active');
+  assert.match(f.detailText('garage-current-room'), /Selected target: 5 °C.*freeze-protection minimum.*not measured room temperature/);
+  assert.match(f.detailText('garage-protection-summary'), /choice remains saved/);
+  f.panel.update({ ...f.initial, now: now + 120_000, garage: { ...garage, effectiveTargetC: null,
+    protection: { available: true, active: false } } });
+  assert.equal(f.nodes.get('garage-heating-operation').textContent, 'Unknown');
+  assert.equal(f.nodes.get('garage-current-room').textContent, 'Unavailable');
+  assert.equal(f.nodes.get('garage-protection-summary').textContent, 'Monitoring');
+});
+
 test('pipe estimates require fresh certain sender evidence and retain valid zero reserve', () => {
   const f = fixture(), protection = { available: true, active: true, sender: { available: true },
     locations: { rear: { airC: 0, estimatedC: 1, remainingKjPerM: 0 }, front: { airC: 2, estimatedC: 2, remainingKjPerM: 0.001 } } };
@@ -191,16 +249,32 @@ test('local regulation fallback remains visible while mode commands are still av
 });
 
 
-test('Bluetooth input ages after the controller report and stale fallback air is labelled', () => {
+test('regulation input retains its own source and age separately from rear temperature', () => {
   const f = fixture(), garage = { ...f.initial.garage,
     adapter: { connected: true, observedAt: now - 30_000, control: { sensorTemperatureC: 0, sensorAgeMs: 160_000 } },
     observations: { rear: { value: 5, stale: true } },
     protection: { sender: { available: true }, locations: { rear: { airC: null, uncertain: true } } } };
   f.panel.update({ ...f.initial, garage });
-  assert.equal(f.nodes.get('garage-bluetooth-temperature').textContent, 'Unavailable');
+  assert.equal(f.nodes.get('garage-regulation-temperature').textContent, 'Unavailable');
   assert.equal(f.nodes.get('garage-protection-rear').textContent, '5 °C · stale');
+  assert.match(f.detailText('garage-regulation-temperature'), /different source than the Garage rear sensor.*not an independent room measurement.*190 seconds/);
   garage.adapter.control.sensorAgeMs = 140_000; f.panel.update({ ...f.initial, garage });
-  assert.equal(f.nodes.get('garage-bluetooth-temperature').textContent, '0 °C');
+  assert.equal(f.nodes.get('garage-regulation-temperature').textContent, '0 °C');
+  assert.equal(f.nodes.get('garage-regulation-reading').hidden, false);
+  assert.equal(f.nodes.get('garage-readings-details').hidden, false);
+  garage.adapter.control.sensorAgeMs = 150_000; f.panel.update({ ...f.initial, garage });
+  assert.equal(f.nodes.get('garage-regulation-temperature').textContent, 'Unavailable', 'The 180-second boundary is unavailable');
+});
+
+test('never-observed regulation input is hidden and an observed input remains explained through lost readback', () => {
+  const f = fixture();
+  assert.equal(f.nodes.get('garage-regulation-reading').hidden, true);
+  f.panel.update({ ...f.initial, garage: { ...f.initial.garage,
+    adapter: { connected: true, observedAt: now, control: { sensorTemperatureC: 6, sensorAgeMs: 1000 } } } });
+  f.panel.update({ ...f.initial, now: now + 30_000 });
+  assert.equal(f.nodes.get('garage-regulation-reading').hidden, false);
+  assert.equal(f.nodes.get('garage-regulation-temperature').textContent, 'Unavailable');
+  assert.match(f.detailText('garage-regulation-temperature'), /Last reported input: 6 °C.*31 seconds.*not connected/);
 });
 
 test('a garage receipt records its own target and cannot masquerade as a newer selection', async () => {

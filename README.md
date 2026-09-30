@@ -139,11 +139,11 @@ rebuild historical CSVs or run a permanent Vite build watcher.
 See [automation and manual heating](docs/automation-and-manual-control.md) for
 the shared permission, handover and restoration rules.
 
-The Home Energy UI has Home **Automatic / Pause** and Garage **Normal / Away**
+The Home Energy UI has Home **Automatic / Paused** and Garage **Normal / Away**
 controls, combined history and price/weather outlooks, requested/actual state, stale-data indication, learning
 health, explicit occupancy and manual heating overrides. The default 21 °C
 **demo** target is confined to simulation, not inferred as the real house's target.
-Home starts paused without an end time. **Automatic / Pause** is one durable,
+Home starts paused without an end time. **Automatic / Paused** is one durable,
 equipment-bound choice. Pause restores normal heating first; subsequent manual
 Normal or Reduced choices remain until changed or Automatic resumes. **Schedule
 & away** can set a resume time; clearing it leaves an indefinite pause. A scheduled
@@ -168,7 +168,7 @@ are rejected; remove them before startup and choose each feature's permission in
 the dashboard.
 
 Open the **Home** or **Garage** summary for its heating controls. Home retains
-**Automatic / Pause**, **Schedule & away**, **Manual heating override**,
+**Automatic / Paused**, **Schedule & away**, **Manual heating override**,
 **Heating strategy & comfort** and the **Home heat model**.
 Garage offers persistent **Normal / Away**, an editable normal target, native
 pump controls and separate **Frost protection**. Raising the selected target shows

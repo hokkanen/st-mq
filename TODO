@@ -1,3 +1,31 @@
+Implemented 2026-09-30 — Unified Home and Garage heating controls
+- Use matching two-choice mode cards and three-part current-state summaries,
+  followed by optional settings folds. Home now shows compressor activity,
+  price-control state and circulation; Garage shows compressor activity,
+  effective target and independent freeze protection. Keep the pump operating
+  mode as secondary text and remove the duplicate Garage selected-target row.
+- Rename the Home choice to Paused, shorten its repeated guidance and place
+  Schedule & away after the live summary. Keep evidence qualifiers below each
+  compact value, with source, confirmation and uncertainty in keyboard-accessible
+  explanations. Preserve visible pending restoration, warnings and action receipts.
+- Move the controller's temperature input into Heat-pump readings as Regulation
+  input. Do not call this a separate Bluetooth room sensor or relabel it as rear:
+  the genuine rear observation remains in the overview. Keep independent source
+  ages, zero values and unavailable states; omit never-observed input and retain
+  its explanation through temporary loss.
+- F1/F3/F4/F5/F7/F8: presentation only; preserve durable choices, manual scope,
+  command authority, restoration and protection. Remove superseded summary
+  markup/renderers/styles and update current callers; no compatibility layer,
+  configuration or device behavior changes. Validation uses synthetic fixtures.
+- Validation: 189 focused UI/state tests and the full routine suite passed
+  (3,679 passed, one optional skip). Production build passed with the existing
+  bundle-size advisory. Home and Garage Chromium suites passed in both themes
+  across 320–1440 px, including shared card geometry, overflow, keyboard focus,
+  requested/confirmed/unknown states, regulation-input expiry and existing control
+  actions. Reviewed desktop, narrow and combined screenshots. Updated broader
+  chart/learning browser assertions and syntax-checked them; those suites were
+  not rerun. Whitespace and staged secret checks passed.
+
 Implemented 2026-09-30 — Charging report evidence and meaningful plan revisions
 - Record actual setting, input, period, execution and price differences. Expired
   market intervals, timestamp refreshes and temporarily absent request revisions

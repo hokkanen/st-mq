@@ -30,7 +30,7 @@ the independent feature controls and Garage local temperature regulation.
    application image.
 6. Choose `controller.input: offline` to view imported history without device
    connections. Choose `providers` or `mqtt` for live temperatures and prices.
-   Keep Home on **Pause** while reviewing plans. Configure the
+   Keep Home on **Paused** while reviewing plans. Configure the
    current direct equipment relay route in [equipment setup](docs/mqtt-equipment.md)
    and verify its device identity, command acceptance and fresh state readback, or
    commission H66 native control as described below. Then enable Home **Automatic** if desired. Configure Garage manual control separately.
@@ -264,7 +264,7 @@ settings and pipe estimates appear when the Gen3 sender is connected. A target
 increase shows moisture guidance for roughly 24 hours; the selected mode has no
 expiry. The BLU H&T development feed supplies temperature only.
 
-Home uses **Automatic / Pause**, **Schedule & away**, a folded **Manual heating
+Home uses **Automatic / Paused**, **Schedule & away**, a folded **Manual heating
 override**, and **Heating strategy & comfort** before the heat model. Pause can
 last indefinitely or end at a scheduled resume time. Manual modes share the
 automatic equipment actions; Preheat ends at its original floor lease deadline.

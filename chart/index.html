@@ -102,15 +102,22 @@
             <section id="home-manual-controls" class="zone-section zone-configuration" aria-labelledby="heating-configuration-title">
               <div id="heating-test-details">
                 <div class="zone-section-heading"><h4 id="heating-configuration-title">Heating control</h4><p id="heating-test-status" class="muted home-control-availability"></p></div>
-              <div class="feature-automation" role="group" aria-labelledby="home-automation-title" aria-describedby="home-automation-activity">
+              <div class="feature-automation heating-choice" role="group" aria-labelledby="home-automation-title" aria-describedby="home-automation-activity">
                 <h5 id="home-automation-title">Heating mode</h5>
                 <div class="heating-mode-buttons heating-mode-buttons-two">
-                  <button id="home-automation-automatic" class="secondary-button" type="button" data-write-control data-access-path="/api/automation" aria-pressed="false" disabled>Automatic</button>
-                  <button id="home-automation-pause" class="secondary-button" type="button" data-write-control data-access-path="/api/automation" aria-pressed="false" disabled>Pause</button>
+                  <button id="home-automation-automatic" class="secondary-button" type="button" data-write-control data-access-path="/api/automation" aria-pressed="false" disabled><span>Automatic</span><small>Heating plan</small><span class="heating-button-state" aria-hidden="true"></span></button>
+                  <button id="home-automation-pause" class="secondary-button" type="button" data-write-control data-access-path="/api/automation" aria-pressed="false" disabled><span>Paused</span><small>Manual control</small><span class="heating-button-state" aria-hidden="true"></span></button>
                 </div>
                 <p id="home-automation-activity" class="muted" role="status">Waiting for automation status</p>
                 <p id="home-automation-message" class="temporary-status" role="status" aria-live="polite"></p>
               </div>
+
+                <div id="home-h66-summary" class="heating-summary" role="group" aria-label="Current home heating state">
+                  <div class="heating-summary-reading"><span>Heat pump</span><strong id="home-heating-operation">Unavailable</strong><small id="home-pump-mode" data-h66-summary="mode">Mode unavailable</small></div>
+                  <div class="heating-summary-reading"><span>Price control</span><strong id="tariff-control-state">Unknown</strong><small id="tariff-control-note">No device readback</small></div>
+                  <div class="heating-summary-reading"><span>Circulation</span><strong id="dhwr">Unknown</strong><small id="dhwr-note">No device readback</small></div>
+                </div>
+                <p id="heating-held-summary" class="heating-hold-warning" role="status" hidden></p>
 
                 <details id="temporary-details" class="equipment-fold temporary-panel">
                   <summary><span>Schedule &amp; away</span><small id="temporary-overview">At home · no resume time</small></summary>
@@ -133,12 +140,6 @@
                   </form>
                 </details>
 
-                <div id="home-h66-summary" class="home-heating-state" role="group" aria-label="Current heating state">
-                  <div class="home-state-reading" data-h66-summary="mode"><span>Heat-pump mode</span><strong>Unavailable</strong></div>
-                  <div class="home-state-reading"><span>Tariff control</span><strong id="tariff-control-state">—</strong></div>
-                  <div class="home-state-reading"><span>Hot-water circulation</span><strong id="dhwr">—</strong></div>
-                </div>
-                <p id="heating-held-summary" class="heating-hold-warning" role="status" hidden></p>
                 <details id="home-manual-override-details" class="equipment-fold manual-heating-override">
                   <summary><span id="home-manual-heating-title">Manual heating override</span><small id="home-manual-overview">Direct equipment controls</small></summary>
                 <p id="heating-test-help" class="muted zone-control-help">Normal and Reduced use the same equipment actions as automatic heating. Pause holds your choice; Preheat always ends at its lease deadline.</p>
@@ -539,32 +540,31 @@
           <div class="zone-content equipment-area">
             <section id="garage-manual-controls" class="zone-section zone-configuration" aria-labelledby="garage-heating-configuration-title">
               <div class="zone-section-heading"><h4 id="garage-heating-configuration-title">Heating control</h4><p id="garage-heating-status" class="muted home-control-availability"></p></div>
-              <div class="feature-automation">
+              <div class="feature-automation heating-choice">
                 <h5>Temperature mode</h5>
-              <p id="garage-heating-help" class="muted zone-control-help">Choose a steady temperature. Normal and Away stay selected until you change them, including across restarts.</p>
               <div id="garage-heating-buttons" class="heating-mode-buttons heating-mode-buttons-two garage-mode-buttons" role="group" aria-label="Garage temperature mode" aria-describedby="garage-heating-help">
                 <button id="garage-mode-normal" data-write-control data-access-path="/api/garage/heating" class="secondary-button" type="button" aria-pressed="false" disabled><span>Normal</span><strong id="garage-mode-normal-target">—</strong><span class="heating-button-state" aria-hidden="true"></span></button>
                 <button id="garage-mode-away" data-write-control data-access-path="/api/garage/heating" class="secondary-button" type="button" aria-pressed="false" disabled><span>Away</span><strong id="garage-mode-away-target">—</strong><span class="heating-button-state" aria-hidden="true"></span></button>
               </div>
               <p id="garage-target-confirmation" class="muted" role="status">Waiting for heat-pump controller confirmation</p>
+              <p id="garage-control-detail" class="muted" role="status"></p>
+              <p id="garage-heating-message" class="temporary-status" role="status" aria-live="polite"></p>
               </div>
               <p id="garage-warming-warning" class="heating-hold-warning heating-hold-warning-strong garage-warming-warning" role="status" aria-live="polite" hidden></p>
-              <div id="garage-heating-state" class="home-heating-state" role="group" aria-label="Current garage heating state">
-                <div class="home-state-reading"><span>Selected temperature</span><strong id="garage-current-control">Unavailable</strong></div>
-                <div class="home-state-reading"><span>Effective target</span><strong id="garage-current-room">Unavailable</strong></div>
-                <div class="home-state-reading"><span>Bluetooth room sensor</span><strong id="garage-bluetooth-temperature">Unavailable</strong></div>
-                <div class="home-state-reading"><span>Heat-pump mode</span><strong id="garage-current-mode">Unavailable</strong></div>
+              <div id="garage-heating-state" class="heating-summary" role="group" aria-label="Current garage heating state">
+                <div class="heating-summary-reading"><span>Heat pump</span><strong id="garage-heating-operation">Unknown</strong><small id="garage-current-mode">Mode unavailable</small></div>
+                <div class="heating-summary-reading"><span>Effective target</span><strong id="garage-current-room">Unavailable</strong><small>Includes protection</small></div>
+                <div class="heating-summary-reading"><span>Freeze protection</span><strong id="garage-protection-summary">Unavailable</strong><small>Independent of mode</small></div>
               </div>
               <details id="garage-target-details" class="equipment-fold">
                 <summary><span>Normal temperature</span><small>Saved until changed</small></summary>
               <form id="garage-target-form" class="garage-target-form" aria-describedby="garage-target-help garage-heating-message">
+                <p id="garage-heating-help" class="muted">Normal and Away stay selected until you change them, including across restarts.</p>
                 <label for="garage-normal-target">Normal temperature · °C</label>
                 <div class="garage-target-input"><input id="garage-normal-target" data-write-control data-access-path="/api/garage/heating" type="number" min="0" max="31" step="0.5" required disabled><button id="garage-target-submit" data-write-control data-access-path="/api/garage/heating" class="secondary-button" type="submit" disabled>Save &amp; select Normal</button></div>
                 <p id="garage-target-help" class="muted">Away uses the preset shown above. Selecting a temperature keeps the heat pump’s power setting; use Heat-pump settings to turn it on or off.</p>
               </form>
               </details>
-              <p id="garage-control-detail" class="muted" role="status"></p>
-              <p id="garage-heating-message" class="temporary-status" role="status" aria-live="polite"></p>
               <details id="garage-protection-details" class="equipment-fold garage-protection">
                 <summary><span>Freeze protection</span><small id="garage-protection-status" class="equipment-device-status">Unavailable</small></summary>
                 <p id="garage-protection-detail" class="muted">Waiting for protection status. A temperature reading alone does not establish pipe protection.</p>
@@ -642,6 +642,7 @@
                     <summary>Heat-pump readings</summary>
                     <p id="garage-native-readings-help" class="muted">Select a value for its source, freshness and quality.</p>
                     <div id="garage-native-readings" aria-describedby="garage-native-readings-help"></div>
+                    <dl id="garage-regulation-reading" class="equipment-readings" hidden><dt>Regulation input</dt><dd id="garage-regulation-temperature">Unavailable</dd></dl>
                   </details>
                   <p id="garage-controller-reason" class="muted"></p>
                 </div>

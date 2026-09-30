@@ -21,7 +21,7 @@ export function automationView(status, feature) {
     automatic: 'Automatic heating is enabled. The current plan and protection checks determine the next action.',
     paused: Number.isFinite(pauseUntil) ? `Paused until ${new Intl.DateTimeFormat('en-GB', {
       timeZone: 'Europe/Helsinki', dateStyle: 'short', timeStyle: 'short',
-    }).format(pauseUntil)}. Normal and Reduced stay selected until then; Preheat has its own deadline.` : 'Paused until you select Automatic. Manual Normal and Reduced stay selected; Preheat has its own deadline.',
+    }).format(pauseUntil)}.` : 'Paused until you select Automatic.',
   })[control?.activity] ?? control?.activity;
   if (control?.activity === 'automatic') {
     const reasons = status.decision?.reasons;
@@ -56,6 +56,8 @@ export function createAutomationControls({ document, request, onStatus, blocked 
         if (!button) continue;
         button.disabled = busy || blocked() || !(view.available || !enabled && view.canDisable);
         button.setAttribute('aria-pressed', String(enabled === view.enabled));
+        const marker = button.querySelector?.('.heating-button-state');
+        if (marker) marker.textContent = enabled === view.enabled ? '✓' : '';
       }
     }
   };

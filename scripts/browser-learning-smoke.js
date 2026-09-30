@@ -162,7 +162,8 @@ try {
   }
   assert.equal(await evaluate("document.querySelectorAll('#model-coefficients-content > .learning-entry').length >= 6"), true);
   assert.equal(await evaluate("document.getElementById('learning-evidence').textContent.includes('Thermal coefficients:')"), false);
-  assert.equal(await evaluate("document.getElementById('home-h66-summary').textContent.includes('Unavailable')"), true);
+  assert.equal(await evaluate("document.getElementById('home-heating-operation').textContent"), 'Unknown');
+  assert.equal(await evaluate("document.getElementById('home-pump-mode').textContent"), 'Mode unavailable');
   assert.equal(await evaluate("document.getElementById('home-pump-health').textContent"), 'Not connected');
   mkdirSync('var', { recursive: true });
   await evaluate("document.querySelector('.controller-panels').scrollIntoView({block:'start'})");
