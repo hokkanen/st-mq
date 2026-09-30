@@ -715,6 +715,8 @@ details details { margin-inline-start: 24px; }
 .overview-zone { display: grid; grid-template-columns: minmax(6.5ch, 1fr) minmax(0, 1fr) minmax(0, 1.2fr); align-items: start; gap: 18px; min-width: 0; font-size: clamp(19px, 7cqw, 36px); font-weight: 450; font-variant-numeric: tabular-nums; }
 /* Reserve the widest signed temperature plus space inside the house walls. */
 .overview-home { grid-template-columns: minmax(6.5ch, 1fr) minmax(calc(6.5ch + 16px), 1fr) minmax(0, 1.2fr); align-items: end; }
+/* Source notes can otherwise lift the taller roof into the header. */
+.overview-home:has(#indoor-age:not([hidden])) { padding-top: 12px; }
 .overview-home:has(#indoor.metric-unavailable) { padding-top: 40px; }
 .overview-zone > div { min-width: 0; }
 .overview-label { margin: 0 0 5px; color: var(--muted); font-size: 10px; font-weight: 400; line-height: 1.5; text-transform: lowercase; }
