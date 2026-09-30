@@ -1,3 +1,33 @@
+Implemented 2026-09-30 — Clear and stable charging session reports
+- Scope each charger shortcut to that charger's current and four retained reports;
+  keep expired selections explicit and open the exact linked guided assessment.
+  Retain focused/expanded history nodes and scroll through dashboard refreshes,
+  including distinct records with the same timestamp. Keep Close reachable in
+  long reports and prevent sticky headings from covering focused evidence.
+- Show initial planning state and meaningful changes; fold routine unchanged
+  records without deleting or rewriting evidence. Ignore rolling price hashes,
+  revision counters and refreshed clocks as proof of a plan change. Expand actual
+  inputs, periods and bounded before/after deltas separately.
+- Group brief low-draw status pairs and nearby repeats with every original event
+  available in details. Keep measured draw distinct from charger status and
+  battery charging; actual draw, important events and gaps interrupt grouping.
+  Group unavailable-information chatter only with supporting unknown evidence;
+  an off phase never establishes physical recovery or a successful stop.
+- Record Automatic permission, control availability, safe cause codes and native
+  handover separately. Preserve loss/restoration source clocks and confirmed
+  deadline misses through telemetry/request loss. Unavailable control cannot
+  verify release/pause checks. Keep private provider error text out of reports.
+- F1/F3/F4/F5/F7/F8: one current observer contract, bounded optional evidence and
+  read-only presentation; no historical format decoders, backfills, database
+  rewrites, planner changes, test-created schedules or live equipment commands.
+  Preserve current restart/session identity, original evidence and unknowns.
+- Validation: full routine suite passed (3,735 passed, one optional skip).
+  Final focused checks passed (135 tests), including the new history-projection
+  cases and final UI/observer fixes. Production build and charging Chromium suite
+  passed at 320/390/1440 px in both themes; screenshots reviewed. The build retains
+  its existing bundle-size advisory. No deployment or live charging test. Final
+  diff and staged secret checks passed.
+
 Implemented 2026-09-30 — Garage connection placement and general device wording
 - Place Garage local frost protection directly below Garage heat pump in MQTT
   connections. Preserve its configured routes and unknown/no-report state.

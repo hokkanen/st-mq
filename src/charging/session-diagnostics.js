@@ -7,6 +7,20 @@ const VEHICLES = new Set(['bmw', 'tesla']);
 const SOURCES = new Set(['bmw-cardata', 'teslamate', 'bmw-target-filter', 'manual-fallback', 'session-anchor', 'session-request', 'vehicle', 'mqtt', 'easee', 'easee-ocpp', 'shelly-evse']);
 const PHASES = new Set(['off', 'waiting', 'paused', 'active', 'released', 'provisional', 'identifying', 'unconfirmed', 'pause-unconfirmed', 'uncertain', 'ownership-uncertain', 'unavailable', 'yielded', 'manual', 'disconnected']);
 const ID_PHASES = new Set(['waiting', 'charging', 'pausing', 'identified', 'inconclusive', 'cancelled', 'complete']);
+// Provider messages can contain URLs, identifiers or upstream payload text.
+// Persist only exact supported diagnostic codes, never an arbitrary reason.
+const CONTROL_ERRORS = new Set(['read-failed', 'command-failed', 'readback-failed', 'readback-mismatch',
+  'access-denied', 'control-revoked', 'state-changed', 'unsupported-schedule', 'invalid-plan', 'missing-current-limit',
+  'start-passed', 'ambiguous-start', 'start-out-of-range', 'charger-fault', 'charging-authorization', 'incomplete-state',
+  'charger-stopped', 'pause-unconfirmed',
+  'offline', 'transaction-unconfirmed', 'composite-unavailable', 'profile-rejected', 'retry-limit', 'storage-failed',
+  'provider-offline', 'evse-control-unavailable', 'evse-command-revoked', 'evse-command-unconfirmed',
+  'evse-publish-unconfirmed', 'evse-rpc-rejected', 'evse-commissioning-required', 'evse-read-unavailable',
+  'evse-native-restriction', 'evse-native-schedule-unavailable', 'evse-event-overflow', 'evse-component-mapping-unverified',
+  'identification-resume-required', 'command-unconfirmed']);
+const CONTROL_REASONS = new Set([...CONTROL_ERRORS, 'manual-stop', 'manual-release', 'native-schedule',
+  'vehicle-not-before', 'identification-pause', 'identification-waiting', 'identification-charging',
+  'economic-wait', 'charge-now', 'economic-window', 'no-headroom', 'supply-unavailable', 'within-limit']);
 const time = value => Number.isSafeInteger(value) && value >= 0;
 const number = value => Number.isFinite(value) ? value : null;
 const at = value => time(value) ? value : null;
@@ -177,6 +191,13 @@ function observation(view, now) {
   const readAt = at(snapshot.readAt ?? view.telemetry?.readAt);
   const providerLive = view.telemetry?.providerConnected !== false && snapshot.online !== false;
   const physicalFresh = providerLive && fresh(readAt, now);
+  const rawError = control.errorCode || view.error || (CONTROL_ERRORS.has(control.reason) ? control.reason : null);
+  const errorCode = rawError ? CONTROL_ERRORS.has(rawError) ? rawError : 'control-error' : null;
+  const reasonCode = CONTROL_REASONS.has(control.reason) ? control.reason : errorCode;
+  const controlAvailability = snapshot.online === false || view.telemetry?.providerConnected === false
+    || errorCode !== null || snapshot.controlReady === false || snapshot.faulted === true || snapshot.authorizationBlocked === true
+    || ['unavailable', 'uncertain', 'ownership-uncertain'].includes(control.phase) ? 'unavailable'
+      : readAt === null ? 'unknown' : physicalFresh ? 'available' : 'unavailable';
   const chargingField = values.charging, powerField = values.powerKw;
   const fieldFresh = item => item?.available === true && item.assumed !== true && item.retained !== true
     && fresh(item.measuredAt ?? item.receivedAt, now);
@@ -213,19 +234,21 @@ function observation(view, now) {
     : control.released === true || view.request?.chargeNow === true || view.plan?.provisional === true ? 'allow'
       : applicable.length ? open ? 'allow' : 'hold' : 'unknown';
   const pending = Boolean(control.pending || control.confirmed === false || ['unconfirmed', 'pause-unconfirmed', 'uncertain', 'ownership-uncertain'].includes(control.phase));
-  const pauseConfirmed = physicalFresh && charging === false && !pending && !control.errorCode
+  const pauseConfirmed = physicalFresh && charging === false && !pending && controlAvailability === 'available'
     && (control.pauseConfirmed === true || ['paused', 'waiting'].includes(control.phase));
-  const releaseConfirmed = physicalFresh && !pending && !control.errorCode && ['active', 'released', 'provisional'].includes(control.phase);
-  const targetApplicable = physicalFresh && values.minimumSoc?.available === true && view.request != null
+  const releaseConfirmed = physicalFresh && !pending && controlAvailability === 'available' && ['active', 'released', 'provisional'].includes(control.phase);
+  const targetApplicable = physicalFresh && values.minimumSoc?.available === true && target.value !== null && view.request != null
     && (!['manual-fallback', 'session-anchor'].includes(target.source) || vehicleId !== null);
   return { readAt, physicalFresh, charging, powerKw, power, reportedCharging, reportedChargingEvidence, targetApplicable,
+    controlAvailability, errorCode, reasonCode, handoverConfirmed: typeof control.handoverConfirmed === 'boolean' ? control.handoverConfirmed : null,
+    requestKnown: physicalFresh && values.connected?.available === true && values.connected.value === true && typeof view.request?.sessionId === 'string',
     automaticEnabled: typeof view.settings?.enabled === 'boolean' ? view.settings.enabled : null,
     chargeNow: view.request ? view.request.chargeNow === true : null,
     scheduleState: installed.length ? 'installed' : controlled && proposed.length ? 'proposed' : controlled ? 'unknown' : 'none',
     vehicleId, soc, target, nativeTarget, vehicleSoc, phase: PHASES.has(control.phase) ? control.phase : 'unknown',
     identification: ID_PHASES.has(view.identification?.phase) ? view.identification.phase : null,
     identificationActive: activeId, expectation, instructionBasis: installed.length ? 'installed-execution' : 'proposed-plan',
-    pauseConfirmed, releaseConfirmed, pending, controlled, manual, error: Boolean(control.errorCode || view.error),
+    pauseConfirmed, releaseConfirmed, pending, controlled, manual, error: errorCode !== null,
     nativeStartAt: values.vehicleNotBefore?.available === true ? at(values.vehicleNotBefore.value) : null,
     supplyBlocked: values.availableCurrentA?.available === true && values.availableCurrentA.value === 0,
     deadlineAt: at(view.deadlineAt), remainingGridKwh: number(view.progress?.remainingGridKwh ?? view.requiredGridKwh),
@@ -250,14 +273,15 @@ function verify(record, key, now) {
     event(record, now, 'check', key);
   }
 }
-function finding(record, code, active, now, severity = 'attention') {
+function finding(record, code, active, now, severity = 'attention', resolution = null) {
   const current = record.findings.find(row => row.code === code && row.resolvedAt === null);
   if (active && !current) {
     append(record, 'findings', { code, severity, firstAt: now, lastAt: now, resolvedAt: null, count: 1 }, LIMITS.findings);
     event(record, now, 'finding', code);
   } else if (!active && current) {
     current.resolvedAt = now; current.lastAt = now;
-    event(record, now, 'recovery', code);
+    if (resolution) current.resolution = resolution;
+    event(record, now, 'recovery', code, resolution ? { resolution } : {});
   }
 }
 function condition(record, code, active, now, delay, severity = 'attention') {
@@ -270,12 +294,28 @@ function targetReached(current, record, now) {
     && current.soc.value >= current.target.value && (current.soc.measuredAt ?? current.soc.receivedAt) >= record.startedAt
     && (current.soc.measuredAt ?? current.soc.receivedAt) <= now;
 }
+function controlContext(current) {
+  return { basis: current.instructionBasis, confirmed: current.pauseConfirmed || current.releaseConfirmed,
+    automaticEnabled: current.automaticEnabled, chargeNow: current.chargeNow,
+    availability: current.controlAvailability, physicalKnown: current.charging !== null,
+    errorCode: current.errorCode, reasonCode: current.reasonCode, handoverConfirmed: current.handoverConfirmed };
+}
 function assess(record, current, now) {
   const previous = record.current;
   // A lapse is not a continuous observation of a failure. In particular,
   // restart cannot convert time spent offline into a verified physical pause.
   const gap = record.observedAt !== null && now - record.observedAt > 3 * MINUTE;
-  if (gap) { record.pendingChecks = {}; event(record, now, 'evidence', 'observation-gap'); }
+  if (gap) { record.pendingChecks = {}; event(record, now, 'evidence', 'observation-gap',
+    { fromAt: record.observedAt, toAt: now }); }
+  current.physicalUnknownSince = current.charging === null ? previous?.physicalUnknownSince ?? now : null;
+  if (current.charging === null && previous?.charging !== null) event(record, now, 'evidence', 'physical-evidence-lost',
+    { fromAt: now, toAt: null, lastKnownAt: record.observedAt,
+      source: previous?.power?.source ?? 'unavailable',
+      measuredAt: previous?.power?.measuredAt ?? null, receivedAt: previous?.power?.receivedAt ?? null, physicalKnown: false });
+  if (current.charging !== null && previous?.charging === null) event(record, now, 'evidence', 'physical-evidence-restored',
+    { fromAt: previous.physicalUnknownSince ?? record.observedAt, toAt: now,
+      source: current.power.source,
+      measuredAt: current.power.measuredAt, receivedAt: current.power.receivedAt, physicalKnown: true });
   if (previous && previous.expectation !== current.expectation) record.expectationAt = now;
   if (!previous || previous.charging !== current.charging || gap && current.charging !== null) {
     const transition = !gap && previous?.charging !== null && typeof previous?.charging === 'boolean'
@@ -292,8 +332,8 @@ function assess(record, current, now) {
     { ...current.reportedChargingEvidence, powerKw: current.powerKw,
       powerMeasuredAt: current.power.measuredAt, powerReceivedAt: current.power.receivedAt });
   }
-  if (previous && previous.phase !== current.phase) event(record, now, 'control', current.phase,
-    { basis: current.instructionBasis, confirmed: current.pauseConfirmed || current.releaseConfirmed });
+  if (!previous || previous.phase !== current.phase || !equal(controlContext(previous), controlContext(current)))
+    event(record, now, 'control', current.phase, controlContext(current));
   if (previous && previous.identification !== current.identification) event(record, now, 'identification', current.identification ?? 'unknown');
   if (previous?.vehicleId !== current.vehicleId && current.vehicleId) event(record, now, 'vehicle', 'identified', { vehicleId: current.vehicleId });
   if (current.vehicleId) { record.vehicleId = current.vehicleId; verify(record, 'identification', now); }
@@ -305,7 +345,9 @@ function assess(record, current, now) {
   }
   if (current.expectation === 'hold' && current.pauseConfirmed && record.firstChargingAt) verify(record, 'pause', now);
   if (current.deliveredGridKwh > 0 && !current.energyIncomplete && fresh(current.energyAt, now, 5 * MINUTE)) verify(record, 'energy', now);
-  const reached = targetReached(current, record, now);
+  const withdrawnTarget = record.outcome.target !== undefined && current.target.source === 'manual-fallback'
+    && record.outcome.targetSource !== 'manual-fallback' && current.target.value !== record.outcome.target;
+  const reached = !withdrawnTarget && targetReached(current, record, now);
   // A withdrawn vehicle target may expose the configured fallback while the
   // charger remains online. That is not a newly requested target. A configured
   // target can change only when it was already the confirmed target's basis.
@@ -324,16 +366,26 @@ function assess(record, current, now) {
     record.coverage.targetAttainment = { state: 'not-exercised' };
     event(record, now, 'outcome', 'target-changed');
   } else if (record.outcome.state !== 'target-confirmed') {
-    const missed = current.physicalFresh && current.vehicleSoc && current.deadlineAt !== null && now >= current.deadlineAt
+    const missed = !withdrawnTarget && current.targetApplicable && current.physicalFresh && current.vehicleSoc
+      && current.deadlineAt !== null && now >= current.deadlineAt
       && (current.soc.measuredAt ?? current.soc.receivedAt) >= current.deadlineAt
+      && (current.soc.measuredAt ?? current.soc.receivedAt) >= record.startedAt
       && current.soc.value !== null && current.target.value !== null && current.soc.value < current.target.value;
     const estimated = current.remainingGridKwh !== null && current.remainingGridKwh <= 0;
-    const state = missed ? 'deadline-missed' : estimated ? 'target-estimated' : 'in-progress';
-    if (record.outcome.state !== state) {
-      record.outcome = { state, at: now, basis: missed ? 'vehicle-reading' : estimated ? 'energy-estimate' : 'observation' };
-      event(record, now, 'outcome', state);
+    const priorMiss = record.outcome.state === 'deadline-missed';
+    const changedRequest = priorMiss && (current.requestKnown && time(current.deadlineAt) && time(record.outcome.deadlineAt)
+      && current.deadlineAt !== record.outcome.deadlineAt || current.targetApplicable && record.outcome.target !== undefined
+      && current.target.value !== record.outcome.target
+      && (current.target.source !== 'manual-fallback' || record.outcome.targetSource === 'manual-fallback'));
+    const state = missed || priorMiss && !changedRequest ? 'deadline-missed' : estimated ? 'target-estimated' : 'in-progress';
+    if (record.outcome.state !== state || missed && (record.outcome.target !== current.target.value || record.outcome.deadlineAt !== current.deadlineAt)) {
+      record.outcome = { state, at: now, basis: missed ? 'vehicle-reading' : estimated ? 'energy-estimate' : 'observation',
+        ...(missed ? { target: current.target.value, targetSource: current.target.source, deadlineAt: current.deadlineAt } : {}) };
+      event(record, now, 'outcome', state, missed ? { measuredAt: current.soc.measuredAt, receivedAt: current.soc.receivedAt,
+        target: current.target.value, deadlineAt: current.deadlineAt } : {});
     }
     if (missed) finding(record, 'deadline-missed', true, now);
+    else if (changedRequest) finding(record, 'deadline-missed', false, now, 'attention', 'request-changed');
   }
   if (reached) finding(record, 'deadline-missed', false, now);
   finding(record, 'deadline-unverified', current.deadlineAt !== null && now >= current.deadlineAt

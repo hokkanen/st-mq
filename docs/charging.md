@@ -194,7 +194,11 @@ attention, incomplete evidence or the observed result. Its dialog separates the
 charging outcome, behavior and coverage, followed by findings, a timeline and
 the actual plan/input revisions. Proposed periods, installed execution,
 identification permission, confirmed pauses and physical charging are distinct.
-Opening a report never identifies a vehicle or changes charging.
+Each charger opens only its own current and retained sessions. An expired
+selection stays explicitly unavailable instead of opening another session. The
+guided-test link opens the assessment attached to that exact report. Opening a
+report never identifies a vehicle or changes charging. Normal dashboard refreshes
+preserve open disclosures, keyboard focus and the report's scroll position.
 
 The report states whether Automatic charging is off, whether there is a proposed
 or adopted controller execution plan, and whether battery inputs are measured or
@@ -211,8 +215,14 @@ settings/price revision. Revised rates are compared over the same remaining
 time intervals; newly available prices are separate from changes to existing
 rates. An unchanged schedule is stated explicitly. With Automatic off and no
 Charge now request, price refreshes do not create charging-plan revisions.
+The visible history contains the initial state and meaningful changes. Repeated
+snapshots without meaningful changes are available under **Routine planning
+records**, collapsed by default; their original records are preserved. Opaque
+price hashes, revision counters and refreshed evidence clocks do not establish a
+plan change. Full inputs and periods are expandable, with concrete before/after
+values shown when recorded changes establish them.
 
-Charger-reported charging state and measured draw are separate timeline entries.
+Charger-reported charging state and measured draw remain separate evidence.
 A fresh charger power reading above 0.1 kW establishes draw; status alone cannot
 pass a charging or resume check in either a passive report or guided assessment.
 Draw can include vehicle auxiliaries and does not prove battery energy increased.
@@ -222,6 +232,21 @@ transitions. Events retain original measurement and receipt clocks separately
 from the controller's recording time; an adapter reread cannot renew them.
 Missing receipt clocks remain unknown. Contradictory recorded event labels are
 qualified by their saved power evidence rather than presented as verified draw.
+Brief charging/not-charging status pairs with readings at or below 0.1 kW are
+shown together. Nearby repeated pairs may share one entry; actual draw, important
+state changes and observation gaps interrupt grouping. A zero pair says **No draw
+measured**, without claiming that no pulse could have occurred between samples.
+Expand the entry for every original event, measured value and available source
+clock. Unattributed saved timestamps are not presented as native measurement
+times, and absent receipt times are stated only in the expanded evidence.
+
+Automatic charging permission and charger-information availability are separate.
+An **Automatic control inactive** event does not prove that information recovered,
+that a stop command succeeded, or that physical draw stopped. The observer records
+bounded control causes and explicit physical-evidence loss/restoration. Availability
+chatter is grouped while the supporting evidence remains unavailable; a recovery
+is shown only with positive evidence, never inferred from an off phase. Unknown
+provider messages remain generic instead of saving arbitrary private error text.
 
 Checks allow settling time for command/readback transitions. They distinguish
 vehicle timers, supply restrictions, manual priority, unavailable telemetry and
@@ -229,6 +254,10 @@ unexplained lack of draw instead of inferring a vehicle timer from zero power.
 Recovered problems remain in the timeline, and later replanning does not rewrite
 earlier evidence. Requested-target attainment and native completion remain
 separate; coverage says **Not exercised** where the session supplied no evidence.
+A confirmed missed ready-by outcome survives a later evidence outage; changing
+the requested target/deadline or positively observing recovery is assessed separately.
+Closing the earlier finding because the request changed is labeled **Request
+changed**, not as evidence that charging recovered.
 The existing energy/session reference comparisons remain separate from these
 behavioral checks; recorded energy coverage is not a reference-energy comparison.
 

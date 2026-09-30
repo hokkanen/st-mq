@@ -153,7 +153,9 @@ both guided programs, explicit charger choice, expectation-only action payloads,
 draft preservation through polling, cancellation, passive/retained session
 reports and read-only access. It uses synthetic status and intercepted assessment
 requests in a disposable application and browser. It checks keyboard dismissal
-and focus, horizontal overflow, and 320/390/1440px layouts in both themes. Its
+and focus, charger-scoped/expired selections, grouped original evidence, collapsed
+routine plans and open-detail/focus/scroll preservation across polling. It checks
+horizontal overflow and a reachable close button at 320/390/1440px in both themes. Its
 temporary screenshot directory is printed on completion. It never connects to a
 vehicle or charger; overnight hardware behavior still requires an actual guided
 run by the installation user.

@@ -211,11 +211,13 @@ export function createChargingTestsPanel({ document, request, onStatus = () => {
     if (!document.querySelector('dialog[open]') && opener?.isConnected) opener.focus();
   });
   return {
-    open(vehicleId = 'bmw') {
+    open(vehicleId = 'bmw', runId = null) {
       opener = document.activeElement; field('vehicleId').value = vehicleId;
-      selectedRun = runs().find(run => run.vehicleId === vehicleId && !terminal(run))?.id
-        ?? runs().find(run => run.vehicleId === vehicleId)?.id ?? null;
+      selectedRun = runId !== null ? runs().find(run => run.vehicleId === vehicleId && run.id === runId)?.id ?? null
+        : runs().find(run => run.vehicleId === vehicleId && !terminal(run))?.id
+          ?? runs().find(run => run.vehicleId === vehicleId)?.id ?? null;
       preview = null; checkedInput = null; message(); instructions(); renderRun(); buttons();
+      if (runId !== null && selectedRun === null) message('This assessment is no longer retained. No other assessment was selected.', true);
       if (!dialog.open) dialog.showModal();
     },
     update(next) {

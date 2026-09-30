@@ -200,7 +200,7 @@ const mitsubishiControls = createMitsubishiControls({ document, request: api,
 const chargingPanel = createChargingPanel({ document, request: api,
   beforeRequest: () => { ++refreshSequence; }, onStatus: result => render(result),
   afterRequest: () => refresh() });
-const chargingDiagnostics = createChargingDiagnosticsPanel({ document, onOpenTest: vehicleId => chargingTests.open(vehicleId) });
+const chargingDiagnostics = createChargingDiagnosticsPanel({ document, onOpenTest: (vehicleId, runId) => chargingTests.open(vehicleId, runId) });
 const chargingTests = createChargingTestsPanel({ document, request: api,
   beforeRequest: () => { ++refreshSequence; }, onStatus: result => render(result),
   afterRequest: () => refresh(), openReport: (id, reportId) => chargingDiagnostics.open(id, reportId) });

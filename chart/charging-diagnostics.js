@@ -1,4 +1,6 @@
-const OUTCOMES = { 'in-progress': 'Session in progress', 'target-confirmed': 'Target confirmed by vehicle',
+import { projectChargingReportHistory } from './charging-report-history.js';
+
+const OUTCOMES = { 'in-progress': 'Outcome not yet confirmed', 'target-confirmed': 'Target confirmed by vehicle',
   'target-estimated': 'Target estimated · awaiting vehicle evidence', 'deadline-missed': 'Target not reached by ready-by',
   'completion-unknown': 'Unplugged · completion unconfirmed', interrupted: 'Observation interrupted' };
 const BEHAVIOR = { observing: 'Observing', expected: 'Observed checks passed', explained: 'Changes explained below',
@@ -21,6 +23,7 @@ const FINDINGS = {
   'deadline-missed': ['Target missed at ready-by', 'An applicable vehicle reading after ready-by was below the requested target. Reaching the target later does not remove this event.'] };
 const EVENTS = { connected: 'Connection observed', 'observation-started': 'Monitoring began during this connection',
   unplugged: 'Vehicle unplugged', 'connection-replaced': 'Connection changed', 'observation-gap': 'Observation gap · no physical conclusion for the missing interval',
+  'physical-evidence-lost': 'Measured draw became unavailable', 'physical-evidence-restored': 'Measured draw available again',
   'charging-observed': 'Draw above 0.1 kW observed', 'not-charging-observed': 'No draw above 0.1 kW observed',
   'charging-started': 'Draw rose above 0.1 kW', 'charging-stopped': 'Draw at 0.1 kW or below observed', 'physical-unknown': 'Measured draw unavailable',
   'charger-reports-charging': 'Charger status reports charging', 'charger-reports-not-charging': 'Charger status reports not charging',
@@ -29,7 +32,8 @@ const EVENTS = { connected: 'Connection observed', 'observation-started': 'Monit
   inconclusive: 'Identification inconclusive', complete: 'Identification completed', cancelled: 'Identification cancelled',
   'initial-plan': 'Initial planning snapshot', 'target-changed': 'Requested target changed',
   ...OUTCOMES, ...COVERAGE };
-const time = (value, timezone = 'Europe/Helsinki', seconds = false) => Number.isFinite(value)
+const validTime = value => Number.isFinite(value) && Math.abs(value) <= 8.64e15;
+const time = (value, timezone = 'Europe/Helsinki', seconds = false) => validTime(value)
   ? new Intl.DateTimeFormat('en-GB', { timeZone: timezone, day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', ...(seconds ? { second: '2-digit' } : {}) }).format(value) : 'Unknown';
 const number = value => Number.isFinite(value) ? Number(value.toFixed(4)) : null;
 const percent = value => Number.isFinite(value) ? `${number(value)}%` : 'Unknown';
@@ -43,6 +47,34 @@ const STATE_LABELS = { disabled: 'Automatic off', unknown: 'Unknown', none: 'No 
   'charge-now': 'Charge now', provisional: 'Provisional release' };
 const SCHEDULE_LABELS = { none: 'No controller charging schedule', proposed: 'Proposed charging periods',
   installed: 'Controller execution plan', unknown: 'Schedule state unknown' };
+const CONTROL_CAUSES = {
+  'read-failed': 'Charger read failed', 'command-failed': 'Charger instruction failed',
+  'readback-failed': 'Charger confirmation could not be read', 'readback-mismatch': 'Charger readback did not match the instruction',
+  'access-denied': 'Charger access denied', 'control-revoked': 'Control permission was withdrawn',
+  'state-changed': 'Charger state changed during the instruction', 'unsupported-schedule': 'Schedule unsupported by the charger',
+  'invalid-plan': 'Charging plan could not be applied', 'missing-current-limit': 'Charging current limit unavailable',
+  'start-passed': 'Requested start had already passed', 'ambiguous-start': 'Requested start time was ambiguous',
+  'start-out-of-range': 'Requested start time was outside the supported range', 'charger-fault': 'Charger reported a fault',
+  ['charging-authorization']: 'Charging authorization required', 'incomplete-state': 'Charger state incomplete',
+  'charger-stopped': 'Charger reported stopped', 'pause-unconfirmed': 'Pause not confirmed',
+  offline: 'Charger offline', 'provider-offline': 'Charger provider offline',
+  'transaction-unconfirmed': 'Charging transaction not confirmed', 'composite-unavailable': 'Charger schedule readback unavailable',
+  'profile-rejected': 'Charger rejected the charging profile', 'retry-limit': 'Instruction retry limit reached',
+  'storage-failed': 'Control state could not be saved', 'evse-control-unavailable': 'Charger control unavailable',
+  'evse-command-revoked': 'Charger instruction permission withdrawn', 'evse-command-unconfirmed': 'Charger instruction unconfirmed',
+  'evse-publish-unconfirmed': 'Instruction delivery unconfirmed', 'evse-rpc-rejected': 'Charger rejected the instruction',
+  'evse-commissioning-required': 'Charger commissioning required', 'evse-read-unavailable': 'Charger read unavailable',
+  'evse-native-restriction': 'A charger restriction has priority', 'evse-native-schedule-unavailable': 'Charger timer unavailable',
+  'evse-event-overflow': 'Charger event buffer exceeded', 'evse-component-mapping-unverified': 'Charger component mapping unverified',
+  'identification-resume-required': 'Identification release still requires confirmation', 'command-unconfirmed': 'Charger instruction unconfirmed',
+  'control-error': 'Charger control error; detailed cause unavailable',
+  'manual-stop': 'Manual stop has priority', 'manual-release': 'Manual release has priority', 'native-schedule': 'Charger timer has priority',
+  'vehicle-not-before': 'Vehicle start restriction', 'identification-pause': 'Identification pause',
+  'identification-waiting': 'Identification waiting', 'identification-charging': 'Identification observing charge',
+  'economic-wait': 'Waiting for a planned charging period', 'charge-now': 'Charge now requested',
+  'economic-window': 'Within a planned charging period', 'no-headroom': 'No electrical headroom available',
+  'supply-unavailable': 'Supply information unavailable', 'within-limit': 'Within the available current limit',
+};
 
 function inputText(input, kind = 'soc') {
   if (!Number.isFinite(input?.value)) return 'Unavailable';
@@ -60,8 +92,11 @@ function controlText(value = {}, snapshot = false) {
   const schedule = SCHEDULE_LABELS[value.scheduleState] ?? 'Schedule state unknown';
   const priority = value.manual === true ? ' · Manual charger instruction has priority' : '';
   const identification = value.identificationActive === true ? ' · Identification check in progress' : '';
-  const uncertain = value.pending === true || value.error === true ? ' · Charger instruction unconfirmed' : '';
-  return `${permission}${extra} · ${schedule}${priority}${identification}${uncertain}`;
+  const uncertain = value.pending === true ? ' · Charger instruction unconfirmed'
+    : value.error === true && value.controlAvailability !== 'unavailable' ? ' · Charger control error' : '';
+  const availability = !snapshot && value.controlAvailability === 'unavailable' ? ' · Charger control unavailable'
+    : !snapshot && value.controlAvailability === 'unknown' ? ' · Charger control availability unknown' : '';
+  return `${permission}${extra} · ${schedule}${priority}${identification}${availability}${uncertain}`;
 }
 
 export function chargingReportFacts(report, timezone = 'Europe/Helsinki') {
@@ -145,7 +180,8 @@ export function chargingReportSummary(report, available = true) {
   if (!report) return { label: 'Session report', state: 'quiet', outcome: 'No session observed yet', behavior: 'Observation starts with a confirmed connection.' };
   const label = report.attentionCount ? `${report.attentionCount} ${report.attentionCount === 1 ? 'issue' : 'issues'}`
     : report.evidenceStale || report.behavior === 'insufficient-evidence' ? 'Evidence incomplete'
-      : report.recoveredCount ? 'Recovered issue' : report.behavior === 'expected' ? 'Checks passed' : 'Session report';
+      : report.recoveredCount ? report.findings?.some(row => row.resolvedAt !== null && row.resolution === 'request-changed') ? 'Past issue' : 'Recovered issue'
+        : report.behavior === 'expected' ? 'Checks passed' : 'Session report';
   return { label, state: report.attentionCount ? 'attention' : report.evidenceStale || report.behavior === 'insufficient-evidence' ? 'unknown'
     : report.behavior === 'expected' ? 'good' : 'quiet', outcome: OUTCOMES[report.outcome?.state] ?? 'Completion unknown',
     behavior: report.evidenceStale ? 'Observation is no longer current' : BEHAVIOR[report.behavior] ?? 'Evidence incomplete' };
@@ -155,134 +191,217 @@ export function chargingReportSummary(report, available = true) {
  * schedule or issue a request. Updates come from the normal dashboard status. */
 export function createChargingDiagnosticsPanel({ document, onOpenTest = () => {} }) {
   const make = (tag, text = '', className = '') => { const node = document.createElement(tag); node.textContent = text; node.className = className; return node; };
+  const setText = (node, value) => { if (node.textContent !== value) node.textContent = value; };
+  const parts = new WeakMap(), lists = new WeakMap();
+  // Retain the actual focused/expanded nodes. A status poll must not rebuild
+  // a history that somebody is reading or move keyboard focus to the document.
+  function sync(container, rows, keyFor, render) {
+    const previous = lists.get(container) ?? new Map(), next = new Map(), occurrences = new Map();
+    rows.forEach((row, index) => {
+      // Several distinct records can legitimately share a recording timestamp.
+      const base = String(keyFor(row, index)), occurrence = occurrences.get(base) ?? 0;
+      occurrences.set(base, occurrence + 1);
+      const key = JSON.stringify([base, occurrence]), node = render(previous.get(key), row, key);
+      next.set(key, node);
+      if (container.children[index] !== node) container.insertBefore(node, container.children[index] ?? null);
+    });
+    for (const [key, node] of previous) if (!next.has(key)) {
+      if (node.contains?.(document.activeElement)) container.closest?.('details')?.querySelector('summary')?.focus({ preventScroll: true });
+      node.remove();
+    }
+    lists.set(container, next);
+  }
   const dialog = make('dialog', '', 'control-dialog charging-report-dialog'); dialog.id = 'charging-report-dialog';
   dialog.setAttribute('aria-labelledby', 'charging-report-title'); dialog.setAttribute('aria-describedby', 'charging-report-help');
-  const heading = make('div', '', 'charging-report-heading'), title = make('h2', 'Charging session'); title.id = 'charging-report-title';
-  const closeButton = make('button', 'Close', 'secondary-button'); closeButton.type = 'button';
-  heading.append(title, closeButton);
-  const help = make('p', 'Checks follow actual charger and vehicle evidence. Unobserved behavior stays unverified.', 'muted'); help.id = 'charging-report-help';
+  const heading = make('div', '', 'charging-report-heading'), title = make('h2'); title.id = 'charging-report-title';
+  const closeButton = make('button', 'Close', 'secondary-button'); closeButton.type = 'button'; heading.append(title, closeButton);
+  const help = make('p', 'Observed charging, important changes and gaps in the evidence for this charger.', 'muted'); help.id = 'charging-report-help';
   const selectorLabel = make('label', 'Session', 'charging-report-selector'), selector = make('select'); selector.id = 'charging-report-session'; selectorLabel.htmlFor = selector.id; selectorLabel.append(selector);
-  const result = make('div', '', 'charging-report-result'), outcome = make('strong'), behavior = make('span'); result.append(outcome, behavior); result.setAttribute('role', 'status');
-  const context = make('p', '', 'muted'), findings = make('ul', '', 'charging-report-findings');
+  const result = make('div', '', 'charging-report-result'), outcome = make('strong'), behavior = make('span'); result.append(outcome, behavior); result.setAttribute('role', 'status'); result.setAttribute('aria-atomic', 'true');
+  const context = make('p', '', 'muted charging-report-context'), findings = make('ul', '', 'charging-report-findings');
   const facts = make('dl', '', 'charging-report-facts');
   const guided = make('div', '', 'charging-report-guided'), guidedNote = make('span'), guidedButton = make('button', 'View guided test', 'secondary-button');
   guidedButton.type = 'button'; guided.append(guidedNote, guidedButton); guided.hidden = true;
   const coverageTitle = make('h3', 'What was observed'), coverage = make('dl', '', 'charging-report-coverage');
   const timelineDetails = make('details', '', 'charging-report-fold'), timeline = make('ol', '', 'charging-report-timeline');
   timelineDetails.append(make('summary', 'Session timeline'),
-    make('p', 'Times below show when the controller recorded each event. Original measurement and receipt times are shown separately where available.', 'muted'), timeline);
+    make('p', 'Brief status changes are grouped. Expand an entry for the original events and evidence times.', 'muted'), timeline);
   const plansDetails = make('details', '', 'charging-report-fold'), plans = make('ol', '', 'charging-report-plans');
-  plansDetails.append(make('summary', 'Recorded plans & inputs'), plans);
-  const limits = make('p', '', 'muted');
+  plansDetails.append(make('summary', 'Plan & input changes'), plans);
+  const routineDetails = make('details', '', 'charging-report-routine'), routineSummary = make('summary'), routinePlans = make('ol', '', 'charging-report-plans');
+  routineDetails.append(routineSummary, make('p', 'These records have no documented meaningful change. They are retained for inspection, not shown as new charging instructions.', 'muted'), routinePlans);
+  plansDetails.append(routineDetails);
+  const limits = make('p', '', 'muted charging-report-limits');
   dialog.append(heading, help, selectorLabel, result, context, facts, guided, findings, coverageTitle, coverage, timelineDetails, plansDetails, limits);
   document.body.append(dialog);
   const buttons = new Map();
-  let status = null, selectedCharger = null, selectedReport = null, opener = null, signature = null, guidedVehicle = null, switchingDialog = false;
-  function appendChanges(container, changes, compact = false) {
-    for (const change of changes) {
-      if (change.complex) {
-        const detail = make('details', '', 'charging-report-change');
-        detail.append(make('summary', `${change.label} changed`), make('p', `Before\n${change.before}`), make('p', `After\n${change.after}`));
-        if (change.omitted) detail.append(make('p', `${change.omitted} additional changed intervals were omitted from this bounded record.`, 'muted'));
-        container.append(detail);
-      } else container.append(make(compact ? 'small' : 'p', `${change.label}: ${change.before} → ${change.after}`, 'charging-report-change-value'));
-    }
+  let status = null, selectedCharger = null, selectedReport = null, opener = null, guidedVehicle = null, guidedRunId = null, switchingDialog = false, renderedScope = null;
+  const chargerLabel = () => status?.charging?.chargers?.find(row => row.id === selectedCharger)?.label
+    ?? ({ charger1: 'Charger 1', charger2: 'Charger 2' })[selectedCharger] ?? 'Charger';
+  const reports = () => {
+    const slot = status?.charging?.diagnostics?.chargers?.find(row => row.id === selectedCharger);
+    return [slot?.current, ...(slot?.recent ?? [])].filter(Boolean);
+  };
+  const controlLabels = { off: 'Automatic control inactive', waiting: 'Controller waiting', paused: 'Controller pause', active: 'Charging permission active',
+    released: 'Controller restriction released', provisional: 'Provisional charging permission', identifying: 'Identification check',
+    unconfirmed: 'Charger instruction unconfirmed', 'pause-unconfirmed': 'Pause unconfirmed', uncertain: 'Charger instruction uncertain',
+    'ownership-uncertain': 'Instruction ownership uncertain', unavailable: 'Charger control information unavailable', yielded: 'Charger instruction has priority', manual: 'Manual charger instruction', disconnected: 'Charger disconnected' };
+  const eventLabel = row => {
+    const changes = chargingPlanChanges(row.changes);
+    if (row.kind === 'physical' && ['charging-started', 'charging-observed'].includes(row.code) && Number.isFinite(row.powerKw) && row.powerKw <= .1)
+      return 'Charging status recorded; draw unconfirmed';
+    if (row.kind === 'physical' && Number.isFinite(row.powerKw) && row.powerKw === 0) return 'No draw measured';
+    if (row.kind === 'finding') return FINDINGS[row.code]?.[0] ?? 'Finding recorded';
+    if (row.kind === 'recovery') return `${FINDINGS[row.code]?.[0] ?? 'Issue'} · ${row.resolution === 'request-changed' ? 'request changed' : 'recovered'}`;
+    if (row.kind === 'plan') return row.code === 'initial-plan' ? 'Initial planning state' : changes.length ? 'Plan or inputs changed' : 'Planning record';
+    if (row.kind === 'control') return `${controlLabels[row.code] ?? 'Control state recorded'}${row.code !== 'unavailable' && row.availability === 'unavailable' ? ' · control unavailable' : ''}`;
+    return EVENTS[row.code] ?? 'Observation recorded';
+  };
+  const eventKey = row => `${row.at}:${row.kind}:${row.code}`;
+  function changesInto(container, changes) {
+    sync(container, changes, row => row.field, (node, change) => {
+      if (!node) {
+        node = make('li', '', 'charging-report-change');
+        const detail = make('details'), summary = make('summary'), before = make('p'), after = make('p'), omitted = make('p', '', 'muted'), simple = make('p', '', 'charging-report-change-value');
+        detail.append(summary, before, after, omitted); node.append(simple, detail); parts.set(node, { detail, summary, before, after, omitted, simple });
+      }
+      const p = parts.get(node); p.detail.hidden = !change.complex; p.simple.hidden = change.complex;
+      setText(p.simple, `${change.label}: ${change.before} → ${change.after}`); setText(p.summary, `${change.label} changed`);
+      setText(p.before, `Before\n${change.before}`); setText(p.after, `After\n${change.after}`);
+      p.omitted.hidden = !change.omitted; setText(p.omitted, change.omitted ? `${change.omitted} additional changed intervals omitted from this bounded record.` : '');
+      return node;
+    });
   }
-  function reports() { return (status?.charging?.diagnostics?.chargers ?? []).flatMap(slot => [slot.current, ...(slot.recent ?? [])].filter(Boolean).map(report => ({ ...report, chargerId: slot.id }))); }
-  function selectDefault() {
-    if (selectedReport !== null) return;
-    const all = reports(), preferred = all.find(report => report.chargerId === selectedCharger);
-    selectedReport = preferred?.id ?? all[0]?.id ?? null;
+  function rawEvent(node, row, timezone) {
+    if (!node) { node = make('li'); const label = make('p'), evidence = make('p', '', 'muted'); node.append(label, evidence); parts.set(node, { label, evidence }); }
+    const p = parts.get(node), details = [];
+    setText(p.label, `${time(row.at, timezone, true)} · ${eventLabel(row)}`);
+    if (Number.isFinite(row.powerKw)) details.push(`Measured draw ${number(row.powerKw)} kW`);
+    const source = sourceName(row.source);
+    if (source) details.push(source);
+    // A timestamp without source attribution cannot prove a meter measurement.
+    if (Number.isFinite(row.measuredAt)) details.push(`${row.code === 'physical-evidence-lost' ? 'Last power sample' : source ? 'Measured' : 'Saved time'} ${time(row.measuredAt, timezone, true)}`);
+    if (Number.isFinite(row.receivedAt)) details.push(`Received ${time(row.receivedAt, timezone, true)}`);
+    if (row.kind === 'physical' || row.kind === 'charger-status') {
+      if (!source) details.push('Source attribution not recorded');
+      if (!Number.isFinite(row.receivedAt)) details.push('Receipt time not recorded');
+    }
+    if (Number.isFinite(row.powerMeasuredAt)) details.push(`Power measured ${time(row.powerMeasuredAt, timezone, true)}`);
+    if (Number.isFinite(row.powerReceivedAt)) details.push(`Power received ${time(row.powerReceivedAt, timezone, true)}`);
+    if (typeof row.automaticEnabled === 'boolean') details.push(`Automatic charging ${row.automaticEnabled ? 'on' : 'off'}`);
+    if (row.chargeNow === true) details.push('Charge now on');
+    if (['available', 'unavailable', 'unknown'].includes(row.availability)) details.push(`Control evidence ${row.availability}`);
+    for (const code of new Set([row.errorCode, row.reasonCode].filter(Boolean))) details.push(CONTROL_CAUSES[code] ?? 'Detailed cause unavailable');
+    if (row.handoverConfirmed === true) details.push('Control handover confirmed');
+    if (row.handoverConfirmed === false) details.push('Control handover unconfirmed');
+    if (row.confirmed === false && row.kind === 'control') details.push('No physical confirmation recorded');
+    setText(p.evidence, details.join(' · ')); p.evidence.hidden = !details.length; return node;
+  }
+  function historyItem(node, group, key, timezone) {
+    if (!node) {
+      node = make('li'); node.dataset.historyKey = key;
+      const stamp = make('time'), label = make('strong'), detail = make('small', '', 'muted');
+      const evidence = make('details', '', 'charging-report-evidence'), evidenceSummary = make('summary'), raw = make('ol', '', 'charging-report-raw');
+      evidence.dataset.historyKey = key; evidence.append(evidenceSummary, raw);
+      const changes = make('ul', '', 'charging-report-changes'), unchanged = make('small', 'Charging periods unchanged', 'muted');
+      node.append(stamp, label, detail, changes, unchanged, evidence); parts.set(node, { stamp, label, detail, changes, unchanged, evidence, evidenceSummary, raw });
+    }
+    const p = parts.get(node), rows = group.events, first = rows[0] ?? {}, changeRows = chargingPlanChanges(first.changes, timezone);
+    const range = group.endAt !== null && group.endAt > group.startAt ? `${time(group.startAt, timezone)} – ${time(group.endAt, timezone)}` : time(group.startAt, timezone);
+    setText(p.stamp, range); p.stamp.dateTime = validTime(group.startAt) ? new Date(group.startAt).toISOString() : '';
+    let label = eventLabel(first), detail = '';
+    if (group.type === 'low-draw-pulse') {
+      label = group.pulseCount > 1 ? `${group.pulseCount} brief charger-status changes` : 'Brief charger-status change';
+      const max = group.maxPowerKw;
+      detail = max === 0 ? 'No draw measured · 0 kW' : Number.isFinite(max) ? `Recorded readings up to ${number(max)} kW` : 'Draw unconfirmed';
+      if (group.pulseCount === 1 && group.endAt > group.startAt) detail += ` · ${Math.round((group.endAt - group.startAt) / 1000)} seconds between status events`;
+    } else if (group.type === 'unavailable') {
+      label = Number.isFinite(group.recoveredAt) ? 'Charger information temporarily unavailable' : 'Charger information unavailable';
+      detail = Number.isFinite(group.recoveredAt) ? 'Evidence became available again.' : 'Recovery has not been observed in these records.';
+    } else if (Number.isFinite(first.powerKw)) detail = first.powerKw === 0 ? 'No draw measured · 0 kW' : `Measured draw ${number(first.powerKw)} kW`;
+    if (first.vehicleId) label += ` · ${vehicleName(first.vehicleId)}`;
+    setText(p.label, label); setText(p.detail, detail); p.detail.hidden = !detail;
+    changesInto(p.changes, changeRows); p.changes.hidden = !changeRows.length;
+    p.unchanged.hidden = first.kind !== 'plan' || !changeRows.length || changeRows.some(change => change.field === 'periods');
+    setText(p.evidenceSummary, rows.length === 1 ? 'Event details' : `${rows.length} recorded events`);
+    sync(p.raw, rows, (row, index) => `${eventKey(row)}:${index}`, (old, row) => rawEvent(old, row, timezone));
+    return node;
+  }
+  function planItem(node, plan, key, timezone) {
+    if (!node) {
+      node = make('li'); node.dataset.planKey = key;
+      const header = make('strong'), changes = make('ul', '', 'charging-report-changes'), unchanged = make('p', 'Charging periods unchanged', 'muted');
+      const detail = make('details', '', 'charging-report-plan-detail'), summary = make('summary', 'Inputs & periods');
+      const control = make('p'), vehicle = make('p', '', 'muted'), inputs = make('p'), deadline = make('p', '', 'muted'), periodLabel = make('p', '', 'charging-report-period-label'), periods = make('p', '', 'charging-report-period'), notes = make('p', '', 'muted');
+      detail.append(summary, control, vehicle, inputs, deadline, periodLabel, periods, notes); node.append(header, changes, unchanged, detail);
+      parts.set(node, { header, changes, unchanged, detail, control, vehicle, inputs, deadline, periodLabel, periods, notes });
+    }
+    const p = parts.get(node), view = chargingPlanPresentation(plan, timezone);
+    setText(p.header, `${time(plan.at, timezone)} · ${view.title}`); changesInto(p.changes, view.changes); p.unchanged.hidden = !view.periodsUnchanged;
+    for (const key of ['control', 'vehicle', 'inputs', 'deadline', 'periodLabel', 'periods']) setText(p[key], view[key]);
+    p.periods.hidden = plan.scheduleState === 'none';
+    const notes = [plan.provisional === true ? 'Provisional release with incomplete planning inputs.' : '', plan.feasible === false ? 'The forecast could not meet the requested target by ready-by.' : '',
+      plan.priceCoverageTruncated === true ? 'The stored electricity-rate horizon is bounded.' : ''].filter(Boolean).join(' ');
+    setText(p.notes, notes); p.notes.hidden = !notes; return node;
   }
   function render() {
-    selectDefault();
-    const all = reports(), report = all.find(row => row.id === selectedReport), timezone = status?.charging?.timezone ?? 'Europe/Helsinki';
-    const choices = all.map(row => [row.id, `${row.chargerId === 'charger1' ? 'Charger 1' : 'Charger 2'} · ${time(row.startedAt, timezone)}${row.endedAt === null ? row.recorded ? ' · Connected at snapshot' : ' · Connected' : ''}`]);
-    const choiceSignature = JSON.stringify(choices);
-    if (choiceSignature !== selector.dataset.choices) {
-      selector.replaceChildren(...choices.map(([value, label]) => { const option = make('option', label); option.value = value; return option; }));
-      selector.dataset.choices = choiceSignature;
-    }
-    selector.value = selectedReport ?? ''; selector.disabled = !all.length;
+    const all = reports();
+    if (selectedReport === null && all.length) selectedReport = all[0].id;
+    const report = all.find(row => row.id === selectedReport), timezone = status?.charging?.timezone ?? 'Europe/Helsinki';
+    setText(title, `${chargerLabel()} · Session report`);
+    const choices = all.map(row => ({ id: row.id, label: `${time(row.startedAt, timezone)} · ${row.endedAt === null ? row.recorded ? 'Connected at snapshot' : 'Connected' : 'Ended'}${row.vehicleId ? ` · ${vehicleName(row.vehicleId)}` : ''}` }));
+    if (selectedReport !== null && !report) choices.unshift({ id: selectedReport, label: 'Selected report is no longer retained' });
+    sync(selector, choices, row => row.id, (node, row) => { node ??= make('option'); node.value = row.id; setText(node, row.label); return node; });
+    selector.value = selectedReport ?? ''; selector.disabled = !all.length; selectorLabel.hidden = !choices.length;
     const summary = chargingReportSummary(report, status?.charging?.diagnostics?.available !== false);
-    if (!report && selectedReport !== null) { summary.outcome = 'This session report is no longer retained'; summary.behavior = 'Select another recorded session above.'; }
-    outcome.textContent = summary.outcome; behavior.textContent = summary.behavior; result.dataset.state = summary.state;
-    context.textContent = report ? `${report.recorded ? 'Recorded master report · ' : ''}${report.chargerId === 'charger1' ? 'Charger 1' : 'Charger 2'} · ${report.vehicleId === 'bmw' ? 'BMW' : report.vehicleId === 'tesla' ? 'Tesla' : 'Vehicle unconfirmed'} · ${report.endedAt === null ? report.recorded ? 'Connected at snapshot' : 'Connected' : `Ended ${time(report.endedAt, timezone)}`} · Last assessed ${time(report.evaluatedAt, timezone)}` : 'Reports continue while the browser is closed and retain four completed sessions per charger.';
-    const run = status?.charging?.physicalTests?.runs?.find(row => row.chargerId === (report?.chargerId ?? selectedCharger)
-      && (row.report?.id === report?.id && report?.id || ['armed', 'awaiting-vehicle-schedule', 'observing'].includes(row.phase) && report?.endedAt === null));
-    guided.hidden = !run; guidedVehicle = run?.vehicleId ?? null;
-    guidedNote.textContent = run ? `${run.program === 'vehicle-schedule' ? 'Vehicle schedule test' : 'Immediate charging test'} · ${run.phase.replaceAll('-', ' ')}` : '';
-    const nextSignature = JSON.stringify(report);
-    if (signature === nextSignature) return;
-    signature = nextSignature;
-    facts.replaceChildren(...chargingReportFacts(report, timezone).flatMap(([label, value]) => [make('dt', label), make('dd', value)]));
-    facts.hidden = !report;
-    findings.replaceChildren(...(report?.findings ?? []).map(row => {
-      const item = make('li'), [label, detail] = FINDINGS[row.code] ?? ['Observation', 'See the timeline for this event.'];
-      item.dataset.state = row.resolvedAt !== null ? 'recovered' : row.severity;
-      item.append(make('strong', label), make('p', detail), make('small', `${time(row.firstAt, timezone)}${row.resolvedAt !== null ? ` · Recovered ${time(row.resolvedAt, timezone)}` : report.endedAt !== null ? ' · Unresolved at unplugging' : ' · Current'}`, 'muted'));
-      return item;
-    }));
-    findings.hidden = !report?.findings?.length;
-    coverage.replaceChildren(...Object.entries(COVERAGE).flatMap(([key, label]) => {
-      const check = report?.coverage?.[key], value = check?.state === 'verified' ? 'Observed' : check?.state === 'insufficient-evidence' ? 'Insufficient evidence' : 'Not exercised';
-      const term = make('dt', label), description = make('dd', value); description.dataset.state = check?.state ?? 'not-exercised'; return [term, description];
-    }));
+    if (!report && selectedReport !== null && status?.charging?.diagnostics?.available !== false) { summary.outcome = 'This session report is no longer retained'; summary.behavior = 'Select another recorded session for this charger.'; }
+    else if (!report && status?.charging?.diagnostics?.available !== false) { summary.outcome = `No session report for ${chargerLabel()}`; summary.behavior = 'A report begins when a connection is observed.'; }
+    setText(outcome, summary.outcome); setText(behavior, summary.behavior); result.dataset.state = summary.state;
+    setText(context, report ? `${report.recorded ? 'Recorded master report · ' : ''}${report.vehicleId ? vehicleName(report.vehicleId) : 'Vehicle unconfirmed'} · ${report.endedAt === null ? report.recorded ? 'Connected at snapshot' : 'Connected' : `Ended ${time(report.endedAt, timezone)}`} · Last assessed ${time(report.evaluatedAt, timezone)}`
+      : 'This charger retains its current report and four completed sessions.');
+    const run = status?.charging?.physicalTests?.runs?.find(row => row.chargerId === selectedCharger && report && row.report?.id === report.id);
+    guided.hidden = !run; guidedVehicle = run?.vehicleId ?? null; guidedRunId = run?.id ?? null;
+    setText(guidedNote, run ? `${run.program === 'vehicle-schedule' ? 'Vehicle schedule test' : 'Immediate charging test'} · ${run.phase.replaceAll('-', ' ')}` : '');
+    const scope = `${selectedCharger}:${selectedReport}`;
+    if (renderedScope !== scope) { timelineDetails.open = false; plansDetails.open = false; routineDetails.open = false; dialog.scrollTop = 0; renderedScope = scope; }
+    const factRows = chargingReportFacts(report, timezone).flatMap(([label, value]) => [{ key: `${label}:label`, tag: 'dt', text: label }, { key: `${label}:value`, tag: 'dd', text: value }]);
+    sync(facts, factRows, row => row.key, (node, row) => { node ??= make(row.tag); setText(node, row.text); return node; }); facts.hidden = !report;
+    sync(findings, report?.findings ?? [], row => `${row.code}:${row.firstAt}`, (node, row) => {
+      if (!node) { node = make('li'); const label = make('strong'), detail = make('p'), when = make('small', '', 'muted'); node.append(label, detail, when); parts.set(node, { label, detail, when }); }
+      const p = parts.get(node), [label, detail] = FINDINGS[row.code] ?? ['Observation', 'See the timeline for this event.'];
+      node.dataset.state = row.resolvedAt !== null ? 'recovered' : row.severity; setText(p.label, label); setText(p.detail, detail);
+      setText(p.when, `${time(row.firstAt, timezone)}${row.resolvedAt !== null ? ` · ${row.resolution === 'request-changed' ? 'Request changed' : 'Recovered'} ${time(row.resolvedAt, timezone)}` : report.endedAt !== null ? ' · Unresolved when the session ended' : ' · Current'}`); return node;
+    }); findings.hidden = !report?.findings?.length;
+    sync(coverage, Object.entries(COVERAGE).flatMap(([key, label]) => {
+      const check = report?.coverage?.[key]; return [{ key: `${key}:label`, tag: 'dt', text: label }, { key: `${key}:value`, tag: 'dd', text: check?.state === 'verified' ? 'Observed' : check?.state === 'insufficient-evidence' ? 'Insufficient evidence' : 'Not exercised', state: check?.state ?? 'not-exercised' }];
+    }), row => row.key, (node, row) => { node ??= make(row.tag); setText(node, row.text); if (row.state) node.dataset.state = row.state; return node; });
     coverageTitle.hidden = coverage.hidden = !report;
-    timeline.replaceChildren(...(report?.timeline ?? []).slice().reverse().map(row => {
-      const item = make('li'), stamp = make('time', time(row.at, timezone)); stamp.dateTime = new Date(row.at).toISOString();
-      const changes = chargingPlanChanges(row.changes, timezone);
-      const controlLabels = { off: 'Charging control off', waiting: 'Controller waiting', paused: 'Controller pause', active: 'Controller charging permission active',
-        released: 'Controller restriction released', provisional: 'Provisional charging permission', identifying: 'Identification permission active',
-        unconfirmed: 'Charger instruction unconfirmed', 'pause-unconfirmed': 'Pause unconfirmed', uncertain: 'Charger instruction uncertain',
-        'ownership-uncertain': 'Instruction ownership uncertain', unavailable: 'Charging control unavailable', yielded: 'Charger instruction has priority', manual: 'Manual charger instruction', disconnected: 'Charger disconnected' };
-      const contradictedDraw = row.kind === 'physical' && ['charging-started', 'charging-observed'].includes(row.code)
-        && Number.isFinite(row.powerKw) && row.powerKw <= 0.1;
-      const label = contradictedDraw ? 'Charging was recorded; saved power does not confirm draw'
-        : row.kind === 'finding' ? FINDINGS[row.code]?.[0] ?? 'Finding recorded'
-        : row.kind === 'recovery' ? `${FINDINGS[row.code]?.[0] ?? 'Issue'} · recovered`
-          : row.kind === 'plan' ? row.code === 'initial-plan' ? 'Initial planning snapshot' : changes.length ? 'Planning changes recorded' : 'Planning snapshot recorded'
-            : row.kind === 'control' ? controlLabels[row.code] ?? 'Control state recorded' : EVENTS[row.code] ?? 'Event recorded';
-      item.append(stamp, make('span', `${label}${row.vehicleId ? ` · ${row.vehicleId === 'bmw' ? 'BMW' : 'Tesla'}` : ''}`));
-      if (Number.isFinite(row.powerKw)) item.append(make('small', `Measured draw ${number(row.powerKw)} kW`, 'muted'));
-      if (Number.isFinite(row.measuredAt) || Number.isFinite(row.receivedAt)) item.append(make('small',
-        `${sourceName(row.source) ? `${sourceName(row.source)} · ` : ''}Measured ${time(row.measuredAt, timezone, true)} · Received ${time(row.receivedAt, timezone, true)}`, 'muted'));
-      if (row.kind === 'charger-status' && (Number.isFinite(row.powerMeasuredAt) || Number.isFinite(row.powerReceivedAt))) item.append(make('small',
-        `Power measured ${time(row.powerMeasuredAt, timezone, true)} · Received ${time(row.powerReceivedAt, timezone, true)}`, 'muted'));
-      appendChanges(item, changes, true);
-      if (row.kind === 'plan' && changes.length && !changes.some(change => change.field === 'periods'))
-        item.append(make('small', 'Charging periods unchanged', 'muted'));
-      return item;
-    }));
-    plans.replaceChildren(...(report?.plans ?? []).slice().reverse().map(plan => {
-      const item = make('li'), view = chargingPlanPresentation(plan, timezone);
-      item.append(make('strong', `${time(plan.at, timezone)} · ${view.title}`), make('p', view.control),
-        make('p', view.vehicle, 'muted'), make('p', view.inputs), make('p', view.deadline, 'muted'));
-      appendChanges(item, view.changes);
-      if (view.periodsUnchanged) item.append(make('p', 'Charging periods unchanged', 'muted'));
-      item.append(make('p', view.periodLabel, 'charging-report-period-label'));
-      if (plan.scheduleState !== 'none') item.append(make('p', view.periods, 'charging-report-period'));
-      if (plan.provisional === true) item.append(make('p', 'The controller proposed a provisional release with incomplete planning inputs.', 'muted'));
-      if (plan.feasible === false) item.append(make('p', 'The recorded forecast could not meet the requested target by ready-by.', 'muted'));
-      if (plan.priceCoverageTruncated === true) item.append(make('p', 'The stored electricity-rate horizon is bounded; it does not contain every planning interval.', 'muted'));
-      return item;
-    }));
-    if (report && !report.plans?.length) plans.append(make('li', report.current?.scheduleState === 'none'
-      ? 'No controller charging schedule was recorded.' : 'No planning snapshots were recorded. Schedule execution cannot be established from this report.'));
+    const history = projectChargingReportHistory(report ?? {}, { order: 'newest-first' });
+    sync(timeline, history.timeline, row => row.id, (node, row, key) => historyItem(node, row, key, timezone));
+    const planRows = history.plans.length ? history.plans : report ? [{ empty: true }] : [];
+    sync(plans, planRows, row => row.empty ? 'empty' : `plan:${row.at}`, (node, row, key) => {
+      if (row.empty) { node ??= make('li'); setText(node, report.current?.scheduleState === 'none' ? 'No controller charging schedule was recorded.' : 'No meaningful planning changes recorded.'); return node; }
+      return planItem(node, row, key, timezone);
+    });
+    routineDetails.hidden = !history.hiddenPlans.length;
+    setText(routineSummary, `${history.hiddenPlans.length} routine planning ${history.hiddenPlans.length === 1 ? 'record' : 'records'}`);
+    sync(routinePlans, history.hiddenPlans, row => `routine:${row.at}`, (node, row, key) => planItem(node, row, key, timezone));
     timelineDetails.hidden = plansDetails.hidden = !report;
     const dropped = report ? Object.values(report.truncated ?? {}).reduce((total, count) => total + count, 0) : 0;
-    limits.textContent = report ? `Draw checks use measured power above 0.1 kW. Power can include vehicle auxiliaries; it does not prove energy entering the battery. Charger status alone does not confirm draw. Unobserved intervals remain unverified.${dropped ? ` ${dropped} older detail entries were omitted by bounded retention; opening evidence and recent changes remain.` : ''}` : '';
+    setText(limits, report ? `Draw checks require measured power above 0.1 kW. Power may supply vehicle auxiliaries; it does not prove battery charging. Unobserved intervals remain unverified.${dropped ? ` ${dropped} older detail entries were omitted by bounded retention.` : ''}` : '');
   }
   function close() { if (dialog.open) dialog.close(); }
   function open(chargerId, reportId = null) {
-    selectedCharger = chargerId ?? selectedCharger; selectedReport = reportId; signature = null;
+    if (!['charger1', 'charger2'].includes(chargerId)) return;
+    selectedCharger = chargerId; selectedReport = reportId; renderedScope = null;
     opener = buttons.get(chargerId) ?? document.activeElement;
     render(); if (!dialog.open) dialog.showModal();
-    opener?.setAttribute?.('aria-expanded', 'true'); closeButton.focus();
+    for (const [id, button] of buttons) button.setAttribute('aria-expanded', String(id === chargerId));
+    closeButton.focus();
   }
   closeButton.addEventListener('click', close);
-  guidedButton.addEventListener('click', () => { switchingDialog = true; close(); onOpenTest(guidedVehicle); });
-  selector.addEventListener('change', () => { selectedReport = selector.value; signature = null; render(); });
+  guidedButton.addEventListener('click', () => { switchingDialog = true; close(); onOpenTest(guidedVehicle, guidedRunId); });
+  selector.addEventListener('change', () => { selectedReport = selector.value; render(); });
   dialog.addEventListener('close', () => {
     for (const button of buttons.values()) button.setAttribute('aria-expanded', 'false');
     if (switchingDialog) { switchingDialog = false; return; }
@@ -302,9 +421,8 @@ export function createChargingDiagnosticsPanel({ document, onOpenTest = () => {}
       }
       const slot = status.charging.diagnostics?.chargers?.find(row => row.id === charger.id), report = slot?.current ?? slot?.recent?.[0];
       const summary = chargingReportSummary(report, status.charging.diagnostics?.available !== false);
-      button.textContent = summary.label === 'Session report' ? 'Session report' : `Report · ${summary.label}`;
-      button.dataset.state = summary.state;
-      button.setAttribute('aria-label', `${charger.label ?? charger.id} session report · ${summary.label}`);
+      setText(button, summary.label === 'Session report' ? 'Session report' : `Report · ${summary.label}`);
+      button.dataset.state = summary.state; button.setAttribute('aria-label', `${charger.label ?? charger.id} session report · ${summary.label}`);
     }
     if (dialog.open) render();
   } };

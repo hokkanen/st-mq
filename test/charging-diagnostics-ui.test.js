@@ -7,6 +7,10 @@ function fixture() {
   class Node {
     constructor(tag) { Object.assign(this, { tagName: tag.toUpperCase(), children: [], dataset: {}, attributes: {}, events: new Map(), className: '', textContent: '', open: false }); }
     append(...children) { for (const node of children) { node.parent = this; this.children.push(node); } }
+    insertBefore(node, reference) { if (node === reference) return; node.remove(); const index = reference ? this.children.indexOf(reference) : this.children.length; this.children.splice(index, 0, node); node.parent = this; }
+    remove() { if (this.parent) { this.parent.children.splice(this.parent.children.indexOf(this), 1); this.parent = null; } }
+    contains(node) { return node === this || this.children.some(child => child.contains(node)); }
+    closest(selector) { return this.tagName === selector.toUpperCase() ? this : this.parent?.closest(selector) ?? null; }
     replaceChildren(...children) { for (const node of this.children) node.parent = null; this.children = []; this.append(...children); }
     setAttribute(key, value) { this.attributes[key] = value; }
     getAttribute(key) { return this.attributes[key]; }
@@ -145,7 +149,7 @@ test('report timeline separates zero measured draw from charger status and prese
   panel.update(state); panel.open('charger1');
   const timeline = document.getElementById('charging-report-dialog').querySelector('.charging-report-timeline');
   const text = descendants(timeline).map(node => node.textContent).join('\n');
-  assert.match(text, /No draw above 0.1 kW observed/);
+  assert.match(text, /No draw measured/);
   assert.match(text, /Charger status reports charging/);
   assert.match(text, /Measured draw 0 kW/);
   assert.match(text, /Measured 28 Sept, 21:00:03 · Received 28 Sept, 21:00:05/);
@@ -180,8 +184,8 @@ test('a recorded charging code with contradictory zero power is shown as unconfi
   panel.update(state); panel.open('charger1');
   const timeline = document.getElementById('charging-report-dialog').querySelector('.charging-report-timeline');
   const text = descendants(timeline).map(node => node.textContent).join('\n');
-  assert.match(text, /Charging was recorded; saved power does not confirm draw/);
-  assert.match(text, /Draw at 0.1 kW or below observed/);
+  assert.match(text, /Brief charger-status change/);
+  assert.match(text, /No draw measured/);
   assert.doesNotMatch(text, /Draw rose above|Draw fell/);
   assert.deepEqual(report.timeline, original);
 });
@@ -224,4 +228,133 @@ test('revised prices with unchanged periods state explicitly that the charging s
     assert.match(text, /Charging periods unchanged/);
     assert.match(text, /3.5 c\/kWh/); assert.match(text, /4.2 c\/kWh/);
   }
+});
+
+test('each charger opens only its own reports, including empty and missing selections', () => {
+  const document = fixture(), panel = createChargingDiagnosticsPanel({ document }), state = status();
+  panel.update(state); panel.open('charger2');
+  const dialog = document.getElementById('charging-report-dialog'), select = document.getElementById('charging-report-session');
+  assert.equal(document.getElementById('charging-report-title').textContent, 'Charger 2 · Session report');
+  assert.equal(select.children.length, 0);
+  assert.match(dialog.querySelector('.charging-report-result').children[0].textContent, /No session report for Charger 2/);
+  const second = structuredClone(state.charging.diagnostics.chargers[0].current);
+  Object.assign(second, { id: 'second-current', chargerId: 'charger2', vehicleId: 'tesla' });
+  state.charging.diagnostics.chargers.push({ id: 'charger2', current: second, recent: [{ ...second, id: 'second-old', endedAt: now }] });
+  panel.update(state);
+  assert.deepEqual(select.children.map(node => node.value), ['second-current', 'second-old']);
+  assert.equal(select.value, 'second-current');
+  panel.open('charger1');
+  assert.deepEqual(select.children.map(node => node.value), ['current', 'previous']);
+  panel.open('charger1', 'second-current');
+  assert.equal(dialog.querySelector('.charging-report-result').children[0].textContent, 'This session report is no longer retained');
+  assert.equal(select.value, 'second-current');
+  assert.equal(dialog.querySelector('.charging-report-facts').hidden, true);
+});
+
+test('polling preserves expanded history, focused evidence and scroll while adding new events', () => {
+  const document = fixture(), panel = createChargingDiagnosticsPanel({ document }), state = status();
+  const report = state.charging.diagnostics.chargers[0].current;
+  report.timeline = [{ at: now, kind: 'physical', code: 'charging-observed', powerKw: 7, measuredAt: now, receivedAt: now, source: 'easee' }];
+  panel.update(state); panel.open('charger1');
+  const dialog = document.getElementById('charging-report-dialog'), timeline = dialog.querySelector('.charging-report-timeline');
+  const entry = timeline.children[0], evidence = entry.querySelector('details'), summary = evidence.querySelector('summary');
+  evidence.open = true; summary.focus(); dialog.scrollTop = 380;
+  report.observedAt = report.evaluatedAt = now + 5000; panel.update(structuredClone(state));
+  assert.equal(timeline.children[0], entry); assert.equal(document.activeElement, summary);
+  assert.equal(evidence.open, true); assert.equal(dialog.scrollTop, 380);
+  report.timeline.push({ at: now + 10_000, kind: 'physical', code: 'charging-stopped', powerKw: 0, source: 'easee' });
+  panel.update(state);
+  assert.equal(timeline.children[1], entry); assert.equal(document.activeElement, summary); assert.equal(evidence.open, true);
+  assert.equal(dialog.scrollTop, 380);
+});
+
+test('unchanged planning snapshots leave one baseline and keep extra records folded for inspection', () => {
+  const document = fixture(), panel = createChargingDiagnosticsPanel({ document }), state = status();
+  const report = state.charging.diagnostics.chargers[0].current;
+  const baseline = { at: now, reason: 'initial-plan', periods: [], inputs: { soc: { value: 20, source: 'manual-fallback' }, target: { value: 80, source: 'manual-fallback' } }, automatic: false, scheduleState: 'none' };
+  report.plans = [baseline, { ...structuredClone(baseline), at: now + 15 * 60_000, reason: 'price-update' }, { ...structuredClone(baseline), at: now + 30 * 60_000, reason: 'session-settings' }];
+  report.timeline = report.plans.map(p => ({ kind: 'plan', code: p.reason, at: p.at }));
+  panel.update(state); panel.open('charger1');
+  const dialog = document.getElementById('charging-report-dialog'), plans = dialog.querySelector('.charging-report-plans');
+  assert.equal(plans.children.length, 1);
+  const routine = dialog.querySelector('.charging-report-routine');
+  assert.equal(routine.hidden, false); assert.equal(routine.open, false);
+  assert.match(routine.querySelector('summary').textContent, /2 routine planning records/);
+  assert.equal(routine.querySelector('ol').children.length, 2);
+  assert.equal(dialog.querySelector('.charging-report-timeline').children.length, 1);
+});
+
+test('distinct planning records at the same timestamp retain separate stable nodes during refreshes', () => {
+  const document = fixture(), panel = createChargingDiagnosticsPanel({ document }), state = status();
+  const report = state.charging.diagnostics.chargers[0].current;
+  report.plans = [
+    { at: now, reason: 'initial-plan', inputs: { target: { value: 80 } }, periods: [] },
+    { at: now, reason: 'target-update', changes: [{ field: 'target', before: 80, after: 85 }], inputs: { target: { value: 85 } }, periods: [] },
+  ];
+  panel.update(state); panel.open('charger1');
+  const plans = document.getElementById('charging-report-dialog').querySelector('.charging-report-plans');
+  const nodes = [...plans.children];
+  assert.equal(nodes.length, 2); assert.notEqual(nodes[0], nodes[1]);
+  const detail = nodes[1].querySelector('details'); detail.open = true; detail.querySelector('summary').focus();
+  for (let i = 0; i < 3; i++) panel.update(structuredClone(state));
+  assert.deepEqual(plans.children, nodes); assert.equal(detail.open, true);
+  assert.equal(document.activeElement, detail.querySelector('summary'));
+  assert.match(descendants(nodes[0]).map(node => node.textContent).join('\n'), /80% → 85%/);
+  assert.match(descendants(nodes[1]).map(node => node.textContent).join('\n'), /Initial planning snapshot/);
+});
+
+test('an unavailable report has an explicit error while retaining its saved evidence', () => {
+  const document = fixture(), panel = createChargingDiagnosticsPanel({ document }), state = status();
+  state.charging.diagnostics.available = false;
+  panel.update(state); panel.open('charger1');
+  const dialog = document.getElementById('charging-report-dialog');
+  assert.equal(dialog.querySelector('.charging-report-result').children[0].textContent, 'Session diagnostics could not be saved.');
+  assert.equal(dialog.querySelector('.charging-report-timeline').children.length, 1);
+  assert.equal(document.getElementById('charger1-session-report').dataset.state, 'unknown');
+});
+
+test('inactive automatic control remains distinct from lost evidence and preserves the bounded cause', () => {
+  const document = fixture(), panel = createChargingDiagnosticsPanel({ document }), state = status();
+  const report = state.charging.diagnostics.chargers[0].current;
+  report.current = { automaticEnabled: false, controlAvailability: 'unavailable', scheduleState: 'none' };
+  report.timeline = [
+    { at: now, kind: 'evidence', code: 'physical-evidence-lost', physicalKnown: false,
+      source: 'easee', measuredAt: now - 45_000, receivedAt: now - 30_000 },
+    { at: now + 1, kind: 'control', code: 'off', automaticEnabled: false,
+      availability: 'unavailable', physicalKnown: false, errorCode: 'read-failed', handoverConfirmed: false },
+  ];
+  panel.update(state); panel.open('charger1');
+  const dialog = document.getElementById('charging-report-dialog');
+  assert.match(descendants(dialog.querySelector('.charging-report-facts')).map(node => node.textContent).join('\n'), /Automatic charging off.*Charger control unavailable/);
+  const text = descendants(dialog.querySelector('.charging-report-timeline')).map(node => node.textContent).join('\n');
+  assert.match(text, /Recovery has not been observed/);
+  assert.match(text, /Automatic control inactive · control unavailable/);
+  assert.match(text, /Charger read failed/);
+  assert.match(text, /Control handover unconfirmed/);
+  assert.match(text, /Last power sample 28 Sept, 20:59:15/);
+  assert.doesNotMatch(text, /temporarily unavailable|Evidence became available again/);
+});
+
+test('guided assessment link passes the exact report-linked assessment instead of a newer vehicle run', () => {
+  const document = fixture(), calls = [], panel = createChargingDiagnosticsPanel({ document, onOpenTest: (...args) => calls.push(args) }), state = status();
+  const linked = state.charging.physicalTests.runs[0]; linked.id = 'original-test'; linked.phase = 'completed';
+  state.charging.physicalTests.runs.unshift({ ...linked, id: 'newer-test', phase: 'observing', report: { id: 'different-report' } });
+  panel.update(state); panel.open('charger1');
+  document.getElementById('charging-report-dialog').querySelector('.charging-report-guided').children[1].dispatch('click');
+  assert.deepEqual(calls, [['bmw', 'original-test']]);
+});
+
+test('editing a missed deadline closes the old request without claiming charging recovered', () => {
+  const document = fixture(), panel = createChargingDiagnosticsPanel({ document }), state = status();
+  const report = state.charging.diagnostics.chargers[0].current;
+  report.findings = [{ code: 'deadline-missed', firstAt: now, resolvedAt: now + 60_000, resolution: 'request-changed' }];
+  report.recoveredCount = 1;
+  report.timeline = [{ at: now + 60_000, kind: 'recovery', code: 'deadline-missed', resolution: 'request-changed' }];
+  panel.update(state); panel.open('charger1');
+  const dialog = document.getElementById('charging-report-dialog');
+  const findingText = descendants(dialog.querySelector('.charging-report-findings')).map(node => node.textContent).join('\n');
+  const eventText = descendants(dialog.querySelector('.charging-report-timeline')).map(node => node.textContent).join('\n');
+  assert.match(findingText, /Request changed/); assert.match(eventText, /request changed/);
+  assert.doesNotMatch(`${findingText}\n${eventText}`, /recovered/i);
+  assert.equal(document.getElementById('charger1-session-report').textContent, 'Report · Past issue');
 });
