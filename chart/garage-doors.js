@@ -206,6 +206,10 @@ export function createGarageDoorPanel({ document, onAction, blocked = () => fals
       const motion = motionFor(controls.nodes[index], bay.device);
       drawMotion(controls.nodes[index], motion); drawMotion(overview.nodes[index], motion);
     });
+    const estimated = overview.nodes.some(node => !node.estimate.hidden);
+    if (estimated) shortcut.setAttribute('aria-describedby', 'garage-overview-estimate');
+    else shortcut.removeAttribute('aria-describedby');
+    shortcut.title = `${shortcut.getAttribute('aria-label')}${estimated ? '. Travel position is estimated.' : ''}`;
     // Other configured doors retain their controls without inventing a physical position.
     const extras = devices.filter(device => !layout.some(bay => bay.device === device));
     for (const [id, node] of otherNodes) if (!extras.some(device => device.id === id)) {

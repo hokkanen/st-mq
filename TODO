@@ -1,3 +1,20 @@
+Implemented 2026-09-30 — Align Garage overview with the original metric columns
+- Restore the original column proportions and left-aligned room target. Anchor
+  the compact garage artwork at the original middle-column position, with its
+  sole caption aligned to the all-in price label and the roof rising above it.
+- Remove the extra visible estimated-position row. Mark estimates inline with ≈,
+  retaining hover/full-state text and an accessible estimate explanation; detailed
+  per-door labels remain in the dialog. Keep captions to one line at narrow widths.
+- Retain the shared facade, spatial mapping, both-direction animation, catch-up
+  timing, command authority and navigation-only overview. No configuration,
+  equipment, protocol or compatibility changes (F1/F4/F5/F7).
+- Validation: production build and both isolated Garage/door Chromium suites
+  passed. Checks cover caption/price alignment, a single visible text row,
+  original-column fit, opening/closing catch-up on both surfaces, keyboard and
+  reduced-motion behavior, and both themes at desktop/mobile/short landscape.
+  Screenshots reviewed at 320/390/1440px. Existing bundle-size advisory remains.
+  No deployment, push or live equipment commands.
+
 Implemented 2026-09-30 — Compact animated Garage overview and delayed-response timing
 - Restore the Garage facade button to its original center position between the
   rear sensor and room target. Cap the compact artwork at 112px, retain both

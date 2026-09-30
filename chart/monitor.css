@@ -1126,16 +1126,16 @@ button.status-detail-close { flex: none; display: grid; place-items: center; wid
 button.status-detail-close:hover { background: var(--surface-soft); color: var(--text); }
 .status-detail-body { margin: 0; font-size: 12px; line-height: 1.65; color: var(--muted); overflow-wrap: anywhere; white-space: pre-line; }
 /* One front-facing gable, shared by the persistent overview and door controls. */
-.overview-garage { grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr) minmax(0, 1fr); }
-.overview-garage > .overview-request { text-align: right; }
-.overview-garage .overview-price { justify-content: flex-end; }
-.overview-garage > .overview-doors { display: flex; justify-content: center; }
-button.garage-overview-trigger { display: block; width: 100%; max-width: 120px; min-height: 44px; padding: 0 4px 5px; border-radius: 6px; color: var(--text); text-align: center; text-decoration: none; transition: background-color .18s ease, box-shadow .18s ease; }
+.overview-garage { --garage-target-size: 18px; }
+/* Match the target label/value/price stack, while the roof can rise above it. */
+.overview-garage > .overview-doors { position: relative; height: calc(40px + var(--garage-target-size) * 1.4); }
+button.garage-overview-trigger { position: absolute; bottom: 0; left: 0; display: block; width: 100%; max-width: 112px; min-height: 44px; padding: 0; border-radius: 4px; color: var(--text); text-align: center; text-decoration: none; transition: background-color .18s ease, box-shadow .18s ease; }
 button.garage-overview-trigger:hover, button.garage-overview-trigger[aria-expanded="true"] { color: var(--text); background: var(--surface-soft); box-shadow: 0 0 0 1px var(--border); }
 button.garage-overview-trigger::before { display: none; }
-.garage-overview-status { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; line-height: 1.4; text-wrap: balance; }
-.garage-overview-estimate { display: none; margin-top: 3px; color: var(--muted); font-size: 9px; line-height: 1.35; text-wrap: balance; }
-.garage-overview-trigger:has(.garage-door-estimate:not([hidden])) .garage-overview-estimate { display: block; }
+.garage-overview-status { display: block; margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 10px; line-height: 15px; }
+.garage-overview-trigger:has(.garage-door-estimate:not([hidden])) .garage-overview-status::before { content: "≈ "; }
+@container zone-overview (max-width: 420px) { .overview-garage { --garage-target-size: 16px; } }
+@container zone-overview (max-width: 290px) { .overview-garage { --garage-target-size: 14px; } }
 #garage-door-summary[data-state="confirmed"] .garage-overview-status { color: var(--chart-indoor); }
 #garage-door-summary[data-state="attention"] .garage-overview-status { color: var(--stale); }
 #garage-doors-help { margin: 0 0 12px; font-size: 12px; line-height: 1.6; }

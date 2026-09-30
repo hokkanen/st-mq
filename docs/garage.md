@@ -31,6 +31,11 @@ and command availability. Left and Right stay in the same positions at every
 screen size. Other configured doors keep their names rather than being assigned
 an assumed position.
 
+The overview keeps one caption aligned with the all-in price label, with the roof
+rising above the readings. An inline ≈ marks estimated travel; its explanation is
+available on hover and to screen readers. The dialog retains detailed per-door
+states and estimate labels.
+
 Both views share the same illustration and reported states. Missing, stale or
 ambiguous reports remain unknown. Sending or acknowledging a command does not
 establish motion or position. Existing command receipts, read-only restrictions

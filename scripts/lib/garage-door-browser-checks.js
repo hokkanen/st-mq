@@ -238,7 +238,8 @@ export async function checkGarageDoorBrowser({ evaluate, command, context, refre
         assert(Math.abs(Math.abs(motion.to-motion.from)/motion.duration - 96/18_000) < 0.00001, 'Both directions keep the same configured linear speed');
       }
       assert.equal(await evaluate(`document.querySelector('${bay(panel, side)} .garage-door-estimate').checkVisibility()`), true);
-      assert.equal(await evaluate(`document.querySelector('${overview} .garage-overview-estimate').checkVisibility()`), true, 'The compact overview visibly identifies estimated travel');
+      assert.equal(await evaluate(`getComputedStyle(document.querySelector('${summary}'),'::before').content.includes('≈')`), true, 'The single caption marks estimated travel inline');
+      assert.equal(await evaluate(`document.querySelector('${overview}').getAttribute('aria-describedby')`), 'garage-overview-estimate', 'The inline estimate has an accessible explanation');
 
       // Both repeated binary reports and a native open state mean not closed;
       // neither should finish the stroke, reverse it or start another timer.
@@ -329,6 +330,7 @@ export async function checkGarageDoorBrowser({ evaluate, command, context, refre
         assert.equal(await evaluate(`document.querySelector('${overview} .garage-facade').checkVisibility()`), true, 'The facade remains visible with its dialog closed');
         assert.equal(await evaluate(`(() => {const b=document.querySelector('${overview}').getBoundingClientRect(),rear=document.querySelector('#garage-temperature').closest('.overview-reading').getBoundingClientRect(),target=document.querySelector('#garage-requested').closest('.overview-request').getBoundingClientRect();return b.width<=120&&b.height<=120&&rear.right<=b.left&&b.right<=target.left;})()`), true, 'The compact animated shortcut fits between the rear sensor and room target');
         assert.equal(await evaluate(`(() => {const p=document.querySelector('${overview}').getBoundingClientRect(),left=document.querySelector('${bay(overview, 'left')}').getBoundingClientRect(),right=document.querySelector('${bay(overview, 'right')}').getBoundingClientRect();return left.left>=p.left&&right.right<=p.right&&left.right<=right.left&&Math.abs(left.top-right.top)<1;})()`), true, 'Overview doors remain side by side at every viewport');
+        assert.equal(await evaluate(`(() => {const caption=document.querySelector('${summary}'),price=document.querySelector('#garage-price-label'),c=caption.getBoundingClientRect(),p=price.getBoundingClientRect();return Math.abs(c.top-p.top)<2&&c.height===15&&getComputedStyle(caption).whiteSpace==='nowrap'&&!document.querySelector('#garage-overview-estimate').checkVisibility();})()`), true, 'One caption aligns with the all-in price label, with no second text row');
         await capture(`garage-overview-${theme}-${width}`);
         await open();
         assert.equal(await evaluate(`Math.abs(document.querySelector('${panel}').getBoundingClientRect().left + document.querySelector('${panel}').getBoundingClientRect().width / 2 - document.documentElement.clientWidth / 2) < 1`), true, 'The window is centered');
