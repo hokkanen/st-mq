@@ -195,6 +195,24 @@ test('provider native cleanup can clear an exact owned profile after the transac
     [{ action: 'ClearChargingProfile', payload: { id: 731 } }]);
 });
 
+test('provider preserves OCPP message receipt clocks instead of replacing them with adapter poll time', async t => {
+  const f = fixture(t), provider = f.make(); await provider.reconcileOcpp();
+  f.listeners.at(-1).control = { connectionId: 'fixture-native-connection', connectorStatus: 'SuspendedEV',
+    timestamp: AT - 30_000, receivedAt: AT - 29_900, transaction: null,
+    readings: [{ id: 120, value: 0, timestamp: new Date(AT - 1000).toISOString(), receivedAt: AT - 800 }] };
+  const adapter = provider.chargerScheduleControl(), first = await adapter.read();
+  assert.equal(first.statusReceivedAt, AT - 29_900);
+  assert.equal(first.powerReceivedAt, AT - 800);
+  f.advance(5000);
+  const next = await adapter.read(), values = adapter.normalize(next, { now: f.now });
+  assert.equal(next.readAt, f.now);
+  assert.equal(values.charging.measuredAt, AT - 30_000);
+  assert.equal(values.charging.receivedAt, AT - 29_900);
+  assert.equal(values.powerKw.value, 0);
+  assert.equal(values.powerKw.measuredAt, AT - 1000);
+  assert.equal(values.powerKw.receivedAt, AT - 800);
+});
+
 test('unconfirmed native cleanup retains its listener and commissioning obligation without applying OcppOff', async t => {
   const f = fixture(t), provider = f.make(); await provider.reconcileOcpp();
   const owned = f.states.get('setup').ownedFingerprint, count = writes(f).length;

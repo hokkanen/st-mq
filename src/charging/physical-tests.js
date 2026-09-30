@@ -362,7 +362,14 @@ export class ChargingPhysicalTests {
       if (run.program === 'vehicle-schedule' && !run.scheduleConfirmedAt)
         run.recommendation = recommendation(charger, run.headroom, now);
     }
-    const charging = field(charger, 'charging') === true || field(charger, 'powerKw') > .1;
+    const meter = charger.values?.powerKw, meterAt = meter?.measuredAt ?? meter?.receivedAt;
+    const power = meter?.available === true && meter.assumed !== true && meter.retained !== true
+      && finite(meter.value) && meter.value >= 0 && time(meterAt) && meterAt >= run.connectedAt
+      && meterAt <= now && now - meterAt <= 2 * MINUTE ? meter.value : null;
+    // Charger state-machine pulses are reported separately from actual draw.
+    // Only fresh, measured power within this physical session can exercise a
+    // charging milestone; polling a held or replayed value cannot refresh it.
+    const charging = power !== null && power > .1;
     if (charging) {
       this.mark(run, 'chargingStarted', now, { source: 'physical-charger' });
       if (run.program === 'vehicle-schedule') {
@@ -390,7 +397,7 @@ export class ChargingPhysicalTests {
     // The requested planning minimum is never a stop instruction. Finish only
     // after a fresh vehicle reading reaches the declared native limit and a
     // subsequent fresh charger observation shows charging has stopped.
-    const stopped = field(charger, 'charging') === false && field(charger, 'powerKw') !== null && field(charger, 'powerKw') <= .1;
+    const stopped = power !== null && power <= .1;
     const observedCeiling = field(charger, 'vehicleCeilingSoc');
     if (percent(observedCeiling) && observedCeiling !== run.expectations.nativeTargetSoc)
       this.finding(run, 'vehicle-limit-differs-from-preparation', now);

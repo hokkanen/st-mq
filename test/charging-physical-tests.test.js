@@ -36,6 +36,7 @@ function fixture() {
   };
   const plug = (charger = view.chargers[0]) => {
     advance(); charger.values.connected = value(true);
+    charger.values.powerKw = value(0, { measuredAt: now, receivedAt: now });
     charger.control.session = { connected: true, connectedAt: now };
     charger.request = { sessionId: `synthetic-session-${now}`, deadlineAt: now + 10 * HOUR };
     charger.vehicle = { state: 'unidentified', id: null, sessionId: charger.request.sessionId };
@@ -123,13 +124,13 @@ test('normal test follows a fresh physical connection, real plan and native comp
   assert.ok(attached.milestones.identification); assert.ok(attached.initialPlan);
   assert.ok(attached.milestones.identifiedPlanningInputs);
   tests = f.create(); f.advance();
-  charger.values.charging = value(true); charger.values.powerKw = value(10);
+  charger.values.charging = value(true); charger.values.powerKw = value(10, { measuredAt: f.clock(), receivedAt: f.clock() });
   f.identify(charger, 'bmw', 70); tests.update(f.view);
   assert.equal(tests.status().runs[0].phase, 'observing');
   f.advance(); f.identify(charger, 'bmw', 80); tests.update(f.view);
   assert.ok(tests.status().runs[0].milestones.vehicleTarget);
   assert.equal(tests.status().runs[0].phase, 'observing', 'target is not a stop instruction');
-  f.advance(); charger.values.charging = value(false); charger.values.powerKw = value(0); tests.update(f.view);
+  f.advance(); charger.values.charging = value(false); charger.values.powerKw = value(0, { measuredAt: f.clock(), receivedAt: f.clock() }); tests.update(f.view);
   assert.equal(tests.status().runs[0].phase, 'completed');
   assert.equal(tests.status().runs[0].endReason, 'vehicle-target-and-stop-observed');
   charger.values.connected = value(false); tests.update(f.view);
@@ -164,8 +165,8 @@ test('a higher actual vehicle limit prevents completion at the declared or plann
   tests.update(f.view);
   assert.equal(tests.status().runs[0].phase, 'observing');
   assert.ok(tests.status().runs[0].findings.some(row => row.code === 'vehicle-limit-differs-from-preparation'));
-  charger.values.charging = value(true); charger.values.powerKw = value(10); tests.update(f.view);
-  charger.values.charging = value(false); charger.values.powerKw = value(0);
+  charger.values.charging = value(true); charger.values.powerKw = value(10, { measuredAt: f.clock(), receivedAt: f.clock() }); tests.update(f.view);
+  charger.values.charging = value(false); charger.values.powerKw = value(0, { measuredAt: f.clock(), receivedAt: f.clock() });
   f.advance(); f.identify(charger, 'bmw', 90); tests.update(f.view);
   assert.equal(tests.status().runs[0].phase, 'completed');
 });
@@ -319,6 +320,39 @@ test('completion rejects an unhealthy feed, an old source timestamp and an unsup
   assert.equal(tests.status().runs[0].phase, 'observing');
   charger.values.soc = value(100, { source: 'manual', measuredAt: f.clock() }); tests.update(f.view);
   assert.equal(tests.status().runs[0].phase, 'observing');
+});
+
+test('guided charging milestones need fresh current-session measured power, never charger status pulses', () => {
+  for (const scenario of ['zero-power', 'missing-power', 'stale-power', 'retained-power', 'assumed-power', 'preconnection-power']) {
+    const f = fixture(), tests = f.create(); tests.start(f.input(), f.view);
+    const charger = f.plug(); charger.values.charging = value(true);
+    charger.values.powerKw = value(7, { measuredAt: f.clock(), receivedAt: f.clock() });
+    if (scenario === 'zero-power') charger.values.powerKw.value = 0;
+    if (scenario === 'missing-power') charger.values.powerKw.available = false;
+    if (scenario === 'stale-power') f.advance(3 * MINUTE);
+    if (scenario === 'retained-power') charger.values.powerKw.retained = true;
+    if (scenario === 'assumed-power') charger.values.powerKw.assumed = true;
+    if (scenario === 'preconnection-power') charger.values.powerKw.measuredAt = START;
+    tests.update(f.view);
+    assert.equal(tests.status().runs[0].milestones.chargingStarted, undefined, scenario);
+  }
+  const f = fixture(), tests = f.create(); tests.start(f.input(), f.view);
+  const charger = f.plug(); charger.values.charging = value(false);
+  charger.values.powerKw = value(.12, { measuredAt: f.clock(), receivedAt: f.clock() }); tests.update(f.view);
+  assert.ok(tests.status().runs[0].milestones.chargingStarted, 'Even a small real measured pulse is observed');
+});
+
+test('guided native completion needs fresh near-zero power after measured charging and vehicle-target evidence', () => {
+  const f = fixture(), tests = f.create(); tests.start(f.input(), f.view);
+  const charger = f.plug(); f.identify(charger, 'bmw', 70);
+  charger.values.powerKw = value(7, { measuredAt: f.clock(), receivedAt: f.clock() }); tests.update(f.view);
+  f.advance(); f.identify(charger, 'bmw', 80);
+  charger.values.powerKw = value(0, { measuredAt: START, receivedAt: f.clock() });
+  charger.values.charging = value(false); tests.update(f.view);
+  assert.equal(tests.status().runs[0].phase, 'observing', 'A stale zero cannot prove physical completion');
+  charger.values.powerKw = value(.02, { measuredAt: f.clock(), receivedAt: f.clock() });
+  charger.values.charging = value(true); tests.update(f.view);
+  assert.equal(tests.status().runs[0].phase, 'completed', 'A lingering charger status cannot override measured near-zero draw and vehicle target evidence');
 });
 
 test('unsupported saved state and retired action fields fail before storage mutation', () => {

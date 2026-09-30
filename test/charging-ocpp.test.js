@@ -482,6 +482,28 @@ test('change-reported old status stays valid with fresh connection and fresh zer
   assert.equal((await f.controller.update({ enabled: true })).errorCode, 'read-failed');
 });
 
+test('normalized OCPP status and power preserve their own source and receipt clocks across rereads', async () => {
+  const f = fixture();
+  f.snapshot({ statusAt: START - 60_000, statusReceivedAt: START - 59_900,
+    powerAt: START - 1000, powerReceivedAt: START - 800 });
+  const first = f.adapter.normalize(await f.adapter.read());
+  assert.equal(first.charging.measuredAt, START - 60_000);
+  assert.equal(first.charging.receivedAt, START - 59_900);
+  assert.equal(first.connected.receivedAt, START - 59_900);
+  assert.equal(first.powerKw.measuredAt, START - 1000);
+  assert.equal(first.powerKw.receivedAt, START - 800);
+  f.advance(5000);
+  const reread = f.adapter.normalize(await f.adapter.read());
+  assert.deepEqual(reread.charging, first.charging);
+  assert.deepEqual(reread.powerKw, first.powerKw);
+  f.snapshot({ statusReceivedAt: null, powerReceivedAt: null });
+  const unknown = f.adapter.normalize(await f.adapter.read());
+  assert.equal(unknown.charging.receivedAt, null);
+  assert.equal(unknown.powerKw.receivedAt, null);
+  f.snapshot({ powerReceivedAt: f.now + 1 });
+  await assert.rejects(f.adapter.read(), { code: 'read-failed' });
+});
+
 test('composite zero is required even after an accepted installation', async () => {
   const f = fixture();
   f.intercept((action, payload, options, result) => {

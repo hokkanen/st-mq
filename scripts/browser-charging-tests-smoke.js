@@ -102,16 +102,30 @@ try {
     const field = (value, receipt = false) => ({ value, available: true, measuredAt: receipt ? null : N - 60000,
       receivedAt: N - 30000, retained: false, timeBasis: receipt ? 'receipt-only' : 'measurement' });
     chargingFixture.report = { id: 'report-fixture', startedAt: N - 7200000, endedAt: null, evaluatedAt: N,
-      vehicleId: 'bmw', outcome: { state: 'in-progress' }, behavior: 'attention', attentionCount: 1, recoveredCount: 0,
-      coverage: { identification: { state: 'verified' }, initialRelease: { state: 'verified' }, pause: { state: 'verified' },
+      vehicleId: null, outcome: { state: 'in-progress' }, behavior: 'attention', attentionCount: 1, recoveredCount: 0,
+      current: { automaticEnabled: false, chargeNow: false, scheduleState: 'none', physicalFresh: true,
+        vehicleId: null, vehicleSoc: false, soc: { value: 20, source: 'manual-fallback', assumed: true },
+        power: { value: 0, source: 'easee-ocpp', measuredAt: N - 45000, receivedAt: N - 30000 },
+        powerKw: 0, charging: false, reportedCharging: true },
+      coverage: { identification: { state: 'not-exercised' }, initialRelease: { state: 'not-exercised' }, pause: { state: 'not-exercised' },
         resume: { state: 'not-exercised' }, completion: { state: 'not-exercised' }, energy: { state: 'insufficient-evidence' } },
       findings: [{ code: 'control-unconfirmed', severity: 'attention', firstAt: N - 1800000, resolvedAt: null }],
-      timeline: [{ kind: 'connection', code: 'connected', at: N - 7200000 },
-        { kind: 'identity', code: 'identified', vehicleId: 'bmw', at: N - 7140000, measuredAt: N - 7150000, receivedAt: N - 7140000 },
+      timeline: [{ kind: 'session', code: 'observation-started', at: N - 3600000 },
+        { kind: 'physical', code: 'not-charging-observed', at: N - 3500000, powerKw: 0, source: 'easee-ocpp',
+          measuredAt: N - 3530000, receivedAt: N - 3510000 },
+        { kind: 'charger-status', code: 'charger-reports-charging', at: N - 3500000, powerKw: 0, source: 'easee-ocpp',
+          measuredAt: N - 3540000, receivedAt: N - 3530000, powerMeasuredAt: N - 3530000, powerReceivedAt: N - 3510000 },
+        { kind: 'plan', code: 'target-update', at: N - 2400000, changes: [{ field: 'target', before: 80, after: 85 }] },
         { kind: 'finding', code: 'control-unconfirmed', at: N - 1800000 }],
-      plans: [{ at: N - 7100000, reason: 'vehicle-identification', deadlineAt: N + 3600000, feasible: true,
-        inputs: { soc: { value: 35, source: 'bmw-cardata' }, target: { value: 80 }, capacity: { value: 74 } },
-        periods: [{ startAt: N - 7000000, endAt: N - 5400000 }, { startAt: N + 600000, endAt: null }] }], truncated: {} };
+      plans: [{ at: N - 3600000, reason: 'initial-plan', deadlineAt: N + 3600000, feasible: null,
+        automatic: false, chargeNow: false, scheduleState: 'none', state: 'disabled', changes: [], vehicleId: null,
+        inputs: { soc: { value: 20, source: 'manual-fallback', assumed: true }, target: { value: 80, source: 'manual-fallback' },
+          capacity: { value: 74, source: 'manual-fallback', assumed: true } }, periods: [] },
+      { at: N - 2400000, reason: 'target-update', deadlineAt: N + 3600000, feasible: null,
+        automatic: false, chargeNow: false, scheduleState: 'none', state: 'disabled',
+        changes: [{ field: 'target', before: 80, after: 85 }], vehicleId: null,
+        inputs: { soc: { value: 20, source: 'manual-fallback', assumed: true }, target: { value: 85, source: 'session-request' },
+          capacity: { value: 74, source: 'manual-fallback', assumed: true } }, periods: [] }], truncated: {} };
     const nativeFetch = globalThis.fetch.bind(globalThis);
     globalThis.fetch = async (input, options = {}) => {
       const path = new URL(typeof input === 'string' ? input : input.url, location.href).pathname;
@@ -211,6 +225,17 @@ try {
   assert.equal(await evaluate('chargingFixture.mutations.length'), mutationCount, 'Session reports make no control requests');
   assert.equal(await evaluate("document.querySelector('.charging-report-result').dataset.state"), 'attention');
   assert.match(await evaluate("document.querySelector('.charging-report-findings').textContent"), /Control remained unconfirmed/);
+  const reportFacts = await evaluate("document.querySelector('.charging-report-facts').textContent");
+  assert.match(reportFacts, /Automatic charging off.*No controller charging schedule/);
+  assert.match(reportFacts, /Actual vehicle battery charge is unconfirmed.*20% · configured assumption/);
+  assert.match(reportFacts, /0 kW measured.*Charger status reports charging/);
+  assert.match(reportFacts, /Earlier charging is not covered by this report/);
+  await evaluate("for (const fold of document.querySelectorAll('#charging-report-dialog > details')) fold.open = true");
+  assert.match(await evaluate("document.querySelector('.charging-report-timeline').textContent"), /Requested target: 80% → 85%.*Charging periods unchanged/);
+  assert.match(await evaluate("document.querySelector('.charging-report-plans').textContent"), /No controller charging schedule/);
+  assert.doesNotMatch(await evaluate("document.querySelector('.charging-report-timeline').textContent"), /Physical charging observed|Physical charging stopped|Plan updated/);
+  assert.match(await evaluate("document.querySelector('.charging-report-timeline').textContent"), /Local OCPP.*Measured.*Received/);
+  await evaluate("for (const fold of document.querySelectorAll('#charging-report-dialog > details')) fold.open = false");
   await keyPress('Escape');
   await until("!document.getElementById('charging-report-dialog').open");
   await until("document.activeElement.id === 'charger1-session-report'");
@@ -284,6 +309,7 @@ try {
   console.log(JSON.stringify({ result: 'charging-browser-smoke-passed', artifacts, checks: [
     'keyboard-disclosures-and-Escape-focus', 'draft-preservation-through-status-polls', 'normal-and-delayed-action-payloads',
     'timer-declarations-in-installation-timezone', 'passive-report-no-mutations', 'read-only-controls', 'retained-report-and-recovered-issue',
+    'automatic-off-no-controller-schedule', 'unidentified-fallback-battery-input', 'partial-observation-history', 'semantic-input-deltas', 'measured-zero-distinct-from-charger-status',
     '320-390-1440-light-dark-layouts' ] }));
 } finally {
   socket?.close(); for (const task of pending.values()) clearTimeout(task.timer);

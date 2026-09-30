@@ -196,6 +196,33 @@ the actual plan/input revisions. Proposed periods, installed execution,
 identification permission, confirmed pauses and physical charging are distinct.
 Opening a report never identifies a vehicle or changes charging.
 
+The report states whether Automatic charging is off, whether there is a proposed
+or adopted controller execution plan, and whether battery inputs are measured or
+assumed. Monitoring may start after connection; earlier charging is then outside
+the report's coverage. A same-version restart retains the existing connection,
+identity and confirmed outcomes while fresh sources reconnect. A new database
+cannot reconstruct an overnight session from a stopped charger or a retained
+full-battery reading.
+
+Planning snapshots list concrete changes to settings, vehicle inputs, remaining
+periods and applicable prices. Removing elapsed price intervals, refreshing a
+source timestamp or temporarily losing the session request does not create a
+settings/price revision. Revised rates are compared over the same remaining
+time intervals; newly available prices are separate from changes to existing
+rates. An unchanged schedule is stated explicitly. With Automatic off and no
+Charge now request, price refreshes do not create charging-plan revisions.
+
+Charger-reported charging state and measured draw are separate timeline entries.
+A fresh charger power reading above 0.1 kW establishes draw; status alone cannot
+pass a charging or resume check in either a passive report or guided assessment.
+Draw can include vehicle auxiliaries and does not prove battery energy increased.
+A zero reading cannot rule out a brief pulse between samples. Initial readings
+and recovery after missing evidence are observations, not invented start/stop
+transitions. Events retain original measurement and receipt clocks separately
+from the controller's recording time; an adapter reread cannot renew them.
+Missing receipt clocks remain unknown. Contradictory recorded event labels are
+qualified by their saved power evidence rather than presented as verified draw.
+
 Checks allow settling time for command/readback transitions. They distinguish
 vehicle timers, supply restrictions, manual priority, unavailable telemetry and
 unexplained lack of draw instead of inferring a vehicle timer from zero power.

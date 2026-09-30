@@ -4,7 +4,7 @@ const VERSION = 1, MINUTE = 60_000;
 const LIMITS = Object.freeze({ sessions: 4, events: 120, plans: 32, findings: 24 });
 const COVERAGE = ['identification', 'initialRelease', 'pause', 'resume', 'lateReplan', 'targetAttainment', 'completion', 'energy'];
 const VEHICLES = new Set(['bmw', 'tesla']);
-const SOURCES = new Set(['bmw-cardata', 'teslamate', 'bmw-target-filter', 'manual-fallback', 'session-anchor', 'session-request', 'vehicle', 'mqtt', 'easee', 'shelly-evse']);
+const SOURCES = new Set(['bmw-cardata', 'teslamate', 'bmw-target-filter', 'manual-fallback', 'session-anchor', 'session-request', 'vehicle', 'mqtt', 'easee', 'easee-ocpp', 'shelly-evse']);
 const PHASES = new Set(['off', 'waiting', 'paused', 'active', 'released', 'provisional', 'identifying', 'unconfirmed', 'pause-unconfirmed', 'uncertain', 'ownership-uncertain', 'unavailable', 'yielded', 'manual', 'disconnected']);
 const ID_PHASES = new Set(['waiting', 'charging', 'pausing', 'identified', 'inconclusive', 'cancelled', 'complete']);
 const time = value => Number.isSafeInteger(value) && value >= 0;
@@ -33,34 +33,144 @@ function periods(value) {
 }
 function planFor(view, now) {
   const plan = view.plan;
-  if (!plan) return null;
-  const rows = periods(plan.periods);
-  if (!rows.length && time(plan.startAt)) rows.push({ startAt: plan.startAt, endAt: null });
-  return { at: now, reason: 'initial-plan', periods: rows, deadlineAt: at(view.deadlineAt ?? plan.deadlineAt),
-    provisional: plan.provisional === true, feasible: typeof plan.feasible === 'boolean' ? plan.feasible : null,
-    requiredGridKwh: number(view.requiredGridKwh), vehicleId: VEHICLES.has(view.vehicle?.id) && view.vehicle.state === 'identified' ? view.vehicle.id : null,
-    inputs: { soc: field(view.values?.soc), target: field(view.values?.minimumSoc), capacity: field(view.values?.capacityKwh) },
-    requestRevision: Number.isSafeInteger(view.request?.revision) ? view.request.revision : null,
-    nativeStartAt: at(view.values?.vehicleNotBefore?.available ? view.values.vehicleNotBefore.value : null),
-    priceBasis: typeof plan.priceSnapshot === 'object' ? hash(plan.priceSnapshot) : null };
+  const inputAvailable = typeof view.request?.sessionId === 'string' && view.values?.connected?.available === true
+    && view.values.connected.value === true && view.telemetry?.providerConnected !== false && view.control?.snapshot?.online !== false;
+  const automatic = typeof view.settings?.enabled === 'boolean' ? view.settings.enabled : null;
+  const chargeNow = inputAvailable ? view.request.chargeNow === true : null;
+  const state = !inputAvailable ? 'unknown' : automatic === false && chargeNow === false ? 'disabled'
+    : ['disabled', 'observing', 'manual', 'released', 'release', 'disconnected', 'unavailable', 'waiting'].includes(plan?.state) ? plan.state : 'unknown';
+  const noSchedule = !inputAvailable || ['disabled', 'observing', 'manual', 'disconnected', 'unavailable'].includes(state);
+  const rows = noSchedule ? [] : periods(plan?.periods);
+  if (!noSchedule && !rows.length && time(plan?.startAt)) rows.push({ startAt: plan.startAt, endAt: null });
+  const installed = periods(view.control?.execution?.periods);
+  const scheduleState = !inputAvailable ? 'unknown' : !rows.length ? 'none'
+    : installed.length && equal(remainingPeriods(installed, now), remainingPeriods(rows, now)) ? 'installed' : 'proposed';
+  const settings = Object.fromEntries(['readyBy', 'manualSoc', 'minimumSoc', 'capacityKwh'].map(key => [key,
+    !inputAvailable ? null : key === 'readyBy' ? /^([01]\d|2[0-3]):[0-5]\d$/.test(view.settings?.readyBy ?? '') ? view.settings.readyBy : null
+      : number(view.settings?.[key])]));
+  const deadlineAt = inputAvailable ? at(view.deadlineAt ?? plan?.deadlineAt) : null;
+  const priceEvidence = inputAvailable && automatic === true && rows.length ? priceIntervals(plan?.priceSnapshot, now, deadlineAt) : null;
+  return { at: now, reason: 'initial-plan', state, automatic, chargeNow, scheduleState,
+    inputStatus: inputAvailable ? 'available' : 'unavailable', settings, changes: [], periods: rows, deadlineAt,
+    provisional: inputAvailable && plan?.provisional === true,
+    feasible: inputAvailable && typeof plan?.feasible === 'boolean' ? plan.feasible : null,
+    requiredGridKwh: inputAvailable ? number(view.requiredGridKwh) : null,
+    vehicleId: inputAvailable && VEHICLES.has(view.vehicle?.id) && view.vehicle.state === 'identified' ? view.vehicle.id : null,
+    inputs: { soc: field(inputAvailable ? view.values?.soc : null), target: field(inputAvailable ? view.values?.minimumSoc : null),
+      capacity: field(inputAvailable ? view.values?.capacityKwh : null) },
+    nativeStartAt: inputAvailable ? at(view.values?.vehicleNotBefore?.available ? view.values.vehicleNotBefore.value : null) : null,
+    nativeStartKnown: inputAvailable && view.values?.vehicleNotBefore?.available === true
+      && (view.values.vehicleNotBefore.value === null || time(view.values.vehicleNotBefore.value)),
+    priceIntervals: priceEvidence?.rows ?? null, priceCoverageTruncated: priceEvidence?.truncated ?? false };
 }
-function planSignature(plan, now) {
-  if (!plan) return null;
-  // Elapsed starts and minute-level forecast drift are not new instructions.
-  // Exact original times remain in each recorded revision.
-  return { periods: plan.periods.map(row => [row.startAt <= now ? 'started' : Math.floor(row.startAt / MINUTE), row.endAt === null ? null : Math.floor(row.endAt / MINUTE)]),
-    deadlineAt: plan.deadlineAt, provisional: plan.provisional, feasible: plan.feasible,
-    vehicleId: plan.vehicleId, requestRevision: plan.requestRevision, nativeStartAt: plan.nativeStartAt,
-    target: [plan.inputs.target.value, plan.inputs.target.source], capacity: plan.inputs.capacity.value, priceBasis: plan.priceBasis };
+function remainingPeriods(rows, now) {
+  // A completed period disappearing, or an open release's start moving with
+  // the clock, changes no remaining charging instruction.
+  return rows.filter(row => row.endAt === null || row.endAt > now).map(row => ({
+    startAt: Math.floor(Math.max(now, row.startAt) / MINUTE),
+    endAt: row.endAt === null ? null : Math.floor(row.endAt / MINUTE) }));
 }
-function planReason(before, next) {
-  if (!before) return 'initial-plan';
-  if (before.vehicleId !== next.vehicleId) return 'vehicle-identification';
-  if (before.requestRevision !== next.requestRevision || before.deadlineAt !== next.deadlineAt) return 'session-settings';
-  if (!equal(before.inputs.target, next.inputs.target)) return 'target-update';
-  if (before.nativeStartAt !== next.nativeStartAt) return 'vehicle-start-update';
-  if (before.priceBasis !== next.priceBasis) return 'price-update';
-  return 'planner-reassessment';
+function priceIntervals(snapshot, now, deadlineAt) {
+  if (!Array.isArray(snapshot) || deadlineAt === null) return null;
+  const rows = snapshot.filter(row => Array.isArray(row) && time(row[0]) && time(row[1]) && row[1] > row[0] && Number.isFinite(row[2]))
+    .map(([startAt, endAt, priceCtPerKwh]) => ({ startAt: Math.max(startAt, now), endAt: Math.min(endAt, deadlineAt), priceCtPerKwh }))
+    .filter(row => row.endAt > row.startAt).sort((a, b) => a.startAt - b.startAt || a.endAt - b.endAt);
+  const result = [];
+  for (const row of rows) {
+    const previous = result.at(-1);
+    if (previous && row.startAt < previous.endAt) return null; // Conflicting coverage is unknown.
+    if (previous?.endAt === row.startAt && previous.priceCtPerKwh === row.priceCtPerKwh) previous.endAt = row.endAt;
+    else result.push(row);
+  }
+  return { rows: result.slice(0, 128), truncated: result.length > 128 };
+}
+function priceChanges(before, next, now) {
+  if (!Array.isArray(before?.priceIntervals) || !Array.isArray(next.priceIntervals)
+    || before.automatic !== true || next.automatic !== true || !time(before.deadlineAt) || !time(next.deadlineAt)) return [];
+  // Compare only the shared remaining request horizon. A longer ready-by
+  // horizon is a request change, not evidence of newly published rates.
+  const old = before.priceIntervals, current = next.priceIntervals;
+  const priorCoverageEnd = before.priceCoverageTruncated === true || before.priceCoverageTruncated === undefined && old.length >= 128
+    ? old.at(-1)?.endAt ?? now : Infinity;
+  const endAt = Math.min(before.deadlineAt, next.deadlineAt, priorCoverageEnd);
+  const boundaries = [...new Set([now, endAt, ...[...old, ...current].flatMap(row => [row.startAt, row.endAt])])]
+    .filter(value => value >= now && value <= endAt).sort((a, b) => a - b);
+  const revisedBefore = [], revisedAfter = [], added = [];
+  for (let index = 0; index < boundaries.length - 1; index++) {
+    const startAt = boundaries[index], endAt = boundaries[index + 1];
+    const previous = old.find(row => row.startAt <= startAt && row.endAt >= endAt);
+    const candidate = current.find(row => row.startAt <= startAt && row.endAt >= endAt);
+    if (!candidate) continue; // Expiry or missing rates does not revise an observed price.
+    if (!previous) added.push({ startAt, endAt, priceCtPerKwh: candidate.priceCtPerKwh });
+    else if (Math.abs(previous.priceCtPerKwh - candidate.priceCtPerKwh) > 1e-7) {
+      revisedBefore.push({ startAt, endAt, priceCtPerKwh: previous.priceCtPerKwh });
+      revisedAfter.push({ startAt, endAt, priceCtPerKwh: candidate.priceCtPerKwh });
+    }
+  }
+  const bounded = (field, previous, after) => ({ field, before: previous.slice(0, 8), after: after.slice(0, 8),
+    ...(after.length > 8 ? { omitted: after.length - 8 } : {}) });
+  return [...(revisedAfter.length ? [bounded('prices', revisedBefore, revisedAfter)] : []),
+    ...(added.length ? [bounded('priceAvailability', [], added)] : [])];
+}
+function planChanges(history, next, now) {
+  const previous = history.at(-1);
+  if (!previous) return [];
+  const changes = [];
+  const change = (field, before, after) => { if (before !== null && before !== undefined && after !== null && after !== undefined && !equal(before, after))
+    changes.push({ field, before, after }); };
+  change('automatic', previous.automatic, next.automatic);
+  // Unavailable connection/request data is not an instruction to remove a
+  // schedule, forget a vehicle, clear a timer or alter the user's settings.
+  if (next.inputStatus !== 'available') return changes;
+  const known = [...history].reverse().find(row => row.inputStatus === 'available');
+  if (!known) return [...changes, { field: 'schedule', before: null, after: next.scheduleState }];
+  change('chargeNow', known.chargeNow, next.chargeNow);
+  const stateMeaning = value => value === 'released' ? 'release' : value;
+  change('state', stateMeaning(known.state), stateMeaning(next.state));
+  change('feasible', known.feasible, next.feasible);
+  change('provisional', known.provisional, next.provisional);
+  if (known.scheduleState !== 'unknown' && next.scheduleState !== 'unknown') change('schedule', known.scheduleState, next.scheduleState);
+  const periodChanges = !equal(remainingPeriods(known.periods, now), remainingPeriods(next.periods, now));
+  if (periodChanges) changes.push({ field: 'periods', before: clone(known.periods), after: clone(next.periods) });
+  const identityUnknown = next.vehicleId === null && known.vehicleId !== null;
+  if (next.vehicleId !== null && known.vehicleId !== next.vehicleId) changes.push({ field: 'vehicle', before: known.vehicleId, after: next.vehicleId });
+  if (!identityUnknown) {
+    change('readyBy', known.deadlineAt, next.deadlineAt);
+    change('startingSoc', known.settings?.manualSoc, next.settings.manualSoc);
+    for (const key of ['target', 'capacity']) {
+      const after = next.inputs[key], automaticSource = item => !['manual-fallback', 'session-anchor', 'session-request', 'unavailable'].includes(item?.source);
+      // A temporary fallback is an assumption, not a replacement vehicle
+      // reading. Compare a recovered feed with its last comparable observation.
+      const candidates = [...history].reverse().filter(row => row.inputStatus === 'available' && Number.isFinite(row.inputs?.[key]?.value));
+      const reference = automaticSource(after) ? candidates.find(row => automaticSource(row.inputs[key])) ?? candidates[0] : candidates[0];
+      const before = reference?.inputs[key];
+      if (after.source === 'manual-fallback' && automaticSource(before)) continue;
+      change(key, before?.value, after.value);
+    }
+    const previousTimer = [...history].reverse().find(row => row.inputStatus === 'available' && row.nativeStartKnown === true);
+    if (next.nativeStartKnown && (previousTimer ? next.nativeStartAt !== previousTimer.nativeStartAt : next.nativeStartAt !== null))
+      changes.push({ field: 'nativeStart', before: previousTimer?.nativeStartAt ?? null, after: next.nativeStartAt });
+  }
+  const previousPrices = [...history].reverse().find(row => row.inputStatus === 'available' && Array.isArray(row.priceIntervals));
+  changes.push(...priceChanges(previousPrices, next, now));
+  if (changes.length && !identityUnknown && next.inputs.soc.value !== null && known.inputs.soc.value !== null
+    && next.inputs.soc.source !== 'manual-fallback' && next.inputs.soc.value !== known.inputs.soc.value)
+    changes.push({ field: 'soc', before: known.inputs.soc.value, after: next.inputs.soc.value });
+  return changes.slice(0, 16);
+}
+function planReason(changes, initial = false) {
+  if (initial) return 'initial-plan';
+  const fields = new Set(changes.map(row => row.field));
+  if (fields.has('automatic') || fields.has('chargeNow')) return 'charging-choice';
+  if (fields.has('vehicle')) return 'vehicle-identification';
+  if (fields.has('readyBy') || fields.has('startingSoc')) return 'session-settings';
+  if (fields.has('target')) return 'target-update';
+  if (fields.has('capacity')) return 'capacity-update';
+  if (fields.has('nativeStart')) return 'vehicle-start-update';
+  if (fields.has('prices')) return 'price-update';
+  if (fields.has('priceAvailability')) return 'price-availability';
+  if (fields.has('periods')) return 'charging-periods';
+  return 'schedule-state';
 }
 function observation(view, now) {
   const values = view.values ?? {}, control = view.control ?? {}, snapshot = control.snapshot ?? {};
@@ -68,14 +178,25 @@ function observation(view, now) {
   const providerLive = view.telemetry?.providerConnected !== false && snapshot.online !== false;
   const physicalFresh = providerLive && fresh(readAt, now);
   const chargingField = values.charging, powerField = values.powerKw;
-  const fieldFresh = item => item?.available === true && fresh(item.measuredAt ?? item.receivedAt ?? readAt, now);
-  const charging = physicalFresh && fieldFresh(chargingField) && typeof chargingField.value === 'boolean' ? chargingField.value
-    : physicalFresh && fieldFresh(powerField) && Number.isFinite(powerField.value) ? powerField.value > 0.1 : null;
+  const fieldFresh = item => item?.available === true && item.assumed !== true && item.retained !== true
+    && fresh(item.measuredAt ?? item.receivedAt, now);
+  const power = field(powerField), powerAt = power.measuredAt ?? power.receivedAt;
+  const connectionAt = at(control.session?.connectedAt ?? view.progress?.connectionAt);
+  const powerKw = physicalFresh && fieldFresh(powerField) && power.value >= 0 && power.value !== null
+    && (connectionAt === null || powerAt >= connectionAt) ? power.value : null;
+  // Charger status describes its state machine. Only measured power establishes
+  // draw; even that includes vehicle auxiliaries, not solely battery charging.
+  const charging = powerKw === null ? null : powerKw > 0.1;
+  const reportedCharging = physicalFresh && chargingField?.available === true && chargingField.retained !== true
+    && typeof chargingField.value === 'boolean' && (chargingField.measuredAt == null || at(chargingField.measuredAt) !== null && chargingField.measuredAt <= now)
+    ? chargingField.value : null;
+  const reportedChargingEvidence = { source: source(chargingField?.source), measuredAt: at(chargingField?.measuredAt),
+    receivedAt: at(chargingField?.receivedAt) };
   const vehicleId = view.vehicle?.state === 'identified' && VEHICLES.has(view.vehicle.id) ? view.vehicle.id : null;
   const soc = field(values.soc), target = field(values.minimumSoc), nativeTarget = field(values.vehicleCeilingSoc);
   // The battery reading may advance slowly; live feed admission remains the
   // runtime's job. A cached/assumed/manual value cannot prove completion.
-  const vehicleSoc = vehicleId !== null && values.soc?.available === true && !soc.assumed
+  const vehicleSoc = vehicleId !== null && values.soc?.available === true && !soc.assumed && values.soc.retained !== true
     && ['bmw-cardata', 'teslamate', 'mqtt', 'vehicle'].includes(soc.source)
     && fresh(soc.measuredAt ?? soc.receivedAt, now, 15 * MINUTE)
     && view.vehicleMqtt?.available !== false && view.vehicleMqtt?.reason !== 'vehicle-feed-stale';
@@ -95,7 +216,12 @@ function observation(view, now) {
   const pauseConfirmed = physicalFresh && charging === false && !pending && !control.errorCode
     && (control.pauseConfirmed === true || ['paused', 'waiting'].includes(control.phase));
   const releaseConfirmed = physicalFresh && !pending && !control.errorCode && ['active', 'released', 'provisional'].includes(control.phase);
-  return { readAt, physicalFresh, charging, powerKw: physicalFresh && fieldFresh(powerField) ? number(powerField.value) : null,
+  const targetApplicable = physicalFresh && values.minimumSoc?.available === true && view.request != null
+    && (!['manual-fallback', 'session-anchor'].includes(target.source) || vehicleId !== null);
+  return { readAt, physicalFresh, charging, powerKw, power, reportedCharging, reportedChargingEvidence, targetApplicable,
+    automaticEnabled: typeof view.settings?.enabled === 'boolean' ? view.settings.enabled : null,
+    chargeNow: view.request ? view.request.chargeNow === true : null,
+    scheduleState: installed.length ? 'installed' : controlled && proposed.length ? 'proposed' : controlled ? 'unknown' : 'none',
     vehicleId, soc, target, nativeTarget, vehicleSoc, phase: PHASES.has(control.phase) ? control.phase : 'unknown',
     identification: ID_PHASES.has(view.identification?.phase) ? view.identification.phase : null,
     identificationActive: activeId, expectation, instructionBasis: installed.length ? 'installed-execution' : 'proposed-plan',
@@ -151,8 +277,21 @@ function assess(record, current, now) {
   const gap = record.observedAt !== null && now - record.observedAt > 3 * MINUTE;
   if (gap) { record.pendingChecks = {}; event(record, now, 'evidence', 'observation-gap'); }
   if (previous && previous.expectation !== current.expectation) record.expectationAt = now;
-  if (!previous || previous.charging !== current.charging) event(record, now, 'physical', current.charging === null ? 'physical-unknown' : current.charging ? 'charging-started' : 'charging-stopped',
-    { measuredAt: current.readAt, powerKw: current.powerKw });
+  if (!previous || previous.charging !== current.charging || gap && current.charging !== null) {
+    const transition = !gap && previous?.charging !== null && typeof previous?.charging === 'boolean'
+      && (current.power.measuredAt ?? current.power.receivedAt) > (previous.power?.measuredAt ?? previous.power?.receivedAt ?? Infinity);
+    const code = current.charging === null ? 'physical-unknown' : current.charging
+      ? transition ? 'charging-started' : 'charging-observed' : transition ? 'charging-stopped' : 'not-charging-observed';
+    event(record, now, 'physical', code, { source: current.power.source, basis: 'measured-power',
+      measuredAt: current.charging === null ? null : current.power.measuredAt,
+      receivedAt: current.charging === null ? null : current.power.receivedAt, powerKw: current.powerKw });
+  }
+  if (!previous || previous.reportedCharging !== current.reportedCharging) {
+    event(record, now, 'charger-status', current.reportedCharging === null ? 'charger-status-unknown'
+      : current.reportedCharging ? 'charger-reports-charging' : 'charger-reports-not-charging',
+    { ...current.reportedChargingEvidence, powerKw: current.powerKw,
+      powerMeasuredAt: current.power.measuredAt, powerReceivedAt: current.power.receivedAt });
+  }
   if (previous && previous.phase !== current.phase) event(record, now, 'control', current.phase,
     { basis: current.instructionBasis, confirmed: current.pauseConfirmed || current.releaseConfirmed });
   if (previous && previous.identification !== current.identification) event(record, now, 'identification', current.identification ?? 'unknown');
@@ -167,13 +306,20 @@ function assess(record, current, now) {
   if (current.expectation === 'hold' && current.pauseConfirmed && record.firstChargingAt) verify(record, 'pause', now);
   if (current.deliveredGridKwh > 0 && !current.energyIncomplete && fresh(current.energyAt, now, 5 * MINUTE)) verify(record, 'energy', now);
   const reached = targetReached(current, record, now);
+  // A withdrawn vehicle target may expose the configured fallback while the
+  // charger remains online. That is not a newly requested target. A configured
+  // target can change only when it was already the confirmed target's basis.
+  const targetChanged = record.outcome.state === 'target-confirmed' && current.targetApplicable
+    && record.outcome.target !== current.target.value
+    && (current.target.source !== 'manual-fallback' || record.outcome.targetSource === 'manual-fallback');
   if (reached) {
+    if (targetChanged) record.coverage.targetAttainment = { state: 'not-exercised' };
     verify(record, 'targetAttainment', now);
-    if (record.outcome.state !== 'target-confirmed') {
-      record.outcome = { state: 'target-confirmed', at: now, basis: 'vehicle-reading', target: current.target.value };
+    if (record.outcome.state !== 'target-confirmed' || targetChanged) {
+      record.outcome = { state: 'target-confirmed', at: now, basis: 'vehicle-reading', target: current.target.value, targetSource: current.target.source };
       event(record, now, 'outcome', 'target-confirmed', { measuredAt: current.soc.measuredAt, receivedAt: current.soc.receivedAt, target: current.target.value });
     }
-  } else if (record.outcome.state === 'target-confirmed' && record.outcome.target !== current.target.value) {
+  } else if (targetChanged) {
     record.outcome = { state: 'in-progress', at: now, basis: 'target-changed' };
     record.coverage.targetAttainment = { state: 'not-exercised' };
     event(record, now, 'outcome', 'target-changed');
@@ -217,11 +363,11 @@ function assess(record, current, now) {
   record.current = current;
   record.observedAt = now;
 }
-function finish(record, now, reason) {
+function finish(record, now, reason, evidence = {}) {
   record.endedAt = now; record.endReason = reason;
   if (!['target-confirmed', 'deadline-missed'].includes(record.outcome.state))
     record.outcome = { state: reason === 'unplugged' ? 'completion-unknown' : 'interrupted', at: now, basis: reason };
-  event(record, now, 'session', reason);
+  event(record, now, 'session', reason, evidence);
 }
 function newRecord(view, now, id, startedAt) {
   return { version: VERSION, id, chargerId: view.id, startedAt, observedAt: null, endedAt: null, endReason: null,
@@ -293,9 +439,15 @@ export class ChargingSessionDiagnostics {
       const nowConnected = connected?.available === true ? connected.value : null;
       const connectedAt = at(view.control?.session?.connectedAt ?? view.progress?.connectionAt);
       const id = chargingDiagnosticSessionId(view);
-      const freshDisconnect = nowConnected === false && fresh(connected.measuredAt ?? connected.receivedAt ?? view.control?.snapshot?.readAt, now);
+      // Change-reported status can be old while the adapter still confirms the
+      // current state. Ending observation now does not move that source clock.
+      const liveConnection = view.telemetry?.providerConnected !== false && view.control?.snapshot?.online !== false
+        && fresh(view.control?.snapshot?.readAt ?? view.telemetry?.readAt, now);
+      const freshDisconnect = nowConnected === false && connected.retained !== true && liveConnection
+        && (connected.measuredAt == null || time(connected.measuredAt) && connected.measuredAt <= now);
       if (slot.current && (freshDisconnect || id && id !== slot.current.id && nowConnected === true)) {
-        finish(slot.current, now, freshDisconnect ? 'unplugged' : 'connection-replaced');
+        finish(slot.current, now, freshDisconnect ? 'unplugged' : 'connection-replaced', freshDisconnect
+          ? { source: source(connected.source), measuredAt: at(connected.measuredAt), receivedAt: at(connected.receivedAt) } : {});
         slot.recent.unshift(slot.current); slot.recent = slot.recent.slice(0, LIMITS.sessions); slot.current = null; changed = true;
       }
       if (!slot.current && nowConnected === true && id && connectedAt <= now) {
@@ -308,11 +460,13 @@ export class ChargingSessionDiagnostics {
       // Earlier findings remain attached to their original observation time;
       // recording a replacement never reassesses or erases that history.
       assess(record, current, now);
-      if (plan && !equal(planSignature(previousPlan, now), planSignature(plan, now))) {
-        plan.reason = planReason(previousPlan, plan);
+      const changes = planChanges(record.plans, plan, now);
+      if (changes.length || !previousPlan && plan.inputStatus === 'available') {
+        plan.changes = changes;
+        plan.reason = planReason(changes, !previousPlan);
         append(record, 'plans', plan, LIMITS.plans);
-        event(record, now, 'plan', plan.reason, { index: record.truncated.plans + record.plans.length });
-        if (previousPlan && previousPlan.vehicleId === null && plan.vehicleId !== null && record.firstChargingAt !== null)
+        event(record, now, 'plan', plan.reason, { index: record.truncated.plans + record.plans.length, changes: clone(changes) });
+        if (changes.some(change => change.field === 'vehicle' && change.before === null) && record.firstChargingAt !== null)
           verify(record, 'lateReplan', now);
         changed = true;
       }

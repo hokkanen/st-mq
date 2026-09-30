@@ -46,7 +46,7 @@ function fixture(t) {
     readback: value => { readbackAvailable = value; } };
 }
 
-async function savedMatch(t) {
+async function savedMatch(t, { sessionOverrides = true } = {}) {
   const f = fixture(t), runtime = f.create();
   await f.attach(runtime);
   publish(runtime, facts(START - MINUTE, { pluggedIn: false, charging: false }));
@@ -59,15 +59,15 @@ async function savedMatch(t) {
     fields: { charging: { measuredAt: START + MINUTE, readingId: 'synthetic-charge-stop' } } });
   assert.equal(view(runtime).vehicle.id, 'bmw');
   const current = view(runtime);
-  await runtime.setChargerSettings('charger1', { scope: 'session', association: current.association,
+  if (sessionOverrides) await runtime.setChargerSettings('charger1', { scope: 'session', association: current.association,
     sessionId: current.request.sessionId, revision: current.request.revision,
     changes: { readyBy: '08:30', capacityKwh: 79, minimumSoc: 100 } });
   runtime.persist();
   const saved = f.store.getState(runtime.key);
   assert.equal(saved.version, 6);
   assert.equal(saved.chargers.charger1.vehicleMatch.id, 'bmw');
-  assert.equal(saved.chargers.charger1.request.overrides.minimumSoc, 100);
-  assert.equal(saved.chargers.charger1.request.revision, 2);
+  assert.equal(saved.chargers.charger1.request.overrides.minimumSoc, sessionOverrides ? 100 : undefined);
+  assert.equal(saved.chargers.charger1.request.revision, sessionOverrides ? 2 : 1);
   assert.ok(saved.vehicleFeeds.bmw.consumedPlugId);
   await runtime.close();
   f.setNow(START + 2 * MINUTE);
@@ -323,4 +323,83 @@ test('failed BMW departure persistence restores the matched session and its requ
   assert.equal(item.targetState, null);
   assert.equal(item.vehicleDisconnect.measuredAt, at);
   assert.equal(f.store.getState(restarted.key).chargers.charger1.request, null);
+});
+
+test('a confirmed same-session outcome survives adapter startup and unavailable vehicle telemetry after restart', async t => {
+  const f = await savedMatch(t, { sessionOverrides: false }), completed = f.create();
+  await f.attach(completed);
+  const completedAt = START + 3 * MINUTE;
+  f.setNow(completedAt);
+  Object.assign(f.physical, { connectorStatus: 'SuspendedEV', statusAt: completedAt, powerKw: 0 });
+  publish(completed, facts(completedAt, { soc: 100, chargeLimitSoc: 100, charging: false }));
+  await completed.reconcile(); completed.persist();
+  assert.equal(view(completed).values.minimumSoc.source, 'bmw-cardata');
+  const previous = completed.status().diagnostics.chargers.find(row => row.id === 'charger1').current;
+  assert.equal(previous.outcome.state, 'target-confirmed');
+  assert.equal(previous.outcome.target, 100);
+  assert.equal(previous.coverage.completion.state, 'verified');
+  const sessionId = view(completed).request.sessionId;
+  await completed.close();
+
+  f.setNow(completedAt + 2 * MINUTE);
+  const restarted = f.create();
+  assertUnassigned(restarted);
+  restarted.persist();
+  const unavailable = restarted.status().diagnostics.chargers.find(row => row.id === 'charger1').current;
+  assert.equal(unavailable.id, previous.id);
+  assert.equal(unavailable.outcome.state, 'target-confirmed', 'Unknown startup defaults do not retract the historical confirmed target');
+  assert.equal(unavailable.outcome.target, 100);
+  assert.equal(unavailable.coverage.completion.state, 'verified');
+  assert.equal(unavailable.current.physicalFresh, false);
+
+  f.readback(false); await f.attach(restarted);
+  assert.equal(restarted.chargers.charger1.request.sessionId, sessionId);
+  assert.equal(restarted.status().diagnostics.chargers.find(row => row.id === 'charger1').current.id, previous.id);
+  f.readback(true); await restarted.reconcile();
+  assert.equal(view(restarted).request.sessionId, sessionId);
+  assert.equal(view(restarted).vehicle.id, 'bmw');
+  assert.equal(view(restarted).automatic.soc.available, false, 'A historical receipt does not make the restored BMW feed live');
+  assert.equal(restarted.status().diagnostics.chargers.find(row => row.id === 'charger1').current.outcome.state, 'target-confirmed');
+});
+
+test('live disconnected status after an outage finalizes the old report without making its old source time new', async t => {
+  const f = await savedMatch(t), runtime = f.create();
+  await f.attach(runtime); runtime.persist();
+  const previous = runtime.status().diagnostics.chargers.find(row => row.id === 'charger1').current;
+  const disconnectedAt = START + 4 * MINUTE, recoveredAt = START + 20 * MINUTE;
+  f.setNow(recoveredAt);
+  Object.assign(f.physical, { connectorStatus: 'Available', statusAt: disconnectedAt, pluggedIn: false,
+    transactionConfirmed: false, transactionId: null, transactionStartedAt: null, powerKw: 0 });
+  await runtime.reconcile(); runtime.persist();
+  const current = view(runtime), reports = runtime.status().diagnostics.chargers.find(row => row.id === 'charger1');
+  assert.equal(current.request, null);
+  assert.equal(current.values.connected.value, false);
+  assert.equal(current.values.connected.measuredAt, disconnectedAt, 'Readback preserves the original source event clock');
+  assert.equal(reports.current, null, 'A current disconnected physical state closes the prior report');
+  assert.equal(reports.recent[0].id, previous.id);
+  assert.equal(reports.recent[0].endReason, 'unplugged');
+  assert.equal(reports.recent[0].endedAt, recoveredAt, 'The assessment ends when disconnection is observed, without backdating unseen behavior');
+});
+
+test('an empty development database cannot reconstruct overnight identity or completion from an already connected stopped car', async t => {
+  const f = fixture(t), observedAt = START + 12 * 60 * MINUTE;
+  f.setNow(observedAt);
+  Object.assign(f.physical, { connectorStatus: 'SuspendedEV', statusAt: START + 11 * 60 * MINUTE, powerKw: 0 });
+  const runtime = f.create();
+  await f.attach(runtime); runtime.persist();
+  let report = runtime.status().diagnostics.chargers.find(row => row.id === 'charger1').current;
+  assert.equal(view(runtime).vehicle.id, null);
+  assert.equal(report.vehicleId, null);
+  assert.equal(report.firstChargingAt, null);
+  assert.equal(report.coverage.identification.state, 'not-exercised');
+  assert.equal(report.coverage.completion.state, 'not-exercised');
+  assert.ok(report.timeline.every(row => row.at >= observedAt), 'The report records only observations made by this database');
+  assert.ok(!report.timeline.some(row => row.kind === 'physical' && row.code === 'charging-started'));
+
+  runtime.receiveSoc(runtime.configuration.vehicles.bmw.mqttTopic,
+    JSON.stringify(facts(START + 11 * 60 * MINUTE, { soc: 100, chargeLimitSoc: 100, charging: false })), { retain: true });
+  runtime.persist(); report = runtime.status().diagnostics.chargers.find(row => row.id === 'charger1').current;
+  assert.equal(view(runtime).vehicle.id, null, 'Retained finished-vehicle data cannot prove its physical assignment');
+  assert.equal(report.coverage.completion.state, 'not-exercised');
+  assert.notEqual(report.outcome.state, 'target-confirmed');
 });

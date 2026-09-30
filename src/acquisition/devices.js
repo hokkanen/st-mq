@@ -568,10 +568,10 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
         : ['Preparing', 'Charging', 'SuspendedEV', 'SuspendedEVSE', 'Finishing'].includes(current.connectorStatus) ? true : null : null;
       return { transport: 'ocpp', scope: ocppInstallation.scope, connectionId: current?.connectionId ?? null,
         readAt: now, online: Boolean(current), connectorStatus: current?.connectorStatus ?? null,
-        statusAt: current?.timestamp ?? null, pluggedIn,
+        statusAt: current?.timestamp ?? null, statusReceivedAt: current?.receivedAt ?? null, pluggedIn,
         transactionId: current?.transaction?.id ?? null, transactionStartedAt: current?.transaction?.startedAt ?? null,
         transactionConfirmed: current?.transaction?.confirmed === true,
-        powerKw: power?.value ?? null, powerAt: power ? sourceTime(power.timestamp) : null,
+        powerKw: power?.value ?? null, powerAt: power ? sourceTime(power.timestamp) : null, powerReceivedAt: power?.receivedAt ?? null,
         ...(cloud ? { limits: cloud.limits } : {}),
         supply: { ...cloud?.supply, chargerCurrentA: vector([183, 184, 185]), voltageV: vector([194, 195, 196]),
           observationTimes: { ...cloud?.supply?.observationTimes,

@@ -207,7 +207,7 @@ test('restart and stale reads do not count an observation gap toward a settled f
 test('retention keeps opening evidence and recent records bounded', () => {
   const { observer, observe } = fixture(), view = charger();
   for (let i = 0; i < 100; i++) {
-    view.request.revision++; view.values.charging.value = i % 2 === 0;
+    view.values.minimumSoc.value = i % 2 ? 80 : 85; view.values.charging.value = i % 2 === 0;
     view.control.phase = i % 2 ? 'released' : 'unconfirmed';
     observe(refresh(view, now + i * MINUTE), now + i * MINUTE);
   }
@@ -226,7 +226,7 @@ test('failed persistence remains dirty and retries a quiet next observation', ()
   const { observer, observe, store } = fixture(), view = charger(); observe(view);
   const original = store.setState; let failures = 0;
   store.setState = () => { failures++; throw new Error('Synthetic save failure'); };
-  view.request.revision++;
+  view.values.minimumSoc.value = 85;
   assert.throws(() => observe(refresh(view, now + MINUTE), now + MINUTE), /Synthetic save failure/);
   assert.throws(() => observe(refresh(view, now + MINUTE + 1), now + MINUTE + 1), /Synthetic save failure/);
   assert.equal(failures, 2);

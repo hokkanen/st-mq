@@ -1,3 +1,32 @@
+Implemented 2026-09-30 — Charging report evidence and meaningful plan revisions
+- Record actual setting, input, period, execution and price differences. Expired
+  market intervals, timestamp refreshes and temporarily absent request revisions
+  no longer imply changed prices or edited settings. Compare retained valid
+  evidence after outages; keep fresh price availability distinct from rate edits.
+- Separate charger-reported state from measured draw in passive reports and
+  guided assessments. Require fresh physical-session power above 0.1 kW for
+  charging checks, preserve original source/receipt clocks through local OCPP,
+  and report initial/recovered readings without inventing start/stop transitions.
+- Retain confirmed targets through startup data loss; actual raised targets
+  receive their own confirmation. Finalize a disconnected session from live
+  adapter readback without moving an older change-reported source timestamp.
+  Verify existing same-version session/identity persistence and keep missing
+  overnight history explicitly unknown rather than guessing a vehicle.
+- Show Automatic off, absent/controller execution plans, assumed battery inputs,
+  monitoring coverage and concrete revision deltas in the report. Keep status
+  pulses and contradictory recorded labels visibly unconfirmed; retain original
+  records without repair/backfill. Preserve the separate charger-card report row,
+  focus behavior, recorded viewer scope and real production charging schedules.
+- F1/F3/F4/F5/F7/F8: bounded optional report evidence, no migrations or historical
+  interpretation engine; preserve control authority and restoration. Household
+  evidence was inspected read-only and kept outside fixtures and Git. No charger
+  commands, deployment, schedule edits or database mutation were performed.
+- Validation: Node 24 standard suite passed 3,676 tests with one optional skip;
+  all 172 final focused report, restart, guided-test, replica and OCPP checks
+  passed after review refinements. Production build and isolated Chromium suite
+  passed, including status-only pulses, specific deltas, retained reports and
+  keyboard/focus in both themes at 320/390/1440 px. Screenshots reviewed.
+
 Implemented 2026-09-30 — Charger card spacing and separate session report row
 - Give Session report a full-width row below Details & settings, with a subtle
   divider and navigation arrow. Add 40 px to each charger summary so Garage has

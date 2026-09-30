@@ -58,8 +58,8 @@ const coversZero = (composite, from, until) => composite.startAt <= from && comp
     || (composite.periods[index + 1]?.startAt ?? composite.endAt) <= from || row.limit === 0);
 
 function snapshotFor(value, scope, now) {
-  if (!fields(value, ['transport', 'scope', 'connectionId', 'readAt', 'online', 'connectorStatus', 'statusAt',
-    'transactionId', 'transactionStartedAt', 'transactionConfirmed', 'pluggedIn', 'powerKw', 'powerAt', 'manualEvent', 'limits', 'supply'])
+  if (!fields(value, ['transport', 'scope', 'connectionId', 'readAt', 'online', 'connectorStatus', 'statusAt', 'statusReceivedAt',
+    'transactionId', 'transactionStartedAt', 'transactionConfirmed', 'pluggedIn', 'powerKw', 'powerAt', 'powerReceivedAt', 'manualEvent', 'limits', 'supply'])
     || value.transport !== 'ocpp' || value.scope !== scope || typeof value.online !== 'boolean'
     || !time(value.readAt) || value.readAt > now || ![true, false, null].includes(value.pluggedIn)
     || value.online && (!text(value.connectionId) || !STATUSES.includes(value.connectorStatus)
@@ -69,7 +69,8 @@ function snapshotFor(value, scope, now) {
     || typeof value.transactionConfirmed !== 'boolean'
     || value.transactionConfirmed && value.transactionId === null
     || value.powerKw !== null && (!Number.isFinite(value.powerKw) || value.powerKw < 0)
-    || value.powerAt !== null && (!time(value.powerAt) || value.powerAt > now)) throw fail('read-failed');
+    || value.powerAt !== null && (!time(value.powerAt) || value.powerAt > now)
+    || ['statusReceivedAt', 'powerReceivedAt'].some(key => value[key] != null && (!time(value[key]) || value[key] > now))) throw fail('read-failed');
   const event = value.manualEvent;
   if (event != null && (!fields(event, ['id', 'kind', 'at', 'transactionId']) || !text(event.id)
     || !['stop', 'release'].includes(event.kind) || !time(event.at) || event.at > now
@@ -121,16 +122,18 @@ export function createOcppScheduleAdapter({ request, readSnapshot, isCurrent = (
     },
     normalize(snapshot = {}, { now = clock() } = {}) {
       const available = snapshot.online === true && fresh(snapshot.readAt, now) && time(snapshot.statusAt) && snapshot.statusAt <= now;
-      const signal = (value, at = snapshot.statusAt, source = 'easee-ocpp') => ({
+      const signal = (value, at = snapshot.statusAt, source = 'easee-ocpp', receivedAt = null) => ({
         value: available && value != null ? value : null, available: available && value != null,
-        source, measuredAt: at ?? null, receivedAt: snapshot.readAt ?? null });
+        source, measuredAt: at ?? null, receivedAt });
       const limits = snapshot.limits ?? {}, supply = snapshot.supply ?? {};
       const ceilings = [limits.chargerA, limits.cableA, ...(limits.circuitA ?? [])].filter(value => Number.isFinite(value) && value > 0);
       const allowance = limits.equalizerAvailableA;
       const complete = values => Array.isArray(values) && values.length === 3 && values.every(Number.isFinite);
       return { ...snapshot, provider: 'easee', providerConnected: available, capabilities: adapter.capabilities,
-        connected: signal(snapshot.pluggedIn), charging: signal(STATUSES.includes(snapshot.connectorStatus) ? snapshot.connectorStatus === 'Charging' : null),
-        powerKw: signal(fresh(snapshot.powerAt, now) ? snapshot.powerKw : null, snapshot.powerAt),
+        connected: signal(snapshot.pluggedIn, snapshot.statusAt, 'easee-ocpp', snapshot.statusReceivedAt ?? null),
+        charging: signal(STATUSES.includes(snapshot.connectorStatus) ? snapshot.connectorStatus === 'Charging' : null,
+          snapshot.statusAt, 'easee-ocpp', snapshot.statusReceivedAt ?? null),
+        powerKw: signal(fresh(snapshot.powerAt, now) ? snapshot.powerKw : null, snapshot.powerAt, 'easee-ocpp', snapshot.powerReceivedAt ?? null),
         currentA: signal(complete(allowance) && ceilings.length ? Math.min(...allowance, ...ceilings) : null),
         availableCurrentA: signal(complete(allowance) ? Math.min(...allowance) : null),
         maxCurrentA: signal(ceilings.length ? Math.min(...ceilings) : null),
