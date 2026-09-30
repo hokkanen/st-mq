@@ -81,7 +81,7 @@ for (const [register, value] of [['0203', 22], ['0212', 46], ['0208', 61], ['220
 test('permanent native edits preserve other manual preheat duties, while ROOM supersedes its boost', async t => {
   const r = rig(); t.after(() => r.controller.close());
   const pause = { pauseId: 'fixture-pause', expiresAt: initialTime + 3_600_000 };
-  await r.controller.setManualPreheat({ enabled: true, ...pause });
+  await r.controller.setPhase({ phase: 'preheat', manual: true, expiresAt: r.now + 60_000, ...pause });
   await r.controller.setSetting({ register: '0212', value: 46 });
   assert.equal(r.controller.status().manualPreheat.baseValue, 20);
   assert.equal(r.controller.status().expiresAt, pause.expiresAt);
@@ -91,7 +91,7 @@ test('permanent native edits preserve other manual preheat duties, while ROOM su
   await r.controller.reconcile();
   assert.equal(r.native['0203'], 20, 'Temporary preheat still restores');
   assert.equal(r.native['0212'], 46, 'Permanent DHW edit survives pause expiry');
-  await r.controller.setManualPreheat({ enabled: true });
+  await r.controller.setPhase({ phase: 'preheat', manual: true, expiresAt: r.now + 60_000 });
   await r.controller.setSetting({ register: '0203', value: 22 });
   assert.equal(r.controller.status().manualPreheat, null);
   assert.equal(r.controller.status().expiresAt, null);
@@ -117,7 +117,7 @@ test('manual native changes respect controller ownership and cannot make a stale
 
 test('a failed durable native edit preserves the active manual preheat restoration duty', async t => {
   const r = rig(); t.after(() => r.controller.close());
-  await r.controller.setManualPreheat({ enabled: true });
+  await r.controller.setPhase({ phase: 'preheat', manual: true, expiresAt: r.now + 60_000 });
   const before = r.controller.status(), save = r.store.setState;
   let failNext = true;
   r.store.setState = (...args) => {
@@ -138,7 +138,7 @@ test('failed native ROOM delivery retains the earlier preheat deadline and resto
   const r = rig({ behavior: ({ payload }) => {
     if (payload === '22') throw new Error('Synthetic publish failure');
   } }); t.after(() => r.controller.close());
-  await r.controller.setManualPreheat({ enabled: true });
+  await r.controller.setPhase({ phase: 'preheat', manual: true, expiresAt: r.now + 60_000 });
   const before = r.controller.status();
   await assert.rejects(r.controller.setSetting({ register: '0203', value: 22 }), { code: 'H66_WRITE_FAILED' });
   assert.equal(r.native['0203'], 25);
@@ -152,7 +152,7 @@ test('failed native ROOM delivery retains the earlier preheat deadline and resto
 test('a late native ROOM result supersedes the earlier temporary boost without restoring its old baseline', async t => {
   const r = rig({ behavior: ({ payload }) => payload === '22' ? 'silent' : undefined });
   t.after(() => r.controller.close());
-  await r.controller.setManualPreheat({ enabled: true });
+  await r.controller.setPhase({ phase: 'preheat', manual: true, expiresAt: r.now + 60_000 });
   const end = r.controller.status().expiresAt;
   await assert.rejects(r.controller.setSetting({ register: '0203', value: 22 }), { code: 'H66_READBACK_TIMEOUT' });
   assert.equal(r.controller.status().obligations['0203'].baseline, 20);
@@ -165,7 +165,7 @@ test('a late native ROOM result supersedes the earlier temporary boost without r
 
 test('explicitly selecting the current boosted ROOM value promotes it without a write or later restoration', async t => {
   const r = rig(); t.after(() => r.controller.close());
-  await r.controller.setManualPreheat({ enabled: true });
+  await r.controller.setPhase({ phase: 'preheat', manual: true, expiresAt: r.now + 60_000 });
   const result = await r.controller.setSetting({ register: '0203', value: 25 });
   assert.equal(result.sent, false);
   assert.equal(result.confirmed, true);
@@ -379,11 +379,11 @@ for (const baseline of [25, 27, 33, 35]) test(`five-degree preheat respects a ${
   assert.equal(r.native['0203'], target);
   assert.equal(result.roomBoostC, target - baseline);
   await r.controller.restore();
-  await r.controller.setManualPreheat({ enabled: true, roomBoostC: 5 });
+  await r.controller.setPhase({ phase: 'preheat', manual: true, expiresAt: r.now + 60_000, roomBoostC: 5 });
   assert.equal(r.native['0203'], target);
-  await r.controller.setManualPreheat({ enabled: true, roomBoostC: 5 });
+  await r.controller.setPhase({ phase: 'preheat', manual: true, expiresAt: r.now + 60_000, roomBoostC: 5 });
   assert.equal(r.native['0203'], target, 'Renewal retains the original baseline');
-  await r.controller.setManualPreheat({ enabled: false });
+  await r.controller.setPhase({ phase: 'normal' });
   assert.equal(r.native['0203'], baseline);
 });
 
@@ -416,11 +416,75 @@ test('a no-op automatic register is watched and a later first write restores the
 test('manual Heat control preheat restores despite a wall-clock rollback', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const r = rig(); t.after(() => r.controller.close());
-  await r.controller.setManualPreheat({ enabled: true });
+  await r.controller.setPhase({ phase: 'preheat', manual: true, expiresAt: r.now + 60_000 });
   r.setNow(initialTime - 3_600_000);
   for (const [register, value] of Object.entries(r.native)) r.feed(register, value);
   r.elapse(60_000); t.mock.timers.tick(60_000);
   await nextTurn();
   assert.equal(r.native['0203'], 20);
   assert.deepEqual(r.controller.status().obligations, {});
+});
+
+test('a paused Reduced selection retains exact native obligations across restart without replaying writes', async t => {
+  const first = rig(); t.after(() => first.controller.close());
+  await first.controller.setPhase({ phase: 'reduction', manual: true, pauseId: 'durable-pause', expiresAt: null });
+  await first.controller.close();
+  const restarted = rig({ store: first.store, values: first.native, startAt: first.now + 86_400_000 });
+  t.after(() => restarted.controller.close());
+  await nextTurn(); await restarted.controller.reconcile();
+  assert.deepEqual(restarted.sent, []);
+  assert.equal(restarted.controller.status().phase, 'reduction');
+  assert.equal(restarted.controller.status().pauseId, 'durable-pause');
+  assert.equal(restarted.controller.status().expiresAt, null);
+  await restarted.controller.restore();
+  assert.deepEqual(restarted.native, baselines);
+});
+
+test('a late matching native device report settles an unconfirmed manual receipt', async t => {
+  const r = rig({ behavior: () => 'silent' }); t.after(() => r.controller.close());
+  await assert.rejects(r.controller.setSetting({ register: '0203', value: 22 }), { code: 'H66_READBACK_TIMEOUT' });
+  assert.equal(r.controller.status().lastManual.status, 'unconfirmed');
+  r.setNow(initialTime + 1000); r.feed('0203', 22);
+  assert.equal(r.controller.status().lastManual.status, 'confirmed');
+  assert.equal(r.controller.status().lastManual.confirmedAt, initialTime + 1000);
+  assert.equal(r.controller.status().lastManual.at, initialTime, 'Feedback does not restart receipt retention.');
+});
+
+test('Preheat returns DHW and AUX to normal service even when it follows a recovery hold', async t => {
+  const r = rig(); t.after(() => r.controller.close());
+  await r.controller.setPhase({ phase: 'reduction' });
+  await r.controller.setPhase({ phase: 'recovery', holdDhwReduced: true, compressorOnly: true });
+  assert.equal(r.native['0212'], 40); assert.equal(r.native['2201'], 2);
+  await r.controller.setPhase({ phase: 'preheat', roomBoostC: 5 });
+  assert.deepEqual(r.native, { ...baselines, '0203': 25 });
+});
+
+test('promoting the last manual ROOM override to a native setting releases manual ownership', async t => {
+  const r = rig(); t.after(() => r.controller.close());
+  await r.controller.setPhase({ phase: 'preheat', manual: true, expiresAt: r.now + 60_000 });
+  await r.controller.setSetting({ register: '0203', value: 25 });
+  await r.controller.setPhase({ phase: 'preheat', roomBoostC: 5 });
+  assert.equal(r.native['0203'], 30);
+});
+
+test('an uncertain native edit preserves an indefinite paused Reduced choice and settles on later readback', async t => {
+  const r = rig({ behavior: ({ index, payload }) => index === '0212' && Number(payload) === 46 ? 'silent' : undefined });
+  t.after(() => r.controller.close());
+  await r.controller.setPhase({ phase: 'reduction', manual: true, pauseId: 'uncertain-edit-pause', expiresAt: null });
+  const obligation = r.controller.status().obligations['0212'];
+  await assert.rejects(r.controller.setSetting({ register: '0212', value: 46 }), { code: 'H66_READBACK_TIMEOUT' });
+  await nextTurn();
+  const pending = r.controller.status();
+  assert.equal(pending.phase, 'reduction');
+  assert.equal(pending.restorationPending, false);
+  assert.equal(pending.expiresAt, null);
+  assert.deepEqual(pending.obligations['0212'], obligation);
+  assert.equal(r.native['2201'], 2, 'Uncertain native delivery must not cancel the held Reduced selection.');
+  r.setNow(initialTime + 1000); r.native['0212'] = 46; r.feed('0212');
+  assert.equal(r.controller.status().lastManual.status, 'confirmed');
+  assert.equal(r.controller.status().obligations['0212'], undefined);
+  assert.equal(r.controller.status().phase, 'reduction');
+  await r.controller.restore();
+  assert.equal(r.native['0212'], 46, 'The confirmed native edit becomes the new baseline.');
+  assert.equal(r.native['2201'], 1);
 });

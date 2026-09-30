@@ -80,7 +80,7 @@ test('supported Stop remains available while the last movement request awaits ph
   assert.equal(garageDoorControl(status(device), device, { busy: true }).disabled, true, 'Request delivery is still serialized');
 });
 
-test('an observed terminal state changes the action and clears the request receipt', () => {
+test('an observed terminal state changes the action and retains a completed receipt', () => {
   const device = operation(door(1), 'open', 'observed');
   device.readings.side_entrance_open.coverState = 'open';
   device.readings.side_entrance_open.observedAt = now + 1000;
@@ -88,7 +88,7 @@ test('an observed terminal state changes the action and clears the request recei
   assert.equal(view.state, 'Open');
   assert.equal(view.action, 'close');
   assert.equal(view.disabled, false);
-  assert.equal(view.feedback, '');
+  assert.match(view.feedback, /state reported: open/);
 });
 
 test('failed or unconfirmed movement offers a retry based on retained contact state with explicit feedback', () => {
@@ -117,14 +117,14 @@ test('local sending and failure feedback belong only to the requested door', () 
   assert.equal(blocked.disabled, true);
 });
 
-test('expired command receipts release the shortcut without changing the retained state', () => {
+test('expired command waiting releases the shortcut while its historical receipt remains', () => {
   const device = operation(door(), 'open', 'published', now - 59_999);
   assert.equal(garageDoorControl(status(device), device).disabled, true);
   const expired = garageDoorControl({ ...status(device), now: now + 1 }, device);
   assert.equal(expired.state, 'Closed');
   assert.equal(expired.action, 'open');
   assert.equal(expired.disabled, false);
-  assert.equal(expired.feedback, '');
+  assert.match(expired.feedback, /no new position report/);
   operation(device, 'open', 'publishing', now - 60_000);
   assert.equal(garageDoorControl(status(device), device).disabled, true, 'An active publication does not expire in presentation');
 });
@@ -135,7 +135,7 @@ test('a newer live terminal report supersedes failed or unconfirmed feedback', (
     device.readings.side_entrance_open.coverState = 'open';
     const view = garageDoorControl(status(device), device);
     assert.equal(view.action, 'close');
-    assert.equal(view.feedback, '');
+    assert.match(view.feedback, /latest device report: open; request superseded/);
     assert.equal(view.failed, false);
   }
 });

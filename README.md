@@ -16,7 +16,7 @@ The default icon and all three reusable SVG/PNG designs are in
 
 The controller provides SQLite history, adaptive thermal learning, complete
 preheat/reduction/recovery planning, a monitoring dashboard and H66 readback/control.
-**Default startup uses simulated devices with heating set to Plan only.** With live
+**Default startup uses simulated devices with heating set to Pause.** With live
 input and a configured transport, each feature can independently be enabled for
 automation. Explicit manual controls have separate authorization and restoration. Explicit manual MQTT and timed H66 tests are also available.
 Market, weather, MQTT temperature, TeslaMate and Easee acquisition plus dated contract
@@ -137,27 +137,27 @@ rebuild historical CSVs or run a permanent Vite build watcher.
 See [automation and manual heating](docs/automation-and-manual-control.md) for
 the shared permission, handover and restoration rules.
 
-The Home Energy UI has Home **Plan only / Automatic** and Garage **Normal / Away**
+The Home Energy UI has Home **Automatic / Pause** and Garage **Normal / Away**
 controls, combined history and price/weather outlooks, requested/actual state, stale-data indication, learning
-health, explicit occupancy and timed normal-heating overrides. The default 21 °C
+health, explicit occupancy and manual heating overrides. The default 21 °C
 **demo** target is confined to simulation, not inferred as the real house's target.
-Home Away/Pause deadlines persist. Plan only computes but does not automatically apply
-that feature’s heating schedule; explicit manual changes still carry restoration obligations.
-**Away until** removes the occupied temperature-drop requirement until the chosen
-return time. The planner compares cost with continuous native operation, including
-recovery and auxiliary energy. Occupied requirements resume at the return time
-within the available forecast horizon; forecasts are never invented beyond it.
-The existing evidence/freshness gates still apply. **Pause until** first changes the
-automatic schedule to normal heating. Temporary heating modes selected afterwards are held until the pause ends or
-**Resume now** is selected. Their previous settings are then restored and automatic
-scheduling resumes if enabled. Applying a new pause deadline starts again from
-normal heating. Outside Pause, temporary heating overrides revert on the next
-controller update, normally within one minute, with a one-minute expiry as a
-fallback. Persistent native parameter edits are independent and remain in effect.
-Repeated temporary edits retain the original restoration values. Pause deadlines
-survive restarts; manually held equipment settings retain the existing restart
-and connection-loss restoration rules. Both temporary controls use Finnish time
-and can be cancelled independently.
+Home starts paused without an end time. **Automatic / Pause** is one durable,
+equipment-bound choice. Pause restores normal heating first; subsequent manual
+Normal or Reduced choices remain until changed or Automatic resumes. **Schedule
+& away** can set a resume time; clearing it leaves an indefinite pause. A scheduled
+pause resumes Automatic at its deadline. Away removes occupied comfort bounds
+until the return time and includes reheating costs; it does not resume Pause.
+
+**Manual heating override** is folded. Its phases share the automatic equipment
+actions, including native hot-water/auxiliary restrictions and automatic circulation
+suppression for Reduced. In Automatic, Normal and Reduced are reassessed on the
+next update. Manual Preheat always ends at its original floor lease deadline;
+Normal or Reduced can end it sooner. ROOM restoration runs at the same deadline
+even if floor restoration needs retries. A 24-hour outcome report distinguishes
+local lease restoration, fallback and missing evidence. Native parameter edits
+remain persistent device settings. Action receipts across Home, Garage and other
+controls stay for 24 hours and update from device feedback.
+
 Home owns its saved automation permission; Garage owns its manual mode. Charging Automatic
 scheduling and Caravan Automatic power remain independent. The header identifies
 Live, Simulation or History viewer; it does not imply a global control permission.
@@ -166,7 +166,8 @@ are rejected; remove them before startup and choose each feature's permission in
 the dashboard.
 
 Open the **Home** or **Garage** summary for its heating controls. Home retains
-**Temporary heating override**, Away/Pause, **Savings & comfort** and learning.
+**Automatic / Pause**, **Schedule & away**, **Manual heating override**,
+**Heating strategy & comfort** and the **Home heat model**.
 Garage offers persistent **Normal / Away**, an editable normal target, native
 pump controls and separate **Frost protection**. Raising the selected target shows
 a moisture warning for approximately 24 hours. The sender settings and pipe
@@ -181,14 +182,14 @@ button labels. The equipment inventory includes individual room and protection
 sensors, tariff relays and native Shelly devices. The Caravan fold groups air
 temperature and humidity, energy and dehumidifier controls. Native Mitsubishi
 temperatures remain in the heat-pump detail view.
-Held changes during Pause show an amber notice even when the sections are closed;
-changing a paused Heat control selection opens a confirmation explaining its lifetime.
+Held changes during Pause show an amber notice beside the folded override controls.
+The selected lifetime is shown beside the buttons; no extra confirmation is needed.
 With live `providers` or `mqtt` input and configured controls, Normal and Reduced
-send tariff requests through the controller's executor. **Max preheating** requests
-normal tariff operation and circulation, and raises the selected ROOM setting
+use the shared tariff/native phase controls. **Preheat** requests
+normal tariff operation, opens commissioned floor circuits and raises the saved ROOM setting
 by the configured maximum boost, capped at the writable ROOM upper limit, with
 H66 readback. It needs no separate temperature input. Repeated clicks do not add
-further boosts. Leaving Max preheating removes that boost while retaining other
+further boosts. Leaving Preheat removes that boost while retaining other
 manual parameter choices.
 Circulation uses MQTT switch ON/OFF and its own configured run duration whether
 paused or not. Clicking Start again starts a full new run; Stop ends it immediately.
@@ -206,9 +207,9 @@ is unconfirmed.
 **Adjust heat-pump parameters** offers ROOM (`0203`), DHW start (`0212`), DHW stop
 (`0208`) and operating-mode (`2201`) changes when the connection and fresh writable
 readbacks are ready. These are persistent native parameter edits; they become the baseline for later
-automatic changes. Bounded heating-mode overrides retain separate restoration duties.
+automatic changes. Manual heating overrides retain their separate pause or lease scope and restoration duties.
 The UI distinguishes a sent request from device readback and a pending restore.
-These are real manual commands with live input, including with heating automation set to Plan only.
+These are real manual commands with live input, including with heating automation set to Pause.
 
 For UI development run `npm start` and `npm run dev` in separate terminals. Vite
 proxies `/api` to the backend. `npm run preview` alone does not provide the API.
@@ -583,8 +584,8 @@ Family can perform only these writes:
 
 - Record firewood and remove any entry within 15 minutes of its being recorded.
 - Start and stop DHWR circulation.
-- Set, change or cancel Home Away/Pause and use temporary Home
-  Normal/Reduction/Preheat with their existing expiry and restoration rules.
+- Set, change or cancel Home Away/Pause and use manual Home
+  Normal/Reduction/Preheat with their pause or lease scope and restoration rules.
 - Select Garage Normal/Away and its normal temperature. The selection has no
   expiry; native pump edits and local frost protection remain separate.
 - Open, close and stop configured garage doors where supported.
@@ -606,7 +607,7 @@ freshness basis, with the source timestamp still unknown. Retained, duplicate an
 invalid messages are handled explicitly. A documented C60 profile does not prove
 installed-device semantics. See [learning and H66 control](docs/learning-and-control.md).
 
-Start live collection with Home initially set to Plan only and Garage control explicitly configured:
+Start live collection with Home initially set to Pause and Garage control explicitly configured:
 
 ```sh
 STMQ_INPUT=providers npm start
@@ -636,7 +637,7 @@ explicit internal-sensor fallback; frost demand separately selects HEAT/ON.
 A BLU H&T can test the temperature path, but it cannot supply two-probe protection.
 See [Garage adapter](docs/garage-adapter.md).
 
-Manual **Heating off** works in Plan only when its installed expiry/restoration
+Manual **Heating off** works in Pause when its installed expiry/restoration
 checks and protection evidence qualify. It saves the room intent, clears external
 sensing, then requests bounded OFF. **Normal** or expiry restores native ON;
 the saved external target resumes with fresh source evidence. This manual
@@ -829,11 +830,11 @@ locations, and environment variables. Changing one of these rejects the whole
 application of settings; restart to use such changes. Finish ongoing equipment
 tests and setting changes first. Owned equipment settings are restored before
 reconnecting; pending restoration blocks the update until equipment is available.
-An in-progress automatic heating cycle ends, while Away/Pause deadlines and
+An in-progress automatic heating cycle ends, while Away and pause choices and
 learning history remain. Startup environment overrides still apply.
 
-The dashboard reports the active values; Away/Pause and explicit timed tests are
-temporary controls. Configuration takes precedence over old browser-saved
+The dashboard reports the active values; Away and scheduled Pause retain their
+deadlines, indefinite Pause has no end time, and explicit tests remain timed. Configuration takes precedence over old browser-saved
 mode/drop settings. `temp_to_hours` is obsolete and has been removed.
 
 `recording.annual_budget_gb` defaults to `10`. There is no maximum recording
@@ -876,7 +877,7 @@ Normal DHW settings and circulation eligibility return at expiry. To restore the
 earlier, pause price control; this selects Normal heating and restores the captured
 native settings. Start a timed circulation run separately if needed.
 `controller.input` is configuration-owned. Home automation and Garage manual mode choices
-are stored separately, bound to the current equipment, and default to Plan only.
+are stored separately, bound to the current equipment, and default to Pause.
 
 The optional `electricity.effective_date` is a Finnish calendar date. First-use
 rates begin today if no date is supplied; subsequent changes begin when loaded.

@@ -24,7 +24,6 @@ test('paused manual heating selections use the executor and preserve the automat
   const { engine, store, config } = setup(t, { commandTransport });
   engine.setTemporary({ awayUntilLocal: '2026-09-09T12:00', pauseUntilLocal: '2026-09-08T12:00' });
   const before = engine.status();
-  const checkpoint = store.getState('controller:providers:plan-only');
   const parameters = structuredClone(engine.checkpoint.model.parameters);
   const execute = engine.executor.execute.bind(engine.executor), calls = [];
   engine.executor.execute = (decision, options) => { calls.push({ decision, options }); return execute(decision, options); };
@@ -54,7 +53,6 @@ test('paused manual heating selections use the executor and preserve the automat
   assert.deepEqual(automaticDecision, before.decision);
   assert.equal(manualHold.until, before.override.expiresAt);
   assert.deepEqual(engine.checkpoint.model.parameters, parameters);
-  assert.deepEqual(store.getState('controller:providers:plan-only'), checkpoint);
   assert.equal(store.events().filter(event => event.type === 'heating-test-sent').length, 3);
   assert.equal(store.events().filter(event => event.type === 'decision').length, 1);
   const restarted = new Engine({ store, config, commandTransport, clock: engine.clock });
@@ -79,7 +77,7 @@ test('manual MQTT tests require live input, exact commands and a configured tran
   const { engine, store } = setup(t, { commandTransport });
   for (const body of [null, [], {}, { command: 'unknown' }, { command: ['reduction'] },
     { command: 'reduction', topic: 'arbitrary/device' }, { command: 'reduction', retain: true }]) {
-    await assert.rejects(engine.testHeating(body), /Choose Normal heating, Max preheating, Reduced heating or hot-water circulation/);
+    await assert.rejects(engine.testHeating(body), /Choose Normal heating, Preheat, Reduced heating or hot-water circulation/);
   }
   assert.equal(publishes, 0);
   assert.equal(store.events().filter(event => event.type.startsWith('heating-test')).length, 0);
@@ -92,6 +90,8 @@ test('pending tests cannot overlap and failed tests are recorded without exposin
   engine.tick(); await engine.dispatchPending;
   const pending = engine.testHeating({ command: 'reduction' });
   await assert.rejects(engine.testHeating({ command: 'normal' }), /already in progress/);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(typeof rejectPublish, 'function');
   rejectPublish(new Error('synthetic-private-broker-password'));
   await assert.rejects(pending, /could not be confirmed/);
   const result = engine.status().heatingTests.lastResult;
@@ -160,7 +160,7 @@ test('heating test API authenticates, validates same-origin JSON and waits for p
   assert.match((await failure.json()).error, /could not be confirmed/);
 });
 
-test('restart with Plan only restores a saved DHWR run without a new ON', async t => {
+test('restart while paused restores a saved DHWR run without a new ON', async t => {
   const switches = [];
   const commandTransport = { async publish() { return { status: 'mqtt', sent: true, actual: null }; },
     async publishDhwr(on) { switches.push(on); return { status: 'mqtt', sent: true, actual: null }; } };

@@ -246,7 +246,7 @@ test('PUBACK latency extends the conservative pulse end before reduction is allo
   assert.equal((await r.run('reduction')).phase, 'reduction');
 });
 
-test('Plan only is synchronous and manual tests cannot overlap an active write', async t => {
+test('Pause is synchronous and manual tests cannot overlap an active write', async t => {
   let acknowledge;
   const r = rig(t, { native: false, publishLegacy: () => new Promise(resolve => { acknowledge = resolve; }) });
   {
@@ -503,4 +503,131 @@ test('elapsed expiry with unavailable OFF delivery retains the original stop obl
   assert.equal(r.executor.status().dhwrOutstanding, true);
   assert.deepEqual(r.executor.status().targetBindings.dhwr, binding);
   assert.equal(r.executor.status().restorationPending, true);
+});
+
+test('manual Reduced applies automatic DHW and AUX settings and remains through an indefinite pause', async t => {
+  const r = rig(t), pause = { id: 'synthetic-indefinite-pause', expiresAt: null };
+  const result = await r.executor.execute({ phase: 'reduction', commands: ['reduction'] },
+    { manualTest: true, now: r.now, pause });
+  assert.equal(result.phase, 'reduction');
+  assert.deepEqual(r.values, { '0203': 19, '0212': 40, '0208': 50, '2201': 2 });
+  assert.equal(r.h66.status().expiresAt, null);
+  r.advance(2 * 86_400_000);
+  await r.executor.maintainPause(r.now, pause);
+  assert.equal(r.executor.status().phase, 'reduction');
+  assert.equal(r.h66.status().obligations['2201'].baseline, 1);
+  await r.executor.execute({ commands: ['normal'] }, { manualTest: true, now: r.now, pause });
+  assert.deepEqual(r.values, { '0203': 19, '0212': 47, '0208': 62, '2201': 1 });
+});
+
+test('changing a pause end updates held Reduced native restoration without rewriting its settings', async t => {
+  const r = rig(t), pause = { id: 'synthetic-edited-pause', expiresAt: null };
+  await r.executor.execute({ commands: ['reduction'] }, { manualTest: true, now: r.now, pause });
+  const count = r.log.length;
+  const end = r.now + 3_600_000;
+  await r.executor.maintainPause(r.now, { ...pause, expiresAt: end });
+  assert.equal(r.h66.status().expiresAt, end);
+  assert.equal(r.executor.status().manualRequested.expiresAt, end);
+  assert.equal(r.log.length, count);
+  await r.executor.maintainPause(r.now, pause);
+  assert.equal(r.h66.status().expiresAt, null);
+  assert.equal(r.log.length, count);
+});
+
+test('manual Reduced waits for an existing circulation service pulse exactly as automatic Reduced does', async t => {
+  const r = rig(t), pause = { id: 'synthetic-circulation-pause', expiresAt: null };
+  await r.executor.execute({ commands: ['circulation'] }, { manualTest: true, now: r.now });
+  const result = await r.executor.execute({ commands: ['reduction'] }, { manualTest: true, now: r.now, pause });
+  assert.equal(result.status, 'waiting');
+  assert.equal(result.requestedPhase, 'reduction');
+  assert.equal(r.values['0212'], 47);
+  assert.equal(r.log.some(row => row.commands?.includes('reduction')), false);
+  r.advance(600_001); await r.executor.maintainPause(r.now, pause);
+  assert.equal(r.values['0212'], 40);
+  assert.deepEqual(r.log.at(-1).commands, ['reduction']);
+  assert.equal(r.executor.status().manualRequested.confirmed, true);
+});
+
+test('manual Preheat has one unrenewed floor lease and restores ROOM while floor expiry readback is still pending', async t => {
+  let leases = 0, finish;
+  const floor = { status: () => ({ enabled: true, leaseSeconds: 900 }),
+    async lease({ until }) { leases++; return { confirmed: true, leaseUntil: until }; },
+    async release() { return { restorationPending: false }; },
+    finishLease() { return new Promise(resolve => { finish = resolve; }); } };
+  const r = rig(t, { floorOverride: floor });
+  await r.executor.execute({ phase: 'preheat', commands: ['normal'], roomBoostC: 5 }, { manualTest: true, now: r.now });
+  const end = r.now + 900_000;
+  assert.equal(r.h66.status().expiresAt, end);
+  for (let i = 0; i < 2; i++) { r.advance(300_000); await r.executor.maintainPause(r.now); }
+  await r.executor.execute({ phase: 'preheat', commands: ['normal'] }, { manualTest: true, now: r.now });
+  assert.equal(leases, 1);
+  assert.equal(r.executor.status().manualRequested.expiresAt, end);
+  r.advance(300_000);
+  const ending = r.executor.maintainPause(r.now);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(r.values['0203'], 19, 'ROOM restore must not wait for a failing floor timeout');
+  finish({ outcome: 'device-local', restorationPending: false }); await ending;
+  const report = r.executor.status().manualPreheatReport;
+  assert.equal(report.floorOutcome, 'device-local');
+  assert.equal(report.roomOutcome, 'restored');
+  assert.equal(report.expiresAt, r.now + 86_400_000);
+  assert.equal(r.executor.status().manualRequested, null);
+  r.advance(86_400_000);
+  assert.equal(r.executor.status().manualPreheatReport, null);
+});
+
+test('manual Preheat restores ROOM and retains uncertain release duty after a failed floor timeout', async t => {
+  const floor = { status: () => ({ enabled: true, leaseSeconds: 60 }),
+    async lease({ until }) { return { confirmed: true, leaseUntil: until }; },
+    async release() { return { restorationPending: false }; },
+    async finishLease() { return { outcome: 'unverified', restorationPending: true }; } };
+  const r = rig(t, { floorOverride: floor }), pause = { id: 'synthetic-preheat-pause', expiresAt: null };
+  await r.executor.execute({ phase: 'preheat', commands: ['normal'] }, { manualTest: true, now: r.now, pause });
+  r.advance(60_000); await r.executor.maintainPause(r.now, pause);
+  assert.equal(r.values['0203'], 19);
+  assert.equal(r.executor.status().manualPreheatReport.floorOutcome, 'unverified');
+  assert.equal(r.executor.status().restorationPending, true);
+});
+
+test('manual Reduced survives same-owner restart without replaying saved native writes', async t => {
+  const saved = new Map(), first = rig(t, { saved }), pause = { id: 'synthetic-restart-pause', expiresAt: null };
+  await first.executor.execute({ commands: ['reduction'] }, { manualTest: true, now: first.now, pause });
+  clearTimeout(first.executor.timer); first.executor.closed = true; await first.h66.close();
+  const restarted = rig(t, { saved, native: false });
+  assert.equal(restarted.executor.status().restartManualPause, true);
+  await restarted.executor.maintainPause(restarted.now, pause);
+  assert.equal(restarted.executor.status().phase, 'reduction');
+  assert.deepEqual(restarted.log, []);
+  await restarted.executor.restoreManual({ now: restarted.now, reason: 'resume-automatic' });
+  assert.deepEqual(restarted.log.at(-1).commands, ['normal']);
+});
+
+test('restarting a paused Reduced choice waits for target identity without discarding its durable scope', async t => {
+  const saved = new Map(), first = rig(t, { saved }), pause = { id: 'late-target-pause', expiresAt: null };
+  await first.executor.execute({ commands: ['reduction'] }, { manualTest: true, now: first.now, pause });
+  clearTimeout(first.executor.timer); first.executor.closed = true; await first.h66.close();
+  const restarted = rig(t, { saved, native: false });
+  delete restarted.transport.targetIdentity.tariff;
+  const result = await restarted.executor.maintainPause(restarted.now, pause);
+  assert.equal(result.status, 'waiting');
+  assert.equal(restarted.executor.status().restartManualPause, true);
+  assert.equal(restarted.executor.status().restorationPending, false);
+  assert.equal(restarted.executor.status().manualRequested.phase, 'reduction');
+  assert.deepEqual(restarted.log, []);
+  restarted.transport.targetIdentity.tariff = 'a'.repeat(64);
+  await restarted.executor.maintainPause(restarted.now, pause);
+  assert.equal(restarted.executor.status().phase, 'reduction');
+  assert.deepEqual(restarted.log, []);
+});
+
+test('orderly shutdown preserves a durable paused Reduced choice and its native restoration obligations', async t => {
+  const r = rig(t), pause = { id: 'shutdown-pause', expiresAt: null };
+  await r.executor.execute({ commands: ['reduction'] }, { manualTest: true, now: r.now, pause });
+  const before = r.log.length;
+  await r.executor.close();
+  assert.equal(r.log.length, before);
+  assert.equal(r.executor.status().manualRequested.phase, 'reduction');
+  assert.equal(r.saved.get('executor:home').manualPause.id, pause.id);
+  assert.equal(r.h66.status().obligations['2201'].baseline, 1);
+  assert.equal(r.values['2201'], 2);
 });

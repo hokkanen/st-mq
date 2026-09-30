@@ -40,7 +40,7 @@ async function fixture(t, options = {}) {
     ocppSetup: { adopt: record('ocppSetup.adopt') },
     ...Object.fromEntries(['setTemporary', 'testHeating', 'stopDhwr', 'coverEquipment', 'changeFireplace',
       'changeSensor', 'revertSensor', 'retrySensorRebuild', 'recheckEquipment', 'switchEquipment',
-      'dehumidifierEquipment', 'setH66Setting', 'testEquipment', 'restoreEquipmentTest', 'testH66', 'setOverride']
+      'dehumidifierEquipment', 'setH66Setting', 'testEquipment', 'restoreEquipmentTest', 'testH66']
       .map(name => [name, record(name)])),
   };
   const config = configuration(options.config);

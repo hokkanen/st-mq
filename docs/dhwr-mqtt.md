@@ -38,7 +38,7 @@ attempting ON, because a lost broker acknowledgement can still mean delivery.
 The expiry timer sends OFF without waiting for the next control tick. Shutdown,
 control restoration and restart also send OFF. Failed OFF delivery remains
 pending and is retried while ST-MQ owns control. Turning off automatic control
-restores equipment; Home Plan only never starts a new automatic run. Explicit timed circulation remains independent.
+restores equipment; Home Pause never starts a new automatic run. Explicit timed circulation remains independent.
 In a paired installation, a demoted instance stops sending commands; its saved
 obligation is handled by the instance that owns control on restoration.
 

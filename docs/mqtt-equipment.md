@@ -313,7 +313,7 @@ controls require a fresh state and confirm the new output through live readback;
 they do not schedule a reversal. DHWR circulation retains its configured run length
 and automatic OFF through ST-MQ's durable executor and the MQTT switch integration. Timed tests keep their saved original
 state and route until restoration completes; configuration cannot discard an
-unresolved restoration. Explicit manual controls can operate equipment with automation set to Plan only;
+unresolved restoration. Explicit manual controls can operate equipment with automation set to Pause;
 automatic control stays subject to each feature's permission and controller authority.
 
 Switch confirmation requires a newly accepted main-state report after dispatch,

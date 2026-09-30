@@ -190,18 +190,23 @@ permission to act. See [the configuration guide](docs/configuration.md).
 ### Configuration ownership and dashboard controls
 
 - Home automatic heating permission is a durable dashboard control choice bound
-  to its current equipment identity, defaulting to Plan only. Garage has manual
+  to its current equipment identity, defaulting to Pause. Garage has manual
   Normal/Away selections and independent device-local frost protection. Charging
   Automatic scheduling and Caravan Automatic power retain independent ownership. There is no global operating
   mode. The environment
   (live, simulation or history viewer) describes data/connection scope, not an
   automatic actuation permission. Explicit manual heating overrides are separately
-  authorized, bounded actions with restoration duties regardless of automation.
+  authorized actions with restoration duties regardless of automation. Home
+  Automatic / Pause is one choice: Pause has no end unless a resume time is set.
+  Normal and Reduced choices remain during Pause; Preheat always has a fixed
+  lease deadline and restores ROOM at that deadline. Scheduled expiry resumes
+  Automatic for the same equipment identity.
 - Configured controller defaults belong exclusively to configuration. Dashboard
   edits must never rewrite those defaults or create persistent database
   preferences that replace them. Reloading or restarting must derive defaults
   from the current configuration, not from an earlier dashboard preference.
-- Temporary controller overrides require an explicit physical session or expiry. Display
+- Temporary controller overrides require an explicit physical session or expiry
+  (Home Normal/Reduced may instead use the current explicit Pause). Display
   that scope beside the action, restore configured behavior when it ends, and
   persist only the remaining valid scope across restart. Validate session and
   device identity before accepting an edit; a new connection inherits no old
@@ -229,8 +234,11 @@ permission to act. See [the configuration guide](docs/configuration.md).
   actual settings from the pump; do not impose an application expiry or mirror
   readable native settings into controller configuration. Successful edits
   establish the baseline for later automatic control. Home Heat control actions
-  Normal, Reduction and Preheat, and explicit timed tests, retain their bounded
-  behavior and restoration duties separately from parameter edits.
+  Normal and Reduction last through the current Pause, including a pause without
+  an end time. In Automatic they are reassessed on the next controller update.
+  Preheat and explicit timed tests retain fixed deadlines and restoration duties
+  separately from parameter edits. Manual phases use the same immediate equipment
+  actions as automatic phases; equipment capability and protection checks remain.
 - Garage Normal/Away is durable device-bound application intent without expiry.
   Configuration owns the predefined Away target; the explicit normal target and
   mode selection survive restart. ST-MQ sends the resulting real target and
@@ -304,7 +312,7 @@ Details: [recording and provenance](docs/recording.md),
 
 ## F5. Explicit control authority and restoration
 
-- Keep one authorized owner of equipment commands. Plan-only automation,
+- Keep one authorized owner of equipment commands. Paused automation,
   read-only replicas, copied database state and restored checkpoints do not grant
   actuation permission. Pair promotion is explicit, never automatic after timeout.
 - Bind control choices and permission to the current equipment/session identity
@@ -456,3 +464,10 @@ Do not broaden a routine code task into a repeated security audit without eviden
   fields visible during temporary data loss, with an explicit unavailable state
   and source/quality details. Keep readings in their own fold and compressor state
   in the summary; never interpret missing compressor activity as idle.
+
+- Action receipts and similar success/failure/confirmation messages remain for
+  24 hours after the action, or until replaced by a newer action on that control.
+  Fresh device evidence updates pending text immediately; later stale readings
+  must not undo a confirmed receipt. Distinguish a past receipt from current
+  control ownership. Live faults and unresolved restoration remain visible for
+  their actual duration, independently of receipt expiry.

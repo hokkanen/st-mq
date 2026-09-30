@@ -56,99 +56,89 @@ function equipmentDocument() {
 const descendants = node => node.children.flatMap(child => [child, ...descendants(child)]);
 const deviceNode = (document, rootId, id) => document.getElementById(rootId).children.find(node => node.dataset.deviceId === id);
 
-test('switch receipts expire from their original request time and disappear when fresh feedback supersedes them', () => {
+test('switch receipts last 24 hours and describe fresh feedback without confusing it with active control', () => {
   const current = status();
   assert.match(equipmentControlResult(current, device()), /On requested.*device confirmed/);
-  assert.equal(equipmentControlResult({ ...current, now: now + 60_000 }, device()), '');
-  assert.equal(equipmentControlResult({ ...current, now: now + 2_000 }, device(0, now + 1_000)), '');
-  assert.match(equipmentControlResult(current, device(0, now - 1)), /On requested/,
-    'A report from before the request does not supersede it');
+  assert.match(equipmentControlResult({ ...current, now: now + 60_000 }, device()), /device confirmed/);
+  assert.equal(equipmentControlResult({ ...current, now: now + 86400_000 }, device()), '');
+  assert.match(equipmentControlResult({ ...current, now: now + 2_000 }, device(0, now + 1_000)), /latest device report: Off; request superseded/);
+  assert.match(equipmentControlResult(current, device(0, now - 1)), /device confirmed/);
   assert.equal(equipmentControlResult(current, { ...device(), id: 'another-switch' }), '');
   const stale = device(0, now + 1_000); stale.readings.switch_active.stale = true;
-  assert.match(equipmentControlResult({ ...current, now: now + 2_000 }, stale), /On requested/,
-    'Unusable readings do not prove a new physical state');
+  assert.match(equipmentControlResult({ ...current, now: now + 2_000 }, stale), /device confirmed/);
 });
 
-test('switch failures remain briefly, pending delivery stays visible, and a newer live state resolves old uncertainty', () => {
+test('a late fresh report resolves an unconfirmed switch receipt without waiting for a new command', () => {
   const current = status({ equipmentControls: { available: true,
     lastResult: receipt({ status: 'unconfirmed', confirmed: false, confirmedAt: undefined }) } });
-  assert.match(equipmentControlResult(current, device(0, now - 1)), /awaiting device confirmation/);
-  assert.equal(equipmentControlResult({ ...current, now: now + 2_000 }, device(1, now + 1_000)), '');
-  assert.equal(equipmentControlResult({ ...current, now: now + 60_000 }, device(0, now - 1)), '');
-  current.now += 120_000;
-  current.equipmentControls.busy = true;
-  current.equipmentControls.lastResult.status = 'pending';
-  assert.match(equipmentControlResult(current, device()), /On requested/,
-    'Actual in-flight delivery is not dismissed by the receipt timeout');
+  assert.match(equipmentControlResult(current, device(0, now - 1)), /no confirming device report/);
+  assert.match(equipmentControlResult({ ...current, now: now + 2_000 }, device(1, now + 1_000)), /device confirmed/);
+  assert.equal(equipmentControlResult({ ...current, now: now + 86400_000 }, device(0, now - 1)), '');
 });
 
-test('door completion clears its receipt while recent delivery failures and movement requests stay visible', () => {
-  assert.equal(equipmentCoverResult(door({ status: 'observed' }), now), '');
+test('door completion and uncertainty remain historical receipts for one day', () => {
+  assert.match(equipmentCoverResult(door({ status: 'observed' }), now), /state reported/);
   assert.match(equipmentCoverResult(door(), now), /position unconfirmed/);
-  assert.match(equipmentCoverResult(door({ status: 'unconfirmed' }), now), /no new position report/);
-  assert.equal(equipmentCoverResult(door({ status: 'unconfirmed' }), now + 60_000), '');
-  assert.equal(equipmentCoverResult(door({ action: 'stop' }), now + 60_000), '',
-    'Stop has no backend completion event, so its acknowledgement must also expire');
-  assert.match(equipmentCoverResult(door({ status: 'publishing' }), now + 120_000), /sending/);
+  assert.match(equipmentCoverResult(door({ status: 'unconfirmed' }), now + 60_000), /no new position report/);
+  assert.equal(equipmentCoverResult(door({ status: 'unconfirmed' }), now + 86400_000), '');
   const stopped = door({ action: 'stop' });
   stopped.readings.door_open.observedAt = now + 1_000;
-  assert.equal(equipmentCoverResult(stopped, now + 2_000), '');
+  assert.match(equipmentCoverResult(stopped, now + 2_000), /state reported: closed/);
 });
 
-test('equipment panel never revives a superseded switch receipt on repeated polls or later unusable readings', () => {
+test('equipment panel retains superseded evidence through stale or reordered polls without reviving confirmation', () => {
   const document = equipmentDocument(), panel = createEquipmentPanel({ document, request: async () => {} });
   const current = status(); panel.update(current);
   const result = deviceNode(document, 'garage-equipment-readings', 'fixture-switch').querySelector('.equipment-control-result');
   assert.equal(result.hidden, false);
   const changed = status({ now: now + 2_000, equipment: { devices: [device(0, now + 1_000)] } });
-  panel.update(changed); assert.equal(result.hidden, true);
+  panel.update(changed); assert.match(result.textContent, /request superseded/);
   changed.equipment.devices[0].readings.switch_active.stale = true;
-  panel.update(changed); assert.equal(result.hidden, true);
-  panel.update({ ...current, now: now + 3_000 }); assert.equal(result.hidden, true);
+  panel.update(changed); assert.match(result.textContent, /request superseded/);
+  panel.update({ ...current, now: now + 3_000 }); assert.match(result.textContent, /request superseded/);
   const next = status({ now: now + 4_000,
     equipmentControls: { available: true, lastResult: receipt({ at: now + 4_000, confirmedAt: now + 4_000 }) } });
-  panel.update(next); assert.equal(result.hidden, false, 'A new request receives its own feedback');
-  panel.update({ ...next, now: now + 64_000 }); assert.equal(result.hidden, true);
-  panel.update({ ...next, now: now + 65_000 }); assert.equal(result.hidden, true);
+  panel.update(next); assert.match(result.textContent, /device confirmed/);
+  panel.update({ ...next, now: now + 86404_000 }); assert.equal(result.hidden, true);
 });
 
-test('equipment panel clears completed door messages and does not revive old request state', () => {
+test('equipment panel retains door completion rather than returning to waiting', () => {
   const document = equipmentDocument(), panel = createEquipmentPanel({ document, request: async () => {} });
   const current = status({ equipment: { devices: [door()] } }); panel.update(current);
   const result = deviceNode(document, 'garage-equipment-readings', 'fixture-door')
     .querySelector('.equipment-cover-controls').querySelector('.equipment-control-result');
-  assert.equal(result.hidden, false);
+  assert.match(result.textContent, /position unconfirmed/);
   panel.update({ ...current, equipment: { devices: [door({ status: 'observed' })] } });
-  assert.equal(result.hidden, true);
-  panel.update(current); assert.equal(result.hidden, true);
+  assert.match(result.textContent, /state reported/);
+  panel.update(current); assert.match(result.textContent, /state reported/);
   panel.update({ ...current, now: now + 1_000,
     equipment: { devices: [door({ action: 'close', requestedAt: now + 1_000 })] } });
-  assert.equal(result.hidden, false);
+  assert.match(result.textContent, /Close requested.*position unconfirmed/);
 });
 
-test('local equipment action errors expire and authoritative receipts replace generic network errors', async () => {
+test('local equipment errors last one day and authoritative receipts replace generic network errors', async () => {
   const actions = createEquipmentActions({ request: async () => { throw new Error('fixture failure'); } });
   actions.update(status({ equipmentControls: { available: true } }));
   assert.equal(await actions.switch('fixture-switch', false), false);
-  assert.equal(actions.snapshot().error, true);
-  actions.update(status({ now: now + 30_000, equipmentControls: { available: true } }));
-  assert.equal(actions.snapshot().error, true);
   actions.update(status({ now: now + 60_000, equipmentControls: { available: true } }));
+  assert.equal(actions.snapshot().error, true);
+  actions.update(status({ now: now + 86400_000, equipmentControls: { available: true } }));
   assert.equal(actions.snapshot().error, false);
   assert.equal(actions.snapshot().message, '');
   assert.equal(await actions.switch('fixture-switch', false), false);
-  actions.update(status({ now: now + 61_000, equipmentControls: { available: true,
-    lastResult: receipt({ on: false, at: now + 60_000, confirmed: false, status: 'unconfirmed' }) } }));
+  actions.update(status({ now: now + 86401_000, equipmentControls: { available: true,
+    lastResult: receipt({ on: false, at: now + 86400_000, confirmed: false, status: 'unconfirmed' }) } }));
   assert.equal(actions.snapshot().error, false);
   assert.equal(actions.snapshot().message, '');
 });
 
-test('recheck acknowledgements expire while active test restoration notices remain present', async () => {
+test('recheck receipts expire after one day while unresolved restoration remains visible', async () => {
   const current = status({ equipmentTests: { available: true, active: { deviceId: 'fixture-switch', status: 'restoration-pending' } } });
   const document = equipmentDocument(), panel = createEquipmentPanel({ document, request: async () => current });
   panel.update(current); await panel.actions.recheck();
-  assert.equal(document.getElementById('equipment-check-message').hidden, false);
   panel.update({ ...current, now: now + 60_000 });
+  assert.equal(document.getElementById('equipment-check-message').hidden, false);
+  panel.update({ ...current, now: now + 86400_000 });
   assert.equal(document.getElementById('equipment-check-message').hidden, true);
   assert.equal(document.getElementById('garage-active-test').hidden, false);
   assert.match(document.getElementById('garage-active-test').textContent, /restoration pending/);

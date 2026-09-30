@@ -20,16 +20,19 @@ export function homePlannedChange(status = {}) {
     'The controller has not reported a current heating plan.');
 
   const pauseUntil = status.override?.expiresAt;
-  if (Number.isFinite(pauseUntil) && pauseUntil > now) return display('Price control paused', `Until ${plannedTime(pauseUntil, now)}`,
-    'The controller will reassess the heating plan when the pause ends. Temporary heating selections return to their previous settings.', pauseUntil);
+  if (Number.isFinite(pauseUntil) && pauseUntil > now) return display('Heating paused', `Until ${plannedTime(pauseUntil, now)}`,
+    'Automatic heating resumes at this time. Manual Preheat keeps its own earlier lease deadline.', pauseUntil);
+  if (status.automation?.home?.enabled === false) return display('Heating paused', 'Until you select Automatic',
+    'Manual Normal and Reduced stay selected during the pause. Preheat ends at its lease deadline. Monitoring and learning continue.');
+  const hold = decision.manualHold;
+  if (hold?.phase === 'preheat' && hold.until > now) return display('Manual Preheat', `Ends at ${plannedTime(hold.until, now)}`,
+    'Preheat is held until its original lease deadline. ROOM is restored at that deadline even if floor restoration needs a retry.', hold.until);
 
   const simulated = status.input === 'simulated';
-  const planOnly = status.automation?.home?.enabled !== true;
-  const planLabel = simulated ? 'Simulation plan' : planOnly ? 'Heating preview' : 'Heating plan';
-  const nextLabel = simulated ? 'Next simulated change' : planOnly ? 'Next preview change' : 'Next planned change';
+  const planLabel = simulated ? 'Simulation plan' : 'Heating plan';
+  const nextLabel = simulated ? 'Next simulated change' : 'Next planned change';
   const provenance = simulated ? 'Simulation only; no commands are sent to the home.'
-    : planOnly ? 'Home heating is set to Plan only; this plan sends no automatic commands.'
-      : 'The controller rechecks the plan as conditions change.';
+    : 'The controller rechecks the plan as conditions change.';
   if (decision.phase === 'recovery') return display(planLabel, 'Recovery in progress',
     `Recovery ends when the house has recovered; there is no fixed end time. ${provenance}`);
 

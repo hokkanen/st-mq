@@ -1,3 +1,4 @@
+import { actionReceiptRecent } from './action-receipts.js';
 import { isReadOnlyReplica } from './replica-status.js';
 import { setStatusDetail } from './status-details.js';
 
@@ -35,8 +36,7 @@ export const dehumidifierCommandAllowed = (status, device, setting, value, busy 
 export function dehumidifierResult(device, now = Date.now()) {
   const operation = device?.dehumidifier?.operation;
   if (!operation || !dehumidifierValueAllowed(operation.setting, operation.value)
-    || !Number.isFinite(operation.requestedAt) || operation.requestedAt > now
-    || now - operation.requestedAt >= 60_000) return '';
+    || !actionReceiptRecent(operation.requestedAt, now)) return '';
   const value = DEHUMIDIFIER_OPTIONS[operation.setting].find(option => option[0] === operation.value)[1];
   const result = { publishing: 'sending…', published: 'sent; awaiting device report', observed: 'device reported',
     unconfirmed: 'no confirming device report', failed: 'could not send; check the device' }[operation.status];

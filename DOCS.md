@@ -1,6 +1,6 @@
 # Home Assistant add-on setup
 
-The 0.9.0 application starts with **simulated devices and Plan only heating**. Default
+The 0.9.0 application starts with **simulated devices and Pause heating**. Default
 startup launches no live controller or provider. Live automation is enabled separately in each feature after configuring its connection. See [learning and control](docs/learning-and-control.md)
 for the algorithm, native-setting restoration and equipment testing limits.
 [Automation and manual heating](docs/automation-and-manual-control.md) explains
@@ -13,7 +13,7 @@ the independent feature controls and Garage local temperature regulation.
    Assistant login. Set an admin password of at least 24 characters in `web_token`
    for direct access on the mapped port 1234. Optionally set a different family
    password of at least 24 characters in `web_family_token`. Leave
-   `controller.input: simulated` for initial review; Home defaults to Plan only; Garage control is disabled by default.
+   `controller.input: simulated` for initial review; Home defaults to Pause; Garage control is disabled by default.
 3. Start the add-on and choose **Open Web UI** in Home Assistant. Ingress needs no
    separate application password. Direct access, when enabled, asks for either
    configured password and selects its role. The **Home Energy** UI clearly labels simulation.
@@ -30,7 +30,7 @@ the independent feature controls and Garage local temperature regulation.
    application image.
 6. Choose `controller.input: offline` to view imported history without device
    connections. Choose `providers` or `mqtt` for live temperatures and prices.
-   Keep Home on **Plan only** while reviewing plans. Configure the
+   Keep Home on **Pause** while reviewing plans. Configure the
    current direct equipment relay route in [equipment setup](docs/mqtt-equipment.md)
    and verify its device identity, command acceptance and fresh state readback, or
    commission H66 native control as described below. Then enable Home **Automatic** if desired. Configure Garage manual control separately.
@@ -84,7 +84,7 @@ startup settings reject the entire application of settings; use a restart for
 those changes. Wait for ongoing heating operations and native setting tests to
 finish. Existing equipment overrides are restored before reconnecting; pending
 restoration blocks the update until equipment is available. An in-progress
-automatic heating cycle ends, while Away/Pause deadlines and learning history
+automatic heating cycle ends, while Away and pause choices and learning history
 remain. Startup environment overrides still apply.
 
 You can also import private settings through the same **Apply configuration**
@@ -116,7 +116,7 @@ The **Configuration** section also reports live access status. Setting a valid
 `controller.web_token` and applying enables direct admin access on port 1234.
 `controller.web_family_token` optionally enables family access with a different
 password. Family can read all pages, operate firewood (removal within 15 minutes),
-DHWR, temporary heating including Away/Pause, garage doors and all EV card
+DHWR, manual heating and Away/Pause, garage doors and all EV card
 controls. Other writes, exports/downloads and settings administration require
 admin; see [web access](README.md#connections-and-access).
 
@@ -248,7 +248,7 @@ equipment** in Garage contain readbacks and manual tests; Garage's chargers sit
 directly below its heating summary. Home's upper summary includes indoor and
 outdoor temperatures, heating request and all-in price. Below those readings, a
 compact row shows the next selected heating-plan change in Finnish local time.
-It identifies paused, Plan only, simulated and read-only states and does not assign
+It identifies paused, simulated and read-only states and does not assign
 a fixed end time to recovery. Equipment and connections headers retain their
 height when toggled; desktop balancing adds only bounded gaps between sections.
 **Tariff control** appears
@@ -260,9 +260,12 @@ settings and pipe estimates appear when the Gen3 sender is connected. A target
 increase shows moisture guidance for roughly 24 hours; the selected mode has no
 expiry. The BLU H&T development feed supplies temperature only.
 
-Home retains **Temporary heating override**, Away/Pause, **Savings & comfort**
-and learning. Its 0–100 **Savings preference** and **Pause price control** affect
-economic control; permanent changes use **Apply configuration**. Home's
+Home uses **Automatic / Pause**, **Schedule & away**, a folded **Manual heating
+override**, and **Heating strategy & comfort** before the heat model. Pause can
+last indefinitely or end at a scheduled resume time. Manual modes share the
+automatic equipment actions; Preheat ends at its original floor lease deadline.
+Action receipts remain for 24 hours and reconcile device feedback. Configuration
+owns the Gentle/Balanced/More savings strategy and comfort limits. Home's
 **Overall comfort reference** and **Room references & limits** show learned
 references with configured drop/rise allowances.
 
@@ -276,10 +279,10 @@ default and separately permits native Easee schedules, independently of the heat
 adapter. See [charging](docs/charging.md).
 **Data & settings** summarizes provider health; each provider row opens its series
 and source details. Its **Connections & configuration** fold contains MQTT setup,
-configuration reload and electricity rates. The **Away until** and **Pause until** controls use
+configuration reload and electricity rates. The **Away until** and **Resume automatic heating at** controls use
 Finnish time even when the remote browser is in another timezone. Apply changes
-saves them together; **Home now** and **Resume now** cancel
-them independently. They persist in the database and expire at their deadlines,
+saves them together; **Home now** and **Automatic now** cancel
+them independently. They persist in the database; scheduled deadlines end Away or resume Automatic,
 including after a restart. Nonexistent or repeated clock-change times require
 another picker time; the API also accepts an explicit UTC offset.
 

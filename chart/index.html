@@ -102,23 +102,46 @@
               <div id="heating-test-details">
                 <div class="zone-section-heading"><h4 id="heating-configuration-title">Heating control</h4><p id="heating-test-status" class="muted home-control-availability"></p></div>
               <div class="feature-automation" role="group" aria-labelledby="home-automation-title" aria-describedby="home-automation-activity">
-                <h5 id="home-automation-title">Home heating automation</h5>
+                <h5 id="home-automation-title">Heating mode</h5>
                 <div class="heating-mode-buttons heating-mode-buttons-two">
-                  <button id="home-automation-plan" class="secondary-button" type="button" data-write-control data-access-path="/api/automation" aria-pressed="false" disabled>Plan only</button>
                   <button id="home-automation-automatic" class="secondary-button" type="button" data-write-control data-access-path="/api/automation" aria-pressed="false" disabled>Automatic</button>
+                  <button id="home-automation-pause" class="secondary-button" type="button" data-write-control data-access-path="/api/automation" aria-pressed="false" disabled>Pause</button>
                 </div>
                 <p id="home-automation-activity" class="muted" role="status">Waiting for automation status</p>
                 <p id="home-automation-message" class="temporary-status" role="status" aria-live="polite"></p>
               </div>
+
+                <details id="temporary-details" class="equipment-fold temporary-panel">
+                  <summary><span>Schedule &amp; away</span><small id="temporary-overview">At home · no resume time</small></summary>
+                  <form id="temporary-form" data-write-control class="temporary-form">
+                    <p class="muted form-timezone">All dates and times below are in Finland · Europe/Helsinki.</p>
+                    <div class="temporary-field">
+                      <label for="pause-until">Resume automatic heating at</label>
+                      <div class="temporary-input-row"><input id="pause-until" type="text" data-date-picker="datetime-local" aria-describedby="override-status pause-help"><button id="resume-now" class="secondary-button" type="button" disabled>Automatic now</button></div>
+                      <p id="override-status" class="temporary-status">No scheduled resume.</p>
+                      <p id="pause-help" class="muted">Set a time to pause now and resume automatically then. Leave it empty to stay paused until you select Automatic. Pausing restores normal heating first; later Normal or Reduced selections stay for the pause. Preheat keeps its own lease deadline. Monitoring and learning continue.</p>
+                    </div>
+                    <div class="temporary-field">
+                      <label for="away-until">Away until</label>
+                      <div class="temporary-input-row"><input id="away-until" type="text" data-date-picker="datetime-local" aria-describedby="away-status away-help"><button id="home-now" class="secondary-button" type="button" disabled>Home now</button></div>
+                      <p id="away-status" class="temporary-status">At home.</p>
+                      <p id="away-help" class="muted">Allow longer price-based reductions while away. The occupied temperature-drop and rise limits do not apply until your return; planning includes reheating costs.</p>
+                    </div>
+                    <div class="temporary-actions"><button id="temporary-submit" type="submit" disabled>Apply changes</button><p id="temporary-message" class="muted" role="status"></p></div>
+                    <p id="override-scope" class="muted">Away changes the automatic plan; it does not resume paused heating.</p>
+                  </form>
+                </details>
 
                 <div id="home-h66-summary" class="home-heating-state" role="group" aria-label="Current heating state">
                   <div class="home-state-reading" data-h66-summary="mode"><span>Heat-pump mode</span><strong>Unavailable</strong></div>
                   <div class="home-state-reading"><span>Tariff control</span><strong id="tariff-control-state">—</strong></div>
                   <div class="home-state-reading"><span>Hot-water circulation</span><strong id="dhwr">—</strong></div>
                 </div>
-                <h5 id="home-temporary-heating-title" class="home-control-subtitle">Temporary heating override</h5>
-                <p id="heating-test-help" class="muted zone-control-help">Changes reset on the next controller update, normally within 1 minute. Pause price control to hold them longer.</p>
-                <div id="heating-test-buttons" class="heating-test-buttons heating-mode-buttons" role="group" aria-labelledby="home-temporary-heating-title" aria-describedby="heating-test-help home-hold-warning heating-test-status">
+                <p id="heating-held-summary" class="heating-hold-warning" role="status" hidden></p>
+                <details id="home-manual-override-details" class="equipment-fold manual-heating-override">
+                  <summary><span id="home-manual-heating-title">Manual heating override</span><small id="home-manual-overview">Direct equipment controls</small></summary>
+                <p id="heating-test-help" class="muted zone-control-help">Normal and Reduced use the same equipment actions as automatic heating. Pause holds your choice; Preheat always ends at its lease deadline.</p>
+                <div id="heating-test-buttons" class="heating-test-buttons heating-mode-buttons" role="group" aria-labelledby="home-manual-heating-title" aria-describedby="heating-test-help home-hold-warning heating-test-status">
                   <button id="test-normal" data-write-control class="secondary-button" type="button" data-heating-command="normal" aria-pressed="false" disabled><span>Normal heating</span><span class="heating-button-state" aria-hidden="true"></span></button>
                   <button id="test-preheat" data-write-control class="secondary-button" type="button" data-heating-command="preheat" aria-pressed="false" aria-describedby="heating-preheat-help" disabled><span>Preheat</span><span class="heating-button-state" aria-hidden="true"></span></button>
                   <button id="test-reduction" data-write-control class="secondary-button" type="button" data-heating-command="reduction" aria-pressed="false" disabled><span>Reduced heating</span><span class="heating-button-state" aria-hidden="true"></span></button>
@@ -126,25 +149,8 @@
                 <p id="home-hold-warning" class="heating-hold-warning" role="status" hidden></p>
                 <p id="heating-preheat-help" class="muted zone-control-help" hidden></p>
                 <p id="heating-test-message" class="temporary-status" role="status" aria-live="polite"></p>
-                <details id="temporary-details" class="equipment-fold temporary-panel">
-                  <summary><span>Away &amp; pause</span><small id="temporary-overview">At home · price control active</small></summary>
-                  <form id="temporary-form" data-write-control class="temporary-form">
-                    <p class="muted form-timezone">All dates and times below are in Finland · Europe/Helsinki.</p>
-                    <div class="temporary-field">
-                      <label for="away-until">Away until</label>
-                      <div class="temporary-input-row"><input id="away-until" type="text" data-date-picker="datetime-local" aria-describedby="away-status away-help"><button id="home-now" class="secondary-button" type="button" disabled>Home now</button></div>
-                      <p id="away-status" class="temporary-status">At home.</p>
-                      <p id="away-help" class="muted">Allow longer price-based reductions while away. The occupied temperature-drop and rise limits do not apply until your return; planning includes reheating costs.</p>
-                    </div>
-                    <div class="temporary-field">
-                      <label for="pause-until">Pause until</label>
-                      <div class="temporary-input-row"><input id="pause-until" type="text" data-date-picker="datetime-local" aria-describedby="override-status pause-help"><button id="resume-now" class="secondary-button" type="button" disabled>Resume now</button></div>
-                      <p id="override-status" class="temporary-status">Price control is not paused.</p>
-                      <p id="pause-help" class="muted">Starting a pause requests Normal heating. Normal, Reduction and Preheat selections made afterwards stay until the pause ends or you select Resume now, then the previous heating state is restored. Heat-pump parameter edits remain in effect. Automatic price control then resumes if enabled; monitoring and learning continue throughout.</p>
-                    </div>
-                    <div class="temporary-actions"><button id="temporary-submit" type="submit" disabled>Apply changes</button><p id="temporary-message" class="muted" role="status"></p></div>
-                    <p id="override-scope" class="muted">Changes are recorded without sending equipment commands.</p>
-                  </form>
+                  <p id="heating-preheat-report" class="muted heating-action-report" role="status" aria-live="polite" hidden></p>
+                  <p class="muted heating-receipt-help">Action reports stay for 24 hours and update when device feedback arrives.</p>
                 </details>
                 <details id="home-preferences-details" class="equipment-fold home-preferences heating-policy">
                   <summary><span>Heating strategy &amp; comfort</span><small id="home-comfort-limits">Configured limits</small></summary>
@@ -158,7 +164,7 @@
                         <li id="home-strategy-balanced" class="heating-strategy-option" data-selected="false"><strong>Balanced <span id="home-strategy-balanced-current" class="heating-strategy-current" hidden>Current</span></strong><p>Weigh worthwhile savings against temperature changes and the length of the intervention.</p></li>
                         <li id="home-strategy-savings" class="heating-strategy-option" data-selected="false"><strong>More savings <span id="home-strategy-savings-current" class="heating-strategy-current" hidden>Current</span></strong><p>Accept smaller benefits and more temperature variation to retain the greatest qualifying savings.</p></li>
                       </ul>
-                      <p class="heating-policy-note">These are saved configuration choices. Edit the Home savings strategy in configuration, then use Apply configuration in Data &amp; settings. Away &amp; pause above provides temporary changes.</p>
+                      <p class="heating-policy-note">These are saved configuration choices. Edit the Home savings strategy in configuration, then use Apply configuration in Data &amp; settings. Schedule &amp; away above sets a return time or an automatic resume time.</p>
                     </section>
                     <section class="heating-policy-section" aria-labelledby="home-comfort-title">
                       <h5 id="home-comfort-title">Comfort boundaries</h5>
@@ -195,12 +201,12 @@
                       <p>Automatic heating uses the following phases when their equipment and prediction checks pass.</p>
                       <dl class="heating-policy-values heating-policy-actions">
                         <div><dt>Normal heating</dt><dd>Release price-based changes and use the heat pump’s saved settings. The heat pump decides when heat is needed.</dd></div>
-                        <div><dt>Preheat</dt><dd>Raise the saved ROOM demand setting by up to <strong id="home-preheat-setting">—</strong>, subject to device limits. Commissioned floor overrides may open the configured circuits together. ROOM is a demand setting, not a room-air target.</dd></div>
-                        <div><dt>Reduced heating</dt><dd>Request tariff reduction. With native heat-pump control available, also lower hot-water settings and restrict auxiliary heating. Automatic hot-water circulation is held back. A reduction request does not prove that the compressor stopped.</dd></div>
+                        <div><dt>Preheat</dt><dd>Restore normal hot-water and auxiliary settings, then raise the saved ROOM demand setting by up to <strong id="home-preheat-setting">—</strong>, subject to device limits. Commissioned floor overrides may open the configured circuits together. ROOM is a demand setting, not a room-air target.</dd></div>
+                        <div><dt>Reduced heating</dt><dd>Request tariff reduction. With native heat-pump control available, also lower hot-water settings and restrict auxiliary heating. Automatic hot-water circulation is held back; a run already in progress finishes before reduction starts. A reduction request does not prove that the compressor stopped.</dd></div>
                         <div><dt>Recovery</dt><dd>Release tariff reduction and restore normal ROOM demand. A timed hold can retain reduced hot-water settings and restrict auxiliary heat; cold-room protection can release the auxiliary restriction early. Saved settings and normal circulation eligibility return at the hold deadline.</dd></div>
                       </dl>
                       <p id="home-policy-durations" class="heating-policy-note">Configured duration limits are unavailable.</p>
-                      <p class="heating-policy-note">The override buttons above request a mode directly, bypassing automatic savings and forecast-comfort selection. Manual Reduced heating changes the tariff request only; it does not apply the automatic hot-water, auxiliary or circulation changes. Overrides normally reset on the next controller update. Pause price control to hold a manual choice. Equipment availability and restoration checks still apply.</p>
+                      <p class="heating-policy-note">Manual heating override requests the same equipment actions as the corresponding automatic phase, bypassing savings and forecast selection. Reduced heating also applies the available hot-water and auxiliary restrictions and holds back automatic circulation. In Automatic, Normal and Reduced are reassessed on the next controller update. Pause holds them until you select Automatic or the scheduled resume time. Preheat ends at the floor-circulation lease deadline, or sooner if you select Normal or Reduced; the controller also restores ROOM at that deadline. Equipment availability, native limits and restoration checks still apply.</p>
                       <div class="heating-policy-decision" role="status"><strong id="home-policy-current-title">Waiting for a decision</strong><p id="home-policy-current-detail"></p><p id="home-policy-economics" class="heating-policy-note"></p></div>
                       <details id="home-policy-details" class="equipment-fold heating-policy-details">
                         <summary>Decision thresholds &amp; safeguards</summary>
@@ -313,7 +319,6 @@
             </section>
           </div>
         </details>
-        <p id="heating-held-summary" class="heating-hold-warning" role="status" hidden></p>
         <div class="home-support">
           <details id="home-equipment-details" class="dashboard-disclosure zone-equipment-fold">
             <summary><span id="home-equipment-title">Sensors &amp; Equipment</span><small id="home-equipment-status" class="equipment-device-status"></small></summary>
@@ -529,12 +534,15 @@
           <div class="zone-content equipment-area">
             <section id="garage-manual-controls" class="zone-section zone-configuration" aria-labelledby="garage-heating-configuration-title">
               <div class="zone-section-heading"><h4 id="garage-heating-configuration-title">Heating control</h4><p id="garage-heating-status" class="muted home-control-availability"></p></div>
+              <div class="feature-automation">
+                <h5>Temperature mode</h5>
               <p id="garage-heating-help" class="muted zone-control-help">Choose a steady temperature. Normal and Away stay selected until you change them, including across restarts.</p>
               <div id="garage-heating-buttons" class="heating-mode-buttons heating-mode-buttons-two garage-mode-buttons" role="group" aria-label="Garage temperature mode" aria-describedby="garage-heating-help">
                 <button id="garage-mode-normal" data-write-control data-access-path="/api/garage/heating" class="secondary-button" type="button" aria-pressed="false" disabled><span>Normal</span><strong id="garage-mode-normal-target">—</strong><span class="heating-button-state" aria-hidden="true"></span></button>
                 <button id="garage-mode-away" data-write-control data-access-path="/api/garage/heating" class="secondary-button" type="button" aria-pressed="false" disabled><span>Away</span><strong id="garage-mode-away-target">—</strong><span class="heating-button-state" aria-hidden="true"></span></button>
               </div>
               <p id="garage-target-confirmation" class="muted" role="status">Waiting for heat-pump controller confirmation</p>
+              </div>
               <p id="garage-warming-warning" class="heating-hold-warning heating-hold-warning-strong garage-warming-warning" role="status" aria-live="polite" hidden></p>
               <div id="garage-heating-state" class="home-heating-state" role="group" aria-label="Current garage heating state">
                 <div class="home-state-reading"><span>Selected temperature</span><strong id="garage-current-control">Unavailable</strong></div>
@@ -542,11 +550,14 @@
                 <div class="home-state-reading"><span>Bluetooth room sensor</span><strong id="garage-bluetooth-temperature">Unavailable</strong></div>
                 <div class="home-state-reading"><span>Heat-pump mode</span><strong id="garage-current-mode">Unavailable</strong></div>
               </div>
+              <details id="garage-target-details" class="equipment-fold">
+                <summary><span>Normal temperature</span><small>Saved until changed</small></summary>
               <form id="garage-target-form" class="garage-target-form" aria-describedby="garage-target-help garage-heating-message">
                 <label for="garage-normal-target">Normal temperature · °C</label>
                 <div class="garage-target-input"><input id="garage-normal-target" data-write-control data-access-path="/api/garage/heating" type="number" min="0" max="31" step="0.5" required disabled><button id="garage-target-submit" data-write-control data-access-path="/api/garage/heating" class="secondary-button" type="submit" disabled>Save &amp; select Normal</button></div>
                 <p id="garage-target-help" class="muted">Away uses the preset shown above. Selecting a temperature keeps the heat pump’s power setting; use Heat-pump settings to turn it on or off.</p>
               </form>
+              </details>
               <p id="garage-control-detail" class="muted" role="status"></p>
               <p id="garage-heating-message" class="temporary-status" role="status" aria-live="polite"></p>
               <details id="garage-protection-details" class="equipment-fold garage-protection">

@@ -335,9 +335,9 @@ try {
       }) && document.getElementById('h66-readings-details').tagName === 'DETAILS'
         && document.getElementById('h66-readings-details').checkVisibility();
     })()`), true, 'Heat-pump settings and readings are visibly nested inside the Home heat pump');
-    await evaluate("document.getElementById('home-heat-pump-details').open=true");
+    await evaluate("document.getElementById('home-heat-pump-details').open=true;document.getElementById('home-manual-override-details').open=true");
     assert.equal(await evaluate("document.getElementById('home-manual-controls').tagName === 'SECTION' && document.getElementById('heating-test-details').tagName === 'DIV' && document.getElementById('heating-test-buttons').checkVisibility()"), true,
-      'Tariff controls are visible beside their reported state without another disclosure');
+      'Manual heating controls are visible inside their dedicated disclosure');
     assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, `Provider series and H66 table fit ${width}px`);
     writeFileSync(`var/home-providers-expanded-${width}.png`, Buffer.from((await send('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
     await evaluate("document.querySelectorAll('.controller-panels details').forEach(fold=>fold.open=false)");
@@ -348,7 +348,7 @@ try {
   assert.equal(await evaluate("window.savedProviderFold === document.querySelector('#providers .provider-fold') && window.savedProviderFold.open"), true, 'Provider folds stay mounted and open across refreshes');
   assert.equal(await evaluate("document.activeElement === document.querySelector('#providers summary')"), true, 'Provider summary keeps keyboard focus');
   assert.equal(await evaluate("document.querySelector('#providers .provider-series').children.length > 0"), true);
-  app.engine.setOverride(1);
+  app.engine.setTemporary({ pauseUntil: new Date(now + 60_000).toISOString() });
   await send('Page.reload');
   await until("document.getElementById('history')?.dataset.ready === 'true'");
   assert.match(await evaluate("document.getElementById('h66-test-status').textContent"), /Remains as the pump’s setting until changed again/);

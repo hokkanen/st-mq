@@ -28,13 +28,16 @@ export class Executor {
       throw failure('EXECUTOR_STATE_UNSUPPORTED', 'Unsupported heating state. Safely stop existing equipment, then start with a fresh development database.');
     this.state = saved != null ? copy(saved) : { version: 2, targetBindings: {}, phase: 'normal',
       pulseUntil: 0, expiresAt: null, legacyOutstanding: false, requested: null, acknowledgedAt: null, lastResult: null };
-    this.restartRestore = Boolean(this.state.legacyOutstanding || this.state.dhwrOutstanding || this.state.manualPause || this.state.manualTemporary || this.state.manualBaseline);
+    this.restartManualPause = Boolean(this.state.manualPause?.id && this.state.manualRequested?.phase === 'reduction'
+      && this.state.manualRequested.confirmed && (this.state.manualPause.expiresAt === null || this.state.manualPause.expiresAt > clock()));
+    this.restartRestore = !this.restartManualPause && Boolean(this.state.legacyOutstanding || this.state.dhwrOutstanding || this.state.manualPause || this.state.manualTemporary || this.state.manualBaseline);
     this.manualRestorePending = false;
     this.pending = null; this.timer = null; this.closed = false;
   }
   persist() {
     this.remaining('temporary', this.state.manualTemporary?.expiresAt);
     this.remaining('pause', this.state.manualPause?.expiresAt);
+    this.remaining('manual-preheat', this.state.manualRequested?.phase === 'preheat' ? this.state.manualRequested.expiresAt : undefined);
     this.remaining('dhwr', this.state.dhwrOutstanding ? this.state.pulseUntil : undefined);
     this.remaining('tariff', this.state.legacyOutstanding ? time(this.state.expiresAt) : undefined);
     this.store.setState(this.key, copy(this.state));
@@ -57,7 +60,7 @@ export class Executor {
     return Math.min(wallEnd - this.clock(), saved.end - this.monotonicClock());
   }
   expired(name, wallEnd) { return this.remaining(name, wallEnd) <= 0; }
-  status() { return { ...copy(this.state), busy: Boolean(this.pending), restorationPending: this.restartRestore }; }
+  status() { return { ...copy(this.state), restartManualPause: this.restartManualPause, manualPreheatReport: this.state.manualPreheatReport?.expiresAt > this.clock() ? copy(this.state.manualPreheatReport) : null, busy: Boolean(this.pending), restorationPending: this.restartRestore }; }
   execute(decision, { automationEnabled = false, now = this.clock(), manualTest = false, pause = null }) {
     if (typeof automationEnabled !== 'boolean') throw new Error('Invalid heating automation permission');
     if (manualTest) {
@@ -65,7 +68,7 @@ export class Executor {
       this.validateCommands(decision.commands);
       return this.exclusive(() => this.manual(decision.commands, now, pause, decision));
     }
-    if (!automationEnabled) return { status: 'plan-only', sent: false, actual: null };
+    if (!automationEnabled) return { status: 'paused', sent: false, actual: null };
     if (this.input === 'simulated') {
       this.plant.state.phase = decision.phase ?? decision.action;
       this.plant.state.roomBoostC = decision.roomBoostC ?? 0;
@@ -99,6 +102,7 @@ export class Executor {
     const ends = [this.state.legacyOutstanding && !this.state.manualBaseline ? this.remaining('tariff', time(this.state.expiresAt)) : NaN,
       this.remaining('pause', this.state.manualPause?.expiresAt),
       this.remaining('temporary', this.state.manualTemporary?.expiresAt),
+      this.state.manualRequested?.phase === 'preheat' ? this.remaining('manual-preheat', this.state.manualRequested.expiresAt) : NaN,
       this.manualRestorePending ? 1000 : NaN,
       this.state.dhwrOutstanding ? this.remaining('dhwr', this.state.pulseUntil) : NaN,
       this.restartRestore && (this.state.dhwrOutstanding || this.state.legacyOutstanding || this.state.manualBaseline)
@@ -111,6 +115,8 @@ export class Executor {
         if (this.restartRestore)
           return this.manualRestorePending ? this.restoreManualInternal({ now, reason: 'manual-expiry-retry' })
             : this.restoreInternal({ now, reason: 'expiry' });
+        if (this.state.manualRequested?.phase === 'preheat' && this.expired('manual-preheat', this.state.manualRequested.expiresAt))
+          return this.finishManualPreheat(now);
         if (this.expired('pause', this.state.manualPause?.expiresAt) || this.expired('temporary', this.state.manualTemporary?.expiresAt))
           return this.restoreManualInternal({ now, reason: 'manual-expiry' });
         if (!this.state.manualBaseline && this.state.legacyOutstanding && this.expired('tariff', time(this.state.expiresAt))) {
@@ -202,96 +208,197 @@ export class Executor {
     return true;
   }
   async beginManual(now, pause) {
-    if (pause && (typeof pause.id !== 'string' || !pause.id || !Number.isFinite(pause.expiresAt)
-      || pause.expiresAt <= now || pause.expiresAt - now > 366 * 86_400_000))
-      throw failure('EXECUTOR_PAUSE_INVALID', 'Choose a current bounded price-control pause.');
+    if (pause && (typeof pause.id !== 'string' || !pause.id || pause.expiresAt !== null
+      && (!Number.isFinite(pause.expiresAt) || pause.expiresAt <= now || pause.expiresAt - now > 366 * 86_400_000)))
+      throw failure('EXECUTOR_PAUSE_INVALID', 'Choose a current heating pause.');
     if (this.restartRestore || this.h66?.status(now).restorationPending)
       throw failure('EXECUTOR_RESTORATION_PENDING', 'Wait for the previous heating settings to be restored.');
-    const currentEnd = this.state.manualPause?.expiresAt ?? this.state.manualTemporary?.expiresAt;
-    if (this.state.manualBaseline && (currentEnd <= now || (this.state.manualPause?.id ?? null) !== (pause?.id ?? null))) {
+    const currentEnd = this.state.manualPause ? this.state.manualPause.expiresAt : this.state.manualTemporary?.expiresAt;
+    if (this.state.manualBaseline && (Number.isFinite(currentEnd) && currentEnd <= now
+      || (this.state.manualPause?.id ?? null) !== (pause?.id ?? null))) {
       const restored = await this.restoreManualInternal({ now, reason: 'manual-owner-changed' });
       if (restored.restorationPending) throw failure('EXECUTOR_RESTORATION_PENDING', 'The previous manual selection is still being restored.');
     }
     if (!this.state.manualBaseline) {
-      this.state.manualBaseline = { phase: this.state.phase, expiresAt: this.state.expiresAt,
-        legacyOutstanding: this.state.legacyOutstanding, at: now };
+      // A direct mode selection ends the admitted automatic episode. Its native
+      // baselines must be restored before acquiring a new manual episode.
+      const restored = await this.restoreInternal({ now, reason: 'manual-selection', preserveManualDhwr: true });
+      if (restored.restorationPending) throw failure('EXECUTOR_RESTORATION_PENDING', 'The previous heating mode is still being restored.');
+      this.state.manualBaseline = { phase: 'normal', expiresAt: null, legacyOutstanding: false, at: now };
       this.state.manualRequested = null;
-      const native = this.h66?.status(now);
-      const nativeEnd = native?.phase === 'manual-temporary' && native.expiresAt > now ? native.expiresAt : Infinity;
       this.state.manualPause = pause ? { id: pause.id, expiresAt: pause.expiresAt } : null;
-      this.state.manualTemporary = pause ? null : { expiresAt: Math.min(now + 60_000, nativeEnd) };
+      this.state.manualTemporary = pause ? null : { expiresAt: now + 60_000 };
     }
     this.persist();
-    return this.state.manualPause?.expiresAt ?? this.state.manualTemporary.expiresAt;
+    return this.state.manualPause ? this.state.manualPause.expiresAt : this.state.manualTemporary.expiresAt;
   }
   async manual(commands, now, pause = null, decision = {}) {
-    // Explicit circulation always owns its complete configured timer, separately
-    // from the short heating-setting hold or a price-control pause.
     if (commands.every(command => command === 'circulation')) return this.publish(commands, now, { manualCirculation: true });
-    const end = await this.beginManual(now, pause);
     const phase = decision.phase === 'preheat' ? 'preheat' : commands.at(-1) === 'reduction' ? 'reduction' : 'normal';
-    const nativeOptions = { now, expiresAt: end, ...(pause ? { pauseId: pause.id } : {}) };
-    if (phase === 'preheat' && typeof this.h66?.setManualPreheat !== 'function')
-      throw failure('H66_UNAVAILABLE', 'Preheating requires writable native heat-pump settings.');
-    this.state.manualRequested = { phase, at: now, confirmed: false, floorOwner: phase === 'preheat' ? `manual:${randomUUID()}` : null, roomBoostC: phase === 'preheat' ? decision.roomBoostC ?? this.preheatRoomBoostC : 0 };
-    this.persist();
-    if (phase !== 'preheat' && this.h66?.status(now).manualPreheat)
-      await this.h66.setManualPreheat({ enabled: false, ...nativeOptions });
-    // Save uncertain tariff delivery before publishing. Explicit circulation and
-    // heating choices are independent while the owner holds the controls.
-    if (phase === 'reduction') this.target('tariff', { acquire: true });
-    this.state.legacyOutstanding = phase === 'reduction' || this.state.legacyOutstanding;
-    this.state.expiresAt = end;
-    this.persist();
+    if (phase === 'preheat' && this.state.manualRequested?.phase === 'preheat'
+      && !this.expired('manual-preheat', this.state.manualRequested.expiresAt))
+      return this.result('preheat', false, { status: 'already-active', confirmed: this.state.manualRequested.confirmed,
+        requestedAt: this.state.manualRequested.at, holdUntil: this.state.manualRequested.expiresAt,
+        roomBoostC: this.state.manualRequested.roomBoostC });
+    if (this.state.manualRequested?.phase === 'preheat') await this.finishManualPreheat(now, 'manual-supersession');
+    let end = await this.beginManual(now, pause);
     if (phase === 'preheat') {
+      const status = this.floorOverride?.status(now);
+      // One local circulation lease is deliberately left unrenewed. The ROOM
+      // deadline is the same even if the floor cannot confirm its release.
+      end = Math.floor((now + (status?.leaseSeconds ?? 900) * 1000) / 1000) * 1000;
+      if (!pause) this.state.manualTemporary.expiresAt = end;
+    }
+    this.state.manualRequested = { phase, at: now, expiresAt: end, confirmed: false,
+      floorOwner: phase === 'preheat' ? `manual:${randomUUID()}` : null,
+      roomBoostC: phase === 'preheat' ? decision.roomBoostC ?? this.preheatRoomBoostC : 0 };
+    this.state.expiresAt = end; this.persist();
+    return this.applyManualChoice(now);
+  }
+  async applyManualChoice(now) {
+    const choice = this.state.manualRequested;
+    const { phase } = choice;
+    const end = choice.expiresAt;
+    const nativeOptions = { now, expiresAt: end, manual: true, pauseId: this.state.manualPause?.id ?? null };
+    let native = null, floor = null;
+    if (phase !== 'preheat') {
+      floor = await this.floorOverride?.release({ reason: 'manual-supersession', now });
+      if (floor?.restorationPending) throw failure('FLOOR_PENDING', 'Floor restoration must finish before another heating mode.');
+    }
+    if (phase === 'reduction' && now < this.state.pulseUntil) {
+      // The same service rule applies to automatic and direct Reduced requests:
+      // complete a circulation pulse already promised before reducing heating.
+      return this.result(this.state.phase, false, { status: 'waiting', requestedPhase: phase,
+        reason: 'Waiting for the configured DHWR run to end.', resumeAt: this.state.pulseUntil, holdUntil: end });
+    }
+    if (phase === 'preheat') {
+      const status = this.h66?.status(now);
+      if (!status?.controlsReady || status.writesEnabled !== true)
+        throw failure('H66_UNAVAILABLE', 'Preheating requires fresh writable native heat-pump settings.');
+      native = await this.h66.restore({ now, reason: 'manual-preheat-baseline' });
+      if (native.restorationPending) throw failure('H66_RESTORATION_PENDING', 'Restore native settings before preheating.');
       try {
+        if (this.floorOverride?.status(now).enabled) {
+          floor = await this.floorOverride.lease({ owner: choice.floorOwner, until: end, now });
+          if (Number.isFinite(floor?.leaseUntil)) {
+            choice.expiresAt = floor.leaseUntil;
+            nativeOptions.expiresAt = floor.leaseUntil;
+            this.state.expiresAt = floor.leaseUntil;
+            if (this.state.manualTemporary) this.state.manualTemporary.expiresAt = floor.leaseUntil;
+            this.persist();
+          }
+        }
         await this.publish(['normal'], now);
-        if (this.floorOverride?.status(now).enabled) await this.floorOverride.lease({ owner: this.state.manualRequested.floorOwner, until: end, now });
-        const native = await this.h66.setManualPreheat({ enabled: true, roomBoostC: this.state.manualRequested.roomBoostC, ...nativeOptions });
-        this.state.manualRequested.roomBoostC = native?.roomBoostC ?? this.state.manualRequested.roomBoostC;
+        native = await this.h66.setPhase({ phase, roomBoostC: choice.roomBoostC, ...nativeOptions });
+        choice.roomBoostC = native.roomBoostC ?? choice.roomBoostC;
       } catch (error) {
-        await this.floorOverride?.release({ reason: 'manual-preheat-failed', now: this.clock() });
+        await Promise.allSettled([this.floorOverride?.release({ reason: 'manual-preheat-failed', now: this.clock() }),
+          this.h66.restore({ now: this.clock(), reason: 'manual-preheat-failed' })]);
         throw error;
       }
+    } else if (phase === 'reduction') {
+      const nativeStatus = this.h66?.status(now);
+      if (nativeStatus?.controlsReady && nativeStatus.writesEnabled === true)
+        native = await this.h66.setPhase({ phase, ...nativeOptions });
+      this.target('tariff', { acquire: true });
+      this.state.legacyOutstanding = true; this.persist();
+      await this.publish(['reduction'], this.clock(), { validUntil: end ?? Infinity });
     } else {
-      const floor = await this.floorOverride?.release({ reason: 'manual-supersession', now });
-      if (floor?.restorationPending) throw failure('FLOOR_PENDING', 'Floor restoration must finish before another heating mode.');
-      await this.publish([phase === 'reduction' ? 'reduction' : 'normal'], now, { allowReductionWithCirculation: true });
+      native = this.h66 ? await this.h66.setPhase({ phase: 'normal', now }) : null;
+      if (native?.restorationPending) throw failure('H66_RESTORATION_PENDING', 'Native settings are still being restored.');
+      await this.publish(['normal'], now);
     }
-    this.state.phase = phase;
-    this.state.manualRequested.confirmed = true;
+    this.state.phase = phase; choice.confirmed = true;
     this.state.legacyOutstanding = phase === 'reduction';
     this.persist();
-    return this.result(phase, true, { holdUntil: pause ? end : null, roomBoostC: this.state.manualRequested.roomBoostC });
+    return this.result(phase, true, { native, floor, holdUntil: choice.expiresAt,
+      roomBoostC: choice.roomBoostC, ...(phase === 'reduction' && !native ? { nativeSettings: 'unavailable; base tariff reduction only' } : {}) });
+  }
+  async finishManualPreheat(now = this.clock(), reason = 'lease-ended') {
+    const choice = this.state.manualRequested;
+    if (choice?.phase !== 'preheat') return this.result(this.state.phase, false);
+    const elapsed = this.expired('manual-preheat', choice.expiresAt);
+    const floorEnabled = this.floorOverride?.status(now).enabled === true;
+    // ROOM restoration starts immediately and does not wait for floor feedback.
+    const results = await Promise.allSettled([
+      this.h66?.restore({ now, reason: 'manual-preheat-ended' }),
+      elapsed && floorEnabled && typeof this.floorOverride.finishLease === 'function'
+        ? this.floorOverride.finishLease({ owner: choice.floorOwner, now })
+        : this.floorOverride?.release({ now, reason }),
+    ]);
+    const native = results[0].status === 'fulfilled' ? results[0].value : null;
+    const floor = results[1].status === 'fulfilled' ? results[1].value : null;
+    const roomPending = results[0].status === 'rejected' || native?.restorationPending === true;
+    const floorPending = results[1].status === 'rejected' || floor?.restorationPending === true;
+    const floorOutcome = !elapsed ? 'cancelled' : !floorEnabled ? 'not-configured' : floor?.outcome ?? 'unverified';
+    const message = ({ 'device-local': 'Floor lease ended locally; all four override contacts reported off before the host release.',
+      fallback: 'Floor contacts were still on after the lease deadline; the host requested their release.',
+      unverified: 'Floor lease expiry could not be verified; the host requested release.',
+      'not-configured': 'Preheat ended at its timed deadline; floor override was not configured.',
+      cancelled: 'Preheat ended before its lease deadline.' })[floorOutcome];
+    this.state.manualPreheatReport = { at: now, expiresAt: now + 86_400_000, leaseUntil: choice.expiresAt,
+      floorOutcome, roomOutcome: roomPending ? 'pending' : 'restored',
+      message: `${message} ${roomPending ? 'ROOM restoration is pending.' : 'The ROOM increase was restored.'}` };
+    this.state.manualRequested = { phase: 'normal', at: now, expiresAt: this.state.manualPause?.expiresAt ?? null,
+      roomBoostC: 0, confirmed: !roomPending && !floorPending };
+    this.state.phase = roomPending || floorPending ? 'restoration-pending' : 'normal';
+    this.state.expiresAt = null;
+    if (!this.state.manualPause && !roomPending && !floorPending) this.clearManual();
+    this.restartRestore = roomPending || floorPending;
+    this.manualRestorePending = this.restartRestore;
+    return this.result(this.state.phase, native?.changed?.length > 0, { native, floor, restorationPending: this.restartRestore });
   }
   reconcileManualPreheat(now = this.clock()) {
-    if (this.state.manualRequested?.phase !== 'preheat' || this.h66?.status(now).manualPreheat) return false;
+    if (this.state.manualRequested?.phase !== 'preheat' || this.h66?.status(now).manualPreheat
+      || this.expired('manual-preheat', this.state.manualRequested.expiresAt)) return false;
     this.state.manualRequested = { ...this.state.manualRequested, phase: 'normal', roomBoostC: 0 };
     this.state.phase = 'normal'; this.persist();
     return true;
   }
-  maintainPause(now = this.clock()) {
+  maintainPause(now = this.clock(), pause = undefined) {
     return this.exclusive(async () => {
+      if (this.restartManualPause) {
+        if (!pause || pause.id !== this.state.manualPause?.id) return this.restoreInternal({ now, reason: 'pause-owner-changed' });
+        if (!this.commandTransport?.targetIdentity?.tariff)
+          return this.result(this.state.phase, false, { status: 'waiting', requestedPhase: 'reduction',
+            reason: 'Waiting for the current heating equipment identity.' });
+        this.target('tariff');
+        this.restartManualPause = false;
+      }
+      if (pause && this.state.manualPause?.id === pause.id) {
+        this.state.manualPause.expiresAt = pause.expiresAt;
+        if (this.state.manualRequested && this.state.manualRequested.phase !== 'preheat') {
+          this.state.manualRequested.expiresAt = pause.expiresAt;
+          this.state.expiresAt = pause.expiresAt;
+        }
+        this.h66?.updatePause?.({ ...pause, now });
+        this.persist();
+      }
       if (this.restartRestore) return this.manualRestorePending ? this.restoreManualInternal({ now, reason: 'manual-restoration-pending' })
         : this.restoreInternal({ now, reason: 'manual-restoration-pending' });
+      if (this.state.manualRequested?.phase === 'preheat' && this.expired('manual-preheat', this.state.manualRequested.expiresAt))
+        return this.finishManualPreheat(now);
       if (this.expired('pause', this.state.manualPause?.expiresAt) || this.expired('temporary', this.state.manualTemporary?.expiresAt))
         return this.restoreManualInternal({ now, reason: 'pause-ended' });
-      const end = this.state.manualPause?.expiresAt ?? this.state.manualTemporary?.expiresAt;
       if (this.state.dhwrOutstanding && this.expired('dhwr', this.state.pulseUntil)) await this.stopDhwr(now);
-      // A later explicit ROOM edit supersedes the preheat boost.
       this.reconcileManualPreheat(now);
-      if (this.state.manualRequested?.phase === 'preheat' && this.floorOverride?.status(now).enabled)
-        await this.floorOverride.lease({ owner: this.state.manualRequested.floorOwner, until: end, now });
-      else await this.floorOverride?.release({ reason: 'manual-preheat-ended', now });
+      // Never renew a manual preheat lease: its first local expiry is the test.
+      if (this.state.manualRequested?.phase !== 'preheat') await this.floorOverride?.release({ reason: 'manual-preheat-ended', now });
+      if (this.state.manualRequested && !this.state.manualRequested.confirmed) return this.applyManualChoice(now);
       const refresh = this.state.manualPause && this.state.manualRequested?.confirmed
         && (this.state.acknowledgedAt == null || now - this.state.acknowledgedAt >= REFRESH_MS);
-      if (refresh) await this.publish([this.state.manualRequested.phase === 'reduction' ? 'reduction' : 'normal'], now,
-        { allowReductionWithCirculation: true });
-      return this.result(this.state.phase, refresh, { status: 'paused-manual', holdUntil: this.state.manualPause ? end : null,
+      if (refresh) await this.publish([this.state.manualRequested.phase === 'reduction' ? 'reduction' : 'normal'], now);
+      return this.result(this.state.phase, refresh, { status: 'manual-hold', holdUntil: this.state.manualRequested?.expiresAt ?? null,
         roomBoostC: this.state.manualRequested?.roomBoostC ?? 0 });
     });
   }
   result(phase, sent, detail = {}) {
+    const report = this.state.manualPreheatReport;
+    if (report?.roomOutcome === 'pending' && detail.native && detail.native.restorationPending !== true
+      && !this.h66?.status(this.clock()).obligations?.['0203']) {
+      report.roomOutcome = 'restored';
+      report.message = report.message.replace('ROOM restoration is pending.', 'The ROOM increase was restored.');
+    }
     const result = { status: 'mqtt', sent: Boolean(sent), actual: null, phase, appliedPhase: phase,
       delivery: 'broker-acknowledged', physicalStateVerified: false,
       pulseUntil: this.state.pulseUntil, expiresAt: this.state.expiresAt, ...detail };
@@ -446,10 +553,15 @@ export class Executor {
     return this.result(phase, refresh, { native, ...detail });
   }
   clearManual() {
+    this.restartManualPause = false;
     this.state.manualPause = null; this.state.manualTemporary = null;
     this.state.manualBaseline = null; this.state.manualRequested = null;
   }
   async restoreManualInternal({ now = this.clock(), reason = 'manual-ended' } = {}) {
+    if (this.state.manualRequested?.phase === 'preheat') {
+      const finished = await this.finishManualPreheat(now, reason);
+      if (finished.restorationPending) return finished;
+    }
     if (this.restartRestore && !this.manualRestorePending) return this.restoreInternal({ now, reason: 'manual-recovery' });
     const baseline = this.state.manualBaseline;
     let native = null, nativeError = null, dhwrError = null, floor = null, sent = false;
@@ -489,6 +601,10 @@ export class Executor {
     });
   }
   async restoreInternal({ now = this.clock(), reason = 'restore-normal', phase = 'normal', detail = {}, preserveManualDhwr = false } = {}) {
+    if (this.state.manualRequested?.phase === 'preheat') {
+      const finished = await this.finishManualPreheat(now, reason);
+      if (finished.restorationPending) return finished;
+    }
     this.manualRestorePending = false;
     let native = null, nativeError = null, dhwrError = null, floor = null, sent = false;
     try { floor = await this.floorOverride?.release({ reason, now }); }
@@ -521,6 +637,15 @@ export class Executor {
       return;
     }
     await this.pending?.catch(() => {});
+    const pause = this.state.manualPause;
+    if (!this.restartRestore && pause && (pause.expiresAt === null || pause.expiresAt > this.clock())
+      && this.state.manualRequested?.phase === 'reduction' && this.state.manualRequested.confirmed) {
+      // A durable paused Reduced choice survives an orderly application restart,
+      // just as it survives an interruption. Stop separately timed circulation.
+      try { if (this.state.dhwrOutstanding) await this.stopDhwr(this.clock()); }
+      finally { this.persist(); this.closed = true; clearTimeout(this.timer); }
+      return;
+    }
     try { await this.restore({ reason: 'application-shutdown' }); }
     finally { this.closed = true; clearTimeout(this.timer); }
   }

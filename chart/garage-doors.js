@@ -1,4 +1,4 @@
-import { equipmentCoverAllowed, equipmentCoverResult, equipmentReadingRows } from './equipment.js';
+import { equipmentCoverAllowed, equipmentCoverResult, equipmentCoverReceipt, equipmentReadingRows } from './equipment.js';
 import { isReadOnlyReplica } from './replica-status.js';
 
 export const garageDoorDevices = status => (status?.equipment?.devices ?? []).filter(device =>
@@ -17,10 +17,12 @@ export function garageDoorControl(status, device, snapshot = {}) {
   const state = known ? reading.value : 'Unknown';
   const moving = known && ['Opening', 'Closing'].includes(state);
   const result = equipmentCoverResult(device, now);
-  const pending = Boolean(result && ['publishing', 'published'].includes(device.cover?.operation?.status));
+  const receipt = equipmentCoverReceipt(device, now);
+  const pending = Boolean(receipt && !receipt.confirmed && !receipt.superseded
+    && receipt.pending);
   const ownRequest = snapshot.actionKind === 'cover' && snapshot.actionDeviceId === device.id;
   const sending = ownRequest && snapshot.busy;
-  const failed = Boolean(ownRequest && snapshot.error || result && ['failed', 'unconfirmed'].includes(device.cover?.operation?.status));
+  const failed = Boolean(ownRequest && snapshot.error || receipt && !receipt.confirmed && !receipt.superseded && ['failed', 'unconfirmed'].includes(device.cover?.operation?.status));
   let action = null, label = 'Unavailable', feedback = result;
   if (known) {
     if (moving || pending) {

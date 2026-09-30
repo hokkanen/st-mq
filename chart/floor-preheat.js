@@ -1,3 +1,5 @@
+import { actionReceiptRecent } from './action-receipts.js';
+
 function duration(seconds) {
   if (!Number.isInteger(seconds) || seconds <= 0) return null;
   if (seconds % 60 === 0) {
@@ -42,6 +44,14 @@ export function floorPreheatView(status = {}) {
 
 export function renderFloorPreheat(document, status) {
   const display = floorPreheatView(status);
+  const receipt = status?.heatingTests?.manualPreheatReport;
+  const report = document.getElementById('heating-preheat-report');
+  if (report) {
+    const visible = actionReceiptRecent(receipt?.at, status?.now ?? Date.now());
+    report.hidden = !visible;
+    report.textContent = visible ? receipt.message : '';
+    report.classList.toggle('form-error', Boolean(visible && (receipt.floorOutcome === 'unverified' || receipt.roomOutcome === 'pending')));
+  }
   const summary = document.getElementById('floor-preheat-state');
   if (summary) {
     summary.textContent = display.label;

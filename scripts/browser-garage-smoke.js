@@ -169,6 +169,7 @@ try {
   assert.match(await evaluate(`document.getElementById('garage-warming-warning').textContent`), /wet or snowy.*24 hours/);
   assert.equal(await evaluate(`document.querySelector('dialog[open]')`), null, 'No confirmation interrupts the mode selection');
   assert.equal(await evaluate(`document.getElementById('garage-native-power').textContent`), 'Off', 'Mode selection preserves native OFF');
+  await evaluate(`document.getElementById('garage-target-details').open = true`);
   await evaluate(`const input = document.getElementById('garage-normal-target'); input.value = '9.5'; input.dispatchEvent(new Event('input')); input.focus(); garageFixture.poll()`);
   await pause(100);
   assert.equal(await evaluate(`document.getElementById('garage-normal-target').value`), '9.5');

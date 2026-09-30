@@ -89,9 +89,9 @@ test('actual backend status enables supported native UI controls and reports con
   assert.equal(mitsubishiControl(status(), 'targetC').available, false);
   await f.runtime.setNativeSettings({ setting: 'fan', value: 2 });
   assert.equal(mitsubishiControl(status(), 'power').available, false);
-  assert.match(mitsubishiResult(status().garage.nativeControls.result), /Fan setting: 2.*waiting/);
+  assert.match(mitsubishiResult(status().garage.nativeControls.result, status().now), /Fan setting: 2.*waiting/);
   f.update({ result: { commandId: f.publications[0].commandId, status: 'native-confirmed', reason: null } });
-  assert.match(mitsubishiResult(status().garage.nativeControls.result), /Fan setting: 2.*Confirmed by the pump/);
+  assert.match(mitsubishiResult(status().garage.nativeControls.result, status().now), /Fan setting: 2.*Confirmed by the pump/);
   assert.equal(mitsubishiControl(status(), 'power').available, true);
 });
 

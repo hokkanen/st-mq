@@ -195,7 +195,7 @@ export function replicaReadModel(snapshot, config) {
     configurationMessage: savedSettings ? 'Home settings were recorded in this snapshot. Equipment mappings and recording limits come from this computer’s configuration.'
       : `${settingsError ?? 'No Home settings were saved in this snapshot.'} Shown Home defaults, equipment mappings and recording limits come from this computer’s configuration.` },
     decision: { ...(snapshot?.decision ?? {}), recorded: true, readOnly: true, snapshotAt: at },
-    execution: { status: 'read-only', reason }, override: copy(state(`override:${input}`)),
+    execution: { status: 'read-only', reason }, override: copy(automationState?.features.home.pause ?? null),
     ...outlook, providers, configuredPrices: null,
     equipment: equipmentSnapshot(config, read, snapshot),
     equipmentTests: { ...unavailable, active: null }, equipmentControls: { ...unavailable },

@@ -1,3 +1,37 @@
+Implemented 2026-09-30 — Unified heating pause, manual phases and action receipts
+- Owner explicitly requested one Automatic/Pause choice, indefinite Pause with an
+  optional resume time, and indefinite Normal/Reduced while paused. Amend F3 and
+  the UI receipt rule accordingly; preserve F4 device evidence and F5 identity,
+  command authority, native protection and durable restoration obligations.
+- Reorganize Home through its heat model: primary Automatic/Pause, Schedule & away,
+  live readings, folded Manual heating override, then Heating strategy & comfort.
+  Match Garage mode controls and fold its normal-temperature editor. Keep Garage
+  durable Normal/Away and independent frost protection.
+- Route manual phases through shared native phase behavior. Reduced now includes
+  available DHW/AUX restrictions and automatic circulation suppression; an already
+  promised DHWR pulse finishes first. Normal restores owned phase settings.
+  Preheat restores normal DHW/AUX even when entered from recovery, then raises ROOM.
+- Manual Preheat uses one original floor lease, with no renewal or stacked boosts.
+  Its exact deadline starts ROOM restoration independently of floor feedback.
+  Probe before host OFF and retain a 24-hour local-expiry/fallback/unknown report.
+  Normal/Reduced, leaving Pause or restoration requirements can end it earlier.
+- Apply shared 24-hour action receipts to heating, H66, Garage, Mitsubishi,
+  equipment, circulation, Caravan and charging controls. Fresh reports resolve
+  waiting; later stale telemetry does not reverse confirmed history. Completed
+  receipts do not imply active control. Keep unresolved restoration visible.
+- F1 removal: retire separate saved override state, /api/override and duplicate
+  H66 manual phase writers. Current automation state is version 3; reject obsolete
+  development state with fresh-start guidance rather than migrating/deleting it.
+  Existing databases and household devices were not operated or modified.
+- Validation: focused lifecycle/control/feedback tests and Home/Garage/Mitsubishi
+  browser suites passed across narrow/desktop layouts and both themes. The full
+  equipment browser sweep also passed updated 24-hour receipt checks, Caravan
+  controls and replica transitions. Full offline
+  regression: 3,524 passed, one optional skip, zero failures. Production build
+  passed with its existing bundle-size advisory. Follow-up focused checks cover
+  final review corrections (94 targeted checks passed); no live equipment tests
+  or deployment were performed.
+
 Implemented 2026-09-29 — Garage chart clarity and current target confirmation
 - F1/F3/F4/F5: use hardware-neutral heat-pump controller and local frost-protection
   unit terminology in user-facing status, errors, settings, chart and recording

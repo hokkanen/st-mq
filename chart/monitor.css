@@ -1840,7 +1840,7 @@ body[data-access-role="family"] .family-access-note { display: block; margin: 12
   .floor-preheat-downloads button { width: 100%; }
 }
 
-.feature-automation { margin-block: 0 1rem; padding-bottom: .5rem; border-bottom: 1px solid var(--border); }
+.feature-automation { margin-block: 0 1rem; }
 .feature-automation h5 { margin-block: 0 .5rem; }
 .feature-automation p { margin-block: .5rem; }
 
@@ -1867,3 +1867,15 @@ body[data-access-role="family"] .family-access-note { display: block; margin: 12
 .garage-protection-approved input { width:auto; }
 .garage-protection-form > button { justify-self:start; }
 @media(max-width:420px) { .garage-protection-grid, .garage-protection-fields { grid-template-columns:1fr; } }
+
+/* Shared heating controls: primary mode, live readings, then optional details. */
+.feature-automation h5 { color: var(--muted); font-size: 11px; font-weight: 500; }
+.feature-automation .heating-mode-buttons { margin-top: 8px; }
+#temporary-details { margin-bottom: 18px; }
+.manual-heating-override > summary, #temporary-details > summary, #garage-target-details > summary { gap: 8px; }
+.manual-heating-override > summary > small, #temporary-details > summary > small, #garage-target-details > summary > small { text-align: right; }
+.heating-action-report, .heating-receipt-help { font-size: 11px; line-height: 1.6; }
+.heating-action-report { padding-top: 10px; border-top: 1px solid var(--border); }
+.zone-content .feature-automation .heating-mode-buttons-two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+
+#heating-test-details:has(#home-manual-override-details[open]) #heating-held-summary { display: none; }

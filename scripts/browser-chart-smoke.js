@@ -840,7 +840,7 @@ try {
   assert.equal(await evaluate("document.getElementById('home-equipment-details').open"), false);
   assert.equal(await evaluate("[...document.querySelectorAll('[data-heating-command]')].every(button => button.disabled)"), true);
   assert.equal(await evaluate("document.getElementById('home-control').contains(document.getElementById('temporary-details')) && document.getElementById('providers-controls').contains(document.getElementById('electricity-details'))"), true);
-  await evaluate(`document.getElementById('home-heat-pump-details').open = true; document.getElementById('temporary-details').open = true;
+  await evaluate(`document.getElementById('home-heat-pump-details').open = true; document.getElementById('home-manual-override-details').open = true; document.getElementById('temporary-details').open = true;
     document.getElementById('away-until').value = '2026-09-09T18:00';
     document.getElementById('away-until').dispatchEvent(new Event('input'));
     document.getElementById('pause-until').value = '2026-09-07T18:00';
@@ -858,7 +858,7 @@ try {
   assert.match(await evaluate("document.getElementById('temporary-overview').textContent"), /Away until.*Paused until/, 'Closed controls still show active away and pause deadlines');
   assert.equal(await evaluate("document.getElementById('temporary-submit').disabled"), true);
   // Pending edits survive blur and an actual background status poll.
-  await evaluate(`document.getElementById('home-heat-pump-details').open = true; document.getElementById('temporary-details').open = true;
+  await evaluate(`document.getElementById('home-heat-pump-details').open = true; document.getElementById('home-manual-override-details').open = true; document.getElementById('temporary-details').open = true;
     window.__statusPolls = 0; const originalFetch = window.fetch;
     window.fetch = (...args) => { if (new URL(args[0], location.href).pathname === '/api/status') window.__statusPolls++; return originalFetch(...args); };
     document.getElementById('away-until').value = '2026-09-10T18:00';
@@ -1069,7 +1069,7 @@ try {
   assert.equal(testConnections, 0, 'Configured manual tests do not connect during startup or polling');
   assert.equal(await evaluate("document.getElementById('home-equipment-details').open"), false);
   await evaluate(`document.getElementById('home-equipment-details').open = true;
-    document.getElementById('home-heat-pump-details').open = true; document.getElementById('temporary-details').open = true;
+    document.getElementById('home-heat-pump-details').open = true; document.getElementById('home-manual-override-details').open = true; document.getElementById('temporary-details').open = true;
     document.getElementById('away-until').value = '2026-09-10T18:00';
     document.getElementById('away-until').dispatchEvent(new Event('input')); true`);
   for (const command of ['reduction', 'normal', 'circulation']) {
@@ -1079,10 +1079,10 @@ try {
     for (let i = 0; !acknowledgeHeating && i < 100; i++) await new Promise(resolve => setTimeout(resolve, 5));
     assert.equal(typeof acknowledgeHeating, 'function');
     assert.equal(await evaluate("[...document.querySelectorAll('[data-heating-command]')].every(button => button.disabled)"), true);
-    assert.equal(await evaluate(`document.getElementById('${command === 'circulation' ? 'dhwr-message' : 'heating-test-message'}').textContent.includes('sent at')`), false);
+    assert.equal(await evaluate(`document.getElementById('${command === 'circulation' ? 'dhwr-message' : 'heating-test-message'}').textContent.includes('requested at')`), false);
     acknowledgeHeating();
     const commandLabel = { reduction: 'Reduced heating', normal: 'Normal heating', circulation: 'Circulation' }[command];
-    await until(`document.getElementById('${command === 'circulation' ? 'dhwr-message' : 'heating-test-message'}').textContent.includes('${commandLabel} sent at') && !document.getElementById('test-${command}').disabled`);
+    await until(`document.getElementById('${command === 'circulation' ? 'dhwr-message' : 'heating-test-message'}').textContent.includes('${commandLabel} requested at') && !document.getElementById('test-${command}').disabled`);
     assert.equal(await evaluate("document.getElementById('away-until').value"), '2026-09-10T18:00');
   }
   assert.deepEqual(testPublishes, [
@@ -1096,7 +1096,7 @@ try {
   assert.match(await evaluate("document.getElementById('tariff-control-state').textContent"), /Normal heating · confirmed/);
   acknowledgeHeating = null;
   // Normal heat is allowed during the preceding DHWR pulse; reduction would
-  // correctly fail before publishing and never exercise broker-error handling.
+  // wait for the existing run before publishing and never exercise broker-error handling.
   await evaluate("document.getElementById('test-normal').click(); true");
   for (let i = 0; !acknowledgeHeating && i < 100; i++) await new Promise(resolve => setTimeout(resolve, 5));
   assert.equal(typeof acknowledgeHeating, 'function');

@@ -147,6 +147,29 @@ export function createFloorOverride({ store, publish, settings = floorOverrideCo
     persist();
     return { ...state.lastResult, released, restorationPending: !released };
   }
+  async function finishLeaseInternal({ owner, now = clock() } = {}) {
+    const obligation = state.outstanding;
+    if (!obligation || owner && obligation.owner !== owner)
+      return clone(state.lastLeaseEnd?.owner === owner ? state.lastLeaseEnd : null);
+    if (now < obligation.leaseUntil) throw fail('FLOOR_CANCELLED');
+    // Observe both devices before sending OFF. Otherwise a successful host
+    // release would conceal a failed device-local lease timeout.
+    active = null;
+    const checkedAt = clock();
+    await probe(checkedAt);
+    const rows = obligation.devices.map(device => readings.get(device.topicPrefix));
+    const observed = rows.every((row, index) => row && row.receivedAt >= checkedAt
+      && row.boot === obligation.devices[index].boot && row.boot > 0 && Array.isArray(row.channels) && row.channels.length === 2
+      && row.channels.every((channel, id) => channel?.id === id && typeof channel.output === 'boolean' && !channel.error));
+    const local = observed && rows.every(row => row.channels.every(channel => !channel.output));
+    const released = await releaseInternal('lease-ended', clock());
+    state.lastLeaseEnd = { owner: obligation.owner, leaseUntil: obligation.leaseUntil,
+      at: clock(), expiresAt: clock() + 86_400_000,
+      outcome: local ? 'device-local' : observed ? 'fallback' : 'unverified',
+      released: released.released, restorationPending: released.restorationPending };
+    persist();
+    return clone(state.lastLeaseEnd);
+  }
   async function leaseInternal({ owner, until, now = clock() }, leaseEpoch) {
     if (closed) throw fail('FLOOR_CLOSED');
     if (!configured()) throw fail('FLOOR_DISABLED');
@@ -166,7 +189,8 @@ export function createFloorOverride({ store, publish, settings = floorOverrideCo
       return { status: 'leased', confirmed: true, ...active };
     if (leaseEpoch !== epoch || !canControl()) throw fail('FLOOR_CANCELLED');
     const leaseUntil = Math.min(until, now + settings.leaseSeconds * 1000);
-    state.outstanding = { owner, until, leaseUntil, brokerDigest, devices: clone(settings.devices), reason: 'leased' };
+    state.outstanding = { owner, until, leaseUntil, brokerDigest,
+      devices: settings.devices.map(device => ({ ...clone(device), boot: readings.get(device.topicPrefix).boot })), reason: 'leased' };
     // This synchronous durable write precedes even the first possibly delivered ON.
     const sequence = nextSequence();
     try {
@@ -225,7 +249,7 @@ export function createFloorOverride({ store, publish, settings = floorOverrideCo
           || (pending.wanted && (!row.ready || !row.clockOk || row.owner !== pending.message.owner
             || row.expiresAt !== pending.message.expiresAt)))) error = fail('FLOOR_READBACK');
       pending.finish(error, row);
-      if (active && (!row.ready || !row.clockOk || !Array.isArray(row.channels) || row.channels.length !== 2 || row.channels.some(channel => !channel?.output || channel.error))) {
+      if (active && now < active.leaseUntil && (!row.ready || !row.clockOk || !Array.isArray(row.channels) || row.channels.length !== 2 || row.channels.some(channel => !channel?.output || channel.error))) {
         epoch++; active = null; void enqueue(() => releaseInternal('lost-output-readback', now));
       }
       recordOutputs(device, row, now);
@@ -246,9 +270,11 @@ export function createFloorOverride({ store, publish, settings = floorOverrideCo
         active: confirmedActive,
         owner: active?.owner ?? null, leaseUntil: active?.leaseUntil ?? null,
         renewSeconds: settings.renewSeconds, leaseSeconds: settings.leaseSeconds,
-        restorationPending: Boolean(state.outstanding && !confirmedActive), devices, lastResult: clone(state.lastResult) };
+        restorationPending: Boolean(state.outstanding && !confirmedActive), devices, lastResult: clone(state.lastResult),
+        lastLeaseEnd: state.lastLeaseEnd?.expiresAt > now ? clone(state.lastLeaseEnd) : null };
     },
     lease(options) { const leaseEpoch = epoch; return enqueue(() => leaseInternal(options, leaseEpoch)); },
+    finishLease(options) { return enqueue(() => finishLeaseInternal(options)); },
     release({ reason = 'preheat-ended', now = clock() } = {}) {
       epoch++; cancelRequests(); active = null;
       return enqueue(() => releaseInternal(reason, now));
@@ -262,7 +288,9 @@ export function createFloorOverride({ store, publish, settings = floorOverrideCo
           if (row && now - row.receivedAt > 90_000) recordOutputs(device, null, row.receivedAt + 90_000, 'missing-report');
         }
       } catch (error) { recordingError = error; }
-      if (state.outstanding && (!active || !canControl() || now >= active.leaseUntil || now >= active.until
+      if (state.outstanding && active && canControl() && now >= active.leaseUntil)
+        await api.finishLease({ owner: active.owner, now });
+      else if (state.outstanding && (!active || !canControl() || now >= active.until
           || !settings.devices.every(device => fresh(device, now))))
         await api.release({ reason: 'expired-or-unavailable', now });
       if (connected && now - lastProbe >= 30_000) await probe(now);

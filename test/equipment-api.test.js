@@ -104,7 +104,7 @@ test('recheck accepts only configured selection and cannot accept command fields
   assert.deepEqual(f.checks, [{ deviceId: 'caravan' }, {}]); assert.deepEqual(f.calls, []);
 });
 
-test('explicit Plan only switch tests persist and confirm both the test and restoration through HTTP', async t => {
+test('explicit paused-mode switch tests persist and confirm both the test and restoration through HTTP', async t => {
   const f = await serverFixture(t);
   const started = await f.post('/api/equipment/test', TEST, { headers: { ...f.headers, Origin: f.base } });
   assert.equal(started.status, 200); assert.equal(started.body.automation.home.enabled, false);
@@ -301,7 +301,7 @@ test('generic equipment recheck publishes only its explicitly configured read re
   assert.equal(f.app.store.getState(KEY), null);
 });
 
-test('explicit Plan only door HTTP controls publish configured commands without optimistic position or unsupported Stop', async t => {
+test('explicit paused-mode door HTTP controls publish configured commands without optimistic position or unsupported Stop', async t => {
   const f = await runtimeFixture(t, [{ id: 'garage_door1', label: 'Synthetic garage door', area: 'garage', kind: 'door',
     connection: 'mqtt:invented-door/state', cover_control: true,
     mqtt: { command_topic: 'invented-door/cover', open_payload: 'open', close_payload: 'closed',

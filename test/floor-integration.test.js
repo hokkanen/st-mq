@@ -20,8 +20,7 @@ function executorFixture(t) {
     lease: async options => { calls.push({ kind: 'lease', ...options }); return { confirmed: true }; },
     release: async options => { calls.push({ kind: 'release', ...options }); return { restorationPending: releasePending, released: !releasePending }; } };
   const h66 = { status: () => ({ controlsReady: true, writesEnabled: true, obligations: {}, manualPreheat }),
-    setPhase: async options => { calls.push({ kind: 'native', ...options }); return { changed: ['0203'] }; },
-    setManualPreheat: async options => { manualPreheat = options.enabled; calls.push({ kind: 'manual-native', ...options }); },
+    setPhase: async options => { manualPreheat = options.manual === true && options.phase === 'preheat'; calls.push({ kind: 'native', ...options }); return { changed: ['0203'] }; },
     restore: async options => { manualPreheat = false; calls.push({ kind: 'restore-native', ...options }); return { restorationPending: false }; } };
   const commandTransport = { targetIdentity: { tariff: 'a'.repeat(64), dhwr: 'b'.repeat(64) }, close: async () => {}, publish: async commands => { calls.push({ kind: 'tariff', commands }); return { sent: true }; },
     publishDhwr: async on => { calls.push({ kind: 'dhwr', on }); return { sent: true }; } };
@@ -31,7 +30,7 @@ function executorFixture(t) {
   return { executor, calls, decision, pending: value => { releasePending = value; } };
 }
 
-test('Plan only decisions never invoke floor leases or device transports', async t => {
+test('Paused decisions never invoke floor leases or device transports', async t => {
   const f = executorFixture(t);
   {
     const result = await f.executor.execute(f.decision, { automationEnabled: false, now: NOW });
@@ -140,7 +139,7 @@ test('disabled replacement configuration retains old subscriptions and releases 
   assert.equal(successor.store.getState('floor-override:v1').outstanding, null);
 });
 
-test('a new manual preheat activation gets a fresh owner while maintenance renews that same activation', async t => {
+test('a new manual preheat activation gets a fresh owner and maintenance never renews its first lease', async t => {
   const f = executorFixture(t);
   const options = { automationEnabled: true, now: NOW, manualTest: true, pause: { id: 'same-pause', expiresAt: NOW + 600_000 } };
   await f.executor.execute(f.decision, options);
@@ -148,9 +147,9 @@ test('a new manual preheat activation gets a fresh owner while maintenance renew
   await f.executor.execute(f.decision, options);
   await f.executor.maintainPause(NOW);
   const owners = f.calls.filter(row => row.kind === 'lease').map(row => row.owner);
-  assert.equal(owners.length, 3);
+  assert.equal(owners.length, 2);
   assert.notEqual(owners[0], owners[1], 'The previous released owner is fenced by the device script');
-  assert.equal(owners[1], owners[2], 'Maintenance renews only the current explicit activation');
+  assert.equal(f.executor.status().manualRequested.expiresAt, NOW + 900_000);
 });
 
 

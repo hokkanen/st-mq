@@ -31,7 +31,8 @@ function deadline(value, local, now) {
   return at;
 }
 
-/** Validate the entire edit before either temporary control is persisted. */
+/** Validate the entire edit before either control is persisted. A null pause
+ * deadline keeps Pause selected without a scheduled Automatic restart. */
 export function temporaryUpdate(input, now) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Temporary controls require a JSON object');
   const allowed = ['awayUntil', 'pauseUntil', 'awayUntilLocal', 'pauseUntilLocal'];

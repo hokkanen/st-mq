@@ -7,24 +7,50 @@ control. History viewers and read-only replicas cannot send equipment commands.
 
 | Feature | Dashboard choice | Scope |
 | --- | --- | --- |
-| Home heating | Plan only / Automatic | Home heating plan and automatic circulation |
+| Home heating | Automatic / Pause | Home heating plan and automatic circulation |
 | Garage heating | Normal / Away | Permanent real room target; no automatic schedule |
 | Charging | Automatic charging Off / On | Each charger's scheduling permission |
 | Caravan | Automatic power Off / On | Independent dehumidifier control |
 
-Home starts Plan only. Its durable permission is bound to the current equipment.
-Disabling it restores owned automatic changes while separately authorized manual
-actions retain their own scope. `POST /api/automation` accepts Home only.
-Configuration defaults remain separate from dashboard choices.
+Home starts paused without a resume time. This single durable choice is bound to
+the current equipment. Selecting Pause restores automatic changes to Normal;
+subsequent manual choices use the pause scope. Selecting Automatic clears the
+pause and restores owned manual changes before reassessing the plan.
+`POST /api/automation` accepts Home only (`enabled: true` for Automatic, `false`
+for indefinite Pause). `POST /api/temporary` sets an optional `pauseUntil` or
+`pauseUntilLocal`; clearing it keeps Pause without an end. A scheduled deadline
+resumes Automatic for the same equipment. There is no separate plan-only mode or
+`/api/override` endpoint. Configuration defaults remain separate.
 
 ## Home manual heating
 
-Home Normal / Reduction / Preheat, Away and Pause retain their bounded behavior
-and restoration duties. Temporary choices outside a pause revert at the next
-controller update, with bounded expiry as fallback. A pause holds a temporary
-choice until its deadline or Resume. Native parameter edits are persistent
-commands, separate from temporary heating actions. Tariff reduction requests a
-relay; it does not establish that a compressor has stopped.
+The folded **Manual heating override** requests Normal, Reduced or Preheat using
+the same immediate equipment actions as the corresponding automatic phase.
+Normal restores owned native settings and tariff control. Reduced requests tariff
+reduction, applies available native hot-water/auxiliary restrictions and suppresses
+automatic circulation. A hot-water circulation run already in progress finishes
+before reduction starts, for both manual and automatic requests. These actions bypass savings/forecast selection, while
+retaining device readiness, native limits and restoration checks. Automatic phase
+selection is situation dependent; a phase's equipment actions share one path.
+
+In Automatic, Normal and Reduced are reassessed on the next controller update.
+During Pause, they remain until another selection, Automatic, or the scheduled
+resume time. An indefinite Pause gives them no application end time. Native
+parameter edits remain separate persistent device commands.
+
+Manual Preheat raises ROOM and opens commissioned floor circuits for one original
+floor lease. Polling does not renew that lease. Normal or Reduced ends it sooner.
+At the deadline the controller restores ROOM independently of floor feedback and
+checks whether the device-local floor lease restored circulation. Missing or failed
+restoration triggers the controller fallback and remains unresolved until fresh
+readback confirms it. With no floor integration, the configured bounded preheat
+duration applies. A report distinguishes device-local expiry, controller fallback
+and missing evidence; software cannot prove restoration through a broken link.
+
+Action receipts, including Garage and equipment controls, remain visible for
+24 hours unless replaced by a newer action on the same control. Device feedback
+updates pending messages; completed receipts describe past actions, not active
+ownership. Ongoing faults/restoration are visible until resolved regardless of age.
 
 ## Garage manual heating
 

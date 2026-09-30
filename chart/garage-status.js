@@ -1,3 +1,4 @@
+import { actionReceiptRecent } from './action-receipts.js';
 import { isReadOnlyReplica } from './replica-status.js';
 import { mitsubishiReadings, mitsubishiCompressor, renderMitsubishiReadings } from './mitsubishi.js';
 import { equipmentReadingRows } from './equipment.js';
@@ -140,7 +141,8 @@ export function createGarageControls({ document, request, onStatus = () => {}, o
   beforeRequest = () => {}, afterRequest = () => {}, blocked = () => false }) {
   const $ = id => document.getElementById(id), input = $('garage-normal-target'), form = $('garage-target-form');
   const message = $('garage-heating-message');
-  let status = null, busy = false, closed = false, dirty = false, protectionDirty = false, selectionFeedback = false;
+  let status = null, busy = false, closed = false, dirty = false, protectionDirty = false, selectionFeedback = null;
+  let protectionFeedback = null;
   const protectionFields = ['marginC', 'pipeOutsideDiameterMm', 'pipeWallMm', 'heatTransferWPerM2K'];
   const protectionForm = $('garage-protection-form');
   const protectionAvailable = () => status?.garage?.protection?.settingsAvailable === true
@@ -176,10 +178,22 @@ export function createGarageControls({ document, request, onStatus = () => {}, o
     const reason = $('garage-control-detail');
     if (reason) reason.textContent = status?.readOnly === true || status?.input === 'offline' || isReadOnlyReplica(status)
       ? 'Recorded selection. Change heating on the live controller.' : garageDisplay(garage).reason;
-    if (message && selectionFeedback) {
-      const confirmation = status?.readOnly === true || status?.input === 'offline' || isReadOnlyReplica(status)
-        ? 'Recorded selection · live confirmation unavailable' : garageDisplay(garage).confirmation;
-      message.textContent = `${modeName(garage.mode)} selected. ${confirmation}.`;
+    if (message && selectionFeedback && !busy) {
+      const now = status?.now ?? Date.now(), receipt = selectionFeedback;
+      if (!actionReceiptRecent(receipt.at, now)) { selectionFeedback = null; message.textContent = ''; message.classList.remove('form-error'); }
+      else {
+        const matches = garage.mode === receipt.mode && garage.requestedTargetC === receipt.targetC;
+        if (!matches && !receipt.error) receipt.superseded = true;
+        if (matches && garage.targetConfirmed === true && !receipt.superseded) {
+          receipt.confirmed = true;
+          if (garage.adapter?.observedAt >= receipt.at) receipt.error = null;
+        }
+        const confirmation = status?.readOnly === true || status?.input === 'offline' || isReadOnlyReplica(status)
+          ? 'Recorded selection · live confirmation unavailable' : receipt.superseded ? 'Selection superseded by a newer choice'
+            : receipt.confirmed ? 'Confirmed by the heat-pump controller' : 'Waiting for heat-pump controller confirmation';
+        message.textContent = receipt.error ?? `${modeName(receipt.mode)} selected · ${number(receipt.targetC)}. ${confirmation}.`;
+        message.classList.toggle('form-error', Boolean(receipt.error));
+      }
     }
     const protection = garage.protection ?? {};
     if (!protectionDirty) for (const key of ['approved', ...protectionFields]) {
@@ -189,11 +203,16 @@ export function createGarageControls({ document, request, onStatus = () => {}, o
     }
     const result = protection.sender?.result;
     const protectionMessage = $('garage-protection-message');
-    if (!busy && result && protectionMessage) {
-      protectionMessage.textContent = result.status === 'applied' ? 'Protection settings applied by the local protection unit.'
+    if (!busy && protectionMessage && protectionFeedback
+      && !actionReceiptRecent(protectionFeedback.at, status?.now ?? Date.now())) {
+      protectionFeedback = null; protectionMessage.textContent = ''; protectionMessage.classList.remove('form-error');
+    }
+    if (!busy && result && protectionMessage && (!protectionFeedback?.error || result.requestedAt >= protectionFeedback.at)) {
+      const recent = actionReceiptRecent(result.requestedAt, status?.now ?? Date.now());
+      protectionMessage.textContent = !recent ? '' : result.status === 'applied' ? 'Protection settings applied by the local protection unit.'
         : result.status === 'published' ? 'Settings requested. Waiting for protection unit confirmation.'
           : result.reason ?? 'Protection settings were not confirmed. Check the reported values before retrying.';
-      protectionMessage.classList.toggle('form-error', ['uncertain', 'rejected', 'failed'].includes(result.status));
+      protectionMessage.classList.toggle('form-error', recent && ['uncertain', 'rejected', 'failed'].includes(result.status));
     }
     const settingsStatus = $('garage-protection-settings-status');
     if (settingsStatus) settingsStatus.textContent = protectionAvailable()
@@ -203,14 +222,16 @@ export function createGarageControls({ document, request, onStatus = () => {}, o
   };
   const send = async payload => {
     if (locked()) return;
-    selectionFeedback = false;
+    selectionFeedback = { at: status?.now ?? Date.now(), mode: payload.mode,
+      targetC: payload.targetC ?? status?.garage?.[`${payload.mode}TargetC`] };
     busy = true; beforeRequest(); onBusy(true); refreshControls();
     if (message) { message.classList.remove('form-error'); message.textContent = 'Saving garage temperature…'; }
     try {
-      status = await request('/api/garage/heating', payload); dirty = false; selectionFeedback = true; onStatus(status); render();
+      status = await request('/api/garage/heating', payload); dirty = false; onStatus(status);
     } catch (error) {
+      selectionFeedback.error = error.message;
       if (message) { message.classList.add('form-error'); message.textContent = error.message; }
-    } finally { busy = false; onBusy(false); refreshControls(); }
+    } finally { busy = false; onBusy(false); render(); }
     await afterRequest();
   };
   const normal = () => { if (finite(status?.garage?.normalTargetC)) void send({ mode: 'normal' }); };
@@ -221,7 +242,7 @@ export function createGarageControls({ document, request, onStatus = () => {}, o
     if (locked() || !dirty) return;
     const targetC = input?.value?.trim() ? Number(input.value) : NaN;
     if (!finite(targetC) || targetC < 0 || targetC > 31 || !Number.isInteger(targetC * 2)) {
-      selectionFeedback = false;
+      selectionFeedback = { at: status?.now ?? Date.now(), error: 'Choose a Normal target from 0 to 31 °C in 0.5 °C steps.' };
       if (message) { message.classList.add('form-error'); message.textContent = 'Choose a Normal target from 0 to 31 °C in 0.5 °C steps.'; }
       return;
     }
@@ -239,16 +260,19 @@ export function createGarageControls({ document, request, onStatus = () => {}, o
     const notice = $('garage-protection-message');
     if (bounds.some(([value, min, max]) => !finite(value) || value < min || value > max)
       || payload.pipeWallMm * 2 >= payload.pipeOutsideDiameterMm) {
+      protectionFeedback = { at: status?.now ?? Date.now(), error: true };
       if (notice) { notice.classList.add('form-error'); notice.textContent = 'Use the stated ranges. The pipe wall must be less than half its outside diameter.'; }
       return;
     }
+    protectionFeedback = { at: status?.now ?? Date.now(), error: false };
     busy = true; beforeRequest(); onBusy(true); refreshControls();
     if (notice) { notice.classList.remove('form-error'); notice.textContent = 'Sending protection settings…'; }
     try {
-      status = await request('/api/garage/protection', payload); protectionDirty = false; onStatus(status); render();
+      status = await request('/api/garage/protection', payload); protectionDirty = false;
       if (notice) notice.textContent = 'Settings requested. Wait for the local protection unit to confirm them.';
-    } catch (error) { if (notice) { notice.classList.add('form-error'); notice.textContent = error.message; } }
-    finally { busy = false; onBusy(false); refreshControls(); }
+      onStatus(status);
+    } catch (error) { protectionFeedback.error = true; if (notice) { notice.classList.add('form-error'); notice.textContent = error.message; } }
+    finally { busy = false; onBusy(false); render(); }
     await afterRequest();
   };
   protectionForm?.addEventListener('submit', submitProtection);

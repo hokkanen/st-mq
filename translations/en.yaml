@@ -2,7 +2,7 @@ configuration:
   controller:
     name: Home controller
     description: >-
-      Start with simulated input and Plan only heating. Home Assistant ingress grants
+      Start with simulated input and Pause heating. Home Assistant ingress grants
       admin access through your HA login. topology selects standalone, mirror or
       pair. Standalone runs independently as master. Mirror uses
       SSH to send snapshots from a master to a read-only slave; roles are fixed
@@ -15,7 +15,7 @@ configuration:
       empty to keep direct port 1234 disabled, or set web_token to an admin
       password of at least 24 characters. Optionally set web_family_token to a
       different password of at least 24 characters for family access. Family can
-      view all pages and operate firewood, DHWR, Home and Garage automation, temporary heating, Away/Pause,
+      view all pages and operate firewood, DHWR, Home Automatic/Pause, Garage Normal/Away, manual heating, schedules,
       garage doors and EV card controls. Other writes, exports and downloads
       require admin. Save options, then choose Apply configuration in the
       application. Password changes apply immediately; clearing both passwords
@@ -59,8 +59,8 @@ configuration:
     name: MQTT broker and temperature sensors
     description: >-
       MQTT input subscribes to the installed H66 using this broker address,
-      username and password. Home and Garage automation permissions are independent
-      dashboard controls; manual commands remain available with Plan only.
+      username and password. Home Automatic/Pause and Garage Normal/Away are independent
+      dashboard controls; manual commands remain available while paused.
       Configure temperature sensors as equipment devices with exact MQTT
       connections. Providers input can use these sensors without an H66 device.
       Indoor topics expect a genuine report every 70 minutes, allowing 300 seconds

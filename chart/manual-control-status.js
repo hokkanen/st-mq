@@ -1,5 +1,6 @@
-const recent = (result, now) => Number.isFinite(result?.at) && result.at <= now && now - result.at < 60_000;
+import { actionReceiptRecent } from './action-receipts.js';
 const failed = result => ['failed', 'unconfirmed'].includes(result?.status) || Boolean(result?.error);
+const unexpired = (until, now) => until === null || Number.isFinite(until) && until > now;
 
 /** Current device evidence wins over a prior request when choosing the active button. */
 export function heatingModeSelection(status = {}) {
@@ -9,54 +10,53 @@ export function heatingModeSelection(status = {}) {
   return { phase: requested, confirmed: false };
 }
 
-/** Saved request records are history; only current manual ownership keeps a notice alive. */
+/** A receipt lasts one day, independently from ownership of the heating mode. */
 export function heatingRequestResult(status = {}, result = status.heatingTests?.lastResult) {
   const now = status.now ?? Date.now();
-  if (!result) return null;
-  if (failed(result)) {
-    if (!recent(result, now)) return null;
-    const actual = status.observations?.actual;
-    const fresh = result.command !== 'circulation' && actual?.verified === true && actual.stale === false
-      && Number.isFinite(result.requestedAt) && actual.observedAt >= result.requestedAt && actual.observedAt <= now;
-    return { ...result, observedPhase: fresh ? actual.phase ?? actual.mode : null };
-  }
+  if (!result || !actionReceiptRecent(result.at, now)) return null;
+  const restorationPending = Boolean(status.execution?.restorationPending || status.h66?.restorationPending || status.preheatValves?.restorationPending);
   if (result.command === 'circulation') {
-    const dhwr = status.dhwr ?? {};
-    return dhwr.active && !(dhwr.requestedAt > result.at)
-      ? { ...result, confirmed: dhwr.confirmed === true } : null;
+    const dhwr = status.dhwr ?? {}, superseded = dhwr.requestedAt > result.at;
+    const active = dhwr.active === true && !superseded;
+    return { ...result, active, superseded, confirmed: active && dhwr.confirmed === true,
+      lifecycle: superseded ? 'superseded' : active ? 'active' : failed(result) ? 'failed' : 'completed' };
   }
-  if (status.execution?.restorationPending || status.h66?.restorationPending || status.preheatValves?.restorationPending) return null;
-  if (result.command === 'preheat' && status.h66 && !status.h66.manualPreheat) return null;
   const actual = status.observations?.actual ?? {}, observedAt = actual.observedAt ?? actual.receivedAt;
-  const confirmed = actual.verified === true && actual.stale === false
-    && (actual.phase ?? actual.mode) === result.command && Number.isFinite(result.requestedAt) && observedAt >= result.requestedAt && observedAt <= now;
-  if (result.holdUntil != null) {
-    const hold = status.decision?.manualHold, pause = status.override;
-    if (!(hold?.until > now) || !(pause?.expiresAt > now) || hold.phase !== result.command
-      || pause.createdAt > result.at) return null;
-    return { ...result, confirmed, holdUntil: hold.until };
-  }
-  if (!(result.expiresAt > now)) return null;
-  const phase = status.observations?.actual?.requestedPhase;
-  return phase && phase !== result.command ? null : { ...result, confirmed };
+  const fresh = actual.verified === true && actual.stale === false && Number.isFinite(observedAt)
+    && observedAt >= (result.requestedAt ?? result.at) && observedAt <= now;
+  const observedPhase = fresh ? actual.phase ?? actual.mode : null;
+  const hold = status.decision?.manualHold, pause = status.override;
+  const sameHold = hold?.phase === result.command && unexpired(hold.until, now)
+    && (!(pause?.createdAt > result.at));
+  const owned = sameHold || result.expiresAt > now && (!actual.requestedPhase || actual.requestedPhase === result.command);
+  const superseded = Boolean(!sameHold && (fresh && observedPhase !== result.command
+    || actual.requestedPhase && actual.requestedPhase !== result.command)
+    || hold && hold.phase !== result.command || pause?.createdAt > result.at);
+  const active = (!failed(result) || fresh && observedPhase === result.command) && !superseded && !restorationPending && owned
+    && (result.command !== 'preheat' || !status.h66 || Boolean(status.h66.manualPreheat));
+  return { ...result, active, superseded, restorationPending, observedPhase,
+    evidenceAt: fresh ? observedAt : null,
+    confirmed: fresh ? observedPhase === result.command : result.confirmed === true,
+    holdUntil: sameHold ? hold.until : result.holdUntil,
+    indefinite: active && sameHold && hold.until === null,
+    lifecycle: superseded ? 'superseded' : active ? 'active' : failed(result) ? 'failed' : 'completed' };
 }
 
 export function h66RequestResult(status = {}) {
   const h66 = status.h66 ?? {}, result = h66.lastManual, now = status.now ?? Date.now();
-  if (!result || result.scope !== 'native-setting') return null;
-  if (failed(result)) return recent(result, now) ? result : null;
-  // This is a recent command receipt, not an expiry of the native setting. The
-  // permanent current value is shown by the separate live pump reading.
-  if (!recent(result, now) || h66.restorationPending) return null;
-  const reading = h66.readings?.[result.register];
-  if (reading?.available === true && reading.stale === false && reading.value !== result.value) return null;
-  return result;
+  if (!result || result.scope !== 'native-setting' || !actionReceiptRecent(result.at, now)) return null;
+  const reading = h66.readings?.[result.register], observedAt = reading?.observedAt ?? reading?.receivedAt ?? reading?.at;
+  const fresh = reading?.available === true && reading.stale === false && Number.isFinite(observedAt)
+    && observedAt >= (result.requestedAt ?? result.at) && observedAt <= now;
+  return { ...result, confirmed: fresh ? reading.value === result.value : result.confirmed === true,
+    observedValue: fresh ? reading.value : null, evidenceAt: fresh ? observedAt : null,
+    superseded: fresh && reading.value !== result.value };
 }
 
-/** Stop acknowledgements yield to live OFF confirmation; unresolved feedback has its own status. */
+/** Restoration remains visible until resolved, independently from receipt age. */
 export function circulationStopPending(status = {}, requestedAt) {
   const dhwr = status.dhwr ?? {}, now = status.now ?? Date.now();
   return Number.isFinite(requestedAt) && !dhwr.active && !(dhwr.requestedAt > requestedAt)
     && (dhwr.restorationPending || dhwr.confirmed !== true && dhwr.feedback?.stateConfigured !== false
-      && now >= requestedAt && now - requestedAt < 60_000);
+      && actionReceiptRecent(requestedAt, now));
 }

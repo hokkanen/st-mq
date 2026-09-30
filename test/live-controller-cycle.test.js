@@ -60,7 +60,7 @@ test('a due base cycle remains intent until broker acknowledgement, then pause r
   await new Promise(resolve=>setImmediate(resolve));r.acknowledge();await r.settle();
   assert.equal(r.engine.applied.phase,'reduction');assert.ok(r.engine.cycles.active());
   assert.deepEqual(r.commands,[['reduction']]);
-  r.engine.setOverride(15);await new Promise(resolve=>setImmediate(resolve));r.acknowledge();await r.settle();
+  r.engine.setTemporary({ pauseUntil: new Date(r.engine.clock() + 15 * 60_000).toISOString() });await new Promise(resolve=>setImmediate(resolve));r.acknowledge();await r.settle();
   assert.equal(r.engine.applied.phase,'normal');assert.deepEqual(r.commands.at(-1),['normal']);
   const request=r.store.latestObservation('controller_phase');assert.equal(request.raw.expiresAt,r.now+1_800_000);assert.equal(request.raw.verified,false);
 });
@@ -98,7 +98,7 @@ test('direct native settings survive automatic controller updates without an exp
 
 test('ending a price-control pause preserves permanent native edits made during it', async t => {
   const r = setup(t, { automationEnabled: false }), native = r.native();
-  r.engine.setOverride(15); await r.settle();
+  r.engine.setTemporary({ pauseUntil: new Date(r.engine.clock() + 15 * 60_000).toISOString() }); await r.settle();
   await r.engine.setH66Setting({ register: '0212', value: 46 });
   assert.equal(native.values['0212'], 46);
   assert.equal(native.h66.status().pauseId, null);

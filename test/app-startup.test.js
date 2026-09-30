@@ -30,12 +30,12 @@ test('standalone entry starts offline promptly, serves built UI, survives restar
     assert.equal(status.settingsReload.configuration.environment, 'ubuntu');
     assert.equal(status.settingsReload.configuration.privatePath, join(directory, 'st-mq/secrets.json'));
     assert.equal(status.settingsReload.configuration.defaultsPath, config.configuration.defaultsPath);
-    app.engine.setOverride(60);
+    app.engine.setTemporary({ pauseUntil: new Date(app.engine.clock() + 60 * 60_000).toISOString() });
     // A conflicting listener must close its worker instead of hanging startup.
     await assert.rejects(start({ config: { ...config, dataDir: join(directory, 'conflict'), dbPath: join(directory, 'conflict/test.sqlite'), port: app.server.address().port } }), /EADDRINUSE/);
   } finally { await app.close(); }
   const restarted = await start({ config });
-  try { assert.equal(restarted.engine.status().override.mode, 'normal'); }
+  try { assert.equal(restarted.engine.status().automation.home.activity, 'paused'); }
   finally { await restarted.close(); }
 });
 
@@ -133,8 +133,8 @@ test('pause expires on its deadline between regular controller ticks', async t =
   const app = await start({ config });
   try {
     app.engine.setTemporary({ pauseUntil: new Date(Date.now() + 200).toISOString() });
-    for (let i = 0; i < 60 && app.store.getState('override:simulated') !== null; i++) await new Promise(resolve => setTimeout(resolve, 20));
-    assert.equal(app.store.getState('override:simulated'), null, 'Timer clears the persisted override without a status request');
-    assert.equal(app.store.events().filter(e => e.type === 'override-expired').length, 1);
+    for (let i = 0; i < 60 && app.store.getState('automation:simulated').features.home.pause !== null; i++) await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal(app.store.getState('automation:simulated').features.home.pause, null, 'Timer resumes Automatic without a status request');
+    assert.equal(app.store.events().filter(e => e.type === 'heating-pause-ended').length, 1);
   } finally { await app.close(); }
 });

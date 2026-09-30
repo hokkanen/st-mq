@@ -63,15 +63,15 @@ test('cover requests serialize delivery, retain contact state, and permit Stop w
     operation: { action: 'open', status: 'published', requestedAt: now } } });
   finish(acknowledged); assert.equal(await pending, true);
   assert.equal(equipmentReadingRows(actions.snapshot().status.equipment.devices[0])[0].value, 'Closed');
-  assert.match(equipmentCoverResult(acknowledged.equipment.devices[0]), /position unconfirmed/);
+  assert.match(equipmentCoverResult(acknowledged.equipment.devices[0], now), /position unconfirmed/);
   const stopping = actions.cover('door1', 'stop');
   assert.deepEqual(calls, [
     { path: '/api/equipment/cover', body: { deviceId: 'door1', action: 'open' } },
     { path: '/api/equipment/cover', body: { deviceId: 'door1', action: 'stop' } },
   ]);
-  finish(status({ ...device, cover: { available: true, operation: { action: 'stop', status: 'published' } } }));
+  finish(status({ ...device, cover: { available: true, operation: { action: 'stop', status: 'published', requestedAt: now } } }));
   await stopping;
-  assert.match(equipmentCoverResult(actions.snapshot().status.equipment.devices[0]), /stopping unconfirmed/);
+  assert.match(equipmentCoverResult(actions.snapshot().status.equipment.devices[0], now), /stopping unconfirmed/);
 });
 
 test('failed cover requests keep monitoring intact and expose no private transport details', async () => {
@@ -82,6 +82,6 @@ test('failed cover requests keep monitoring intact and expose no private transpo
   assert.equal(actions.snapshot().busy, false);
   assert.equal(actions.snapshot().error, true);
   assert.doesNotMatch(actions.snapshot().message, /private-broker-detail/);
-  assert.match(equipmentCoverResult({ cover: { operation: { action: 'close', status: 'unconfirmed' } } }), /no new position report/);
+  assert.match(equipmentCoverResult({ cover: { operation: { action: 'close', status: 'unconfirmed', requestedAt: now } } }, now), /no new position report/);
   assert.equal(equipmentCoverResult(door('door2')), '', 'One door does not inherit another door’s request result');
 });

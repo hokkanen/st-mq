@@ -200,7 +200,7 @@ try {
   assert.equal((await fetch(new URL(themePath, base))).status, 200);
   const state = await (await fetch(`${base}/api/status`, { headers })).json();
   assert.equal(state.automation.home.enabled, false);
-  assert.equal(state.automation.garage.enabled, false);
+  assert.equal(state.automation.garage, undefined);
   assert.equal(state.input, 'simulated');
   const chartResponse = await fetch(`${base}/api/chart`, { headers });
   assert.equal(chartResponse.status, 200);
@@ -209,10 +209,10 @@ try {
   assert.equal(chart.range.startDate, chart.range.endDate);
   assert.equal(chart.range.timeZone, 'Europe/Helsinki');
   assert.ok(chart.series.all_in_price.length > 0);
-  app.engine.setOverride(60);
+  app.engine.setTemporary({ pauseUntil: new Date(app.engine.clock() + 3_600_000).toISOString() });
 } finally { await app.close(); }
 app = await start({ config });
-try { assert.equal(app.engine.status().override.mode, 'normal'); }
+try { assert.equal(app.engine.status().automation.home.enabled, false); assert(app.engine.status().override.expiresAt > Date.now()); }
 finally { await app.close(); }
 const now = Date.now(), fixture = providerFixture(now);
 app = await start({ config: { ...config, input: 'providers', dbPath: join(config.dataDir, 'provider-fixture.sqlite'), connections: fixture.connections },

@@ -319,3 +319,28 @@ test('an old unscoped release obligation is never guessed to belong to the curre
   assert.equal(publications.length, 0);
   await adapter.close({ restore: false });
 });
+
+test('lease completion probes all outputs before release and reports device-local expiry for24hours', async t => {
+  const f = await fixture(t);
+  await f.adapter.lease({ owner: 'expiry-check', until: START + 60_000 });
+  const start = f.publications.length;
+  await f.advance(60);
+  assert.deepEqual(f.publications.slice(start, start + 4).map(row => row.command.action), ['probe', 'probe', 'release', 'release']);
+  assert.equal(f.adapter.status().lastLeaseEnd.outcome, 'device-local');
+  assert.equal(f.adapter.status().lastLeaseEnd.restorationPending, false);
+  assert.equal(f.adapter.status().lastLeaseEnd.expiresAt, START + 60_000 + 86_400_000);
+  assert.equal(f.adapter.status(START + 60_000 + 86_400_000).lastLeaseEnd, null);
+});
+
+test('lease completion exposes a failed local expiry before successfully enforcing host OFF', async t => {
+  const f = await fixture(t);
+  await f.adapter.lease({ owner: 'failed-expiry-check', until: START + 60_000 });
+  // The correlated device reply still reports ON at host lease expiry. This
+  // represents a broken local timeout; a successful host OFF must not hide it.
+  f.now(START + 60_000);
+  f.devices.forEach(device => device.offset(60));
+  const result = await f.adapter.finishLease({ owner: 'failed-expiry-check' });
+  assert.equal(result.outcome, 'fallback');
+  assert.equal(result.released, true);
+  assert(f.devices.every(device => device.channels.every(value => value === false)));
+});

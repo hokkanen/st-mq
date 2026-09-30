@@ -84,7 +84,7 @@ try {
   };
   await send('Runtime.enable'); await send('Page.enable');
   // Exercise the production fetch/render/polling path. Only the presentation of
-  // synthetic status is varied, and every mutating browser request is blocked.
+  // synthetic status is varied; control requests terminate in this fixture.
   await send('Page.addScriptToEvaluateOnNewDocument', { source: `
     globalThis.homeFixture = { paused: false, savingsStrategy: 'balanced', reads: 0, mutations: [],
       automatic: true };
@@ -92,14 +92,32 @@ try {
     globalThis.fetch = async (input, options = {}) => {
       const method = options.method ?? (input instanceof Request ? input.method : 'GET');
       if (!['GET', 'HEAD'].includes(method.toUpperCase())) {
-        homeFixture.mutations.push(String(input));
-        throw new Error('Mutating requests are blocked in the synthetic browser fixture');
+        const path = new URL(String(input), location.href).pathname;
+        const body = JSON.parse(options.body ?? '{}');
+        homeFixture.mutations.push({ path, body });
+        if (path === '/api/automation') {
+          homeFixture.automatic = body.enabled; homeFixture.paused = !body.enabled;
+          homeFixture.pauseEnd = null; homeFixture.manualPhase = null;
+        } else if (path === '/api/temporary') {
+          if (Object.hasOwn(body, 'pauseUntilLocal')) {
+            homeFixture.automatic = false; homeFixture.paused = true;
+            homeFixture.pauseEnd = body.pauseUntilLocal ? Date.parse(body.pauseUntilLocal + '+03:00') : null;
+          }
+        } else if (path === '/api/heating-test') {
+          homeFixture.manualPhase = body.command;
+          homeFixture.receipt = { command: body.command, status: 'mqtt', sent: true,
+            at: ${now}, requestedAt: ${now}, holdUntil: null,
+            expiresAt: body.command === 'preheat' ? ${now} + 900000 : null };
+          return new Response(JSON.stringify(homeFixture.receipt), { headers: { 'Content-Type': 'application/json' } });
+        } else throw new Error('Unexpected mutation in browser fixture: ' + path);
+        return globalThis.fetch('/api/status');
       }
       const response = await nativeFetch(input, options);
       if (!new URL(typeof input === 'string' ? input : input.url, location.href).pathname.endsWith('/api/status')) return response;
       const status = await response.json();
       homeFixture.reads++;
-      status.automation = { home: { enabled: homeFixture.automatic, available: true } };
+      status.automation = { home: { enabled: homeFixture.automatic && !homeFixture.paused, available: true, activity: homeFixture.automatic && !homeFixture.paused ? 'automatic' : 'paused' } };
+      status.decision.reasons = homeFixture.paused ? ['heating-paused'] : ['flat-prices-preserve-normal-warmth'];
       status.settings.savingsStrategy = homeFixture.savingsStrategy;
       status.settings.preheatRoomBoostC = 5;
       status.settings.comfort.maxDropC = 1.5;
@@ -108,15 +126,15 @@ try {
         { id: 'bedroom', label: 'Bedroom', referenceC: 20, referenceSource: 'room', minC: 18.5, maxC: 21.5, limitsApply: true },
         { id: 'office', label: 'Office', referenceC: 21, referenceSource: 'overall', minC: 19.5, maxC: 22.5, limitsApply: true },
       ];
-      status.override = homeFixture.paused ? { expiresAt: status.now + 3_600_000 } : null;
+      status.override = homeFixture.paused ? { expiresAt: homeFixture.pauseEnd === undefined ? status.now + 3_600_000 : homeFixture.pauseEnd } : null;
       status.decision.manualHold = homeFixture.paused
-        ? { until: status.override.expiresAt, phase: 'preheat', changed: true } : null;
+        ? { until: homeFixture.manualPhase === 'preheat' ? status.now + 900000 : status.override.expiresAt, phase: homeFixture.manualPhase ?? 'preheat', changed: true } : null;
       status.heatingTests = { ...status.heatingTests, available: true, preheatAvailable: true,
-        preheatTargetC: 25, preheatRoomBoostC: 5 };
-      status.observations.actual = { ...status.observations.actual, source: 'simulation', verified: true,
-        stale: false, mode: 'normal', phase: homeFixture.paused ? 'preheat' : 'normal',
-        requestedPhase: homeFixture.paused ? 'preheat' : 'normal' };
-      status.h66 = { ...status.h66, connected: true, brokerConnected: true, enabled: true,
+        preheatTargetC: 25, preheatRoomBoostC: 5, lastResult: homeFixture.receipt };
+      status.observations.actual = { ...status.observations.actual, source: 'simulation', verified: homeFixture.confirmed !== false, observedAt: status.now,
+        stale: false, mode: 'normal', phase: homeFixture.manualPhase ?? (homeFixture.paused ? 'preheat' : 'normal'),
+        requestedPhase: homeFixture.manualPhase ?? (homeFixture.paused ? 'preheat' : 'normal') };
+      status.h66 = { ...status.h66, manualPreheat: homeFixture.manualPhase === 'preheat' ? { confirmed: true } : null, connected: true, brokerConnected: true, enabled: true,
         readings: Object.fromEntries(Object.entries({ '2201': 1, '0203': 20, '0212': 45,
           '0208': 55, '1A01': 1, '1A07': 0, '3104': 0, '1A20': 0 })
           .map(([key, value]) => [key, { value, available: true, observedAt: status.now }])) };
@@ -142,15 +160,18 @@ try {
     }) && document.querySelector('[data-h66-summary="mode"]').checkVisibility()
       && !document.getElementById('home-savings-strategy').checkVisibility();
   })()`), true, 'Current heat-pump, tariff and circulation states remain visible outside folded preferences');
-  assert.match(await evaluate(`document.getElementById('heating-test-help').textContent`), /next controller update.*1 minute.*Pause price control/);
+  assert.match(await evaluate(`document.getElementById('heating-test-help').textContent`), /next controller update.*1 minute.*Preheat.*lease deadline/);
   assert.equal(await evaluate(`document.getElementById('home-comfort-limits').textContent`), '−1.5 / +1.5 °C');
   assert.equal(await evaluate(`(() => {
     const group = document.getElementById('heating-test-buttons');
     return group.getAttribute('role') === 'group'
-      && document.getElementById(group.getAttribute('aria-labelledby')).textContent === 'Temporary heating override'
+      && document.getElementById(group.getAttribute('aria-labelledby')).textContent === 'Manual heating override'
       && [...group.querySelectorAll('button')].every(button => button.type === 'button'
         && !button.disabled && button.getAttribute('aria-label') && button.hasAttribute('aria-pressed'));
   })()`), true, 'Temporary actions have an accessible group name, button names and selection state');
+  assert.equal(await evaluate(`document.getElementById('home-manual-override-details').open`), false, 'Manual heating starts folded');
+  await evaluate(`document.querySelector('#home-manual-override-details > summary').focus()`);
+  await keyPress('Enter');
   await evaluate(`document.getElementById('test-normal').focus()`);
   await keyPress('Tab');
   assert.equal(await evaluate('document.activeElement.id'), 'test-preheat', 'Preheat follows Normal in keyboard order');
@@ -159,9 +180,9 @@ try {
   assert.equal(await evaluate(`(() => {
     const temporary = document.getElementById('temporary-details');
     return temporary.closest('#heating-test-details') !== null
-      && Boolean(document.getElementById('heating-test-buttons').compareDocumentPosition(temporary) & Node.DOCUMENT_POSITION_FOLLOWING)
+      && Boolean(temporary.compareDocumentPosition(document.getElementById('home-manual-override-details')) & Node.DOCUMENT_POSITION_FOLLOWING)
       && Boolean(temporary.compareDocumentPosition(document.getElementById('home-preferences-details')) & Node.DOCUMENT_POSITION_FOLLOWING);
-  })()`), true, 'Away and pause sits next to temporary actions before permanent preferences');
+  })()`), true, 'Schedule and away sits below the mode choice before manual overrides and strategy');
   await screenshot('desktop-dark-folded');
   console.log(`Home controls first screenshot: ${join(artifacts, 'desktop-dark-folded.png')}`);
   await evaluate(`document.querySelector('#home-preferences-details > summary').focus()`);
@@ -180,7 +201,7 @@ try {
     'Space closes native preferences disclosure');
   await evaluate(`homeFixture.automatic = false; await homeFixture.poll()`);
   assert.equal(await evaluate(`document.getElementById('test-reduction').disabled`), false,
-    'Home manual reduction stays available with Plan only');
+    'Home manual reduction stays available while paused');
   await evaluate(`homeFixture.automatic = true; await homeFixture.poll()`);
   for (const width of [1280, 360]) for (const theme of ['dark', 'light']) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: 1100, deviceScaleFactor: 1, mobile: false });
@@ -239,7 +260,7 @@ try {
   }
   console.log(`Home controls screenshots available: ${artifacts}`);
   await evaluate(`homeFixture.paused = true; await homeFixture.poll()`);
-  assert.match(await evaluate(`document.getElementById('heating-test-help').textContent`), /held until.*Resume now.*previous settings return/);
+  assert.match(await evaluate(`document.getElementById('heating-test-help').textContent`), /Normal and Reduced stay until.*Automatic.*Preheat always ends/);
   assert.doesNotMatch(await evaluate(`document.getElementById('heating-test-help').textContent`), /1 minute/);
   assert.equal(await evaluate(`document.getElementById('test-preheat').getAttribute('aria-pressed')`), 'true',
     'Paused fixture retains accessible active preheat state');
@@ -284,11 +305,49 @@ try {
   }
   await evaluate(`homeFixture.paused = false; await homeFixture.poll()`);
   assert.match(await evaluate(`document.getElementById('heating-test-help').textContent`), /next controller update.*1 minute/);
+  assert.deepEqual(await evaluate('homeFixture.mutations'), [], 'Presentation checks sent no commands');
+  await evaluate(`document.getElementById('home-automation-pause').click()`);
+  await until(`document.getElementById('home-automation-pause').getAttribute('aria-pressed') === 'true'
+    && document.getElementById('home-automation-message').textContent.includes('No resume time')`);
+  assert.match(await evaluate(`document.getElementById('heating-test-help').textContent`), /stay until you select/);
+  await evaluate(`document.getElementById('home-manual-override-details').open = true; homeFixture.confirmed = false;
+    document.getElementById('test-reduction').click()`);
+  await until(`document.getElementById('heating-test-message').textContent.includes('Waiting for device feedback')`);
+  await evaluate(`homeFixture.confirmed = true`);
+  await until(`await homeFixture.poll(); return document.getElementById('heating-test-message').textContent.includes('Device confirmed')`);
+  assert.match(await evaluate(`document.getElementById('heating-test-message').textContent`), /Device confirmed.*Held until you select/);
+  for (const [id, command] of [['test-preheat', 'preheat'], ['test-normal', 'normal']]) {
+    await evaluate(`document.getElementById('${id}').click()`);
+    await until(`homeFixture.receipt?.command === '${command}' && !document.getElementById('${id}').disabled`);
+    await until(`await homeFixture.poll(); return document.getElementById('heating-test-message').textContent.includes('Device confirmed')`);
+    assert.match(await evaluate(`document.getElementById('heating-test-message').textContent`), /Device confirmed/);
+  }
+  await evaluate(`document.getElementById('temporary-details').open = true;
+    document.getElementById('pause-until').value = '2026-09-21T17:00';
+    document.getElementById('pause-until').dispatchEvent(new Event('input', { bubbles: true }));
+    document.getElementById('temporary-form').requestSubmit()`);
+  await until(`document.getElementById('override-status').textContent.includes('17:00')`);
+  await evaluate(`document.getElementById('pause-until').value = '';
+    document.getElementById('pause-until').dispatchEvent(new Event('input', { bubbles: true }));
+    document.getElementById('temporary-form').requestSubmit()`);
+  await until(`document.getElementById('override-status').textContent === 'Paused until you select Automatic.'`);
+  assert.equal(await evaluate(`document.getElementById('home-automation-pause').getAttribute('aria-pressed')`), 'true',
+    'Clearing the scheduled end keeps Pause selected');
+  await evaluate(`document.getElementById('resume-now').click()`);
+  await until(`document.getElementById('home-automation-automatic').getAttribute('aria-pressed') === 'true'`);
+  await evaluate(`document.getElementById('home-automation-pause').click()`);
+  await until(`document.getElementById('home-automation-pause').getAttribute('aria-pressed') === 'true'`);
+  await evaluate(`document.getElementById('home-automation-automatic').click()`);
+  await until(`document.getElementById('home-automation-automatic').getAttribute('aria-pressed') === 'true'`);
+  assert.deepEqual(await evaluate('homeFixture.mutations.map(row => row.body)'), [
+    { feature: 'home', enabled: false }, { command: 'reduction' }, { command: 'preheat' },
+    { command: 'normal' }, { pauseUntilLocal: '2026-09-21T17:00' }, { pauseUntilLocal: null },
+    { feature: 'home', enabled: true }, { feature: 'home', enabled: false }, { feature: 'home', enabled: true },
+  ], 'Primary mode and all three manual buttons send their intended request');
   await evaluate(`document.getElementById('dashboard-reset').click()`);
   assert.equal(await evaluate(`document.querySelectorAll('details[open]').length`), 0,
     'Dashboard reset closes controls, strategies and models after cross-link navigation');
   assert.equal(await evaluate(`document.activeElement.id`), 'dashboard-reset');
-  assert.deepEqual(await evaluate('homeFixture.mutations'), [], 'No mutating API request was attempted');
   assert.deepEqual(errors, [], 'Production monitor runs without browser exceptions');
   console.log(`Home controls browser checks passed. Synthetic screenshots: ${artifacts}`);
 } finally {

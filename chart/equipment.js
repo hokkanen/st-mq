@@ -1,3 +1,4 @@
+import { actionReceiptRecent, createReceiptTracker } from './action-receipts.js';
 import { isReadOnlyReplica } from './replica-status.js';
 import { setStatusDetail } from './status-details.js';
 import { temperatureReadingStatus } from './temperature-status.js';
@@ -8,9 +9,7 @@ const clock = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', mo
   hour: '2-digit', minute: '2-digit', timeZoneName: 'shortOffset' });
 const labels = { temperature: 'Temperatures', door: 'Door', switch: 'Switch', power: 'Power meter', metered_switch: 'Energy meter', dehumidifier: 'Dehumidifier', heat_pump: 'Heat pump', vehicle: 'Vehicle', charger: 'Charger', floor_override: 'Floor override' };
 const pretty = text => String(text ?? '').replaceAll(/[_-]/g, ' ');
-const RESULT_NOTICE_MS = 60_000;
-const recentResult = (at, now) => !Number.isFinite(now)
-  || Number.isFinite(at) && at <= now && now - at < RESULT_NOTICE_MS;
+const recentResult = actionReceiptRecent;
 function equipmentStateReading(device, now) {
   const readings = Object.values(device?.readings ?? {}).filter(reading => reading.unit === 'state');
   const reading = readings.length === 1 ? readings[0] : null;
@@ -208,7 +207,8 @@ export function createEquipmentActions({ request, onChange = () => {}, onStatus 
             : actionKind === 'dehumidifier' ? device?.dehumidifier?.operation : null;
         const reported = reading && reading.observedAt > messageAt
           && (actionKind === 'control' || actionKind === 'cover' && ['open', 'closed'].includes(reading.coverState));
-        const returned = latest && (latest.at ?? latest.requestedAt) >= messageAt;
+        const returned = latest && (actionKind !== 'control' || latest.deviceId === actionDeviceId)
+          && (latest.at ?? latest.requestedAt) >= messageAt;
         if (!recentResult(messageAt, next.now ?? Date.now()) || error && (reported || returned)
           || !error && JSON.stringify(next.equipmentTests?.lastResult) !== JSON.stringify(status?.equipmentTests?.lastResult)) {
           message = ''; error = false;
@@ -266,35 +266,49 @@ export function equipmentCoverAllowed(status, device, action, busy = false) {
     && ['open', 'close', 'stop'].includes(action) && device.controls?.cover?.[action] === true && device.cover?.available === true);
 }
 
-/** A saved command receipt is temporary feedback; current readings and active
- * operations describe the device after that receipt is no longer relevant. */
-export function equipmentControlResult(status, device) {
-  const last = status.equipmentControls?.lastResult;
-  if (last?.deviceId !== device.id || typeof last.on !== 'boolean') return '';
-  const pending = last.status === 'pending' && status.equipmentControls?.busy;
-  if (!pending) {
-    if (!recentResult(last.at, status.now ?? Date.now())) return '';
-    const reading = equipmentStateReading(device, status.now);
-    if (reading && reading.observedAt > (last.confirmedAt ?? last.at)
-      && (reading.value !== Number(last.on) || last.confirmed !== true)) return '';
-  }
-  return `${last.on ? 'On' : 'Off'} requested · ${last.confirmed === true ? 'device confirmed'
-    : last.sent ? 'sent; awaiting device confirmation' : pretty(last.status ?? 'not sent')}${Number.isFinite(last.at) ? ` · ${clock.format(last.at)}` : ''}`;
+/** Historical receipts remain for a day and reconcile with fresh device reports. */
+export function equipmentControlReceipt(status, device) {
+  const last = status.equipmentControls?.lastResult, now = status.now ?? Date.now();
+  if (last?.deviceId !== device.id || typeof last.on !== 'boolean' || !recentResult(last.at, now)) return null;
+  const reading = equipmentStateReading(device, now);
+  const fresh = reading && reading.observedAt >= (last.requestedAt ?? last.at);
+  return { ...last, evidenceAt: fresh ? reading.observedAt : null, observedValue: fresh ? reading.value : null,
+    confirmed: fresh ? reading.value === Number(last.on) : last.confirmed === true,
+    superseded: Boolean(fresh && reading.value !== Number(last.on)) };
 }
-
-export function equipmentCoverResult(device, now) {
+function controlReceiptText(last) {
+  if (!last) return '';
+  const outcome = last.superseded ? `latest device report: ${last.observedValue ? 'On' : 'Off'}; request superseded`
+    : last.confirmed ? 'device confirmed' : last.status === 'pending' ? 'sending…'
+      : ['failed', 'unconfirmed'].includes(last.status) ? 'no confirming device report'
+        : last.sent ? 'sent; awaiting device confirmation' : pretty(last.status ?? 'not sent');
+  return `${last.on ? 'On' : 'Off'} requested · ${outcome} · ${clock.format(last.at)}`;
+}
+export function equipmentControlResult(status, device) {
+  return controlReceiptText(equipmentControlReceipt(status, device));
+}
+export function equipmentCoverReceipt(device, now) {
   const operation = device.cover?.operation;
-  if (!operation || !['open', 'close', 'stop'].includes(operation.action) || operation.status === 'observed') return '';
-  if (operation.status !== 'publishing') {
-    if (!recentResult(operation.requestedAt, now)) return '';
-    const reading = equipmentStateReading(device, now);
-    if (reading && reading.observedAt > operation.requestedAt && ['open', 'closed'].includes(reading.coverState)
-      && (operation.action === 'stop' || ['failed', 'unconfirmed'].includes(operation.status))) return '';
-  }
-  const result = { publishing: 'sending…', published: 'sent; position unconfirmed', observed: 'state reported',
-    failed: 'could not send; check the door', unconfirmed: 'no new position report' }[operation.status] ?? 'position unconfirmed';
-  const detail = operation.action === 'stop' && operation.status === 'published' ? 'sent; stopping unconfirmed' : result;
+  if (!operation || !['open', 'close', 'stop'].includes(operation.action) || !recentResult(operation.requestedAt, now)) return null;
+  const reading = equipmentStateReading(device, now);
+  const fresh = reading && reading.observedAt > operation.requestedAt && ['open', 'closed'].includes(reading.coverState);
+  const matches = fresh && (operation.action === 'stop' || reading.coverState === (operation.action === 'open' ? 'open' : 'closed'));
+  return { ...operation, pending: operation.status === 'publishing' || operation.status === 'published' && now - operation.requestedAt < 60_000,
+    evidenceAt: fresh ? reading.observedAt : null, observedValue: fresh ? reading.coverState : null,
+    confirmed: operation.status === 'observed' || Boolean(matches),
+    superseded: Boolean(fresh && !matches && ['failed', 'unconfirmed', 'observed'].includes(operation.status)) };
+}
+function coverReceiptText(operation) {
+  if (!operation) return '';
+  const result = operation.status === 'published' && !operation.pending && !operation.confirmed ? 'no new position report' : operation.superseded ? `latest device report: ${operation.observedValue}; request superseded`
+    : operation.confirmed ? `state reported${operation.observedValue ? `: ${operation.observedValue}` : ''}`
+      : { publishing: 'sending…', published: 'sent; position unconfirmed', observed: 'state reported',
+        failed: 'could not send; check the door', unconfirmed: 'no new position report' }[operation.status] ?? 'position unconfirmed';
+  const detail = operation.pending && !operation.confirmed && operation.action === 'stop' && operation.status === 'published' ? 'sent; stopping unconfirmed' : result;
   return `${pretty(operation.action).replace(/^./, letter => letter.toUpperCase())} requested · ${detail}`;
+}
+export function equipmentCoverResult(device, now) {
+  return coverReceiptText(equipmentCoverReceipt(device, now));
 }
 
 export function equipmentCheckText(device) {
@@ -737,13 +751,12 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
               : status.equipmentControls?.reason ?? 'Manual control is unavailable.';
       const last = status.equipmentControls?.lastResult;
       const scoped = actionKind === 'control' && actionDeviceId === device.id;
-      let result = equipmentControlResult(status, device);
-      const controlRequest = last?.deviceId === device.id ? `${last.at}:${last.on}` : null;
-      if (!result && controlRequest) node.dismissedControlRequest = controlRequest;
-      if (controlRequest && node.dismissedControlRequest === controlRequest) result = '';
+      node.controlReceipt ??= createReceiptTracker();
+      const receipt = node.controlReceipt(last && `${last.at}:${last.on}`, equipmentControlReceipt(status, device), status.now);
+      const result = controlReceiptText(receipt);
       node.result.textContent = scoped && (busy || error) ? message : result;
       node.result.hidden = !node.result.textContent;
-      node.result.classList.toggle('form-error', Boolean(scoped && error || last?.deviceId === device.id && last.confirmed !== true && ['failed', 'unconfirmed'].includes(last.status)));
+      node.result.classList.toggle('form-error', Boolean(scoped && error || receipt && !receipt.confirmed && !receipt.superseded && ['failed', 'unconfirmed'].includes(receipt.status)));
       const hasCoverControls = device.kind === 'door' && ['open', 'close', 'stop'].some(action => device.controls?.cover?.[action] === true);
       node.coverControls.hidden = !hasCoverControls;
       node.coverButtons.setAttribute('aria-label', `${device.label ?? 'Door'} operation`);
@@ -761,14 +774,13 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
         : busy || blocked() ? 'Another request is in progress.'
           : !device.cover?.available ? 'Door control is unavailable. Check the connection.'
             : 'Open means the door is not fully closed.';
-      let coverResult = equipmentCoverResult(device, status.now ?? Date.now());
       const operation = device.cover?.operation;
-      const coverRequest = operation ? `${operation.requestedAt}:${operation.action}` : null;
-      if (!coverResult && coverRequest) node.dismissedCoverRequest = coverRequest;
-      if (coverRequest && node.dismissedCoverRequest === coverRequest) coverResult = '';
+      node.coverReceipt ??= createReceiptTracker();
+      const coverReceipt = node.coverReceipt(operation && `${operation.requestedAt}:${operation.action}`, equipmentCoverReceipt(device, status.now ?? Date.now()), status.now);
+      const coverResult = coverReceiptText(coverReceipt);
       node.coverResult.textContent = coverScoped && (busy || error) ? message : coverResult;
       node.coverResult.hidden = !node.coverResult.textContent;
-      node.coverResult.classList.toggle('form-error', Boolean(coverScoped && error || ['failed', 'unconfirmed'].includes(device.cover?.operation?.status)));
+      node.coverResult.classList.toggle('form-error', Boolean(coverScoped && error || coverReceipt && !coverReceipt.confirmed && !coverReceipt.superseded && ['failed', 'unconfirmed'].includes(coverReceipt.status)));
     }
     for (const child of [...root.children]) if (!devices.some(device => device.id === child.dataset.deviceId)) child.remove();
   }

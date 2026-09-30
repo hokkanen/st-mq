@@ -68,12 +68,12 @@ test('native controls require their own advertised authority, independently of a
 
 test('command feedback requires native confirmation and identifies unknown outcomes', () => {
   for(const status of ['pending','published','accepted']){
-    const message=mitsubishiResult({setting:'targetC',value:22,status});
+    const message=mitsubishiResult({requestedAt:now,setting:'targetC',value:22,status},now);
     assert.match(message,/waiting for fresh pump confirmation/);assert.doesNotMatch(message,/Confirmed by/);
   }
-  assert.match(mitsubishiResult({setting:'power',value:'off',status:'native-confirmed',nativeConfirmedAt:now}),/Confirmed by the pump at/);
-  assert.match(mitsubishiResult({setting:'fan',value:2,status:'uncertain'}),/Outcome uncertain.*before retrying/);
-  assert.match(mitsubishiResult({setting:'vane',value:'swing',status:'rejected',reason:'restoration-pending'}),/Rejected.*Restoration pending/);
+  assert.match(mitsubishiResult({requestedAt:now,setting:'power',value:'off',status:'native-confirmed',nativeConfirmedAt:now},now),/Confirmed by the pump at/);
+  assert.match(mitsubishiResult({requestedAt:now,setting:'fan',value:2,status:'uncertain'},now),/Outcome uncertain.*before retrying/);
+  assert.match(mitsubishiResult({requestedAt:now,setting:'vane',value:'swing',status:'rejected',reason:'restoration-pending'},now),/Rejected.*Restoration pending/);
 });
 
 function panelFixture() {
@@ -142,9 +142,9 @@ test('parameter form sends one advertised typed setting, rejects double submit, 
   let done;f.reply(()=>new Promise(resolve=>{done=resolve;}));
   const pending=f.submit();await f.submit();assert.equal(f.calls.length,1);
   assert.deepEqual(f.calls[0],['/api/garage/native',{setting:'fan',value:2}]);assert.equal(f.nodes.get('garage-native-submit').disabled,true);
-  done({...f.status,garage:{...f.status.garage,nativeControls:{...f.status.garage.nativeControls,result:{setting:'fan',value:2,status:'accepted'}}}});
+  done({...f.status,garage:{...f.status.garage,nativeControls:{...f.status.garage.nativeControls,result:{setting:'fan',value:2,requestedAt:now,status:'accepted'}}}});
   await pending;assert.match(f.nodes.get('garage-native-message').textContent,/waiting for fresh pump confirmation/);
-  f.panel.update({...f.status,garage:{...f.status.garage,nativeControls:{...f.status.garage.nativeControls,result:{setting:'fan',value:2,status:'native-confirmed',nativeConfirmedAt:now}}}});
+  f.panel.update({...f.status,garage:{...f.status.garage,nativeControls:{...f.status.garage.nativeControls,result:{setting:'fan',value:2,requestedAt:now,status:'native-confirmed',nativeConfirmedAt:now}}}});
   assert.match(f.nodes.get('garage-native-message').textContent,/Confirmed by the pump/);assert.deepEqual(f.busy,[true,false]);
   f.panel.close();assert.equal(f.nodes.get('garage-native-form').listeners.size,0);
 });
@@ -356,4 +356,34 @@ test('loss of current native values preserves the editor and unsaved draft while
   assert.equal(f.nodes.get('garage-native-setting').value, 'targetC');
   assert.equal(input.value, '23.5'); assert.equal(input.disabled, true);
   f.panel.update(f.status); assert.equal(input.value, '23.5'); assert.equal(input.disabled, false);
+});
+
+test('a native command receipt follows late pump readback, survives later telemetry loss and expires after 24 hours', () => {
+  const f = panelFixture(), at = now - 1000;
+  const latest = structuredClone(f.status);
+  latest.garage.nativeControls.result = { commandId: 'fixture-command', setting: 'fan', value: 2,
+    requestedAt: at, status: 'uncertain' };
+  f.panel.update(latest);
+  assert.match(f.nodes.get('garage-native-message').textContent, /Outcome uncertain/);
+  latest.garage.adapter.native.readbacks.fan = { value: 2, measuredAt: now, usable: true };
+  f.panel.update(latest);
+  assert.match(f.nodes.get('garage-native-message').textContent, /Confirmed by the pump/);
+  latest.garage.adapter.connected = false;
+  f.panel.update(latest);
+  assert.match(f.nodes.get('garage-native-message').textContent, /Confirmed by the pump/);
+  latest.now = at + 86400_000;
+  f.panel.update(latest);
+  assert.equal(f.nodes.get('garage-native-message').textContent, '');
+});
+
+test('a historical native receipt reports a later setting change and does not resume waiting during data loss', () => {
+  const f = panelFixture(), latest = structuredClone(f.status);
+  latest.garage.nativeControls.result = { commandId: 'fixture-command', setting: 'fan', value: 2,
+    requestedAt: now - 2000, status: 'native-confirmed' };
+  latest.garage.adapter.native.readbacks.fan = { value: 3, measuredAt: now - 1000, usable: true };
+  f.panel.update(latest);
+  assert.match(f.nodes.get('garage-native-message').textContent, /Latest pump report: 3. Request superseded/);
+  latest.garage.adapter.native.readbacks.fan.usable = false;
+  f.panel.update(latest);
+  assert.match(f.nodes.get('garage-native-message').textContent, /Request superseded/);
 });

@@ -56,7 +56,7 @@ test('live test transport stays idle until a POST and shutdown records an unconf
   const status = await (await fetch(`${endpoint}/api/status`)).json();
   assert.equal(status.heatingTests.available, true);
   assert.equal(status.automation.home.enabled, false);
-  app.engine.setOverride(60);
+  app.engine.setTemporary({ pauseUntil: null });
   app.engine.tick();
   assert.equal(clients.length, 0, 'Startup, status, temporary controls and automatic ticks never connect the publisher');
   const post = command => fetch(`${endpoint}/api/heating-test`, {

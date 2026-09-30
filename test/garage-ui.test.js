@@ -45,6 +45,7 @@ test('manual Normal and Away send durable selections without lease, expiry, or n
   assert.match(f.nodes.get('garage-heating-message').textContent, /Away selected.*Waiting for heat-pump controller confirmation/);
   f.panel.update({ ...away, now: now + 2 * day });
   assert.equal(f.nodes.get('garage-mode-away').attributes.get('aria-pressed'), 'true');
+  assert.equal(f.nodes.get('garage-heating-message').textContent, '', 'The receipt expires without ending the durable selection');
   assert.deepEqual(f.busy, [true, false]);
   f.panel.close(); assert.equal(f.nodes.get('garage-mode-normal').listeners.has('click'), false);
 });
@@ -53,15 +54,15 @@ test('selection feedback follows polled confirmation and marks recorded confirma
   const f = fixture(), message = f.nodes.get('garage-heating-message');
   const away = { ...f.initial, garage: { ...f.initial.garage, mode: 'away', requestedTargetC: 5, targetConfirmed: false } };
   f.reply(away); await f.trigger('garage-mode-away');
-  assert.equal(message.textContent, 'Away selected. Waiting for heat-pump controller confirmation.');
+  assert.equal(message.textContent, 'Away selected · 5 °C. Waiting for heat-pump controller confirmation.');
   const confirmed = { ...away, garage: { ...away.garage, targetConfirmed: true } };
   f.panel.update(confirmed);
-  assert.equal(message.textContent, 'Away selected. Confirmed by the heat-pump controller.');
+  assert.equal(message.textContent, 'Away selected · 5 °C. Confirmed by the heat-pump controller.');
   assert.equal(f.nodes.get('garage-target-confirmation').textContent, 'Confirmed by the heat-pump controller');
   f.panel.update(away);
-  assert.equal(message.textContent, 'Away selected. Waiting for heat-pump controller confirmation.');
+  assert.equal(message.textContent, 'Away selected · 5 °C. Confirmed by the heat-pump controller.', 'A lost reading does not erase the receipt confirmation');
   f.panel.update({ ...confirmed, readOnly: true });
-  assert.equal(message.textContent, 'Away selected. Recorded selection · live confirmation unavailable.');
+  assert.equal(message.textContent, 'Away selected · 5 °C. Recorded selection · live confirmation unavailable.');
   assert.equal(f.requests.length, 1, 'Status updates must not resend the selection');
 });
 
@@ -200,4 +201,30 @@ test('Bluetooth input ages after the controller report and stale fallback air is
   assert.equal(f.nodes.get('garage-protection-rear').textContent, '5 °C · stale');
   garage.adapter.control.sensorAgeMs = 140_000; f.panel.update({ ...f.initial, garage });
   assert.equal(f.nodes.get('garage-bluetooth-temperature').textContent, '0 °C');
+});
+
+test('a garage receipt records its own target and cannot masquerade as a newer selection', async () => {
+  const f = fixture(), message = f.nodes.get('garage-heating-message');
+  await f.trigger('garage-mode-normal');
+  f.panel.update({ ...f.initial, now: now + 1_000, garage: { ...f.initial.garage,
+    mode: 'away', requestedTargetC: 5 } });
+  assert.match(message.textContent, /Normal selected · 10 °C. Selection superseded/);
+  f.panel.update({ ...f.initial, now: now + 2_000 });
+  assert.match(message.textContent, /Selection superseded/);
+  f.panel.update({ ...f.initial, now: now + day });
+  assert.equal(message.textContent, '');
+});
+
+test('protection command confirmation replaces waiting and expires from the original request time', () => {
+  const f = fixture(), message = f.nodes.get('garage-protection-message');
+  const status = { ...f.initial, garage: { ...f.initial.garage, protection: { sender: {
+    result: { requestedAt: now, status: 'published' } } } } };
+  f.panel.update(status);
+  assert.match(message.textContent, /Waiting for protection unit confirmation/);
+  status.garage.protection.sender.result.status = 'applied'; status.now = now + 1_000;
+  f.panel.update(status);
+  assert.match(message.textContent, /applied by the local protection unit/);
+  status.now = now + day;
+  f.panel.update(status);
+  assert.equal(message.textContent, '');
 });

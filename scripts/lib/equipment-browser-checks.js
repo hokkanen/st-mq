@@ -137,7 +137,7 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until,
       const path = new URL(args[0],location.href).pathname;
       if(path.endsWith('/api/status')) {const response=await fixture.fetch(...args);fixture.base=await response.json();fixture.responses++;return new Response(JSON.stringify(fixture.response(fixture.base)),{status:200});}
       if(path.includes('/api/equipment/')||path.endsWith('/api/heating-test')||path.endsWith('/api/dhwr/stop')) {
-        const body=JSON.parse(args[1].body);fixture.calls.push({path,body});
+        const body=JSON.parse(args[1].body);fixture.now++;fixture.calls.push({path,body});
         if(fixture.failNext) {fixture.failNext=false;return new Response(JSON.stringify({error:'Synthetic control failure'}),{status:503});}
         if(path.endsWith('/switch')) {
           fixture.lastResult={...body,at:fixture.now,status:'unconfirmed',sent:true,confirmed:false};
@@ -178,10 +178,10 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until,
     const charger2 = '[data-source-section=shelly-evse] .provider-series > li';
     assert.deepEqual(await evaluate(`[...document.querySelectorAll('${charger2} > strong')].map(node=>node.textContent)`), [
       'Charger 2 phase currents L1–L3', 'Charger 2 phase voltages L1–L3', 'Charger 2 phase active power L1–L3',
-      'Charger 2 active power', 'Charger 2 meter counter', 'Charger 2 total energy', 'Charger 2 session energy', 'Charger 2 session check',
+      'Charger 2 active power', 'Charger 2 meter counter', 'Charger 2 total energy', 'Charger 2 phase energy L1–L3', 'Charger 2 session energy', 'Charger 2 session check',
     ], 'Shelly native phase readings are listed alongside supported total and session measurements');
     assert.equal(await evaluate(`[...document.querySelectorAll('${charger2}')].slice(0,5).every(node=>node.dataset.state==='available')`), true);
-    assert.equal(await evaluate("[...document.querySelectorAll('[data-provider=electricity] .provider-series > li > strong')].some(node=>node.textContent==='Charger 2 phase energy L1–L3')"), false, 'Total meter energy is not invented phase energy');
+    assert.match(await evaluate("[...document.querySelectorAll('[data-provider=electricity] .provider-series > li')].find(node=>node.querySelector('strong').textContent==='Charger 2 phase energy L1–L3').textContent"), /Calculated from Shelly EVSE/, 'Estimated phase allocation is distinguished from native measurements');
     await evaluate('window.equipmentUiFixture.completeChargerReadings=structuredClone(window.equipmentUiFixture.chargerReadings);delete window.equipmentUiFixture.chargerReadings.ev2_voltage_l2;true');
     await refresh();
     assert.match(await evaluate(`document.querySelectorAll('${charger2}')[1].getAttribute('aria-label')`), /Partly available/, 'A missing phase cannot appear as complete three-phase voltage');
@@ -198,7 +198,7 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until,
     await evaluate("window.equipmentUiFixture.chargerStatus={status:'degraded',reason:'commissioning-required'};true");
     await refresh();
     assert.equal(await evaluate("document.querySelector('[data-provider=electricity] .provider-category-state').textContent"), 'Needs attention', 'Commissioning remains visible in the source overview');
-    assert.equal(await evaluate(`[...document.querySelectorAll('${charger2}')].filter(node=>!['ev2_energy','shelly_session_energy_check'].includes(node.dataset.series)).every(node=>node.dataset.state==='available')`), true, 'Fresh native measurements do not become unavailable when charging control needs commissioning');
+    assert.equal(await evaluate(`[...document.querySelectorAll('${charger2}')].filter(node=>!node.dataset.series.startsWith('ev2_energy')&&node.dataset.series!=='shelly_session_energy_check').every(node=>node.dataset.state==='available')`), true, 'Fresh native measurements do not become unavailable when charging control needs commissioning');
     await evaluate('window.equipmentUiFixture.chargerStatus={};true');
     await refresh();
     const vehicles = '[data-provider=vehicle-telemetry] .provider-body';
@@ -257,7 +257,7 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until,
     assert.equal(await evaluate(`document.querySelector('${caravan}').tagName`), 'DETAILS');
     assert.equal(await evaluate(`document.querySelector('${caravan}').open`), false, 'Equipment starts as a compact summary');
     assert.equal(await evaluate(`document.querySelector('${caravan} .equipment-device-body').checkVisibility()`), false);
-    assert.equal(await evaluate("document.querySelectorAll('.zone-equipment-fold .equipment-device > summary button, .zone-equipment-fold .equipment-device > summary input, .zone-equipment-fold .equipment-device > summary a').length"), 0, 'An equipment device summary has one native disclosure action');
+    assert.equal(await evaluate("[...document.querySelectorAll('#home-equipment-readings > .equipment-device > summary, #garage-equipment-readings > .equipment-device > summary')].flatMap(summary=>[...summary.querySelectorAll('button,input,a')]).length"), 0, 'An equipment device summary has one native disclosure action');
     assert.match(await evaluate(`document.querySelector('${caravan} > summary').textContent`), /Caravan.*Energy.*Switch: On.*Available/);
     await evaluate(`document.querySelector('${caravan} > summary h4').click();document.querySelector('${caravan} > summary').focus();true`);
     await settle();
@@ -271,23 +271,25 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until,
     await until('window.equipmentUiFixture.calls.length === 1'); await settle();
     assert.deepEqual(JSON.parse(await evaluate('JSON.stringify(window.equipmentUiFixture.calls[0])')), {path:'/api/equipment/switch',body:{deviceId:'caravan',on:false}});
     assert.equal(await evaluate(`document.querySelector('${caravan} .status-detail-label').textContent`), 'On', 'Acknowledgement does not invent physical state');
-    assert.match(await evaluate(`document.querySelector('${caravan} .equipment-control-result').textContent`), /awaiting device confirmation/);
-    await evaluate("window.equipmentUiFixture.devices.find(d=>d.id==='caravan').readings.caravan_active.value=0;window.equipmentUiFixture.lastResult.confirmed=true;window.equipmentUiFixture.lastResult.status='confirmed';true");
+    assert.match(await evaluate(`document.querySelector('${caravan} .equipment-control-result').textContent`), /no confirming device report/);
+    await evaluate("Object.assign(window.equipmentUiFixture.devices.find(d=>d.id==='caravan').readings.caravan_active,{value:0,observedAt:++window.equipmentUiFixture.now});window.equipmentUiFixture.lastResult.confirmed=true;window.equipmentUiFixture.lastResult.status='confirmed';true");
     await refresh();
     assert.equal(await evaluate(`document.querySelector('${caravan} .status-detail-label').textContent`), 'Off');
     assert.equal(await evaluate(`document.querySelector('${caravan} button[aria-pressed=true]').textContent`), 'Turn off');
     assert.match(await evaluate(`document.querySelector('${caravan} .equipment-control-result').textContent`), /device confirmed/);
     await evaluate('window.equipmentUiFixture.now+=60000;true'); await refresh();
-    assert.equal(await evaluate(`document.querySelector('${caravan} .equipment-control-result').hidden`), true, 'Old switch receipts disappear while the actual setting remains visible');
+    assert.match(await evaluate(`document.querySelector('${caravan} .equipment-control-result').textContent`), /device confirmed/, 'A one-minute-old receipt remains historical feedback');
+    await evaluate('window.equipmentUiFixture.now=window.equipmentUiFixture.lastResult.at+86400000;true'); await refresh();
+    assert.equal(await evaluate(`document.querySelector('${caravan} .equipment-control-result').hidden`), true, 'Switch receipts expire after 24 hours while actual state stays visible');
     await evaluate(`(() => {const f=window.equipmentUiFixture;f.now++;f.lastResult={deviceId:'caravan',on:false,at:f.now,confirmedAt:f.now,status:'confirmed',sent:true,confirmed:true};return true;})()`);
     await refresh();
     assert.equal(await evaluate(`document.querySelector('${caravan} .equipment-control-result').hidden`), false, 'A new request can show its own receipt');
     await evaluate(`(() => {const f=window.equipmentUiFixture;f.now++;Object.assign(f.devices.find(d=>d.id==='caravan').readings.caravan_active,{value:1,observedAt:f.now});return true;})()`);
     await refresh();
-    assert.equal(await evaluate(`document.querySelector('${caravan} .equipment-control-result').hidden`), true, 'New device state supersedes the old switch confirmation');
+    assert.match(await evaluate(`document.querySelector('${caravan} .equipment-control-result').textContent`), /latest device report: On; request superseded/, 'A newer device state updates the historical receipt');
     await evaluate(`(() => {const f=window.equipmentUiFixture;f.now++;Object.assign(f.devices.find(d=>d.id==='caravan').readings.caravan_active,{value:0,observedAt:f.now});return true;})()`);
     await refresh();
-    assert.equal(await evaluate(`document.querySelector('${caravan} .equipment-control-result').hidden`), true, 'A superseded receipt cannot reappear when the device later returns to that value');
+    assert.match(await evaluate(`document.querySelector('${caravan} .equipment-control-result').textContent`), /device confirmed/, 'A genuinely newer matching report can resolve the request');
     assert.equal(await evaluate("document.getElementById('equipment-recheck-all') === null && [...document.querySelectorAll('#mqtt-devices-details button')].every(button=>!/^Recheck/i.test(button.textContent))"), true, 'Connections show live status without Recheck controls');
     assert.equal(await evaluate("document.querySelector('#equipment-connections [data-device-id=caravan] .equipment-connection-name').textContent"), 'Caravan');
     assert.equal(await evaluate("document.querySelector('#equipment-connections [data-device-id=caravan] .equipment-device-status').textContent"), 'Available');
@@ -359,40 +361,47 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until,
     assert.equal(await evaluate("[...document.querySelectorAll('#equipment-connections code')].some(n=>n.textContent==='stmq/home/dhwr/status/power')"), true);
     await evaluate("document.getElementById('test-circulation').click();true");
     await until("window.equipmentUiFixture.calls.length === 5 && !document.getElementById('test-circulation').disabled"); await settle();
-    assert.match(await evaluate("document.getElementById('dhwr-message').textContent"), /Waiting for a new device report/);
+    assert.match(await evaluate("document.getElementById('dhwr-message').textContent"), /Waiting for device feedback/);
     assert.equal(await evaluate("document.querySelector('#dhwr-live-power .status-detail-label').textContent"), '38 W');
     await evaluate("document.getElementById('dhwr-stop').click();true");
     await until("window.equipmentUiFixture.calls.length === 6 && document.getElementById('dhwr-stop').disabled"); await settle();
     assert.equal(await evaluate("document.getElementById('dhwr-message').textContent"), 'Stop sent. Waiting for a new device report to verify the request.');
     await evaluate('window.equipmentUiFixture.dhwr.confirmed=true;true'); await refresh();
-    assert.equal(await evaluate("document.getElementById('dhwr-message').textContent"), '', 'Fresh OFF confirmation clears the circulation stop acknowledgement');
-    // Heat-control receipts follow their temporary ownership, including an early Resume.
+    assert.equal(await evaluate("document.getElementById('dhwr-message').textContent"), 'Circulation stopped · device confirmed.', 'Fresh OFF feedback completes the retained stop receipt');
+    // Manual Preheat is bounded by the floor lease even during an indefinite Pause.
     await evaluate(`(() => {const f=window.equipmentUiFixture;
-      f.beginManual=()=>{const at=++f.now,until=at+60000,pauseId='invented-ui-pause-'+at;
-        f.heatingResult={command:'preheat',status:'mqtt',sent:true,at,expiresAt:until,holdUntil:until};
-        f.status={override:{id:pauseId,createdAt:at,expiresAt:until},execution:{status:'mqtt'},
+      f.beginManual=()=>{const at=++f.now,until=at+900000,pauseId='invented-ui-pause-'+at;
+        f.heatingResult={command:'preheat',status:'mqtt',sent:true,at,requestedAt:at,expiresAt:until,holdUntil:until};
+        f.status={override:{id:pauseId,createdAt:at,expiresAt:null},execution:{status:'mqtt'},
+          automation:{home:{enabled:false,available:true,activity:'paused',pausedUntil:null}},
           decision:{...f.base.decision,manualHold:{phase:'preheat',until,parameters:true,changed:true}},
           observations:{...f.base.observations,actual:{requestedPhase:'preheat',phase:'preheat',mode:'normal',verified:false,stale:false,observedAt:at}},
-          h66:{...f.base.h66,enabled:true,connected:true,brokerConnected:true,phase:'manual-pause',pauseId,expiresAt:until,restorationPending:false,
-            requested:{'0203':25},obligations:{'0203':{baseline:20,expected:25}},manualPreheat:{confirmed:true,baseValue:20},
-            lastManual:{register:'0203',value:25,previousValue:20,readback:25,at,scope:'heat-control',expiresAt:until,pauseId,status:'confirmed',confirmed:true,sent:true},
+          h66:{...f.base.h66,enabled:true,connected:true,brokerConnected:true,phase:'preheat',pauseId,expiresAt:until,restorationPending:false,
+            requested:{'0203':25},obligations:{'0203':{baseline:20,expected:25}},manualPreheat:{confirmed:true,baseValue:20},lastManual:null,
             readings:{...f.base.h66?.readings,'0203':{value:25,available:true,stale:false,receivedAt:at,observedAt:at}}}};};
-      f.endManual=()=>{f.status.override=null;delete f.status.decision.manualHold;
+      f.endManual=()=>{delete f.status.decision.manualHold;
         Object.assign(f.status.h66,{phase:'normal',pauseId:null,expiresAt:null,requested:{},obligations:{},manualPreheat:null});
         Object.assign(f.status.h66.readings['0203'],{value:20,receivedAt:f.now,observedAt:f.now});
         Object.assign(f.status.observations.actual,{requestedPhase:'normal',phase:'normal',verified:true,observedAt:f.now});};
-      f.beginManual();return true;})()`); await refresh();
-    assert.match(await evaluate("document.getElementById('heating-test-message').textContent"), /Preheat sent.*held until/);
-    assert.equal(await evaluate("document.getElementById('h66-test-message').textContent"), '', 'A temporary preheat request is not an ordinary native-setting receipt');
-    await evaluate('window.equipmentUiFixture.now=window.equipmentUiFixture.status.override.expiresAt;window.equipmentUiFixture.endManual();true'); await refresh();
-    assert.equal(await evaluate("document.getElementById('heating-test-message').textContent"), '', 'Expired preheat receipts disappear after restoration');
-    assert.equal(await evaluate("document.getElementById('h66-test-message').textContent"), '', 'Restored preheat does not create a native-setting receipt');
+      f.beginManual();document.getElementById('home-heat-pump-details').open=true;return true;})()`); await refresh();
+    assert.equal(await evaluate("document.getElementById('home-manual-override-details').open"), false, 'Manual override starts folded');
+    await evaluate("document.getElementById('home-manual-override-details').open=true;true");
+    assert.match(await evaluate("document.getElementById('heating-test-message').textContent"), /Preheat requested.*Ends at.*lease deadline/);
+    assert.equal(await evaluate("document.getElementById('home-automation-pause').getAttribute('aria-pressed')"), 'true');
+    assert.match(await evaluate("document.getElementById('override-status').textContent"), /Paused until you select Automatic/);
+    assert.equal(await evaluate("document.getElementById('h66-test-message').textContent"), '', 'A manual preheat request is separate from native-setting receipts');
+    await evaluate('window.equipmentUiFixture.now=window.equipmentUiFixture.heatingResult.expiresAt;window.equipmentUiFixture.endManual();true'); await refresh();
+    assert.match(await evaluate("document.getElementById('heating-test-message').textContent"), /later selection or device report has replaced|manual action has ended/i, 'Ended preheat stays as a historical receipt');
+    assert.doesNotMatch(await evaluate("document.getElementById('heating-test-message').textContent"), /Waiting|Ends at/);
+    assert.equal(await evaluate("document.getElementById('h66-test-message').textContent"), '', 'Restoration does not create a native-setting receipt');
     await refresh();
-    assert.equal(await evaluate("document.getElementById('heating-test-message').textContent+document.getElementById('h66-test-message').textContent"), '', 'Polling the same stored results cannot bring ended changes back');
+    assert.doesNotMatch(await evaluate("document.getElementById('heating-test-message').textContent"), /Waiting|Ends at/, 'Polling cannot revive the ended control');
+    await evaluate('window.equipmentUiFixture.now=window.equipmentUiFixture.heatingResult.at+86400000;true'); await refresh();
+    assert.equal(await evaluate("document.getElementById('heating-test-message').textContent"), '', 'Preheat receipts expire 24 hours after the request');
     await evaluate('window.equipmentUiFixture.beginManual();true'); await refresh();
-    assert.match(await evaluate("document.getElementById('heating-test-message').textContent"), /held until/);
-    await evaluate('window.equipmentUiFixture.now++;window.equipmentUiFixture.endManual();true'); await refresh();
-    assert.equal(await evaluate("document.getElementById('heating-test-message').textContent+document.getElementById('h66-test-message').textContent"), '', 'Resume removes the temporary heating receipt before its original deadline');
+    assert.match(await evaluate("document.getElementById('heating-test-message').textContent"), /Ends at/);
+    await evaluate('window.equipmentUiFixture.now++;window.equipmentUiFixture.endManual();window.equipmentUiFixture.status.override=null;Object.assign(window.equipmentUiFixture.status.automation.home,{enabled:true,activity:"automatic"});true'); await refresh();
+    assert.match(await evaluate("document.getElementById('heating-test-message').textContent"), /later selection or device report has replaced|manual action has ended/i, 'Returning to Automatic ends ownership while retaining its historical receipt');
     // Ordinary native changes persist on the pump; only their recent command notice expires.
     await evaluate(`(() => {const f=window.equipmentUiFixture,at=++f.now;
       f.status.h66.lastManual={register:'0203',value:25,previousValue:20,readback:25,at,confirmedAt:at,
@@ -402,7 +411,9 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until,
     assert.doesNotMatch(await evaluate("document.getElementById('h66-test-message').textContent"), /Held until|Resume now|restored/i);
     assert.equal(await evaluate("document.querySelector('#h66-manual-state .status-detail-label').textContent"), '25 °C');
     await evaluate("(() => {const f=window.equipmentUiFixture;f.now+=60000;Object.assign(f.status.h66.readings['0203'],{receivedAt:f.now,observedAt:f.now});return true;})()"); await refresh();
-    assert.equal(await evaluate("document.getElementById('h66-test-message').textContent"), '', 'The native receipt expires after one minute');
+    assert.match(await evaluate("document.getElementById('h66-test-message').textContent"), /device confirmed/, 'A native receipt remains after one minute');
+    await evaluate("(() => {const f=window.equipmentUiFixture;f.now=f.status.h66.lastManual.at+86400000;Object.assign(f.status.h66.readings['0203'],{receivedAt:f.now,observedAt:f.now});return true;})()"); await refresh();
+    assert.equal(await evaluate("document.getElementById('h66-test-message').textContent"), '', 'Native command receipts expire after 24 hours');
     assert.equal(await evaluate("document.querySelector('#h66-manual-state .status-detail-label').textContent"), '25 °C', 'The current reported native setting remains after its receipt expires');
     await refresh();
     assert.equal(await evaluate("document.getElementById('h66-test-message').textContent"), '', 'Polling cannot revive an expired native-setting receipt');
@@ -432,7 +443,9 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until,
     await until(`window.equipmentUiFixture.calls.length === ${coverCalls + 3}`); await settle();
     assert.match(await evaluate(`document.querySelector('${door1} .equipment-cover-controls .equipment-control-result').textContent`), /Stop requested.*stopping unconfirmed/);
     await evaluate('window.equipmentUiFixture.now+=60000;true'); await refresh();
-    assert.equal(await evaluate(`document.querySelector('${door1} .equipment-cover-controls .equipment-control-result').hidden`), true, 'Unconfirmed door receipts expire while current door state stays visible');
+    assert.match(await evaluate(`document.querySelector('${door1} .equipment-cover-controls .equipment-control-result').textContent`), /no new position report/, 'The waiting period ends while the receipt stays visible');
+    await evaluate("window.equipmentUiFixture.now=window.equipmentUiFixture.devices.find(device=>device.id==='door1').cover.operation.requestedAt+86400000;true"); await refresh();
+    assert.equal(await evaluate(`document.querySelector('${door1} .equipment-cover-controls .equipment-control-result').hidden`), true, 'Door receipts expire after 24 hours while current state stays visible');
     assert.equal(await evaluate(`document.querySelector('${door1} .status-detail-label').textContent`), 'Closed');
     await evaluate("window.equipmentUiFixture.devices.find(device=>device.id==='door2').cover.available=false;true"); await refresh();
     assert.equal(await evaluate(`document.querySelector('${door2} [data-cover-action=open]').disabled`), true);

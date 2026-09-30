@@ -46,7 +46,7 @@ An illustrative partial configuration uses a deliberately invented identifier:
 ```
 
 Both `providers` and `mqtt` input support H66. Preserve the installation's chosen
-live input and keep Home heating on **Plan only** while commissioning; it does
+live input and keep Home heating on **Pause** while commissioning; it does
 not start automatic heating commands. Explicit manual controls remain available.
 
 Save private settings in the configured private configuration file, or save
@@ -87,12 +87,12 @@ both the gateway and dashboard report the changed value. It stays in effect unti
 deliberately changed again, including across controller updates, pause expiry and
 application restart. Change it back explicitly after a commissioning check.
 
-The separate **Heat control** Normal, Reduction and Preheat actions remain
-temporary. Outside a price-control pause they revert on the next controller
-update, with a one-minute restoration deadline. During Pause they are held until
-its deadline or **Resume now**. Automatic heating adjustments also restore their
-captured native baseline, including any permanent parameter edit made before
-the adjustment started.
+The separate **Manual heating override** uses the automatic phase actions.
+Normal and Reduced are reassessed on the next controller update in Automatic;
+during Pause they stay until changed, Automatic, or the optional resume time.
+Preheat always ends at its original floor lease deadline, with ROOM restored at
+the same time independently of floor feedback. The previous captured native
+baseline includes any permanent parameter edit made before the adjustment.
 
 Broker delivery is separate from matching native readback. A permanent native
 edit is never replayed or rolled back after uncertain delivery; fresh pump

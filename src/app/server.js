@@ -335,11 +335,6 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
           if (!/^[a-z0-9_]{1,64}$/.test(signal)) throw new Error('Invalid signal');
           return json(200, readerStore.observations({ signal, from, to, limit: numberParam(url, 'limit', 1000, 5000) }));
         }
-        if (req.method === 'POST' && url.pathname === '/api/override') return await mutate((current, input) => {
-          const result = current.setOverride(input.minutes);
-          return json(200, { ...result, webAccess, ...(result.fireplace
-            ? { fireplace: fireplaceAccess(result.fireplace, webAccess, current.clock()) } : {}) });
-        });
         return json(404, { error: 'Unknown endpoint' });
       }
       if (req.method !== 'GET' && req.method !== 'HEAD') return json(405, { error: 'Method not allowed' });

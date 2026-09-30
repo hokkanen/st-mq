@@ -5,19 +5,22 @@ import { Store } from '../src/storage/store.js';
 import { createAppServer } from '../src/app/server.js';
 import { HeatingAutomation } from '../src/app/automation.js';
 
-function setup(t, { input = 'simulated', canControl = () => true, commandTransport = null } = {}) {
+function setup(t, { input = 'simulated', canControl = () => true, commandTransport = null,
+  clock = () => Date.parse('2026-09-28T12:00Z') } = {}) {
   const store = new Store(':memory:');
   const config = { input, settings: {}, garage: { enabled: true },
     connections: { mqtt: { address: 'mqtt://invented.invalid', user: 'invented-account' } } };
-  const engine = new Engine({ store, config, commandTransport, canControl, clock: () => Date.parse('2026-09-28T12:00Z') });
+  const engine = new Engine({ store, config, commandTransport, canControl, clock });
   t.after(() => { clearTimeout(engine.executor.timer); engine.executor.closed = true; store.close(); });
   return { engine, store, config };
 }
 
-test('Home starts Plan only and persists for unchanged equipment; Garage has no automatic permission', async t => {
+test('Home starts paused and persists for unchanged equipment; Garage has no automatic permission', async t => {
   const { engine, store, config } = setup(t);
   assert.deepEqual(Object.values(engine.status().automation).map(row => row.enabled), [false]);
   assert.equal(engine.status().environment, 'simulation');
+  assert.equal(engine.status().automation.home.activity, 'paused');
+  assert.equal(engine.status().override.expiresAt, null);
   await engine.setAutomation({ feature: 'home', enabled: true });
   assert.equal(engine.automationEnabled('home'), true);
   assert.equal(engine.status().automation.garage, undefined);
@@ -65,20 +68,20 @@ test('read-only authority and history cannot grant automation or manual heating 
   await assert.rejects(history.setAutomation({ feature: 'home', enabled: true }), /history viewer/);
 });
 
-test('disabling automation preserves an explicit paused manual reduction and its restoration scope', async t => {
+test('selecting Pause removes the scheduled end and preserves the manual reduction', async t => {
   const commands = [], commandTransport = { targetIdentity: { tariff: 'a'.repeat(64), dhwr: 'b'.repeat(64) },
     async publish(batch) { commands.push(batch); return { status: 'mqtt', sent: true }; } };
   const { engine } = setup(t, { input: 'mqtt', commandTransport });
   engine.automation.set('home', true);
-  engine.setOverride(30); await engine.dispatchPending;
+  engine.setTemporary({ pauseUntil: new Date(engine.clock() + 30 * 60_000).toISOString() }); await engine.dispatchPending;
   await engine.testHeating({ command: 'reduction' });
   const scope = engine.executor.status().manualPause;
   commands.length = 0;
   await engine.setAutomation({ feature: 'home', enabled: false });
   assert.deepEqual(commands, []);
-  assert.deepEqual(engine.executor.status().manualPause, scope);
+  assert.deepEqual(engine.executor.status().manualPause, { ...scope, expiresAt: null });
   assert.equal(engine.executor.status().phase, 'reduction');
-  assert.equal(engine.status().automation.home.activity, 'plan-only');
+  assert.equal(engine.status().automation.home.activity, 'paused');
 });
 
 test('unsupported saved automation state is rejected before database mutation', t => {
@@ -87,6 +90,84 @@ test('unsupported saved automation state is rejected before database mutation', 
   const before = store.db.prepare('SELECT * FROM state ORDER BY key').all();
   assert.throws(() => new Engine({ store, config }), /Unsupported saved heating automation/);
   assert.deepEqual(store.db.prepare('SELECT * FROM state ORDER BY key').all(), before);
+});
+
+test('indefinite Pause holds manual Reduced through updates and restart until Automatic is selected', async t => {
+  let now = Date.parse('2026-09-28T12:00Z');
+  const commands = [], commandTransport = { targetIdentity: { tariff: 'a'.repeat(64), dhwr: 'b'.repeat(64) },
+    async publish(batch) { commands.push(batch); return { status: 'mqtt', sent: true }; } };
+  const { engine, store, config } = setup(t, { input: 'mqtt', commandTransport, clock: () => now });
+  const request = await engine.testHeating({ command: 'reduction' });
+  assert.equal(request.expiresAt, null);
+  assert.equal(engine.status().decision.manualHold.until, null);
+  const pauseId = engine.status().override.id;
+  now += 2 * 86_400_000;
+  engine.tick(); await engine.dispatchPending;
+  assert.equal(engine.executor.status().phase, 'reduction');
+  assert.equal(engine.status().override.id, pauseId);
+  const restarted = new Engine({ store, config, commandTransport, clock: () => now });
+  t.after(() => { clearTimeout(restarted.executor.timer); restarted.executor.closed = true; });
+  commandTransport.targetIdentity.tariff = null;
+  const beforeReconnect = commands.length;
+  restarted.tick(); await restarted.dispatchPending;
+  assert.equal(commands.length, beforeReconnect, 'Unknown identity never sends a command');
+  assert.equal(restarted.executor.status().manualRequested.phase, 'reduction');
+  assert.equal(restarted.executor.status().restorationPending, false, 'A normal reconnect wait does not discard durable intent');
+  commandTransport.targetIdentity.tariff = 'a'.repeat(64);
+  restarted.tick(); await restarted.dispatchPending;
+  assert.equal(restarted.executor.status().phase, 'reduction');
+  assert.equal(restarted.status().decision.manualHold.until, null);
+  assert.equal(commands.some(batch => batch.includes('normal')), false);
+  await restarted.setAutomation({ feature: 'home', enabled: true });
+  await restarted.dispatchPending;
+  assert.equal(restarted.status().override, null);
+  assert.equal(restarted.executor.status().manualPause, null);
+  assert.equal(commands.at(-1)[0], 'normal');
+});
+
+test('editing or removing a scheduled pause end preserves its manual choice and ownership', async t => {
+  const commands = [], commandTransport = { targetIdentity: { tariff: 'a'.repeat(64), dhwr: 'b'.repeat(64) },
+    async publish(batch) { commands.push(batch); return { status: 'mqtt', sent: true }; } };
+  const { engine } = setup(t, { input: 'mqtt', commandTransport });
+  await engine.testHeating({ command: 'reduction' });
+  const pauseId = engine.status().override.id, until = engine.clock() + 3_600_000;
+  await engine.dispatchPending;
+  engine.setTemporary({ pauseUntil: new Date(until).toISOString() }); await engine.dispatchPending;
+  assert.deepEqual(engine.executor.status().manualPause, { id: pauseId, expiresAt: until });
+  engine.setTemporary({ pauseUntil: null }); await engine.dispatchPending;
+  assert.deepEqual(engine.executor.status().manualPause, { id: pauseId, expiresAt: null });
+  assert.equal(engine.status().automation.home.activity, 'paused');
+  assert.equal(engine.nextTemporaryDeadline(), Infinity);
+  assert.deepEqual(commands, [['reduction']]);
+});
+
+test('scheduled Pause resumes only the originally selected equipment and a changed target revokes the schedule', async t => {
+  let now = Date.parse('2026-09-28T12:00Z');
+  const commands = [], commandTransport = { targetIdentity: { tariff: 'a'.repeat(64), dhwr: 'b'.repeat(64) },
+    async publish(batch) { commands.push(batch); return { status: 'mqtt', sent: true }; } };
+  const { engine } = setup(t, { input: 'mqtt', commandTransport, clock: () => now });
+  engine.setTemporary({ pauseUntil: new Date(now + 60_000).toISOString() });
+  assert.equal(engine.status().automation.home.enabled, false);
+  assert.deepEqual(commands, []);
+  now += 60_000; engine.tick(); await engine.dispatchPending;
+  assert.equal(engine.status().automation.home.enabled, true);
+  assert.equal(engine.status().override, null);
+  engine.setTemporary({ pauseUntil: new Date(now + 60_000).toISOString() }); await engine.dispatchPending;
+  commandTransport.targetIdentity.tariff = 'c'.repeat(64);
+  now += 60_000; engine.tick(); await engine.dispatchPending;
+  assert.equal(engine.status().automation.home.enabled, false);
+  assert.equal(engine.status().override.expiresAt, null);
+});
+
+test('retired parallel pause state and prior automation schema reject without changing the database', t => {
+  for (const retired of ['override', 'automation']) {
+    const { store, config } = setup(t);
+    if (retired === 'override') store.setState('override:simulated', { id: 'retired-pause', mode: 'normal', expiresAt: Date.now() + 60_000 });
+    else store.setState('automation:simulated', { ...store.getState('automation:simulated'), version: 2 });
+    const before = store.db.prepare('SELECT * FROM state ORDER BY key').all();
+    assert.throws(() => new Engine({ store, config }), /Unsupported saved heating/);
+    assert.deepEqual(store.db.prepare('SELECT * FROM state ORDER BY key').all(), before);
+  }
 });
 
 test('automation API permits family choices and rejects retired or ambiguous payloads', async t => {

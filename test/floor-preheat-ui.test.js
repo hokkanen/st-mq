@@ -100,3 +100,22 @@ test('renderer replaces prior confirmed state with unavailable status and tolera
   assert.match(elements.get('floor-preheat-renewal').textContent, /timing unavailable/);
   assert.doesNotThrow(() => renderFloorPreheat({ getElementById: () => null }, ready()));
 });
+
+test('the lease outcome remains a small 24-hour receipt while restoration status keeps its own lifetime', () => {
+  const at = 1_000_000, classes = new Map();
+  const report = { textContent: '', hidden: true, classList: { toggle: (name, value) => classes.set(name, value) } };
+  const document = { getElementById: id => id === 'heating-preheat-report' ? report : null };
+  const status = { ...ready(), now: at, heatingTests: { manualPreheatReport: { at, floorOutcome: 'device-local',
+    roomOutcome: 'restored', message: 'Local floor lease ended automatically. ROOM returned to its previous setting.' } } };
+  renderFloorPreheat(document, status);
+  assert.equal(report.hidden, false);
+  assert.match(report.textContent, /ended automatically/);
+  status.now = at + 86399_999; renderFloorPreheat(document, status); assert.equal(report.hidden, false);
+  status.heatingTests.manualPreheatReport.roomOutcome = 'pending'; renderFloorPreheat(document, status);
+  assert.equal(classes.get('form-error'), true);
+  status.preheatValves.restorationPending = true;
+  status.now = at + 86400_000;
+  const view = renderFloorPreheat(document, status);
+  assert.equal(report.hidden, true); assert.equal(report.textContent, '');
+  assert.equal(view.label, 'Release pending');
+});

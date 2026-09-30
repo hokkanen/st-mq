@@ -44,17 +44,19 @@ test('Home schedule times identify a different Helsinki date', () => {
   assert.equal(homePlannedChange(status).value, 'Preheat at 16 Sept, 16:00');
 });
 
-test('pause, simulation and plan-only previews retain their actual authority', () => {
+test('scheduled and indefinite pause and simulation retain their actual authority', () => {
   const status = scheduled();
   status.override = { expiresAt: now + hour };
   status.decision.manualHold = { phase: 'reduction', until: now + hour };
-  assert.equal(homePlannedChange(status).label, 'Price control paused');
+  assert.equal(homePlannedChange(status).label, 'Heating paused');
   assert.equal(homePlannedChange(status).value, 'Until 16:00');
   delete status.override;
   delete status.decision.manualHold;
   status.automation.home.enabled = false;
-  assert.equal(homePlannedChange(status).label, 'Next preview change');
-  assert.match(homePlannedChange(status).detail, /no automatic commands/);
+  assert.equal(homePlannedChange(status).label, 'Heating paused');
+  assert.equal(homePlannedChange(status).value, 'Until you select Automatic');
+  assert.match(homePlannedChange(status).detail, /Manual Normal and Reduced/);
+  status.automation.home.enabled = true;
   status.input = 'simulated';
   assert.equal(homePlannedChange(status).label, 'Next simulated change');
   assert.match(homePlannedChange(status).detail, /no commands are sent to the home/);

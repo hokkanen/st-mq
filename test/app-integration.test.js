@@ -39,15 +39,15 @@ function setup(t, input = 'simulated') {
   return { store, engine, config, createEngine, advance: ms => { at += ms; } };
 }
 
-test('Plan only records intents without operating the simulated plant', t => {
+test('Pause records its state without operating the simulated plant', t => {
   const { engine, store } = setup(t);
   const result = engine.tick();
   assert.equal(result.automation.home.enabled, false);
   assert.equal(result.execution.sent, false);
-  assert.equal(result.decision.dhwr.requested, true);
+  assert.equal(result.decision.dhwr.requested, false);
   assert.equal(engine.plant.state.pulseUntil, 0);
   assert.equal(store.events().some(e => e.type === 'simulated-command-readback'), false);
-  assert.equal(engine.status().execution.status, 'plan-only');
+  assert.equal(engine.status().execution.status, 'paused');
 });
 
 test('retired Garage pause state rejects before startup writes or MQTT connection', async t => {
@@ -76,15 +76,15 @@ test('automatic simulation applies pulse sequence once and restart preserves rec
   assert.ok(engine.plant.state.pulseUntil > engine.clock());
   const pulseUntil = engine.plant.state.pulseUntil;
   advance(15 * 60_000);
-  engine.setOverride(120);
+  engine.setTemporary({ pauseUntil: new Date(engine.clock() + 120 * 60_000).toISOString() });
   const restarted = createEngine();
   const result = restarted.tick();
   assert.equal(result.decision.dhwr.requested, false);
   assert.equal(restarted.plant.state.pulseUntil, pulseUntil);
-  assert.equal(result.override.mode, 'normal');
+  assert.equal(result.automation.home.activity, 'paused');
   advance(120 * 60_000);
   assert.equal(restarted.tick().override, null);
-  assert.ok(store.events().some(e => e.type === 'override-expired'));
+  assert.ok(store.events().some(e => e.type === 'heating-pause-ended'));
 });
 
 test('history input cannot enable automation, ingest does not fabricate unknown source timestamps', async t => {
@@ -124,12 +124,14 @@ test('authenticated API serves authoritative state, bounded history and persiste
   assert.equal((await fetch(`${base}/api/history?limit=999999`, { headers })).status, 400);
   assert.equal((await fetch(`${base}/api/history?from=0`, { headers })).status, 400);
   assert.equal((await fetch(`${base}/api/history?signal=indoor_temperature`, { headers })).status, 200);
-  assert.equal((await fetch(`${base}/api/override`, { method: 'POST', headers: { ...headers, Origin: 'https://untrusted.example', 'Content-Type': 'application/json' }, body: '{"minutes":60}' })).status, 403);
-  assert.equal((await fetch(`${base}/api/override`, { method: 'POST', headers, body: '{"minutes":60}' })).status, 400);
-  const response = await fetch(`${base}/api/override`, { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: '{"minutes":60}' });
+  const body = JSON.stringify({ pauseUntil: new Date(engine.clock() + 3_600_000).toISOString() });
+  assert.equal((await fetch(`${base}/api/temporary`, { method: 'POST', headers: { ...headers, Origin: 'https://untrusted.example', 'Content-Type': 'application/json' }, body })).status, 403);
+  assert.equal((await fetch(`${base}/api/temporary`, { method: 'POST', headers, body })).status, 400);
+  const response = await fetch(`${base}/api/temporary`, { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body });
   assert.equal(response.status, 200);
   assert.equal((await response.json()).override.expiresAt, engine.clock() + 3_600_000);
-  assert.equal((await fetch(`${base}/api/override`, { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: '{"minutes":-1}' })).status, 400);
+  assert.equal((await fetch(`${base}/api/temporary`, { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: '{"minutes":-1}' })).status, 400);
+  assert.equal((await fetch(`${base}/api/override`, { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: '{"minutes":60}' })).status, 404);
 });
 
 test('MQTT requests snapshots on reconnect, preserves retained uncertainty and logs bounded errors', async t => {

@@ -9,7 +9,7 @@ The adapter and device script are implemented and exercised in an API harness. T
 Preheating requests the captured normal ROOM setting plus
 `controller.preheat_room_boost_c` (default **5 °C**), capped at the device's supported
 maximum. Renewals maintain that request without adding another increment. This is
-a heat-pump demand setting; occupied room temperatures remain bounded by the learned
+a heat-pump demand setting; automatic planning constrains occupied room forecasts using the learned
 reference and `max_drop_c` / `max_rise_c` (both default **1.5 °C**).
 
 A positive `controller.floor_thermal_priors.capacity_kwh_per_c` enables one separate
@@ -53,7 +53,18 @@ thermal recovery.
 
 ## Renewal and failback
 
-The controller renews an active lease every **5 minutes**. Each renewal expires locally after **15 minutes**, or at the planned preheat end, whichever comes first. Five-minute renewals do not cycle the relay: they reaffirm ON and its deadline. This allows missed renewals while bounding unwanted extra heating more tightly than a 50-minute timeout. Changing these defaults requires validating the installed firmware again; software accepts no local lease above 15 minutes.
+During automatic preheat, the controller renews an active lease every **5 minutes**. Each renewal expires locally after **15 minutes**, or at the planned preheat end, whichever comes first. Five-minute renewals do not cycle the relay: they reaffirm ON and its deadline. This allows missed renewals while bounding unwanted extra heating more tightly than a 50-minute timeout. Changing these defaults requires validating the installed firmware again; software accepts no local lease above 15 minutes.
+
+Manual **Preheat** deliberately uses one lease without renewal, including while
+Home is paused. Repeated clicks do not extend its original deadline or stack the
+ROOM increase. Normal or Reduced can end it sooner; ending Pause or restoration
+requirements can also end it early. At lease expiry, the controller probes both
+devices before requesting release, so a host OFF cannot conceal a failed local
+expiry. ROOM restoration starts at the same deadline independently of the floor
+probe. The 24-hour report distinguishes contacts already OFF, host fallback and
+missing evidence; relay readback does not prove valve movement or water flow.
+Manual heating bypasses savings and forecast selection while retaining native
+limits, equipment readiness and restoration duties.
 
 Each device runs [the local script](../scripts/shelly/floor-lease.js), with three complementary protections:
 
@@ -144,7 +155,7 @@ The initial software treatment is pooled. Separate Storage/Living experimentatio
 
 ## Integration API and tests
 
-`createFloorOverride` in [floor-override.js](../src/control/floor-override.js) accepts durable `getState`/`setState`, a publish callback, normalized settings, a clock, an authority callback and a broker identity. The acquisition layer supplies the broker address and username for the private scope digest. Its methods are `setConnected`, `ingest`, `status`, `lease`, `release`, `tick` and `close`; `topics` includes subscriptions needed for both current mappings and outstanding older mappings. `lease({owner, until})` uses a stable unique episode owner and an absolute millisecond deadline. It resolves with `confirmed: true` only after all four outputs confirm. Disabled/uncommissioned activation throws `FLOOR_DISABLED`; a normal release with no obligation is a no-op. `close({restore: false})` stops without device writes and preserves outstanding obligations for the successor; normal close requests release before disconnecting.
+`createFloorOverride` in [floor-override.js](../src/control/floor-override.js) accepts durable `getState`/`setState`, a publish callback, normalized settings, a clock, an authority callback and a broker identity. The acquisition layer supplies the broker address and username for the private scope digest. Its methods are `setConnected`, `ingest`, `status`, `lease`, `finishLease`, `release`, `tick` and `close`; `topics` includes subscriptions needed for both current mappings and outstanding older mappings. `lease({owner, until})` uses a stable unique episode owner and an absolute millisecond deadline. It resolves with `confirmed: true` only after all four outputs confirm. Disabled/uncommissioned activation throws `FLOOR_DISABLED`; a normal release with no obligation is a no-op. `close({restore: false})` stops without device writes and preserves outstanding obligations for the successor; normal close requests release before disconnecting.
 
 Run `node --test test/floor-override.test.js test/floor-integration.test.js test/floor-recording.test.js`. The tests execute the uploadable script against mocked official API shapes and independent native timers, alongside the host adapter, and verify actual SQLite history. They establish software behavior, not equipment commissioning.
 

@@ -14,7 +14,7 @@ const result = (reasons, actual) => ({ state: reasons.length ? 'attention' : 'co
 /** A sent MQTT request and an H66 compressor reading cannot confirm the tariff relay. */
 export function homeHeatingConfirmation(status = {}) {
   const now = status.now ?? Date.now(), decision = status.decision ?? {}, actual = status.observations?.actual ?? {};
-  const hold = decision.manualHold?.until > now ? decision.manualHold : null;
+  const hold = decision.manualHold && (decision.manualHold.until === null || decision.manualHold.until > now) ? decision.manualHold : null;
   const phase = hold?.phase ?? actual.requestedPhase ?? decision.phase ?? decision.action;
   const expected = phase === 'reduction' ? 'reduction' : ['normal', 'preheat', 'recovery'].includes(phase) ? 'normal' : null;
   const at = timestamp(actual.observedAt ?? actual.sourceTime ?? actual.receivedAt);
@@ -54,7 +54,7 @@ export function homeHeatingConfirmation(status = {}) {
   const confirmation = result(reasons, known
     ? `Actual heating mode: ${words(actual.mode)}${actual.source === 'mqtt-request' ? ' · requested, unverified' : current && actual.verified === true ? ' · current readback' : ' · current state unconfirmed'}.`
     : 'Actual heating state: unknown.');
-  if (status.automation?.home?.enabled !== true) confirmation.detail += '\n\nAutomatic heating control is disabled; device feedback still verifies manual requests.';
+  if (status.automation?.home?.enabled !== true) confirmation.detail += '\n\nAutomatic heating control is paused; device feedback still verifies manual requests.';
   return confirmation;
 }
 

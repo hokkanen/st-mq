@@ -28,7 +28,7 @@ test('saved controls show only unexpired away and pause deadlines', () => {
 
 test('Home and Garage automation badges are independent of each other and the environment', () => {
   const status = { input: 'mqtt', automation: { home: { enabled: false }, garage: { enabled: true } } };
-  assert.deepEqual(priceControlState(status), { label: 'Plan only', state: 'muted' });
+  assert.deepEqual(priceControlState(status), { label: 'Paused', state: 'paused' });
   assert.deepEqual(priceControlState(status, { feature: 'garage' }), { label: 'Automatic', state: 'active' });
   assert.equal(priceControlState(status, { feature: 'garage', paused: true }).label, 'Paused');
   assert.equal(priceControlState(status, { enabled: false }).label, 'Unavailable');

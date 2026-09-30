@@ -82,11 +82,28 @@ test('Preheat stays unavailable without ROOM headroom or fresh controls', async 
   assert.equal(stale.engine.heatingTests().preheatAvailable, false);
 });
 
+test('manual Preheat re-arms the controller for its exact off-minute ROOM and floor deadline', async t => {
+  const f = setup(t, { floor: true });
+  f.at(START + 17_345);
+  const deadlines = [];
+  f.engine.onTemporaryChange = () => deadlines.push(f.engine.nextTemporaryDeadline());
+  const result = await f.engine.testHeating({ command: 'preheat' });
+  const deadline = START + 917_000;
+  assert.equal(result.expiresAt, deadline);
+  assert.equal(f.controller.status().expiresAt, deadline);
+  assert.equal(f.engine.nextTemporaryDeadline(), deadline);
+  assert.deepEqual(deadlines, [deadline]);
+  assert.notEqual(deadline % 60_000, 0, 'The controller deadline follows the lease instead of the next regular minute');
+  await f.engine.testHeating({ command: 'normal' });
+  assert.equal(f.engine.nextTemporaryDeadline(), Infinity);
+  assert.deepEqual(deadlines, [deadline, Infinity]);
+});
+
 test('repeated preheat during a pause uses its original ROOM baseline and restores it when pause ends', async t => {
   const f = setup(t, { room: 22 });
-  f.store.setState('override:providers', { id: 'fixture-max-preheat-pause', mode: 'normal', createdAt: START, expiresAt: START + 3_600_000 });
+  f.engine.automation.set('home', false, { pauseUntil: START + 3_600_000 });
   await f.engine.testHeating({ command: 'preheat' });
-  assert.equal(f.controller.status().phase, 'manual-pause');
+  assert.equal(f.controller.status().phase, 'preheat');
   f.at(START + 1000);
   const capability = f.engine.heatingTests();
   assert.equal(capability.preheatAvailable, true);
@@ -94,20 +111,25 @@ test('repeated preheat during a pause uses its original ROOM baseline and restor
   await f.engine.testHeating({ command: 'preheat' });
   assert.deepEqual(f.writes, [{ register: '0203', value: 27 }]);
   assert.equal(f.native['0203'], 27);
-  f.engine.setTemporary({ pauseUntil: null }); await f.engine.dispatchPending;
+  await f.engine.setAutomation({ feature: 'home', enabled: true }); await f.engine.dispatchPending;
   assert.equal(f.native['0203'], 22); assert.equal(f.controller.status().manualPreheat, null);
-  assert.equal(Boolean(f.engine.executor.status().dhwrOutstanding), false);
-  assert.deepEqual(f.switches, []);
+  assert.deepEqual(f.switches, [true], 'Resuming Automatic restores ordinary circulation eligibility.');
 });
 
-test('unpaused preheat restores on the next controller update without starting circulation', async t => {
+test('automatic-mode manual preheat survives controller updates and restores at its single lease deadline', async t => {
   const f = setup(t);
+  f.engine.automation.set('home', true);
   await f.engine.testHeating({ command: 'preheat' });
   assert.equal(f.native['0203'], 25);
-  assert.equal(f.controller.status().expiresAt, START + 60_000);
+  assert.equal(f.controller.status().expiresAt, START + 900_000);
   f.at(START + 1000); f.engine.tick(); await f.engine.dispatchPending;
+  assert.equal(f.native['0203'], 25);
+  assert.deepEqual(f.switches, [], 'Manual Preheat never starts DHWR.');
+  f.at(START + 900_000);
+  Object.entries(f.native).forEach(([register, value]) => f.controller.ingest(createH66Decoder({ deviceId: 'fixture-max-preheat' }).decode({ topic: `fixture-max-preheat/HP/${register}`, payload: String(value), receivedAt: START + 900_000 })));
+  f.engine.tick(); await f.engine.dispatchPending;
   assert.equal(f.native['0203'], 20);
   assert.equal(f.controller.status().phase, 'normal');
-  assert.equal(Boolean(f.engine.executor.status().dhwrOutstanding), false);
-  assert.deepEqual(f.switches, []);
+  assert.equal(f.engine.executor.status().manualPreheatReport.roomOutcome, 'restored');
+  assert.deepEqual(f.switches, [true], 'Automatic normal service resumes after the manual lease ends.');
 });

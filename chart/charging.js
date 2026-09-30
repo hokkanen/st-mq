@@ -1,3 +1,4 @@
+import { actionReceiptRecent } from './action-receipts.js';
 import { isReadOnlyReplica, replicaSnapshotKey } from './replica-status.js';
 import { setStatusDetail } from './status-details.js';
 import { chargerSummary, chargingCost, chargingNotice } from './charging-summary.js';
@@ -436,6 +437,7 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
   const $ = id => document.getElementById(id), devices = new Map(), listeners = [];
   const timePicker = createChargingTime({ document });
   let status, busy = false;
+  const actionMessages = new Map();
   const make = (tag, text = '', className = '', id) => {
     const node = document.createElement(tag); node.textContent = text;
     if (className) node.className = className; if (id) node.id = id; return node;
@@ -672,6 +674,7 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
   }
   async function mutate(path, payload, message, success = '', saved = () => {}, followup) {
     if (busy || !writable()) return false;
+    actionMessages.delete(message);
     busy = true; message.textContent = success ? 'Saving…' : ''; message.classList.remove('form-error'); refreshControls();
     try {
       beforeRequest(); const result = await request(path, payload); saved(); update(result); onStatus(result);
@@ -679,7 +682,7 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
       message.textContent = typeof success === 'function' ? success() : success;
       return true;
     } catch (error) { message.textContent = error.message ?? 'Could not save charging settings.'; message.classList.add('form-error'); return false; }
-    finally { busy = false; refreshControls(); afterRequest(); }
+    finally { actionMessages.set(message, status?.now ?? Date.now()); busy = false; refreshControls(); afterRequest(); }
   }
   function updateFields(group, settings, charger) {
     const session = requestKey(charger);
@@ -744,6 +747,9 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     }
   }
   function update(next) {
+    for (const [node, at] of actionMessages) if (!actionReceiptRecent(at, next?.now ?? Date.now())) {
+      node.textContent = ''; node.classList.remove('form-error'); actionMessages.delete(node);
+    }
     if (Number.isSafeInteger(next?.charging?.revision) && Number.isSafeInteger(status?.charging?.revision) && next.charging.revision < status.charging.revision
       && isReadOnlyReplica(next) === isReadOnlyReplica(status) && next.charging.readOnly === status.charging.readOnly
       && replicaSnapshotKey(next) === replicaSnapshotKey(status)) return;

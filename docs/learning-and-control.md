@@ -60,8 +60,8 @@ The **Installed heat-pump model** row holds the source equations, worked example
 manufacturer link and limitations, using the same calculation disclosure as other parameters.
 
 Each dashboard includes its learning summary alongside the heating and pause controls.
-Home shows current heat-pump, tariff and circulation status first, followed by
-**Temporary heating override** and **Away & pause**.
+Home shows **Automatic / Pause**, **Schedule & away**, current heat-pump, tariff
+and circulation state, then the folded **Manual heating override**.
 **Heating strategy & comfort** holds
 the normal-temperature reference, occupied drop/rise limits, savings preference
 and ROOM increase; its closed summary shows the configured room limits. Permanent
@@ -293,8 +293,7 @@ A new cycle's conservative benefit must exceed the strategy's minimum of 50,
 °C²-hour, 2 cents per extra active hour and 2 cents to start. Continuation excludes
 the already committed start hurdle. Among admitted choices, the mildest retaining
 at least 60%, 80% or 100% of the best positive conservative benefit is selected.
-Gentle can still start a sufficiently worthwhile cycle. Use **Pause price
-control** to suspend economic control. Garage uses permanent manual targets instead; see [Garage heating](garage.md).
+Gentle can still start a sufficiently worthwhile cycle. Use **Pause** to suspend economic control. Garage uses permanent manual targets instead; see [Garage heating](garage.md).
 
 These decision rules consume the heat model's thermal predictions, uncertainty
 and action evidence. They are not fitted model coefficients: choosing another
@@ -359,10 +358,10 @@ restart on each controller update. Restoration obligations survive interruption;
 loss of control can require earlier full restoration. Separate transports do not
 guarantee atomic compressor switching.
 
-For hot water before the deadline, use **Pause price control**, which selects
+For hot water before the deadline, use **Pause**, which selects
 Normal heating and restores the captured native DHW settings. Start a timed
-circulation run if needed. The Normal heating button alone changes tariff/manual
-heating selection; it does not guarantee restoration of an automatic DHW hold.
+circulation run if needed. **Normal heating** in Manual heating override also
+restores the owned tariff, DHW and auxiliary settings through the same phase path.
 App native-parameter edits require pausing an active cycle. A setting changed
 directly on the heat pump is respected rather than overwritten by the hold.
 
@@ -405,11 +404,13 @@ baseline for later automatic heating adjustments. Restarting reads the pump; it
 does not replay an old dashboard value or restore a previous native setting.
 Controller configuration remains separate from these native device settings.
 
-**Heat control** actions retain their temporary scope. Starting a price-control
-pause selects Normal heating; subsequent Normal, Reduction or Preheat actions are
-held until the pause ends or the owner selects Resume now. Outside Pause, they
-revert on the next controller update, normally within one minute, with a
-one-minute restoration deadline. **Preheat** requests the configured increase
+**Manual heating override** actions share the automatic phase equipment behavior.
+Starting Pause selects Normal; subsequent Normal and Reduced stay until another
+selection, Automatic, or the optional resume time. In Automatic they are
+reassessed on the next update. Preheat always has a fixed original floor-lease
+deadline (with a bounded timer when no floor override is configured), and restores
+ROOM at that deadline even if floor release needs retries. Preheat requests the
+configured increase
 above the current native ROOM baseline and the pooled floor-valve override, with
 normal tariff operation. It does not stack temperature boosts or start continuous
 DHWR. A deliberate native ROOM edit supersedes an active manual preheat boost;
@@ -456,7 +457,7 @@ assumptions used in prediction, not settings read from `8105` and not new writes
 to the pump's installer menu.
 
 Home Automatic may send heating/H66 commands only with live input and
-the required fresh controls. Home Plan only computes the plan without automatic
+the required fresh controls. Home Pause monitors and learns without automatic
 heating commands. Garage has independent manual modes; charging and Caravan have separate automation choices. Explicit manual tests are separate authorization: a timed test captures
 the current baseline, writes the selected register, checks readback and restores
 the baseline after expiry. Failed readback and pending restoration are visible;
@@ -546,3 +547,9 @@ zero estimate for the missing period.
 - [Husdata C60 register list](https://online.husdata.se/h-docs/C60.pdf).
 - [Husdata MQTT specification](https://husdata.se/docs/h60-manual/home-assistant-integration/mqtt-specification/).
 - [Danfoss DHP-H installation instructions, VMBMA702](https://assets.danfoss.com/documents/latest/29671/AN000086466221en-010701.pdf), system 1 routing in §8.2 and integral control in §15.7.
+
+Manual phase behavior and Pause duration follow the single current contract in
+[Automation and manual heating](automation-and-manual-control.md). In particular,
+Reduced applies the complete available automatic reduction actions, indefinite
+Pause holds Normal/Reduced, and manual Preheat uses one fixed floor lease with
+independent ROOM restoration and a 24-hour outcome report.

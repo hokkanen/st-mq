@@ -29,7 +29,7 @@ test('optional synchronization failure leaves the primary running and control AP
   response = await fetch(`${endpoint}/api/temporary`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ pauseUntil: new Date(Date.now() + 60_000).toISOString() }) });
   assert.equal(response.status, 200);
-  assert.ok(app.store.getState('override:simulated'));
+  assert.ok(app.store.getState('automation:simulated').features.home.pause);
   assert.equal(app.mirror.status().state, 'error');
   const stop = app.mirror.stop.bind(app.mirror);
   let finishCopyCleanup;

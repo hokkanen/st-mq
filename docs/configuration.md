@@ -83,8 +83,8 @@ disables direct add-on access. Home Assistant ingress retains full admin access
 through Home Assistant authentication, independently of these passwords.
 
 Family reads all application data with credentials concealed, and may record
-firewood, remove entries within 15 minutes, operate DHWR, Away/Pause and temporary
-heating, Home automation and Garage manual modes, garage doors and all EV card controls. Every other write, export and
+firewood, remove entries within 15 minutes, operate DHWR, Away/Pause and manual
+heating, Home Automatic/Pause and Garage manual modes, garage doors and all EV card controls. Every other write, export and
 download requires admin. These permissions do not change equipment authority,
 restoration or freeze protection. The role is not configurable; see the
 [complete access policy](../README.md#connections-and-access).
@@ -109,8 +109,10 @@ complete SQLite snapshot with the same timestamped filename format. See
 
 ## Heating automation and manual controls
 
-Home has a durable **Plan only / Automatic** choice, bound to the equipment
-identity and initially Plan only. Garage instead has persistent manual Normal/Away
+Home has a durable **Automatic / Pause** choice, bound to the equipment
+identity and initially Pause without an end time. An optional resume time
+returns to Automatic; clearing the time keeps Pause. Normal/Reduced manual
+choices follow the pause duration, while Preheat always ends at its lease deadline. Garage instead has persistent manual Normal/Away
 selections with no expiry. Configuration owns its Away preset; the normal target
 is an explicit device-bound choice. The Pill retains the requested target and
 regulates locally. Changing a Garage mode does not replay native power/mode edits.

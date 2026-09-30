@@ -1,6 +1,5 @@
 import { weatherAcquisitionIdentity } from '../acquisition/weather-identity.js';
 import { HeatingAutomation } from './automation.js';
-import { randomUUID } from 'node:crypto';
 import { dhwrEligible } from '../control/dhwr.js';
 import { restoreAdaptiveCheckpoint } from '../control/adaptive-learning.js';
 import { chooseCycle, evaluateCycle, economicAdmission, forecastIntervals, cycleForecastCovered, phaseAt, revalidatePlan, learningReadiness, recoveryPolicy, trialEnvelope, preheatRoomRequest } from '../control/planner.js';
@@ -37,7 +36,17 @@ import { ChargingRuntime } from '../charging/runtime.js';
 import { isGarageDoorSignal, confirmedGarageDoor } from '../garage/door-state.js';
 
 const OBSERVATION_MAX_AGE_MS = OUTDOOR_MAX_AGE_MS;
-const pauseIdentity = override => override?.id ?? (Number.isFinite(override?.createdAt) ? String(override.createdAt) : null);
+const pauseIdentity = override => override?.id ?? null;
+const activeDeadline = (deadline, now) => deadline === null || Number.isFinite(deadline) && deadline > now;
+function manualHeatingHeld(executor, native, pause, now) {
+  if (executor?.restorationPending || native?.restorationPending) return false;
+  if (executor?.manualRequested?.phase === 'preheat')
+    return executor.manualRequested.expiresAt > now && (!executor.manualPause || executor.manualPause.id === pauseIdentity(pause));
+  return Boolean(pause && (executor?.manualPause || native?.pauseId)
+    && (!executor?.manualPause || executor.manualPause.id === pauseIdentity(pause))
+    && (!native?.pauseId || native.pauseId === pauseIdentity(pause))
+    && activeDeadline(pause.expiresAt, now));
+}
 const WEATHER_SOURCES = ['fmi', 'openmeteo'];
 const OUTDOOR_SOURCES = [...WEATHER_SOURCES];
 const PROVIDER_OBSERVATION_SOURCES = ['easee', ...WEATHER_SOURCES];
@@ -358,6 +367,8 @@ export class Engine {
   }
   async closeFireplace() { await this.fireplaceRebuild?.close(); }
   constructor({ store, config, clock = Date.now, commandTransport = null, canControl = () => true }) {
+    if (store.getState(`override:${config.input}`) != null)
+      throw new Error('Unsupported saved heating pause controls; start a fresh development database.');
     validateSettings(config.settings);
     validateGarageAdapterSnapshot(store.getState(`garage:adapter:${config.input}`));
     validateGarageModeState(store.getState(`garage:mode:${config.input}`));
@@ -369,7 +380,7 @@ export class Engine {
       try { validateSettings(previousSettings); }
       catch { throw new Error('Unsupported saved heating settings; start a fresh development database'); }
     }
-    this.automation = new HeatingAutomation({ store, config, targetIdentity: feature => this.automationTarget(feature) });
+    this.automation = new HeatingAutomation({ store, config, clock, targetIdentity: feature => this.automationTarget(feature) });
     this.store = store;
     this.config = config;
     this.clock = clock;
@@ -567,10 +578,9 @@ export class Engine {
         : !this.plant && !this.executor.commandTransport ? 'Configure a heating command connection before enabling automation.'
           : !this.automationTarget('home') ? 'Waiting for the heating equipment identity to be confirmed.'
             : control.enabled && this.automationTarget('home') !== control.targetIdentity ? 'The heating equipment changed; its automation permission is no longer valid.' : null;
-    const pause = this.store.getState(`override:${this.config.input}`);
-    const activity = reason ? 'unavailable' : !control.enabled ? 'plan-only' : pause?.expiresAt > this.clock() ? 'paused' : 'automatic';
+    const activity = reason ? 'unavailable' : control.enabled ? 'automatic' : 'paused';
     return { home: { ...control, available: reason === null, reason, activity,
-      ...(activity === 'paused' ? { pausedUntil: pause.expiresAt } : {}) } };
+      ...(!control.enabled ? { pausedUntil: control.pause.expiresAt } : {}) } };
   }
   setAutomation(input) {
     if (this.automationChangePromise)
@@ -590,7 +600,7 @@ export class Engine {
       throw Object.assign(new Error(current.reason ?? 'Heating automation is unavailable.'), { statusCode: 409 });
     if (this.automationChangePending)
       throw Object.assign(new Error('Wait for the current automation change to finish.'), { statusCode: 409 });
-    if (current.enabled === enabled) return this.status();
+    if (current.enabled === enabled && (enabled || current.pause.expiresAt === null)) return this.status();
     this.automationChangePending = true;
     try {
       this.automation.set(feature, enabled);
@@ -603,6 +613,11 @@ export class Engine {
         // A dispatch admitted before this edit may have completed meanwhile.
         if (this.cycles.active()) this.cycles.cancel(this.clock(), 'automatic-control-disabled');
         const state = this.executor.status();
+        // An existing manual choice remains owned by the current pause. Its
+        // selected end can be removed without cancelling that choice.
+        if (state.manualPause?.id === this.automation.features.home.pause.id && !this.heatingTestBusy) {
+          await this.executor.maintainPause(this.clock(), this.automation.features.home.pause);
+        }
         // Manual choices and independently timed circulation retain their scope.
         if (!state.manualPause && !state.manualTemporary && !this.heatingTestBusy) {
           this.dispatchPending = this.executor.restore({ now: this.clock(), reason: 'automatic-control-disabled', preserveManualDhwr: true })
@@ -625,10 +640,6 @@ export class Engine {
     this.tick();
     return contract;
   }
-  setOverride(minutes) {
-    if (!Number.isInteger(minutes) || minutes < 0 || minutes > 1440) throw new Error('Override duration must be 0–1440 whole minutes');
-    return this.setTemporary({ pauseUntil: minutes ? new Date(this.clock() + minutes * 60_000).toISOString() : null });
-  }
   heatingTests() {
     const available = this.canControl() && ['mqtt', 'providers'].includes(this.config.input) && Boolean(this.executor.commandTransport);
     const native = this.h66?.status(this.clock()), room = native?.manualPreheat?.baseValue ?? native?.readings?.['0203']?.value;
@@ -645,7 +656,8 @@ export class Engine {
     preheatAvailable, preheatRoomBoostC: preheatAvailable ? roomBoostC : null,
     preheatTargetC: preheatAvailable ? request.roomSettingC : null, preheatReason: preheatAvailable ? null
       : 'Preheating needs a fresh writable ROOM setting with room for the configured increase, or commissioned floor overrides.',
-    lastResult: this.store.getState(`heating-test:${this.config.input}`) };
+    lastResult: this.store.getState(`heating-test:${this.config.input}`),
+    manualPreheatReport: this.executor.status().manualPreheatReport ?? null };
   }
   comfortRooms(checkpoint = this.checkpoint) {
     const comfort = this.settings.comfort;
@@ -780,19 +792,23 @@ export class Engine {
   }
   async testHeating(input) {
     if (!input || typeof input !== 'object' || Array.isArray(input)
-      || Object.keys(input).length !== 1 || ![...HEATING_COMMANDS, 'preheat'].includes(input.command)) throw new Error('Choose Normal heating, Max preheating, Reduced heating or hot-water circulation.');
+      || Object.keys(input).length !== 1 || ![...HEATING_COMMANDS, 'preheat'].includes(input.command)) throw new Error('Choose Normal heating, Preheat, Reduced heating or hot-water circulation.');
     const capability = this.heatingTests();
     if (!capability.available) throw new Error(capability.reason);
     if (input.command === 'preheat' && !capability.preheatAvailable) throw new Error(capability.preheatReason);
     if (this.heatingTestBusy) throw new Error('An MQTT test is already in progress.');
     if (this.automationChangePending) throw new Error('Wait for the current automation change to finish.');
-    if (this.dispatchPending || input.command !== 'circulation' && this.cycles.active())
-      throw new Error('Wait for the current heating cycle or transition to finish before running a manual test.');
+    if (this.dispatchPending)
+      throw new Error('Wait for the current heating transition to finish before selecting a manual override.');
     this.heatingTestBusy = true;
     const command = input.command, requestedAt = this.clock();
     try {
       const now = requestedAt, override = this.expireTemporary(now);
       const pause = override ? { id: pauseIdentity(override), expiresAt: override.expiresAt } : null;
+      if (command !== 'circulation') {
+        if (this.cycles.active()) this.cycles.cancel(now, 'manual-heating-override');
+        this.pendingPlan = null; this.store.setState(`pending-plan:${this.config.input}`, null);
+      }
       this.store.event('heating-test-requested', { input: this.config.input, command }, this.clock());
       // The automatic schedule stays Normal during a pause; the executor owns
       // any later manual choice until that pause ends. MQTT acknowledgement is
@@ -800,11 +816,14 @@ export class Engine {
       const execution = await this.executor.execute(command === 'preheat'
         ? { phase: 'preheat', commands: ['normal'], roomSettingC: capability.preheatTargetC, roomBoostC: capability.preheatRoomBoostC } : { commands: [command] },
       { automationEnabled: this.automationEnabled('home'), now, manualTest: true, pause });
-      const result = { command, ...execution, requestedAt, at: this.clock() };
+      const unchangedPreheat = command === 'preheat' && execution.sent === false
+        && this.executor.status().manualRequested?.confirmed === true;
+      const result = { command, ...execution,
+        requestedAt: unchangedPreheat ? this.executor.status().manualRequested.at : requestedAt, at: this.clock() };
       this.store.setState(`heating-test:${this.config.input}`, result);
       this.store.event('heating-test-sent', { input: this.config.input, ...result }, result.at);
       if (command === 'circulation') this.recordDhwr(this.executor.status().pulseUntil, result.at);
-      if (command !== 'circulation') {
+      if (command !== 'circulation' && execution.status !== 'waiting' && !unchangedPreheat) {
         this.recordManualHeating(command === 'preheat' ? 'preheat' : command === 'reduction' ? 'reduction' : 'normal',
           result.at, command === 'preheat' ? capability.preheatRoomBoostC : 0);
       }
@@ -819,34 +838,41 @@ export class Engine {
       this.store.setState(`heating-test:${this.config.input}`, result);
       this.store.event('heating-test-failed', { input: this.config.input, ...result }, result.at);
       throw new Error(message);
-    } finally { this.heatingTestBusy = false; }
+    } finally { this.heatingTestBusy = false; this.onTemporaryChange?.(); }
   }
   setTemporary(input) {
     const now = this.clock(), changes = temporaryUpdate(input, now);
+    if (!this.canControl() || this.config.input === 'offline')
+      throw Object.assign(new Error(this.config.input === 'offline' ? 'Heating controls are unavailable in the history viewer.' : 'This computer is read-only.'), { statusCode: 409 });
+    if (changes.pauseUntil != null && !this.automationStatus().home.available)
+      throw new Error(this.automationStatus().home.reason);
     if (Object.hasOwn(changes, 'pauseUntil') && (this.heatingTestBusy || this.dispatchPending || this.executor.status().busy))
       throw new Error('Wait for the current heating request to finish before changing the pause.');
     let occupancy = this.settings.occupancy;
-    this.store.transaction(() => {
-      if (Object.hasOwn(changes, 'awayUntil')) {
-        occupancy = changes.awayUntil === null ? { mode: 'occupied' } : { mode: 'away', returnAt: new Date(changes.awayUntil).toISOString() };
-        this.store.setState(`occupancy:${this.config.input}`, occupancy);
-        this.store.event('occupancy-changed', { occupancy }, now);
-      }
-      if (Object.hasOwn(changes, 'pauseUntil')) {
-        const override = changes.pauseUntil === null ? null : { id: randomUUID(), mode: 'normal', createdAt: now, expiresAt: changes.pauseUntil };
-        this.store.setState(`override:${this.config.input}`, override);
-        this.store.event('override-changed', { override }, now);
-      }
-    });
+    const previousAutomation = this.automation.features;
+    try {
+      this.store.transaction(() => {
+        if (Object.hasOwn(changes, 'awayUntil')) {
+          occupancy = changes.awayUntil === null ? { mode: 'occupied' } : { mode: 'away', returnAt: new Date(changes.awayUntil).toISOString() };
+          this.store.setState(`occupancy:${this.config.input}`, occupancy);
+          this.store.event('occupancy-changed', { occupancy }, now);
+        }
+        if (Object.hasOwn(changes, 'pauseUntil')) {
+          this.automation.set('home', false, { pauseUntil: changes.pauseUntil, now });
+          this.store.event('heating-pause-changed', { pause: this.automation.features.home.pause }, now);
+        }
+      });
+    } catch (error) { this.automation.features = previousAutomation; throw error; }
     this.settings = { ...this.settings, occupancy };
     const result = this.tick();
     this.onTemporaryChange?.();
     return result;
   }
   nextTemporaryDeadline() {
-    const now = this.clock();
+    const now = this.clock(), manual = this.executor.status().manualRequested;
     const deadlines = [this.settings.occupancy?.mode === 'away' ? Date.parse(this.settings.occupancy.returnAt) : NaN,
-      this.store.getState(`override:${this.config.input}`)?.expiresAt];
+      this.automation.features.home.pause?.expiresAt,
+      manual?.phase === 'preheat' ? manual.expiresAt : NaN];
     return Math.min(...deadlines.filter(at => Number.isFinite(at)).map(at => Math.max(now,at)));
   }
   expireTemporary(now) {
@@ -858,13 +884,15 @@ export class Engine {
       });
       this.settings = { ...this.settings, occupancy };
     }
-    const key = `override:${this.config.input}`;
-    let override = this.store.getState(key);
-    if (override && override.expiresAt <= now) {
-      this.store.transaction(() => {
-        this.store.setState(key, null);
-        this.store.event('override-expired', { input: this.config.input }, now);
-      });
+    let override = this.automation.features.home.pause;
+    if (override && Number.isFinite(override.expiresAt) && override.expiresAt <= now) {
+      const previousAutomation = this.automation.features;
+      try {
+        this.store.transaction(() => {
+          this.automation.set('home', true, { now, targetIdentity: this.automation.features.home.targetIdentity });
+          this.store.event('heating-pause-ended', { input: this.config.input }, now);
+        });
+      } catch (error) { this.automation.features = previousAutomation; throw error; }
       override = null;
     }
     return override;
@@ -896,7 +924,7 @@ export class Engine {
         await this.floorOverride?.release({ reason: 'manual-room-supersession', now: this.clock() });
         this.recordManualHeating('normal', this.clock());
       }
-    } finally { this.heatingTestBusy = false; }
+    } finally { this.heatingTestBusy = false; this.onTemporaryChange?.(); }
     return this.status();
   }
   readAdaptive(now) {
@@ -980,10 +1008,8 @@ export class Engine {
     if (!this.plant) observations.actual = this.heatingActual(now, h66);
     const manualPause = priorExecutor?.manualPause;
     const ownsPausedSettings = Boolean(manualPause || h66.pauseId);
-    const ownsTemporarySettings = Boolean(priorExecutor?.manualTemporary || h66.phase === 'manual-temporary');
-    const holdManualSettings = ownsPausedSettings && !ownsTemporarySettings && override && !priorExecutor?.restorationPending && !h66.restorationPending
-      && (!manualPause || manualPause.id === pauseIdentity(override) && manualPause.expiresAt > now)
-      && (!h66.pauseId || h66.phase === 'manual-pause' && h66.pauseId === pauseIdentity(override) && h66.expiresAt > now);
+    const ownsTemporarySettings = Boolean(priorExecutor?.manualTemporary);
+    const holdManualSettings = manualHeatingHeld(priorExecutor, h66, override, now);
     let checkpoint = this.readAdaptive(now);
     const normalRoom = h66.readings?.['0203'];
     const recordedRoom = this.recorder.committedAt('room_setting', now);
@@ -1120,7 +1146,7 @@ export class Engine {
         || reading.value >= reference + this.settings.comfort.maxRiseC);
     });
     const controlHold=!cycle?this.cycles.controlHold(now):null;
-    const forceNormal = override ? 'temporary-normal-override' : controlHold?'recent-cycle-incomplete'
+    const forceNormal = override ? 'heating-paused' : holdManualSettings ? 'manual-heating-override' : controlHold?'recent-cycle-incomplete'
       : cycle && equipment.fireplaceRelevant && !fireplaceEvidenceReady(checkpoint.model) ? 'awaiting-fireplace-response-evidence'
       : cycle && equipment.externalChangeRevision>(cycle.plan.equipment?.externalChangeRevision??0)
       ? 'native-settings-changed' : observations.indoor.stale || observations.outdoor.stale ? 'missing-or-stale-observations'
@@ -1183,6 +1209,9 @@ export class Engine {
       } else decision = { ...normal('waiting-for-scheduled-cycle'), plan: this.pendingPlan };
     }
     if (!this.automationEnabled('home') && cycle) { this.cycles.cancel(now, 'automatic-control-disabled'); cycle = null; decision = normal('automatic-control-disabled'); }
+    if ((observations.indoor.stale || observations.outdoor.stale) && !decision.reasons.includes('missing-or-stale-observations'))
+      decision.reasons.push('missing-or-stale-observations');
+    if (roomComfortLimited && !decision.reasons.includes('room-comfort-limit')) decision.reasons.push('room-comfort-limit');
     const cycleSchedule = this.cycles.active()?.executionSchedule ?? decision.plan?.schedule;
     decision.owner = this.cycles.active()?.plan.executionOwner ?? this.cycles.active()?.id ?? `plan:${decision.plan?.generatedAt ?? now}`;
     if (decision.phase === 'recovery') {
@@ -1198,7 +1227,7 @@ export class Engine {
         fallbackAt:active?.recoveryFallbackAt
           ?? (savedRecovery.recoveryOwner === decision.owner ? savedRecovery.recoveryAuxReleasedAt : null) ?? null, holdUntil}));
       decision.recoveryStartedAt = recoveryStartedAt ?? null;
-      if (['native-settings-changed', 'temporary-normal-override', 'heat-pump-alarm', 'native-mode-not-space-heating'].includes(forceNormal))
+      if (['native-settings-changed', 'heating-paused', 'manual-heating-override', 'heat-pump-alarm', 'native-mode-not-space-heating'].includes(forceNormal))
         decision.recoveryHoldActive = false;
       if (decision.recoveryHoldActive && !decision.recoveryCompressorOnly && active && !active.recoveryFallbackAt) {
         active.recoveryFallbackAt=now; active.recoveryFallbackReason=decision.recoveryFallbackReason;
@@ -1221,7 +1250,8 @@ export class Engine {
     decision.dhwr = { requested: pulse, durationMinutes: this.control.dhwrPulseMinutes, lastPulseAt: lastPulseAt ?? null,
       basis: 'The controller requests MQTT ON/OFF; measured positive power verifies on and zero verifies off.' };
     decision.nextState = { phase: decision.phase };
-    if (holdManualSettings) decision.manualHold = { until: override.expiresAt,
+    if (holdManualSettings) decision.manualHold = { until: priorExecutor.manualRequested?.phase === 'preheat'
+      ? priorExecutor.manualRequested.expiresAt : override.expiresAt,
       phase: manualPause ? priorExecutor.manualRequested?.phase ?? this.applied.phase : this.applied.phase,
       parameters: Object.keys(h66.obligations ?? {}).length > 0,
       changed: Boolean(priorExecutor.manualRequested?.confirmed && priorExecutor.manualBaseline
@@ -1231,7 +1261,7 @@ export class Engine {
     const onExecution = execution => {
       const executorStatus = this.executor.status?.();
       if (execution.sent || execution.status === 'simulated'
-        || ['mqtt', 'paused-manual'].includes(execution.status) && executorStatus?.acknowledgedAt != null
+        || ['mqtt', 'manual-hold'].includes(execution.status) && executorStatus?.acknowledgedAt != null
           && ['normal','preheat','reduction','recovery'].includes(execution.phase)) {
         const phase = ['normal','preheat','reduction','recovery'].includes(execution.phase) ? execution.phase : decision.phase;
         if (execution.restorationPending) return execution;
@@ -1291,9 +1321,13 @@ export class Engine {
     };
     let execution = this.dispatchPending || this.automationChangePending ? { status:'pending', sent:false, actual:null } : this.heatingTestBusy || h66.phase === 'test' && h66.lastTest?.expiresAt > now
       ? { status:'manual-test-in-progress', sent:false, actual:null }
-      : ownsTemporarySettings || ownsPausedSettings && !holdManualSettings
+      : (ownsTemporarySettings || ownsPausedSettings) && !holdManualSettings
         ? this.executor.restoreManual({ now, reason: 'manual-settings-ended-or-reset', decision, automationEnabled: this.automationEnabled('home') })
-        : holdManualSettings ? this.executor.maintainPause(now) : this.executor.execute(decision,{automationEnabled:this.automationEnabled('home'),now});
+        : holdManualSettings ? this.executor.maintainPause(now, override)
+          : override && (priorExecutor.legacyOutstanding || ['preheat', 'reduction', 'recovery'].includes(priorExecutor.phase)
+            || Object.keys(h66.obligations ?? {}).length || this.floorOverride?.status(now).outstanding)
+            ? this.executor.restore({ now, reason: 'heating-paused', preserveManualDhwr: true })
+            : this.executor.execute(decision,{automationEnabled:this.automationEnabled('home'),now});
     if (execution?.then) {
       this.dispatchPending = execution.then(onExecution).catch(() => {
         this.store.event('control-execution-failed',{input,phase:decision.phase,reason:'Command or native-setting readback failed; restoration remains pending'},this.clock());
@@ -1339,12 +1373,13 @@ export class Engine {
   status() {
     if (!this.latestStatus) return this.tick();
     const checkTime = this.clock();
-    if (this.latestStatus.override?.expiresAt <= checkTime
+    if (Number.isFinite(this.latestStatus.override?.expiresAt) && this.latestStatus.override.expiresAt <= checkTime
       || this.settings.occupancy.mode === 'away' && Date.parse(this.settings.occupancy.returnAt) <= checkTime) return this.tick();
     const result = structuredClone(this.latestStatus);
     const now = this.clock();
     result.now = now;
     result.automation = this.automationStatus();
+    result.override = structuredClone(this.automation.features.home.pause);
     result.runtimeTiming = this.runtimeTiming?.() ?? null;
     result.heatingTests = this.heatingTests();
     result.preheatValves = this.preheatValveStatus();
@@ -1360,12 +1395,8 @@ export class Engine {
     const executor = this.executor.status(), native = result.h66 ?? {}, override = result.override;
     const manual = executor.manualRequested;
     if (!this.plant) result.observations.actual = this.heatingActual(now, native);
-    const holding = override && !executor.manualTemporary && native.phase !== 'manual-temporary'
-      && !executor.restorationPending && !native.restorationPending
-      && Boolean(executor.manualPause || native.pauseId)
-      && (!executor.manualPause || executor.manualPause.id === pauseIdentity(override) && executor.manualPause.expiresAt > now)
-      && (!native.pauseId || native.phase === 'manual-pause' && native.pauseId === pauseIdentity(override) && native.expiresAt > now);
-    if (holding) result.decision.manualHold = { until: override.expiresAt, phase: manual?.phase ?? this.applied.phase,
+    const holding = manualHeatingHeld(executor, native, override, now);
+    if (holding) result.decision.manualHold = { until: manual?.phase === 'preheat' ? manual.expiresAt : override.expiresAt, phase: manual?.phase ?? this.applied.phase,
       parameters: Object.keys(native.obligations ?? {}).length > 0,
       changed: Boolean(manual?.confirmed && executor.manualBaseline && manual.phase !== executor.manualBaseline.phase)
         || Object.keys(native.obligations ?? {}).length > 0 };

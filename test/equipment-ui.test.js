@@ -500,7 +500,8 @@ test('dehumidifier commands validate allowed values, require live authority and 
   assert.equal(dehumidifierControlAllowed(initial, { ...device, enabled: false }), false);
   device.dehumidifier.operation = { setting: 'power', value: 'on', requestedAt: now, status: 'unconfirmed' };
   assert.match(dehumidifierResult(device, now), /no confirming device report/);
-  assert.equal(dehumidifierResult(device, now + 60_000), '');
+  assert.match(dehumidifierResult(device, now + 60_000), /no confirming device report/);
+  assert.equal(dehumidifierResult(device, now + 86400_000), '');
 });
 
 test('dehumidifier controls follow reported capabilities and automatic power rejects manual commands', async () => {
