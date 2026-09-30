@@ -176,13 +176,20 @@ export function createGarageDoorPanel({ document, onAction, blocked = () => fals
   const reducedMotion = document.defaultView.matchMedia('(prefers-reduced-motion: reduce)');
   function drawMotion(node, motion) {
     node.animation?.cancel();
+    node.animation = null;
     const transform = value => `translateY(${-96 * (value ?? 0)}px)`;
+    const animate = motion.durationMs > 0 && !reducedMotion.matches && node.leaf.animate;
     node.row.dataset.travelKnown = String(motion.to !== null);
+    node.row.dataset.travelClosed = String(motion.to === 0 && !animate);
     node.estimate.hidden = !motion.estimated;
     node.leaf.style.transform = transform(motion.to);
-    if (motion.durationMs > 0 && !reducedMotion.matches && node.leaf.animate) {
-      node.animation = node.leaf.animate([{ transform: transform(motion.from) }, { transform: transform(motion.to) }],
+    if (animate) {
+      const animation = node.animation = node.leaf.animate([{ transform: transform(motion.from) }, { transform: transform(motion.to) }],
         { duration: motion.durationMs, easing: 'linear', fill: 'forwards' });
+      animation.onfinish = () => {
+        // Estimated arrival hides the motion cue; only a report clears attention.
+        if (node.animation === animation) node.row.dataset.travelClosed = String(motion.to === 0);
+      };
     }
   }
   function update(snapshot = {}) {

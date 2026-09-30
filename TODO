@@ -1,3 +1,18 @@
+Implemented 2026-09-30 — Stop the closing arrow at estimated arrival
+- Hide the downward motion cue when the shutter reaches its estimated closed
+  position in the overview and dialog, including reduced motion. Retain attention
+  colour, reported state and estimate labels until actual closed confirmation.
+- Keep completion separate from device evidence; ignore finish callbacks from
+  replaced animations and recompute the cue on refresh/new movement (F4/F5).
+  Retain command authority, spatial mapping and shared linear travel timing.
+  No configuration, protocol, compatibility or hardware-control changes (F1).
+- Validation: 46 focused motion/control tests, production build and isolated
+  Garage-door Chromium suite passed. Browser regression covers natural closing
+  completion for both doors/views, retained attention through refresh, actual
+  closed confirmation, subsequent opening and reduced motion. Existing responsive
+  checks pass in both themes; existing bundle-size advisory remains.
+  No deployment, push or live equipment commands.
+
 Implemented 2026-09-30 — Align Garage overview with the original metric columns
 - Restore the original column proportions and left-aligned room target. Anchor
   the compact garage artwork at the original middle-column position, with its

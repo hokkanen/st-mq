@@ -275,6 +275,57 @@ export async function checkGarageDoorBrowser({ evaluate, command, context, refre
     await open();
     await assertClosedArtwork();
 
+    // Finish a short, real animation without a Closed report or another poll.
+    // The motion cue stops at the floor, while reported state still owns colour.
+    const physicalDoors = [overview, panel].map(scope => `${scope} .garage-door-row[data-side]`).join(', ');
+    const reportBoth = async state => {
+      await evaluate(`(() => {const f=window.equipmentUiFixture;f.now++;
+        for(const d of f.devices.filter(d=>d.kind==='door')){d.cover.state='${state}';d.cover.operation=null;
+          Object.assign(Object.values(d.readings)[0],{value:'${state}'==='closed'?0:1,coverState:'${state}',observedAt:f.now,stale:false});}
+        return true;})()`);
+      await refresh();
+    };
+    await evaluate("(() => {const f=window.equipmentUiFixture;f.status.garage.doorTravelSeconds=1;for(const d of f.devices.filter(d=>d.kind==='door'))Object.values(d.readings)[0].stale=true;return true;})()");
+    await refresh();
+    await reportBoth('open');
+    await reportBoth('closing');
+    assert.equal(await evaluate(`[...document.querySelectorAll('${physicalDoors}')].every(n=>getComputedStyle(n.querySelector('.garage-door-motion')).display==='block')`), true, 'Both doors show closing arrows in both views during travel');
+    await until(`[...document.querySelectorAll('${physicalDoors}')].every(n=>getComputedStyle(n.querySelector('.garage-door-motion')).display==='none')`);
+    const assertAwaitingClosed = async () => {
+      const artwork = await evaluate(`[...document.querySelectorAll('${physicalDoors}')].map(n=>({
+        arrow:getComputedStyle(n.querySelector('.garage-door-motion')).display,
+        position:new DOMMatrix(getComputedStyle(n.querySelector('.garage-door-leaf')).transform).m42,
+        state:n.querySelector('.garage-door-state').textContent.trim(),
+        estimated:!n.querySelector('.garage-door-estimate').hidden,
+        colour:getComputedStyle(n).getPropertyValue('--door-color').trim(),
+        attention:getComputedStyle(n).getPropertyValue('--stale').trim()}))`);
+      for (const door of artwork) {
+        assert.equal(door.arrow, 'none', 'Downward arrow disappears at estimated closed position');
+        assert.equal(door.position, 0);
+        assert.equal(door.state, 'Closing', 'Animation completion cannot manufacture a Closed report');
+        assert.equal(door.estimated, true);
+        assert.equal(door.colour, door.attention, 'The shutter retains its attention colour until confirmation');
+      }
+      assert.equal(await evaluate("document.querySelector('#garage-door-summary').dataset.state"), 'attention');
+    };
+    await assertAwaitingClosed();
+    await refresh();
+    await assertAwaitingClosed();
+    await reportBoth('closed');
+    await assertClosedArtwork();
+    assert.equal(await evaluate("document.querySelector('#garage-door-summary').dataset.state"), 'confirmed');
+    await reportBoth('opening');
+    assert.equal(await evaluate(`[...document.querySelectorAll('${physicalDoors}')].every(n=>getComputedStyle(n.querySelector('.garage-door-motion')).display==='block')`), true, 'A later opening restores the motion cue');
+    if (setReducedMotion) {
+      await setReducedMotion(true);
+      await reportBoth('closing');
+      await assertAwaitingClosed();
+      await setReducedMotion(false);
+    }
+    await reportBoth('closed');
+    await evaluate('window.equipmentUiFixture.status.garage.doorTravelSeconds=18;true');
+    await refresh();
+
     for (const mutation of ["d.controls.cover.open=false", "d.cover.available=false", "d.readings.garage_door1_open.stale=true", "d.readings.garage_door1_open.value=null"]) {
       await evaluate(`(() => {const f=window.equipmentUiFixture,d=f.devices.find(d=>d.id==='door1');f.garageDoorBefore=structuredClone(d);${mutation};return true;})()`);
       await refresh();

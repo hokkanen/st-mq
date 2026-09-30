@@ -1167,6 +1167,7 @@ button.garage-overview-trigger::before { display: none; }
 .garage-door-motion { display: none; stroke-width: 2; }
 .garage-door-row[data-state="moving"] .garage-door-motion { display: block; animation: garage-motion 1.4s ease-in-out infinite; }
 .garage-door-row[data-motion="closing"] .garage-door-motion { transform: rotate(180deg); transform-origin: 56px 53px; }
+.garage-door-row[data-motion="closing"][data-travel-closed="true"] .garage-door-motion { display: none; animation: none; }
 @keyframes garage-motion { 50% { opacity: .3; } }
 .garage-door-description { display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 0; margin-top: 18px; text-align: center; }
 .garage-door-name, .home-overview .garage-door-name { color: var(--text); font-size: 12px; font-weight: 550; line-height: 1.4; }
