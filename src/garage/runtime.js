@@ -124,14 +124,10 @@ export class GarageRuntime {
       return result;
     } finally { this.busy = false; }
   }
-  async setProtection(input) {
-    if (!this.canControl() || this.input === 'offline' || this.closed) throw new Error('This instance is read-only.');
-    if (!this.sender) throw new Error('The local frost-protection unit is not connected.');
-    const result = await this.sender.setConfiguration(input);
-    this.store.event('garage-protection-setting-requested', { settings: input, commandId: result.commandId }, this.clock());
-    return result;
+  tick({ now = this.clock() } = {}) {
+    this.sync(now);
+    if (!this.closed) void this.sender?.reconcile(now).catch(() => {});
   }
-  tick({ now = this.clock() } = {}) { this.sync(now); }
   ingestEnergy(observation) { return this.engine.recorder.recordEnergy(observation); }
   fail(reason) { this.lastError = reason; }
   status(now = this.clock()) {
@@ -158,7 +154,7 @@ export class GarageRuntime {
       reason: !control?.frostAvailable ? 'Local frost protection is unavailable. A commissioned local frost-protection unit and fresh protection feed are required.'
         : control.frostActive ? 'The heat-pump controller is applying the local frost-protection demand.' : 'Local frost protection is ready.',
       locations: sender?.protection?.locations ?? null, settings: sender?.settings ?? null,
-      settingsAvailable: sender?.settingsAvailable === true, settingsReason: sender?.settingsReason ?? 'The local frost-protection unit is not connected.',
+      configuration: sender?.configuration ?? { status: 'unknown', reason: 'Waiting for fresh local frost-protection unit status.', attempts: 0 },
       configuredSettings: copy(this.settings.protection), sender: sender ?? null };
     return { settings: copy(this.settings), status: control?.status ?? 'unavailable', reason: this.lastError ?? reason,
       mode: selection?.mode ?? null, normalTargetC: selection?.normalTargetC ?? null,
@@ -175,5 +171,5 @@ export class GarageRuntime {
           observedAt: observed?.sourceTime ?? null }]; })),
       adapter: adapter ?? { phase: 'unavailable', contractStatus: 'missing', connected: false, blockedReasons: ['Waiting for the heat-pump controller connection.'] } };
   }
-  async close() { this.closed = true; }
+  async close() { this.closed = true; await this.sender?.close(); }
 }

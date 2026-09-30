@@ -134,6 +134,25 @@ export function renderGarage(document, status = {}) {
     'Garage freeze protection', protectionDetail, garage.protection?.available !== true);
   const protectionSummary = document.getElementById('garage-protection-summary');
   if (protectionSummary) protectionSummary.dataset.state = display.protectionState;
+  const configured = garage.protection?.configuredSettings, reported = garage.protection?.settings;
+  const parameterValue = (key, value) => key === 'approved'
+    ? typeof value === 'boolean' ? value ? 'Approved' : 'Not approved' : 'Unavailable'
+    : finite(value) ? new Intl.NumberFormat('en-GB', { maximumFractionDigits: 3 }).format(value) : 'Unavailable';
+  for (const key of ['approved', 'marginC', 'pipeOutsideDiameterMm', 'pipeWallMm', 'heatTransferWPerM2K']) {
+    set(`garage-protection-configured-${key}`, parameterValue(key, configured?.[key]));
+    set(`garage-protection-reported-${key}`, parameterValue(key, reported?.[key]));
+    const node = document.getElementById(`garage-protection-reported-${key}`);
+    node?.classList.toggle('stale', Boolean(configured && reported && configured[key] !== reported[key]));
+  }
+  set('garage-protection-configured-label', readOnly ? 'Recorded config' : 'Configured');
+  set('garage-protection-reported-label', readOnly ? 'Recorded unit' : 'Reported');
+  const configuration = garage.protection?.configuration;
+  set('garage-protection-settings-status', readOnly ? 'Recorded settings; live confirmation is unavailable.'
+    : configuration?.reason || ({ confirmed: 'Configuration confirmed by the local protection unit.',
+      pending: 'Configuration sent; waiting for matching device readback.',
+      mismatch: 'The local protection unit reports different settings.',
+      unknown: 'Waiting for fresh local protection settings.' })[configuration?.status] || 'Waiting for fresh local protection settings.');
+  document.getElementById('garage-protection-settings-status')?.classList.toggle('stale', !readOnly && configuration?.status === 'mismatch');
   for (const location of ['rear', 'front']) {
     const pipe = garage.protection?.locations?.[location];
     const reading = garage.observations?.[location];
@@ -170,12 +189,7 @@ export function createGarageControls({ document, request, onStatus = () => {}, o
   beforeRequest = () => {}, afterRequest = () => {}, blocked = () => false }) {
   const $ = id => document.getElementById(id), input = $('garage-normal-target'), form = $('garage-target-form');
   const message = $('garage-heating-message');
-  let status = null, busy = false, closed = false, dirty = false, protectionDirty = false, selectionFeedback = null;
-  let protectionFeedback = null;
-  const protectionFields = ['marginC', 'pipeOutsideDiameterMm', 'pipeWallMm', 'heatTransferWPerM2K'];
-  const protectionForm = $('garage-protection-form');
-  const protectionAvailable = () => status?.garage?.protection?.settingsAvailable === true
-    && status?.readOnly !== true && status?.input !== 'offline' && !isReadOnlyReplica(status);
+  let status = null, busy = false, closed = false, dirty = false, selectionFeedback = null;
   const available = () => status?.garage?.controlAvailable === true && status?.readOnly !== true
     && status?.input !== 'offline' && !isReadOnlyReplica(status);
   const locked = () => closed || busy || blocked() || !available();
@@ -193,11 +207,6 @@ export function createGarageControls({ document, request, onStatus = () => {}, o
     if (input) input.disabled = locked();
     if ($('garage-target-submit')) $('garage-target-submit').disabled = locked() || !dirty;
     form?.setAttribute('aria-busy', String(busy));
-    for (const key of ['approved', ...protectionFields]) {
-      const field = $(`garage-protection-${key}`);
-      if (field) field.disabled = closed || busy || blocked() || !protectionAvailable();
-    }
-    if ($('garage-protection-submit')) $('garage-protection-submit').disabled = closed || busy || blocked() || !protectionAvailable() || !protectionDirty;
   };
   const render = () => {
     const garage = status?.garage ?? {};
@@ -224,28 +233,6 @@ export function createGarageControls({ document, request, onStatus = () => {}, o
         message.classList.toggle('form-error', Boolean(receipt.error));
       }
     }
-    const protection = garage.protection ?? {};
-    if (!protectionDirty) for (const key of ['approved', ...protectionFields]) {
-      const field = $(`garage-protection-${key}`); if (!field) continue;
-      if (key === 'approved') field.checked = protection.settings?.approved === true;
-      else field.value = finite(protection.settings?.[key]) ? String(protection.settings[key]) : '';
-    }
-    const result = protection.sender?.result;
-    const protectionMessage = $('garage-protection-message');
-    if (!busy && protectionMessage && protectionFeedback
-      && !actionReceiptRecent(protectionFeedback.at, status?.now ?? Date.now())) {
-      protectionFeedback = null; protectionMessage.textContent = ''; protectionMessage.classList.remove('form-error');
-    }
-    if (!busy && result && protectionMessage && (!protectionFeedback?.error || result.requestedAt >= protectionFeedback.at)) {
-      const recent = actionReceiptRecent(result.requestedAt, status?.now ?? Date.now());
-      protectionMessage.textContent = !recent ? '' : result.status === 'applied' ? 'Protection settings applied by the local protection unit.'
-        : result.status === 'published' ? 'Settings requested. Waiting for protection unit confirmation.'
-          : result.reason ?? 'Protection settings were not confirmed. Check the reported values before retrying.';
-      protectionMessage.classList.toggle('form-error', recent && ['uncertain', 'rejected', 'failed'].includes(result.status));
-    }
-    const settingsStatus = $('garage-protection-settings-status');
-    if (settingsStatus) settingsStatus.textContent = protectionAvailable()
-      ? 'Current settings reported by the local protection unit.' : protection.settingsReason ?? 'Waiting for reported protection settings.';
     renderGarage(document, status ?? {});
     refreshControls();
   };
@@ -277,41 +264,11 @@ export function createGarageControls({ document, request, onStatus = () => {}, o
     }
     void send({ mode: 'normal', targetC });
   };
-  const editProtection = () => { protectionDirty = true; refreshControls(); };
-  const submitProtection = async event => {
-    event.preventDefault();
-    if (closed || busy || blocked() || !protectionAvailable() || !protectionDirty) return;
-    const payload = { version: 'garage-thermal-reserve-v1', approved: $('garage-protection-approved')?.checked === true };
-    for (const key of protectionFields) payload[key] = $(`garage-protection-${key}`)?.value?.trim()
-      ? Number($(`garage-protection-${key}`).value) : NaN;
-    const bounds = [[payload.marginC, 0.1, 5], [payload.pipeOutsideDiameterMm, 6, 100],
-      [payload.pipeWallMm, 0.3, 10], [payload.heatTransferWPerM2K, 1, 100]];
-    const notice = $('garage-protection-message');
-    if (bounds.some(([value, min, max]) => !finite(value) || value < min || value > max)
-      || payload.pipeWallMm * 2 >= payload.pipeOutsideDiameterMm) {
-      protectionFeedback = { at: status?.now ?? Date.now(), error: true };
-      if (notice) { notice.classList.add('form-error'); notice.textContent = 'Use the stated ranges. The pipe wall must be less than half its outside diameter.'; }
-      return;
-    }
-    protectionFeedback = { at: status?.now ?? Date.now(), error: false };
-    busy = true; beforeRequest(); onBusy(true); refreshControls();
-    if (notice) { notice.classList.remove('form-error'); notice.textContent = 'Sending protection settings…'; }
-    try {
-      status = await request('/api/garage/protection', payload); protectionDirty = false;
-      if (notice) notice.textContent = 'Settings requested. Wait for the local protection unit to confirm them.';
-      onStatus(status);
-    } catch (error) { protectionFeedback.error = true; if (notice) { notice.classList.add('form-error'); notice.textContent = error.message; } }
-    finally { busy = false; onBusy(false); render(); }
-    await afterRequest();
-  };
-  protectionForm?.addEventListener('submit', submitProtection);
-  for (const key of ['approved', ...protectionFields]) $(`garage-protection-${key}`)?.addEventListener('input', editProtection);
   $('garage-mode-normal')?.addEventListener('click', normal); $('garage-mode-away')?.addEventListener('click', away);
   form?.addEventListener('submit', submit); input?.addEventListener('input', edit); refreshControls();
   return { update(value) { status = value; render(); }, refreshControls,
     close() { closed = true; $('garage-mode-normal')?.removeEventListener('click', normal);
       $('garage-mode-away')?.removeEventListener('click', away); form?.removeEventListener('submit', submit);
-      input?.removeEventListener('input', edit); protectionForm?.removeEventListener('submit', submitProtection);
-      for (const key of ['approved', ...protectionFields]) $(`garage-protection-${key}`)?.removeEventListener('input', editProtection);
+      input?.removeEventListener('input', edit);
       refreshControls(); } };
 }

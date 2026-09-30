@@ -50,9 +50,14 @@ temperature. The Pill applies the higher required target without overwriting the
 saved user target. Rescue explicitly selects HEAT and ON. Protection is local:
 ST-MQ and its MQTT broker do not need to remain connected for the sender/Pill loop.
 
-The **Frost protection** panel shows sender availability, readings, estimates,
-settings and active demand. ST-MQ can request protection-setting changes over
-MQTT; the sender validates and persists them and reports actual applied settings.
+The **Freeze protection** panel shows sender availability, readings, estimates,
+settings and active demand. **Protection settings** compares configured and
+reported values without an editor. Installation approval, margin, pipe geometry
+and heat transfer come from `garage.protection` in configuration. After editing
+that source, use **Apply configuration** in **Data & settings** or restart.
+ST-MQ applies the loaded parameters over MQTT when Garage is enabled and fresh
+sender status and local write authority permit it. The sender validates and
+persists them; only matching fresh readback confirms the configuration.
 Missing/stale status is unavailable, never proof of safety. See
 [pipe assumptions](garage-protection-defaults.md) and [adapter contract](garage-adapter.md).
 

@@ -255,12 +255,15 @@ configuration-owned. See [the explorer guide](docs/heating-plan-explorer.md).
 The row identifies paused, simulated and read-only states and does not assign
 a fixed end time to recovery. Equipment and connections headers retain their
 height when toggled; desktop balancing adds only bounded gaps between sections.
-**Tariff control** appears
-above **Recirculation** inside Home's heating configuration; an unverified request
-does not confirm the relay state. Garage separates its saved and effective room
+Home's heating summary shows compressor activity, **Price control** and
+**Circulation**; an unverified request does not confirm the relay state.
+Garage separates its saved and effective room
 targets from native pump feedback. It has persistent **Normal / Away**, a normal
-target editor, native controls and independent **Frost protection**. Sender
-settings and pipe estimates appear when the Gen3 sender is connected. A target
+target editor, native controls and independent **Freeze protection**. Its read-only
+settings compare parameters from `garage.protection` in configuration with actual
+sender readback. Edit configuration and use **Apply configuration** to change them;
+there is no dashboard parameter editor. Pipe estimates appear when the Gen3 sender
+is connected. A target
 increase shows moisture guidance for roughly 24 hours; the selected mode has no
 expiry. The BLU H&T development feed supplies temperature only.
 

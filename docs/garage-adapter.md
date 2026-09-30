@@ -33,8 +33,16 @@ reports, clear external input and set native 16°C in HEAT, preserving power.
 
 The Gen3 sender retains its protection configuration and front/rear pipe state.
 Its MQTT status uses `stmq-garage-sender/v1`; commands are bounded and tied to
-fresh sender identity/challenge. ST-MQ presents actual sender readback, while
-configuration requests remain pending until confirmed. The Bluetooth protection
+fresh sender identity/challenge. `garage.protection` in loaded configuration is
+the only source of installation approval and protection parameters; the dashboard
+has no settings-write route. ST-MQ presents configured values separately from
+actual sender readback, while configuration requests remain pending until fresh
+readback matches. A successful command result alone is not confirmation.
+Missing confirmation permits one retry after 30 seconds using an unused fresh
+challenge, then stops with a visible mismatch. Explicit rejection or failure stops
+immediately. Apply configuration or restart to retry after reviewing the source;
+broker reconnects and sender reboots do not reset an exhausted retry budget.
+The Bluetooth protection
 interface carries the minimum target, rescue flag and input/model validity.
 The Pill applies the floor without replacing the user target and selects HEAT/ON
 when rescue requires it. Configured protection feed loss invokes the driver's

@@ -23,8 +23,11 @@ bulk temperature reaches zero.
 | Safety factor | 2, fixed | Counts heat loss twice as fast and credits heat gain half as fast. |
 
 The geometry and heat-transfer values are explicit engineering assumptions,
-not fitted building-model coefficients. The sender's enabled protection settings
-are validated and persisted locally; ST-MQ shows confirmed sender readback.
+not fitted building-model coefficients. They and installation approval are owned
+by `garage.protection` in configuration. The dashboard is read-only and compares
+loaded configuration with sender readback; it cannot store a competing preference
+or directly edit the sender's parameters. The sender validates and persists
+settings delivered from loaded configuration, independently of its pipe state.
 The shared installation default is unapproved until explicitly commissioned.
 
 ## Continuous thermal calculation
@@ -82,7 +85,7 @@ Garage building model; there is no learned economic controller.
 The sender broadcasts room temperature, minimum target, rescue and validity over
 Bluetooth. The Pill preserves the saved user target, applies the required floor,
 and explicitly selects HEAT/ON for rescue. ST-MQ displays the sender's actual
-status/settings and can send settings changes over MQTT; broker/controller loss
+status/settings and applies loaded configuration over MQTT; broker/controller loss
 must not stop local protection. Configured feed loss is a distinct fault policy.
 With no sender installed, the dashboard reports protection unavailable.
 

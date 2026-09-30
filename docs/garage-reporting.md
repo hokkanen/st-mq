@@ -5,10 +5,11 @@ control and effective target. A protection or sensor-fallback increase is visibl
 without replacing the selected mode. Warm-up advisories describe condensation
 risk and remain distinct from mode lifetime.
 
-The independent protection panel shows the Gen3 sender's actual configuration,
-front/rear air and estimated pipe temperatures, validity and heating demand.
-ST-MQ can request settings changes but never claims they are applied before
-sender confirmation. Offline or missing protection is unavailable. With the
+The independent protection panel compares parameters from `garage.protection`
+with the Gen3 sender's actual configuration, and shows front/rear air and estimated
+pipe temperatures, validity and heating demand. Its settings are read-only;
+ST-MQ applies only loaded configuration and requires matching fresh readback for
+confirmation. Offline or missing protection is unavailable. With the
 BLU H&T test source, temperature control works while pipe protection is absent.
 
 Charts retain original temperatures, doors, compressor activity, supported native

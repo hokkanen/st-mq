@@ -90,8 +90,10 @@ try {
   await send('Page.addScriptToEvaluateOnNewDocument', { source: `
     globalThis.garageFixture = { mode: 'normal', normalTargetC: 10, targetC: 10, confirmed: true,
       protection: false, uncertain: false, offline: false, readOnly: false, calls: [], reads: 0,
-      protectionSettings: { version: 'garage-thermal-reserve-v1', approved: true, marginC: 1,
+      configurationStatus: 'confirmed',
+      configuredProtectionSettings: { version: 'garage-thermal-reserve-v1', approved: true, marginC: 1,
         pipeOutsideDiameterMm: 20, pipeWallMm: 2, heatTransferWPerM2K: 5 } };
+    garageFixture.protectionSettings = { ...garageFixture.configuredProtectionSettings };
     const nativeFetch = globalThis.fetch.bind(globalThis);
     const fixture = status => {
       const f = garageFixture; f.reads++;
@@ -105,7 +107,10 @@ try {
         observations: { rear: { value: 6.5, sourceTime: status.now, receivedAt: status.now, stale: false, quality: [] },
           front: { value: 4, sourceTime: status.now, receivedAt: status.now, stale: false, quality: [] } },
         protection: { available: Boolean(f.protection), active: f.protection === 'active', status: f.protection ? 'ready' : 'unavailable',
-          settingsAvailable: Boolean(f.protection) && !f.offline, settings: f.protection ? f.protectionSettings : null,
+          configuredSettings: f.configuredProtectionSettings,
+          settings: f.protection && !f.offline ? f.protectionSettings : null,
+          configuration: { status: f.protection && !f.offline ? f.configurationStatus : 'unknown', attempts: 0,
+            reason: f.protection && !f.offline ? f.configurationReason ?? null : 'Waiting for fresh local frost-protection unit status.' },
           sender: { available: Boolean(f.protection) && !f.offline },
           locations: { rear: { airC: 6.5, estimatedC: 5, remainingKjPerM: 6, uncertain: false },
             front: { airC: 4, estimatedC: 1.5, remainingKjPerM: 0, uncertain: f.uncertain } } },
@@ -131,8 +136,7 @@ try {
           if (body.targetC !== undefined) garageFixture.normalTargetC = body.targetC;
           garageFixture.targetC = body.mode === 'away' ? 5 : garageFixture.normalTargetC;
           garageFixture.warming = garageFixture.targetC > before;
-        } else if (path === '/api/garage/protection') garageFixture.protectionSettings = body;
-        else throw new Error('Unexpected mutation blocked by synthetic browser fixture');
+        } else throw new Error('Unexpected mutation blocked by synthetic browser fixture');
         return new Response(JSON.stringify(fixture(await nativeFetch('/api/status').then(r => r.json()))),
           { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
@@ -197,8 +201,24 @@ try {
     for (const id of ['garage-equipment-details', 'garage-controller-details', 'garage-readings-details'])
       document.getElementById(id).open = false`);
   assert.equal(await evaluate(`document.getElementById('garage-protection-status').textContent`), 'Unavailable');
-  assert.equal(await evaluate(`document.getElementById('garage-protection-marginC').value`), '');
-  assert.equal(await evaluate(`document.getElementById('garage-protection-submit').disabled`), true);
+  await evaluate(`document.getElementById('garage-protection-details').open = true;
+    document.getElementById('garage-protection-settings-details').open = true; garageFixture.poll()`);
+  assert.equal(await evaluate(`document.querySelectorAll('#garage-protection-settings-details input, #garage-protection-settings-details select, #garage-protection-settings-details button, #garage-protection-settings-details form').length`), 0,
+    'Protection installation parameters have no dashboard editing controls');
+  assert.deepEqual(await evaluate(`Array.from(document.querySelectorAll('#garage-protection-parameters thead th'), node => node.textContent.trim())`),
+    ['Parameter', 'Configured', 'Reported']);
+  assert.equal(await evaluate(`document.querySelectorAll('#garage-protection-parameters tbody tr').length`), 5);
+  assert.match(await evaluate(`document.getElementById('garage-protection-configured-approved').textContent`), /^Approved$/);
+  for (const [key, value] of [['marginC', 1], ['pipeOutsideDiameterMm', 20], ['pipeWallMm', 2], ['heatTransferWPerM2K', 5]]) {
+    assert.equal(Number.parseFloat(await evaluate(`document.getElementById('garage-protection-configured-${key}').textContent`)), value,
+      `Configured ${key} remains visible without a protection sender`);
+    assert.match(await evaluate(`document.getElementById('garage-protection-reported-${key}').textContent`), /Unavailable/);
+  }
+  assert.match(await evaluate(`document.getElementById('garage-protection-reported-approved').textContent`), /Unavailable/);
+  assert.match(await evaluate(`document.getElementById('garage-protection-settings-status').textContent`), /Waiting for fresh/);
+  assert.match(await evaluate(`document.getElementById('garage-protection-settings-details').textContent`), /config/i);
+  assert.deepEqual(await evaluate(`garageFixture.calls`), [], 'Opening and refreshing installation parameters sends no commands');
+  await evaluate(`document.getElementById('garage-protection-details').open = false`);
   await evaluate(`garageFixture.confirmed = false; document.getElementById('garage-mode-away').click()`);
   await until(`document.getElementById('garage-mode-away').getAttribute('aria-pressed') === 'true'`);
   assert.equal(await evaluate(`document.getElementById('garage-current-room').textContent`), '5 °C');
@@ -225,15 +245,33 @@ try {
     ['/api/garage/heating', { mode: 'away' }], ['/api/garage/heating', { mode: 'normal' }],
     ['/api/garage/heating', { mode: 'normal', targetC: 9.5 }],
   ]);
-  await evaluate(`garageFixture.protection = 'active'; garageFixture.poll(); document.getElementById('garage-protection-details').open = true; document.getElementById('garage-protection-settings-details').open = true`);
+  await evaluate(`garageFixture.protection = 'ready'; garageFixture.configuredProtectionSettings.approved = false;
+    garageFixture.protectionSettings.approved = false; garageFixture.poll();
+    document.getElementById('garage-protection-details').open = true;
+    document.getElementById('garage-protection-settings-details').open = true`);
+  await until(`document.getElementById('garage-protection-reported-approved').textContent !== 'Unavailable'`);
+  for (const owner of ['configured', 'reported']) assert.match(
+    await evaluate(`document.getElementById('garage-protection-${owner}-approved').textContent`), /^(Not approved|Unapproved)$/,
+    'Explicit false approval is distinct from unavailable readback');
+  await evaluate(`garageFixture.protection = 'active'; garageFixture.configuredProtectionSettings.approved = true;
+    garageFixture.protectionSettings.approved = true; garageFixture.configuredProtectionSettings.marginC = 1.5;
+    garageFixture.configurationStatus = 'mismatch';
+    garageFixture.configurationReason = 'The local frost-protection unit reports different values. Configuration remains the source of these parameters.';
+    garageFixture.poll()`);
   await until(`document.getElementById('garage-protection-status').textContent === 'Heating override active'`);
   assert.equal(await evaluate(`document.getElementById('garage-protection-summary').textContent`), 'Override active');
   assert.equal(await evaluate(`document.getElementById('garage-current-room').textContent`), '14 °C');
   assert.equal(await evaluate(`document.getElementById('garage-reserve-front').textContent`), '0 kJ/m');
-  await evaluate(`document.getElementById('garage-protection-marginC').value = '1.5'; document.getElementById('garage-protection-marginC').dispatchEvent(new Event('input')); document.getElementById('garage-protection-submit').click()`);
-  await until(`garageFixture.calls.length === 4`);
-  assert.equal(await evaluate(`garageFixture.calls[3][0]`), '/api/garage/protection');
-  assert.equal(await evaluate(`garageFixture.calls[3][1].marginC`), 1.5);
+  assert.equal(Number.parseFloat(await evaluate(`document.getElementById('garage-protection-configured-marginC').textContent`)), 1.5);
+  assert.equal(Number.parseFloat(await evaluate(`document.getElementById('garage-protection-reported-marginC').textContent`)), 1);
+  assert.match(await evaluate(`document.getElementById('garage-protection-settings-status').textContent`), /reports different values/);
+  await evaluate(`garageFixture.protectionSettings = { ...garageFixture.configuredProtectionSettings };
+    garageFixture.configurationStatus = 'confirmed';
+    garageFixture.configurationReason = 'Configuration confirmed by the local frost-protection unit.';
+    garageFixture.poll()`);
+  await until(`document.getElementById('garage-protection-settings-status').textContent.includes('Configuration confirmed')`);
+  assert.equal(Number.parseFloat(await evaluate(`document.getElementById('garage-protection-reported-marginC').textContent`)), 1.5);
+  assert.equal(await evaluate(`garageFixture.calls.length`), 3, 'Readback updates never issue parameter writes');
   await evaluate(`garageFixture.uncertain = true; garageFixture.poll()`);
   await until(`document.getElementById('garage-pipe-front').textContent === 'Unavailable'`);
   for (const width of [320, 390, 768, 1440]) for (const theme of ['dark', 'light']) {
@@ -242,7 +280,7 @@ try {
     await checkDashboardLayout({ evaluate, width });
     const overflow = await evaluate(`(() => {
       const garage = document.getElementById('garage-control'), box = garage.getBoundingClientRect();
-      return [...garage.querySelectorAll('button,input,label,p,dl,.heating-summary-reading')].filter(node => {
+      return [...garage.querySelectorAll('button,input,label,p,dl,table,th,td,.heating-summary-reading')].filter(node => {
         if (!node.getClientRects().length) return false;
         const rect = node.getBoundingClientRect(); return rect.left < box.left - 1 || rect.right > box.right + 1;
       }).map(node => node.id || node.tagName);
@@ -259,17 +297,23 @@ try {
   assert.equal(await evaluate(`document.getElementById('garage-pipe-rear').textContent`), 'Unavailable');
   assert.equal(await evaluate(`document.getElementById('garage-heating-operation').textContent`), 'Unknown',
     'A lost pump connection never presents stale idle feedback as current');
+  assert.equal(Number.parseFloat(await evaluate(`document.getElementById('garage-protection-configured-marginC').textContent`)), 1.5);
+  assert.match(await evaluate(`document.getElementById('garage-protection-reported-marginC').textContent`), /Unavailable/,
+    'Stale readback never replaces configured parameters or looks freshly confirmed');
   await evaluate(`garageFixture.offline = false; garageFixture.readOnly = true; garageFixture.poll()`);
   await until(`document.getElementById('garage-control-detail').textContent.includes('Recorded selection')`);
-  assert.equal(await evaluate(`document.getElementById('garage-protection-submit').disabled`), true);
-  assert.equal(await evaluate(`garageFixture.calls.length`), 4);
+  assert.equal(await evaluate(`document.querySelectorAll('#garage-protection-settings-details input, #garage-protection-settings-details select, #garage-protection-settings-details button, #garage-protection-settings-details form').length`), 0);
+  assert.equal(Number.parseFloat(await evaluate(`document.getElementById('garage-protection-configured-marginC').textContent`)), 1.5);
+  assert.equal(Number.parseFloat(await evaluate(`document.getElementById('garage-protection-reported-marginC').textContent`)), 1.5);
+  assert.equal(await evaluate(`garageFixture.calls.length`), 3);
   assert.doesNotMatch(await evaluate(`document.getElementById('garage-control').textContent`), /\b(?:Pill|Gen3)\b/i);
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ result: 'garage-manual-browser-smoke-passed', artifacts,
     checks: ['Normal/Away keyboard and pointer changes', 'Away confirmation replaces pending feedback after polling', 'Persistent target edits and polling focus',
       'Condensation advisory without confirmation gate', 'Native OFF remains OFF', 'Missing protection stays unavailable',
       'Three concise heating readings and keyboard evidence', 'Distinct rear observation and expiring controller regulation input',
-      'Separate sender settings and confirmed estimates', 'Uncertain/stale estimates remain unavailable',
+      'Read-only configured and reported installation parameters', 'Missing, false, mismatching and confirmed sender readback',
+      'Uncertain/stale estimates remain unavailable',
       '320/390/768/1440px layouts in both themes', 'Read-only controls', 'No browser exceptions'] }));
   await send('Page.close');
 } finally {

@@ -7,6 +7,8 @@ import { createHash } from 'node:crypto';
 import { Store } from '../src/storage/store.js';
 import { Recorder } from '../src/storage/recorder.js';
 import { replicaReadModel } from '../src/app/replica-read-model.js';
+import { garageSettings } from '../src/garage/settings.js';
+import { GARAGE_SENDER_CONTRACT } from '../src/garage/sender.js';
 
 const at = Date.parse('2026-05-07T12:00:00Z');
 const hash = path => createHash('sha256').update(readFileSync(path)).digest('hex');
@@ -40,6 +42,28 @@ const adapter = (native, observedAt = at - 5000, receivedAt = observedAt) => ({ 
   control: { targetC: 10, externalEnabled: true, effectiveTargetC: 10, status: 'active',
     sensorTemperatureC: 9, sensorAgeMs: 1000, externalTemperatureC: 16, frostAvailable: false, frostActive: false }, native, health: {},
   lastCommand: null, electrical: null, faultRaw: null });
+
+test('recorded frost parameters preserve configured and reported values without claiming live confirmation', t => {
+  const configured = garageSettings({ enabled: true, protection: { approved: true } });
+  const reported = { ...configured.protection, approved: false };
+  const snapshot = fixture(t, store => {
+    store.setState('garage:configuration:mqtt', configured);
+    store.setState('garage:sender:mqtt', { version: 1, schema: GARAGE_SENDER_CONTRACT, lastCommand: null,
+      state: { deviceId: 'fixture-sender', bootId: 'fixture-boot', challenge: 'fixture-challenge', sequence: 1,
+        config: reported, observedAt: at - 1000, receivedAt: at - 1000, retained: false,
+        protection: { available: false, active: false, minTargetC: null, reason: 'unapproved',
+          locations: { rear: { airC: 8, estimatedC: null, uncertain: true }, front: { airC: 7, estimatedC: null, uncertain: true } } } } });
+  });
+  const result = replicaReadModel(snapshot, config).garage.protection;
+  assert.deepEqual(result.configuredSettings, configured.protection);
+  assert.deepEqual(result.settings, reported);
+  assert.equal(result.configuration.status, 'unknown');
+  assert.equal(result.sender.configuration.status, 'unknown');
+  assert.equal(result.sender.available, false);
+  assert.equal(result.recorded, true);
+  assert.equal(result.readOnly, true);
+  assert.equal(hash(snapshot.path), snapshot.digest);
+});
 
 test('read projection exposes saved settings and equipment evidence without live authority or database changes', t => {
   const snapshot = fixture(t, store => {

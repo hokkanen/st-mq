@@ -70,7 +70,10 @@ and selects native 16°C in HEAT while preserving power.
 Power, mode, fan and vane edits are explicit one-shot commands with readback.
 They have no automatic replay or expiry. Independent local frost protection can
 request HEAT/ON and a higher minimum target. The sender owns the pipe estimates;
-MQTT carries its settings/status, while Bluetooth carries local protection.
+MQTT carries its configuration-owned settings/status, while Bluetooth carries
+local protection. Installation approval and protection parameters are edited only
+under `garage.protection` in configuration; the dashboard displays configured and
+reported values without a competing durable override.
 The BLU H&T test feed supplies temperature only. Missing protection is displayed
 as unavailable. Neither receipt of a command nor a model estimate proves heating.
 

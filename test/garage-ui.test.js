@@ -17,10 +17,10 @@ function fixture() {
     'garage-regulation-temperature', 'garage-regulation-reading', 'garage-readings-details', 'garage-protection-summary',
     'garage-heating-status', 'garage-control-detail', 'garage-protection-status', 'garage-protection-detail',
     'garage-protection-rear', 'garage-protection-front', 'garage-pipe-rear', 'garage-pipe-front', 'garage-reserve-rear',
-    'garage-reserve-front', 'garage-pipe-rear-status', 'garage-pipe-front-status', 'garage-protection-form',
-    'garage-protection-approved', 'garage-protection-marginC', 'garage-protection-pipeOutsideDiameterMm',
-    'garage-protection-pipeWallMm', 'garage-protection-heatTransferWPerM2K', 'garage-protection-submit',
-    'garage-protection-settings-status', 'garage-protection-message'];
+    'garage-reserve-front', 'garage-pipe-rear-status', 'garage-pipe-front-status',
+    'garage-protection-configured-label', 'garage-protection-reported-label', 'garage-protection-settings-status',
+    ...['approved', 'marginC', 'pipeOutsideDiameterMm', 'pipeWallMm', 'heatTransferWPerM2K']
+      .flatMap(key => [`garage-protection-configured-${key}`, `garage-protection-reported-${key}`])];
   const document = { addEventListener() {}, documentElement: { clientWidth: 390, clientHeight: 640 },
     defaultView: { addEventListener() {}, innerWidth: 390, innerHeight: 640 } };
   class Node {
@@ -57,7 +57,7 @@ function fixture() {
   }
   const initial = { now, input: 'providers', garage: { mode: 'normal', normalTargetC: 10, awayTargetC: 5,
     requestedTargetC: 10, effectiveTargetC: 10, targetConfirmed: true, controlAvailable: true,
-    protection: { available: false, active: false, status: 'unavailable', settingsAvailable: false } } };
+    protection: { available: false, active: false, status: 'unavailable' } } };
   const requests = [], busy = []; let response = initial;
   const panel = createGarageControls({ document, onBusy: value => busy.push(value),
     request: async (path, payload) => { requests.push([path, payload]); if (response instanceof Error) throw response; return response; } });
@@ -200,29 +200,49 @@ test('pipe estimates require fresh certain sender evidence and retain valid zero
   assert.equal(f.nodes.get('garage-reserve-rear').textContent, 'Unavailable');
 });
 
-test('protection settings stay separate, require actual readback, preserve drafts and await confirmation', async () => {
+test('protection configuration is read-only and remains distinct from absent or mismatched readback', () => {
   const f = fixture();
-  assert.equal(f.nodes.get('garage-protection-marginC').value, '');
-  assert.equal(f.nodes.get('garage-protection-submit').disabled, true);
-  const settings = { approved: true, version: 'garage-thermal-reserve-v1', marginC: 1, pipeOutsideDiameterMm: 20,
-    pipeWallMm: 2, heatTransferWPerM2K: 5 };
-  const status = { ...f.initial, garage: { ...f.initial.garage, protection: { settingsAvailable: true, settings } } };
-  f.panel.update(status); f.reply(status);
-  f.nodes.get('garage-protection-marginC').value = '1.5'; await f.trigger('garage-protection-marginC', 'input');
-  f.panel.update(status); assert.equal(f.nodes.get('garage-protection-marginC').value, '1.5');
-  await f.trigger('garage-protection-form', 'submit');
-  assert.deepEqual(f.requests, [['/api/garage/protection', { ...settings, marginC: 1.5 }]]);
-  assert.match(f.nodes.get('garage-protection-message').textContent, /Wait for the local protection unit to confirm/);
+  const configuredSettings = { approved: false, version: 'garage-thermal-reserve-v1', marginC: 1,
+    pipeOutsideDiameterMm: 21, pipeWallMm: 1, heatTransferWPerM2K: 20 };
+  const protection = { configuredSettings, settings: null, configuration: { status: 'unknown' } };
+  const status = { ...f.initial, garage: { ...f.initial.garage, protection } };
+  f.panel.update(status);
+  assert.equal(f.nodes.get('garage-protection-configured-approved').textContent, 'Not approved');
+  assert.equal(f.nodes.get('garage-protection-configured-marginC').textContent, '1');
+  assert.equal(f.nodes.get('garage-protection-reported-approved').textContent, 'Unavailable');
+  assert.match(f.nodes.get('garage-protection-settings-status').textContent, /Waiting for fresh/);
+  protection.settings = { ...configuredSettings, approved: true, marginC: 1.5 };
+  protection.configuration = { status: 'mismatch', reason: 'The local protection unit reports different settings.' };
+  f.panel.update(status);
+  assert.equal(f.nodes.get('garage-protection-configured-marginC').textContent, '1');
+  assert.equal(f.nodes.get('garage-protection-reported-marginC').textContent, '1.5');
+  assert.equal(f.nodes.get('garage-protection-reported-approved').textContent, 'Approved');
+  assert.equal(f.nodes.get('garage-protection-reported-marginC').classes.has('stale'), true);
+  assert.match(f.nodes.get('garage-protection-settings-status').textContent, /different settings/);
+  protection.settings = { ...configuredSettings };
+  protection.configuration = { status: 'confirmed' };
+  f.panel.update(status);
+  assert.match(f.nodes.get('garage-protection-settings-status').textContent, /Configuration confirmed/);
+  assert.equal(f.nodes.get('garage-protection-reported-marginC').classes.has('stale'), false);
+  protection.settings = null; protection.configuration = { status: 'unknown' };
+  f.panel.update(status);
+  assert.equal(f.nodes.get('garage-protection-configured-pipeOutsideDiameterMm').textContent, '21');
+  assert.equal(f.nodes.get('garage-protection-reported-pipeOutsideDiameterMm').textContent, 'Unavailable');
+  assert.deepEqual(f.requests, [], 'Reading configuration or polling never sends a dashboard command');
 });
 
 test('Garage markup has durable controls and independent protection without retired automatic or model controls', () => {
   const html = readFileSync(new URL('../chart/index.html', import.meta.url), 'utf8');
   const garage = html.slice(html.indexOf('<article id="garage-control"'), html.indexOf('id="garage-equipment-readings"'));
-  for (const id of ['garage-mode-normal', 'garage-mode-away', 'garage-target-form', 'garage-protection-details', 'garage-protection-form'])
+  for (const id of ['garage-mode-normal', 'garage-mode-away', 'garage-target-form', 'garage-protection-details', 'garage-protection-parameters'])
     assert(garage.includes(`id="${id}"`));
   assert.doesNotMatch(garage, /garage-(automation|pause|learning|release)|Automatic savings|Savings strategy|Temporary heating override/);
   assert.match(garage, /roughly 24 hours.*longer if contents are still cold/);
   assert.match(garage, /including across restarts/);
+  const start = garage.indexOf('id="garage-protection-settings-details"');
+  const parameters = garage.slice(start, garage.indexOf('</details>', start));
+  assert.doesNotMatch(parameters, /<input|<select|<form|garage-protection-submit|api\/garage\/protection/);
+  assert.match(parameters, /garage\.protection.*Apply configuration/);
 });
 
 test('Home savings values are unchanged and Garage only presents observed electrical timing', () => {
@@ -289,16 +309,16 @@ test('a garage receipt records its own target and cannot masquerade as a newer s
   assert.equal(message.textContent, '');
 });
 
-test('protection command confirmation replaces waiting and expires from the original request time', () => {
-  const f = fixture(), message = f.nodes.get('garage-protection-message');
-  const status = { ...f.initial, garage: { ...f.initial.garage, protection: { sender: {
-    result: { requestedAt: now, status: 'published' } } } } };
+test('recorded protection parameters cannot claim fresh confirmation', () => {
+  const f = fixture();
+  const configuredSettings = { approved: true, version: 'garage-thermal-reserve-v1', marginC: 1,
+    pipeOutsideDiameterMm: 21, pipeWallMm: 1, heatTransferWPerM2K: 20 };
+  const status = { ...f.initial, readOnly: true, garage: { ...f.initial.garage, protection: {
+    configuredSettings, settings: configuredSettings, configuration: { status: 'confirmed' } } } };
   f.panel.update(status);
-  assert.match(message.textContent, /Waiting for protection unit confirmation/);
-  status.garage.protection.sender.result.status = 'applied'; status.now = now + 1_000;
-  f.panel.update(status);
-  assert.match(message.textContent, /applied by the local protection unit/);
-  status.now = now + day;
-  f.panel.update(status);
-  assert.equal(message.textContent, '');
+  assert.equal(f.nodes.get('garage-protection-configured-label').textContent, 'Recorded config');
+  assert.equal(f.nodes.get('garage-protection-reported-label').textContent, 'Recorded unit');
+  assert.equal(f.nodes.get('garage-protection-configured-approved').textContent, 'Approved');
+  assert.match(f.nodes.get('garage-protection-settings-status').textContent, /Recorded settings; live confirmation is unavailable/);
+  assert.deepEqual(f.requests, []);
 });

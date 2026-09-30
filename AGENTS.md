@@ -254,8 +254,13 @@ permission to act. See [the configuration guide](docs/configuration.md).
 - Garage frost protection runs independently in the Gen3 probe sender and Pill.
   The sender retains conservative front/rear pipe-reserve state and settings;
   the Pill applies a minimum target and explicit HEAT/ON rescue. Protection cannot
-  overwrite the saved user target. ST-MQ displays and configures the sender over
-  MQTT; unavailable or stale protection remains unknown. There is one pump-command
+  overwrite the saved user target. The installation approval, protection margin,
+  pipe geometry and heat-transfer assumptions belong exclusively to
+  `garage.protection` in configuration. ST-MQ applies those loaded values to the
+  sender over MQTT; the dashboard only compares configured values with actual
+  readback and cannot edit them. Configuration or a command acknowledgement is
+  not proof that the sender applied it. Unavailable or stale protection remains
+  unknown. There is one pump-command
   owner. The BLU H&T development setup supplies temperature but no pipe protection.
   Warn when manual target/mode changes raise temperature; approximately 24 hours
   is moisture-avoidance guidance, not a guarantee that stored objects are warm.

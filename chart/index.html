@@ -576,18 +576,17 @@
                 <details id="garage-protection-settings-details" class="equipment-fold">
                   <summary>Protection settings</summary>
                   <p id="garage-protection-settings-status" class="muted" role="status">Waiting for reported protection settings.</p>
-                  <form id="garage-protection-form" class="garage-protection-form" data-write-control data-admin-only data-access-path="/api/garage/protection" aria-describedby="garage-protection-settings-help garage-protection-message">
-                    <label class="garage-protection-approved"><input id="garage-protection-approved" type="checkbox" disabled> Installation parameters are approved</label>
-                    <div class="garage-protection-fields">
-                      <label for="garage-protection-marginC">Protection margin · °C<input id="garage-protection-marginC" type="number" min="0.1" max="5" step="0.1" required disabled></label>
-                      <label for="garage-protection-pipeOutsideDiameterMm">Pipe outside diameter · mm<input id="garage-protection-pipeOutsideDiameterMm" type="number" min="6" max="100" step="0.1" required disabled></label>
-                      <label for="garage-protection-pipeWallMm">Pipe wall thickness · mm<input id="garage-protection-pipeWallMm" type="number" min="0.3" max="10" step="0.1" required disabled></label>
-                      <label for="garage-protection-heatTransferWPerM2K">Heat transfer · W/(m²·K)<input id="garage-protection-heatTransferWPerM2K" type="number" min="1" max="100" step="0.1" required disabled></label>
-                    </div>
-                    <p id="garage-protection-settings-help" class="muted">These are the settings reported by the local frost-protection unit. Changes apply there and must be confirmed by its readback. The two locations keep independent reserve estimates. If approval is cleared, the heat-pump controller treats the configured protection as unavailable and requests fallback heating.</p>
-                    <button id="garage-protection-submit" class="secondary-button" type="submit" disabled>Apply protection settings</button>
-                    <p id="garage-protection-message" class="temporary-status" role="status" aria-live="polite"></p>
-                  </form>
+                  <table id="garage-protection-parameters" class="garage-protection-parameters" aria-label="Configured and reported protection parameters" aria-describedby="garage-protection-settings-status garage-protection-settings-help">
+                    <thead><tr><th scope="col">Parameter</th><th id="garage-protection-configured-label" scope="col">Configured</th><th id="garage-protection-reported-label" scope="col">Reported</th></tr></thead>
+                    <tbody>
+                      <tr><th scope="row">Installation approval</th><td id="garage-protection-configured-approved">Unavailable</td><td id="garage-protection-reported-approved">Unavailable</td></tr>
+                      <tr><th scope="row">Protection margin · °C</th><td id="garage-protection-configured-marginC">Unavailable</td><td id="garage-protection-reported-marginC">Unavailable</td></tr>
+                      <tr><th scope="row">Pipe outside diameter · mm</th><td id="garage-protection-configured-pipeOutsideDiameterMm">Unavailable</td><td id="garage-protection-reported-pipeOutsideDiameterMm">Unavailable</td></tr>
+                      <tr><th scope="row">Pipe wall thickness · mm</th><td id="garage-protection-configured-pipeWallMm">Unavailable</td><td id="garage-protection-reported-pipeWallMm">Unavailable</td></tr>
+                      <tr><th scope="row">Heat transfer · W/(m²·K)</th><td id="garage-protection-configured-heatTransferWPerM2K">Unavailable</td><td id="garage-protection-reported-heatTransferWPerM2K">Unavailable</td></tr>
+                    </tbody>
+                  </table>
+                  <p id="garage-protection-settings-help" class="muted">Change <code>garage.protection</code> in configuration, then use Apply configuration in Data &amp; settings. Reported values come from the local protection unit; matching settings do not by themselves establish that protection is available.</p>
                 </details>
               </details>
               <details class="equipment-fold garage-temperature-help">

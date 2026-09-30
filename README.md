@@ -171,9 +171,10 @@ Open the **Home** or **Garage** summary for its heating controls. Home retains
 **Automatic / Paused**, **Schedule & away**, **Manual heating override**,
 **Heating strategy & comfort** and the **Home heat model**.
 Garage offers persistent **Normal / Away**, an editable normal target, native
-pump controls and separate **Frost protection**. Raising the selected target shows
-a moisture warning for approximately 24 hours. The sender settings and pipe
-estimates are available through the protection panel when connected.
+pump controls and separate **Freeze protection**. Raising the selected target shows
+a moisture warning for approximately 24 hours. Protection parameters are edited
+under `garage.protection` in configuration; the read-only panel compares configured
+and reported settings alongside the sender's pipe estimates.
 Each heat pump has an overview and detailed readings. Garage's chargers sit
 below its heating summary. Equipment remains in **Sensors & Equipment** (Home)
 and **Sensors & More equipment** (Garage). Home shows **Tariff control** above
@@ -636,8 +637,10 @@ selected Normal/Away temperatures without expiry. Normal restores the saved norm
 target; Away holds the configured preset. Temperature increases show a condensation
 advisory. The Gen3 probe sender runs independent front/rear pipe protection and
 communicates its state/settings to the application. Its Bluetooth demand lets the
-Pill rescue heating without a broker or controller connection. The Frost protection
-panel keeps unavailable evidence distinct from safe or active protection.
+Pill rescue heating without a broker or controller connection. The Freeze protection
+panel keeps unavailable evidence distinct from safe or active protection. Its
+installation parameters come exclusively from `garage.protection`; use **Apply
+configuration** after editing that source, and check for matching sender readback.
 
 The `shelly-cn105/v2` Pill integration retains a real target locally and regulates
 from native Bluetooth BTHome components. Power, mode, fan and vane commands are

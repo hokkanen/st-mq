@@ -3,6 +3,8 @@ import { garageSettings } from './settings.js';
 import { decodeGarageEnvelope } from './contract.js';
 
 export const GARAGE_SENDER_CONTRACT = 'stmq-garage-sender/v1';
+const CONFIGURATION_TIMEOUT_MS = 30_000;
+const CONFIGURATION_ATTEMPTS = 2;
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const topic = value => typeof value === 'string' && value.length <= 1024 && !/[+#\u0000]/.test(value);
 export function garageSenderSettings(input = {}) {
@@ -66,29 +68,64 @@ export function validateGarageSenderSnapshot(value) {
   return { ...value, state };
 }
 
-/** MQTT is a settings and observation channel. BLE protection and the pipe
- * estimate continue on the sender independently of this application. */
-export function createGarageSender({ settings: input = {}, publish, clock = Date.now, canControl = () => true,
+/** Only the loaded installation configuration can request sender settings.
+ * BLE protection and the pipe estimate continue independently of ST-MQ. */
+export function createGarageSender({ settings: input = {}, protection = garageSettings().protection,
+  enabled = false, publish, clock = Date.now, canControl = () => true,
   onState = () => {}, onObservation = () => {}, persisted = null } = {}) {
   const settings = garageSenderSettings(input);
+  const configuredSettings = validateSenderProtectionSettings(protection);
   validateGarageSenderSnapshot(persisted);
-  let connected = false, state = null, usedChallenge = null, lastCommand = null;
+  let connected = false, closed = false, state = null, usedChallenge = null, lastCommand = null;
+  let pending = null, attempts = 0, stoppedReason = null, matched = false;
   const retiredBoots = new Set();
   function snapshot() { return { version: 1, schema: GARAGE_SENDER_CONTRACT, state: state ? structuredClone(state) : null,
     lastCommand: lastCommand ? structuredClone(lastCommand) : null }; }
+  const fresh = now => Boolean(connected && state && !state.retained && state.observedAt <= now
+    && state.receivedAt <= now && now - state.observedAt < settings.maxAgeMs);
+  const matching = () => Object.keys(configuredSettings).every(key => state?.config[key] === configuredSettings[key]);
+  function expire(now) {
+    if (!pending || now - pending.requestedAt < CONFIGURATION_TIMEOUT_MS) return;
+    pending = null;
+    lastCommand = { ...lastCommand, status: 'uncertain', reason: 'Local frost-protection configuration readback timed out.' };
+    onState(snapshot());
+  }
+  function writeReason() {
+    return !enabled ? 'Garage control is disabled in configuration.'
+      : !canControl() ? 'This instance is read-only.'
+        : !publish || !settings.commandTopic ? 'The local frost-protection settings connection is unavailable.' : null;
+  }
   function status(now = clock()) {
-    const available = connected && state && !state.retained && state.observedAt <= now && now - state.observedAt < settings.maxAgeMs;
-    if (lastCommand?.status === 'published' && now - lastCommand.requestedAt >= 30_000)
-      lastCommand = { ...lastCommand, status: 'uncertain', reason: 'Local frost-protection unit confirmation timed out.' };
-    const reason = !canControl() ? 'This instance is read-only.'
-      : !available ? 'Waiting for fresh local frost-protection unit status.'
-        : !publish || !settings.commandTopic ? 'The local frost-protection settings connection is unavailable.'
-          : usedChallenge === state.challenge ? 'Waiting for the local frost-protection unit to accept another command.'
-            : lastCommand?.status === 'published' ? 'Waiting for local frost-protection unit confirmation.' : null;
-    return { available: Boolean(available), settingsAvailable: reason === null, settingsReason: reason,
+    expire(now);
+    const available = fresh(now);
+    const configuration = !available ? { status: 'unknown', reason: 'Waiting for fresh local frost-protection unit status.' }
+      : matching() ? { status: 'confirmed', reason: null }
+        : pending ? { status: 'pending', reason: 'Waiting for the local frost-protection unit to report the configured parameters.' }
+          : { status: 'mismatch', reason: stoppedReason ?? writeReason()
+            ?? (attempts >= CONFIGURATION_ATTEMPTS ? 'The local unit has not confirmed the configured parameters. Apply configuration to retry.'
+              : 'The local unit reports different parameters. Waiting to apply the loaded configuration.') };
+    return { available, configuredSettings: structuredClone(configuredSettings), configuration: { ...configuration, attempts },
       observedAt: state?.observedAt ?? null, receivedAt: state?.receivedAt ?? null,
       settings: available ? structuredClone(state.config) : null,
       protection: available ? structuredClone(state.protection) : null, result: lastCommand ? structuredClone(lastCommand) : null };
+  }
+  async function reconcile(now = clock()) {
+    expire(now);
+    if (!fresh(now) || matching() || writeReason() || pending || stoppedReason
+      || attempts >= CONFIGURATION_ATTEMPTS || usedChallenge === state.challenge) return;
+    const command = { schema: GARAGE_SENDER_CONTRACT, bootId: state.bootId, challenge: state.challenge,
+      commandId: randomUUID(), action: 'configure', config: structuredClone(configuredSettings) };
+    usedChallenge = state.challenge; attempts++;
+    pending = { commandId: command.commandId, requestedAt: now, deviceId: state.deviceId, bootId: state.bootId };
+    lastCommand = { commandId: command.commandId, requestedAt: now, status: 'published', reason: null };
+    onState(snapshot());
+    try { await publish(settings.commandTopic, JSON.stringify(command), { qos: 0, retain: false, noReplay: true }); }
+    catch {
+      // A delayed publish failure cannot overwrite a newer command or readback.
+      if (pending?.commandId !== command.commandId) return;
+      lastCommand = { ...lastCommand, status: 'uncertain', reason: 'Local frost-protection configuration delivery is unconfirmed.' };
+      onState(snapshot());
+    }
   }
   function receive(topicName, payload, packet = {}, receivedAt = clock()) {
     if (!connected || topicName !== settings.stateTopic) return false;
@@ -105,13 +142,25 @@ export function createGarageSender({ settings: input = {}, publish, clock = Date
     if (state && `${state.deviceId}:${state.bootId}` !== identity) {
       retiredBoots.add(`${state.deviceId}:${state.bootId}`); usedChallenge = null;
       if (retiredBoots.size > 16) retiredBoots.delete(retiredBoots.values().next().value);
-      if (lastCommand?.status === 'published') lastCommand = { ...lastCommand, status: 'uncertain', reason: 'The local frost-protection unit restarted.' };
+      if (pending) {
+        pending = null;
+        lastCommand = { ...lastCommand, status: 'uncertain', reason: 'The local frost-protection unit restarted.' };
+      }
     }
     state = { deviceId: value.deviceId, bootId: value.bootId, sequence: value.sequence,
       observedAt: value.observedAt, receivedAt, retained: packet.retain === true, challenge: value.challenge, config, protection };
-    if (lastCommand && value.result?.commandId === lastCommand.commandId
-      && ['applied', 'rejected', 'failed'].includes(value.result.status))
+    if (!packet.retain && pending && pending.deviceId === state.deviceId && pending.bootId === state.bootId
+      && value.result?.commandId === pending.commandId && ['applied', 'rejected', 'failed'].includes(value.result.status)) {
       lastCommand = { ...lastCommand, status: value.result.status, reason: value.result.reason ?? null };
+      if (value.result.status !== 'applied') {
+        pending = null;
+        stoppedReason = 'The local unit could not apply the configured parameters. Check its reported settings and apply configuration to retry.';
+      }
+    }
+    if (!packet.retain) {
+      if (matching()) { pending = null; stoppedReason = null; matched = true; }
+      else if (matched) { attempts = 0; stoppedReason = null; matched = false; }
+    }
     onState(snapshot());
     if (!packet.retain) for (const location of ['rear', 'front']) {
       const row = protection.locations[location];
@@ -121,23 +170,12 @@ export function createGarageSender({ settings: input = {}, publish, clock = Date
         raw: { usableForControl: false, estimated: true, schema: GARAGE_SENDER_CONTRACT,
           reportIntervalMs: 30_000, reportGraceMs: settings.maxAgeMs - 30_000 } });
     }
+    void reconcile(receivedAt).catch(() => {});
     return true;
   }
-  return { topics: settings.stateTopic ? [settings.stateTopic] : [], receive, snapshot, status,
-    setConnected(value) { connected = Boolean(value); state = null; usedChallenge = null; },
+  return { topics: settings.stateTopic ? [settings.stateTopic] : [], receive, snapshot, status, reconcile,
+    setConnected(value) { connected = !closed && Boolean(value); state = null; usedChallenge = null; },
     subscriptionFailed() { connected = false; },
-    async setConfiguration(input) {
-      const config = validateSenderProtectionSettings(input), now = clock(), view = status(now);
-      if (!view.settingsAvailable) throw Object.assign(new Error(view.settingsReason), { statusCode: 409 });
-      const command = { schema: GARAGE_SENDER_CONTRACT, bootId: state.bootId, challenge: state.challenge,
-        commandId: randomUUID(), action: 'configure', config };
-      usedChallenge = state.challenge; lastCommand = { commandId: command.commandId, requestedAt: now, status: 'published', reason: null };
-      onState(snapshot());
-      try { await publish(settings.commandTopic, JSON.stringify(command), { qos: 0, retain: false, noReplay: true }); }
-      catch { lastCommand = { ...lastCommand, status: 'uncertain', reason: 'Local frost-protection settings delivery is unconfirmed.' }; onState(snapshot());
-        throw Object.assign(new Error(lastCommand.reason), { statusCode: 503 }); }
-      return { ...lastCommand };
-    },
-    async close() { connected = false; },
+    async close() { closed = true; connected = false; pending = null; },
   };
 }

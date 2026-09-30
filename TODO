@@ -1,3 +1,38 @@
+Implemented 2026-09-30 — Configuration-owned Garage protection parameters
+- Remove the dashboard protection form and settings-write endpoint. Installation
+  approval, protection margin, pipe geometry and heat-transfer assumptions now
+  come exclusively from loaded garage.protection configuration. Clarify F3 and
+  the configuration/adapter guides; use Apply configuration or restart after
+  editing the source. No separate durable dashboard preference is retained.
+- Show configured and reported values in a read-only table, with false approval,
+  missing readback, mismatches and recorded snapshots kept distinct. Keep
+  configured values visible during outages and require matching fresh device
+  values for confirmation; a published command or applied receipt alone is
+  insufficient. Confirmed parameters do not imply available pipe protection.
+- Reconcile loaded parameters over the sender's existing fenced MQTT contract
+  only with Garage enabled, local authority and fresh nonretained sender status.
+  Keep delivery nonretained and nonreplayable. Permit at most two attempts for an
+  unresolved mismatch, separated by the 30-second confirmation window and fresh
+  challenges; stop immediately after explicit rejection/failure. Reconnect/reboot
+  cannot reset an exhausted budget. A terminal runtime/sender close also blocks
+  late reports from publishing while the remaining MQTT connections shut down.
+- Audit dashboard mutation routes and their relevant persistence/default-loading
+  paths: no other reachable permanent override of configuration defaults found.
+  Home permission, Garage Normal target/mode, charging permission/priority and
+  Caravan thresholds remain explicitly owned durable choices; native device
+  commands, scoped overrides and deliberate configuration import stay separate.
+- F1/F3/F4/F5/F7/F8: remove obsolete editor flags, request handlers and receipt UI;
+  retain current sender snapshot/protocol validation, independent local protection,
+  actual readback and recorded evidence. No migrations, live equipment actions or
+  private configuration edits. Tests use synthetic sources and MQTT fixtures.
+- Validation: 82 consolidated UI/backend tests and 69 focused backend tests
+  passed. Garage Chromium suite passed at 320/390/768/1440 px in both themes,
+  covering config/readback mismatches, unavailable and recorded evidence, zero
+  parameter writes, table bounds and existing heating actions. Screenshots
+  reviewed. Production build passed with its existing bundle-size advisory.
+  Full routine regression passed (3,688 passed, one optional skip). Final
+  whitespace and staged secret checks passed.
+
 Implemented 2026-09-30 — Unified Home and Garage heating controls
 - Use matching two-choice mode cards and three-part current-state summaries,
   followed by optional settings folds. Home now shows compressor activity,

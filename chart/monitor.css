@@ -1865,15 +1865,15 @@ body[data-access-role="family"] .family-access-note { display: block; margin: 12
 .garage-protection [data-state="attention"] { color:var(--stale); }
 .garage-warming-warning { line-height:1.55; }
 
-.garage-protection-grid, .garage-protection-fields { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:1rem; }
+.garage-protection-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:1rem; }
 .garage-protection-location h5 { margin:.6rem 0; font-size:.85rem; }
-.garage-protection-form { display:grid; gap:.8rem; }
-.garage-protection-fields label { display:grid; gap:.4rem; margin:0; font-size:.8rem; }
-.garage-protection-fields input { min-width:0; width:100%; }
-.garage-protection-approved { display:flex; flex-direction:row; align-items:center; justify-content:flex-start; gap:.5rem; margin:0; }
-.garage-protection-approved input { width:auto; }
-.garage-protection-form > button { justify-self:start; }
-@media(max-width:420px) { .garage-protection-grid, .garage-protection-fields { grid-template-columns:1fr; } }
+.garage-protection-parameters { width: 100%; table-layout: fixed; border-collapse: collapse; margin: 12px 0; font-size: 11px; line-height: 1.6; }
+.garage-protection-parameters th, .garage-protection-parameters td { padding: 9px 5px; border-bottom: 1px solid var(--border); text-align: right; overflow-wrap: anywhere; vertical-align: top; font-weight: 400; }
+.garage-protection-parameters th { color: var(--muted); }
+.garage-protection-parameters th:first-child { width: 42%; padding-left: 0; text-align: left; }
+.garage-protection-parameters td { font-variant-numeric: tabular-nums; }
+.garage-protection-parameters th:last-child, .garage-protection-parameters td:last-child { padding-right: 0; }
+@media(max-width:420px) { .garage-protection-grid { grid-template-columns:1fr; } }
 
 /* Shared heating controls: primary mode, live readings, then optional details. */
 .feature-automation h5 { color: var(--muted); font-size: 11px; font-weight: 500; }

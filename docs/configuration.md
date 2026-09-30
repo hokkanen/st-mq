@@ -37,9 +37,12 @@ Garage manual control can be enabled with this sparse installation override:
 It inherits public adapter topics and the Away preset. Sender MQTT topics default to `heatpump/garage/sender/state` and
 `heatpump/garage/sender/command`. Configure the sender with that prefix, or set
 `garage.sender.stateTopic` and `commandTopic` to its actual topics. Review and
-apply the protection settings in the Frost protection panel. Approval stored in application defaults
-is not evidence that the sender accepted it. The panel reports actual sender
-settings and freshness. See [Garage heating](garage.md).
+set installation approval and protection parameters under `garage.protection`,
+then use **Apply configuration** in **Data & settings** or restart. The
+**Freeze protection → Protection settings** panel is read-only: it compares the
+loaded configuration with actual sender readback. Configured approval is not
+evidence that the sender accepted it or that protection is available.
+See [Garage heating](garage.md).
 
 Only write the leaves you need to change. Leave default topics, timing values,
 equipment lists and empty credential placeholders out of the private file.
@@ -131,10 +134,14 @@ independent. `POST /api/automation` accepts Home only; Garage mode controls use
 `POST /api/garage/heating`. Garage enablement and sender wiring are installation
 configuration; fresh adapter evidence is still needed to send a request.
 
-The Frost protection panel displays the Gen3 sender's confirmed configuration and
-state. Explicit edits go to the sender and are confirmed by readback. Network loss
-does not expire the sender's protection or Pill's selected target. The BLU H&T
-test source has no two-probe protection. See [Garage heating](garage.md).
+The Freeze protection panel displays the Gen3 sender's state and compares
+configured parameters with reported settings. Installation approval, margin,
+pipe geometry and heat transfer come only from `garage.protection`; there is no
+dashboard override or settings-write endpoint. With Garage enabled and local
+write authority, the controller applies loaded configuration through the sender's
+fresh MQTT command route. Confirmation requires matching device readback.
+Network loss does not expire the sender's protection or Pill's selected target.
+The BLU H&T test source has no two-probe protection. See [Garage heating](garage.md).
 
 ## Charging defaults and dashboard overrides
 

@@ -206,7 +206,8 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
         ...(config.garage?.adapter?.commandTopic ? [{ role: 'Explicit pump and room-target commands', topic: config.garage.adapter.commandTopic, direction: 'publish' }] : [])] });
   }
   const garageSender = config.garage?.sender ? createGarageSender({ settings: config.garage.sender,
-    publish, clock: () => engine.clock(), canControl,
+    protection: config.garage.protection, enabled: config.garage.enabled === true,
+    publish, clock: () => engine.clock(), canControl: () => config.input !== 'offline' && canControl(),
     persisted: store.getState?.(`garage:sender:${config.input}`),
     onState: snapshot => engine.garage?.senderChanged?.(snapshot),
     onObservation: observation => engine.ingest(observation) }) : null;
@@ -214,7 +215,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     engine.garage?.setSender?.(garageSender);
     if (garageSender.topics.length) topicGroups.push({ id: 'garage-sender', label: 'Garage local frost protection', source: 'MQTT',
       topics: [...garageSender.topics.map(topic => ({ role: 'Sender status and protection readback', topic, direction: 'subscribe' })),
-        ...(config.garage.sender.commandTopic ? [{ role: 'Explicit protection settings', topic: config.garage.sender.commandTopic, direction: 'publish' }] : [])] });
+        ...(config.garage.sender.commandTopic ? [{ role: 'Configured protection parameters', topic: config.garage.sender.commandTopic, direction: 'publish' }] : [])] });
   }
   const requestSnapshot = async () => {
     if (!decoder) return;

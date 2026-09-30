@@ -177,6 +177,9 @@ test('permanent settings APIs are read-only and configured price revisions prese
   const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
   assert.equal((await fetch(`${base}/api/contract`)).status, 401);
   for (const path of ['contract', 'settings']) assert.equal((await fetch(`${base}/api/${path}`, { headers, method: 'POST', body: '{}' })).status, 405);
+  assert.equal((await fetch(`${base}/api/garage/protection`, { headers, method: 'POST', body: '{}' })).status, 404,
+    'Installation parameters have no dashboard mutation endpoint');
+  assert.equal(engine.garage.setProtection, undefined);
   const saved = engine.contract();
   assert.equal(saved.periods[0].vatRate, 0.255);
   assert.equal(saved.periods[0].marginCtPerKwh, 0.33);
