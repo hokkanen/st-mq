@@ -1,4 +1,5 @@
-.charging-disclosure .charging-session-report { margin: -4px 0 -4px auto; min-height: 32px; padding: 4px 7px; border: 0; background: transparent; color: var(--muted); font-size: 11px; line-height: 1.4; text-align: right; white-space: normal; }
+.charging-disclosure .charging-session-report { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; min-height: 32px; margin: 0; padding: 5px 0; border: 0; border-top: 1px solid var(--border); border-radius: 0; background: transparent; color: var(--muted); font-size: 11px; line-height: 1.4; text-align: left; white-space: normal; }
+.charging-session-report::after { content: '›'; flex: none; color: var(--muted); font-size: 18px; line-height: 1; }
 .charging-session-report[data-state="good"] { color: var(--accent); }
 .charging-session-report[data-state="attention"], .charging-session-report[data-state="unknown"] { color: var(--stale); }
 .charging-disclosure .charging-session-report:hover { background: var(--surface-soft); }
@@ -36,5 +37,4 @@
   .charging-report-dialog { padding: 16px; }
   .charging-report-coverage { gap: 8px; font-size: 11px; }
   .charging-report-timeline li { grid-template-columns: 80px minmax(0, 1fr); gap: 5px 8px; }
-  .charging-disclosure .charging-session-report { max-width: 48%; }
 }

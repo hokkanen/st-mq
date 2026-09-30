@@ -1593,13 +1593,13 @@ button.garage-door-action:disabled { opacity: .55; cursor: default; }
   --charging-gap: 8px;
   --charging-value-size: clamp(17px, 5cqw, calc(25px - var(--charging-compact, 0) * 4px));
   /* Compact = 1 for desktop or paired cards, 0 for the original mobile spacing. */
-  height: calc(364px - var(--charging-compact, 0) * 40px);
-  min-height: calc(364px - var(--charging-compact, 0) * 40px);
+  height: calc(404px - var(--charging-compact, 0) * 40px);
+  min-height: calc(404px - var(--charging-compact, 0) * 40px);
   padding: calc(16px - var(--charging-compact, 0) * 4px) 14px;
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: calc(56px - var(--charging-compact, 0) * 2px) 48px
     calc(76px - var(--charging-compact, 0) * 6px) calc(70px - var(--charging-compact, 0) * 10px)
-    42px calc(20px - var(--charging-compact, 0) * 4px);
+    42px calc(60px - var(--charging-compact, 0) * 4px);
   gap: calc(4px - var(--charging-compact, 0) * 2px);
   border-radius: 10px;
   cursor: pointer;
@@ -1648,7 +1648,7 @@ button.garage-door-action:disabled { opacity: .55; cursor: default; }
 .charging-notice[data-state="good"] { color: var(--accent); }
 .charging-notice[data-state="attention"], .charging-notice[data-state="manual"] { color: var(--stale); }
 .charging-notice .status-detail-trigger { text-align: left; }
-.charging-disclosure { display: flex; justify-content: space-between; align-items: center; gap: 8px; color: var(--muted); font-size: 10px; line-height: 1.4; }
+.charging-disclosure { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: calc(20px - var(--charging-compact, 0) * 4px) 32px; align-items: center; gap: 8px; color: var(--muted); font-size: 10px; line-height: 1.4; }
 .charging-disclosure > span:first-child::before, .charging-disclosure-open::before { content: '+'; display: inline-block; width: 13px; color: var(--text); }
 .charging-disclosure-open::before { content: '−'; }
 .charging-disclosure-open, .charging-device[open] .charging-disclosure-closed { display: none; }

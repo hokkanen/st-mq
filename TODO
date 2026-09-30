@@ -1,3 +1,18 @@
+Implemented 2026-09-30 — Charger card spacing and separate session report row
+- Give Session report a full-width row below Details & settings, with a subtle
+  divider and navigation arrow. Add 40 px to each charger summary so Garage has
+  more vertical room beside Home's heating preview. Keep both charger summaries
+  equal in height and retain the existing bounded desktop column balancing.
+- F1/F4/F7/F8: presentation only; preserve report states, evidence, controls,
+  disclosure behavior and dialog focus. Remove the cramped half-width mobile
+  report styling; no configuration, state or compatibility paths change.
+- Validation: 140 focused charging/Garage UI tests passed; production build passed
+  with its existing bundle-size advisory. Charging browser suite passed, including
+  report focus and both themes at 320/390/1440 px. A temporary synthetic layout
+  sweep passed at eight widths from 320 to 1920 px in both themes, checking report
+  row bounds, long labels, equal card heights and expanded/collapsed cards; the
+  existing dashboard balance browser checks passed. Screenshots reviewed.
+
 Implemented 2026-09-30 — Heating plan explorer and scoped one-cycle scenarios
 - Make Home's heating preview a keyboard-accessible dialog opener, retaining
   selected, paused, simulated and recorded-plan meanings. Show the actual upcoming

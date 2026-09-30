@@ -188,8 +188,8 @@ silence or zero power alone is insufficient. **End assessment** leaves ordinary
 charging running. Restore a temporary vehicle timer yourself; this application
 cannot restore it. Up to 24 assessments are retained, with active runs preserved.
 
-Every ordinary connection also gets a passive **Session report**, beside
-**Details & settings** on its charger card. The action's text and color indicate
+Every ordinary connection also gets a passive **Session report**, in its own row
+below **Details & settings** on its charger card. The action's text and color indicate
 attention, incomplete evidence or the observed result. Its dialog separates the
 charging outcome, behavior and coverage, followed by findings, a timeline and
 the actual plan/input revisions. Proposed periods, installed execution,
