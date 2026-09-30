@@ -278,9 +278,13 @@ export async function checkGarageDoorBrowser({ evaluate, command, context, refre
     // Finish a short, real animation without a Closed report or another poll.
     // The motion cue stops at the floor, while reported state still owns colour.
     const physicalDoors = [overview, panel].map(scope => `${scope} .garage-door-row[data-side]`).join(', ');
-    const reportBoth = async state => {
+    const cueVisible = selector => `(() => {const s=getComputedStyle(document.querySelector('${selector} .garage-door-motion'));return s.display!=='none'&&s.visibility!=='hidden';})()`;
+    // Simulate delayed finish notifications: completion must still paint correctly,
+    // without a later device report redrawing either door.
+    const withoutFinishNotifications = () => evaluate(`[...document.querySelectorAll('${physicalDoors}')].forEach(n=>n.querySelector('.garage-door-leaf').getAnimations().forEach(a=>a.onfinish=null));true`);
+    const reportBoth = async (state, ids = ['door1', 'door2']) => {
       await evaluate(`(() => {const f=window.equipmentUiFixture;f.now++;
-        for(const d of f.devices.filter(d=>d.kind==='door')){d.cover.state='${state}';d.cover.operation=null;
+        for(const d of f.devices.filter(d=>${JSON.stringify(ids)}.includes(d.id))){d.cover.state='${state}';d.cover.operation=null;
           Object.assign(Object.values(d.readings)[0],{value:'${state}'==='closed'?0:1,coverState:'${state}',observedAt:f.now,stale:false});}
         return true;})()`);
       await refresh();
@@ -289,18 +293,19 @@ export async function checkGarageDoorBrowser({ evaluate, command, context, refre
     await refresh();
     await reportBoth('open');
     await reportBoth('closing');
-    assert.equal(await evaluate(`[...document.querySelectorAll('${physicalDoors}')].every(n=>getComputedStyle(n.querySelector('.garage-door-motion')).display==='block')`), true, 'Both doors show closing arrows in both views during travel');
-    await until(`[...document.querySelectorAll('${physicalDoors}')].every(n=>getComputedStyle(n.querySelector('.garage-door-motion')).display==='none')`);
+    for (const scope of [overview, panel]) for (const side of ['left', 'right']) assert.equal(await evaluate(cueVisible(bay(scope, side))), true, 'Both doors show closing arrows in both views during travel');
+    await withoutFinishNotifications();
+    await until(`[...document.querySelectorAll('${physicalDoors}')].every(n=>new DOMMatrix(getComputedStyle(n.querySelector('.garage-door-leaf')).transform).m42===0)`);
     const assertAwaitingClosed = async () => {
       const artwork = await evaluate(`[...document.querySelectorAll('${physicalDoors}')].map(n=>({
-        arrow:getComputedStyle(n.querySelector('.garage-door-motion')).display,
+        arrowVisible:(()=>{const s=getComputedStyle(n.querySelector('.garage-door-motion'));return s.display!=='none'&&s.visibility!=='hidden';})(),
         position:new DOMMatrix(getComputedStyle(n.querySelector('.garage-door-leaf')).transform).m42,
         state:n.querySelector('.garage-door-state').textContent.trim(),
         estimated:!n.querySelector('.garage-door-estimate').hidden,
         colour:getComputedStyle(n).getPropertyValue('--door-color').trim(),
         attention:getComputedStyle(n).getPropertyValue('--stale').trim()}))`);
       for (const door of artwork) {
-        assert.equal(door.arrow, 'none', 'Downward arrow disappears at estimated closed position');
+        assert.equal(door.arrowVisible, false, 'Downward arrow disappears at estimated closed position without a finish callback or new report');
         assert.equal(door.position, 0);
         assert.equal(door.state, 'Closing', 'Animation completion cannot manufacture a Closed report');
         assert.equal(door.estimated, true);
@@ -315,12 +320,56 @@ export async function checkGarageDoorBrowser({ evaluate, command, context, refre
     await assertClosedArtwork();
     assert.equal(await evaluate("document.querySelector('#garage-door-summary').dataset.state"), 'confirmed');
     await reportBoth('opening');
-    assert.equal(await evaluate(`[...document.querySelectorAll('${physicalDoors}')].every(n=>getComputedStyle(n.querySelector('.garage-door-motion')).display==='block')`), true, 'A later opening restores the motion cue');
+    for (const scope of [overview, panel]) for (const side of ['left', 'right']) assert.equal(await evaluate(cueVisible(bay(scope, side))), true, 'A later opening restores the motion cue');
     if (setReducedMotion) {
       await setReducedMotion(true);
       await reportBoth('closing');
       await assertAwaitingClosed();
       await setReducedMotion(false);
+    }
+    for (const [first, last] of [['right', 'left'], ['left', 'right']]) {
+      await reportBoth('closed');
+      await reportBoth('opening');
+      await until(`new DOMMatrix(getComputedStyle(document.querySelector('${bay(overview, first)} .garage-door-leaf')).transform).m42===-96`);
+      await reportBoth('closing', [first === 'right' ? 'door1' : 'door2']);
+      await until(`new DOMMatrix(getComputedStyle(document.querySelector('${bay(overview, first)} .garage-door-leaf')).transform).m42>=-48`);
+      await reportBoth('closing', [last === 'right' ? 'door1' : 'door2']);
+      await withoutFinishNotifications();
+      await until(`new DOMMatrix(getComputedStyle(document.querySelector('${bay(overview, first)} .garage-door-leaf')).transform).m42===0`);
+      await settle();
+      for (const scope of [overview, panel]) {
+        assert.equal(await evaluate(cueVisible(bay(scope, first))), false, `${first} arrow stops independently when it finishes first`);
+        assert.equal(await evaluate(cueVisible(bay(scope, last))), true, `${last} arrow remains while that door is still closing`);
+      }
+      await refresh();
+      await close();
+      await open();
+      for (const scope of [overview, panel]) assert.equal(await evaluate(cueVisible(bay(scope, first))), false, 'Other-door updates and dialog navigation cannot revive the finished arrow');
+      await until([overview, panel].flatMap(scope => ['left', 'right'].map(side => `!${cueVisible(bay(scope, side))}`)).join(' && '));
+      await assertAwaitingClosed();
+      await reportBoth('closed', [first === 'right' ? 'door1' : 'door2']);
+      for (const scope of [overview, panel]) {
+        assert.equal(await evaluate(cueVisible(bay(scope, last))), false, 'Confirming one door cannot change the other completed arrow');
+        assert.equal(await text(`${bay(scope, last)} .garage-door-state`), 'Closing', 'The other door still awaits its own confirmation');
+        for (const [side, colour] of [[first, '--chart-indoor'], [last, '--stale']]) assert.equal(await evaluate(`(() => {const s=getComputedStyle(document.querySelector('${bay(scope, side)}'));return s.getPropertyValue('--door-color').trim()===s.getPropertyValue('${colour}').trim();})()`), true, 'Each door keeps its own confirmation colour');
+      }
+    }
+    // Reverse a partly closed shutter, then interrupt travel with lost evidence.
+    // Canceled closing effects must never hide a later opening cue.
+    await reportBoth('closed');
+    await reportBoth('opening');
+    await until(`new DOMMatrix(getComputedStyle(document.querySelector('${bay(overview, 'right')} .garage-door-leaf')).transform).m42<=-48`);
+    await reportBoth('closing');
+    await reportBoth('opening');
+    await until(`new DOMMatrix(getComputedStyle(document.querySelector('${bay(overview, 'right')} .garage-door-leaf')).transform).m42===-96`);
+    for (const scope of [overview, panel]) for (const side of ['left', 'right']) assert.equal(await evaluate(cueVisible(bay(scope, side))), true, 'A canceled closing effect cannot hide the opening cue');
+    await reportBoth('closing');
+    await evaluate("for(const d of window.equipmentUiFixture.devices.filter(d=>d.kind==='door'))Object.values(d.readings)[0].stale=true;true");
+    await refresh();
+    for (const scope of [overview, panel]) for (const side of ['left', 'right']) {
+      assert.equal(await evaluate(cueVisible(bay(scope, side))), false, 'Lost evidence removes the motion cue');
+      assert.equal(await text(`${bay(scope, side)} .garage-door-state`), 'Unknown');
+      assert.equal(await travel(scope, side), null, 'Lost evidence cancels estimated travel');
     }
     await reportBoth('closed');
     await evaluate('window.equipmentUiFixture.status.garage.doorTravelSeconds=18;true');

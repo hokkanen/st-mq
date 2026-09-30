@@ -109,7 +109,7 @@ function createGarageFacade(document, interactive, activate) {
     if (interactive) { state.setAttribute('aria-live', 'polite'); feedback.setAttribute('role', 'status'); }
     row.append(action, description, feedback);
     const node = { row, action, label, name, state, identity, feedback, bay, estimate,
-      leaf: picture.querySelector('.garage-door-leaf'), motion: createGarageDoorMotion() };
+      leaf: picture.querySelector('.garage-door-leaf'), cue: picture.querySelector('.garage-door-motion'), motion: createGarageDoorMotion() };
     if (interactive) action.addEventListener('click', () => activate(node));
     return node;
   }
@@ -176,20 +176,26 @@ export function createGarageDoorPanel({ document, onAction, blocked = () => fals
   const reducedMotion = document.defaultView.matchMedia('(prefers-reduced-motion: reduce)');
   function drawMotion(node, motion) {
     node.animation?.cancel();
+    node.cueAnimation?.cancel();
     node.animation = null;
+    node.cueAnimation = null;
     const transform = value => `translateY(${-96 * (value ?? 0)}px)`;
     const animate = motion.durationMs > 0 && !reducedMotion.matches && node.leaf.animate;
+    const closing = node.row.dataset.motion === 'closing' && motion.to === 0;
     node.row.dataset.travelKnown = String(motion.to !== null);
-    node.row.dataset.travelClosed = String(motion.to === 0 && !animate);
     node.estimate.hidden = !motion.estimated;
     node.leaf.style.transform = transform(motion.to);
+    node.cue.style.visibility = closing ? 'hidden' : '';
     if (animate) {
-      const animation = node.animation = node.leaf.animate([{ transform: transform(motion.from) }, { transform: transform(motion.to) }],
+      node.animation = node.leaf.animate([{ transform: transform(motion.from) }, { transform: transform(motion.to) }],
         { duration: motion.durationMs, easing: 'linear', fill: 'forwards' });
-      animation.onfinish = () => {
-        // Estimated arrival hides the motion cue; only a report clears attention.
-        if (node.animation === animation) node.row.dataset.travelClosed = String(motion.to === 0);
-      };
+      if (closing) {
+        // Share the shutter's timeline: no delayed finish event can leave an
+        // arrow on a closed illustration. Reported evidence still owns colour.
+        node.cueAnimation = node.cue.animate([{ visibility: 'visible' }, { visibility: 'hidden' }],
+          { duration: motion.durationMs, easing: 'steps(1, end)', fill: 'forwards' });
+        node.cueAnimation.startTime = node.animation.startTime = document.timeline.currentTime;
+      }
     }
   }
   function update(snapshot = {}) {
@@ -222,6 +228,7 @@ export function createGarageDoorPanel({ document, onAction, blocked = () => fals
     for (const [id, node] of otherNodes) if (!extras.some(device => device.id === id)) {
       if (document.activeElement === node.action) back.focus({ preventScroll: true });
       node.animation?.cancel();
+      node.cueAnimation?.cancel();
       node.row.remove(); otherNodes.delete(id);
     }
     for (const device of extras) {

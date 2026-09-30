@@ -55,7 +55,9 @@ Positions inferred during travel are labeled as estimates. A closed report ends
 travel immediately; a binary Open/`coverState: open` report only establishes that
 the door is not closed, so it does not skip or finish the opening animation.
 When estimated closing reaches the floor, the downward arrow disappears in both
-views. The door keeps its attention colour and reported state until a closed
+views. Each arrow shares its own shutter's animation clock; it does not wait for
+the other door, a completion callback, or another status report. The door keeps
+its attention colour and reported state until a closed
 report confirms it; reduced motion hides the arrow when the shutter snaps closed.
 The current contact integration has no measured opening percentage. Failed or
 unacknowledged commands supply no timing anchor, and lost evidence or replacement

@@ -1,3 +1,22 @@
+Implemented 2026-09-30 — Independently finish each Garage closing arrow
+- Replace finish-callback cleanup with a visibility animation sharing the same
+  start time and duration as its own shutter. Each downward arrow disappears at
+  its own endpoint without waiting for either door's confirmation or a redraw.
+- Retain per-door confirmation colours, reported state, estimate labels, shared
+  linear speed, response-gated catch-up and command authority (F4/F5). Cancel both
+  effects on replacement, reversal or lost evidence; reduced motion snaps both.
+  Remove the superseded completion dataset/CSS path; no protocol, configuration,
+  compatibility or hardware-control changes (F1).
+- Validation: 63 focused tests, production build and isolated Garage-door Chromium
+  suite passed. Browser checks cover simultaneous/staggered closing in either
+  order, absent finish notifications and no new reports, independent confirmation
+  colours, refresh/dialog navigation, reversal, stale evidence and reduced motion,
+  alongside existing command timing, authority and responsive checks in both themes.
+  The new no-finish-notification regression fails against the previous commit in a
+  disposable worktree and passes with the fix. This models delayed notifications;
+  the installation's browser was not inspected. Existing bundle-size advisory
+  remains. No deployment, push or live equipment commands.
+
 Implemented 2026-09-30 — Stop the closing arrow at estimated arrival
 - Hide the downward motion cue when the shutter reaches its estimated closed
   position in the overview and dialog, including reduced motion. Retain attention
