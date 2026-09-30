@@ -640,7 +640,7 @@ communicates its state/settings to the application. Its Bluetooth demand lets th
 heat-pump controller rescue heating without a broker or application connection.
 The Freeze protection panel keeps unavailable evidence distinct from safe or
 active protection. Its installation parameters come exclusively from
-`garage.protection`; use **Apply configuration** after editing that source,
+`garage.protection`; use **Apply reviewed configuration** after editing that source,
 and check for matching sender readback.
 
 The `shelly-cn105/v2` heat-pump integration retains a real target locally and
@@ -736,7 +736,7 @@ releases economic scheduling for the current connection even with Automatic
 charging OFF, while preserving native device and vehicle constraints.
 Cloud delayed starts and native OCPP control are exclusive. Native OCPP setup is
 managed by ST-MQ. With `easee.local_ocpp.server_url` omitted or empty, standalone
-setup detects the LAN IPv4 address on startup and **Apply configuration**; paired
+setup detects the LAN IPv4 address on startup and **Apply reviewed configuration**; paired
 setup uses the stable shared virtual IP. Set a standalone `server_url` override
 when detection does not provide an address the charger can reach. The live local
 connection status shows the effective base URL and its source. Opt-in
@@ -787,12 +787,12 @@ On Ubuntu, edit `~/.config/st-mq/secrets.json` (or
 for example `/etc/st-mq/secrets.json` for a service account. Keep the directory
 owner-only (`chmod 700`) and the file owner-readable/writable (`chmod 600`), and
 ensure the account running ST-MQ can read it. This file is permanent: every start
-and **Apply configuration** merges it over `config.json.options`, and never
+and **Apply reviewed configuration** merges it over `config.json.options`, and never
 deletes it. Environment overrides take precedence. The UI displays the actual
 paths used by the running instance.
 
-In Home Assistant, edit and **save** add-on options, then choose **Apply
-configuration** in ST-MQ. The button fetches the freshly saved Supervisor options;
+In Home Assistant, edit and **save** add-on options, then choose **Check & review
+configuration** followed by **Apply reviewed configuration**. The check fetches the freshly saved Supervisor options;
 it does not depend on the startup export in `/data/options.json`. For an import,
 upload a sparse `secrets.json` using SSH to the exact add-on configuration path
 shown in ST-MQ, normally `/addon_configs/<actual-add-on-slug>/secrets.json`.
@@ -821,8 +821,15 @@ On Ubuntu, removing a key from the permanent file restores the public default
 on the next application. Invalid values reject the change; no private values are
 included in validation errors or status responses.
 
-The button is at **Data & settings → Connections & configuration → Configuration →
-Apply configuration**. **Applies without restart** covers price-control mode,
+As admin, open **Data & settings → Connections & configuration → Configuration →
+Check & review configuration**. Validation and a field-by-field current/proposed
+diff run before application; private values stay hidden. Checking does not save
+imports or reconnect providers. Choose **Apply reviewed configuration** after
+reviewing, or **Cancel**. Changed sources or reviews older than five minutes need
+a new check. Restart-only changes disable application of the whole review. Family
+access cannot see or request reviews. See the [review workflow](docs/configuration.md#check-and-review-before-applying).
+
+**Applies without restart** covers price-control mode,
 comfort limits, learning settings, electricity rates, recording interval, storage
 budget, and the direct-access token. With live input it also covers provider
 connections, location, sensor topics, polling intervals, H66 device selection and

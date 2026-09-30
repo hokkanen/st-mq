@@ -1009,7 +1009,7 @@ test('live local endpoint display distinguishes automatic detection, explicit se
     assert.equal(display.readings.label, 'Waiting for connection', 'Detecting an address does not confirm charger reachability');
     if (source === 'detected') {
       assert.match(display.detail, /cannot reach this address.*easee\.local_ocpp\.server_url.*apply configuration/);
-      assert.match(display.detail, /Apply configuration again to detect the address after a network change/);
+      assert.match(display.detail, /Apply reviewed configuration again to detect the address after a network change/);
     } else if (source === 'configured') {
       assert.match(display.detail, /Leave easee\.local_ocpp\.server_url empty.*detect a local address automatically/);
     } else assert.match(display.detail, /shared address/);

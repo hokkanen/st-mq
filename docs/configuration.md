@@ -20,11 +20,21 @@ other fields. There is no separate file to maintain for each feature.
 | Dashboard controls | Temporary session/deadline overrides, labeled native-device actions and the explicitly documented persistent device-bound choices below. Controller defaults remain configuration-owned. |
 | `config.json.schema` and manifest metadata | Software configuration: accepted fields, types, ranges and Home Assistant packaging. These are not installation overrides. |
 
-Any supported option can be overridden. Validation checks field names, types and
-ranges; it cannot establish whether installation assumptions are physically true.
+Any supported option can be overridden. Validation checks JSON syntax, field names,
+types, ranges and supported combinations; it cannot establish whether installation
+assumptions are physically true.
 Approval and commissioning flags must describe the installation, rather than
 being switched on simply to remove a blocked status. Algorithm versions and fixed
 code constants follow the software's versioning contract.
+
+Public defaults leave credentials, precise location, account identifiers and
+private installation endpoints empty. The MQTT broker name `core-mosquitto` is Home
+Assistant's standard service name; equipment IDs and topics are generic logical
+names. TeslaMate's car `1` and `Home` geofence are conventional setup defaults,
+not a VIN or a household address. Floor slab, copper pipe, heat-transfer and
+equipment capacity assumptions are intentional public engineering defaults.
+`test/public-config-privacy.test.js` guards these boundaries without printing
+values on failure; it does not replace review of newly added settings.
 
 ## Keep the private file small
 
@@ -38,11 +48,21 @@ It inherits public adapter topics and the Away preset. Sender MQTT topics defaul
 `heatpump/garage/sender/command`. Configure the sender with that prefix, or set
 `garage.sender.stateTopic` and `commandTopic` to its actual topics. Review and
 set installation approval and protection parameters under `garage.protection`,
-then use **Apply configuration** in **Data & settings** or restart. The
+then use **Apply reviewed configuration** in **Data & settings** or restart. The
 **Freeze protection → Protection settings** panel is read-only: it compares the
 loaded configuration with actual sender readback. Configured approval is not
 evidence that the sender accepted it or that protection is available.
 See [Garage heating](garage.md).
+
+The current Garage configuration contains only manual-control enablement, the
+Away preset, temperature evidence freshness, local protection parameters and
+the pump/sender connections. `maxSensorAgeMs` limits displayed air-temperature
+evidence; source-specific deadlines can expire it sooner. Each connection's
+`maxAgeMs` limits its own reported status. `adapter.electricalSource` selects
+native counter or power evidence for qualified Garage electricity intervals;
+`none` disables interval derivation while native telemetry remains diagnostic.
+There are no configured Normal targets, learned building coefficients or
+economic scheduling settings for Garage. Those retired fields are rejected.
 
 Only write the leaves you need to change. Leave default topics, timing values,
 equipment lists and empty credential placeholders out of the private file.
@@ -59,16 +79,44 @@ section headings as fields: the configuration validator rejects unknown keys.
 
 On standalone installations the permanent file is
 `$XDG_CONFIG_HOME/st-mq/secrets.json`, normally `~/.config/st-mq/secrets.json`;
-`STMQ_CONFIG` can select another file. Start or **Apply configuration** rereads
+`STMQ_CONFIG` can select another file. Start or **Apply reviewed configuration** rereads
 and merges it without expanding or rewriting it. Removing an override restores
 the shared default on the next application. Keep the directory at mode `0700`
 and the file at `0600`.
 
-In Home Assistant, save add-on options and then choose **Apply configuration**.
+In Home Assistant, save add-on options and then choose **Apply reviewed configuration**.
 An uploaded private file merges into those saved options and is removed after
 successful import and application. Omitting a key from a later import preserves
 its saved value. See [permanent configuration](../README.md#permanent-configuration-and-prices)
 for exact paths, reload behavior and restart requirements.
+
+## Check and review before applying
+
+In **Data & settings → Connections & configuration → Configuration**, admins
+choose **Check & review configuration** after saving their changes. This reads
+the same source and runs the same configuration checks as application, without
+saving imports, reconnecting providers or sending device commands. Errors leave
+the loaded configuration in place. Correct the source and check again.
+
+The review compares changed fields with the loaded configuration and shows
+current/proposed values. Credentials, coordinates, account/device identifiers,
+connection addresses, topics and free text remain hidden, including in the API
+response. Engineering values and supported choices remain readable. Environment
+overrides still take precedence; `effective` rows show the resulting runtime
+values when they differ from the source. Restart-only changes are listed and disable
+application of the entire review.
+
+Choose **Apply reviewed configuration** to continue or **Cancel** to discard the
+review. An unchanged configuration can still be applied to reconnect providers
+and retry configured setup. Applying rechecks the source and loaded configuration; a changed or
+expired review must be repeated. Reviews expire after five minutes and are held
+only in memory. This prevents applying changes made after review. Family access
+cannot see or request a review or apply settings. Read-only instances cannot use
+this workflow. Existing equipment restoration and authority checks still apply.
+
+The admin API uses `POST /api/settings/preview` with `{}`, then
+`POST /api/settings/reload` with the returned `{"reviewId":"…"}`. The reload
+endpoint rejects an empty request or an unreviewed configuration.
 
 ## Admin and family web access
 
@@ -80,7 +128,7 @@ listeners each configured password must have at least 24 characters. Environment
 variables `STMQ_API_TOKEN` and `STMQ_FAMILY_API_TOKEN` override their respective
 fields, including explicit empty values.
 
-Choose **Apply configuration** as admin to rotate or clear passwords without
+Choose **Apply reviewed configuration** as admin to rotate or clear passwords without
 restarting. Clearing the family password disables family login; clearing both
 disables direct add-on access. Home Assistant ingress retains full admin access
 through Home Assistant authentication, independently of these passwords.
@@ -103,7 +151,7 @@ available to the server when copies must survive container replacement.
 
 To change the destination, merge an override such as
 `"recording": { "export_directory": "~/database-copies" }` into the existing
-configuration and choose **Apply configuration**. Use an absolute path, `"~"`,
+configuration and choose **Apply reviewed configuration**. Use an absolute path, `"~"`,
 or a path beginning with `"~/"`; other relative paths and `~user` paths are
 rejected. The server account needs write permission to the destination.
 
@@ -152,7 +200,7 @@ two-probe protection. See [Garage heating](garage.md).
 empty, standalone setup detects the computer's LAN IPv4 address and uses
 `ws://<detected address>:<local_ocpp.port>/ocpp` (port 9001 by default). A specific
 usable local IPv4 listener host takes precedence over default-route selection.
-Detection runs on startup and **Apply configuration**; it does not rewrite the
+Detection runs on startup and **Apply reviewed configuration**; it does not rewrite the
 configuration file. Supply `server_url` explicitly if detection is ambiguous or
 the charger needs a different reachable address or proxy. Paired operation uses
 the shared virtual IP; an explicit URL must exactly match that shared endpoint.

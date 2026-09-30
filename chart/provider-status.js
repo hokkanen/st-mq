@@ -592,7 +592,7 @@ export function easeeLocalConnectionDisplay(health, { now, formatTime } = {}) {
       ? 'Setup is automatic. OCPP handles charging authorization and schedules locally. During paired handover, the other computer must be ready to accept the charger at the shared address.'
       : 'Setup is automatic. OCPP handles charging authorization and schedules locally.'
         + (setup.endpointSource === 'detected'
-          ? ' If the charger cannot reach this address, set easee.local_ocpp.server_url and apply configuration. Apply configuration again to detect the address after a network change.'
+          ? ' If the charger cannot reach this address, set easee.local_ocpp.server_url and apply configuration. Apply reviewed configuration again to detect the address after a network change.'
           : setup.endpointSource === 'configured'
             ? ' The charger must be able to reach this address. Leave easee.local_ocpp.server_url empty and apply configuration to detect a local address automatically.' : '') };
 }

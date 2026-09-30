@@ -58,7 +58,7 @@ function optionalTimestampParam(url, key) {
 export function createAppServer({ engine, getEngine = () => engine, store, chartService, token = '', familyToken = '',
   getAccess, ingress = false, role = 'master', topology = 'standalone', getReadContext, syncStatus,
   pairContext, controlAuthority, getDatabaseExportDirectory = homedir,
-  reloadSettings, settingsReloadStatus = () => ({ available: false, busy: false,
+  reloadSettings, previewSettings, settingsReloadStatus = () => ({ available: false, busy: false,
     reason: 'This instance has no reloadable configuration source.' }), staticDir = resolve('dist') }) {
   const overviewService = getReadContext ? null : chartService?.overview ? chartService : createChartService({ store });
   if (typeof familyToken !== 'string' || familyToken && (!token || token === familyToken))
@@ -183,7 +183,7 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
           if (unavailable()) return json(503, { error: unavailable() });
           if (writesBlocked()) return json(409, { error: readOnlyMessage });
           if (pairContext?.recovering() && ['/api/fireplace', '/api/fireplace/remove', '/api/sensor-changes',
-            '/api/sensor-changes/revert', '/api/sensor-changes/retry-rebuild', '/api/settings/reload', '/api/charging/ocpp-setup'].includes(url.pathname))
+            '/api/sensor-changes/revert', '/api/sensor-changes/retry-rebuild', '/api/settings/reload', '/api/settings/preview', '/api/charging/ocpp-setup'].includes(url.pathname))
             return json(409, { error: 'Historical recovery is running. Wait before changing source corrections or configuration.' });
           const current = getEngine();
           if (webAccess.role === 'family' && !familyActionAllowed(url.pathname, input, current))
@@ -266,13 +266,24 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
         if (req.method === 'POST' && url.pathname === '/api/fireplace/remove')
           return await mutate((current, input) => json(200, fireplaceAccess(current.changeFireplace(input, true,
             webAccess.role === 'family' ? { maxAgeMs: FAMILY_FIREWOOD_REMOVAL_MS } : {}), webAccess, current.clock())));
-        if (req.method === 'POST' && url.pathname === '/api/settings/reload') {
+        if (req.method === 'POST' && url.pathname === '/api/settings/preview') {
           return await mutate(async (_engine, input) => {
             if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length)
-              throw new Error('Apply configuration reads saved settings; send an empty JSON object.');
+              throw new Error('Review configuration reads saved settings; send an empty JSON object.');
+            if (!previewSettings) return json(409, { error: settingsReloadStatus().reason });
+            const result = await previewSettings();
+            if (!stillAuthorized()) return;
+            return json(200, result);
+          });
+        }
+        if (req.method === 'POST' && url.pathname === '/api/settings/reload') {
+          return await mutate(async (_engine, input) => {
             if (!reloadSettings) return json(409, { error: settingsReloadStatus().reason });
+            if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length !== 1
+              || typeof input.reviewId !== 'string' || !/^[a-f0-9-]{36}$/.test(input.reviewId))
+              throw new Error('Review the configuration first, then apply with its reviewId.');
             completingReload = true;
-            await reloadSettings();
+            await reloadSettings(input.reviewId);
             return json(200, status());
           });
         }
@@ -386,7 +397,8 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
       if (!res.destroyed) {
         const fireplaceWrite = req.method === 'POST' && /^\/api\/(?:fireplace(?:\/remove)?|sensor-changes(?:\/(?:revert|retry-rebuild))?)(?:\?|$)/.test(req.url);
         const code = error.statusCode ?? (fireplaceWrite && !(error instanceof TypeError || error instanceof SyntaxError) ? 503 : 400);
-        json(code, { error: code >= 500 ? 'Request could not be confirmed. Retry shortly.' : error.message });
+        json(code, { error: code >= 500 ? 'Request could not be confirmed. Retry shortly.'
+          : error instanceof SyntaxError && /^\/api\/settings\//.test(req.url) ? 'The request must contain valid JSON.' : error.message });
       }
     } finally { readContext?.release?.(); }
   });

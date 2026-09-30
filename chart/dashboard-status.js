@@ -85,10 +85,10 @@ export function settingsReloadScope(status = {}) {
   const location = configurationLocation(configuration);
   const instructions = [], access = [];
   if (configuration?.environment === 'home-assistant') {
-    instructions.push('Change and save options in the host dashboard. Apply configuration reads those freshly saved options.');
+    instructions.push('Change and save options in the host dashboard. Check & review configuration reads those freshly saved options.');
     if (isFilePath(configuration.externalImportPath)) instructions.push(`To import settings, upload the file to ${configuration.externalImportPath} using SSH.`);
     instructions.push('Use a plain JSON options object without an outer options wrapper. Omitted fields keep saved values, arrays replace saved arrays, and explicit empty values clear fields.');
-    instructions.push('Choose Apply configuration. A successful import saves its values in the host dashboard and removes the uploaded file; a failed import keeps the file for correction.');
+    instructions.push('As admin, choose Check & review configuration, inspect the changes, then Apply reviewed configuration. A successful import saves its values in the host dashboard and removes the uploaded file; a failed import keeps the file for correction.');
     if (reload.access?.ingress?.enabled === true) access.push('Host dashboard access is enabled and uses your host login.');
     if (reload.access?.direct?.enabled === false) access.push('Direct access is disabled. Set controller.web_token to at least 24 characters and apply to enable it.');
     else if (reload.access?.direct?.enabled === true) access.push('Direct access is enabled and requires your admin or family password. Clear both controller.web_token and controller.web_family_token and apply to disable it.');
@@ -96,7 +96,7 @@ export function settingsReloadScope(status = {}) {
     if (isFilePath(configuration.privatePath)) instructions.push(`Edit the permanent private JSON file at ${configuration.privatePath}.`
       + (isFilePath(configuration.defaultsPath) ? ` It overrides the options defaults in ${configuration.defaultsPath}.` : ''));
     instructions.push('Use a plain JSON options object without an outer options wrapper. Include the settings you want to override; omitted settings use the defaults.');
-    instructions.push('Save the file, then choose Apply configuration. The private file stays in place for future starts and changes.');
+    instructions.push('Save the file, then as admin choose Check & review configuration. Inspect the changes and choose Apply reviewed configuration. The private file stays in place for future starts and changes.');
     if (reload.access?.direct?.enabled === true) access.push(reload.access.direct.tokenRequired
       ? 'Direct access is enabled and requires your admin or family password.'
       : 'Local access is enabled. Loopback access works without a password.');

@@ -369,9 +369,9 @@ networking may need the host address and forwarded port supplied explicitly.
 Include the listener or proxy port: `ws://` without a port uses port 80. For
 standalone `wss`, configure a TLS proxy plus `ca_certificate` and
 `ca_certificate_domain`; the native listener accepts ordinary WebSocket traffic.
-Detection runs at provider startup and after **Apply configuration**, rather than
+Detection runs at provider startup and after **Apply reviewed configuration**, rather than
 changing the charger endpoint on each setup retry. After a network change,
-restart or use **Apply configuration** to detect again. A DHCP reservation helps
+restart or use **Apply reviewed configuration** to detect again. A DHCP reservation helps
 keep the selected address stable.
 
 For paired operation, ST-MQ derives the base address from the configured pairing
@@ -395,7 +395,7 @@ Temporary listener readiness warnings clear when the listener recovers, without
 waiting for the next cloud check or reapplying charger configuration. Outstanding
 cloud failures and retry deadlines remain in effect. Storage and authorization
 readiness failures are reported separately from listener network failures.
-Correct missing configuration and use **Apply configuration** to reconnect.
+Correct missing configuration and use **Apply reviewed configuration** to reconnect.
 The live setup status shows the effective base server URL and whether it was
 detected, explicitly configured or derived from the pairing virtual IP. It hides
 authentication secrets, authorization tags and the appended charge-point identity.
@@ -414,7 +414,7 @@ inactive connection it applied. It can update that connection to a newly detecte
 address without another adoption; changed remote settings still require review.
 
 To turn off a local connection managed by this installation, set
-`easee.local_ocpp.enabled` to `false` and use **Apply configuration**. ST-MQ checks
+`easee.local_ocpp.enabled` to `false` and use **Apply reviewed configuration**. ST-MQ checks
 that the charger still has its owned configuration, stores `OcppOff` while
 preserving the existing address, authentication and certificate settings, then
 applies that version. A failed cloud operation remains pending and retries;

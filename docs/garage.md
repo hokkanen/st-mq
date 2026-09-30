@@ -57,7 +57,7 @@ The **Freeze protection** panel shows sender availability, readings, estimates,
 settings and active demand. **Protection settings** compares configured and
 reported values without an editor. Installation approval, margin, pipe geometry
 and heat transfer come from `garage.protection` in configuration. After editing
-that source, use **Apply configuration** in **Data & settings** or restart.
+that source, use **Apply reviewed configuration** in **Data & settings** or restart.
 ST-MQ applies the loaded parameters over MQTT when Garage is enabled and fresh
 sender status and local write authority permit it. The sender validates and
 persists them; only matching fresh readback confirms the configuration.

@@ -12,6 +12,7 @@ import { garageSenderSettings } from '../garage/sender.js';
 import { floorOverrideConfiguration } from '../control/floor-override.js';
 import { chargingConfiguration } from '../charging/config.js';
 import { localOcppConfiguration } from '../acquisition/easee-ocpp.js';
+import { rememberConfigurationOptions } from './configuration-preview.js';
 
 // Keep the configuration source private and out of status/serialized settings.
 // Programmatically constructed configurations have no implicit disk source.
@@ -343,6 +344,7 @@ function buildConfiguration(options, env, cwd, configuration, source, { bootstra
       throw new Error('The local OCPP port must differ from the web and pair ports.');
   }
   configurationSources.set(config, source);
+  rememberConfigurationOptions(config, options);
   configurationReaders.set(config, () => loadConfig(env, cwd));
   return config;
 }

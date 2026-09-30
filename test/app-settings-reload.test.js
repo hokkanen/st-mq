@@ -24,10 +24,15 @@ async function setup(t, options = {}, overrides = {}) {
   t.after(async () => { try { await app.close(); } finally { rmSync(directory, { recursive: true, force: true }); } });
   const base = `http://127.0.0.1:${app.server.address().port}`;
   const headers = { 'Content-Type': 'application/json', ...(config.token ? { Authorization: `Bearer ${config.token}` } : {}) };
-  const post = (args = {}) => fetch(`${base}/api/settings/reload`, {
-    method: 'POST', headers, body: '{}', ...args,
-  });
-  return { app, config, path, write, base, headers, post };
+  const preview = (args = {}) => fetch(`${base}/api/settings/preview`, { method: 'POST', headers, body: '{}', ...args });
+  const post = async (args = {}) => {
+    if (Object.keys(args).length) return fetch(`${base}/api/settings/reload`, { method: 'POST', headers, body: '{}', ...args });
+    const reviewed = await preview();
+    if (!reviewed.ok) return reviewed;
+    const { reviewId } = await reviewed.json();
+    return fetch(`${base}/api/settings/reload`, { method: 'POST', headers, body: JSON.stringify({ reviewId }) });
+  };
+  return { app, config, path, write, base, headers, post, preview };
 }
 
 test('reload applies disk settings, rates and recording while preserving temporary controls and the listener', async t => {
@@ -86,6 +91,86 @@ test('reload validates authentication, JSON and startup settings before touching
   assert.match(failure.error, /read or validated/);
   assert.doesNotMatch(JSON.stringify({ failure, events: app.store.events() }), /synthetic-secret-value|options\.json/);
   assert.equal(app.engine, engine);
+});
+
+test('admin preview validates and conceals private source values without applying or reconnecting', async t => {
+  const { app, write, preview, headers, base } = await setup(t, { controller: { web_token: 'synthetic-admin-review-password',
+    web_family_token: 'synthetic-family-review-password' } });
+  const engine = app.engine, events = app.store.events();
+  write({ controller: { web_token: 'synthetic-admin-review-password', web_family_token: 'synthetic-family-review-password', max_drop_c: 0.5 },
+    garage: { protection: { pipeWallMm: 1.2 } }, mqtt: { pw: 'synthetic-personal-broker-password', address: 'mqtt://synthetic-private-host.invalid' },
+    geoloc: { latitude: '61.23456789', longitude: '26.98765432' },
+    teslamate: { enabled: false, carId: 'synthetic-private-vehicle' } });
+  const response = await preview();
+  assert.equal(response.status, 200);
+  const review = await response.json();
+  assert.equal(review.valid, true);
+  assert.equal(review.canApply, true);
+  assert.equal(review.imported, false);
+  assert.deepEqual(review.restartRequired, []);
+  assert.deepEqual(review.changes.find(row => row.path === 'controller.max_drop_c'),
+    { path: 'controller.max_drop_c', before: 1.5, after: 0.5, redacted: false });
+  assert.equal(review.changes.find(row => row.path === 'garage.protection.pipeWallMm').after, 1.2);
+  for (const path of ['mqtt.pw', 'mqtt.address', 'geoloc.latitude', 'geoloc.longitude', 'teslamate.carId']) {
+    const row = review.changes.find(row => row.path === path);
+    assert.equal(row.redacted, true, path);
+    assert.equal(row.after, '[redacted]', path);
+  }
+  assert.doesNotMatch(JSON.stringify(review), /61\.23456789|26\.98765432|synthetic-personal|synthetic-private/);
+  assert.equal(app.engine, engine);
+  assert.equal(engine.executor.closed, false);
+  assert.deepEqual(app.store.events(), events);
+  assert.equal((await preview({ headers: { ...headers, Authorization: 'Bearer synthetic-family-review-password' } })).status, 403);
+  assert.equal((await fetch(`${base}/api/settings/reload`, { method: 'POST', headers, body: '{}' })).status, 400);
+  assert.equal((await fetch(`${base}/api/settings/reload`, { method: 'POST', headers,
+    body: JSON.stringify({ reviewId: '00000000-0000-4000-8000-000000000000' }) })).status, 409);
+  assert.deepEqual(app.store.events(), events);
+});
+
+test('preview reports startup changes and private validation errors before any restoration', async t => {
+  const { app, write, preview, path } = await setup(t);
+  let restorations = 0;
+  app.engine.executor.restore = async () => { restorations++; return {}; };
+  write({ controller: { input: 'offline' } });
+  let response = await preview();
+  const review = await response.json();
+  assert.equal(review.valid, true);
+  assert.equal(review.canApply, false);
+  assert.ok(review.restartRequired.includes('input'));
+  for (const candidate of [{ controller: { max_drop_c: 20 } },
+    { controller: { web_family_token: 'synthetic-family-with-no-admin' } },
+    { mqtt: { ['synthetic-private-name\nconfidential']: null } }]) {
+    write(candidate);
+    response = await preview();
+    assert.equal(response.status, 400);
+    assert.doesNotMatch(await response.text(), /synthetic-private-name|confidential|synthetic-family-with-no-admin/);
+  }
+  writeFileSync(path, '{"synthetic-private-fragment":BROKEN');
+  response = await preview();
+  assert.equal(response.status, 400);
+  assert.doesNotMatch(await response.text(), /synthetic-private-fragment/);
+  assert.equal(restorations, 0);
+});
+
+test('reviewed apply rejects changes on disk and baseline replacements before restoration', async t => {
+  const { app, write, preview, headers, base } = await setup(t);
+  const apply = reviewId => fetch(`${base}/api/settings/reload`, { method: 'POST', headers, body: JSON.stringify({ reviewId }) });
+  write({ controller: { max_drop_c: 0.6 } });
+  const first = await (await preview()).json();
+  let restores = 0;
+  const restore = app.engine.executor.restore.bind(app.engine.executor);
+  app.engine.executor.restore = async args => { restores++; return restore(args); };
+  write({ controller: { max_drop_c: 0.7 } });
+  const stale = await apply(first.reviewId);
+  assert.equal(stale.status, 409);
+  assert.equal(restores, 0);
+  assert.equal(app.engine.settings.comfort.maxDropC, 1.5);
+  const [old, fresh] = await Promise.all([preview().then(r => r.json()), preview().then(r => r.json())]);
+  assert.equal((await apply(fresh.reviewId)).status, 200);
+  assert.equal(app.engine.settings.comfort.maxDropC, 0.7);
+  assert.equal((await apply(old.reviewId)).status, 409);
+  assert.equal((await apply(fresh.reviewId)).status, 409);
+  assert.doesNotMatch(JSON.stringify(app.store.events()), new RegExp(`${old.reviewId}|${fresh.reviewId}|${first.reviewId}`));
 });
 
 test('database saves use the latest configured directory after reload and retain it when validation fails', async t => {
@@ -267,12 +352,12 @@ test('reload serializes against API mutations and source-less injected configura
   const { app, config, base, headers, post } = await setup(t, {}, {
     readConfig: async () => { entered(); await waiting; return config; },
   });
-  const pending = post();
+  const pending = app.reloadSettings();
   await reading;
   assert.equal((await post()).status, 503);
   assert.equal((await fetch(`${base}/api/temporary`, { method: 'POST', headers, body: '{}' })).status, 503);
   release();
-  assert.equal((await pending).status, 200);
+  await pending;
   const injectedPath = join(config.dataDir, 'injected.sqlite');
   const second = await start({ config: { ...config, port: 0, dbPath: injectedPath } });
   try {

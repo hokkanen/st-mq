@@ -51,7 +51,7 @@ not start automatic heating commands. Explicit manual controls remain available.
 
 Save private settings in the configured private configuration file, or save
 add-on options in Home Assistant. Choose **Data & settings → Connections &
-settings → Configuration → Apply configuration**. H66 device selection and
+settings → Configuration → Check & review configuration**. H66 device selection and
 broker changes reconnect without an ST-MQ restart when input is already live.
 Changing from `simulated` or `offline` to a live input requires a restart. See
 [configuration application](../DOCS.md) for private imports and restart settings.

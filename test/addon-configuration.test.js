@@ -78,9 +78,14 @@ function fixture(t, initial = { controller: { input: 'simulated', max_drop_c: 1.
       return app;
     },
     async reload() {
-      return fetch(`${endpoint(app.webAccess.ingressServer)}/api/settings/reload`, { method: 'POST',
+      const preview = await fetch(`${endpoint(app.webAccess.ingressServer)}/api/settings/preview`, { method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Forwarded-Host': 'ha.synthetic.invalid',
           Origin: 'https://ha.synthetic.invalid' }, body: '{}', signal: AbortSignal.timeout(5000) });
+      if (!preview.ok) return preview;
+      const { reviewId } = await preview.json();
+      return fetch(`${endpoint(app.webAccess.ingressServer)}/api/settings/reload`, { method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Forwarded-Host': 'ha.synthetic.invalid',
+          Origin: 'https://ha.synthetic.invalid' }, body: JSON.stringify({ reviewId }), signal: AbortSignal.timeout(5000) });
     },
   };
 }
@@ -164,7 +169,7 @@ test('ingress import saves Supervisor, applies runtime/token, then cleans up; to
     assert.equal(f.saved.controller.web_token, firstToken);
   };
   assert.equal((await f.reload()).status, 200);
-  assert.deepEqual(f.events, ['prepare-reload', 'persist', 'supervisor-save', 'persisted', 'complete']);
+  assert.deepEqual(f.events, ['prepare-reload', 'prepare-reload', 'persist', 'supervisor-save', 'persisted', 'complete']);
   assert.equal(existsSync(f.paths.importPath), false);
   assert.equal(readFileSync(f.paths.privatePath, 'utf8'), originalExport);
   assert.equal(f.saved.controller.input, 'simulated');
@@ -186,6 +191,41 @@ test('ingress import saves Supervisor, applies runtime/token, then cleans up; to
   assert.equal(direct.listening, false);
   assert.equal(app.webAccess.ingressServer, ingress);
   assert.equal((await fetch(`${endpoint(ingress)}/api/status`)).status, 200);
+});
+
+test('add-on preview retains imports and rejects replaced candidates before restoration or Supervisor persistence', async t => {
+  const f = fixture(t);
+  const app = await f.launch(), initialEngine = app.engine;
+  const post = (route, value = {}) => fetch(`${endpoint(app.webAccess.ingressServer)}${route}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Forwarded-Host': 'ha.synthetic.invalid',
+      Origin: 'https://ha.synthetic.invalid' }, body: JSON.stringify(value) });
+  f.writeImport({ controller: { max_drop_c: 0.5, web_token: firstToken } });
+  const original = readFileSync(f.paths.importPath, 'utf8');
+  const saved = structuredClone(f.saved), events = app.store.events();
+  let restores = 0;
+  app.engine.executor.restore = async () => { restores++; return {}; };
+  const response = await post('/api/settings/preview');
+  assert.equal(response.status, 200);
+  const review = await response.json();
+  assert.equal(review.imported, true);
+  assert.equal(review.canApply, true);
+  assert.equal(f.posts, 0);
+  assert.equal(restores, 0);
+  assert.deepEqual(f.saved, saved);
+  assert.equal(readFileSync(f.paths.importPath, 'utf8'), original);
+  assert.equal(existsSync(f.paths.receiptPath), false);
+  assert.equal(app.engine, initialEngine);
+  assert.deepEqual(app.store.events(), events);
+  assert.doesNotMatch(JSON.stringify(review), new RegExp(firstToken));
+  f.writeImport({ controller: { max_drop_c: 0.75, web_token: secondToken } });
+  const stale = await post('/api/settings/reload', { reviewId: review.reviewId });
+  assert.equal(stale.status, 409);
+  assert.equal(f.posts, 0);
+  assert.equal(restores, 0);
+  assert.deepEqual(f.saved, saved);
+  assert.equal(app.engine, initialEngine);
+  assert.equal(existsSync(f.paths.importPath), true);
+  assert.equal(existsSync(f.paths.receiptPath), false);
 });
 
 test('startup-only changes and pending equipment restoration reject before Supervisor persistence', async t => {

@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdir, rm } from 'node:fs/promises';
 import { configurationSource } from '../app/config.js';
+import { inheritConfigurationSnapshot } from '../app/configuration-preview.js';
 import { startReplica } from '../app/replica.js';
 import { createSourceSnapshot } from '../replication/transport.js';
 import { durableJson, ownedDirectory, publishSnapshot } from '../replication/publication.js';
@@ -44,7 +45,7 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
     return historyPending;
   }
   const operations = new Map(), handlers = new Map();
-  const runtimeConfiguration = next => ({ ...next, role: 'master', dbPath: primaryPath });
+  const runtimeConfiguration = next => inheritConfigurationSnapshot(next, { ...next, role: 'master', dbPath: primaryPath });
   const context = {
     canControl: () => !closed && Boolean(manager?.canControl()),
     recovering: () => recoveryRunning,

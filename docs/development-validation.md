@@ -103,6 +103,7 @@ These scripts start their own disposable Chrome processes:
 
 ```sh
 node scripts/browser-access-smoke.js
+node scripts/browser-configuration-smoke.js
 node scripts/browser-equipment-smoke.js
 node scripts/browser-equipment-smoke.js --caravan-only
 node scripts/browser-charging-tests-smoke.js
@@ -116,6 +117,14 @@ node scripts/browser-chart-views-smoke.js
 node scripts/browser-selectors-smoke.js
 node scripts/browser-timing-compat-smoke.js
 ```
+
+The configuration suite uses a disposable configuration file and actual local
+preview/apply endpoints. It checks validation, masked current/proposed values,
+cancel, stale-review rejection, unchanged reapplication, restart-only changes,
+family restrictions, logout clearing and keyboard focus through polling. It also
+checks the diff at 320/390/1440 px in both themes; synthetic screenshots use
+`STMQ_CONFIGURATION_SCREENSHOT_DIR` when supplied. It never reads installation
+configuration or connects providers.
 
 The heating-explorer suite checks the Home preview opener without toggling its
 parent card, Escape and focus restoration, pinned comparisons and draft retention,

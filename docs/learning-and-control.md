@@ -67,7 +67,7 @@ and uncertainty. **Schedule & away** and **Manual heating override** follow as f
 **Heating strategy & comfort** holds
 the normal-temperature reference, occupied drop/rise limits, savings preference
 and ROOM increase; its closed summary shows the configured room limits. Permanent
-preferences still use configuration and **Apply configuration**. **Home heat model**
+preferences still use configuration and **Apply reviewed configuration**. **Home heat model**
 follows these controls, with the reconstruction explanation under **Learning outcomes →
 Validation & evidence → Reconstructing the model**. Home reports
 counts of usable observations and accepted model updates. These counts describe

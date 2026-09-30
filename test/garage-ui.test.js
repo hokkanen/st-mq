@@ -242,7 +242,7 @@ test('Garage markup has durable controls and independent protection without reti
   const start = garage.indexOf('id="garage-protection-settings-details"');
   const parameters = garage.slice(start, garage.indexOf('</details>', start));
   assert.doesNotMatch(parameters, /<input|<select|<form|garage-protection-submit|api\/garage\/protection/);
-  assert.match(parameters, /garage\.protection.*Apply configuration/);
+  assert.match(parameters, /garage\.protection.*Apply reviewed configuration/);
 });
 
 test('Home savings values are unchanged and Garage only presents observed electrical timing', () => {

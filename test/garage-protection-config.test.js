@@ -22,7 +22,7 @@ test('Garage room intent has no duplicate configured baseline', () => {
   assert.equal(Object.hasOwn(document.schema.garage, 'baselineC'), false);
   assert.equal(Object.hasOwn(garageSettings(), 'baselineC'), false);
   assert.throws(() => garageSettings({ baselineC: 10 }), /Unknown garage setting: baselineC/);
-  assert.throws(() => validateOptionFields({ garage: { baselineC: 10 } }, document.schema), /baselineC/);
+  assert.throws(() => validateOptionFields({ garage: { baselineC: 10 } }, document.schema), /Unknown configuration field in garage: \[unsupported field\]/);
 });
 
 test('sparse owner approval inherits public adapter settings and can be withdrawn on reload', async t => {

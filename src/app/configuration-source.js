@@ -51,7 +51,8 @@ export function validateOptionFields(options, schema, path = '') {
   if (!path) validateTopologyOptions(options);
   for (const [key, value] of Object.entries(options)) {
     const field = path ? `${path}.${key}` : key;
-    if (!Object.hasOwn(schema, key) || forbiddenKeys.has(key)) throw new Error(`Unknown configuration field: ${field}.`);
+    if (!Object.hasOwn(schema, key) || forbiddenKeys.has(key))
+      throw new Error(`Unknown configuration field in ${path || 'root'}: [unsupported field].`);
     const rule = schema[key];
     if (object(rule)) validateOptionFields(value, rule, field);
     else if (Array.isArray(rule)) {
@@ -249,18 +250,19 @@ export function createConfigurationSource({ env, cwd, buildConfig, paths = confi
         throw new Error('Home Assistant settings changed during an interrupted import. Remove the retained import file to load the current settings.');
       const saved = sameReceipt && (!uncertain || currentDigest === receipt.optionsDigest);
       if (file && !saved) {
-        validateHomeAssistantValues(file.options);
         validateOptionFields(file.options, defaults.schema);
+        validateHomeAssistantValues(file.options);
       }
       const options = mergeOptions(defaults.options, file && !saved ? mergeOptions(current, file.options) : current);
       let resolvedCurrent = current;
       if (containsReferences(current)) {
         resolvedCurrent = await supervisor('GET', 'options/config');
+        validateOptionFields(resolvedCurrent, defaults.schema);
         validateHomeAssistantValues(resolvedCurrent);
       }
       const runtimeOptions = mergeOptions(defaults.options, file && !saved ? mergeOptions(resolvedCurrent, file.options) : resolvedCurrent);
-      validateHomeAssistantValues(runtimeOptions);
       validateOptionFields(runtimeOptions, defaults.schema);
+      validateHomeAssistantValues(runtimeOptions);
       const config = buildConfig(runtimeOptions, publicInfo(), source);
       let persisted = !file || saved;
       return { config, imported: Boolean(file),

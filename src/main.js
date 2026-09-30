@@ -14,6 +14,7 @@ import { prepareStorage } from './app/storage-paths.js';
 import { createHeatingTransport } from './control/mqtt.js';
 import { standaloneAuthority, stoppedControllerViewer } from './control/authority.js';
 import { createRuntimeTiming } from './app/runtime-timing.js';
+import { createConfigurationReviews, configurationRestartRequired, configurationValidationMessage } from './app/configuration-preview.js';
 
 export async function start({ config = loadConfig(), readConfig = configurationReader(config),
   clock = Date.now, providerOptions = {}, mqttOptions = {}, pairContext = null, pairOptions = {},
@@ -57,6 +58,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
   const runtimeTiming = createRuntimeTiming();
   let engine, webAccess, learning, chartService, commandTransport, replication, authority, timer, closed = false, reloadPending = null;
   let runtimeUsable = true, starting = true, configurationResult = null;
+  const configurationReviews = createConfigurationReviews({ clock });
   let authorityStopping = null, controlRevoked = false;
   const acquisitions = [];
   const canControl = () => !controlRevoked && (pairContext?.canControl?.() ?? true) && (authority?.canControl() ?? true);
@@ -248,7 +250,27 @@ export async function start({ config = loadConfig(), readConfig = configurationR
         ? 'Applies configuration and reconnects providers. Input, listening addresses, ports and storage changes require restart.'
         : 'This instance has no reloadable configuration source.',
   });
-  async function reloadSettings() {
+  async function readCandidateConfiguration() {
+    try {
+      const transaction = source ? await source.prepare() : null;
+      let next = transaction ? transaction.config : await readConfig();
+      if (pairContext?.runtimeConfiguration) next = pairContext.runtimeConfiguration(next);
+      return { next, transaction };
+    } catch (error) {
+      throw new Error(`Configuration could not be read or validated. ${source ? configurationValidationMessage(error) : 'Check the configuration file.'}`);
+    }
+  }
+  async function previewSettings() {
+    requireRunning();
+    if (starting || reloadPending) throw Object.assign(new Error('Settings are being updated. Retry shortly.'), { statusCode: 409 });
+    if (!runtimeUsable || typeof readConfig !== 'function') throw new Error(settingsReloadStatus().reason);
+    const baseline = config;
+    const { next, transaction } = await readCandidateConfiguration();
+    requireRunning();
+    if (baseline !== config || reloadPending) throw Object.assign(new Error('Settings changed during validation. Review the configuration again.'), { statusCode: 409 });
+    return configurationReviews.preview(baseline, next, transaction?.imported ?? false);
+  }
+  async function reloadSettings(reviewId) {
     requireRunning();
     if (starting) throw new Error('The application is still starting. Retry shortly.');
     if (!runtimeUsable) throw new Error(settingsReloadStatus().reason);
@@ -256,21 +278,10 @@ export async function start({ config = loadConfig(), readConfig = configurationR
     if (typeof readConfig !== 'function') throw new Error(settingsReloadStatus().reason);
     clearTimeout(timer);
     const operation = async () => {
-      let next, transaction;
-      try {
-        transaction = source ? await source.prepare() : null;
-        next = transaction ? transaction.config : await readConfig();
-        if (pairContext?.runtimeConfiguration) next = pairContext.runtimeConfiguration(next);
-      }
-      catch (error) {
-        // Source errors are authored without JSON snippets or provider responses.
-        // Injected readers have no such contract, so keep their errors private.
-        throw new Error(`Configuration could not be read or validated. ${source ? error.message : 'Check the configuration file.'}`);
-      }
+      const { next, transaction } = await readCandidateConfiguration();
       requireRunning();
-      const startupKeys = ['topology', 'role', 'input', 'host', 'port', 'ingressHost', 'ingressPort', 'dataDir', 'databaseDir', 'dbPath', 'addon'];
-      if (startupKeys.some(key => next[key] !== config[key]) || !isDeepStrictEqual(next.mirror, config.mirror)
-        || !isDeepStrictEqual(next.pair, config.pair))
+      if (reviewId !== undefined) configurationReviews.consume(reviewId, config, next, transaction?.imported ?? false);
+      if (configurationRestartRequired(config, next).length)
         throw new Error('Input, topology, role, mirror, pair, network access or storage settings changed. Restart to apply these changes; no settings were updated.');
       const native = engine.h66Status?.();
       if (engine.heatingTestBusy || engine.dispatchPending || engine.executor.pending || engine.automationChangePending
@@ -352,6 +363,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
           }
         });
         config = next;
+        configurationReviews.clear();
         await createRuntime();
         requireRunning();
         await startProviderRuntime();
@@ -439,7 +451,8 @@ export async function start({ config = loadConfig(), readConfig = configurationR
       syncStatus: () => replication?.status() ?? null,
       pairContext,
       controlAuthority: authority,
-      reloadSettings: typeof readConfig === 'function' ? reloadSettings : null, settingsReloadStatus,
+      reloadSettings: typeof readConfig === 'function' ? reloadSettings : null,
+      previewSettings: typeof readConfig === 'function' ? previewSettings : null, settingsReloadStatus,
       staticDir: resolve(dirname(fileURLToPath(import.meta.url)), '../dist') });
     await webAccess.start();
     requireRunning();
@@ -469,7 +482,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
     console.log(JSON.stringify({ event: 'ready', input: config.input, environment: engine.environment(), manualHeatingTests: engine.heatingTests().available,
       address: webAccess.server.address(), startupMs: Math.round(performance.now() - started) }));
     finishStartup();
-    return { store, get engine() { return engine; }, get server() { return webAccess.server; }, webAccess, mirror: replication, close, reloadSettings, revokeControl };
+    return { store, get engine() { return engine; }, get server() { return webAccess.server; }, webAccess, mirror: replication, close, reloadSettings, previewSettings, revokeControl };
   } catch (error) {
     finishStartup();
     try { await close(); } catch (cleanupError) { error.cleanupError = cleanupError; }

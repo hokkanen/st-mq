@@ -118,7 +118,7 @@ test('a direct reload can remove its own token and complete without a close dead
   ({ access } = await setup(t, config, { reloadSettings: async () => access.apply({ ...config, token: '' }) }));
   const direct = access.server;
   const response = await fetch(`${endpoint(direct)}/api/settings/reload`, {
-    method: 'POST', headers: { ...authorization(firstToken), 'Content-Type': 'application/json' }, body: '{}',
+    method: 'POST', headers: { ...authorization(firstToken), 'Content-Type': 'application/json' }, body: JSON.stringify({ reviewId: '00000000-0000-4000-8000-000000000000' }),
     signal: AbortSignal.timeout(2000),
   });
   assert.equal(response.status, 200);

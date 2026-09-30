@@ -263,6 +263,11 @@ async function runtimeFixture(t, devices = [native()]) {
   });
   await flush();
   const post = async (route, input = {}) => {
+    if (route === '/api/settings/reload' && !Object.keys(input).length) {
+      const preview = await post('/api/settings/preview');
+      if (preview.status !== 200) return preview;
+      input = { reviewId: preview.body.reviewId };
+    }
     const response = await fetch(`http://127.0.0.1:${app.server.address().port}${route}`, { method: 'POST',
       headers: { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' }, body: JSON.stringify(input) });
     return { status: response.status, body: await response.json() };

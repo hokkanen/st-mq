@@ -66,14 +66,19 @@ the independent feature controls and Garage local temperature regulation.
 9. Set the occupied preferred drop with `controller.max_drop_c` (default **1.5°C**).
    It does not constrain away cooling. Permanent settings are reported in the UI;
    change them in options, then use **Data & settings → Connections & configuration →
-   Configuration → Apply configuration**.
+   Configuration → Check & review configuration**, inspect the diff, then choose
+   **Apply reviewed configuration** (admin only).
    Old browser-saved values cannot override
    these settings. `temp_to_hours` is no longer used; remove it from saved add-on
    options if an upgrade still displays the old key.
 
-**Apply configuration** reads freshly saved Home Assistant options from Supervisor
-and reconnects providers. Save options in Home Assistant before choosing the
-button in ST-MQ. It does not rely on `/data/options.json`, which Supervisor exports
+**Check & review configuration** reads freshly saved Home Assistant options from
+Supervisor and validates them without changing the runtime or saving imports.
+The admin-only diff conceals credentials and private values. Choose **Apply reviewed
+configuration** to reconnect providers after reviewing the changes. A changed source
+or a review older than five minutes requires another check; restart-only changes
+disable application. Save options in Home Assistant before checking. This workflow
+does not rely on `/data/options.json`, which Supervisor exports
 when starting the add-on. **Applies without restart** lists price-control mode,
 comfort limits, learning settings, electricity rates, recording interval, storage
 budget and the direct-access token. With live input, provider connections,
@@ -87,8 +92,8 @@ restoration blocks the update until equipment is available. An in-progress
 automatic heating cycle ends, while Away and pause choices and learning history
 remain. Startup environment overrides still apply.
 
-You can also import private settings through the same **Apply configuration**
-button. In Terminal & SSH, upload `secrets.json` to this add-on's configuration
+You can also import private settings through the same check, review and apply
+workflow. In Terminal & SSH, upload `secrets.json` to this add-on's configuration
 folder. The UI displays the exact path, such as
 `/addon_configs/<actual-add-on-slug>/secrets.json`; inside ST-MQ it is
 `/config/secrets.json`. This is next to the `st-mq/` database folder, not inside it.
@@ -262,7 +267,7 @@ saved and effective room targets from native pump feedback. It has persistent
 **Normal / Away**, a normal target editor, native controls and independent
 **Freeze protection**. Its read-only settings compare parameters from
 `garage.protection` in configuration with actual sender readback. Edit
-configuration and use **Apply configuration** to change them; there is no
+configuration and use **Apply reviewed configuration** to change them; there is no
 dashboard parameter editor. Pipe estimates appear when the protection sender
 is connected. A target increase shows moisture guidance for roughly 24 hours;
 the selected mode has no expiry. The BLU H&T development feed supplies
@@ -400,7 +405,7 @@ make a backup. Work on a copy, run `PRAGMA quick_check;`, and retain the origina
 until the edited copy is verified. Restoring the complete HA add-on backup is the
 usual route; the history CLI can restore a snapshot to a new database path.
 Options are owned by Supervisor: edit and save them through add-on configuration,
-or upload the sparse import described above, then choose **Apply configuration**.
+or upload the sparse import described above, then choose **Apply reviewed configuration**.
 The temporary upload is not a permanent settings file; Supervisor retains the
 successfully imported values.
 

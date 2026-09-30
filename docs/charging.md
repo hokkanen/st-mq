@@ -63,7 +63,7 @@ server requires the current physical association, session ID and request revisio
 tab or cable swap. Overrides survive restart only within that same connection;
 unplugging returns to configuration defaults. Editing a field does not erase the
 live source reading beside it. Draft edits survive ordinary status refreshes.
-Change permanent defaults in configuration and choose **Apply configuration**.
+Change permanent defaults in configuration and choose **Apply reviewed configuration**.
 
 Enter ready-by time as **HH:mm**, or use **Choose time** and **Set**. The time
 chooser stays within the window and scrolls when space is limited. Set updates

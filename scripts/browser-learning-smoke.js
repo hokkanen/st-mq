@@ -58,6 +58,18 @@ try {
     for (let i = 0; i < 200; i++) { if (await evaluate(expression)) return; await new Promise(resolve => setTimeout(resolve, 30)); }
     throw new Error(`UI did not settle: ${expression}. ${errors.join('; ')}`);
   };
+  const chooseChart = async (kind, key) => {
+    await evaluate(`(() => {
+      document.getElementById('chart-series-toggle').click();
+      document.getElementById('chart-series-mode-${kind === 'view' ? 'views' : 'series'}').click();
+      const search = document.getElementById('chart-series-search');
+      search.value = ''; search.dispatchEvent(new Event('input'));
+      document.querySelector('#chart-series [data-${kind}-key="${key}"]').click();
+    })()`);
+    await until(`!document.getElementById('chart-series-picker').open
+      && document.getElementById('history').dataset.ready === 'true'
+      && document.getElementById('history').dataset.${kind} === '${key}'`);
+  };
   const checkNestedFolds = async (selector, minimumIndent = 16) => {
     const folds = await evaluate(`Array.from(document.querySelectorAll(${JSON.stringify(selector)}), fold => {
       const summary = fold.querySelector(':scope > summary');
@@ -180,11 +192,13 @@ try {
   assert.match(configurationInstructions, /stays in place/);
   assert.match(await evaluate("document.getElementById('settings-access').textContent"), /Loopback access works without a password/);
   assert.equal(await evaluate("document.getElementById('settings-import-warning').hidden"), true);
-  assert.equal(await evaluate("document.getElementById('settings-reload').textContent"), 'Apply configuration');
+  assert.equal(await evaluate("document.getElementById('settings-reload').textContent"), 'Check & review configuration');
   assert.match(await evaluate("document.getElementById('settings-reload-scope').textContent"), /Applies without restart.*Electricity rates.*Requires restart.*Input mode.*Environment variables/s);
   assert.equal(await evaluate("document.getElementById('settings-reload-scope').getBoundingClientRect().height > 0"), true, 'Reload scope is visible beside the action');
   writeFileSync(join(directory, 'options.json'), JSON.stringify({ controller: { max_drop_c: 0.7 } }));
   await evaluate("document.getElementById('settings-reload').click()");
+  await until("!document.getElementById('settings-review').hidden && !document.getElementById('settings-review-apply').disabled");
+  await evaluate("document.getElementById('settings-review-apply').click()");
   await until("document.getElementById('settings-reload-message').textContent === 'Configuration applied.' && !document.getElementById('settings-reload').disabled");
   assert.equal(await evaluate("document.getElementById('away-until').value"), '2026-09-10T18:00', 'Settings refresh preserves unsaved temporary drafts');
   assert.equal(await evaluate("document.getElementById('controls-details').open"), true, 'Settings refresh preserves open controls');
@@ -208,15 +222,16 @@ try {
   assert(await evaluate("document.querySelectorAll('.mode-segment').length > 0"));
   await evaluate("document.querySelector('[data-chart-key=spot_price]').click()");
   for (const left of ['learning_profit', 'learning_aux_profit', 'learning_recovery_error', 'learning_indoor_temperature', 'solar_radiation', 'model_compressor_duty', 'model_controller_phase', 'ev1_session_energy_check', 'power']) {
-    await evaluate(`document.getElementById('left-axis').value='${left}'; document.getElementById('left-axis').dispatchEvent(new Event('change'))`);
-    await until(`document.getElementById('history').dataset.ready === 'true' && document.getElementById('history').dataset.left === '${left}'`);
+    await chooseChart(left === 'power' ? 'view' : 'series', left);
     assert.equal(await evaluate("document.querySelector('[data-chart-key=spot_price]').getAttribute('aria-pressed')"), 'false');
-    if (left === 'ev1_session_energy_check') assert.equal(await evaluate("document.getElementById('chart-status').textContent.includes('No recorded values for the selected left axis')"), true);
+    if (left === 'ev1_session_energy_check') assert.equal(await evaluate("document.getElementById('chart-status').textContent.includes('No recorded values for the visible subject')"), true);
     if (left.startsWith('model_')) {
-      assert.equal(await evaluate("document.getElementById('chart-notes').textContent.includes('not recalculated using today')"), true);
+      assert.match(await evaluate("document.getElementById('chart-view-description').textContent"), /Saved learning input/,
+        `${left} is labeled as saved evidence`);
+      if (left === 'model_compressor_duty') assert.equal(await evaluate("document.getElementById('chart-notes').textContent.includes('Saved learning inputs retain the original interval evidence')"), true);
       assert.equal(await evaluate("document.getElementById('chart-status').textContent.includes('No recorded values')"), false);
       await evaluate(`document.querySelector('[data-chart-key=${left}]').click()`);
-      assert.equal(await evaluate("document.getElementById('chart-status').textContent.includes('hidden in the legend')"), true);
+      assert.equal(await evaluate("document.getElementById('chart-status').textContent.includes('All view series are hidden')"), true);
       await evaluate(`document.querySelector('[data-chart-key=${left}]').click()`);
     }
   }
@@ -232,13 +247,12 @@ try {
       const shot = await send('Page.captureScreenshot', { format: 'png' });
       writeFileSync(`var/learning-${section}-${width}.png`, Buffer.from(shot.data, 'base64'));
     }
-    await evaluate("document.getElementById('left-axis').value='model_compressor_duty'; document.getElementById('left-axis').dispatchEvent(new Event('change')); document.querySelector('.history-panel').scrollIntoView({block:'start'})");
-    await until("document.getElementById('history').dataset.ready === 'true' && document.getElementById('history').dataset.left === 'model_compressor_duty'");
+    await chooseChart('series', 'model_compressor_duty');
+    await evaluate("document.querySelector('.history-panel').scrollIntoView({block:'start'})");
     assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, `model input chart fits ${width}px`);
     const inputShot = await send('Page.captureScreenshot', { format: 'png' });
     writeFileSync(`var/learning-model-input-chart-${width}.png`, Buffer.from(inputShot.data, 'base64'));
-    await evaluate("document.getElementById('left-axis').value='power'; document.getElementById('left-axis').dispatchEvent(new Event('change'))");
-    await until("document.getElementById('history').dataset.ready === 'true' && document.getElementById('history').dataset.left === 'power'");
+    await chooseChart('view', 'power');
   }
   await evaluate("document.getElementById('home-equipment-details').open=true; document.getElementById('home-pump-device').open=true; document.querySelector('#h66-readings-details > summary').focus();true");
   assert.equal(await evaluate("document.getElementById('h66-readings-details').open"), false);
@@ -265,7 +279,7 @@ try {
   // Exercise the real Engine/status/API/H66 controller with an in-memory MQTT
   // publication function. It has no broker address or physical connection.
   await app.close(); app = null;
-  const fixture = providerFixture(now), publications = [], deviceId = 'synthetic-browser-h66';
+  const fixture = providerFixture(now), publications = [], heatingBatches = [], deviceId = 'synthetic-browser-h66';
   const fixtureTemperatures = fixture.providerOptions.devices.temperatures;
   fixture.providerOptions.temperatureProvider = async () => {
     const observations = await fixtureTemperatures();
@@ -273,6 +287,13 @@ try {
   };
   app = await start({ config: { ...config, input: 'providers', dbPath: join(directory, 'providers.sqlite'), connections: fixture.connections },
     clock: () => now, providerOptions: fixture.providerOptions });
+  // Timed Pause needs a confirmed heating destination. This synthetic transport
+  // records batches locally; native H66 readbacks and writes remain separate.
+  app.engine.executor.commandTransport = {
+    targetIdentity: { tariff: 'a'.repeat(64), dhwr: 'b'.repeat(64) },
+    async publish(batch) { heatingBatches.push(batch); return { status: 'mqtt', sent: true }; },
+    async close() {},
+  };
   const decoder = createH66Decoder({ deviceId });
   const readback = (register, value) => h66.ingest(decoder.decode({ topic: `${deviceId}/HP/${register}`, payload: String(value), receivedAt: now }));
   h66 = createH66Controller({ deviceId, store: app.store, clock: () => now, config: { writeEnabled: true },
@@ -299,7 +320,8 @@ try {
   assert.deepEqual(await evaluate("[...document.querySelectorAll('#providers > [data-provider]')].map(row => row.dataset.provider)"),
     ['electricity', 'market', 'vehicle-telemetry', 'main-temperatures'], 'The overview has four current source categories, including combined temperatures and weather');
   assert.deepEqual(await evaluate("[...document.querySelectorAll('#connections-details > .controller-fold')].map(fold => fold.id)"),
-    ['mqtt-devices-details', 'floor-preheat-details', 'electricity-details', 'controls-details'], 'Connection settings include MQTT, floor preheating, rates and configuration');
+    ['mqtt-devices-details', 'charging-setup-details', 'floor-preheat-details', 'electricity-details', 'controls-details'],
+    'Connection settings include MQTT, charging setup, floor preheating, rates and configuration');
   assert.equal(await evaluate("!document.getElementById('connections-details').open && [...document.querySelectorAll('#providers .provider-fold > summary')].every(summary=>summary.checkVisibility())"), true, 'Source categories remain accessible with configuration closed');
   assert.equal((await fetch(`http://127.0.0.1:${app.server.address().port}/api/status`).then(r => r.json())).observations.garage.value, 16.4,
     'The temperature catalogue receives the actual garage observation');
@@ -324,7 +346,7 @@ try {
       return rows.every((row, index) => row.summary.checkVisibility()
         && Math.abs(row.summary.getBoundingClientRect().left - rows[0].summary.getBoundingClientRect().left) < 1
         && (!index || row.box.top >= rows[index - 1].box.bottom - 1));
-    })()`), true, 'MQTT, floor preheating, rates and configuration form aligned rows without vertical overlap');
+    })()`), true, 'MQTT, charging setup, floor preheating, rates and configuration form aligned rows without vertical overlap');
     assert.equal(await evaluate(`(() => {
       const parents = { 'home-pump-device': 'home-equipment-details', 'h66-readings-details': 'home-pump-device',
         'h66-test-details': 'home-pump-device' };

@@ -14,7 +14,7 @@ reference and `max_drop_c` / `max_rise_c` (both default **1.5 °C**).
 
 A positive `controller.floor_thermal_priors.capacity_kwh_per_c` enables one separate
 selected-slab state. Configure it in the installation's private configuration,
-then choose **Apply configuration**. The following keys express fixed assumptions:
+then choose **Apply reviewed configuration**. The following keys express fixed assumptions:
 
 | Key | Meaning |
 | --- | --- |

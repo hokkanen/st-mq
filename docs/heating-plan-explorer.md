@@ -95,7 +95,7 @@ Admin-selected temperature allowances are explicit temporary preferences within
 the supported settings ranges. Absolute comfort protection, native protections,
 readiness, learning evidence and trial cost bounds are not adjustable execution
 bypasses. The action never writes configuration defaults. A permanent change
-uses the existing configuration source and **Apply configuration**.
+uses the existing configuration source and **Apply reviewed configuration**.
 
 An unused approval cannot silently transfer to another opportunity. Cancellation
 ends the authorized scope; an active cycle follows the normal restoration and

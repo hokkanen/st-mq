@@ -30,9 +30,14 @@ async function setup(t, options = {}, overrides = {}) {
     finally { rmSync(directory, { recursive: true, force: true }); }
   });
   const base = `http://127.0.0.1:${app.server.address().port}`;
-  const post = (endpoint, value = {}) => fetch(`${base}${endpoint}`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(value),
-  });
+  const post = async (endpoint, value = {}) => {
+    if (endpoint === '/api/settings/reload' && !Object.keys(value).length) {
+      const preview = await post('/api/settings/preview');
+      if (!preview.ok) return preview;
+      value = { reviewId: (await preview.json()).reviewId };
+    }
+    return fetch(`${base}${endpoint}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(value) });
+  };
   return { app, config, read, write, base, post };
 }
 

@@ -140,7 +140,7 @@ test('family garage-door permission verifies the configured device and exact cov
 
 test('family denies exports and every remaining write before any operation is dispatched', async t => {
   const f = await fixture(t);
-  for (const path of ['/api/database-export', '/api/settings/reload', '/api/settings', '/api/contract',
+  for (const path of ['/api/database-export', '/api/settings/preview', '/api/settings/reload', '/api/settings', '/api/contract',
     '/api/pair/action', '/api/sensor-changes', '/api/sensor-changes/revert', '/api/sensor-changes/retry-rebuild',
     '/api/garage/native', '/api/equipment/recheck', '/api/equipment/switch', '/api/equipment/dehumidifier',
     '/api/equipment/h66', '/api/equipment/test', '/api/equipment/test/restore', '/api/test/h66',
@@ -189,7 +189,7 @@ test('admin and trusted Home Assistant ingress retain administrative controls', 
   assert.equal(status.status, 200);
   assert.deepEqual(status.body.webAccess, { role: 'admin', source: 'ingress' });
   assert.equal((await f.post('/api/garage/native', native, ingress)).status, 200);
-  assert.equal((await f.post('/api/settings/reload', {}, ingress)).status, 200);
+  assert.equal((await f.post('/api/settings/reload', { reviewId: '00000000-0000-4000-8000-000000000000' }, ingress)).status, 200);
   assert.equal(f.calls.length, 5);
 });
 

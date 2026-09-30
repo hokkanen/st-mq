@@ -166,7 +166,7 @@
                         <li id="home-strategy-balanced" class="heating-strategy-option" data-selected="false"><strong>Balanced <span id="home-strategy-balanced-current" class="heating-strategy-current" hidden>Current</span></strong><p>Weigh worthwhile savings against temperature changes and the length of the intervention.</p></li>
                         <li id="home-strategy-savings" class="heating-strategy-option" data-selected="false"><strong>More savings <span id="home-strategy-savings-current" class="heating-strategy-current" hidden>Current</span></strong><p>Accept smaller benefits and more temperature variation to retain the greatest qualifying savings.</p></li>
                       </ul>
-                      <p class="heating-policy-note">These are saved configuration choices. Edit the Home savings strategy in configuration, then use Apply configuration in Data &amp; settings. Schedule &amp; away above sets a return time or an automatic resume time.</p>
+                      <p class="heating-policy-note">These are saved configuration choices. Edit the Home savings strategy in configuration, then use Apply reviewed configuration in Data &amp; settings. Schedule &amp; away above sets a return time or an automatic resume time.</p>
                     </section>
                     <section class="heating-policy-section" aria-labelledby="home-comfort-title">
                       <h5 id="home-comfort-title">Comfort boundaries</h5>
@@ -413,7 +413,7 @@
                         <details class="equipment-fold"><summary>Shelly MQTT options</summary>
                           <p class="muted">Enable status and RPC notifications (<code>status_ntf</code> and <code>rpc_ntf</code>), plus RPC over MQTT (<code>enable_rpc</code>) when available.</p>
                         </details>
-                        <p class="muted"><a href="#controls-details" data-open-configuration>Open Configuration and Apply configuration →</a></p>
+                        <p class="muted"><a href="#controls-details" data-open-configuration>Open Configuration and Apply reviewed configuration →</a></p>
                       </details>
                     </div>
                   </details>
@@ -456,7 +456,7 @@
                             <p>Initialize the persistent boot counter once, as described in the guide. Install the floor-lease script and enable startup execution. Never reset the counter on a commissioned device. Disable other schedules and relay command writers.</p>
                           </li>
                           <li><h4>Prove expiry and thermostat restoration</h4><p>Verify clocks, MQTT mapping, both output reports and renewals. Test a short planned deadline and the 15-minute ceiling, then host, network, script and power failures. Follow the guide for clock faults, stale commands and partial failures. Observe actual thermostat operation after release; test native auto-off with the script stopped separately.</p></li>
-                          <li><h4>Record the checks, then enable</h4><p>Save the results and hydraulic configuration privately. Only after all checks pass, record commissioning and enable floor control in configuration, then Apply configuration. Supervise a short preheat and its full recovery, checking floor and room temperatures.</p><a href="#controls-details" data-open-configuration>Open Configuration →</a></li>
+                          <li><h4>Record the checks, then enable</h4><p>Save the results and hydraulic configuration privately. Only after all checks pass, record commissioning and enable floor control in configuration, then Apply reviewed configuration. Supervise a short preheat and its full recovery, checking floor and room temperatures.</p><a href="#controls-details" data-open-configuration>Open Configuration →</a></li>
                         </ol>
                       </details>
                     </div>
@@ -499,9 +499,28 @@
                       <div id="settings-reload-scope" class="reload-scope"></div>
                       <p id="settings-reload-help" class="muted"></p>
                       <div class="settings-actions">
-                        <button id="settings-reload" data-write-control data-admin-only class="secondary-button" type="button" disabled>Apply configuration</button>
+                        <button id="settings-reload" data-write-control data-admin-only class="secondary-button" type="button" hidden disabled>Check &amp; review configuration</button>
                         <p id="settings-reload-message" class="muted" role="status" aria-live="polite"></p>
                       </div>
+                      <section id="settings-review" class="configuration-review" data-admin-only aria-labelledby="settings-review-title" hidden>
+                        <h3 id="settings-review-title" tabindex="-1">Review configuration changes</h3>
+                        <p id="settings-review-summary" role="status"></p>
+                        <p class="muted">Compared with the loaded configuration. Credentials, locations and private identifiers are hidden. Environment overrides still apply; rows marked <code>effective</code> show the resulting runtime values. Review expires after 5 minutes; changed files need a new review.</p>
+                        <p id="settings-review-import" class="muted" hidden>Applying also saves the imported settings in Home Assistant and removes the uploaded file after success.</p>
+                        <table id="settings-review-table" class="configuration-diff">
+                          <caption>Changed configuration fields</caption>
+                          <thead><tr><th scope="col">Field</th><th scope="col">Current</th><th scope="col">Proposed</th></tr></thead>
+                          <tbody id="settings-review-changes"></tbody>
+                        </table>
+                        <div id="settings-review-restart-note" hidden>
+                          <p class="form-error">These changes require a restart. No settings can be applied from this review.</p>
+                          <ul id="settings-review-restart"></ul>
+                        </div>
+                        <div class="settings-actions">
+                          <button id="settings-review-cancel" class="secondary-button" type="button">Cancel</button>
+                          <button id="settings-review-apply" data-write-control type="button" disabled>Apply reviewed configuration</button>
+                        </div>
+                      </section>
                     </div>
                   </details>
                 </details>
@@ -586,7 +605,7 @@
                       <tr><th scope="row">Heat transfer · W/(m²·K)</th><td id="garage-protection-configured-heatTransferWPerM2K">Unavailable</td><td id="garage-protection-reported-heatTransferWPerM2K">Unavailable</td></tr>
                     </tbody>
                   </table>
-                  <p id="garage-protection-settings-help" class="muted">Change <code>garage.protection</code> in configuration, then use Apply configuration in Data &amp; settings. Reported values come from the local protection unit; matching settings do not by themselves establish that protection is available.</p>
+                  <p id="garage-protection-settings-help" class="muted">Change <code>garage.protection</code> in configuration, then use Apply reviewed configuration in Data &amp; settings. Reported values come from the local protection unit; matching settings do not by themselves establish that protection is available.</p>
                 </details>
               </details>
               <details class="equipment-fold garage-temperature-help">

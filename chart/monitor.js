@@ -4,6 +4,7 @@ import { createSelectPickers } from './select-picker.js';
 import { createDatePicker } from './date-picker.js';
 import { createDashboardReset } from './dashboard-reset.js';
 import { confirmAction } from './confirmation.js';
+import { createConfigurationReview } from './configuration-review.js';
 import { renderLearningRows } from './learning-rows.js';
 import { renderGarage, createGarageControls } from './garage-status.js';
 import { createMitsubishiControls } from './mitsubishi.js';
@@ -129,6 +130,7 @@ function lockScreen({ authenticationFailed = false } = {}) {
   for (const picker of temporaryDatePickers) picker.dismiss();
   const hadPassword = Boolean(session.token), hadStatus = Boolean(lastStatus);
   session.logout(); ++refreshSequence; lastStatus = undefined; webAccess = undefined;
+  configurationReview.clear(); configurationReview.update();
   document.body.dataset.authenticated = 'false';
   closeStatusDetails(document);
   for (const dialog of document.querySelectorAll('dialog[open]')) dialog.close();
@@ -167,6 +169,13 @@ const fireplacePanel = createFireplacePanel({ document, request: api, storage: s
   beforeMutation: () => { ++refreshSequence; }, afterMutation: () => refresh() });
 const heatingExplorer = createHeatingExplorerPanel({ document, request: api,
   afterMutation: () => { ++refreshSequence; return refresh(); } });
+const configurationReview = createConfigurationReview({ document, request: api,
+  getStatus: () => lastStatus && { ...lastStatus, webAccess },
+  blocked: () => !lastStatus || isReadOnlyReplica(lastStatus) || temporaryBusy || heatingTestBusy || h66TestBusy
+    || settingsReloadBusy || equipmentBusy || Boolean(lastStatus?.equipmentTests?.active || lastStatus?.equipmentTests?.busy || lastStatus?.equipmentControls?.busy)
+    || !settingsReloadScope(lastStatus).available,
+  onBusy: busy => { settingsReloadBusy = busy; ++refreshSequence; updateTemporaryButtons(); },
+  onStatus: render, afterApply: () => refresh({ forceChart: true }) });
 // Mount the static input guide before restoring a possibly pending sensor change.
 renderModelInputs($('model-inputs-content'), undefined, { sensorChanges: $('sensor-change-details'),
   outdoorSensorChanges: $('outdoor-sensor-change-details') });
@@ -264,7 +273,7 @@ function updateTemporaryButtons(updateEquipment = true) {
   $('test-circulation').disabled ||= Boolean(lastStatus?.dhwr?.restorationPending);
   $('dhwr-stop').disabled = busy || !lastStatus?.heatingTests?.available || !(lastStatus?.dhwr?.active || lastStatus?.dhwr?.restorationPending || lastStatus?.dhwr?.actualOn === true);
   $('h66-test-submit').disabled = busy || !h66Control(lastStatus?.h66, $('h66-test-register').value).available;
-  $('settings-reload').disabled = busy || !settingsReloadScope(lastStatus).available;
+  configurationReview.update();
   const localSetup = document.querySelector('[data-provider=electricity] .provider-local-adopt');
   if (localSetup) localSetup.disabled = busy || ocppSetupRevision(lastStatus) === null;
   if (updateEquipment) equipmentPanel.refreshControls();
@@ -908,27 +917,6 @@ async function refreshPairing() {
   } catch { pairPanel.unavailable(); }
   finally { pairPollBusy = false; }
 }
-$('settings-reload').addEventListener('click', async () => {
-  if (isReadOnlyReplica(lastStatus) || temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy || equipmentBusy || !settingsReloadScope(lastStatus).available) return;
-  settingsReloadBusy = true; ++refreshSequence;
-  updateTemporaryButtons();
-  $('settings-reload').setAttribute('aria-busy', 'true');
-  $('settings-reload-message').classList.remove('form-error');
-  $('settings-reload-message').textContent = 'Applying configuration and reconnecting providers…';
-  try {
-    const result = await api('/api/settings/reload', {});
-    render(result);
-    $('settings-reload-message').textContent = 'Configuration applied.';
-  } catch (error) {
-    $('settings-reload-message').classList.add('form-error');
-    $('settings-reload-message').textContent = error.message;
-  } finally {
-    settingsReloadBusy = false;
-    $('settings-reload').removeAttribute('aria-busy');
-    updateTemporaryButtons();
-  }
-  await refresh({ forceChart: true });
-});
 $('auth').addEventListener('submit', event => {
   event.preventDefault();
   $('auth').setAttribute('aria-busy', 'true');

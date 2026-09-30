@@ -1,3 +1,34 @@
+Implemented 2026-09-30 — Audit public defaults and review configuration before applying
+- Audited 318 scalar public option leaves, including all 18 Garage leaves,
+  against current configuration/runtime consumers. No unused public Garage
+  settings or precise household coordinates, credentials or private identifiers
+  were found. Retain the intentionally public floor, copper-pipe and equipment
+  engineering defaults; add privacy guards that report field paths only.
+- Reuse existing JSON/schema/domain validation in an admin-only Check & review
+  configuration workflow, with current/proposed field values, concealed private
+  values, effective environment overrides and restart-only changes. Checking
+  cannot persist an import, reconnect providers or send device commands.
+- Require an expiring single-use review ID at the HTTP apply boundary; reread
+  and compare source/runtime values before restoration or persistence. Reject
+  stale, unknown and retired inputs without translation. Keep no-change reapply
+  for provider reconnect/setup retry and existing equipment restoration, sparse
+  overrides, Supervisor imports, token rotation and paired runtime ownership.
+- F1/F3/F5/F7/F8: source values and bounded reviews stay in private memory;
+  mask credentials, locations, identifiers, connections and free text in the
+  actual preview response. Validate unknown names before formatting errors,
+  including resolved Supervisor settings. Family cannot preview or apply.
+- Updated existing browser fixtures to use the review/apply flow and current
+  chart picker; the learning fixture declares its synthetic heating transport
+  and equipment identities for scheduled Pause/resume instead of bypassing
+  current authority checks.
+- Validation: full routine suite passed (3,779 passed, one optional skip),
+  followed by 47 passing checks of the final configuration/privacy changes.
+  Production build and configuration/access/ingress/learning Chromium checks passed;
+  review screenshots checked at 320/390/1440 px in both themes. Targeted checks
+  cover expiration, source races, imported files, rollback, restoration and
+  privacy. Build retains its existing bundle-size advisory. No deployment or
+  household connections; private installation configuration was not inspected.
+
 Implemented 2026-09-30 — Compact foldable charging report entries
 - Make each timeline event, planning record and finding a single collapsed
   timestamp/title disclosure. Put explanations, deltas, inputs and original

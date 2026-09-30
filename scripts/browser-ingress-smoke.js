@@ -116,11 +116,13 @@ try {
   assert.match(instructions, /Omitted fields keep saved values/);
   assert.match(instructions, /failed import keeps the file/);
   assert.match(await evaluate("document.getElementById('settings-access').textContent"), /Host dashboard access.*host login.*Direct access is disabled/);
-  assert.equal(await evaluate("document.getElementById('settings-reload').textContent"), 'Apply configuration');
+  assert.equal(await evaluate("document.getElementById('settings-reload').textContent"), 'Check & review configuration');
 
   writeFileSync(privatePath, '{"controller":{"max_drop_c":0.6}}', { mode: 0o600 });
   cleanupPending = true;
   await evaluate("document.getElementById('settings-reload').click()");
+  await until("!document.getElementById('settings-review').hidden && !document.getElementById('settings-review-apply').disabled");
+  await evaluate("document.getElementById('settings-review-apply').click()");
   await until("document.getElementById('settings-reload-message').textContent === 'Configuration applied.' && !document.getElementById('settings-reload').disabled");
   assert.equal(await evaluate("document.getElementById('drop').textContent"), '0.6 °C');
   assert.equal(await evaluate("document.getElementById('settings-import-warning').hidden"), false);
@@ -130,7 +132,7 @@ try {
   await evaluate("document.getElementById('recording-details').open = true; document.getElementById('recording-overview-details').open = true; document.getElementById('energy-audit-details').open = true;");
   await until("document.getElementById('recording-overview-message').textContent.includes('Database snapshot:')");
   await until("document.getElementById('energy-audit-content').children.length > 0");
-  for (const path of ['api/status', 'api/chart?', 'api/events?', 'api/settings/reload', 'api/recording-overview', 'api/energy-audits']) {
+  for (const path of ['api/status', 'api/chart?', 'api/events?', 'api/settings/preview', 'api/settings/reload', 'api/recording-overview', 'api/energy-audits']) {
     assert.ok(requests.some(request => request.path.startsWith(`${prefix}${path}`)), `Browser requested ${path} through ingress`);
   }
   assert.ok(requests.some(request => request.method === 'POST' && request.path === `${prefix}api/settings/reload`));

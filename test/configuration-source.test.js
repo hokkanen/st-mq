@@ -111,7 +111,7 @@ test('HA rejects retired native token fields without translating or saving setti
   for (const field of ['access_token','refresh_token']) {
     const f = fixture(t);
     f.state.current.easee[field] = 'synthetic-retired-token';
-    await assert.rejects(f.source.prepare(), error => error.message === `Unknown configuration field: easee.${field}.`);
+    await assert.rejects(f.source.prepare(), error => error.message === 'Unknown configuration field in easee: [unsupported field].');
     assert.equal(f.state.current.easee[field], 'synthetic-retired-token');
     assert.equal(f.posts(),0);
   }
@@ -157,6 +157,16 @@ test('existing HA secret references resolve for runtime and follow Supervisor sa
   assert.equal(f.state.current.controller.web_token, 'synthetic-resolved-web-token-value');
   await imported.complete();
   assert.equal(existsSync(f.paths.importPath), false);
+});
+
+test('HA validates resolved field names before rendering unsupported value errors', async t => {
+  const f = fixture(t);
+  f.state.current.controller.web_token = '!secret synthetic_existing_web_token';
+  f.state.secretValues.synthetic_existing_web_token = 'synthetic-resolved-web-token-value';
+  f.state.current['synthetic-private-field-name'] = null;
+  await assert.rejects(f.source.prepare(), error => /Unknown configuration field in root/.test(error.message)
+    && !/synthetic-private|synthetic-resolved/.test(error.message));
+  assert.equal(f.posts(), 0);
 });
 
 test('receipt recognizes interrupted Supervisor save after existing references were resolved', async t => {
@@ -293,5 +303,5 @@ test('standalone validates defaults and private overrides, then retains its perm
   assert.equal(existsSync(f.paths.privatePath), true);
   const manifest = { options: { ...f.defaults, unexpected: 'synthetic-value' }, schema: f.schema };
   writeFileSync(f.paths.defaultsPath, JSON.stringify(manifest));
-  await assert.rejects(source.prepare(), /Unknown configuration field: unexpected/);
+  await assert.rejects(source.prepare(), /Unknown configuration field in root/);
 });

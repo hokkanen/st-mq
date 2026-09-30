@@ -341,7 +341,7 @@ test('standalone startup rejects unknown settings and malformed JSON without exp
   const path = join(directory, 'secrets.json');
   writeFileSync(path, JSON.stringify({ mqtt: { password_typo: 'synthetic-sensitive-value' } }));
   assert.throws(() => loadConfig({ STMQ_CONFIG: path }, directory), error =>
-    /Unknown configuration field: mqtt.password_typo/.test(error.message) && !error.message.includes('synthetic-sensitive-value'));
+    /Unknown configuration field in mqtt/.test(error.message) && !error.message.includes('synthetic-sensitive-value'));
   writeFileSync(path, '{"mqtt":{"pw":"synthetic-sensitive-value');
   assert.throws(() => loadConfig({ STMQ_CONFIG: path }, directory), error =>
     /valid JSON/.test(error.message) && !error.message.includes('synthetic-sensitive-value'));
