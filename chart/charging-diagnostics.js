@@ -22,7 +22,7 @@ const FINDINGS = {
   'deadline-unverified': ['Ready-by outcome unconfirmed', 'The deadline passed without an applicable vehicle reading proving whether the requested target had been reached.'],
   'deadline-missed': ['Target missed at ready-by', 'An applicable vehicle reading after ready-by was below the requested target. Reaching the target later does not remove this event.'] };
 const EVENTS = { connected: 'Connection observed', 'observation-started': 'Monitoring began during this connection',
-  unplugged: 'Vehicle unplugged', 'connection-replaced': 'Connection changed', 'observation-gap': 'Observation gap · no physical conclusion for the missing interval',
+  unplugged: 'Vehicle unplugged', 'connection-replaced': 'Connection changed', 'observation-gap': 'Observation gap',
   'physical-evidence-lost': 'Measured draw became unavailable', 'physical-evidence-restored': 'Measured draw available again',
   'charging-observed': 'Draw above 0.1 kW observed', 'not-charging-observed': 'No draw above 0.1 kW observed',
   'charging-started': 'Draw rose above 0.1 kW', 'charging-stopped': 'Draw at 0.1 kW or below observed', 'physical-unknown': 'Measured draw unavailable',
@@ -33,8 +33,10 @@ const EVENTS = { connected: 'Connection observed', 'observation-started': 'Monit
   'initial-plan': 'Initial planning snapshot', 'target-changed': 'Requested target changed',
   ...OUTCOMES, ...COVERAGE };
 const validTime = value => Number.isFinite(value) && Math.abs(value) <= 8.64e15;
+const timeFormatter = (timezone, seconds = false) => new Intl.DateTimeFormat('en-GB', {
+  timeZone: timezone, day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', ...(seconds ? { second: '2-digit' } : {}) });
 const time = (value, timezone = 'Europe/Helsinki', seconds = false) => validTime(value)
-  ? new Intl.DateTimeFormat('en-GB', { timeZone: timezone, day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', ...(seconds ? { second: '2-digit' } : {}) }).format(value) : 'Unknown';
+  ? timeFormatter(timezone, seconds).format(value) : 'Unknown';
 const number = value => Number.isFinite(value) ? Number(value.toFixed(4)) : null;
 const percent = value => Number.isFinite(value) ? `${number(value)}%` : 'Unknown';
 const vehicleName = value => ({ bmw: 'BMW', tesla: 'Tesla' })[value] ?? 'Unidentified';
@@ -246,6 +248,8 @@ export function createChargingDiagnosticsPanel({ document, onOpenTest = () => {}
     released: 'Controller restriction released', provisional: 'Provisional charging permission', identifying: 'Identification check',
     unconfirmed: 'Charger instruction unconfirmed', 'pause-unconfirmed': 'Pause unconfirmed', uncertain: 'Charger instruction uncertain',
     'ownership-uncertain': 'Instruction ownership uncertain', unavailable: 'Charger control information unavailable', yielded: 'Charger instruction has priority', manual: 'Manual charger instruction', disconnected: 'Charger disconnected' };
+  const changeTitle = (changes, fallback) => changes.length === 1 ? `${changes[0].label} changed`
+    : changes.length > 1 ? `${changes.length} plan & input changes` : fallback;
   const eventLabel = row => {
     const changes = chargingPlanChanges(row.changes);
     if (row.kind === 'physical' && ['charging-started', 'charging-observed'].includes(row.code) && Number.isFinite(row.powerKw) && row.powerKw <= .1)
@@ -253,7 +257,7 @@ export function createChargingDiagnosticsPanel({ document, onOpenTest = () => {}
     if (row.kind === 'physical' && Number.isFinite(row.powerKw) && row.powerKw === 0) return 'No draw measured';
     if (row.kind === 'finding') return FINDINGS[row.code]?.[0] ?? 'Finding recorded';
     if (row.kind === 'recovery') return `${FINDINGS[row.code]?.[0] ?? 'Issue'} · ${row.resolution === 'request-changed' ? 'request changed' : 'recovered'}`;
-    if (row.kind === 'plan') return row.code === 'initial-plan' ? 'Initial planning state' : changes.length ? 'Plan or inputs changed' : 'Planning record';
+    if (row.kind === 'plan') return row.code === 'initial-plan' ? 'Initial planning state' : changeTitle(changes, 'Planning record');
     if (row.kind === 'control') return `${controlLabels[row.code] ?? 'Control state recorded'}${row.code !== 'unavailable' && row.availability === 'unavailable' ? ' · control unavailable' : ''}`;
     return EVENTS[row.code] ?? 'Observation recorded';
   };
@@ -300,15 +304,18 @@ export function createChargingDiagnosticsPanel({ document, onOpenTest = () => {}
   function historyItem(node, group, key, timezone) {
     if (!node) {
       node = make('li'); node.dataset.historyKey = key;
-      const stamp = make('time'), label = make('strong'), detail = make('small', '', 'muted');
-      const evidence = make('details', '', 'charging-report-evidence'), evidenceSummary = make('summary'), raw = make('ol', '', 'charging-report-raw');
-      evidence.dataset.historyKey = key; evidence.append(evidenceSummary, raw);
+      const stamp = make('time'), label = make('strong'), detail = make('p', '', 'muted');
+      const evidence = make('details', '', 'charging-report-entry charging-report-evidence'), summary = make('summary'), raw = make('ol', '', 'charging-report-raw');
+      const body = make('div', '', 'charging-report-entry-body'), evidenceCount = make('p', '', 'muted');
       const changes = make('ul', '', 'charging-report-changes'), unchanged = make('small', 'Charging periods unchanged', 'muted');
-      node.append(stamp, label, detail, changes, unchanged, evidence); parts.set(node, { stamp, label, detail, changes, unchanged, evidence, evidenceSummary, raw });
+      summary.append(stamp, label); body.append(detail, changes, unchanged, evidenceCount, raw);
+      evidence.dataset.historyKey = key; evidence.append(summary, body); node.append(evidence);
+      parts.set(node, { stamp, label, detail, changes, unchanged, evidenceCount, raw });
     }
     const p = parts.get(node), rows = group.events, first = rows[0] ?? {}, changeRows = chargingPlanChanges(first.changes, timezone);
-    const range = group.endAt !== null && group.endAt > group.startAt ? `${time(group.startAt, timezone)} – ${time(group.endAt, timezone)}` : time(group.startAt, timezone);
-    setText(p.stamp, range); p.stamp.dateTime = validTime(group.startAt) ? new Date(group.startAt).toISOString() : '';
+    const range = validTime(group.startAt) && validTime(group.endAt) && group.endAt > group.startAt
+      ? timeFormatter(timezone).formatRange(group.startAt, group.endAt) : time(group.startAt, timezone);
+    setText(p.stamp, `${range} · `); p.stamp.dateTime = validTime(group.startAt) ? new Date(group.startAt).toISOString() : '';
     let label = eventLabel(first), detail = '';
     if (group.type === 'low-draw-pulse') {
       label = group.pulseCount > 1 ? `${group.pulseCount} brief charger-status changes` : 'Brief charger-status change';
@@ -318,26 +325,30 @@ export function createChargingDiagnosticsPanel({ document, onOpenTest = () => {}
     } else if (group.type === 'unavailable') {
       label = Number.isFinite(group.recoveredAt) ? 'Charger information temporarily unavailable' : 'Charger information unavailable';
       detail = Number.isFinite(group.recoveredAt) ? 'Evidence became available again.' : 'Recovery has not been observed in these records.';
-    } else if (Number.isFinite(first.powerKw)) detail = first.powerKw === 0 ? 'No draw measured · 0 kW' : `Measured draw ${number(first.powerKw)} kW`;
+    } else if (first.code === 'observation-gap') detail = 'Behavior during the missing interval is unverified.';
+    else if (Number.isFinite(first.powerKw)) detail = first.powerKw === 0 ? 'No draw measured · 0 kW' : `Measured draw ${number(first.powerKw)} kW`;
     if (first.vehicleId) label += ` · ${vehicleName(first.vehicleId)}`;
     setText(p.label, label); setText(p.detail, detail); p.detail.hidden = !detail;
     changesInto(p.changes, changeRows); p.changes.hidden = !changeRows.length;
     p.unchanged.hidden = first.kind !== 'plan' || !changeRows.length || changeRows.some(change => change.field === 'periods');
-    setText(p.evidenceSummary, rows.length === 1 ? 'Event details' : `${rows.length} recorded events`);
+    setText(p.evidenceCount, `${rows.length} recorded events`); p.evidenceCount.hidden = rows.length === 1;
     sync(p.raw, rows, (row, index) => `${eventKey(row)}:${index}`, (old, row) => rawEvent(old, row, timezone));
     return node;
   }
   function planItem(node, plan, key, timezone) {
     if (!node) {
       node = make('li'); node.dataset.planKey = key;
-      const header = make('strong'), changes = make('ul', '', 'charging-report-changes'), unchanged = make('p', 'Charging periods unchanged', 'muted');
-      const detail = make('details', '', 'charging-report-plan-detail'), summary = make('summary', 'Inputs & periods');
+      const stamp = make('time'), header = make('strong'), changes = make('ul', '', 'charging-report-changes'), unchanged = make('p', 'Charging periods unchanged', 'muted');
+      const detail = make('details', '', 'charging-report-entry charging-report-plan-detail'), summary = make('summary'), body = make('div', '', 'charging-report-entry-body');
       const control = make('p'), vehicle = make('p', '', 'muted'), inputs = make('p'), deadline = make('p', '', 'muted'), periodLabel = make('p', '', 'charging-report-period-label'), periods = make('p', '', 'charging-report-period'), notes = make('p', '', 'muted');
-      detail.append(summary, control, vehicle, inputs, deadline, periodLabel, periods, notes); node.append(header, changes, unchanged, detail);
-      parts.set(node, { header, changes, unchanged, detail, control, vehicle, inputs, deadline, periodLabel, periods, notes });
+      summary.append(stamp, header); body.append(changes, unchanged, control, vehicle, inputs, deadline, periodLabel, periods, notes);
+      detail.append(summary, body); node.append(detail);
+      parts.set(node, { stamp, header, changes, unchanged, control, vehicle, inputs, deadline, periodLabel, periods, notes });
     }
     const p = parts.get(node), view = chargingPlanPresentation(plan, timezone);
-    setText(p.header, `${time(plan.at, timezone)} · ${view.title}`); changesInto(p.changes, view.changes); p.unchanged.hidden = !view.periodsUnchanged;
+    setText(p.stamp, `${time(plan.at, timezone)} · `); p.stamp.dateTime = validTime(plan.at) ? new Date(plan.at).toISOString() : '';
+    setText(p.header, changeTitle(view.changes, view.title));
+    changesInto(p.changes, view.changes); p.unchanged.hidden = !view.periodsUnchanged;
     for (const key of ['control', 'vehicle', 'inputs', 'deadline', 'periodLabel', 'periods']) setText(p[key], view[key]);
     p.periods.hidden = plan.scheduleState === 'none';
     const notes = [plan.provisional === true ? 'Provisional release with incomplete planning inputs.' : '', plan.feasible === false ? 'The forecast could not meet the requested target by ready-by.' : '',
@@ -367,9 +378,15 @@ export function createChargingDiagnosticsPanel({ document, onOpenTest = () => {}
     const factRows = chargingReportFacts(report, timezone).flatMap(([label, value]) => [{ key: `${label}:label`, tag: 'dt', text: label }, { key: `${label}:value`, tag: 'dd', text: value }]);
     sync(facts, factRows, row => row.key, (node, row) => { node ??= make(row.tag); setText(node, row.text); return node; }); facts.hidden = !report;
     sync(findings, report?.findings ?? [], row => `${row.code}:${row.firstAt}`, (node, row) => {
-      if (!node) { node = make('li'); const label = make('strong'), detail = make('p'), when = make('small', '', 'muted'); node.append(label, detail, when); parts.set(node, { label, detail, when }); }
+      if (!node) {
+        node = make('li'); const entry = make('details', '', 'charging-report-entry'), summary = make('summary'), body = make('div', '', 'charging-report-entry-body');
+        const stamp = make('time'), label = make('strong'), detail = make('p'), when = make('small', '', 'muted');
+        summary.append(stamp, label); body.append(detail, when); entry.append(summary, body); node.append(entry); parts.set(node, { stamp, label, detail, when });
+      }
       const p = parts.get(node), [label, detail] = FINDINGS[row.code] ?? ['Observation', 'See the timeline for this event.'];
-      node.dataset.state = row.resolvedAt !== null ? 'recovered' : row.severity; setText(p.label, label); setText(p.detail, detail);
+      node.dataset.state = row.resolvedAt !== null ? 'recovered' : row.severity;
+      setText(p.stamp, `${time(row.firstAt, timezone)} · `); p.stamp.dateTime = validTime(row.firstAt) ? new Date(row.firstAt).toISOString() : '';
+      setText(p.label, `${label}${row.resolvedAt !== null ? row.resolution === 'request-changed' ? ' · request changed' : ' · recovered' : ''}`); setText(p.detail, detail);
       setText(p.when, `${time(row.firstAt, timezone)}${row.resolvedAt !== null ? ` · ${row.resolution === 'request-changed' ? 'Request changed' : 'Recovered'} ${time(row.resolvedAt, timezone)}` : report.endedAt !== null ? ' · Unresolved when the session ended' : ' · Current'}`); return node;
     }); findings.hidden = !report?.findings?.length;
     sync(coverage, Object.entries(COVERAGE).flatMap(([key, label]) => {

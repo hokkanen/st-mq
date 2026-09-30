@@ -1,3 +1,20 @@
+Implemented 2026-09-30 — Compact foldable charging report entries
+- Make each timeline event, planning record and finding a single collapsed
+  timestamp/title disclosure. Put explanations, deltas, inputs and original
+  evidence inside the entry; remove separate Event details / Inputs & periods
+  rows. Single-field plan titles name the change; finding titles preserve status.
+- Use compact row spacing with native keyboard toggles, visible focus, natural
+  narrow-screen wrapping and larger touch targets. Preserve open entries, stable
+  nodes and scroll during polling and when another event arrives.
+- F1/F4/F5/F7/F8: presentation only; preserve original bounded evidence, source
+  meaning, charger scoping and read-only behavior. No controller, schedule,
+  persisted-contract or compatibility changes.
+- Validation: all 63 focused UI/history/diagnostic tests passed. Production build
+  and charging Chromium sweep passed at 320/390/1440 px in both themes; compact
+  and expanded screenshots reviewed. Entry keyboard toggles, native nested folds,
+  polling focus/scroll and read-only behavior passed. Build retains its existing
+  bundle-size advisory. Final diff and staged secret checks passed; no deployment.
+
 Implemented 2026-09-30 — Clear and stable charging session reports
 - Scope each charger shortcut to that charger's current and four retained reports;
   keep expired selections explicit and open the exact linked guided assessment.

@@ -233,6 +233,22 @@ try {
   assert.match(reportFacts, /0 kW measured.*Charger status reports charging/);
   assert.match(reportFacts, /Earlier charging is not covered by this report/);
   await evaluate("for (const fold of document.querySelectorAll('#charging-report-dialog > details')) fold.open = true");
+  assert.equal(await evaluate(`(() => {
+    const entries = [...document.querySelectorAll('.charging-report-timeline > li, .charging-report-fold > .charging-report-plans > li, .charging-report-findings > li')];
+    const compact = value => value.replace(/\\s+/g, ' ').trim();
+    return entries.length > 0 && entries.every(row => {
+      const detail = row.querySelector(':scope > details'), summary = detail?.querySelector(':scope > summary');
+      return detail && summary && !detail.open && compact(row.innerText) === compact(summary.innerText);
+    });
+  })()`), true, 'Each report entry initially shows only its clickable timestamp and title');
+  assert.doesNotMatch(await evaluate("document.querySelector('.charging-report-timeline').innerText"), /Requested target:|Charging periods unchanged|Event details|Measured|Received/);
+  await evaluate(`(() => {
+    const entry = [...document.querySelectorAll('.charging-report-timeline > li > details')]
+      .find(row => row.textContent.includes('Requested target: 80% → 85%'));
+    if (!entry) throw new Error('No compact target-change entry');
+    entry.querySelector('summary').focus();
+  })()`);
+  await keyPress('Enter');
   assert.match(await evaluate("document.querySelector('.charging-report-timeline').innerText"), /Requested target: 80% → 85%.*Charging periods unchanged/s);
   assert.match(await evaluate("document.querySelector('.charging-report-plans').textContent"), /No controller charging schedule/);
   assert.doesNotMatch(await evaluate("document.querySelector('.charging-report-timeline').textContent"), /Physical charging observed|Physical charging stopped|Plan updated/);
@@ -402,7 +418,7 @@ try {
   await until("document.querySelector('.charging-report-timeline details[data-history-key]') !== null");
   await evaluate(`(() => {
     const row = [...document.querySelectorAll('.charging-report-timeline > li[data-history-key]')]
-      .find(node => /2 brief charger-status changes/i.test(node.querySelector(':scope > strong')?.textContent));
+      .find(node => /2 brief charger-status changes/i.test(node.querySelector(':scope > details > summary')?.textContent));
     const group = row?.querySelector('details[data-history-key]');
     if (!group || group.open || group.querySelectorAll('.charging-report-raw > li').length !== 4)
       throw new Error('The paired zero-power status changes must preserve four collapsed original events');
@@ -431,12 +447,17 @@ try {
     const row = [...document.querySelectorAll('.charging-report-fold > .charging-report-plans > li[data-plan-key]')]
       .find(node => /4\\.1234/.test(node.textContent));
     const details = row?.querySelector('.charging-report-plan-detail');
-    const rates = row?.querySelector('.charging-report-change');
+    const rates = row?.querySelector('.charging-report-change details');
     if (!details || !rates) throw new Error('No planning snapshot with exact changed electricity rates');
-    details.open = true; rates.open = true;
     globalThis.savedPlanDetails = details;
     globalThis.savedPlanRates = rates;
-    globalThis.savedPlanSummary = rates.querySelector('summary');
+    details.querySelector(':scope > summary').focus();
+  })()`);
+  await keyPress('Enter');
+  assert.equal(await evaluate('savedPlanDetails.open'), true, 'Enter on a planning timestamp and title opens its details');
+  await evaluate(`(() => {
+    savedPlanRates.open = true;
+    globalThis.savedPlanSummary = savedPlanRates.querySelector('summary');
     savedPlanSummary.focus();
     globalThis.savedPlanScroll = document.getElementById('charging-report-dialog').scrollTop;
     chargingFixture.report.evaluatedAt += 1000;
@@ -449,6 +470,12 @@ try {
   for (const width of [320, 390, 1440]) for (const theme of ['light', 'dark']) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: 1000, deviceScaleFactor: 1, mobile: false });
     await evaluate(`document.documentElement.dataset.theme='${theme}';
+      for (const fold of document.querySelectorAll('#charging-report-dialog > details')) fold.open = true;
+      for (const fold of document.querySelectorAll('.charging-report-timeline > li > details, .charging-report-plans > li > details, .charging-report-findings > li > details, .charging-report-routine')) fold.open = false;`);
+    await fits('#charging-report-dialog');
+    await evaluate("document.querySelector('.charging-report-timeline').closest('details').scrollIntoView({block:'start'})");
+    await screenshot(`report-compact-${width}-${theme}`, '#charging-report-dialog', { preserveScroll: true });
+    await evaluate(`
       for (const fold of document.querySelectorAll('#charging-report-dialog details')) fold.open = true;`);
     await fits('#charging-report-dialog');
     await screenshot(`report-expanded-${width}-${theme}`, '#charging-report-dialog');
@@ -506,7 +533,7 @@ try {
     'timer-declarations-in-installation-timezone', 'passive-report-no-mutations', 'read-only-controls', 'retained-report-and-recovered-issue',
     'automatic-off-no-controller-schedule', 'unidentified-fallback-battery-input', 'partial-observation-history', 'semantic-input-deltas', 'measured-zero-distinct-from-charger-status',
     'charger-scoped-current-and-retained-reports', 'empty-charger-does-not-borrow-peer-history', 'expired-selected-report', 'stale-and-unavailable-report-states',
-    'grouped-zero-power-status-and-idle-control', 'no-op-planning-snapshots-hidden', 'expanded-history-focus-and-scroll-during-polls',
+    'grouped-zero-power-status-and-idle-control', 'compact-timestamp-title-entry-disclosures', 'no-op-planning-snapshots-hidden', 'expanded-history-focus-and-scroll-during-polls',
     'modal-switching-focus-and-exact-linked-run', 'long-expanded-details-fit-all-viewports', 'sticky-heading-keeps-history-and-close-action-visible',
     '320-390-1440-light-dark-layouts' ] }));
 } finally {

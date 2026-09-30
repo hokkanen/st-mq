@@ -258,6 +258,8 @@ test('polling preserves expanded history, focused evidence and scroll while addi
   panel.update(state); panel.open('charger1');
   const dialog = document.getElementById('charging-report-dialog'), timeline = dialog.querySelector('.charging-report-timeline');
   const entry = timeline.children[0], evidence = entry.querySelector('details'), summary = evidence.querySelector('summary');
+  assert.deepEqual(entry.children, [evidence]); assert.equal(evidence.open, false);
+  assert.match(descendants(summary).map(node => node.textContent).join(''), /Draw above 0.1 kW observed/);
   evidence.open = true; summary.focus(); dialog.scrollTop = 380;
   report.observedAt = report.evaluatedAt = now + 5000; panel.update(structuredClone(state));
   assert.equal(timeline.children[0], entry); assert.equal(document.activeElement, summary);
@@ -295,6 +297,10 @@ test('distinct planning records at the same timestamp retain separate stable nod
   const plans = document.getElementById('charging-report-dialog').querySelector('.charging-report-plans');
   const nodes = [...plans.children];
   assert.equal(nodes.length, 2); assert.notEqual(nodes[0], nodes[1]);
+  for (const node of nodes) {
+    const fold = node.querySelector('details'); assert.deepEqual(node.children, [fold]); assert.equal(fold.open, false);
+  }
+  assert.match(descendants(nodes[0].querySelector('summary')).map(node => node.textContent).join(''), /Requested target changed/);
   const detail = nodes[1].querySelector('details'); detail.open = true; detail.querySelector('summary').focus();
   for (let i = 0; i < 3; i++) panel.update(structuredClone(state));
   assert.deepEqual(plans.children, nodes); assert.equal(detail.open, true);

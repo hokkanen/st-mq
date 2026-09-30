@@ -199,6 +199,9 @@ selection stays explicitly unavailable instead of opening another session. The
 guided-test link opens the assessment attached to that exact report. Opening a
 report never identifies a vehicle or changes charging. Normal dashboard refreshes
 preserve open disclosures, keyboard focus and the report's scroll position.
+Each timeline event, planning record and finding starts as a compact, clickable
+timestamp and title. Open that entry to see its explanation and original evidence;
+the details are inside the entry rather than behind a separate action below it.
 
 The report states whether Automatic charging is off, whether there is a proposed
 or adopted controller execution plan, and whether battery inputs are measured or
