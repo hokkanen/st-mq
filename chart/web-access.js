@@ -12,6 +12,7 @@ export function webRequestAllowed(access, path, data, status) {
     '/api/charging/settings', '/api/automation'].includes(path)) return true;
   if (path === '/api/heating-test') return ['normal', 'reduction', 'preheat', 'circulation'].includes(data.command);
   if (path === '/api/garage/heating') return ['normal', 'away'].includes(data.mode);
+  if (/^\/api\/charging\/tests\/(preview|start|schedule|cancel)$/.test(path)) return true;
   if (/^\/api\/charging\/chargers\/[^/]+\/(?:settings|control|charge-now|resume|target|identify)$/.test(path)) return true;
   if (path === '/api/equipment/cover') {
     const device = status?.equipment?.devices?.find(device => device.id === data.deviceId);

@@ -1,0 +1,22 @@
+#charging-setup-details { scroll-margin-top: 20px; }
+#charging-setup-details > summary { flex-wrap: wrap; }
+#charging-setup-content { font-size: 12px; line-height: 1.65; overflow-wrap: anywhere; }
+#charging-setup-content p { margin: 0 0 12px; }
+#charging-setup-content .equipment-fold { margin: 10px 0; }
+#charging-setup-content .equipment-fold > summary { margin-bottom: 10px; }
+.charging-setup-vehicle > summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
+.charging-setup-vehicle > summary > small { margin-left: auto; font-size: 11px; }
+.charging-setup-facts, .charging-setup-descriptors { margin: 12px 0; }
+.charging-setup-facts > div, .charging-setup-descriptors > div { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr); gap: 12px; padding: 7px 0; border-bottom: 1px solid var(--border); }
+.charging-setup-facts dt, .charging-setup-descriptors dt { color: var(--muted); }
+.charging-setup-facts dd, .charging-setup-descriptors dd { margin: 0; min-width: 0; }
+.charging-setup-descriptors > div { grid-template-columns: minmax(0, .65fr) minmax(0, 2fr); }
+.charging-setup-descriptors code { font-size: 11px; overflow-wrap: anywhere; }
+.charging-setup-descriptors small { display: block; color: var(--muted); margin-top: 3px; }
+.charging-setup-limit { padding-left: 12px; border-left: 2px solid var(--border); }
+#charging-setup-content .charging-setup-footnote { margin-top: 16px; color: var(--muted); }
+#charging-setup-content .secondary-button { margin-bottom: 6px; font-size: 12px; }
+#charging-setup-content a { color: var(--accent); text-underline-offset: 3px; }
+@media (max-width: 480px) {
+  .charging-setup-facts > div, .charging-setup-descriptors > div { grid-template-columns: minmax(0, 1fr); gap: 3px; }
+}

@@ -253,6 +253,13 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
           return await mutate(async (current, input) => { await current.setAutomation(input); return json(200, status()); });
         if (req.method === 'POST' && url.pathname === '/api/charging/settings')
           return await mutate(async (current, input) => { await current.charging.setSettings(input); return json(200, status()); });
+        const chargingTestAction = url.pathname.match(/^\/api\/charging\/tests\/(preview|start|schedule|cancel)$/);
+        if (req.method === 'POST' && chargingTestAction)
+          return await mutate((current, input) => {
+            if (pairContext?.recovering()) return json(409, { error: 'Wait for recovery to finish before changing a charging assessment.' });
+            const result = current.charging.chargingTestAction(chargingTestAction[1], input);
+            return json(200, chargingTestAction[1] === 'preview' ? result : status());
+          });
         const chargerAction = url.pathname.match(/^\/api\/charging\/chargers\/([^/]+)\/(settings|control|resume|charge-now|identify)$/);
         if (req.method === 'POST' && chargerAction)
           return await mutate(async (current, input) => {

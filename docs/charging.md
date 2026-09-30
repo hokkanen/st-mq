@@ -134,6 +134,84 @@ remains unverified; software cannot promise an autonomous hardware fallback.
 
 The ready-by time becomes one concrete occurrence when the physical connection starts. Midnight, identification, progress updates, priority changes and restart do not roll it forward. A deliberate session ready-by edit may change it. Late identification replaces default-derived vehicle inputs without splitting the physical session or resetting its costs.
 
+## Setup, guided physical tests and session reports
+
+**Data & settings → Connections & configuration → Charging**, above Floor
+preheating, explains physical charger setup and the independent BMW/Tesla feeds.
+The BMW guide lists the exact CarData descriptors and the Home Assistant/MQTT
+mapping requirements. Both vehicle guides show accepted fields with their
+original source or receipt clocks. Feed health, identification and charger
+commissioning remain separate capabilities; opening the guide sends no commands.
+
+Each vehicle has a **Guided test** button. Select the physical charger explicitly,
+then choose **Normal charging** or **Delayed vehicle schedule**. Both use the
+normal identification, planning and charger-control code. The assessment has no
+actuator, planner or vehicle-command interface. Its declared vehicle, starting
+charge and native limit are expectations, never hidden production inputs.
+
+Prepare and arm while unplugged, with live charger and vehicle feeds, commissioned
+control, Automatic charging enabled and no conflicting charger timer or manual
+Stop. Battery headroom uses configured usable capacity, efficiency and expected
+power: aim for at least 30 minutes of active charging for the normal program and
+60 minutes for the delayed program. These are test-design estimates, not battery
+percentage limits or measured capacity. A naturally suitable later session is
+preferable to charging to 100% or deliberately discharging for a test.
+
+- **Normal charging:** allow immediate charging in the vehicle, arm, then plug
+  into the selected charger. Observe independent identification, normal economic
+  planning, charger execution and physical completion.
+- **Delayed vehicle schedule:** first set a future vehicle start that prevents
+  immediate charging and record it before arming. After plug-in, the guide
+  evaluates candidate vehicle timer settings against the actual production
+  periods. It prefers opportunities for delayed identification, revised battery
+  inputs and a real intermediate pause/resume while aiming to meet the target.
+  Enter the suggested timer in the car and confirm it in the guide. This changes
+  only the user-operated vehicle restriction: the test never inserts, moves or
+  replaces the controller's periods, lowers a target or moves ready-by. If the
+  real conditions cannot support a useful recommendation, that remains explicit.
+
+The suggestion is an estimate of test coverage, not a proof of the cheapest
+possible schedule or a guarantee of completion. The real scheduler continues
+aiming to charge at the cheapest feasible times using its own available evidence.
+Early identification is valid; it means the delayed-identification branch was
+not exercised. An unchanged schedule after identification can also be valid.
+BMW vehicle windows remain unavailable to the planner; Tesla's next-start field
+is not a complete weekly schedule. No telemetry is suppressed to force a case.
+
+Assessments run on the server and survive a browser close or current-version
+restart. They follow one equipment/backend and physical connection, retain an
+inconclusive initial identification or observation gap, and end on unplugging
+instead of attaching to the next vehicle. Reaching the requested minimum and
+observing completion at the native vehicle limit are separate milestones.
+Completion needs fresh vehicle charge evidence and physical stop evidence;
+silence or zero power alone is insufficient. **End assessment** leaves ordinary
+charging running. Restore a temporary vehicle timer yourself; this application
+cannot restore it. Up to 24 assessments are retained, with active runs preserved.
+
+Every ordinary connection also gets a passive **Session report**, beside
+**Details & settings** on its charger card. The action's text and color indicate
+attention, incomplete evidence or the observed result. Its dialog separates the
+charging outcome, behavior and coverage, followed by findings, a timeline and
+the actual plan/input revisions. Proposed periods, installed execution,
+identification permission, confirmed pauses and physical charging are distinct.
+Opening a report never identifies a vehicle or changes charging.
+
+Checks allow settling time for command/readback transitions. They distinguish
+vehicle timers, supply restrictions, manual priority, unavailable telemetry and
+unexplained lack of draw instead of inferring a vehicle timer from zero power.
+Recovered problems remain in the timeline, and later replanning does not rewrite
+earlier evidence. Requested-target attainment and native completion remain
+separate; coverage says **Not exercised** where the session supplied no evidence.
+The existing energy/session reference comparisons remain separate from these
+behavioral checks; recorded energy coverage is not a reference-energy comparison.
+
+Each charger retains the current report plus four completed reports. Details are
+bounded to 120 timeline entries, 32 plan snapshots and 24 findings per session;
+opening evidence and recent changes remain, and truncation is disclosed. Stores
+contain normalized facts and scoped hashes, not raw MQTT payloads, coordinates,
+VINs or account credentials. Observer storage failures are visible without
+blocking ordinary charger control or restoration.
+
 ## Vehicle assignment
 
 The observer evaluates both charging points together, including while automatic charging is OFF and hours after connection. Assignment requires positive corroboration: applicable vehicle home/plug/start evidence and physical charging behavior. Similar powers on two charging points can remain ambiguous. A negative Tesla match never identifies BMW or the other charger by elimination.

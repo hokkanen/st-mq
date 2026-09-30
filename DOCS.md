@@ -275,11 +275,14 @@ adds no coefficient storage. Historical coefficient chart axes separately replay
 the saved journal with its matching algorithm.
 Both charger cards open their
 schedule, readings and preferences. Charger 1's **Automatic charging** is off by
-default and separately permits native Easee schedules, independently of the heating automation permissions. Charger 2 observes TeslaMate and has no command
-adapter. See [charging](docs/charging.md).
+default and separately permits native Easee schedules, independently of the heating automation permissions. Charger 2 is the physical Shelly EVSE with separately
+commissioned MQTT control. BMW CarData and TeslaMate supply vehicle evidence for
+either charger. See [charging](docs/charging.md).
 **Data & settings** summarizes provider health; each provider row opens its series
 and source details. Its **Connections & configuration** fold contains MQTT setup,
-configuration reload and electricity rates. The **Away until** and **Resume automatic heating at** controls use
+configuration reload and electricity rates. Its **Charging** section, above
+**Floor preheating**, explains charger setup and the BMW/Tesla feed requirements,
+shows live field readiness and opens guided physical charging tests. The **Away until** and **Resume automatic heating at** controls use
 Finnish time even when the remote browser is in another timezone. Apply changes
 saves them together; **Home now** and **Automatic now** cancel
 them independently. They persist in the database; scheduled deadlines end Away or resume Automatic,

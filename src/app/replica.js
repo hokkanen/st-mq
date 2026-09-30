@@ -61,8 +61,25 @@ function chargingSnapshot(snapshot) {
   for (const charger of saved.view.chargers) validateTargetSelection(charger.targetSelection);
   const snapshotAt = snapshot.publication.sourceAt;
   const settings = chargingSettings(saved.view.settings);
-  const reception = value => ({ ...value, connected: null, brokerConnected: null, subscribed: null,
+  const reception = value => ({ ...value, available: false, connected: null, brokerConnected: null, subscribed: null,
     subscriptionStatus: 'read-only-snapshot', reason: 'read-only-snapshot', readOnly: true, recorded: true, snapshotAt });
+  const recordedSetup = setup => setup ? { ...structuredClone(setup), available: false, healthy: false,
+    readOnly: true, recorded: true, snapshotAt,
+    fields: Object.fromEntries(Object.entries(setup.fields ?? {}).map(([key, value]) => [key,
+      { ...value, available: false, recorded: true, reason: 'read-only-snapshot' }])) } : null;
+  const reports = saved.view.diagnostics, tests = saved.view.physicalTests;
+  if (reports && (reports.version !== 1 || !Array.isArray(reports.chargers))
+    || tests && (tests.version !== 1 || !Array.isArray(tests.runs)))
+    throw new Error('Unsupported charging assessment snapshot; start a fresh development database');
+  const recordedReport = report => report ? { ...structuredClone(report), readOnly: true, recorded: true, snapshotAt,
+    liveAvailable: false, evidenceStale: report.endedAt === null || report.evidenceStale === true } : null;
+  const diagnostics = reports ? { ...structuredClone(reports), readOnly: true, recorded: true, snapshotAt, liveAvailable: false,
+    chargers: reports.chargers.map(slot => ({ id: slot.id, current: recordedReport(slot.current),
+      recent: (slot.recent ?? []).map(recordedReport) })) } : null;
+  // Preserve the master's assessment, including an unfinished test phase. A
+  // viewer neither advances a run nor turns elapsed viewer time into a result.
+  const physicalTests = tests ? { ...structuredClone(tests), canManage: false, readOnly: true, recorded: true, snapshotAt,
+    runs: tests.runs.map(run => ({ ...run, readOnly: true, recorded: true, snapshotAt, liveAvailable: false })) } : null;
   const chargers = CHARGER_DEFINITIONS.map(definition => {
     const id = definition.id;
     const record = saved.chargers?.[id] ?? {};
@@ -86,8 +103,10 @@ function chargingSnapshot(snapshot) {
   });
   return { readOnly: true, recorded: true, snapshotAt, timezone: TIME_ZONE,
     controls: saved.view.controls, settings, chargers,
-    vehicleFeeds: (saved.view?.vehicleFeeds ?? []).map(feed => ({ ...feed, reception: reception(feed.reception) })),
-    coordination: saved.view?.coordination ?? null, error: null };
+    vehicleFeeds: (saved.view?.vehicleFeeds ?? []).map(feed => ({ ...feed, reception: reception(feed.reception),
+      ...(feed.setup ? { setup: recordedSetup(feed.setup) } : {}) })),
+    coordination: saved.view?.coordination ?? null, error: null,
+    ...(diagnostics ? { diagnostics } : {}), ...(physicalTests ? { physicalTests } : {}) };
 }
 
 function recordedInput(store) {

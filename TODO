@@ -1,3 +1,34 @@
+Implemented 2026-09-30 — Charging setup, real-session assessments and diagnostics
+- Add Charging above Floor preheating with charger commissioning/recovery guidance,
+  exact BMW CarData mappings, TeslaMate health/settings distinctions and sanitized
+  live field readiness. Correct the obsolete Charger 2 observer description.
+- Add one shared BMW/Tesla guide with explicit physical charger selection, normal
+  and delayed-vehicle-timer programs, duration-based headroom checks and persisted
+  expectations. User declarations never identify a vehicle, change production
+  battery inputs, manufacture charging periods or change targets/ready-by.
+- The second program scores candidate native vehicle start times using the real
+  production periods and declared battery need, favoring useful delayed-ID,
+  input-reassessment and pause/resume coverage with estimated target opportunity.
+  The user enters the timer in the car. The unchanged controller continues aiming
+  for the target in its cheapest feasible periods. Preserve a Tesla timer already
+  incorporated into the real plan; do not repeatedly push it later on confirmation.
+- Add per-charger Session report beside Details & settings. Passive bounded
+  reports retain original plans, transitions, findings/recoveries and coverage;
+  separate requested minimum, native completion and missing evidence. Keep four
+  completed sessions per charger and 24 guided assessments, preserving active
+  assessments. Browser close/restart does not end a same-connection test.
+- F1/F3/F4/F5/F7/F8: separate optional current assessor state, strict version
+  rejection without migration, no actuator authority, session/equipment fencing,
+  original source clocks, bounded storage and sanitized facts. Existing metering,
+  energy-reference checks, commissioning and restoration remain intact. Read-only
+  replicas expose frozen reports without live-readiness or test-write authority.
+- Validation: Node 24 full offline suite passed 3,573 tests with one optional
+  skip, followed by 75 final focused backend/API/UI/replica checks after review
+  fixes. Production build passed with its existing bundle-size advisory. New
+  charging and existing equipment browser suites passed; charging covered both
+  themes at 320/390/1440px, keyboard/focus, drafts, timer confirmation and retained
+  reports. Synthetic screenshots reviewed. No live equipment run or deployment.
+
 Implemented 2026-09-30 — Unified heating pause, manual phases and action receipts
 - Owner explicitly requested one Automatic/Pause choice, indefinite Pause with an
   optional resume time, and indefinite Normal/Reduced while paused. Amend F3 and

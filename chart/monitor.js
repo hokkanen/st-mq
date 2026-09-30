@@ -8,6 +8,12 @@ import { renderLearningRows } from './learning-rows.js';
 import { renderGarage, createGarageControls } from './garage-status.js';
 import { createMitsubishiControls } from './mitsubishi.js';
 import { createChargingPanel } from './charging.js';
+import { createChargingDiagnosticsPanel } from './charging-diagnostics.js';
+import { createChargingTestsPanel } from './charging-tests.js';
+import { initializeChargingSetup } from './charging-setup.js';
+import './charging-diagnostics.css';
+import './charging-tests.css';
+import './charging-setup.css';
 import { createHistoryChart } from './history-chart.js';
 import { dashboardProviders, outdoorSourceLabel, providerName, providerSeries, temperatureReadingStatus } from './provider-status.js';
 import { activeRates, rateRows, temporaryValues, priceControlState, renderHomePolicy, renderHomeRoomReferences } from './home-controls.js';
@@ -189,6 +195,11 @@ const mitsubishiControls = createMitsubishiControls({ document, request: api,
 const chargingPanel = createChargingPanel({ document, request: api,
   beforeRequest: () => { ++refreshSequence; }, onStatus: result => render(result),
   afterRequest: () => refresh() });
+const chargingDiagnostics = createChargingDiagnosticsPanel({ document, onOpenTest: vehicleId => chargingTests.open(vehicleId) });
+const chargingTests = createChargingTestsPanel({ document, request: api,
+  beforeRequest: () => { ++refreshSequence; }, onStatus: result => render(result),
+  afterRequest: () => refresh(), openReport: (id, reportId) => chargingDiagnostics.open(id, reportId) });
+const chargingSetup = initializeChargingSetup(document, { onStartTest: vehicleId => chargingTests.open(vehicleId) });
 const adoptOcppSetup = createOcppSetupAction({ document, request: api, getStatus: () => lastStatus,
   blocked: () => temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy || equipmentBusy,
   beforeRequest: () => { ++refreshSequence; }, afterRequest: () => refresh(),
@@ -722,6 +733,7 @@ function render(s) {
   automationControls.update(s);
   mitsubishiControls.update(s);
   chargingPanel.update(s);
+  chargingDiagnostics.update(s); chargingTests.update(s); chargingSetup.render(s);
   $('error').hidden = true;
   pairPanel.update(pairPanelView(s));
   const replica = renderReplicaStatus(document, s, { formatTime: time });

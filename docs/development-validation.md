@@ -105,6 +105,7 @@ These scripts start their own disposable Chrome processes:
 node scripts/browser-access-smoke.js
 node scripts/browser-equipment-smoke.js
 node scripts/browser-equipment-smoke.js --caravan-only
+node scripts/browser-charging-tests-smoke.js
 node scripts/browser-home-controls-smoke.js
 node scripts/browser-garage-smoke.js
 node scripts/browser-garage-smoke.js --temperature-hold-only
@@ -136,6 +137,16 @@ command, error associations and saved-policy ownership of manual power. Syntheti
 screenshots include live automatic/paused recording, manual/active recording and
 expanded threshold editing, framed around the dehumidifier. Commands terminate
 in browser fixtures.
+
+The charging-tests suite checks the Charging setup fold and BMW descriptor guide,
+both guided programs, explicit charger choice, expectation-only action payloads,
+draft preservation through polling, cancellation, passive/retained session
+reports and read-only access. It uses synthetic status and intercepted assessment
+requests in a disposable application and browser. It checks keyboard dismissal
+and focus, horizontal overflow, and 320/390/1440px layouts in both themes. Its
+temporary screenshot directory is printed on completion. It never connects to a
+vehicle or charger; overnight hardware behavior still requires an actual guided
+run by the installation user.
 
 The Tuya Local bridge tests render synthetic HA templates and verify independent
 native report clocks, identity, supported controls and request expiry. The pinned

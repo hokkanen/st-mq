@@ -19,6 +19,49 @@ subscription health, live/retained reception and topics are shown separately fro
 the current charger association. Invalid reports need attention; repeat messages
 do not renew measurement timestamps. BMW is not an electricity-consumption source.
 
+**Data & settings → Connections & configuration → Charging → BMW** explains
+the setup and shows each received field with its original source time. Publisher
+health and current physical charger association are separate. The setup view
+shows unavailable fields explicitly; it does not create a vehicle association or
+send a charger command. **Guided BMW test** opens the common test guide, where the
+physical charger and immediate/delayed vehicle-schedule program are chosen.
+
+## Enabling the useful feeds
+
+Use the descriptors in the table below when selecting vehicle data for the
+CarData integration. Check that the integration has access to those descriptors
+for the same vehicle, then enable their corresponding Home Assistant sensors.
+Names shown in Home Assistant can differ from the technical descriptors. BMW's
+[customer API documentation](https://bmw-cardata.bmwgroup.com/customer/public/api-documentation)
+describes configured data containers and the applicable telematics catalogue;
+availability is vehicle-dependent, so an absent sensor is not evidence of zero
+charge or an unplugged vehicle.
+
+The capabilities are independent:
+
+- Measured battery percentage enables the automatic starting-charge input.
+- Reported charge limit enables the automatic target and vehicle ceiling.
+- Usable capacity is optional vehicle evidence; the configured capacity remains
+  an explicit assumption when that reading is unavailable.
+- Plug state, charging state and timestamped latitude/longitude provide the
+  context and transitions needed for BMW identification. Battery percentage is
+  not required to recognize the vehicle. Location alone does not identify which
+  physical charger it is using.
+
+Map the enabled sensors into the publisher builder below. The current builder
+takes all three battery entity mappings; an unavailable battery sensor is omitted
+from its MQTT report instead of being invented. Its optional identity arguments
+must be supplied to publish the plug/charging/home evidence for identification.
+The `device_tracker` is only an optional trigger; enable the separate coordinate
+sensors even when a tracker already appears to locate the car at home.
+
+Confirm the home-zone mapping before a physical test. The setup panel shows
+neither the configured home point nor VIN, account, entity or source identifiers.
+Original BMW measurement times remain visible even while the publisher continues
+to report unchanged values. Vehicle charge windows are not forwarded by this
+bridge; disable them for the immediate-charging program, or configure the
+specific native timer requested by the delayed-start guide.
+
 ## Battery and identity facts
 
 The builder is [`scripts/lib/bmw-cardata-automation.js`](../scripts/lib/bmw-cardata-automation.js).

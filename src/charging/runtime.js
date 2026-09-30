@@ -19,6 +19,9 @@ import { acceptEaseeTransition } from './stream-evidence.js';
 import { confirmedIdentityPause } from './identity-evidence.js';
 import { advanceIdentification, prepareActiveBmwCandidate, matchActiveBmwPause, validateIdentificationState } from './identification.js';
 import { shellyAssociation } from './shelly-evse.js';
+import { ChargingSessionDiagnostics } from './session-diagnostics.js';
+import { ChargingPhysicalTests } from './physical-tests.js';
+import { bmwVehicleSetup, teslaVehicleSetup } from './setup.js';
 
 const MINUTE = 60_000;
 // The CarData Home Assistant bridge publishes unchanged facts every five
@@ -95,6 +98,8 @@ export class ChargingRuntime {
   constructor({ engine, store, config, clock = Date.now, canControl = () => true, definitions = CHARGER_DEFINITIONS }) {
     Object.assign(this, { engine, store, config, clock, canControl, definitions });
     this.key = `charging:${config.input}`;
+    this.sessionDiagnostics = new ChargingSessionDiagnostics({ store, key: `${this.key}:session-diagnostics`, clock });
+    this.physicalTests = new ChargingPhysicalTests({ store, key: `${this.key}:physical-tests`, clock });
     const saved = store.getState(this.key) ?? {};
     if (Object.keys(saved).length && (saved.version !== 6 || Object.keys(saved).some(key => !['version', 'revision', 'controls', 'chargers', 'vehicleFeeds', 'consumedTeslaPower', 'view'].includes(key)))) throw new Error('Unsupported charging state; start a fresh development database');
     if (saved.consumedTeslaPower != null && (!object(saved.consumedTeslaPower)
@@ -176,6 +181,13 @@ export class ChargingRuntime {
   }
   savedOwnership(id) { return this.charger(id).ownershipAdmitted ? this.store.getState(this.ownershipKey(id)) ?? null : null; }
   persist() {
+    // Assessors only observe the production view. A diagnostic storage failure
+    // must not block charging or an outstanding physical restoration duty.
+    const now = this.clock();
+    try { this.sessionDiagnostics.observe(this.views(now), now); this.diagnosticsError = null; }
+    catch { this.diagnosticsError = 'Session diagnostics could not be saved.'; }
+    try { this.physicalTests.update(this.status(now), now); this.physicalTestsError = null; }
+    catch { this.physicalTestsError = 'The charging assessment could not be saved.'; }
     const view = this.status();
     const chargers = Object.fromEntries(Object.entries(this.chargers).map(([id, item]) => [id,
       { association: item.association, controls: item.controls, replan: item.replan, request: item.request, plan: item.plan, progress: item.progress, supplyEstimate: item.supplyEstimate,
@@ -1110,16 +1122,30 @@ export class ChargingRuntime {
     }
     await this.reconcile(id, { resume: true });
   }
+  chargingTestAction(action, input) {
+    this.checkControlAuthority();
+    const method = { preview: 'preview', start: 'start', schedule: 'confirmSchedule', cancel: 'cancel' }[action];
+    if (!method) throw new Error('Unknown charging assessment action.');
+    return this.physicalTests[method](input, this.status());
+  }
   status(now = this.clock()) {
     const chargers = this.views(now);
     const usedBy = id => chargers.find(charger => charger.vehicle?.state === 'identified'
       && charger.vehicle.id === id && charger.values.connected.value === true)?.id ?? null;
     const vehicleFeeds = Object.values(this.vehicleFeeds).filter(feed => feed.mqttTopic).map(feed => ({
       id: feed.id, label: feed.label, provider: feed.provider, topic: feed.mqttTopic,
-      reception: vehicleReception(feed, now), usedByChargerId: usedBy(feed.id) }));
-    if (this.teslaCapture) vehicleFeeds.push({ id: 'tesla', label: 'Tesla', provider: 'teslamate', topic: this.teslaCapture.topic ?? null,
-      reception: this.teslaCapture.reception?.() ?? null, usedByChargerId: usedBy('tesla') });
-    return { revision: this.revision, timezone: TIME_ZONE, controls: { priority: this.controls.priority, revision: this.controls.revision }, settings: this.settings, chargers, vehicleFeeds, coordination: this.coordination, error: this.error ?? null };
+      reception: vehicleReception(feed, now), setup: bmwVehicleSetup(feed.reading, { available: vehicleFeedAvailable(feed, now), now }),
+      usedByChargerId: usedBy(feed.id) }));
+    if (this.teslaCapture) {
+      const tesla = this.teslaCapture.snapshot();
+      vehicleFeeds.push({ id: 'tesla', label: 'Tesla', provider: 'teslamate', topic: this.teslaCapture.topic ?? null,
+        reception: this.teslaCapture.reception?.() ?? null,
+        setup: teslaVehicleSetup(tesla, { now }), usedByChargerId: usedBy('tesla') });
+    }
+    return { revision: this.revision, timezone: TIME_ZONE, controls: { priority: this.controls.priority, revision: this.controls.revision }, settings: this.settings, chargers, vehicleFeeds, coordination: this.coordination, error: this.error ?? null,
+      diagnostics: { ...this.sessionDiagnostics.status(now), ...(this.diagnosticsError ? { available: false, error: this.diagnosticsError } : {}) },
+      physicalTests: { ...this.physicalTests.status(), canManage: !this.closed && this.canControl() && ['mqtt', 'providers'].includes(this.config.input),
+        ...(this.physicalTestsError ? { available: false, error: this.physicalTestsError } : {}) } };
   }
   async close() {
     this.closed = true; clearInterval(this.timer); clearTimeout(this.boundaryTimer); clearTimeout(this.streamTimer);

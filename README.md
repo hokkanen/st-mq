@@ -24,7 +24,9 @@ setup are integrated. Charger 1 accepts any car, using manual battery values unt
 BMW or Tesla is identified, and can use opt-in cloud Easee schedules or native
 OCPP pauses that expire on the charger. Charger 2
 is a physical Shelly EVSE with commissioning-gated MQTT control. Tesla and BMW are read-only vehicle feeds for either charger. Heating mode and charging permission are
-independent. See [charging controls and estimates](docs/charging.md).
+independent. The Charging setup section explains BMW/Tesla feeds and opens guided
+physical tests; each charger’s Session report follows normal charging and keeps
+recent outcomes. See [charging controls, tests and reports](docs/charging.md).
 ENTSO-E has a direct Elering backup; FMI supplies temperature
 and solar forecasts, with Open-Meteo as backup. Current outdoor temperature uses
 FMI station observations, with Open-Meteo estimates as backup. Offline

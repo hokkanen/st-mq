@@ -187,3 +187,60 @@ test('replica rejects a current snapshot missing its recorded configuration inst
   assert.match(status.charging.error, /saved charging data is unavailable/);
   assert.equal(digest(), originalDigest);
 });
+
+test('replica preserves recorded charging assessments while withdrawing live evidence and test authority', async t => {
+  const settings = chargingSettings(), outcome = { state: 'target-confirmed', at: snapshotAt - 60_000, basis: 'vehicle-reading' };
+  const current = { id: 'recorded-session', chargerId: 'charger1', startedAt: snapshotAt - 3600_000,
+    observedAt: snapshotAt, evaluatedAt: snapshotAt, endedAt: null, behavior: 'expected', evidenceStale: false,
+    outcome, current: { physicalFresh: true, charging: false }, findings: [], coverage: { targetAttainment: { state: 'verified', at: outcome.at } },
+    plans: [{ at: snapshotAt - 3600_000, periods: [{ startAt: snapshotAt - 1800_000, endAt: null }] }], timeline: [] };
+  const finished = { ...structuredClone(current), id: 'earlier-session', endedAt: snapshotAt - 600_000 };
+  const run = { id: 'recorded-test', chargerId: 'charger1', vehicleId: 'bmw', phase: 'observing',
+    deadlineAt: snapshotAt + 60_000, updatedAt: snapshotAt, findings: [], milestones: {}, report: { id: current.id } };
+  const feed = { id: 'bmw', provider: 'bmw-cardata', reception: { available: true, connected: true },
+    setup: { available: true, fields: { soc: { value: 80, available: true, measuredAt: snapshotAt - 1000 },
+      atHome: { value: true, available: true, measuredAt: snapshotAt - 1000 } } } };
+  const { app, root, digest, originalDigest, advance } = await fixture(t, { version: 6, chargers: {}, view: {
+    settings, chargers: CHARGER_DEFINITIONS.map(definition => buildCharger({ definition,
+      settings: settings.chargers[definition.id], now: snapshotAt })), vehicleFeeds: [feed],
+    diagnostics: { version: 1, chargers: [{ id: 'charger1', current, recent: [finished] }] },
+    physicalTests: { version: 1, canManage: true, runs: [run] },
+  } });
+  const before = app.status().charging, projected = before.diagnostics.chargers[0];
+  assert.deepEqual(projected.current.outcome, outcome);
+  assert.equal(projected.current.behavior, 'expected', 'Recorded assessment is not reinterpreted by the viewer');
+  assert.equal(projected.current.evaluatedAt, snapshotAt);
+  assert.equal(projected.current.evidenceStale, true);
+  assert.equal(projected.current.recorded, true);
+  assert.equal(projected.current.liveAvailable, false);
+  assert.deepEqual(projected.current.current, current.current, 'Physical facts remain explicitly recorded rather than overwritten');
+  assert.equal(projected.recent[0].evidenceStale, false, 'An ended report retains its historical conclusion');
+  assert.deepEqual(projected.current.plans, current.plans);
+  assert.equal(before.physicalTests.canManage, false);
+  assert.equal(before.physicalTests.runs[0].phase, 'observing');
+  assert.equal(before.physicalTests.runs[0].recorded, true);
+  assert.equal(before.physicalTests.runs[0].liveAvailable, false);
+  assert.equal(before.vehicleFeeds[0].setup.available, false);
+  assert.equal(before.vehicleFeeds[0].setup.fields.soc.available, false);
+  assert.equal(before.vehicleFeeds[0].setup.fields.soc.value, 80);
+  assert.equal(before.vehicleFeeds[0].reception.available, false);
+  advance(); assert.deepEqual(app.status().charging, before, 'Elapsed viewer time never completes a physical test');
+  for (const action of ['preview', 'start', 'schedule', 'cancel']) {
+    const denied = await fetch(`${root}/api/charging/tests/${action}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+    assert.equal(denied.status, 405);
+  }
+  assert.equal(digest(), originalDigest);
+});
+
+test('replica rejects unsupported assessment versions without altering publication', async t => {
+  const settings = chargingSettings();
+  for (const type of ['diagnostics', 'physicalTests']) await t.test(type, async t => {
+    const { app, digest, originalDigest } = await fixture(t, { version: 6, chargers: {}, view: {
+      settings, chargers: CHARGER_DEFINITIONS.map(definition => buildCharger({ definition,
+        settings: settings.chargers[definition.id], now: snapshotAt })),
+      [type]: type === 'diagnostics' ? { version: 0, chargers: [] } : { version: 0, runs: [] },
+    } });
+    assert.equal(app.status().charging.available, false);
+    assert.equal(digest(), originalDigest);
+  });
+});
