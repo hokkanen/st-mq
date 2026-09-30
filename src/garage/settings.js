@@ -3,7 +3,7 @@
 export const GARAGE_POLICY_VERSION = 'garage-thermal-reserve-v1';
 export const GARAGE_HEAT_TRANSFER_SAFETY_FACTOR = 2;
 export const DEFAULT_GARAGE_SETTINGS = Object.freeze({
-  enabled: false, awayTargetC: 5, maxSensorAgeMs: 180_000,
+  enabled: false, awayTargetC: 5, maxSensorAgeMs: 180_000, door_travel_seconds: 18,
   protection: Object.freeze({ approved: false, version: GARAGE_POLICY_VERSION,
     marginC: 1, pipeOutsideDiameterMm: 21, pipeWallMm: 1, heatTransferWPerM2K: 20 }),
 });
@@ -24,6 +24,7 @@ export function garageSettings(input = {}) {
   number(output, 'awayTargetC', 0, 31);
   if (!Number.isInteger(output.awayTargetC * 2)) throw new Error('Garage awayTargetC must use half-degree steps');
   number(output, 'maxSensorAgeMs', 30_000, 4 * 3_600_000);
+  number(output, 'door_travel_seconds', 1, 300);
   const policy = output.protection;
   if (typeof policy.approved !== 'boolean') throw new Error('Garage protection approval must be boolean');
   if (policy.version !== GARAGE_POLICY_VERSION) throw new Error('Unsupported garage protection policy version');

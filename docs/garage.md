@@ -20,6 +20,28 @@ if stored objects remain cold. Air can warm faster than surfaces; added moisture
 can cause condensation on those surfaces. The time is guidance, not proof of safe
 surface temperatures. The advisory has an age; the chosen heating mode has no expiry.
 
+## Garage doors
+
+The overview permanently shows the garage from the driveway: one centered gable
+with **Left = Door 2** and **Right = Door 1**. Selecting any part of the facade
+opens the Garage doors dialog. Only the dialog's individual door buttons operate
+the doors; they offer Open, Close or configured Stop according to current evidence
+and command availability. Left and Right stay in the same positions at every
+screen size. Other configured doors keep their names rather than being assigned
+an assumed position.
+
+Both views share the same illustration and reported states. Missing, stale or
+ambiguous reports remain unknown. Sending or acknowledging a command does not
+establish motion or position. Existing command receipts, read-only restrictions
+and device authority checks still apply.
+
+`garage.door_travel_seconds` is **18 seconds** by default, shared by both doors for
+opening and closing. Travel animation uses constant linear speed; reversing
+direction uses the remaining distance rather than restarting a full travel time.
+Positions inferred during travel are labeled as estimates and corrected by device
+reports. The current contact integration has no measured opening percentage.
+This setting changes only the visualization, not motor timing or door controls.
+
 ## Local temperature regulation
 
 The heat-pump controller retains the requested target and external-control

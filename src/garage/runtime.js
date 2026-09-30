@@ -159,6 +159,7 @@ export class GarageRuntime {
     return { settings: copy(this.settings), status: control?.status ?? 'unavailable', reason: this.lastError ?? reason,
       mode: selection?.mode ?? null, normalTargetC: selection?.normalTargetC ?? null,
       awayTargetC: this.settings.awayTargetC,
+      doorTravelSeconds: this.settings.door_travel_seconds,
       requestedTargetC, effectiveTargetC: control?.effectiveTargetC ?? null,
       targetConfirmed: Boolean(control && control.externalEnabled && control.targetC === requestedTargetC),
       changedAt: selection?.changedAt ?? null,

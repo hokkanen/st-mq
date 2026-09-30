@@ -159,12 +159,23 @@ export async function checkDashboardLayout({ evaluate, width }) {
     return button.left > (card.left + card.right) / 2 && button.top >= card.top
       && button.bottom < card.top + 90 && button.right <= card.right;
   })`), true, `Home Fireplace and Garage chart shortcuts remain at the top right at ${width}px`);
-  assert.equal(await evaluate(`['home', 'garage'].every(area => {
-    const overview = document.querySelector('#' + area + '-control .overview-zone');
+  assert.equal(await evaluate(`(() => {
+    const overview = document.querySelector('#home-control .overview-zone');
     const bounds = overview.getBoundingClientRect(), cells = [...overview.children].map(node => node.getBoundingClientRect());
     return cells.length === 3 && cells.every((cell, index) => cell.left >= bounds.left - 1 && cell.right <= bounds.right + 1
       && Math.abs(cell.top - cells[0].top) <= 1 && (index === 0 || cell.left >= cells[index - 1].right));
-  })`), true, `Home and Garage retain three aligned overview columns at ${width}px`);
+  })()`), true, `Home retains three aligned overview columns at ${width}px`);
+  assert.equal(await evaluate(`(() => {
+    const overview = document.querySelector('#garage-control .overview-zone'), bounds = overview.getBoundingClientRect();
+    const temperature = overview.querySelector('.overview-reading').getBoundingClientRect();
+    const target = overview.querySelector('.overview-request').getBoundingClientRect();
+    const doors = overview.querySelector('.overview-doors').getBoundingClientRect();
+    return Math.abs(temperature.top-target.top)<=1 && temperature.right<=target.left
+      && temperature.left>=bounds.left-1 && target.right<=bounds.right+1
+      && doors.top>=Math.max(temperature.bottom,target.bottom)
+      && Math.abs(doors.left-bounds.left)<=1 && Math.abs(doors.right-bounds.right)<=1
+      && overview.querySelector('.garage-facade').checkVisibility();
+  })()`), true, `Garage shows two aligned metrics with a permanent full-width garage facade below at ${width}px`);
   assert.equal(await evaluate(`['indoor', 'outdoor', 'requested', 'price', 'garage-temperature', 'garage-door-summary', 'garage-requested', 'garage-price'].every(id => {
     const value = document.getElementById(id), cell = value.closest('.overview-zone > div').getBoundingClientRect();
     return [...value.querySelectorAll('.status-detail-trigger, .status-detail-label')].every(trigger => {

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { garageDoorControl, garageDoorDevices } from '../chart/garage-doors.js';
+import { garageDoorControl, garageDoorDevices, garageDoorLayout } from '../chart/garage-doors.js';
 
 const now = Date.parse('2026-09-24T12:00:00Z');
 const door = (value = 0, extra = {}) => ({
@@ -53,6 +53,7 @@ test('sending and broker acknowledgement retain the observed state and block rep
   const device = door(), current = status(device);
   const sending = garageDoorControl(current, device, { busy: true, actionKind: 'cover', actionDeviceId: device.id });
   assert.equal(sending.state, 'Closed');
+  assert.equal(sending.position, 'closed', 'Delivery cannot move the illustrated shutter');
   assert.equal(sending.label, 'Sending…');
   assert.equal(sending.sending, true);
   assert.equal(sending.disabled, true);
@@ -60,6 +61,7 @@ test('sending and broker acknowledgement retain the observed state and block rep
     operation(device, 'open', phase);
     const view = garageDoorControl(current, device);
     assert.equal(view.state, 'Closed');
+    assert.equal(view.position, 'closed');
     assert.equal(view.moving, false);
     assert.equal(view.label, 'Waiting…');
     assert.equal(view.action, null);
@@ -216,4 +218,75 @@ test('garage door discovery uses configured devices and signals without hard-cod
   assert.deepEqual(current, before, 'Rendering never rewrites readings, capabilities or operations');
   assert.deepEqual(garageDoorDevices(), []);
   assert.deepEqual(garageDoorDevices({}), []);
+});
+
+test('the front elevation maps Left to Door 2 and Right to Door 1 by signal, independently of IDs, labels and device order', () => {
+  const right = door(0, { id: 'west_motor', label: 'Left old label', readings: {
+    garage_door1_open: { value: 0, unit: 'state', stale: false, observedAt: now },
+  } });
+  const left = door(1, { id: 'east_motor', label: 'Right old label', readings: {
+    garage_door2_open: { value: 1, unit: 'state', stale: false, observedAt: now },
+  } });
+  for (const devices of [[right, left], [left, right]]) {
+    const current = { now, equipment: { devices } }, before = structuredClone(current);
+    const layout = garageDoorLayout(current);
+    assert.deepEqual(layout.map(({ side, label, number, device }) => ({ side, label, number, id: device?.id })), [
+      { side: 'left', label: 'Left', number: 2, id: 'east_motor' },
+      { side: 'right', label: 'Right', number: 1, id: 'west_motor' },
+    ]);
+    assert.equal(layout[0].device, left, 'The physical bay keeps its configured actuator identity');
+    assert.equal(layout[1].device, right);
+    assert.deepEqual(current, before, 'Layout does not rewrite configuration or device evidence');
+  }
+});
+
+test('missing or ambiguous spatial mappings never guess a garage bay from device order, labels or IDs', () => {
+  const mapped = (id, signals) => door(0, { id, readings: Object.fromEntries(signals.map(signal =>
+    [signal, { value: 0, unit: 'state', stale: false, observedAt: now }])) });
+  for (const current of [undefined, {}, { equipment: { devices: [door(0, { id: 'garage_door1', label: 'Door 1' })] } }]) {
+    assert.deepEqual(garageDoorLayout(current).map(bay => bay.device), [null, null]);
+  }
+  const left = mapped('left_motor', ['garage_door2_open']);
+  const right = mapped('right_motor', ['garage_door1_open']);
+  const duplicate = mapped('duplicate', ['garage_door1_open']);
+  let layout = garageDoorLayout({ equipment: { devices: [right, duplicate, left] } });
+  assert.equal(layout[0].device, left);
+  assert.equal(layout[1].device, null, 'Two possible actuators cannot claim the same bay');
+  layout = garageDoorLayout({ equipment: { devices: [mapped('combined', ['garage_door1_open', 'garage_door2_open'])] } });
+  assert.deepEqual(layout.map(bay => bay.device), [null, null], 'One ambiguous contact device cannot operate both bays');
+  layout = garageDoorLayout({ equipment: { devices: [{ ...right, enabled: false }, left] } });
+  assert.equal(layout[0].device, left);
+  assert.equal(layout[1].device, null, 'A disabled device does not reserve a controllable bay');
+});
+
+test('unavailable reports retain their physical bay without presenting closed state or granting movement', () => {
+  const right = door(0, { id: 'right_motor', readings: {
+    garage_door1_open: { value: 0, unit: 'state', stale: true, observedAt: now },
+  } });
+  const current = { role: 'master', now, equipment: { devices: [right] } };
+  const layout = garageDoorLayout(current);
+  assert.equal(layout[0].device, null);
+  assert.equal(layout[1].device, right);
+  const view = garageDoorControl(current, layout[1].device);
+  assert.equal(view.state, 'Unknown');
+  assert.equal(view.tone, 'unknown');
+  assert.equal(view.position, 'unknown');
+  assert.equal(view.action, null);
+  assert.equal(view.disabled, true);
+});
+
+test('reported motion is separate from binary contact position and does not fabricate travel progress', () => {
+  for (const value of [0, 1]) for (const coverState of ['opening', 'closing']) {
+    const device = door(value);
+    device.readings.side_entrance_open.coverState = coverState;
+    const view = garageDoorControl(status(device), device);
+    assert.equal(view.moving, true);
+    assert.equal(view.position, value === 0 ? 'closed' : 'open');
+    assert.equal(view.state, coverState === 'opening' ? 'Opening' : 'Closing');
+  }
+  const device = door(0.5);
+  const view = garageDoorControl(status(device), device);
+  assert.equal(view.state, 'Unknown', 'Fractional binary contact input is not a supported position percentage');
+  assert.equal(view.position, 'unknown');
+  assert.equal(view.disabled, true);
 });

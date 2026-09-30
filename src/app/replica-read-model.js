@@ -126,6 +126,7 @@ function garageSnapshot(snapshot, read) {
   }]));
   return { readOnly: true, recorded: true, snapshotAt: at, settings: settings ?? {},
     mode: mode?.mode ?? null, normalTargetC: mode?.normalTargetC ?? null, awayTargetC: mode?.awayTargetC ?? null,
+    doorTravelSeconds: settings?.door_travel_seconds ?? null,
     requestedTargetC, effectiveTargetC: saved?.control?.effectiveTargetC ?? null, targetConfirmed: false,
     warmingWarning: copy(mode?.warmingWarning ?? null),
     protection: { status: 'unavailable', available: false, active: null, reason,

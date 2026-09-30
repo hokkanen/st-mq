@@ -106,6 +106,7 @@
       "enabled": false,
       "awayTargetC": 5,
       "maxSensorAgeMs": 180000,
+      "door_travel_seconds": 18,
 
       "protection": {
         "approved": false,
@@ -588,6 +589,7 @@
       "enabled": "bool",
       "awayTargetC": "float(0,31)",
       "maxSensorAgeMs": "int(30000,14400000)",
+      "door_travel_seconds": "float(1,300)",
 
       "protection": {
         "approved": "bool",

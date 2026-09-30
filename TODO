@@ -1,3 +1,30 @@
+Implemented 2026-09-30 — Persistent two-door Garage facade and linear travel
+- Replace separate small door illustrations with one shared front elevation:
+  centered gable ridge, paired sectional shutters and coherent frame/trim.
+  The permanently visible overview only opens the existing control dialog;
+  the dialog provides individual door actions in their physical positions.
+- Map Left to garage_door2_open and Right to garage_door1_open independently of
+  device order/labels. Keep numerical IDs secondary and preserve additional
+  configured doors without inventing their location. Missing, stale or ambiguous
+  bay mappings remain unknown in the illustration and aggregate status.
+- Add the owner-requested shared garage.door_travel_seconds default of 18 for
+  both doors and directions. Animate reported movement linearly, preserve progress
+  across polling/reversals and label inferred positions as estimates. Requests
+  and acknowledgements do not manufacture movement; terminal reports correct
+  estimates. Respect reduced motion and maintain keyboard focus and touch targets.
+- F1/F3/F4/F5/F7: retain equipment command ownership, pending/receipt semantics,
+  fresh-state/capability gates, configured identities and read-only restrictions.
+  Keep timing configuration-owned and expose it in live/recorded status; no motor
+  timing, schema, recording, heating, migration or compatibility alias changes.
+  Remove the superseded separate-door artwork and device-order summary logic.
+- Validation: 3,799 routine tests passed, one optional test skipped; 50 focused
+  final Garage checks passed. Production build and isolated Garage/door Chromium
+  suites passed, including both themes, 320/390/1440px and short landscape,
+  spatial command mapping, overview navigation only, linear progress, reduced
+  motion, missing reports, pending actions, keyboard focus and read-only gating.
+  Synthetic screenshots reviewed. Build retains its existing bundle-size advisory.
+  No household configuration, equipment, deployment or push.
+
 Implemented 2026-09-30 — Audit public defaults and review configuration before applying
 - Audited 318 scalar public option leaves, including all 18 Garage leaves,
   against current configuration/runtime consumers. No unused public Garage

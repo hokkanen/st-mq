@@ -545,7 +545,6 @@
                 <small class="overview-note">Rear sensor</small>
                 <small id="garage-temperature-age" class="overview-note">Waiting for readings</small>
               </div>
-              <div class="overview-doors"><p class="overview-label">Doors</p><strong id="garage-door-summary"><button id="garage-doors-shortcut" class="status-detail-trigger" type="button" aria-label="Garage doors: Unknown. Show controls" aria-haspopup="dialog" aria-expanded="false" aria-controls="garage-doors-dialog"><span id="garage-doors-label" class="status-detail-label">Unknown</span></button></strong></div>
               <div class="overview-request">
                 <p id="garage-requested-label" class="overview-label">Room target</p>
                 <strong id="garage-requested" role="status">—</strong>
@@ -553,6 +552,13 @@
                   <p id="garage-price-label" class="overview-label">All-in price</p>
                   <div class="overview-price-value"><strong id="garage-price">—</strong><small id="garage-price-unit"></small></div>
                 </div>
+              </div>
+              <div id="garage-door-summary" class="overview-doors">
+                <button id="garage-doors-shortcut" class="status-detail-trigger garage-overview-trigger" type="button" aria-label="Garage doors: Unknown. Show controls" aria-haspopup="dialog" aria-expanded="false" aria-controls="garage-doors-dialog">
+                  <span class="garage-overview-heading"><span>Garage doors</span><span class="garage-overview-link">Controls <span aria-hidden="true">↗</span></span></span>
+                  <span id="garage-facade-overview"></span>
+                  <span id="garage-doors-label" class="status-detail-label garage-overview-status">Unknown</span>
+                </button>
               </div>
             </div>
           </summary>
@@ -881,7 +887,7 @@
   <footer>Finnish local time · Europe/Helsinki · Weather: <a href="https://en.ilmatieteenlaitos.fi/open-data">FMI</a> / <a href="https://open-meteo.com/">Open-Meteo</a> (DWD ICON)</footer>
   <dialog id="garage-doors-dialog" class="control-dialog garage-doors-dialog" aria-labelledby="garage-doors-title" aria-describedby="garage-doors-help">
     <h2 id="garage-doors-title">Garage doors</h2>
-    <p id="garage-doors-help" class="muted">Choose a door to open or close. Its reported position is shown below.</p>
+    <p id="garage-doors-help" class="muted">Viewed from the driveway. Tap a door to operate it.</p>
     <div id="garage-doors-content" class="garage-door-controls"></div>
     <div class="confirmation-actions"><button id="garage-doors-back" class="secondary-button" type="button" autofocus>Go back</button></div>
   </dialog>

@@ -53,7 +53,8 @@ try {
   await send('Page.navigate',{url:`http://127.0.0.1:${app.server.address().port}/`});
   await until("document.getElementById('updated')?.textContent.startsWith('Updated')");
   mkdirSync('var',{recursive:true});
-  await checkEquipmentBrowser({evaluate,command,context:'cdp',until,garageDoorsOnly,caravanOnly});
+  const setReducedMotion=value=>send('Emulation.setEmulatedMedia',{features:[{name:'prefers-reduced-motion',value:value?'reduce':'no-preference'}]});
+  await checkEquipmentBrowser({evaluate,command,context:'cdp',until,garageDoorsOnly,caravanOnly,setReducedMotion});
   assert.deepEqual(errors,[]);
   console.log(caravanOnly ? 'Caravan browser checks passed: supported settings, automatic power drafts and saving, recording states, authority, and both themes at 320/390/1440px.' : garageDoorsOnly ? 'Garage door browser checks passed: modal navigation, focus, pending commands, live reports, authority, and both themes at desktop, mobile and landscape sizes.' : 'Equipment browser checks passed: charger phase availability, local OCPP setup placement and keyboard disclosure, flat vehicle feeds with MQTT diagnostics, mocked equipment controls, Caravan layout, DHWR feedback and five responsive viewports.');
 } finally {

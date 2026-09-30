@@ -2,7 +2,7 @@ import { actionReceiptRecent } from './action-receipts.js';
 import { isReadOnlyReplica } from './replica-status.js';
 import { mitsubishiReadings, mitsubishiCompressor, renderMitsubishiReadings } from './mitsubishi.js';
 import { equipmentReadingRows } from './equipment.js';
-import { garageDoorDevices } from './garage-doors.js';
+import { garageDoorControl, garageDoorLayout } from './garage-doors.js';
 import { setStatusDetail } from './status-details.js';
 import { renderCurrentPrice } from './current-price.js';
 import { garageHeatingWarning } from './heating-warning.js';
@@ -55,37 +55,18 @@ export function renderGarage(document, status = {}) {
   set('garage-temperature-age', !main || main.stale ? 'Waiting for current readings' : main.qualifier ?? 'Readings current');
   const temperatureNote = document.getElementById('garage-temperature-age');
   if (temperatureNote) temperatureNote.hidden = Boolean(main && !main.stale && !main.qualifier);
-  const doors = garageDoorDevices(status).flatMap(device => {
-    const rows = equipmentReadingRows(device).filter(row => /_open$/.test(row.signal));
-    return rows.length ? rows.map(row => ({ ...row, name: device.label ?? row.label }))
-      : [{ name: device.label ?? 'Door', value: 'Unknown', stale: true, detail: 'No usable reading received' }];
+  const layout = garageDoorLayout(status);
+  const doors = layout.map(bay => {
+    const view = bay.device ? garageDoorControl(status, bay.device) : { state: 'Unknown', tone: 'unknown' };
+    return { name: bay.label, value: view.state, stale: view.tone === 'unknown' };
   });
-  const openDoors = doors.filter(row => row.value === 'Open'), closedDoors = doors.filter(row => row.value === 'Closed');
-  const movingDoors = doors.filter(row => ['Opening', 'Closing'].includes(row.value));
-  const unknownDoors = doors.filter(row => !['Open', 'Closed'].includes(row.value));
-  const doorName = row => /^garage_door(\d+)_open$/.test(row.signal)
-    ? `Door ${row.signal.match(/^garage_door(\d+)_open$/)[1]}` : row.name.replace(/^Garage\s+/i, '');
-  let doorSummary = 'Unknown';
-  if (doors.length === 1) doorSummary = doors[0].value;
-  else if (movingDoors.length) {
-    doorSummary = doors.length === 2 && movingDoors.length === 2 && movingDoors[0].value === movingDoors[1].value
-      ? `Both ${movingDoors[0].value.toLowerCase()}`
-      : movingDoors.map(row => `${doorName(row)} ${row.value.toLowerCase()}`).join(' · ');
-  } else if (doors.length === 2) {
-    if (openDoors.length === 2) doorSummary = 'Both open';
-    else if (closedDoors.length === 2) doorSummary = 'Both closed';
-    else if (openDoors.length === 1) doorSummary = `${doorName(openDoors[0])} open${unknownDoors.length ? ' · other unknown' : ''}`;
-    else if (unknownDoors.length === 2) doorSummary = 'Both unknown';
-    else doorSummary = `${doorName(unknownDoors[0])} unknown`;
-  } else if (doors.length > 2) {
-    doorSummary = [[openDoors.length, 'open'], [closedDoors.length, 'closed'], [unknownDoors.length, 'unknown']]
-      .filter(([count]) => count).map(([count, state]) => `${count} ${state}`).join(' · ');
-  }
+  const doorSummary = doors[0].value === doors[1].value ? `Both ${doors[0].value.toLowerCase()}`
+    : doors.filter(row => row.value !== 'Closed').map(row => `${row.name} ${row.value.toLowerCase()}`).join(' · ');
   set('garage-doors-label', doorSummary);
   document.getElementById('garage-doors-shortcut')?.setAttribute('aria-label', `Garage doors: ${doorSummary}. Show controls`);
   const doorStatus = document.getElementById('garage-door-summary');
-  doorStatus?.classList.toggle('stale', !doors.length || doors.some(row => row.stale));
-  if (doorStatus) doorStatus.dataset.state = doors.length && closedDoors.length === doors.length && !doors.some(row => row.stale)
+  doorStatus?.classList.toggle('stale', doors.some(row => row.stale));
+  if (doorStatus) doorStatus.dataset.state = doors.every(row => row.value === 'Closed' && !row.stale)
     ? 'confirmed' : 'attention';
 
   const readings = mitsubishiReadings(garage, now);

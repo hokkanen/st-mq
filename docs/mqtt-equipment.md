@@ -239,6 +239,11 @@ Commands are non-retained QoS 1 requests and are not replayed after failure.
 The UI distinguishes sending, sent and subsequently reported state; it never
 changes the contact value optimistically. See [HA setup and SmartThings fields](homeassistant-mqtt.md).
 
+The Garage facade uses the shared `garage.door_travel_seconds` setting for linear
+opening and closing motion of both doors (18 seconds by default). This duration
+does not establish actual position, alter contact history or confirm a command;
+see [Garage configuration](configuration.md#keep-the-private-file-small).
+
 Use different exact topics for different publishers and for status versus commands.
 MQTT does not assign source priority to publishers sharing a topic. Each configured
 measurement has one selected connection and recorded signal; there is no backup

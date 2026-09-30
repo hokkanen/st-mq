@@ -54,15 +54,25 @@ loaded configuration with actual sender readback. Configured approval is not
 evidence that the sender accepted it or that protection is available.
 See [Garage heating](garage.md).
 
-The current Garage configuration contains only manual-control enablement, the
-Away preset, temperature evidence freshness, local protection parameters and
-the pump/sender connections. `maxSensorAgeMs` limits displayed air-temperature
-evidence; source-specific deadlines can expire it sooner. Each connection's
+The current Garage configuration contains manual-control enablement, the
+Away preset, temperature evidence freshness, door visualization timing, local
+protection parameters and the pump/sender connections. `maxSensorAgeMs` limits
+displayed air-temperature evidence; source-specific deadlines can expire it
+sooner. Each connection's
 `maxAgeMs` limits its own reported status. `adapter.electricalSource` selects
 native counter or power evidence for qualified Garage electricity intervals;
 `none` disables interval derivation while native telemetry remains diagnostic.
 There are no configured Normal targets, learned building coefficients or
 economic scheduling settings for Garage. Those retired fields are rejected.
+
+`garage.door_travel_seconds` is the full opening and closing time used for both
+doors' linear visual movement. Its shared default is 18 seconds; accepted values
+are 1–300 seconds, including fractions. For example,
+`{"garage":{"door_travel_seconds":20}}` overrides the shared duration without
+changing the equipment inventory. Use **Apply reviewed configuration** after
+editing it. This is a visualization assumption, not measured door position or
+confirmation that a command completed. It does not change door commands,
+timeouts or recorded contact states.
 
 Only write the leaves you need to change. Leave default topics, timing values,
 equipment lists and empty credential placeholders out of the private file.

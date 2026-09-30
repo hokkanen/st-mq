@@ -30,6 +30,15 @@ configuration:
       temperature drop in °C (default 1.5); away periods have no comfort-drop
       limit. The comfort reference is learned from continuous normal heating.
       Away until and Pause until are temporary dashboard controls.
+  garage:
+    name: Garage heating and doors
+    description: >-
+      Configure manual heating, the Away target, temperature freshness, local
+      protection and pump/sender connections. door_travel_seconds is the full
+      opening and closing time shared by both doors for linear visual movement
+      (default 18 seconds, range 1–300). This is an animation assumption, not a
+      measured position or command confirmation. Save options, then choose
+      Apply reviewed configuration in the application.
   electricity:
     name: Electricity rates — c/kWh EXCLUDING VAT
     description: >-
