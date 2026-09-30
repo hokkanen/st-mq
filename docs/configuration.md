@@ -123,10 +123,12 @@ access permits simulation but cannot approve or cancel this one-cycle scope.
 Home has a durable **Automatic / Pause** choice, bound to the equipment
 identity and initially Pause without an end time. An optional resume time
 returns to Automatic; clearing the time keeps Pause. Normal/Reduced manual
-choices follow the pause duration, while Preheat always ends at its lease deadline. Garage instead has persistent manual Normal/Away
-selections with no expiry. Configuration owns its Away preset; the normal target
-is an explicit device-bound choice. The Pill retains the requested target and
-regulates locally. Changing a Garage mode does not replay native power/mode edits.
+choices follow the pause duration, while Preheat always ends at its lease
+deadline. Garage instead has persistent manual Normal/Away selections with no
+expiry. Configuration owns its Away preset; the normal target is an explicit
+device-bound choice. The heat-pump controller retains the requested target and
+regulates locally. Changing a Garage mode does not replay native power/mode
+edits.
 
 The environment is Live, Simulation or History viewer. Read-only views cannot
 change controls. Home automation, charging and Caravan power permissions remain
@@ -134,14 +136,15 @@ independent. `POST /api/automation` accepts Home only; Garage mode controls use
 `POST /api/garage/heating`. Garage enablement and sender wiring are installation
 configuration; fresh adapter evidence is still needed to send a request.
 
-The Freeze protection panel displays the Gen3 sender's state and compares
-configured parameters with reported settings. Installation approval, margin,
-pipe geometry and heat transfer come only from `garage.protection`; there is no
-dashboard override or settings-write endpoint. With Garage enabled and local
-write authority, the controller applies loaded configuration through the sender's
-fresh MQTT command route. Confirmation requires matching device readback.
-Network loss does not expire the sender's protection or Pill's selected target.
-The BLU H&T test source has no two-probe protection. See [Garage heating](garage.md).
+The Freeze protection panel displays the protection sender's state and
+compares configured parameters with reported settings. Installation approval,
+margin, pipe geometry and heat transfer come only from `garage.protection`;
+there is no dashboard override or settings-write endpoint. With Garage enabled
+and local write authority, the controller applies loaded configuration through
+the sender's fresh MQTT command route. Confirmation requires matching device
+readback. Network loss does not expire the sender's protection or the
+heat-pump controller's selected target. The BLU H&T test source has no
+two-probe protection. See [Garage heating](garage.md).
 
 ## Charging defaults and dashboard overrides
 
@@ -191,28 +194,30 @@ See [charging](charging.md).
 
 Heat-pump parameter edits remain in effect until deliberately changed. Native
 readback is authoritative; readable pump settings are not controller defaults.
-Garage reads the Pill’s confirmed real target separately from native 17°C.
-Normal/Away selection has no expiry. Local external-temperature activation needs
-fresh Bluetooth evidence; sensor failure has an explicit native 16°C fallback
-that preserves power. The sender’s independent frost rescue may select HEAT/ON.
-Home Heat control actions Normal, Reduction and Preheat retain their separate
-temporary behavior. The H66 assumptions `compressor_integral_a1`,
-`aux_integral_a2`, `compressor_hysteresis_c`, `aux_hysteresis_c` and `a2_basis`
-remain in configuration because the integration cannot read those settings.
-Caravan dehumidifier Automatic power and its OFF/ON thresholds are durable
-application choices bound to the configured appliance and Shelly BLU connection.
-Their initial values are enabled, 1°C OFF and 2°C ON; configuration owns only the
-sensor/actuator wiring. Disabling Automatic power exposes manual native power
-without disabling the independent native On/Off power test. Dehumidifier state
+Garage reads the heat-pump controller’s confirmed real target separately from
+native 17°C. Normal/Away selection has no expiry. Local external-temperature
+activation needs fresh Bluetooth evidence; sensor failure has an explicit
+native 16°C fallback that preserves power. The sender’s independent frost
+rescue may select HEAT/ON. Home Heat control actions Normal, Reduction and
+Preheat retain their separate temporary behavior. The H66 assumptions
+`compressor_integral_a1`, `aux_integral_a2`, `compressor_hysteresis_c`,
+`aux_hysteresis_c` and `a2_basis` remain in configuration because the
+integration cannot read those settings. Caravan dehumidifier Automatic power
+and its OFF/ON thresholds are durable application choices bound to the
+configured appliance and Shelly BLU connection. Their initial values are
+enabled, 1°C OFF and 2°C ON; configuration owns only the sensor/actuator
+wiring. Disabling Automatic power exposes manual native power without
+disabling the independent native On/Off power test. Dehumidifier state
 recording requires the Caravan meter to show a corresponding rise and fall;
 humidity is not required. The test temporarily owns native power and durably
 restores its previous setting before ordinary control resumes. A failed or
 inconclusive check keeps recording paused until the next appliance or meter
 connection is tested. The existing enabled `caravan` device in the same area
-supplies the power evidence; the test adds no configuration threshold defaults.
-Native heat-pump and dehumidifier controls directly change the device's settings;
-local charger setup explicitly configures the device connection. Those actions
-are labeled separately and do not change controller configuration defaults.
+supplies the power evidence; the test adds no configuration threshold
+defaults. Native heat-pump and dehumidifier controls directly change the
+device's settings; local charger setup explicitly configures the device
+connection. Those actions are labeled separately and do not change controller
+configuration defaults.
 
 ## Heating strategies and limits
 

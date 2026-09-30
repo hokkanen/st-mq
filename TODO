@@ -1,3 +1,20 @@
+Implemented 2026-09-30 — Garage connection placement and general device wording
+- Place Garage local frost protection directly below Garage heat pump in MQTT
+  connections. Preserve its configured routes and unknown/no-report state.
+- Use heat-pump controller and protection sender for general Garage roles in
+  current guides and comments. Use general Caravan sensor/appliance labels when
+  no model is supplied; retain explicit models and hardware/protocol requirements.
+- Shorten Garage protection & electricity to one balanced sentence; keep detailed
+  evidence qualifications in series descriptions and chart inspection.
+- F1/F3/F4/F7/F8: presentation only, preserving local control, protection, state
+  ownership and original evidence. Remove obsolete timed-OFF Garage guidance
+  from README; no compatibility aliases, configuration or runtime control changes.
+- Validation: all 74 focused connection, equipment, chart and Garage UI tests
+  passed. Production build and equipment/chart-view Chromium suites passed,
+  including desktop/mobile layouts and both themes; Garage screenshots reviewed.
+  Build retains its existing bundle-size advisory. Full regression and live
+  equipment checks were not run. Final diff and staged secret checks passed.
+
 Implemented 2026-09-30 — Caravan recording follows native power response
 - Replace the two-minute humidity agreement gate with a bounded native Off
   baseline / On / Off test against fresh Caravan meter power on each connection.

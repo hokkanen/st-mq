@@ -107,7 +107,8 @@ signal matches a built-in power/current reading replaces its field path while
 preserving the unit. An optional reading that has never arrived does not invalidate
 unrelated measurements. Home indoor signals
 retain their existing reporting and learning contract. Garage readings are displayed and recorded separately. Local protection runs
-on the sender and Pill; these readings never enter the Home temperature average.
+on the sender and heat-pump controller; these readings never enter the Home
+temperature average.
 
 ## Configure a Shelly
 

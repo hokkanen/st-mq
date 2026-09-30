@@ -171,9 +171,10 @@ fragments; complete short cycles receive their own checks. A dip followed by a
 return to the initial temperature cannot score zero error. Coefficient eligibility
 requires independent observed variation and sensitivity, not merely many rows.
 
-Garage temperature freshness is enforced locally by the Pill. Native BTHome
-receipt times distinguish new reports from cache reads. ST-MQ does not renew
-Garage temperature leases or run its pipe model; see [Garage control](garage.md).
+Garage temperature freshness is enforced locally by the heat-pump controller.
+Native BTHome receipt times distinguish new reports from cache reads. ST-MQ
+does not renew Garage temperature leases or run its pipe model; see [Garage
+control](garage.md).
 
 Three kinds of evidence remain distinct:
 

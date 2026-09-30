@@ -259,13 +259,22 @@ test('MQTT device introductions describe purpose independently of connection che
   assert.match(equipmentConnectionIntroduction({ kind: 'floor_override', connectionDetail: 'Output 0: unknown.' }), /Floor-heating valves.*Shelly MQTT/);
 });
 
-test('Garage MQTT order puts heat pump and temperatures before Caravan air, energy and both doors', () => {
+test('Garage MQTT order puts local frost protection directly below heat pump before temperatures and other equipment', () => {
   const devices = [
     { id: 'door2', kind: 'door' }, { id: 'caravan_dehumidifier', kind: 'dehumidifier' }, { id: 'caravan', kind: 'metered_switch' },
     { id: 'blu_ht', kind: 'temperature' }, { id: 'door1', kind: 'door' }, { id: 'garage-probes', kind: 'temperature' },
   ].map(device => ({ ...device, area: 'garage', topics: [] }));
-  const rows = equipmentConnections({ equipment: { devices, topicGroups: [{ id: 'garage-adapter',
-    topics: [{ role: 'Status', topic: 'invented/pump/state', direction: 'subscribe' }] }] } });
+  const protectionTopics = [topic('Sender status and protection readback', 'invented/protection/state'),
+    topic('Configured protection parameters', 'invented/protection/command', 'publish')];
+  const rows = equipmentConnections({ equipment: { devices, topicGroups: [
+    { id: 'garage-sender', label: 'Garage local frost protection', source: 'MQTT', topics: protectionTopics },
+    { id: 'garage-adapter', topics: [topic('Status', 'invented/pump/state')] },
+  ] } });
   assert.deepEqual(rows.filter(device => device.area === 'garage').map(device => device.id),
-    ['connection:garage-adapter:garage', 'garage-probes', 'blu_ht', 'caravan_dehumidifier', 'caravan', 'door1', 'door2']);
+    ['connection:garage-adapter:garage', 'connection:garage-sender:garage', 'garage-probes', 'blu_ht', 'caravan_dehumidifier', 'caravan', 'door1', 'door2']);
+  const protection = rows.find(device => device.id === 'connection:garage-sender:garage');
+  assert.equal(protection.label, 'Garage local frost protection');
+  assert.equal(protection.source, 'MQTT');
+  assert.deepEqual(protection.topics, protectionTopics);
+  assert.deepEqual(equipmentConnectionSummary(protection), { label: 'Configured', state: 'pending', recent: 'No live report yet' });
 });

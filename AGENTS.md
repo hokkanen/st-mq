@@ -242,21 +242,22 @@ permission to act. See [the configuration guide](docs/configuration.md).
 - Garage Normal/Away is durable device-bound application intent without expiry.
   Configuration owns the predefined Away target; the explicit normal target and
   mode selection survive restart. ST-MQ sends the resulting real target and
-  external-control enable to the Pill. The Pill persists these, regulates from
-  native BTHome temperature components and does not need mode labels. Ordinary
-  power/mode/fan/vane edits are one-shot device commands without automatic replay
-  or restoration. Temperature maintenance preserves OFF and never enforces HEAT;
+  external-control enable to the heat-pump controller. It persists these,
+  regulates from native BTHome temperature components and does not need mode
+  labels. Ordinary power/mode/fan/vane edits are one-shot device commands without
+  automatic replay or restoration. Temperature maintenance preserves OFF and never enforces HEAT;
   non-HEAT suspends/clears the offset and fresh HEAT recovery resumes the target.
   In HEAT, sensor timeout clears the offset and selects native 16°C preserving
   power. Successful external regulation first confirms native 17°C and sends
   measured temperature + 17°C - effective target. Freshness is received sensor
   evidence, never repeatedly reading a cache or a stored target.
-- Garage frost protection runs independently in the Gen3 probe sender and Pill.
-  The sender retains conservative front/rear pipe-reserve state and settings;
-  the Pill applies a minimum target and explicit HEAT/ON rescue. Protection cannot
-  overwrite the saved user target. The installation approval, protection margin,
-  pipe geometry and heat-transfer assumptions belong exclusively to
-  `garage.protection` in configuration. ST-MQ applies those loaded values to the
+- Garage frost protection runs independently in the probe sender and heat-pump
+  controller. The sender retains conservative front/rear pipe-reserve state and
+  settings;
+  the heat-pump controller applies a minimum target and explicit HEAT/ON rescue.
+  Protection cannot overwrite the saved user target. The installation approval,
+  protection margin, pipe geometry and heat-transfer assumptions belong exclusively
+  to `garage.protection` in configuration. ST-MQ applies those loaded values to the
   sender over MQTT; the dashboard only compares configured values with actual
   readback and cannot edit them. Configuration or a command acknowledgement is
   not proof that the sender applied it. Unavailable or stale protection remains

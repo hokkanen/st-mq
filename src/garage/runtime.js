@@ -14,8 +14,8 @@ const observationView = (row, now, maxAge) => ({ value: finite(row?.value) ? row
     || row.raw?.retained === true || row.raw?.auditOnly === true
     || (row.quality ?? []).some(flag => !['good', 'simulated', 'historical', 'converted_fahrenheit', 'estimated'].includes(flag)) });
 
-/** Manual, equipment-bound intent. Pill readback describes actual regulation;
- * neither a saved mode nor a reconnect grants permission to send commands. */
+/** Manual, equipment-bound intent. Heat-pump controller readback describes actual
+ * regulation; neither a saved mode nor a reconnect grants permission to send commands. */
 export class GarageRuntime {
   constructor({ engine, store, config, clock = Date.now, canControl = () => true }) {
     this.engine = engine; this.store = store; this.config = config; this.clock = clock; this.canControl = canControl;

@@ -60,12 +60,13 @@ target. Raising the effective requested target shows a condensation advisory:
 avoid wet or snowy cars and substantial added moisture for roughly 24 hours,
 and longer while surfaces and stored contents remain cold.
 
-The Pill stores the real target and external-control enable, without mode labels.
-It uses native BTHome temperature components for its local loop. With fresh input
-in HEAT it confirms native 17°C and feeds measured temperature + 17°C - effective
-target. It preserves OFF. Other native modes suspend the override; returning to
-HEAT with fresh evidence resumes it. A sensor timeout clears external sensing
-and selects native 16°C in HEAT while preserving power.
+The heat-pump controller stores the real target and external-control enable,
+without mode labels. It uses native BTHome temperature components for its
+local loop. With fresh input in HEAT it confirms native 17°C and feeds
+measured temperature + 17°C - effective target. It preserves OFF. Other native
+modes suspend the override; returning to HEAT with fresh evidence resumes it.
+A sensor timeout clears external sensing and selects native 16°C in HEAT while
+preserving power.
 
 Power, mode, fan and vane edits are explicit one-shot commands with readback.
 They have no automatic replay or expiry. Independent local frost protection can

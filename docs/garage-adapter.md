@@ -15,7 +15,8 @@ requires sensor evidence and native readback. A `set` command changes a single
 native field (power, mode, target, fan or vane), preserving unrelated fields.
 Acceptance, serial acknowledgement and confirmed native settings are distinct.
 There are no leases, renewals, timed power restoration or Normal/Away labels in
-the Pill. ST-MQ owns those labels and sends only the resulting target.
+the heat-pump controller. ST-MQ owns those labels and sends only the resulting
+target.
 
 ## Bluetooth and local regulation
 
@@ -31,7 +32,7 @@ reports, clear external input and set native 16°C in HEAT, preserving power.
 
 ## Protection sender
 
-The Gen3 sender retains its protection configuration and front/rear pipe state.
+The protection sender retains its configuration and front/rear pipe state.
 Its MQTT status uses `stmq-garage-sender/v1`; commands are bounded and tied to
 fresh sender identity/challenge. `garage.protection` in loaded configuration is
 the only source of installation approval and protection parameters; the dashboard
@@ -44,10 +45,10 @@ immediately. Apply configuration or restart to retry after reviewing the source;
 broker reconnects and sender reboots do not reset an exhausted retry budget.
 The Bluetooth protection
 interface carries the minimum target, rescue flag and input/model validity.
-The Pill applies the floor without replacing the user target and selects HEAT/ON
-when rescue requires it. Configured protection feed loss invokes the driver's
-explicit local fault policy; an installation without a protection source reports
-unavailable. A BLU H&T supplies temperature only.
+The heat-pump controller applies the floor without replacing the user target and
+selects HEAT/ON when rescue requires it. Configured protection feed loss invokes
+the driver's explicit local fault policy; an installation without a protection
+source reports unavailable. A BLU H&T supplies temperature only.
 
 ## Validation
 

@@ -158,10 +158,11 @@ model; it is separate from a forecast saved before execution or measured savings
 
 ## Garage control and original history
 
-Garage has no learned heat model or automatic savings planner. Its manual mode,
-normal target and warm-up advisory are current device-bound state. The Pill and
-Gen3 sender retain their local target/protection state independently. Neither a
-model reset nor a copied database authorizes commands or manufactures protection
-reserve. Original measurements and generic historical journal/events remain
-unchanged; there is no old Garage algorithm interpreter or coefficient replay.
-Home's reconstruction guarantee above is unchanged.
+Garage has no learned heat model or automatic savings planner. Its manual
+mode, normal target and warm-up advisory are current device-bound state. The
+heat-pump controller and protection sender retain their local
+target/protection state independently. Neither a model reset nor a copied
+database authorizes commands or manufactures protection reserve. Original
+measurements and generic historical journal/events remain unchanged; there is
+no old Garage algorithm interpreter or coefficient replay. Home's
+reconstruction guarantee above is unchanged.

@@ -635,31 +635,21 @@ inputs; there is no H66 indoor sensor or fallback. Garage rear/front protection
 are independent of Home; see [Garage heating](docs/garage.md). Garage has manually
 selected Normal/Away temperatures without expiry. Normal restores the saved normal
 target; Away holds the configured preset. Temperature increases show a condensation
-advisory. The Gen3 probe sender runs independent front/rear pipe protection and
+advisory. The protection sender runs independent front/rear pipe protection and
 communicates its state/settings to the application. Its Bluetooth demand lets the
-Pill rescue heating without a broker or controller connection. The Freeze protection
-panel keeps unavailable evidence distinct from safe or active protection. Its
-installation parameters come exclusively from `garage.protection`; use **Apply
-configuration** after editing that source, and check for matching sender readback.
+heat-pump controller rescue heating without a broker or application connection.
+The Freeze protection panel keeps unavailable evidence distinct from safe or
+active protection. Its installation parameters come exclusively from
+`garage.protection`; use **Apply configuration** after editing that source,
+and check for matching sender readback.
 
-The `shelly-cn105/v2` Pill integration retains a real target locally and regulates
-from native Bluetooth BTHome components. Power, mode, fan and vane commands are
-one-shot edits with readback; there are no timed OFF leases. Local temperature
-maintenance preserves OFF and suspends outside HEAT. A stale sensor triggers
-explicit internal-sensor fallback; frost demand separately selects HEAT/ON.
-A BLU H&T can test the temperature path, but it cannot supply two-probe protection.
-See [Garage adapter](docs/garage-adapter.md).
-
-Manual **Heating off** works in Pause when its installed expiry/restoration
-checks and protection evidence qualify. It saves the room intent, clears external
-sensing, then requests bounded OFF. **Normal** or expiry restores native ON;
-the saved external target resumes with fresh source evidence. This manual
-handover can briefly use the internal thermostat. The two operations remain
-mutually exclusive. The Pill's `pauseEnabled` permission governs timed OFF;
-external-temperature permission governs the room feed; `manualEnabled` governs
-persistent native edits. No command carries manual-versus-automatic policy.
-The buttons report pending, confirmed, unavailable and restoring states.
-Use matching current application and adapter contracts for deployment.
+The `shelly-cn105/v2` heat-pump integration retains a real target locally and
+regulates from native Bluetooth BTHome components. Power, mode, fan and vane
+commands are one-shot edits with readback; there are no timed OFF leases.
+Local temperature maintenance preserves OFF and suspends outside HEAT. A stale
+sensor triggers explicit internal-sensor fallback; frost demand separately
+selects HEAT/ON. A BLU H&T can test the temperature path, but it cannot supply
+two-probe protection. See [Garage adapter](docs/garage-adapter.md).
 
 | Data | Primary → backup | Normal collection interval |
 | --- | --- | --- |

@@ -16,8 +16,9 @@ function measured(field, at) {
     : finiteTime(field.ageMs) && field.ageMs <= at ? at - field.ageMs : null;
   return measuredAt === null || measuredAt > at ? null : { value: field.value, measuredAt };
 }
-/** The Pill owns continuous regulation and frost rescue. The application sends
- * only explicit, challenge-bound edits; connection and shutdown never actuate. */
+/** The heat-pump controller owns continuous regulation and frost rescue.
+ * The application sends only explicit, challenge-bound edits; connection and
+ * shutdown never actuate. */
 export function createGarageAdapter({ settings: input = {}, clock = Date.now, canControl = () => true,
   onObservation = () => {}, onEnergy = () => {}, onState = () => {}, onEquipmentDiagnostic = () => {},
   persisted = null, productionTransport = null } = {}) {

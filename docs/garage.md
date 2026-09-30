@@ -10,9 +10,9 @@ Normal uses the saved normal target; Away uses the configured preset (5°C by
 default). Selecting Normal again restores the normal target. The selection is
 bound to the configured pump and persists across application restart. Pump
 readback and command confirmation remain separate from requested settings.
-Changing a mode sends the real target to the Pill. It does not replay unrelated
-power, mode, fan or vane commands. Native power OFF remains an explicit device
-choice; frost rescue is a separate higher-priority operation.
+Changing a mode sends the real target to the heat-pump controller. It does not
+replay unrelated power, mode, fan or vane commands. Native power OFF remains an
+explicit device choice; frost rescue is a separate higher-priority operation.
 
 A target increase displays a moisture advisory: avoid bringing wet or snowy cars
 inside, or adding significant moisture, for roughly the next 24 hours and longer
@@ -22,12 +22,14 @@ surface temperatures. The advisory has an age; the chosen heating mode has no ex
 
 ## Local temperature regulation
 
-The Pill retains the requested target and external-control enable in its KVS.
-A Gen3 Shelly with the sensor add-on broadcasts the real room temperature using
-BTHome Bluetooth. The Pill's native BTHome components receive the measurement;
-its script does not scan or decode arbitrary Bluetooth traffic.
+The heat-pump controller retains the requested target and external-control
+enable in persistent storage. A Gen3 Shelly with the sensor add-on broadcasts
+the real room temperature using BTHome Bluetooth. The heat-pump controller's
+native BTHome components receive the measurement; its script does not scan or
+decode arbitrary Bluetooth traffic.
 
-With fresh input in HEAT mode, the Pill confirms native 17°C before feeding:
+With fresh input in HEAT mode, the controller confirms native 17°C before
+feeding:
 
 ```
 external temperature = measured room temperature + 17°C - effective target
@@ -44,11 +46,12 @@ saved target or interrupt a healthy local Bluetooth feed.
 
 ## Independent frost protection
 
-The sending Gen3 owns separate front/rear conservative pipe-temperature estimates.
-It broadcasts a minimum target, rescue demand and validity alongside the real room
-temperature. The Pill applies the higher required target without overwriting the
-saved user target. Rescue explicitly selects HEAT and ON. Protection is local:
-ST-MQ and its MQTT broker do not need to remain connected for the sender/Pill loop.
+The protection sender owns separate front/rear conservative pipe-temperature
+estimates. It broadcasts a minimum target, rescue demand and validity alongside
+the real room temperature. The heat-pump controller applies the higher required
+target without overwriting the saved user target. Rescue explicitly selects HEAT
+and ON. Protection is local: the sender and heat-pump controller communicate
+without an ST-MQ or MQTT broker connection.
 
 The **Freeze protection** panel shows sender availability, readings, estimates,
 settings and active demand. **Protection settings** compares configured and
@@ -61,9 +64,13 @@ persists them; only matching fresh readback confirms the configuration.
 Missing/stale status is unavailable, never proof of safety. See
 [pipe assumptions](garage-protection-defaults.md) and [adapter contract](garage-adapter.md).
 
+In **MQTT connections**, local frost protection appears directly below the
+Garage heat pump.
+
 The BLU H&T is a development temperature source. It does not provide two-probe
-pipe protection. The UI explicitly shows this limitation until the Gen3 sender
-is configured and fresh. Simulated protection tests are not installed qualification.
+pipe protection. The UI explicitly shows this limitation until the protection
+sender is configured and fresh. Simulated protection tests are not installed
+qualification.
 
 ## Recording and charts
 
@@ -93,16 +100,17 @@ activity, effective target and independent freeze protection. The saved target
 stays in the overview and mode buttons; it does not need a second summary row.
 Select a status value for confirmation, source and availability details.
 
-The **Regulation input** under **Heat-pump readings** is the Pill's live
-local-regulation input. Its intended
-permanent source is the rear feed, already recorded as `garage_temperature`.
-The temporary Caravan BLU H&T used for commissioning is not a rear-probe
-measurement. Its Pill readback remains in current diagnostic state, with the
-reported sensor age, but creates no separate temperature history or chart legend
-entry. The rear/front acquisition sources keep their own timestamps and coverage.
+The **Regulation input** under **Heat-pump readings** is the heat-pump
+controller's live local-regulation input. Its intended permanent source is the
+rear feed, already recorded as `garage_temperature`. The temporary Caravan BLU
+H&T used for commissioning is not a rear-probe measurement. Its controller
+readback remains in current diagnostic state, with the reported sensor age,
+but creates no separate temperature history or chart legend entry. The
+rear/front acquisition sources keep their own timestamps and coverage.
 
-**Saved room target** is the target retained by the Pill after a Normal/Away
-selection; it is not necessarily the saved Normal target while Away is selected.
+**Saved room target** is the target retained by the heat-pump controller after a
+Normal/Away selection; it is not necessarily the saved Normal target while Away
+is selected.
 **Effective room target** includes the independent frost-protection minimum.
 For example, a saved 5°C target and an 8°C protection minimum produce an 8°C
 effective target without changing the saved 5°C request. Neither is the native
@@ -110,12 +118,13 @@ effective target without changing the saved 5°C request. Neither is the native
 
 The state legend entries describe separate facts:
 
-- **Local room regulation** reports whether the Pill's external room regulation
-  is enabled. It does not prove that regulation is currently active: sensor
-  freshness, native mode and pump communication still matter.
-- **Frost protection available** reports whether the Pill has a usable protection
-  feed. A temperature-only BLU H&T cannot provide it. False means protection is
-  unavailable, not that temperatures are safe; missing readback remains unknown.
+- **Local room regulation** reports whether the controller's external room
+  regulation is enabled. It does not prove that regulation is currently active:
+  sensor freshness, native mode and pump communication still matter.
+- **Frost protection available** reports whether the controller has a usable
+  protection feed. A temperature-only BLU H&T cannot provide it. False means
+  protection is unavailable, not that temperatures are safe; missing readback
+  remains unknown.
 - **Frost override** reports an active independent protection override of the
   ordinary target/operation. Rescue may explicitly select HEAT and ON.
 - **Defrost** is the pump's native reported defrost cycle, separate from protecting
@@ -134,12 +143,12 @@ these time series.
 | `garage_temperature_2` | Front air temperature |
 | `garage_door1_open` | Door 1 open/closed |
 | `garage_door2_open` | Door 2 open/closed |
-| `garage_room_target` | Pill saved room target |
-| `garage_effective_target` | Pill effective target including protection |
+| `garage_room_target` | Heat-pump controller's saved room target |
+| `garage_effective_target` | Heat-pump controller's effective target including protection |
 | `garage_away_mode` | Saved Normal/Away selection |
-| `garage_external_enabled` | Pill local room regulation enabled |
-| `garage_frost_available` | Pill protection feed available |
-| `garage_frost_active` | Pill frost override active |
+| `garage_external_enabled` | Heat-pump controller's local room regulation enabled |
+| `garage_frost_available` | Heat-pump controller's protection feed available |
+| `garage_frost_active` | Heat-pump controller's frost override active |
 | `garage_pipe_rear_temperature` | Sender's estimated rear pipe temperature |
 | `garage_pipe_front_temperature` | Sender's estimated front pipe temperature |
 | `garage_native_power` | Native ON/OFF setting, not measured watts |

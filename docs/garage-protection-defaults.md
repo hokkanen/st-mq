@@ -70,10 +70,11 @@ the reserve. Neither another location warming nor native ON replenishes it.
 
 ## Local sender and recovery
 
-The Gen3 sender runs this calculation independently for both probes. Neither
-location can donate reserve to the other. Freshness follows genuine probe reports;
-repeating cached values or receiving a new target cannot create warmth. A short
-door-related air plunge spends reserve according to actual elapsed exposure.
+The protection sender runs this calculation independently for both probes.
+Neither location can donate reserve to the other. Freshness follows genuine
+probe reports; repeating cached values or receiving a new target cannot create
+warmth. A short door-related air plunge spends reserve according to actual
+elapsed exposure.
 
 The sender persists settings and conservatively handles reboot or acquisition
 gaps. Missing history is unknown: it cannot initialize a warm reference merely
@@ -83,11 +84,12 @@ recovery justifies release. Stored protection state is separate from the removed
 Garage building model; there is no learned economic controller.
 
 The sender broadcasts room temperature, minimum target, rescue and validity over
-Bluetooth. The Pill preserves the saved user target, applies the required floor,
-and explicitly selects HEAT/ON for rescue. ST-MQ displays the sender's actual
-status/settings and applies loaded configuration over MQTT; broker/controller loss
-must not stop local protection. Configured feed loss is a distinct fault policy.
-With no sender installed, the dashboard reports protection unavailable.
+Bluetooth. The heat-pump controller preserves the saved user target, applies the
+required floor, and explicitly selects HEAT/ON for rescue. ST-MQ displays the
+sender's actual status/settings and applies loaded configuration over MQTT;
+broker/application loss must not stop local protection. Configured feed loss is
+a distinct fault policy. With no sender installed, the dashboard reports
+protection unavailable.
 
 The reference assumptions do not certify every pipe or stored container. Sensor
 placement, useful-heating delay, radio reception and pump operation need actual

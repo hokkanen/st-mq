@@ -1,16 +1,17 @@
 # Garage reporting
 
-Garage reports manually chosen Normal/Away mode, requested target, Pill-confirmed
-control and effective target. A protection or sensor-fallback increase is visible
-without replacing the selected mode. Warm-up advisories describe condensation
-risk and remain distinct from mode lifetime.
+Garage reports manually chosen Normal/Away mode, requested target, confirmed
+heat-pump control and effective target. A protection or sensor-fallback increase
+is visible without replacing the selected mode. Warm-up advisories describe
+condensation risk and remain distinct from mode lifetime.
 
 The independent protection panel compares parameters from `garage.protection`
-with the Gen3 sender's actual configuration, and shows front/rear air and estimated
-pipe temperatures, validity and heating demand. Its settings are read-only;
-ST-MQ applies only loaded configuration and requires matching fresh readback for
-confirmation. Offline or missing protection is unavailable. With the
-BLU H&T test source, temperature control works while pipe protection is absent.
+with the protection sender's actual configuration, and shows front/rear air
+and estimated pipe temperatures, validity and heating demand. Its settings are
+read-only; ST-MQ applies only loaded configuration and requires matching fresh
+readback for confirmation. Offline or missing protection is unavailable. With
+the BLU H&T test source, temperature control works while pipe protection is
+absent.
 
 Charts retain original temperatures, doors, compressor activity, supported native
 pump observations and qualified electrical history. Requests are not measurements.

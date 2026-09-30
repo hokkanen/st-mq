@@ -451,7 +451,7 @@ test('Caravan groups air and pending dehumidifier with energy, preserving disclo
   assert.equal(air.querySelector('.caravan-air-metrics').textContent, 'Temperature14.1 °CRelative humidity63 %');
   assert.match(air.querySelector('.caravan-sensor-details').textContent, /Battery100 %Bluetooth signal-81 dBm/);
   const appliance = caravan.querySelector('.caravan-dehumidifier');
-  assert.match(appliance.textContent, /electriQ DESD8LW.*Awaiting first device report/);
+  assert.match(appliance.textContent, /Dehumidifier.*Awaiting first device report/);
   assert(descendants(appliance).filter(node => ['SELECT', 'BUTTON'].includes(node.tagName)).every(node => node.disabled));
   assert.deepEqual(DEHUMIDIFIER_OPTIONS.targetHumidity.map(option => option[0]), [30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80]);
   caravan.open = true;
@@ -625,11 +625,11 @@ test('recording explains the power check, modest loads and missing evidence inde
   assert.equal(appliance.querySelector('.caravan-recording-details').children[0].textContent, 'Power check');
   const evidence = appliance.querySelector('.caravan-power-check');
   assert.equal(evidence.querySelector('.caravan-power-changes').textContent, 'Rise after On5.2 WFall after OffUnavailable');
-  assert.match(evidence.textContent, /Dehumidifier25 %Shelly BLU60 %/);
+  assert.match(evidence.textContent, /Dehumidifier25 %Air sensor60 %/);
   assert.match(evidence.querySelector('.caravan-comparison-rule').textContent, /at least 3 W.*small fan load.*Humidity is not a recording requirement/);
   assert.equal(evidence.querySelector('.caravan-temperature-label').hidden, true, 'Absent appliance temperature has no visible placeholder');
   for (const [reason, expected] of [['appliance-unavailable', /fresh dehumidifier reports/],
-    ['air-unavailable', /fresh Shelly BLU temperature for automatic power/], ['power-unavailable', /fresh Caravan power/],
+    ['air-unavailable', /fresh caravan air temperature for automatic power/], ['power-unavailable', /fresh Caravan power/],
     ['restoring-power', /Restoring.*previous power setting/], ['control-unavailable', /control authority/],
     ['cold', /temperature above the automatic Off threshold before checking power/],
     ['power-test-failed', /power did not confirm both switches/]]) {

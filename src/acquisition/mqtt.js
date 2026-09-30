@@ -181,7 +181,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     temperatureReportGraceMs: config.connections.mqtt.temperatureReportGraceMs ?? DEFAULT_TEMPERATURE_REPORT_GRACE_MS }) : null;
   const shelly = equipment;
   if (equipment) engine.equipment = equipment;
-  // Local regulation belongs to the Pill; MQTT carries explicit owner edits.
+  // The heat-pump controller owns local regulation; MQTT carries explicit owner edits.
   const garage = engine.garage || config.garage?.adapter ? createGarageAdapter({
     settings: config.garage?.adapter, clock: () => engine.clock(), canControl,
     productionTransport: createShellyCn105Transport({ settings: config.garage?.adapter, publish }),

@@ -8,12 +8,13 @@ guides for current behavior.
 ## Current implementation, 29 September 2026 — local Garage control
 
 Garage now has permanent Normal/Away targets and independent local frost
-protection. The Pill uses native BTHome components, durable target intent and
-one-shot native commands. ST-MQ shows and configures the future Gen3 sender;
-its pipe protection remains autonomous. The learned Garage building model,
-economic scheduling and expiring Garage controls are retired. Home learning
-and its independent automation permission remain intact. See [Garage](garage.md)
-and [TODO](../TODO) for validation and hardware limits.
+protection. The heat-pump controller uses native BTHome components, durable
+target intent and one-shot native commands. ST-MQ shows and configures the
+future protection sender; its pipe protection remains autonomous. The learned
+Garage building model, economic scheduling and expiring Garage controls are
+retired. Home learning and its independent automation permission remain
+intact. See [Garage](garage.md) and [TODO](../TODO) for validation and
+hardware limits.
 
 ## Historical implementation, 7 September 2026 — 0.9.0
 

@@ -482,7 +482,7 @@ export function equipmentConnections(status = {}, devices = equipmentDevices(sta
     if (!remaining.length) continue;
     const parts = group.id === 'temperatures' ? ['home', 'garage'].map(area => ({ area,
       topics: remaining.filter(topic => (topic.signal?.startsWith('garage_') ? 'garage' : 'home') === area) }))
-      : [{ area: group.id === 'garage-adapter' ? 'garage' : ['h66', 'dhwr', 'heating'].includes(group.id) ? 'home' : 'other', topics: remaining }];
+      : [{ area: ['garage-adapter', 'garage-sender'].includes(group.id) ? 'garage' : ['h66', 'dhwr', 'heating'].includes(group.id) ? 'home' : 'other', topics: remaining }];
     for (const part of parts) {
       if (!part.topics.length) continue;
       const row = { id: `connection:${group.id}:${part.area}`, label: group.label ?? pretty(group.id), area: part.area,
@@ -547,7 +547,7 @@ export function equipmentConnections(status = {}, devices = equipmentDevices(sta
 }
 
 function garageEquipmentOrder(device) {
-  return device.kind === 'heat_pump' ? 0 : device.id === 'blu_ht' ? 2 : device.kind === 'temperature' ? 1
+  return device.kind === 'heat_pump' ? 0 : device.id === 'connection:garage-sender:garage' ? 0.5 : device.id === 'blu_ht' ? 2 : device.kind === 'temperature' ? 1
     : device.id === 'caravan' ? 3 : device.kind === 'door' ? 4 + Number(device.id.match(/door([12])$/)?.[1] ?? 0) / 10
       : device.kind === 'dehumidifier' ? 2.5 : 6;
 }

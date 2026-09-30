@@ -85,7 +85,7 @@ export function createCaravanContents({ document, actions, blocked, readingsFor,
     [temperatureComparison, ['applianceTemperatureC', 'temperatureC']]]) {
     for (const [index, field] of fields.entries()) {
       const cell = make('div'), value = make('dd');
-      cell.append(make('dt', index === 0 ? 'Dehumidifier' : 'Shelly BLU'), value); group.append(cell); comparisonValues.set(field, value);
+      cell.append(make('dt', index === 0 ? 'Dehumidifier' : 'Air sensor'), value); group.append(cell); comparisonValues.set(field, value);
     }
   }
   const comparisonRule = make('p', '', 'caravan-comparison-rule muted');
@@ -160,7 +160,7 @@ export function createCaravanContents({ document, actions, blocked, readingsFor,
     const temperature = value => Number.isFinite(value) ? `${value} °C` : 'unavailable';
     powerPolicy.textContent = guard?.enabled
       ? `Off ≤ ${temperature(guard.offAtC)} · On ≥ ${temperature(guard.onAtC)}` : 'Manual power control';
-    policyHelp.textContent = 'Uses Shelly BLU temperature. Between the thresholds, power keeps its previous state.';
+    policyHelp.textContent = 'Uses the caravan air temperature. Between the thresholds, power keeps its previous state.';
     if (currentAppliance?.dehumidifier?.probeBusy)
       policyHelp.textContent = `Settings are locked until the power check and restoration finish. ${policyHelp.textContent}`;
     if (guard?.canEdit === false && !isReadOnlyReplica(lastSnapshot?.status)
@@ -238,7 +238,7 @@ export function createCaravanContents({ document, actions, blocked, readingsFor,
   return { air, dehumidifier, update(snapshot, airDevice, appliance) {
     air.hidden = !airDevice; dehumidifier.hidden = !appliance;
     if (airDevice) {
-      airModel.textContent = airDevice.model ?? 'Shelly BLU H&T';
+      airModel.textContent = airDevice.model ?? 'Air sensor';
       const rows = readingsFor(airDevice), primary = rows.filter(row => /(?:^|_)(?:temperature|humidity)$/.test(row.signal));
       airReadings(metrics, primary, metricNodes, true);
       const secondary = rows.filter(row => !primary.includes(row));
@@ -252,7 +252,7 @@ export function createCaravanContents({ document, actions, blocked, readingsFor,
     if (currentAppliance && currentAppliance.connection !== appliance.connection) policyDirty = false;
     lastSnapshot = snapshot; currentAppliance = appliance;
     const allowed = dehumidifierControlAllowed(status, appliance, busy || blocked());
-    model.textContent = appliance.model ?? 'electriQ DESD8LW';
+    model.textContent = appliance.model ?? 'Dehumidifier';
     // Device health describes the readings. The nested availability flag also
     // includes command authority, so a replica can still show healthy reports.
     const connection = summaryFor(appliance), live = appliance.available === true;
@@ -304,7 +304,7 @@ export function createCaravanContents({ document, actions, blocked, readingsFor,
         'appliance-unavailable': 'Waiting for fresh dehumidifier reports.',
         'power-unavailable': 'Waiting for fresh Caravan power readings.',
         'control-unavailable': 'The power check needs device control authority.',
-        'air-unavailable': 'Waiting for fresh Shelly BLU temperature for automatic power.',
+        'air-unavailable': 'Waiting for fresh caravan air temperature for automatic power.',
         cold: !guard.qualified ? 'Waiting for temperature above the automatic Off threshold before checking power.' : null,
       };
       setText(recordingDetail, guard.recording ? 'Caravan power followed native On and Off.'

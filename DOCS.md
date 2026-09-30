@@ -241,31 +241,32 @@ Learning values are stored as learned; new forecasts and models do not rewrite
 earlier learning chart samples.
 
 An empty direct-access token keeps port 1234 disabled; Home Assistant ingress
-remains available through HA login. Home Assistant options own permanent settings.
-Above the chart, **Home** and **Garage** each open **Heating configuration**
-from their upper summary. **Sensors & Equipment** in Home and **Sensors & More
-equipment** in Garage contain readbacks and manual tests; Garage's chargers sit
-directly below its heating summary. Home's upper summary includes indoor and
-outdoor temperatures, heating request and all-in price. Below those readings, a
-compact row shows the next selected heating-plan change in Finnish local time.
-It opens the **Heating plan explorer** for upcoming phases, constraint explanations
-and hypothetical limit comparisons. Family may simulate; using a scenario for one
-cycle requires admin access and current control readiness. Defaults remain
-configuration-owned. See [the explorer guide](docs/heating-plan-explorer.md).
-The row identifies paused, simulated and read-only states and does not assign
-a fixed end time to recovery. Equipment and connections headers retain their
-height when toggled; desktop balancing adds only bounded gaps between sections.
-Home's heating summary shows compressor activity, **Price control** and
-**Circulation**; an unverified request does not confirm the relay state.
-Garage separates its saved and effective room
-targets from native pump feedback. It has persistent **Normal / Away**, a normal
-target editor, native controls and independent **Freeze protection**. Its read-only
-settings compare parameters from `garage.protection` in configuration with actual
-sender readback. Edit configuration and use **Apply configuration** to change them;
-there is no dashboard parameter editor. Pipe estimates appear when the Gen3 sender
-is connected. A target
-increase shows moisture guidance for roughly 24 hours; the selected mode has no
-expiry. The BLU H&T development feed supplies temperature only.
+remains available through HA login. Home Assistant options own permanent
+settings. Above the chart, **Home** and **Garage** each open **Heating
+configuration** from their upper summary. **Sensors & Equipment** in Home and
+**Sensors & More equipment** in Garage contain readbacks and manual tests;
+Garage's chargers sit directly below its heating summary. Home's upper summary
+includes indoor and outdoor temperatures, heating request and all-in price.
+Below those readings, a compact row shows the next selected heating-plan
+change in Finnish local time. It opens the **Heating plan explorer** for
+upcoming phases, constraint explanations and hypothetical limit comparisons.
+Family may simulate; using a scenario for one cycle requires admin access and
+current control readiness. Defaults remain configuration-owned. See [the
+explorer guide](docs/heating-plan-explorer.md). The row identifies paused,
+simulated and read-only states and does not assign a fixed end time to
+recovery. Equipment and connections headers retain their height when toggled;
+desktop balancing adds only bounded gaps between sections. Home's heating
+summary shows compressor activity, **Price control** and **Circulation**; an
+unverified request does not confirm the relay state. Garage separates its
+saved and effective room targets from native pump feedback. It has persistent
+**Normal / Away**, a normal target editor, native controls and independent
+**Freeze protection**. Its read-only settings compare parameters from
+`garage.protection` in configuration with actual sender readback. Edit
+configuration and use **Apply configuration** to change them; there is no
+dashboard parameter editor. Pipe estimates appear when the protection sender
+is connected. A target increase shows moisture guidance for roughly 24 hours;
+the selected mode has no expiry. The BLU H&T development feed supplies
+temperature only.
 
 Home uses **Automatic / Paused**, **Schedule & away**, a folded **Manual heating
 override**, and **Heating strategy & comfort** before the heat model. Pause can
