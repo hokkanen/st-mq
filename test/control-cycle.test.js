@@ -209,3 +209,20 @@ test('a captured compressor-only baseline excludes AUX from the plan and its nat
   assert.ok(controlled.trajectory.every(step=>step.auxiliaryKw===0));
   assert.ok(evaluateCycle({...args,equipment:{...args.equipment,nativeAuxAllowed:true}}).auxiliaryKwh>0);
 });
+
+test('an actually completed approved scenario retains consent provenance in the replay journal without changing learning weight', t => {
+  const { store, tracker, plan } = fixture(t, { intervals: intervals(8, { outdoorC: 21 }) });
+  plan.userTrial = { id: 'synthetic-approved-scenario', approvedAt: start, latestStartAt: start + 300_000,
+    expiresAt: start + 8 * HOUR, limits: { maxReductionHours: 8, maxRiseC: 1.75 }, basis: 'admin-approved-one-cycle-scenario' };
+  plan.maxRiseC = 1.75;
+  const changes = { outdoorC: 21, auxKw: 0, auxRoute: 'space-heating', thermalCompressorDuty: 0, thermalAuxKw: 0 };
+  tracker.start(plan, sample(start, changes), start, { executed: true });
+  const episode = finish(tracker, changes);
+  assert.ok(episode.complete);
+  assert.deepEqual(episode.userTrial, plan.userTrial);
+  const committed = store.learningJournal({ input: 'synthetic' }).find(entry => entry.kind === 'episode');
+  assert.deepEqual(committed.payload.value.userTrial, plan.userTrial);
+  const { userTrial, ...ordinaryEvidence } = episode;
+  assert.deepEqual(updateAdaptiveEpisode(null, episode), updateAdaptiveEpisode(null, ordinaryEvidence),
+    'admin consent labels real exposure; it supplies no extra evidence or fitting weight');
+});

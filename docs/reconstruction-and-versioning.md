@@ -52,6 +52,14 @@ their own right; model replay does not recreate missing physical outcomes or tur
 estimated savings into measured savings. Readback and measured behavior must remain
 distinct from intent.
 
+Heating-plan exploration keeps hypothetical snapshots only in bounded memory.
+An explicit admin one-cycle approval is retained with the actual cycle's frozen
+plan; qualifying completed episodes also carry that approval context in the
+learning journal. Simulated alternatives do not add journal entries, consume
+learning allowance or validate a duration. Actual observations use the existing
+ordered learning updates and completion gates. This adds provenance without a
+second learning algorithm or a comprehensive archive of hypothetical decisions.
+
 ## Manual source corrections
 
 `fireplace_events` stores a load once and a removal once, with server timestamps,

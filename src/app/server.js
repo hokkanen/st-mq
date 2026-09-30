@@ -192,6 +192,33 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
         };
         if (req.method === 'GET' && url.pathname === '/api/status') return json(200, status());
         if (readContext && !readContext.store) return json(503, { error: 'Waiting for a verified master snapshot.' });
+        if (req.method === 'GET' && url.pathname === '/api/heating/explorer') {
+          if (!engine.heatingExplorer) return json(503, { error: 'Heating plan exploration is unavailable on this instance.' });
+          const result = await engine.heatingExplorer.view();
+          if (!stillAuthorized()) return;
+          if (unavailable() || !readContext && engine !== getEngine())
+            return json(409, { error: 'Configuration changed during the comparison. Refresh the plan.' });
+          return json(200, result);
+        }
+        if (req.method === 'POST' && url.pathname === '/api/heating/explorer/simulate')
+          return await mutate(async (current, input) => {
+            if (!current.heatingExplorer) return json(503, { error: 'Heating plan exploration is unavailable on this instance.' });
+            const result = await current.heatingExplorer.simulate(input);
+            if (!stillAuthorized()) return;
+            if (unavailable() || current !== getEngine())
+              return json(409, { error: 'Configuration changed during the comparison. Refresh the plan.' });
+            return json(200, result);
+          });
+        if (req.method === 'POST' && url.pathname === '/api/heating/explorer/apply')
+          return await mutate((current, input) => {
+            if (!current.heatingExplorer) return json(503, { error: 'Heating plan exploration is unavailable on this instance.' });
+            return json(200, current.heatingExplorer.apply(input));
+          });
+        if (req.method === 'POST' && url.pathname === '/api/heating/explorer/cancel')
+          return await mutate((current, input) => {
+            if (!current.heatingExplorer) return json(503, { error: 'Heating plan exploration is unavailable on this instance.' });
+            return json(200, current.heatingExplorer.cancel(input));
+          });
         if (req.method === 'GET' && url.pathname === '/api/database-export')
           return await exportDatabase({ store: readerStore, response: res, authorized: stillAuthorized });
         if (saveDatabase) {

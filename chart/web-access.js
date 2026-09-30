@@ -9,7 +9,7 @@ export function webRequestAllowed(access, path, data, status) {
   if (access?.role !== 'family') return data === undefined && path === '/api/status';
   if (data === undefined) return !/^\/api\/(?:database-export|downloads)(?:[/?]|$)/.test(path);
   if (['/api/fireplace', '/api/fireplace/remove', '/api/temporary', '/api/dhwr/stop',
-    '/api/charging/settings', '/api/automation'].includes(path)) return true;
+    '/api/charging/settings', '/api/automation', '/api/heating/explorer/simulate'].includes(path)) return true;
   if (path === '/api/heating-test') return ['normal', 'reduction', 'preheat', 'circulation'].includes(data.command);
   if (path === '/api/garage/heating') return ['normal', 'away'].includes(data.mode);
   if (/^\/api\/charging\/tests\/(preview|start|schedule|cancel)$/.test(path)) return true;

@@ -248,7 +248,11 @@ equipment** in Garage contain readbacks and manual tests; Garage's chargers sit
 directly below its heating summary. Home's upper summary includes indoor and
 outdoor temperatures, heating request and all-in price. Below those readings, a
 compact row shows the next selected heating-plan change in Finnish local time.
-It identifies paused, simulated and read-only states and does not assign
+It opens the **Heating plan explorer** for upcoming phases, constraint explanations
+and hypothetical limit comparisons. Family may simulate; using a scenario for one
+cycle requires admin access and current control readiness. Defaults remain
+configuration-owned. See [the explorer guide](docs/heating-plan-explorer.md).
+The row identifies paused, simulated and read-only states and does not assign
 a fixed end time to recovery. Equipment and connections headers retain their
 height when toggled; desktop balancing adds only bounded gaps between sections.
 **Tariff control** appears

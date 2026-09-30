@@ -228,6 +228,14 @@ an unrecorded outcome or make estimated savings into measured savings. See the
 
 ## Planning and recovery
 
+Home's heating-plan row opens the [Heating plan explorer](heating-plan-explorer.md).
+It uses this same planner to explain limiting constraints and compare changes to
+duration, comfort and preheat preferences on a fixed snapshot. Family can simulate;
+admins can explicitly apply eligible preferences to one upcoming cycle. A higher
+ceiling does not create evidence for a longer reduction. Simulations never train
+the model; approved executions retain their context in the ordinary cycle and
+learning records, subject to the same completion and validation checks.
+
 Each candidate prices preheat, reduction, recovery and remaining heat debt under
 the same price/weather outlook. Electricity price belongs in this objective, not
 in the thermal coefficients. The fixed compressor performance map and nominal auxiliary estimates

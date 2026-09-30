@@ -34,6 +34,8 @@ import { garageSettings } from '../garage/settings.js';
 import { validateGarageSenderSnapshot } from '../garage/sender.js';
 import { ChargingRuntime } from '../charging/runtime.js';
 import { isGarageDoorSignal, confirmedGarageDoor } from '../garage/door-state.js';
+import { HeatingExplorer, validateHeatingTrialState } from './heating-explorer.js';
+import { applyExplorerOverrides } from '../control/heating-explorer.js';
 
 const OBSERVATION_MAX_AGE_MS = OUTDOOR_MAX_AGE_MS;
 const pauseIdentity = override => override?.id ?? null;
@@ -365,8 +367,9 @@ export class Engine {
       throw error;
     }
   }
-  async closeFireplace() { await this.fireplaceRebuild?.close(); }
+  async closeFireplace() { await Promise.all([this.fireplaceRebuild?.close(), this.heatingExplorer?.close()]); }
   constructor({ store, config, clock = Date.now, commandTransport = null, canControl = () => true }) {
+    validateHeatingTrialState(store.getState(`heating-explorer:trial:${config.input}`));
     if (store.getState(`override:${config.input}`) != null)
       throw new Error('Unsupported saved heating pause controls; start a fresh development database.');
     validateSettings(config.settings);
@@ -467,6 +470,7 @@ export class Engine {
     }
     this.garage = new GarageRuntime({ engine: this, store, config, clock, canControl });
     this.charging = new ChargingRuntime({ engine: this, store, config, clock, canControl });
+    this.heatingExplorer = new HeatingExplorer(this);
     this.automation.save();
   }
   ingest(observation) {
@@ -1132,7 +1136,15 @@ export class Engine {
     }
     this.lastSample = sample;
     const targetC = this.settings.comfort.targetC ?? checkpoint.baselineC ?? (this.plant ? 21 : null);
-    const settings = { ...this.settings, comfort: { ...this.settings.comfort, targetC } };
+    const baseSettings = { ...this.settings, comfort: { ...this.settings.comfort, targetC } };
+    const scopedTrial = this.heatingExplorer.reconcile(now);
+    if (this.pendingPlan?.userTrial && (scopedTrial?.status !== 'pending' || scopedTrial.id !== this.pendingPlan.userTrial.id)) {
+      this.pendingPlan = null;
+      this.store.setState(`pending-plan:${input}`, null);
+    }
+    const scoped = scopedTrial ? applyExplorerOverrides({ settings: baseSettings, config: this.control }, scopedTrial.limits)
+      : { settings: baseSettings, config: this.control };
+    const settings = scoped.settings, planningConfig = scoped.config;
     const normal = reason => ({ action: 'normal', phase: 'normal', reasons: [reason], plan: null,
       comfort: { targetC, maxDropC: settings.comfort.maxDropC, maxDropApplies: settings.occupancy.mode !== 'away' } });
     // Pause ends the automatic cycle before accepting independent owner choices.
@@ -1142,8 +1154,8 @@ export class Engine {
     const roomComfortLimited = this.settings.occupancy.mode === 'occupied' && Object.keys(indoorWeights(this.control)).some(signal => {
       const reference = checkpoint.sensorComfortReferences?.[signal]?.targetC;
       const reading = observations[{ indoor_temperature: 'upstairs', downstairs_temperature: 'downstairs', bedroom_temperature: 'bedroom' }[signal]];
-      return Number.isFinite(reference) && !reading?.stale && (reading.value <= reference - this.settings.comfort.maxDropC
-        || reading.value >= reference + this.settings.comfort.maxRiseC);
+      return Number.isFinite(reference) && !reading?.stale && (reading.value <= reference - settings.comfort.maxDropC
+        || reading.value >= reference + settings.comfort.maxRiseC);
     });
     const controlHold=!cycle?this.cycles.controlHold(now):null;
     const forceNormal = override ? 'heating-paused' : holdManualSettings ? 'manual-heating-override' : controlHold?'recent-cycle-incomplete'
@@ -1155,6 +1167,7 @@ export class Engine {
         : this.settings.occupancy.mode === 'occupied' && targetC !== null && sample.indoorC <= targetC-2 ? 'hard-comfort-limit' : null;
     if (forceNormal) {
       if (cycle) this.cycles.shorten(now, forceNormal);
+      if (scopedTrial) this.heatingExplorer.reject(forceNormal);
       this.pendingPlan = null; decision = normal(forceNormal);
       if (cycle) decision.phase = 'recovery';
     } else if (cycle) {
@@ -1167,7 +1180,7 @@ export class Engine {
         const intervals = forecastIntervals(outlook.prices, outlook.forecast, now);
         const args = { intervals, model: checkpoint.model, initialState: { indoorC: sample.indoorC,
           reserveC: this.fireplaceReserveOverride ?? checkpoint.state?.reserveC ?? sample.indoorC, slabC: checkpoint.state?.slabC, integral: equipment.integral },
-          targetC, config: this.control, equipment, occupancy: settings.occupancy, maxDropC: settings.comfort.maxDropC, maxRiseC: settings.comfort.maxRiseC };
+          targetC, config: planningConfig, equipment, occupancy: settings.occupancy, maxDropC: settings.comfort.maxDropC, maxRiseC: settings.comfort.maxRiseC };
         if (!cycleForecastCovered(intervals, schedule, now) || schedule.reductionEnd <= now || !equipment.h66Available && schedule.reductionEnd-now > this.control.maxUnobservedReductionHours*3600000) {
           this.cycles.shorten(now, 'control-or-forecast-coverage-lost'); phase = 'recovery'; reasons = ['control-or-forecast-coverage-lost'];
         } else {
@@ -1192,9 +1205,10 @@ export class Engine {
     } else {
       if (this.pendingPlan) {
         const checked = revalidatePlan({plan:this.pendingPlan,now,observations,...outlook,checkpoint,settings,
-          config:this.control,thermalState:this.fireplaceReserveOverride == null ? checkpoint.state : { ...checkpoint.state, reserveC:this.fireplaceReserveOverride },equipment,
+          config:planningConfig,thermalState:this.fireplaceReserveOverride == null ? checkpoint.state : { ...checkpoint.state, reserveC:this.fireplaceReserveOverride },equipment,
           trialBudgetRemainingCents:this.cycles.budget(now)});
         this.pendingPlan = checked.valid ? checked.plan : null;
+        if (!checked.valid && scopedTrial) this.heatingExplorer.reject(checked.reason);
         if (!checked.valid) this.store.event('scheduled-cycle-rejected',{reason:checked.reason},now);
       }
       const due = this.pendingPlan && Math.min(this.pendingPlan.schedule.preheatStart,this.pendingPlan.schedule.reductionStart) <= now;
@@ -1202,7 +1216,7 @@ export class Engine {
         decision = { ...normal('revalidated-scheduled-cycle'), plan: this.pendingPlan, phase: phaseAt(this.pendingPlan.schedule,now) };
         decision.action = decision.phase === 'reduction' ? 'reduction' : 'normal'; this.pendingPlan = null;
       } else if (!this.pendingPlan) {
-        decision = chooseCycle({ now, observations, ...outlook, checkpoint, settings, config: this.control,
+        decision = chooseCycle({ now, observations, ...outlook, checkpoint, settings: baseSettings, config: this.control,
           thermalState: this.fireplaceReserveOverride == null ? checkpoint.state : { ...checkpoint.state, reserveC: this.fireplaceReserveOverride }, equipment: this.plant ? { ...equipment, h66Available:true, preheatAvailable:true } : equipment,
           trialBudgetRemainingCents: checkpoint.health.usableSamples >= 4 ? this.cycles.budget(now) : 0 });
         if (decision.plan && decision.phase === 'normal') this.pendingPlan = decision.plan;
@@ -1212,6 +1226,16 @@ export class Engine {
     if ((observations.indoor.stale || observations.outdoor.stale) && !decision.reasons.includes('missing-or-stale-observations'))
       decision.reasons.push('missing-or-stale-observations');
     if (roomComfortLimited && !decision.reasons.includes('room-comfort-limit')) decision.reasons.push('room-comfort-limit');
+    const currentCycle = this.cycles.active();
+    const actualPlan = currentCycle?.plan ?? decision.plan;
+    const actualSchedule = currentCycle?.executionSchedule;
+    const currentScopeActive = scopedTrial && ['pending', 'running'].includes(this.heatingExplorer.trial()?.status);
+    this.heatingExplorer.capture({ now, observations, ...outlook, checkpoint, settings: baseSettings, config: this.control,
+      currentSettings: currentScopeActive ? settings : baseSettings, currentConfig: currentScopeActive ? planningConfig : this.control,
+      thermalState: this.fireplaceReserveOverride == null ? checkpoint.state : { ...checkpoint.state, reserveC: this.fireplaceReserveOverride },
+      equipment: this.plant ? { ...equipment, h66Available: true, preheatAvailable: true } : equipment,
+      trialBudgetRemainingCents: checkpoint.health.usableSamples >= 4 ? this.cycles.budget(now) : 0 },
+    { ...decision, plan: actualPlan && actualSchedule ? { ...actualPlan, schedule: actualSchedule } : actualPlan }, forceNormal);
     const cycleSchedule = this.cycles.active()?.executionSchedule ?? decision.plan?.schedule;
     decision.owner = this.cycles.active()?.plan.executionOwner ?? this.cycles.active()?.id ?? `plan:${decision.plan?.generatedAt ?? now}`;
     if (decision.phase === 'recovery') {
@@ -1297,7 +1321,10 @@ export class Engine {
           plan.initialState = { indoorC: sample.indoorC, reserveC: this.fireplaceReserveOverride ?? checkpoint.state?.reserveC ?? sample.indoorC, slabC: checkpoint.state?.slabC, integral: equipment.integral };
           plan.intervals = forecastIntervals(outlook.prices,outlook.forecast,effectiveAt);
           plan.executionStartedAt=effectiveAt;plan.initialObservationAt=now;plan.equipment=equipment;
-          this.cycles.start(plan,{...cycleSample,timestamp:effectiveAt,windowStart:effectiveAt,windowEnd:effectiveAt,phase},effectiveAt,{executed:!this.plant});
+          this.store.transaction(() => {
+            const started = this.cycles.start(plan,{...cycleSample,timestamp:effectiveAt,windowStart:effectiveAt,windowEnd:effectiveAt,phase},effectiveAt,{executed:!this.plant});
+            this.heatingExplorer.started(started);
+          });
         }
         recordLearningContext(this.store,input,{phase,roomBoostC:this.applied.roomBoostC, floorOverrideMode: this.floorOverrideMode(this.clock()),
           dhwrActive: this.executor.status().pulseUntil > this.clock(),
@@ -1354,7 +1381,7 @@ export class Engine {
     const episodeStatus = visibleCycle ? {id:visibleCycle.id,status:visibleCycle.status,startedAt:visibleCycle.startedAt,
       actual:visibleCycle.actual,stableSince:visibleCycle.stableSince,referenceLabel:visibleCycle.plan.referenceLabel,adjustments:visibleCycle.adjustments} : null;
     this.latestStatus = { now,input,environment:this.environment(),automation:this.automationStatus(),
-      runtimeTiming:this.runtimeTiming?.() ?? null,
+      runtimeTiming:this.runtimeTiming?.() ?? null, heatingScenario: this.heatingExplorer.publicTrial(),
       settings:this.settings,demoComfortTargetC:this.plant&&checkpoint.baselineC===null?21:null,observations,override,decision:{...decision,plan:visiblePlan},execution,
       comfortRooms:this.comfortRooms(checkpoint),
       heatingTests:this.heatingTests(),preheatValves:this.preheatValveStatus(now),h66,prices:outlook.prices,forecast:outlook.forecast,spot:outlook.spot??[],
@@ -1381,6 +1408,7 @@ export class Engine {
     result.automation = this.automationStatus();
     result.override = structuredClone(this.automation.features.home.pause);
     result.runtimeTiming = this.runtimeTiming?.() ?? null;
+    result.heatingScenario = this.heatingExplorer.publicTrial();
     result.heatingTests = this.heatingTests();
     result.preheatValves = this.preheatValveStatus();
     result.equipment = this.equipmentStatus();

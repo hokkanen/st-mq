@@ -92,10 +92,11 @@
                 </div>
               </div>
             </div>
-            <div id="home-planned-change" class="home-planned-change">
+            <button id="home-planned-change" class="home-planned-change" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="heating-explorer-dialog" aria-label="Explore the heating plan and its limits">
               <svg class="home-plan-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8"/><path d="M12 7v5l3 2"/></svg>
               <span class="home-plan-copy"><span id="home-plan-label" class="home-plan-label">Heating plan</span> <span id="home-plan-value" class="home-plan-value">Waiting for a plan</span></span>
-            </div>
+              <span class="home-plan-open" aria-hidden="true">Explore <span>↗</span></span>
+            </button>
           </summary>
           <div class="zone-content equipment-area">
             <section id="home-manual-controls" class="zone-section zone-configuration" aria-labelledby="heating-configuration-title">
@@ -865,6 +866,56 @@
     <div id="garage-doors-content" class="garage-door-controls"></div>
     <div class="confirmation-actions"><button id="garage-doors-back" class="secondary-button" type="button" autofocus>Go back</button></div>
   </dialog>
+  <dialog id="heating-explorer-dialog" class="control-dialog heating-explorer-dialog" aria-labelledby="heating-explorer-title" aria-describedby="heating-explorer-intro">
+    <header class="heating-explorer-header">
+      <div><p class="heating-explorer-eyebrow">Home · Heating</p><h2 id="heating-explorer-title">Plan &amp; possibilities</h2><p id="heating-explorer-intro" class="muted">Understand the plan. Explore what different limits could change.</p></div>
+      <button id="heating-explorer-close" type="button" class="secondary-button heating-explorer-close" aria-label="Close heating plan">×</button>
+    </header>
+    <div class="heating-explorer-snapshot"><span id="heating-explorer-snapshot">Loading current conditions…</span><button id="heating-explorer-refresh" class="secondary-button" type="button">Refresh conditions</button></div>
+    <p id="heating-explorer-message" class="heating-explorer-message" role="status" aria-live="polite"></p>
+    <p id="heating-explorer-receipt" class="heating-explorer-message" role="status" aria-live="polite"></p>
+    <div id="heating-explorer-content" aria-busy="false" hidden>
+      <div id="heating-explorer-context" class="heating-explorer-note" hidden></div>
+      <section class="heating-explorer-section" aria-labelledby="heating-current-title">
+        <div class="heating-explorer-section-heading"><h3 id="heating-current-title">Currently selected plan</h3><span id="heating-explorer-phase" class="heating-explorer-tag"></span></div>
+        <p id="heating-explorer-reason" class="muted"></p>
+        <ol id="heating-explorer-timeline" class="heating-explorer-timeline" aria-label="Current planned heating phases"></ol>
+        <button id="heating-explorer-jump" type="button" class="secondary-button heating-explorer-jump">Explore different limits ↓</button>
+      </section>
+      <section id="heating-explorer-opportunities-section" class="heating-explorer-section" aria-labelledby="heating-opportunities-title" hidden>
+        <h3 id="heating-opportunities-title">Opportunity to review</h3><div id="heating-explorer-opportunities"></div>
+      </section>
+      <section class="heating-explorer-section" aria-labelledby="heating-constraints-title">
+        <div class="heating-explorer-section-heading"><h3 id="heating-constraints-title">What shapes this plan</h3><span class="muted">Limits &amp; evidence</span></div>
+        <p class="muted heating-explorer-section-help">Reaching a limit alone does not show that changing it would improve the plan.</p>
+        <ul id="heating-explorer-constraints" class="heating-explorer-constraints"></ul>
+      </section>
+      <section class="heating-explorer-section heating-explorer-workbench" aria-labelledby="heating-simulator-title">
+        <div class="heating-explorer-section-heading"><h3 id="heating-simulator-title">Explore different limits</h3><span class="heating-explorer-tag">Preview only</span></div>
+        <p class="muted">Choose what to allow, then compare. The planner still chooses the duration; your settings stay unchanged.</p>
+        <form id="heating-explorer-form">
+          <div id="heating-explorer-controls" class="heating-explorer-controls"></div>
+          <details id="heating-explorer-more-limits" class="heating-explorer-more-limits"><summary>Other limits &amp; strategy</summary><div id="heating-explorer-secondary-controls" class="heating-explorer-controls"></div></details>
+          <div class="heating-explorer-actions"><button id="heating-explorer-calculate" type="submit">Compare scenario</button><button id="heating-explorer-reset" type="button" class="secondary-button">Reset to current limits</button></div>
+        </form>
+        <p id="heating-explorer-dirty" class="muted" role="status" hidden>Limits changed. Compare again to update the estimates.</p>
+      </section>
+      <section id="heating-explorer-comparison-section" class="heating-explorer-section" aria-labelledby="heating-comparison-title" hidden>
+        <div class="heating-explorer-section-heading"><h3 id="heating-comparison-title">Your scenario compared</h3><span class="heating-explorer-tag">Model estimates</span></div>
+        <p id="heating-explorer-comparison-summary" role="status" aria-live="polite"></p>
+        <div id="heating-explorer-metrics" class="heating-explorer-metrics"></div>
+        <ol id="heating-explorer-scenario-timeline" class="heating-explorer-timeline" aria-label="Hypothetical heating phases"></ol>
+        <figure id="heating-explorer-chart" class="heating-explorer-chart" hidden><div id="heating-explorer-chart-plot"></div><figcaption><span class="heating-chart-key heating-chart-current">Current plan</span><span class="heating-chart-key heating-chart-scenario">Your scenario</span><span>Shaded: model uncertainty allowance</span><span>Predicted indoor average · Finnish local time</span></figcaption></figure>
+        <p id="heating-explorer-scenario-evidence" class="heating-explorer-note"></p>
+        <details class="heating-explorer-breakdown"><summary>Energy, recovery &amp; room temperatures</summary><div id="heating-explorer-breakdown" class="heating-explorer-table-wrap"></div></details>
+        <div id="heating-explorer-illustrative" class="heating-explorer-note" hidden></div>
+        <div id="heating-explorer-application" class="heating-explorer-application"><h4>Use this for one cycle</h4><p id="heating-explorer-application-help" class="muted"></p><button id="heating-explorer-apply" data-admin-only data-write-control type="button" disabled>Use these limits for one cycle</button></div>
+      </section>
+      <section id="heating-explorer-trial" class="heating-explorer-section heating-explorer-note" hidden><h3>One-cycle limits</h3><p id="heating-explorer-trial-description"></p><button id="heating-explorer-cancel" data-admin-only data-write-control class="secondary-button" type="button">Cancel one-cycle limits</button></section>
+      <details class="heating-explorer-footnotes"><summary>How to read these estimates</summary><ul id="heating-explorer-limitations"></ul><p>Exploring does not train the model. Only recorded observations from real operation can add learning evidence. Forecasts are estimates; a stress case is not a statistical confidence interval.</p></details>
+    </div>
+  </dialog>
+
   <dialog id="fireplace-dialog" class="control-dialog fireplace-dialog" aria-labelledby="fireplace-title" aria-describedby="fireplace-help">
     <h2 id="fireplace-title">Fireplace</h2>
     <p id="fireplace-overview" class="muted">Add firewood</p>

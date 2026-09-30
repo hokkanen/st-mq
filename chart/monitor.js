@@ -35,6 +35,8 @@ import { setStatusDetail, closeStatusDetails } from './status-details.js';
 import { priceStatuses, renderCurrentPrice } from './current-price.js';
 import { homeHeatingConfirmation, setHeatingStatusDetail } from './heating-status.js';
 import { renderHomePlannedChange } from './heating-plan.js';
+import { createHeatingExplorerPanel } from './heating-explorer.js';
+import './heating-explorer.css';
 import { homeHeatingWarning } from './heating-warning.js';
 import { createOcppSetupAction, ocppSetupRevision } from './ocpp-setup.js';
 import { createDashboardLayout } from './dashboard-layout.js';
@@ -122,6 +124,7 @@ const reasons = {
   'continuous-normal-preferred': 'Continuous normal operation is preferred',
 };
 function lockScreen({ authenticationFailed = false } = {}) {
+  heatingExplorer.clear();
   selectPickers.dismiss();
   for (const picker of temporaryDatePickers) picker.dismiss();
   const hadPassword = Boolean(session.token), hadStatus = Boolean(lastStatus);
@@ -162,6 +165,8 @@ async function api(path, data, options = {}) {
 function showError(error) { $('error').textContent = error.message; $('error').hidden = false; $('connection').textContent = 'Connection needs attention'; }
 const fireplacePanel = createFireplacePanel({ document, request: api, storage: sessionStorage,
   beforeMutation: () => { ++refreshSequence; }, afterMutation: () => refresh() });
+const heatingExplorer = createHeatingExplorerPanel({ document, request: api,
+  afterMutation: () => { ++refreshSequence; return refresh(); } });
 // Mount the static input guide before restoring a possibly pending sensor change.
 renderModelInputs($('model-inputs-content'), undefined, { sensorChanges: $('sensor-change-details'),
   outdoorSensorChanges: $('outdoor-sensor-change-details') });
@@ -739,6 +744,7 @@ function render(s) {
   const replica = renderReplicaStatus(document, s, { formatTime: time });
   if (replica) garageDoors.close();
   renderHomePlannedChange(document, s);
+  heatingExplorer.update({ ...s, webAccess });
   sensorChangePanel.update(isReadOnlyReplica(s) ? { ...s.sensorChanges, available: false, readOnly: true } : s.sensorChanges);
   $('connection').textContent = replica || s.input === 'offline' ? 'History viewer' : s.input === 'simulated' ? 'Simulation' : 'Live';
   $('context').textContent = s.input === 'simulated' ? 'Simulated devices and example prices. This workspace sends no commands to your home.'
@@ -896,7 +902,7 @@ async function refreshPairing() {
     pairPanel.update(pairPanelView(lastStatus));
     renderInstanceRole(document, lastStatus);
     if (isReadOnlyReplica(lastStatus)) {
-      garageDoors.close(); fireplacePanel.close();
+      garageDoors.close(); fireplacePanel.close(); heatingExplorer.clear();
       renderReplicaStatus(document, lastStatus, { formatTime: time });
     }
     if (changed) await refresh({ forceChart: true });
@@ -1122,7 +1128,7 @@ historyChart = createHistoryChart({ api: (path, options) => api(path, undefined,
 document.addEventListener('themechange', event => historyChart.updateTheme(event.detail.theme));
 setInterval(() => refresh({ background: true }), 15_000);
 setInterval(refreshPairing, 3_000);
-setInterval(() => { checkCommunication(); if (!session.locked) fireplacePanel.tick(); }, 1000);
+setInterval(() => { checkCommunication(); if (!session.locked) { fireplacePanel.tick(); heatingExplorer.tick(); } }, 1000);
 window.addEventListener('online', () => void refresh());
 document.addEventListener('visibilitychange', () => { checkCommunication(); if (!document.hidden) void refresh(); });
 if (session.locked) { $('auth').hidden = ingress; $('connection').textContent = 'Signed out'; if (!ingress) $('token').focus(); }

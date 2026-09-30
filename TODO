@@ -1,3 +1,39 @@
+Implemented 2026-09-30 — Heating plan explorer and scoped one-cycle scenarios
+- Make Home's heating preview a keyboard-accessible dialog opener, retaining
+  selected, paused, simulated and recorded-plan meanings. Show the actual upcoming
+  phases, constraint values, room/time rejection evidence and advice supported by
+  tested improvements rather than a ceiling merely being reached.
+- Family can compare duration, room drop/rise, preheat and strategy preferences
+  on a pinned snapshot using the production planner. Show incremental estimated
+  benefit, temperatures, uncertainty, recovery, auxiliary use and remaining debt;
+  retain the actual selected plan separately from fresh optimization. Longer
+  fixed-duration illustrations remain non-executable and disclose extrapolation.
+- Admin can explicitly authorize one reviewed upcoming cycle with a deadline.
+  Server-held previews bind model, prices/weather, household settings, source
+  evidence and equipment identity. Revalidate before/during execution; reject
+  stale approval, keep cancellation/expiry/restoration independent, and end
+  approvals on restart. No permanent settings are rewritten or copied into
+  hidden dashboard defaults. Actual trial status follows polling without moving
+  the comparison baseline or discarding hypothetical edits.
+- F1/F2/F3/F4/F5/F6/F7/F8: strict current request/state validation, no migration or
+  renamed-field aliases, unchanged native and absolute comfort protections,
+  unchanged learning-evidence and trial-budget gates, and no training from
+  simulations. Preserve approval provenance in real cycles and qualifying journal
+  episodes without changing their learning weight or algorithm. Snapshots/caches,
+  worker concurrency and computation time are bounded; no device or private
+  configuration data is included in fixtures. Register new state/events in the
+  recording inventory and document control ownership, estimates and limitations.
+- Extend the existing preheat candidate grid to honor supported ceilings above
+  two hours, retaining treatment evidence, source-range and admission checks.
+- Validation: final npm run check on Node 26.8.2 passed 3,637 tests with one optional
+  skip and a successful production build (existing bundle-size advisory). Another
+  103 focused worker, permission, lifecycle, reconstruction, inventory and UI checks
+  passed during review. Home-controls and explorer Chromium suites passed;
+  explorer covers 320/390/1280/1920px, both themes, keyboard/focus, role enforcement,
+  pinned edits, stale previews, trial lifecycle and recorded-view polling. Synthetic
+  screenshots reviewed; 31 documentation links and whitespace checks passed.
+  No live equipment testing, deployment, private data modification or push.
+
 Implemented 2026-09-30 — Charging setup, real-session assessments and diagnostics
 - Add Charging above Floor preheating with charger commissioning/recovery guidance,
   exact BMW CarData mappings, TeslaMate health/settings distinctions and sanitized

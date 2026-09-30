@@ -82,7 +82,8 @@ restarting. Clearing the family password disables family login; clearing both
 disables direct add-on access. Home Assistant ingress retains full admin access
 through Home Assistant authentication, independently of these passwords.
 
-Family reads all application data with credentials concealed, and may record
+Family reads all application data with credentials concealed, may calculate
+read-only heating-plan comparisons, and may record
 firewood, remove entries within 15 minutes, operate DHWR, Away/Pause and manual
 heating, Home Automatic/Pause and Garage manual modes, garage doors and all EV card controls. Every other write, export and
 download requires admin. These permissions do not change equipment authority,
@@ -108,6 +109,13 @@ complete SQLite snapshot with the same timestamped filename format. See
 [database exports](recording.md#single-file-database-export) for details.
 
 ## Heating automation and manual controls
+
+The [Heating plan explorer](heating-plan-explorer.md) compares hypothetical
+settings without editing these defaults. Its admin-only one-cycle action stores
+an expiring, equipment-bound approval for the reviewed opportunity. Explicit
+temporary preferences are restored to configured behavior when their scope ends;
+equipment protection and outstanding restoration duties remain active. Family
+access permits simulation but cannot approve or cancel this one-cycle scope.
 
 Home has a durable **Automatic / Pause** choice, bound to the equipment
 identity and initially Pause without an end time. An optional resume time

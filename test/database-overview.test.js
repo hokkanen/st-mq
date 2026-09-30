@@ -60,12 +60,14 @@ test('overview distinguishes saved/null values, imports, shared forecasts, journ
     store.setState(`settings:${privateMarker}`, { credential: privateMarker });
     store.setState(`settings:${privateMarker}`, { credential: privateMarker, mode: 'observe' });
     store.setState(`fireplace:rebuild:${privateMarker}`, { status: 'running', error: privateMarker });
+    store.setState(`heating-explorer:trial:${privateMarker}`, { status: 'pending', binding: privateMarker });
     store.db.prepare("INSERT INTO fireplace_events(input,request_id,at,kind,kg) VALUES(?,?,?,'load',?)")
       .run(privateMarker, privateMarker, at, 8);
     store.setState(`heat-pump-power-config:${privateMarker}`, { version: 1, heatPumpCompressorKw: 2, circulationKw: 0.1, auxRatedKw: 6 });
     store.setState(`contract:${privateMarker}`, { periods: [{ from: at - 86400000, marginCtPerKwh: 1 }, { from: at, marginCtPerKwh: 2 }] });
     store.event('heat-pump-power-config', { input: privateMarker, version: 1, heatPumpCompressorKw: 2, circulationKw: 0.1, auxRatedKw: 6 }, at);
     store.event('decision', { personal: privateMarker }, at);
+    store.event('heating-scenario-approved', { binding: privateMarker }, at);
     store.event(privateMarker, { personal: privateMarker }, at);
     for (const kind of ['sample', 'episode', 'context']) store.appendLearningJournal('providers', {
       kind, at, algorithmVersion: 'fixture-algorithm', configVersion: { private: privateMarker },
@@ -91,6 +93,8 @@ test('overview distinguishes saved/null values, imports, shared forecasts, journ
     store.counter({ device: privateMarker, signal: 'compressor_runtime', value: 100, observedDate: '2026-01-10', note: privateMarker, provenance: privateMarker });
     const overview = getDatabaseOverview({ store, now: at + 2000 });
     const rows = items(overview);
+    assert.equal(rows.get('state-heating-scenarios').count, 1);
+    assert.equal(rows.get('events-heating-scenarios').count, 1);
     assert.equal(rows.get('controller_phase').count, 2);
     assert.equal(rows.get('controller_phase').firstAt, at);
     assert.equal(rows.get('controller_phase').lastAt, at + 1000);

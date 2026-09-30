@@ -85,11 +85,12 @@ export class CycleTracker {
     if (this.active()) return this.active();
     plan = structuredClone({ ...plan, prediction: summary(plan.prediction), referencePrediction: summary(plan.referencePrediction) });
     const common = { intervals: plan.intervals, model: plan.model, initialState: plan.initialState, targetC: plan.targetC,
-      occupancy: plan.occupancy, maxDropC: plan.maxDropC, config: this.config, equipment: plan.equipment ?? {} };
+      occupancy: plan.occupancy, maxDropC: plan.maxDropC, maxRiseC: plan.maxRiseC,
+      config: plan.config ?? this.config, equipment: plan.equipment ?? {} };
     plan.prediction = summary(evaluateCycle({ ...common, schedule: plan.schedule }));
     plan.referencePrediction = summary(evaluateCycle({ ...common, schedule: plan.reference }));
     const cycle = { id: `${this.input}:${randomUUID()}`, startedAt: now, status: 'active', treatmentKey: plan.schedule.treatmentKey ?? 'native', plan,
-      executionBasis: executed ? 'live-commanded' : 'simulated', modelConfig: { ...this.config }, observations: [], lastSample: sample,
+      executionBasis: executed ? 'live-commanded' : 'simulated', modelConfig: { ...(plan.config ?? this.config) }, observations: [], lastSample: sample,
       observerState: { ...plan.initialState },
       actual: { costCents: 0, electricityKwh: 0, recoveryCostCents: 0, recoveryEnergyKwh: 0,
         compressorKwh: 0, compressorRunHours: 0, spaceHeatingAuxKwh: 0, dhwAuxKwh: 0,
@@ -211,7 +212,7 @@ export class CycleTracker {
     if (intervals.some(i => !number(i.outdoorC) || !number(i.price))) { this.save(cycle); return null; }
     const reference = evaluateCycle({ schedule: cycle.plan.reference, intervals, model: cycle.plan.model,
       initialState: cycle.plan.initialState, targetC: cycle.plan.targetC, config: cycle.modelConfig ?? this.config,
-      occupancy: cycle.plan.occupancy, maxDropC: cycle.plan.maxDropC,
+      occupancy: cycle.plan.occupancy, maxDropC: cycle.plan.maxDropC, maxRiseC: cycle.plan.maxRiseC,
       equipment: { ...cycle.plan.equipment, fireplaceEvents: this.fireplaceContext?.fireplaceEvents ?? cycle.plan.equipment?.fireplaceEvents ?? [] }, includeTail: false });
     const reserve = cycle.observerState?.reserveC;
     const settled = sample.indoorC >= reference.endState.indoorC - 0.2
@@ -233,7 +234,7 @@ export class CycleTracker {
         return { ...i, outdoorC: original.outdoorC, solarRadiationWm2: original.solarRadiationWm2, price: original.price };
       }) : null;
       const common = { model: cycle.plan.model, initialState: cycle.plan.initialState, targetC: cycle.plan.targetC,
-        config: cycle.modelConfig ?? this.config, occupancy: cycle.plan.occupancy, maxDropC: cycle.plan.maxDropC,
+        config: cycle.modelConfig ?? this.config, occupancy: cycle.plan.occupancy, maxDropC: cycle.plan.maxDropC, maxRiseC: cycle.plan.maxRiseC,
         equipment: cycle.plan.equipment ?? {}, includeTail: false };
       const predicted = predictionIntervals && !cycle.adjustments?.length
         ? evaluateCycle({ ...common, schedule: cycle.plan.schedule, intervals: predictionIntervals }) : null;
@@ -272,6 +273,7 @@ export class CycleTracker {
         recoveryBasis: 'Comparable room temperature and reserve reconstructed with the frozen cycle model, and selected slab when configured, held for one hour; DHW service excluded',
         referenceLabel: cycle.plan.referenceLabel, assessedAt: now };
       const episode = { id: cycle.id, treatmentKey: cycle.treatmentKey ?? 'native', complete: true, recoveryComplete: true, startedAt: cycle.startedAt, endedAt: now,
+        ...(cycle.plan.userTrial ? { userTrial: cycle.plan.userTrial } : {}),
         energyBasis: a.metered ? 'measured' : 'estimated', compressorKwh: a.compressorKwh,
         compressorRunHours: a.compressorRunHours, recoveryHours: (now - schedule.reductionEnd) / HOUR,
         recoveryEnergyKwh: a.spaceHeatingRecoveryKwh, spaceHeatingAuxKwh: a.spaceHeatingAuxKwh,

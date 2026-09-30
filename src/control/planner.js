@@ -126,6 +126,14 @@ export function evaluateCycle({ schedule = null, intervals, model, initialState,
   let absoluteCostCents = 0, recoveryEnergyKwh = 0, recoveryAuxKwh = 0, spaceHeatingCostCents=0, spaceHeatingKwh=0;
   let penalty = 0, severe = false, uncertaintyC = 0, elapsed = 0;
   const roomDiscomfort = {};
+  // Keep one worst occurrence per boundary/room. These facts explain the same
+  // safety checks used by dispatch; they do not change admission or training.
+  const violations = new Map();
+  const violation = (code, roomId, at, value, limit, excess = 0) => {
+    const key = `${code}:${roomId ?? ''}`, previous = violations.get(key);
+    if ((!previous || excess > previous.excess) && (previous || violations.size < 24))
+      violations.set(key, { code, roomId, at, value: number(value) ? value : null, limit, unit: '°C', excess });
+  };
   let recoverySettledHours = 0, recoveredAt = null, previousEnd = null, recoveryFallbackAt=null, indoorTrendCPerHour=null;
   const trajectory = [];
 
@@ -242,12 +250,23 @@ export function evaluateCycle({ schedule = null, intervals, model, initialState,
           const discomfortKey = `${room.id}:${delta > 0 ? 'hot' : 'cold'}`;
           roomDiscomfort[discomfortKey] = (roomDiscomfort[discomfortKey] ?? 0) + discomfort;
           penalty += discomfort;
-          if (schedule && phase !== 'normal' && (room.stale || !number(projectedRoomC)
-            || projectedRoomC - uncertaintyC < (room.targetC ?? targetC) - maxDropC
-            || projectedRoomC + uncertaintyC > (room.targetC ?? targetC) + maxRiseC)) severe = true;
+          if (schedule && phase !== 'normal') {
+            const lower = (room.targetC ?? targetC) - maxDropC, upper = (room.targetC ?? targetC) + maxRiseC;
+            if (room.stale || !number(projectedRoomC)) {
+              severe = true; violation('room-observation-unavailable', room.id, end, null, null);
+            }
+            if (projectedRoomC - uncertaintyC < lower) {
+              severe = true; violation('room-drop-limit', room.id, end, projectedRoomC - uncertaintyC, lower, lower - projectedRoomC + uncertaintyC);
+            }
+            if (projectedRoomC + uncertaintyC > upper) {
+              severe = true; violation('room-rise-limit', room.id, end, projectedRoomC + uncertaintyC, upper, projectedRoomC + uncertaintyC - upper);
+            }
+          }
         }
       }
-      if (phase === 'preheat' && (!source.withinPlanningRange || !number(equipment.supplyC))) severe = true;
+      if (phase === 'preheat' && (!source.withinPlanningRange || !number(equipment.supplyC))) {
+        severe = true; violation('preheat-source-range', null, end, source.supplyC, null);
+      }
       trajectory.push({ at: end, phase, requestedPhase, ...state, integral: projected.integral,
         supplyShortfallC: projected.supplyShortfallC, nativeCompressorDemand: projected.nativeCompressorDemand,
         sourceEstimate: prediction.source, auxiliaryRisk: prediction.auxiliaryRisk, powerKw: kw, spaceHeatingPowerKw, auxiliaryKw: auxKw,
@@ -279,6 +298,7 @@ export function evaluateCycle({ schedule = null, intervals, model, initialState,
   return { costCents, electricityKwh, auxiliaryKwh, recoveryCostCents, recoveryEnergyKwh, recoveryAuxKwh, preheatCostCents,
     penalty, roomDiscomfort, score: costCents + penalty * 17.5, severe, endState: state, terminalKwh, terminalCostCents,spaceHeatingCostCents,spaceHeatingKwh,
     uncertaintyCents, trajectory, recoveredAt, nativeEndState: nativeState,
+    violations: [...violations.values()].map(({ excess, ...entry }) => entry),
     integralBasis: 'At most one hour of measured-trend projection; later native integral unknown',
     auxiliaryBasis: 'Estimated space-heating auxiliary risk; DHW costs need separate observed attribution',
     basis: 'estimated-space-heating-only; matched DHW service is not established', completeRecoveryPredicted: schedule === null || recoveredAt !== null };
@@ -322,7 +342,7 @@ export function economicAdmission({ prediction, referencePrediction, args, sched
     basis: 'Paired physical stress scenarios; estimated space-heating costs, not measured whole-house savings.' };
 }
 
-function validatedReductionHours(model) {
+export function validatedReductionHours(model) {
   const phase = model?.equipmentResponse?.validation?.phases?.reduction;
   return actionEvidenceReady(model, 'reduction') && model?.forecastValidation?.accepted
     && number(phase?.maxDurationHours) && number(model.forecastValidation.maxReductionHours)
@@ -536,20 +556,29 @@ export function chooseCycle({ now, observations, prices, forecast, checkpoint, s
   const starts = [...new Set([now,...(preheatTrialReady?[now+trialPreheat*HOUR]:[]), ...intervals.filter((row, i) => i && row.price !== intervals[i-1].price)
     .map(row => row.start).filter(t => t <= now + 12 * HOUR)])].slice(0, 32);
   const preheatOptions=[];
-  let evaluatedCandidates=0;
+  let evaluatedCandidates=0, forecastRejected=0, comfortRejected=0;
+  const rejectedExamples = new Map();
   const addCandidate=(schedule,duration)=>{
     const result=evaluation(schedule);evaluatedCandidates++;
     const trialSafety=trialEnvelope({schedule,initialState,targetC,intervals,model,config:c,
       occupancy:settings.occupancy,maxDropC:settings.comfort.maxDropC,maxRiseC:settings.comfort.maxRiseC ?? 1.5,equipment});
     const option={schedule,result,duration,trialSafety,firstActionAt:schedule.preheatStart};
     if (!result.severe)candidates.push(option);
+    else {
+      comfortRejected++;
+      for (const entry of result.violations) {
+        const key = `${entry.code}:${entry.roomId ?? ''}`;
+        if (!rejectedExamples.has(key) && rejectedExamples.size < 12)
+          rejectedExamples.set(key, { ...entry, reductionHours: duration });
+      }
+    }
     return option;
   };
   // Evaluate every reduction first. Expand preheat around promising reductions
   // rather than multiplying the entire grid by every duration/boost combination.
   for (const reductionStart of starts) for (const duration of durations) {
     const reductionEnd=reductionStart+duration*HOUR,delay=(reductionStart-now)/HOUR;
-    if (!cycleForecastCovered(intervals, { reductionEnd }, now)) continue;
+    if (!cycleForecastCovered(intervals, { reductionEnd }, now)) { forecastRejected++; continue; }
     const option=addCandidate({preheatStart:reductionStart,preheatEnd:reductionStart,
       reductionStart,reductionEnd,roomBoostC:0,treatmentKey:'reduction-only-v1'},duration);
     const demandWindow=baseline.trajectory.filter(step=>step.at>reductionStart&&step.at<=reductionEnd+2*HOUR);
@@ -565,7 +594,7 @@ export function chooseCycle({ now, observations, prices, forecast, checkpoint, s
   const expansions=[...new Set([...ranked.slice(0,8),...preheatOptions.filter(o=>
     o.schedule.reductionStart===now+trialPreheat*HOUR&&o.duration<=trialMaximum).slice(0,4)])];
   for (const option of expansions) {
-    const preheats=[...new Set([...(actionEvidenceReady(model,'preheat')?[.5,1,1.5,2]:[]),
+    const preheats=[...new Set([...(actionEvidenceReady(model,'preheat')?[.5,1,1.5,2,3,4,6,c.maxPreheatHours]:[]),
       ...(preheatTrialReady?[trialPreheat]:[])])].filter(d=>d<=option.delay&&d<=c.maxPreheatHours);
     const requestedRoom = preheatRoomRequest(equipment, c);
     if (!number(requestedRoom.roomBoostC)) continue;
@@ -575,6 +604,9 @@ export function chooseCycle({ now, observations, prices, forecast, checkpoint, s
   }
   const search={method:'reduction-grid-room-boost-preheat-paired-scenario-shortlist',evaluatedCandidates,
     preheatExpansions:expansions.length,limitation:'Bounded candidate search; not a proof of a global optimum.'};
+  const diagnostics = { configuredMaximumHours: configuredMaximum, validatedMaximumHours: testedMaximum,
+    economicMaximumHours: economicMaximum, trialMaximumHours: trialMaximum,
+    forecastRejected, comfortRejected, violations: [...rejectedExamples.values()] };
   const args = { intervals, model, initialState, targetC, occupancy: settings.occupancy,
     maxDropC: settings.comfort.maxDropC, maxRiseC: settings.comfort.maxRiseC ?? 1.5, config: c, equipment };
   for (const option of candidates) {
@@ -592,6 +624,10 @@ export function chooseCycle({ now, observations, prices, forecast, checkpoint, s
     option.risk = option.economics.uncertaintyCents;
     return option;
   }).filter(option => option.economics.admitted);
+  diagnostics.evidenceRejected = candidates.length - qualified.length;
+  diagnostics.economicsAssessed = Math.min(qualified.length, 16);
+  diagnostics.economicsRejected = diagnostics.economicsAssessed - assessed.length;
+  diagnostics.economicsAdmitted = assessed.length;
   const best = Math.max(0, ...assessed.map(o => o.economics.lowerBenefitCents));
   const retainedFraction = heatingStrategy(settings.savingsStrategy).retainedBenefitFraction;
   let chosen = assessed.filter(o => o.economics.lowerBenefitCents >= best * retainedFraction)
@@ -614,17 +650,19 @@ export function chooseCycle({ now, observations, prices, forecast, checkpoint, s
     if (selectedTrial) {chosen=selectedTrial;trial=true;}
   }
   if (!chosen) return { ...normal('normal-operation-preferred'), readiness,
-    evaluation: { baselineCostCents: baseline.costCents, candidates: candidates.length, search } };
+    diagnostics, evaluation: { baselineCostCents: baseline.costCents, candidates: candidates.length, search } };
   const reference = null, referenceResult = baseline;
   const phase = phaseAt(chosen.schedule, now);
   return { action: phase === 'reduction' ? 'reduction' : 'normal', phase,
     reasons: [trial ? 'bounded-learning-trial' : 'predicted-full-cycle-benefit'],
-    comfort: { targetC, maxDropC: settings.comfort.maxDropC, maxDropApplies: !away },
+    comfort: { targetC, maxDropC: settings.comfort.maxDropC, maxDropApplies: !away }, diagnostics,
     plan: { generatedAt: now, horizonEnd: intervals.at(-1).end, schedule: chosen.schedule, reference,
       referenceLabel: 'continuous normal operation',
-      initialState, targetC, model, intervals, equipment, occupancy: { ...settings.occupancy }, maxDropC: settings.comfort.maxDropC,
+      initialState, targetC, model, intervals, equipment, config: c, occupancy: { ...settings.occupancy },
+      maxDropC: settings.comfort.maxDropC, maxRiseC: settings.comfort.maxRiseC ?? 1.5,
+      savingsStrategy: settings.savingsStrategy,
       trial, trialAllowanceCents: trial ? Math.max(0, -chosen.benefit, chosen.trialSafety.costExposureCents) : 0,
-      trialSafety: trial ? chosen.trialSafety : null, readiness, search, economics: chosen.economics ?? null,
+      trialSafety: trial ? chosen.trialSafety : null, readiness, search, diagnostics, economics: chosen.economics ?? null,
       prediction: chosen.result, referencePrediction: referenceResult,
       estimatedBenefitCents: referenceResult.costCents - chosen.result.costCents,
       uncertaintyCents: chosen.risk, evidence: 'Estimated complete-cycle comparison; unexecuted reference is modelled.' } };

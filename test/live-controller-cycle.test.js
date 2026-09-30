@@ -157,3 +157,84 @@ test('near-third H66 output maps to nominal stages and other percentages stay ex
   assert.deepEqual([0,33,67,100].map(p=>auxiliaryPowerFromOutput(p).kw),[0,3,6,9]);
   assert.deepEqual(auxiliaryPowerFromOutput(50),{kw:4.5,stage:null,basis:'proportional-output-estimate'});
 });
+
+test('admin scenario consent uses effective limits for exactly the reviewed cycle and keeps learning exposure context', async t => {
+  const r = setup(t), plan = r.plan();
+  const explorer = r.engine.heatingExplorer;
+  explorer.capture({ now: r.now, settings: r.engine.settings, config: r.engine.control,
+    checkpoint: r.engine.checkpoint, observations: {}, equipment: {} }, { phase: 'normal', reasons: [], plan: null });
+  r.engine.pendingPlan = null;
+  explorer.worker = { async run() { return { version: 1, executablePlan: plan }; }, async close() {} };
+  const view = await explorer.view();
+  const comparison = await explorer.simulate({ snapshotId: view.snapshotId, limits: { maxReductionHours: 8, maxRiseC: 1.75 } });
+  assert.equal(comparison.application.allowed, true, comparison.application.reason);
+  const consent = explorer.apply({ previewId: comparison.previewId });
+  const settings = structuredClone(r.engine.settings), config = structuredClone(r.engine.control);
+  const status = r.engine.tick(); await r.settle();
+  assert.equal(status.decision.phase, 'reduction');
+  const cycle = r.engine.cycles.active();
+  assert.equal(cycle.plan.userTrial.id, consent.activeTrial.id);
+  assert.equal(cycle.plan.maxRiseC, 1.75); assert.equal(cycle.modelConfig.maxReductionHours, 8);
+  assert.equal(explorer.input.currentSettings.comfort.maxRiseC, 1.75);
+  assert.equal(explorer.publicTrial().status, 'running');
+  assert.equal(r.engine.status().heatingScenario.status, 'running');
+  assert.deepEqual(r.engine.settings, settings); assert.deepEqual(r.engine.control, config);
+  const journal = r.store.learningJournal({ input: 'mqtt' });
+  assert.ok(journal.every(row => row.kind !== 'episode'), 'no completed training outcome is fabricated at approval or command time');
+  explorer.cancel({});
+  const recovery = r.engine.tick(); await r.settle();
+  assert.equal(recovery.decision.phase, 'recovery');
+  assert.equal(explorer.publicTrial().status, 'cancelled');
+  assert.equal(r.engine.status().heatingScenario.status, 'cancelled');
+  assert.equal(r.engine.cycles.active().plan.userTrial.id, consent.activeTrial.id, 'cancel preserves actual exposure provenance');
+  assert.equal(r.engine.pendingPlan, null);
+  assert.equal(explorer.input.currentPlan.schedule.reductionEnd, r.now);
+  assert.equal(explorer.input.currentDecision.phase, 'recovery');
+  assert.equal(explorer.input.currentSettings.comfort.maxRiseC, r.engine.settings.comfort.maxRiseC);
+  assert.equal(explorer.input.currentConfig.maxReductionHours, r.engine.control.maxReductionHours);
+});
+
+test('an approved scenario cannot bypass current response evidence', async t => {
+  const r = setup(t), plan = r.plan();
+  const explorer = r.engine.heatingExplorer;
+  explorer.capture({ now: r.now, settings: r.engine.settings, config: r.engine.control,
+    checkpoint: r.engine.checkpoint, observations: {}, equipment: {} }, { phase: 'normal', reasons: [], plan: null });
+  r.engine.pendingPlan = null;
+  explorer.worker = { async run() { return { version: 1, executablePlan: plan }; }, async close() {} };
+  const view = await explorer.view(), comparison = await explorer.simulate({ snapshotId: view.snapshotId, limits: { maxReductionHours: 8 } });
+  explorer.apply({ previewId: comparison.previewId });
+  // Evidence changes after approval but before the next ordinary control tick.
+  r.engine.checkpoint.model.equipmentResponse = null;
+  const decision = r.engine.tick(); await r.settle();
+  assert.notEqual(decision.decision.phase, 'reduction');
+  assert.equal(explorer.publicTrial().status, 'rejected');
+  assert.equal(r.engine.cycles.active(), null);
+  assert.equal(r.commands.some(commands => commands.includes('reduction')), false);
+});
+
+test('one-cycle preferred limits cannot suppress the absolute two-degree occupied comfort guard', async t => {
+  const r = setup(t), plan = r.plan(), explorer = r.engine.heatingExplorer;
+  explorer.capture({ now: r.now, settings: r.engine.settings, config: r.engine.control,
+    checkpoint: r.engine.checkpoint, observations: {}, equipment: {} }, { phase: 'normal', reasons: [], plan: null });
+  r.engine.pendingPlan = null;
+  explorer.worker = { async run() { return { version: 1, executablePlan: plan }; }, async close() {} };
+  const view = await explorer.view(), comparison = await explorer.simulate({ snapshotId: view.snapshotId,
+    limits: { maxReductionHours: 8, maxDropC: 2 } });
+  explorer.apply({ previewId: comparison.previewId });
+  r.ingest('indoor_temperature', 19);
+  const status = r.engine.tick(); await r.settle();
+  assert.equal(status.decision.phase, 'normal');
+  assert.ok(status.decision.reasons.includes('hard-comfort-limit'));
+  assert.equal(explorer.publicTrial().status, 'rejected');
+  assert.equal(r.commands.some(commands => commands.includes('reduction')), false);
+});
+
+test('a copied pending scenario plan cannot act as its own approval', async t => {
+  const r = setup(t), plan = r.plan();
+  plan.userTrial = { id: 'orphan-scenario', limits: { maxReductionHours: 8 } };
+  const status = r.engine.tick(); await r.settle();
+  assert.equal(status.decision.plan?.userTrial, undefined);
+  assert.equal(r.engine.pendingPlan?.userTrial, undefined);
+  assert.equal(r.engine.cycles.active()?.plan.userTrial, undefined,
+    'ordinary automation may choose its own admissible plan, but never inherit orphan scenario consent');
+});

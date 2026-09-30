@@ -437,7 +437,13 @@ Home's upper summary shows the indoor average, outdoor
 temperature, heating request and all-in electricity price; Garage's shows its rear
 temperature, doors, heating request and the same price. A compact row below Home's
 readings shows the next planned heating change and its Finnish local time, or the
-current pause, recovery or no-plan state. Plan-only previews and simulated plans are labeled.
+current pause, recovery or no-plan state. Select this row to open the
+**Heating plan explorer**: inspect upcoming phases and limiting constraints, then
+compare hypothetical duration, comfort and preheat limits against the current
+plan. Family can simulate; admin can explicitly use an eligible scenario for one
+cycle. Estimates include recovery and uncertainty, and permanent settings stay
+configuration-owned. See [the explorer guide](docs/heating-plan-explorer.md).
+Plan-only previews and simulated plans are labeled.
 The equipment and connections fold headers keep their height when toggled;
 small desktop column differences use spacing between sections, with larger
 differences retaining their natural height. Each upper summary opens
@@ -584,6 +590,7 @@ One password field accepts either credential and selects its role. Family can
 read every page, setting, chart and diagnostic, with credentials still concealed.
 Family can perform only these writes:
 
+- Calculate heating-plan comparisons without changing controls or learning.
 - Record firewood and remove any entry within 15 minutes of its being recorded.
 - Start and stop DHWR circulation.
 - Set, change or cancel Home Away/Pause and use manual Home
@@ -595,7 +602,8 @@ Family can perform only these writes:
   charger priority choices and changes scoped to the current physical session.
 
 All other writes, exports and downloads require admin. This includes native
-heat-pump parameters, the durable Garage temperature target, device tests,
+heat-pump parameters, heating-plan one-cycle approvals and cancellation,
+the durable Garage temperature target, device tests,
 maintenance, pairing and configuration application. EV installation settings,
 commissioning, integration credentials and electrical limits remain admin-only.
 The server enforces the split for API calls as well as dashboard buttons; newly

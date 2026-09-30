@@ -107,6 +107,7 @@ node scripts/browser-equipment-smoke.js
 node scripts/browser-equipment-smoke.js --caravan-only
 node scripts/browser-charging-tests-smoke.js
 node scripts/browser-home-controls-smoke.js
+node scripts/browser-heating-explorer-smoke.js
 node scripts/browser-garage-smoke.js
 node scripts/browser-garage-smoke.js --temperature-hold-only
 node scripts/browser-mitsubishi-smoke.js
@@ -115,6 +116,14 @@ node scripts/browser-chart-views-smoke.js
 node scripts/browser-selectors-smoke.js
 node scripts/browser-timing-compat-smoke.js
 ```
+
+The heating-explorer suite checks the Home preview opener without toggling its
+parent card, Escape and focus restoration, pinned comparisons and draft retention,
+family simulation, explicit admin approval, stale-input rejection and narrow
+layouts in both themes. It uses synthetic response fixtures and captures a
+temporary screenshot gallery; it never commands household equipment. The Node
+explorer and live-controller-cycle tests separately exercise the production
+worker, access policy, real planner and one-cycle lifecycle against offline data.
 
 The Mitsubishi sweep builds its own temporary UI bundle unless `STMQ_UI_DIST`
 is provided. It checks application dropdown keyboard commit/cancel and real
