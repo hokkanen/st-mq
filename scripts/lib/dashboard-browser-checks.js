@@ -163,8 +163,8 @@ export async function checkDashboardLayout({ evaluate, width }) {
     const overview = document.querySelector('#home-control .overview-zone');
     const bounds = overview.getBoundingClientRect(), cells = [...overview.children].map(node => node.getBoundingClientRect());
     return cells.length === 3 && cells.every((cell, index) => cell.left >= bounds.left - 1 && cell.right <= bounds.right + 1
-      && Math.abs(cell.top - cells[0].top) <= 1 && (index === 0 || cell.left >= cells[index - 1].right));
-  })()`), true, `Home retains three aligned overview columns at ${width}px`);
+      && Math.abs(cell.bottom - cells[0].bottom) <= 1 && (index === 0 || cell.left >= cells[index - 1].right));
+  })()`), true, `Home aligns the bottoms of its three overview columns at ${width}px`);
   assert.equal(await evaluate(`(() => {
     const overview = document.querySelector('#garage-control .overview-zone'), bounds = overview.getBoundingClientRect();
     const temperature = overview.querySelector('.overview-reading').getBoundingClientRect();

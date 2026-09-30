@@ -713,12 +713,30 @@ details details { margin-inline-start: 24px; }
 .chart-shortcut:hover, .fireplace-shortcut:hover { color: var(--accent); border-color: var(--accent); }
 .home-overview { margin-top: 20px; }
 .overview-zone { display: grid; grid-template-columns: 1fr 1fr 1.2fr; align-items: start; gap: 18px; min-width: 0; }
+.overview-home { align-items: end; }
+/* Keep the header clear when the taller house rises into its row. */
+.home-control .home-heading-actions { position: relative; z-index: 1; background: var(--surface); box-shadow: 0 0 0 4px var(--surface); }
 .overview-zone > div { min-width: 0; }
 .overview-label { margin: 0 0 5px; color: var(--muted); font-size: 10px; font-weight: 400; line-height: 1.5; text-transform: lowercase; }
 .overview-label::first-letter { text-transform: uppercase; }
 .home-overview strong { display: block; font-weight: 450; font-variant-numeric: tabular-nums; }
 .overview-temperature { font-size: clamp(19px, 7cqw, 36px); line-height: 1.2; letter-spacing: -1.1px; }
-.overview-home > .overview-reading:first-child .overview-temperature { color: var(--accent); }
+.overview-indoor { position: relative; max-width: 112px; text-align: center; }
+.home-facade { position: absolute; bottom: 100%; width: 100%; aspect-ratio: 320 / 270; container-type: inline-size; }
+/* Longer freshness/source notes grow down without lifting the reading into the header. */
+.overview-indoor:has(#indoor-age:not([hidden])) { padding-top: 40px; }
+.overview-indoor:has(#indoor-age:not([hidden])) .home-facade { bottom: calc(100% - 40px); }
+.home-facade-building { display: block; width: 100%; height: auto; fill: none; stroke: var(--muted); stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
+.home-facade-building path { vector-effect: non-scaling-stroke; stroke-width: .6px; }
+.home-facade-wall { fill: var(--surface); stroke: var(--border); }
+.home-facade-building .home-facade-roof { stroke: var(--text); stroke-width: 1px; }
+.home-facade-trim { stroke: color-mix(in srgb, var(--muted) 60%, var(--border)); }
+.home-facade-window { fill: var(--surface-soft); }
+.home-facade-porch { fill: var(--surface-soft); stroke: var(--border); }
+.home-facade-ground { stroke: var(--border); }
+/* The reading clears a small part of the outline where compact layouts need it. */
+.home-facade .overview-temperature { position: absolute; top: 56%; left: 5%; width: 80%; background: var(--surface); color: var(--accent); font-size: clamp(16px, 21cqw, 24px); line-height: 1.2; letter-spacing: -.6px; }
+.home-facade .overview-temperature.metric-unavailable { font-size: clamp(10px, 13cqw, 14px); letter-spacing: -.2px; }
 .overview-temperature .status-detail-label { white-space: nowrap; }
 .overview-note { display: block; margin-top: 5px; color: var(--muted); font-size: 10px; line-height: 1.5; }
 .home-planned-change { display: flex; align-items: baseline; gap: 9px; margin-top: 16px; padding: 10px 14px; border-radius: 6px; background: var(--surface-soft); font-size: 11px; line-height: 1.6; }

@@ -1,3 +1,23 @@
+Implemented 2026-09-30 — Home temperature inside a west-elevation silhouette
+- Move Outdoor to the left and Indoor average to the middle. Draw a compact
+  west-facing house in the Garage facade's line style, using the stepped roof,
+  larger entrance canopy and omitted lower-left extension from the reference
+  photos. Keep the source photos/drawings outside the repository (F8).
+- Align all three Home overview cells at the bottom, letting the house rise
+  above its neighbours. Clear small parts of the outline behind the reading
+  and header where space is tight; reserve room for visible freshness/source
+  notes so long recorded-history labels cannot hide the temperature control.
+- Preserve reading IDs, evidence popovers, keyboard access and unavailable /
+  attention states (F4/F7). Replace the positional indoor accent and superseded
+  top-alignment assertion. No data, configuration, control or compatibility
+  changes (F1); Garage artwork and door behavior remain unchanged.
+- Validation: 32 focused Home/status-detail/replica tests, production build and
+  isolated Home/Garage Chromium suites passed. A temporary synthetic layout
+  sweep checked 30 views at 320/390/820/1000/1440px in both themes with current,
+  unavailable and long recorded-source notes: bottom alignment, containment,
+  no page overflow and unobscured temperature hit targets passed. Reviewed
+  screenshots. Existing bundle-size advisory remains. No deployment or push.
+
 Implemented 2026-09-30 — Independently finish each Garage closing arrow
 - Replace finish-callback cleanup with a visibility animation sharing the same
   start time and duration as its own shutter. Each downward arrow disappears at

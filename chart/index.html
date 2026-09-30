@@ -73,15 +73,27 @@
               </div>
             </div>
             <div class="home-overview overview-zone overview-home" aria-label="Latest home conditions">
-              <div class="overview-reading">
-                <strong id="indoor" class="overview-temperature">—</strong>
-                <small class="overview-note">Indoor average</small>
-                <small id="indoor-age" class="overview-note">Waiting for readings</small>
-              </div>
               <div class="overview-reading overview-outdoor">
                 <strong id="outdoor" class="overview-temperature">—</strong>
                 <small class="overview-note">Outdoor</small>
                 <small id="outdoor-age" class="overview-note">Waiting for readings</small>
+              </div>
+              <div class="overview-reading overview-indoor">
+                <div class="home-facade">
+                  <svg class="home-facade-building" viewBox="0 0 320 270" aria-hidden="true" focusable="false">
+                    <path class="home-facade-wall" d="M22 155 136 87V20L298 89v132L22 256Z"/>
+                    <path class="home-facade-roof" d="m12 154 124-73V12l172 73M16 160l126-74V21l162 70"/>
+                    <path class="home-facade-trim" d="M22 161v95m213-193v165m63-133v126"/>
+                    <path class="home-facade-window" d="M169 102h39v28h-39Zm24 0v28M43 226h18v24H43Zm57-5h22v13h-22Zm60-4h22v12h-22Z"/>
+                    <path class="home-facade-porch" d="m235 157 63 25v39l-63 8Z"/>
+                    <path class="home-facade-roof" d="m228 150 81 30m-81-24 80 30"/>
+                    <path class="home-facade-trim" d="M291 180v42m-50 5v-53l24 9v41m-6-20v5m-24 20 67-8m-67 14 73-9m-73 15 79-10"/>
+                    <path class="home-facade-ground" d="m12 258 304-35"/>
+                  </svg>
+                  <strong id="indoor" class="overview-temperature">—</strong>
+                </div>
+                <small class="overview-note">Indoor average</small>
+                <small id="indoor-age" class="overview-note">Waiting for readings</small>
               </div>
               <div class="overview-request">
                 <p id="requested-label" class="overview-label">Heating request</p>
