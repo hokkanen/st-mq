@@ -1,3 +1,34 @@
+Implemented 2026-09-30 — Caravan recording follows native power response
+- Replace the two-minute humidity agreement gate with a bounded native Off
+  baseline / On / Off test against fresh Caravan meter power on each connection.
+  Require independent advancing observations, a stable rise and matching fall;
+  a detectable fan-only load can qualify without appliance RH or temperature.
+  Flat, noisy, incomplete or stale evidence leaves appliance history paused.
+- Preserve the four-state Off/Low/Medium/High recorder, source clocks and explicit
+  history gaps. Record compact electrical-test provenance; never backfill the
+  test window. BLU air/RH and measured counter energy recording stay independent.
+  Both native Shelly kW and explicitly configured MQTT watts are supported.
+- Persist identity/route-bound restoration before test commands. Restore original
+  native power after testing, interruption, restart and graceful shutdown; reject
+  settings reload until restoration completes through the original connection.
+  Respect authority loss, independent native power changes and enabled cold-Off
+  thresholds. Never switch the meter plug or change native humidity/fan settings.
+- Show power-check progress and observed rise/fall in the Caravan card; prevent
+  competing edits during testing/restoration. Reconnect and meter outages require
+  new qualification; failed tests do not repeatedly cycle equipment online.
+- F1/F3/F4/F5/F7/F8: remove old humidity-match producers, status fields, recorder
+  metadata and UI criteria without compatibility aliases or migrations. Preserve
+  durable policy ownership and original evidence. The explicit user-authorized
+  live native test confirmed meter response and restored the original power and
+  policy, using an owner-only external restoration journal. No deployment.
+- Validation: routine suite passed (3,714 passed, one optional skip), production
+  build passed with its existing bundle-size advisory, and final focused checks
+  passed (54 probe/control/history and 12 lifecycle/reload tests). The 33 UI tests
+  and Caravan browser sweep passed in both themes at 320/390/1440 px. Live tests
+  did not force a low-humidity operating mode; modest-load, no-delta, noisy-meter
+  and lagging-source-clock cases are covered by synthetic fixtures. Final diff
+  and staged secret checks passed.
+
 Implemented 2026-09-30 — Configuration-owned Garage protection parameters
 - Remove the dashboard protection form and settings-write endpoint. Installation
   approval, protection margin, pipe geometry and heat-transfer assumptions now

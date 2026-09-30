@@ -469,7 +469,7 @@ test('Caravan groups air and pending dehumidifier with energy, preserving disclo
   assert.equal(fan.value, 'high'); assert.equal(fan.disabled, false);
   assert.match(appliance.querySelector('.equipment-control-result').textContent, /device reported/);
   liveDevice.dehumidifier.available = false;
-  liveDevice.dehumidifier.temperatureControl = { enabled: true, colocated: false, reason: 'air-unavailable' };
+  liveDevice.dehumidifier.temperatureControl = { enabled: true, qualified: false, reason: 'air-unavailable' };
   panel.update({ ...next, role: 'slave' }); assert.equal(fan.disabled, true);
   assert.equal(fan.value, 'high', 'Read-only authority cannot hide healthy reported settings');
   assert.match(appliance.querySelector('.caravan-control-help').textContent, /master computer/);
@@ -520,7 +520,8 @@ test('dehumidifier controls follow reported capabilities and automatic power rej
   const device = dehumidifier(true), calls = [], document = equipmentDocument();
   device.dehumidifier.capabilities = { power: ['off', 'on'], fanSpeed: ['low', 'medium', 'high'], targetHumidity: [30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80] };
   device.dehumidifier.temperatureControl = { configured: true, enabled: true, canEdit: true, offAtC: 1, onAtC: 2,
-    recording: false, readingsMatch: false, reason: 'readings-mismatch', temperatureC: 14.1, humidity: 63, applianceTemperatureC: 22, applianceHumidity: 35 };
+    recording: false, qualified: false, reason: 'power-test-failed', temperatureC: 14.1, humidity: 63, applianceTemperatureC: 22, applianceHumidity: 35,
+    locationTest: { status: 'failed', phase: null, reason: 'power-test-failed', minimumPowerChangeW: 3, powerRiseW: 0, powerFallW: 0 } };
   const current = status({ equipment: { devices: [caravanAir(), device] } });
   const panel = createEquipmentPanel({ document, request: async (path, body) => { calls.push({ path, body }); return current; } }); panel.update(current);
   const appliance = deviceNode(document, 'garage-equipment-readings', 'caravan').querySelector('.caravan-dehumidifier');
@@ -529,7 +530,7 @@ test('dehumidifier controls follow reported capabilities and automatic power rej
   const fan = descendants(appliance).find(node => node.dataset.setting === 'fanSpeed');
   assert.equal(fan.children.find(option => option.value === 'auto').hidden, true);
   assert(appliance.querySelector('.caravan-power-buttons').children.every(button => button.disabled));
-  assert.match(appliance.querySelector('.caravan-recording').textContent, /Recording paused.*does not match Shelly BLU/);
+  assert.match(appliance.querySelector('.caravan-recording').textContent, /Recording paused.*power did not confirm both switches/);
   assert.doesNotMatch(appliance.textContent, /inside|outside|located|in caravan/i);
   const actions = createEquipmentActions({ request: async (path, body) => { calls.push({ path, body }); return current; } }); actions.update(current);
   for (const [setting, value] of [['power', 'on'], ['mode', 'heater'], ['fanSpeed', 'auto'], ['swing', 'fixed_45']])
@@ -543,7 +544,8 @@ test('dehumidifier controls follow reported capabilities and automatic power rej
 test('automatic power edits validate hysteresis, preserve draft through polling and save explicit device intent', async () => {
   const device = dehumidifier(true), calls = [], document = equipmentDocument();
   device.dehumidifier.temperatureControl = { configured: true, enabled: true, canEdit: true, offAtC: 1, onAtC: 2,
-    recording: true, readingsMatch: true, reason: 'warm', temperatureC: 14, humidity: 60, applianceTemperatureC: 15, applianceHumidity: 58 };
+    recording: true, qualified: true, reason: 'warm', temperatureC: 14, humidity: 60, applianceTemperatureC: 15, applianceHumidity: 58,
+    locationTest: { status: 'passed', phase: null, reason: null, minimumPowerChangeW: 3, powerRiseW: 8, powerFallW: 8 } };
   const current = status({ equipment: { devices: [device] } });
   const panel = createEquipmentPanel({ document, request: async (path, body) => {
     calls.push({ path, body }); Object.assign(device.dehumidifier.temperatureControl, body); return current;
@@ -610,29 +612,67 @@ test('automatic power actions reject malformed thresholds and remain editable du
   assert.equal(await actions.dehumidifierTemperatureControl(device.id, { enabled: true, offAtC: 1, onAtC: 2 }), false);
 });
 
-test('recording explains humidity agreement, qualification and missing evidence without inferring device location', () => {
+test('recording explains the power check, modest loads and missing evidence independently of humidity', () => {
   const device = dehumidifier(true), document = equipmentDocument();
   device.dehumidifier.temperatureControl = { configured: true, enabled: true, canEdit: true, offAtC: 1, onAtC: 2,
-    comparison: 'humidity', requiredMatchingMs: 120000, maxHumidityDifference: 10, temperatureC: 14, humidity: 60,
-    applianceTemperatureC: null, applianceHumidity: 58, recording: false, readingsMatch: true, reason: 'checking-readings' };
+    temperatureC: 14, humidity: 60, applianceTemperatureC: null, applianceHumidity: 25,
+    recording: false, qualified: false, reason: 'checking-power',
+    locationTest: { status: 'testing', phase: 'on', reason: null, minimumPowerChangeW: 3, powerRiseW: 5.2, powerFallW: null } };
   const panel = createEquipmentPanel({ document, request: async () => {} }), current = status({ equipment: { devices: [device] } });
   panel.update(current);
   const appliance = deviceNode(document, 'garage-equipment-readings', 'caravan').querySelector('.caravan-dehumidifier');
-  assert.match(appliance.querySelector('.caravan-recording').textContent, /Recording paused.*Humidity match.*2 minutes/);
-  const comparison = appliance.querySelector('.caravan-comparison');
-  assert.equal(comparison.querySelector('.caravan-comparison-values').textContent, 'Dehumidifier58 %Shelly BLU60 %');
-  assert.match(comparison.querySelector('.caravan-comparison-rule').textContent, /History records Off, Low, Medium or High.*within 10 points/);
-  assert.equal(comparison.querySelector('.caravan-comparison-label').hidden, true);
-  assert.equal(comparison.children[2].hidden, true, 'Absent appliance temperature has no visible placeholder');
-  for (const [reason, expected] of [['appliance-unavailable', /fresh dehumidifier readings/],
-    ['air-unavailable', /fresh Shelly BLU temperature and humidity/], ['appliance-readings-unavailable', /fresh dehumidifier humidity/],
-    ['readings-mismatch', /Humidity does not match Shelly BLU/]]) {
-    Object.assign(device.dehumidifier.temperatureControl, { reason, readingsMatch: false }); panel.update(current);
+  assert.match(appliance.querySelector('.caravan-recording').textContent, /Recording paused.*power rises with On and falls with Off/);
+  assert.equal(appliance.querySelector('.caravan-recording-details').children[0].textContent, 'Power check');
+  const evidence = appliance.querySelector('.caravan-power-check');
+  assert.equal(evidence.querySelector('.caravan-power-changes').textContent, 'Rise after On5.2 WFall after OffUnavailable');
+  assert.match(evidence.textContent, /Dehumidifier25 %Shelly BLU60 %/);
+  assert.match(evidence.querySelector('.caravan-comparison-rule').textContent, /at least 3 W.*small fan load.*Humidity is not a recording requirement/);
+  assert.equal(evidence.querySelector('.caravan-temperature-label').hidden, true, 'Absent appliance temperature has no visible placeholder');
+  for (const [reason, expected] of [['appliance-unavailable', /fresh dehumidifier reports/],
+    ['air-unavailable', /fresh Shelly BLU temperature for automatic power/], ['power-unavailable', /fresh Caravan power/],
+    ['restoring-power', /Restoring.*previous power setting/], ['control-unavailable', /control authority/],
+    ['cold', /temperature above the automatic Off threshold before checking power/],
+    ['power-test-failed', /power did not confirm both switches/]]) {
+    Object.assign(device.dehumidifier.temperatureControl, { reason }); panel.update(current);
     assert.match(appliance.querySelector('.caravan-recording').textContent, expected);
     assert.doesNotMatch(appliance.querySelector('.caravan-recording').textContent, /inside|outside|located|in caravan/i);
   }
-  Object.assign(device.dehumidifier.temperatureControl, { recording: true, readingsMatch: true, reason: 'warm', enabled: false }); panel.update(current);
-  assert.match(appliance.querySelector('.caravan-recording').textContent, /Recording active.*Humidity match/);
+  Object.assign(device.dehumidifier.temperatureControl, { recording: true, qualified: true, reason: 'disabled', enabled: false,
+    humidity: null, applianceHumidity: null,
+    locationTest: { status: 'passed', phase: null, reason: null, minimumPowerChangeW: 3, powerRiseW: 5.2, powerFallW: 5 } }); panel.update(current);
+  assert.match(appliance.querySelector('.caravan-recording').textContent, /Recording active.*power followed native On and Off/);
+  assert.equal(evidence.querySelector('.caravan-humidity-label').hidden, true, 'Missing humidity does not qualify or block recording');
+  assert.equal(evidence.querySelector('.caravan-power-changes').textContent, 'Rise after On5.2 WFall after Off5 W');
+  Object.assign(device.dehumidifier.temperatureControl, { reason: 'cold', enabled: true }); panel.update(current);
+  assert.match(appliance.querySelector('.caravan-recording').textContent, /Recording active.*power followed native On and Off/);
+});
+
+test('power testing and restoration lock native settings and the direct command path', async () => {
+  const device = dehumidifier(true), document = equipmentDocument(), calls = [];
+  device.dehumidifier.temperatureControl = { configured: true, enabled: false, canEdit: true, offAtC: 1, onAtC: 2,
+    recording: false, reason: 'checking-power', locationTest: { status: 'testing', phase: 'on', minimumPowerChangeW: 3 } };
+  const current = status({ equipment: { devices: [device] } });
+  const request = async (...args) => { calls.push(args); return current; };
+  const panel = createEquipmentPanel({ document, request }), actions = createEquipmentActions({ request });
+  for (const reason of ['checking-power', 'restoring-power']) {
+    device.dehumidifier.probeBusy = true;
+    device.dehumidifier.temperatureControl.reason = reason;
+    panel.update(current); actions.update(current);
+    const appliance = deviceNode(document, 'garage-equipment-readings', 'caravan').querySelector('.caravan-dehumidifier');
+    const controls = descendants(appliance.querySelector('.caravan-dehumidifier-controls')).filter(node => ['BUTTON', 'SELECT'].includes(node.tagName));
+    assert(controls.every(node => node.disabled));
+    const policy = appliance.querySelector('.caravan-temperature-control');
+    assert(descendants(policy).filter(node => ['BUTTON', 'INPUT'].includes(node.tagName)).every(node => node.disabled));
+    assert.match(appliance.querySelector('.caravan-control-help').textContent, /locked while the power check runs/);
+    assert.equal(await actions.dehumidifier(device.id, 'power', 'on'), false);
+    assert.equal(await actions.dehumidifier(device.id, 'fanSpeed', 'high'), false);
+    assert.equal(await actions.dehumidifierTemperatureControl(device.id, { enabled: true, offAtC: 1, onAtC: 2 }), false);
+    device.dehumidifier.powerOffAvailable = true;
+    assert.equal(await actions.dehumidifier(device.id, 'power', 'off'), false);
+  }
+  assert.deepEqual(calls, []);
+  device.dehumidifier.probeBusy = false; actions.update(current);
+  assert.equal(await actions.dehumidifier(device.id, 'fanSpeed', 'high'), true);
 });
 
 test('equipment readings honor combined appliance state labels and never coerce unknown state to Off', () => {
@@ -712,7 +752,7 @@ test('recorded equipment values stay visible with provenance while live device a
 test('power policy drafts can be discarded without a request, while open details and focus survive polling', () => {
   const document = equipmentDocument(), calls = [], device = dehumidifier(true);
   device.dehumidifier.temperatureControl = { configured: true, enabled: true, canEdit: true, offAtC: 1, onAtC: 2,
-    comparison: 'humidity', recording: false, readingsMatch: false, reason: 'readings-mismatch' };
+    recording: false, qualified: false, reason: 'power-test-failed', locationTest: { status: 'failed', reason: 'power-test-failed' } };
   const current = status({ equipment: { devices: [device] } });
   const panel = createEquipmentPanel({ document, request: (...args) => { calls.push(args); } }); panel.update(current);
   const appliance = deviceNode(document, 'garage-equipment-readings', 'caravan').querySelector('.caravan-dehumidifier');

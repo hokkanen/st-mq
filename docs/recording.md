@@ -1161,11 +1161,26 @@ settings, humidity targets and the appliance's own temperature/humidity are not
 recorded as measurements.
 
 State history retains the appliance identity, required power/fan receipt clocks
-and qualification provenance, without duplicating native sensor readings or
-settings. Fresh humidity agreement with Shelly BLU must qualify before any state
-is recorded, even with Automatic power disabled. Coverage stops at the earliest
-required evidence expiry. Both Caravan views and the series explorer show the
-same four categorical labels; retired dehumidifier series have no alias or
+and qualification provenance (test method/version, source clocks, measured
+deltas and meter signature), without duplicating native sensor readings or
+settings. A native On/Off location test must show a corresponding Caravan meter
+power rise and fall before any state is recorded, even with Automatic power
+disabled. The minimum response is 3 W in each direction, allowing a small fan
+load when dehumidifying is unnecessary; meter noise can raise that threshold.
+Qualification uses advancing reports, never cached republications; a failed or
+inconclusive test leaves a gap and a
+new appliance or meter connection repeats the test. Both must remain fresh after
+a pass, and restart requires a new test after outstanding restoration. Native
+power is restored to its prior setting before normal temperature control resumes,
+with a durable restoration obligation.
+Enabled automatic cold protection defers or aborts the test until warmer
+temperature evidence arrives. An independent native power change supersedes
+the test's captured setting; restoration respects that newer choice.
+Humidity is not a qualification requirement. Coverage stops at the earliest
+required evidence expiry; testing and unresolved restoration remain gaps.
+This gate does not suppress the independent BLU or Caravan energy series.
+Both Caravan views and the series explorer show the same four categorical labels;
+retired dehumidifier series have no alias or
 conversion into this contract.
 
 Caravan energy uses the same adaptive interval recorder as property and charging

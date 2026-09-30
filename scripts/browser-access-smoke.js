@@ -62,8 +62,9 @@ try {
         mqttStatus: { subscriptionStatus: 'subscribed', lastLiveAt: now },
         controls: { dehumidifier: true }, readings: {}, dehumidifier: { available: true, observedAt: now, runningState: 'on',
           capabilities: { power: ['off', 'on'], targetHumidity: [30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80], fanSpeed: ['low', 'medium', 'high'] },
-          temperatureControl: { configured: true, enabled: true, canEdit: true, offAtC: 1, onAtC: 2, comparison: 'humidity',
-            recording: false, readingsMatch: false, reason: 'readings-mismatch', humidity: 63, applianceHumidity: 40 },
+          temperatureControl: { configured: true, enabled: true, canEdit: true, offAtC: 1, onAtC: 2,
+            recording: false, qualified: false, reason: 'power-test-failed', humidity: 63, applianceHumidity: 40,
+            locationTest: { status: 'failed', phase: null, reason: 'power-test-failed', minimumPowerChangeW: 3, powerRiseW: 0, powerFallW: 0 } },
           state: { power: 'on', mode: 'dehumidify', targetHumidity: 55, fanSpeed: 'low', swing: 'fixed_90' } } },
     ] };
     status.equipmentControls = { available: true, busy: false };

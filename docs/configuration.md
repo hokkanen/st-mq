@@ -203,7 +203,13 @@ Caravan dehumidifier Automatic power and its OFF/ON thresholds are durable
 application choices bound to the configured appliance and Shelly BLU connection.
 Their initial values are enabled, 1°C OFF and 2°C ON; configuration owns only the
 sensor/actuator wiring. Disabling Automatic power exposes manual native power
-without disabling the independent humidity-agreement recording gate.
+without disabling the independent native On/Off power test. Dehumidifier state
+recording requires the Caravan meter to show a corresponding rise and fall;
+humidity is not required. The test temporarily owns native power and durably
+restores its previous setting before ordinary control resumes. A failed or
+inconclusive check keeps recording paused until the next appliance or meter
+connection is tested. The existing enabled `caravan` device in the same area
+supplies the power evidence; the test adds no configuration threshold defaults.
 Native heat-pump and dehumidifier controls directly change the device's settings;
 local charger setup explicitly configures the device connection. Those actions
 are labeled separately and do not change controller configuration defaults.

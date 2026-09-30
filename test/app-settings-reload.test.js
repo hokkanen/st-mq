@@ -163,6 +163,27 @@ test('reload reconnects subscriptions and command transport, ignores late old pu
   assert.equal(replacement.endCalls, 1);
 });
 
+test('reload retains the current connection until Caravan native power restoration completes', async t => {
+  const mqtt = fakeMqtt();
+  const options = { controller: { input: 'mqtt' }, mqtt: { address: 'mqtt://first.invalid' },
+    equipment: { devices: [{ id: 'indoor', kind: 'temperature', connection: 'mqtt:invented/first' }] } };
+  const { app, write, post } = await setup(t, options, { mqttOptions: { connect: mqtt.connect } });
+  const original = app.engine, client = mqtt.clients[0];
+  const restore = original.equipment.restoreCaravanProbes;
+  original.equipment.restoreCaravanProbes = async () => ({ restorationPending: true });
+  write({ ...options, mqtt: { address: 'mqtt://second.invalid' } });
+  const blocked = await post();
+  assert.equal(blocked.status, 400);
+  assert.match((await blocked.json()).error, /Caravan power restoration is still pending/);
+  assert.equal(app.engine, original);
+  assert.equal(client.endCalls, 0);
+  assert.equal(mqtt.clients.length, 1, 'Pending restoration cannot discard its original broker connection');
+  original.equipment.restoreCaravanProbes = restore;
+  assert.equal((await post()).status, 200);
+  assert.equal(client.endCalls, 1);
+  assert.equal(mqtt.clients.length, 2);
+});
+
 test('a failed reconnect restores the previous configuration and rate history without exposing transport errors', async t => {
   const mqtt = fakeMqtt();
   let attempts = 0;

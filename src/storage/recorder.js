@@ -710,10 +710,22 @@ function compactRaw(raw, observation) {
       if ([1, 2, 3].includes(observation.value) && finiteTime(raw.fieldTimestamps?.fanSpeed))
         result.fieldTimestamps.fanSpeed = raw.fieldTimestamps.fanSpeed;
     }
-    if (typeof raw.readingsMatch === 'boolean') result.readingsMatch = raw.readingsMatch;
-    if (typeof raw.sensorDeviceId === 'string' && /^[a-z][a-z0-9_]{0,99}$/.test(raw.sensorDeviceId)) result.sensorDeviceId = raw.sensorDeviceId;
-    for (const key of ['airObservedAt', 'humidityObservedAt', 'applianceHumidityObservedAt'])
-      if (finiteTime(raw[key])) result[key] = raw[key];
+    const evidence = raw.locationEvidence;
+    if (evidence?.method === 'native-power-cycle-v1'
+      && typeof evidence.meterSignature === 'string' && /^[a-f0-9]{64}$/.test(evidence.meterSignature)
+      && ['startedAt', 'completedAt', 'meterObservedAt'].every(key => finiteTime(evidence[key]))
+      && evidence.completedAt >= evidence.startedAt && evidence.meterObservedAt >= evidence.startedAt
+      && ['powerRiseW', 'powerFallW', 'minimumChangeW'].every(key => Number.isFinite(evidence[key]) && evidence[key] >= 3))
+      result.locationEvidence = Object.fromEntries(['method', 'meterSignature', 'startedAt', 'completedAt',
+        'meterObservedAt', 'powerRiseW', 'powerFallW', 'minimumChangeW'].map(key => [key, evidence[key]]));
+    if (result.locationEvidence && evidence.phases && ['baseline', 'on', 'off'].every(phase => {
+      const row = evidence.phases[phase];
+      return row && (finiteTime(row.commandAt) || phase === 'baseline' && row.commandAt === null)
+        && finiteTime(row.firstPowerObservedAt) && finiteTime(row.lastPowerObservedAt)
+        && row.lastPowerObservedAt >= row.firstPowerObservedAt
+        && (row.commandAt === null || row.firstPowerObservedAt >= row.commandAt);
+    })) result.locationEvidence.phases = Object.fromEntries(['baseline', 'on', 'off'].map(phase => [phase,
+      Object.fromEntries(['commandAt', 'firstPowerObservedAt', 'lastPowerObservedAt'].map(key => [key, evidence.phases[phase][key]]))]));
   }
   return result;
 }

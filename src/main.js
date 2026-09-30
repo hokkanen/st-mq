@@ -282,6 +282,13 @@ export async function start({ config = loadConfig(), readConfig = configurationR
       // Restore owned equipment settings through the old connections before any
       // broker or device changes can discard that restoration path.
       try {
+        const caravan = await engine.equipment?.restoreCaravanProbes();
+        if (caravan?.restorationPending) throw new Error('pending');
+      } catch {
+        engine.onTemporaryChange = schedule;
+        throw new Error('Caravan power restoration is still pending. Settings were not updated; retry when the equipment is available.');
+      }
+      try {
         await engine.equipmentTests?.restore();
         const result = await engine.executor.restore({ now: clock(), reason: 'settings-reload' });
         if (result.restorationPending) throw new Error('pending');

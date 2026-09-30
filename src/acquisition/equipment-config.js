@@ -203,8 +203,8 @@ export function equipmentConfiguration(input = {}) {
   for (const device of enabled.filter(row => row.temperatureControl)) {
     const sensor = enabled.find(row => row.id === device.temperatureControl.sensorDeviceId);
     if (!sensor || sensor.protocol !== 'mqtt' || sensor.kind !== 'temperature' || sensor.area !== device.area
-      || !sensor.ownedSignals.includes('caravan_temperature') || !sensor.ownedSignals.includes('caravan_humidity'))
-      throw new Error('Temperature control requires the enabled caravan air temperature and humidity sensor in the same area');
+      || !sensor.ownedSignals.includes('caravan_temperature'))
+      throw new Error('Temperature control requires the enabled caravan air temperature sensor in the same area');
   }
   if (new Set(ownedSignals).size !== ownedSignals.length) throw new Error('Enabled equipment cannot own the same recorded signal');
   for (const [index, device] of enabled.entries()) for (const other of enabled.slice(index + 1)) {

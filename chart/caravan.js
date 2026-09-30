@@ -23,9 +23,11 @@ export const temperatureControlValueAllowed = values => Boolean(values && typeof
   && values.onAtC - values.offAtC >= 0.5 - 1e-8);
 export const temperatureControlAllowed = (status, device, busy = false) => Boolean(status && !isReadOnlyReplica(status)
   && !busy && device?.enabled !== false && device?.kind === 'dehumidifier'
+  && device.dehumidifier?.probeBusy !== true
   && device.dehumidifier?.temperatureControl?.configured === true && device.dehumidifier.temperatureControl.canEdit === true);
 const dehumidifierControlReady = (status, device, busy) => Boolean(status && !isReadOnlyReplica(status)
   && !busy && device?.enabled !== false && device?.kind === 'dehumidifier' && device.controls?.dehumidifier === true
+  && device.dehumidifier?.probeBusy !== true
   && !['publishing', 'published'].includes(device.dehumidifier?.operation?.status));
 export const dehumidifierControlAllowed = (status, device, busy = false) => dehumidifierControlReady(status, device, busy)
   && device.available === true && device.dehumidifier?.available === true;
@@ -70,7 +72,12 @@ export function createCaravanContents({ document, actions, blocked, readingsFor,
   const recording = make('div', '', 'caravan-recording'), recordingState = make('strong'), recordingDetail = make('span');
   recording.append(recordingState, recordingDetail); recording.setAttribute('role', 'status');
   const recordingDetails = make('details', '', 'caravan-recording-details');
-  const comparison = make('div', '', 'caravan-comparison');
+  const comparison = make('div', '', 'caravan-comparison caravan-power-check');
+  const powerChanges = make('dl', '', 'caravan-comparison-values caravan-power-changes'), powerValues = new Map();
+  for (const [field, label] of [['powerRiseW', 'Rise after On'], ['powerFallW', 'Fall after Off']]) {
+    const cell = make('div'), value = make('dd');
+    cell.append(make('dt', label), value); powerChanges.append(cell); powerValues.set(field, value);
+  }
   const humidityComparison = make('dl', '', 'caravan-comparison-values');
   const temperatureComparison = make('dl', '', 'caravan-comparison-values');
   const comparisonValues = new Map();
@@ -82,9 +89,10 @@ export function createCaravanContents({ document, actions, blocked, readingsFor,
     }
   }
   const comparisonRule = make('p', '', 'caravan-comparison-rule muted');
-  const temperatureLabel = make('p', 'Temperature', 'caravan-comparison-label muted');
-  comparison.append(humidityComparison, temperatureLabel, temperatureComparison, comparisonRule);
-  recordingDetails.append(make('summary', 'Compare readings'), comparison);
+  const humidityLabel = make('p', 'Humidity · live only', 'caravan-comparison-label caravan-humidity-label muted');
+  const temperatureLabel = make('p', 'Temperature · live only', 'caravan-comparison-label caravan-temperature-label muted');
+  comparison.append(powerChanges, comparisonRule, humidityLabel, humidityComparison, temperatureLabel, temperatureComparison);
+  recordingDetails.append(make('summary', 'Power check'), comparison);
   recordingPanel.append(recording, recordingDetails);
 
   const policyDetails = make('details', '', 'caravan-policy-details');
@@ -153,6 +161,8 @@ export function createCaravanContents({ document, actions, blocked, readingsFor,
     powerPolicy.textContent = guard?.enabled
       ? `Off ≤ ${temperature(guard.offAtC)} · On ≥ ${temperature(guard.onAtC)}` : 'Manual power control';
     policyHelp.textContent = 'Uses Shelly BLU temperature. Between the thresholds, power keeps its previous state.';
+    if (currentAppliance?.dehumidifier?.probeBusy)
+      policyHelp.textContent = `Settings are locked until the power check and restoration finish. ${policyHelp.textContent}`;
     if (guard?.canEdit === false && !isReadOnlyReplica(lastSnapshot?.status)
       && !Number.isFinite(currentAppliance?.dehumidifier?.observedAt))
       policyHelp.textContent = `Settings become editable after the first device report. ${policyHelp.textContent}`;
@@ -273,6 +283,7 @@ export function createCaravanContents({ document, actions, blocked, readingsFor,
     power.hidden = !(device.capabilities?.power?.length) || device.temperatureControl?.enabled === true;
     controls.hidden = power.hidden && [...settingFields.values()].every(field => field.hidden);
     help.textContent = isReadOnlyReplica(status) ? 'Controls are available on the master computer.'
+      : device.probeBusy ? 'Native settings are locked while the power check runs and the previous power setting is restored.'
       : !live && device.powerOffAvailable && !device.temperatureControl?.enabled ? 'Power can be turned off. Other settings need a fresh device report.'
       : !live ? 'Controls become available after the dehumidifier connects and reports its settings.'
         : ['publishing', 'published'].includes(device.operation?.status) ? 'Waiting for the device to report the requested setting.'
@@ -285,23 +296,28 @@ export function createCaravanContents({ document, actions, blocked, readingsFor,
       const guard = device.temperatureControl;
       setText(recordingState, guard.recording ? 'Recording active' : 'Recording paused');
       recording.dataset.state = guard.recording ? 'available' : 'pending';
-      const agreement = guard.comparison === 'humidity' ? 'Humidity matches Shelly BLU.' : 'Temperature and humidity match Shelly BLU.';
-      const matchingMinutes = (guard.requiredMatchingMs ?? 120000) / 60000;
-      setText(recordingDetail, guard.reason === 'checking-readings'
-        ? `${agreement} Checking fresh reports for ${matchingMinutes} minutes before recording.`
-        : guard.recording ? agreement
-        : guard.reason === 'identity-unavailable' ? 'Waiting for a complete dehumidifier report.'
-        : guard.reason === 'appliance-unavailable' ? 'Waiting for fresh dehumidifier readings.'
-          : guard.reason === 'air-unavailable' ? 'Waiting for fresh Shelly BLU temperature and humidity.'
-            : guard.reason === 'appliance-readings-unavailable' ? 'Waiting for a fresh dehumidifier humidity reading.'
-              : guard.readingsMatch ? 'Waiting for a fresh dehumidifier status report.'
-                : `${guard.comparison === 'humidity' ? 'Humidity does' : 'Temperature or humidity does'} not match Shelly BLU.`);
+      const test = guard.locationTest;
+      const explanation = {
+        'checking-power': 'Checking whether Caravan power rises with On and falls with Off.',
+        'restoring-power': 'Restoring the dehumidifier’s previous power setting.',
+        'power-test-failed': 'Caravan power did not confirm both switches. A new connection will repeat the check.',
+        'appliance-unavailable': 'Waiting for fresh dehumidifier reports.',
+        'power-unavailable': 'Waiting for fresh Caravan power readings.',
+        'control-unavailable': 'The power check needs device control authority.',
+        'air-unavailable': 'Waiting for fresh Shelly BLU temperature for automatic power.',
+        cold: !guard.qualified ? 'Waiting for temperature above the automatic Off threshold before checking power.' : null,
+      };
+      setText(recordingDetail, guard.recording ? 'Caravan power followed native On and Off.'
+        : explanation[guard.reason] ?? explanation[test?.reason]
+          ?? (test?.status === 'passed' ? 'Waiting for a fresh dehumidifier state report.' : 'Waiting to check Caravan power.'));
       const value = (number, unit) => Number.isFinite(number) ? `${Math.round(number * 10) / 10} ${unit}` : 'Unavailable';
       for (const [field, node] of comparisonValues) setText(node, value(guard[field], field.endsWith('C') ? '°C' : '%'));
-      temperatureLabel.hidden = temperatureComparison.hidden = guard.comparison !== 'temperature-humidity';
-      comparisonRule.textContent = `History records Off, Low, Medium or High. Humidity must stay within ${guard.maxHumidityDifference ?? 10} points of Shelly BLU`
-        + (guard.comparison === 'temperature-humidity' ? ` and temperature within ${guard.maxTemperatureDifferenceC ?? 4} °C` : '')
-        + ` for ${matchingMinutes} minutes, with fresh reports from both devices.`;
+      for (const [field, node] of powerValues) setText(node, value(test?.[field], 'W'));
+      humidityLabel.hidden = humidityComparison.hidden = !Number.isFinite(guard.applianceHumidity) && !Number.isFinite(guard.humidity);
+      temperatureLabel.hidden = temperatureComparison.hidden = !Number.isFinite(guard.applianceTemperatureC);
+      comparisonRule.textContent = `On every connection, fresh Caravan meter reports must show at least ${test?.minimumPowerChangeW ?? 3} W of rise with native On and fall with Off.`
+        + ' A small fan load is sufficient; full dehumidifying power is not required. The previous power setting is restored before normal control resumes.'
+        + ' Humidity is not a recording requirement. History records Off, Low, Medium or High.';
       if (!policyDirty && !policySaving) resetPolicyDraft();
       refreshPolicy();
     }

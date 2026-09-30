@@ -23,8 +23,10 @@ The card starts with reported power and the supported native humidity and fan
 controls. **Automatic power** shows the saved enabled state and thresholds;
 expand it to edit the switch and thresholds, then use **Save changes** or
 **Discard**. Unsaved edits do not change the active policy. Recording status
-stays visible, and **Compare readings** expands the live readings and agreement
-criteria. Family and replica views keep their read-only restrictions.
+stays visible, and **Power check** expands the observed rise/fall and test
+criteria. Humidity readings remain optional live information. Native settings
+and policy edits are locked while the test or its restoration is active. Family
+and replica views keep their read-only restrictions.
 
 Installation entity IDs and credentials stay outside the repository. Set up the
 local integration and bridge in this order:
@@ -52,7 +54,7 @@ Tuya device ID. It is not the Home Assistant entity ID or device-registry ID.
 The observation adapter computes this digest from the actual configured native
 device. The bridge requires it to match the privately selected digest before
 publishing usable observations or accepting a command. Replacing the appliance
-invalidates the earlier saved policy and comparison evidence.
+invalidates the earlier saved policy and location-test evidence.
 
 Normal Tuya Local entity values may temporarily include pending command values.
 The bridge reads all actual values and clocks from `local_observations`, while
@@ -147,7 +149,7 @@ The request deadline fences bridge dispatch. Once a request reaches Tuya Local,
 that integration's native delivery and retry behavior applies; the deadline is
 not a device-local cancellation guarantee through a broken link.
 
-## Automatic power and humidity agreement
+## Automatic power and Caravan location check
 
 The public equipment entry associates `temperature_control.sensor_device_id`
 with `blu_ht`; configuration owns that wiring only. **Automatic power**, **Off
@@ -163,31 +165,61 @@ while offline.
 With Automatic power enabled, fresh Caravan air temperature at or below **Off
 at** requests native Off; at or above **On at** requests native On. Between the
 thresholds the previous demand remains. Startup in the band uses Off demand.
-Disable Automatic power to expose supported manual power controls and leave
-native power unchanged. Other supported native controls remain available.
-Disabling the policy does not disable the recording evidence check.
+Disable Automatic power to expose supported manual power controls. Disabling
+the policy does not disable the independent location test or recording gate.
+The test owns native settings until it has restored the previous power setting;
+ordinary supported native controls then become available again.
 
-Appliance humidity must be within **10 percentage points** of Shelly BLU humidity
-for **two minutes**, supported by advancing source reports from both devices.
-Cached publications and time passing alone cannot establish agreement. If the
-appliance also provides a temperature, it must be within 4°C of Shelly BLU;
-an absent appliance temperature is allowed. The current HA bridge provides
-humidity only and never substitutes the BLU reading for appliance evidence.
+Every time the dehumidifier comes online, the controller checks whether the
+Caravan meter responds to its native power commands. It first establishes an
+Off baseline, requesting native Off if necessary, then requests On followed by
+Off. Independently advancing appliance reports must confirm the requested
+settings, and independently advancing Caravan meter reports must show a power
+rise with On and a fall with Off. Cached snapshots, retained publications,
+command acknowledgements and elapsed time cannot provide this evidence.
 
-The UI reports matching, differing or unavailable readings and **Recording
-active/paused**, without guessing where the appliance is. Humidity agreement is
-a plausibility check, not proof of physical location: similar humidity in two
-places can pass. Missing, stale or disagreeing evidence immediately prevents On
-and ends caravan history coverage. Recovery requires a new qualifying period
-and fresh appliance state; it never fills the earlier gap backwards.
+The minimum detectable response is **3 W** in each direction. A modest fan load
+can pass; full dehumidifying power is not required when humidity is already low.
+Observed meter variation can raise that threshold. The fall must also be similar
+to the rise and return close to the Off baseline. Each assessed power level needs
+at least two independent meter reports spanning at least five seconds.
+The test does not change the target humidity or fan speed to force a larger
+load. It allows bounded time for native startup and shutdown before assessing
+power, with a three-minute deadline per phase, so cooling operation after Off
+does not immediately fail the check.
+If the appliance draws no detectable extra power, the result is inconclusive
+and recording stays paused. Humidity and agreement between air sensors are
+not prerequisites.
 
-Loss of comparison evidence requests Off only for an appliance previously
-managed in this runtime. An appliance first seen with nonmatching readings
-receives no automatic commands. Pending On or setting acknowledgements cannot
-block protective Off. Offline devices cannot be switched or confirmed. Authority
-loss prevents all writes. An uncertain request is reassessed before retrying,
-with a 30-second minimum interval for the same demand. Commands never switch the
-energy plug or replace native low-temperature protection and shutdown behavior.
+Enabled Automatic power retains its cold-temperature protection during the
+test. Fresh Caravan temperature at or below the Off threshold defers testing
+or aborts an active test to native Off. Warmer temperature evidence allows a
+new test. The dashboard explains this wait; humidity remains independent.
+
+The test temporarily changes native power and durably saves the previous
+setting before sending a command. It restores that setting and confirms fresh
+device readback before normal temperature control resumes. The restoration
+obligation survives restart and connection loss; a broken link cannot prove
+restoration. Shutdown and reload attempt restoration within a bounded wait
+before closing the command transport; unresolved obligations remain durable.
+A fresh independent native power change aborts the test and supersedes its
+captured setting, so restoration cannot overwrite that newer manual or native
+choice. Commands always use the native appliance controls, never the
+Caravan plug relay. The appliance's own protection and cooling cycle remain
+in control of its physical operation.
+
+The UI shows **Recording active/paused**, waiting for fresh reports, checking
+power, restoring power, or a failed check. A pass is evidence that the Caravan
+meter followed both switches; unrelated load changes can still confound that
+inference. A failed or inconclusive check leaves recording paused until a new
+appliance or meter connection is checked. The configured, enabled `caravan`
+meter in the same area supplies `caravan_power` in W or kW; no extra configuration
+setting selects a replacement meter. Both the appliance and the meter must
+remain fresh after a pass. Losing either invalidates qualification; restart
+requires a new test after completing any pending restoration.
+Qualification is never filled backwards into the test or an earlier reporting
+gap. Device control authority is required for the
+test and restoration; read-only replicas cannot send these commands.
 
 ## Recording
 
@@ -210,17 +242,19 @@ and selected fan level, not measured airflow or proof of water removal. A humidi
 target, full tank or shutdown cycle can affect physical operation.
 
 The recorder retains only this combined state, appliance identity, required
-power/fan receipt clocks and comparison qualification provenance. Separate fan
+power/fan receipt clocks and power-test qualification provenance. Separate fan
 settings, mode, humidity target, louvre setting and the appliance's own
 temperature/humidity remain live-only; commands do not generate history points.
 There is no alias or conversion from either retired dehumidifier history series.
 With the Caravan sensor association configured, every recorded state requires
-the fresh, qualified comparison, including when Automatic power is disabled.
-Coverage ends at the earliest expiry of the required appliance and comparison
-reports. Missing comparison evidence produces a gap instead of a claimed state.
+a passed power test and fresh required appliance and Caravan meter evidence,
+including when Automatic power is disabled. Unavailable evidence, testing and
+unresolved restoration produce a gap instead of a claimed state. A missing
+humidity report does not prevent recording.
 
-The same Caravan fold records `caravan_temperature` and `caravan_humidity` from
-the Shelly BLU H&T. Battery and Bluetooth signal strength are live-only.
+Independently of the dehumidifier gate, the same Caravan fold records
+`caravan_temperature` and `caravan_humidity` from the Shelly BLU H&T. Battery and
+Bluetooth signal strength are live-only.
 The Caravan plug records `caravan_energy` as measured interval kWh through the
 shared adaptive recorder. It automatically balances recording frequency against
 load changes, just like property and charging energy; instantaneous power, current

@@ -65,10 +65,15 @@ test('only caravan air, interval energy and combined appliance state record; bat
 test('persisted appliance state keeps only necessary identity and evidence clocks from live metadata', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   const recorder = new Recorder(store, { clock: () => start });
-  const lineage = { identity: 'a'.repeat(64), fieldTimestamps: { power: start, fanSpeed: start - 500 }, readingsMatch: true, sensorDeviceId: 'blu_ht',
-    airObservedAt: start - 3000, humidityObservedAt: start - 2000, applianceHumidityObservedAt: start - 1000 };
+  const lineage = { identity: 'a'.repeat(64), fieldTimestamps: { power: start, fanSpeed: start - 500 },
+    locationEvidence: { method: 'native-power-cycle-v1', meterSignature: 'b'.repeat(64), startedAt: start - 60000,
+      completedAt: start - 1000, meterObservedAt: start, powerRiseW: 5, powerFallW: 5, minimumChangeW: 3,
+      phases: { baseline: { commandAt: null, firstPowerObservedAt: start - 60000, lastPowerObservedAt: start - 50000 },
+        on: { commandAt: start - 40000, firstPowerObservedAt: start - 39000, lastPowerObservedAt: start - 30000 },
+        off: { commandAt: start - 20000, firstPowerObservedAt: start - 19000, lastPowerObservedAt: start - 1000 } } } };
   const raw = { ...report(stateSignal, 3).raw, ...lineage, fieldTimestamps: { ...lineage.fieldTimestamps, humidity: start - 1000 },
-    fanSpeed: 'high', mode: 'auto', targetHumidity: 55, swing: 'fixed_90', temperature: 14, humidity: 63,
+    readingsMatch: true, sensorDeviceId: 'blu_ht', airObservedAt: start, humidityObservedAt: start,
+    applianceHumidityObservedAt: start, fanSpeed: 'high', mode: 'auto', targetHumidity: 55, swing: 'fixed_90', temperature: 14, humidity: 63,
     capabilities: { fanSpeed: ['low', 'high'] }, stateLabels: { 0: 'Off', 1: 'Low', 2: 'Medium', 3: 'High' }, payload: 'appliance live payload' };
   recorder.record({ ...report(stateSignal, 3), raw });
   const persisted = store.observations().find(row => row.signal === stateSignal);

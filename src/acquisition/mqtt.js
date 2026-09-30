@@ -429,6 +429,14 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       restore: args => h66.restore(args), test: args => h66.test(args), requestSnapshot } : {}),
     close: async ({ restore = true } = {}) => {
       if (stopped || stopping) return;
+      // Native power confirmation still needs the normal message handler and
+      // publication authority. Stop discovery before disabling either path.
+      if (restore && canControl() && equipment) {
+        try {
+          const result = await equipment.restoreCaravanProbes({ resume: false });
+          if (result.restorationPending) report('caravan-shutdown-restoration-pending');
+        } catch { report('caravan-shutdown-restoration-pending'); }
+      }
       if (restore && canControl()) await floorOverride.release({ reason: 'application-shutdown', now: engine.clock() }).catch(() => report('floor-shutdown-restoration-pending'));
       stopping = true; connectionGeneration++; vehicleSubscriptions.clear(); equipmentSubscriptionBuffer = null; teslaSubscriptionBuffer = null;
       for (const finish of [...pendingSubscriptions]) finish(new Error('MQTT closed'));
