@@ -170,12 +170,13 @@ export async function checkDashboardLayout({ evaluate, width }) {
     const temperature = overview.querySelector('.overview-reading').getBoundingClientRect();
     const target = overview.querySelector('.overview-request').getBoundingClientRect();
     const doors = overview.querySelector('.overview-doors').getBoundingClientRect();
-    return Math.abs(temperature.top-target.top)<=1 && temperature.right<=target.left
+    const button = document.getElementById('garage-doors-shortcut').getBoundingClientRect();
+    return Math.abs(temperature.top-target.top)<=1 && Math.abs(temperature.top-doors.top)<=1
+      && temperature.right<=doors.left && doors.right<=target.left
       && temperature.left>=bounds.left-1 && target.right<=bounds.right+1
-      && doors.top>=Math.max(temperature.bottom,target.bottom)
-      && Math.abs(doors.left-bounds.left)<=1 && Math.abs(doors.right-bounds.right)<=1
+      && button.width<=120 && button.height>=44 && button.left>=doors.left-1 && button.right<=doors.right+1
       && overview.querySelector('.garage-facade').checkVisibility();
-  })()`), true, `Garage shows two aligned metrics with a permanent full-width garage facade below at ${width}px`);
+  })()`), true, `Garage keeps a compact permanent facade between its rear sensor and room target at ${width}px`);
   assert.equal(await evaluate(`['indoor', 'outdoor', 'requested', 'price', 'garage-temperature', 'garage-door-summary', 'garage-requested', 'garage-price'].every(id => {
     const value = document.getElementById(id), cell = value.closest('.overview-zone > div').getBoundingClientRect();
     return [...value.querySelectorAll('.status-detail-trigger, .status-detail-label')].every(trigger => {

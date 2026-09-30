@@ -181,8 +181,97 @@ export async function checkGarageDoorBrowser({ evaluate, command, context, refre
     assert.equal((await buttonState('door2')).disabled, false, 'A failed publication allows an explicit retry');
     assert.equal(await evaluate(`document.querySelector('${row('door1')} .garage-door-feedback').classList.contains('form-error')`), false);
     assert.doesNotMatch(await text(`${row('door2')} .garage-door-feedback`), /Synthetic control failure/);
+    for (const scope of [overview, panel]) assert.equal(await travel(scope, 'left'), null, 'Failed delivery cannot start a travel clock or animate the left door');
+    await evaluate("(() => {const f=window.equipmentUiFixture,d=f.devices.find(d=>d.id==='door2');f.now+=3000;d.cover.state='opening';Object.assign(d.readings.garage_door2_open,{value:1,coverState:'opening',observedAt:f.now});return true;})()");
+    await refresh();
+    for (const scope of [overview, panel]) {
+      const motion = await travel(scope, 'left');
+      assert(motion && motion.duration > 17_500 && motion.from > -3, 'A report after failed delivery starts from the last known position, without command-time catch-up');
+    }
     await evaluate("(() => {const f=window.equipmentUiFixture;f.now+=60001;for(const d of f.devices.filter(d=>d.kind==='door')){d.cover.operation=null;d.cover.state='closed';Object.assign(Object.values(d.readings)[0],{value:0,coverState:'closed',observedAt:f.now});}return true;})()");
     await refresh();
+    await assertClosedArtwork();
+
+    // The real contact can report Open as soon as a shutter leaves the floor.
+    // Confirm the actual command flow catches up from successful delivery, while
+    // both representations stay still until a fresh physical response arrives.
+    await evaluate('window.equipmentUiFixture.savedMotionDoors=structuredClone(window.equipmentUiFixture.devices);true');
+    for (const [id, side, direction, response] of [
+      ['door1', 'right', 'open', 'open'], ['door2', 'left', 'open', 'opening'],
+      ['door1', 'right', 'close', 'closing'], ['door2', 'left', 'close', 'closing'],
+    ]) {
+      await evaluate(`(() => {const f=window.equipmentUiFixture;f.devices=structuredClone(f.savedMotionDoors);f.now+=60001;
+        for(const d of f.devices.filter(d=>d.kind==='door'))for(const r of Object.values(d.readings))r.observedAt=f.now;
+        const d=f.devices.find(d=>d.id==='${id}');if('${direction}'==='close')Object.values(d.readings)[0].stale=true;return true;})()`);
+      await refresh();
+      if (direction === 'close') {
+        // Reacquire an already-open door, without inventing an opening stroke.
+        await evaluate(`(() => {const f=window.equipmentUiFixture,d=f.devices.find(d=>d.id==='${id}');f.now++;d.cover.state='open';
+          Object.assign(Object.values(d.readings)[0],{value:1,coverState:'open',observedAt:f.now,stale:false});return true;})()`);
+        await refresh();
+      }
+      await open();
+      assert.deepEqual(await buttonState(id), { action: direction, disabled: false });
+      const callsBefore = await evaluate('window.equipmentUiFixture.calls.length');
+      await click(action(id));
+      await until(`window.equipmentUiFixture.calls.length===${callsBefore + 1}`);
+      await until(`document.querySelector('${row(id)} .garage-door-feedback').textContent.includes('position unconfirmed')`);
+      assert.deepEqual(await evaluate(`window.equipmentUiFixture.calls[${callsBefore}]`), { path: '/api/equipment/cover', body: { deviceId: id, action: direction } });
+      for (const scope of [overview, panel]) assert.equal(await travel(scope, side), null, `${direction} delivery does not animate before device confirmation`);
+
+      await evaluate(`(() => {const f=window.equipmentUiFixture,d=f.devices.find(d=>d.id==='${id}');f.now=d.cover.operation.acknowledgedAt+1000;
+        Object.values(d.readings)[0].observedAt=f.now;return true;})()`);
+      await refresh();
+      for (const scope of [overview, panel]) assert.equal(await travel(scope, side), null, 'A fresh unchanged endpoint report does not confirm the requested movement');
+      await evaluate(`(() => {const f=window.equipmentUiFixture,d=f.devices.find(d=>d.id==='${id}'),r=Object.values(d.readings)[0];
+        f.now=d.cover.operation.acknowledgedAt+3000;d.cover.state='${response}';Object.assign(r,{value:1,observedAt:f.now});
+        if('${response}'==='open')delete r.coverState;else r.coverState='${response}';return true;})()`);
+      await refresh();
+      const firstMotion = {};
+      for (const scope of [overview, panel]) {
+        const motion = firstMotion[scope] = await travel(scope, side);
+        assert(motion, `${side} ${direction} is animated in ${scope} after physical confirmation`);
+        assert.equal(motion.easing, 'linear');
+        assert(Math.abs(motion.from - (direction === 'open' ? -16 : -80)) < 3, 'Three-second confirmation catches up to the anticipated position');
+        assert(motion.duration > 14_500 && motion.duration <= 15_050, 'Only the remaining fifteen seconds are animated');
+        assert.equal(motion.to, direction === 'open' ? -96 : 0);
+        assert(Math.abs(Math.abs(motion.to-motion.from)/motion.duration - 96/18_000) < 0.00001, 'Both directions keep the same configured linear speed');
+      }
+      assert.equal(await evaluate(`document.querySelector('${bay(panel, side)} .garage-door-estimate').checkVisibility()`), true);
+      assert.equal(await evaluate(`document.querySelector('${overview} .garage-overview-estimate').checkVisibility()`), true, 'The compact overview visibly identifies estimated travel');
+
+      // Both repeated binary reports and a native open state mean not closed;
+      // neither should finish the stroke, reverse it or start another timer.
+      await refresh();
+      await evaluate(`(() => {const f=window.equipmentUiFixture,d=f.devices.find(d=>d.id==='${id}');f.now++;
+        d.cover.state='open';Object.assign(Object.values(d.readings)[0],{value:1,coverState:'open',observedAt:f.now});return true;})()`);
+      await refresh();
+      for (const scope of [overview, panel]) {
+        const motion = await travel(scope, side);
+        assert(motion && motion.remaining < firstMotion[scope].remaining, 'Repeated and native Open reports preserve progress instead of restarting or snapping');
+        assert.equal(motion.to, firstMotion[scope].to, 'A not-closed report preserves the current travel direction');
+      }
+      await close();
+      await until(`!document.querySelector('${panel}').open`);
+      assert.equal(await evaluate(`document.querySelector('${overview} .garage-facade').checkVisibility()`), true);
+      assert(await travel(overview, side), 'The compact overview keeps animating with its dialog closed');
+      const position = () => evaluate(`new DOMMatrix(getComputedStyle(document.querySelector('${bay(overview, side)} .garage-door-leaf')).transform).m42`);
+      const before = await position();
+      await settle();
+      const after = await position();
+      assert(direction === 'open' ? after < before : after > before, 'The visible compact shutter moves in the requested direction');
+
+      await evaluate(`(() => {const f=window.equipmentUiFixture,d=f.devices.find(d=>d.id==='${id}');f.now++;
+        d.cover.state='closed';Object.assign(Object.values(d.readings)[0],{value:0,coverState:'closed',observedAt:f.now});return true;})()`);
+      await refresh();
+      for (const scope of [overview, panel]) {
+        assert.equal(await travel(scope, side), null, 'A confirmed closed endpoint immediately stops estimated travel');
+        assert.equal(await evaluate(`new DOMMatrix(getComputedStyle(document.querySelector('${bay(scope, side)} .garage-door-leaf')).transform).m42`), 0);
+      }
+    }
+    await evaluate('window.equipmentUiFixture.devices=window.equipmentUiFixture.savedMotionDoors;delete window.equipmentUiFixture.savedMotionDoors;true');
+    await refresh();
+    await open();
     await assertClosedArtwork();
 
     for (const mutation of ["d.controls.cover.open=false", "d.cover.available=false", "d.readings.garage_door1_open.stale=true", "d.readings.garage_door1_open.value=null"]) {
@@ -238,6 +327,7 @@ export async function checkGarageDoorBrowser({ evaluate, command, context, refre
         await evaluate(`document.querySelector('${overview}').scrollIntoView({block:'center'});true`);
         await settle();
         assert.equal(await evaluate(`document.querySelector('${overview} .garage-facade').checkVisibility()`), true, 'The facade remains visible with its dialog closed');
+        assert.equal(await evaluate(`(() => {const b=document.querySelector('${overview}').getBoundingClientRect(),rear=document.querySelector('#garage-temperature').closest('.overview-reading').getBoundingClientRect(),target=document.querySelector('#garage-requested').closest('.overview-request').getBoundingClientRect();return b.width<=120&&b.height<=120&&rear.right<=b.left&&b.right<=target.left;})()`), true, 'The compact animated shortcut fits between the rear sensor and room target');
         assert.equal(await evaluate(`(() => {const p=document.querySelector('${overview}').getBoundingClientRect(),left=document.querySelector('${bay(overview, 'left')}').getBoundingClientRect(),right=document.querySelector('${bay(overview, 'right')}').getBoundingClientRect();return left.left>=p.left&&right.right<=p.right&&left.right<=right.left&&Math.abs(left.top-right.top)<1;})()`), true, 'Overview doors remain side by side at every viewport');
         await capture(`garage-overview-${theme}-${width}`);
         await open();

@@ -243,6 +243,10 @@ The Garage facade uses the shared `garage.door_travel_seconds` setting for linea
 opening and closing motion of both doors (18 seconds by default). This duration
 does not establish actual position, alter contact history or confirm a command;
 see [Garage configuration](configuration.md#keep-the-private-file-small).
+Animation waits for a fresh physical response, then catches up from the existing
+operation's successful `acknowledgedAt` timestamp. Publication alone cannot move
+the illustration. A reported Open state is not a measured fully-open endpoint;
+the estimated stroke continues while the closed contact remains released.
 
 Use different exact topics for different publishers and for status versus commands.
 MQTT does not assign source priority to publishers sharing a topic. Each configured

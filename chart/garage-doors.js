@@ -77,11 +77,11 @@ function createGarageFacade(document, interactive, activate) {
   };
   const facade = make('span', 'garage-facade');
   facade.append(svg('0 0 360 234', 'garage-facade-building', [
-    ['garage-facade-wall', 'M32 94L180 26l148 68v118H32Z'],
-    ['garage-facade-roof', 'M20 94L180 20l160 74M27 102L180 32l153 70'],
-    ['garage-facade-trim', 'M32 101v111m296-111v111M47 212V99h126v113m14 0V99h126v113'],
+    ['garage-facade-wall', 'M24 94L180 14l156 80v118H24Z'],
+    ['garage-facade-roof', 'M12 94L180 8l168 86M19 102L180 20l161 82'],
+    ['garage-facade-trim', 'M24 101v111m312-111v111M47 212V99h126v113m14 0V99h126v113'],
     ['garage-facade-vent', 'M168 69h24m-20-6h16m-20 12h24'],
-    ['garage-facade-ground', 'M20 213h320M43 221h274'],
+    ['garage-facade-ground', 'M12 213h336M35 221h290'],
   ]));
   const list = make('span', 'garage-door-list'); facade.append(list);
   const text = (node, value) => { if (node.textContent !== value) node.textContent = value; };
@@ -198,7 +198,8 @@ export function createGarageDoorPanel({ document, onAction, blocked = () => fals
     };
     const animationNow = document.defaultView.performance.now();
     const motionFor = (node, device) => node.motion.update({ ...viewFor(device), deviceId: device?.id,
-      durationSeconds: snapshot.status?.garage?.doorTravelSeconds, now: animationNow });
+      durationSeconds: snapshot.status?.garage?.doorTravelSeconds, now: animationNow,
+      statusNow: snapshot.status?.now, operation: device?.cover?.operation });
     layout.forEach((bay, index) => {
       overview.updateNode(overview.nodes[index], bay, viewFor(bay.device));
       updateControl(controls.nodes[index], bay);

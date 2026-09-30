@@ -545,6 +545,13 @@
                 <small class="overview-note">Rear sensor</small>
                 <small id="garage-temperature-age" class="overview-note">Waiting for readings</small>
               </div>
+              <div id="garage-door-summary" class="overview-doors">
+                <button id="garage-doors-shortcut" class="status-detail-trigger garage-overview-trigger" type="button" aria-label="Garage doors: Unknown. Show controls" aria-haspopup="dialog" aria-expanded="false" aria-controls="garage-doors-dialog">
+                  <span id="garage-facade-overview"></span>
+                  <span id="garage-doors-label" class="status-detail-label garage-overview-status">Unknown</span>
+                  <span class="garage-overview-estimate">Estimated position</span>
+                </button>
+              </div>
               <div class="overview-request">
                 <p id="garage-requested-label" class="overview-label">Room target</p>
                 <strong id="garage-requested" role="status">—</strong>
@@ -552,13 +559,6 @@
                   <p id="garage-price-label" class="overview-label">All-in price</p>
                   <div class="overview-price-value"><strong id="garage-price">—</strong><small id="garage-price-unit"></small></div>
                 </div>
-              </div>
-              <div id="garage-door-summary" class="overview-doors">
-                <button id="garage-doors-shortcut" class="status-detail-trigger garage-overview-trigger" type="button" aria-label="Garage doors: Unknown. Show controls" aria-haspopup="dialog" aria-expanded="false" aria-controls="garage-doors-dialog">
-                  <span class="garage-overview-heading"><span>Garage doors</span><span class="garage-overview-link">Controls <span aria-hidden="true">↗</span></span></span>
-                  <span id="garage-facade-overview"></span>
-                  <span id="garage-doors-label" class="status-detail-label garage-overview-status">Unknown</span>
-                </button>
               </div>
             </div>
           </summary>

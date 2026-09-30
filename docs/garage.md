@@ -23,7 +23,8 @@ surface temperatures. The advisory has an age; the chosen heating mode has no ex
 ## Garage doors
 
 The overview permanently shows the garage from the driveway: one centered gable
-with **Left = Door 2** and **Right = Door 1**. Selecting any part of the facade
+with **Left = Door 2** and **Right = Door 1**. Its compact animated button sits
+between the rear temperature and room target. Selecting any part of the facade
 opens the Garage doors dialog. Only the dialog's individual door buttons operate
 the doors; they offer Open, Close or configured Stop according to current evidence
 and command availability. Left and Right stay in the same positions at every
@@ -38,8 +39,20 @@ and device authority checks still apply.
 `garage.door_travel_seconds` is **18 seconds** by default, shared by both doors for
 opening and closing. Travel animation uses constant linear speed; reversing
 direction uses the remaining distance rather than restarting a full travel time.
-Positions inferred during travel are labeled as estimates and corrected by device
-reports. The current contact integration has no measured opening percentage.
+Successful command publication starts the estimate's clock, but the illustration
+waits for a fresh door response before showing that movement. When the response
+arrives, both the overview and dialog jump to the position estimated from elapsed
+time and animate the remaining distance. A response three seconds after successful
+send therefore starts one sixth into an 18-second stroke, with 15 seconds left.
+Unchanged reports cannot confirm a new direction or restart its timer.
+
+Positions inferred during travel are labeled as estimates. A closed report ends
+travel immediately; a binary Open/`coverState: open` report only establishes that
+the door is not closed, so it does not skip or finish the opening animation.
+The current contact integration has no measured opening percentage. Failed or
+unacknowledged commands supply no timing anchor, and lost evidence or replacement
+equipment clears pending estimates. Reported movement without a local command can
+animate from the last known position, with no assumed command-start time.
 This setting changes only the visualization, not motor timing or door controls.
 
 ## Local temperature regulation

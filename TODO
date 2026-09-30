@@ -1,3 +1,32 @@
+Implemented 2026-09-30 — Compact animated Garage overview and delayed-response timing
+- Restore the Garage facade button to its original center position between the
+  rear sensor and room target. Cap the compact artwork at 112px, retain both
+  animated shutters and one concise estimate label, and keep the larger dialog.
+  Slightly widen the shared walls/roof and raise the ridge without resizing doors.
+- Use the existing cover-operation acknowledgedAt clock from successful command
+  publication. Wait for a fresh directional response before showing new movement,
+  then catch up to elapsed travel and animate the remainder at constant speed.
+  Both doors and both directions share the configured 18-second full stroke;
+  reversals use their position at successful send and remaining distance.
+- Fix binary Open/coverState open being treated as fully open: it establishes
+  not-closed and cannot skip, finish or restart estimated opening. Closed endpoint
+  and measured position remain authoritative. Unchanged Open cannot confirm a
+  closing/reopening request. Keep clocks separate and preserve progress on polling.
+- F1/F4/F5/F7: retain receipt semantics, command ownership/capability/authority gates,
+  device identity, unknown/stale handling and reduced motion. Failed/unacknowledged
+  sends cannot anchor travel; unknown evidence or replacement equipment clears
+  pending estimates. No new protocol, recording, schema, configuration default,
+  compatibility path or hardware command behavior. Replace superseded endpoint
+  tests with response-gated timing and binary-contact regressions.
+- Validation: 85 focused Garage/equipment checks passed, including 28 motion cases;
+  production build and both isolated Garage/door Chromium suites passed. Browser
+  checks issue intercepted Open/Close requests on both doors, assert three-second
+  catch-up in both surfaces, no movement before response, constant remaining speed,
+  continuity with the dialog closed, failed-send handling and closed correction.
+  Reviewed desktop, 320/390px and short-landscape screenshots in both themes.
+  Build retains its existing bundle-size advisory. No deployment, push, household
+  configuration reads or live device commands.
+
 Implemented 2026-09-30 — Persistent two-door Garage facade and linear travel
 - Replace separate small door illustrations with one shared front elevation:
   centered gable ridge, paired sectional shutters and coherent frame/trim.
