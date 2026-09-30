@@ -1,3 +1,25 @@
+Implemented 2026-09-30 — Full-size temperatures inside a clean house outline
+- Simplify the west-facing house to its stepped roof, intact exterior walls,
+  upper window and one middle wall ending above the reading. Remove the low
+  entrance roof, lower windows, ground and all masking of the outline.
+- Restore the shared original temperature font and natural 5px gap to Indoor
+  average. Let the drawing rise behind the normal-flow reading; retain bottom
+  alignment and readable freshness/source notes. Reserve measured signed-number
+  width for Home and Garage summaries, including -99.9 °C through 99.9 °C,
+  with additional clearance inside the house walls.
+- F1/F4/F7: retain source/unknown/attention meanings, evidence popovers and
+  keyboard controls. Remove the draft's smaller indoor font and absolute text
+  positioning. No data, configuration, control, recording or compatibility
+  changes; reference images remain external (F8).
+- Validation: 32 focused tests, production build and Home/Garage Chromium suites
+  passed. Browser checks measure all ten rendered digit widths and both signed
+  range extremes, asserting one-line fit, full wall containment, no outline or
+  window intersection, original typography, label spacing and bottom alignment
+  at 320–1440px in both themes, including the narrow two-column breakpoint.
+  A temporary 50-view sweep also checked missing/long recorded-source labels,
+  header clearance, temperature hit targets and page overflow; screenshots
+  reviewed. Existing bundle-size advisory remains. No deployment or push.
+
 Implemented 2026-09-30 — Home temperature inside a west-elevation silhouette
 - Move Outdoor to the left and Indoor average to the middle. Draw a compact
   west-facing house in the Garage facade's line style, using the stepped roof,

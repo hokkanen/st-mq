@@ -184,6 +184,7 @@ export async function checkDashboardLayout({ evaluate, width }) {
       return box.left >= cell.left - 1 && box.right <= cell.right + 1;
     });
   })`), true, `Overview values and explanation buttons stay inside their columns at ${width}px`);
+  await checkOverviewTemperatureFit({ evaluate, width });
   const support = await evaluate(`(() => {
     const root = document.querySelector('#home-control .home-support');
     const bounds = root.getBoundingClientRect();
@@ -232,6 +233,102 @@ export async function checkDashboardLayout({ evaluate, width }) {
       && dialog.scrollWidth <= dialog.clientWidth && document.documentElement.scrollWidth <= innerWidth;
   })()`), true, `Fireplace window stays inside the viewport without horizontal overflow at ${width}px`);
   await evaluate("document.getElementById('fireplace-close').click()");
+}
+
+/** Exercise the widest available readings without changing fixture evidence or controls. */
+export async function checkOverviewTemperatureFit({ evaluate, width }) {
+  const layout = await evaluate(`(() => {
+    const values = ['indoor', 'outdoor', 'garage-temperature', 'garage-requested'].map(id => {
+      const value = document.getElementById(id), label = value.querySelector('.status-detail-label') ?? value;
+      return { id, value, label, children: [...label.childNodes], unavailable: value.classList.contains('metric-unavailable') };
+    });
+    const bounds = node => {
+      const box = node.getBoundingClientRect();
+      return { left: box.left, right: box.right, top: box.top, bottom: box.bottom, width: box.width };
+    };
+    const textBounds = node => {
+      const range = document.createRange();
+      range.selectNodeContents(node);
+      const box = range.getBoundingClientRect();
+      return { left: box.left, right: box.right, top: box.top, bottom: box.bottom, width: box.width,
+        lines: range.getClientRects().length };
+    };
+    try {
+      // Measuring each digit in the actual rendered font proves the two-digit
+      // extrema cover every one-decimal reading, without enumerating the range.
+      const digits = values.map(({ id, value, label }) => {
+        value.classList.remove('metric-unavailable');
+        const widths = [...'0123456789'].map(digit => {
+          label.textContent = '-' + digit + digit + '.' + digit + ' °C';
+          return textBounds(label).width;
+        });
+        return { id, widths };
+      });
+      const samples = ['-99.9 °C', '99.9 °C'].map(text => {
+        for (const { label } of values) label.textContent = text;
+        const indoor = document.getElementById('indoor'), outdoor = document.getElementById('outdoor');
+        const indoorText = textBounds(values.find(value => value.id === 'indoor').label);
+        const intersectingPaths = [...document.querySelectorAll('.home-facade-building path')].flatMap(path => {
+          const length = path.getTotalLength(), matrix = path.getScreenCTM();
+          // Test the drawn outline in screen coordinates, independently of its
+          // SVG dimensions or the responsive CSS used to position the house.
+          const steps = Math.ceil(length * Math.max(Math.hypot(matrix.a, matrix.b), Math.hypot(matrix.c, matrix.d)) * 2);
+          for (let step = 0; step <= steps; step++) {
+            const point = path.getPointAtLength(length * step / Math.max(steps, 1)).matrixTransform(matrix);
+            if (point.x >= indoorText.left - 1 && point.x <= indoorText.right + 1
+              && point.y >= indoorText.top - 1 && point.y <= indoorText.bottom + 1) return [{
+                path: path.getAttribute('class'), x: point.x, y: point.y, text: indoorText }];
+          }
+          return [];
+        });
+        const font = node => {
+          const style = getComputedStyle(node);
+          return [style.fontSize, style.lineHeight, style.letterSpacing];
+        };
+        return { text,
+          values: values.map(({ id, value, label }) => ({ id, text: textBounds(label),
+            trigger: bounds(value.querySelector('.status-detail-trigger') ?? value),
+            column: bounds(value.closest('.overview-zone > div')) })),
+          indoorFont: font(indoor), outdoorFont: font(outdoor),
+          walls: bounds(document.querySelector('.home-facade-wall')),
+          intersectingPaths,
+          indoorNoteGap: document.querySelector('.overview-indoor > .overview-note').getBoundingClientRect().top
+            - indoor.getBoundingClientRect().bottom,
+          homeColumns: [...document.querySelector('#home-control .overview-zone').children].map(bounds),
+          viewportFits: document.documentElement.scrollWidth <= innerWidth };
+      });
+      return { digits, samples };
+    } finally {
+      for (const { value, label, children, unavailable } of values) {
+        label.replaceChildren(...children);
+        value.classList.toggle('metric-unavailable', unavailable);
+      }
+    }
+  })()`);
+  for (const { id, widths } of layout.digits) {
+    assert.ok(Math.max(...widths) - Math.min(...widths) <= .1,
+      `${id} uses equally wide rendered digits at ${width}px`);
+  }
+  for (const sample of layout.samples) {
+    for (const { id, text, trigger, column } of sample.values) {
+      assert.ok(text.lines === 1 && text.left >= column.left - .5 && text.right <= column.right + .5
+        && trigger.left >= column.left - .5 && trigger.right <= column.right + .5,
+      `${id} fits ${sample.text} on one line inside its column at ${width}px: ${JSON.stringify({ text, trigger, column })}`);
+    }
+    const indoor = sample.values.find(value => value.id === 'indoor').text;
+    assert.ok(indoor.left >= sample.walls.left + 1 && indoor.right <= sample.walls.right - 1
+      && indoor.top >= sample.walls.top && indoor.bottom <= sample.walls.bottom,
+    `Indoor ${sample.text} fits inside the exterior walls at ${width}px: ${JSON.stringify({ indoor, walls: sample.walls })}`);
+    assert.deepEqual(sample.intersectingPaths, [],
+      `The house outline and upper window leave ${sample.text} unobstructed at ${width}px`);
+    assert.deepEqual(sample.indoorFont, sample.outdoorFont,
+      `Indoor preserves the original overview temperature typography at ${width}px`);
+    assert.ok(Math.abs(sample.indoorNoteGap - 5) <= .5,
+      `Indoor average follows the temperature with its natural 5px gap at ${width}px`);
+    assert.ok(sample.homeColumns.every(column => Math.abs(column.bottom - sample.homeColumns[0].bottom) <= 1),
+      `The three Home items align at the bottom for ${sample.text} at ${width}px`);
+    assert.equal(sample.viewportFits, true, `The ${sample.text} overview fits the ${width}px viewport`);
+  }
 }
 
 export async function checkProviderLayout({ evaluate, width }) {

@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { start } from '../src/main.js';
 import { loadConfig } from '../src/app/config.js';
+import { checkOverviewTemperatureFit } from './lib/dashboard-browser-checks.js';
 
 const directory = mkdtempSync(join(tmpdir(), 'stmq-home-controls-browser-'));
 const artifacts = mkdtempSync(join(tmpdir(), 'stmq-home-controls-screenshots-'));
@@ -245,12 +246,13 @@ try {
   assert.equal(await evaluate(`document.getElementById('test-reduction').disabled`), false,
     'Home manual reduction stays available while paused');
   await evaluate(`homeFixture.automatic = true; await homeFixture.poll()`);
-  for (const width of [320, 360, 390, 768, 1280]) for (const theme of ['dark', 'light']) {
+  for (const width of [320, 360, 390, 768, 820, 1280]) for (const theme of ['dark', 'light']) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: 1100, deviceScaleFactor: 1, mobile: false });
     await evaluate(`if (document.documentElement.dataset.theme !== '${theme}') document.getElementById('theme-toggle').click();
       document.getElementById('home-preferences-details').open = true;
       document.getElementById('home-room-references-details').open = true;
       document.getElementById('garage-heating-details').open = true`);
+    await checkOverviewTemperatureFit({ evaluate, width });
     const layout = await evaluate(`({ page: document.documentElement.scrollWidth, viewport: innerWidth,
       overflow: [...document.querySelectorAll('#home-preferences-details *')].filter(element => element.scrollWidth > element.clientWidth + 1)
         .map(element => ({ name: element.id || element.tagName, scroll: element.scrollWidth, client: element.clientWidth })),
