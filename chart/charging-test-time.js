@@ -19,3 +19,20 @@ export function parseChargingTestTime(value, timezone = 'Europe/Helsinki') {
   if (candidates.size !== 1) throw new Error('Choose an unambiguous local time outside the daylight-saving clock change.');
   return [...candidates][0];
 }
+
+export const chargingTestClock = (at, timezone) => chargingTestLocalTime(at, timezone).slice(11);
+
+// A time-only vehicle timer refers to its next local occurrence. Calendar-day
+// arithmetic keeps tomorrow correct across DST; the parser rejects ambiguous
+// and nonexistent manually entered clock times rather than choosing silently.
+export function nextChargingTestTime(value, timezone = 'Europe/Helsinki', now = Date.now()) {
+  if (!/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value)) throw new Error('Enter the vehicle schedule as HH:mm.');
+  const local = chargingTestLocalTime(now, timezone);
+  let date = local.slice(0, 10);
+  if (value <= local.slice(11)) {
+    const tomorrow = new Date(`${date}T12:00:00Z`);
+    tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
+    date = tomorrow.toISOString().slice(0, 10);
+  }
+  return parseChargingTestTime(`${date}T${value}`, timezone);
+}

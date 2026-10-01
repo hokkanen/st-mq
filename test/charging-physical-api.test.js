@@ -5,36 +5,50 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../src/storage/store.js';
 import { Engine } from '../src/app/engine.js';
+import { ChargingRuntime } from '../src/charging/runtime.js';
 import { loadConfig } from '../src/app/config.js';
 import { createAppServer } from '../src/app/server.js';
 import { familyRouteAllowed } from '../src/app/web-permissions.js';
 import { webRequestAllowed } from '../chart/web-access.js';
 import { chargingTestLocalTime, parseChargingTestTime } from '../chart/charging-test-time.js';
 
-function fixture(t) {
+function fixture(t, vehicleId = 'tesla') {
   const directory = mkdtempSync(join(tmpdir(), 'charging-physical-api-'));
   const store = new Store(join(directory, 'test.sqlite'));
-  let now = Date.parse('2026-09-30T17:00:00Z'), connected = false, primary = true;
+  let now = Date.parse('2026-09-30T17:00:00Z'), connected = false, connectedAt = null, primary = true;
   const config = { ...loadConfig({ XDG_CONFIG_HOME: directory, STMQ_DATA_DIR: directory }, directory),
     input: 'mqtt', deviceId: null, connections: { mqtt: { address: 'mqtt://example.invalid' } } };
   const engine = new Engine({ store, config, clock: () => now });
   const runtime = engine.charging, item = runtime.chargers.charger1;
+  runtime.canControl = () => primary;
   const reading = value => ({ value, available: true, measuredAt: now, source: 'easee' });
   item.adapter = { normalize: () => ({ connected: reading(connected), charging: reading(false),
     powerKw: reading(0), voltageV: reading(230), maximumCurrentA: reading(16) }) };
-  item.controller = { status: () => ({ session: { connected, connectedAt: connected ? now : null },
+  item.controller = { status: () => ({ session: { connected, connectedAt },
     snapshot: { online: true, readAt: now, controlReady: true, schedule: { enabled: 'none' } }, phase: 'off' }),
     async update() { throw new Error('Assessment must not operate the charger'); }, close() {} };
   item.controls.enabled = true; runtime.refreshSettings();
   runtime.teslaCapture = { snapshot: () => ({ connected: true, healthy: true, pluggedIn: false }), reception: () => ({ connected: true }) };
+  Object.assign(runtime.vehicleFeeds.bmw.mqtt, { connected: true, subscribed: true, lastValidLiveAt: now });
   t.after(async () => { await runtime.close(); await engine.closeFireplace(); store.close(); rmSync(directory, { recursive: true, force: true }); });
-  return { engine, runtime, store, input: { chargerId: 'charger1', vehicleId: 'tesla', program: 'immediate',
-    association: item.association, soc: 30, nativeTargetSoc: 80, prepared: true },
-  primary: () => primary, demote: () => { primary = false; }, plug: () => { now += 1000; connected = true; } };
+  return { engine, runtime, store, config, clock: () => now, input: { chargerId: 'charger1', vehicleId, program: 'immediate',
+    association: item.association, soc: 30, nativeTargetSoc: 85, capacityKwh: 62, prepared: true },
+  primary: () => primary, demote: () => { primary = false; }, plug: () => { now += 1000; connected = true; connectedAt = now; },
+    unplug: () => { now += 1000; connected = false; connectedAt = null; } };
+}
+
+function production(runtime) {
+  const status = runtime.status();
+  return structuredClone({ settings: status.settings, chargers: status.chargers,
+    vehicleFeeds: status.vehicleFeeds, revision: status.revision, coordination: status.coordination });
 }
 
 test('guided-test API uses real normalized charger readiness and keeps declarations out of production settings', async t => {
   const f = fixture(t), token = 'synthetic-physical-test-authorization';
+  // Keep background forecast completion out of the before/after action
+  // comparison. Ordinary synchronous production planning remains enabled.
+  await f.runtime.historyService.close(); f.runtime.historyService = null;
+  f.engine.status();
   const server = createAppServer({ engine: f.engine, store: f.store, token,
     controlAuthority: { canControl: f.primary, status: () => ({}) } });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -60,13 +74,79 @@ test('guided-test API uses real normalized charger readiness and keeps declarati
   assert.equal(run.phase, 'observing'); assert.ok(run.sessionId);
   assert.equal(view.chargers[0].values.soc.value, before.chargers.charger1.manualSoc);
   assert.notEqual(view.chargers[0].values.soc.value, f.input.soc);
+  assert.equal(view.chargers[0].values.minimumSoc.value, before.chargers.charger1.minimumSoc);
+  assert.notEqual(view.chargers[0].values.minimumSoc.value, f.input.nativeTargetSoc);
+  assert.equal(view.chargers[0].values.capacityKwh.value, before.chargers.charger1.capacityKwh);
+  assert.notEqual(view.chargers[0].values.capacityKwh.value, f.input.capacityKwh);
+  assert.deepEqual(view.chargers[0].request.overrides, {});
   assert.notEqual(view.chargers[0].vehicle?.state, 'identified');
   assert.ok(view.diagnostics.chargers[0].current);
+  const actual = production(f.runtime);
+  const targetInput = { id: run.id, association: run.association, sessionId: run.sessionId,
+    targetRevision: run.target.revision, nativeTargetSoc: 90 };
+  const targetResponse = await post('target', targetInput);
+  assert.equal(targetResponse.status, 200);
+  const assessed = (await targetResponse.json()).charging.physicalTests.runs[0];
+  assert.equal(assessed.expectations.nativeTargetSoc, 90);
+  assert.deepEqual(production(f.runtime), actual, 'Recording the assumed car target cannot alter any production knowledge');
+  assert.equal((await post('target', { ...targetInput, nativeTargetSoc: 95 })).status, 400, 'Stale assessment revision is rejected');
   assert.equal((await post('cancel', { id: armed.id, association: f.input.association })).status, 200);
   assert.equal(f.runtime.physicalTests.status().runs[0].phase, 'cancelled');
   assert.deepEqual(f.runtime.settings, before);
+  assert.deepEqual(production(f.runtime), actual, 'Ending the assessment leaves actual charging unchanged');
   f.demote();
   assert.equal((await post('preview', f.input)).status, 409);
+});
+
+for (const vehicleId of ['bmw', 'tesla']) test(`${vehicleId} guide assumptions survive restart without becoming production inputs or identity`, async t => {
+  const f = fixture(t, vehicleId), before = production(f.runtime);
+  f.runtime.chargingTestAction('preview', f.input);
+  f.runtime.chargingTestAction('start', f.input);
+  assert.deepEqual(production(f.runtime), before);
+  f.plug(); f.runtime.persist();
+  const actual = production(f.runtime), run = f.runtime.physicalTests.status().runs[0];
+  assert.deepEqual(actual.chargers[0].request.overrides, {});
+  const targetAction = { id: run.id, association: run.association, sessionId: run.sessionId,
+    targetRevision: run.target.revision, nativeTargetSoc: 90 };
+  f.runtime.chargingTestAction('target', targetAction);
+  assert.deepEqual(production(f.runtime), actual);
+  f.runtime.persist();
+
+  const restarted = new ChargingRuntime({ engine: {}, store: f.store, config: f.config, clock: f.clock, canControl: f.primary });
+  t.after(() => restarted.close());
+  restarted.chargers.charger1.adapter = f.runtime.chargers.charger1.adapter;
+  restarted.chargers.charger1.controller = f.runtime.chargers.charger1.controller;
+  restarted.teslaCapture = f.runtime.teslaCapture;
+  const restored = restarted.status(), current = restored.chargers[0];
+  assert.equal(restored.physicalTests.runs[0].expectations.nativeTargetSoc, 90);
+  assert.equal(restored.physicalTests.runs[0].expectations.soc, f.input.soc);
+  assert.equal(restored.physicalTests.runs[0].expectations.capacityKwh, f.input.capacityKwh);
+  assert.deepEqual(current.request, actual.chargers[0].request);
+  for (const key of ['soc', 'minimumSoc', 'capacityKwh']) assert.deepEqual(current.values[key], actual.chargers[0].values[key]);
+  assert.notEqual(current.vehicle.state, 'identified');
+  assert.deepEqual(restarted.settings, f.runtime.settings);
+  f.unplug(); restarted.persist();
+  assert.equal(restarted.status().physicalTests.runs[0].phase, 'finished');
+  f.plug(); restarted.persist();
+  assert.deepEqual(restarted.status().chargers[0].request.overrides, {});
+  assert.equal(restarted.status().physicalTests.runs[0].sessionId, run.sessionId);
+});
+
+test('failed assessment target save rolls back only its declaration and never changes production charging', async t => {
+  const f = fixture(t);
+  f.runtime.chargingTestAction('start', f.input);
+  f.plug(); f.runtime.persist();
+  const before = production(f.runtime), assessments = f.runtime.physicalTests.status(), run = assessments.runs[0];
+  const setState = f.store.setState.bind(f.store);
+  f.store.setState = (key, value) => {
+    if (key.endsWith(':physical-tests')) throw new Error('Synthetic assessment storage failure');
+    return setState(key, value);
+  };
+  assert.throws(() => f.runtime.chargingTestAction('target', { id: run.id, association: run.association,
+    sessionId: run.sessionId, targetRevision: run.target.revision, nativeTargetSoc: 95 }), /Synthetic assessment storage failure/);
+  assert.deepEqual(f.runtime.physicalTests.status(), assessments);
+  assert.deepEqual(f.store.getState('charging:mqtt:physical-tests'), assessments);
+  assert.deepEqual(production(f.runtime), before);
 });
 
 test('assessment storage failure stays visible without preventing normal runtime persistence', t => {
@@ -82,7 +162,7 @@ test('assessment storage failure stays visible without preventing normal runtime
 });
 
 test('family assessment actions are explicitly scoped on both sides of the API', () => {
-  for (const action of ['preview', 'start', 'schedule', 'cancel']) {
+  for (const action of ['preview', 'start', 'schedule', 'target', 'cancel']) {
     const path = `/api/charging/tests/${action}`;
     assert.equal(familyRouteAllowed('POST', path), true);
     assert.equal(webRequestAllowed({ role: 'family' }, path, {}), true);

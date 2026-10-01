@@ -1206,7 +1206,7 @@ export class ChargingRuntime {
   }
   chargingTestAction(action, input) {
     this.checkControlAuthority();
-    const method = { preview: 'preview', start: 'start', schedule: 'confirmSchedule', cancel: 'cancel' }[action];
+    const method = { preview: 'preview', start: 'start', schedule: 'confirmSchedule', target: 'confirmTarget', cancel: 'cancel' }[action];
     if (!method) throw new Error('Unknown charging assessment action.');
     return this.physicalTests[method](input, this.status());
   }

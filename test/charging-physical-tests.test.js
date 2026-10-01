@@ -4,6 +4,8 @@ import { ChargingPhysicalTests } from '../src/charging/physical-tests.js';
 import { chargingDiagnosticSessionId } from '../src/charging/session-diagnostics.js';
 import { easeeChargerTelemetry } from '../src/charging/easee.js';
 import { buildCharger, CHARGER_DEFINITIONS } from '../src/charging/model.js';
+import { updateChargingProgress } from '../src/charging/progress.js';
+import { CHARGING_EFFICIENCY } from '../src/domain/charging-energy.js';
 
 const MINUTE = 60_000, HOUR = 60 * MINUTE, START = Date.parse('2026-09-30T18:00:00Z');
 const value = (input, extra = {}) => ({ value: input, available: true, source: 'charger', ...extra });
@@ -28,7 +30,7 @@ function fixture() {
     })),
   };
   const input = (extra = {}) => ({ chargerId: 'charger1', vehicleId: 'bmw', program: 'immediate', association: view.chargers[0].association,
-    soc: 40, nativeTargetSoc: 80, prepared: true, ...extra });
+    soc: 40, nativeTargetSoc: 80, capacityKwh: extra.vehicleId === 'tesla' ? 57 : 74, prepared: true, ...extra });
   const advance = (duration = MINUTE) => {
     now += duration;
     for (const charger of view.chargers) if (charger.control.snapshot) charger.control.snapshot.readAt = now;
@@ -38,7 +40,7 @@ function fixture() {
     advance(); charger.values.connected = value(true);
     charger.values.powerKw = value(0, { measuredAt: now, receivedAt: now });
     charger.control.session = { connected: true, connectedAt: now };
-    charger.request = { sessionId: `synthetic-session-${now}`, deadlineAt: now + 10 * HOUR };
+    charger.request = { sessionId: `synthetic-session-${now}`, revision: 1, deadlineAt: now + 10 * HOUR };
     charger.vehicle = { state: 'unidentified', id: null, sessionId: charger.request.sessionId };
     return charger;
   };
@@ -66,6 +68,20 @@ test('preparation gates use live readiness and duration instead of one fixed bat
   assert.equal(f.writes.length, 0);
 });
 
+test('accepted usable capacity drives preparation without rewriting configuration and is required to arm', () => {
+  const f = fixture(), tests = f.create(), original = structuredClone(f.view.settings);
+  const smaller = tests.preview(f.input({ capacityKwh: 35 }), f.view);
+  const larger = tests.preview(f.input({ capacityKwh: 70 }), f.view);
+  assert.equal(larger.headroom.minutes, smaller.headroom.minutes * 2);
+  assert.equal(smaller.headroom.basis, 'accepted-capacity-and-expected-power');
+  assert.equal(tests.preview(f.input({ capacityKwh: null }), f.view).eligible, false);
+  for (const capacityKwh of [null, undefined, 0, -1, 301, '74'])
+    assert.throws(() => tests.start(f.input({ capacityKwh }), f.view), /capacity/);
+  const run = tests.start(f.input({ capacityKwh: 70 }), f.view);
+  assert.equal(run.expectations.capacityKwh, 70);
+  assert.deepEqual(f.view.settings, original);
+});
+
 test('real Easee normalization supplies unplugged headroom from fixed limits, independent of zero idle draw', () => {
   const f = fixture(), tests = f.create(), original = f.view.chargers[0];
   const snapshot = { readAt: START, online: true, mode: 1, modeAt: START, pluggedIn: false, enabled: true,
@@ -83,7 +99,7 @@ test('real Easee normalization supplies unplugged headroom from fixed limits, in
   assert.ok(preview.headroom.minutes > 170);
 });
 
-test('arming records private expectations without changing production inputs, telemetry or plans', () => {
+test('assessment observer records accepted inputs without itself changing session requests, telemetry or plans', () => {
   const f = fixture(), tests = f.create(), before = structuredClone(f.view);
   const run = tests.start(f.input({ soc: 37, nativeTargetSoc: 89 }), f.view);
   assert.equal(run.phase, 'armed'); assert.equal(run.expectations.soc, 37);
@@ -140,7 +156,7 @@ test('normal test follows a fresh physical connection, real plan and native comp
 test('planning target, estimated battery and zero power cannot finish a test', () => {
   const f = fixture(), tests = f.create(); tests.start(f.input({ nativeTargetSoc: 90 }), f.view);
   const charger = f.plug(); f.identify(charger, 'bmw', 80); f.plan(); tests.update(f.view);
-  assert.ok(tests.status().runs[0].milestones.planningMinimum);
+  assert.equal(tests.status().runs[0].milestones.vehicleTarget, undefined);
   assert.equal(tests.status().runs[0].milestones.completion, undefined);
   charger.progress = { estimatedSoc: 100 }; tests.update(f.view);
   charger.values.soc = value(100, { source: 'manual-fallback', assumed: true, measuredAt: f.clock() }); tests.update(f.view);
@@ -149,26 +165,125 @@ test('planning target, estimated battery and zero power cannot finish a test', (
   assert.equal(tests.status().runs[0].phase, 'observing', 'old preconnection battery reading is not completion');
 });
 
-test('attaining an earlier lower minimum does not confirm a later higher minimum by ready-by', () => {
-  const f = fixture(), tests = f.create(); tests.start(f.input({ nativeTargetSoc: 100 }), f.view);
-  const charger = f.plug(); f.identify(charger, 'bmw', 80); tests.update(f.view);
-  assert.equal(tests.status().runs[0].milestones.planningMinimum.targetSoc, 80);
+test('an earlier attained target does not confirm a later accepted higher target by ready-by', () => {
+  const f = fixture(), tests = f.create();
+  const run = tests.start(f.input(), f.view), charger = f.plug();
+  f.identify(charger, 'bmw', 80); charger.values.powerKw = value(7, { measuredAt: f.clock() }); tests.update(f.view);
+  assert.equal(tests.status().runs[0].milestones.vehicleTarget.targetSoc, 80);
+  f.advance();
+  tests.confirmTarget({ id: run.id, association: run.association, sessionId: charger.request.sessionId,
+    targetRevision: tests.status().runs[0].target.revision, nativeTargetSoc: 90 }, f.view);
   charger.values.minimumSoc = value(90, { source: 'session-request' });
   f.advance(10 * HOUR); tests.update(f.view);
   assert.equal(tests.status().runs[0].milestones.deadline.state, 'not-confirmed-by-deadline');
+  assert.equal(tests.status().runs[0].milestones.deadline.targetSoc, 90);
 });
 
-test('a higher actual vehicle limit prevents completion at the declared or planning minimum', () => {
+test('guide target confirmation remains isolated even when an explicit ordinary session override differs from the car', () => {
+  for (const vehicleId of ['bmw', 'tesla']) {
+    const f = fixture(); let tests = f.create();
+    const run = tests.start(f.input({ vehicleId }), f.view), charger = f.plug();
+    // An unrelated user action may explicitly override the ordinary request.
+    // Confirming a guide assumption must not overwrite that independent action.
+    charger.request.overrides = { minimumSoc: 80 };
+    charger.values.minimumSoc = value(80, { source: 'session-request' });
+    f.identify(charger, vehicleId, 70);
+    charger.values.vehicleCeilingSoc = value(90, { source: vehicleId === 'bmw' ? 'bmw-cardata' : 'teslamate', receivedAt: START });
+    charger.values.powerKw = value(7, { measuredAt: f.clock() }); tests.update(f.view);
+    f.advance(); f.identify(charger, vehicleId, 90);
+    charger.values.powerKw = value(0, { measuredAt: f.clock() }); tests.update(f.view);
+    assert.equal(tests.status().runs[0].phase, 'observing');
+    assert.equal(tests.status().runs[0].expectations.nativeTargetSoc, 80);
+    assert.equal(tests.status().runs[0].target.reportedSoc, 90);
+    assert.equal(tests.status().runs[0].target.requiresConfirmation, true);
+    assert.ok(tests.status().runs[0].findings.some(row => row.code === 'vehicle-limit-differs-from-preparation'));
+    const action = { id: run.id, association: run.association, sessionId: charger.request.sessionId,
+      targetRevision: tests.status().runs[0].target.revision, nativeTargetSoc: 90 };
+    assert.throws(() => tests.confirmTarget({ ...action, targetRevision: 99 }, f.view), /session changed/);
+    assert.throws(() => tests.confirmTarget({ ...action, revision: charger.request.revision }, f.view), /Invalid physical charging test action/);
+    charger.request.revision += 5;
+    const before = structuredClone(f.view);
+    tests.confirmTarget(action, f.view);
+    assert.deepEqual(f.view, before, 'assessment confirmation neither depends on nor modifies ordinary session request revisions');
+    assert.equal(tests.status().runs[0].target.requiresConfirmation, false, 'actual vehicle report and assessment assumption now agree');
+    assert.equal(charger.values.minimumSoc.value, 80, 'the explicit ordinary session override is untouched');
+    tests = f.create(); tests.update(f.view);
+    assert.equal(tests.status().runs[0].target.requiresConfirmation, false);
+    assert.equal(tests.status().runs[0].phase, 'completed');
+    assert.deepEqual(tests.status().runs[0].target.history.map(row => row.targetSoc), [80, 90]);
+    assert.equal(tests.status().runs[0].target.revision, 2);
+    assert.throws(() => tests.confirmTarget(action, f.view), /changed/);
+  }
+});
+
+test('an entered guide assumption of 67 cannot pass against an independently reported car target of 85', () => {
+  for (const vehicleId of ['bmw', 'tesla']) {
+    const f = fixture(), tests = f.create();
+    const run = tests.start(f.input({ vehicleId, nativeTargetSoc: 67 }), f.view), charger = f.plug();
+    const source = vehicleId === 'bmw' ? 'bmw-cardata' : 'teslamate';
+    f.identify(charger, vehicleId, 40);
+    // These values arrive through the normal independently identified car feed;
+    // no guide declaration is used to set either production field.
+    charger.values.vehicleCeilingSoc = value(85, { source, receivedAt: f.clock() });
+    charger.values.minimumSoc = value(85, { source });
+    charger.values.powerKw = value(7, { measuredAt: f.clock() }); tests.update(f.view);
+    f.advance(); f.identify(charger, vehicleId, 67);
+    charger.values.powerKw = value(0, { measuredAt: f.clock() });
+    const at67 = structuredClone(f.view); tests.update(f.view);
+    const mismatch = tests.status().runs[0];
+    assert.deepEqual(f.view, at67);
+    assert.equal(mismatch.phase, 'observing');
+    assert.equal(mismatch.expectations.nativeTargetSoc, 67);
+    assert.equal(mismatch.target.reportedSoc, 85);
+    assert.equal(mismatch.target.requiresConfirmation, true);
+    assert.equal(mismatch.milestones.vehicleTarget, undefined);
+    assert.equal(mismatch.milestones.completion, undefined);
+    tests.confirmTarget({ id: run.id, association: run.association, sessionId: charger.request.sessionId,
+      targetRevision: mismatch.target.revision, nativeTargetSoc: 85 }, f.view);
+    tests.update(f.view);
+    assert.deepEqual(f.view, at67, 'recording the verified car target changes only the assessment');
+    assert.equal(tests.status().runs[0].phase, 'observing', '67 is still below the car target');
+    assert.equal(tests.status().runs[0].milestones.vehicleTarget, undefined);
+    f.advance(); f.identify(charger, vehicleId, 85);
+    charger.values.powerKw = value(0, { measuredAt: f.clock() });
+    const at85 = structuredClone(f.view); tests.update(f.view);
+    assert.deepEqual(f.view, at85);
+    assert.equal(tests.status().runs[0].phase, 'completed');
+    assert.equal(tests.status().runs[0].milestones.vehicleTarget.targetSoc, 85);
+    assert.equal(charger.values.minimumSoc.value, 85);
+  }
+});
+
+test('an ordinary session-request field cannot masquerade as independently reported car target evidence', () => {
   const f = fixture(), tests = f.create(); tests.start(f.input(), f.view);
-  const charger = f.plug(); f.identify(charger, 'bmw', 80);
-  charger.values.vehicleCeilingSoc = value(90, { source: 'bmw-cardata' });
-  tests.update(f.view);
+  const charger = f.plug(); f.identify(charger);
+  charger.values.vehicleCeilingSoc = value(67, { source: 'session-request', receivedAt: f.clock() });
+  const before = structuredClone(f.view); tests.update(f.view);
+  assert.deepEqual(f.view, before);
+  assert.equal(tests.status().runs[0].target.reportedSoc, null);
+  assert.equal(tests.status().runs[0].expectations.nativeTargetSoc, 80);
+});
+
+test('actual reported target conflicts remain explicit while ordinary planner settings are independent', () => {
+  const f = fixture(), tests = f.create();
+  const run = tests.start(f.input({ nativeTargetSoc: 90 }), f.view), charger = f.plug();
+  f.identify(charger, 'bmw', 70);
+  charger.values.powerKw = value(7, { measuredAt: f.clock() }); tests.update(f.view);
+  f.advance(); f.identify(charger, 'bmw', 80);
+  charger.values.vehicleCeilingSoc = value(80, { source: 'bmw-cardata', receivedAt: f.clock() });
+  charger.values.powerKw = value(0, { measuredAt: f.clock() }); tests.update(f.view);
   assert.equal(tests.status().runs[0].phase, 'observing');
-  assert.ok(tests.status().runs[0].findings.some(row => row.code === 'vehicle-limit-differs-from-preparation'));
-  charger.values.charging = value(true); charger.values.powerKw = value(10, { measuredAt: f.clock(), receivedAt: f.clock() }); tests.update(f.view);
-  charger.values.charging = value(false); charger.values.powerKw = value(0, { measuredAt: f.clock(), receivedAt: f.clock() });
-  f.advance(); f.identify(charger, 'bmw', 90); tests.update(f.view);
+  assert.equal(tests.status().runs[0].target.requiresConfirmation, true);
+  tests.confirmTarget({ id: run.id, association: run.association, sessionId: charger.request.sessionId,
+    targetRevision: tests.status().runs[0].target.revision, nativeTargetSoc: 90 }, f.view);
+  assert.equal(tests.status().runs[0].target.requiresConfirmation, true, 'reaffirming an assumption cannot erase contradictory evidence');
+  f.advance(); charger.values.vehicleCeilingSoc = value(90, { source: 'bmw-cardata', receivedAt: f.clock() });
+  charger.values.minimumSoc = value(95, { source: 'session-request' });
+  f.identify(charger, 'bmw', 90); charger.values.powerKw = value(0, { measuredAt: f.clock() }); tests.update(f.view);
+  assert.equal(tests.status().runs[0].target.reportedSoc, 90);
+  assert.equal(tests.status().runs[0].target.requiresConfirmation, false);
   assert.equal(tests.status().runs[0].phase, 'completed');
+  assert.equal(charger.values.minimumSoc.value, 95, 'assessment observation leaves ordinary settings alone');
 });
 
 test('delayed test obtains a suggestion only from the real plan and retains early identification as uncovered timing', () => {
@@ -216,7 +331,8 @@ test('a Tesla timer incorporated into the real plan before confirmation does not
   assert.match(tests.status().runs[0].recommendation.message, /already includes/);
   tests.confirmSchedule({ id: run.id, association: run.association, sessionId: charger.request.sessionId, startAt: suggested }, f.view);
   assert.equal(tests.status().runs[0].phase, 'observing');
-  assert.equal(tests.status().runs[0].expectations.vehicleStartAt, suggested);
+  assert.equal(tests.status().runs[0].expectations.vehicleStartAt, START + 3 * HOUR);
+  assert.equal(tests.status().runs[0].schedule.startAt, suggested);
 });
 
 test('an initially identified Tesla can keep its suitable existing native timer without manufacturing a delay', () => {
@@ -228,6 +344,135 @@ test('an initially identified Tesla can keep its suitable existing native timer 
   assert.equal(tests.status().runs[0].recommendation.startAt, startAt);
   tests.confirmSchedule({ id: run.id, association: run.association, sessionId: charger.request.sessionId, startAt }, f.view);
   assert.ok(tests.status().runs[0].findings.some(row => row.code === 'identified-before-vehicle-start'));
+});
+
+test('repeated schedule adjustments retain original, latest saved value and receipts across restart for both vehicles', () => {
+  for (const vehicleId of ['bmw', 'tesla']) {
+    const f = fixture(); let tests = f.create();
+    const initialStartAt = START + 3 * HOUR;
+    const run = tests.start(f.input({ vehicleId, program: 'vehicle-schedule', vehicleStartAt: initialStartAt }), f.view);
+    const charger = f.plug(); f.plan(charger, START + HOUR); f.identify(charger, vehicleId); tests.update(f.view);
+    const first = START + 2 * HOUR, second = START + 4 * HOUR;
+    const action = { id: run.id, association: run.association, sessionId: charger.request.sessionId };
+    tests.confirmSchedule({ ...action, startAt: first }, f.view);
+    const firstReceipt = f.clock();
+    tests = f.create(); f.advance();
+    tests.confirmSchedule({ ...action, startAt: second }, f.view);
+    const secondReceipt = f.clock();
+    tests = f.create(); f.advance(); f.plan(charger, START + 90 * MINUTE); tests.update(f.view);
+    const restored = tests.status().runs[0];
+    assert.equal(restored.expectations.vehicleStartAt, initialStartAt);
+    assert.equal(restored.schedule.startAt, second);
+    assert.equal(restored.schedule.confirmedAt, secondReceipt);
+    assert.deepEqual(restored.schedule.history, [
+      { startAt: first, confirmedAt: firstReceipt, source: 'user-confirmed' },
+      { startAt: second, confirmedAt: secondReceipt, source: 'user-confirmed' },
+    ]);
+    assert.equal(restored.milestones.vehicleSchedule.startAt, second);
+    assert.equal(restored.milestones.vehicleSchedule.at, secondReceipt);
+    assert.notEqual(restored.recommendation.startAt, second, 'updated recommendations stay separate from confirmed values');
+  }
+});
+
+test('later timer adjustments cannot retroactively turn an observed on-time identity into early identification', () => {
+  for (const vehicleId of ['bmw', 'tesla']) {
+    const f = fixture(); let tests = f.create();
+    const initialStartAt = START + HOUR;
+    const run = tests.start(f.input({ vehicleId, program: 'vehicle-schedule', vehicleStartAt: initialStartAt }), f.view);
+    const charger = f.plug(); f.plan(charger, START + 30 * MINUTE); tests.update(f.view);
+    f.advance(HOUR); f.identify(charger, vehicleId); tests.update(f.view);
+    const identity = tests.status().runs[0].milestones.identification;
+    assert.ok(identity.at > initialStartAt);
+    assert.equal(identity.startAt, initialStartAt);
+    assert.equal(tests.status().runs[0].findings.some(row => row.code === 'identified-before-vehicle-start'), false);
+    const adjustedStartAt = START + 3 * HOUR;
+    tests.confirmSchedule({ id: run.id, association: run.association, sessionId: charger.request.sessionId,
+      startAt: adjustedStartAt }, f.view);
+    tests.update(f.view);
+    tests = f.create(); f.advance(); tests.update(f.view);
+    const restored = tests.status().runs[0];
+    assert.equal(restored.schedule.startAt, adjustedStartAt);
+    assert.deepEqual(restored.milestones.identification, identity);
+    assert.equal(restored.findings.some(row => row.code === 'identified-before-vehicle-start'), false);
+  }
+});
+
+test('later schedule suggestions and confirmation use ordinary remaining energy after charging and a revised target', () => {
+  for (const vehicleId of ['bmw', 'tesla']) for (const basis of ['vehicle-reading', 'recorded-energy']) {
+    const f = fixture(), tests = f.create();
+    const run = tests.start(f.input({ vehicleId, capacityKwh: 74, program: 'vehicle-schedule', vehicleStartAt: START + 3 * HOUR }), f.view);
+    const charger = f.plug(); f.identify(charger, vehicleId); f.plan(charger, START + HOUR);
+    charger.telemetry = { vehicle: charger.vehicle };
+    let progressState;
+    const creditKwh = 74 * 35 / 100 / CHARGING_EFFICIENCY;
+    const progress = (credit = 0) => {
+      charger.requiredGridKwh = 74 * Math.max(0, charger.values.minimumSoc.value - charger.values.soc.value) / 100 / CHARGING_EFFICIENCY;
+      const next = updateChargingProgress(progressState, charger, f.clock(), () => ({ gridKwh: credit, coveredMs: credit > 0 ? HOUR : 0 }));
+      progressState = next.state;
+      charger.progress = { ...next, state: undefined };
+      charger.requiredGridKwh = next.remainingGridKwh;
+    };
+    progress(); tests.update(f.view);
+    f.advance(6 * HOUR);
+    if (basis === 'vehicle-reading') f.identify(charger, vehicleId, 75);
+    progress(basis === 'recorded-energy' ? creditKwh : 0);
+    f.plan(charger, START + 9 * HOUR); tests.update(f.view);
+    const suggested = tests.status().runs[0].recommendation;
+    assert.equal(suggested.state, 'available', `${vehicleId} ${basis}: ${suggested.message}`);
+    assert.match(suggested.message, /current session/);
+    assert.equal(suggested.startAt, START + 9 * HOUR + 15 * MINUTE);
+    const action = { id: run.id, association: run.association, sessionId: charger.request.sessionId };
+    tests.confirmSchedule({ ...action, startAt: suggested.startAt }, f.view);
+    assert.equal(tests.status().runs[0].schedule.startAt, suggested.startAt);
+
+    tests.confirmTarget({ ...action, targetRevision: tests.status().runs[0].target.revision, nativeTargetSoc: 85 }, f.view);
+    charger.values.minimumSoc = value(85, { source: 'session-request' });
+    progress(basis === 'recorded-energy' ? creditKwh : 0); tests.update(f.view);
+    const revised = tests.status().runs[0];
+    assert.deepEqual(revised.headroom, run.headroom, 'preparation remains an unchanged historical estimate');
+    assert.equal(revised.recommendation.state, 'available');
+    assert.ok(revised.recommendation.estimatedFinishAt > suggested.estimatedFinishAt);
+    tests.confirmSchedule({ ...action, startAt: revised.recommendation.startAt }, f.view);
+    assert.equal(tests.status().runs[0].schedule.history.length, 2);
+  }
+});
+
+test('remaining-energy recommendations conservatively reject mismatched, stale or missing production evidence', () => {
+  for (const mismatch of ['capacity', 'target', 'connection', 'energy', 'missing']) {
+    const f = fixture(), tests = f.create();
+    tests.start(f.input({ program: 'vehicle-schedule', vehicleStartAt: START + 3 * HOUR }), f.view);
+    const charger = f.plug(); f.identify(charger); tests.update(f.view);
+    f.advance(6 * HOUR); f.plan(charger, START + 9 * HOUR);
+    const remaining = 74 * 5 / 100 / CHARGING_EFFICIENCY;
+    charger.requiredGridKwh = remaining;
+    charger.progress = { connectionAt: charger.control.session.connectedAt, anchorAt: charger.control.session.connectedAt,
+      estimatedSoc: 75, remainingGridKwh: remaining, basis: { source: 'recorded-charger-energy', status: 'tracking' } };
+    if (mismatch === 'capacity') charger.values.capacityKwh.value = 57;
+    if (mismatch === 'target') charger.values.minimumSoc.value = 90;
+    if (mismatch === 'connection') charger.progress.connectionAt = START;
+    if (mismatch === 'energy') charger.progress.remainingGridKwh = 1;
+    if (mismatch === 'missing') { delete charger.progress; delete charger.requiredGridKwh; }
+    tests.update(f.view);
+    assert.equal(tests.status().runs[0].recommendation.state, 'unavailable', mismatch);
+  }
+});
+
+test('applicable production required energy works without a progress object and modeled completion is never physical completion', () => {
+  const f = fixture(), tests = f.create();
+  const run = tests.start(f.input({ program: 'vehicle-schedule', vehicleStartAt: START + 3 * HOUR }), f.view);
+  const charger = f.plug(); f.identify(charger); tests.update(f.view);
+  f.advance(6 * HOUR); f.identify(charger, 'bmw', 75); f.plan(charger, START + 9 * HOUR);
+  charger.requiredGridKwh = 74 * 5 / 100 / CHARGING_EFFICIENCY;
+  tests.update(f.view);
+  assert.equal(tests.status().runs[0].recommendation.state, 'available');
+  charger.progress = { connectionAt: charger.control.session.connectedAt, anchorAt: f.clock(), estimatedSoc: 80,
+    remainingGridKwh: 0, basis: { source: 'recorded-charger-energy', status: 'tracking' } };
+  charger.requiredGridKwh = 0; tests.update(f.view);
+  assert.equal(tests.status().runs[0].recommendation.readinessRisk, false);
+  assert.match(tests.status().runs[0].recommendation.message, /estimates no charging remains/);
+  assert.equal(tests.status().runs[0].milestones.completion, undefined);
+  assert.throws(() => tests.confirmSchedule({ id: run.id, association: run.association,
+    sessionId: charger.request.sessionId, startAt: START + 9 * HOUR + 15 * MINUTE }, f.view), /Wait for observed vehicle completion/);
 });
 
 test('test actions are fenced to current equipment and physical connection', () => {
@@ -242,6 +487,16 @@ test('test actions are fenced to current equipment and physical connection', () 
   assert.throws(() => tests.confirmSchedule(action, f.view), /changed/);
 });
 
+test('a future physical connection timestamp cannot attach prepared values to an assessment', () => {
+  const f = fixture(), tests = f.create(); tests.start(f.input(), f.view);
+  const charger = f.plug(); charger.control.session.connectedAt = f.clock() + HOUR;
+  tests.update(f.view);
+  const run = tests.status().runs[0];
+  assert.equal(run.sessionId, null);
+  assert.equal(run.phase, 'interrupted');
+  assert.equal(run.endReason, 'fresh-connection-not-observed');
+});
+
 test('unplug and an unseen cable swap conclude the old run without following another vehicle', () => {
   for (const swap of [false, true]) {
     const f = fixture(), tests = f.create(); tests.start(f.input(), f.view);
@@ -249,11 +504,41 @@ test('unplug and an unseen cable swap conclude the old run without following ano
     f.advance();
     if (swap) charger.request.sessionId = 'new-session'; else charger.values.connected = value(false);
     tests.update(f.view);
-    assert.equal(tests.status().runs[0].phase, 'interrupted');
+    assert.equal(tests.status().runs[0].phase, swap ? 'interrupted' : 'finished');
     assert.equal(tests.status().runs[0].endReason, swap ? 'physical-session-changed' : 'unplugged-before-completion');
     f.plug(); tests.update(f.view);
-    assert.equal(tests.status().runs[0].phase, 'interrupted');
+    assert.equal(tests.status().runs[0].phase, swap ? 'interrupted' : 'finished');
+    assert.equal(tests.status().runs[0].milestones.completion, undefined);
   }
+});
+
+test('preparation intent expires after one day and never follows a later connection', () => {
+  for (const connect of [false, true]) {
+    const f = fixture(); let tests = f.create();
+    const run = tests.start(f.input(), f.view);
+    assert.equal(run.expiresAt, START + 24 * HOUR);
+    tests = f.create(); f.advance(24 * HOUR + MINUTE);
+    if (connect) f.plug();
+    tests.update(f.view);
+    assert.equal(tests.status().runs[0].phase, 'finished');
+    assert.equal(tests.status().runs[0].endReason, 'preparation-expired');
+    assert.equal(tests.status().runs[0].sessionId, null);
+  }
+  const f = fixture(), tests = f.create(); tests.start(f.input(), f.view);
+  f.plug(); tests.update(f.view); f.advance(24 * HOUR); tests.update(f.view);
+  assert.equal(tests.status().runs[0].phase, 'observing', 'expiry belongs to preparation, never an attached physical session');
+});
+
+test('an armed assessment observes a physical connection without modifying it during a control-authority change', () => {
+  const f = fixture(), tests = f.create(); tests.start(f.input({ nativeTargetSoc: 90 }), f.view);
+  const charger = f.plug(); f.view.physicalTests = { canManage: false };
+  const before = structuredClone(f.view); tests.update(f.view);
+  assert.equal(tests.status().runs[0].phase, 'observing');
+  assert.equal(tests.status().runs[0].sessionId, charger.request.sessionId);
+  assert.deepEqual(f.view, before);
+  assert.equal(charger.values.minimumSoc.value, 80);
+  charger.values.connected = value(false); tests.update(f.view);
+  assert.equal(tests.status().runs[0].phase, 'finished');
 });
 
 test('missing restart evidence preserves a run; fresh evidence after a gap reports the gap', () => {
@@ -358,8 +643,12 @@ test('guided native completion needs fresh near-zero power after measured chargi
 test('unsupported saved state and retired action fields fail before storage mutation', () => {
   const f = fixture(), tests = f.create(); tests.start(f.input(), f.view);
   const saved = structuredClone(f.saved.get('physical-tests'));
-  for (const corrupt of [state => { state.version = 99; }, state => { state.legacy = true; }, state => { state.runs[0].command = 'start'; },
+  for (const corrupt of [state => { state.version = 1; }, state => { state.version = 99; }, state => { state.legacy = true; }, state => { state.runs[0].command = 'start'; },
     state => { state.runs[0].expectations.manualSoc = 99; }, state => { state.runs[0].headroom.oldFixedPercent = 10; },
+    state => { delete state.runs[0].expectations.capacityKwh; }, state => { state.runs[0].scheduleConfirmedAt = START; },
+    state => { state.runs[0].schedule.startAt = START; }, state => { state.runs[0].target.history[0].targetSoc = 90; },
+    state => { state.runs[0].expiresAt = START; }, state => { state.runs[0].target.planningSoc = 90; },
+    state => { state.runs[0].target.revision = 0; },
     state => { state.runs.push(structuredClone(state.runs[0])); }]) {
     const next = structuredClone(saved); corrupt(next); f.saved.set('physical-tests', next); const writes = f.writes.length;
     assert.throws(() => f.create(), /Unsupported physical charging test state/); assert.equal(f.writes.length, writes);

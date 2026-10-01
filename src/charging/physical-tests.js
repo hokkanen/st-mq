@@ -5,11 +5,12 @@ import { chargingDiagnosticSessionId } from './session-diagnostics.js';
 const MINUTE = 60_000, HOUR = 60 * MINUTE, MAX_RUNS = 24;
 const PROGRAMS = ['immediate', 'vehicle-schedule'];
 const ACTIVE = ['armed', 'awaiting-vehicle-schedule', 'observing'];
-const PHASES = [...ACTIVE, 'completed', 'cancelled', 'interrupted'];
+const PHASES = [...ACTIVE, 'completed', 'finished', 'cancelled', 'interrupted'];
 const finite = Number.isFinite;
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const time = value => Number.isSafeInteger(value) && value >= 0;
 const percent = value => finite(value) && value >= 0 && value <= 100;
+const capacity = value => finite(value) && value >= 1 && value <= 300;
 const copy = value => structuredClone(value);
 const allowed = (value, keys) => object(value) && Object.keys(value).every(key => keys.includes(key));
 const active = run => ACTIVE.includes(run.phase);
@@ -36,20 +37,21 @@ const planSummary = (charger, now) => ({ at: now, reason: charger.plan.reason ??
   feasible: typeof charger.plan.feasible === 'boolean' ? charger.plan.feasible : null });
 
 function validateInput(input, arming = false) {
-  if (!allowed(input, ['chargerId', 'vehicleId', 'program', 'association', 'soc', 'nativeTargetSoc', 'prepared', 'vehicleStartAt'])
+  if (!allowed(input, ['chargerId', 'vehicleId', 'program', 'association', 'soc', 'nativeTargetSoc', 'capacityKwh', 'prepared', 'vehicleStartAt'])
     || !['charger1', 'charger2'].includes(input.chargerId) || !['bmw', 'tesla'].includes(input.vehicleId)
     || !PROGRAMS.includes(input.program)
     || input.soc != null && !percent(input.soc) || input.nativeTargetSoc != null && !percent(input.nativeTargetSoc)
+    || input.capacityKwh != null && !capacity(input.capacityKwh)
     || input.prepared !== undefined && typeof input.prepared !== 'boolean'
     || input.association !== undefined && (typeof input.association !== 'string' || !input.association.length)
     || input.vehicleStartAt != null && !time(input.vehicleStartAt)
     || input.program === 'immediate' && input.vehicleStartAt != null
-    || arming && (!percent(input.soc) || !percent(input.nativeTargetSoc) || input.prepared !== true || !input.association))
-    throw new Error('Select a vehicle, charger and program, and confirm the current battery percentage and vehicle charge limit.');
+    || arming && (!percent(input.soc) || !percent(input.nativeTargetSoc) || !capacity(input.capacityKwh) || input.prepared !== true || !input.association))
+    throw new Error('Select a vehicle, charger and program, and confirm the current battery percentage, vehicle charge target and usable battery capacity.');
 }
 
-function headroom(input, charger, view) {
-  const capacityKwh = view.settings?.vehicles?.[input.vehicleId]?.capacityKwh;
+function headroom(input, charger) {
+  const capacityKwh = input.capacityKwh;
   const forecastPower = charger?.forecast?.powerKw;
   const voltage = field(charger, 'voltageV');
   const limits = ['maximumCurrentA', 'vehicleCurrentA', 'nativeCurrentA'].map(name => field(charger, name))
@@ -62,7 +64,47 @@ function headroom(input, charger, view) {
   const minimumMinutes = input.program === 'immediate' ? 30 : 60;
   return { capacityKwh: capacityKwh > 0 ? capacityKwh : null, powerKw, gridKwh, minutes, minimumMinutes,
     adequate: minutes === null ? null : minutes >= minimumMinutes, declaredSoc: percent(input.soc) ? input.soc : null,
-    basis: 'configured-capacity-and-expected-power' };
+    basis: 'accepted-capacity-and-expected-power' };
+}
+
+/** Use the ordinary session's remaining-energy model only within its original
+ * connection and accepted target/capacity. Preparation remains a frozen record;
+ * a missing or mismatched live model falls back to the accepted initial inputs. */
+function remainingEstimate(run, charger, now) {
+  const fallback = headroom({ ...run.expectations, program: run.program }, charger);
+  const estimate = { ...fallback, powerKw: fallback.powerKw ?? run.headroom.powerKw,
+    basis: 'accepted-preparation-inputs' };
+  if (physicalSession(charger) !== run.sessionId || connected(charger) !== true
+    || !fresh(charger.control?.snapshot, now)
+    || field(charger, 'minimumSoc') !== run.expectations.nativeTargetSoc
+    || field(charger, 'capacityKwh') !== run.expectations.capacityKwh) return estimate;
+  const required = charger.requiredGridKwh, progress = charger.progress;
+  const gridForSoc = soc => run.expectations.capacityKwh * Math.max(0, run.expectations.nativeTargetSoc - soc) / 100 / CHARGING_EFFICIENCY;
+  const agrees = (a, b) => finite(a) && a >= 0 && finite(b) && Math.abs(a - b) <= 1e-6;
+  if (progress) {
+    // The normal progress model credits only recorded energy and retains its
+    // reference clock across gaps. Partial coverage supplies partial credit;
+    // it never gives energy to the unobserved portion of the connection.
+    if (time(progress.connectionAt) && progress.connectionAt >= run.connectedAt && progress.connectionAt <= now
+      && time(progress.anchorAt) && progress.anchorAt >= progress.connectionAt && progress.anchorAt <= now
+      && ['tracking', 'awaiting-recorded-energy'].includes(progress.basis?.status)
+      && ['soc', 'recorded-charger-energy'].includes(progress.basis?.source)
+      && percent(progress.estimatedSoc) && agrees(progress.remainingGridKwh, gridForSoc(progress.estimatedSoc))
+      && (required == null || agrees(required, progress.remainingGridKwh)))
+      return { ...estimate, gridKwh: progress.remainingGridKwh, basis: 'current-session-progress' };
+    // An explicitly inconsistent/stale progress object cannot be bypassed by
+    // treating its companion requiredGridKwh scalar as independent evidence.
+    return estimate;
+  }
+  const soc = charger.values?.soc, socAt = soc?.measuredAt ?? soc?.receivedAt;
+  const applicableSoc = soc?.source === 'session-anchor' && socAt >= run.createdAt
+    || ['bmw-cardata', 'teslamate'].includes(soc?.source) && socAt >= run.connectedAt
+      && charger.vehicle?.state === 'identified' && charger.vehicle.id === run.vehicleId
+      && charger.vehicle.sessionId === run.sessionId;
+  if (soc?.available === true && !soc.assumed && !soc.retained && percent(soc.value)
+    && time(socAt) && socAt <= now && applicableSoc && agrees(required, gridForSoc(soc.value)))
+    return { ...estimate, gridKwh: required, basis: 'current-session-progress' };
+  return estimate;
 }
 
 /** Recommend a user-operated timer from the production plan only. This helper
@@ -99,6 +141,8 @@ function recommendation(charger, estimate, now) {
   const base = { state: 'waiting-for-plan', startAt: null, baselineStartAt, deadlineAt,
     estimatedFinishAt: null, readinessRisk: false, periodCount: rows.length, coverageOpportunities: [] };
   if (!rows.length) return { ...base, message: 'Connect with the vehicle timer already blocking immediate charging. A suggestion will use the real charging plan when it is available.' };
+  if (estimate.basis === 'current-session-progress' && estimate.gridKwh === 0)
+    return { ...base, state: 'unavailable', message: 'The current session estimates no charging remains to the accepted vehicle target. Keep the recorded schedule and wait for observed vehicle completion before unplugging.' };
   // Arrange the vehicle's native timer around existing economic periods. Prefer
   // leaving some initial charging before a real pause/resume, while preserving
   // enough planned opportunity for the declared native target. The normal
@@ -121,25 +165,49 @@ function recommendation(charger, estimate, now) {
     message: (incorporatedTimer && best.startAt === knownTimer
       ? 'The real plan already includes this reported vehicle timer. Keep it and confirm it here; an earlier unidentified plan was not established by this observation. '
       : 'Set the vehicle start to this time, then confirm it here. ')
+      + (estimate.basis === 'current-session-progress'
+        ? 'This uses the current session’s remaining-energy estimate. ' : 'This uses the accepted preparation battery values. ')
       + 'It leaves estimated room for the vehicle target within the real plan. The controller may revise that plan after identification; coverage and finish time are not guaranteed.' };
 }
 
 function validateSaved(saved) {
   const keys = ['id', 'chargerId', 'vehicleId', 'program', 'association', 'backend', 'phase', 'createdAt', 'updatedAt',
-    'endedAt', 'endReason', 'sessionId', 'connectedAt', 'expectations', 'headroom', 'recommendation', 'milestones',
-    'findings', 'initialPlan', 'latestPlan', 'deadlineAt', 'scheduleConfirmedAt', 'restorationReminder', 'report', 'lastSeenAt'];
-  if (!allowed(saved, ['version', 'runs']) || saved.version !== 1 || !Array.isArray(saved.runs) || saved.runs.length > MAX_RUNS)
+    'expiresAt', 'endedAt', 'endReason', 'sessionId', 'connectedAt', 'expectations', 'headroom', 'recommendation', 'milestones',
+    'findings', 'initialPlan', 'latestPlan', 'deadlineAt', 'schedule', 'target', 'restorationReminder', 'report', 'lastSeenAt'];
+  if (!allowed(saved, ['version', 'runs']) || saved.version !== 2 || !Array.isArray(saved.runs) || saved.runs.length > MAX_RUNS)
     throw new Error('Unsupported physical charging test state; start a fresh development database.');
   for (const run of saved.runs) {
     if (!allowed(run, keys) || typeof run.id !== 'string' || !run.id.length
       || !['charger1', 'charger2'].includes(run.chargerId) || !['bmw', 'tesla'].includes(run.vehicleId)
       || !PROGRAMS.includes(run.program) || !PHASES.includes(run.phase) || typeof run.association !== 'string'
       || !run.association.length || typeof run.backend !== 'string' || !time(run.createdAt) || !time(run.updatedAt)
+      || !time(run.expiresAt) || run.expiresAt !== run.createdAt + 24 * HOUR
       || run.endedAt !== null && !time(run.endedAt) || run.sessionId !== null && typeof run.sessionId !== 'string'
       || run.connectedAt !== null && !time(run.connectedAt)
-      || !allowed(run.expectations, ['soc', 'nativeTargetSoc', 'vehicleStartAt'])
-      || !percent(run.expectations.soc) || !percent(run.expectations.nativeTargetSoc)
+      || !allowed(run.expectations, ['soc', 'nativeTargetSoc', 'capacityKwh', 'vehicleStartAt'])
+      || !percent(run.expectations.soc) || !percent(run.expectations.nativeTargetSoc) || !capacity(run.expectations.capacityKwh)
       || run.expectations.vehicleStartAt !== null && !time(run.expectations.vehicleStartAt)
+      || !allowed(run.schedule, ['startAt', 'confirmedAt', 'history'])
+      || run.schedule.startAt !== null && !time(run.schedule.startAt)
+      || run.schedule.confirmedAt !== null && !time(run.schedule.confirmedAt)
+      || !Array.isArray(run.schedule.history) || run.schedule.history.length > 64
+      || run.schedule.history.some(row => !allowed(row, ['startAt', 'confirmedAt', 'source'])
+        || !time(row.startAt) || !time(row.confirmedAt) || row.source !== 'user-confirmed')
+      || run.schedule.history.length > 0 && (run.schedule.history.at(-1).startAt !== run.schedule.startAt
+        || run.schedule.history.at(-1).confirmedAt !== run.schedule.confirmedAt)
+      || run.schedule.history.length === 0 && (run.schedule.confirmedAt !== null
+        || run.schedule.startAt !== run.expectations.vehicleStartAt)
+      || run.program === 'immediate' && (run.expectations.vehicleStartAt !== null || run.schedule.history.length > 0)
+      || run.program === 'vehicle-schedule' && !time(run.expectations.vehicleStartAt)
+      || !allowed(run.target, ['reportedSoc', 'reportedAt', 'source', 'revision', 'requiresConfirmation', 'history'])
+      || run.target.reportedSoc !== null && !percent(run.target.reportedSoc)
+      || run.target.reportedAt !== null && !time(run.target.reportedAt)
+      || !Number.isSafeInteger(run.target.revision) || run.target.revision < 1
+      || ![null, 'bmw-cardata', 'teslamate'].includes(run.target.source)
+      || typeof run.target.requiresConfirmation !== 'boolean'
+      || !Array.isArray(run.target.history) || !run.target.history.length || run.target.history.length > 64
+      || run.target.history.some(row => !allowed(row, ['targetSoc', 'confirmedAt']) || !percent(row.targetSoc) || !time(row.confirmedAt))
+      || run.target.history.at(-1).targetSoc !== run.expectations.nativeTargetSoc
       || !object(run.milestones) || !Array.isArray(run.findings) || run.findings.length > 32
       || !allowed(run.headroom, ['capacityKwh', 'powerKw', 'gridKwh', 'minutes', 'minimumMinutes', 'adequate', 'declaredSoc', 'basis'])
       || ![30, 60].includes(run.headroom.minimumMinutes)
@@ -150,7 +218,7 @@ function validateSaved(saved) {
       || !Array.isArray(run.recommendation.coverageOpportunities)
       || run.recommendation.coverageOpportunities.some(value => !['delayed-start', 'late-identification', 'pause-and-resume', 'input-reassessment'].includes(value))
       || !allowed(run.milestones, ['connection', 'identification', 'initialPlan', 'identifiedPlanningInputs', 'chargingStarted',
-        'chargingAfterDelay', 'planningMinimum', 'vehicleTarget', 'deadline', 'completion', 'vehicleSchedule'])
+        'chargingAfterDelay', 'vehicleTarget', 'deadline', 'completion', 'vehicleSchedule'])
       || Object.values(run.milestones).some(row => !allowed(row, ['at', 'connectedAt', 'source', 'state', 'startAt', 'targetSoc']) || !time(row.at)
         || row.targetSoc !== undefined && !percent(row.targetSoc))
       || run.findings.some(row => !allowed(row, ['code', 'at']) || typeof row.code !== 'string' || !time(row.at)))
@@ -164,14 +232,15 @@ function validateSaved(saved) {
 }
 
 /** Durable observer only: constructor accepts storage and a clock, never an
- * actuator, planner, runtime setter, vehicle capture or command callback. User
- * declarations are private expectations and cannot become production inputs. */
+ * actuator, planner, runtime setter, vehicle capture or command callback. All
+ * guided inputs remain assessment assumptions and never become charger settings,
+ * production planning inputs, vehicle commands or identification evidence. */
 export class ChargingPhysicalTests {
   constructor({ store, key = 'charging:physical-tests', clock = Date.now }) {
     Object.assign(this, { store, key, clock });
     const saved = store.getState(key);
     if (saved !== undefined && saved !== null) validateSaved(saved);
-    this.state = saved == null ? { version: 1, runs: [] } : copy(saved);
+    this.state = saved == null ? { version: 2, runs: [] } : copy(saved);
   }
 
   status() { return copy(this.state); }
@@ -189,7 +258,7 @@ export class ChargingPhysicalTests {
     validateInput(input);
     const now = this.clock(), charger = view.chargers?.find(row => row.id === input.chargerId);
     const feed = view.vehicleFeeds?.find(row => row.id === input.vehicleId), snapshot = charger?.control?.snapshot;
-    const estimate = headroom(input, charger, view), gates = [];
+    const estimate = headroom(input, charger), gates = [];
     const gate = (code, ready, message) => gates.push({ code, state: ready ? 'ready' : 'blocked', message });
     gate('charger', Boolean(charger?.association) && (!input.association || input.association === charger.association), 'Select the current physical charger.');
     gate('unplugged', fresh(snapshot, now) && connected(charger) === false, 'Unplug the vehicle first so the test can follow one new connection.');
@@ -205,8 +274,8 @@ export class ChargingPhysicalTests {
       'A live, healthy vehicle feed is needed to assess identification and battery readings.');
     gate('unused', !this.state.runs.some(run => active(run) && (run.chargerId === input.chargerId || run.vehicleId === input.vehicleId)),
       'End the existing guided test for this vehicle or charger first.');
-    gate('declarations', percent(input.soc) && percent(input.nativeTargetSoc) && input.nativeTargetSoc > input.soc,
-      'Enter the current battery percentage and the actual higher charge limit set in the vehicle.');
+    gate('declarations', percent(input.soc) && percent(input.nativeTargetSoc) && input.nativeTargetSoc > input.soc && capacity(input.capacityKwh),
+      'Verify the current battery percentage, the higher charge target set in the vehicle, and usable battery capacity.');
     gate('headroom', estimate.adequate === true, estimate.minutes === null
       ? 'Charging headroom cannot be estimated until capacity, current and voltage are available.'
       : `Allow about ${estimate.minimumMinutes} minutes of active charging below the vehicle limit. Use a naturally suitable session; there is no need to charge to 100%.`);
@@ -225,11 +294,14 @@ export class ChargingPhysicalTests {
     return this.transaction(() => {
       const run = { id: randomUUID(), chargerId: input.chargerId, vehicleId: input.vehicleId, program: input.program,
         association: input.association, backend: backend(charger), phase: 'armed', createdAt: now, updatedAt: now,
-        endedAt: null, endReason: null, sessionId: null, connectedAt: null, lastSeenAt: null,
-        expectations: { soc: input.soc, nativeTargetSoc: input.nativeTargetSoc,
+        expiresAt: now + 24 * HOUR, endedAt: null, endReason: null, sessionId: null, connectedAt: null, lastSeenAt: null,
+        expectations: { soc: input.soc, nativeTargetSoc: input.nativeTargetSoc, capacityKwh: input.capacityKwh,
           vehicleStartAt: input.program === 'vehicle-schedule' ? input.vehicleStartAt : null },
         headroom: preview.headroom, recommendation: preview.recommendation, milestones: {}, findings: [],
-        initialPlan: null, latestPlan: null, deadlineAt: null, scheduleConfirmedAt: null, report: null,
+        initialPlan: null, latestPlan: null, deadlineAt: null, report: null,
+        schedule: { startAt: input.program === 'vehicle-schedule' ? input.vehicleStartAt : null, confirmedAt: null, history: [] },
+        target: { reportedSoc: null, reportedAt: null, source: null, revision: 1, requiresConfirmation: false,
+          history: [{ targetSoc: input.nativeTargetSoc, confirmedAt: now }] },
         restorationReminder: input.program === 'vehicle-schedule'
           ? 'Restore or remove the temporary vehicle schedule yourself when the test ends. The controller cannot change it.' : null };
       const running = this.state.runs.filter(active), completed = this.state.runs.filter(row => !active(row));
@@ -258,7 +330,9 @@ export class ChargingPhysicalTests {
       throw new Error('Connect the selected vehicle to the same charger before confirming its timer.');
     if (!time(input.startAt) || input.startAt < now + 5 * MINUTE || input.startAt > now + 48 * HOUR)
       throw new Error('Choose a future vehicle start within 48 hours.');
-    const proposed = recommendation(charger, run.headroom, now);
+    const estimate = remainingEstimate(run, charger, now), proposed = recommendation(charger, estimate, now);
+    if (estimate.basis === 'current-session-progress' && estimate.gridKwh === 0)
+      throw new Error('No further vehicle timer adjustment is needed for the estimated remaining charge. Wait for observed vehicle completion, then unplug.');
     const knownTimer = field(charger, 'vehicleNotBefore');
     // Tesla can report the user-applied timer before the confirmation reaches
     // us. The production plan then legitimately starts at that same timer. Do
@@ -269,13 +343,32 @@ export class ChargingPhysicalTests {
     if (proposed.state !== 'available' || !incorporatedTimer
       && input.startAt <= (originalStart ?? proposed.baselineStartAt))
       throw new Error('Wait for a real charging plan, then choose a vehicle start later than its first period.');
-    if (!expectedOpportunity(charger, run.headroom, input.startAt, run.deadlineAt).feasible)
+    if (!expectedOpportunity(charger, estimate, input.startAt, run.deadlineAt).feasible)
       throw new Error('This vehicle start leaves insufficient charging opportunity in the real plan. Choose the suggested time or use a normal test.');
     return this.transaction(() => {
-      run.expectations.vehicleStartAt = input.startAt;
-      run.scheduleConfirmedAt = now; run.phase = 'observing'; run.updatedAt = now;
+      run.schedule.startAt = input.startAt; run.schedule.confirmedAt = now;
+      run.schedule.history = [...run.schedule.history, { startAt: input.startAt, confirmedAt: now, source: 'user-confirmed' }].slice(-64);
+      run.phase = 'observing'; run.updatedAt = now;
       run.recommendation = proposed;
-      this.mark(run, 'vehicleSchedule', now, { startAt: input.startAt, source: 'user-confirmed' });
+      run.milestones.vehicleSchedule = { at: now, startAt: input.startAt, source: 'user-confirmed' };
+      return run;
+    });
+  }
+
+  confirmTarget(input, view) {
+    const { run, charger } = this.scoped(input, view, ['id', 'association', 'sessionId', 'targetRevision', 'nativeTargetSoc']);
+    const now = this.clock();
+    if (!run.sessionId || input.sessionId !== run.sessionId || physicalSession(charger) !== run.sessionId
+      || connected(charger) !== true || !fresh(charger.control?.snapshot, now)
+      || !Number.isSafeInteger(input.targetRevision) || input.targetRevision !== run.target.revision)
+      throw new Error('The assessment target or charging session changed; refresh before confirming the assessment assumption.');
+    if (!percent(input.nativeTargetSoc)) throw new Error('Enter the charge target set in the vehicle, from 0 to 100%.');
+    return this.transaction(() => {
+      run.expectations.nativeTargetSoc = input.nativeTargetSoc; run.target.revision++;
+      run.target.history = [...run.target.history, { targetSoc: input.nativeTargetSoc, confirmedAt: now }].slice(-64);
+      this.observeTarget(run, charger, view, now);
+      if (run.program === 'vehicle-schedule') run.recommendation = recommendation(charger, remainingEstimate(run, charger, now), now);
+      run.updatedAt = now;
       return run;
     });
   }
@@ -299,6 +392,27 @@ export class ChargingPhysicalTests {
     run.phase = phase; run.endReason = reason; run.endedAt = now; run.updatedAt = now;
   }
 
+  observeTarget(run, charger, view, now) {
+    const feed = view.vehicleFeeds?.find(row => row.id === run.vehicleId);
+    const reading = charger.values?.vehicleCeilingSoc;
+    const observedAt = reading?.measuredAt ?? reading?.receivedAt;
+    // A target is a held device setting: its original clock need not belong to
+    // this connection, but only the independently identified vehicle's healthy
+    // current feed can provide it. Missing evidence never clears a known conflict.
+    if (charger.vehicle?.state === 'identified' && charger.vehicle.id === run.vehicleId
+      && charger.vehicle.sessionId === run.sessionId && feedAvailable(feed)
+      && reading?.available === true && !reading.assumed && percent(reading.value)
+      && ['bmw-cardata', 'teslamate'].includes(reading.source)
+      && (observedAt == null || time(observedAt) && observedAt <= now)) {
+      run.target.reportedSoc = reading.value;
+      run.target.reportedAt = observedAt ?? null;
+      run.target.source = reading.source;
+    }
+    const reportedConflict = percent(run.target.reportedSoc) && run.target.reportedSoc !== run.expectations.nativeTargetSoc;
+    run.target.requiresConfirmation = reportedConflict;
+    if (reportedConflict) this.finding(run, 'vehicle-limit-differs-from-preparation', now);
+  }
+
   update(view, now = this.clock()) {
     if (!time(now)) throw new Error('Charging tests require a numeric UTC observation time.');
     return this.transaction(() => {
@@ -309,6 +423,11 @@ export class ChargingPhysicalTests {
         }
         // At startup a controller may not yet exist. Missing readback is unknown,
         // never a disconnection or backend change and never grounds to attach a run.
+        if (run.phase === 'armed' && now > run.expiresAt
+          && !(connected(charger) === true && time(charger.control?.session?.connectedAt)
+            && charger.control.session.connectedAt >= run.createdAt && charger.control.session.connectedAt <= run.expiresAt)) {
+          this.finish(run, 'finished', 'preparation-expired', now); continue;
+        }
         if (!fresh(charger.control?.snapshot, now)) continue;
         if (backend(charger) !== run.backend) { this.finish(run, 'interrupted', 'backend-changed', now); continue; }
         if (run.lastSeenAt !== null && now - run.lastSeenAt > 5 * MINUTE) this.finding(run, 'observation-gap', now);
@@ -317,7 +436,7 @@ export class ChargingPhysicalTests {
         if (run.phase === 'armed') {
           if (connection !== true || !sessionId) continue;
           const connectedAt = charger.control.session?.connectedAt;
-          if (!time(connectedAt) || connectedAt < run.createdAt) {
+          if (!time(connectedAt) || connectedAt < run.createdAt || connectedAt > now) {
             this.finish(run, 'interrupted', 'fresh-connection-not-observed', now); continue;
           }
           run.connectedAt = connectedAt; run.sessionId = sessionId;
@@ -325,7 +444,7 @@ export class ChargingPhysicalTests {
           run.phase = run.program === 'vehicle-schedule' ? 'awaiting-vehicle-schedule' : 'observing';
           this.mark(run, 'connection', now, { connectedAt });
         }
-        if (connection === false) { this.finish(run, 'interrupted', 'unplugged-before-completion', now); continue; }
+        if (connection === false) { this.finish(run, 'finished', 'unplugged-before-completion', now); continue; }
         if (sessionId && sessionId !== run.sessionId) { this.finish(run, 'interrupted', 'physical-session-changed', now); continue; }
         if (connection !== true || sessionId !== run.sessionId) continue;
         this.observeRun(run, charger, view, now);
@@ -337,9 +456,13 @@ export class ChargingPhysicalTests {
   observeRun(run, charger, view, now) {
     const identified = charger.vehicle?.state === 'identified' && charger.vehicle.sessionId === run.sessionId;
     if (identified && charger.vehicle.id !== run.vehicleId) this.finding(run, 'wrong-vehicle-identified', now);
-    if (identified && charger.vehicle.id === run.vehicleId) {
-      this.mark(run, 'identification', now, { source: 'production-matcher' });
-      if (run.program === 'vehicle-schedule' && now < run.expectations.vehicleStartAt)
+    if (identified && charger.vehicle.id === run.vehicleId && !run.milestones.identification) {
+      // Judge the first observed identity against the schedule recorded then.
+      // A later timer adjustment cannot turn held identity into a new early
+      // identification event or rewrite the original coverage outcome.
+      this.mark(run, 'identification', now, { source: 'production-matcher',
+        ...(run.program === 'vehicle-schedule' ? { startAt: run.schedule.startAt } : {}) });
+      if (run.program === 'vehicle-schedule' && now < run.schedule.startAt)
         this.finding(run, 'identified-before-vehicle-start', now);
     }
     if (charger.identification?.phase === 'inconclusive') this.finding(run, 'identification-inconclusive', now);
@@ -359,8 +482,8 @@ export class ChargingPhysicalTests {
       if (identified && charger.vehicle.id === run.vehicleId
         && !['manual-fallback', 'session-anchor'].includes(plan.socSource))
         this.mark(run, 'identifiedPlanningInputs', now, { source: 'production-inputs' });
-      if (run.program === 'vehicle-schedule' && !run.scheduleConfirmedAt)
-        run.recommendation = recommendation(charger, run.headroom, now);
+      if (run.program === 'vehicle-schedule')
+        run.recommendation = recommendation(charger, remainingEstimate(run, charger, now), now);
     }
     const meter = charger.values?.powerKw, meterAt = meter?.measuredAt ?? meter?.receivedAt;
     const power = meter?.available === true && meter.assumed !== true && meter.retained !== true
@@ -373,36 +496,34 @@ export class ChargingPhysicalTests {
     if (charging) {
       this.mark(run, 'chargingStarted', now, { source: 'physical-charger' });
       if (run.program === 'vehicle-schedule') {
-        if (now < run.expectations.vehicleStartAt) this.finding(run, 'charging-before-vehicle-start', now);
+        if (now < run.schedule.startAt) this.finding(run, 'charging-before-vehicle-start', now);
         else this.mark(run, 'chargingAfterDelay', now, { source: 'physical-charger' });
       }
     }
     const feed = view.vehicleFeeds?.find(row => row.id === run.vehicleId);
     const soc = identified && charger.vehicle.id === run.vehicleId && feedAvailable(feed)
       ? sample(charger, 'soc', run.connectedAt, now) : null;
-    const minimum = field(charger, 'minimumSoc');
-    if (soc && percent(minimum) && soc.value >= minimum && run.milestones.planningMinimum?.targetSoc !== minimum) {
-      // This milestone applies to the attained planning target. An earlier
-      // default/edited lower target must not prove a later higher one at ready-by.
-      run.milestones.planningMinimum = { at: now, source: soc.source, targetSoc: minimum }; run.updatedAt = now;
+    this.observeTarget(run, charger, view, now);
+    if (soc && !run.target.requiresConfirmation && soc.value >= run.expectations.nativeTargetSoc
+      && run.milestones.vehicleTarget?.targetSoc !== run.expectations.nativeTargetSoc) {
+      run.milestones.vehicleTarget = { at: now, source: soc.source, targetSoc: run.expectations.nativeTargetSoc };
+      run.updatedAt = now;
     }
-    if (soc && soc.value >= run.expectations.nativeTargetSoc) this.mark(run, 'vehicleTarget', now, { source: soc.source });
-    if (!run.milestones.deadline && time(run.deadlineAt) && now >= run.deadlineAt)
-      this.mark(run, 'deadline', now, { state: run.milestones.planningMinimum?.at <= run.deadlineAt
-        && run.milestones.planningMinimum?.targetSoc === minimum
-        ? 'target-observed-by-deadline' : 'not-confirmed-by-deadline' });
+    if (time(run.deadlineAt) && now >= run.deadlineAt) {
+      const state = !run.target.requiresConfirmation && run.milestones.vehicleTarget?.at <= run.deadlineAt
+        && run.milestones.vehicleTarget?.targetSoc === run.expectations.nativeTargetSoc
+        ? 'target-observed-by-deadline' : 'not-confirmed-by-deadline';
+      if (run.milestones.deadline?.targetSoc !== run.expectations.nativeTargetSoc)
+        run.milestones.deadline = { at: now, state, targetSoc: run.expectations.nativeTargetSoc };
+    }
     const entry = view.diagnostics?.chargers?.find(row => row.id === run.chargerId);
     const report = [entry?.current, ...(entry?.recent ?? [])].find(row => row?.id === chargingDiagnosticSessionId(charger));
     if (report) run.report = { id: report.id, behavior: report.behavior, outcome: copy(report.outcome), coverage: copy(report.coverage) };
-    // The requested planning minimum is never a stop instruction. Finish only
-    // after a fresh vehicle reading reaches the declared native limit and a
-    // subsequent fresh charger observation shows charging has stopped.
+    // Reaching the accepted vehicle target is never a stop instruction. A
+    // different live limit must be reconciled explicitly, never silently used
+    // as another assessment target.
     const stopped = power !== null && power <= .1;
-    const observedCeiling = field(charger, 'vehicleCeilingSoc');
-    if (percent(observedCeiling) && observedCeiling !== run.expectations.nativeTargetSoc)
-      this.finding(run, 'vehicle-limit-differs-from-preparation', now);
-    const nativeTarget = percent(observedCeiling) ? observedCeiling : run.expectations.nativeTargetSoc;
-    if (soc && soc.value >= nativeTarget && stopped) {
+    if (soc && soc.value >= run.expectations.nativeTargetSoc && !run.target.requiresConfirmation && stopped) {
       if (!run.milestones.chargingStarted) {
         this.finish(run, 'interrupted', 'target-without-observed-charging', now); return;
       }

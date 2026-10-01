@@ -15,7 +15,8 @@ test('family requests allow household controls and reads while all other writes 
     ['/api/dhwr/stop', {}], ['/api/heating-test', { command: 'circulation' }], ['/api/heating-test', { command: 'preheat' }],
     ['/api/garage/heating', { mode: 'normal', targetC: 10 }], ['/api/garage/heating', { mode: 'away' }],
     ['/api/equipment/cover', { deviceId: 'door', action: 'open' }], ['/api/charging/settings', { priority: [] }],
-    ...['settings', 'control', 'charge-now', 'resume', 'target', 'identify'].map(action => [`/api/charging/chargers/test/${action}`, {}]),
+    ...['settings', 'control', 'charge-now', 'resume', 'identify'].map(action => [`/api/charging/chargers/test/${action}`, {}]),
+    ...['preview', 'start', 'schedule', 'target', 'cancel'].map(action => [`/api/charging/tests/${action}`, {}]),
   ]) assert.equal(webRequestAllowed(family, path, data, status), true, path);
   for (const [path, data] of [
     ['/api/database-export'], ['/api/database-export', {}], ['/api/downloads/floor-lease-script'],
@@ -25,7 +26,7 @@ test('family requests allow household controls and reads while all other writes 
     ['/api/garage/temporary', { pauseUntil: null }], ['/api/garage/release', {}], ['/api/garage/protection', {}],
     ['/api/garage/heating', { mode: 'off' }], ['/api/heating-test', { command: 'commission' }], ['/api/garage/heating', { mode: 'power' }],
     ['/api/equipment/cover', { deviceId: 'gate', action: 'open' }], ['/api/equipment/cover', { deviceId: 'door', action: 'stop' }],
-    ['/api/new-control', {}], ['/api/charging/chargers/test/new-control', {}],
+    ['/api/new-control', {}], ['/api/charging/chargers/test/new-control', {}], ['/api/charging/chargers/test/target', {}],
   ]) {
     assert.equal(webRequestAllowed(family, path, data, status), false, path);
     assert.equal(webRequestAllowed(admin, path, data, status), true, path);

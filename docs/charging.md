@@ -145,50 +145,92 @@ mapping requirements. Both vehicle guides show accepted fields with their
 original source or receipt clocks. Feed health, identification and charger
 commissioning remain separate capabilities; opening the guide sends no commands.
 
-Each vehicle has a **Guided test** button. Select the physical charger explicitly,
-then choose **Normal charging** or **Delayed vehicle schedule**. Both use the
-normal identification, planning and charger-control code. The assessment has no
-actuator, planner or vehicle-command interface. Its declared vehicle, starting
-charge and native limit are expectations, never hidden production inputs.
+Each vehicle has a **Guided test** button. Selecting a vehicle loads its
+available battery percentage and charge target independently of charger selection.
+Usable battery capacity comes from a reported vehicle value when available,
+otherwise that vehicle's configured default. All three values remain editable;
+the user verifies them before arming. Source clocks and unavailable fields stay
+visible. Reloading explicitly offers new readings without silently replacing
+manual edits. This reads the existing feed; it does not wake or query the car.
+BMW may report usable capacity; the current Tesla feed uses configured capacity.
+
+The guide has one target: the charge target set in the car. The guide and normal
+charging algorithm obtain it independently. A manually supplied value means the
+user has checked or set that target in the car; it is not a separate test goal. **Every guided-test input is
+assessment-only:** selected vehicle, battery percentage, target, usable capacity
+and recorded schedules. They are used only for test preparation estimates,
+recommendations about user-operated vehicle timers and assessment of independently
+observed behavior. They never enter production charging settings, planning inputs,
+vehicle identity evidence, telemetry, charger commands or configuration defaults.
+The normal algorithm continues using its own configuration, ordinary session
+controls and independently acquired vehicle/charger evidence. This separation
+applies equally to values loaded from vehicle telemetry and values typed by the
+user; confirming a copied reading does not grant it new production authority.
+
+Preparation expires after 24 hours if no connection starts. Assessment assumptions
+survive a current-version restart and remain associated with the exact test and
+physical connection. If the independently reported vehicle target disagrees with
+the assumed target, the guide shows the source time and discrepancy. The user can
+check the car and update the assessment's assumed target. This changes only the
+assessment, never the normal session target or the car. A conflicting report
+remains visible until it agrees and cannot establish successful completion at a
+different target. Historical findings remain separate from the current discrepancy.
+The guide does not ask the user to enter a second controller target or silently
+force the production plan to agree with its assumptions.
 
 Prepare and arm while unplugged, with live charger and vehicle feeds, commissioned
 control, Automatic charging enabled and no conflicting charger timer or manual
-Stop. Battery headroom uses configured usable capacity, efficiency and expected
-power: aim for at least 30 minutes of active charging for the normal program and
-60 minutes for the delayed program. These are test-design estimates, not battery
-percentage limits or measured capacity. A naturally suitable later session is
-preferable to charging to 100% or deliberately discharging for a test.
+Stop. Battery headroom uses the verified usable capacity, battery percentage,
+vehicle target, efficiency and expected charging power: aim for at least 30 minutes
+of active charging for the normal program and 60 minutes for the delayed program.
+These are test-design estimates, not measured capacity or fixed percentage limits.
+A naturally suitable later session is preferable to charging to 100% or
+deliberately discharging for a test.
 
 - **Normal charging:** allow immediate charging in the vehicle, arm, then plug
   into the selected charger. Observe independent identification, normal economic
   planning, charger execution and physical completion.
-- **Delayed vehicle schedule:** first set a future vehicle start that prevents
-  immediate charging and record it before arming. After plug-in, the guide
-  evaluates candidate vehicle timer settings against the actual production
-  periods. It prefers opportunities for delayed identification, revised battery
-  inputs and a real intermediate pause/resume while aiming to meet the target.
-  Enter the suggested timer in the car and confirm it in the guide. This changes
-  only the user-operated vehicle restriction: the test never inserts, moves or
-  replaces the controller's periods, lowers a target or moves ready-by. If the
-  real conditions cannot support a useful recommendation, that remains explicit.
+- **Delayed vehicle schedule:** first set a future start in the car that prevents
+  immediate charging and record it before arming. Use the ordinary application
+  time picker; the resolved day and installation timezone are shown beside it.
+  After plug-in, the guide evaluates candidate vehicle timer settings against the
+  actual production periods. If the real plan cannot accommodate the assumed
+  target, the guide reports that limitation without modifying the plan. It prefers
+  useful delayed-start and intermediate pause/resume coverage while checking
+  opportunity to reach the vehicle target. The original timer, latest confirmed
+  timer and recommendation are shown separately.
+  Set a suitable timer in the car, then record it in the guide using the button
+  or Enter. This records what the user did; it sends no vehicle command.
 
-The suggestion is an estimate of test coverage, not a proof of the cheapest
-possible schedule or a guarantee of completion. The real scheduler continues
-aiming to charge at the cheapest feasible times using its own available evidence.
-Early identification is valid; it means the delayed-identification branch was
-not exercised. An unchanged schedule after identification can also be valid.
-BMW vehicle windows remain unavailable to the planner; Tesla's next-start field
-is not a complete weekly schedule. No telemetry is suppressed to force a case.
+Confirmed adjustments and their timestamps are retained independently of
+recommendations. Reopening, refreshing or restarting restores the latest recorded
+time. Polling preserves unsaved edits, and a newer recommendation never overwrites
+a confirmed time. The guide does not insert, move or replace production periods
+or change ready-by. Later adjustments can use independently acquired remaining
+energy from the normal session when its target, capacity, scope and evidence
+agree; otherwise the guide uses its conservative preparation assumptions.
+Insufficient charging opportunity remains explicit.
 
-Assessments run on the server and survive a browser close or current-version
-restart. They follow one equipment/backend and physical connection, retain an
-inconclusive initial identification or observation gap, and end on unplugging
-instead of attaching to the next vehicle. Reaching the requested minimum and
-observing completion at the native vehicle limit are separate milestones.
-Completion needs fresh vehicle charge evidence and physical stop evidence;
-silence or zero power alone is insufficient. **End assessment** leaves ordinary
-charging running. Restore a temporary vehicle timer yourself; this application
-cannot restore it. Up to 24 assessments are retained, with active runs preserved.
+The suggestion estimates test coverage; it is not proof of the cheapest possible
+schedule or a guarantee of completion. The normal scheduler continues choosing
+the cheapest feasible periods using available evidence. A vehicle timer prevents
+immediate charging, but does not guarantee delayed identification. Early
+identification and an unchanged plan after identification can both be valid.
+BMW vehicle windows remain unavailable to the planner; Tesla's reported next
+start is not a complete weekly schedule. A suitable Tesla timer already reflected
+in the real plan can be kept without repeatedly requesting a later adjustment.
+No telemetry is suppressed to force a case.
+
+Assessments run on the server and survive a closed window or browser. Leave the
+car connected until charging completion is confirmed, then unplug; no separate
+End action is required. An earlier unplug also closes the assessment cleanly,
+retaining incomplete coverage rather than claiming success or following the next
+vehicle. Completion needs observed charging, fresh vehicle evidence reaching the
+accepted target and fresh physical stop evidence; silence or zero power alone is
+insufficient. **Stop assessment early** stops observation while ordinary charging
+continues. Restore or remove a temporary timer in the car yourself. Up to 24
+assessments are retained, with active runs preserved. The current assessment state
+is version 2; unsupported development formats are rejected without migration.
 
 Every ordinary connection also gets a passive **Session report**, in its own row
 below **Details & settings** on its charger card. The action's text and color indicate

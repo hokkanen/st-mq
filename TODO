@@ -1,3 +1,34 @@
+Implemented 2026-10-01 — Guided charging with independent vehicle expectations
+- Load battery percentage, vehicle target and optional usable capacity directly
+  from the selected vehicle feed, independently of the physical charger. Retain
+  source clocks, manual edits and configured capacity fallback; add explicit
+  replacement loading and verification. Use existing dropdown/time controls.
+- Keep one target: the target set in the car, independently obtained by the guide
+  and normal charging algorithm. Every guide input/action remains assessment-only;
+  no session override, planner input, vehicle identity, source observation or
+  device command is created from a declaration. A lower entered assumption cannot
+  pass target/completion checks against a higher independently reported car target.
+- Preserve initial vehicle schedule, latest recorded adjustment, bounded history
+  and 24-hour save receipts separately from evolving recommendations. Enter saves
+  the confirmation; reopening/reload/restart restores the saved value. Time-only
+  inputs show the resolved local day and reject ambiguous DST entries. Tesla can
+  keep a suitable reported timer; BMW continues with user-confirmed schedule data.
+- Explain unplugging as the normal finish and retain incomplete coverage for an
+  earlier unplug. Separate stopping the assessment from stopping charging. Expire
+  unused preparation after 24 hours; scope results to the observed connection.
+- Use independently observed remaining charging energy for later recommendations
+  only when scope, evidence, capacity and target agree; otherwise retain conservative
+  preparation assumptions. Never alter real charging periods to improve coverage.
+- F1/F3/F4/F5/F7/F8: use one assessment v2 contract, reject obsolete state without
+  migrations, remove the retired charger-target permission alias, keep bounded
+  histories/provenance and read-only fencing. Production charging algorithm and
+  configuration remain unchanged. All validation uses synthetic data and devices.
+- Validation: full routine suite 3,889 passed, 1 skipped, 0 failed; final 61
+  focused assessment/API/runtime-independence/replica/time tests passed, including
+  the later schedule-history fix. Production build and isolated browser checks
+  passed for both vehicles, themes and 320/390/1440px layouts. No live vehicle or
+  charger was contacted; physical overnight behavior remains installation work.
+
 Implemented 2026-10-01 — Connection-scoped vehicle identification and bounded extra charging
 - Share one identification lifecycle across BMW and Tesla: normal charging has
   no identification time/energy cutoff; an economic delay permits one bounded

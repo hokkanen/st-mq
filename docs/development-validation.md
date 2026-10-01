@@ -158,10 +158,11 @@ expanded threshold editing, framed around the dehumidifier. Commands terminate
 in browser fixtures.
 
 The charging-tests suite checks the Charging setup fold and BMW descriptor guide,
-both guided programs, explicit charger choice, expectation-only action payloads,
-draft preservation through polling, cancellation, passive/retained session
-reports and read-only access. It uses synthetic status and intercepted assessment
-requests in a disposable application and browser. It checks keyboard dismissal
+both vehicles and guided programs, explicit charger choice, vehicle readings and
+capacity defaults, assessment-only input payloads, shared time/dropdown controls,
+saved schedule confirmations, draft preservation through polling, early stopping,
+passive/retained session reports and read-only access. It uses synthetic status
+and intercepted assessment requests in a disposable application and browser. It checks keyboard dismissal
 and focus, charger-scoped/expired selections, grouped original evidence, collapsed
 routine plans and open-detail/focus/scroll preservation across polling. It checks
 horizontal overflow and a reachable close button at 320/390/1440px in both themes. Its

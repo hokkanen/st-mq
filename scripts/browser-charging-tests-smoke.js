@@ -62,10 +62,16 @@ try {
       if (await evaluate(expression)) return;
       await pause(30);
     }
-    throw new Error(`UI did not settle: ${expression}; browser errors: ${errors.join(', ')}`);
+    const fixture = await evaluate(`({lastMutation:chargingFixture.mutations.at(-1),
+      message:document.querySelector('[data-test-message]')?.textContent,
+      receipt:document.querySelector('[data-test-schedule-receipt]')?.textContent,
+      focused:{tag:document.activeElement?.tagName,id:document.activeElement?.id},
+      confirmDisabled:document.querySelector('[data-test-confirm]')?.disabled,
+      targetDisabled:document.querySelector('[data-test-target-value]')?.disabled})`);
+    throw new Error(`UI did not settle: ${expression}; browser errors: ${errors.join(', ')}; synthetic fixture: ${JSON.stringify(fixture)}`);
   };
   const keyPress = async key => {
-    const windowsVirtualKeyCode = { Enter: 13, Escape: 27, Tab: 9 }[key];
+    const windowsVirtualKeyCode = { Enter: 13, Escape: 27, Tab: 9, ArrowDown: 40, ArrowUp: 38 }[key];
     await send('Input.dispatchKeyEvent', { type: 'keyDown', key, code: key, windowsVirtualKeyCode,
       ...(key === 'Enter' ? { text: '\r', unmodifiedText: '\r' } : {}) });
     await send('Input.dispatchKeyEvent', { type: 'keyUp', key, code: key, windowsVirtualKeyCode });
@@ -78,6 +84,7 @@ try {
       const input = form.elements.namedItem(name);
       if (input.type === 'checkbox') input.checked = value; else input.value = value;
       input.dispatchEvent(new Event('input', { bubbles: true }));
+      if (input.tagName === 'SELECT') input.dispatchEvent(new Event('change', { bubbles: true }));
     }
   })()`);
   const screenshot = async (name, selector, { preserveScroll = false } = {}) => {
@@ -97,8 +104,8 @@ try {
   })()`), true, `${selector} fits the viewport without horizontal overflow`);
   await send('Runtime.enable'); await send('Page.enable');
   await send('Page.addScriptToEvaluateOnNewDocument', { source: `
-    globalThis.chargingFixture = { reads: 0, mutations: [], runs: [], readOnly: false, connected: false, archived: false,
-      diagnosticsAvailable: true, recent: [], second: { current: null, recent: [] } };
+    globalThis.chargingFixture = { reads: 0, mutations: [], declarationChecks: [], runs: [], readOnly: false, connected: false, archived: false,
+      noChargers: false, vehicleReadings: {}, diagnosticsAvailable: true, recent: [], second: { current: null, recent: [] } };
     const N = ${now};
     const field = (value, receipt = false) => ({ value, available: true, measuredAt: receipt ? null : N - 60000,
       receivedAt: N - 30000, retained: false, timeBasis: receipt ? 'receipt-only' : 'measurement' });
@@ -133,30 +140,54 @@ try {
       const method = options.method ?? (input instanceof Request ? input.method : 'GET');
       if (!['GET', 'HEAD'].includes(method.toUpperCase())) {
         const body = JSON.parse(options.body ?? '{}'); chargingFixture.mutations.push({ path, body });
-        if (path === '/api/charging/tests/preview') return new Response(JSON.stringify({ eligible: true,
-          headroom: { minutes: 180, capacityKwh: body.vehicleId === 'bmw' ? 74 : 57, powerKw: 11,
+        const ordinaryBefore = JSON.stringify(chargingFixture.ordinaryCharging);
+        const checkedResponse = response => {
+          chargingFixture.declarationChecks.push({path, unchanged:ordinaryBefore === JSON.stringify(chargingFixture.ordinaryCharging)});
+          return response;
+        };
+        if (path === '/api/charging/tests/preview') {
+          await globalThis.fetch('/api/status');
+          return checkedResponse(new Response(JSON.stringify({ eligible: true,
+          headroom: { minutes: 180, capacityKwh: body.capacityKwh, powerKw: 11,
             minimumMinutes: body.program === 'immediate' ? 30 : 60 },
           gates: [{ state: 'ready', message: 'The physical charger is unplugged and ready.' },
-            { state: 'ready', message: 'Vehicle feed available; physical identity remains unconfirmed.' }] }), { headers: { 'Content-Type': 'application/json' } });
+            { state: 'ready', message: 'Vehicle feed available; physical identity remains unconfirmed.' }] }), { headers: { 'Content-Type': 'application/json' } }));
+        }
         if (path === '/api/charging/tests/start') {
           chargingFixture.runs.unshift({ id: 'run-' + (chargingFixture.runs.length + 1), association: body.association,
             vehicleId: body.vehicleId, chargerId: body.chargerId, program: body.program, phase: 'armed', sessionId: null,
-            expectations: { soc: body.soc, nativeTargetSoc: body.nativeTargetSoc, vehicleStartAt: body.vehicleStartAt ?? null },
+            expectations: { soc: body.soc, nativeTargetSoc: body.nativeTargetSoc, capacityKwh: body.capacityKwh,
+              vehicleStartAt: body.vehicleStartAt ?? null },
+            schedule: { startAt: body.vehicleStartAt ?? null, confirmedAt: null, history: [] },
+            target: { reportedSoc: null, reportedAt: null, source: null, revision: 1, requiresConfirmation: false,
+              history: [{ targetSoc: body.nativeTargetSoc, confirmedAt: N }] },
             milestones: { identification: null, initialPlan: null }, findings: [] });
         } else if (path === '/api/charging/tests/schedule') {
           const run = chargingFixture.runs.find(item => item.id === body.id); run.phase = 'observing';
-          run.expectations.vehicleStartAt = body.startAt;
-          run.milestones.vehicleTimer = { message: 'User declared the native timer; awaiting actual charging evidence.' };
+          run.schedule.startAt = body.startAt; run.schedule.confirmedAt = N;
+          run.schedule.history.push({ startAt: body.startAt, confirmedAt: N, source: 'user-confirmed' });
+          run.milestones.vehicleSchedule = { at: N, startAt: body.startAt,
+            message: 'User confirmed the vehicle schedule; awaiting actual charging evidence.' };
           run.restorationReminder = 'Restore the vehicle timer after this test.';
+        } else if (path === '/api/charging/tests/target') {
+          const run = chargingFixture.runs.find(item => item.id === body.id);
+          if (body.targetRevision !== run.target.revision || Object.hasOwn(body, 'revision'))
+            throw new Error('Assessment target confirmation must use its own revision, never the charger request revision');
+          run.expectations.nativeTargetSoc = body.nativeTargetSoc;
+          run.target.revision++;
+          run.target.requiresConfirmation = false;
+          run.target.history.push({ targetSoc: body.nativeTargetSoc, confirmedAt: N });
         } else if (path === '/api/charging/tests/cancel') {
           const run = chargingFixture.runs.find(item => item.id === body.id); run.phase = 'cancelled';
         } else throw new Error('Unexpected mutation in charging browser fixture: ' + path);
-        return globalThis.fetch('/api/status');
+        return checkedResponse(await globalThis.fetch('/api/status'));
       }
       const response = await nativeFetch(input, options);
       if (path !== '/api/status') return response;
       const status = await response.json(); chargingFixture.reads++;
       status.readOnly = chargingFixture.readOnly;
+      status.charging.settings.vehicles.tesla.capacityKwh = 57;
+      status.charging.settings.vehicles.bmw.capacityKwh = 74;
       status.charging.physicalTests = { available: true, canManage: !chargingFixture.readOnly, runs: chargingFixture.runs };
       for (const charger of status.charging.chargers) {
         charger.association = charger.id + '-fixture-association';
@@ -164,17 +195,23 @@ try {
         charger.values.connected = field(chargingFixture.connected && charger.id === 'charger1');
         charger.values.charging = field(false); charger.control = { phase: 'off' };
       }
+      if (chargingFixture.noChargers) status.charging.chargers = [];
       status.charging.vehicleFeeds = ['bmw', 'tesla'].map(id => ({ id, label: id === 'bmw' ? 'BMW' : 'Tesla',
         provider: id === 'bmw' ? 'bmw-cardata' : 'teslamate', usedByChargerId: null,
         reception: { brokerConnected: true, subscribed: true, ...(id === 'bmw' ? { available: true } : {}) },
         setup: { available: true, healthy: true, state: id === 'tesla' ? 'asleep' : null,
-          fields: { soc: field(35, id === 'tesla'), minimumSoc: field(80, id === 'tesla'), capacityKwh: field(74),
+          fields: { soc: field(id === 'bmw' ? 35 : 40, id === 'tesla'), minimumSoc: field(80, id === 'tesla'),
+            ...(id === 'bmw' ? { capacityKwh: field(74) } : { vehicleNotBefore: field(N + 10 * 3600000, true) }),
             atHome: field(true, id === 'tesla'), pluggedIn: field(false, id === 'tesla'), charging: field(false, id === 'tesla'),
-            powerKw: field(0, true), requestedCurrentA: field(16, true), maxCurrentA: field(16, true) } } }));
+            powerKw: field(0, true), requestedCurrentA: field(16, true), maxCurrentA: field(16, true),
+            ...chargingFixture.vehicleReadings[id] } } }));
       status.charging.diagnostics = { available: chargingFixture.diagnosticsAvailable, chargers: [{ id: 'charger1',
         current: chargingFixture.archived ? null : chargingFixture.report,
         recent: chargingFixture.archived ? [chargingFixture.report, ...chargingFixture.recent] : chargingFixture.recent },
         { id: 'charger2', current: chargingFixture.second.current, recent: chargingFixture.second.recent }] };
+      chargingFixture.ordinaryCharging = structuredClone({settings:status.charging.settings,
+        chargers:status.charging.chargers.map(({id,settings,request,values,vehicle,plan,control}) => ({id,settings,request,values,vehicle,plan,control})),
+        vehicleFeeds:status.charging.vehicleFeeds});
       return new Response(JSON.stringify(status), { status: response.status, headers: response.headers });
     };
     const nativeInterval = globalThis.setInterval;
@@ -182,6 +219,11 @@ try {
       if (delay === 15000 && callback.toString().includes('background')) chargingFixture.poll = callback;
       return nativeInterval(callback, delay, ...args);
     };
+    const restoredFixture = sessionStorage.getItem('charging-browser-fixture');
+    if (restoredFixture) {
+      Object.assign(chargingFixture, JSON.parse(restoredFixture));
+      sessionStorage.removeItem('charging-browser-fixture');
+    }
   ` });
   await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
   await send('Page.navigate', { url: `http://127.0.0.1:${app.server.address().port}/` });
@@ -198,8 +240,54 @@ try {
   assert.equal(await evaluate('document.activeElement.id'), 'charging-setup-bmw-test', 'Escape returns focus to the setup button');
   assert.equal(await evaluate('chargingFixture.mutations.length'), 0, 'Opening and closing guides never commands a charger');
 
+  // Vehicle preparation uses its independent feed before any charger is selected.
+  // Exercise the application listbox itself, including keyboard selection.
+  await evaluate('chargingFixture.noChargers = true'); await poll();
   await click('#charging-setup-bmw-test');
-  await setFields({ vehicleId: 'bmw', chargerId: 'charger1', program: 'immediate', soc: '35', nativeTargetSoc: '80', prepared: true });
+  assert.deepEqual(await evaluate(`['soc','nativeTargetSoc','capacityKwh'].map(name =>
+    document.querySelector('#charging-test-form [name=' + name + ']').value)`), ['35', '80', '74'],
+  'BMW battery, one assumed vehicle target and usable capacity load without a configured charger');
+  assert.equal(await evaluate("document.querySelector('[name=chargerId]').value"), '', 'Preparation does not silently select a physical charger');
+  assert.match(await evaluate("document.querySelector('[data-test-source=soc]').textContent"), /vehicle|BMW|reported/i);
+  assert.equal(await evaluate("document.querySelectorAll('#charging-test-form select.app-select-source').length"), 3,
+    'Vehicle, physical charger and program use application dropdowns');
+  await click('[name=vehicleId] + .app-select-trigger');
+  await keyPress('ArrowDown'); await keyPress('Enter');
+  assert.equal(await evaluate("document.querySelector('[name=vehicleId]').value"), 'tesla');
+  assert.deepEqual(await evaluate(`['soc','nativeTargetSoc','capacityKwh'].map(name =>
+    document.querySelector('#charging-test-form [name=' + name + ']').value)`), ['40', '80', '57'],
+  'Tesla loads its own readings and its configured capacity fallback');
+  assert.match(await evaluate("document.querySelector('[data-test-source=capacityKwh]').textContent"), /configur|default/i);
+  assert.equal(await evaluate('chargingFixture.mutations.length'), 0, 'Selecting vehicles only loads independent vehicle data');
+  await click('[name=vehicleId] + .app-select-trigger');
+  await keyPress('ArrowUp'); await keyPress('Enter');
+  await setFields({ soc: '36', nativeTargetSoc: '82', capacityKwh: '72' });
+  await evaluate(`chargingFixture.vehicleReadings.bmw = {
+    soc:{value:37,available:true,measuredAt:${now},receivedAt:${now}},
+    minimumSoc:{value:85,available:true,measuredAt:${now},receivedAt:${now}} }`);
+  await poll();
+  assert.deepEqual(await evaluate(`['soc','nativeTargetSoc','capacityKwh'].map(name =>
+    document.querySelector('#charging-test-form [name=' + name + ']').value)`), ['36', '82', '72'],
+  'Background vehicle readings never replace edits to the battery, target or capacity');
+  await click('[data-test-load]');
+  assert.deepEqual(await evaluate(`['soc','nativeTargetSoc','capacityKwh'].map(name =>
+    document.querySelector('#charging-test-form [name=' + name + ']').value)`), ['37', '85', '74'],
+  'The explicit load action replaces fields with the latest available readings');
+  await evaluate(`chargingFixture.vehicleReadings.bmw = {
+    soc:{value:null,available:false},minimumSoc:{value:null,available:false},capacityKwh:{value:null,available:false} }`);
+  await evaluate("sessionStorage.setItem('charging-browser-fixture', JSON.stringify(chargingFixture))");
+  await send('Page.reload');
+  await until("chargingFixture.poll && document.getElementById('charging-setup-tesla-state')?.textContent === 'Healthy · Sleeping'");
+  await click('#charging-setup-bmw-test');
+  await setFields({ program: 'vehicle-schedule' });
+  assert.deepEqual(await evaluate(`['soc','nativeTargetSoc','capacityKwh','vehicleStartAt'].map(name =>
+    document.querySelector('#charging-test-form [name=' + name + ']').value)`), ['', '', '74', ''],
+  'Missing BMW battery and target require entry, capacity falls back to configuration, and no unsupported schedule is invented');
+  assert.match(await evaluate("document.querySelector('[data-test-source=soc]').textContent"), /unavailable|enter|provide|not.*available/i);
+  assert.equal(await evaluate('chargingFixture.mutations.length'), 0,
+    'Loading or replacing preparation values does not arm a session or change car settings');
+  await evaluate('chargingFixture.noChargers = false; chargingFixture.vehicleReadings = {}'); await poll();
+  await setFields({ vehicleId: 'bmw', chargerId: 'charger1', program: 'immediate', soc: '35', nativeTargetSoc: '80', capacityKwh: '73', prepared: true });
   await evaluate("document.querySelector('[name=soc]').focus(); globalThis.savedSocInput = document.querySelector('[name=soc]')");
   await poll();
   assert.equal(await evaluate("document.querySelector('[name=soc]').value === '35' && document.activeElement === savedSocInput && savedSocInput === document.querySelector('[name=soc]')"), true,
@@ -212,7 +300,13 @@ try {
   await until("!document.querySelector('[data-test-preview]').disabled");
   await click('[data-test-preview]');
   await until("!document.querySelector('[data-test-arm]').disabled");
-  const immediate = { chargerId: 'charger1', vehicleId: 'bmw', program: 'immediate', association: 'charger1-fixture-association', soc: 35, nativeTargetSoc: 80, prepared: true };
+  const immediate = { chargerId: 'charger1', vehicleId: 'bmw', program: 'immediate', association: 'charger1-fixture-association',
+    soc: 35, nativeTargetSoc: 80, capacityKwh: 73, prepared: true };
+  assert.match(await evaluate("document.querySelector('[data-test-preparation]').textContent"), /assessment/i);
+  assert.doesNotMatch(await evaluate("document.querySelector('[data-test-preparation]').textContent"), /Apply these inputs|Use these values for this charging session/i,
+    'Preparation explains that the entered values belong only to the assessment');
+  assert.equal(await evaluate("document.querySelectorAll('#charging-test-form [name=nativeTargetSoc]').length"), 1,
+    'The guide asks for one assumed vehicle target');
   assert.deepEqual(await evaluate('chargingFixture.mutations.at(-1)'), { path: '/api/charging/tests/preview', body: immediate });
   await click('[data-test-arm]');
   await until("document.querySelector('[data-test-phase]').textContent === 'Ready to plug in'");
@@ -263,32 +357,140 @@ try {
   assert.equal(await evaluate("document.getElementById('charger1-device-summary').parentElement.open"), expanded, 'Report button does not toggle charger details');
   await keyPress('Escape'); await click('#charging-setup-bmw-test');
   await click('[data-test-cancel]');
-  await until("document.querySelector('[data-test-phase]').textContent === 'Assessment cancelled'");
+  await until("document.querySelector('[data-test-phase]').textContent === 'Assessment stopped early'");
   assert.deepEqual(await evaluate('chargingFixture.mutations.at(-1)'), { path: '/api/charging/tests/cancel', body: { id: 'run-1', association: 'charger1-fixture-association' } });
   await keyPress('Escape');
 
   await evaluate("document.getElementById('charging-setup-tesla-details').open = true");
   await click('#charging-setup-tesla-test');
+  await until("!document.querySelector('[name=vehicleId]').disabled");
+  assert.equal(await evaluate("document.querySelector('[name=vehicleStartAt]').value"), '01:00',
+    'Tesla can preload its reported next vehicle schedule without a charger association');
   await setFields({ vehicleId: 'tesla', chargerId: 'charger2', program: 'vehicle-schedule', soc: '40', nativeTargetSoc: '80',
-    vehicleStartAt: '2026-10-01T01:00', prepared: true });
+    capacityKwh: '57', vehicleStartAt: '01:00', prepared: true });
+  assert.equal(await evaluate("document.querySelector('[name=vehicleStartAt]').type"), 'text');
+  assert.match(await evaluate("document.querySelector('[data-test-initial-date]').textContent"), /Europe\/Helsinki/,
+    'A time-only vehicle schedule explains its resolved date and installation timezone');
+  await until("!document.getElementById('charging-test-initial-time-choose').disabled");
+  await click('#charging-test-initial-time-choose');
+  await until("document.getElementById('charging-test-time-dialog')?.open");
+  assert.equal(await evaluate("document.getElementById('charging-test-time-hour').value"), '01');
+  await evaluate("document.getElementById('charging-test-time-minute').value='05'");
+  await click('#charging-test-time-set');
+  assert.equal(await evaluate("document.querySelector('[name=vehicleStartAt]').value"), '01:05',
+    'The initial schedule uses the shared charging time chooser');
+  await setFields({ vehicleStartAt: '01:00', prepared: true });
   await until("!document.querySelector('[data-test-preview]').disabled");
   await click('[data-test-preview]'); await until("!document.querySelector('[data-test-arm]').disabled");
   const delayed = { chargerId: 'charger2', vehicleId: 'tesla', program: 'vehicle-schedule', association: 'charger2-fixture-association',
-    soc: 40, nativeTargetSoc: 80, prepared: true, vehicleStartAt: Date.parse('2026-09-30T22:00:00Z') };
+    soc: 40, nativeTargetSoc: 80, capacityKwh: 57, prepared: true, vehicleStartAt: Date.parse('2026-09-30T22:00:00Z') };
   assert.deepEqual(await evaluate('chargingFixture.mutations.at(-1)'), { path: '/api/charging/tests/preview', body: delayed });
   await click('[data-test-arm]'); await until("document.querySelector('[data-test-phase]').textContent === 'Ready to plug in'");
   assert.deepEqual(await evaluate('chargingFixture.mutations.at(-1)'), { path: '/api/charging/tests/start', body: delayed });
+  await evaluate("Object.assign(chargingFixture.runs[0], {sessionId:'session-fixture-2',phase:'observing',recommendation:{state:'unavailable'}})");
+  await poll();
+  assert.equal(await evaluate("document.getElementById('charging-test-schedule-form').hidden && document.querySelector('[data-test-confirm]').disabled"), true,
+    'Before a recommendation exists, the guide shows the recorded initial schedule without offering an unsupported adjustment');
   await evaluate(`Object.assign(chargingFixture.runs[0], { sessionId:'session-fixture-2', phase:'awaiting-vehicle-schedule',
     recommendation: { state:'available', startAt:${Date.parse('2026-09-30T22:30:00Z')}, message:'The observed production plan starts at 01:00. A vehicle start at 01:30 exercises delayed charging.' } })`);
   await poll(); await until("!document.querySelector('[data-test-timer]').hidden");
-  assert.equal(await evaluate("document.querySelector('[data-test-confirm-time]').value"), '2026-10-01T01:30', 'A new suggestion fills the untouched timer field');
-  await evaluate("document.querySelector('[data-test-confirm-time]').value = '2026-10-01T01:45'; document.querySelector('[data-test-confirm-time]').dispatchEvent(new Event('input', { bubbles: true })); document.querySelector('[data-test-confirm-time]').focus()");
+  await until("!document.querySelector('[data-test-confirm]').disabled");
+  assert.equal(await evaluate("document.querySelector('[data-test-confirm-time]').value"), '01:30', 'A first recommendation fills the untouched adjustment field');
+  assert.match(await evaluate("document.querySelector('[data-test-schedule-original]').textContent"), /01:00/);
+  assert.match(await evaluate("document.querySelector('[data-test-schedule-current]').textContent"), /01:00/);
+  assert.match(await evaluate("document.querySelector('[data-test-recommendation]').textContent"), /01:30/);
+  await click('#charging-test-adjustment-time-choose');
+  await until("document.getElementById('charging-test-time-dialog')?.open");
+  await evaluate("document.getElementById('charging-test-time-minute').value='45'");
+  await click('#charging-test-time-set');
+  await evaluate("document.querySelector('[data-test-confirm-time]').focus()");
   await poll();
-  assert.equal(await evaluate("document.querySelector('[data-test-confirm-time]').value"), '2026-10-01T01:45', 'Timer draft survives polling');
-  await click('[data-test-confirm]');
-  await until("document.querySelector('[data-test-message]').textContent.includes('Vehicle timer recorded')");
+  assert.equal(await evaluate("document.querySelector('[data-test-confirm-time]').value"), '01:45', 'Schedule draft survives polling');
+  await evaluate("document.querySelector('[data-test-confirm-time]').focus()");
+  await keyPress('Enter');
+  await until("document.querySelector('[data-test-schedule-receipt]').textContent.includes('01:45')");
   assert.deepEqual(await evaluate('chargingFixture.mutations.at(-1)'), { path: '/api/charging/tests/schedule', body: {
     id: 'run-2', association: 'charger2-fixture-association', sessionId: 'session-fixture-2', startAt: Date.parse('2026-09-30T22:45:00Z') } });
+  assert.match(await evaluate("document.querySelector('[data-test-schedule-original]').textContent"), /01:00/,
+    'Recording a new schedule preserves the original preparation time');
+  assert.match(await evaluate("document.querySelector('[data-test-schedule-current]').textContent"), /01:45/,
+    'Enter records the new schedule and immediately displays the saved value');
+  assert.match(await evaluate("document.querySelector('[data-test-guidance]').textContent"), /unplug/i,
+    'The active assessment explains unplugging as the normal finish');
+  assert.match(await evaluate("document.querySelector('[data-test-cancel]').textContent"), /Stop assessment early/i);
+  await keyPress('Escape'); await click('#charging-setup-tesla-test');
+  assert.equal(await evaluate("document.querySelector('[data-test-confirm-time]').value"), '01:45',
+    'Reopening uses the saved schedule instead of restoring the recommendation');
+  await evaluate(`Object.assign(chargingFixture.runs[0].recommendation, {
+    startAt:${Date.parse('2026-09-30T23:00:00Z')},
+    message:'The controller revised its charging periods. This recommendation leaves estimated room for the vehicle target.' })`);
+  await poll();
+  assert.equal(await evaluate("document.querySelector('[data-test-confirm-time]').value"), '01:45',
+    'A later plan recommendation never silently replaces a confirmed schedule');
+  await evaluate("sessionStorage.setItem('charging-browser-fixture', JSON.stringify(chargingFixture))");
+  await send('Page.reload');
+  await until("chargingFixture.poll && document.getElementById('charging-setup-tesla-state')?.textContent === 'Healthy · Sleeping'");
+  await click('#charging-setup-tesla-test');
+  assert.equal(await evaluate("document.querySelector('[data-test-confirm-time]').value"), '01:45',
+    'A fresh browser page restores the server-recorded schedule, even when a newer recommendation exists');
+  assert.match(await evaluate("document.querySelector('[data-test-schedule-receipt]').textContent"), /01:45/,
+    'The recorded-value receipt survives reloading');
+  await evaluate("document.querySelector('[data-test-confirm-time]').value='02:15'; document.querySelector('[data-test-confirm-time]').dispatchEvent(new Event('input',{bubbles:true})); document.querySelector('[data-test-confirm-time]').focus()");
+  await keyPress('Enter');
+  await until("document.querySelector('[data-test-schedule-receipt]').textContent.includes('02:15')");
+  assert.equal(await evaluate('chargingFixture.runs[0].schedule.history.length'), 2,
+    'Further schedule adjustments retain both confirmations');
+  await evaluate("chargingFixture.runs[0].recommendation.state='unavailable'"); await poll();
+  assert.equal(await evaluate("document.querySelector('[data-test-confirm-time]').value === '02:15' && document.querySelector('[data-test-confirm-time]').disabled && document.querySelector('[data-test-confirm]').disabled"), true,
+    'When a recommendation becomes unavailable, the saved schedule stays visible and further adjustments are disabled');
+  await evaluate("chargingFixture.runs[0].recommendation.state='available'");
+  await evaluate(`(() => {
+    const run = chargingFixture.runs[0], at = ${now};
+    run.expectations.nativeTargetSoc = 67;
+    Object.assign(run.target, {reportedSoc:85,reportedAt:at,source:'teslamate',requiresConfirmation:true,
+      history:[{targetSoc:67,confirmedAt:at}]});
+    run.milestones.vehicleTarget = {at,targetSoc:67,source:'teslamate'};
+    run.milestones.deadline = {at,targetSoc:67,state:'target-observed-by-deadline'};
+    chargingFixture.vehicleReadings.tesla = {
+      soc:{value:67,available:true,measuredAt:at,receivedAt:at},
+      minimumSoc:{value:85,available:true,measuredAt:at,receivedAt:at},
+    };
+  })()`);
+  await poll();
+  assert.equal(await evaluate("document.querySelector('[data-test-target-review]').hidden"), false,
+    'A different reported vehicle target asks the user to verify the assessment assumption');
+  const targetMilestones = () => evaluate(`Object.fromEntries([...document.querySelectorAll('[data-test-milestones] dt')]
+    .filter(node => ['Vehicle target reached','Ready-by outcome'].includes(node.textContent))
+    .map(node => [node.textContent,node.nextElementSibling.textContent]))`);
+  assert.deepEqual(await targetMilestones(), {
+    'Vehicle target reached':'Current vehicle target unconfirmed', 'Ready-by outcome':'Current vehicle target unconfirmed',
+  }, 'A guide assumption of 67% cannot show target/deadline success when the car independently reports 85% and its charge is 67%');
+  assert.equal(await evaluate("document.querySelector('[data-test-phase]').textContent"), 'Following the charging session',
+    'Reaching only the declared assumption never displays physical charging completion');
+  await until("!document.querySelector('[data-test-target-value]').disabled");
+  await evaluate("document.querySelector('[data-test-target-value]').value='84'; document.querySelector('[data-test-target-value]').dispatchEvent(new Event('input',{bubbles:true})); chargingFixture.runs[0].target.reportedAt += 60000");
+  await poll();
+  assert.equal(await evaluate("document.querySelector('[data-test-target-value]').value"), '84',
+    'A refreshed source timestamp never replaces a manually edited target reconciliation draft');
+  const beforeTargetDeclaration = await evaluate('chargingFixture.ordinaryCharging');
+  await evaluate("document.querySelector('[data-test-target-value]').value='85'; document.querySelector('[data-test-target-value]').dispatchEvent(new Event('input',{bubbles:true})); document.querySelector('[data-test-target-value]').focus()");
+  await keyPress('Enter');
+  await until("chargingFixture.mutations.at(-1).path === '/api/charging/tests/target'");
+  assert.deepEqual(await evaluate('chargingFixture.mutations.at(-1).body'), {
+    id:'run-2',association:'charger2-fixture-association',sessionId:'session-fixture-2',targetRevision:1,nativeTargetSoc:85,
+  }, 'Confirming an assumption uses the assessment revision and no ordinary charging settings');
+  assert.equal(await evaluate('chargingFixture.runs[0].expectations.nativeTargetSoc'), 85);
+  assert.equal(await evaluate('chargingFixture.runs[0].target.revision'), 2);
+  await until("document.querySelector('[data-test-target-review]').hidden");
+  assert.equal(await evaluate("document.querySelector('[data-test-target-review]').hidden"), true,
+    'Recording the verified vehicle target clears the assessment discrepancy');
+  assert.deepEqual(await targetMilestones(), {
+    'Vehicle target reached':'Current vehicle target unconfirmed', 'Ready-by outcome':'Current vehicle target unconfirmed',
+  }, 'After accepting 85%, old milestones recorded for 67% remain historical and cannot become success for the current target');
+  assert.deepEqual(await evaluate('chargingFixture.ordinaryCharging'), beforeTargetDeclaration,
+    'Recording a different assumed vehicle target leaves actual values, requests, plans, controls, vehicle identity and configuration unchanged');
+  assert.match(await evaluate("document.querySelector('[data-test-target-receipt]').textContent"), /assessment target/i);
+  assert.doesNotMatch(await evaluate("document.querySelector('[data-test-target-receipt]').textContent"), /applied.*session/i);
 
   for (const width of [320, 390, 1440]) for (const theme of ['light', 'dark']) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: 1000, deviceScaleFactor: 1, mobile: false });
@@ -308,6 +510,15 @@ try {
   await keyPress('Escape'); await click('#charging-setup-bmw-test');
   await click('[data-test-new]');
   assert.equal(await evaluate("document.querySelector('[data-test-preview]').disabled && document.querySelector('[data-test-arm]').disabled"), true);
+  await keyPress('Escape');
+  await evaluate(`Object.assign(chargingFixture.runs.find(run => run.id === 'run-2'), {
+    phase:'finished',endReason:'unplugged-before-completion',endedAt:${now} })`);
+  await poll(); await click('#charging-setup-tesla-test');
+  assert.match(await evaluate("document.querySelector('[data-test-phase]').textContent"), /finished|ended|unplugged/i);
+  assert.match(await evaluate("document.querySelector('[data-test-guidance]').textContent"), /unplugging.*completion.*not confirmed/i,
+    'Unplugging ends the assessment while clearly retaining incomplete completion coverage');
+  assert.equal(await evaluate("document.querySelector('[data-test-cancel]').hidden"), true,
+    'An unplugged assessment requires no separate End action');
   await keyPress('Escape');
   await evaluate(`chargingFixture.archived=true; chargingFixture.report.endedAt=${now}; chargingFixture.connected=false;
     chargingFixture.report.outcome={state:'completion-unknown'}; chargingFixture.report.findings[0].resolvedAt=${now - 60000};
@@ -501,7 +712,8 @@ try {
     const f = chargingFixture, completed = structuredClone(f.runs.find(run => run.id === 'run-1'));
     f.recent = [{...structuredClone(f.report), id:'report-bmw-old', startedAt:${now - 86_400_000}, endedAt:${now - 79_200_000},
       outcome:{state:'target-confirmed'}}];
-    Object.assign(completed, {id:'completed-bmw-test', phase:'completed', report:{id:'report-bmw-old'}, sessionId:'previous-bmw-session'});
+    Object.assign(completed, {id:'completed-bmw-test', phase:'completed', endReason:'vehicle-target-and-stop-observed',
+      report:{id:'report-bmw-old'}, sessionId:'previous-bmw-session'});
     const latest = {...structuredClone(completed), id:'newer-bmw-test', phase:'armed', report:null, sessionId:null};
     f.runs.unshift(latest, completed);
   })()`);
@@ -511,8 +723,12 @@ try {
   await click('.charging-report-guided button');
   await until("document.getElementById('charging-test-dialog').open && !document.getElementById('charging-report-dialog').open");
   assert.equal(await evaluate("document.getElementById('charging-test-dialog').contains(document.activeElement)"), true);
-  assert.equal(await evaluate("document.querySelector('[data-test-phase]').textContent"), 'Assessment complete',
+  assert.equal(await evaluate("document.querySelector('[data-test-phase]').textContent"), 'Charging completion confirmed',
     'An old report opens its completed guided assessment, not a newer active test of the same vehicle');
+  assert.match(await evaluate("document.querySelector('[data-test-guidance]').textContent"), /completed charging occasion/i,
+    'A historical completed assessment describes its recorded outcome');
+  assert.doesNotMatch(await evaluate("document.querySelector('[data-test-guidance]').textContent"), /unplug the car/i,
+    'A historical completed assessment never tells the user to unplug a different current session');
   await click('[data-test-report]');
   await until("document.getElementById('charging-report-dialog').open && !document.getElementById('charging-test-dialog').open");
   assert.equal(await evaluate("document.getElementById('charging-report-dialog').contains(document.activeElement)"), true);
@@ -526,11 +742,18 @@ try {
   await fits('#charging-setup-content'); await screenshot('setup-descriptors-320', '#charging-setup-details');
   assert.equal(await evaluate("chargingFixture.mutations.every(row => row.path.startsWith('/api/charging/tests/'))"), true,
     'No tested guide action calls a charger settings or command endpoint');
+  assert.equal(await evaluate('chargingFixture.declarationChecks.length === chargingFixture.mutations.length && chargingFixture.declarationChecks.every(row => row.unchanged)'), true,
+    'Every preparation, arm, schedule, target and cancellation declaration preserves ordinary charging status and configuration');
   assert.equal(await evaluate('chargingFixture.mutations.length'), inspectionMutations, 'All report history inspection remains read-only');
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ result: 'charging-browser-smoke-passed', artifacts, checks: [
-    'keyboard-disclosures-and-Escape-focus', 'draft-preservation-through-status-polls', 'normal-and-delayed-action-payloads',
-    'timer-declarations-in-installation-timezone', 'passive-report-no-mutations', 'read-only-controls', 'retained-report-and-recovered-issue',
+    'keyboard-disclosures-and-Escape-focus', 'vehicle-stats-without-charger', 'missing-stats-and-capacity-defaults',
+    'single-assessment-target-reconciliation', 'lower-assumption-never-shows-real-target-success',
+    'assessment-declarations-preserve-ordinary-charging', 'target-draft-preserved-through-source-refresh',
+    'app-dropdowns-and-shared-time-picker', 'draft-preservation-through-status-polls', 'normal-and-delayed-action-payloads',
+    'time-only-schedules-in-installation-timezone', 'original-current-and-recommended-schedules', 'Enter-schedule-receipt',
+    'confirmed-schedule-survives-reopen-page-reload-and-new-recommendation', 'unavailable-recommendation-gating', 'unplug-finish-and-incomplete-coverage',
+    'passive-report-no-mutations', 'read-only-controls', 'retained-report-and-recovered-issue',
     'automatic-off-no-controller-schedule', 'unidentified-fallback-battery-input', 'partial-observation-history', 'semantic-input-deltas', 'measured-zero-distinct-from-charger-status',
     'charger-scoped-current-and-retained-reports', 'empty-charger-does-not-borrow-peer-history', 'expired-selected-report', 'stale-and-unavailable-report-states',
     'grouped-zero-power-status-and-idle-control', 'compact-timestamp-title-entry-disclosures', 'no-op-planning-snapshots-hidden', 'expanded-history-focus-and-scroll-during-polls',

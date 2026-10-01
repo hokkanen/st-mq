@@ -248,6 +248,9 @@ For example, merge only these intentional choices into your configuration:
 physical connection; restart preserves only the same ongoing session. **Charge
 now** releases automatic scheduling for the current connection even with
 Automatic charging OFF, subject to native limits and device readiness.
+Guided charging inputs are assessment-only assumptions. Battery percentage,
+vehicle target, capacity and schedules entered there never change these defaults,
+ordinary session overrides, production planning inputs or vehicle identification.
 See [charging](charging.md).
 
 Heat-pump parameter edits remain in effect until deliberately changed. Native
