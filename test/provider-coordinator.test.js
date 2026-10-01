@@ -122,7 +122,7 @@ test('provider electrical batches form voltage history before raw acquisition fi
     value: unit === 'V' ? 230 + Number(name.at(-1)) : 0,
     sourceTime: unit === 'V' ? initial : now, receivedAt: now,
     quality: ['local_ocpp', ...(unit === 'V' && now - initial > 5 * MINUTE ? ['stale'] : [])],
-    raw: { acquisitionOnly: true, observationId: id, voltageMapping: 'phase-neutral',
+    raw: { acquisitionOnly: true, observationId: id, voltageMapping: 'phase-neutral', transport: 'ocpp',
       deviceConnection: { connected: true, observedAt: initial } },
   }));
   const providers = startProviders(f.options);
@@ -130,6 +130,7 @@ test('provider electrical batches form voltage history before raw acquisition fi
     for (let minute = 0; minute <= 60; minute++) { f.setTime(initial + minute * MINUTE); await providers.runDue(); }
     const estimate = readPlanningVoltage(f.store, { input: 'providers', now: initial + 60 * MINUTE });
     assert.deepEqual(estimate.voltageV, [231, 232, 233]);
+    assert(estimate.phases.every(phase => phase.input === 1 && phase.inputs === 1), 'only explicitly identified OCPP contributes');
     assert.equal(f.store.observations().filter(row => row.source === 'voltage-estimate').length, 6, 'only initial and formed estimates are archived');
     assert.equal(f.store.observations({ signal: 'ev1_voltage_l1' }).length, 0, 'original voltage acquisitions stay outside history');
   } finally { await providers.close(); }

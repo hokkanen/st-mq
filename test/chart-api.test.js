@@ -137,7 +137,7 @@ test('recorded energy checks always include property availability and real charg
   assert.deepEqual(rows.map(row=>row.signal),['property_import_energy_counter','ev1_session_energy_check','shelly_session_energy_check']);
   assert.equal(rows[0].summary.status,'compared');
   assert.equal(rows[0].summary.readingCount,2);
-  assert.deepEqual(rows[0].summary.latestReading,{valueKwh:10.03,sourceTime:now,receivedAt:now});
+  assert.deepEqual(rows[0].summary.latestReading,{valueKwh:10.03,sourceTime:now,receivedAt:now,transport:null});
   assert.equal(rows[0].summary.comparison.start,now-60000);
   assert.equal(rows[0].summary.comparison.end,now);
   assert.ok(Math.abs(rows[0].summary.comparison.differenceKwh)<1e-12);

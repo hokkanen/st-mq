@@ -5,7 +5,8 @@ import { temperatureReportMaxAge } from '../domain/temperature-reports.js';
 import { isRecordedDataset } from './recorded-datasets.js';
 import { validEnergyQuality } from './energy-history.js';
 import { recordingPolicy, recordingStreamKey as keyOf } from '../domain/recording-policy.js';
-import { VOLTAGE_RECORDING_FLOOR_V, VOLTAGE_SIGNALS } from './voltage.js';
+import { VOLTAGE_RECORDING_FLOOR_V, VOLTAGE_SIGNALS, voltageRecordingStatus } from './voltage.js';
+import { recordedTransport } from '../domain/recording-source.js';
 
 const MINUTE = 60_000, HOUR = 60 * MINUTE, DAY = 24 * HOUR, YEAR = 365.25 * DAY;
 export const RECORDING_VERSION = 'recording-contract-v2';
@@ -52,7 +53,8 @@ function sameEnergyQuality(a,b,{ zeroA = false,zeroB = false } = {}) {
 }
 const semanticQuality = raw => Object.fromEntries(['usableForControl','verified','retained','cached','installationVerified',
   'verification','diagnosticAvailable','accuracyVerified','contractVersion','supported','timeBasis','publicationMayUseGatewayCache','basis','reportIntervalMs','reportGraceMs','eventOnly','temperatureRouteSignature',
-  'voltageSource','voltageMature','voltageAvailability'].filter(key=>raw?.[key]!==undefined).map(key=>[key,raw[key]]));
+  'transport','voltageSource','voltageMature','voltageAvailability'].filter(key=>raw?.[key]!==undefined).map(key=>[key,raw[key]])
+  .concat(raw?.voltageEstimate ? [['voltageInputs',raw.voltageEstimate.inputs],['voltageInput',raw.voltageEstimate.input]] : []));
 // Source validity is independent of the recording budget.
 // Increasing storage compression must never make old measurements fresher.
 // Room and garage readings remain the last reported measurement until replaced.
@@ -414,6 +416,7 @@ export class Recorder {
    */
   recordEnergy(interval) {
     const { source = 'easee', device, prefix, start, end, energies, powers, quality = [], receivedAt = end } = interval;
+    const transport = recordedTransport(interval);
     const signals = energySignals(prefix);
     if (!signals || !finiteTime(start) || !finiteTime(end) || end <= start
       || !finiteTime(receivedAt) || end > receivedAt || !Array.isArray(energies) || energies.length !== signals.length
@@ -463,7 +466,7 @@ export class Recorder {
       }
       // Close the previous valid interval before any gap or quality transition;
       // do not spread its energy over missing time or blend measurement bases.
-      if (state.pending && (state.pending.end !== start || !sameEnergyQuality(state.pending.quality,q,
+      if (state.pending && (state.pending.end !== start || (state.pending.transport ?? null) !== transport || !sameEnergyQuality(state.pending.quality,q,
         {zeroA:state.pending.energies.every(value=>value===0),zeroB:zero})))
         observations.push(...this.commitEnergy(state,source,device,prefix,receivedAt,'boundary'));
       // A native counter may hold its value between quantized increments while
@@ -485,7 +488,8 @@ export class Recorder {
       // no maximum duration, blending it backwards could distort days of history.
       if (reason && state.pending)
         observations.push(...this.commitEnergy(state,source,device,prefix,receivedAt,'power-boundary'));
-      if (!state.pending) state.pending = {start,end,receivedAt,energies:signals.map(()=>0),quality:q};
+      if (!state.pending) state.pending = {start,end,receivedAt,energies:signals.map(()=>0),quality:q,
+        ...(transport ? {transport} : {})};
       for (let i=0;i<signals.length;i++) state.pending.energies[i] += energies[i];
       state.pending.quality = flags([...state.pending.quality,...q]);
       if (native) state.pending.selectionPowers = [...powers];
@@ -511,13 +515,14 @@ export class Recorder {
     const observations = p.energies.map((value,i) => {
       const o = {source,device,signal:signals[i],value,unit:'kWh',sourceTime:p.end,receivedAt,
         quality:p.quality,raw:{intervalStart:p.start,intervalEnd:p.end,durationMs:p.end-p.start,
+          ...(p.transport ? {transport:p.transport} : {}),
           basis:prefix==='caravan'?'meter-counter-delta':prefix==='ev2'?'native-meter-counter-delta'
             :prefix==='ev2-phase'?'native-meter-counter-phase-allocation':'integrated-power-phase-allocation',
           ...(prefix==='caravan'?{learningRole:'history-only'}:{}),recorder:{version:VERSION,policy:'adaptive-energy',reason,group:prefix}}};
       o.id = this.store.observation(o);
       const s = this.signalState(o,receivedAt);
       const previous = s.last;
-      s.last = {id:o.id,value,sourceTime:p.end,receivedAt,quality:p.quality};
+      s.last = {id:o.id,value,sourceTime:p.end,receivedAt,quality:p.quality,semanticQuality:semanticQuality(o.raw)};
       s.lastPollAt = receivedAt; s.lastSourceTime = p.end; s.unit = 'kWh'; s.recordingPolicy = 'adaptive-energy';
       s.scale = state.scales[i]?.scale ?? 0;
       this.coverage(s,o,'fresh');
@@ -534,7 +539,7 @@ export class Recorder {
     return observations;
   }
 
-  energyGap({ source = 'easee', device, prefix, start, end, receivedAt = end, quality = ['acquisition-failed'] }) {
+  energyGap({ source = 'easee', device, prefix, start, end, receivedAt = end, quality = ['acquisition-failed'], transport }) {
     const signals = energySignals(prefix);
     if (!signals || !finiteTime(start) || !finiteTime(end) || end < start || !finiteTime(receivedAt) || receivedAt < end)
       throw new TypeError('Invalid phase energy gap');
@@ -550,7 +555,8 @@ export class Recorder {
       for (const signal of signals) {
         const result = this.record({source,device,signal,value:null,unit:'kWh',
           sourceTime:end,receivedAt,quality:flags([...quality,'missing']),
-          raw:{basis:'availability-gap',intervalStart:start,intervalEnd:end,durationMs:end-start}});
+          raw:{basis:'availability-gap',intervalStart:start,intervalEnd:end,durationMs:end-start,
+            ...(['cloud','ocpp'].includes(transport) ? {transport} : {})}});
         if (result.saved) observations.push(result.observation);
       }
       return observations;
@@ -619,6 +625,8 @@ export class Recorder {
       (SELECT MAX(id) FROM provider_snapshot_fetches) snapshots,(SELECT MAX(id) FROM recorder_coverage) coverage`).get();
     const rows = this.store.db.prepare("SELECT value FROM state WHERE key LIKE 'recorder:signal:%'").all();
     const states = rows.map(row=>JSON.parse(row.value)).filter(isRecordedDataset);
+    const voltageStatuses = new Map(states.filter(voltageEstimate).map(s => [s.device, null]));
+    for (const input of voltageStatuses.keys()) voltageStatuses.set(input, voltageRecordingStatus(this.store,input,now));
     const openEnergy = new Map();
     for (const row of this.store.db.prepare("SELECT key,value FROM state WHERE key LIKE 'recorder:energy:%'").all()) {
       const [source,device,prefix] = JSON.parse(row.key.slice('recorder:energy:'.length));
@@ -626,7 +634,7 @@ export class Recorder {
       if (!pending || pending.end > now || pending.receivedAt > now) continue;
       for (const [i,signal] of (energySignals(prefix) ?? []).entries())
         openEnergy.set(keyOf({source,device,signal,unit:'kWh'}), { start:pending.start,end:pending.end,
-          receivedAt:pending.receivedAt,kwh:pending.energies[i] });
+          receivedAt:pending.receivedAt,kwh:pending.energies[i],...(pending.transport ? {transport:pending.transport} : {}) });
     }
     // Constant temperatures extend existing coverage rows. Give their report
     // deadlines a separate revision so long plots can refresh without following
@@ -674,7 +682,10 @@ export class Recorder {
       const grouped = /_energy_l[123]$/.test(s.signal), totalEnergy = ['ev2_energy','caravan_energy'].includes(s.signal);
       const policy = recordingPolicy(s), exact = !policy.adaptive;
       const powerFloor = policy.id==='adaptive-energy' && /^ev[12]_energy(?:_l[123])?$/.test(s.signal) ? CHARGER_POWER_FLOOR_KW : 0;
+      const voltage = voltageStatuses.get(s.device)?.[s.signal];
       return {signal:s.signal,source:s.source,unit:s.unit,status:s.status,lastSavedAt:s.last?.receivedAt ?? null,
+        ...(s.source === 'easee' ? {transport:recordedTransport({raw:s.last?.semanticQuality,quality:s.last?.quality})} : {}),
+        ...(voltage ? {voltage} : {}),
         streamId:createHash('sha256').update(s.key).digest('hex').slice(0,12),
         policy:policy.id,openInterval:openEnergy.get(s.key) ?? null,
         lastSourceTime:s.lastSourceTime,lastPollAt:s.lastPollAt,scale:s.scale,
@@ -705,7 +716,7 @@ function compactRaw(raw, observation) {
     'basis','energyBasis','source','issuedAt','fetchedAt','snapshotId','provenance','intervalStart','intervalEnd','durationMs',
     'modelVersion','controllerPhase','estimated','forecast','reportIntervalMs','reportGraceMs','eventOnly','maxAgeMs',
     'reportPolicyChangedAt','originalReportReceivedAt','originalReportSourceTime','originalReportTimeBasis','transportRecoveredAt','temperatureRouteSignature',
-    'voltageSource','voltageMature','voltageAvailability','voltageEstimate'];
+    'transport','voltageSource','voltageMature','voltageAvailability','voltageEstimate'];
   const result = Object.fromEntries(allowed.filter(key=>raw[key] !== undefined).map(key=>[key,raw[key]]));
   // Caravan appliance history stores one power/fan state. Keep its physical
   // identity and evidence clocks without retaining sensor or setting values.

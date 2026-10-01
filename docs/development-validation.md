@@ -114,6 +114,7 @@ node scripts/browser-garage-smoke.js --temperature-hold-only
 node scripts/browser-mitsubishi-smoke.js
 node scripts/browser-fullscreen-smoke.js
 node scripts/browser-chart-views-smoke.js
+node scripts/browser-chart-views-smoke.js --voltage-only
 node scripts/browser-selectors-smoke.js
 node scripts/browser-timing-compat-smoke.js
 ```
@@ -206,6 +207,10 @@ with private IDs and readings excluded from logs and screenshots.
 
 The fullscreen suite checks the page controls, chart entry/exit restoration,
 external fullscreen changes and fallback behavior with synthetic data.
+
+The chart-views `--voltage-only` mode checks the dedicated Phase voltage estimates
+view, all three default traces and individual series, saved source provenance,
+and both themes at 320/390/1280px using synthetic data.
 
 The chart-views suite exercises every named view, the complete supported series
 explorer, view-specific legend choices, global price visibility, reset behavior,

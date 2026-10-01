@@ -22,6 +22,9 @@ view('power', 'Electrical power', 'Electricity', 'Compare property demand with c
 view('phases', 'Phase loading', 'Electricity', 'Compare property phase currents with charger fills stacked separately for each phase. Reconstructed currents are interval averages.', 'A',
   ['property', 'ev1', 'ev2'].flatMap(prefix => [1, 2, 3].map(phase => `${prefix}_current_l${phase}`)), property, [],
   ['property_current_l1', 'property_current_l2', 'property_current_l3'], { stackPhases: true });
+view('voltage_estimates', 'Phase voltage estimates', 'Electricity', 'Saved smoothed voltage estimates for each supply phase, not live measurements. Inspect a point for the contributing sources and the feed used for its latest update.', 'V',
+  ['voltage_estimate_l1', 'voltage_estimate_l2', 'voltage_estimate_l3'], [], [],
+  ['voltage_estimate_l1', 'voltage_estimate_l2', 'voltage_estimate_l3']);
 view('session_checks', 'Charging session checks', 'Electricity', 'Final meter readings for completed sessions; inspect a point for its reconstruction and difference.', 'kWh / session',
   ['ev1_session_energy_check', 'shelly_session_energy_check'], property, [], ['ev1_session_energy_check', 'shelly_session_energy_check']);
 view('temperatures', 'Property temperatures', 'Temperatures & weather', 'Compare the three home rooms and both garage probes on one temperature scale.', '', [],

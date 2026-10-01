@@ -1,3 +1,32 @@
+Implemented 2026-10-01 — Shared voltage inputs and recorded source provenance
+- Prefer Charger 1 OCPP, Charger 1 Easee Cloud and then
+  Equalizer Easee Cloud independently per phase. Preserve one smoothed accumulator
+  per phase across valid feed changes, with bounded acquisition state and stable
+  source selection. Keep live electrical measurement/control requirements intact.
+  Exclude Charger 2 from shared estimates and startup inputs: its phase order is
+  not established as matching Easee's charger/Equalizer installation phase order.
+- Store compact contributor masks and latest-update source codes with saved
+  estimates. Historical tooltips use saved provenance; today's connection cannot
+  relabel older readings. Distinguish cloud and OCPP throughout recorded evidence.
+- Show initial valid-coverage progress and paused acquisition explicitly. Add a
+  Phase voltage estimates view below phase currents, with Voltage estimate L1–L3.
+- F1/F3/F4/F5/F7/F8: current estimator contract only; reject obsolete state without
+  migration, history backfill or automatic database reset. No raw voltage log,
+  new control authority or installation probing. Measure compact metadata overhead
+  with synthetic data and retain sparse adaptive recording with its 0.5 V floor.
+- Measured storage: the two provenance fields add 21 JSON bytes per saved estimate
+  in a 12,000-row comparison. SQLite page allocation happened to match for those
+  record sizes, without a general zero-overhead claim. Steady three-phase minute
+  acquisitions over 24 hours saved six rows total. Cloud/OCPP enable/disable keeps
+  the accumulated estimate; changing actual equipment/phase mapping resets coverage.
+- Validation: final routine suite 3,966 passed, 1 optional upstream Tuya parser test
+  skipped, 0 failed; production build passed. Focused real Chrome voltage checks
+  passed the dedicated view/default traces, saved source tooltips, recorder
+  collecting/established/paused states and cloud/OCPP labels in both themes at
+  320/390/1280px. Acquisition, source-specific disconnect, restart, forbidden
+  Charger 2 input and transport-change regressions passed. All checks used
+  synthetic data; no live installation, database reset or deployment was performed.
+
 Implemented 2026-10-01 — Complete retained charging reports and unified event history
 - Replace per-session event/finding/plan eviction and four-session retention with
   indexed session/event tables, bounded observer checkpoints and paged queries.

@@ -62,6 +62,7 @@ export function recordEaseeSessionChecks({ store, rows, now, flush = () => {} })
       ...(!compared ? ['incomplete-coverage'] : compared.edgeEstimated ? ['estimated-boundary'] : []),
       ...(head && session.start < head.end ? ['out-of-order'] : [])];
     const eventId = recordChargingSessionCheck(store, { source: 'easee', sessionKey: session.sessionKey,
+      ...(['cloud', 'ocpp'].includes(row.raw?.transport) ? { transport: row.raw.transport } : {}),
       start: session.start, end: session.end, estimatedKwh: compared?.estimatedKwh ?? null,
       referenceKwh: session.referenceKwh, complete: !!compared && !quality.includes('counter-reset') && !quality.includes('out-of-order'), quality });
     store.setState(stateKey, { eventId, fingerprint });

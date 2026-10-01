@@ -9,6 +9,22 @@ import { historyValueScales } from '../chart/history-chart.js';
 
 const blank = () => readChartPreferences({ getItem: () => null });
 
+test('phase voltage estimates follow phase loading with three visible estimated-voltage lines', () => {
+  const index = CHART_VIEWS.findIndex(view => view.key === 'phases');
+  const view = CHART_VIEWS[index + 1];
+  assert.equal(view.key, 'voltage_estimates'); assert.equal(view.label, 'Phase voltage estimates');
+  assert.equal(view.unit, 'V'); assert.deepEqual(view.rightSignals, []);
+  assert.deepEqual(view.leftSignals, ['voltage_estimate_l1', 'voltage_estimate_l2', 'voltage_estimate_l3']);
+  assert.match(view.description, /smoothed.*not live/);
+  const datasets = historyDatasets({}, selectedChartView({ view: view.key }), chartViewPreferences(view, blank()));
+  for (const [index, key] of view.leftSignals.entries()) {
+    const dataset = datasets.find(dataset => dataset.key === key);
+    assert.equal(dataset.label, `Voltage estimate L${index + 1}`);
+    assert.equal(dataset.hidden, false); assert.equal(dataset.yAxisID, 'left');
+    assert.equal(SIGNAL_INFO[key].color, `phase${index + 1}`);
+  }
+});
+
 test('interpolation defaults on and is a global browser preference independent of view resets', () => {
   assert.equal(blank().interpolation, true);
   const preferences = blank();

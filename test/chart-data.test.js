@@ -473,6 +473,7 @@ test('Easee power combines one acquisition with independent phase event timestam
     for (let phase = 1; phase <= 3; phase++) {
       put(store, `property_current_l${phase}`, phase * 10, timestamps[phase - 1], {
         source: 'easee', device: 'fixture-equalizer', receivedAt,
+        raw: { transport: 'cloud' },
         // Older adapter versions flagged both devices when only the idle
         // charger's timestamps lagged. The chart rechecks each device itself.
         quality: ['current_snapshot_not_energy', 'asynchronous_snapshot'],
@@ -486,6 +487,7 @@ test('Easee power combines one acquisition with independent phase event timestam
     const result = get(store);
     assert.deepEqual(result.series.property_power.map(({x,y}) => ({x,y})), [{ x: timestamps[2], y: 13.8 }]);
     assert.deepEqual(result.meta.lastReadings.property_power, { x: timestamps[2], y: 13.8,
+      source: 'easee', transport: 'cloud',
       voltageBasis: 'recorded-voltage-estimate', voltageV: [230, 230, 230], powerFactorAssumption: 1 });
     assert.equal(historySeriesAt(result).property_power.at(-1).y, 13.8);
     assert.equal(historySeriesAt(result).charger_power.at(-1).y, 0);
@@ -530,12 +532,14 @@ test('Easee power loads unchanged phases outside historical scan bounds without 
     const timestamps = [from - 5 * 24 * HOUR, from - 4 * HOUR, from + MINUTE];
     for (const [i, at] of timestamps.entries()) put(store, `property_current_l${i + 1}`, 10, at, {
       source: 'easee', device: 'fixture-equalizer', receivedAt, quality: ['asynchronous_snapshot', 'stale'],
+      raw: { transport: 'cloud' },
     });
     const count = store.db.prepare('SELECT count(*) AS total FROM observations').get().total;
     for (const chartNow of [now, now + 2 * 24 * HOUR]) {
       const result = get(store, { now: chartNow });
       assert.deepEqual(result.series.property_power.map(({x,y}) => ({x,y})), [{ x: from + MINUTE, y: 6.9 }]);
       assert.deepEqual(result.meta.lastReadings.property_power, { x: from + MINUTE, y: 6.9,
+        source: 'easee', transport: 'cloud',
         voltageBasis: 'recorded-voltage-estimate', voltageV: [230, 230, 230], powerFactorAssumption: 1 });
     }
     assert.equal(store.db.prepare('SELECT count(*) AS total FROM observations').get().total, count);

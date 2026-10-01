@@ -102,7 +102,7 @@ function currentObservations(payload, device, ids, prefix, now) {
     if (value !== null && value > 1000) quality.push('implausible_current');
     return { source: 'easee', device, signal: `${prefix}_l${index + 1}`, value, unit: 'A',
       sourceTime: at, receivedAt: now, quality,
-      raw: { observationId: id, reportedValue: input, timestamp: at } };
+      raw: { observationId: id, reportedValue: input, timestamp: at, transport: 'cloud' } };
   });
 }
 
@@ -253,7 +253,8 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
   }
   const lifetime = new AbortController();
   let closed = false, stream = null, streaming = false, electricityEpoch = 0, nativeStopped = false, restoringOcpp = false;
-  const streamedElectricity = new Set(), transports = new Map(), reconcileAt = new Map();
+  const streamedElectricity = new Set(), streamedVoltage = new Set(), transports = new Map(), reconcileAt = new Map();
+  const cloudVoltage = new Map();
   let savedOcppSetup, invalidOcppSetup = false;
   try {
     savedOcppSetup = ocppSetupState?.get?.();
@@ -266,8 +267,8 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
   const local = ocppFactory({ config: localConfig, chargerId: easee.charger_id, clock, virtualTag: ocppInstallation?.virtualTag,
     canControl: () => !closed && !nativeStopped && !invalidOcppSetup && canControl(), state: ocppState,
     onDisconnect: () => {
-      if (!closed && transports.get(easee.charger_id) === 'ocpp') {
-        electricityEpoch++; onStreamDisconnect([easee.charger_id]);
+      if (!closed && supplied(easee.charger_id)) {
+        electricityEpoch++; onStreamDisconnect([easee.charger_id], { transport: 'ocpp' });
       }
     } });
   const setupBase = `/local-ocpp/v1/connection-details/${encodeURIComponent(easee.charger_id ?? '')}`;
@@ -323,9 +324,11 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
 
   function disconnectStream() {
     electricityEpoch++;
-    const affected = [...streamedElectricity];
-    streamedElectricity.clear();
-    if (!closed && affected.length) onStreamDisconnect(affected);
+    const affected = [...new Set([...streamedElectricity, ...streamedVoltage])];
+    streamedElectricity.clear(); streamedVoltage.clear();
+    for (const id of affected) if (cloudVoltage.has(id))
+      cloudVoltage.set(id, { nextReadAt: cloudVoltage.get(id).nextReadAt });
+    if (!closed && affected.length) onStreamDisconnect(affected, { transport: 'cloud' });
   }
 
   function openSignal(signal) {
@@ -579,11 +582,38 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
             voltage: [194, 195, 196].map(id => sourceTime(current?.readings.find(row => row.id === id)?.timestamp)) } } };
     } }) : null;
 
+  async function supplementalCloudVoltage({ id, fields, verified }, now, signal, needed) {
+    if (!verified) return [];
+    const voltageFields = fields.filter(([, , unit]) => unit === 'V');
+    const ids = [...voltageFields.map(([id]) => id), 250, ...CHARGER_TELEMETRY.map(([id]) => id)];
+    let cached = cloudVoltage.get(id);
+    const streamed = stream?.snapshot(id, ids, { requiredIds: [250] });
+    let payload = streamed ?? cached?.payload;
+    if (streamed) streamedVoltage.add(id);
+    // Existing stream/cache evidence costs no provider request. Only an absent
+    // local phase needs a bounded REST fallback; it shares normal provider backoff.
+    if (needed && !streamed && (!cached || now >= cached.nextReadAt)) {
+      cached = { ...cached, nextReadAt: now + Math.max(60_000, fallbackIntervalMs) };
+      cloudVoltage.set(id, cached);
+      try {
+        const result = await observationResult(id, ids, { signal, requiredIds: [250] });
+        payload = result.payload;
+        cloudVoltage.set(id, { ...cached, payload });
+        if (result.usesStream) streamedVoltage.add(id);
+      } catch {
+        // An optional voltage fallback cannot discard usable local power/current.
+        // Its prior source clocks still bound any cached evidence.
+      }
+    }
+    return payload ? electricalObservations(payload, id, 'ev1', voltageFields, now, true)
+      .map(row => ({ ...row, raw: { ...row.raw, transport: 'cloud', voltageOnly: true } })) : [];
+  }
+
   return {
     startStreaming,
     electricityEpoch() { return electricityEpoch; },
     canSampleStream() {
-      return Boolean(local.snapshot() || stream && electricalDevices.length && electricalDevices.some(device =>
+      return Boolean(local.snapshot() || local.voltageSnapshot?.() || stream && electricalDevices.length && electricalDevices.some(device =>
         stream.snapshot(device.id, device.ids, { requiredIds: device.requiredIds }) !== null));
     },
     streamStatus() { return stream?.status() ?? null; },
@@ -621,13 +651,19 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
     chargerScheduleControl() { return controlBackend === 'native' ? nativeScheduleControl : scheduleControl; },
     async electricity({ now = Date.now(), signal } = {}) {
       validNow(now);
-      const results = await Promise.allSettled(electricalDevices.map(async ({ id, prefix, fields, verified, ids, requiredIds }) => {
+      const results = await Promise.allSettled(electricalDevices.map(async definition => {
+        const { id, prefix, fields, verified, ids, requiredIds } = definition;
         const epoch = electricityEpoch;
         const direct = prefix === 'ev1' ? local.snapshot() : null;
         if (direct) {
           transports.set(id, 'ocpp'); streamedElectricity.delete(id);
-          return electricalObservations(direct, id, prefix, ELECTRICITY_FIELDS.ev1, now, true).map(row => ({ ...row,
+          const rows = electricalObservations(direct, id, prefix, ELECTRICITY_FIELDS.ev1, now, true).map(row => ({ ...row,
             quality: [...row.quality, 'local_ocpp'], raw: { ...row.raw, transport: 'ocpp' } }));
+          const missingPhase = rows.some(row => row.unit === 'V' && (row.value === null || row.value < 200 || row.value > 250
+            || row.quality.some(flag => ['missing', 'stale', 'invalid_numeric', 'invalid_unit', 'future_source_time'].includes(flag))));
+          const fallback = await supplementalCloudVoltage(definition, now, signal, missingPhase);
+          if (epoch !== electricityEpoch) throw new ProviderError('provider-request-aborted');
+          return [...rows, ...fallback];
         }
         const validate = payload => {
           const rows = electricalObservations(payload, id, prefix, fields, now, verified);
@@ -638,17 +674,25 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
         const { payload, transport, usesStream } = await observationResult(id, ids, { signal, requiredIds, reconcile: streaming, validate });
         if (epoch !== electricityEpoch) throw new ProviderError('provider-request-aborted');
         const rows = electricalObservations(payload, id, prefix, fields, now, verified);
+        if (prefix === 'ev1') cloudVoltage.set(id, { payload, nextReadAt: now + Math.max(60_000, fallbackIntervalMs) });
         transports.set(id, transport);
         if (usesStream) streamedElectricity.add(id);
         else streamedElectricity.delete(id);
         return rows.map(row => ({ ...row, raw: { ...row.raw, transport: 'cloud' } }));
       }));
-      return annotateElectricalCurrents(results.flatMap((result, index) => result.status === 'fulfilled' ? result.value : electricalDevices[index].fields.map(([id, name, unit]) => ({
+      const observations = results.flatMap((result, index) => result.status === 'fulfilled' ? result.value : electricalDevices[index].fields.map(([id, name, unit]) => ({
         ...baseObservation({ source: 'easee', device: electricalDevices[index].id, signal: `${electricalDevices[index].prefix}_${name}`, unit, now,
           quality: failureFlags(result.reason) }),
-        raw: { observationId: id, acquisitionOnly: true, auditOnly: name.endsWith('_counter'),
+        raw: { observationId: id, acquisitionOnly: true, auditOnly: name.endsWith('_counter'), transport: 'cloud',
           error: providerFailureCode(result.reason), retryAfterMs: result.reason?.retryAfterMs },
-      }))));
+      })));
+      // A voltage-only native sample may coexist with cloud electrical evidence.
+      // Keep it out of energy integration and live-current readiness.
+      const voltage = local.voltageSnapshot?.();
+      if (voltage && !observations.some(row => row.raw?.transport === 'ocpp'))
+        observations.push(...electricalObservations(voltage, easee.charger_id, 'ev1', ELECTRICITY_FIELDS.ev1.filter(([, , unit]) => unit === 'V'), now, true)
+          .map(row => ({ ...row, quality: [...row.quality, 'local_ocpp'], raw: { ...row.raw, transport: 'ocpp', voltageOnly: true } })));
+      return annotateElectricalCurrents(observations);
     },
 
     async easee({ now = Date.now(), signal } = {}) {
@@ -659,7 +703,7 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
       const rows = results.flatMap((result, index) => result.status === 'fulfilled' ? result.value : jobs[index][1].map((id, phase) => ({ ...baseObservation({
         source: 'easee', device: easee[jobs[index][0]], signal: `${jobs[index][2]}_l${phase + 1}`, unit: 'A', now,
         quality: ['current_snapshot_not_energy', ...failureFlags(result.reason)], retryAfterMs: result.reason?.retryAfterMs,
-      }), raw: { error: providerFailureCode(result.reason), retryAfterMs: result.reason?.retryAfterMs } })));
+      }), raw: { error: providerFailureCode(result.reason), retryAfterMs: result.reason?.retryAfterMs, transport: 'cloud' } })));
       const property = rows.filter(row => row.signal.startsWith('property_'));
       const charger = rows.filter(row => row.signal.startsWith('ev1_'));
       if (property.length === 3 && property.every(row => row.value === 0)) property.forEach(row => row.quality.push('all_zero_property_current'));

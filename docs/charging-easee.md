@@ -214,8 +214,11 @@ averages the resulting charging power. The household reference includes original
 see [household history](charging.md#planning-and-equalizer). With no usable supply-budget
 evidence it uses live net allowance without subtracting demand twice. Missing
 voltage never becomes an invented nominal value. Both household chargers use the
-published smoothed per-phase voltage estimates for planned power and duration;
-valid live local voltage is provisional startup evidence until the estimates are
+published smoothed per-phase voltage estimates for planned power and duration.
+Only the Easee charger and Equalizer supply these estimates, in priority order
+Charger 1 OCPP, Charger 1 Easee Cloud, then Equalizer Easee Cloud. Charger 2
+voltage is excluded because its phase order is not verified against those sources.
+Valid live Easee voltage is provisional startup evidence until the estimates are
 established. Present-time measurements and native current limits retain their
 separate authority. See [smoothed phase voltage](recording.md#smoothed-phase-voltage).
 
@@ -266,7 +269,11 @@ charger only removes that restriction; it does not restore cloud authorization
 for a new charging session.
 
 The local receiver supports charger power, phase currents and explicitly
-identified phase-neutral voltages. Property/Equalizer readings and finalized
+identified phase-neutral voltages. Its voltage-only feed remains usable without
+a complete power/current snapshot, while electrical integration and control retain
+their independent readiness requirements. Saved estimate provenance identifies
+all contributing feeds and the latest contributing feed at that historical time.
+Property/Equalizer readings and finalized
 cloud session checks remain cloud data; connector 0 is never guessed to mean
 an Equalizer meter. A working local socket or complete electrical readings do
 not prove that charging authorization or scheduling is functioning.

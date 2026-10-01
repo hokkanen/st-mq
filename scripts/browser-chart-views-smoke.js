@@ -11,10 +11,39 @@ import { CHART_VIEWS } from '../src/domain/chart-views.js';
 import { EXPLORER_SERIES } from '../chart/series-explorer.js';
 import { CHART_FIXTURE_VOLTAGE_V, seedChartFixture } from './lib/chart-fixture.js';
 import { addFireplace } from '../src/app/fireplace.js';
+import { VoltageEstimator } from '../src/storage/voltage.js';
+
+function seedVoltageRecordingFixture(app, now) {
+  const minute = 60_000;
+  let at = now - 60 * minute;
+  const estimator = new VoltageEstimator(app.store, { recorder: app.engine.recorder, input: 'providers', clock: () => at });
+  const phases = [
+    [1, 30, 0, 'easee', 'ocpp'], [2, 60, 0, 'easee', 'cloud'], [3, 25, 5, 'easee', 'cloud'],
+  ];
+  for (; at <= now; at += minute) for (const [phase, duration, endOffset, source, transport] of phases) {
+    const end = now - endOffset * minute;
+    if (at < end - duration * minute || at > end) continue;
+    estimator.ingest({
+      source, device: `invented-voltage-source-${phase}`, signal: `${phase === 3 ? 'property' : 'ev1'}_voltage_l${phase}`,
+      value: 226 + 2 * phase, unit: 'V', sourceTime: at, receivedAt: at, quality: [],
+      raw: { voltageMapping: 'phase-neutral', transport },
+    });
+  }
+  estimator.interrupt({ source: 'easee', devices: ['invented-voltage-source-3'], transport: 'cloud', now });
+  for (const transport of ['ocpp', 'cloud']) app.engine.recorder.recordEnergy({
+    source: 'easee', device: `invented-energy-${transport}`, prefix: 'ev1', transport,
+    start: now - minute, end: now, receivedAt: now, energies: [.01, .01, .01], powers: [.6, .6, .6], quality: ['estimated'],
+  });
+  const saved = app.engine.recorder.status(now).parameters;
+  for (const [phase, duration] of phases) assert.equal(saved.find(row => row.signal === `voltage_estimate_l${phase}`
+    && row.voltage?.inputs !== 8)?.voltage.coverageMs, duration * minute, `L${phase}: recorder exposes actual accumulated coverage`);
+  app.engine.tick();
+}
 
 const directory = mkdtempSync(join(tmpdir(), 'stmq-chart-views-browser-'));
 const now = Date.parse('2026-09-07T12:00:00Z');
 const screenshotDirectory = process.env.STMQ_SCREENSHOT_DIR ?? 'var';
+const voltageOnly = process.argv.includes('--voltage-only');
 let app, socket, browser, id = 0;
 const pending = new Map(), errors = [], screenshots = [];
 try {
@@ -22,6 +51,7 @@ try {
   const config = loadConfig({ STMQ_CONFIG: join(directory, 'options.json'), STMQ_DATA_DIR: directory,
     STMQ_PORT: '0', STMQ_INPUT: 'simulated' }, directory);
   app = await start({ config, clock: () => now });
+  if (voltageOnly) seedVoltageRecordingFixture(app, now);
   seedChartFixture(app.store, now);
   addFireplace(app.store, 'simulated', { kg: 5, requestId: 'invented-chart-views-fire' }, now - 3 * 3600_000);
   app.store.observation({ signal: 'alarm_code', value: 13, unit: 'code', source: 'simulation',
@@ -89,7 +119,7 @@ try {
     assert(new Set(periodicFixture.series[key].filter(point => Number.isFinite(point.y)).map(point => point.y)).size > 10,
       `${key}: source readings change gradually across enough reports to inspect their curve`);
   }
-  let endpoint = process.argv[2];
+  let endpoint = process.argv.slice(2).find(argument => !argument.startsWith('--'));
   if (!endpoint) {
     const profile = join(directory, 'chrome'); mkdirSync(profile);
     browser = spawn(process.env.STMQ_CHROME_BIN ?? '/opt/google/chrome/chrome', [
@@ -590,7 +620,7 @@ try {
     const key = `voltage_estimate_l${index + 1}`;
     await choose('series', key);
     await evaluate("document.querySelector('.history-panel').scrollIntoView({block:'start'}); true"); await settle();
-    assert.match(await evaluate("document.getElementById('chart-legend').textContent"), /Supply L[123] voltage estimate/);
+    assert.match(await evaluate("document.getElementById('chart-legend').textContent"), /Voltage estimate L[123]/);
     const paths = await drawnPaths(key);
     const first = paths.flatMap(path => path.path).find(command => command.method === 'moveTo');
     assert(first, `${key}: the established database estimate has a painted trace`);
@@ -598,9 +628,54 @@ try {
       return {x:r.left+${first.args[0]}+2,y:r.top+${first.args[1]}+1}; })()`);
     await send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...point }); await settle();
     const tooltip = await evaluate("window.chartLabels.join(' ')");
-    assert.match(tooltip, new RegExp(`Supply L${index + 1} voltage estimate.*${expectedVoltage}`));
+    assert.match(tooltip, new RegExp(`Voltage estimate L${index + 1}.*${expectedVoltage}`));
     assert.match(tooltip, /saved smoothed voltage estimate; not a live measurement/);
+    assert.match(tooltip, /contributing source: Simulation/);
+    assert.match(tooltip, /latest update from: Simulation/);
   }
+  await choose('view', 'voltage_estimates');
+  assert.equal(await evaluate("document.getElementById('history').dataset.view"), 'voltage_estimates');
+  for (let phase = 1; phase <= 3; phase++) {
+    assert.match(await evaluate("document.getElementById('chart-legend').textContent"), new RegExp(`Voltage estimate L${phase}`));
+    assert((await drawnPaths(`voltage_estimate_l${phase}`)).length, `Voltage estimate L${phase} is visible by default`);
+  }
+  if (voltageOnly) {
+    for (const [width, height] of [[1280, 1100], [390, 844], [320, 568]]) {
+      await viewport(width, height, width < 500);
+      for (const theme of ['dark', 'light']) {
+        if (await evaluate('document.documentElement.dataset.theme') !== theme)
+          await evaluate("document.getElementById('theme-toggle').click(); true");
+        await evaluate("document.querySelector('.history-panel').scrollIntoView({block:'start'}); true");
+        await settle();
+        assert(await evaluate('document.documentElement.scrollWidth <= innerWidth'), `${width}px ${theme}: no horizontal overflow`);
+        for (let phase = 1; phase <= 3; phase++) assert((await drawnPaths(`voltage_estimate_l${phase}`)).length,
+          `${width}px ${theme}: voltage estimate L${phase} remains painted`);
+        await capture(`voltage-estimates-${width}-${theme}`);
+      }
+    }
+    await evaluate("document.getElementById('recording-details').open=true; document.getElementById('recording-adaptive-details').open=true; true");
+    await until("[...document.querySelectorAll('tr[data-signal=\"voltage_estimate_l1\"]')].some(row=>row.textContent.includes('Collecting voltage history'))");
+    const recordingRows = await evaluate(`(() => Object.fromEntries([1,2,3].map(phase => {
+      const source = ['Charger 1 · OCPP','Charger 1 · Easee Cloud','Equalizer · Easee Cloud'][phase-1];
+      const row = [...document.querySelectorAll('tr[data-signal="voltage_estimate_l' + phase + '"]')].find(row=>row.textContent.includes(source));
+      row.querySelector('details').open = true;
+      return [phase, row.textContent];
+    })))()`);
+    assert.match(recordingRows[1], /Voltage estimate L1.*Smoothed voltage · V.*Collecting voltage history.*30 of 60 minutes/);
+    assert.match(recordingRows[1], /Charger 1 · OCPP/);
+    assert.match(recordingRows[2], /Established estimate.*Charger 1 · Easee Cloud/);
+    assert.match(recordingRows[3], /Voltage collection paused.*25 of 60 minutes.*Equalizer · Easee Cloud/);
+    for (const text of Object.values(recordingRows)) assert.doesNotMatch(text, /failed its source quality checks|No age cutoff applies/);
+    const energySourceLabels = await evaluate("[...document.querySelectorAll('tr[data-signal=\"ev1_energy_l1\"] th small')].map(node=>node.textContent)");
+    assert(energySourceLabels.includes('Easee · OCPP · kWh'));
+    assert(energySourceLabels.includes('Easee · Cloud · kWh'));
+    await viewport(1280, 1100);
+    await evaluate("document.getElementById('recording-adaptive-details').scrollIntoView({block:'start'}); true");
+    await settle(); await capture('voltage-recording-status');
+    assert.deepEqual(errors, [], 'Voltage views and tooltip interactions have no uncaught browser exceptions');
+    console.log('Voltage browser checks passed: dedicated phase view, three default traces, per-phase explorer labels and saved-source tooltips, both themes at 320/390/1280px; real estimator collecting/established/paused recorder states and distinct OCPP/cloud recording labels.');
+    console.log(`Screenshots: ${screenshots.join(', ')}`);
+  } else {
   await choose('view', 'power');
   const checkDateRange = async (start, end = start) => until(`document.getElementById('history').dataset.ready === 'true'
     && document.getElementById('history').dataset.rangeStart === ${JSON.stringify(start)}
@@ -1383,6 +1458,7 @@ try {
   assert.deepEqual(errors, [], 'All view selections and cursor interactions have no uncaught browser exceptions');
   console.log(`Chart views browser checks passed: ${CHART_VIEWS.length} named views, ${EXPLORER_SERIES.length} searchable explorer choices, Home learning groups, Garage target and protection history without learned outcomes, unified view/series browsing without chart changes, separate searches, centered modal keyboard/touch/focus without automatic search keyboards, periodic temperature Bézier geometry, persistent interpolation toggle with step-only rendering and restored original curves/lines, compact accessible legend footer including save failure, solid solar history and dash-dot forecast, charger phase fills, visibility isolation, garage readback, crosshair bounds and touch, dark/light themes, 320/390px portrait, and aligned landscape/tablet headers with long selected labels.`);
   console.log(`Screenshots: ${screenshots.join(', ')}`);
+  }
 } finally {
   socket?.close(); for (const request of pending.values()) clearTimeout(request.timer);
   await app?.close();

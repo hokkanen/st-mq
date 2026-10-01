@@ -91,7 +91,8 @@ const activePeriod = (control, now) => control?.execution?.periods?.some(period 
 function livePlanningVoltages(views, supply, now) {
   const valid = value => Number.isFinite(value) && value >= 200 && value <= 250;
   const fresh = at => Number.isSafeInteger(at) && at <= now && now - at <= 5 * MINUTE;
-  const local = views.filter(view => view.telemetry?.providerConnected !== false);
+  // Only Easee's charger and Equalizer share verified installation phase order.
+  const local = views.filter(view => view.id === 'charger1' && view.telemetry?.providerConnected !== false);
   const phaseSources = local.map(view => view.telemetry?.phaseVoltageV).filter(field => field?.available && fresh(field.measuredAt));
   const scalar = local.map(view => view.values.voltageV).find(field => field.available && valid(field.value)
     && (Array.isArray(field.inputs) && field.inputs.length > 0 ? field.inputs.every(input => fresh(input.measuredAt)) : fresh(field.measuredAt)));
@@ -734,8 +735,9 @@ export class ChargingRuntime {
       } else item.targetState = null;
       if (vehicleId) result[id].vehicleCapacityFallbackKwh = this.settings.vehicles[vehicleId].capacityKwh;
     }
-    // Only local physical EVSE voltage may fill a local supply gap.
-    const voltage = Object.values(result).find(item => item.voltageV?.available && item.providerConnected !== false)?.voltageV;
+    // Only Easee's charger/Equalizer voltage may supply a shared planning input.
+    const voltage = result.charger1?.voltageV?.available && result.charger1.providerConnected !== false
+      ? result.charger1.voltageV : null;
     if (voltage) for (const item of Object.values(result)) if (!item.voltageV?.available)
       item.voltageV = { ...voltage, source: 'local-evse-supply' };
     return result;

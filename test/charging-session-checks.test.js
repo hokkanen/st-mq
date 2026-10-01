@@ -54,7 +54,7 @@ test('all-session comparison is energy weighted and excludes incomplete, zero-re
   assert.deepEqual(easeeTotals, { basis: 'electricity-meter', recordedSessions: 6, comparedSessions: 2,
     excludedSessions: 4, exclusionReasons: { 'comparison-incomplete': 1, 'zero-reference': 1, stale: 1, 'missing-estimate': 1 },
     estimatedKwh: 93, referenceKwh: 100, differenceKwh: -7,
-    start: 1000, end: 131000, lastSessionEnd: 131000 });
+    start: 1000, end: 131000, lastSessionEnd: 131000, referenceTransports: ['unknown'] });
   assert.equal(tesla.summary.comparedSessions, 1);
   assert.equal(tesla.summary.differencePercent, 12.5);
   assert.deepEqual({ events: store.events().length, states: store.db.prepare('SELECT count(*) AS n FROM state').get().n }, before);

@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
 import { Store } from '../src/storage/store.js';
 import { Engine } from '../src/app/engine.js';
+import { readPlanningVoltage } from '../src/storage/voltage.js';
 import { recordLearningContext } from '../src/app/committed-learning.js';
 import { loadConfig } from '../src/app/config.js';
 import { createAppServer } from '../src/app/server.js';
@@ -67,6 +68,41 @@ test('retired Garage pause state rejects before startup writes or MQTT connectio
   /Unsupported saved Garage adapter state/);
   assert.equal(connects, 0);
   assert.equal(store.db.prepare('SELECT total_changes() AS changes').get().changes, before);
+});
+
+test('retired voltage estimate state rejects before any Engine startup mutation', t => {
+  const store = new Store(':memory:');
+  t.after(() => store.close());
+  store.setState('voltage:estimate:providers', { version: 'voltage-ewma-v1', candidates: {}, phases: [] });
+  const before = store.db.prepare('SELECT total_changes() AS changes').get().changes;
+  assert.throws(() => new Engine({ store, config: { input: 'providers', settings: {} } }),
+    /Unsupported voltage estimate state; start a fresh development database/);
+  assert.equal(store.db.prepare('SELECT total_changes() AS changes').get().changes, before);
+});
+
+test('changing charger transport preserves mature voltage while changed physical phase mapping resets it', t => {
+  const f = setup(t, 'providers');
+  f.config.connections = { easee: { charger_id: 'voltage-fixture-charger', charger_voltage_ids: [194, 195, 196],
+    local_ocpp: { enabled: false } } };
+  const first = f.createEngine();
+  for (let minute = 0; minute <= 60; minute++) {
+    if (minute) f.advance(60_000);
+    for (let phase = 1; phase <= 3; phase++) first.voltage.ingest({ source: 'easee', device: 'voltage-fixture-charger',
+      signal: `ev1_voltage_l${phase}`, value: 230 + phase, unit: 'V', sourceTime: first.clock(), receivedAt: first.clock(),
+      quality: [], raw: { acquisitionOnly: true, voltageMapping: 'phase-neutral', transport: 'cloud' } });
+  }
+  const saved = f.store.getState('voltage:estimate:providers');
+  const read = () => readPlanningVoltage(f.store, { input: 'providers', now: first.clock() });
+  assert.deepEqual(read().voltageV, [231, 232, 233]);
+  for (const enabled of [true, false]) {
+    f.config.connections.easee.local_ocpp.enabled = enabled;
+    f.createEngine();
+    assert.deepEqual(f.store.getState('voltage:estimate:providers'), saved, 'Transport selection retains all learning and provenance');
+    assert.deepEqual(read().voltageV, [231, 232, 233]);
+  }
+  f.config.connections.easee.charger_voltage_ids = [195, 196, 194];
+  f.createEngine();
+  assert.deepEqual(read().voltageV, [null, null, null], 'A changed physical phase assignment requires new coverage');
 });
 
 test('automatic simulation applies pulse sequence once and restart preserves recency and timed override', async t => {

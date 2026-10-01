@@ -2,6 +2,8 @@ import { HISTORY_GROUPS } from '../src/domain/history-series.js';
 import { durationText, qualityReasonText } from './reading-status.js';
 import { providerName } from './provider-status.js';
 import { recordingPolicy, recordedSignalInfo, RECORDING_POLICIES } from '../src/domain/recording-policy.js';
+import { recordingSourceLabel } from '../src/domain/recording-source.js';
+import { voltageProvenanceDetails } from '../src/domain/voltage-provenance.js';
 
 export function durationLabel(ms) {
   if (!Number.isFinite(ms) || ms < 0) return 'Collecting';
@@ -13,6 +15,25 @@ const number = value => Number.isFinite(value) ? new Intl.NumberFormat('en-GB',{
 const readable = value => String(value ?? '').replaceAll('_',' ');
 
 export function recordingStatus(row = {}, { now = Date.now() } = {}) {
+  if (row.voltage) {
+    const v = row.voltage, provenance = voltageProvenanceDetails(v);
+    const label = v.mature ? v.reporting ? 'Established estimate' : 'Estimate held · input unavailable'
+      : v.reason === 'source-unconfigured' ? 'Waiting for voltage source'
+        : v.reporting ? 'Collecting voltage history' : 'Voltage collection paused';
+    const messages = [v.mature ? 'Saved smoothed voltage for planning; this is not a live voltage reading.'
+      : `${number(Math.min(60,Math.max(0,v.coverageMs ?? 0)/60000))} of 60 minutes of valid coverage collected.`];
+    if (!v.reporting) messages.push(v.reason === 'source-unconfigured'
+      ? 'No eligible configured phase-voltage source is available.'
+      : 'Waiting for a valid phase-voltage report or confirmed device telemetry. Missing time does not add coverage.');
+    if (provenance.contributors.length) messages.push(`Contributing sources: ${provenance.contributors.join('; ')}.`);
+    if (provenance.latest) messages.push(`Latest contributing input: ${provenance.latest}.`);
+    if (!provenance.complete) messages.push('Source provenance is incomplete.');
+    if (Number.isFinite(v.lastObservedAt) && v.lastObservedAt <= now)
+      messages.push(`The latest contributing voltage report is ${durationText(now-v.lastObservedAt)} old.`);
+    if (Number.isFinite(row.lastSavedAt) && row.lastSavedAt <= now)
+      messages.push(`The estimate was last saved ${durationText(now-row.lastSavedAt)} ago.`);
+    return {label,detail:messages.join(' ')};
+  }
   const freshness = row.freshness;
   if (!freshness) return { label: ({ fresh: 'Recorded acquisition', stale: 'Reading rejected',
     failed: 'Acquisition failed', unavailable: 'Reading unavailable' })[row.status] ?? 'Waiting for source',
@@ -87,7 +108,7 @@ export function renderRecording(status, root) {
     if(row.group!==previousGroup) {const tr=document.createElement('tr'),cell=document.createElement('th');cell.colSpan=5;cell.scope='colgroup';cell.textContent=row.group;tr.className='recording-group';tr.append(cell);body.append(tr);previousGroup=row.group;}
     const tr=document.createElement('tr'),title=document.createElement('th');title.scope='row';title.textContent=row.label;
     tr.dataset.signal=row.signal;tr.dataset.streamId=row.streamId??row.signal;
-    if(row.source) {const source=document.createElement('small');const name=({ 'garage-adapter':'Garage heat pump', 'mqtt-equipment':'MQTT equipment', 'shelly-mqtt':'Shelly', simulation:'Simulation' })[row.source]??providerName(row.source)??readable(row.source);
+    if(row.source) {const source=document.createElement('small');const name=recordingSourceLabel(row)??({ 'voltage-estimate':'Smoothed voltage', 'garage-adapter':'Garage heat pump', 'mqtt-equipment':'MQTT equipment', 'shelly-mqtt':'Shelly', simulation:'Simulation' })[row.source]??providerName(row.source)??readable(row.source);
       source.textContent=`${name} · ${({degC:'°C','degree-minutes':'°min'})[row.unit]??row.unit??''}`;title.append(source);}
     if(row.streamQualifier) {const qualifier=document.createElement('small');qualifier.className='recording-stream-qualifier';qualifier.textContent=row.streamQualifier;title.append(qualifier);}
     tr.append(title);
@@ -329,6 +350,8 @@ export function energyAuditRow(item) {
       notice: null,
       detailsLabel: excluded > 0 ? `${sessions(excluded)} excluded · details` : 'Comparison details',
       details: s.recordedSessions > 0 ? [
+        ...(!second ? [`Final meter references: ${(s.referenceTransports?.length ? s.referenceTransports : ['unknown'])
+          .map(transport => recordingSourceLabel({source:'easee',transport})).join('; ')}. Recorded energy can include different input transports.`] : []),
         ...reasons,
         ...(reasons.length > 1 ? ['Reason counts can overlap: a session may have more than one issue.'] : []),
         ...(excluded > 0 ? ['Excluded sessions remain in history and do not contribute to these totals.'] : []),
@@ -355,9 +378,10 @@ export function energyAuditRow(item) {
     detailsLabel: 'Meter readings and coverage',
     details: [
       ...(latest ? [
+        `Meter source: Equalizer · ${recordingSourceLabel({source:'easee',transport:latest.transport})}.`,
         `${s.readingCount} cumulative meter reading${s.readingCount === 1 ? '' : 's'} recorded.`,
         `Latest reading received: ${checkDate(latest.receivedAt)}. Meter times describe the source reading; receiving the same reading again does not create a new counter.`,
-      ] : ['The property import counter is supplied by the Easee Equalizer. Check its connection under Equipment.']),
+      ] : ['The property import counter is supplied by the Easee Equalizer through Easee Cloud. Check its connection under Equipment.']),
       ...(previous ? [`Previous meter reading: ${checkEnergy(previous.valueKwh)} · ${checkDate(previous.sourceTime)}.`] : []),
       ...(coverage ? [
         `Latest meter period: ${checkPeriod(coverage)}.`,

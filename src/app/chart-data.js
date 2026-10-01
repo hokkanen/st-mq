@@ -30,6 +30,7 @@ import { CHART_VIEW_BY_KEY } from '../domain/chart-views.js';
 import { RecordedEvidenceLine } from './chart-recorded-evidence.js';
 import { createVoltageReader, VOLTAGE_SIGNALS } from '../storage/voltage.js';
 import { currentPowerKw, voltageMetadata, voltageSegments } from './chart-voltage.js';
+import { recordedTransport } from '../domain/recording-source.js';
 
 export const CHART_TIME_ZONE = 'Europe/Helsinki';
 const HOUR = 3_600_000, DAY = 24 * HOUR;
@@ -655,7 +656,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
           lines.auxiliary_power.add(time, kw, coverageMetadata);
         }
       } else {
-        let metadata;
+        let metadata = row.source === 'easee' ? { source: row.source, transport: recordedTransport(row) } : undefined;
         if (DOOR_SIGNALS.includes(signal)) {
           let raw; try { raw = JSON.parse(row.raw); } catch { /* Optional telemetry basis. */ }
           metadata = { source: row.source, estimated: raw?.estimated === true, basis: raw?.basis, learningRole: 'history-only' };
@@ -700,15 +701,17 @@ export function getChartData({ store, input = 'offline', contract = null, market
           // basis changes. These are display boundaries, never new currents.
           for (const boundary of voltageReader.boundaries(previous.at, time)) {
             const estimate = voltageReader(boundary, { allowFuture: previous.imported });
-            const metadata = { ...voltageMetadata(estimate), displayBoundary: true,
+            const metadata = { ...previous.metadata, ...voltageMetadata(estimate), displayBoundary: true,
               observedAt: previous.at, interpolated: false };
             line.add(boundary, currentPowerKw(previous.values, estimate), metadata);
           }
         }
         const estimate = voltageReader(time, { allowFuture: group.imported });
         const power = group.complete ? currentPowerKw(group.values, estimate) : null;
-        line?.add(time, power, voltageMetadata(estimate));
-        currentPowerHistory.set(prefix, { at: time, values: group.values, imported: group.imported });
+        const metadata = { ...(group.source === 'easee' ? { source: group.source, transport: group.transport } : {}),
+          ...voltageMetadata(estimate) };
+        line?.add(time, power, metadata);
+        currentPowerHistory.set(prefix, { at: time, values: group.values, imported: group.imported, metadata });
       }
     }
     previousTelemetryAt = time;
@@ -810,7 +813,10 @@ export function getChartData({ store, input = 'offline', contract = null, market
       // Easee phases retain independent source timestamps in the phase view.
       const key = `${prefix}:${row.source}:${row.device}:${row.import_id ?? ''}:${row.row_number ?? row.received_at}`;
       let group = phases.get(key);
-      if (!group) { group = { prefix, id: row.id, values: [null, null, null], imported: row.import_id != null, priority: row.import_id === null ? 1 : 0 }; phases.set(key, group); }
+      const transport = row.source === 'easee' ? recordedTransport(row) : null;
+      if (!group) { group = { prefix, id: row.id, source: row.source, transport,
+        values: [null, null, null], imported: row.import_id != null, priority: row.import_id === null ? 1 : 0 }; phases.set(key, group); }
+      else if (group.transport !== transport) group.transport = null;
       group.values[Number(row.signal.at(-1)) - 1] = !row.alignedPowerSnapshot && flags.includes('asynchronous_snapshot')
         || flags.includes('ev_exceeds_property_current') ? null : value;
       group.id = row.id;
@@ -830,7 +836,8 @@ export function getChartData({ store, input = 'offline', contract = null, market
         const line = envelopes[signal]; if (!line) continue;
         const evidence = segment.estimate.phases[phase];
         const metadata = { basis: 'recorded-voltage-estimate', source: 'voltage-estimate',
-          observedAt: evidence?.at ?? null, voltageAvailability: evidence?.availability ?? null };
+          observedAt: evidence?.at ?? null, voltageAvailability: evidence?.availability ?? null,
+          voltageEstimate: { inputs: evidence?.inputs ?? null, input: evidence?.input ?? null } };
         line.add(segment.start, segment.estimate.voltageV[phase], metadata);
         line.add(segment.end - 1, segment.estimate.voltageV[phase], metadata);
       }

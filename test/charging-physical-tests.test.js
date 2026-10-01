@@ -24,6 +24,7 @@ function fixture() {
       controls: { enabled: true }, capabilities: { scheduling: true }, settings: { manualSoc: 20, minimumSoc: 80 },
       control: { snapshot: { transport: index ? 'shelly-evse' : 'easee', online: true, readAt: now, controlReady: true }, session: { connected: false } },
       request: null, vehicle: { state: 'disconnected', id: null }, identification: { phase: 'waiting' }, plan: null,
+      ...(id === 'charger2' ? {forecast:{voltageV:230,powerKw:0}} : {}),
       values: { connected: value(false), soc: value(20, { source: 'manual-fallback', assumed: true }), minimumSoc: value(80, { source: 'manual-fallback' }),
         vehicleCeilingSoc: { available: false, value: null }, capacityKwh: value(74), maximumCurrentA: value(16), voltageV: value(230),
         charging: value(false), powerKw: value(0) },
@@ -78,6 +79,14 @@ test('guided duration uses published planning voltage even before a vehicle draw
   const changed = tests.preview(f.input(), f.view).headroom;
   assert.equal(first.powerKw, 11.52);
   assert.equal(changed.minutes, first.minutes);
+});
+
+test('Charger 2 guide cannot substitute its own voltage for a missing shared forecast', () => {
+  const f=fixture(),tests=f.create(),charger=f.view.chargers[1];
+  delete charger.forecast;
+  const estimate=tests.preview(f.input({chargerId:'charger2',association:charger.association}),f.view).headroom;
+  assert.equal(estimate.powerKw,null);
+  assert.equal(estimate.minutes,null);
 });
 
 test('accepted usable capacity drives preparation without rewriting configuration and is required to arm', () => {

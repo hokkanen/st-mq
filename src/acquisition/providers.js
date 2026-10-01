@@ -158,7 +158,7 @@ function cacheWeather(previous, result, snapshotId, now) {
  * of its last good data; it cannot postpone control or another provider's poll. */
 export function startProviders({ engine, store, config, clock = Date.now, http,
   devices, market = fetchMarket, weather = fetchWeather, outdoor = fetchOutdoorTemperature,
-  temperatureProvider, automatic = true, canControl = () => true, streamFactory } = {}) {
+  temperatureProvider, automatic = true, canControl = () => true, streamFactory, ocppFactory } = {}) {
   const connections = config.connections ?? {};
   http ??= createHttp({ allowChargerScheduling: true, allowOcppSetup: true, canControl });
   const location = configuredLocation(connections);
@@ -170,7 +170,7 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
   }
   // This poll supplies the FMI → Open-Meteo weather fallbacks. The engine
   // uses only these weather sources for outdoor temperature.
-  devices ??= createDeviceProviders({ connections, http, clock, canControl, streamFactory,
+  devices ??= createDeviceProviders({ connections, http, clock, canControl, streamFactory, ocppFactory,
     retryState: store.getState('providers:health')?.easee,
     ocppState: { get: () => store.getState('easee:ocpp'), set: value => store.setState('easee:ocpp', value) },
     ocppSetupState: { get: () => store.getState('easee:ocpp-setup'), set: value => store.setState('easee:ocpp-setup', value) },
@@ -190,7 +190,7 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
       } catch { throw Object.assign(new Error('Charging control transition remains pending'), { code: 'control-transition-pending' }); }
     },
     fallbackIntervalMs: config.acquisition?.easeeIntervalMs ?? 15_000,
-    onStreamDisconnect: ids => interruptElectricity(ids),
+    onStreamDisconnect: (ids, options) => interruptElectricity(ids, options),
     onChargerObservation: observation => engine.charging?.receiveEaseeObservation(observation),
     tokenStore: fileTokenStore(join(config.dataDir, 'easee-tokens.json'), connections.easee ?? {}) });
   engine.ocppSetup = {
@@ -263,7 +263,7 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
   }
   store.setState('providers:health', health);
   let closed = false, timer;
-  const interruptedDevices = new Set();
+  const interruptedDevices = new Map();
 
   function streamHealth() {
     health.easee.localOcpp = devices.localOcppStatus?.() ?? null;
@@ -275,21 +275,23 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
     }
   }
 
-  function interruptElectricity(ids) {
+  function interruptElectricity(ids, { transport } = {}) {
     if (closed || !canControl()) return false;
-    for (const id of ids) interruptedDevices.add(id);
-    ids = [...interruptedDevices];
+    for (const id of ids) interruptedDevices.set(JSON.stringify([id, transport ?? null]), { id, transport });
+    const interruptions = [...interruptedDevices.values()];
+    const affected = row => row && interruptions.some(item => item.id === row.device
+      && (item.transport === undefined || row.transport === item.transport));
     // This RAM projection must become unavailable even if the durable gap write
     // fails. The pending boundary is retried before any subsequent integration.
     if (engine.electricitySnapshot) for (const group of ['charger', 'property'])
-      if (ids.includes(engine.electricitySnapshot[group]?.device)) engine.electricitySnapshot[group] = null;
+      if (affected(engine.electricitySnapshot[group])) engine.electricitySnapshot[group] = null;
     const before = electricity.checkpoint(), checkpoint = structuredClone(before), at = clock();
     try { store.transaction(() => {
-      engine.voltage?.interrupt?.({ source: 'easee', devices: ids, now: at });
+      for (const item of interruptions) engine.voltage?.interrupt?.({ source: 'easee', devices: [item.id], transport: item.transport, now: at });
       for (const [key, previous] of Object.entries(checkpoint.devices)) {
-        if (!ids.includes(previous.device)) continue;
+        if (!affected(previous)) continue;
         engine.recorder?.energyGap?.({ source: 'easee', device: previous.device, prefix: previous.prefix,
-          start: Math.min(previous.at, at), end: Math.max(previous.at, at), quality: ['acquisition-failed'] });
+          transport: previous.transport, start: Math.min(previous.at, at), end: Math.max(previous.at, at), quality: ['acquisition-failed'] });
         delete checkpoint.devices[key];
         checkpoint.availability[key] = false;
       }
@@ -368,7 +370,7 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
             missingTomorrow = Math.max(0, ...result.intervals.map(row => row.end)) < at + 24 * 60 * MINUTE;
           }
         } else {
-          if (!Array.isArray(result) || result.length > 20) throw new Error('Invalid observation batch');
+          if (!Array.isArray(result) || result.length > (name === 'easee' ? 32 : 20)) throw new Error('Invalid observation batch');
           if (name === 'easee') {
             for (const observation of result.filter(row => /_voltage_l[123]$/.test(row.signal)))
               engine.voltage?.ingest(observation, { telemetryAt: voltageTelemetryAt(result, observation, clock()) });
@@ -415,7 +417,7 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
           const currents = [1, 2, 3].map(phase => result.find(observation => observation.device === row.device
             && observation.signal === `${row.prefix}_current_l${phase}`));
           const activeCurrents = currents.filter(observation => Number.isFinite(observation?.value) && observation.value > 1);
-          snapshot[group] = { device: row.device, powerKw: row.powers.reduce((sum, value) => sum + value, 0),
+          snapshot[group] = { device: row.device, transport: row.transport, powerKw: row.powers.reduce((sum, value) => sum + value, 0),
             sourceTime: row.sourceTime, receivedAt: row.at, telemetryAt: row.telemetryAt,
             telemetryConfirmed: row.quality.includes('device_telemetry_confirmed'),
             currentA: currents.every(observation => Number.isFinite(observation?.value))

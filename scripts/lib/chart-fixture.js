@@ -8,7 +8,8 @@ export function seedVoltageFixture(store, { at, input, voltageV }) {
     quality: ['estimated', ...(input === 'simulated' ? ['simulated'] : [])],
     raw: { fixture: true, basis: 'time-weighted-voltage-estimate', voltageMature: true,
       voltageSource: 'synthetic-visual-voltage', voltageAvailability: 'reporting',
-      voltageEstimate: { phase: phase + 1, coverageMs: 3600_000 } },
+      voltageEstimate: { phase: phase + 1, coverageMs: 3600_000, inputs: input === 'simulated' ? 8 : 4,
+        input: input === 'simulated' ? 8 : 4 } },
   });
 }
 

@@ -543,7 +543,12 @@ estimate for each physical phase. The same estimates convert future household
 power into current. These are six-hour-half-life estimates, established after one
 hour of valid elapsed acquisition coverage and recorded adaptively with a 0.5 V
 minimum change floor. The planner reads recorded values, not small internal
-smoothing updates. Valid live local voltage may serve provisionally before an
+smoothing updates. Each phase prefers Charger 1 OCPP, Charger 1 Easee Cloud, then
+Equalizer Easee Cloud. Charger 2 cannot supply shared estimates or provisional
+startup voltage because its phase order is not verified against these sources.
+Shared smoothing retains compact
+contributing-source provenance across feed changes, with stable source recovery.
+Valid live local voltage may serve provisionally before an
 estimate exists; remote vehicle voltage and nominal defaults cannot supply
 missing household evidence. A saved estimate after restart is historical context,
 not proof of a fresh live electrical measurement. See

@@ -1,5 +1,6 @@
 import { ENERGY_SIGNALS } from '../domain/history-series.js';
 import { pendingEnergyObservations } from './pending-energy.js';
+import { recordedTransport } from '../domain/recording-source.js';
 
 const invalid = new Set(['missing','invalid-numeric','invalid-unit','invalid-value','provider-error','provider-unavailable',
   'integration-gap','unknown-phase-share','conflicting-duplicate','stale','retained','failed','unavailable',
@@ -98,10 +99,11 @@ function* rawGroups(rows, stats) {
       if (group) yield group;
       key = nextKey;
       group = { source: row.source, device: row.device, prefix, start: raw?.intervalStart, end: raw?.intervalEnd,
-        basis: raw?.basis, receivedAt: row.received_at, pending: raw?.pending === true,
+        basis: raw?.basis, receivedAt: row.received_at, pending: raw?.pending === true, transport: recordedTransport(row),
         observationIds: [], values: totalOnly(prefix)?[null]:[null, null, null] };
     }
     group.receivedAt = Math.max(group.receivedAt, row.received_at);
+    if (group.transport !== recordedTransport(row)) group.transport = null;
     const index = totalOnly(prefix)?0:Number(row.signal.at(-1)) - 1;
     if (group.seen?.has(index)) group.conflict = true;
     (group.seen ??= new Set()).add(index);

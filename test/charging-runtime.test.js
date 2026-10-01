@@ -84,6 +84,17 @@ const editSession = (runtime, id, changes) => {
 };
 const packet = (soc, at, readingId = 'reading-1', extra = {}) => JSON.stringify({ provider: 'bmw-cardata', soc, measuredAt: at, readingId, ...extra });
 
+test('Charger 2 voltage cannot fill the shared startup estimate or Charger 1 readings', t => {
+  const f = fixture(), runtime = f.create(); t.after(() => runtime.close());
+  const voltage = value => ({value,available:true,measuredAt:f.clock(),source:'shelly-evse'});
+  runtime.chargers.charger2.adapter = { normalize: () => ({providerConnected:true,
+    voltageV:voltage(241),phaseVoltageV:voltage([241,237,229])}) };
+  runtime.tick({prices});
+  assert.deepEqual(runtime.coordination.assumptions.voltage.voltageV,[null,null,null]);
+  assert.equal(chargerView(runtime).values.voltageV.available,false);
+  assert.equal(chargerView(runtime,'charger2').values.voltageV.value,241,'own live reading remains local');
+});
+
 test('published voltage survives restart and live voltage changes do not rewrite the waiting plan or session log', async t => {
   const f = fixture(preferences, {}, { charger1: true });
   const database = new Store(':memory:');

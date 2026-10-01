@@ -29,6 +29,7 @@ export function addRecordedEnergy({store,range,now,input,envelopes,timing,voltag
     const complete = values.length === (totalOnly(prefix)?1:3) && values.every(Number.isFinite);
     const total = complete ? values.reduce((sum,value)=>sum+value,0) : null;
     const metadata = {basis:'estimated',intervalStart:start,intervalEnd:end,source:group.source,fromEnergy:true,
+      ...(group.source === 'easee' ? { transport: group.transport ?? null } : {}),
       ...(group.pending ? { pending: true } : {}),
       ...(group.conflict ? { quality: ['conflicting-logical-energy'] } : {})};
     if (prefix==='caravan') {

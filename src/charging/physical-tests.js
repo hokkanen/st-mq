@@ -64,7 +64,8 @@ function headroom(input, charger) {
   const capacityKwh = input.capacityKwh;
   const forecastPower = charger?.forecast?.powerKw;
   const plannedVoltage = charger?.forecast?.voltageV;
-  const voltage = plannedVoltage >= 200 && plannedVoltage <= 250 ? plannedVoltage : field(charger, 'voltageV');
+  const voltage = plannedVoltage >= 200 && plannedVoltage <= 250 ? plannedVoltage
+    : charger?.id === 'charger1' ? field(charger, 'voltageV') : null;
   const limits = ['maximumCurrentA', 'vehicleCurrentA', 'nativeCurrentA'].map(name => field(charger, name))
     .filter(value => finite(value) && value > 0);
   const powerKw = forecastPower > 0 ? forecastPower : limits.length && voltage >= 200 && voltage <= 250

@@ -1,10 +1,13 @@
 // Acquisition-only integration. The property import counter is audit data and never
 // participates in this calculation. All durable learning inputs are the three
 // interval energies emitted here and subsequently committed by the recorder.
+import { recordedTransport } from './recording-source.js';
+
 const HOUR = 3_600_000;
 const BAD = new Set(['provider_error', 'missing', 'invalid_unit', 'invalid_numeric', 'conflicting_duplicate', 'future_source_time']);
 const time = value => Number.isSafeInteger(value) && value >= 0;
 const positive = value => Number.isFinite(value) && value >= 0;
+const transportOf = row => row ? recordedTransport(row) ?? undefined : undefined;
 
 export class ElectricityAccumulator {
   constructor({ maxAgeMs = 300_000, maxTelemetryAgeMs = 17 * 60_000, maxGapMs = 60_000, checkpoint } = {}) {
@@ -37,7 +40,7 @@ export class ElectricityAccumulator {
     if (!Array.isArray(rows) || !time(now)) throw new TypeError('Electrical rows and a valid timestamp are required');
     const groups = new Map(), audits = [], intervals = [], gaps = [];
     for (const row of rows) {
-      if (row?.source !== 'easee' || typeof row.device !== 'string') continue;
+      if (row?.source !== 'easee' || typeof row.device !== 'string' || row.raw?.voltageOnly) continue;
       const prefix = /^ev1_/.test(row.signal) ? 'ev1' : /^property_/.test(row.signal) ? 'property' : null;
       if (!prefix || /_energy_counter$/.test(row.signal) && row.signal !== 'property_import_energy_counter') continue;
       const key = `${prefix}:${row.device}`;
@@ -48,6 +51,7 @@ export class ElectricityAccumulator {
       const auditKey = `${key}:${row.signal}`, previous = this.auditHeads[auditKey];
       if (previous?.sourceTime === row.sourceTime && previous.value === row.value) continue;
       const quality = [...(row.quality ?? []).filter(flag => flag !== 'stale')];
+      if (transportOf(row) === 'cloud') quality.push('easee_cloud');
       if (previous && row.sourceTime <= previous.sourceTime) quality.push('counter_time_not_increasing');
       if (previous && row.value < previous.value) quality.push('counter_reset');
       audits.push({ source: 'easee', device: row.device, signal: row.signal, sourceTime: row.sourceTime,
@@ -58,7 +62,7 @@ export class ElectricityAccumulator {
       const previous = this.devices[key];
       const snapshot = this.snapshot(group, now);
       if (!snapshot) {
-        if (this.availability[key] !== false) gaps.push({ device: group.device, prefix: group.prefix, start: Math.min(previous?.at ?? now, now), end: Math.max(previous?.at ?? now, now),
+        if (this.availability[key] !== false) gaps.push({ device: group.device, prefix: group.prefix, transport: previous?.transport ?? transportOf(group.rows[0]), start: Math.min(previous?.at ?? now, now), end: Math.max(previous?.at ?? now, now),
           quality: ['electricity_unavailable', ...new Set(group.rows.flatMap(row => (row.quality ?? []).filter(flag => BAD.has(flag) || flag === 'stale')))] });
         this.availability[key] = false;
         delete this.devices[key];
@@ -68,7 +72,7 @@ export class ElectricityAccumulator {
       // Reported power and VI inputs have independent clocks; changing the
       // estimation basis is not a reversal of the same source measurement.
       const sameBasis = previous?.quality.includes('reported_active_power') === snapshot.quality.includes('reported_active_power');
-      const sameTransport = previous?.quality.includes('local_ocpp') === snapshot.quality.includes('local_ocpp');
+      const sameTransport = transportOf(previous) === snapshot.transport;
       const sourceRolledBack = previous && sameBasis && snapshot.sourceTime < previous.sourceTime;
       const previousMaxAge = previous?.quality.includes('device_telemetry_confirmed') ? this.maxTelemetryAgeMs : this.maxAgeMs;
       if (previous && sameTransport && now > previous.at && now - previous.at <= this.maxGapMs && !sourceRolledBack
@@ -78,10 +82,13 @@ export class ElectricityAccumulator {
         const quality = [...new Set([...previous.quality, ...snapshot.quality,
           ...(previous.sourceTime === snapshot.sourceTime ? ['held_source_values'] : [])])];
         intervals.push({ source: 'easee', device: group.device, prefix: group.prefix, start: previous.at, end: now,
-          energies, powers: snapshot.powers, receivedAt: now, sourceTime: snapshot.sourceTime, telemetryAt: snapshot.telemetryAt, quality });
+          energies, powers: snapshot.powers, receivedAt: now, sourceTime: snapshot.sourceTime, telemetryAt: snapshot.telemetryAt,
+          transport: snapshot.transport, quality });
       } else if (previous && now !== previous.at) {
-        gaps.push({ device: group.device, prefix: group.prefix, start: Math.min(previous.at, now), end: Math.max(previous.at, now),
-          quality: [now < previous.at ? 'clock_rollback' : sourceRolledBack ? 'source_time_rollback' : 'electricity_gap'] });
+        gaps.push({ device: group.device, prefix: group.prefix, transport: sameTransport ? snapshot.transport : undefined,
+          start: Math.min(previous.at, now), end: Math.max(previous.at, now),
+          quality: [now < previous.at ? 'clock_rollback' : sourceRolledBack ? 'source_time_rollback' : 'electricity_gap',
+            ...(!sameTransport ? ['transport_changed'] : [])] });
       }
       if (!previous || now >= previous.at) this.devices[key] = snapshot;
       else delete this.devices[key];
@@ -112,7 +119,6 @@ export class ElectricityAccumulator {
     const reportedPower = usable(power) || confirmed;
     let used, powers;
     const quality = ['estimated', 'phase_allocation_estimated'];
-    if (rows.some(row => row.raw?.transport === 'ocpp')) quality.push('local_ocpp');
     if (confirmed) quality.push('device_telemetry_confirmed');
     if (reportedPower && !usable(power)) quality.push('held_power_with_live_telemetry');
     if (reportedPower && power.value === 0) {
@@ -148,6 +154,9 @@ export class ElectricityAccumulator {
     // can confirm an unchanged value without rewriting any measurement time.
     const sourceTime = reportedPower ? power.sourceTime : Math.min(...times);
     const telemetryAt = reportedPower && confirmed ? latestTelemetry : sourceTime;
-    return { device, prefix, at: now, sourceTime, telemetryAt, powers, quality };
+    const transports = [...new Set(used.map(transportOf))];
+    const transport = transports.length === 1 ? transports[0] : undefined;
+    if (transport === 'ocpp') quality.push('local_ocpp');
+    return { device, prefix, at: now, sourceTime, telemetryAt, powers, quality, transport };
   }
 }

@@ -594,6 +594,16 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       if (!power || power.value > 0 && ![183, 184, 185].every(id => rows.some(row => row.id === id))) return null;
       return [...rows, { id: 250, value: true, timestamp: new Date(lastMessageAt).toISOString() }];
     },
+    voltageSnapshot() {
+      // Voltage forecasting needs only explicitly mapped fresh phase-neutral
+      // values. It cannot grant current/power/control readiness to this socket.
+      if (!refreshAuthority() || !transportFresh()) return null;
+      releaseFutureReadings();
+      if (!stateReady) return null;
+      const rows = [...values.values()].filter(row => [194, 195, 196].includes(row.id)
+        && row.value !== null && instant(row.timestamp) <= clock() && clock() - instant(row.timestamp) <= MAX_AGE_MS);
+      return rows.length ? [...rows, { id: 250, value: true, timestamp: new Date(lastMessageAt).toISOString() }] : null;
+    },
     status() {
       const available = Boolean(this.snapshot()), listening = Boolean(server?.listening && !closed);
       return { configured, listening, ready: listening && stateReady && authorizationReady && canControl() && !error,

@@ -48,9 +48,10 @@ export function recordChargingSessionCheck(store, input) {
   if (typeof input.complete !== 'boolean') throw new TypeError('Charging session coverage is required');
   const quality = input.quality ?? [];
   if (!Array.isArray(quality) || quality.some(flag => !QUALITY.has(flag))) throw new TypeError('Invalid charging session quality');
+  if (input.transport !== undefined && !['cloud','ocpp'].includes(input.transport)) throw new TypeError('Invalid charging check transport');
   const check = { version: VERSION, source: input.source, start: input.start, end: input.end,
     estimatedKwh: input.estimatedKwh, referenceKwh: input.referenceKwh, complete: input.complete,
-    quality: [...new Set(quality)].sort() };
+    quality: [...new Set(quality)].sort(), ...(input.transport ? {transport:input.transport} : {}) };
   // Hash identifiers before persistence; keep the source in the identity so the
   // two providers can use the same session key without colliding.
   const key = `${EVENT_TYPE}:${digest(JSON.stringify([input.source, input.sessionKey]))}`;
@@ -74,13 +75,15 @@ export function chargingSessionCheckSummaries(store) {
   const rows = Object.entries(SOURCES).map(([source, descriptor]) => ({ kind: 'charging-session-summary', source,
     signal: descriptor.signal, summary: { basis: descriptor.basis, recordedSessions: 0, comparedSessions: 0,
       excludedSessions: 0, exclusionReasons: {}, estimatedKwh: 0, referenceKwh: 0, differenceKwh: null, differencePercent: null,
-      start: null, end: null, lastSessionEnd: null } }));
+      start: null, end: null, lastSessionEnd: null, referenceTransports: [] } }));
   const bySource = new Map(rows.map(row => [row.source, row.summary]));
   // Store.events() has a page limit. Iteration deliberately includes all history
   // without loading every session into memory or silently averaging one page.
   for (const row of store.db.prepare('SELECT payload FROM events WHERE type=? ORDER BY at,id').iterate(EVENT_TYPE)) {
     const check = JSON.parse(row.payload), summary = bySource.get(check.source);
     if (!summary || check.version !== VERSION) continue;
+    const transport = ['cloud','ocpp'].includes(check.transport) ? check.transport : 'unknown';
+    if (!summary.referenceTransports.includes(transport)) summary.referenceTransports.push(transport);
     summary.recordedSessions++;
     summary.lastSessionEnd = Math.max(summary.lastSessionEnd ?? check.end, check.end);
     if (!comparableChargingSession(check)) {

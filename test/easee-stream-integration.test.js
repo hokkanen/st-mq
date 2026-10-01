@@ -201,7 +201,7 @@ test('stream token rejection and simultaneous REST 401 share one refresh and dur
   assert.equal(refreshes, 1, 'An old rejected token cannot rotate the already renewed pair again');
 });
 
-function providerFixture(t, easee = connections().easee) {
+function providerFixture(t, easee = connections().easee, extra = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-stream-integration-'));
   const store = new Store(':memory:'), stream = fakeStream(), intervals = [], gaps = [], calls = [];
   const f = { now: START, stream, store, intervals, gaps, calls, fail: null, hold: null, payload: null };
@@ -219,7 +219,7 @@ function providerFixture(t, easee = connections().easee) {
     if (f.payload) return f.payload(deviceId);
     return observations(deviceId, f.now).filter(row => target.searchParams.get('ids').split(',').map(Number).includes(row.id));
   }, close() {} };
-  const options = { engine, store, config, http, streamFactory: stream.factory, automatic: false, clock: () => f.now };
+  const options = { engine, store, config, http, streamFactory: stream.factory, automatic: false, clock: () => f.now, ...extra };
   f.providers = startProviders(options);
   f.health = () => store.getState('providers:health').easee;
   f.poll = async at => { f.now = at; await f.providers.runDue(); };
@@ -247,6 +247,34 @@ test('provider disconnect records a gap and cannot integrate across rapid stream
   await f.poll(START + 45_000);
   assert.equal(f.intervals.length, 4);
   assert(f.intervals.slice(2).every(row => row.start === START + 30_000 && row.end === START + 45_000));
+});
+
+test('cloud voltage stream loss leaves independent OCPP integration and voltage provenance intact', async t => {
+  let localOptions;
+  const localRows = observations(CHARGER);
+  const f = providerFixture(t, { ...connections().easee, charger_voltage_ids: [194, 195, 196] }, {
+    ocppFactory: options => { localOptions = options; return {
+      start() {}, close() {}, status: () => ({ configured: true }), snapshot: () => localRows,
+    }; },
+  });
+  const interruptions = [], voltages = [];
+  f.engine.voltage = { ingest(row) { voltages.push(row); }, interrupt(row) { interruptions.push(row); } };
+  await f.poll(START);
+  for (const deviceId of [CHARGER, EQUALIZER]) f.stream.publish(deviceId);
+  await f.poll(START + 15_000);
+  assert(voltages.some(row => row.device === CHARGER && row.raw.transport === 'cloud' && row.raw.voltageOnly));
+  assert(voltages.some(row => row.device === CHARGER && row.raw.transport === 'ocpp' && !row.raw.voltageOnly));
+  f.now = START + 20_000; f.stream.disconnect();
+  assert(f.gaps.every(row => row.device !== CHARGER), 'Cloud interruption cannot close an OCPP energy head');
+  assert.equal(f.engine.electricitySnapshot.charger.transport, 'ocpp');
+  assert(interruptions.every(row => row.transport === 'cloud'));
+  voltages.length = 0;
+  await f.poll(START + 30_000);
+  assert(!voltages.some(row => row.device === CHARGER && row.raw.transport === 'cloud'),
+    'Disconnected cloud cache cannot silently regain voltage availability');
+  localOptions.onDisconnect();
+  assert(f.gaps.some(row => row.device === CHARGER && row.transport === 'ocpp'));
+  assert.equal(interruptions.at(-1).transport, 'ocpp');
 });
 
 test('healthy stream recovery resumes at normal cadence despite a REST rate-limit cooldown', async t => {

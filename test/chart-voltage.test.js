@@ -93,6 +93,59 @@ test('late receipt cannot revise a selected as-of voltage and simulated estimate
   assert(query(store, 'voltage_estimates', { input: 'simulated' }).series.voltage_estimate_l1.some(point => point.y === 250));
 });
 
+test('voltage view preserves each saved phase estimate provenance through later feed switches', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  seedVoltage(store, start, [228, 230, 232], { inputs: 3, latestInput: 1 });
+  seedVoltage(store, start + HOUR, [228, 230, 232], { inputs: 7, latestInput: 4 });
+  const result = getChartData({ store, ...base, view: 'voltage_estimates' });
+  for (let phase = 1; phase <= 3; phase++) {
+    const key = `voltage_estimate_l${phase}`, points = result.series[key];
+    const first = points.find(point => point.x === start);
+    const later = points.find(point => point.x === start + HOUR);
+    assert.equal(first.y, 226 + phase * 2);
+    assert.deepEqual(first.voltageEstimate, { inputs: 3, input: 1 });
+    assert.deepEqual(later.voltageEstimate, { inputs: 7, input: 4 });
+    const tooltip = point => historyTooltipLabel({ dataset: { key, label: `Voltage estimate L${phase}`, unit: 'V' },
+      parsed: { x: point.x, y: point.y }, raw: point });
+    const before = tooltip(first), after = tooltip(later);
+    assert.match(before, /mixed sources; contributing sources: Charger 1 · OCPP, Charger 1 · Easee Cloud/);
+    assert.match(before, /latest update from: Charger 1 · OCPP/);
+    assert.doesNotMatch(before, /Equalizer/);
+    assert.match(after, /latest update from: Equalizer · Easee Cloud/);
+    assert.match(after, /Charger 1 · Easee Cloud/);
+  }
+});
+
+test('voltage tooltip never invents contributors for missing or invalid saved provenance', () => {
+  for (const voltageEstimate of [undefined, {}, { inputs: 128, input: 1 }, { inputs: 1, input: 4 }]) {
+    const tooltip = historyTooltipLabel({ dataset: { key: 'voltage_estimate_l1', label: 'Voltage estimate L1', unit: 'V' },
+      parsed: { x: start, y: 232 }, raw: { voltageEstimate } });
+    assert.match(tooltip, /source provenance incomplete/);
+    assert.doesNotMatch(tooltip, /latest update from:|Charger 1|Charger 2|Equalizer/);
+  }
+});
+
+test('historical charger energy and phase-current tooltips distinguish saved OCPP and cloud transport', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  seedVoltage(store, start, [228, 230, 232]);
+  for (const [index, transport] of ['ocpp', 'cloud', null].entries()) {
+    const from = start + index * HOUR, to = from + HOUR;
+    for (let phase = 1; phase <= 3; phase++) store.observation({ source: 'easee', device: 'invented-charger',
+      signal: `ev1_energy_l${phase}`, value: 1, unit: 'kWh', sourceTime: to, receivedAt: to, quality: ['estimated'],
+      raw: { intervalStart: from, intervalEnd: to, durationMs: HOUR, basis: 'integrated-power-phase-allocation', ...(transport ? { transport } : {}) } });
+  }
+  for (const [left, key, unit] of [['power', 'charger_power', 'kW'], ['phases', 'ev1_current_l1', 'A']]) {
+    const result = query(store, left);
+    const labels = [0, 1, 2].map(index => {
+      const point = result.series[key].find(point => point.x === start + index * HOUR);
+      return historyTooltipLabel({ dataset: { key, label: 'Charger 1', unit }, parsed: { x: point.x, y: point.y }, raw: point });
+    });
+    assert.match(labels[0], /Easee · OCPP/);
+    assert.match(labels[1], /Easee · Cloud/);
+    assert.match(labels[2], /Easee · transport unknown/);
+  }
+});
+
 test('current-derived chart power and charging timing use the same voltage boundaries', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   seedVoltage(store, start, [220, 220, 220]);

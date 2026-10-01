@@ -158,6 +158,61 @@ test('charger electricity prefers local OCPP and falls back to cloud without att
   assert.equal(series.find(row => row.signals.includes('property_active_power')).source, 'Easee cloud');
 });
 
+test('native voltage can feed forecasts before power/current readiness without widening electrical readiness', async t => {
+  const f = await fixture(t), client = await f.connect();
+  await client.call('BootNotification', { chargePointVendor: 'Easee', chargePointModel: 'fixture' });
+  await client.call('MeterValues', meter(samples.filter(row => row.measurand === 'Voltage')));
+  assert.equal(f.local.snapshot(), null);
+  assert.equal(f.local.status().available, false);
+  assert.deepEqual(f.local.voltageSnapshot().filter(row => row.unit === 'V').map(row => row.id), [194, 195, 196]);
+  f.now = at + 61_000;
+  await client.call('Heartbeat', {});
+  assert.equal(f.local.voltageSnapshot(), null, 'Heartbeat cannot renew actual voltage clocks');
+});
+
+test('missing native voltage phases use bounded cloud-only supplements without changing energy inputs', async t => {
+  let now = at, requests = 0, complete = false;
+  const payload = voltage => [...ocppMeterReadings(meter(samples.map(row => row.measurand === 'Voltage'
+    ? { ...row, value: String(voltage) } : row), now), now), { id: 250, value: true, timestamp: new Date(now).toISOString() }];
+  const local = { start() {}, close() {}, status: () => ({ configured: true }),
+    snapshot: () => payload(240).filter(row => complete || row.id !== 195) };
+  const devices = createDeviceProviders({ connections: { easee: { charger_id: 'fixture-charger', access_token: 'fixture-token',
+    charger_voltage_ids: [194, 195, 196] } }, clock: () => now, ocppFactory: () => local,
+    http: { json: async () => { requests++; return payload(220); } } });
+  t.after(() => devices.close());
+  const first = await devices.electricity({ now });
+  assert.equal(requests, 1);
+  const cloud = first.filter(row => row.raw.voltageOnly);
+  assert.equal(cloud.length, 3); assert(cloud.every(row => row.raw.transport === 'cloud' && row.value === 220));
+  assert(first.filter(row => !row.raw.voltageOnly).every(row => row.raw.transport === 'ocpp'));
+  const accumulator = new ElectricityAccumulator(); accumulator.sample(first, now);
+  now += 15_000;
+  const next = await devices.electricity({ now });
+  assert.equal(requests, 1, 'Optional cloud fallback is cached between bounded reads');
+  const [interval] = accumulator.sample(next, now).intervals;
+  assert.equal(interval.transport, 'ocpp');
+  assert(interval.quality.includes('current_phase_weights'), 'Cloud voltage cannot fill native integration phase evidence');
+  assert(Math.abs(interval.energies.reduce((sum, value) => sum + value, 0) - 6.9 * 15 / 3600) < 1e-12);
+  complete = true; now += 60_000;
+  await devices.electricity({ now });
+  assert.equal(requests, 1, 'Complete local voltage never triggers another cloud request');
+});
+
+test('voltage-only native observations coexist with cloud electrical readings', async t => {
+  const cloudRows = [...ocppMeterReadings(meter(), at), { id: 250, value: true, timestamp: new Date(at).toISOString() }];
+  const local = { start() {}, close() {}, status: () => ({ configured: true }), snapshot: () => null,
+    voltageSnapshot: () => cloudRows.filter(row => row.unit === 'V' || row.id === 250) };
+  const devices = createDeviceProviders({ connections: { easee: { charger_id: 'fixture-charger', access_token: 'fixture-token' } },
+    clock: () => at, ocppFactory: () => local, http: { json: async () => cloudRows } });
+  t.after(() => devices.close());
+  const rows = await devices.electricity({ now: at });
+  assert.equal(rows.filter(row => row.raw.voltageOnly && row.raw.transport === 'ocpp').length, 3);
+  const accumulator = new ElectricityAccumulator(); accumulator.sample(rows, at);
+  const [interval] = accumulator.sample(rows, at + 15_000).intervals;
+  assert.equal(interval.transport, 'cloud');
+  assert(!interval.quality.includes('local_ocpp'));
+});
+
 
 test('local OCPP requires durable storage, and rejects a different charger association without mutation', async () => {
   const missingStorage = createEaseeOcpp({ config, chargerId: 'fixture', canControl: () => true });

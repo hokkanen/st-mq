@@ -126,11 +126,10 @@ test('native Shelly phases expose current, voltage and active power in installed
   const readings = f.adapter.readings();
   assert.deepEqual([1, 2, 3].map(n => readings[`ev2_current_l${n}`].value), [9, 10, 8]);
   assert.deepEqual([1, 2, 3].map(n => readings[`ev2_voltage_l${n}`].value), [233, 231, 228]);
-  assert.deepEqual(f.voltages.map(row => row.value), [233, 231, 228], 'the estimator receives installed phase order before recording');
-  assert(f.voltages.every(row => row.raw.voltageMapping === 'phase-neutral' && row.sourceTime === NOW));
+  assert.equal(f.voltages.length, 0, 'Shelly voltage remains local electrical evidence and never feeds the shared estimate');
   assert.deepEqual(f.adapter.normalize(null).phaseVoltageV.value, [233, 231, 228]);
   await f.adapter.refresh();
-  assert.equal(f.voltages.length, 3, 'duplicate role reports cannot add estimator samples');
+  assert.equal(f.voltages.length, 0);
   assert.deepEqual([1, 2, 3].map(n => readings[`ev2_active_power_l${n}`].value), [2.1, 2.2, 1.7]);
   assert.equal(readings.ev2_active_power.value, 6);
   assert.equal(readings.ev2_import_energy_counter.value, 42.5);

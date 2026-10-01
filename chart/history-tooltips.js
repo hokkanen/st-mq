@@ -1,5 +1,7 @@
 import { historyValueLabel, coefficientStatusLabel, firewoodPointDetail, sessionPointDetail } from './history-model.js';
 import { outdoorSourceLabel, providerName, temperatureAttentionDetails } from './provider-status.js';
+import { voltageProvenanceDetails } from '../src/domain/voltage-provenance.js';
+import { recordingSourceLabel } from '../src/domain/recording-source.js';
 import { Interaction } from 'chart.js';
 import { getRelativePosition } from 'chart.js/helpers';
 
@@ -51,7 +53,8 @@ export function historyTooltipTitle(items) {
 
 export function historyTooltipLabel(item) {
   const { key } = item.dataset, raw = item.raw ?? {}, details = [];
-  const source = raw.modelInput || raw.modelOutcome ? null : key === 'outdoor_temperature' ? outdoorSourceLabel(raw.source) : providerName(raw.source);
+  const source = raw.modelInput || raw.modelOutcome ? null : key === 'outdoor_temperature' ? outdoorSourceLabel(raw.source)
+    : raw.source === 'easee' ? recordingSourceLabel(raw) : providerName(raw.source);
   if (source) details.push(source);
   if (raw.modelCoefficient) {
     details.push('model result', coefficientStatusLabel(raw.coefficientStatus));
@@ -75,6 +78,11 @@ export function historyTooltipLabel(item) {
   else if (key === 'garage_native_energy') details.push('cumulative native meter counter; not interval consumption');
   else if (/^voltage_estimate_l[123]$/.test(key)) {
     details.push('saved smoothed voltage estimate; not a live measurement');
+    const provenance = voltageProvenanceDetails(raw.voltageEstimate);
+    if (provenance.complete) {
+      details.push(`${provenance.mixed ? 'mixed sources; contributing sources' : 'contributing source'}: ${provenance.contributors.join(', ')}`);
+      details.push(`latest update from: ${provenance.latest}`);
+    } else details.push('source provenance incomplete');
     if (raw.voltageAvailability === 'held') details.push('retained estimate while voltage reporting is unavailable');
   }
   else if (key === 'garage_energy') {

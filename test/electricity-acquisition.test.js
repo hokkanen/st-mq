@@ -37,6 +37,18 @@ test('all acquired intervals contribute while phase sums preserve reported activ
   assert(JSON.stringify(accumulator.checkpoint()).length < 1500, 'checkpoint does not grow with polling history');
 });
 
+test('energy and meter audits retain explicit transport without inventing unknown cloud provenance', () => {
+  const accumulator = new ElectricityAccumulator();
+  const cloud = now => sample(now, { counter: 100 + (now - initial) / 3600000 })
+    .map(row => ({ ...row, raw: { ...row.raw, transport: 'cloud' } }));
+  assert(accumulator.sample(cloud(initial), initial).audits[0].quality.includes('easee_cloud'));
+  const [interval] = accumulator.sample(cloud(initial + 15_000), initial + 15_000).intervals;
+  assert.equal(interval.transport, 'cloud');
+  assert.equal(accumulator.checkpoint().devices['property:invented-meter'].transport, 'cloud');
+  const unknown = new ElectricityAccumulator(); unknown.sample(sample(initial), initial);
+  assert.equal(unknown.sample(sample(initial + 15_000), initial + 15_000).intervals[0].transport, undefined);
+});
+
 test('irregular polls use elapsed time and intermediate changes survive integration', () => {
   const accumulator = new ElectricityAccumulator();
   accumulator.sample(sample(initial, { power: 0 }), initial);

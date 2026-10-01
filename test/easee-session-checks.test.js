@@ -79,9 +79,11 @@ test('new finalized session flushes pending energy once and compares its full ph
   const check = checks(f.store)[0].payload;
   near(check.estimatedKwh, 0.075);
   assert.equal(check.complete, true);
+  assert.equal(check.transport, 'cloud', 'The session meter reference retains its own acquisition transport');
   assert(!JSON.stringify(checks(f.store)).includes(device));
   const summary = chargingSessionCheckSummaries(f.store)[0].summary;
   assert.equal(summary.comparedSessions, 1);
+  assert.deepEqual(summary.referenceTransports, ['cloud']);
   near(summary.differencePercent, 0);
 });
 

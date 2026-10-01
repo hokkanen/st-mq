@@ -209,15 +209,35 @@ same bounded telemetry window used for energy integration. Held values keep thei
 original voltage clock and an explicit confirmation basis. Faster polling never
 creates more elapsed coverage; cached receipts, retained messages and restart
 cannot renew source validity, and gaps do not count as observed time. The estimator
-retains bounded per-source restart state, not another growing raw-observation
-history.
+retains bounded feed state and one shared accumulator per phase, not another
+growing raw-observation history.
 
-Prefer property Equalizer measurements. A verified Easee charger phase-neutral
-mapping or the commissioned Shelly EVSE phase mapping may supply local fallback
-evidence. Maintain each source separately: switching sources must not silently
-blend property and charger-terminal voltage. Unverified terminal pairs and remote
-vehicle voltage cannot establish a household phase estimate. Source, valid
-coverage, phase and estimation quality accompany the published values.
+Prefer Charger 1 OCPP, then Charger 1 Easee Cloud, then Equalizer Easee Cloud,
+independently for each phase. Charger 2 is excluded from shared estimates and
+startup voltage because its phase order is not verified against these sources.
+Inputs require verified phase-neutral mapping into installation phase order.
+A missing phase cannot borrow
+another phase's value. OCPP voltage acquisition does not depend on a complete
+charger power/current snapshot. It grants no additional electrical/control readiness.
+Retain a usable selected feed during brief interruptions; require stable recovery
+for five minutes before returning to a preferred feed after establishment.
+Unverified terminal pairs and remote vehicle voltage cannot establish a household
+phase estimate.
+
+Feed changes preserve smoothing while recording their provenance. Each saved
+estimate carries a compact contributing-source mask and latest-update source code:
+1 is Charger 1 OCPP, 2 Charger 1 Easee Cloud and 4 Equalizer Easee Cloud.
+Simulation uses isolated code 8. Contributors remain until the accumulator is
+reset because exponential smoothing does not give old inputs
+a finite expiry. The latest-update source identifies only that update, not the
+exclusive origin of the accumulated value. Source/device context and timestamps
+remain attached to the saved record; today's selected feed never relabels history.
+Replacing contributing equipment or phase mapping resets affected accumulators
+rather than interpreting former equipment as the replacement.
+
+The current persisted estimator format is `voltage-ewma-v2`. Unsupported estimator
+state is rejected before engine initialization writes, with fresh-development-database
+guidance; no migration, backfill or automatic reset is performed.
 
 The adaptive recorder compares each estimate with its last saved value using
 `max(0.5 V, learned adaptive threshold)`. Small changes accumulate internally until
@@ -225,14 +245,34 @@ the saved-value difference crosses that floor. Source and availability changes
 remain semantic boundaries regardless of numeric difference. Constant established
 voltage needs no periodic historical row. The internal smoothing checkpoint keeps
 full precision; consumers use the last published database estimate so discarded
-subthreshold changes cannot revise the charging schedule.
+subthreshold changes cannot revise the charging schedule. Source provenance adds
+no raw measurement log or periodic historical writes.
+
+A synthetic comparison of 12,000 otherwise identical saved estimate records
+measured 21 additional JSON bytes per record for the two compact provenance fields.
+Both test databases occupied the same number of SQLite pages after compaction;
+page allocation depends on record packing and is not a zero-overhead guarantee.
+A separate 24-hour steady-input run at one acquisition per minute saved six voltage
+rows total: initial collection and establishment for each of three phases.
 
 An established value remains a historical estimate during an acquisition gap or
 restart; it never establishes fresh electrical or control evidence. Startup may
 use valid live local voltage provisionally until estimates are established. With
 neither usable estimates nor live voltage, voltage-dependent calculations remain
 unavailable rather than inventing nominal voltage. Live power integration, local
-current limiting and displays retain their actual measurement requirements.
+current limiting and displays retain their actual measurement requirements. The
+recorder shows initial valid-coverage progress, whether acquisition is paused,
+and original input timing separately from estimate publication. An estimate still
+collecting coverage is not described as a failed-quality reading. The chart's
+Phase voltage estimates view uses Voltage estimate L1–L3 labels and saved source
+provenance.
+
+Easee recorded evidence retains its cloud or OCPP transport separately from the
+provider/device identity, including energy intervals and their pending tails.
+Transport changes create recording boundaries. Labels show Easee · Cloud or
+Easee · OCPP; missing provenance remains transport unknown. A session's final
+meter-reference transport does not imply that every integrated energy interval
+came through the same transport.
 
 Historical conversions use the estimate available at their historical time. Only
 supported CSV history predating the estimates may use the first fully established

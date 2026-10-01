@@ -1,7 +1,9 @@
 import { recordedEnergyGroups } from '../storage/energy-history.js';
+import { recordedTransport } from '../domain/recording-source.js';
 
 const SIGNAL = 'property_import_energy_counter';
-const reading = row => row ? { valueKwh:row.value, sourceTime:row.source_time, receivedAt:row.received_at } : null;
+const reading = row => row ? { valueKwh:row.value, sourceTime:row.source_time, receivedAt:row.received_at,
+  transport:recordedTransport(row) } : null;
 
 // Valid counter periods advance in source time without overlapping. Share one
 // evidence cursor across them so a long run of gaps does not rescan the complete

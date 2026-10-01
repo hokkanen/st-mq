@@ -25,6 +25,7 @@ export function pendingEnergyObservations(store, { now, input, prefix, source, d
       value: pending.energies[i], unit: 'kWh', source_time: pending.end, received_at: pending.receivedAt,
       quality: JSON.stringify(pending.quality), raw: JSON.stringify({ intervalStart: pending.start, intervalEnd: pending.end,
         durationMs: pending.end - pending.start, basis, pending: true,
+        ...(['cloud','ocpp'].includes(pending.transport) ? {transport:pending.transport} : {}),
         ...(p === 'caravan' ? { learningRole: 'history-only' } : {}) }) });
   }
   return rows;

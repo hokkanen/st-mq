@@ -31,7 +31,7 @@ test('property meter availability distinguishes no readings and one unchanged re
   const summary=read();
   assert.equal(summary.status,'waiting-for-second-reading');
   assert.equal(summary.readingCount,1);
-  assert.deepEqual(summary.latestReading,{valueKwh:123,sourceTime:start,receivedAt:start+MINUTE});
+  assert.deepEqual(summary.latestReading,{valueKwh:123,sourceTime:start,receivedAt:start+MINUTE,transport:null});
   assert.equal(summary.previousReading,null);
   assert.equal(summary.lastSuccessfulComparison,null);
 });
