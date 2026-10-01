@@ -1,3 +1,4 @@
+import { withReportDatabase } from './helpers/report-database.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { dashboardProviders, temperatureReadingStatus, temperatureAttentionDetails, describeProvider } from '../chart/provider-status.js';
@@ -115,7 +116,7 @@ test('Tesla vehicle feed separates live reception and logger health from unchang
   receive('healthy', 'true', now - 4 * MINUTE);
   receive('charger_power', '1', now);
 
-  const runtime = new ChargingRuntime({ engine: {}, store: { getState: () => null }, clock: () => now,
+  const runtime = new ChargingRuntime({ engine: {}, store: withReportDatabase({ getState: () => null }, t), clock: () => now,
     config: { input: 'mqtt', charging: { vehicles: { bmw: { mqttTopic: null } } } }, definitions: [] });
   runtime.teslaCapture = capture;
   t.after(() => runtime.close());

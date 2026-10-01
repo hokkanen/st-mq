@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { diagnosticStore, diagnosticRows, readCompleteReport } from './support/charging-report-fixture.js';
 import { ChargingSessionDiagnostics } from '../src/charging/session-diagnostics.js';
 
 const MINUTE = 60_000, HOUR = 60 * MINUTE, at = Date.parse('2026-10-02T16:00:00Z');
@@ -21,12 +22,12 @@ function prices(start = at, end = at + 5 * HOUR) {
     [start + index * 15 * MINUTE, start + (index + 1) * 15 * MINUTE, index % 2 ? 12 : 8]);
 }
 function fixture() {
-  const state = new Map(), store = { getState: key => structuredClone(state.get(key)), setState: (key, value) => state.set(key, structuredClone(value)) };
+  const store = diagnosticStore();
   let observer = new ChargingSessionDiagnostics({ store });
   return { observe(view, now = at) {
     view.control.snapshot.readAt = now;
     for (const key of ['connected', 'charging', 'powerKw']) Object.assign(view.values[key], { measuredAt: now, receivedAt: now });
-    return observer.observe([view], now).chargers[0].current;
+    return readCompleteReport(observer, observer.observe([view], now).chargers[0].current);
   }, restart() { observer = new ChargingSessionDiagnostics({ store }); } };
 }
 const delta = (report, field) => report.plans.at(-1).changes.find(row => row.field === field);
@@ -186,7 +187,7 @@ test('a timer becoming unavailable is not removal, while explicit available null
   assert.deepEqual(delta(report, 'nativeStart'), { field: 'nativeStart', before: at + 2 * HOUR, after: null });
 });
 
-test('completed periods disappear without a new remaining schedule and diagnostic price details stay bounded', () => {
+test('completed periods disappear without a new remaining schedule and every revised price interval is preserved', () => {
   const { observe } = fixture(), view = charger();
   view.plan.state = 'release'; view.plan.periods = [{ startAt: at, endAt: at + 15 * MINUTE }, { startAt: at + 2 * HOUR, endAt: null }];
   observe(view);
@@ -194,19 +195,36 @@ test('completed periods disappear without a new remaining schedule and diagnosti
   assert.equal(observe(view, at + 20 * MINUTE).plans.length, 1);
   view.plan.priceSnapshot = view.plan.priceSnapshot.map(([start, end, price]) => [start, end, price + 2]);
   const report = observe(view, at + 21 * MINUTE), prices = delta(report, 'prices');
-  assert.equal(prices.after.length, 8); assert.equal(prices.before.length, 8); assert(prices.omitted > 0);
-  assert(report.plans.at(-1).changes.length <= 16);
+  assert.equal(prices.after.length, 19); assert.equal(prices.before.length, 19);
+  assert.equal(prices.after[0].startAt, at + 21 * MINUTE);
+  assert.equal(prices.after.at(-1).endAt, view.deadlineAt);
+  assert.equal(prices.omitted, undefined);
 });
 
-test('rolling beyond the bounded price evidence window does not invent newly published prices', () => {
+test('complete price evidence survives the former cap and elapsed prices do not invent new publications', () => {
   const { observe } = fixture(), view = charger();
   const prices = Array.from({ length: 300 }, (_, index) => [at + index * MINUTE, at + (index + 1) * MINUTE, index % 2 ? 7 : 8]);
   view.plan.priceSnapshot = prices;
   let report = observe(view);
-  assert.equal(report.plans[0].priceIntervals.length, 128);
-  assert.equal(report.plans[0].priceCoverageTruncated, true);
+  assert.equal(report.plans[0].priceIntervals.length, 300);
+  assert.equal(report.plans[0].priceCoverageTruncated, undefined);
   view.plan.priceSnapshot = prices.slice(15);
   report = observe(view, at + 15 * MINUTE);
   assert.equal(report.plans.length, 1);
   assert(!report.timeline.some(row => row.code === 'price-availability'));
+});
+
+test('full normalized charging periods and price deltas survive restart beyond their former snapshot caps', () => {
+  const f = fixture(), view = charger();
+  view.plan.periods = Array.from({ length: 120 }, (_, index) => ({ startAt: at + index * 2 * MINUTE, endAt: at + (index * 2 + 1) * MINUTE }));
+  view.plan.priceSnapshot = Array.from({ length: 300 }, (_, index) => [at + index * MINUTE, at + (index + 1) * MINUTE, index % 2 ? 7 : 8]);
+  const initial = f.observe(view);
+  assert.equal(initial.plans[0].periods.length, 120);
+  f.restart();
+  view.plan.priceSnapshot = view.plan.priceSnapshot.map(([start, end, price]) => [start, end, price + 1]);
+  const report = f.observe(view, at + MINUTE), changes = delta(report, 'prices');
+  assert.equal(report.plans[0].periods.length, 120);
+  assert.equal(report.plans[0].priceIntervals.length, 300);
+  assert.equal(changes.before.length, 299); assert.equal(changes.after.length, 299);
+  assert.equal(changes.after.at(-1).endAt, view.deadlineAt);
 });

@@ -1,3 +1,4 @@
+import { withReportDatabase } from './helpers/report-database.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { matchTeslaSession } from '../src/charging/vehicle.js';
@@ -92,6 +93,7 @@ function runtimeFixture(t) {
   const saved = new Map();
   const store = { getState: key => structuredClone(saved.get(key)),
     setState: (key, value) => saved.set(key, structuredClone(value)) };
+  withReportDatabase(store, t);
   const physical = {
     charger1: { connected: true, charging: true, connectedAt: NOW, at: NOW, power: 7 },
     charger2: { connected: false, charging: false, connectedAt: null, at: NOW, power: 0 },

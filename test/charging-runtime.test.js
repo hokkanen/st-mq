@@ -1,3 +1,4 @@
+import { withReportDatabase } from './helpers/report-database.js';
 import { createHash } from 'node:crypto';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -20,6 +21,7 @@ function fixture(charging = {}, saved = {}, automatic = {}) {
       writes.push(key); values.set(key, structuredClone(value));
     },
   };
+  withReportDatabase(store);
   const engine = {};
   const options = { engine, store, config: { input: 'mqtt', charging }, clock: () => now, canControl: () => true };
   const create = () => {
@@ -99,7 +101,7 @@ test('published voltage survives restart and live voltage changes do not rewrite
   await runtime.setAdapter('charger1', adapter); await runtime.reconcile();
   runtime.tick({ prices }); await runtime.reconcile();
   const original = structuredClone(chargerView(runtime).plan.periods);
-  const planCount = () => runtime.sessionDiagnostics.status().chargers.find(row => row.id === 'charger1').current.plans.length;
+  const planCount = () => runtime.sessionDiagnostics.status().chargers.find(row => row.id === 'charger1').current.counts.plans;
   const plansBefore = planCount();
   assert.ok(plansBefore > 0);
   for (const voltage of [225, 234, 228, 239]) {

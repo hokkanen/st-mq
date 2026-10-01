@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 
-const VERSION = 1, MINUTE = 60_000;
-const LIMITS = Object.freeze({ sessions: 4, events: 120, plans: 32, findings: 24 });
+const VERSION = 2, MINUTE = 60_000, DAY = 24 * 60 * MINUTE, EXPIRY_BATCH = 1;
+const FILTERS = new Set(['all', 'findings', 'plans', 'charging', 'control', 'vehicle', 'evidence']);
 const COVERAGE = ['identification', 'initialRelease', 'pause', 'resume', 'lateReplan', 'targetAttainment', 'completion', 'energy'];
 const VEHICLES = new Set(['bmw', 'tesla']);
 const SOURCES = new Set(['bmw-cardata', 'teslamate', 'bmw-target-filter', 'manual-fallback', 'session-anchor', 'session-request', 'vehicle', 'mqtt', 'easee', 'easee-ocpp', 'shelly-evse']);
@@ -48,7 +48,7 @@ function field(value) {
 }
 function periods(value) {
   return (Array.isArray(value) ? value : []).filter(row => time(row?.startAt) && (row.endAt === null || time(row.endAt) && row.endAt > row.startAt))
-    .slice(0, 96).map(row => ({ startAt: row.startAt, endAt: row.endAt }));
+    .map(row => ({ startAt: row.startAt, endAt: row.endAt }));
 }
 function planFor(view, now) {
   const plan = view.plan;
@@ -80,7 +80,7 @@ function planFor(view, now) {
     nativeStartAt: inputAvailable ? at(view.values?.vehicleNotBefore?.available ? view.values.vehicleNotBefore.value : null) : null,
     nativeStartKnown: inputAvailable && view.values?.vehicleNotBefore?.available === true
       && (view.values.vehicleNotBefore.value === null || time(view.values.vehicleNotBefore.value)),
-    priceIntervals: priceEvidence?.rows ?? null, priceCoverageTruncated: priceEvidence?.truncated ?? false };
+    priceIntervals: priceEvidence };
 }
 function remainingPeriods(rows, now) {
   // A completed period disappearing, or an open release's start moving with
@@ -101,7 +101,7 @@ function priceIntervals(snapshot, now, deadlineAt) {
     if (previous?.endAt === row.startAt && previous.priceCtPerKwh === row.priceCtPerKwh) previous.endAt = row.endAt;
     else result.push(row);
   }
-  return { rows: result.slice(0, 128), truncated: result.length > 128 };
+  return result;
 }
 function priceChanges(before, next, now) {
   if (!Array.isArray(before?.priceIntervals) || !Array.isArray(next.priceIntervals)
@@ -109,9 +109,7 @@ function priceChanges(before, next, now) {
   // Compare only the shared remaining request horizon. A longer ready-by
   // horizon is a request change, not evidence of newly published rates.
   const old = before.priceIntervals, current = next.priceIntervals;
-  const priorCoverageEnd = before.priceCoverageTruncated === true || before.priceCoverageTruncated === undefined && old.length >= 128
-    ? old.at(-1)?.endAt ?? now : Infinity;
-  const endAt = Math.min(before.deadlineAt, next.deadlineAt, priorCoverageEnd);
+  const endAt = Math.min(before.deadlineAt, next.deadlineAt);
   const boundaries = [...new Set([now, endAt, ...[...old, ...current].flatMap(row => [row.startAt, row.endAt])])]
     .filter(value => value >= now && value <= endAt).sort((a, b) => a - b);
   const revisedBefore = [], revisedAfter = [], added = [];
@@ -126,10 +124,8 @@ function priceChanges(before, next, now) {
       revisedAfter.push({ startAt, endAt, priceCtPerKwh: candidate.priceCtPerKwh });
     }
   }
-  const bounded = (field, previous, after) => ({ field, before: previous.slice(0, 8), after: after.slice(0, 8),
-    ...(after.length > 8 ? { omitted: after.length - 8 } : {}) });
-  return [...(revisedAfter.length ? [bounded('prices', revisedBefore, revisedAfter)] : []),
-    ...(added.length ? [bounded('priceAvailability', [], added)] : [])];
+  return [...(revisedAfter.length ? [{ field: 'prices', before: revisedBefore, after: revisedAfter }] : []),
+    ...(added.length ? [{ field: 'priceAvailability', before: [], after: added }] : [])];
 }
 function planChanges(history, next, now) {
   const previous = history.at(-1);
@@ -175,7 +171,7 @@ function planChanges(history, next, now) {
   if (changes.length && !identityUnknown && next.inputs.soc.value !== null && known.inputs.soc.value !== null
     && next.inputs.soc.source !== 'manual-fallback' && next.inputs.soc.value !== known.inputs.soc.value)
     changes.push({ field: 'soc', before: known.inputs.soc.value, after: next.inputs.soc.value });
-  return changes.slice(0, 16);
+  return changes;
 }
 function planReason(changes, initial = false) {
   if (initial) return 'initial-plan';
@@ -262,16 +258,8 @@ function observation(view, now) {
     energyAt: at(view.progress?.basis?.lastMeasuredAt), targetConflict: view.targetSelection?.conflict === true };
 }
 
-function append(record, key, entry, maximum) {
-  record[key].push(entry);
-  if (record[key].length > maximum) {
-    // Retain the opening evidence as well as the most recent transitions.
-    record[key].splice(1, record[key].length - maximum);
-    record.truncated[key]++;
-  }
-}
 function event(record, now, kind, code, extra = {}) {
-  append(record, 'timeline', { at: now, kind, code, ...extra }, LIMITS.events);
+  record.events.push({ sequence: ++record.counts.events, at: now, kind, code, ...extra });
 }
 function verify(record, key, now) {
   if (record.coverage[key].state !== 'verified') {
@@ -282,12 +270,26 @@ function verify(record, key, now) {
 function finding(record, code, active, now, severity = 'attention', resolution = null) {
   const current = record.findings.find(row => row.code === code && row.resolvedAt === null);
   if (active && !current) {
-    append(record, 'findings', { code, severity, firstAt: now, lastAt: now, resolvedAt: null, count: 1 }, LIMITS.findings);
-    event(record, now, 'finding', code);
+    const summary = record.findings.find(row => row.code === code);
+    if (summary) {
+      Object.assign(summary, { count: summary.count + 1, lastAt: now, activeFirstAt: now, resolvedAt: null, context: clone(record.findingContext) });
+      delete summary.resolution;
+    }
+    else record.findings.push({ code, severity, firstAt: now, activeFirstAt: now, lastAt: now, resolvedAt: null,
+      context: clone(record.findingContext), count: 1 });
+    record.counts.findings++;
+    event(record, now, 'finding', code, { severity, episode: summary?.count ?? 1, context: clone(record.findingContext) });
+  } else if (active && current && code === 'control-unconfirmed') {
+    const cause = context => ['basis', 'automaticEnabled', 'chargeNow', 'errorCode', 'reasonCode'].map(key => context?.[key]);
+    if (!equal(cause(current.context), cause(record.findingContext))) {
+      current.context = clone(record.findingContext); current.lastAt = now;
+      event(record, now, 'finding-update', code, { severity: current.severity, episode: current.count, context: clone(record.findingContext) });
+    }
   } else if (!active && current) {
     current.resolvedAt = now; current.lastAt = now;
-    if (resolution) current.resolution = resolution;
-    event(record, now, 'recovery', code, resolution ? { resolution } : {});
+    if (resolution) current.resolution = resolution; else delete current.resolution;
+    event(record, now, 'recovery', code, { severity: current.severity, episode: current.count,
+      context: clone(record.findingContext), ...(resolution ? { resolution } : {}) });
   }
 }
 function condition(record, code, active, now, delay, severity = 'attention') {
@@ -307,6 +309,7 @@ function controlContext(current) {
     errorCode: current.errorCode, reasonCode: current.reasonCode, handoverConfirmed: current.handoverConfirmed };
 }
 function assess(record, current, now) {
+  record.findingContext = controlContext(current);
   const previous = record.current;
   // A lapse is not a continuous observation of a failure. In particular,
   // restart cannot convert time spent offline into a verified physical pause.
@@ -430,16 +433,17 @@ function finish(record, now, reason, evidence = {}) {
   event(record, now, 'session', reason, evidence);
 }
 function newRecord(view, now, id, startedAt) {
-  return { version: VERSION, id, chargerId: view.id, startedAt, observedAt: null, endedAt: null, endReason: null,
+  return { version: VERSION, id, chargerId: view.id, association: hash(view.association), startedAt, observedFrom: now,
+    observedAt: null, endedAt: null, endReason: null, saved: false, savedAt: null,
     vehicleId: null, expectationAt: now, firstChargingAt: null, current: null,
     outcome: { state: 'in-progress', at: now, basis: 'observation' },
     coverage: Object.fromEntries(COVERAGE.map(key => [key, { state: 'not-exercised' }])),
-    findings: [], plans: [], timeline: [{ at: now, kind: 'session', code: startedAt < now ? 'observation-started' : 'connected' }],
-    pendingChecks: {}, truncated: { plans: 0, timeline: 0, findings: 0 } };
+    findings: [], planContext: [], events: [], counts: { events: 0, plans: 0, findings: 0 }, pendingChecks: {} };
 }
 function publicReport(record, now) {
+  if (record?.version !== VERSION) throw unsupported();
   const result = clone(record);
-  delete result.pendingChecks; delete result.expectationAt;
+  for (const key of ['pendingChecks', 'expectationAt', 'planContext', 'events', 'findingContext', 'association']) delete result[key];
   const stale = result.endedAt === null && !fresh(result.observedAt, now, 3 * MINUTE);
   const active = result.findings.filter(row => row.resolvedAt === null);
   const issues = result.findings.filter(row => row.severity === 'attention');
@@ -449,98 +453,268 @@ function publicReport(record, now) {
       : active.some(row => row.severity === 'explained') || issues.length ? 'explained'
         : result.coverage.initialRelease.state === 'verified' || result.coverage.pause.state === 'verified' ? 'expected' : 'observing';
   result.attentionCount = active.filter(row => row.severity === 'attention').length;
-  result.recoveredCount = issues.filter(row => row.resolvedAt !== null).length;
+  result.recoveredCount = issues.reduce((sum, row) => sum + row.count - (row.resolvedAt === null ? 1 : 0), 0);
   result.evidenceStale = stale;
   result.evaluatedAt = record.observedAt;
   return result;
 }
 
-/** Observer only: accepts already acquired, normalized runtime views. It has no
- * charger, vehicle, planner, network or command reference. Stored identifiers
- * are scoped hashes; payloads, locations and private account IDs never enter it.
+// These are comparison references, not retained history. Keep the latest plan
+// for each comparison used by planChanges; the complete plans live in SQL events.
+function planContext(history, next) {
+  const all = [...history, next], keep = new Set([all.at(-1)]);
+  const latest = predicate => { const found = all.findLast(predicate); if (found) keep.add(found); };
+  latest(row => row.inputStatus === 'available');
+  latest(row => row.inputStatus === 'available' && row.nativeStartKnown === true);
+  latest(row => row.inputStatus === 'available' && Array.isArray(row.priceIntervals));
+  for (const key of ['target', 'capacity']) {
+    latest(row => row.inputStatus === 'available' && Number.isFinite(row.inputs?.[key]?.value));
+    latest(row => row.inputStatus === 'available' && Number.isFinite(row.inputs?.[key]?.value)
+      && !['manual-fallback', 'session-anchor', 'session-request', 'unavailable'].includes(row.inputs[key].source));
+  }
+  return all.filter(row => keep.has(row));
+}
+function category(kind) {
+  if (['finding', 'finding-update', 'recovery'].includes(kind)) return 'findings';
+  if (kind === 'plan') return 'plans';
+  if (['physical', 'charger-status', 'outcome', 'session', 'check'].includes(kind)) return 'charging';
+  if (['vehicle', 'identification'].includes(kind)) return 'vehicle';
+  return kind;
+}
+function chargerId(value) {
+  if (!['charger1', 'charger2'].includes(value)) throw new TypeError('Unknown charging point');
+  return value;
+}
+function reportId(value) {
+  if (typeof value !== 'string' || !/^[a-f0-9]{64}$/.test(value)) throw new TypeError('Invalid charging report identifier');
+  return value;
+}
+function pageLimit(value) {
+  if (!Number.isSafeInteger(value) || value < 1 || value > 100) throw new TypeError('Report page limit must be between 1 and 100');
+  return value;
+}
+const unsupported = () => new Error('Unsupported charging diagnostics; start a fresh development database');
+function validateRecord(row, id) {
+  const keys = 'association,chargerId,counts,coverage,current,endReason,endedAt,events,expectationAt,findings,firstChargingAt,id,observedAt,observedFrom,outcome,pendingChecks,planContext,saved,savedAt,startedAt,vehicleId,version';
+  if (!row || row.version !== VERSION || row.chargerId !== id || Object.keys(row).sort().join(',') !== keys
+    || !/^[a-f0-9]{64}$/.test(row.id) || !/^[a-f0-9]{64}$/.test(row.association)
+    || !time(row.startedAt) || !time(row.observedFrom) || !time(row.observedAt) || row.observedAt < row.startedAt
+    || !time(row.expectationAt) || row.firstChargingAt !== null && !time(row.firstChargingAt)
+    || row.endedAt !== null && (!time(row.endedAt) || row.endedAt < row.startedAt)
+    || typeof row.saved !== 'boolean' || row.savedAt !== null && !time(row.savedAt) || row.saved !== (row.savedAt !== null)
+    || !row.current || !row.outcome || !row.coverage || COVERAGE.some(name => !row.coverage[name])
+    || Object.keys(row.coverage).some(name => !COVERAGE.includes(name)) || !row.pendingChecks
+    || !row.counts || ['events', 'plans', 'findings'].some(key => !time(row.counts[key]))
+    || !Array.isArray(row.events) || row.events.length || !Array.isArray(row.planContext) || row.planContext.length > 8
+    || !Array.isArray(row.findings) || row.findings.length > 12) throw unsupported();
+  return row;
+}
+
+/** Observer only. Complete immutable event history is stored separately from
+ * bounded current checkpoints and report summaries. Construction and queries
+ * never write, so the same reader is safe for history viewers and replicas.
  */
 export class ChargingSessionDiagnostics {
-  constructor({ store, key = 'charging:session-diagnostics', clock = Date.now }) {
-    this.store = store; this.key = key; this.clock = clock;
+  constructor({ store, key = 'charging:session-diagnostics', clock = Date.now, retentionDays = 30 }) {
+    if (!Number.isSafeInteger(retentionDays) || retentionDays < 1 || retentionDays > 3650)
+      throw new TypeError('Charging report retention must be between 1 and 3650 days');
+    this.store = store; this.key = key; this.clock = clock; this.retentionDays = retentionDays;
     const saved = store.getState(key);
     if (saved !== undefined && saved !== null && (saved.version !== VERSION || Object.keys(saved).sort().join(',') !== 'chargers,version'
-      || !saved.chargers || Array.isArray(saved.chargers))) throw new Error('Unsupported charging diagnostics; start a fresh development database');
+      || !saved.chargers || Array.isArray(saved.chargers))) throw unsupported();
+    this.state = { version: VERSION, chargers: {} };
     for (const [id, slot] of Object.entries(saved?.chargers ?? {})) {
-      if (!['charger1', 'charger2'].includes(id) || !slot || Object.keys(slot).sort().join(',') !== 'association,current,recent'
-        || !/^[a-f0-9]{64}$/.test(slot.association) || !Array.isArray(slot.recent) || slot.recent.length > LIMITS.sessions
-        || slot.current !== null && (!slot.current || slot.current.endedAt !== null)
-        || slot.recent.some(row => !row || !time(row.endedAt))
-        || [slot.current, ...slot.recent].filter(Boolean).some(row => row.version !== VERSION || row.chargerId !== id
-          || Object.keys(row).sort().join(',') !== 'chargerId,coverage,current,endReason,endedAt,expectationAt,findings,firstChargingAt,id,observedAt,outcome,pendingChecks,plans,startedAt,timeline,truncated,vehicleId,version'
-          || !/^[a-f0-9]{64}$/.test(row.id) || !time(row.startedAt) || !time(row.observedAt)
-          || row.observedAt < row.startedAt || !time(row.expectationAt) || row.firstChargingAt !== null && !time(row.firstChargingAt)
-          || row.endedAt !== null && (!time(row.endedAt) || row.endedAt < row.startedAt)
-          || !row.current || !row.outcome || !row.coverage || COVERAGE.some(name => !row.coverage[name])
-          || Object.keys(row.coverage).some(name => !COVERAGE.includes(name))
-          || !row.pendingChecks || !row.truncated || !Array.isArray(row.timeline) || row.timeline.length > LIMITS.events
-          || !Array.isArray(row.plans) || row.plans.length > LIMITS.plans || !Array.isArray(row.findings) || row.findings.length > LIMITS.findings))
-        throw new Error('Unsupported charging diagnostics; start a fresh development database');
+      if (!['charger1', 'charger2'].includes(id) || !slot || Object.keys(slot).sort().join(',') !== 'association,closedThrough,currentId'
+        || !/^[a-f0-9]{64}$/.test(slot.association) || slot.closedThrough !== null && !time(slot.closedThrough)
+        || slot.currentId !== null && !/^[a-f0-9]{64}$/.test(slot.currentId)) throw unsupported();
+      const row = slot.currentId === null ? null : store.db.prepare(
+        'SELECT checkpoint FROM charging_reports WHERE namespace=? AND charger_id=? AND report_id=?').get(key, id, slot.currentId);
+      if (slot.currentId !== null && !row) throw unsupported();
+      const current = row ? validateRecord(JSON.parse(row.checkpoint), id) : null;
+      if (current && (current.endedAt !== null || current.association !== slot.association)) throw unsupported();
+      this.state.chargers[id] = { association: slot.association, closedThrough: slot.closedThrough, current };
     }
-    this.state = saved ? clone(saved) : { version: VERSION, chargers: {} };
-    this.lastSavedAt = 0; this.dirty = false;
+    this.lastSavedAt = 0; this.lastPrunedAt = 0;
+  }
+  writable() {
+    if (this.store.readOnly) throw new Error('Charging reports are read-only');
+  }
+  persist(record, now, saveMetadata = false) {
+    const existing = this.store.db.prepare('SELECT saved_at FROM charging_reports WHERE namespace=? AND charger_id=? AND report_id=?')
+      .get(this.key, record.chargerId, record.id);
+    if (existing && !saveMetadata) { record.savedAt = existing.saved_at; record.saved = existing.saved_at !== null; }
+    const pending = record.events;
+    record.events = [];
+    delete record.findingContext;
+    const summary = publicReport(record, now);
+    this.store.db.prepare(`INSERT INTO charging_reports(namespace,charger_id,report_id,association,started_at,ended_at,saved_at,summary,checkpoint)
+      VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(namespace,charger_id,report_id) DO UPDATE SET
+      ended_at=excluded.ended_at,saved_at=excluded.saved_at,summary=excluded.summary,checkpoint=excluded.checkpoint`)
+      .run(this.key, record.chargerId, record.id, record.association, record.startedAt, record.endedAt,
+        record.savedAt, JSON.stringify(summary), JSON.stringify(record));
+    const insert = this.store.db.prepare('INSERT INTO charging_report_events(namespace,charger_id,report_id,at,category,payload) VALUES(?,?,?,?,?,?)');
+    for (const entry of pending) insert.run(this.key, record.chargerId, record.id, entry.at, category(entry.kind), JSON.stringify(entry));
+  }
+  prune(now) {
+    return this.store.db.prepare(`DELETE FROM charging_reports WHERE (namespace,charger_id,report_id) IN
+      (SELECT namespace,charger_id,report_id FROM charging_reports WHERE namespace=? AND saved_at IS NULL
+       AND ended_at IS NOT NULL AND ended_at<=? ORDER BY ended_at LIMIT ?)`)
+      .run(this.key, now - this.retentionDays * DAY, EXPIRY_BATCH).changes;
   }
   observe(chargers, now = this.clock()) {
+    this.writable();
     if (!time(now) || !Array.isArray(chargers)) throw new TypeError('Charging diagnostics require runtime views and a UTC timestamp');
+    // Publish the bounded working copy only after its SQL transaction commits.
+    // Failed writes cannot consume events or create duplicate episodes on retry.
+    const state = clone(this.state), touched = new Map();
     let changed = false;
     for (const view of chargers) {
       if (!['charger1', 'charger2'].includes(view.id) || typeof view.association !== 'string') continue;
       const association = hash(view.association);
-      let slot = this.state.chargers[view.id];
+      let slot = state.chargers[view.id];
       if (!slot || slot.association !== association) {
-        // Equipment changes never attach old sessions to the replacement.
-        slot = this.state.chargers[view.id] = { association, current: null, recent: [] }; changed = true;
+        if (slot?.current) {
+          finish(slot.current, now, 'equipment-replaced');
+          touched.set(`${slot.current.chargerId}:${slot.current.id}`, slot.current);
+        }
+        slot = state.chargers[view.id] = { association, closedThrough: null, current: null }; changed = true;
       }
       const connected = view.values?.connected;
       const nowConnected = connected?.available === true ? connected.value : null;
       const connectedAt = at(view.control?.session?.connectedAt ?? view.progress?.connectionAt);
       const id = chargingDiagnosticSessionId(view);
-      // Change-reported status can be old while the adapter still confirms the
-      // current state. Ending observation now does not move that source clock.
       const liveConnection = view.telemetry?.providerConnected !== false && view.control?.snapshot?.online !== false
         && fresh(view.control?.snapshot?.readAt ?? view.telemetry?.readAt, now);
       const freshDisconnect = nowConnected === false && connected.retained !== true && liveConnection
         && (connected.measuredAt == null || time(connected.measuredAt) && connected.measuredAt <= now);
-      if (slot.current && (freshDisconnect || id && id !== slot.current.id && nowConnected === true)) {
+      if (slot.current && (freshDisconnect || id && id !== slot.current.id && nowConnected === true && connectedAt > slot.current.startedAt)) {
         finish(slot.current, now, freshDisconnect ? 'unplugged' : 'connection-replaced', freshDisconnect
           ? { source: source(connected.source), measuredAt: at(connected.measuredAt), receivedAt: at(connected.receivedAt) } : {});
-        slot.recent.unshift(slot.current); slot.recent = slot.recent.slice(0, LIMITS.sessions); slot.current = null; changed = true;
+        touched.set(`${slot.current.chargerId}:${slot.current.id}`, slot.current); slot.closedThrough = slot.current.startedAt; slot.current = null; changed = true;
       }
-      if (!slot.current && nowConnected === true && id && connectedAt <= now) {
-        slot.current = newRecord(view, now, id, connectedAt); changed = true;
+      if (!slot.current && nowConnected === true && id && connectedAt <= now && (slot.closedThrough === null || connectedAt > slot.closedThrough)) {
+        // A completed physical connection cannot become active again through a
+        // replayed view. A fresh connection has a new scoped report identifier.
+        const exists = this.store.db.prepare('SELECT ended_at FROM charging_reports WHERE namespace=? AND charger_id=? AND report_id=?')
+          .get(this.key, view.id, id);
+        if (!exists) {
+          slot.current = newRecord(view, now, id, connectedAt);
+          event(slot.current, now, 'session', connectedAt < now ? 'observation-started' : 'connected'); changed = true;
+        }
       }
       const record = slot.current;
-      if (!record || now < record.observedAt) continue;
-      const before = JSON.stringify([record.timeline, record.findings, record.coverage, record.pendingChecks]);
-      const current = observation(view, now), plan = planFor(view, now), previousPlan = record.plans.at(-1);
-      // Earlier findings remain attached to their original observation time;
-      // recording a replacement never reassesses or erases that history.
+      if (!record || now < record.observedAt || id && id !== record.id) continue;
+      const before = JSON.stringify([record.findings, record.coverage, record.pendingChecks]);
+      const current = observation(view, now), plan = planFor(view, now), previousPlan = record.planContext.at(-1);
       assess(record, current, now);
-      const changes = planChanges(record.plans, plan, now);
+      const changes = planChanges(record.planContext, plan, now);
       if (changes.length || !previousPlan && plan.inputStatus === 'available') {
-        plan.changes = changes;
-        plan.reason = planReason(changes, !previousPlan);
-        append(record, 'plans', plan, LIMITS.plans);
-        event(record, now, 'plan', plan.reason, { index: record.truncated.plans + record.plans.length, changes: clone(changes) });
+        plan.changes = changes; plan.reason = planReason(changes, !previousPlan);
+        record.planContext = planContext(record.planContext, plan); record.counts.plans++;
+        event(record, now, 'plan', plan.reason, { index: record.counts.plans, changes: clone(changes), plan });
         if (changes.some(change => change.field === 'vehicle' && change.before === null) && record.firstChargingAt !== null)
           verify(record, 'lateReplan', now);
-        changed = true;
       }
-      changed ||= before !== JSON.stringify([record.timeline, record.findings, record.coverage, record.pendingChecks]);
+      changed ||= record.events.length > 0 || before !== JSON.stringify([record.findings, record.coverage, record.pendingChecks]);
+      touched.set(`${record.chargerId}:${record.id}`, record);
     }
-    this.dirty ||= changed;
-    if (this.dirty || now - this.lastSavedAt >= 5 * MINUTE) {
-      this.store.setState(this.key, clone(this.state)); this.lastSavedAt = now; this.dirty = false;
+    const shouldPrune = now - this.lastPrunedAt >= 60 * MINUTE;
+    if (changed || now - this.lastSavedAt >= MINUTE || shouldPrune) {
+      let pruned = 0;
+      this.store.transaction(() => {
+        for (const record of touched.values()) this.persist(record, now);
+        this.store.setState(this.key, { version: VERSION, chargers: Object.fromEntries(Object.entries(state.chargers)
+          .map(([id, slot]) => [id, { association: slot.association, closedThrough: slot.closedThrough, currentId: slot.current?.id ?? null }])) });
+        if (shouldPrune) pruned = this.prune(now);
+      });
+      this.lastSavedAt = now;
+      if (shouldPrune) this.lastPrunedAt = pruned === EXPIRY_BATCH ? 0 : now;
     }
+    this.state = state;
     return this.status(now);
   }
+  listReports({ chargerId: id, savedOnly = false, before = null, limit = 20 } = {}) {
+    chargerId(id); pageLimit(limit);
+    if (typeof savedOnly !== 'boolean') throw new TypeError('savedOnly must be boolean');
+    const clauses = ['namespace=?', 'charger_id=?'], values = [this.key, id];
+    if (savedOnly) clauses.push('saved_at IS NOT NULL');
+    if (before !== null) {
+      let cursor;
+      try { cursor = JSON.parse(Buffer.from(before, 'base64url').toString()); } catch { throw new TypeError('Invalid report cursor'); }
+      if (!Array.isArray(cursor) || cursor.length !== 2 || !time(cursor[0])) throw new TypeError('Invalid report cursor');
+      reportId(cursor[1]); clauses.push('(started_at<? OR (started_at=? AND report_id<?))'); values.push(cursor[0], cursor[0], cursor[1]);
+    }
+    const rows = this.store.db.prepare(`SELECT report_id,association,started_at,summary FROM charging_reports WHERE ${clauses.join(' AND ')}
+      ORDER BY started_at DESC,report_id DESC LIMIT ?`).all(...values, limit + 1);
+    const more = rows.length > limit; if (more) rows.pop();
+    const last = rows.at(-1);
+    return { reports: rows.map(row => this.present(JSON.parse(row.summary), this.clock(), row.association)),
+      nextBefore: more ? Buffer.from(JSON.stringify([last.started_at, last.report_id])).toString('base64url') : null };
+  }
+  getReport({ chargerId: id, reportId: report } = {}) {
+    chargerId(id); reportId(report);
+    const active = this.state.chargers[id]?.current;
+    if (active?.id === report) return this.present(active, this.clock());
+    const row = this.store.db.prepare('SELECT association,summary FROM charging_reports WHERE namespace=? AND charger_id=? AND report_id=?').get(this.key, id, report);
+    return row ? this.present(JSON.parse(row.summary), this.clock(), row.association) : null;
+  }
+  reportEvents({ chargerId: id, reportId: report, filter = 'all', before = null, limit = 50 } = {}) {
+    chargerId(id); reportId(report); pageLimit(limit);
+    if (!FILTERS.has(filter)) throw new TypeError('Unknown report event filter');
+    if (!this.getReport({ chargerId: id, reportId: report })) return null;
+    const clauses = ['namespace=?', 'charger_id=?', 'report_id=?'], values = [this.key, id, report];
+    if (filter !== 'all') { clauses.push('category=?'); values.push(filter); }
+    if (before !== null) {
+      if (typeof before !== 'string' || !/^[1-9][0-9]*$/.test(before) || !Number.isSafeInteger(Number(before))) throw new TypeError('Invalid event cursor');
+      clauses.push('id<?'); values.push(Number(before));
+    }
+    const rows = this.store.db.prepare(`SELECT id,payload FROM charging_report_events WHERE ${clauses.join(' AND ')} ORDER BY id DESC LIMIT ?`)
+      .all(...values, limit + 1);
+    const more = rows.length > limit; if (more) rows.pop();
+    return { events: rows.map(row => ({ id: row.id, ...JSON.parse(row.payload) })), nextBefore: more ? String(rows.at(-1).id) : null };
+  }
+  saveReport({ chargerId: id, reportId: report, saved } = {}) {
+    this.writable(); chargerId(id); reportId(report);
+    if (typeof saved !== 'boolean') throw new TypeError('saved must be boolean');
+    const row = this.store.db.prepare('SELECT checkpoint FROM charging_reports WHERE namespace=? AND charger_id=? AND report_id=?').get(this.key, id, report);
+    if (!row) return null;
+    const record = clone(this.state.chargers[id]?.current?.id === report ? this.state.chargers[id].current : JSON.parse(row.checkpoint));
+    const now = this.clock(); record.saved = saved; record.savedAt = saved ? record.savedAt ?? now : null;
+    this.store.transaction(() => {
+      this.persist(record, now, true);
+      // Removing saved protection from an already expired report is immediate,
+      // independently of the bounded background expiry batch.
+      if (!saved && record.endedAt !== null && record.endedAt <= now - this.retentionDays * DAY)
+        this.store.db.prepare('DELETE FROM charging_reports WHERE namespace=? AND charger_id=? AND report_id=?').run(this.key, id, report);
+    });
+    if (this.state.chargers[id]?.current?.id === report) this.state.chargers[id].current = record;
+    return this.getReport({ chargerId: id, reportId: report });
+  }
+  deleteReport({ chargerId: id, reportId: report } = {}) {
+    this.writable(); chargerId(id); reportId(report);
+    const row = this.store.db.prepare('SELECT ended_at FROM charging_reports WHERE namespace=? AND charger_id=? AND report_id=?').get(this.key, id, report);
+    if (!row) return false;
+    if (row.ended_at === null) { const error = new Error('An active session report cannot be deleted'); error.code = 'active-report'; throw error; }
+    return this.store.transaction(() => Boolean(this.store.db.prepare('DELETE FROM charging_reports WHERE namespace=? AND charger_id=? AND report_id=?')
+      .run(this.key, id, report).changes));
+  }
+  present(record, now, association = record.association) {
+    const result = publicReport(record, now), currentAssociation = this.state.chargers[record.chargerId]?.association;
+    // This is present-day equipment context, not a rewritten historical field.
+    // Without a recorded current scope there is no basis to label either way.
+    if (typeof currentAssociation === 'string' && typeof association === 'string')
+      result.previousEquipment = association !== currentAssociation;
+    return result;
+  }
   status(now = this.clock()) {
-    return { version: VERSION, retention: { recentSessionsPerCharger: LIMITS.sessions, eventsPerSession: LIMITS.events, plansPerSession: LIMITS.plans },
-      chargers: Object.entries(this.state.chargers).map(([id, slot]) => ({ id,
-        current: slot.current ? publicReport(slot.current, now) : null, recent: slot.recent.map(row => publicReport(row, now)) })) };
+    return { version: VERSION, retention: { days: this.retentionDays },
+      chargers: ['charger1', 'charger2'].flatMap(id => {
+        const slot = this.state.chargers[id];
+        const rows = this.store.db.prepare('SELECT association,summary FROM charging_reports WHERE namespace=? AND charger_id=? AND ended_at IS NOT NULL ORDER BY started_at DESC,report_id DESC LIMIT 5')
+          .all(this.key, id);
+        if (!slot && !rows.length) return [];
+        return [{ id, current: slot?.current ? this.present(slot.current, now) : null,
+          recent: rows.slice(0, 4).map(row => this.present(JSON.parse(row.summary), now, row.association)), hasMore: rows.length > 4 }];
+      }) };
   }
 }

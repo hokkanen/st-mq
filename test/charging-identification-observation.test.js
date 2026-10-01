@@ -1,3 +1,4 @@
+import { withReportDatabase } from './helpers/report-database.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ChargingRuntime } from '../src/charging/runtime.js';
@@ -18,6 +19,7 @@ async function fixture(t, transport, vehicle = 'bmw', { retainedOnly = false, he
       if (failPersistence && key === runtime.key) throw new Error('synthetic storage unavailable');
       states.set(key, structuredClone(value));
     } };
+  withReportDatabase(store, t);
   const config = { input: 'mqtt', connections: {
     easee: { charger_id: 'synthetic-observation-charger', equalizer_id: 'synthetic-observation-equalizer' },
     mqtt: { address: 'mqtt://synthetic.invalid', user: 'synthetic-observation' } },

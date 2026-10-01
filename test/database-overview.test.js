@@ -26,7 +26,7 @@ test('empty overview explains all physical tables without inventing historical p
     assert.equal(overview.database.fileBytes, null);
     assert(overview.database.allocatedBytes > 0);
     const actual = store.db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all();
-    assert.equal(actual.length, 18);
+    assert.equal(actual.length, 20);
     assert.deepEqual(overview.accounting.tables.map(table => table.name), actual.map(table => table.name));
     for (const table of overview.accounting.tables) assert.equal(table.rows,
       store.db.prepare(`SELECT COUNT(*) count FROM ${table.name}`).get().count, table.name);
@@ -227,6 +227,32 @@ test('inactive journals, state families and individual event types have separate
   for (const row of overview.groups.find(group => group.id === 'events').items.filter(row => row.breakdown))
     assert.equal(row.breakdown.reduce((count, entry) => count + entry.count, 0), row.count, row.id);
   assert(!JSON.stringify(overview).includes('private-'));
+});
+
+test('charging report inventory counts sessions and retained evidence without exposing report payloads', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  const marker = 'private-synthetic-report-payload';
+  const insert = store.db.prepare(`INSERT INTO charging_reports
+    (namespace,charger_id,report_id,association,started_at,ended_at,saved_at,summary,checkpoint)
+    VALUES(?,?,?,?,?,?,?,?,?)`);
+  insert.run(marker, 'charger1', 'active', marker, at, null, null, JSON.stringify({ note: marker }), '{}');
+  insert.run(marker, 'charger1', 'saved', marker, at - 10000, at - 1000, at, '{}', '{}');
+  const event = store.db.prepare(`INSERT INTO charging_report_events
+    (namespace,charger_id,report_id,at,category,payload) VALUES(?,?,?,?,?,?)`);
+  event.run(marker, 'charger1', 'active', at, 'control', JSON.stringify({ note: marker }));
+  event.run(marker, 'charger1', 'saved', at - 1000, 'plans', JSON.stringify({ note: marker }));
+  store.db.exec('PRAGMA query_only=ON');
+  const overview = getDatabaseOverview({ store, now: at }), rows = items(overview);
+  assert.equal(overview.catalogueComplete, true);
+  assert.equal(rows.get('charging-reports').count, 2);
+  assert.deepEqual(rows.get('charging-reports').facts, [
+    { label: 'Active reports', value: 1 }, { label: 'Saved reports', value: 1 },
+  ]);
+  assert.equal(rows.get('charging-report-events').count, 2);
+  assert.match(rows.get('charging-report-events').retentionDescription, /Whole-report expiry or deletion/);
+  assert.equal(overview.accounting.tables.find(row => row.name === 'charging_reports').rows, 2);
+  assert.equal(overview.accounting.tables.find(row => row.name === 'charging_report_events').rows, 2);
+  assert(!JSON.stringify(overview).includes(marker));
 });
 
 test('fireplace inventory separates retained loads, correction actions and current rebuild state without exposing entries', () => {

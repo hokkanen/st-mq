@@ -1,3 +1,28 @@
+Implemented 2026-10-01 — Complete retained charging reports and unified event history
+- Replace per-session event/finding/plan eviction and four-session retention with
+  indexed session/event tables, bounded observer checkpoints and paged queries.
+  Retain complete recorded diagnostic histories while their session is retained.
+- Expire whole completed unsaved reports after configured report_retention_days
+  (30 by default); protect active and explicitly saved reports. Allow admins to
+  save, remove saved protection and delete completed reports, preserving independent
+  energy history, physical control ownership and restoration duties.
+- Unify report details into one grouped Events view with All, Findings, Plans &
+  inputs, Charging, Control, Vehicle and Evidence filters. Expand original episodes,
+  clocks and planning snapshots; distinguish repeated episodes from continuity and
+  preserve materially different causes and missing evidence.
+- F1/F3/F4/F5/F7/F8: schema16 and current diagnostics format only, no old decoder,
+  migration, automatic reset or private installation mutation. Configuration owns
+  expiry defaults; report saving owns historical retention intent. Read-only viewers
+  inspect recorded evidence without control authority. Dashboard/query work stays
+  bounded independently of stored event count. No charger confirmation algorithm
+  changes or claims that installed confirmation chatter has been fixed.
+- Validation: routine suite 3,941 passed, one optional upstream Tuya Local test
+  skipped; 67 focused storage/diagnostics and 45 final UI/history checks passed.
+  Build and charging browser sweep passed, covering filters, active/completed
+  saving, saved selection, deletion/cancel, expired un-save, family restrictions,
+  and 320/390/1440px layouts in both themes. Synthetic 10,000-event paging and
+  one-report expiry were measured; no live overnight assessment or deployment.
+
 Implemented 2026-10-01 — Usable guided preparation and verified vehicle targets
 - Accept decimal battery inputs, including reported capacity such as 72.43 kWh,
   without rounding. Explain invalid fields individually; valid manual battery

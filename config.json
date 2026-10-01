@@ -133,6 +133,7 @@
     },
 
     "charging": {
+      "report_retention_days": 30,
       "defaults": {
         "readyBy": "06:00",
         "manualSoc": 20,
@@ -616,6 +617,7 @@
     },
 
     "charging": {
+      "report_retention_days": "int(1,3650)",
       "defaults": {
         "readyBy": "str",
         "manualSoc": "float(0,100)",

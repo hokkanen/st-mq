@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { diagnosticStore, diagnosticRows, readCompleteReport } from './support/charging-report-fixture.js';
 import { ChargingSessionDiagnostics } from '../src/charging/session-diagnostics.js';
 
 const MINUTE = 60_000, START = Date.parse('2026-10-01T18:00:00Z');
@@ -7,8 +8,7 @@ const reading = (value, at = START, extra = {}) => ({ value, available: true, so
 
 function fixture() {
   let now = START;
-  const states = new Map(), store = { getState: key => structuredClone(states.get(key)),
-    setState: (key, value) => states.set(key, structuredClone(value)) };
+  const store = diagnosticStore(), states = { values: () => diagnosticRows(store) };
   let observer = new ChargingSessionDiagnostics({ store, clock: () => now });
   const view = { id: 'charger1', association: 'synthetic-physical-equipment',
     request: { sessionId: 'synthetic-current-session', revision: 1 }, settings: { enabled: true },
@@ -23,7 +23,7 @@ function fixture() {
     progress: { remainingGridKwh: 8, deliveredGridKwh: 0, connectionAt: START, basis: { energyCoverageIncomplete: true } } };
   const observe = (at = now) => {
     now = at; view.control.snapshot.readAt = at;
-    return observer.observe([view], at).chargers[0].current;
+    return readCompleteReport(observer, observer.observe([view], at).chargers[0].current);
   };
   const sample = (at, soc = 70, powerKw = 0) => {
     view.values.soc = reading(soc, at, { source: 'bmw-cardata' }); view.values.powerKw = reading(powerKw, at);

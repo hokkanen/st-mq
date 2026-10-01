@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { diagnosticStore, diagnosticRows, readCompleteReport } from './support/charging-report-fixture.js';
 import { ChargingSessionDiagnostics, chargingDiagnosticSessionId } from '../src/charging/session-diagnostics.js';
 import { chargingReportSummary } from '../chart/charging-diagnostics.js';
 
@@ -24,12 +25,10 @@ function refresh(view, at) {
   return view;
 }
 function fixture() {
-  const data = new Map(); let writes = 0;
-  const store = { getState: key => data.has(key) ? structuredClone(data.get(key)) : undefined,
-    setState(key, value) { writes++; data.set(key, structuredClone(value)); } };
-  const observer = new ChargingSessionDiagnostics({ store });
-  return { store, observer, data, writes: () => writes,
-    observe: (view, at = now) => observer.observe([view], at).chargers[0].current };
+  const store = diagnosticStore(), data = { values: () => diagnosticRows(store) };
+  const observer = new ChargingSessionDiagnostics({ store, clock: () => now });
+  return { store, observer, data,
+    observe: (view, at = now) => readCompleteReport(observer, observer.observe([view], at).chargers[0].current) };
 }
 
 test('observes independently of controls, persists bounded normalized evidence and never stores raw identity', () => {
@@ -190,7 +189,8 @@ test('replacement connection and changed equipment cannot inherit the prior repo
   assert.equal(observer.status(now + MINUTE).chargers[0].recent[0].endReason, 'connection-replaced');
   view.association = 'replacement-equipment';
   observe(refresh(view, now + 2 * MINUTE), now + 2 * MINUTE);
-  assert.equal(observer.status(now + 2 * MINUTE).chargers[0].recent.length, 0);
+  assert.equal(observer.status(now + 2 * MINUTE).chargers[0].recent.length, 2);
+  assert.equal(observer.status(now + 2 * MINUTE).chargers[0].recent[0].endReason, 'equipment-replaced');
 });
 
 test('restart and stale reads do not count an observation gap toward a settled failure', () => {
@@ -199,12 +199,12 @@ test('restart and stale reads do not count an observation gap toward a settled f
   for (let i = 0; i <= 5; i++) observe(refresh(view, now + i * MINUTE), now + i * MINUTE);
   assert.equal(observer.status(now + 10 * MINUTE).chargers[0].current.evidenceStale, true);
   const restarted = new ChargingSessionDiagnostics({ store });
-  const report = restarted.observe([refresh(view, now + 30 * MINUTE)], now + 30 * MINUTE).chargers[0].current;
+  const report = readCompleteReport(restarted, restarted.observe([refresh(view, now + 30 * MINUTE)], now + 30 * MINUTE).chargers[0].current);
   assert(report.timeline.some(row => row.code === 'observation-gap'));
   assert(!report.findings.some(row => row.code === 'permitted-without-draw'));
 });
 
-test('retention keeps opening evidence and recent records bounded', () => {
+test('complete evidence survives beyond former caps while dashboard and runtime remain bounded', () => {
   const { observer, observe } = fixture(), view = charger();
   for (let i = 0; i < 100; i++) {
     view.values.minimumSoc.value = i % 2 ? 80 : 85; view.values.charging.value = i % 2 === 0;
@@ -212,14 +212,19 @@ test('retention keeps opening evidence and recent records bounded', () => {
     observe(refresh(view, now + i * MINUTE), now + i * MINUTE);
   }
   let report = observer.status(now + 100 * MINUTE).chargers[0].current;
-  assert.equal(report.plans.length, 32); assert.equal(report.plans[0].at, now);
-  assert.equal(report.timeline.length, 120); assert.equal(report.timeline[0].code, 'connected');
-  assert(report.truncated.plans > 0); assert(report.truncated.timeline > 0);
+  assert.equal(report.counts.plans, 100);
+  assert.equal(report.timeline, undefined); assert.equal(report.plans, undefined);
+  const complete = readCompleteReport(observer, report);
+  assert.equal(complete.plans.length, 100); assert.equal(complete.plans[0].at, now);
+  assert(complete.timeline.length > 120); assert.equal(complete.timeline[0].code, 'connected');
+  assert(observer.state.chargers.charger1.current.planContext.length <= 8);
+  assert.equal(observer.state.chargers.charger1.current.events.length, 0);
   for (let i = 100; i < 110; i++) {
     view.request.sessionId = `session-${i}`; view.control.session.connectedAt = now + i * MINUTE;
     observe(refresh(view, now + i * MINUTE), now + i * MINUTE);
   }
   assert.equal(observer.status(now + 110 * MINUTE).chargers[0].recent.length, 4);
+  assert.equal(observer.listReports({chargerId:'charger1'}).reports.length, 11);
 });
 
 test('failed persistence remains dirty and retries a quiet next observation', () => {
@@ -232,8 +237,8 @@ test('failed persistence remains dirty and retries a quiet next observation', ()
   assert.equal(failures, 2);
   store.setState = original; observe(refresh(view, now + MINUTE + 2), now + MINUTE + 2);
   const restored = new ChargingSessionDiagnostics({ store });
-  assert.equal(restored.status(now + MINUTE + 2).chargers[0].current.plans.length, 2);
-  assert.equal(observer.dirty, false);
+  assert.equal(restored.status(now + MINUTE + 2).chargers[0].current.counts.plans, 2);
+  assert.equal(observer.state.chargers.charger1.current.events.length, 0);
 });
 
 test('unsupported persisted contract fails before mutation', () => {

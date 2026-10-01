@@ -1,5 +1,5 @@
 // One current schema. Pre-production databases are never migrated.
-export const SCHEMA_VERSION = 15;
+export const SCHEMA_VERSION = 16;
 export const CURRENT_SCHEMA = `
 CREATE TABLE annotations (
   id INTEGER PRIMARY KEY, kind TEXT NOT NULL, start_at INTEGER NOT NULL, end_at INTEGER,
@@ -11,6 +11,17 @@ CREATE TABLE counters (
   unit TEXT NOT NULL, observed_date TEXT NOT NULL, source_time INTEGER,
   note TEXT NOT NULL, provenance TEXT NOT NULL, created_at INTEGER NOT NULL,
   UNIQUE(device, signal, observed_date, provenance)
+);
+CREATE TABLE charging_reports (
+ namespace TEXT NOT NULL, charger_id TEXT NOT NULL, report_id TEXT NOT NULL,
+ association TEXT NOT NULL, started_at INTEGER NOT NULL, ended_at INTEGER, saved_at INTEGER,
+ summary TEXT NOT NULL CHECK(json_valid(summary)), checkpoint TEXT NOT NULL CHECK(json_valid(checkpoint)),
+ PRIMARY KEY(namespace,charger_id,report_id)
+) WITHOUT ROWID;
+CREATE TABLE charging_report_events (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, namespace TEXT NOT NULL, charger_id TEXT NOT NULL, report_id TEXT NOT NULL,
+ at INTEGER NOT NULL, category TEXT NOT NULL, payload TEXT NOT NULL CHECK(json_valid(payload)),
+ FOREIGN KEY(namespace,charger_id,report_id) REFERENCES charging_reports(namespace,charger_id,report_id) ON DELETE CASCADE
 );
 CREATE TABLE energy_audits (
  id INTEGER PRIMARY KEY, source TEXT NOT NULL, device TEXT NOT NULL, signal TEXT NOT NULL,
@@ -77,6 +88,10 @@ CREATE TABLE recovery_runs (id TEXT PRIMARY KEY, input TEXT NOT NULL, donor_dige
             previous_fireplace_revision INTEGER, source_head INTEGER, fireplace_revision INTEGER);
 CREATE TABLE state (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL);
 CREATE INDEX annotations_time ON annotations(start_at, end_at);
+CREATE INDEX charging_reports_history ON charging_reports(namespace,charger_id,started_at DESC,report_id DESC);
+CREATE INDEX charging_reports_expiry ON charging_reports(namespace,ended_at) WHERE saved_at IS NULL AND ended_at IS NOT NULL;
+CREATE INDEX charging_report_events_report ON charging_report_events(namespace,charger_id,report_id,id DESC);
+CREATE INDEX charging_report_events_category ON charging_report_events(namespace,charger_id,report_id,category,id DESC);
 CREATE INDEX energy_audits_device_time ON energy_audits(device,source_time,id);
 CREATE INDEX events_type_time ON events(type,at,id);
 CREATE INDEX fireplace_events_input_time ON fireplace_events(input,at,id);

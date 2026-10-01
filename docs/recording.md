@@ -559,6 +559,14 @@ unobserved chart options or mix exact contacts into the adaptive table.
 - External temperature feed: no numeric history and no routine renewal events.
   Diagnostic events record abnormal onset, changed reason and recovery once.
   Durable local targets and one-shot command results remain distinct.
+- Charging session reports: bounded current summaries and observer checkpoints,
+  plus append-only diagnostic events with source clocks and planning snapshots.
+  All recorded report events survive while their session is retained. Completed
+  unsaved reports expire together with their details after the configured number
+  of days (30 by default); active and explicitly saved reports are protected.
+  Explicit deletion of a completed report affects only its owned diagnostic
+  records, not independent energy or learning history. History pages and display
+  grouping bound work without discarding stored events. See [charging reports](charging.md).
 - Calculated outputs, requests, market/weather snapshots, manual inputs, learning
   journals, session checks, imported rows and provenance, source corrections,
   recovery records, bounded statistics and overwritten operational state each
@@ -583,7 +591,7 @@ byte and variation metrics remain labeled as such. Current open energy is shown
 separately from finalized observation counts. The annual target measures overall
 SQLite growth; mandatory exact/history records are never dropped to meet it.
 
-This recording contract uses database schema 15. An incompatible development
+This recording contract uses database schema 16. An incompatible development
 schema is rejected before mutation with fresh-database guidance; no migration,
 backfill or automatic reset is provided. Supported read-only v0.7.5 CSV import,
 current-version restart, backup/restore and deterministic journal replay remain.

@@ -38,338 +38,240 @@ function fixture() {
 const descendants = node => node.children.flatMap(child => [child, ...descendants(child)]);
 const now = Date.parse('2026-09-28T18:00:00Z');
 
-test('report facts explain the exact identification blocker and pending historical evidence', () => {
-  const report = { current: { identification: 'waiting', identificationReason: 'bmw-home-unknown' } };
-  assert.match(chargingReportFacts(report).find(([label]) => label === 'Identification')[1], /no valid last known home/);
-  report.current = { identification: 'observing', identificationReason: 'probe-energy-limit' };
-  const facts = chargingReportFacts(report);
-  assert.match(facts.find(([label]) => label === 'Identification')[1], /awaiting matching reports.*energy limit.*remains pending/);
-  assert.match(facts.find(([label]) => label === 'Control at last assessment')[1], /awaiting matching reports/);
-});
-function status() {
-  const report = { id: 'current', startedAt: now, endedAt: null, evaluatedAt: now, chargerId: 'charger1',
-    behavior: 'expected', outcome: { state: 'in-progress' }, coverage: { initialRelease: { state: 'verified' } }, findings: [],
-    timeline: [{ at: now, kind: 'physical', code: 'charging-started' }], plans: [], truncated: { plans: 0, findings: 0, timeline: 0 } };
-  return { now, charging: { timezone: 'Europe/Helsinki', chargers: [{ id: 'charger1', label: 'Charger 1' }, { id: 'charger2', label: 'Charger 2' }],
-    diagnostics: { version: 1, chargers: [{ id: 'charger1', current: report, recent: [{ ...report, id: 'previous', endedAt: now - 1 }] }] },
-    physicalTests: { runs: [{ vehicleId: 'bmw', chargerId: 'charger1', program: 'immediate', phase: 'observing', report: { id: 'current' } }] } } };
+const flush = () => new Promise(resolve => setImmediate(resolve));
+const textOf = node => [node.textContent, ...descendants(node).map(child => child.textContent)].join('\n');
+function setup() {
+  const document = fixture(), calls = [];
+  const current = { id: 'current', startedAt: now, observedFrom: now, endedAt: null, evaluatedAt: now, chargerId: 'charger1', saved: false,
+    behavior: 'expected', outcome: { state: 'in-progress' }, coverage: { initialRelease: { state: 'verified' } }, findings: [], counts: { events: 1, findings: 0, plans: 0 } };
+  const previous = { ...structuredClone(current), id: 'previous', startedAt: now - 86400_000, endedAt: now - 1 };
+  const reports = new Map([[current.id, current], [previous.id, previous]]);
+  const records = new Map([[current.id, [{ id: 1, at: now, kind: 'physical', code: 'charging-observed', powerKw: 7, source: 'easee', measuredAt: now, receivedAt: now }]], [previous.id, []]]);
+  const state = { now, webAccess: { role: 'admin' }, charging: { timezone: 'Europe/Helsinki', chargers: [{ id: 'charger1', label: 'Charger 1' }, { id: 'charger2', label: 'Charger 2' }],
+    diagnostics: { version: 2, retention: { days: 30 }, chargers: [{ id: 'charger1', current, recent: [previous] }, { id: 'charger2', current: null, recent: [] }] },
+    physicalTests: { runs: [{ id: 'test1', vehicleId: 'bmw', chargerId: 'charger1', program: 'immediate', phase: 'observing', report: { id: 'current' } }] } } };
+  const request = async (path, body) => {
+    calls.push({ path, body }); const url = new URL(path, 'http://local');
+    const id = decodeURIComponent(url.pathname.split('/')[4] ?? ''), report = reports.get(id);
+    if (url.pathname === '/api/charging/reports') {
+      const all = [...reports.values()].filter(row => row.chargerId === url.searchParams.get('chargerId') && (url.searchParams.get('savedOnly') !== 'true' || row.saved));
+      return { reports: structuredClone(all), nextBefore: null, readOnly: false };
+    }
+    if (!report || report.chargerId !== url.searchParams.get('chargerId')) throw Object.assign(new Error('Report not found'), { status: 404 });
+    if (url.pathname.endsWith('/events')) {
+      const filter = url.searchParams.get('filter');
+      const kinds = { findings: ['finding', 'finding-update', 'recovery'], plans: ['plan'], charging: ['physical', 'charger-status'], control: ['control'], vehicle: ['identification'], evidence: ['evidence', 'session'] };
+      const events = (records.get(id) ?? []).filter(row => filter === 'all' || kinds[filter]?.includes(row.kind)).filter(row => !url.searchParams.has('before') || row.id < Number(url.searchParams.get('before'))).sort((a, b) => b.id - a.id);
+      const limit = Number(url.searchParams.get('limit'));
+      return { events: structuredClone(events.slice(0, limit)), nextBefore: events.length > limit ? String(events[limit - 1].id) : null, readOnly: false };
+    }
+    if (url.pathname.endsWith('/save')) { report.saved = body.saved; return structuredClone(report); }
+    if (url.pathname.endsWith('/delete')) { reports.delete(id); return { deleted: true }; }
+    return structuredClone(report);
+  };
+  const panel = createChargingDiagnosticsPanel({ document, request }); panel.update(state);
+  return { document, calls, state, current, previous, reports, records, request, panel,
+    dialog: document.getElementById('charging-report-dialog'), async open(id = 'current') { panel.open('charger1', id); await flush(); } };
 }
 
-test('report shortcut preserves focus across refreshes and opens without disclosure or control actions', () => {
-  const document = fixture(), panel = createChargingDiagnosticsPanel({ document }), state = status();
-  panel.update(state);
-  const button = document.getElementById('charger1-session-report'); button.focus();
-  panel.update(structuredClone(state));
-  assert.equal(document.getElementById('charger1-session-report'), button);
-  assert.equal(document.activeElement, button);
-  assert.equal(button.textContent, 'Report · Checks passed');
-  let prevented = 0, stopped = 0;
-  button.dispatch('click', { preventDefault: () => prevented++, stopPropagation: () => stopped++ });
-  assert.equal(prevented, 1); assert.equal(stopped, 1);
-  const dialog = document.getElementById('charging-report-dialog');
-  assert.equal(dialog.open, true); assert.equal(button.getAttribute('aria-expanded'), 'true');
-  panel.close();
-  assert.equal(dialog.open, false); assert.equal(button.getAttribute('aria-expanded'), 'false');
-  assert.equal(document.activeElement, button);
+test('one event section contains full plan details exactly once and filtering replaces its rows', async () => {
+  const f = setup(), changes = [{ field: 'target', before: 70, after: 80 }];
+  f.records.set('current', [{ id: 1, at: now, kind: 'plan', code: 'target-update', changes,
+    plan: { at: now, reason: 'target-update', changes, automatic: false, scheduleState: 'none', periods: [],
+      inputs: { soc: { value: 20, source: 'manual-fallback' }, target: { value: 80, source: 'session-request' } } } },
+  { id: 2, at: now + 1, kind: 'control', code: 'paused' }]);
+  await f.open();
+  assert.equal(f.dialog.querySelector('.charging-report-findings'), null);
+  assert.equal(f.dialog.querySelector('.charging-report-plans'), null);
+  const timeline = f.dialog.querySelector('.charging-report-timeline');
+  assert.equal(timeline.children.length, 2);
+  assert.equal(textOf(timeline).match(/Requested target: 70% → 80%/g).length, 1);
+  assert.match(textOf(timeline), /configured assumption/);
+  const filter = f.document.getElementById('charging-report-filter'); filter.value = 'control'; filter.dispatch('change'); await flush();
+  assert.equal(timeline.children.length, 1); assert.match(textOf(timeline), /Controller pause/);
 });
 
-test('opens the requested retained report and does not substitute a different physical session after expiry', () => {
-  const document = fixture(), panel = createChargingDiagnosticsPanel({ document }); panel.update(status());
-  panel.open('charger1', 'previous');
-  assert.equal(document.getElementById('charging-report-session').value, 'previous');
-  panel.close(); panel.open('charger1', 'expired-session');
-  const result = document.getElementById('charging-report-dialog').querySelector('.charging-report-result');
-  assert.equal(result.children[0].textContent, 'This session report is no longer retained');
-  assert.notEqual(document.getElementById('charging-report-session').value, 'current');
+test('polling preserves expanded event, nested rates, focused node and scroll', async () => {
+  const f = setup(); await f.open();
+  const timeline = f.dialog.querySelector('.charging-report-timeline'), item = timeline.children[0], details = item.querySelector('details'), summary = details.querySelector('summary');
+  details.open = true; summary.focus(); f.dialog.scrollTop = 380;
+  f.current.evaluatedAt += 5000; f.panel.update(structuredClone(f.state)); await flush();
+  assert.equal(timeline.children[0], item); assert.equal(f.document.activeElement, summary); assert.equal(details.open, true); assert.equal(f.dialog.scrollTop, 380);
+  f.records.get('current').push({ id: 2, at: now + 10_000, kind: 'physical', code: 'charging-stopped', powerKw: 0, source: 'easee' });
+  f.current.counts.events++; f.current.evaluatedAt++; f.panel.update(structuredClone(f.state)); await flush();
+  assert.equal(timeline.children[1], item); assert.equal(f.document.activeElement, summary); assert.equal(details.open, true); assert.equal(f.dialog.scrollTop, 380);
 });
 
-test('guided assessment link opens the selected vehicle without issuing charger actions', () => {
-  const document = fixture(), calls = [], panel = createChargingDiagnosticsPanel({ document, onOpenTest: id => calls.push(id) });
-  panel.update(status()); panel.open('charger1');
-  const dialog = document.getElementById('charging-report-dialog'), guided = dialog.querySelector('.charging-report-guided');
-  assert.equal(guided.hidden, false);
-  guided.children[1].dispatch('click');
-  assert.deepEqual(calls, ['bmw']); assert.equal(dialog.open, false);
+test('expired exact selection is not substituted and charger histories stay separate', async () => {
+  const f = setup(); await f.open('missing');
+  assert.match(textOf(f.dialog.querySelector('.charging-report-result')), /no longer retained/);
+  assert.equal(f.document.getElementById('charging-report-session').value, 'missing');
+  f.panel.open('charger2'); await flush();
+  assert.equal(f.document.getElementById('charging-report-session').children.length, 0);
+  assert.match(textOf(f.dialog.querySelector('.charging-report-result')), /No session report for Charger 2/);
 });
 
-test('current recorded reports show their snapshot scope and incomplete live evidence', () => {
-  const document = fixture(), panel = createChargingDiagnosticsPanel({ document }), state = status();
-  Object.assign(state.charging.diagnostics.chargers[0].current, { recorded: true, evidenceStale: true });
-  panel.update(state); panel.open('charger1');
-  const dialog = document.getElementById('charging-report-dialog');
-  assert.equal(document.getElementById('charger1-session-report').dataset.state, 'unknown');
-  assert(descendants(dialog).some(node => /Recorded master report.*Connected at snapshot/.test(node.textContent)));
-  assert.equal(dialog.querySelector('.charging-report-result').children[1].textContent, 'Observation is no longer current');
-});
-
-test('automatic off, absent schedule and unknown actual battery are explicit despite fallback inputs', () => {
-  const report = { startedAt: now, current: { automaticEnabled: false, chargeNow: false, scheduleState: 'none',
-    vehicleId: null, vehicleSoc: false, soc: { value: 20, source: 'manual-fallback', assumed: true },
-    power: { value: 0, measuredAt: now + 3000 }, powerKw: 0, physicalFresh: true, charging: false, reportedCharging: true },
-    timeline: [{ kind: 'session', code: 'observation-started', at: now + 25 * 60_000 }] };
-  const facts = Object.fromEntries(chargingReportFacts(report));
-  assert.match(facts['Control at last assessment'], /Automatic charging off.*No controller charging schedule/);
-  assert.match(facts.Vehicle, /Unidentified.*Actual vehicle battery charge is unconfirmed/);
-  assert.equal(facts['Battery input'], '20% · configured assumption');
-  assert.match(facts['Measured draw / status'], /0 kW measured.*Charger status reports charging/);
-  assert.match(facts['Observation coverage'], /Connection recorded.*monitoring began.*Earlier charging is not covered/);
-});
-
-test('snapshot history does not claim changed settings or prices from an opaque reason alone', () => {
-  for (const reason of ['price-update', 'session-settings', 'planner-reassessment']) {
-    const snapshot = chargingPlanPresentation({ reason, automatic: false, scheduleState: 'none', changes: [],
-      inputs: { soc: { value: 20, source: 'manual-fallback' }, target: { value: 80, source: 'session-request' },
-        capacity: { value: 74, source: 'manual-fallback', assumed: true } }, vehicleId: null });
-    assert.equal(snapshot.title, 'Planning snapshot recorded');
-    assert.equal(snapshot.periodLabel, 'No controller charging schedule');
-    assert.match(snapshot.inputs, /20% · configured assumption.*80% · session entry.*74 kWh · configured assumption/);
-    assert.match(snapshot.vehicle, /Unidentified.*do not establish.*actual battery charge/);
-    assert.doesNotMatch(JSON.stringify(snapshot), /prices changed|settings changed|Plan updated/);
-  }
-});
-
-test('specific semantic deltas show actual values while unchanged, unknown and private fields are omitted', () => {
-  const changes = chargingPlanChanges([
-    { field: 'startingSoc', before: 20, after: 55 }, { field: 'target', before: 80, after: 80 },
-    { field: 'capacity', before: 74, after: 57 }, { field: 'automatic', before: false, after: true },
-    { field: 'readyBy', before: now, after: now + 3_600_000 },
-    { field: 'periods', before: [], after: [{ startAt: now, endAt: null }] },
-    { field: 'prices', before: [{ startAt: now, endAt: now + 3_600_000, priceCtPerKwh: 3.5 }],
-      after: [{ startAt: now, endAt: now + 3_600_000, priceCtPerKwh: 5.2 }] },
-    { field: 'priceAvailability', before: [], after: [{ startAt: now, endAt: now + 3_600_000, priceCtPerKwh: 5.2 }] },
-    { field: 'private-id', before: 'secret-fixture', after: '<img src=x>' },
-  ]);
-  assert.deepEqual(changes[0], { field: 'startingSoc', label: 'Starting-charge input', before: '20%', after: '55%', complex: false });
-  assert.equal(changes.length, 7);
-  assert.equal(changes.find(row => row.field === 'periods').before, 'No charging periods');
-  assert.match(changes.find(row => row.field === 'periods').after, /open release/);
-  assert.match(changes.find(row => row.field === 'prices').before, /3.5 c\/kWh/);
-  assert.match(changes.find(row => row.field === 'prices').after, /5.2 c\/kWh/);
-  assert.doesNotMatch(JSON.stringify(changes), /secret-fixture|<img/);
-});
-
-test('report timeline separates zero measured draw from charger status and preserves original clocks', () => {
-  const document = fixture(), panel = createChargingDiagnosticsPanel({ document }), state = status();
-  const report = state.charging.diagnostics.chargers[0].current;
-  report.timeline = [{ kind: 'physical', code: 'not-charging-observed', at: now + 20_000, powerKw: 0,
+test('original source and receipt clocks distinguish zero draw and charger status', async () => {
+  const f = setup(); f.records.set('current', [{ id: 1, kind: 'physical', code: 'not-charging-observed', at: now + 20_000, powerKw: 0,
     source: 'easee', measuredAt: now + 3000, receivedAt: now + 5000 },
-  { kind: 'charger-status', code: 'charger-reports-charging', at: now + 20_000, powerKw: 0,
-    source: 'easee', measuredAt: now + 1000, receivedAt: now + 2000, powerMeasuredAt: now + 3000, powerReceivedAt: now + 5000 }];
-  panel.update(state); panel.open('charger1');
-  const timeline = document.getElementById('charging-report-dialog').querySelector('.charging-report-timeline');
-  const text = descendants(timeline).map(node => node.textContent).join('\n');
-  assert.match(text, /No draw measured/);
-  assert.match(text, /Charger status reports charging/);
-  assert.match(text, /Measured draw 0 kW/);
+  { id: 2, kind: 'charger-status', code: 'charger-reports-charging', at: now + 20_000, powerKw: 0, source: 'easee', measuredAt: now + 1000, receivedAt: now + 2000 }]);
+  await f.open(); const text = textOf(f.dialog.querySelector('.charging-report-timeline'));
+  assert.match(text, /No draw measured/); assert.match(text, /Charger status reports charging/);
   assert.match(text, /Measured 28 Sept, 21:00:03 · Received 28 Sept, 21:00:05/);
-  assert.doesNotMatch(text, /charging stopped|Physical charging observed|top.up/i);
 });
 
-test('empty plans explain missing schedule and exact deltas appear in both timeline and planning snapshots', () => {
-  const document = fixture(), panel = createChargingDiagnosticsPanel({ document }), state = status();
-  const report = state.charging.diagnostics.chargers[0].current;
-  report.current = { automaticEnabled: false, scheduleState: 'none' };
-  panel.update(state); panel.open('charger1');
-  const dialog = document.getElementById('charging-report-dialog');
-  assert.equal(dialog.querySelector('.charging-report-plans').children[0].textContent, 'No controller charging schedule was recorded.');
-  const changes = [{ field: 'target', before: 70, after: 80 }];
-  report.plans = [{ at: now, reason: 'target-update', changes, automatic: false, scheduleState: 'none', periods: [],
-    inputs: { soc: { value: 20, source: 'manual-fallback' }, target: { value: 80, source: 'session-request' } } }];
-  report.timeline.push({ kind: 'plan', code: 'target-update', at: now, changes });
-  panel.update(state);
-  for (const selector of ['.charging-report-timeline', '.charging-report-plans']) {
-    const text = descendants(dialog.querySelector(selector)).map(node => node.textContent).join('\n');
-    assert.match(text, /Requested target: 70% → 80%/);
-    assert.doesNotMatch(text, /Plan updated/);
+test('recurring findings show unique issues and total episodes with a scoped filter', async () => {
+  const f = setup(); f.current.findings = [{ code: 'control-unconfirmed', count: 22, firstAt: now, lastAt: now + 40, resolvedAt: null, severity: 'attention' }];
+  f.records.set('current', [{ id: 1, at: now, kind: 'finding', code: 'control-unconfirmed', episode: 1 },
+    { id: 2, at: now + 1, kind: 'recovery', code: 'control-unconfirmed', episode: 1 },
+    { id: 3, at: now + 2, kind: 'finding', code: 'control-unconfirmed', episode: 2 }]);
+  await f.open();
+  const link = f.dialog.querySelector('.charging-report-current-findings');
+  assert.match(link.textContent, /1 unresolved finding · 1 issue, 22 recorded episodes/);
+  link.dispatch('click'); await flush();
+  assert.equal(f.dialog.querySelector('.charging-report-timeline').children.length, 1);
+  assert.match(textOf(f.dialog.querySelector('.charging-report-timeline')), /2 episodes/);
+  assert.match(textOf(f.dialog), /Separate recorded occurrences in the loaded events/);
+});
+
+test('save active report protects future events and cannot delete active report', async () => {
+  const f = setup(); await f.open();
+  assert.equal(f.document.getElementById('charging-report-delete').disabled, true);
+  f.document.getElementById('charging-report-save').dispatch('click'); await flush();
+  assert.equal(f.current.saved, true);
+  assert.equal(f.document.getElementById('charging-report-save').textContent, 'Remove from saved');
+  assert.match(f.dialog.querySelector('.charging-report-message').textContent, /including future events/);
+  f.panel.update(structuredClone(f.state)); await flush();
+  assert.match(f.dialog.querySelector('.charging-report-message').textContent, /Report saved permanently/);
+});
+
+test('removing an expired saved report warns using its own retention before mutation', async () => {
+  const f = setup(); Object.assign(f.previous, { saved: true, endedAt: now - 3 * 86400_000, retention: { days: 2 } });
+  await f.open('previous'); f.document.getElementById('charging-report-save').dispatch('click');
+  const confirmation = f.dialog.querySelector('.charging-report-confirm');
+  assert.equal(confirmation.hidden, false); assert.match(textOf(confirmation), /delete it and its events immediately/);
+  assert.equal(f.calls.filter(row => row.body).length, 0);
+  confirmation.children[2].dispatch('click'); assert.equal(confirmation.hidden, true);
+});
+
+test('completed report deletion requires an in-dialog confirmation and retains selection', async () => {
+  const f = setup(); await f.open('previous'); f.document.getElementById('charging-report-delete').dispatch('click');
+  assert.equal(f.calls.filter(row => row.body).length, 0);
+  f.dialog.querySelector('.charging-report-confirm').children[1].dispatch('click'); await flush();
+  assert.equal(f.reports.has('previous'), false);
+  assert.match(textOf(f.dialog.querySelector('.charging-report-result')), /no longer retained/);
+  assert.equal(f.document.getElementById('charging-report-session').value, 'previous');
+});
+
+test('family and read-only viewers can inspect but cannot manage reports', async () => {
+  for (const restriction of [{ webAccess: { role: 'family' } }, { readOnly: true }, { role: 'slave' }]) {
+    const f = setup(); Object.assign(f.state, restriction); f.panel.update(f.state); await f.open('previous');
+    assert.equal(f.document.getElementById('charging-report-save').disabled, true); assert.equal(f.document.getElementById('charging-report-delete').disabled, true);
+    assert.match(textOf(f.dialog), /View only/);
   }
 });
 
-test('a recorded charging code with contradictory zero power is shown as unconfirmed without rewriting it', () => {
-  const document = fixture(), panel = createChargingDiagnosticsPanel({ document }), state = status();
-  const report = state.charging.diagnostics.chargers[0].current;
-  report.timeline = [{ kind: 'physical', code: 'charging-started', at: now, powerKw: 0, measuredAt: now - 10_000 },
-    { kind: 'physical', code: 'charging-stopped', at: now + 1000, powerKw: 0, measuredAt: now - 9000 }];
-  const original = structuredClone(report.timeline);
-  panel.update(state); panel.open('charger1');
-  const timeline = document.getElementById('charging-report-dialog').querySelector('.charging-report-timeline');
-  const text = descendants(timeline).map(node => node.textContent).join('\n');
-  assert.match(text, /Brief charger-status change/);
-  assert.match(text, /No draw measured/);
-  assert.doesNotMatch(text, /Draw rose above|Draw fell/);
-  assert.deepEqual(report.timeline, original);
+test('saved collection loads its own list without showing unrelated recent reports', async () => {
+  const f = setup(); f.previous.saved = true; await f.open();
+  const collection = f.document.getElementById('charging-report-collection'); collection.value = 'saved'; collection.dispatch('change'); await flush();
+  assert.deepEqual(f.document.getElementById('charging-report-session').children.map(row => row.value), ['previous']);
+  assert.equal(f.document.getElementById('charging-report-session').value, 'previous');
 });
 
-test('stale measured power is labeled as a last reading and never current draw', () => {
-  const facts = Object.fromEntries(chargingReportFacts({ current: { physicalFresh: false, powerKw: null,
-    power: { value: 11, measuredAt: now - 3_600_000 }, reportedCharging: true } }));
+test('event pagination preserves all records and polling bridges bursts larger than one page', async () => {
+  const f = setup(); f.records.set('current', Array.from({ length: 120 }, (_, i) => ({ id: i + 1, at: now + i, kind: 'evidence', code: 'observation-gap' })));
+  f.current.counts.events = 120; await f.open();
+  const timeline = f.dialog.querySelector('.charging-report-timeline'); assert.equal(timeline.children.length, 50);
+  f.document.getElementById('charging-report-more-events').dispatch('click'); await flush(); assert.equal(timeline.children.length, 100);
+  f.records.get('current').push(...Array.from({ length: 130 }, (_, i) => ({ id: i + 121, at: now + i + 120, kind: 'evidence', code: 'observation-gap' })));
+  f.current.counts.events = 250; f.current.evaluatedAt++; f.panel.update(structuredClone(f.state)); await flush();
+  assert.equal(timeline.children.length, 230);
+  f.document.getElementById('charging-report-more-events').dispatch('click'); await flush(); assert.equal(timeline.children.length, 250);
+  assert.equal(f.document.getElementById('charging-report-more-events').hidden, true);
+});
+
+test('late event responses cannot overwrite a different filter or a closed dialog', async () => {
+  const f = setup(); let resolveLate;
+  const request = (path, body) => path.includes('/events?') && path.includes('filter=all') ? new Promise(resolve => { resolveLate = resolve; }) : f.request(path, body);
+  const panel = createChargingDiagnosticsPanel({ document: f.document, request }); panel.update(f.state); panel.open('charger1'); await flush();
+  const dialog = f.document.body.children.at(-1), filter = dialog.querySelector('.charging-report-events').querySelector('select');
+  filter.value = 'plans'; filter.dispatch('change'); await flush();
+  resolveLate({ events: [{ id: 99, at: now, kind: 'control', code: 'unconfirmed' }], nextBefore: null }); await flush();
+  assert.equal(dialog.querySelector('.charging-report-timeline').children.length, 0);
+  panel.close(); assert.equal(dialog.open, false);
+});
+
+test('a metadata read begun before saving cannot undo the saved receipt or summary', async () => {
+  const f = setup(); let hold = false, resolveLate;
+  const request = (path, body) => hold && /\/current\?/.test(path) ? new Promise(resolve => { resolveLate = resolve; }) : f.request(path, body);
+  const panel = createChargingDiagnosticsPanel({ document: f.document, request }); panel.update(f.state); panel.open('charger1'); await flush();
+  const dialog = f.document.body.children.at(-1); hold = true; f.current.evaluatedAt++; panel.update(structuredClone(f.state)); await flush();
+  const stale = structuredClone(f.current);
+  dialog.querySelector('.charging-report-actions').children[0].dispatch('click'); await flush();
+  resolveLate(stale); await flush();
+  assert.equal(dialog.querySelector('.charging-report-actions').children[0].textContent, 'Remove from saved');
+  assert.match(dialog.querySelector('.charging-report-message').textContent, /Report saved permanently/);
+});
+
+test('guided link opens the exact assessment attached to the report and restores focus', async () => {
+  const f = setup(), calls = []; const panel = createChargingDiagnosticsPanel({ document: f.document, request: f.request, onOpenTest: (...args) => calls.push(args) });
+  panel.update(f.state); panel.open('charger1'); await flush();
+  const dialog = f.document.body.children.at(-1); dialog.querySelector('.charging-report-guided').children[1].dispatch('click');
+  assert.deepEqual(calls, [['bmw', 'test1']]); assert.equal(dialog.open, false);
+});
+
+test('facts retain partial monitoring, stale power and assumed battery meanings', () => {
+  const facts = Object.fromEntries(chargingReportFacts({ startedAt: now, observedFrom: now + 60_000,
+    current: { automaticEnabled: false, scheduleState: 'none', vehicleSoc: false, soc: { value: 20, source: 'manual-fallback' }, physicalFresh: false,
+      power: { value: 11, measuredAt: now }, reportedCharging: true } }));
+  assert.match(facts['Observation coverage'], /Earlier charging is not covered/);
   assert.match(facts['Measured draw / status'], /Last reading 11 kW.*current draw unavailable/);
+  assert.match(facts.Vehicle, /Actual vehicle battery charge is unconfirmed/);
 });
 
-test('controller execution plans do not imply every future pause is installed in the charger', () => {
-  const view = chargingPlanPresentation({ automatic: true, scheduleState: 'installed', state: 'released' });
-  assert.match(view.control, /Controller execution plan/);
+test('plan changes retain exact prices, explicit unchanged periods and execution distinction', () => {
+  const changes = [{ field: 'prices', before: [{ startAt: now, endAt: now + 3600_000, priceCtPerKwh: 3.5 }], after: [{ startAt: now, endAt: now + 3600_000, priceCtPerKwh: 4.2 }] }];
+  const view = chargingPlanPresentation({ scheduleState: 'installed', changes }); assert.equal(view.periodsUnchanged, true);
   assert.match(view.periodLabel, /physical execution is checked separately/);
-  assert.doesNotMatch(JSON.stringify(view), /Installed charging instruction/);
-  const changes = chargingPlanChanges([{ field: 'soc', before: 20, after: 55 },
-    { field: 'feasible', before: true, after: false }, { field: 'provisional', before: false, after: true },
-    { field: 'prices', before: [], after: [{ startAt: now, endAt: now + 3_600_000, priceCtPerKwh: 5.2 }], omitted: 2 }]);
-  assert.equal(changes[0].label, 'Battery input');
-  assert.equal(changes[1].after, 'Shortfall forecast');
-  assert.equal(changes[2].after, 'Requested');
-  assert.equal(changes[3].omitted, 2);
+  assert.match(chargingPlanChanges(changes)[0].before, /3.5 c\/kWh/); assert.match(chargingPlanChanges(changes)[0].after, /4.2 c\/kWh/);
 });
 
-test('revised prices with unchanged periods state explicitly that the charging schedule did not move', () => {
-  const delta = { field: 'prices', before: [{ startAt: now, endAt: now + 3_600_000, priceCtPerKwh: 3.5 }],
-    after: [{ startAt: now, endAt: now + 3_600_000, priceCtPerKwh: 4.2 }] };
-  const view = chargingPlanPresentation({ reason: 'price-update', scheduleState: 'proposed', changes: [delta] });
-  assert.equal(view.periodsUnchanged, true);
-  assert.equal(chargingPlanPresentation({ reason: 'initial-plan', changes: [] }).periodsUnchanged, false);
-  assert.equal(chargingPlanPresentation({ reason: 'price-update', changes: [] }).periodsUnchanged, false);
-  const document = fixture(), panel = createChargingDiagnosticsPanel({ document }), state = status();
-  const report = state.charging.diagnostics.chargers[0].current;
-  report.plans = [{ at: now, reason: 'price-update', changes: [delta], periods: [{ startAt: now + 600_000, endAt: null }] }];
-  report.timeline = [{ kind: 'plan', code: 'price-update', at: now, changes: [delta] }];
-  panel.update(state); panel.open('charger1');
-  const dialog = document.getElementById('charging-report-dialog');
-  for (const selector of ['.charging-report-timeline', '.charging-report-plans']) {
-    const text = descendants(dialog.querySelector(selector)).map(node => node.textContent).join('\n');
-    assert.match(text, /Charging periods unchanged/);
-    assert.match(text, /3.5 c\/kWh/); assert.match(text, /4.2 c\/kWh/);
-  }
+test('large suspended-tab catchup is bounded and explicitly reloadable without losing focused history', async () => {
+  const f = setup(); await f.open();
+  const timeline = f.dialog.querySelector('.charging-report-timeline'), original = timeline.children[0], summary = original.querySelector('summary'); summary.focus();
+  f.records.get('current').push(...Array.from({ length: 400 }, (_, i) => ({ id: i + 2, at: now + i + 1, kind: 'evidence', code: 'observation-gap' })));
+  const prior = f.calls.filter(row => row.path.includes('/events?')).length;
+  f.current.counts.events = 401; f.current.evaluatedAt++; f.panel.update(structuredClone(f.state)); await flush();
+  assert.equal(f.calls.filter(row => row.path.includes('/events?')).length - prior, 5);
+  assert.equal(timeline.children.length, 1); assert.equal(timeline.children[0], original); assert.equal(f.document.activeElement, summary);
+  const refresh = f.document.getElementById('charging-report-refresh-events'); assert.equal(refresh.hidden, false);
+  refresh.dispatch('click'); await flush();
+  assert.equal(timeline.children.length, 50); assert.equal(refresh.hidden, true); assert.equal(f.document.getElementById('charging-report-more-events').hidden, false);
 });
 
-test('each charger opens only its own reports, including empty and missing selections', () => {
-  const document = fixture(), panel = createChargingDiagnosticsPanel({ document }), state = status();
-  panel.update(state); panel.open('charger2');
-  const dialog = document.getElementById('charging-report-dialog'), select = document.getElementById('charging-report-session');
-  assert.equal(document.getElementById('charging-report-title').textContent, 'Charger 2 · Session report');
-  assert.equal(select.children.length, 0);
-  assert.match(dialog.querySelector('.charging-report-result').children[0].textContent, /No session report for Charger 2/);
-  const second = structuredClone(state.charging.diagnostics.chargers[0].current);
-  Object.assign(second, { id: 'second-current', chargerId: 'charger2', vehicleId: 'tesla' });
-  state.charging.diagnostics.chargers.push({ id: 'charger2', current: second, recent: [{ ...second, id: 'second-old', endedAt: now }] });
-  panel.update(state);
-  assert.deepEqual(select.children.map(node => node.value), ['second-current', 'second-old']);
-  assert.equal(select.value, 'second-current');
-  panel.open('charger1');
-  assert.deepEqual(select.children.map(node => node.value), ['current', 'previous']);
-  panel.open('charger1', 'second-current');
-  assert.equal(dialog.querySelector('.charging-report-result').children[0].textContent, 'This session report is no longer retained');
-  assert.equal(select.value, 'second-current');
-  assert.equal(dialog.querySelector('.charging-report-facts').hidden, true);
+test('unsaving in Saved removes the list entry while preserving the selected report explicitly', async () => {
+  const f = setup(); f.previous.saved = true; await f.open();
+  const collection = f.document.getElementById('charging-report-collection'); collection.value = 'saved'; collection.dispatch('change'); await flush();
+  f.document.getElementById('charging-report-save').dispatch('click'); await flush();
+  const selector = f.document.getElementById('charging-report-session');
+  assert.equal(selector.value, 'previous'); assert.equal(selector.children.length, 1);
+  assert.equal(selector.children[0].textContent, 'Selected report · no longer saved');
+  assert.match(f.dialog.querySelector('.charging-report-message').textContent, /removed from saved/);
 });
 
-test('polling preserves expanded history, focused evidence and scroll while adding new events', () => {
-  const document = fixture(), panel = createChargingDiagnosticsPanel({ document }), state = status();
-  const report = state.charging.diagnostics.chargers[0].current;
-  report.timeline = [{ at: now, kind: 'physical', code: 'charging-observed', powerKw: 7, measuredAt: now, receivedAt: now, source: 'easee' }];
-  panel.update(state); panel.open('charger1');
-  const dialog = document.getElementById('charging-report-dialog'), timeline = dialog.querySelector('.charging-report-timeline');
-  const entry = timeline.children[0], evidence = entry.querySelector('details'), summary = evidence.querySelector('summary');
-  assert.deepEqual(entry.children, [evidence]); assert.equal(evidence.open, false);
-  assert.match(descendants(summary).map(node => node.textContent).join(''), /Draw above 0.1 kW observed/);
-  evidence.open = true; summary.focus(); dialog.scrollTop = 380;
-  report.observedAt = report.evaluatedAt = now + 5000; panel.update(structuredClone(state));
-  assert.equal(timeline.children[0], entry); assert.equal(document.activeElement, summary);
-  assert.equal(evidence.open, true); assert.equal(dialog.scrollTop, 380);
-  report.timeline.push({ at: now + 10_000, kind: 'physical', code: 'charging-stopped', powerKw: 0, source: 'easee' });
-  panel.update(state);
-  assert.equal(timeline.children[1], entry); assert.equal(document.activeElement, summary); assert.equal(evidence.open, true);
-  assert.equal(dialog.scrollTop, 380);
+test('material finding evidence changes stay visible without a new detected episode', async () => {
+  const f = setup(); f.records.set('current', [
+    { id: 1, at: now, kind: 'finding', code: 'control-unconfirmed', episode: 1, context: { errorCode: 'pause-unconfirmed' } },
+    { id: 2, at: now + 1, kind: 'finding-update', code: 'control-unconfirmed', episode: 1, context: { errorCode: 'invalid-plan' } }]);
+  await f.open(); const filter = f.document.getElementById('charging-report-filter'); filter.value = 'findings'; filter.dispatch('change'); await flush();
+  const timeline = f.dialog.querySelector('.charging-report-timeline');
+  assert.equal(timeline.children.length, 2); assert.match(textOf(timeline.children[0]), /Evidence changed/);
+  assert.match(textOf(timeline.children[0]), /Charging plan could not be applied/);
+  assert.match(textOf(timeline.children[0]), /same episode remains active/);
+  assert.doesNotMatch(textOf(timeline), /0 episodes/);
 });
 
-test('unchanged planning snapshots leave one baseline and keep extra records folded for inspection', () => {
-  const document = fixture(), panel = createChargingDiagnosticsPanel({ document }), state = status();
-  const report = state.charging.diagnostics.chargers[0].current;
-  const baseline = { at: now, reason: 'initial-plan', periods: [], inputs: { soc: { value: 20, source: 'manual-fallback' }, target: { value: 80, source: 'manual-fallback' } }, automatic: false, scheduleState: 'none' };
-  report.plans = [baseline, { ...structuredClone(baseline), at: now + 15 * 60_000, reason: 'price-update' }, { ...structuredClone(baseline), at: now + 30 * 60_000, reason: 'session-settings' }];
-  report.timeline = report.plans.map(p => ({ kind: 'plan', code: p.reason, at: p.at }));
-  panel.update(state); panel.open('charger1');
-  const dialog = document.getElementById('charging-report-dialog'), plans = dialog.querySelector('.charging-report-plans');
-  assert.equal(plans.children.length, 1);
-  const routine = dialog.querySelector('.charging-report-routine');
-  assert.equal(routine.hidden, false); assert.equal(routine.open, false);
-  assert.match(routine.querySelector('summary').textContent, /2 routine planning records/);
-  assert.equal(routine.querySelector('ol').children.length, 2);
-  assert.equal(dialog.querySelector('.charging-report-timeline').children.length, 1);
-});
-
-test('distinct planning records at the same timestamp retain separate stable nodes during refreshes', () => {
-  const document = fixture(), panel = createChargingDiagnosticsPanel({ document }), state = status();
-  const report = state.charging.diagnostics.chargers[0].current;
-  report.plans = [
-    { at: now, reason: 'initial-plan', inputs: { target: { value: 80 } }, periods: [] },
-    { at: now, reason: 'target-update', changes: [{ field: 'target', before: 80, after: 85 }], inputs: { target: { value: 85 } }, periods: [] },
-  ];
-  panel.update(state); panel.open('charger1');
-  const plans = document.getElementById('charging-report-dialog').querySelector('.charging-report-plans');
-  const nodes = [...plans.children];
-  assert.equal(nodes.length, 2); assert.notEqual(nodes[0], nodes[1]);
-  for (const node of nodes) {
-    const fold = node.querySelector('details'); assert.deepEqual(node.children, [fold]); assert.equal(fold.open, false);
-  }
-  assert.match(descendants(nodes[0].querySelector('summary')).map(node => node.textContent).join(''), /Requested target changed/);
-  const detail = nodes[1].querySelector('details'); detail.open = true; detail.querySelector('summary').focus();
-  for (let i = 0; i < 3; i++) panel.update(structuredClone(state));
-  assert.deepEqual(plans.children, nodes); assert.equal(detail.open, true);
-  assert.equal(document.activeElement, detail.querySelector('summary'));
-  assert.match(descendants(nodes[0]).map(node => node.textContent).join('\n'), /80% → 85%/);
-  assert.match(descendants(nodes[1]).map(node => node.textContent).join('\n'), /Initial planning snapshot/);
-});
-
-test('an unavailable report has an explicit error while retaining its saved evidence', () => {
-  const document = fixture(), panel = createChargingDiagnosticsPanel({ document }), state = status();
-  state.charging.diagnostics.available = false;
-  panel.update(state); panel.open('charger1');
-  const dialog = document.getElementById('charging-report-dialog');
-  assert.equal(dialog.querySelector('.charging-report-result').children[0].textContent, 'Session diagnostics could not be saved.');
-  assert.equal(dialog.querySelector('.charging-report-timeline').children.length, 1);
-  assert.equal(document.getElementById('charger1-session-report').dataset.state, 'unknown');
-});
-
-test('inactive automatic control remains distinct from lost evidence and preserves the bounded cause', () => {
-  const document = fixture(), panel = createChargingDiagnosticsPanel({ document }), state = status();
-  const report = state.charging.diagnostics.chargers[0].current;
-  report.current = { automaticEnabled: false, controlAvailability: 'unavailable', scheduleState: 'none' };
-  report.timeline = [
-    { at: now, kind: 'evidence', code: 'physical-evidence-lost', physicalKnown: false,
-      source: 'easee', measuredAt: now - 45_000, receivedAt: now - 30_000 },
-    { at: now + 1, kind: 'control', code: 'off', automaticEnabled: false,
-      availability: 'unavailable', physicalKnown: false, errorCode: 'read-failed', handoverConfirmed: false },
-  ];
-  panel.update(state); panel.open('charger1');
-  const dialog = document.getElementById('charging-report-dialog');
-  assert.match(descendants(dialog.querySelector('.charging-report-facts')).map(node => node.textContent).join('\n'), /Automatic charging off.*Charger control unavailable/);
-  const text = descendants(dialog.querySelector('.charging-report-timeline')).map(node => node.textContent).join('\n');
-  assert.match(text, /Recovery has not been observed/);
-  assert.match(text, /Automatic control inactive · control unavailable/);
-  assert.match(text, /Charger read failed/);
-  assert.match(text, /Control handover unconfirmed/);
-  assert.match(text, /Last power sample 28 Sept, 20:59:15/);
-  assert.doesNotMatch(text, /temporarily unavailable|Evidence became available again/);
-});
-
-test('guided assessment link passes the exact report-linked assessment instead of a newer vehicle run', () => {
-  const document = fixture(), calls = [], panel = createChargingDiagnosticsPanel({ document, onOpenTest: (...args) => calls.push(args) }), state = status();
-  const linked = state.charging.physicalTests.runs[0]; linked.id = 'original-test'; linked.phase = 'completed';
-  state.charging.physicalTests.runs.unshift({ ...linked, id: 'newer-test', phase: 'observing', report: { id: 'different-report' } });
-  panel.update(state); panel.open('charger1');
-  document.getElementById('charging-report-dialog').querySelector('.charging-report-guided').children[1].dispatch('click');
-  assert.deepEqual(calls, [['bmw', 'original-test']]);
-});
-
-test('editing a missed deadline closes the old request without claiming charging recovered', () => {
-  const document = fixture(), panel = createChargingDiagnosticsPanel({ document }), state = status();
-  const report = state.charging.diagnostics.chargers[0].current;
-  report.findings = [{ code: 'deadline-missed', firstAt: now, resolvedAt: now + 60_000, resolution: 'request-changed' }];
-  report.recoveredCount = 1;
-  report.timeline = [{ at: now + 60_000, kind: 'recovery', code: 'deadline-missed', resolution: 'request-changed' }];
-  panel.update(state); panel.open('charger1');
-  const dialog = document.getElementById('charging-report-dialog');
-  const findingText = descendants(dialog.querySelector('.charging-report-findings')).map(node => node.textContent).join('\n');
-  const eventText = descendants(dialog.querySelector('.charging-report-timeline')).map(node => node.textContent).join('\n');
-  assert.match(findingText, /Request changed/); assert.match(eventText, /request changed/);
-  assert.doesNotMatch(`${findingText}\n${eventText}`, /recovered/i);
-  assert.equal(document.getElementById('charger1-session-report').textContent, 'Report · Past issue');
+test('saved history identifies previous charger equipment separately from its current card label', async () => {
+  const f = setup(); f.previous.previousEquipment = true; await f.open('previous');
+  assert.match(f.dialog.querySelector('.charging-report-context').textContent, /Previous charger equipment/);
 });

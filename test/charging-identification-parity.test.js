@@ -1,3 +1,4 @@
+import { withReportDatabase } from './helpers/report-database.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ChargingRuntime } from '../src/charging/runtime.js';
@@ -16,6 +17,7 @@ function fixture(t, transport) {
     getState: key => structuredClone(states.get(key)),
     setState: (key, value) => states.set(key, structuredClone(value)),
   };
+  withReportDatabase(store, t);
   const config = { input: 'mqtt',
     connections: { easee: { charger_id: 'synthetic-parity-charger', equalizer_id: 'synthetic-parity-equalizer' },
       mqtt: { address: 'mqtt://synthetic.invalid', user: 'synthetic-parity' }, teslamate: { enabled: true } },

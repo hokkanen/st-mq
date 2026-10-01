@@ -113,7 +113,9 @@ export class ChargingRuntime {
   constructor({ engine, store, config, clock = Date.now, canControl = () => true, definitions = CHARGER_DEFINITIONS }) {
     Object.assign(this, { engine, store, config, clock, canControl, definitions });
     this.key = `charging:${config.input}`;
-    this.sessionDiagnostics = new ChargingSessionDiagnostics({ store, key: `${this.key}:session-diagnostics`, clock });
+    this.configuration = chargingConfiguration(config.charging);
+    this.sessionDiagnostics = new ChargingSessionDiagnostics({ store, key: `${this.key}:session-diagnostics`, clock,
+      retentionDays: this.configuration.report_retention_days });
     this.physicalTests = new ChargingPhysicalTests({ store, key: `${this.key}:physical-tests`, clock });
     const saved = store.getState(this.key) ?? {};
     if (Object.keys(saved).length && (saved.version !== 6 || Object.keys(saved).some(key => !['version', 'revision', 'controls', 'chargers', 'vehicleFeeds', 'consumedTeslaPower', 'view'].includes(key)))) throw new Error('Unsupported charging state; start a fresh development database');
@@ -124,7 +126,6 @@ export class ChargingRuntime {
       throw new Error('Unsupported consumed vehicle evidence; start a fresh development database');
     this.consumedTeslaPower = saved.consumedTeslaPower ?? null;
     this.revision = saved.revision ?? 0;
-    this.configuration = chargingConfiguration(config.charging);
     this.settings = chargingSettingsFromConfiguration(this.configuration);
     validateSavedControls(saved.controls, true);
     for (const previous of Object.values(saved.chargers ?? {})) {
@@ -1261,7 +1262,8 @@ export class ChargingRuntime {
         setup: teslaVehicleSetup(tesla, { now }), usedByChargerId: usedBy('tesla') });
     }
     return { revision: this.revision, timezone: TIME_ZONE, controls: { priority: this.controls.priority, revision: this.controls.revision }, settings: this.settings, chargers, vehicleFeeds, coordination: this.coordination, error: this.error ?? null,
-      diagnostics: { ...this.sessionDiagnostics.status(now), ...(this.diagnosticsError ? { available: false, error: this.diagnosticsError } : {}) },
+      diagnostics: { ...this.sessionDiagnostics.status(now), canManage: !this.closed && this.canControl() && this.config.input !== 'offline',
+        ...(this.diagnosticsError ? { available: false, error: this.diagnosticsError } : {}) },
       physicalTests: { ...this.physicalTests.status(), canManage: !this.closed && this.canControl() && ['mqtt', 'providers'].includes(this.config.input),
         ...(this.physicalTestsError ? { available: false, error: this.physicalTestsError } : {}) } };
   }

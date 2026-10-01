@@ -10,6 +10,7 @@ import { chargingSessionCheckSummaries } from './charging-session-checks.js';
 import { propertyEnergyCheckSummary } from './property-energy-checks.js';
 import { createDatabaseExport } from './database-export.js';
 import { familyRouteAllowed, familyActionAllowed, fireplaceAccess, FAMILY_FIREWOOD_REMOVAL_MS } from './web-permissions.js';
+import { ChargingSessionDiagnostics } from '../charging/session-diagnostics.js';
 
 function authorized(req, token) {
   if (!token) return false;
@@ -53,6 +54,34 @@ function optionalTimestampParam(url, key) {
   if (value === null) return undefined;
   if (!/^-?\d+$/.test(value) || !Number.isSafeInteger(Number(value))) throw new TypeError(`Invalid ${key}`);
   return Number(value);
+}
+function chargingReportQuery(url, kind) {
+  const accepted = kind === 'list' ? ['chargerId', 'savedOnly', 'before', 'limit']
+    : kind === 'events' ? ['chargerId', 'filter', 'before', 'limit'] : ['chargerId'];
+  for (const key of url.searchParams.keys()) {
+    if (!accepted.includes(key) || url.searchParams.getAll(key).length !== 1)
+      throw new TypeError('Unsupported charging report query.');
+  }
+  const chargerId = url.searchParams.get('chargerId');
+  if (!['charger1', 'charger2'].includes(chargerId)) throw new TypeError('Select a charging point for this report.');
+  const query = { chargerId };
+  if (kind === 'list' || kind === 'events') {
+    query.limit = numberParam(url, 'limit', kind === 'list' ? 20 : 50, 100);
+    if (!query.limit) throw new TypeError('Invalid limit');
+    query.before = url.searchParams.get('before');
+    if (query.before !== null && (!query.before || query.before.length > 256)) throw new TypeError('Invalid before');
+  }
+  if (kind === 'list') {
+    const savedOnly = url.searchParams.get('savedOnly');
+    if (savedOnly !== null && !['true', 'false'].includes(savedOnly)) throw new TypeError('Invalid savedOnly');
+    query.savedOnly = savedOnly === 'true';
+  }
+  if (kind === 'events') {
+    query.filter = url.searchParams.get('filter') ?? 'all';
+    if (!['all', 'findings', 'plans', 'charging', 'control', 'vehicle', 'evidence'].includes(query.filter))
+      throw new TypeError('Invalid event filter');
+  }
+  return query;
 }
 
 export function createAppServer({ engine, getEngine = () => engine, store, chartService, token = '', familyToken = '',
@@ -291,6 +320,51 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
           return await mutate(async (current, input) => { await current.setAutomation(input); return json(200, status()); });
         if (req.method === 'POST' && url.pathname === '/api/charging/settings')
           return await mutate(async (current, input) => { await current.charging.setSettings(input); return json(200, status()); });
+        const reportRoute = url.pathname.match(/^\/api\/charging\/reports(?:\/([^/]+)(?:\/(events|save|delete))?)?$/);
+        if (reportRoute && req.method === 'GET' && (!reportRoute[2] || reportRoute[2] === 'events')) {
+          const [, reportId, action] = reportRoute;
+          const kind = action === 'events' ? 'events' : reportId ? 'report' : 'list';
+          const query = chargingReportQuery(url, kind);
+          // A history viewer has its own offline runtime. Its reports belong to
+          // the recorded producer; never use that empty runtime's status cache.
+          const key = engine.config.input === 'offline'
+            ? readerStore.db.prepare('SELECT namespace FROM charging_reports WHERE charger_id=? ORDER BY started_at DESC LIMIT 1').get(query.chargerId)?.namespace
+              ?? 'charging:offline:session-diagnostics'
+            : `charging:${engine.config.input}:session-diagnostics`;
+          const readOnly = writesBlocked() || Boolean(pairContext?.recovering()) || engine.config.input === 'offline';
+          const snapshotAt = readContext ? engine.clock() : null;
+          const recordedRetention = readerStore.getState(key.slice(0, -':session-diagnostics'.length))?.view?.diagnostics?.retention?.days;
+          const retentionDays = (engine.config.input === 'offline' || readContext ? recordedRetention
+            : engine.charging?.configuration?.report_retention_days) ?? recordedRetention ?? 30;
+          const reports = new ChargingSessionDiagnostics({ store: readerStore, key, clock: engine.clock, retentionDays });
+          const metadata = { readOnly, retention: { days: retentionDays }, ...(readOnly ? { recorded: true, liveAvailable: false } : {}),
+            ...(snapshotAt !== null ? { recorded: true, snapshotAt, liveAvailable: false } : {}) };
+          const annotate = report => ({ ...report, ...metadata,
+            ...(readOnly ? { liveAvailable: false, evidenceStale: report.endedAt === null || report.evidenceStale === true } : {}) });
+          if (kind === 'list') {
+            const result = reports.listReports(query);
+            return json(200, { ...result, ...metadata, reports: result.reports.map(annotate) });
+          }
+          const report = reports.getReport({ ...query, reportId });
+          if (!report) return json(404, { error: 'This charging report is no longer available.' });
+          return json(200, kind === 'events'
+            ? { ...reports.reportEvents({ ...query, reportId }), ...metadata } : annotate(report));
+        }
+        if (reportRoute && req.method === 'POST' && ['save', 'delete'].includes(reportRoute[2]))
+          return await mutate((current, input) => {
+            if (current.config.input === 'offline' || pairContext?.recovering())
+              return json(409, { error: 'Charging reports are read-only on this computer.' });
+            const [, reportId, action] = reportRoute, query = { ...chargingReportQuery(url, 'report'), reportId };
+            if (!input || typeof input !== 'object' || Array.isArray(input)
+              || (action === 'save' ? Object.keys(input).join(',') !== 'saved' || typeof input.saved !== 'boolean' : Object.keys(input).length))
+              throw new TypeError(action === 'save' ? 'Save a report with a boolean saved value.' : 'Delete a report with an empty JSON object.');
+            const reports = current.charging.sessionDiagnostics;
+            if (!reports.getReport(query)) return json(404, { error: 'This charging report is no longer available.' });
+            if (action === 'save') return json(200, reports.saveReport({ ...query, saved: input.saved }) ?? { deleted: true });
+            try { reports.deleteReport(query); }
+            catch (error) { if (error.code === 'active-report') error.statusCode = 409; throw error; }
+            return json(200, { deleted: true });
+          });
         const chargingTestAction = url.pathname.match(/^\/api\/charging\/tests\/(preview|start|schedule|target|cancel)$/);
         if (req.method === 'POST' && chargingTestAction)
           return await mutate((current, input) => {

@@ -253,6 +253,14 @@ vehicle target, capacity and schedules entered there never change these defaults
 ordinary session overrides, production planning inputs or vehicle identification.
 Verifying a car target that differs from telemetry records an assessment-only
 acknowledgement; it never replaces the reported value or the controller's target.
+
+`charging.report_retention_days` controls automatic expiry of completed session
+reports: 30 days by default, accepting whole numbers from 1 to 3650. Age is measured
+from session end. Active reports and reports explicitly saved in the dashboard
+are protected. Saved status belongs to the individual historical report and
+survives restart; it does not replace this configuration default. Removing saved
+status returns a completed report to this policy and may immediately expire it.
+
 See [charging](charging.md).
 
 Heat-pump parameter edits remain in effect until deliberately changed. Native
@@ -350,7 +358,7 @@ larger sections without adding another configuration format.
 
 | Sections, in file order | Settings they own |
 | --- | --- |
-| `controller`, `garage`, `charging`, `electricity` | Topology, Home operation/heating and web access passwords, Garage presets, local-protection sender and pump adapter, charger/vehicle sources and permanent charging defaults, electricity tariffs. |
+| `controller`, `garage`, `charging`, `electricity` | Topology, Home operation/heating and web access passwords, Garage presets, local-protection sender and pump adapter, charger/vehicle sources, permanent charging defaults and report retention, electricity tariffs. |
 | `geoloc`, `mqtt`, `entsoe`, `easee`, `teslamate` | Location, broker access and provider connections. `easee.local_ocpp` contains the authenticated local charger listener and explicit authorization tags; see [Easee setup](charging-easee.md#direct-local-ocpp-telemetry-firmware-344-or-later). |
 | `equipment` | The current MQTT/Shelly equipment inventory and device mappings. |
 | `acquisition`, `recording` | Provider polling/freshness and recording/storage settings. |

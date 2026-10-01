@@ -357,6 +357,29 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
   const audits = aggregate('energy_audits', 'source_time');
   const journalEntries = aggregate('learning_journal_entries', 'at');
   const epochs = aggregate('learning_epochs', 'NULL');
+  const chargingReports = aggregate('charging_reports', 'started_at', 'COALESCE(ended_at,started_at)');
+  const chargingEvents = aggregate('charging_report_events', 'at');
+  const chargingReportCounts = db.prepare(`SELECT SUM(ended_at IS NULL) active,
+    SUM(saved_at IS NOT NULL) saved FROM charging_reports`).get();
+  add('charging_reports', 'Charging session reports',
+    'Session summaries and original diagnostic evidence, independent of recorded energy and charger control ownership.', [
+      item('charging-reports', 'Session reports', 'Current assessment, observation coverage, finding summaries and saved-report protection.', chargingReports, {
+        countLabel: 'sessions', dateBasis: 'connection / session end', retention: 'mixed',
+        retentionDescription: 'Completed unsaved reports expire after the configured number of days (30 by default). Active and explicitly saved reports are protected. Completed reports can be explicitly deleted.',
+        writeBehavior: 'Created when a connection is observed; bounded assessment and restart checkpoint updated as evidence changes.',
+        facts: [{ label: 'Active reports', value: Number(chargingReportCounts.active ?? 0) },
+          { label: 'Saved reports', value: Number(chargingReportCounts.saved ?? 0) }],
+        fields: fields(['Assessment', 'Outcome, evidence coverage, current observations and recurring finding counts.'],
+          ['Retention', 'Session end and explicit saved status; no charger actuation permission.']),
+      }),
+      item('charging-report-events', 'Session report events', 'Original observations, control transitions, finding episodes and planning snapshots.', chargingEvents, {
+        countLabel: 'events', dateBasis: 'event recording time', retention: 'mixed',
+        retentionDescription: 'All events survive while their report is retained. Whole-report expiry or deletion removes its owned events; display grouping and paging never discard evidence.',
+        writeBehavior: 'Appended on meaningful diagnostic changes; unchanged polls do not produce new instructions.',
+        fields: fields(['Evidence', 'Original source and receipt clocks, known values and explicit unavailable states.'],
+          ['Planning', 'Recorded input changes and full planning snapshots, separate from physical execution.']),
+      }),
+    ]);
   const recoveryRuns = aggregate('recovery_runs', 'started_at', 'COALESCE(completed_at,started_at)');
   const recoverySources = aggregate('recovery_provenance', 'NULL');
   const otherEpochs = aggregate('learning_journal_entries', 'at', 'at',
@@ -410,6 +433,7 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
     learning_journal_entries: journalEntries.count, learning_epochs: epochs.count, recovery_runs: recoveryRuns.count,
     recovery_provenance: recoverySources.count, learning_cycles: cycles.count,
     fireplace_events: sum([...fireplace.values()]).count,
+    charging_reports: chargingReports.count, charging_report_events: chargingEvents.count,
   };
   const actualTables = db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all();
   if (actualTables.some(({ name }) => !Object.hasOwn(tableCounts, name))) inventoryIssues.push('An unregistered physical table needs a writer and retention description.');

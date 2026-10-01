@@ -165,8 +165,8 @@ targets that differ from telemetry, draft preservation through polling, early st
 passive/retained session reports and read-only access. It uses synthetic status
 and intercepted assessment requests in a disposable application and browser. It checks keyboard dismissal
 and focus, conflicting target edits from another window, checkbox alignment,
-charger-scoped/expired selections, grouped original evidence, collapsed
-routine plans and open-detail/focus/scroll preservation across polling. It checks
+charger-scoped/expired selections, grouped original evidence, unified event
+filters, saved-report controls and open-detail/focus/scroll preservation across polling. It checks
 horizontal overflow and a reachable close button at 320/390/1440px in both themes. Its
 temporary screenshot directory is printed on completion. It never connects to a
 vehicle or charger; overnight hardware behavior still requires an actual guided
@@ -178,6 +178,15 @@ inputs, identity evidence, raw readings, plans and device updates around guide
 actions. Target-conflict tests cover explicit verification, repeated/fluctuating
 reports, unseen conflicts, stale actions, restart and storage rollback. A verified
 declaration remains insufficient evidence for charging or completion by itself.
+
+Session-report storage and API tests use fresh synthetic SQLite databases. They
+cover history beyond the former event/session count limits, complete event pages,
+age-based whole-report expiry, saved active/completed reports, removal from saved,
+explicit completed-report deletion, restart, transaction rollback and read-only
+inspection. Report actions must leave energy records, production inputs and
+charger authority unchanged. Database-overview checks account for report summaries
+and event rows without exposing private payloads. These checks do not establish
+that installed charger confirmation chatter or replanning has been resolved.
 
 The Tuya Local bridge tests render synthetic HA templates and verify independent
 native report clocks, identity, supported controls and request expiry. The pinned

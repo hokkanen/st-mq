@@ -1,3 +1,4 @@
+import { withReportDatabase } from './helpers/report-database.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ChargingRuntime } from '../src/charging/runtime.js';
@@ -21,6 +22,7 @@ function fixture(t) {
     charging: { vehicles: { bmw: { mqttTopic: 'synthetic/vehicles/bmw' } }, chargers: { charger2: { enabled: false } } } };
   const store = { getState: key => structuredClone(values.get(key)),
     setState: (key, value) => values.set(key, structuredClone(value)) };
+  withReportDatabase(store, t);
   const physical = { connectorStatus: 'Charging', statusAt: START, transactionId: 7, transactionStartedAt: START,
     transactionConfirmed: true, pluggedIn: true, powerKw: 7 };
   const create = () => {
@@ -393,8 +395,10 @@ test('an empty development database cannot reconstruct overnight identity or com
   assert.equal(report.firstChargingAt, null);
   assert.equal(report.coverage.identification.state, 'not-exercised');
   assert.equal(report.coverage.completion.state, 'not-exercised');
-  assert.ok(report.timeline.every(row => row.at >= observedAt), 'The report records only observations made by this database');
-  assert.ok(!report.timeline.some(row => row.kind === 'physical' && row.code === 'charging-started'));
+  const { events, nextBefore } = runtime.sessionDiagnostics.reportEvents({ chargerId: 'charger1', reportId: report.id, limit: 100 });
+  assert.equal(nextBefore, null);
+  assert.ok(events.every(row => row.at >= observedAt), 'The report records only observations made by this database');
+  assert.ok(!events.some(row => row.kind === 'physical' && row.code === 'charging-started'));
 
   runtime.receiveSoc(runtime.configuration.vehicles.bmw.mqttTopic,
     JSON.stringify(facts(START + 11 * 60 * MINUTE, { soc: 100, chargeLimitSoc: 100, charging: false })), { retain: true });

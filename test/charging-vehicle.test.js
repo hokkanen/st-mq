@@ -1,3 +1,4 @@
+import { withReportDatabase } from './helpers/report-database.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { acceptVehicleReading, matchBmwSession } from '../src/charging/vehicle.js';
@@ -126,6 +127,7 @@ function fixture(chargingConfig = {}) {
   const tesla = { association: 'synthetic-tesla-feed', connected: true, pluggedIn: true, atHome: true, assignment: 'auto', batteryLevel: 75, chargeLimitSoc: 90 };
   const values = new Map(), store = { getState: key => structuredClone(values.get(key)),
     setState: (key, value) => { if (store.fail) throw new Error('database unavailable'); values.set(key, structuredClone(value)); } };
+  withReportDatabase(store);
   const engine = {};
   const config = { input: 'mqtt', charging: chargingConfig };
   const create = () => {

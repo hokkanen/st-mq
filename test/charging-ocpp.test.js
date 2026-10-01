@@ -1,3 +1,4 @@
+import { withReportDatabase } from './helpers/report-database.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createOcppScheduleAdapter, initialOcppControllerState, normalizeOcppComposite, ocppPauseInstruction } from '../src/charging/ocpp.js';
@@ -129,6 +130,7 @@ test('native physical reconnect restores the charger card without granting trans
   f.snapshot({ transactionId: null, transactionStartedAt: null, transactionConfirmed: false, statusAt: START });
   const config = { input: 'providers', connections: { easee: { charger_id: 'synthetic-card-charger' } } };
   const store = { getState: key => structuredClone(states.get(key)), setState: (key, value) => states.set(key, structuredClone(value)) };
+  withReportDatabase(store, t);
   const attach = ({ controller, adapter }, clock) => {
     const runtime = new ChargingRuntime({ engine: {}, config, store, clock });
     const item = runtime.chargers.charger1;

@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { diagnosticStore, diagnosticRows, readCompleteReport } from './support/charging-report-fixture.js';
 import { ChargingSessionDiagnostics } from '../src/charging/session-diagnostics.js';
 
 const MINUTE = 60_000, START = Date.parse('2026-10-01T05:00:00Z');
@@ -8,8 +9,7 @@ const reading = (value, measuredAt = START, extra = {}) => ({ value, available: 
 
 function fixture() {
   let now = START;
-  const states = new Map(), store = { getState: key => structuredClone(states.get(key)),
-    setState: (key, state) => states.set(key, structuredClone(state)) };
+  const store = diagnosticStore();
   let observer = new ChargingSessionDiagnostics({ store, key: 'physical-report', clock: () => now });
   const view = { id: 'charger1', association: 'synthetic-equipment', provider: 'easee',
     request: { sessionId: 'synthetic-connection', revision: 1 }, settings: { enabled: true },
@@ -26,7 +26,7 @@ function fixture() {
       basis: { energyCoverageIncomplete: false, lastMeasuredAt: START } } };
   const observe = (at = now) => {
     now = at; view.control.snapshot.readAt = at;
-    return observer.observe([view], at).chargers[0].current;
+    return readCompleteReport(observer, observer.observe([view], at).chargers[0].current);
   };
   const power = (kw, at, extra = {}) => { view.values.powerKw = reading(kw, at, extra); };
   const reported = (charging, at, extra = {}) => { view.values.charging = reading(charging, at, extra); };

@@ -193,7 +193,7 @@ test('replica preserves recorded charging assessments while withdrawing live evi
   const current = { id: 'recorded-session', chargerId: 'charger1', startedAt: snapshotAt - 3600_000,
     observedAt: snapshotAt, evaluatedAt: snapshotAt, endedAt: null, behavior: 'expected', evidenceStale: false,
     outcome, current: { physicalFresh: true, charging: false }, findings: [], coverage: { targetAttainment: { state: 'verified', at: outcome.at } },
-    plans: [{ at: snapshotAt - 3600_000, periods: [{ startAt: snapshotAt - 1800_000, endAt: null }] }], timeline: [] };
+    saved: true, savedAt: snapshotAt - 60_000, counts: { events: 15, plans: 3, findings: 0 } };
   const finished = { ...structuredClone(current), id: 'earlier-session', endedAt: snapshotAt - 600_000 };
   const run = { id: 'recorded-test', chargerId: 'charger1', vehicleId: 'bmw', phase: 'observing',
     deadlineAt: snapshotAt + 60_000, updatedAt: snapshotAt, findings: [], milestones: {}, report: { id: current.id } };
@@ -203,7 +203,7 @@ test('replica preserves recorded charging assessments while withdrawing live evi
   const { app, root, digest, originalDigest, advance } = await fixture(t, { version: 6, chargers: {}, view: {
     settings, chargers: CHARGER_DEFINITIONS.map(definition => buildCharger({ definition,
       settings: settings.chargers[definition.id], now: snapshotAt })), vehicleFeeds: [feed],
-    diagnostics: { version: 1, chargers: [{ id: 'charger1', current, recent: [finished] }] },
+    diagnostics: { version: 2, retention: { days: 30 }, chargers: [{ id: 'charger1', current, recent: [finished], hasMore: true }] },
     physicalTests: { version: 2, canManage: true, runs: [run] },
   } });
   const before = app.status().charging, projected = before.diagnostics.chargers[0];
@@ -215,7 +215,10 @@ test('replica preserves recorded charging assessments while withdrawing live evi
   assert.equal(projected.current.liveAvailable, false);
   assert.deepEqual(projected.current.current, current.current, 'Physical facts remain explicitly recorded rather than overwritten');
   assert.equal(projected.recent[0].evidenceStale, false, 'An ended report retains its historical conclusion');
-  assert.deepEqual(projected.current.plans, current.plans);
+  assert.deepEqual(projected.current.counts, current.counts);
+  assert.equal(projected.current.saved, true);
+  assert.equal(projected.hasMore, true);
+  assert.equal(Object.hasOwn(projected.current, 'timeline'), false);
   assert.equal(before.physicalTests.canManage, false);
   assert.equal(before.physicalTests.runs[0].phase, 'observing');
   assert.equal(before.physicalTests.runs[0].recorded, true);

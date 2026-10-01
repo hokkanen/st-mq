@@ -11,6 +11,13 @@ test('physical EVSE defaults keep uncommissioned Shelly control disabled', () =>
   assert.deepEqual(chargingConfiguration(config), config);
   assert.equal(config.vehicles.bmw.mqttTopic, 'stmq/vehicles/bmw');
 });
+test('completed report retention is a bounded configuration default, independent of charging settings', () => {
+  assert.equal(chargingConfiguration().report_retention_days, 30);
+  for (const days of [1, 90, 3650]) assert.equal(chargingConfiguration({ report_retention_days: days }).report_retention_days, days);
+  for (const days of [0, -1, 3651, 1.5, '30', null, false])
+    assert.throws(() => chargingConfiguration({ report_retention_days: days }), /report_retention_days/);
+  assert.equal(Object.hasOwn(chargingSettingsFromConfiguration(chargingConfiguration({ report_retention_days: 90 })), 'report_retention_days'), false);
+});
 test('retired vehicle-on-charger topics, efficiencies, assignment aliases and settings fail closed', () => {
   for (const field of [{mqttTopic:'test/vehicle'}, {efficiency:.925}, {vehicleId:'test'}])
     for (const id of ['charger1','charger2']) assert.throws(() => chargingConfiguration({chargers:{[id]:field}}));

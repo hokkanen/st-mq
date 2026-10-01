@@ -6,6 +6,7 @@ const strict = (value, allowed, label) => {
 };
 const topic = value => value === '' || value === null || typeof value === 'string' && value.length <= 256 && !/[+#\u0000-\u0020]/.test(value);
 export const DEFAULT_CHARGING_CONFIGURATION = Object.freeze({
+  report_retention_days: 30,
   defaults: DEFAULT_CHARGING_DEFAULTS,
   chargers: { charger1: {}, charger2: {
     enabled: false, profile: 'top-ac-portable', deviceId: '', model: '', firmware: '', topicPrefix: '',
@@ -20,7 +21,10 @@ export const DEFAULT_CHARGING_CONFIGURATION = Object.freeze({
   },
 });
 export function chargingConfiguration(input = {}) {
-  strict(input, ['defaults', 'chargers', 'vehicles'], 'charging configuration');
+  strict(input, ['report_retention_days', 'defaults', 'chargers', 'vehicles'], 'charging configuration');
+  const retentionDays = input.report_retention_days === undefined ? DEFAULT_CHARGING_CONFIGURATION.report_retention_days : input.report_retention_days;
+  if (!Number.isSafeInteger(retentionDays) || retentionDays < 1 || retentionDays > 3650)
+    throw new Error('Charging report_retention_days must be an integer from 1 to 3650');
   const generalDefaults = chargingDefaults(input.defaults);
   strict(input.chargers ?? {}, ['charger1', 'charger2'], 'chargers');
   strict(input.chargers?.charger1 ?? {}, [], 'Easee configuration');
@@ -63,5 +67,5 @@ export function chargingConfiguration(input = {}) {
     }
     vehicles[id] = vehicle;
   }
-  return { defaults: generalDefaults, chargers: { charger1: c1, charger2: c2 }, vehicles };
+  return { report_retention_days: retentionDays, defaults: generalDefaults, chargers: { charger1: c1, charger2: c2 }, vehicles };
 }

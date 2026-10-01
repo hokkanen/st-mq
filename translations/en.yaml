@@ -93,15 +93,15 @@ configuration:
       schedules, independently of heating mode; it is off by default.
       Stale measurements remain marked stale. charger_voltage_ids may contain three verified phase-to-neutral observation IDs; leave empty to allocate by currents. Use [194, 195, 196] only after verifying the charger uses the documented TN terminal mapping. Cumulative kWh is diagnostic-only and never corrects or trains the model.
   charging:
-    name: Charger vehicle feeds and efficiency
+    name: Charging defaults, reports and vehicle feeds
     description: >-
-      Each charger can use a distinct exact mqttTopic for vehicle charge readings.
-      Leave the topic empty to disable that extra feed. Defaults are
-      stmq/garage/charger1/vehicle for Charger 1 and no extra feed for Charger 2.
-      efficiency is the battery share of grid energy, from 0.5 to 1, default 0.9.
-      Apply configuration reloads these deployment settings. Automatic charging,
-      target charge, ready-by time and manual fallbacks are saved separately in
-      each dashboard charger card. Charger 2 currently has no command adapter.
+      Shared and vehicle-specific defaults set ready-by time, starting charge,
+      target charge and usable capacity. Session edits stay with the current
+      connection; Automatic charging and priority are independent dashboard choices.
+      BMW CarData and TeslaMate provide vehicle evidence for either charger.
+      Charger 2 requires explicit enablement and commissioning for control.
+      report_retention_days keeps completed session reports for 30 days by default
+      (1 to 3650); saved reports and active sessions do not expire automatically.
   recording:
     name: Historical recording
     description: >-

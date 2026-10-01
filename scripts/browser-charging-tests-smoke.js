@@ -95,7 +95,7 @@ try {
     return b.left >= a.left && b.right <= a.right && b.top >= a.top && b.bottom <= a.bottom
       && b.width >= 32 && b.height >= 32;
   })()`), true, `${selector} has an accessible clock button inside the field without a separate Choose time row`);
-  const poll = () => evaluate('chargingFixture.poll()');
+  const poll = async () => { await evaluate('chargingFixture.poll()'); await pause(60); };
   const setFields = values => evaluate(`(() => {
     const form = document.getElementById('charging-test-form');
     for (const [name, value] of Object.entries(${JSON.stringify(values)})) {
@@ -122,7 +122,7 @@ try {
   })()`), true, `${selector} fits the viewport without horizontal overflow`);
   await send('Runtime.enable'); await send('Page.enable');
   await send('Page.addScriptToEvaluateOnNewDocument', { source: `
-    globalThis.chargingFixture = { reads: 0, mutations: [], declarationChecks: [], runs: [], readOnly: false, connected: false, archived: false,
+    globalThis.chargingFixture = { reads: 0, mutations: [], reportMutations: [], reportReads: [], deletedReports: [], declarationChecks: [], runs: [], readOnly: false, family: false, connected: false, archived: false,
       noChargers: false, vehicleReadings: {}, diagnosticsAvailable: true, recent: [], second: { current: null, recent: [] } };
     const N = ${now};
     const field = (value, receipt = false) => ({ value, available: true, measuredAt: receipt ? null : N - 60000,
@@ -152,10 +152,57 @@ try {
         changes: [{ field: 'target', before: 80, after: 85 }], vehicleId: null,
         inputs: { soc: { value: 20, source: 'manual-fallback', assumed: true }, target: { value: 85, source: 'session-request' },
           capacity: { value: 74, source: 'manual-fallback', assumed: true } }, periods: [] }], truncated: {} };
+    function eventsFor(report) {
+      const events = report.timeline.map(row => ({...row}));
+      for (const plan of report.plans) {
+        const paired = events.find(row => row.kind === 'plan' && row.at === plan.at && row.code === plan.reason && !row.plan);
+        if (paired) paired.plan = plan;
+        else events.push({at:plan.at,kind:'plan',code:plan.reason,changes:plan.changes,plan});
+      }
+      return events.sort((a,b) => a.at-b.at).map((row,index) => ({...row,id:index+1,sequence:index+1}));
+    }
+    function summaryFor(report) {
+      if (!report) return null;
+      const {timeline,plans,truncated,...summary} = report;
+      return {...summary,saved:report.saved===true,observedFrom:timeline.find(row=>row.kind==='session')?.at,
+        counts:{events:eventsFor(report).length,plans:plans.length,findings:report.findings.reduce((n,row)=>n+(row.count??1),0)},
+        readOnly:chargingFixture.readOnly,retention:{days:30}};
+    }
     const nativeFetch = globalThis.fetch.bind(globalThis);
     globalThis.fetch = async (input, options = {}) => {
       const path = new URL(typeof input === 'string' ? input : input.url, location.href).pathname;
       const method = options.method ?? (input instanceof Request ? input.method : 'GET');
+      if (path.startsWith('/api/charging/reports')) {
+        const url = new URL(typeof input === 'string' ? input : input.url, location.href), f = chargingFixture;
+        const all = (url.searchParams.get('chargerId') === 'charger2' ? [f.second.current,...f.second.recent] : [f.report,...f.recent])
+          .filter(row=>row&&!f.deletedReports.includes(row.id));
+        const json = (value,status=200) => new Response(JSON.stringify(value),{status,headers:{'Content-Type':'application/json'}});
+        if (path === '/api/charging/reports') return json({reports:all.filter(row=>url.searchParams.get('savedOnly')!=='true'||row.saved).map(summaryFor),nextBefore:null,readOnly:f.readOnly});
+        const id=decodeURIComponent(path.split('/')[4]), report=all.find(row=>row.id===id);
+        if (!report) return json({error:'Report not found'},404);
+        if (method.toUpperCase()==='POST') {
+          const body=JSON.parse(options.body??'{}');
+          if(f.family||f.readOnly) return json({error:'Report management is unavailable'},403);
+          f.reportMutations.push({path,body});
+          if(path.endsWith('/save')) {
+            report.saved=body.saved;
+            if(!body.saved&&report.endedAt!==null&&report.endedAt<=N-30*86400000) {f.deletedReports.push(id);return json({deleted:true});}
+            return json(summaryFor(report));
+          }
+          if(path.endsWith('/delete')) {
+            if(report.endedAt===null) return json({error:'Active report cannot be deleted'},409);
+            f.deletedReports.push(id);f.recent=f.recent.filter(row=>row.id!==id);f.second.recent=f.second.recent.filter(row=>row.id!==id);return json({deleted:true});
+          }
+        }
+        if (path.endsWith('/events')) {
+          const kinds={findings:['finding','finding-update','recovery'],plans:['plan'],charging:['physical','charger-status','outcome','session','check'],control:['control'],vehicle:['identification','vehicle'],evidence:['evidence']};
+          const filter=url.searchParams.get('filter'), before=Number(url.searchParams.get('before')??Infinity), limit=Number(url.searchParams.get('limit')??50);
+          f.reportReads.push({id,filter});
+          const events=eventsFor(report).filter(row=>row.id<before&&(filter==='all'||kinds[filter]?.includes(row.kind))).reverse();
+          return json({events:events.slice(0,limit),nextBefore:events.length>limit?String(events[limit-1].id):null,readOnly:f.readOnly});
+        }
+        return json(summaryFor(report));
+      }
       if (!['GET', 'HEAD'].includes(method.toUpperCase())) {
         const body = JSON.parse(options.body ?? '{}'); chargingFixture.mutations.push({ path, body });
         const ordinaryBefore = JSON.stringify(chargingFixture.ordinaryCharging);
@@ -218,6 +265,7 @@ try {
       if (path !== '/api/status') return response;
       const status = await response.json(); chargingFixture.reads++;
       status.readOnly = chargingFixture.readOnly;
+      if(chargingFixture.family) status.webAccess={role:'family',source:'password'};
       status.charging.settings.vehicles.tesla.capacityKwh = 57;
       status.charging.settings.vehicles.bmw.capacityKwh = 74;
       status.charging.physicalTests = { available: true, canManage: !chargingFixture.readOnly, runs: chargingFixture.runs };
@@ -242,9 +290,9 @@ try {
             powerKw: field(0, true), requestedCurrentA: field(16, true), maxCurrentA: field(16, true),
             ...chargingFixture.vehicleReadings[id] } } }));
       status.charging.diagnostics = { available: chargingFixture.diagnosticsAvailable, chargers: [{ id: 'charger1',
-        current: chargingFixture.archived ? null : chargingFixture.report,
-        recent: chargingFixture.archived ? [chargingFixture.report, ...chargingFixture.recent] : chargingFixture.recent },
-        { id: 'charger2', current: chargingFixture.second.current, recent: chargingFixture.second.recent }] };
+        current: chargingFixture.archived ? null : summaryFor(chargingFixture.report),
+        recent: (chargingFixture.archived ? [chargingFixture.report, ...chargingFixture.recent] : chargingFixture.recent).filter(row=>!chargingFixture.deletedReports.includes(row.id)).map(summaryFor) },
+        { id: 'charger2', current: summaryFor(chargingFixture.second.current), recent: chargingFixture.second.recent.map(summaryFor) }] };
       chargingFixture.ordinaryCharging = structuredClone({settings:status.charging.settings,
         chargers:status.charging.chargers.map(({id,settings,request,values,vehicle,plan,control}) => ({id,settings,request,values,vehicle,plan,control})),
         vehicleFeeds:status.charging.vehicleFeeds});
@@ -526,9 +574,10 @@ try {
   const mutationCount = await evaluate('chargingFixture.mutations.length');
   await click('[data-test-report]');
   await until("document.getElementById('charging-report-dialog').open");
+  await pause(40);
   assert.equal(await evaluate('chargingFixture.mutations.length'), mutationCount, 'Session reports make no control requests');
   assert.equal(await evaluate("document.querySelector('.charging-report-result').dataset.state"), 'attention');
-  assert.match(await evaluate("document.querySelector('.charging-report-findings').textContent"), /Control remained unconfirmed/);
+  assert.match(await evaluate("document.querySelector('.charging-report-current-findings').textContent"), /1 unresolved finding/);
   const reportFacts = await evaluate("document.querySelector('.charging-report-facts').textContent");
   assert.match(reportFacts, /Automatic charging off.*No controller charging schedule/);
   assert.match(reportFacts, /Actual vehicle battery charge is unconfirmed.*20% · configured assumption/);
@@ -536,7 +585,7 @@ try {
   assert.match(reportFacts, /Earlier charging is not covered by this report/);
   await evaluate("for (const fold of document.querySelectorAll('#charging-report-dialog > details')) fold.open = true");
   assert.equal(await evaluate(`(() => {
-    const entries = [...document.querySelectorAll('.charging-report-timeline > li, .charging-report-fold > .charging-report-plans > li, .charging-report-findings > li')];
+    const entries = [...document.querySelectorAll('.charging-report-timeline > li')];
     const compact = value => value.replace(/\\s+/g, ' ').trim();
     return entries.length > 0 && entries.every(row => {
       const detail = row.querySelector(':scope > details'), summary = detail?.querySelector(':scope > summary');
@@ -552,7 +601,7 @@ try {
   })()`);
   await keyPress('Enter');
   assert.match(await evaluate("document.querySelector('.charging-report-timeline').innerText"), /Requested target: 80% → 85%.*Charging periods unchanged/s);
-  assert.match(await evaluate("document.querySelector('.charging-report-plans').textContent"), /No controller charging schedule/);
+  assert.match(await evaluate("document.querySelector('.charging-report-timeline').textContent"), /No controller charging schedule/);
   assert.doesNotMatch(await evaluate("document.querySelector('.charging-report-timeline').textContent"), /Physical charging observed|Physical charging stopped|Plan updated/);
   assert.match(await evaluate("document.querySelector('.charging-report-timeline').textContent"), /Local OCPP.*Measured.*Received/);
   await evaluate("for (const fold of document.querySelectorAll('#charging-report-dialog > details')) fold.open = false");
@@ -561,7 +610,7 @@ try {
   await until("document.activeElement.id === 'charger1-session-report'");
   assert.equal(await evaluate('document.activeElement.id'), 'charger1-session-report');
   const expanded = await evaluate("document.getElementById('charger1-device-summary').parentElement.open");
-  await click('#charger1-session-report');
+  await click('#charger1-session-report'); await pause(40);
   assert.equal(await evaluate("document.getElementById('charger1-device-summary').parentElement.open"), expanded, 'Report button does not toggle charger details');
   await keyPress('Escape'); await click('#charging-setup-bmw-test');
   await click('[data-test-cancel]');
@@ -727,7 +776,7 @@ try {
     await keyPress('Escape');
     await evaluate("document.getElementById('charging-setup-details').open=true; document.getElementById('charging-setup-bmw-details').open=true; document.getElementById('charging-setup-tesla-details').open=true");
     await fits('#charging-setup-content'); await screenshot(`setup-${width}-${theme}`, '#charging-setup-details');
-    await click('#charger1-session-report');
+    await click('#charger1-session-report'); await pause(40);
     await fits('#charging-report-dialog'); await screenshot(`report-${width}-${theme}`, '#charging-report-dialog');
     await keyPress('Escape'); await click('#charging-setup-tesla-test');
   }
@@ -752,9 +801,9 @@ try {
     chargingFixture.report.outcome={state:'completion-unknown'}; chargingFixture.report.findings[0].resolvedAt=${now - 60000};
     chargingFixture.report.attentionCount=0; chargingFixture.report.recoveredCount=1; chargingFixture.report.behavior='explained'`);
   await poll(); await until("document.getElementById('charger1-session-report').textContent.includes('Recovered issue')");
-  await click('#charger1-session-report');
+  await click('#charger1-session-report'); await pause(40);
   assert.match(await evaluate("document.querySelector('.charging-report-result').textContent"), /Unplugged · completion unconfirmed/);
-  assert.match(await evaluate("document.querySelector('.charging-report-findings').textContent"), /Recovered/);
+  assert.match(await evaluate("document.querySelector('.charging-report-current-findings').textContent"), /0 unresolved findings/);
   assert.equal(await evaluate("document.getElementById('charging-report-session').options.length"), 1, 'Completed reports remain inspectable after unplugging');
   await keyPress('Escape');
 
@@ -764,6 +813,7 @@ try {
   await evaluate("document.getElementById('charger2-session-report').focus()");
   await keyPress('Enter');
   await until("document.getElementById('charging-report-dialog').open");
+  await pause(40);
   assert.match(await evaluate("document.getElementById('charging-report-title').textContent"), /Charger 2/);
   assert.equal(await evaluate("document.getElementById('charging-report-session').options.length"), 0,
     'An empty Charger 2 never offers Charger 1 reports');
@@ -784,11 +834,11 @@ try {
     globalThis.savedSecondReports = structuredClone(f.second);
   })()`);
   await poll();
-  await click('#charger1-session-report');
+  await click('#charger1-session-report'); await pause(40);
   assert.match(await evaluate("document.getElementById('charging-report-title').textContent"), /Charger 1/);
   assert.deepEqual(await evaluate("[...document.getElementById('charging-report-session').options].map(option => option.value)"),
     ['report-fixture', 'charger1-previous'], 'Charger 1 offers only its current and retained reports');
-  await evaluate("document.getElementById('charging-report-session').value='charger1-previous'; document.getElementById('charging-report-session').dispatchEvent(new Event('change'))");
+  await evaluate("document.getElementById('charging-report-session').value='charger1-previous'; document.getElementById('charging-report-session').dispatchEvent(new Event('change'))"); await pause(40);
   assert.match(await evaluate("document.querySelector('.charging-report-result').textContent"), /Target confirmed/);
   await evaluate('chargingFixture.report.evaluatedAt += 1000'); await poll();
   assert.equal(await evaluate("document.getElementById('charging-report-session').value"), 'charger1-previous');
@@ -796,19 +846,19 @@ try {
   assert.match(await evaluate("document.querySelector('.charging-report-result').textContent"), /no longer retained/i);
   assert.notEqual(await evaluate("document.getElementById('charging-report-session').value"), 'report-fixture',
     'An expired selected report never silently switches to the current physical connection');
-  await keyPress('Escape'); await click('#charger2-session-report');
+  await keyPress('Escape'); await click('#charger2-session-report'); await pause(40);
   assert.deepEqual(await evaluate("[...document.getElementById('charging-report-session').options].map(option => option.value)"),
     ['charger2-current', 'charger2-previous'], 'Charger 2 offers only its current and retained reports');
   assert.equal(await evaluate("document.getElementById('charging-report-session').value"), 'charger2-current');
-  await evaluate("document.getElementById('charging-report-session').value='charger2-previous'; document.getElementById('charging-report-session').dispatchEvent(new Event('change'))");
+  await evaluate("document.getElementById('charging-report-session').value='charger2-previous'; document.getElementById('charging-report-session').dispatchEvent(new Event('change'))"); await pause(40);
   assert.match(await evaluate("document.querySelector('.charging-report-result').textContent"), /not reached by ready-by/i);
-  await keyPress('Escape'); await click('#charger2-session-report');
+  await keyPress('Escape'); await click('#charger2-session-report'); await pause(40);
   await evaluate('chargingFixture.second.current.evidenceStale = true'); await poll();
   assert.match(await evaluate("document.querySelector('.charging-report-result').textContent"), /no longer current|incomplete/i);
   await evaluate('chargingFixture.diagnosticsAvailable = false'); await poll();
   assert.match(await evaluate("document.querySelector('.charging-report-result').textContent"), /could not be saved|unavailable/i);
   await evaluate('chargingFixture.diagnosticsAvailable = true; chargingFixture.second = { current:null, recent:[] }');
-  await poll(); await keyPress('Escape'); await click('#charger2-session-report');
+  await poll(); await keyPress('Escape'); await click('#charger2-session-report'); await pause(40);
   assert.equal(await evaluate("document.getElementById('charging-report-session').options.length"), 0);
   assert.match(await evaluate("document.querySelector('.charging-report-result').textContent"), /No .*session|No .*report/i);
   await keyPress('Escape');
@@ -835,7 +885,7 @@ try {
     const before = Array.from({length:8}, (_, index) => ({ startAt:N + index * 900000,
       endAt:N + (index + 1) * 900000, priceCtPerKwh:3.1234 + index / 10 }));
     const after = before.map(row => ({...row, priceCtPerKwh:row.priceCtPerKwh + 1}));
-    const rateChange = {field:'prices', before, after, omitted:2};
+    const rateChange = {field:'prices', before, after};
     report.plans.push({ ...structuredClone(baseline), at:N - 2200000, reason:'price-update', changes:[rateChange] });
     report.timeline.push({kind:'plan', code:'session-settings', at:N - 2350000, changes:[]},
       {kind:'plan', code:'price-update', at:N - 2300000, changes:[]},
@@ -843,17 +893,14 @@ try {
     report.timeline.sort((a,b) => a.at - b.at);
     globalThis.originalHistory = JSON.stringify({timeline:report.timeline, plans:report.plans});
   })()`);
-  await poll(); await click('#charger1-session-report');
+  await poll(); await click('#charger1-session-report'); await pause(40);
   await evaluate("for (const fold of document.querySelectorAll('#charging-report-dialog > details')) fold.open = true");
-  assert.equal(await evaluate("document.querySelectorAll('.charging-report-fold > .charging-report-plans > li[data-plan-key]').length"), 3,
-    'Initial and actual changed planning snapshots remain; two unchanged snapshots stay hidden');
+  assert.equal(await evaluate("document.querySelectorAll('.charging-report-snapshots > li[data-plan-key]').length"), 5,
+    'Every planning snapshot is available under its one event');
   assert.equal(await evaluate("document.querySelectorAll('.charging-report-timeline > li[data-history-key]').length < chargingFixture.report.timeline.length"), true,
     'Repeated idle control and zero-power charger status events are combined');
   assert.equal(await evaluate("JSON.stringify({timeline:chargingFixture.report.timeline, plans:chargingFixture.report.plans}) === originalHistory"), true,
     'Grouping does not mutate the recorded timeline or planning inputs');
-  assert.equal(await evaluate("document.querySelector('.charging-report-routine').open"), false,
-    'Unchanged planning snapshots remain collapsed when meaningful history is opened');
-  assert.match(await evaluate("document.querySelector('.charging-report-routine > summary').textContent"), /2 routine planning records/);
   await until("document.querySelector('.charging-report-timeline details[data-history-key]') !== null");
   await evaluate(`(() => {
     const row = [...document.querySelectorAll('.charging-report-timeline > li[data-history-key]')]
@@ -883,9 +930,9 @@ try {
   assert.equal(await evaluate("savedHistoryGroup.isConnected && savedHistoryGroup.open && document.activeElement === savedHistorySummary && document.getElementById('charging-report-dialog').scrollTop > 0"), true,
     'A newly recorded group preserves the open evidence and focus without resetting to the top');
   await evaluate(`(() => {
-    const row = [...document.querySelectorAll('.charging-report-fold > .charging-report-plans > li[data-plan-key]')]
+    const row = [...document.querySelectorAll('.charging-report-timeline > li[data-history-key]')]
       .find(node => /4\\.1234/.test(node.textContent));
-    const details = row?.querySelector('.charging-report-plan-detail');
+    const details = row?.querySelector('details');
     const rates = row?.querySelector('.charging-report-change details');
     if (!details || !rates) throw new Error('No planning snapshot with exact changed electricity rates');
     globalThis.savedPlanDetails = details;
@@ -910,9 +957,9 @@ try {
     await send('Emulation.setDeviceMetricsOverride', { width, height: 1000, deviceScaleFactor: 1, mobile: false });
     await evaluate(`document.documentElement.dataset.theme='${theme}';
       for (const fold of document.querySelectorAll('#charging-report-dialog > details')) fold.open = true;
-      for (const fold of document.querySelectorAll('.charging-report-timeline > li > details, .charging-report-plans > li > details, .charging-report-findings > li > details, .charging-report-routine')) fold.open = false;`);
+      for (const fold of document.querySelectorAll('.charging-report-timeline > li > details')) fold.open = false;`);
     await fits('#charging-report-dialog');
-    await evaluate("document.querySelector('.charging-report-timeline').closest('details').scrollIntoView({block:'start'})");
+    await evaluate("document.querySelector('.charging-report-events').scrollIntoView({block:'start'})");
     await screenshot(`report-compact-${width}-${theme}`, '#charging-report-dialog', { preserveScroll: true });
     await evaluate(`
       for (const fold of document.querySelectorAll('#charging-report-dialog details')) fold.open = true;`);
@@ -964,7 +1011,7 @@ try {
     f.runs.unshift(latest, completed);
   })()`);
   await poll();
-  await click('#charger1-session-report');
+  await click('#charger1-session-report'); await pause(40);
   await evaluate("document.getElementById('charging-report-session').value='report-bmw-old'; document.getElementById('charging-report-session').dispatchEvent(new Event('change'))");
   await click('.charging-report-guided button');
   await until("document.getElementById('charging-test-dialog').open && !document.getElementById('charging-report-dialog').open");
@@ -992,6 +1039,84 @@ try {
     'Returning from the completed assessment restores its exact retained report');
   await keyPress('Escape');
 
+  // Report management changes only the selected historical report. The browser
+  // fixture rejects family/read-only writes and keeps production facts separate.
+  await evaluate(`(() => {
+    const f=chargingFixture;
+    f.archived=false; f.readOnly=false; f.family=false; f.report.endedAt=null; f.report.saved=false;
+    f.recent.push({...structuredClone(f.report),id:'report-management',startedAt:${now - 86400000},endedAt:${now - 82000000},saved:false},
+      {...structuredClone(f.report),id:'report-expired-saved',startedAt:${now - 33*86400000},endedAt:${now - 32*86400000},saved:true});
+    f.report.timeline.push({kind:'finding-update',code:'control-unconfirmed',episode:1,at:${now + 2000},
+      context:{errorCode:'invalid-plan',reasonCode:'invalid-plan',basis:'controller-plan'}});
+  })()`);
+  await poll();
+  const productionBeforeReports = await evaluate('JSON.stringify(chargingFixture.ordinaryCharging)');
+  await click('#charger1-session-report');
+  await until("document.getElementById('charging-report-session').value==='report-fixture' && !document.getElementById('charging-report-save').disabled");
+  assert.equal(await evaluate("document.getElementById('charging-report-delete').disabled"),true,'Active reports cannot be deleted');
+  await pointerClick('#charging-report-save');
+  await until("document.getElementById('charging-report-save').textContent==='Remove from saved' && !document.getElementById('charging-report-save').disabled");
+  assert.deepEqual(await evaluate('chargingFixture.reportMutations.at(-1)'),{path:'/api/charging/reports/report-fixture/save',body:{saved:true}});
+  await poll();
+  assert.match(await evaluate("document.querySelector('.charging-report-message').textContent"),/saved permanently.*future events/i);
+  await evaluate("document.getElementById('charging-report-collection').value='saved';document.getElementById('charging-report-collection').dispatchEvent(new Event('change'))");
+  await until("document.getElementById('charging-report-session').options.length===2");
+  assert.deepEqual(await evaluate("[...document.getElementById('charging-report-session').options].map(row=>row.value)"),['report-fixture','report-expired-saved']);
+  await evaluate("document.getElementById('charging-report-collection').value='recent';document.getElementById('charging-report-collection').dispatchEvent(new Event('change'))");
+  await until("document.getElementById('charging-report-session').value==='report-fixture' && !document.getElementById('charging-report-save').disabled");
+  for (const filter of ['findings','plans','charging','control','vehicle','evidence','all']) {
+    await evaluate(`document.getElementById('charging-report-filter').value=${JSON.stringify(filter)};document.getElementById('charging-report-filter').dispatchEvent(new Event('change'))`);
+    await until(`chargingFixture.reportReads.at(-1)?.filter===${JSON.stringify(filter)}`); await pause(40);
+    assert.equal(await evaluate("document.querySelector('.charging-report-events').querySelectorAll('h3').length"),1,'The selected history stays in one Events section');
+    if(filter==='findings') assert.match(await evaluate("document.querySelector('.charging-report-timeline').textContent"),/invalid|rejected|could not be (?:used|applied)/i,
+      'A changed invalid-plan cause remains visible in Findings');
+    if(filter==='plans') assert.ok(await evaluate("document.querySelectorAll('.charging-report-snapshots > li').length"));
+  }
+  await pointerClick('#charging-report-save');
+  await until("document.getElementById('charging-report-save').textContent==='Save report' && !document.getElementById('charging-report-save').disabled");
+  assert.deepEqual(await evaluate('chargingFixture.reportMutations.at(-1).body'),{saved:false});
+  await evaluate("document.getElementById('charging-report-session').value='report-management';document.getElementById('charging-report-session').dispatchEvent(new Event('change'))");
+  await until("!document.getElementById('charging-report-delete').disabled");
+  await pointerClick('#charging-report-save');
+  await until("document.getElementById('charging-report-save').textContent==='Remove from saved' && !document.getElementById('charging-report-save').disabled");
+  for (const width of [320,390,1440]) for (const theme of ['light','dark']) {
+    await send('Emulation.setDeviceMetricsOverride',{width,height:1000,deviceScaleFactor:1,mobile:false});
+    await evaluate(`document.documentElement.dataset.theme='${theme}'`);
+    await fits('#charging-report-dialog'); await screenshot(`report-saved-${width}-${theme}`,'#charging-report-dialog');
+  }
+  await evaluate('chargingFixture.family=true'); await poll();
+  await until("document.getElementById('charging-report-save').disabled && document.getElementById('charging-report-delete').disabled");
+  const familyReportMutations = await evaluate('chargingFixture.reportMutations.length');
+  await click('#charging-report-save'); await click('#charging-report-delete');
+  assert.equal(await evaluate('chargingFixture.reportMutations.length'),familyReportMutations,'Family report browsing cannot change saved history');
+  await evaluate('chargingFixture.family=false'); await poll();
+  await until("!document.getElementById('charging-report-delete').disabled");
+  await pointerClick('#charging-report-delete');
+  await until("!document.querySelector('.charging-report-confirm').hidden");
+  assert.match(await evaluate("document.querySelector('.charging-report-confirm').textContent"),/permanently.*Energy history is kept/i);
+  await click('.charging-report-confirm button:last-child');
+  assert.equal(await evaluate('chargingFixture.reportMutations.length'),familyReportMutations,'Cancelling deletion keeps the report');
+  await pointerClick('#charging-report-delete'); await click('.charging-report-confirm button');
+  await until("document.querySelector('.charging-report-result').textContent.includes('no longer retained')");
+  assert.deepEqual(await evaluate('chargingFixture.reportMutations.at(-1)'),{path:'/api/charging/reports/report-management/delete',body:{}});
+  assert.equal(await evaluate("document.getElementById('charging-report-session').value"),'report-management','Deleting the selected report never opens another connection');
+  await evaluate("document.getElementById('charging-report-session').value='report-expired-saved';document.getElementById('charging-report-session').dispatchEvent(new Event('change'))");
+  await until("document.getElementById('charging-report-save').textContent==='Remove from saved' && !document.getElementById('charging-report-save').disabled");
+  await pointerClick('#charging-report-save');
+  await until("!document.querySelector('.charging-report-confirm').hidden");
+  assert.match(await evaluate("document.querySelector('.charging-report-confirm').textContent"),/past the retention period.*delete.*immediately/i);
+  for (const width of [320,390,1440]) for (const theme of ['light','dark']) {
+    await send('Emulation.setDeviceMetricsOverride',{width,height:1000,deviceScaleFactor:1,mobile:false});
+    await evaluate(`document.documentElement.dataset.theme='${theme}'`);
+    await fits('#charging-report-dialog'); await screenshot(`report-expiry-warning-${width}-${theme}`,'#charging-report-dialog');
+  }
+  await click('.charging-report-confirm button');
+  await until("document.querySelector('.charging-report-result').textContent.includes('no longer retained')");
+  assert.deepEqual(await evaluate('chargingFixture.reportMutations.at(-1)'),{path:'/api/charging/reports/report-expired-saved/save',body:{saved:false}});
+  assert.equal(await evaluate('JSON.stringify(chargingFixture.ordinaryCharging)'),productionBeforeReports,
+    'Saving, un-saving and deleting reports do not change production inputs, identity, schedules or charger control');
+  await keyPress('Escape');
+
   await send('Emulation.setDeviceMetricsOverride', { width: 320, height: 1000, deviceScaleFactor: 1, mobile: false });
   await evaluate("for (const fold of document.querySelectorAll('#charging-setup-bmw-details details')) fold.open = true");
   await fits('#charging-setup-content'); await screenshot('setup-descriptors-320', '#charging-setup-details');
@@ -1015,7 +1140,9 @@ try {
     'passive-report-no-mutations', 'read-only-controls', 'retained-report-and-recovered-issue',
     'automatic-off-no-controller-schedule', 'unidentified-fallback-battery-input', 'partial-observation-history', 'semantic-input-deltas', 'measured-zero-distinct-from-charger-status',
     'charger-scoped-current-and-retained-reports', 'empty-charger-does-not-borrow-peer-history', 'expired-selected-report', 'stale-and-unavailable-report-states',
-    'grouped-zero-power-status-and-idle-control', 'compact-timestamp-title-entry-disclosures', 'no-op-planning-snapshots-hidden', 'expanded-history-focus-and-scroll-during-polls',
+    'grouped-zero-power-status-and-idle-control', 'compact-timestamp-title-entry-disclosures', 'all-planning-snapshots-under-one-event', 'expanded-history-focus-and-scroll-during-polls',
+    'all-seven-event-filters-and-material-finding-cause', 'active-and-completed-report-saving', 'saved-session-selector',
+    'family-report-management-disabled', 'explicit-saved-report-deletion-and-cancel', 'expired-unsave-confirmation', 'report-actions-preserve-production-charging',
     'modal-switching-focus-and-exact-linked-run', 'long-expanded-details-fit-all-viewports', 'sticky-heading-keeps-history-and-close-action-visible',
     '320-390-1440-light-dark-layouts' ] }));
 } finally {

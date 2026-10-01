@@ -172,15 +172,17 @@ test('failed assessment target save rolls back only its declaration and never ch
 });
 
 test('assessment storage failure stays visible without preventing normal runtime persistence', t => {
-  const f = fixture(t), setState = f.store.setState.bind(f.store);
-  f.store.setState = (key, value) => {
-    if (key.endsWith(':session-diagnostics')) throw new Error('Synthetic diagnostic storage outage');
-    return setState(key, value);
-  };
+  const f = fixture(t);
+  f.store.db.exec("CREATE TRIGGER reject_report_event BEFORE INSERT ON charging_report_events BEGIN SELECT RAISE(ABORT, 'Synthetic diagnostic storage outage'); END");
   f.plug();
   assert.doesNotThrow(() => f.runtime.persist());
   assert.equal(f.runtime.status().diagnostics.available, false);
   assert.equal(f.store.getState('charging:mqtt').version, 6);
+  assert.equal(f.store.db.prepare('SELECT COUNT(*) count FROM charging_reports').get().count, 0, 'A failed event append rolls the report back');
+  f.store.db.exec('DROP TRIGGER reject_report_event');
+  f.runtime.persist();
+  assert.notEqual(f.runtime.status().diagnostics.available, false);
+  assert.ok(f.store.db.prepare('SELECT COUNT(*) count FROM charging_report_events').get().count > 0);
 });
 
 test('family assessment actions are explicitly scoped on both sides of the API', () => {

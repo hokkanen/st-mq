@@ -253,18 +253,25 @@ is version 2; unsupported development formats are rejected without migration.
 
 Every ordinary connection also gets a passive **Session report**, in its own row
 below **Details & settings** on its charger card. The action's text and color indicate
-attention, incomplete evidence or the observed result. Its dialog separates the
-charging outcome, behavior and coverage, followed by findings, a timeline and
-the actual plan/input revisions. Proposed periods, installed execution,
-identification permission, confirmed pauses and physical charging are distinct.
-Each charger opens only its own current and retained sessions. An expired
-selection stays explicitly unavailable instead of opening another session. The
-guided-test link opens the assessment attached to that exact report. Opening a
-report never identifies a vehicle or changes charging. Normal dashboard refreshes
-preserve open disclosures, keyboard focus and the report's scroll position.
-Each timeline event, planning record and finding starts as a compact, clickable
-timestamp and title. Open that entry to see its explanation and original evidence;
-the details are inside the entry rather than behind a separate action below it.
+attention, incomplete evidence or the observed result. The report summarizes
+outcome, current findings and observation coverage, followed by one **Events**
+history. Filters select **All**, **Findings**, **Plans & inputs**, **Charging**,
+**Control**, **Vehicle** or **Evidence**. Plan changes appear once, with the
+recorded before/after changes, full planning inputs and periods inside the entry.
+Proposed periods, adopted execution, identification permission, confirmed pauses
+and physical charging remain distinct.
+
+The session selector offers recent and saved reports for that charger, loading
+older sessions and events in pages. An expired or deleted selection stays
+explicitly unavailable instead of opening another session. The guided-test link
+opens the assessment attached to that exact report. Opening or saving a report
+never identifies a vehicle, changes a schedule or sends a charger instruction.
+Normal dashboard refreshes preserve open disclosures, keyboard focus and the
+report's scroll position. Each event starts as a compact timestamp and title;
+expand it for its explanation, planning snapshot and original evidence.
+Automatic refresh loads only a bounded number of new event pages. After a large
+burst or a long browser pause, **Refresh events** loads the latest page explicitly;
+older records remain available through **Load older events**.
 
 The report states whether Automatic charging is off, whether there is a proposed
 or adopted controller execution plan, and whether battery inputs are measured or
@@ -281,12 +288,11 @@ settings/price revision. Revised rates are compared over the same remaining
 time intervals; newly available prices are separate from changes to existing
 rates. An unchanged schedule is stated explicitly. With Automatic off and no
 Charge now request, price refreshes do not create charging-plan revisions.
-The visible history contains the initial state and meaningful changes. Repeated
-snapshots without meaningful changes are available under **Routine planning
-records**, collapsed by default; their original records are preserved. Opaque
-price hashes, revision counters and refreshed evidence clocks do not establish a
-plan change. Full inputs and periods are expandable, with concrete before/after
-values shown when recorded changes establish them.
+The history contains the initial state and meaningful changes. Opaque price
+hashes, revision counters and refreshed evidence clocks do not establish a plan
+change. Full inputs and periods are expandable, with concrete before/after values
+shown when recorded changes establish them. An unchanged poll does not create a
+new planning instruction.
 
 Charger-reported charging state and measured draw remain separate evidence.
 A fresh charger power reading above 0.1 kW establishes draw; status alone cannot
@@ -327,12 +333,40 @@ changed**, not as evidence that charging recovered.
 The existing energy/session reference comparisons remain separate from these
 behavioral checks; recorded energy coverage is not a reference-energy comparison.
 
-Each charger retains the current report plus four completed reports. Details are
-bounded to 120 timeline entries, 32 plan snapshots and 24 findings per session;
-opening evidence and recent changes remain, and truncation is disclosed. Stores
-contain normalized facts and scoped hashes, not raw MQTT payloads, coordinates,
-VINs or account credentials. Observer storage failures are visible without
-blocking ordinary charger control or restoration.
+Repeated equivalent control messages and recurring findings can be grouped for
+inspection without deleting their original records. A recurring finding shows
+its episode count and current state; it does not imply continuous observation
+between episodes. The combined history keeps meaningful intervening events in
+time order. Changed causes, actual draw, control instructions and observation gaps
+must remain distinguishable. In particular, an invalid-plan error must not be
+hidden inside an unrelated generic control-confirmation group. Grouping changes
+presentation only; it does not alter control confirmation or manufacture recovery.
+
+Completed reports expire as whole reports after **30 days** by default, measured
+from the session end. `charging.report_retention_days` configures 1–3650 days.
+Active sessions never expire. There is no per-session event, finding or planning
+record count that discards older evidence. Events are appended to indexed database
+records; dashboard summaries, runtime checkpoints and page requests stay bounded.
+This retains recorded diagnostic evidence, not every raw telemetry publication.
+Automatic expiry is performed by writable observer maintenance, checked hourly
+and processed one report at a time when a backlog exists. Read-only browsing
+does not prune the database.
+
+Admins can **Save report** to protect it from automatic expiry, including future
+events if the session is still active. **Remove from saved** returns it to the
+configured retention policy and can immediately expire an old completed report.
+**Delete report** explicitly removes a completed report and all its owned details,
+including a saved report; active reports cannot be deleted. Family and read-only
+viewers can inspect reports but cannot change retention or delete history. Saving
+is protection within this database, not an independent backup. Report removal
+does not delete energy observations, learning history, charger ownership or
+restoration obligations. Saved reports remain historical when equipment changes;
+they confer no authority over the replacement equipment.
+
+Stores contain normalized facts and scoped hashes, not raw MQTT payloads,
+coordinates, VINs or account credentials. Report storage failures remain visible
+without blocking ordinary charger control or restoration. Unsupported development
+formats are rejected; there is no migration or automatic database reset.
 
 ## Vehicle assignment
 

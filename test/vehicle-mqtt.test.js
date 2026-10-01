@@ -1,3 +1,4 @@
+import { withReportDatabase } from './helpers/report-database.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
@@ -11,6 +12,7 @@ async function fixture(t) {
   const saved = new Map(), acknowledgements = [], client = new EventEmitter();
   const store = { getState: key => structuredClone(saved.get(key)),
     setState: (key, value) => saved.set(key, structuredClone(value)), event() {} };
+  withReportDatabase(store, t);
   const config = { input: 'mqtt', connections: { mqtt: { address: 'mqtt://invented.invalid' } } };
   const engine = { clock: () => now };
   engine.charging = new ChargingRuntime({ engine, store, config, clock: engine.clock });

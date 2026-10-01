@@ -68,13 +68,13 @@ function chargingSnapshot(snapshot) {
     fields: Object.fromEntries(Object.entries(setup.fields ?? {}).map(([key, value]) => [key,
       { ...value, available: false, recorded: true, reason: 'read-only-snapshot' }])) } : null;
   const reports = saved.view.diagnostics, tests = saved.view.physicalTests;
-  if (reports && (reports.version !== 1 || !Array.isArray(reports.chargers))
+  if (reports && (reports.version !== 2 || !Array.isArray(reports.chargers))
     || tests && (tests.version !== 2 || !Array.isArray(tests.runs)))
     throw new Error('Unsupported charging assessment snapshot; start a fresh development database');
   const recordedReport = report => report ? { ...structuredClone(report), readOnly: true, recorded: true, snapshotAt,
     liveAvailable: false, evidenceStale: report.endedAt === null || report.evidenceStale === true } : null;
-  const diagnostics = reports ? { ...structuredClone(reports), readOnly: true, recorded: true, snapshotAt, liveAvailable: false,
-    chargers: reports.chargers.map(slot => ({ id: slot.id, current: recordedReport(slot.current),
+  const diagnostics = reports ? { ...structuredClone(reports), canManage: false, readOnly: true, recorded: true, snapshotAt, liveAvailable: false,
+    chargers: reports.chargers.map(slot => ({ id: slot.id, hasMore: slot.hasMore === true, current: recordedReport(slot.current),
       recent: (slot.recent ?? []).map(recordedReport) })) } : null;
   // Preserve the master's assessment, including an unfinished test phase. A
   // viewer neither advances a run nor turns elapsed viewer time into a result.

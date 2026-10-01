@@ -1,3 +1,4 @@
+import { withReportDatabase } from './helpers/report-database.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
@@ -21,6 +22,7 @@ async function fixture(t, { charging = true, retainedOnly = false, enabled = tru
     if (failSave && key.startsWith('charging:')) throw Error('synthetic storage unavailable');
     data.set(key, structuredClone(value));
   }, transaction: fn => fn(), event: () => 1 };
+  withReportDatabase(store, t);
   const roles = { current_limit: 'Number', start_charging: 'Boolean', work_state: 'Enum', phase_info: 'Object',
     energy_charge: 'Number', time_charge: 'Number' };
   const ids = Object.fromEntries(Object.keys(roles).map((role, i) => [role, i + 200]));

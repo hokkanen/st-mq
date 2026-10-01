@@ -1,4 +1,5 @@
-import { projectChargingReportHistory } from './charging-report-history.js';
+import { isReadOnlyReplica } from './replica-status.js';
+import { projectChargingReportHistory, CHARGING_EVENT_FILTERS, chargingFindingCounts } from './charging-report-history.js';
 
 const OUTCOMES = { 'in-progress': 'Outcome not yet confirmed', 'target-confirmed': 'Target confirmed by vehicle',
   'target-estimated': 'Target estimated · awaiting vehicle evidence', 'deadline-missed': 'Target not reached by ready-by',
@@ -121,8 +122,7 @@ function controlText(value = {}, snapshot = false) {
 export function chargingReportFacts(report, timezone = 'Europe/Helsinki') {
   if (!report) return [];
   const current = report.current ?? {};
-  const opening = report.timeline?.find(row => row.kind === 'session' && ['connected', 'observation-started'].includes(row.code));
-  const observedFrom = opening?.at;
+  const observedFrom = report.observedFrom;
   const partial = Number.isFinite(observedFrom) && observedFrom > report.startedAt;
   const observation = partial
     ? `Connection recorded ${time(report.startedAt, timezone)}; monitoring began ${time(observedFrom, timezone)}. Earlier charging is not covered by this report.`
@@ -142,6 +142,8 @@ export function chargingReportFacts(report, timezone = 'Europe/Helsinki') {
     ...(current.identification ? [['Identification', [EVENTS[current.identification] ?? 'Identification state unknown',
       IDENTIFICATION_CAUSES[current.identificationReason]].filter(Boolean).join(' · ')]] : []),
     ['Battery input', inputText(current.soc)],
+    ['Requested target', inputText(current.target)],
+    ['Ready by', Number.isFinite(current.deadlineAt) ? time(current.deadlineAt, timezone) : 'Unavailable'],
     ['Measured draw / status', `${physical}${chargerStatus}`],
     ['Observation coverage', observation],
   ];
@@ -177,8 +179,7 @@ export function chargingPlanChanges(changes, timezone = 'Europe/Helsinki') {
     const definition = fields[change?.field];
     if (!definition || JSON.stringify(change.before) === JSON.stringify(change.after)) return [];
     const [label, format] = definition, before = format(change.before), after = format(change.after);
-    return before === after ? [] : [{ field: change.field, label, before, after, complex: ['periods', 'prices', 'priceAvailability'].includes(change.field),
-      ...(Number.isSafeInteger(change.omitted) && change.omitted > 0 ? { omitted: change.omitted } : {}) }];
+    return before === after ? [] : [{ field: change.field, label, before, after, complex: ['periods', 'prices', 'priceAvailability'].includes(change.field) }];
   });
 }
 
@@ -208,9 +209,9 @@ export function chargingReportSummary(report, available = true) {
     behavior: report.evidenceStale ? 'Observation is no longer current' : BEHAVIOR[report.behavior] ?? 'Evidence incomplete' };
 }
 
-/** Read-only report UI. Opening it does not identify, poll a vehicle, change a
- * schedule or issue a request. Updates come from the normal dashboard status. */
-export function createChargingDiagnosticsPanel({ document, onOpenTest = () => {} }) {
+/** Observational report UI. Reading a report never identifies a vehicle or
+ * changes charging. Save/delete actions manage only the report's retention. */
+export function createChargingDiagnosticsPanel({ document, request, onOpenTest = () => {}, afterMutation = () => {} }) {
   const make = (tag, text = '', className = '') => { const node = document.createElement(tag); node.textContent = text; node.className = className; return node; };
   const setText = (node, value) => { if (node.textContent !== value) node.textContent = value; };
   const parts = new WeakMap(), lists = new WeakMap();
@@ -239,30 +240,53 @@ export function createChargingDiagnosticsPanel({ document, onOpenTest = () => {}
   const help = make('p', 'Observed charging, important changes and gaps in the evidence for this charger.', 'muted'); help.id = 'charging-report-help';
   const selectorLabel = make('label', 'Session', 'charging-report-selector'), selector = make('select'); selector.id = 'charging-report-session'; selectorLabel.htmlFor = selector.id; selectorLabel.append(selector);
   const result = make('div', '', 'charging-report-result'), outcome = make('strong'), behavior = make('span'); result.append(outcome, behavior); result.setAttribute('role', 'status'); result.setAttribute('aria-atomic', 'true');
-  const context = make('p', '', 'muted charging-report-context'), findings = make('ul', '', 'charging-report-findings');
+  const context = make('p', '', 'muted charging-report-context');
   const facts = make('dl', '', 'charging-report-facts');
   const guided = make('div', '', 'charging-report-guided'), guidedNote = make('span'), guidedButton = make('button', 'View guided test', 'secondary-button');
   guidedButton.type = 'button'; guided.append(guidedNote, guidedButton); guided.hidden = true;
   const coverageTitle = make('h3', 'What was observed'), coverage = make('dl', '', 'charging-report-coverage');
-  const timelineDetails = make('details', '', 'charging-report-fold'), timeline = make('ol', '', 'charging-report-timeline');
-  timelineDetails.append(make('summary', 'Session timeline'),
-    make('p', 'Brief status changes are grouped. Expand an entry for the original events and evidence times.', 'muted'), timeline);
-  const plansDetails = make('details', '', 'charging-report-fold'), plans = make('ol', '', 'charging-report-plans');
-  plansDetails.append(make('summary', 'Plan & input changes'), plans);
-  const routineDetails = make('details', '', 'charging-report-routine'), routineSummary = make('summary'), routinePlans = make('ol', '', 'charging-report-plans');
-  routineDetails.append(routineSummary, make('p', 'These records have no documented meaningful change. They are retained for inspection, not shown as new charging instructions.', 'muted'), routinePlans);
-  plansDetails.append(routineDetails);
+  const currentFindings = make('button', '', 'secondary-button charging-report-current-findings'); currentFindings.type = 'button';
+  const collectionLabel = make('label', 'Show sessions', 'charging-report-selector'), collection = make('select');
+  collection.id = 'charging-report-collection'; collectionLabel.htmlFor = collection.id; collectionLabel.append(collection);
+  for (const [value, label] of [['recent', 'Recent sessions'], ['saved', 'Saved reports']]) { const option = make('option', label); option.value = value; collection.append(option); }
+  collection.value = 'recent';
+  const moreReports = make('button', 'Load older sessions', 'secondary-button'); moreReports.type = 'button'; moreReports.id = 'charging-report-more-sessions';
+  const actions = make('div', '', 'charging-report-actions'), save = make('button', 'Save report', 'secondary-button'), remove = make('button', 'Delete report', 'secondary-button');
+  save.type = remove.type = 'button'; save.id = 'charging-report-save'; remove.id = 'charging-report-delete';
+  save.setAttribute('data-admin-only', ''); remove.setAttribute('data-admin-only', ''); actions.append(save, remove);
+  const retention = make('p', '', 'muted charging-report-retention');
+  const confirmation = make('div', '', 'charging-report-confirm'), confirmationText = make('p'), confirm = make('button', 'Delete report'), cancel = make('button', 'Cancel', 'secondary-button');
+  confirm.type = cancel.type = 'button'; confirmation.append(confirmationText, confirm, cancel); confirmation.hidden = true;
+  const message = make('p', '', 'charging-report-message'); message.setAttribute('role', 'status');
+  const timelineDetails = make('section', '', 'charging-report-events'), timeline = make('ol', '', 'charging-report-timeline');
+  const eventHeading = make('h3', 'Events'), filterLabel = make('label', 'Event type', 'charging-report-selector'), filter = make('select');
+  filter.id = 'charging-report-filter'; filterLabel.htmlFor = filter.id; filterLabel.append(filter);
+  for (const [value, label] of Object.entries(CHARGING_EVENT_FILTERS)) { const option = make('option', label); option.value = value; filter.append(option); }
+  filter.value = 'all';
+  const refreshEvents = make('button', 'New events available · Refresh events', 'secondary-button'); refreshEvents.type = 'button'; refreshEvents.id = 'charging-report-refresh-events'; refreshEvents.hidden = true;
+  const eventScope = make('p', '', 'muted charging-report-event-scope'), moreEvents = make('button', 'Load older events', 'secondary-button');
+  moreEvents.type = 'button'; moreEvents.id = 'charging-report-more-events';
+  timelineDetails.append(eventHeading, filterLabel, make('p', 'Related repetitions are grouped. Expand an entry for each occurrence, original evidence and planning inputs.', 'muted'), eventScope, refreshEvents, timeline, moreEvents);
   const limits = make('p', '', 'muted charging-report-limits');
-  dialog.append(heading, help, selectorLabel, result, context, facts, guided, findings, coverageTitle, coverage, timelineDetails, plansDetails, limits);
+  dialog.append(heading, help, collectionLabel, selectorLabel, moreReports, actions, retention, confirmation, message, result, context, facts, guided, currentFindings, coverageTitle, coverage, timelineDetails, limits);
   document.body.append(dialog);
-  const buttons = new Map();
+  const buttons = new Map(), receipts = new Map();
   let status = null, selectedCharger = null, selectedReport = null, opener = null, guidedVehicle = null, guidedRunId = null, switchingDialog = false, renderedScope = null;
+  let remoteReports = [], remoteReport = null, events = [], reportsBefore = null, eventsBefore = null, loaded = false, missing = false;
+  let listSequence = 0, detailSequence = 0, eventsSequence = 0, loadingList = false, loadingEvents = false, mutating = false, pendingAction = null;
+  let newEventsPending = false;
+  let apiReadOnly = false, error = '', refreshToken = null, selectionEpoch = 0, loadingDetail = false;
   const chargerLabel = () => status?.charging?.chargers?.find(row => row.id === selectedCharger)?.label
     ?? ({ charger1: 'Charger 1', charger2: 'Charger 2' })[selectedCharger] ?? 'Charger';
+  const slot = () => status?.charging?.diagnostics?.chargers?.find(row => row.id === selectedCharger);
   const reports = () => {
-    const slot = status?.charging?.diagnostics?.chargers?.find(row => row.id === selectedCharger);
-    return [slot?.current, ...(slot?.recent ?? [])].filter(Boolean);
+    const local = collection.value === 'saved' ? [] : [slot()?.current, ...(slot()?.recent ?? [])].filter(Boolean);
+    return [...new Map([...local, ...remoteReports].map(row => [row.id, row])).values()];
   };
+  const canManage = () => status?.webAccess?.role === 'admin' && typeof request === 'function' && !apiReadOnly && status?.readOnly !== true && status?.charging?.readOnly !== true
+    && !isReadOnlyReplica(status) && status?.charging?.diagnostics?.readOnly !== true && status?.charging?.diagnostics?.canManage !== false;
+  const query = values => new URLSearchParams(Object.entries({ chargerId: selectedCharger, ...values }).filter(([, value]) => value !== null && value !== undefined)).toString();
+  const reportPath = suffix => `/api/charging/reports/${encodeURIComponent(selectedReport)}${suffix}?${query()}`;
   const controlLabels = { off: 'Automatic control inactive', waiting: 'Controller waiting', paused: 'Controller pause', active: 'Charging permission active',
     released: 'Controller restriction released', provisional: 'Provisional charging permission', identifying: 'Identification check',
     unconfirmed: 'Charger instruction unconfirmed', 'pause-unconfirmed': 'Pause unconfirmed', uncertain: 'Charger instruction uncertain',
@@ -274,6 +298,7 @@ export function createChargingDiagnosticsPanel({ document, onOpenTest = () => {}
     if (row.kind === 'physical' && ['charging-started', 'charging-observed'].includes(row.code) && Number.isFinite(row.powerKw) && row.powerKw <= .1)
       return 'Charging status recorded; draw unconfirmed';
     if (row.kind === 'physical' && Number.isFinite(row.powerKw) && row.powerKw === 0) return 'No draw measured';
+    if (row.kind === 'finding-update') return `${FINDINGS[row.code]?.[0] ?? 'Finding'} · Evidence changed`;
     if (row.kind === 'finding') return FINDINGS[row.code]?.[0] ?? 'Finding recorded';
     if (row.kind === 'recovery') return `${FINDINGS[row.code]?.[0] ?? 'Issue'} · ${row.resolution === 'request-changed' ? 'request changed' : 'recovered'}`;
     if (row.kind === 'plan') return row.code === 'initial-plan' ? 'Initial planning state' : changeTitle(changes, 'Planning record');
@@ -285,19 +310,20 @@ export function createChargingDiagnosticsPanel({ document, onOpenTest = () => {}
     sync(container, changes, row => row.field, (node, change) => {
       if (!node) {
         node = make('li', '', 'charging-report-change');
-        const detail = make('details'), summary = make('summary'), before = make('p'), after = make('p'), omitted = make('p', '', 'muted'), simple = make('p', '', 'charging-report-change-value');
-        detail.append(summary, before, after, omitted); node.append(simple, detail); parts.set(node, { detail, summary, before, after, omitted, simple });
+        const detail = make('details'), summary = make('summary'), before = make('p'), after = make('p'), simple = make('p', '', 'charging-report-change-value');
+        detail.append(summary, before, after); node.append(simple, detail); parts.set(node, { detail, summary, before, after, simple });
       }
       const p = parts.get(node); p.detail.hidden = !change.complex; p.simple.hidden = change.complex;
       setText(p.simple, `${change.label}: ${change.before} → ${change.after}`); setText(p.summary, `${change.label} changed`);
       setText(p.before, `Before\n${change.before}`); setText(p.after, `After\n${change.after}`);
-      p.omitted.hidden = !change.omitted; setText(p.omitted, change.omitted ? `${change.omitted} additional changed intervals omitted from this bounded record.` : '');
       return node;
     });
   }
   function rawEvent(node, row, timezone) {
     if (!node) { node = make('li'); const label = make('p'), evidence = make('p', '', 'muted'); node.append(label, evidence); parts.set(node, { label, evidence }); }
-    const p = parts.get(node), details = [];
+    const p = parts.get(node), details = [], evidenceRow = row.context ? { ...row.context, ...row } : row;
+    if (['finding', 'finding-update', 'recovery'].includes(row.kind)) details.push(FINDINGS[row.code]?.[1] ?? 'Finding recorded.');
+    if (row.kind === 'finding-update') details.push('The same episode remains active; its recorded evidence changed.');
     setText(p.label, `${time(row.at, timezone, true)} · ${eventLabel(row)}`);
     if (Number.isFinite(row.powerKw)) details.push(`Measured draw ${number(row.powerKw)} kW`);
     const source = sourceName(row.source);
@@ -311,14 +337,16 @@ export function createChargingDiagnosticsPanel({ document, onOpenTest = () => {}
     }
     if (Number.isFinite(row.powerMeasuredAt)) details.push(`Power measured ${time(row.powerMeasuredAt, timezone, true)}`);
     if (Number.isFinite(row.powerReceivedAt)) details.push(`Power received ${time(row.powerReceivedAt, timezone, true)}`);
-    if (typeof row.automaticEnabled === 'boolean') details.push(`Automatic charging ${row.automaticEnabled ? 'on' : 'off'}`);
-    if (row.chargeNow === true) details.push('Charge now on');
-    if (['available', 'unavailable', 'unknown'].includes(row.availability)) details.push(`Control evidence ${row.availability}`);
-    for (const code of new Set([row.errorCode, row.reasonCode].filter(Boolean)))
+    if (typeof evidenceRow.automaticEnabled === 'boolean') details.push(`Automatic charging ${evidenceRow.automaticEnabled ? 'on' : 'off'}`);
+    if (evidenceRow.chargeNow === true) details.push('Charge now on');
+    if (['available', 'unavailable', 'unknown'].includes(evidenceRow.availability)) details.push(`Control evidence ${evidenceRow.availability}`);
+    for (const code of new Set([evidenceRow.errorCode, evidenceRow.reasonCode].filter(Boolean)))
       details.push((row.kind === 'identification' ? IDENTIFICATION_CAUSES : CONTROL_CAUSES)[code] ?? 'Detailed cause unavailable');
-    if (row.handoverConfirmed === true) details.push('Control handover confirmed');
-    if (row.handoverConfirmed === false) details.push('Control handover unconfirmed');
-    if (row.confirmed === false && row.kind === 'control') details.push('No physical confirmation recorded');
+    if (evidenceRow.handoverConfirmed === true) details.push('Control handover confirmed');
+    if (evidenceRow.handoverConfirmed === false) details.push('Control handover unconfirmed');
+    if (evidenceRow.basis === 'installed-execution') details.push('Instruction basis: adopted controller plan');
+    else if (evidenceRow.basis === 'proposed-plan') details.push('Instruction basis: proposed plan');
+    if (evidenceRow.confirmed === false && row.kind === 'control') details.push('No physical confirmation recorded');
     setText(p.evidence, details.join(' · ')); p.evidence.hidden = !details.length; return node;
   }
   function historyItem(node, group, key, timezone) {
@@ -326,11 +354,11 @@ export function createChargingDiagnosticsPanel({ document, onOpenTest = () => {}
       node = make('li'); node.dataset.historyKey = key;
       const stamp = make('time'), label = make('strong'), detail = make('p', '', 'muted');
       const evidence = make('details', '', 'charging-report-entry charging-report-evidence'), summary = make('summary'), raw = make('ol', '', 'charging-report-raw');
-      const body = make('div', '', 'charging-report-entry-body'), evidenceCount = make('p', '', 'muted');
+      const body = make('div', '', 'charging-report-entry-body'), evidenceCount = make('p', '', 'muted'), snapshots = make('ol', '', 'charging-report-snapshots');
       const changes = make('ul', '', 'charging-report-changes'), unchanged = make('small', 'Charging periods unchanged', 'muted');
-      summary.append(stamp, label); body.append(detail, changes, unchanged, evidenceCount, raw);
+      summary.append(stamp, label); body.append(detail, changes, unchanged, snapshots, evidenceCount, raw);
       evidence.dataset.historyKey = key; evidence.append(summary, body); node.append(evidence);
-      parts.set(node, { stamp, label, detail, changes, unchanged, evidenceCount, raw });
+      parts.set(node, { stamp, label, detail, changes, unchanged, evidenceCount, snapshots, raw });
     }
     const p = parts.get(node), rows = group.events, first = rows[0] ?? {}, changeRows = chargingPlanChanges(first.changes, timezone);
     const range = validTime(group.startAt) && validTime(group.endAt) && group.endAt > group.startAt
@@ -345,12 +373,21 @@ export function createChargingDiagnosticsPanel({ document, onOpenTest = () => {}
     } else if (group.type === 'unavailable') {
       label = Number.isFinite(group.recoveredAt) ? 'Charger information temporarily unavailable' : 'Charger information unavailable';
       detail = Number.isFinite(group.recoveredAt) ? 'Evidence became available again.' : 'Recovery has not been observed in these records.';
+    } else if (group.type === 'finding-series' || group.type === 'confirmation-series') {
+      const finding = rows.find(row => row.kind === 'finding') ?? first;
+      label = `${group.type === 'confirmation-series' ? 'Control confirmation changed repeatedly' : FINDINGS[finding.code]?.[0] ?? 'Finding'} · ${group.episodeCount || group.count} ${group.episodeCount ? group.episodeCount === 1 ? 'episode' : 'episodes' : 'control changes'}`;
+      if (first.kind === 'finding-update') label += ' · Evidence changed';
+      const cause = first.context?.errorCode; if (cause) label += ` · ${CONTROL_CAUSES[cause] ?? cause}`;
+      detail = 'Separate recorded occurrences in the loaded events; this does not mean the condition was continuous. Expand for each detection and clearing.' + (group.startsMissing ? ' Episode starts may be in older events.' : '');
+    } else if (group.type === 'repeated-control') { label += ` · ${group.count} occurrences`; detail = 'Equivalent recorded control evidence; individual timestamps are preserved below.';
     } else if (first.code === 'observation-gap') detail = 'Behavior during the missing interval is unverified.';
     else if (Number.isFinite(first.powerKw)) detail = first.powerKw === 0 ? 'No draw measured · 0 kW' : `Measured draw ${number(first.powerKw)} kW`;
     if (first.vehicleId) label += ` · ${vehicleName(first.vehicleId)}`;
     setText(p.label, label); setText(p.detail, detail); p.detail.hidden = !detail;
-    changesInto(p.changes, changeRows); p.changes.hidden = !changeRows.length;
-    p.unchanged.hidden = first.kind !== 'plan' || !changeRows.length || changeRows.some(change => change.field === 'periods');
+    changesInto(p.changes, first.plan ? [] : changeRows); p.changes.hidden = Boolean(first.plan) || !changeRows.length;
+    sync(p.snapshots, rows.filter(row => row.plan), row => row.id ?? row.at, (node, row, key) => planItem(node, row.plan, key, timezone));
+    p.snapshots.hidden = !rows.some(row => row.plan);
+    p.unchanged.hidden = Boolean(first.plan) || first.kind !== 'plan' || !changeRows.length || changeRows.some(change => change.field === 'periods');
     setText(p.evidenceCount, `${rows.length} recorded events`); p.evidenceCount.hidden = rows.length === 1;
     sync(p.raw, rows, (row, index) => `${eventKey(row)}:${index}`, (old, row) => rawEvent(old, row, timezone));
     return node;
@@ -359,11 +396,13 @@ export function createChargingDiagnosticsPanel({ document, onOpenTest = () => {}
     if (!node) {
       node = make('li'); node.dataset.planKey = key;
       const stamp = make('time'), header = make('strong'), changes = make('ul', '', 'charging-report-changes'), unchanged = make('p', 'Charging periods unchanged', 'muted');
-      const detail = make('details', '', 'charging-report-entry charging-report-plan-detail'), summary = make('summary'), body = make('div', '', 'charging-report-entry-body');
+      const detail = make('div', '', 'charging-report-plan-detail'), summary = make('p', '', 'muted'), body = make('div');
+      const clocks = make('p', '', 'muted charging-report-period'), settings = make('p'), state = make('p'), vehicleStart = make('p'), energy = make('p');
+      const rates = make('details', '', 'charging-report-rates'), rateSummary = make('summary', 'Recorded planning electricity rates'), rateRows = make('p', '', 'charging-report-period'); rates.append(rateSummary, rateRows);
       const control = make('p'), vehicle = make('p', '', 'muted'), inputs = make('p'), deadline = make('p', '', 'muted'), periodLabel = make('p', '', 'charging-report-period-label'), periods = make('p', '', 'charging-report-period'), notes = make('p', '', 'muted');
-      summary.append(stamp, header); body.append(changes, unchanged, control, vehicle, inputs, deadline, periodLabel, periods, notes);
+      summary.hidden = true; summary.append(stamp, header); body.append(changes, unchanged, control, state, vehicle, inputs, clocks, settings, deadline, vehicleStart, energy, periodLabel, periods, rates, notes);
       detail.append(summary, body); node.append(detail);
-      parts.set(node, { stamp, header, changes, unchanged, control, vehicle, inputs, deadline, periodLabel, periods, notes });
+      parts.set(node, { stamp, header, changes, unchanged, control, state, vehicle, inputs, clocks, settings, deadline, vehicleStart, energy, periodLabel, periods, rates, rateRows, notes });
     }
     const p = parts.get(node), view = chargingPlanPresentation(plan, timezone);
     setText(p.stamp, `${time(plan.at, timezone)} · `); p.stamp.dateTime = validTime(plan.at) ? new Date(plan.at).toISOString() : '';
@@ -371,75 +410,181 @@ export function createChargingDiagnosticsPanel({ document, onOpenTest = () => {}
     changesInto(p.changes, view.changes); p.unchanged.hidden = !view.periodsUnchanged;
     for (const key of ['control', 'vehicle', 'inputs', 'deadline', 'periodLabel', 'periods']) setText(p[key], view[key]);
     p.periods.hidden = plan.scheduleState === 'none';
-    const notes = [plan.provisional === true ? 'Provisional release with incomplete planning inputs.' : '', plan.feasible === false ? 'The forecast could not meet the requested target by ready-by.' : '',
-      plan.priceCoverageTruncated === true ? 'The stored electricity-rate horizon is bounded.' : ''].filter(Boolean).join(' ');
+    setText(p.state, `Planner state: ${STATE_LABELS[plan.state] ?? 'Unknown'} · Planning inputs ${plan.inputStatus ?? 'unknown'}`);
+    setText(p.clocks, [['soc', 'Charge input'], ['target', 'Target'], ['capacity', 'Capacity']].map(([key, label]) => {
+      const input = plan.inputs?.[key];
+      return `${label}: measured ${time(input?.measuredAt, timezone, true)} · received ${time(input?.receivedAt, timezone, true)}`;
+    }).join('\n'));
+    setText(p.settings, `Session settings: ready by ${plan.settings?.readyBy ?? 'Unknown'} · starting charge ${percent(plan.settings?.manualSoc)} · target ${percent(plan.settings?.minimumSoc)} · capacity ${Number.isFinite(plan.settings?.capacityKwh) ? `${number(plan.settings.capacityKwh)} kWh` : 'Unknown'}`);
+    setText(p.vehicleStart, plan.nativeStartKnown === true ? Number.isFinite(plan.nativeStartAt) ? `Reported vehicle start constraint: ${time(plan.nativeStartAt, timezone)}` : 'Vehicle reports no start constraint.' : 'Vehicle start constraint unknown.');
+    setText(p.energy, `Required grid energy estimate: ${Number.isFinite(plan.requiredGridKwh) ? `${number(plan.requiredGridKwh)} kWh` : 'Unavailable'}`);
+    setText(p.rateRows, Array.isArray(plan.priceIntervals) ? priceText(plan.priceIntervals, timezone) : 'Planning electricity rates unavailable.');
+    const notes = [plan.provisional === true ? 'Provisional release with incomplete planning inputs.' : '', plan.feasible === false ? 'The forecast could not meet the requested target by ready-by.' : ''].filter(Boolean).join(' ');
     setText(p.notes, notes); p.notes.hidden = !notes; return node;
   }
   function render() {
+    const scroll = dialog.scrollTop;
     const all = reports();
     if (selectedReport === null && all.length) selectedReport = all[0].id;
-    const report = all.find(row => row.id === selectedReport), timezone = status?.charging?.timezone ?? 'Europe/Helsinki';
+    const report = missing ? null : remoteReport?.id === selectedReport ? remoteReport : all.find(row => row.id === selectedReport);
+    const timezone = status?.charging?.timezone ?? 'Europe/Helsinki';
     setText(title, `${chargerLabel()} · Session report`);
-    const choices = all.map(row => ({ id: row.id, label: `${time(row.startedAt, timezone)} · ${row.endedAt === null ? row.recorded ? 'Connected at snapshot' : 'Connected' : 'Ended'}${row.vehicleId ? ` · ${vehicleName(row.vehicleId)}` : ''}` }));
-    if (selectedReport !== null && !report) choices.unshift({ id: selectedReport, label: 'Selected report is no longer retained' });
-    sync(selector, choices, row => row.id, (node, row) => { node ??= make('option'); node.value = row.id; setText(node, row.label); return node; });
-    selector.value = selectedReport ?? ''; selector.disabled = !all.length; selectorLabel.hidden = !choices.length;
+    const choices = all.map(row => ({ id: row.id, label: `${time(row.startedAt, timezone)} · ${row.endedAt === null ? row.recorded ? 'Connected at snapshot' : 'Connected' : 'Ended'}${row.vehicleId ? ` · ${vehicleName(row.vehicleId)}` : ''}${row.saved ? ' · Saved' : ''}` }));
+    if (selectedReport !== null && !choices.some(row => row.id === selectedReport)) choices.unshift({ id: selectedReport, label: missing ? 'Selected report is no longer retained' : collection.value === 'saved' && report?.saved === false ? 'Selected report · no longer saved' : 'Selected session' });
+    sync(selector, choices, row => row.id, (node, row) => { node ??= make('option'); node.value = row.id; setText(node, missing && row.id === selectedReport ? 'Selected report is no longer retained' : row.label); return node; });
+    selector.value = selectedReport ?? ''; selector.disabled = !choices.length || mutating; selectorLabel.hidden = !choices.length;
+    moreReports.hidden = !reportsBefore; moreReports.disabled = loadingList; collection.disabled = loadingList || mutating;
     const summary = chargingReportSummary(report, status?.charging?.diagnostics?.available !== false);
-    if (!report && selectedReport !== null && status?.charging?.diagnostics?.available !== false) { summary.outcome = 'This session report is no longer retained'; summary.behavior = 'Select another recorded session for this charger.'; }
+    if (!report && selectedReport !== null && status?.charging?.diagnostics?.available !== false) { summary.outcome = missing ? 'This session report is no longer retained' : 'Loading session report'; summary.behavior = missing ? 'Select another recorded session for this charger.' : 'Fetching the selected report.'; }
     else if (!report && status?.charging?.diagnostics?.available !== false) { summary.outcome = `No session report for ${chargerLabel()}`; summary.behavior = 'A report begins when a connection is observed.'; }
     setText(outcome, summary.outcome); setText(behavior, summary.behavior); result.dataset.state = summary.state;
-    setText(context, report ? `${report.recorded ? 'Recorded master report · ' : ''}${report.vehicleId ? vehicleName(report.vehicleId) : 'Vehicle unconfirmed'} · ${report.endedAt === null ? report.recorded ? 'Connected at snapshot' : 'Connected' : `Ended ${time(report.endedAt, timezone)}`} · Last assessed ${time(report.evaluatedAt, timezone)}`
-      : 'This charger retains its current report and four completed sessions.');
+    setText(context, report ? `${report.recorded ? 'Recorded master report · ' : ''}${report.previousEquipment ? 'Previous charger equipment · ' : ''}${report.vehicleId ? vehicleName(report.vehicleId) : 'Vehicle unconfirmed'} · ${report.endedAt === null ? report.recorded ? 'Connected at snapshot' : 'Connected' : `Ended ${time(report.endedAt, timezone)}`} · Last assessed ${time(report.evaluatedAt, timezone)}` : '');
     const run = status?.charging?.physicalTests?.runs?.find(row => row.chargerId === selectedCharger && report && row.report?.id === report.id);
     guided.hidden = !run; guidedVehicle = run?.vehicleId ?? null; guidedRunId = run?.id ?? null;
     setText(guidedNote, run ? `${run.program === 'vehicle-schedule' ? 'Vehicle schedule test' : 'Immediate charging test'} · ${run.phase.replaceAll('-', ' ')}` : '');
     const scope = `${selectedCharger}:${selectedReport}`;
-    if (renderedScope !== scope) { timelineDetails.open = false; plansDetails.open = false; routineDetails.open = false; dialog.scrollTop = 0; renderedScope = scope; }
+    if (renderedScope !== scope) { dialog.scrollTop = 0; renderedScope = scope; } else dialog.scrollTop = scroll;
     const factRows = chargingReportFacts(report, timezone).flatMap(([label, value]) => [{ key: `${label}:label`, tag: 'dt', text: label }, { key: `${label}:value`, tag: 'dd', text: value }]);
     sync(facts, factRows, row => row.key, (node, row) => { node ??= make(row.tag); setText(node, row.text); return node; }); facts.hidden = !report;
-    sync(findings, report?.findings ?? [], row => `${row.code}:${row.firstAt}`, (node, row) => {
-      if (!node) {
-        node = make('li'); const entry = make('details', '', 'charging-report-entry'), summary = make('summary'), body = make('div', '', 'charging-report-entry-body');
-        const stamp = make('time'), label = make('strong'), detail = make('p'), when = make('small', '', 'muted');
-        summary.append(stamp, label); body.append(detail, when); entry.append(summary, body); node.append(entry); parts.set(node, { stamp, label, detail, when });
-      }
-      const p = parts.get(node), [label, detail] = FINDINGS[row.code] ?? ['Observation', 'See the timeline for this event.'];
-      node.dataset.state = row.resolvedAt !== null ? 'recovered' : row.severity;
-      setText(p.stamp, `${time(row.firstAt, timezone)} · `); p.stamp.dateTime = validTime(row.firstAt) ? new Date(row.firstAt).toISOString() : '';
-      setText(p.label, `${label}${row.resolvedAt !== null ? row.resolution === 'request-changed' ? ' · request changed' : ' · recovered' : ''}`); setText(p.detail, detail);
-      setText(p.when, `${time(row.firstAt, timezone)}${row.resolvedAt !== null ? ` · ${row.resolution === 'request-changed' ? 'Request changed' : 'Recovered'} ${time(row.resolvedAt, timezone)}` : report.endedAt !== null ? ' · Unresolved when the session ended' : ' · Current'}`); return node;
-    }); findings.hidden = !report?.findings?.length;
+    const findingCounts = chargingFindingCounts(report);
+    currentFindings.hidden = !findingCounts.issues;
+    setText(currentFindings, `${findingCounts.active} unresolved ${findingCounts.active === 1 ? 'finding' : 'findings'} · ${findingCounts.issues} ${findingCounts.issues === 1 ? 'issue' : 'issues'}, ${findingCounts.episodes} recorded ${findingCounts.episodes === 1 ? 'episode' : 'episodes'} · View findings`);
     sync(coverage, Object.entries(COVERAGE).flatMap(([key, label]) => {
       const check = report?.coverage?.[key]; return [{ key: `${key}:label`, tag: 'dt', text: label }, { key: `${key}:value`, tag: 'dd', text: check?.state === 'verified' ? 'Observed' : check?.state === 'insufficient-evidence' ? 'Insufficient evidence' : 'Not exercised', state: check?.state ?? 'not-exercised' }];
     }), row => row.key, (node, row) => { node ??= make(row.tag); setText(node, row.text); if (row.state) node.dataset.state = row.state; return node; });
     coverageTitle.hidden = coverage.hidden = !report;
-    const history = projectChargingReportHistory(report ?? {}, { order: 'newest-first' });
+    const history = projectChargingReportHistory({ events }, { filter: filter.value });
     sync(timeline, history.timeline, row => row.id, (node, row, key) => historyItem(node, row, key, timezone));
-    const planRows = history.plans.length ? history.plans : report ? [{ empty: true }] : [];
-    sync(plans, planRows, row => row.empty ? 'empty' : `plan:${row.at}`, (node, row, key) => {
-      if (row.empty) { node ??= make('li'); setText(node, report.current?.scheduleState === 'none' ? 'No controller charging schedule was recorded.' : 'No meaningful planning changes recorded.'); return node; }
-      return planItem(node, row, key, timezone);
-    });
-    routineDetails.hidden = !history.hiddenPlans.length;
-    setText(routineSummary, `${history.hiddenPlans.length} routine planning ${history.hiddenPlans.length === 1 ? 'record' : 'records'}`);
-    sync(routinePlans, history.hiddenPlans, row => `routine:${row.at}`, (node, row, key) => planItem(node, row, key, timezone));
-    timelineDetails.hidden = plansDetails.hidden = !report;
-    const dropped = report ? Object.values(report.truncated ?? {}).reduce((total, count) => total + count, 0) : 0;
-    setText(limits, report ? `Draw checks require measured power above 0.1 kW. Power may supply vehicle auxiliaries; it does not prove battery charging. Unobserved intervals remain unverified.${dropped ? ` ${dropped} older detail entries were omitted by bounded retention.` : ''}` : '');
+    timelineDetails.hidden = !report;
+    setText(eventScope, loadingEvents && !events.length ? 'Loading events…' : !events.length ? 'No events of this type recorded.'
+      : `${events.length} ${newEventsPending ? 'previously loaded ' : eventsBefore ? 'latest ' : ''}recorded events loaded · ${history.timeline.length} displayed ${history.timeline.length === 1 ? 'entry' : 'entries'}${filter.value === 'findings' ? ' · Episode groups describe the loaded history' : ''}`);
+    refreshEvents.hidden = !newEventsPending;
+    moreEvents.hidden = !eventsBefore; moreEvents.disabled = loadingEvents; filter.disabled = !report || mutating;
+    const days = report?.retention?.days ?? status?.charging?.diagnostics?.retention?.days ?? 30;
+    const expiresAt = report?.endedAt === null ? null : report?.endedAt + days * 86_400_000;
+    setText(retention, !report ? '' : report.saved ? 'Saved permanently in this database. Saving protects this report and its future events from automatic expiry.'
+      : report.endedAt === null ? `Active reports are retained. Completed reports expire after ${days} days unless saved.` : `Automatically expires ${time(expiresAt, timezone)} unless saved.`);
+    actions.hidden = !report; save.disabled = remove.disabled = !canManage() || mutating;
+    remove.disabled ||= report?.endedAt === null; remove.title = report?.endedAt === null ? 'Active reports cannot be deleted' : '';
+    setText(save, report?.saved ? 'Remove from saved' : 'Save report');
+    const receipt = receipts.get(scope);
+    const feedback = receipt && Date.now() - receipt.at < 86_400_000 ? receipt.text : '';
+    message.dataset.state = feedback && !receipt.failed ? 'saved' : 'error';
+    setText(message, [feedback, error].filter(Boolean).join(' ') || (!canManage() && report ? 'View only · report management is unavailable here.' : ''));
+    message.hidden = !message.textContent;
+    setText(limits, report ? 'Draw checks require measured power above 0.1 kW. Power may supply vehicle auxiliaries; it does not prove battery charging. Unobserved intervals remain unverified. Events stay with retained reports; loading fewer events does not discard them.' : '');
+  }
+  const isMissing = failure => failure?.status === 404 || failure?.statusCode === 404 || /not found|no longer retained/i.test(failure?.message ?? '');
+  function invalidateSelection() {
+    newEventsPending = false; selectionEpoch++; detailSequence++; eventsSequence++; loadingDetail = false; remoteReport = null; events = []; eventsBefore = null; loaded = false; missing = false;
+    loadingEvents = false; pendingAction = null; confirmation.hidden = true; error = ''; refreshToken = null;
+  }
+  async function loadReports(append = false) {
+    if (typeof request !== 'function') return;
+    const ticket = ++listSequence, charger = selectedCharger, view = collection.value;
+    loadingList = true; render();
+    try {
+      const response = await request(`/api/charging/reports?${query({ savedOnly: view === 'saved', before: append ? reportsBefore : null, limit: 20 })}`);
+      if (ticket !== listSequence || charger !== selectedCharger || view !== collection.value) return;
+      apiReadOnly = response.readOnly === true;
+      remoteReports = [...new Map([...(append ? remoteReports : []), ...response.reports].map(row => [row.id, row])).values()];
+      reportsBefore = response.nextBefore; loadingList = false; render();
+      if (!loaded && selectedReport) await loadDetail();
+    } catch (failure) { if (ticket === listSequence) { loadingList = false; error = failure.message; render(); } }
+  }
+  async function loadEvents(append = false, refresh = false) {
+    if (typeof request !== 'function' || !selectedReport || missing) return;
+    const ticket = ++eventsSequence, scope = `${selectedCharger}:${selectedReport}:${filter.value}`;
+    loadingEvents = true; render();
+    try {
+      const path = `/api/charging/reports/${encodeURIComponent(selectedReport)}/events`;
+      const response = await request(`${path}?${query({ filter: filter.value, before: append ? eventsBefore : null, limit: 50 })}`);
+      if (ticket !== eventsSequence || scope !== `${selectedCharger}:${selectedReport}:${filter.value}`) return;
+      if (refresh && events.length) {
+        if (events.length >= 1000 && response.events[0]?.id > events[0].id) { newEventsPending = true; loadingEvents = false; render(); return; }
+        let pages = 1;
+        const newestLoaded = events[0].id; let cursor = response.nextBefore;
+        while (cursor && response.events.length && response.events.at(-1).id > newestLoaded) {
+          if (ticket !== eventsSequence || scope !== `${selectedCharger}:${selectedReport}:${filter.value}`) return;
+          if (pages >= 5) { newEventsPending = true; loadingEvents = false; render(); return; }
+          pages++;
+          const page = await request(`${path}?${query({ filter: filter.value, before: cursor, limit: 50 })}`);
+          response.events.push(...page.events); cursor = page.nextBefore;
+        }
+      }
+      if (ticket !== eventsSequence || scope !== `${selectedCharger}:${selectedReport}:${filter.value}`) return;
+      apiReadOnly = response.readOnly === true;
+      const existing = append || refresh ? events : [];
+      events = [...new Map([...existing, ...response.events].map(row => [row.id, row])).values()].sort((a, b) => b.id - a.id);
+      if (!refresh || !loaded) eventsBefore = response.nextBefore;
+      loaded = true; loadingEvents = false; error = ''; render();
+    } catch (failure) { if (ticket === eventsSequence) { loadingEvents = false; if (isMissing(failure)) { missing = true; remoteReport = null; events = []; } error = failure.message; render(); } }
+  }
+  async function loadDetail({ refresh = false } = {}) {
+    if (typeof request !== 'function' || !selectedReport) return;
+    const ticket = ++detailSequence, scope = `${selectedCharger}:${selectedReport}`; loadingDetail = true;
+    try {
+      const response = await request(reportPath(''));
+      if (ticket !== detailSequence || scope !== `${selectedCharger}:${selectedReport}`) return;
+      loadingDetail = false; remoteReport = response; apiReadOnly = response.readOnly === true; missing = false;
+      render(); if (!newEventsPending) await loadEvents(false, refresh);
+    } catch (failure) { if (ticket === detailSequence) { loadingDetail = false; if (isMissing(failure)) { missing = true; remoteReport = null; events = []; } error = failure.message; render(); } }
+  }
+  async function mutate(action) {
+    if (!canManage() || mutating || !selectedReport) return;
+    const report = remoteReport ?? reports().find(row => row.id === selectedReport);
+    if (!report || action === 'delete' && report.endedAt === null) return;
+    const epoch = selectionEpoch, scope = `${selectedCharger}:${selectedReport}`, path = reportPath(action === 'delete' ? '/delete' : '/save');
+    listSequence++; detailSequence++; eventsSequence++; loadingList = loadingDetail = loadingEvents = false;
+    mutating = true; confirmation.hidden = true; pendingAction = null; error = ''; render();
+    try {
+      const response = await request(path, action === 'delete' ? {} : { saved: action === 'save' });
+      if (epoch !== selectionEpoch || scope !== `${selectedCharger}:${selectedReport}`) return;
+      if (response.deleted) { missing = true; remoteReport = null; events = []; remoteReports = remoteReports.filter(row => row.id !== selectedReport); }
+      else { remoteReport = response; remoteReports = remoteReports.map(row => row.id === response.id ? response : row).filter(row => collection.value !== 'saved' || row.saved); }
+      receipts.set(scope, { at: Date.now(), text: response.deleted ? 'Session report and its events deleted.' : action === 'save' ? 'Report saved permanently in this database, including future events for this session.' : 'Report removed from saved. Ordinary retention applies.', failed: false });
+      await afterMutation();
+    } catch (failure) { if (epoch === selectionEpoch && scope === `${selectedCharger}:${selectedReport}`) receipts.set(scope, { at: Date.now(), text: failure.message, failed: true }); }
+    finally {
+      mutating = false; render();
+      if (epoch === selectionEpoch && dialog.open && !missing && !loaded) void loadDetail();
+    }
+  }
+  function ask(action, text) {
+    pendingAction = action; setText(confirmationText, text); setText(confirm, action === 'delete' ? 'Delete report' : 'Remove from saved');
+    confirmation.hidden = false; confirm.focus();
   }
   function close() { if (dialog.open) dialog.close(); }
   function open(chargerId, reportId = null) {
     if (!['charger1', 'charger2'].includes(chargerId)) return;
     selectedCharger = chargerId; selectedReport = reportId; renderedScope = null;
+    invalidateSelection(); listSequence++; remoteReports = []; reportsBefore = null; collection.value = 'recent'; filter.value = 'all';
     opener = buttons.get(chargerId) ?? document.activeElement;
     render(); if (!dialog.open) dialog.showModal();
     for (const [id, button] of buttons) button.setAttribute('aria-expanded', String(id === chargerId));
     closeButton.focus();
+    void loadReports();
   }
   closeButton.addEventListener('click', close);
   guidedButton.addEventListener('click', () => { switchingDialog = true; close(); onOpenTest(guidedVehicle, guidedRunId); });
-  selector.addEventListener('change', () => { selectedReport = selector.value; render(); });
+  selector.addEventListener('change', () => { selectedReport = selector.value; invalidateSelection(); render(); void loadDetail(); });
+  collection.addEventListener('change', () => { selectedReport = null; remoteReports = []; invalidateSelection(); render(); void loadReports(); });
+  filter.addEventListener('change', () => { eventsSequence++; events = []; eventsBefore = null; loaded = false; newEventsPending = false; void loadEvents(); });
+  currentFindings.addEventListener('click', () => { filter.value = 'findings'; events = []; eventsBefore = null; loaded = false; newEventsPending = false; void loadEvents(); filter.focus(); });
+  moreReports.addEventListener('click', () => { void loadReports(true); });
+  refreshEvents.addEventListener('click', () => { eventsSequence++; events = []; eventsBefore = null; loaded = false; newEventsPending = false; void loadEvents(); });
+  moreEvents.addEventListener('click', () => { void loadEvents(true); });
+  save.addEventListener('click', () => {
+    const report = remoteReport ?? reports().find(row => row.id === selectedReport); if (!report || !canManage()) return;
+    const expires = report.endedAt !== null && report.endedAt + (report.retention?.days ?? status?.charging?.diagnostics?.retention?.days ?? 30) * 86_400_000 <= (status?.now ?? Date.now());
+    if (report.saved && expires) ask('unsave', 'This report is past the retention period. Removing it from saved will delete it and its events immediately.');
+    else void mutate(report.saved ? 'unsave' : 'save');
+  });
+  remove.addEventListener('click', () => { if (!canManage() || (remoteReport ?? reports().find(row => row.id === selectedReport))?.endedAt === null) return; ask('delete', 'Delete this completed session report and all its events permanently? Energy history is kept.'); });
+  confirm.addEventListener('click', () => { if (pendingAction) void mutate(pendingAction); });
+  cancel.addEventListener('click', () => { confirmation.hidden = true; pendingAction = null; save.focus(); });
   dialog.addEventListener('close', () => {
+    selectionEpoch++; listSequence++; detailSequence++; eventsSequence++; loadingList = loadingEvents = loadingDetail = false;
     for (const button of buttons.values()) button.setAttribute('aria-expanded', 'false');
     if (switchingDialog) { switchingDialog = false; return; }
     if (!document.querySelector('dialog[open]') && opener?.isConnected && !opener.disabled) opener.focus({ preventScroll: true });
@@ -461,6 +606,11 @@ export function createChargingDiagnosticsPanel({ document, onOpenTest = () => {}
       setText(button, summary.label === 'Session report' ? 'Session report' : `Report · ${summary.label}`);
       button.dataset.state = summary.state; button.setAttribute('aria-label', `${charger.label ?? charger.id} session report · ${summary.label}`);
     }
-    if (dialog.open) render();
+    if (dialog.open) {
+      render();
+      const summary = [slot()?.current, ...(slot()?.recent ?? [])].find(row => row?.id === selectedReport);
+      const token = JSON.stringify([status.now, summary ?? null, slot()?.recent?.map(row => row.id)]);
+      if (!mutating && token !== refreshToken && !loadingEvents && !loadingDetail) { refreshToken = token; void loadDetail({ refresh: loaded }); }
+    }
   } };
 }
