@@ -9,7 +9,7 @@ import { start } from '../src/main.js';
 import { loadConfig } from '../src/app/config.js';
 import { CHART_VIEWS } from '../src/domain/chart-views.js';
 import { EXPLORER_SERIES } from '../chart/series-explorer.js';
-import { seedChartFixture } from './lib/chart-fixture.js';
+import { CHART_FIXTURE_VOLTAGE_V, seedChartFixture } from './lib/chart-fixture.js';
 import { addFireplace } from '../src/app/fireplace.js';
 
 const directory = mkdtempSync(join(tmpdir(), 'stmq-chart-views-browser-'));
@@ -67,7 +67,8 @@ try {
     for (const prefix of ['ev1', 'ev2']) for (let index = 0; index < 12; index++) {
       const start = now - (90 - index * 5) * 60_000, end = start + 5 * 60_000;
       for (let phase = 1; phase <= 3; phase++) app.store.observation({
-        signal: `${prefix}_energy_l${phase}`, value: (prefix === 'ev1' ? 5 + phase : 2 + phase) * .23 / 12,
+        signal: `${prefix}_energy_l${phase}`, value: (prefix === 'ev1' ? 5 + phase : 2 + phase)
+          * CHART_FIXTURE_VOLTAGE_V[phase - 1] / 1000 / 12,
         unit: 'kWh', source: 'simulation', device: `invented-chart-${prefix}`, sourceTime: end, receivedAt: end,
         quality: ['estimated', 'simulated', 'phase_allocation_estimated'],
         raw: { intervalStart: start, intervalEnd: end, durationMs: end - start, basis: 'integrated-power-phase-allocation' },
@@ -585,6 +586,22 @@ try {
   await until("document.getElementById('history')?.dataset.ready === 'true'");
   assert.equal(await evaluate("document.getElementById('history').dataset.view"), 'power');
   assert.equal(await interpolationEnabled(), true, 'Interpolation starts on, preserving the existing chart rendering');
+  for (const [index, expectedVoltage] of CHART_FIXTURE_VOLTAGE_V.entries()) {
+    const key = `voltage_estimate_l${index + 1}`;
+    await choose('series', key);
+    await evaluate("document.querySelector('.history-panel').scrollIntoView({block:'start'}); true"); await settle();
+    assert.match(await evaluate("document.getElementById('chart-legend').textContent"), /Supply L[123] voltage estimate/);
+    const paths = await drawnPaths(key);
+    const first = paths.flatMap(path => path.path).find(command => command.method === 'moveTo');
+    assert(first, `${key}: the established database estimate has a painted trace`);
+    const point = await evaluate(`(() => { const r=document.getElementById('history').getBoundingClientRect();
+      return {x:r.left+${first.args[0]}+2,y:r.top+${first.args[1]}+1}; })()`);
+    await send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...point }); await settle();
+    const tooltip = await evaluate("window.chartLabels.join(' ')");
+    assert.match(tooltip, new RegExp(`Supply L${index + 1} voltage estimate.*${expectedVoltage}`));
+    assert.match(tooltip, /saved smoothed voltage estimate; not a live measurement/);
+  }
+  await choose('view', 'power');
   const checkDateRange = async (start, end = start) => until(`document.getElementById('history').dataset.ready === 'true'
     && document.getElementById('history').dataset.rangeStart === ${JSON.stringify(start)}
     && document.getElementById('history').dataset.rangeEnd === ${JSON.stringify(end)}`);

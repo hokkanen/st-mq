@@ -5,6 +5,7 @@ import { temperatureReportMaxAge } from '../domain/temperature-reports.js';
 import { isRecordedDataset } from './recorded-datasets.js';
 import { validEnergyQuality } from './energy-history.js';
 import { recordingPolicy, recordingStreamKey as keyOf } from '../domain/recording-policy.js';
+import { VOLTAGE_RECORDING_FLOOR_V, VOLTAGE_SIGNALS } from './voltage.js';
 
 const MINUTE = 60_000, HOUR = 60 * MINUTE, DAY = 24 * HOUR, YEAR = 365.25 * DAY;
 export const RECORDING_VERSION = 'recording-contract-v2';
@@ -23,6 +24,8 @@ const hostContactReport = o => o.unit === 'state' && o.sourceTime === o.received
   && (o.source === 'floor-override' && o.raw?.timeBasis === 'request-readback'
     || o.source === 'mqtt-equipment' && o.signal === 'dhwr_active' && o.raw?.timeBasis === 'mqtt-received');
 const numericalFloor = (a,b) => Math.max(1,Math.abs(a??0),Math.abs(b??0))*Number.EPSILON*32;
+const voltageEstimate = o => o.source === 'voltage-estimate' && VOLTAGE_SIGNALS.includes(o.signal) && o.unit === 'V';
+const valueFloor = o => voltageEstimate(o) ? VOLTAGE_RECORDING_FLOOR_V : 0;
 // This is a history-selection floor, never a power/energy clamp. Every accepted
 // Wh remains in the durable interval, including a charger's real standby load.
 const CHARGER_POWER_FLOOR_KW = 0.010;
@@ -48,12 +51,14 @@ function sameEnergyQuality(a,b,{ zeroA = false,zeroB = false } = {}) {
   return same(left,right);
 }
 const semanticQuality = raw => Object.fromEntries(['usableForControl','verified','retained','cached','installationVerified',
-  'verification','diagnosticAvailable','accuracyVerified','contractVersion','supported','timeBasis','publicationMayUseGatewayCache','basis','reportIntervalMs','reportGraceMs','eventOnly','temperatureRouteSignature'].filter(key=>raw?.[key]!==undefined).map(key=>[key,raw[key]]));
+  'verification','diagnosticAvailable','accuracyVerified','contractVersion','supported','timeBasis','publicationMayUseGatewayCache','basis','reportIntervalMs','reportGraceMs','eventOnly','temperatureRouteSignature',
+  'voltageSource','voltageMature','voltageAvailability'].filter(key=>raw?.[key]!==undefined).map(key=>[key,raw[key]]));
 // Source validity is independent of the recording budget.
 // Increasing storage compression must never make old measurements fresher.
 // Room and garage readings remain the last reported measurement until replaced.
 // Their source clock still controls ordering, recording and measurement lineage.
-const sourceAge = o => o.source === 'mqtt-equipment' && o.unit === 'state' && (o.eventOnly || o.raw?.eventOnly) ? Infinity
+const sourceAge = o => voltageEstimate(o) ? Infinity
+  : o.source === 'mqtt-equipment' && o.unit === 'state' && (o.eventOnly || o.raw?.eventOnly) ? Infinity
   : temperatureReportMaxAge(o) ?? (HELD_TEMPERATURE_SIGNALS.includes(o.signal) ? Infinity : o.source === 'husdata-h66' ? H66_MAX_AGE_MS
   : /temperature$/.test(o.signal) ? OUTDOOR_MAX_AGE_MS : o.signal === 'solar_radiation' ? 6 * HOUR : 5 * MINUTE);
 
@@ -367,7 +372,7 @@ export class Recorder {
       const transition = s.last && (status !== s.status || !same(o.quality,s.last.quality)
         || o.unit!==s.unit || !same(semanticQuality(o.raw),s.last.semanticQuality??{}));
       const crossingZero = /pump_speed$/.test(o.signal) && s.last && (o.value === 0) !== (s.last.value === 0);
-      const threshold = Math.max(s.scale * g.tolerance,numericalFloor(o.value,s.last?.value));
+      const threshold = Math.max(valueFloor(o),s.scale * g.tolerance,numericalFloor(o.value,s.last?.value));
       let reason = !s.last ? 'initial' : transition ? 'quality-or-availability' : force ? 'forced'
         : freshUpdate && (crossingZero || exact && changed) ? 'state-change'
         : freshUpdate && changed && Math.abs(o.value - s.last.value) > threshold ? 'learned-change' : null;
@@ -674,7 +679,7 @@ export class Recorder {
         policy:policy.id,openInterval:openEnergy.get(s.key) ?? null,
         lastSourceTime:s.lastSourceTime,lastPollAt:s.lastPollAt,scale:s.scale,
         freshness:recordingFreshness(s,s.coverageId ? latestCoverage.get(s.coverageId) : null,now),
-        threshold:exact ? null : Math.max(powerFloor,s.scale*g.tolerance),thresholdUnit:grouped || totalEnergy ? 'kW' : s.unit,
+        threshold:exact ? null : Math.max(powerFloor,valueFloor(s),s.scale*g.tolerance),thresholdUnit:grouped || totalEnergy ? 'kW' : s.unit,
         optimizedQuantity:grouped ? 'phase-power' : totalEnergy ? 'total-power' : 'value',grouped,...stats};
     }).sort((a,b)=>a.signal.localeCompare(b.signal));
     return {version:VERSION,...this.config,historyRevision:JSON.stringify({...revision,energy:g.energyRevision ?? 0}),temperatureReportRevision,sourceReportRevision,normalizedTolerance:g.tolerance,measuredDatabaseBytes:this.store.databaseBytes(),
@@ -699,7 +704,8 @@ function compactRaw(raw, observation) {
     'diagnosticAvailable','accuracyVerified','contractVersion','supported',
     'basis','energyBasis','source','issuedAt','fetchedAt','snapshotId','provenance','intervalStart','intervalEnd','durationMs',
     'modelVersion','controllerPhase','estimated','forecast','reportIntervalMs','reportGraceMs','eventOnly','maxAgeMs',
-    'reportPolicyChangedAt','originalReportReceivedAt','originalReportSourceTime','originalReportTimeBasis','transportRecoveredAt','temperatureRouteSignature'];
+    'reportPolicyChangedAt','originalReportReceivedAt','originalReportSourceTime','originalReportTimeBasis','transportRecoveredAt','temperatureRouteSignature',
+    'voltageSource','voltageMature','voltageAvailability','voltageEstimate'];
   const result = Object.fromEntries(allowed.filter(key=>raw[key] !== undefined).map(key=>[key,raw[key]]));
   // Caravan appliance history stores one power/fan state. Keep its physical
   // identity and evidence clocks without retaining sensor or setting values.

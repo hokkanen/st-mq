@@ -22,6 +22,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
   state = copy(state);
   let connected = false, admitted = false, online = false, closed = false, generation = 0, discovered = false, controlReady = false;
   let error = null, info = null, service = null, serviceStatus = null, nativeSchedules = null, serviceAt = null, currentConfig = null, polling = null, buffer = [], componentRoles = new Map(), pendingEvents = [];
+  engine.voltage?.interrupt?.({ source: 'shelly-evse', devices: [association], now: clock() });
   const source = `stmq-evse-${randomUUID()}`, pending = new Map();
   let subscriptionStatus = 'disconnected', lastLiveAt = null;
   const topics = [
@@ -116,6 +117,10 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
           }
         }
         if (role === 'phase_info' && !retained) {
+          for (let phase = 0; phase < 3; phase++) engine.voltage?.ingest({ source: 'shelly-evse', device: association,
+            signal: `ev2_voltage_l${phase + 1}`, value: value[PHASE_KEYS[config.phaseMap[phase]]].voltage,
+            unit: 'V', sourceTime: measuredAt, receivedAt, quality: [],
+            raw: { acquisitionOnly: true, voltageMapping: 'phase-neutral' } });
           const before = state.counter, total = value.total_act_energy;
           const phasePowers = config.phaseMap.map(index => value[PHASE_KEYS[index]].power / 1000);
           const check = state.checkSession;
@@ -166,7 +171,10 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     if (topic === `${config.topicPrefix}/online`) {
       if (!admission.admit(topic, payload, packet, clock())) return;
       if (!packet.retain && ['true', 'false'].includes(payload.toString())) lastLiveAt = receivedAt;
-      online = payload.toString() === 'true'; if (!online) { discovered = controlReady = false; rejectPending('evse-offline'); } return;
+      online = payload.toString() === 'true'; if (!online) {
+        discovered = controlReady = false; rejectPending('evse-offline');
+        engine.voltage?.interrupt?.({ source: 'shelly-evse', devices: [association], now: receivedAt });
+      } return;
     }
     let frame; try { frame = JSON.parse(payload); } catch { return; }
     if (frame.src !== config.deviceId) return;
@@ -260,7 +268,10 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       void refresh();
     });
   }
-  function disconnect() { connected = admitted = online = discovered = controlReady = false; subscriptionStatus = 'disconnected'; generation++; buffer = []; rejectPending('evse-offline'); }
+  function disconnect() {
+    connected = admitted = online = discovered = controlReady = false; subscriptionStatus = 'disconnected'; generation++; buffer = []; rejectPending('evse-offline');
+    if (!closed) engine.voltage?.interrupt?.({ source: 'shelly-evse', devices: [association], now: clock() });
+  }
   client.on('connect', connect); client.on('message', receive); client.on('offline', disconnect); client.on('close', disconnect);
   const timer = setInterval(() => { void refresh().then(() => engine.charging?.tick({ force: true })); }, 5000); timer.unref?.();
   const settingFresh = role => {
@@ -324,6 +335,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
         currentA: signal(state.fields.current_limit?.value, 'current_limit'), maximumCurrentA: { value: config.maximumCurrentA, available: ready(), source: 'verified-hardware' },
         actualCurrentA: signal(phases ? Math.max(...['phase_a', 'phase_b', 'phase_c'].map(key => phases[key].current)) : null, 'phase_info'),
         voltageV: signal(phases ? Math.min(...['phase_a', 'phase_b', 'phase_c'].map(key => phases[key].voltage)) : null, 'phase_info'),
+        phaseVoltageV: signal(phases ? config.phaseMap.map(index => phases[PHASE_KEYS[index]].voltage) : null, 'phase_info'),
         powerKw: signal(phases ? phases.total_power / 1000 : null, 'phase_info'),
         phaseMeasurements: phases ?? null, commissioning: snapshot().commissioning };
     },

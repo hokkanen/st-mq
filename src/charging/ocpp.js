@@ -130,6 +130,9 @@ export function createOcppScheduleAdapter({ request, readSnapshot, isCurrent = (
       const ceilings = [limits.chargerA, limits.cableA, ...(limits.circuitA ?? [])].filter(value => Number.isFinite(value) && value > 0);
       const allowance = limits.equalizerAvailableA;
       const complete = values => Array.isArray(values) && values.length === 3 && values.every(Number.isFinite);
+      const voltageTimes = supply.observationTimes?.voltage;
+      const voltageAvailable = complete(supply.voltageV) && complete(voltageTimes)
+        && voltageTimes.every(at => time(at) && at <= now && now - at <= 5 * 60_000);
       return { ...snapshot, provider: 'easee', providerConnected: available, capabilities: adapter.capabilities,
         connected: signal(snapshot.pluggedIn, snapshot.statusAt, 'easee-ocpp', snapshot.statusReceivedAt ?? null),
         charging: signal(STATUSES.includes(snapshot.connectorStatus) ? snapshot.connectorStatus === 'Charging' : null,
@@ -139,7 +142,9 @@ export function createOcppScheduleAdapter({ request, readSnapshot, isCurrent = (
         availableCurrentA: signal(complete(allowance) ? Math.min(...allowance) : null),
         maxCurrentA: signal(ceilings.length ? Math.min(...ceilings) : null),
         actualCurrentA: signal(complete(supply.chargerCurrentA) ? supply.chargerCurrentA.reduce((sum, value) => sum + value, 0) / 3 : null),
-        voltageV: signal(complete(supply.voltageV) ? supply.voltageV.reduce((sum, value) => sum + value, 0) / 3 : null),
+        voltageV: { ...signal(voltageAvailable ? supply.voltageV.reduce((sum, value) => sum + value, 0) / 3 : null,
+          voltageAvailable ? Math.min(...voltageTimes) : null), timeBasis: 'derived-observations',
+          inputs: [0, 1, 2].map(phase => ({ measuredAt: voltageTimes?.[phase] ?? null })) },
         phases: { value: 3, available: true, source: 'installation-assumption', assumed: true },
         scheduledStartAt: signal(snapshot.nativeInstruction?.startAt ?? null, snapshot.nativeInstruction?.confirmedAt),
         scheduledEndAt: signal(null), scheduledEndKind: null, scheduleKind: 'ocpp-tx-pause' };

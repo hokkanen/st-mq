@@ -68,6 +68,18 @@ test('preparation gates use live readiness and duration instead of one fixed bat
   assert.equal(f.writes.length, 0);
 });
 
+test('guided duration uses published planning voltage even before a vehicle draws power', () => {
+  const f = fixture(), tests = f.create();
+  const charger = f.view.chargers[0];
+  charger.forecast = { powerKw: 0, voltageV: 240 };
+  charger.values.voltageV = { value: 210, available: true };
+  const first = tests.preview(f.input(), f.view).headroom;
+  charger.values.voltageV.value = 245;
+  const changed = tests.preview(f.input(), f.view).headroom;
+  assert.equal(first.powerKw, 11.52);
+  assert.equal(changed.minutes, first.minutes);
+});
+
 test('accepted usable capacity drives preparation without rewriting configuration and is required to arm', () => {
   const f = fixture(), tests = f.create(), original = structuredClone(f.view.settings);
   const smaller = tests.preview(f.input({ capacityKwh: 35 }), f.view);

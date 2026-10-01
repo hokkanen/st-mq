@@ -54,6 +54,19 @@ function fixture({ initialState = null, identification = null } = {}) {
 }
 const writes = f => f.calls.filter(row => row.action !== 'GetCompositeSchedule');
 
+test('fresh OCPP connector status cannot refresh old or unknown voltage measurement clocks', () => {
+  const { adapter } = fixture();
+  const snapshot = { online: true, readAt: START, statusAt: START,
+    supply: { voltageV: [228, 230, 232], observationTimes: { voltage: [START, START, START] } } };
+  const live = adapter.normalize(snapshot, { now: START }).voltageV;
+  assert.equal(live.available, true); assert.equal(live.value, 230);
+  assert.deepEqual(live.inputs.map(row => row.measuredAt), [START, START, START]);
+  snapshot.supply.observationTimes.voltage[1] = START - 6 * MINUTE;
+  assert.equal(adapter.normalize(snapshot, { now: START }).voltageV.available, false);
+  delete snapshot.supply.observationTimes;
+  assert.equal(adapter.normalize(snapshot, { now: START }).voltageV.available, false);
+});
+
 test('native pause is a finite transaction-specific zero profile with no positive current command', () => {
   const instruction = ocppPauseInstruction({ profileId: 1, transactionId: 7, now: START, startAt: START + 30 * MINUTE });
   const p = instruction.payload.csChargingProfiles;

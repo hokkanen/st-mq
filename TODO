@@ -1,3 +1,35 @@
+Implemented 2026-10-01 — Stable recorded phase voltage and charging schedules
+- Derive independent L1–L3 voltage estimates from verified local phase-neutral
+  acquisitions with a six-hour EWMA half-life and one hour of valid elapsed
+  coverage. Preserve source identity and bounded restart state; cache reads,
+  unverified terminal pairs and remote vehicle reports cannot manufacture evidence.
+- Publish through the existing adaptive recorder with a 0.5 V minimum change
+  floor against the last saved estimate. Keep source/availability boundaries
+  explicit and retain formed estimates as historical context through outages.
+  No periodic value records or growing raw-voltage log are introduced.
+- Use published estimates for future charging power and household demand, with
+  provisional valid local voltage during startup. Preserve live measurements for
+  actual electrical draw, energy integration and immediate current limits.
+  Recheck nearby waiting schedules jointly before retaining them; changed intent,
+  feasibility or material cost differences still revise the actual schedule.
+- Replace nominal-voltage conversions in historical charts and metadata with
+  time-local per-phase estimates. Preserve original measured current and energy;
+  only supported CSV dates before voltage history may use the first established
+  estimates as labelled retrospective assumptions. No import rows are rewritten.
+- F1/F3/F4/F5/F6/F7/F8: one current estimator contract, no migration/backfill or old
+  interpreter; explicit evidence/provisional/retrospective meanings and unchanged
+  control authority. Charger energy-storage differences remain outside this task.
+  Update active contracts, chart labels and synthetic browser fixtures together.
+- Validation: final routine suite 3,914 passed, 1 skipped, 0 failed; production
+  build passed. The optional upstream Tuya parser test requires its external
+  source checkout. Focused browser checks passed for all three selectable voltage
+  traces, values and provenance tooltips. The broader chart browser sweep remains
+  blocked by separate Save-view receipt and comparison-button marker assertions;
+  no unrelated UI changes were made to satisfy them. Synthetic day-long recording
+  verifies sparse voltage rows; provider acquisition, restart, stale-source,
+  historical conversion and schedule-stability regressions passed. All validation
+  used synthetic data; no installation measurements or devices were accessed.
+
 Implemented 2026-10-01 — Guided charging with independent vehicle expectations
 - Load battery percentage, vehicle target and optional usable capacity directly
   from the selected vehicle feed, independently of the physical charger. Retain

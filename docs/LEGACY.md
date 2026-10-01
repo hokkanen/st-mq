@@ -32,8 +32,13 @@ unix_time,ch_curr1,ch_curr2,ch_curr3,eq_curr1,eq_curr2,eq_curr3
 
 `unix_time` is Unix time in seconds. The first three current fields belong to
 charger phases L1–L3; the last three belong to Equalizer property phases L1–L3.
-Units are amperes. These are current snapshots, not energy measurements; old
-charts estimate power using nominal 230 V and unity power factor.
+Units are amperes. These are current snapshots, not energy measurements. Charts
+estimate power using the applicable recorded phase-voltage estimates and unity
+power factor. For CSV timestamps before voltage-estimate history begins, the first
+fully established database value for each phase supplies an explicitly labelled
+retrospective assumption. Until that evidence exists, the original current remains
+available but voltage-dependent power is unknown. Later voltage changes do not
+change the early-CSV fallback or rewrite imported source rows.
 
 ## Import and provenance
 

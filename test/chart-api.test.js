@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { seedVoltage } from './voltage-fixture.js';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -188,6 +189,7 @@ test('chart defaults to today in Finland and includes shared right-axis data for
 
 test('total-power API includes property phases reported minutes apart and preserves phase timestamps', async t => {
   const { base, headers, store, now } = await fixture(t);
+  seedVoltage(store, now - 2 * 3_600_000);
   const propertyTimes = [now - 45 * 60_000, now - 10 * 60_000, now];
   for (const [i, sourceTime] of propertyTimes.entries()) {
     store.observation({ source: 'easee', device: 'fixture-property', signal: `property_current_l${i + 1}`,

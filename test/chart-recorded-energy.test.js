@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Store } from '../src/storage/store.js';
+import { voltageStore } from './voltage-fixture.js';
 import { Recorder } from '../src/storage/recorder.js';
 import { ElectricityAccumulator } from '../src/domain/electricity.js';
 import { addRecordedEnergy } from '../src/app/chart-energy.js';
@@ -51,7 +51,7 @@ function liveElectricity(store, start) {
 }
 
 test('fresh Easee total power keeps stable old phase weights continuous through recorder coalescing', () => {
-  const store = new Store(':memory:');
+  const store = voltageStore();
   try {
     const start = day.from + HOUR, end = start + 20 * MINUTE;
     const { recorder, devices, poll } = liveElectricity(store, start);
@@ -82,7 +82,7 @@ test('fresh Easee total power keeps stable old phase weights continuous through 
 });
 
 test('failed Easee acquisition still breaks derived power and currents until fresh total power recovers', () => {
-  const store = new Store(':memory:');
+  const store = voltageStore();
   try {
     const start = day.from + HOUR, failedAt = start + 10 * MINUTE, recoveredAt = failedAt + 2 * MINUTE;
     const end = recoveredAt + 5 * MINUTE, lastGoodAt = failedAt - 15_000;
@@ -138,7 +138,7 @@ function unchangedElectricalReadings(store, start, chargerPower) {
 }
 
 for (const chargerPower of [0, 4.6]) test(`connected Easee telemetry keeps unchanged power and currents continuous at ${chargerPower} kW charger power`, () => {
-  const store = new Store(':memory:');
+  const store = voltageStore();
   try {
     const start = day.from + HOUR, end = start + 20 * MINUTE;
     const { recorder, devices, originalAt, poll } = unchangedElectricalReadings(store, start, chargerPower);
@@ -169,7 +169,7 @@ for (const chargerPower of [0, 4.6]) test(`connected Easee telemetry keeps uncha
 });
 
 for (const failure of ['stalled telemetry', 'missing connection', 'disconnected']) test(`Easee ${failure} leaves a real chart gap before confirmed telemetry recovers`, () => {
-  const store = new Store(':memory:');
+  const store = voltageStore();
   try {
     const start = day.from + HOUR, failedAt = start + 10 * MINUTE;
     const recoveredAt = failedAt + (failure === 'stalled telemetry' ? 20 : 8) * MINUTE;
@@ -203,7 +203,7 @@ for (const failure of ['stalled telemetry', 'missing connection', 'disconnected'
 });
 
 for (const failure of ['disconnection', 'stalled device telemetry']) test(`independent charger telemetry keeps cached idle readings through cloud reconnection but respects ${failure}`, () => {
-  const store = new Store(':memory:');
+  const store = voltageStore();
   try {
     const start = day.from + HOUR, stalled = failure === 'stalled device telemetry';
     const failedAt = start + 20 * MINUTE, recoveredAt = stalled ? start + 10 * MINUTE : failedAt + 2 * MINUTE;
@@ -236,7 +236,7 @@ for (const failure of ['disconnection', 'stalled device telemetry']) test(`indep
 });
 
 test('phase kWh produces average real power without 230 V and explicitly equivalent chart currents', () => {
-  const store = new Store(':memory:');
+  const store = voltageStore();
   try {
     const start = day.from + HOUR, end = start + 5 * MINUTE;
     interval(store, start, end, [0.1, 0.2, 0.3]);
@@ -258,7 +258,7 @@ test('phase kWh produces average real power without 230 V and explicitly equival
 });
 
 test('recorded standby and threshold power stay visible on charts but only charging enters timing costs', () => {
-  const store = new Store(':memory:');
+  const store = voltageStore();
   try {
     const start = day.from + HOUR, powers = [0.05, 0.1, 0.1001, 6, 0];
     for (const [index, kw] of powers.entries())
@@ -285,12 +285,12 @@ test('recorded standby and threshold power stay visible on charts but only charg
     assert.deepEqual(result.meta, { rows: 15, intervals: 5 });
     for (const [index, kw] of powers.entries())
       near(result.series.charger_power.find(row => row.x === start + index * MINUTE)?.y, kw);
-    assert.equal(store.db.prepare('SELECT count(*) count FROM observations').get().count, 15);
+    assert.equal(store.db.prepare("SELECT count(*) count FROM observations WHERE source <> 'voltage-estimate'").get().count, 15);
   } finally { store.close(); }
 });
 
 test('exactly 100 W stays idle when uneven recorded durations round the reconstructed power upward', () => {
-  const store = new Store(':memory:');
+  const store = voltageStore();
   try {
     const start = day.from + HOUR, end = start + 7000, kwh = 0.1 * (end - start) / HOUR;
     interval(store, start, end, [kwh / 3, kwh / 3, kwh / 3]);
@@ -305,7 +305,7 @@ test('exactly 100 W stays idle when uneven recorded durations round the reconstr
 });
 
 test('an interval crossing both selected boundaries is clipped for display and energy accounting', () => {
-  const store = new Store(':memory:');
+  const store = voltageStore();
   try {
     const start = day.from + HOUR;
     interval(store, start, start + 5 * MINUTE, [0.1, 0.2, 0.2]);
@@ -319,7 +319,7 @@ test('an interval crossing both selected boundaries is clipped for display and e
 });
 
 test('recorded intervals crossing Finnish midnight contribute to each selected day', () => {
-  const store = new Store(':memory:');
+  const store = voltageStore();
   try {
     interval(store, day.to - 2 * MINUTE, day.to + 3 * MINUTE, [0.1, 0.2, 0.2]);
     const market = { fetchedAt: day.from, intervals: [{ start: day.from, end: day.to, spotCtPerKwh: 20, unit: 'c/kWh', vatIncluded: false }] };
@@ -330,7 +330,7 @@ test('recorded intervals crossing Finnish midnight contribute to each selected d
 });
 
 test('gaps, invalid units and incomplete phases contribute no invented total energy', () => {
-  const store = new Store(':memory:');
+  const store = voltageStore();
   try {
     const start = day.from + HOUR;
     interval(store, start, start + MINUTE, [0.1, 0, 0]);
@@ -346,7 +346,7 @@ test('gaps, invalid units and incomplete phases contribute no invented total ene
 });
 
 test('price boundary accounting uses all recorded intervals independently of display decimation', () => {
-  const store = new Store(':memory:');
+  const store = voltageStore();
   try {
     const boundary = day.from + 2 * HOUR;
     interval(store, boundary - MINUTE, boundary + MINUTE, [0.1, 0.1, 0]);
@@ -358,7 +358,7 @@ test('price boundary accounting uses all recorded intervals independently of dis
 });
 
 test('retired native scalar power is unavailable and audit counters cannot change current interval totals', () => {
-  const store = new Store(':memory:');
+  const store = voltageStore();
   try {
     const start = day.from + HOUR;
     for (const [at, power] of [[start - 5 * MINUTE, 6], [start + MINUTE, 99]]) store.observation({ source: 'controller-estimate', device: 'providers',
@@ -381,7 +381,7 @@ test('retired native scalar power is unavailable and audit counters cannot chang
 });
 
 test('long recorded intervals retain original bounds, exact coverage and assumed-price evidence across hold-sized pieces', () => {
-  const store = new Store(':memory:');
+  const store = voltageStore();
   try {
     const start = day.from + HOUR, end = start + 90 * MINUTE;
     interval(store, start, end, [0.9, 0, 0]);
@@ -408,7 +408,7 @@ test('long recorded intervals retain original bounds, exact coverage and assumed
 });
 
 test('long ranges preserve original power peaks, interval provenance and gaps without stored summaries', () => {
-  const store = new Store(':memory:');
+  const store = voltageStore();
   try {
     const start = day.from + HOUR;
     for (let minute = 0; minute < 30; minute++) {
@@ -428,7 +428,7 @@ test('long ranges preserve original power peaks, interval provenance and gaps wi
 });
 
 test('arbitrary tariff boundaries use original intervals for the same exact costs on every range', () => {
-  const store = new Store(':memory:');
+  const store = voltageStore();
   try {
     const start = day.from + HOUR, boundary = start + 7 * MINUTE;
     for (let minute = 0; minute < 30; minute++) {
@@ -445,7 +445,7 @@ test('arbitrary tariff boundaries use original intervals for the same exact cost
 });
 
 test('mixed recording durations retain each original interval without double counting their shared boundary', () => {
-  const store = new Store(':memory:');
+  const store = voltageStore();
   try {
     const start = day.from + HOUR;
     interval(store, start, start + 15 * MINUTE, [0.1, 0.2, 0.2]);
@@ -459,7 +459,7 @@ test('mixed recording durations retain each original interval without double cou
 });
 
 test('partial selected edges clip drawing and cost while retaining the original energy interval provenance', () => {
-  const store = new Store(':memory:');
+  const store = voltageStore();
   try {
     const start = day.from + HOUR;
     for (let minute = 0; minute < 30; minute++) interval(store, start + minute * MINUTE, start + (minute + 1) * MINUTE, [0.1, 0, 0]);
@@ -473,7 +473,7 @@ test('partial selected edges clip drawing and cost while retaining the original 
 });
 
 test('energy geometry index streams cohorts without a full-range SQL sort or mixing incomplete devices', () => {
-  const store = new Store(':memory:');
+  const store = voltageStore();
   try {
     const start = day.from + HOUR, now = start + 5 * MINUTE;
     // Insertion order differs from observation time and alternates the property

@@ -145,8 +145,10 @@ provide confirmation, and an explicit disconnection ends availability immediatel
 Charger terminal-pair voltages can confirm that the device is reporting even when
 their mapping is unsuitable for phase allocation or VI-only power estimation.
 
-Current, voltage and power snapshots remain acquisition-only. Current snapshots
-can appear in live status, but are not new historical or training signals.
+Raw current, voltage and power snapshots remain acquisition-only. Current snapshots
+can appear in live status, but are not new historical or training signals. The
+separate smoothed per-phase voltage estimates below are derived historical signals;
+they do not archive raw voltage polls or replace the measurements used for energy.
 Stream loss clears electrical continuity and records a gap, even if reconnect
 finishes before the next acquisition. Restart also requires a new starting
 snapshot; it cannot bridge the interval without an active stream. Recovered
@@ -184,12 +186,60 @@ boundary closes only that charger's groups, not unrelated property or Caravan da
 Open and finalized intervals share overlap, quality and source-identity checks;
 long intervals are not dropped or cut off by an arbitrary history duration limit.
 
-Charts derive interval-average kW as `kWh × 3,600,000 / durationMs`. This conversion
-does not use 230 V. Equivalent chart currents divide estimated phase kW by `0.23`;
-they assume 230 V and unity power factor and are not the original current readings.
-Older current-only history keeps its existing 230 V estimation basis. The new
-energy path takes over at its recorded boundary without double-counting the older
-path. Missing intervals remain missing in energy and timing comparisons.
+Charts derive interval-average kW as `kWh × 3,600,000 / durationMs`; voltage is not
+part of this conversion. Equivalent chart currents divide each phase's estimated
+power by its applicable recorded voltage estimate, assuming unity power factor.
+They are estimates, not the original current readings. Original current snapshots
+retain their amperes; their estimated power uses the same historical voltage
+lookup. Missing voltage leaves only the derived conversion unavailable, without
+discarding measured currents or energy. The energy path takes over at its recorded
+boundary without double-counting current-only history. Missing intervals remain
+missing in energy and timing comparisons.
+
+### Smoothed phase voltage
+
+`voltage_estimate_l1` through `voltage_estimate_l3` retain established estimates of
+typical phase-neutral voltage in volts. Each phase uses a time-aware exponentially
+weighted average with a six-hour half-life, calculated from valid acquisitions
+before adaptive recording. One hour of accepted elapsed coverage establishes an
+estimate. Successive accepted acquisitions must be no more than five minutes
+apart. Their original voltage report must remain fresh, or an explicitly online
+device's independently recent telemetry must confirm a held reading under the
+same bounded telemetry window used for energy integration. Held values keep their
+original voltage clock and an explicit confirmation basis. Faster polling never
+creates more elapsed coverage; cached receipts, retained messages and restart
+cannot renew source validity, and gaps do not count as observed time. The estimator
+retains bounded per-source restart state, not another growing raw-observation
+history.
+
+Prefer property Equalizer measurements. A verified Easee charger phase-neutral
+mapping or the commissioned Shelly EVSE phase mapping may supply local fallback
+evidence. Maintain each source separately: switching sources must not silently
+blend property and charger-terminal voltage. Unverified terminal pairs and remote
+vehicle voltage cannot establish a household phase estimate. Source, valid
+coverage, phase and estimation quality accompany the published values.
+
+The adaptive recorder compares each estimate with its last saved value using
+`max(0.5 V, learned adaptive threshold)`. Small changes accumulate internally until
+the saved-value difference crosses that floor. Source and availability changes
+remain semantic boundaries regardless of numeric difference. Constant established
+voltage needs no periodic historical row. The internal smoothing checkpoint keeps
+full precision; consumers use the last published database estimate so discarded
+subthreshold changes cannot revise the charging schedule.
+
+An established value remains a historical estimate during an acquisition gap or
+restart; it never establishes fresh electrical or control evidence. Startup may
+use valid live local voltage provisionally until estimates are established. With
+neither usable estimates nor live voltage, voltage-dependent calculations remain
+unavailable rather than inventing nominal voltage. Live power integration, local
+current limiting and displays retain their actual measurement requirements.
+
+Historical conversions use the estimate available at their historical time. Only
+supported CSV history predating the estimates may use the first fully established
+database value for each phase, explicitly marked as a retrospective voltage
+assumption. Later voltage changes do not revise that fallback. CSV source bytes,
+original currents, timestamps and import provenance remain unchanged. No estimate
+is a measurement of the voltage that actually occurred throughout an old interval.
 
 ### Heat-pump power reconstructed from history
 
@@ -392,8 +442,9 @@ in response to measured SQLite growth, using smoothed daily and weekly estimates
 Signals are compared with their last saved value. Charger energy has a 10 W
 per-channel selection floor to avoid saving idle noise on every acquisition;
 this selects interval boundaries, never rounds or discards accepted energy.
-Other adaptive signals retain their learned thresholds without model-importance
-weights. Native charger counters use a separate instantaneous-power selection
+Smoothed phase-voltage estimates have a 0.5 V selection floor; internal smoothing
+retains unrounded values. Other adaptive signals retain their learned thresholds
+without model-importance weights. Native charger counters use a separate instantaneous-power selection
 reference, because a counter can remain unchanged between quantized increments.
 All room/protection temperatures use exact change recording so learning endpoints
 remain actual reported values. A reporting deadline does not itself make other
@@ -1219,6 +1270,7 @@ The retained data has distinct responsibilities:
 | Data | Why retained |
 | --- | --- |
 | Phase/total energy intervals | Original integration result; acquired current, voltage and power polls are not separately archived. |
+| Smoothed per-phase voltage and bounded estimator state | Stable published forecast inputs and time-local historical conversion estimates; source/quality remain distinct from live voltage observations. |
 | Adaptive source measurements and compact coverage | Values, original measurement times and proven report continuity; freshness cannot be reconstructed from value changes alone. |
 | Learning journal, compact manual corrections and seeds | Frozen normalized inputs, source/configuration meaning and deterministic replay; a later query must not substitute today's input interpretation. |
 | Dated power assumptions and controller auxiliary estimates | Historical equipment interpretation and the estimate actually available to control; not separately measured heat-pump electricity. |

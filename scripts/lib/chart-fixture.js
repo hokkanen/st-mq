@@ -1,4 +1,17 @@
 // Artificial visual-test observations only. Never called by application startup.
+export const CHART_FIXTURE_VOLTAGE_V = Object.freeze([228, 230, 232]);
+
+export function seedVoltageFixture(store, { at, input, voltageV }) {
+  for (let phase = 0; phase < 3; phase++) store.observation({
+    source: 'voltage-estimate', device: input, signal: `voltage_estimate_l${phase + 1}`,
+    value: voltageV[phase], unit: 'V', sourceTime: at, receivedAt: at,
+    quality: ['estimated', ...(input === 'simulated' ? ['simulated'] : [])],
+    raw: { fixture: true, basis: 'time-weighted-voltage-estimate', voltageMature: true,
+      voltageSource: 'synthetic-visual-voltage', voltageAvailability: 'reporting',
+      voltageEstimate: { phase: phase + 1, coverageMs: 3600_000 } },
+  });
+}
+
 export function seedChartFixture(store, now) {
   const minute = 60_000;
   const start = Math.floor((now - 40 * 60 * minute) / (5 * minute)) * 5 * minute;
@@ -7,6 +20,7 @@ export function seedChartFixture(store, now) {
     quality: ['simulated'], raw: { verified: 'Synthetic visual test fixture', usableForControl: true, ...raw },
   });
   store.transaction(() => {
+    seedVoltageFixture(store, { at: start, input: 'simulated', voltageV: CHART_FIXTURE_VOLTAGE_V });
     for (let at = start, i = 0; at <= now; at += 5 * minute, i++) {
       const cycle = i % 48, charging = cycle >= 12 && cycle < 24;
       const auxiliaryKw = cycle >= 20 && cycle < 24 || cycle >= 30 && cycle <= 33 ? 3 : 0;
@@ -14,7 +28,8 @@ export function seedChartFixture(store, now) {
       for (let phase = 0; phase < 3; phase++) {
         const charger = charging ? 8 + phase : 0;
         add(`ev1_current_l${phase + 1}`, charger, 'A', at, 'simulation', 'visual-test-charger');
-        add(`property_current_l${phase + 1}`, currents[phase] + charger + auxiliaryKw / (3 * 0.23), 'A', at, 'simulation', 'visual-test-property');
+        add(`property_current_l${phase + 1}`, currents[phase] + charger
+          + auxiliaryKw * 1000 / (3 * CHART_FIXTURE_VOLTAGE_V[phase]), 'A', at, 'simulation', 'visual-test-property');
       }
       add('indoor_temperature', 21.1 + Math.sin(i / 15) * 0.25, 'degC', at);
       add('garage_temperature', 13.2 + Math.sin(i / 20) * 0.6, 'degC', at);

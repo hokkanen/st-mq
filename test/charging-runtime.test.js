@@ -3,6 +3,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ChargingRuntime } from '../src/charging/runtime.js';
 import { normalizeScheduleState, scheduleFingerprint, delayedScheduleFor, easeeChargerTelemetry } from '../src/charging/easee.js';
+import { Store } from '../src/storage/store.js';
+import { Recorder } from '../src/storage/recorder.js';
+import { VoltageEstimator } from '../src/storage/voltage.js';
 
 const HOUR = 3_600_000, initialNow = Date.parse('2026-01-15T00:00:00Z');
 function fixture(charging = {}, saved = {}, automatic = {}) {
@@ -33,6 +36,7 @@ function fixture(charging = {}, saved = {}, automatic = {}) {
 }
 function fakeAdapter(clock) {
   let schedule = normalizeScheduleState({ enabled: 'none' });
+  let voltageV = [230, 230, 230];
   const observed = { online: true, enabled: true, mode: 2, pluggedIn: true, manualStop: false, outputPhase: 30, powerKw: 0 };
   const limits = { circuitA: [16, 16, 16], chargerA: 16, cableA: 32,
     dynamicChargerA: 16, equalizerAvailableA: [16, 16, 16] };
@@ -43,12 +47,13 @@ function fakeAdapter(clock) {
     observations: { ...(observed.powerMeasuredAt === undefined ? {} : { 120: { at: observed.powerMeasuredAt } }),
       ...(observed.modeAt === undefined ? {} : { 109: { at: observed.modeAt } }) },
     supply: { availableCurrentA: [...limits.equalizerAvailableA], propertyCurrentA: [0, 0, 0],
-      chargerCurrentA: [0, 0, 0], voltageV: [230, 230, 230], observedAt: clock() } });
+      chargerCurrentA: [0, 0, 0], voltageV, observedAt: clock(), observationTimes: { voltage: [clock(), clock(), clock()] } } });
   return {
     calls,
     setSchedule(value) { schedule = normalizeScheduleState(value); },
     setObservation(value) { Object.assign(observed, value); },
     setLimits(value) { Object.assign(limits, value); },
+    setVoltage(value) { voltageV = value; },
     async read() { calls.push({ kind: 'read' }); return snapshot(); },
     async installDelayed(input) {
       await input.beforeWrite?.(snapshot());
@@ -76,6 +81,41 @@ const editSession = (runtime, id, changes) => {
     sessionId: view.request?.sessionId, revision: view.request?.revision, changes });
 };
 const packet = (soc, at, readingId = 'reading-1', extra = {}) => JSON.stringify({ provider: 'bmw-cardata', soc, measuredAt: at, readingId, ...extra });
+
+test('published voltage survives restart and live voltage changes do not rewrite the waiting plan or session log', async t => {
+  const f = fixture(preferences, {}, { charger1: true });
+  const database = new Store(':memory:');
+  let at = initialNow - HOUR;
+  const recorder = new Recorder(database, { clock: () => at });
+  const estimator = new VoltageEstimator(database, { recorder, input: 'mqtt', clock: () => at });
+  for (; at <= initialNow; at += 60_000) [228, 230, 232].forEach((value, phase) => estimator.ingest({
+    source: 'easee', device: 'synthetic-meter', signal: `property_voltage_l${phase + 1}`, value, unit: 'V',
+    sourceTime: at, receivedAt: at, quality: [], raw: { voltageMapping: 'phase-neutral' },
+  }));
+  f.values.set('voltage:estimate:mqtt', database.getState('voltage:estimate:mqtt'));
+  database.close();
+  let runtime = f.create(), adapter = fakeAdapter(f.clock);
+  t.after(() => runtime.close());
+  await runtime.setAdapter('charger1', adapter); await runtime.reconcile();
+  runtime.tick({ prices }); await runtime.reconcile();
+  const original = structuredClone(chargerView(runtime).plan.periods);
+  const planCount = () => runtime.sessionDiagnostics.status().chargers.find(row => row.id === 'charger1').current.plans.length;
+  const plansBefore = planCount();
+  assert.ok(plansBefore > 0);
+  for (const voltage of [225, 234, 228, 239]) {
+    adapter.setVoltage([voltage, voltage + 1, voltage + 2]);
+    await runtime.reconcile(); runtime.tick({ prices });
+    assert.deepEqual(chargerView(runtime).plan.periods, original);
+    assert.equal(chargerView(runtime).values.voltageV.value, voltage + 1, 'Live status remains an actual reading');
+    assert.deepEqual(runtime.coordination.assumptions.voltage.voltageV, [228, 230, 232]);
+  }
+  assert.equal(planCount(), plansBefore);
+  runtime.close(); runtime = f.create(); adapter = fakeAdapter(f.clock); adapter.setVoltage([240, 240, 240]);
+  await runtime.setAdapter('charger1', adapter); await runtime.reconcile();
+  runtime.tick({ prices }); await runtime.reconcile();
+  assert.deepEqual(chargerView(runtime).plan.periods, original);
+  assert.deepEqual(runtime.coordination.assumptions.voltage.voltageV, [228, 230, 232]);
+});
 
 const priceOutlook = values => values.map((price, index) => ({ start: initialNow + index * HOUR,
   end: initialNow + (index + 1) * HOUR, price }));

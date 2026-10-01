@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Store } from '../src/storage/store.js';
+import { seedVoltage } from './voltage-fixture.js';
 import { Recorder } from '../src/storage/recorder.js';
 import { getChartData } from '../src/app/chart-data.js';
 import { CHART_VIEWS, CHART_VIEW_BY_KEY } from '../src/domain/chart-views.js';
@@ -43,6 +44,7 @@ test('view combines grouped recorded quantities and interpreted garage temperatu
 
 test('named electrical view and individual power explorer retain coherent phase snapshots', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
+  seedVoltage(store, start);
   for (const prefix of ['property', 'ev1']) for (let phase = 1; phase <= 3; phase++)
     put(store, `${prefix}_current_l${phase}`, prefix === 'property' ? 10 : 5, start, { unit: 'A' });
   for (const selection of [{ view: 'power' }, { left: 'property_power' }]) {
@@ -54,6 +56,7 @@ test('named electrical view and individual power explorer retain coherent phase 
 
 test('named electrical comparisons retain common original cohorts through coarse reduction', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
+  seedVoltage(store, start);
   for (let i = 0; i < 180; i++) for (const prefix of ['property', 'ev1']) for (let phase = 1; phase <= 3; phase++)
     put(store, `${prefix}_current_l${phase}`, i === 90 ? null : (prefix === 'property' ? 12 : 3) + (i % 7 === 0 ? 4 : 0),
       start + i * MINUTE, { unit: 'A' });

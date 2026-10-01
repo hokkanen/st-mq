@@ -29,7 +29,7 @@ test('skew, nonadditive residual and telemetry loss use accepted fallback with t
 function fixture(t, extra={}) {
   let now=NOW, authority=true, failSave=false;
   const service={id:0,auto_balance:{enable:false},auto_charge:true,global_charge_limit:0,global_time_limit:0},serviceStatus={state:'running'},schedules={rev:1,jobs:[]};
-  const client=new EventEmitter(), values=new Map(), writes=[], energy=[], gaps=[];
+  const client=new EventEmitter(), values=new Map(), writes=[], energy=[], gaps=[], voltages=[];
   const roleTypes={current_limit:'number',start_charging:'boolean',work_state:'enum',phase_info:'object',energy_charge:'number',time_charge:'number'};
   const roles=Object.keys(roleTypes), ids=Object.fromEntries(roles.map((role,i)=>[role,i+200]));
   const fields={current_limit:16,start_charging:true,work_state:'charging',phase_info:{total_power:8280,total_act_energy:0,phase_a:{voltage:230,current:12,power:2760},phase_b:{voltage:230,current:12,power:2760},phase_c:{voltage:230,current:12,power:2760}},energy_charge:0,time_charge:0};
@@ -46,10 +46,10 @@ function fixture(t, extra={}) {
     cb?.();queueMicrotask(()=>client.emit('message',`${frame.src}/rpc`,Buffer.from(JSON.stringify({id:frame.id,src:'synthetic-evse',dst:frame.src,result})),{}));
   };
   const store={getState:key=>structuredClone(values.get(key)),setState:(key,value)=>{if(failSave)throw Error('disk');values.set(key,structuredClone(value));},transaction:fn=>fn(),event:()=>1};
-  const engine={recorder:{recordEnergy:value=>energy.push(value),energyGap:value=>gaps.push(value)}};
+  const engine={recorder:{recordEnergy:value=>energy.push(value),energyGap:value=>gaps.push(value)},voltage:{ingest:value=>voltages.push(value)}};
   const adapter=createShellyEvseAdapter({config:config(extra),broker:{address:'mqtt://synthetic'},client,store,engine,clock:()=>now,canControl:()=>authority});
   t.after(()=>adapter.close());
-  return {adapter,client,fields,writes,energy,gaps,values,service,serviceStatus,schedules,now:()=>now,setNow:value=>now=value,setAuthority:value=>authority=value,setFail:value=>failSave=value,
+  return {adapter,client,fields,writes,energy,gaps,voltages,values,service,serviceStatus,schedules,now:()=>now,setNow:value=>now=value,setAuthority:value=>authority=value,setFail:value=>failSave=value,
     async ready(){client.emit('connect');client.emit('message','test/evse/online',Buffer.from('true'),{retain:true});await adapter.refresh();},
     notify(role,value,packet={}){client.emit('message','test/evse/events/rpc',Buffer.from(JSON.stringify({src:'synthetic-evse',method:'NotifyStatus',params:{[`${roleTypes[role]}:${ids[role]}`]:{value,last_update_ts:now/1000}}})),packet);}};
 }
@@ -126,6 +126,11 @@ test('native Shelly phases expose current, voltage and active power in installed
   const readings = f.adapter.readings();
   assert.deepEqual([1, 2, 3].map(n => readings[`ev2_current_l${n}`].value), [9, 10, 8]);
   assert.deepEqual([1, 2, 3].map(n => readings[`ev2_voltage_l${n}`].value), [233, 231, 228]);
+  assert.deepEqual(f.voltages.map(row => row.value), [233, 231, 228], 'the estimator receives installed phase order before recording');
+  assert(f.voltages.every(row => row.raw.voltageMapping === 'phase-neutral' && row.sourceTime === NOW));
+  assert.deepEqual(f.adapter.normalize(null).phaseVoltageV.value, [233, 231, 228]);
+  await f.adapter.refresh();
+  assert.equal(f.voltages.length, 3, 'duplicate role reports cannot add estimator samples');
   assert.deepEqual([1, 2, 3].map(n => readings[`ev2_active_power_l${n}`].value), [2.1, 2.2, 1.7]);
   assert.equal(readings.ev2_active_power.value, 6);
   assert.equal(readings.ev2_import_energy_counter.value, 42.5);

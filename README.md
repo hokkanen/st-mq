@@ -346,9 +346,12 @@ Temporary Away and Pause dates use the same calendar with hour/minute fields;
   ranges, activity occupancy and reduced state samples are explicitly identified.
 - **Reading evidence:** open **How to read this view** for line conventions and
   the selected quantities' interpretation. Recorded power reconstructed from
-  energy is an interval average, and phase-current equivalents assume 230 V and
-  unity power factor. Imported coherent current observations retain their original
-  basis. Saved indoor averages retain their original sensor membership. The
+  energy is an interval average, and phase-current equivalents use recorded
+  per-phase voltage estimates with a unity power factor assumption. Imported
+  coherent current observations retain their original basis. Before voltage
+  history begins, their power estimates use the first established per-phase
+  voltage estimates as explicit retrospective assumptions. Missing voltage leaves
+  derived power/current unavailable. Saved indoor averages retain their original sensor membership. The
   garage pump's interpreted temperature is a diagnostic, not a third independent
   protection sensor. Viewing history sends no equipment commands.
 - **Energy cost comparisons:** open this fold below the chart for **Heating**,
@@ -372,8 +375,8 @@ Temporary Away and Pause dates use the same calendar with hour/minute fields;
   from recorded compressor activity and auxiliary output using the nominal powers
   saved for that time. This differs from Home's cycle electricity estimate. Garage
   timing requires qualified dedicated electrical intervals. Charger electricity
-  uses recorded phase or total energy intervals; eligible current snapshots retain
-  their 230 V estimate. The visible basis and
+  uses recorded phase or total energy intervals; eligible current snapshots use
+  historical per-phase voltage estimates. The visible basis and
   source details identify those estimates and simulation. Missing equipment data
   or dated heat-pump power assumptions leave gaps. Heat-pump power is never
   property consumption minus charger consumption.

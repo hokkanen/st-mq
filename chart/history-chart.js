@@ -335,7 +335,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     if (keys.some(key => ENERGY_SIGNALS.includes(key) || key === 'garage_energy')) notes.push('Energy points describe the original recording intervals, which can have different durations. Do not compare them as equal-period totals.');
     if (keys.includes('caravan_power')) notes.push('Caravan power is measured meter energy divided by its original interval duration. It shows average electrical load, not instantaneous peaks; original energy readings remain in Series explorer.');
     if (datasets.some(dataset => ['audit', 'session', 'interval-energy'].includes(dataset.kind))) notes.push('Hollow circles mark individual recorded readings or interval totals. Hover or tap a point in fullscreen to inspect its value and original time; gaps do not imply a zero reading.');
-    if (keys.some(key => key.includes('_current_'))) notes.push('Reconstructed currents are equivalent interval averages at 230 V, not instantaneous RMS peaks. Imported current observations retain their original basis.');
+    if (keys.some(key => key.includes('_current_'))) notes.push('Reconstructed currents use historical per-phase voltage estimates and assume unity power factor; they are interval averages, not instantaneous RMS peaks. Imported current observations retain their original basis.');
     if (datasets.some(dataset => dataset.data.some(point => point.carriedForward))) notes.push(replicaSnapshotKey(status) !== null
       ? 'Display tails carry the last reading to the saved snapshot time; these extensions are not new measurements.'
       : 'Display tails carry the last reading to now; these extensions are not new measurements.');

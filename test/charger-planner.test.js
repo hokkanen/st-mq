@@ -78,6 +78,47 @@ test('current and AC voltage are required but three phases are assumed before ch
   assert.equal(phaseUnknown.assumptions.phases, 3);
 });
 
+test('published per-phase planning voltage isolates schedules from live voltage noise', () => {
+  const stableSupply = { ...supply, planningVoltageV: [228, 230, 232] };
+  const first = run([make('first', { telemetry: { voltageV: 225 } })], { supply: stableSupply });
+  const changed = run([make('first', { telemetry: { voltageV: 240 } })],
+    { supply: { ...stableSupply, voltageV: [239, 240, 241] } });
+  assert.deepEqual(changed.plans.first.periods, first.plans.first.periods);
+  assert.equal(changed.plans.first.finishAt, first.plans.first.finishAt);
+  assert.equal(first.forecasts.first.voltageV, 230);
+  const missing = run([make()], { supply: { ...supply, planningVoltageV: [228, null, 232] } });
+  assert.equal(missing.plans.first.reason, 'electrical-telemetry-unavailable', 'An explicitly missing phase cannot be revived from raw telemetry');
+});
+
+test('present peer current from measured power uses live voltage while its future forecast uses estimated voltage', () => {
+  const charger = make('peer', { preferences: { enabled: false },
+    telemetry: { voltageV: 240, actualCurrentA: null, powerKw: 7.2, charging: true } });
+  const forecast = forecastCharger({ now, deadlineAt: now + HOUR, charger,
+    supply: { ...supply, planningVoltageV: [220, 220, 220] } });
+  assert.equal(forecast.actualCurrentA, 10);
+  assert.equal(forecast.voltageV, 220);
+});
+
+test('nearby future periods are retained only while jointly feasible and economically equivalent', () => {
+  const charger = make('first', { preferences: { capacityKwh: 4 }, telemetry: { minimumSoc: 100 } });
+  const outlook = prices([10, 1, 20]);
+  const optimum = run([charger], { prices: outlook });
+  const startAt = optimum.plans.first.startAt;
+  const retained = run([charger], { prices: outlook, previousPeriods: { first: [{ startAt: startAt + 60_000, endAt: null }] } });
+  assert.equal(retained.plans.first.startAt, startAt + 60_000);
+  assert.equal(retained.assumptions.scheduleRetained, true);
+  const dearer = run([charger], { prices: outlook, previousPeriods: { first: [{ startAt: startAt - 60_000, endAt: null }] } });
+  assert.equal(dearer.plans.first.startAt, startAt, 'A minute of expensive energy exceeds the stability cost tolerance');
+  const distant = run([charger], { prices: outlook, previousPeriods: { first: [{ startAt: startAt + 180_000, endAt: null }] } });
+  assert.equal(distant.plans.first.startAt, startAt);
+  const imminent = run([charger], { prices: prices([1, 10]), previousPeriods: { first: [{ startAt: now + 60_000, endAt: null }] } });
+  assert.equal(imminent.plans.first.startAt, now, 'Stability must not delay an immediate release');
+  const tight = make('first', { preferences: { capacityKwh: 11 * .925 }, telemetry: { minimumSoc: 100 }, deadlineAt: now + 2 * HOUR });
+  const insufficient = run([tight], { prices: outlook, previousPeriods: { first: [{ startAt: now + HOUR + 60_000, endAt: null }] } });
+  assert.equal(insufficient.plans.first.startAt, now + HOUR, 'A missed target overrides the time deadband');
+  assert.equal(insufficient.plans.first.feasible, true);
+});
+
 test('clipped zero allowance does not establish future headroom', () => {
   const result = run([make('first', { telemetry: { currentA: 0, maxCurrentA: 16 } })], {
     supply: { ...supply, availableCurrentA: [0, 0, 0], propertyCurrentA: [25, 25, 25] },

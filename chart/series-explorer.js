@@ -30,6 +30,7 @@ function meaning(signal, info) {
   if (MODEL_INPUT_INFO[signal]) return [`saved-input:${info.unit}`, 'Saved learning input'];
   if (signal.startsWith('learning_')) return [signal === 'learning_indoor_temperature' ? 'temperature' : `assessed-cycle:${info.unit}`, 'Saved model assessment'];
   if (signal === 'solar_radiation') return ['historical-solar-estimate', 'Historical solar estimate'];
+  if (/^voltage_estimate_l[123]$/.test(signal)) return ['voltage-estimate', 'Recorded voltage estimate'];
   if (signal.includes('forecast')) return [`forecast:${info.unit}`, 'Weather forecast'];
   if (['controller_phase', 'dhwr_request'].includes(signal)) return [`state:${signal}`, 'Recorded control request'];
   if (info.unit === 'state' || info.unit === 'code') return [`state:${signal}`, 'Recorded state'];

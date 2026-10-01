@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Store } from '../src/storage/store.js';
+import { seedVoltage } from './voltage-fixture.js';
 import { Recorder } from '../src/storage/recorder.js';
 import { pendingEnergyObservations } from '../src/storage/pending-energy.js';
 import { recordedEnergyStart } from '../src/storage/energy-history.js';
@@ -47,6 +48,7 @@ test('steady multi-day energy remains durable, visible without writes, and avail
 
 test('native C2 total alone supplies power and charging credit while phase energy supplies only phase history', t => {
   const {store,recorder}=fixture(t),end=start+HOUR;
+  seedVoltage(store, start);
   record(recorder,'ev2',start,end,[6]);
   record(recorder,'ev2-phase',start,end,[1,2,3]);
   const chart=project(store,start,end,end);

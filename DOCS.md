@@ -161,8 +161,10 @@ Heating configuration → Home learning → Model inputs → Average indoor → 
 **Reason** field describes the saved history; it does not alter the learning effect.
 Whole-house and EV power estimates use recorded
 phase-energy increments divided by their actual intervals. Equivalent chart
-currents assume 230 V and unity power factor; older current-only history uses
-the nominal 230 V power estimate. H66 AUX power is a red fill derived from the
+currents use the applicable recorded per-phase voltage estimates and assume
+unity power factor. Older current-only CSV history uses the first established
+voltage estimates retrospectively where no earlier estimate exists; missing
+voltage leaves the derived power unavailable. H66 AUX power is a red fill derived from the
 configured rated power (9 kW by default), with Charger 1 and Charger 2 stacked
 above it. Compressor space heating is yellow, hot-water heating blue, and heat-off
 requests use a light crossed hatch. Red DHWR requests occupy their own strip
@@ -202,8 +204,9 @@ from recorded compressor activity and auxiliary output using dated nominal
 compressor, circulation and auxiliary power assumptions. It therefore differs
 from the Home cycle electricity estimate even before scope and dates differ.
 Garage timing requires qualified dedicated electrical intervals. Charger electricity
-uses recorded phase or total energy intervals, with a 230 V phase-current estimate for
-older current-only history. Simulation is identified separately. The
+uses recorded phase or total energy intervals, with historical per-phase voltage
+estimates for older current-only history. The pre-estimate CSV fallback is an
+explicit retrospective assumption. Simulation is identified separately. The
 included-time mix is duration-weighted, not a percentage of samples, energy or
 accuracy. Auxiliary consumption remains a nominal estimate even when its output
 is observed. Historical calculations use saved equipment readings and assumptions;

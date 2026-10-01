@@ -485,6 +485,45 @@ The planner first respects device/vehicle limits, manual permission, native star
 
 The implementation is a bounded search over a declared slot/current model, **not a globally exact continuous-time optimizer**. Results expose the search kind, relaxed cost lower bound, feasible candidate cost and upper bound on the cost gap where available. Search pruning can miss a better joint candidate; reported feasibility is conditional on the recorded assumptions. Synthetic exhaustive small-horizon comparisons validate representative cases. There is no one-cent pause penalty or mandatory one-cent saving hurdle. Practical minimum economic runs/gaps remain 15 minutes; equal-cost choices prefer stability.
 
+Planned charging power and duration use the latest published smoothed voltage
+estimate for each physical phase. The same estimates convert future household
+power into current. These are six-hour-half-life estimates, established after one
+hour of valid elapsed acquisition coverage and recorded adaptively with a 0.5 V
+minimum change floor. The planner reads recorded values, not small internal
+smoothing updates. Valid live local voltage may serve provisionally before an
+estimate exists; remote vehicle voltage and nominal defaults cannot supply
+missing household evidence. A saved estimate after restart is historical context,
+not proof of a fresh live electrical measurement. See
+[voltage recording and historical interpretation](recording.md#smoothed-phase-voltage).
+
+Household energy history retains per-phase power for forecast scenarios and
+converts it with the present planning voltage. Historical chart conversions still
+use the voltage estimates applicable at the original time. Original imported
+current readings keep their measured-current meaning. When an
+imported calculation needs voltage before estimate history begins, it uses the
+first fully established per-phase database estimates as labelled retrospective
+assumptions. Later voltage changes cannot rewrite that early-CSV basis. Measured
+energy, charging progress and billed interval energy never depend on those
+retrospective voltage assumptions.
+
+For unchanged charging intent, a proposed adjustment of up to two minutes to
+future waiting-period boundaries may retain the existing periods. The planner
+rechecks both chargers together under the new forecasts: every deadline must
+remain feasible, and neither the combined estimate nor either charger's cost may
+exceed the new candidate by more than 0.1 cent. The period count must agree.
+Changed prices, priorities, requests, connection, observed battery charge,
+capacity, targets or current limits bypass this retention. Delivered-energy
+progress is rechecked in the joint simulation without treating every small meter
+increment as new intent. Running periods and starts within the next two minutes
+are not retained by this rule. The retained schedule is the actual plan, so session
+diagnostics do not log discarded candidate movements as schedule changes.
+
+Live property and charger currents still govern actual draw, immediate phase
+headroom and the commissioned limiter. Live voltage remains appropriate for
+current electrical readings and integration paths that genuinely require it.
+Neither smoothing nor schedule stability can relax native limits, telemetry
+freshness, control authority, changed session requests or a missed deadline.
+
 Easee's Equalizer, charger and vehicle determine the available charging current. Native OCPP economic pauses impose an expiring 0 A restriction; identification probes briefly release the owned pause at normal current before returning to that economic pause or normal charging. This never raises native limits or changes circuit protection or fuse settings. Current already drawn by an automatic-OFF, manually running or post-target peer remains a load until physical evidence says otherwise. Forecast household load, gross configured capacity and current net allowance are distinct. A clipped zero Equalizer allowance does not establish an exact gross budget. Missing rates or capacity produce provisional decisions, not free electricity or invented assured readiness.
 
 The final period is an open release. Reaching the planning minimum or ready-by deadline does not issue a final stop. Extra actual energy remains metered and priced. Unknown future post-target consumption cannot have a guaranteed optimized bill. Later economic pauses require ST-MQ and the provider to be available; the UI distinguishes the proposed plan, dispatched request, readback and observed physical response.

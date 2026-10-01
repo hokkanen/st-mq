@@ -12,6 +12,7 @@ import { start } from '../src/main.js';
 import { assembleOutlook } from '../src/app/contract.js';
 import { describeProvider } from '../chart/provider-status.js';
 import { ELECTRICITY_FIELDS } from '../src/acquisition/devices.js';
+import { readPlanningVoltage } from '../src/storage/voltage.js';
 
 const initial = Date.parse('2026-09-06T09:00:00Z'), MINUTE = 60_000;
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
@@ -110,6 +111,27 @@ test('normal configuration acquires electricity every fifteen seconds with audit
     assert.equal(f.store.energyAudits().length, 2);
     assert.equal(f.store.observations({ signal: 'property_import_energy_counter' }).length, 0);
     assert.equal(f.engine.latest.property_current_l1.value, 10);
+  } finally { await providers.close(); }
+});
+
+test('provider electrical batches form voltage history before raw acquisition filtering', async t => {
+  const f = fixture(t);
+  f.config.acquisition.easeeIntervalMs = MINUTE;
+  f.options.devices.electricity = async ({ now }) => ELECTRICITY_FIELDS.ev1.map(([id, name, unit]) => ({
+    source: 'easee', device: 'fixture-ev', signal: `ev1_${name}`, unit,
+    value: unit === 'V' ? 230 + Number(name.at(-1)) : 0,
+    sourceTime: unit === 'V' ? initial : now, receivedAt: now,
+    quality: ['local_ocpp', ...(unit === 'V' && now - initial > 5 * MINUTE ? ['stale'] : [])],
+    raw: { acquisitionOnly: true, observationId: id, voltageMapping: 'phase-neutral',
+      deviceConnection: { connected: true, observedAt: initial } },
+  }));
+  const providers = startProviders(f.options);
+  try {
+    for (let minute = 0; minute <= 60; minute++) { f.setTime(initial + minute * MINUTE); await providers.runDue(); }
+    const estimate = readPlanningVoltage(f.store, { input: 'providers', now: initial + 60 * MINUTE });
+    assert.deepEqual(estimate.voltageV, [231, 232, 233]);
+    assert.equal(f.store.observations().filter(row => row.source === 'voltage-estimate').length, 6, 'only initial and formed estimates are archived');
+    assert.equal(f.store.observations({ signal: 'ev1_voltage_l1' }).length, 0, 'original voltage acquisitions stay outside history');
   } finally { await providers.close(); }
 });
 

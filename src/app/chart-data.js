@@ -28,6 +28,8 @@ import { alignEaseePowerSnapshots } from './chart-phase-snapshots.js';
 import { powerExtremaTimes } from './chart-power-extrema.js';
 import { CHART_VIEW_BY_KEY } from '../domain/chart-views.js';
 import { RecordedEvidenceLine } from './chart-recorded-evidence.js';
+import { createVoltageReader, VOLTAGE_SIGNALS } from '../storage/voltage.js';
+import { currentPowerKw, voltageMetadata, voltageSegments } from './chart-voltage.js';
 
 export const CHART_TIME_ZONE = 'Europe/Helsinki';
 const HOUR = 3_600_000, DAY = 24 * HOUR;
@@ -361,7 +363,7 @@ function* mergedHistoryRows(store, nativeRows, from, to, requested, now) {
   }
 }
 
-function addHistoricalChargerTiming(store, timing, range, now, input, cutoff = Infinity) {
+function addHistoricalChargerTiming(store, timing, range, now, input, cutoff = Infinity, voltageReader) {
   const until = Math.min(cutoff, now + 1, range.to);
   if (until <= range.from - 30 * 60_000) return;
   const compact = input !== 'simulated' && range.to - range.from > 7 * DAY;
@@ -373,34 +375,42 @@ function addHistoricalChargerTiming(store, timing, range, now, input, cutoff = I
     ${compact ? 'AND o.import_id IS NULL' : ''}
     ORDER BY o.source_time,o.id`).iterate(range.from - 30 * 60_000, until, now, now);
   const rows = compact ? mergedHistoryRows(store, native, range.from - 30 * 60_000, until, new Set(PHASES), now) : native;
-  const flagsOf = qualityReader(); let at = null, groups = new Map();
-  const flush = () => {
-    const candidates = [...groups.values()].sort((a, b) => b.priority - a.priority || b.id - a.id);
-    if (candidates.length) {
-      const values = candidates[0].values;
-      timing.add('charger1', at, values.every(Number.isFinite) ? values.reduce((sum, value) => sum + value, 0) * 0.23 : null,
-        { key: input === 'simulated' ? 'simulated' : 'currents' });
+  const flagsOf = qualityReader(); let at = null, groups = new Map(), previous = null;
+  const finish = end => {
+    if (!previous) return;
+    const until = Math.min(end, previous.at + 30 * 60_000);
+    for (const segment of voltageSegments(voltageReader, previous.at, until, { allowFuture: previous.imported })) {
+      timing.add('charger1', segment.start, currentPowerKw(previous.values, segment.estimate),
+        { key: input === 'simulated' ? 'simulated' : segment.estimate.basis === 'retrospective-voltage-estimate'
+          ? 'retrospective-currents' : 'currents' });
     }
+    timing.add('charger1', until, null);
+  };
+  const flush = () => {
+    finish(at);
+    const candidates = [...groups.values()].sort((a, b) => b.priority - a.priority || b.id - a.id);
+    previous = candidates.length ? { ...candidates[0], at } : null;
     groups = new Map();
   };
   for (const row of alignEaseePowerSnapshots(rows, store.db, now)) {
+    if (row.imported && row.kind !== 'easee') continue;
     if (at !== null && row.source_time !== at) flush();
     at = row.source_time;
     if (row.imported) {
-      if (row.kind !== 'easee') continue;
       const values = JSON.parse(row.canonical).slice(0, 3).map(observation =>
         observation.quality.includes('ev_exceeds_property_current') ? null : valueOf(observation, observation.quality));
-      groups.set(`csv:${row.id}:${row.row_number}`, { values, priority: 0, id: row.id * 1_000_000_000 + row.row_number * 10 });
+      groups.set(`csv:${row.id}:${row.row_number}`, { values, imported: true, priority: 0, id: row.id * 1_000_000_000 + row.row_number * 10 });
     } else {
       const key = `${row.source}:${row.device}:${row.import_id ?? ''}:${row.row_number ?? row.received_at}`;
       const flags = flagsOf(row.quality);
-      if (!groups.has(key)) groups.set(key, { values: [null, null, null], priority: row.import_id == null ? 1 : 0, id: row.id });
+      if (!groups.has(key)) groups.set(key, { values: [null, null, null], imported: row.import_id != null, priority: row.import_id == null ? 1 : 0, id: row.id });
       const group = groups.get(key); group.id = row.id;
       group.values[Number(row.signal.at(-1)) - 1] = flags.includes('ev_exceeds_property_current')
         || !row.alignedPowerSnapshot && flags.includes('asynchronous_snapshot') ? null : valueOf(row, flags);
     }
   }
   if (at !== null) flush();
+  finish(Math.min(until, now, range.to));
   // Finish snapshots at the exact recorded-energy handover, without double
   // counting or dependence on chart decimation.
   timing.add('charger1', Math.min(until, now, range.to), null);
@@ -463,13 +473,15 @@ export function getChartData({ store, input = 'offline', contract = null, market
   const heatPumpEnergy = !drawingOnly || envelopes.heat_pump_power
     ? addHistoricalHeatPump({ store, range, now, input, envelope: envelopes.heat_pump_power, timing }) : null;
   const energyStarts = Object.fromEntries(['property','ev1'].map(prefix=>[prefix,recordedEnergyStart(store,prefix,input,now)]));
-  if (!drawingOnly) addHistoricalChargerTiming(store, timing, range, now, input, energyStarts.ev1);
+  const voltageReader = createVoltageReader(store, { input, from: range.from - 3 * HOUR, to: queryTo, now });
+  if (!drawingOnly) addHistoricalChargerTiming(store, timing, range, now, input, energyStarts.ev1, voltageReader);
   const modeEnvelopes = Object.fromEntries([0, 1, 2, 3, 4].map(mode => [mode, new ShadeEnvelope(range, points)]));
   const compressorHomeEnvelopes = Object.fromEntries([0, 1, 2, 3].map(value => [value, new ShadeEnvelope(range, points)]));
   let telemetry = new Map(), previousTelemetryAt = null;
+  const currentPowerHistory = new Map();
   const learningMetadata = {};
   const requested = new Set(projecting && _priceProjection ? ['spot_price']
-    : [...names.filter(name => !Object.hasOwn(MODEL_INPUT_INFO, name) && !Object.hasOwn(MODEL_COEFFICIENT_INFO, name) && !Object.hasOwn(SESSION_CHECK_INFO, name) && !AUDIT_SIGNALS.includes(name) && !FIREWOOD_OUTCOME_NAMES.includes(name) && !['caravan_energy', 'caravan_power', 'property_power', 'charger2_power', 'heat_pump_power', 'outdoor_forecast', 'solar_forecast', 'all_in_price', ...ENERGY_SIGNALS].includes(name)),
+    : [...names.filter(name => !Object.hasOwn(MODEL_INPUT_INFO, name) && !Object.hasOwn(MODEL_COEFFICIENT_INFO, name) && !Object.hasOwn(SESSION_CHECK_INFO, name) && !AUDIT_SIGNALS.includes(name) && !VOLTAGE_SIGNALS.includes(name) && !FIREWOOD_OUTCOME_NAMES.includes(name) && !['caravan_energy', 'caravan_power', 'property_power', 'charger2_power', 'heat_pump_power', 'outdoor_forecast', 'solar_forecast', 'all_in_price', ...ENERGY_SIGNALS].includes(name)),
       ...(aggregatePower ? PHASES : []),
       ...(!projecting ? ['garage_compressor_active', 'spot_price', 'requested_heat_mode', 'auxiliary_output', ...H66_SIGNALS] : []),
       ...(names.includes('auxiliary_power') ? ['auxiliary_output'] : [])]);
@@ -681,8 +693,22 @@ export function getChartData({ store, input = 'offline', contract = null, market
       }
       for (const [prefix, group] of candidates) {
         if (time >= energyStarts[prefix]) continue;
-        const power = group.complete ? group.values.reduce((sum, value) => sum + value, 0) * 0.23 : null;
-        lines[prefix === 'property' ? 'property_power' : 'charger_power']?.add(time, power);
+        const line = lines[prefix === 'property' ? 'property_power' : 'charger_power'];
+        const previous = currentPowerHistory.get(prefix);
+        if (line && previous && time - previous.at <= 30 * 60_000) {
+          // A held current snapshot changes its derived power when the voltage
+          // basis changes. These are display boundaries, never new currents.
+          for (const boundary of voltageReader.boundaries(previous.at, time)) {
+            const estimate = voltageReader(boundary, { allowFuture: previous.imported });
+            const metadata = { ...voltageMetadata(estimate), displayBoundary: true,
+              observedAt: previous.at, interpolated: false };
+            line.add(boundary, currentPowerKw(previous.values, estimate), metadata);
+          }
+        }
+        const estimate = voltageReader(time, { allowFuture: group.imported });
+        const power = group.complete ? currentPowerKw(group.values, estimate) : null;
+        line?.add(time, power, voltageMetadata(estimate));
+        currentPowerHistory.set(prefix, { at: time, values: group.values, imported: group.imported });
       }
     }
     previousTelemetryAt = time;
@@ -759,7 +785,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
             return observation.quality.includes('ev_exceeds_property_current') ? null : value;
           });
           const id = row.id * 1_000_000_000 + row.row_number * 10;
-          phases.set(`${prefix}:csv:${row.id}:${row.row_number}`, { prefix, id, values, priority: 0 });
+          phases.set(`${prefix}:csv:${row.id}:${row.row_number}`, { prefix, id, values, imported: true, priority: 0 });
         }
       } else for (const observation of decoded.observations) {
         if (!requested.has(observation.signal)) continue;
@@ -784,7 +810,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
       // Easee phases retain independent source timestamps in the phase view.
       const key = `${prefix}:${row.source}:${row.device}:${row.import_id ?? ''}:${row.row_number ?? row.received_at}`;
       let group = phases.get(key);
-      if (!group) { group = { prefix, id: row.id, values: [null, null, null], priority: row.import_id === null ? 1 : 0 }; phases.set(key, group); }
+      if (!group) { group = { prefix, id: row.id, values: [null, null, null], imported: row.import_id != null, priority: row.import_id === null ? 1 : 0 }; phases.set(key, group); }
       group.values[Number(row.signal.at(-1)) - 1] = !row.alignedPowerSnapshot && flags.includes('asynchronous_snapshot')
         || flags.includes('ev_exceeds_property_current') ? null : value;
       group.id = row.id;
@@ -797,7 +823,17 @@ export function getChartData({ store, input = 'offline', contract = null, market
   if (Number.isFinite(energyStarts.ev1)) timing.add('charger1',energyStarts.ev1,null);
   const recordedEnergy = !drawingOnly || names.some(name => ENERGY_SIGNALS.includes(name) || PHASES.includes(name)
     || ['property_power', 'charger_power', 'charger2_power', 'caravan_power'].includes(name))
-    ? addRecordedEnergy({store,range,now,input,envelopes,timing}) : { rows: 0, intervals: 0 };
+    ? addRecordedEnergy({store,range,now,input,envelopes,timing,voltageReader}) : { rows: 0, intervals: 0 };
+  if (names.some(name => VOLTAGE_SIGNALS.includes(name)))
+    for (const segment of voltageSegments(voltageReader, range.from, Math.min(range.to, now)))
+      for (const [phase, signal] of VOLTAGE_SIGNALS.entries()) {
+        const line = envelopes[signal]; if (!line) continue;
+        const evidence = segment.estimate.phases[phase];
+        const metadata = { basis: 'recorded-voltage-estimate', source: 'voltage-estimate',
+          observedAt: evidence?.at ?? null, voltageAvailability: evidence?.availability ?? null };
+        line.add(segment.start, segment.estimate.voltageV[phase], metadata);
+        line.add(segment.end - 1, segment.estimate.voltageV[phase], metadata);
+      }
   const finishHeldLines = () => {
     for (const name of ['auxiliary_power', 'solar_radiation', ...DOOR_SIGNALS]) if (lines[name]?.previous) {
       const line = lines[name], previous = line.previous, nowEnd = Math.min(now, range.to), end = Math.min(nowEnd, previous.x + line.gap);
@@ -902,7 +938,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
   const relatedGroups = [...(powerNames.length > 1 ? [powerNames] : []), ...(phaseNames.length > 1 ? [phaseNames] : []), ['all_in_price', 'spot_price']];
   for (const group of relatedGroups) if (group.some(name => envelopes[name].count > series[name].length)) {
     const compositeTimes = group === powerNames && aggregatePower ? powerExtremaTimes({ store,range,now,input,
-      points,readValue:valueOf }) : [];
+      points,readValue:valueOf,voltageReader }) : [];
     const times = [...new Set([...group.flatMap(name => series[name].map(point => point.x)),...compositeTimes])].sort((a, b) => a - b);
     const priceGroup = group[0] === 'all_in_price';
     const projected = getChartData({ store, input, contract, now, startDate, endDate, ...(view === undefined ? { left } : { view }), points, viewFrom, viewTo,
@@ -936,7 +972,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
     meta: { ...(detail ? { detail: true } : {}), ...(relatedSampling ? { relatedSampling } : {}), warnings, priceAssumptions, rawRows, invalidRows, lastReadings, learning: learningMetadata, modelInputs, modelCoefficients, fireplaceInputs, firewoodOutcomes, recordedEnergy, chargingSessions, heatPumpEnergy, historyBasis: 'original-recorded-history',
     returnedPoints: Object.values(series).reduce((sum, rows) => sum + rows.length, 0),
     elapsedMs: Math.round((performance.now() - started) * 100) / 100,
-    powerEstimate: powerNames.length ? 'Recorded phase or total energy divided by its interval duration; coherent current snapshots, including v0.7.5 CSV imports, use 230 V. Phase allocation and energy integration are estimates.' : null,
+    powerEstimate: powerNames.length ? 'Recorded phase or total energy divided by its interval duration. Current snapshots use historical per-phase voltage estimates and assume unity power factor. CSV history before voltage records uses the first established estimates retrospectively. Missing voltage leaves derived values unavailable; measured energy is unchanged.' : null,
     heatOffBasis: 'Historical requested reduction, not compressor activity.',
     auxHeatBasis: 'Estimated kW from H66 auxiliary output and configured capacity; cumulative counters do not identify episodes.',
     dhwrBasis: 'Requested circulation with its recorded duration; v0.7.5 CSV requests last ten minutes. MQTT acknowledgement is not physical pump feedback. Recorded electrical or switch feedback is shown separately and does not prove water flow.',

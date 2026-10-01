@@ -1,12 +1,15 @@
 import assert from 'node:assert/strict';
 import { recordHeatPumpConfiguration } from '../../src/app/chart-heat-pump.js';
 import { Recorder } from '../../src/storage/recorder.js';
+import { seedVoltageFixture } from './chart-fixture.js';
 
 // Invented observations only. These days deliberately separate operating evidence,
 // missing telemetry, and incomplete prices without accessing a household database.
 export function seedTimingBrowserFixture(store) {
   const historicalStart = Date.parse('2026-09-06T00:00:00+03:00');
+  const voltageV = [230, 230, 230]; // Explicit artificial voltage evidence for these scenarios.
   store.transaction(() => {
+    seedVoltageFixture(store, { at: Date.parse('2026-09-03T00:00:00+03:00'), input: 'providers', voltageV });
     for (let slot = 0; slot <= 96; slot++) {
       const at = historicalStart + slot * 15 * 60_000;
       const add = (signal, value, unit) => store.observation({ source: 'browser-fixture',
@@ -40,7 +43,7 @@ export function seedTimingBrowserFixture(store) {
           // Current snapshots precede the first saved energy interval. Six hours
           // of later standby intervals remain idle; unrecorded hours stay unknown.
           const at=from+slot*quarter,power=slot<12?3:slot<24?1:.05;
-          if(slot<12)for(let phase=1;phase<=3;phase++)add(`ev1_current_l${phase}`,power/(3*.23),'A',at);
+          if(slot<12)for(let phase=1;phase<=3;phase++)add(`ev1_current_l${phase}`,power*1000/(3*voltageV[phase-1]),'A',at);
           else recorder.recordEnergy({source:'easee',device:'synthetic-timing-charger',prefix:'ev1',
             start:at,end:at+quarter,receivedAt:at+quarter,energies:Array(3).fill(power/12),
             powers:Array(3).fill(power/3),quality:['estimated']});
@@ -486,7 +489,7 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
     assert.match(sourceText, /2026/, 'Contributing dates remain next to each source explanation');
   }
   assert.match(await text(`${detail('charger')} .timing-source[data-source="recorded"]`), /saved interval/i);
-  assert.match(await text(`${detail('charger')} .timing-source[data-source="currents"]`), /230 V/i);
+  assert.match(await text(`${detail('charger')} .timing-source[data-source="currents"]`), /historical per-phase voltage/i);
   const coverage = JSON.parse(await evaluate(`fetch('/api/chart?start=2026-09-05&end=2026-09-05').then(response => response.json()).then(data => JSON.stringify(data.timingBenefit.charger.coverageDetails))`));
   assert.equal(coverage.chargingMs, 6 * 3_600_000);
   assert.equal(coverage.idleMs, 6 * 3_600_000);

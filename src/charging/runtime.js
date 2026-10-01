@@ -22,6 +22,7 @@ import { shellyAssociation } from './shelly-evse.js';
 import { ChargingSessionDiagnostics } from './session-diagnostics.js';
 import { ChargingPhysicalTests } from './physical-tests.js';
 import { bmwVehicleSetup, teslaVehicleSetup } from './setup.js';
+import { readPlanningVoltage } from '../storage/voltage.js';
 
 const MINUTE = 60_000;
 // The CarData Home Assistant bridge publishes unchanged facts every five
@@ -87,6 +88,20 @@ const initialMqtt = () => ({ connected: false, brokerConnected: false, subscribe
   lastMessageAt: null, lastLiveAt: null, lastRetainedAt: null, lastValidAt: null, lastValidLiveAt: null });
 const activePeriod = (control, now) => control?.execution?.periods?.some(period => period.startAt <= now
   && (period.endAt === null || period.endAt > now));
+function livePlanningVoltages(views, supply, now) {
+  const valid = value => Number.isFinite(value) && value >= 200 && value <= 250;
+  const fresh = at => Number.isSafeInteger(at) && at <= now && now - at <= 5 * MINUTE;
+  const local = views.filter(view => view.telemetry?.providerConnected !== false);
+  const phaseSources = local.map(view => view.telemetry?.phaseVoltageV).filter(field => field?.available && fresh(field.measuredAt));
+  const scalar = local.map(view => view.values.voltageV).find(field => field.available && valid(field.value)
+    && (Array.isArray(field.inputs) && field.inputs.length > 0 ? field.inputs.every(input => fresh(input.measuredAt)) : fresh(field.measuredAt)));
+  return [0, 1, 2].map(phase => {
+    const voltage = supply?.voltageV?.[phase], at = supply?.observationTimes?.voltage?.[phase];
+    if (valid(voltage) && fresh(at)) return voltage;
+    const phaseVoltage = phaseSources.map(field => field.value?.[phase]).find(valid);
+    return phaseVoltage ?? scalar?.value ?? null;
+  });
+}
 const scheduleCeiling = snapshot => {
   const limits = [snapshot?.limits?.chargerA, snapshot?.limits?.cableA, ...[snapshot?.limits?.circuitA].flat()].filter(value => Number.isFinite(value) && value > 0);
   return limits.length ? Math.floor(Math.min(...limits)) : undefined;
@@ -820,11 +835,15 @@ export class ChargingRuntime {
     const installation = this.configuration.chargers.charger2;
     const configuredBudgetCurrentA = installation.enabled && installation.verified
       ? installation.mainFuseA.map((amps, phase) => Math.max(0, amps - installation.marginA[phase])) : null;
-    const supply = reportedSupply || configuredBudgetCurrentA ? { ...reportedSupply,
-      ...(configuredBudgetCurrentA ? { configuredBudgetCurrentA } : {}) } : null;
-    const historyOptions = { now, deadlineAt, input: this.config.input, voltageV: supply?.voltageV, timezone: TIME_ZONE,
+    const voltageEstimate = readPlanningVoltage(this.store, { input: this.config.input, now });
+    const livePhases = livePlanningVoltages(views, reportedSupply, now);
+    const planningVoltageV = voltageEstimate.voltageV.map((value, phase) => value
+      ?? (Number.isFinite(livePhases[phase]) && livePhases[phase] >= 200 && livePhases[phase] <= 250 ? livePhases[phase] : null));
+    const supply = { ...reportedSupply, planningVoltageV,
+      ...(configuredBudgetCurrentA ? { configuredBudgetCurrentA } : {}) };
+    const historyOptions = { now, deadlineAt, input: this.config.input, voltageV: planningVoltageV, timezone: TIME_ZONE,
       weather: this.weather, outdoorC: this.engine.latest?.outdoor_temperature?.value };
-    const historyKey = digest({ deadlineAt, weather: this.weather, voltage: supply?.voltageV?.map?.(Math.round) ?? null });
+    const historyKey = digest({ deadlineAt, weather: this.weather, voltage: planningVoltageV });
     if (this.historyAt === null || now - this.historyAt >= 5 * MINUTE || historyKey !== this.historyKey) {
       this.historyKey = historyKey;
       if (!this.historyService) {
@@ -858,17 +877,34 @@ export class ChargingRuntime {
     }).map(view => view.id));
     const planningViews = views.map(view => priceReplans.has(view.id)
       ? { ...view, control: { ...view.control, released: false, phase: null } } : view);
-    const result = planChargers({ now, chargers: planningViews, prices: this.prices, household: this.household, supply, priority: this.settings.priority });
+    // Source-clock refreshes and forecast noise are not new charging intent.
+    // User/vehicle inputs, limits, prices and connection changes bypass the
+    // period deadband; the planner still rechecks joint feasibility and cost.
+    const stabilityBasis = digest({ priority: this.settings.priority,
+      prices: priceWindow(currentPrices, -Infinity, Infinity),
+      chargers: views.map(view => [view.id, view.association, view.deadlineAt, view.settings, view.request?.revision,
+        view.referenceGridKwh, ...['connected', 'soc', 'minimumSoc', 'capacityKwh', 'maximumCurrentA', 'currentA',
+          'vehicleNotBefore', 'vehicleCurrentA', 'nativeCurrentA', 'vehicleCeilingSoc'].map(key => view.values[key]?.value ?? null)]) });
+    const previousPeriods = Object.fromEntries(views.flatMap(view => {
+      const item = this.charger(view.id), previous = item.plan;
+      return !item.newEpisode && previous?.stabilityBasis === stabilityBasis && previous.feasible === true
+        && !previous.provisional && previous.state === 'waiting' && !view.control?.pending && !view.control?.manual
+        && !priceReplans.has(view.id) ? [[view.id, previous.periods]] : [];
+    }));
+    const result = planChargers({ now, chargers: planningViews, prices: this.prices, household: this.household, supply,
+      previousPeriods, priority: this.settings.priority });
     this.coordination = { allocations: result.allocations, currentLimits: result.currentLimits,
       currentLimitsAreProposals: false, priority: this.settings.priority, warnings: result.warnings, assumptions: { ...result.assumptions,
+        voltage: { ...voltageEstimate, voltageV: planningVoltageV,
+          provisional: voltageEstimate.voltageV.some(value => value === null) },
         householdReference: { ...householdReferenceSummary(this.household),
           noHistory: this.historyReady && householdReferenceSummary(this.household).noHistory,
           loading: this.historyFlights.size > 0, unavailable: Boolean(this.historyError) } } };
     const environment = { supply: { budget: supply?.estimate?.available ? supply.estimate.budgetCurrentA : supply?.availableCurrentA,
-        voltageV: supply?.voltageV, allocationA: supply?.allocationA, quality: supply?.estimate?.quality },
+        voltageV: planningVoltageV, allocationA: supply?.allocationA, quality: supply?.estimate?.quality },
       household: this.household.map(row => [row.start, row.end, row.phaseCurrentA, row.scenarios]),
       chargers: views.map(view => [view.id, view.requiredGridKwh, view.values.connected.value,
-        view.values.currentA.value, view.values.maximumCurrentA.value, view.values.voltageV.value,
+        view.values.currentA.value, view.values.maximumCurrentA.value,
         view.values.scheduledStartAt.value, view.values.scheduledEndAt.value,
         ...['vehicleNotBefore', 'vehicleCurrentA', 'nativeCurrentA', 'vehicleCeilingSoc'].map(key =>
           view.values[key]?.available === false ? null : view.values[key]?.value ?? null)]) };
@@ -972,7 +1008,7 @@ export class ChargingRuntime {
         continue;
       }
       const next = result.plans?.[view.id];
-      if (next) item.plan = { ...next, basis, priceSnapshot: currentPrices, creditedGridKwh: credit, replannedGapAt: observedGap,
+      if (next) item.plan = { ...next, basis, stabilityBasis, priceSnapshot: currentPrices, creditedGridKwh: credit, replannedGapAt: observedGap,
         id: started && !active ? randomUUID() : item.plan?.id ?? randomUUID() };
     }
     for (const view of this.views(now)) {

@@ -1,4 +1,5 @@
 import { weatherAcquisitionIdentity } from './weather-identity.js';
+import { voltageTelemetryAt } from '../storage/voltage.js';
 import { PROVIDER_CURRENT_ATTENTION_MS, PROVIDER_TEMPERATURE_ATTENTION_MS } from '../domain/reading-freshness.js';
 import { join } from 'node:path';
 import { createHttp, providerFailureCode } from './http.js';
@@ -284,6 +285,7 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
       if (ids.includes(engine.electricitySnapshot[group]?.device)) engine.electricitySnapshot[group] = null;
     const before = electricity.checkpoint(), checkpoint = structuredClone(before), at = clock();
     try { store.transaction(() => {
+      engine.voltage?.interrupt?.({ source: 'easee', devices: ids, now: at });
       for (const [key, previous] of Object.entries(checkpoint.devices)) {
         if (!ids.includes(previous.device)) continue;
         engine.recorder?.energyGap?.({ source: 'easee', device: previous.device, prefix: previous.prefix,
@@ -368,6 +370,8 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
         } else {
           if (!Array.isArray(result) || result.length > 20) throw new Error('Invalid observation batch');
           if (name === 'easee') {
+            for (const observation of result.filter(row => /_voltage_l[123]$/.test(row.signal)))
+              engine.voltage?.ingest(observation, { telemetryAt: voltageTelemetryAt(result, observation, clock()) });
             const sampled = electricity.sample(result, clock());
             for (const interval of sampled.intervals) engine.ingestEnergy?.(interval);
             for (const audit of sampled.audits) store.energyAudit?.(audit);

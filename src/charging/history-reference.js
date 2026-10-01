@@ -2,7 +2,7 @@ import moment from 'moment-timezone';
 
 export const HOUR = 3_600_000;
 export const DAY = 24 * HOUR;
-export const HISTORY_VERSION = 'charging-household-v1-comparable-nights';
+export const HISTORY_VERSION = 'charging-household-v2-recorded-voltage';
 const MAX_PATTERNS = 24;
 const MAX_BUCKET_NIGHTS = 32;
 const finite = Number.isFinite;
@@ -51,12 +51,14 @@ function compactPatterns(patterns) {
   while (patterns.length > MAX_PATTERNS) {
     let a = 0, b = 1, distance = Infinity;
     for (let i = 0; i < patterns.length; i++) for (let j = i + 1; j < patterns.length; j++) {
-      if (Boolean(patterns[i].referenceVoltageV) !== Boolean(patterns[j].referenceVoltageV)) continue;
+      if (Boolean(patterns[i].phasePowerKw) !== Boolean(patterns[j].phasePowerKw)) continue;
       const d = patterns[i].phaseCurrentA.reduce((sum, value, p) => sum + (value - patterns[j].phaseCurrentA[p]) ** 2, 0);
       if (d < distance) { a = i; b = j; distance = d; }
     }
     const first = patterns[a], second = patterns[b], durationMs = first.durationMs + second.durationMs;
     first.phaseCurrentA = first.phaseCurrentA.map((value, p) => (value * first.durationMs + second.phaseCurrentA[p] * second.durationMs) / durationMs);
+    if (first.phasePowerKw) first.phasePowerKw = first.phasePowerKw.map((value, p) =>
+      (value * first.durationMs + second.phasePowerKw[p] * second.durationMs) / durationMs);
     first.durationMs = durationMs;
     patterns.splice(b, 1);
   }
@@ -84,15 +86,25 @@ export function summarizeHousehold(spans, { timezone, priority = 0, voltageV } =
       if (finite(span.trailingOutdoorC)) { group.trailingSum += span.trailingOutdoorC * durationMs; group.trailingMs += durationMs; }
       group.unknownCharger2 ||= span.unknownCharger2 === true;
       group.legacy ||= span.legacy === true;
-      const referenceVoltageV = priority === 1 && !span.legacy ? voltageV : undefined;
-      const patternKey = `${referenceVoltageV ? 'energy' : 'current'}:${span.phaseCurrentA.map(value => Math.round(value * 2)).join(':')}`;
+      group.retrospectiveVoltage ||= span.voltageBasis === 'retrospective-voltage-estimate';
+      const referenceVoltageV = span.referenceVoltageV ?? (priority === 1 && !span.legacy ? voltageV : undefined);
+      // Native interval power needs no historical voltage assumption. Imported
+      // currents acquire an estimated power basis only with an explicit saved
+      // historical or first-mature retrospective voltage reference.
+      const phasePowerKw = span.phasePowerKw ?? (referenceVoltageV?.every(finite)
+        ? span.phaseCurrentA.map((value, phase) => value * referenceVoltageV[phase] / 1000) : undefined);
+      const patternKey = phasePowerKw ? `power:${phasePowerKw.map(value => Math.round(value * 10)).join(':')}`
+        : `current:${span.phaseCurrentA.map(value => Math.round(value * 2)).join(':')}`;
       const existing = group.keys.get(patternKey);
       if (existing) {
         const combined = existing.durationMs + durationMs;
         existing.phaseCurrentA = existing.phaseCurrentA.map((value, p) => (value * existing.durationMs + span.phaseCurrentA[p] * durationMs) / combined);
+        if (phasePowerKw) existing.phasePowerKw = existing.phasePowerKw.map((value, p) =>
+          (value * existing.durationMs + phasePowerKw[p] * durationMs) / combined);
         existing.durationMs = combined;
       } else {
-        const pattern = { phaseCurrentA: [...span.phaseCurrentA], durationMs, referenceVoltageV };
+        const pattern = { phaseCurrentA: [...span.phaseCurrentA], durationMs,
+          ...(phasePowerKw ? { phasePowerKw: [...phasePowerKw] } : {}) };
         group.patterns.push(pattern); group.keys.set(patternKey, pattern);
         if (group.patterns.length > MAX_PATTERNS * 2) { compactPatterns(group.patterns); group.keys.clear(); }
       }
@@ -104,7 +116,8 @@ export function summarizeHousehold(spans, { timezone, priority = 0, voltageV } =
     return { date: group.date, hour: group.hour, night: group.night, at: group.at,
       priority, coverageMs: group.coverageMs, outdoorC: group.temperatureMs >= group.coverageMs / 2 ? group.temperatureSum / group.temperatureMs : null,
       trailingOutdoorC: group.trailingMs >= group.coverageMs / 2 ? group.trailingSum / group.trailingMs : null,
-      unknownCharger2: group.unknownCharger2, legacy: group.legacy, patterns: group.patterns };
+      unknownCharger2: group.unknownCharger2, legacy: group.legacy,
+      retrospectiveVoltage: group.retrospectiveVoltage === true, patterns: group.patterns };
   });
 }
 
@@ -162,8 +175,8 @@ export function predictHousehold(reference, { at, now, outdoorC = null, trailing
   const weighted = selected.map(item => ({ ...item, weight: (item.score || 1) * Math.min(1, item.entry.coverageMs / HOUR) }));
   const totalWeight = weighted.reduce((sum, item) => sum + item.weight, 0);
   const scenarios = weighted.flatMap(item => item.entry.patterns.map(pattern => ({
-    phaseCurrentA: pattern.phaseCurrentA.map((value, phase) => finite(pattern.referenceVoltageV?.[phase]) && finite(voltageV?.[phase])
-      ? value * pattern.referenceVoltageV[phase] / voltageV[phase] : value),
+    phaseCurrentA: pattern.phaseCurrentA.map((value, phase) => finite(pattern.phasePowerKw?.[phase]) && finite(voltageV?.[phase]) && voltageV[phase] > 0
+      ? pattern.phasePowerKw[phase] * 1000 / voltageV[phase] : value),
     weight: item.weight / totalWeight * pattern.durationMs / item.entry.coverageMs,
   })));
   const phaseCurrentA = [0, 1, 2].map(phase => scenarios.reduce((sum, scenario) => sum + scenario.phaseCurrentA[phase] * scenario.weight, 0));
@@ -176,6 +189,7 @@ export function predictHousehold(reference, { at, now, outdoorC = null, trailing
     limited: selected.length < 3 || method !== 'similar-conditions', noHistory: false,
     targetOutdoorC: outdoorC, temperatureRangeC: temperatures.length ? [Math.min(...temperatures), Math.max(...temperatures)] : null,
     oldestAt: Math.min(...selected.map(item => item.entry.at)), newestAt: Math.max(...selected.map(item => item.entry.at)),
-    unknownCharger2: selected.some(item => item.entry.unknownCharger2), legacy: selected.some(item => item.entry.legacy), coverageMs,
+    unknownCharger2: selected.some(item => item.entry.unknownCharger2), legacy: selected.some(item => item.entry.legacy),
+    retrospectiveVoltage: selected.some(item => item.entry.retrospectiveVoltage), coverageMs,
   } };
 }

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { voltageStore } from './voltage-fixture.js';
 import { Store } from '../src/storage/store.js';
 import { DailyTimingBenchmark, Envelope, chartRange, getChartData } from '../src/app/chart-data.js';
 import { createChartService } from '../src/app/chart-service.js';
@@ -78,7 +79,7 @@ test('partial energy, missing prices and telemetry gaps never become a full-day 
 });
 
 test('learning histories retain the estimate known at each assessment and preserve unknown auxiliary evidence', () => {
-  const store = new Store(':memory:');
+  const store = voltageStore();
   try {
     const extra = { source: 'controller-learning', device: 'offline', unit: 'EUR/cycle', quality: ['estimated'], raw: { count: 3, basis: 'Estimated completed cycles', modelVersion: 1 } };
     put(store, 'learning_profit', 1.25, from - 5 * 24 * HOUR, extra);
@@ -98,7 +99,7 @@ test('learning histories retain the estimate known at each assessment and preser
 });
 
 test('controller estimates remain isolated and reduction requests end at their recorded expiry', () => {
-  const store = new Store(':memory:');
+  const store = voltageStore();
   try {
     put(store, 'auxiliary_power', 6, from + HOUR, { source: 'controller-estimate', device: 'simulated', unit: 'kW', quality: ['estimated'] });
     put(store, 'controller_phase', 2, from - 4 * HOUR, { source: 'controller', device: 'simulated', unit: 'state', quality: ['requested'], raw: { expiresAt: from + 2 * HOUR } });
@@ -115,7 +116,7 @@ test('controller estimates remain isolated and reduction requests end at their r
 });
 
 test('auxiliary power uses documented percentage with installed capacity and expires instead of carrying indefinitely', () => {
-  const store = new Store(':memory:');
+  const store = voltageStore();
   try {
     const extra = { source: 'husdata-h66', unit: '%', raw: { verified: 'installed', usableForControl: true, ratedPowerKw: 9 } };
     put(store, 'auxiliary_output', 33, from + HOUR, extra);
@@ -131,7 +132,7 @@ test('auxiliary power uses documented percentage with installed capacity and exp
 });
 
 test('timing estimates are independent of the selected axis and display decimation', () => {
-  const store = new Store(':memory:');
+  const store = voltageStore();
   try {
     const market = { fetchedAt: from, intervals: [interval(from, from + 4 * HOUR, 0), interval(from + 4 * HOUR, from + 24 * HOUR, 20)] };
     recordHeatPumpConfiguration(store, 'mqtt', { heatPumpCompressorKw: 3, circulationKw: 0, auxRatedKw: 9 }, from);
@@ -151,7 +152,7 @@ test('timing estimates are independent of the selected axis and display decimati
 });
 
 test('charger timing uses coherent current acquisitions on every axis', () => {
-  const store = new Store(':memory:');
+  const store = voltageStore();
   try {
     const market = { fetchedAt: from, intervals: [interval(from, from + HOUR, 0), interval(from + HOUR, from + 24 * HOUR, 20)] };
     for (const at of [from, from + 30 * MINUTE]) for (let phase = 1; phase <= 3; phase++)
@@ -166,7 +167,7 @@ test('charger timing uses coherent current acquisitions on every axis', () => {
 });
 
 test('old charger timing uses current known rates and historical spot without changing control prices or history', () => {
-  const store = new Store(':memory:');
+  const store = voltageStore();
   try {
     const current = from + 60 * 24 * HOUR;
     const currentContract = { periods: [{ ...contract.periods[0], from: current }] };
@@ -255,7 +256,7 @@ test('coverage explains missing power separately from incomplete full-day prices
 });
 
 test('legacy heat-pump estimates do not replace missing original equipment and dated power assumptions', () => {
-  const store = new Store(':memory:');
+  const store = voltageStore();
   try {
     const market = { fetchedAt: from, intervals: [interval(from, from + 24 * HOUR, 10)] };
     const metadata = [
@@ -280,11 +281,11 @@ test('legacy heat-pump estimates do not replace missing original equipment and d
 });
 
 test('current charger evidence retains its electrical basis and missing prices still report available power', () => {
-  const store = new Store(':memory:');
+  const store = voltageStore();
   try {
     for (let phase = 1; phase <= 3; phase++) put(store, `ev1_current_l${phase}`, 3, from);
     currentPower(store, 1, from + 30 * MINUTE, { unit: 'kW', raw: {
-      basis: 'Three coherent phase currents × nominal 230 V; not an energy meter',
+      basis: 'Three coherent phase currents × recorded phase voltage; not an energy meter',
     } });
     currentPower(store, 1, from + HOUR, { unit: 'kW' });
     const market = { fetchedAt: from, intervals: [interval(from, from + 24 * HOUR, 10)] };
@@ -303,7 +304,7 @@ test('current charger evidence retains its electrical basis and missing prices s
 });
 
 test('simulated timing evidence cannot inherit a physical-meter claim or enter household results', () => {
-  const store = new Store(':memory:');
+  const store = voltageStore();
   try {
     const prices = [{ start: from, end: from + 24 * HOUR, allInCentsPerKWh: 10 }];
     put(store, 'heat_pump_power', 2, from, { source: 'controller-estimate', device: 'simulated', unit: 'kW',
@@ -325,7 +326,7 @@ test('simulated timing evidence cannot inherit a physical-meter claim or enter h
 });
 
 test('legacy CSV spot slots enable charger timing on short and compact ranges without provider snapshots', async () => {
-  const store = new Store(':memory:'), directory = mkdtempSync(join(tmpdir(), 'stmq-timing-'));
+  const store = voltageStore(), directory = mkdtempSync(join(tmpdir(), 'stmq-timing-'));
   try {
     const file = join(directory, 'synthetic-prices.csv');
     const rows = ['unix_time,price,heat_on,temp_in,temp_ga,temp_out'];
@@ -363,7 +364,7 @@ test('legacy CSV spot slots enable charger timing on short and compact ranges wi
 });
 
 test('rate assumptions in the daily baseline are flagged even when charging has dated rates', () => {
-  const store = new Store(':memory:');
+  const store = voltageStore();
   try {
     const partialContract = { periods: [{ ...contract.periods[0], from: from + HOUR }] };
     const market = { fetchedAt: from, intervals: [interval(from, from + HOUR, -10), interval(from + HOUR, from + 24 * HOUR, 20)] };
@@ -383,7 +384,7 @@ test('rate assumptions in the daily baseline are flagged even when charging has 
 });
 
 test('archived solar forecast remains separate from future forecast and is never filled into unknown history', () => {
-  const store = new Store(':memory:');
+  const store = voltageStore();
   try {
     put(store, 'solar_radiation', 300, now - 10 * MINUTE, { unit: 'W/m²', source: 'fmi', quality: ['forecast'] });
     const weather = { fetchedAt: now, forecast: [{ start: now, end: now + HOUR, outdoorC: 1, solarRadiationWm2: 450, issuedAt: null, issuedAtBasis: 'fetched-snapshot', fetchedAt: now }] };
@@ -396,7 +397,7 @@ test('archived solar forecast remains separate from future forecast and is never
 });
 
 test('mixed solar providers retain their own provenance through chart points and archived holds', () => {
-  const store = new Store(':memory:');
+  const store = voltageStore();
   try {
     const fetchedAt = now - 5 * MINUTE;
     put(store, 'solar_radiation', 300, now - 10 * MINUTE, { unit: 'W/m²', source: 'controller-estimate', quality: ['estimated'],
@@ -421,7 +422,7 @@ test('mixed solar providers retain their own provenance through chart points and
 });
 
 test('historical outdoor readings identify sources without turning model estimates into sensor readings', () => {
-  const store = new Store(':memory:');
+  const store = voltageStore();
   try {
     for (const [source, minutes] of [['mqtt-temperature', 4], ['husdata-h66', 3], ['fmi', 2], ['openmeteo', 1]])
       put(store, 'outdoor_temperature', -minutes, now - minutes * MINUTE, { source });
@@ -444,7 +445,7 @@ test('Finnish inclusive calendar dates preserve 23/25-hour days and reject inval
 });
 
 test('combined power requires all three phases from the same timestamp and acquisition', () => {
-  const store = new Store(':memory:');
+  const store = voltageStore();
   try {
     for (let phase = 1; phase <= 3; phase++) put(store, `property_current_l${phase}`, phase * 10, from);
     put(store, 'property_current_l1', 10, from + MINUTE);
@@ -456,7 +457,7 @@ test('combined power requires all three phases from the same timestamp and acqui
     assert.equal(result.series.property_power[0].y, 13.8);
     assert(result.series.property_power.some(point => point.x === from + MINUTE && point.y === null));
     assert(result.series.charger_power.every(point => point.y === null));
-    assert.match(result.meta.powerEstimate, /Phase allocation and energy integration are estimates/);
+    assert.match(result.meta.powerEstimate, /historical per-phase voltage estimates and assume unity power factor/);
     assert(!Object.hasOwn(result.series, 'property_current_l1'));
     const phaseView = get(store, { left: 'phases' });
     assert.equal(phaseView.series.property_current_l1[0].y, 10);
@@ -465,7 +466,7 @@ test('combined power requires all three phases from the same timestamp and acqui
 });
 
 test('Easee power combines one acquisition with independent phase event timestamps', () => {
-  const store = new Store(':memory:');
+  const store = voltageStore();
   try {
     const receivedAt = from + MINUTE;
     const timestamps = [from - 4 * HOUR, from - 45 * MINUTE, from + 1300];
@@ -483,8 +484,9 @@ test('Easee power combines one acquisition with independent phase event timestam
     }
     put(store, 'indoor_temperature', 21, from + 500);
     const result = get(store);
-    assert.deepEqual(result.series.property_power, [{ x: timestamps[2], y: 13.8 }]);
-    assert.deepEqual(result.meta.lastReadings.property_power, { x: timestamps[2], y: 13.8 });
+    assert.deepEqual(result.series.property_power.map(({x,y}) => ({x,y})), [{ x: timestamps[2], y: 13.8 }]);
+    assert.deepEqual(result.meta.lastReadings.property_power, { x: timestamps[2], y: 13.8,
+      voltageBasis: 'recorded-voltage-estimate', voltageV: [230, 230, 230], powerFactorAssumption: 1 });
     assert.equal(historySeriesAt(result).property_power.at(-1).y, 13.8);
     assert.equal(historySeriesAt(result).charger_power.at(-1).y, 0);
     assert.equal(result.series.indoor_temperature[0].y, 21);
@@ -495,7 +497,7 @@ test('Easee power combines one acquisition with independent phase event timestam
 });
 
 test('Easee total power accepts independent event clocks but rejects missing phases and mixed devices or acquisitions', () => {
-  const store = new Store(':memory:');
+  const store = voltageStore();
   try {
     const phase = (number, at, extra = {}) => put(store, `property_current_l${number}`, 10, at, {
       source: 'easee', device: 'fixture-equalizer', receivedAt: from + MINUTE, ...extra,
@@ -513,7 +515,7 @@ test('Easee total power accepts independent event clocks but rejects missing pha
     phase(1, from + 4 * MINUTE, { receivedAt: from + 5 * MINUTE });
     phase(2, from + 4 * MINUTE + 100, { receivedAt: from + 5 * MINUTE });
     const result = get(store);
-    assert.deepEqual(result.series.property_power.filter(point => point.y !== null), [
+    assert.deepEqual(result.series.property_power.filter(point => point.y !== null).map(({x,y}) => ({x,y})), [
       { x: from + 30_000, y: 6.9 }, { x: from + MINUTE + 30_001, y: 6.9 },
     ]);
     assert.equal(result.meta.lastReadings.property_power.y, null);
@@ -522,7 +524,7 @@ test('Easee total power accepts independent event clocks but rejects missing pha
 });
 
 test('Easee power loads unchanged phases outside historical scan bounds without joining other polls', () => {
-  const store = new Store(':memory:');
+  const store = voltageStore();
   try {
     const receivedAt = from + HOUR;
     const timestamps = [from - 5 * 24 * HOUR, from - 4 * HOUR, from + MINUTE];
@@ -532,8 +534,9 @@ test('Easee power loads unchanged phases outside historical scan bounds without 
     const count = store.db.prepare('SELECT count(*) AS total FROM observations').get().total;
     for (const chartNow of [now, now + 2 * 24 * HOUR]) {
       const result = get(store, { now: chartNow });
-      assert.deepEqual(result.series.property_power, [{ x: from + MINUTE, y: 6.9 }]);
-      assert.deepEqual(result.meta.lastReadings.property_power, { x: from + MINUTE, y: 6.9 });
+      assert.deepEqual(result.series.property_power.map(({x,y}) => ({x,y})), [{ x: from + MINUTE, y: 6.9 }]);
+      assert.deepEqual(result.meta.lastReadings.property_power, { x: from + MINUTE, y: 6.9,
+        voltageBasis: 'recorded-voltage-estimate', voltageV: [230, 230, 230], powerFactorAssumption: 1 });
     }
     assert.equal(store.db.prepare('SELECT count(*) AS total FROM observations').get().total, count);
   } finally { store.close(); }
@@ -541,7 +544,7 @@ test('Easee power loads unchanged phases outside historical scan bounds without 
 
 test('Easee power keeps missing or unknown-time phases invalid after a complete older poll', () => {
   for (const invalid of [{ value: null }, { sourceTime: null }, { sourceTime: now + MINUTE, quality: ['future_source_time'] }]) {
-    const store = new Store(':memory:');
+    const store = voltageStore();
     try {
       const putPhase = (phase, at, extra = {}) => store.observation({ source: 'easee', device: 'fixture-equalizer',
         signal: `property_current_l${phase}`, value: 10, unit: 'A', sourceTime: at, receivedAt: at, ...extra });
@@ -557,7 +560,7 @@ test('Easee power keeps missing or unknown-time phases invalid after a complete 
 });
 
 test('a newer invalid Easee poll supersedes a complete poll with the same source timestamps', () => {
-  const store = new Store(':memory:');
+  const store = voltageStore();
   try {
     for (const receivedAt of [from + MINUTE, from + 2 * MINUTE]) {
       for (const phase of [1, 2, 3]) put(store, `property_current_l${phase}`,
@@ -566,13 +569,13 @@ test('a newer invalid Easee poll supersedes a complete poll with the same source
         });
     }
     const result = get(store);
-    assert.deepEqual(result.series.property_power, [{ x: from, y: null }]);
+    assert.deepEqual(result.series.property_power.map(({x,y}) => ({x,y})), [{ x: from, y: null }]);
     assert.equal(historySeriesAt(result).property_power.at(-1).y, null);
   } finally { store.close(); }
 });
 
 test('all right-axis history stays present; bad readings and long gaps remain breaks, absence remains visible', () => {
-  const store = new Store(':memory:');
+  const store = voltageStore();
   try {
     put(store, 'indoor_temperature', 20, from, { quality: ['absence_heating_off_approximate', 'excluded_occupied_training'] });
     put(store, 'indoor_temperature', 0, from + HOUR, { quality: ['suspect_zero_indoor'] });
@@ -592,7 +595,7 @@ test('all right-axis history stays present; bad readings and long gaps remain br
 });
 
 test('shading respects bounded requests, DHWR pulses and separately verified compressor routing', () => {
-  const store = new Store(':memory:');
+  const store = voltageStore();
   try {
     csvRequest(store, 0, from - 5 * MINUTE, { quality: ['requested_not_observed'], unit: 'legacy_command' });
     csvRequest(store, 15, from + 10 * MINUTE);
@@ -624,7 +627,7 @@ test('shading respects bounded requests, DHWR pulses and separately verified com
 });
 
 test('home compressor activity separates stopped, known routes and fresh running with unknown routing', t => {
-  const store = new Store(':memory:'); t.after(() => store.close());
+  const store = voltageStore(); t.after(() => store.close());
   const start = from + HOUR;
   const report = (signal, value, minute, extra = {}) => put(store, signal, value, start + minute * MINUTE,
     { source: 'husdata-h66', unit: 'state', raw: { verified: true, usableForControl: true }, ...extra });
@@ -653,7 +656,7 @@ test('home compressor activity separates stopped, known routes and fresh running
 });
 
 test('dense combined compressor activity bounds each state while preserving its occupied duration', t => {
-  const store = new Store(':memory:'); t.after(() => store.close());
+  const store = voltageStore(); t.after(() => store.close());
   const start = from + HOUR, count = 804;
   const extra = { source: 'husdata-h66', unit: 'state', raw: { verified: true, usableForControl: true } };
   for (let i = 0; i < count; i++) {
@@ -674,7 +677,7 @@ test('dense combined compressor activity bounds each state while preserving its 
 });
 
 test('all-in history uses nearest dated rates with an explicit assumption and still requires a contract', () => {
-  const store = new Store(':memory:');
+  const store = voltageStore();
   try {
     put(store, 'spot_price', -4, from);
     put(store, 'spot_price', 8, from + 8 * HOUR);
@@ -696,7 +699,7 @@ test('all-in history uses nearest dated rates with an explicit assumption and st
 });
 
 test('stored market snapshots preserve old prices and latest differently partitioned revisions win', () => {
-  const store = new Store(':memory:');
+  const store = voltageStore();
   try {
     put(store, 'spot_price', 99, from);
     store.snapshot({ kind: 'market', source: 'fixture', fetchedAt: from - HOUR,
@@ -714,7 +717,7 @@ test('stored market snapshots preserve old prices and latest differently partiti
 });
 
 test('provider intervals override reconstructed spot slots across partial and missing slots without overlap', () => {
-  const store = new Store(':memory:');
+  const store = voltageStore();
   try {
     for (let slot = 0; slot < 96; slot++)
       put(store, 'spot_price', slot === 1 ? null : 10, from + slot * 15 * MINUTE + 7000);
@@ -735,7 +738,7 @@ test('provider intervals override reconstructed spot slots across partial and mi
 });
 
 test('weather and future prices are clipped to selected days and stale forecasts stay absent', () => {
-  const store = new Store(':memory:');
+  const store = voltageStore();
   try {
     const market = { fetchedAt: now, intervals: [interval(from, from + 24 * HOUR, 5), interval(from + 24 * HOUR, from + 48 * HOUR, 5)] };
     const forecast = [{ start: from, end: from + 48 * HOUR, outdoorC: -5, issuedAt: null, issuedAtBasis: 'fetched-snapshot', fetchedAt: now }];
@@ -752,7 +755,7 @@ test('weather and future prices are clipped to selected days and stale forecasts
 });
 
 test('simulation remains isolated and only the supplied known synthetic outlook is shown', () => {
-  const store = new Store(':memory:');
+  const store = voltageStore();
   try {
     put(store, 'indoor_temperature', 21, from, { source: 'simulation' });
     put(store, 'indoor_temperature', 18, from);
@@ -779,7 +782,7 @@ test('pixel envelope retains peaks, endpoints and missing-data breaks within a b
 });
 
 test('combined history scans beyond old 5000-row limit and retains both date-range ends', () => {
-  const store = new Store(':memory:');
+  const store = voltageStore();
   try {
     store.transaction(() => {
       for (let index = 0; index < 12_000; index++) put(store, 'indoor_temperature', index === 8000 ? 30 : 20, from + index * 1000);
@@ -795,7 +798,7 @@ test('combined history scans beyond old 5000-row limit and retains both date-ran
 
 test('compact original-row queries match expanded observations for duplicates, missing phases, gaps and source precedence', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-chart-import-'));
-  const store = new Store(':memory:');
+  const store = voltageStore();
   try {
     const stmqPath = join(directory, 'stmq.csv'), easeePath = join(directory, 'easee.csv');
     writeFileSync(stmqPath, 'unix_time,price,heat_on,temp_in,temp_ga,temp_out\n' + [
@@ -849,7 +852,7 @@ test('worker cache invalidates on new observations; aborts release the bounded q
 
 test('native scalar readings remain authoritative when CSV history is imported later, for every date-range path', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-chart-precedence-'));
-  const store = new Store(':memory:');
+  const store = voltageStore();
   try {
     put(store, 'indoor_temperature', 21, from);
     put(store, 'indoor_temperature', 23, from);
@@ -874,7 +877,7 @@ test('native scalar readings remain authoritative when CSV history is imported l
 });
 
 test('live charts recover old unchanged readings and expose original timestamps for display-only tails', () => {
-  const store = new Store(':memory:');
+  const store = voltageStore();
   try {
     const recordedAt = from - 2 * 24 * HOUR;
     for (const [signal, value] of [['indoor_temperature', 21], ['downstairs_temperature', 20], ['bedroom_temperature', 19], ['garage_temperature', 12], ['outdoor_temperature', -4]])
@@ -908,7 +911,7 @@ test('live charts recover old unchanged readings and expose original timestamps 
 });
 
 test('raw indoor location history preserves independent values and missing optional sensors', () => {
-  const store = new Store(':memory:');
+  const store = voltageStore();
   try {
     put(store, 'indoor_temperature', 23, from);
     let result = get(store);
@@ -928,7 +931,7 @@ test('raw indoor location history preserves independent values and missing optio
 });
 
 test('latest invalid readings and incomplete current acquisitions cannot revive old carried-forward values', () => {
-  const store = new Store(':memory:');
+  const store = voltageStore();
   try {
     const old = from - 2 * 24 * HOUR;
     put(store, 'indoor_temperature', 21, old);

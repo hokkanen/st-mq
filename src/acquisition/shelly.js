@@ -4,6 +4,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import { createCaravanEnergy } from './shelly-energy.js';
 import { equipmentSignature, equipmentMeterIdentity } from './equipment-config.js';
 import { GARAGE_TEMPERATURE_POLL_MS, GARAGE_TEMPERATURE_MAX_AGE_MS } from '../domain/temperature-reports.js';
+import { readPlanningVoltage } from '../storage/voltage.js';
 
 const scalar = value => typeof value === 'number' && Number.isFinite(value);
 const valid = (value, min, max) => scalar(value) && value >= min && value <= max;
@@ -27,7 +28,7 @@ const definitions = device => [
   ...(stateName(device) ? [{ signal: stateName(device), unit: 'state', label: device.kind === 'door' ? 'Door' : 'Switch', required: true }] : []),
   ...(hasTemperature(device) ? [{ signal: tempName(device), unit: 'degC', label: device.role === 'garage' ? 'Garage rear' : 'Temperature', required: true }] : []),
   ...(metered(device) ? [{ signal: `${device.role}_power`, unit: 'kW', label: 'Power', required: true },
-    { signal: `${device.role}_current`, unit: 'A', label: 'Current', required: true }] : []),
+    { signal: `${device.role}_current`, unit: 'A', label: 'Current', required: device.generation > 1 }] : []),
   ...device.customReadings,
 ];
 const property = (object, path) => path?.split('.').reduce((value, key) => value && typeof value === 'object' && Object.hasOwn(value, key) ? value[key] : undefined, object);
@@ -218,10 +219,18 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
       customStatus(device, { [mapping.component]: { tC: value } }, at, false); return true;
     }
     if (metered(device) && suffix === `${switchPath}/power`) {
-      const watts = payload.trim() ? Number(payload) : NaN, voltage = device.nominalVoltage ?? 230;
+      const watts = payload.trim() ? Number(payload) : NaN;
+      // Gen1 reports watts but no current or phase identity. Its display-only
+      // equivalent current uses the established mean supply estimate, with the
+      // unknown phase and unity-power-factor assumption kept explicit.
+      const estimate = readPlanningVoltage(store, { input: engine.config?.input ?? 'live', now: at });
+      const voltage = estimate.voltageV.every(value => Number.isFinite(value) && value > 0)
+        ? estimate.voltageV.reduce((sum, value) => sum + value, 0) / 3 : null;
       emit(device, `${device.role}_power`, valid(watts, 0, 25000) ? watts / 1000 : null, 'kW', at, valid(watts, 0, 25000) ? [] : ['invalid-value']);
-      emit(device, `${device.role}_current`, valid(watts, 0, 25000) ? watts / voltage : null, 'A', at,
-        valid(watts, 0, 25000) ? ['estimated'] : ['invalid-value'], { basis: 'power-over-nominal-voltage', estimated: true }); return true;
+      emit(device, `${device.role}_current`, valid(watts, 0, 25000) && voltage !== null ? watts / voltage : null, 'A', at,
+        !valid(watts, 0, 25000) ? ['invalid-value'] : voltage === null ? ['voltage-estimate-unavailable'] : ['estimated'],
+        { basis: 'power-over-estimated-mean-voltage', estimated: true, voltageV: voltage,
+          voltageBasis: estimate.basis, phase: 'unknown', powerFactorAssumed: 1 }); return true;
     }
     if (metered(device) && suffix === `${switchPath}/energy`) {
       const wattMinutes = payload.trim() ? Number(payload) : NaN;

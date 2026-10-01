@@ -73,18 +73,29 @@ export function historyTooltipLabel(item) {
   else if (['garage_room_target', 'garage_effective_target'].includes(key)) details.push('Heat-pump controller target readback; not measured room temperature');
   else if (key === 'garage_away_mode') details.push('saved mode choice; not confirmation of heating');
   else if (key === 'garage_native_energy') details.push('cumulative native meter counter; not interval consumption');
+  else if (/^voltage_estimate_l[123]$/.test(key)) {
+    details.push('saved smoothed voltage estimate; not a live measurement');
+    if (raw.voltageAvailability === 'held') details.push('retained estimate while voltage reporting is unavailable');
+  }
   else if (key === 'garage_energy') {
     details.push(raw.basis === 'counter-delta' ? 'native meter difference over the recorded interval'
       : raw.basis === 'power-trapezoid' ? 'integrated reported power over the recorded interval' : 'recorded interval energy; measurement basis unavailable');
     if (raw.provisional) details.push('provisional estimate');
     details.push(raw.accuracyVerified === true ? 'accuracy verified' : 'accuracy unverified');
   }
-  else if (raw.equivalentCurrent) details.push('interval average', 'equivalent at 230 V');
+  else if (raw.equivalentCurrent) details.push('interval average', 'equivalent current; unity power factor assumed');
   else if (['property_power', 'charger_power', 'charger2_power', 'caravan_power'].includes(key) && Number.isFinite(raw.intervalStart)) details.push('interval average from recorded energy');
   else if (key.endsWith('_energy') || /_energy_l[123]$/.test(key)) details.push('recorded interval energy');
   else if (key === 'solar_radiation') details.push('historical solar estimate from the forecast available at the time');
   else if (key.endsWith('_forecast')) details.push('forecast');
   if (raw.assumedPrice) details.push('assumed price');
+  if (raw.voltageBasis) {
+    const voltages = (Array.isArray(raw.voltageV) ? raw.voltageV : [raw.voltageV]).filter(Number.isFinite);
+    details.push(raw.retrospectiveVoltage ? 'retrospective voltage assumption: first established database estimate'
+      : voltages.length ? 'historical voltage estimate' : 'voltage estimate unavailable');
+    if (voltages.length) details.push(`${voltages.map(value => Number(value.toFixed(1))).join(' / ')} V`);
+    if (!raw.equivalentCurrent && raw.powerFactorAssumption === 1) details.push('unity power factor assumed');
+  }
   const session = sessionPointDetail(raw);
   if (session) details.push(session);
   else if (raw.auditOnly) details.push('meter check only');

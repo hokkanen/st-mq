@@ -10,7 +10,8 @@ export const timingSources = {
   measured: { label: 'Meter-based', short: 'metered', explanation: 'Uses qualified dedicated electrical intervals with their recorded measurement basis.' },
   observed: { label: 'Operation estimate', short: 'operation estimate', explanation: 'Uses reported compressor activity and configured component powers. Energy is estimated, not separately metered.' },
   recorded: { label: 'Recorded energy estimate', short: 'recorded energy', explanation: 'Uses reported active power or recorded voltage and current, integrated over each saved interval. Phase allocation and energy remain estimates; cumulative meter checks do not revise this history.' },
-  currents: { label: 'Current estimate', short: 'current estimate', explanation: 'Uses phase-current readings at 230 V to estimate power. This is not a direct active-power or energy measurement.' },
+  currents: { label: 'Current estimate', short: 'current estimate', explanation: 'Uses phase-current readings with the historical per-phase voltage estimates and assumes unity power factor. This is not a direct active-power or energy measurement.' },
+  'retrospective-currents': { label: 'Retrospective current estimate', short: 'retrospective estimate', explanation: 'CSV current history before voltage recording uses the first established per-phase voltage estimates retrospectively and assumes unity power factor. The original currents remain unchanged; voltage and energy are not measurements of that earlier period.' },
   unknown: { label: 'Basis unrecorded', short: 'basis unrecorded', explanation: 'The stored power value does not say how it was measured or estimated. Its basis cannot be classified now.' },
   simulated: { label: 'Simulated', short: 'simulated', explanation: 'Uses simulated input, not measured household consumption.' },
 };
@@ -59,7 +60,7 @@ function span(from, to, prefix) {
 }
 
 function sourcesFor(result) {
-  const order = ['measured', 'observed', 'recorded', 'currents', 'unknown', 'simulated'];
+  const order = ['measured', 'observed', 'recorded', 'currents', 'retrospective-currents', 'unknown', 'simulated'];
   return (result.evidence?.sources ?? []).filter(source => source.durationMs > 0 && source.share > 0 && timingSources[source.key])
     .sort((a, b) => order.indexOf(a.key) - order.indexOf(b.key));
 }

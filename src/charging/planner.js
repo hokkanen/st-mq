@@ -1,5 +1,6 @@
 const HOUR = 3_600_000, EPS = 1e-7, MIN_CURRENT_A = 6;
 const MIN_PERIOD_MS = 15 * 60_000, MIN_PAUSE_MS = 15 * 60_000;
+const STABLE_PERIOD_MS = 2 * 60_000, STABLE_COST_CENTS = 0.1;
 const finite = Number.isFinite;
 const unique = values => [...new Set(values)];
 const three = value => Array.isArray(value) && value.length === 3 && value.every(item => finite(item) && item >= 0);
@@ -32,7 +33,10 @@ function electrical(charger, supply = {}) {
     allocation ? Math.min(...allocation) : Infinity,
     finite(value(charger, 'nativeCurrentA')) ? value(charger, 'nativeCurrentA') : Infinity,
     finite(value(charger, 'vehicleCurrentA')) ? value(charger, 'vehicleCurrentA') : Infinity) : null;
-  const observedVoltage = value(charger, 'voltageV') ?? supply.voltageV;
+  // Published per-phase estimates describe future supply. Live voltage remains
+  // the explicit startup fallback when no planning estimate was supplied.
+  const observedVoltage = Object.hasOwn(supply, 'planningVoltageV') ? supply.planningVoltageV
+    : value(charger, 'voltageV') ?? supply.voltageV;
   const voltageV = three(observedVoltage) ? observedVoltage.reduce((sum, item) => sum + item, 0) / 3 : observedVoltage;
   const available = finite(currentA) && currentA >= 0 && finite(voltageV) && voltageV >= 200 && voltageV <= 250;
   return { phases, currentA, voltageV, available, powerKw: available ? 3 * voltageV * currentA / 1000 : null };
@@ -78,7 +82,10 @@ export function forecastCharger({ now, deadlineAt, charger, supply = {} } = {}) 
   const uncertain = !targetKnown(charger);
   const actual = value(charger, 'actualCurrentA');
   const actualPower = value(charger, 'powerKw');
-  const actualCurrentA = finite(actual) ? actual : finite(actualPower) && electric.voltageV > 0 ? actualPower * 1000 / (3 * electric.voltageV) : null;
+  const liveVoltage = value(charger, 'voltageV') ?? supply.voltageV;
+  const liveVoltageV = three(liveVoltage) ? liveVoltage.reduce((sum, item) => sum + item, 0) / 3 : liveVoltage;
+  const actualCurrentA = finite(actual) ? actual : finite(actualPower) && liveVoltageV >= 200 && liveVoltageV <= 250
+    ? actualPower * 1000 / (3 * liveVoltageV) : null;
   const reservedCurrentA = charging && finite(actualCurrentA) ? Math.max(electric.currentA, actualCurrentA) : electric.currentA;
   return { ...base, state: uncertain ? 'uncertain' : 'forecast', known: !uncertain,
     reason: uncertain ? 'vehicle-stop-unknown' : 'automatic-current-forecast', startAt, endAt, finishAt,
@@ -537,7 +544,7 @@ function splitCandidate(best, jobs, intervals) {
  * periods may end, but the final release remains enabled beyond the minimum and
  * deadline. Allocated current limits are proposals for a future capable adapter;
  * the externally balanced charger never receives a current proposal. */
-export function planChargers({ now, chargers = [], prices = [], household = [], supply, fixedPeriods = {}, forecastOnly = false, priority = 'balanced' } = {}) {
+export function planChargers({ now, chargers = [], prices = [], household = [], supply, fixedPeriods = {}, previousPeriods = {}, forecastOnly = false, priority = 'balanced' } = {}) {
   if (!finite(now)) throw new Error('Charging planner requires numeric UTC time');
   if (!['balanced','charger1','charger2'].includes(priority)) throw new Error('Invalid charging priority');
   if (!Array.isArray(chargers) || new Set(chargers.map(charger => charger.id)).size !== chargers.length)
@@ -704,6 +711,29 @@ export function planChargers({ now, chargers = [], prices = [], household = [], 
     }
     continuous = best;
     best = splitCandidate(best, jobs, intervals);
+  }
+  // Reassess all retained periods together so stability cannot spend the same
+  // shared headroom twice. This applies only to future schedules with unchanged
+  // intent (the runtime owns that gate), never to imminent release or a running
+  // period. Small savings below a tenth of a cent do not warrant minute-scale
+  // churn, but feasibility and every charger's cost are checked again.
+  const closePeriods = (before, after) => Array.isArray(before) && before.length === after.length
+    && before.every((period, index) => Number.isSafeInteger(period.startAt) && period.startAt > now + STABLE_PERIOD_MS
+      && after[index].startAt > now + STABLE_PERIOD_MS
+      && Math.abs(period.startAt - after[index].startAt) <= STABLE_PERIOD_MS
+      && (period.endAt === null && after[index].endAt === null
+        || Number.isSafeInteger(period.endAt) && Number.isSafeInteger(after[index].endAt)
+          && Math.abs(period.endAt - after[index].endAt) <= STABLE_PERIOD_MS));
+  if (!allFixed && !forecastOnly && best.feasible && jobs.every(job =>
+    closePeriods(previousPeriods[job.charger.id], best.periods?.[job.charger.id] ?? [{ startAt: best.starts[job.charger.id], endAt: null }]))) {
+    const periods = Object.fromEntries(jobs.map(job => [job.charger.id, previousPeriods[job.charger.id]]));
+    const starts = Object.fromEntries(jobs.map(job => [job.charger.id, periods[job.charger.id][0].startAt]));
+    const retained = { ...simulate({ starts, periods, jobs, intervals }), starts, periods };
+    if (retained.feasible && retained.costCents <= best.costCents + STABLE_COST_CENTS
+      && retained.states.every(item => item.costCents <= best.states.find(other => other.charger.id === item.charger.id).costCents + STABLE_COST_CENTS)) {
+      best = retained;
+      result.assumptions.scheduleRetained = true;
+    }
   }
   result.feasible = best.feasible && !blockedTimers.length;
   // Relax shared competition and practical switching constraints to obtain a

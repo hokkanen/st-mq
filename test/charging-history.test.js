@@ -7,6 +7,7 @@ import { Store } from '../src/storage/store.js';
 import { importCsv } from '../src/storage/history.js';
 import { householdSpans, forecastHousehold, householdReference, householdReferenceSummary } from '../src/charging/history.js';
 import { HouseholdReference, summarizeHousehold, predictHousehold, HOUR, DAY } from '../src/charging/history-reference.js';
+import { seedVoltage } from './voltage-fixture.js';
 
 const now = Date.parse('2026-09-15T01:00:00Z');
 const options = { now, deadlineAt: now + HOUR, input: 'live', voltageV: 230, timezone: 'UTC',
@@ -75,6 +76,7 @@ test('two original 0.7.5 nights immediately provide a temperature and phase awar
 
 test('known Charger 2 intervals are subtracted from an imported reference, without requiring modern property energy', async t => {
   const { store, dir } = fixture(t), date = '2026-02-14', start = Date.parse(`${date}T01:00:00Z`);
+  seedVoltage(store, now - HOUR);
   await legacy(store, dir, [date], { current: [10, 11, 12] });
   peerEnergy(store, [4,4,4].map(value=>value*230/1000), start, start + HOUR);
   const [forecast] = forecastHousehold(store, options);
@@ -245,6 +247,7 @@ test('a short native fragment replaces only its interval and retains the remaini
 
 test('a later recorded Charger 2 interval updates an already cached imported night', async t => {
   const { store, dir } = fixture(t), start = Date.parse('2026-02-14T01:00:00Z');
+  seedVoltage(store, now - HOUR);
   await legacy(store, dir, ['2026-02-14'], { current: [10, 11, 12] });
   const [before] = forecastHousehold(store, options);
   assert.deepEqual(before.phaseCurrentA, [10, 11, 12]);
@@ -254,16 +257,23 @@ test('a later recorded Charger 2 interval updates an already cached imported nig
   assert.equal(after.reference.unknownCharger2, false);
 });
 
-test('the first voltage report adds energy history to the existing legacy index without rebuilding its archive', async t => {
+test('the first mature voltage estimate enables retrospective CSV conversion and peer subtraction', async t => {
   const { store, dir } = fixture(t);
   await legacy(store, dir, ['2026-02-14'], { current: [10, 11, 12] });
   const start = Date.parse('2026-02-14T01:00:00Z');
   peerEnergy(store, [4,4,4].map(value=>value*230/1000), start, start + HOUR);
   const withoutVoltage = { ...options, voltageV: null };
-  const [initial] = forecastHousehold(store, withoutVoltage), reference = householdReference(store, withoutVoltage);
+  const [initial] = forecastHousehold(store, withoutVoltage);
   assert.deepEqual(initial.phaseCurrentA, [10, 11, 12]);
+  seedVoltage(store, now - HOUR);
   const [ready] = forecastHousehold(store, options);
-  assert.equal(householdReference(store, options), reference);
   ready.phaseCurrentA.forEach((value, phase) => assert.ok(Math.abs(value - (6 + phase)) < 1e-10));
   assert.equal(ready.reference.unknownCharger2, false);
+  assert.equal(ready.reference.retrospectiveVoltage, true);
+  assert.equal(householdReferenceSummary([ready]).retrospectiveVoltage, true);
+  const reference = householdReference(store, options);
+  seedVoltage(store, now, [240, 240, 240]);
+  const [later] = forecastHousehold(store, { ...options, voltageV: 240 });
+  assert.equal(householdReference(store, { ...options, voltageV: 240 }), reference);
+  later.phaseCurrentA.forEach((value, phase) => assert.ok(Math.abs(value - (6 + phase) * 230 / 240) < 1e-10));
 });

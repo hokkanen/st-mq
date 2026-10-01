@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Store } from '../src/storage/store.js';
+import { voltageStore } from './voltage-fixture.js';
 import { importCsv } from '../src/storage/history.js';
 import { Envelope, getChartData } from '../src/app/chart-data.js';
 import { addRecordedEnergy } from '../src/app/chart-energy.js';
@@ -37,7 +37,7 @@ function coherent(series, names) {
 }
 
 test('coarsened native power and phase channels retain the corresponding property value at charger peaks', t => {
-  const store = new Store(':memory:'); t.after(() => store.close());
+  const store = voltageStore(); t.after(() => store.close());
   for (let index = 0; index < property.length; index++) {
     const at = start + index * MINUTE;
     for (let phase = 1; phase <= 3; phase++) {
@@ -65,7 +65,7 @@ test('coarsened native power and phase channels retain the corresponding propert
 });
 
 test('recorded interval power aligns every load and phase while retaining original energy provenance', t => {
-  const store = new Store(':memory:'); t.after(() => store.close());
+  const store = voltageStore(); t.after(() => store.close());
   for (let index = 0; index < property.length; index++) {
     const at = start + index * MINUTE, end = at + MINUTE;
     for (const [prefix, value] of [['property', property[index]], ['ev1', charger[index]]])
@@ -91,7 +91,7 @@ test('recorded interval power aligns every load and phase while retaining origin
 
 test('compact CSV power and phases share their original timestamps and coherent values', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'chart-related-'));
-  const store = new Store(':memory:'); t.after(() => { store.close(); rmSync(directory, { recursive: true, force: true }); });
+  const store = voltageStore(); t.after(() => { store.close(); rmSync(directory, { recursive: true, force: true }); });
   const path = join(directory, 'synthetic-easee.csv');
   writeFileSync(path, ['unix_time,ch_curr1,ch_curr2,ch_curr3,eq_curr1,eq_curr2,eq_curr3',
     ...property.map((value, index) => [(start + index * MINUTE) / 1000,
@@ -126,7 +126,7 @@ test('shared sampling keeps source duplicate precedence and disconnects an omitt
 });
 
 test('conflicting original interval projections become unavailable while sequential tails remain readable', t => {
-  const store = new Store(':memory:'); t.after(() => store.close());
+  const store = voltageStore(); t.after(() => store.close());
   for (const [at, end, kw] of [[start, start + 2 * MINUTE, 3], [start + MINUTE, start + 3 * MINUTE, 6],
     [start + MINUTE, start + 3 * MINUTE, 9], [start + 3 * MINUTE, start + 4 * MINUTE, 3]])
     for (let phase = 1; phase <= 3; phase++) put(store, `ev1_energy_l${phase}`,
@@ -152,7 +152,7 @@ test('conflicting original interval projections become unavailable while sequent
 });
 
 test('dated-rate prices share source times, including negative spot and authoritative interval overrides', t => {
-  const store = new Store(':memory:'); t.after(() => store.close());
+  const store = voltageStore(); t.after(() => store.close());
   const spots = [-2, 15, -3, 12, 4, 10, 3];
   const slot = 15 * MINUTE;
   const rates = { marginCtPerKwh: 0, taxCtPerKwh: 0, vatRate: 0, tariff: 'day-night',
@@ -180,7 +180,7 @@ test('dated-rate prices share source times, including negative spot and authorit
 });
 
 test('coarse power and phases retain live carry-forward while real missing final readings still break it', t => {
-  const store = new Store(':memory:'); t.after(() => store.close());
+  const store = voltageStore(); t.after(() => store.close());
   const now = start + 10 * MINUTE;
   for (let index = 0; index <= 6; index++) for (let phase = 1; phase <= 3; phase++) {
     const at = start + index * MINUTE;

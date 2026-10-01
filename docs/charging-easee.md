@@ -213,8 +213,11 @@ averages the resulting charging power. The household reference includes original
 0.7.5 current/temperature imports and keeps older cold-weather conditions useful;
 see [household history](charging.md#planning-and-equalizer). With no usable supply-budget
 evidence it uses live net allowance without subtracting demand twice. Missing
-voltage never becomes an invented 230 V value; valid property voltage can serve
-both household chargers.
+voltage never becomes an invented nominal value. Both household chargers use the
+published smoothed per-phase voltage estimates for planned power and duration;
+valid live local voltage is provisional startup evidence until the estimates are
+established. Present-time measurements and native current limits retain their
+separate authority. See [smoothed phase voltage](recording.md#smoothed-phase-voltage).
 
 `test/charging-easee-control.test.js` covers the documented wire format,
 normalization, delayed release, replanning, restarts, in-flight OFF races,

@@ -186,7 +186,7 @@ test('mixed charger history explains interval energy and the bounded legacy snap
   assert.equal(display.basis, 'Mixed basis');
   assert.deepEqual(display.sources.map(source => source.key), ['recorded', 'currents']);
   assert.match(display.sources[0].dates, /Contributing intervals and samples/);
-  assert.match(display.sources[1].explanation, /phase-current readings at 230 V/);
+  assert.match(display.sources[1].explanation, /phase-current readings with the historical per-phase voltage estimates/);
   assert.match(display.coverageExplanation, /Saved energy intervals are used without extending into gaps.*Older power samples are held for at most 30 minutes/);
 });
 

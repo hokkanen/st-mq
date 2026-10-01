@@ -155,6 +155,7 @@ function householdReferenceText(reference, now) {
     && reference.temperatureRangeC.every(finite)) parts.push(`${number(reference.temperatureRangeC[0])} to ${number(reference.temperatureRangeC[1], '°C')}`);
   if (validTime(reference.oldestAt) && now - Number(reference.oldestAt) > 180 * 86400_000) parts.push('includes older seasonal readings');
   if (reference.unknownCharger2) parts.push('older readings may include unmeasured charging');
+  if (reference.retrospectiveVoltage) parts.push('older current readings use the first established voltage estimate retrospectively');
   if (reference.missingHours > 0) parts.push('zero other load for hours without any usable reference');
   if (reference.loading) parts.push('refreshing the reference');
   else if (reference.unavailable || reference.error) parts.push('last reference retained while refresh retries');
@@ -369,7 +370,7 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
     ['Readings & fallbacks', 'Only an identified vehicle’s charge, target and usable capacity take priority, separately for each available field. Otherwise, configured starting charge, target and capacity are used. Explicit session edits take priority for this connection; a newer vehicle charge reading can replace the starting-charge reference. Unplugging restores configured defaults. Automatic readings never erase configured values. The original reading time stays visible as it ages; a receipt time is labeled separately when measurement time is unknown.'],
     ['Target & completion', 'The displayed target comes from the vehicle when available. The requested target is used for estimates and does not change the vehicle’s own charge limit. The estimated target time is a forecast, not a command to stop charging. Estimated cost includes all energy delivered since plugging in plus the energy still needed to reach the target. It stays visible after reaching the target and grows with any further charging.'],
     ['Charging progress', 'Delivered charging energy raises the estimated charge from the starting value, allowing for charging losses and usable capacity. Added energy shows recorded grid energy since plugging in and stays until disconnection. A new vehicle reading updates only the battery estimate reference. The original vehicle reading stays separate; missing energy is not invented. The estimate can keep rising beyond the requested target. Disconnecting clears connection progress; the starting charge should be updated for each session after driving when no vehicle reading is available.'],
-    ['Energy estimate', `Three-phase charging is assumed; voltage comes from provider readings. ${energyAssumption}`],
+    ['Energy estimate', `Three-phase charging is assumed. Forecasts use saved smoothed voltage estimates for each phase, with fresh local readings used provisionally while those estimates are established. ${energyAssumption}`],
   ];
   if (!supported) explanations.push(
     ['Monitoring', 'This integration observes charging and estimates progress. Set charging schedules and current limits in the vehicle or charger controls. This page cannot start, pause or schedule charging, and has no automatic ready-by deadline.'],

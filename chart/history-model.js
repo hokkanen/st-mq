@@ -78,8 +78,8 @@ export function visible(key, preferences = {}) {
 }
 
 const seriesInfo = {
-  property_power: ['Property', 'kW · interval average from recorded energy; older history uses 230 V × current', 'property'],
-  charger_power: ['Charger 1', 'kW · interval average from recorded energy; older history uses 230 V × current', 'ev', 'fill'],
+  property_power: ['Property', 'kW · interval average from recorded energy; current history uses estimated per-phase voltage', 'property'],
+  charger_power: ['Charger 1', 'kW · interval average from recorded energy; current history uses estimated per-phase voltage', 'ev', 'fill'],
   charger2_power: ['Charger 2', 'kW · interval average from recorded native total meter energy', 'ev2', 'fill'],
   caravan_energy: ['Caravan energy', 'kWh · measured meter energy over the recorded interval', 'property', 'interval-energy'],
   caravan_power: ['Caravan power', 'kW · interval average from recorded meter energy', 'property'],

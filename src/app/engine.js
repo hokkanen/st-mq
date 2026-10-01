@@ -8,6 +8,9 @@ import { controlObservations } from './control-observations.js';
 import { heatingFeedback } from './heating-feedback.js';
 import { recordHeatPumpConfiguration } from './chart-heat-pump.js';
 import { Recorder } from '../storage/recorder.js';
+import { VoltageEstimator, voltageTelemetryAt } from '../storage/voltage.js';
+import { chargingConfiguration } from '../charging/config.js';
+import { shellyAssociation } from '../charging/shelly-evse.js';
 import { LEARNING_ALGORITHM, LEARNING_WINDOW_MS, committedLearningSample, appendLearningRecord, replayLearningJournal as replayCommittedLearning, recordLearningContext, learningCheckpointDigest } from './committed-learning.js';
 import { addFireplace, removeFireplace, fireplaceView, fireplaceRevision, FireplaceRebuildManager } from './fireplace.js';
 import { fireplaceLearningContext, withFireplaceInputs } from './fireplace-inputs.js';
@@ -390,6 +393,16 @@ export class Engine {
     this.canControl = canControl;
     const { exportDirectory, ...recorderConfig } = config.recording ?? {};
     this.recorder = new Recorder(store, { config: recorderConfig, clock });
+    const easeeVoltage = config.connections?.easee ?? {}, shellyVoltage = chargingConfiguration(config.charging).chargers.charger2;
+    const voltageSources = ['mqtt', 'providers'].includes(config.input) ? {
+      property: easeeVoltage.equalizer_id ? { source: 'easee', device: easeeVoltage.equalizer_id, mapping: 'phase-neutral' } : null,
+      ev1: easeeVoltage.charger_id ? { source: 'easee', device: easeeVoltage.charger_id,
+        mapping: JSON.stringify([easeeVoltage.charger_voltage_ids ?? [], easeeVoltage.local_ocpp?.enabled === true]) } : null,
+      ev2: shellyVoltage.enabled ? { source: 'shelly-evse', device: shellyAssociation(shellyVoltage, config.connections?.mqtt),
+        mapping: JSON.stringify(shellyVoltage.phaseMap) } : null,
+    } : config.input === 'simulated' ? undefined : { property: null, ev1: null, ev2: null };
+    this.voltage = new VoltageEstimator(store, { recorder: this.recorder, input: config.input, clock,
+      telemetryMaxAgeMs: config.acquisition?.electricityTelemetryMaxAgeMs, sourcePolicy: voltageSources });
     if (['mqtt', 'providers'].includes(config.input)) {
       const cachedWeather = store.getState('provider:weather'), health = store.getState('providers:health');
       const unsupported = value => typeof value?.source === 'string' && !WEATHER_SOURCES.includes(value.source);
@@ -489,6 +502,9 @@ export class Engine {
         && !lastIndoorReading(this.store, { signal: observation.signal, at: now, input: this.config.input,
           notBefore: boundary, includeAvailability: false });
     }
+    if (/^(?:property|ev1)_voltage_l[123]$/.test(observation.signal)) {
+      this.voltage.ingest(observation, { telemetryAt: voltageTelemetryAt(Object.values(this.latest), observation, now) });
+    } else if (/^ev2_voltage_l[123]$/.test(observation.signal)) this.voltage.ingest(observation);
     const result = observation.raw?.acquisitionOnly ? { saved: false, reason: 'acquisition-only' } : this.recorder.record(observation, { force });
     const rejectedTime = HELD_TEMPERATURE_SIGNALS.includes(observation.signal)
       && (result.rejectedSourceTime || result.reason === 'out-of-order-receipt');
@@ -964,6 +980,7 @@ export class Engine {
     this.automation.reconcileTargets();
     recordHeatPumpConfiguration(this.store, input, this.control, now);
     this.recorder.flush(now);
+    this.voltage.tick(now);
     const priorExecutor = this.executor.status?.();
     if (priorExecutor?.lastResult?.status === 'mqtt' && priorExecutor.lastResult.at > (this.applied.at ?? -Infinity)
       && ['normal','preheat','reduction','recovery'].includes(priorExecutor.phase)) {

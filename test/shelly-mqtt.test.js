@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../src/storage/store.js';
 import { createShellyCapture } from '../src/acquisition/shelly.js';
+import { seedVoltage } from './voltage-fixture.js';
 import { equipmentConfiguration } from '../src/acquisition/equipment-config.js';
 import { createCaravanEnergy } from '../src/acquisition/shelly-energy.js';
 import { Recorder } from '../src/storage/recorder.js';
@@ -125,13 +126,28 @@ test('Readback timeout and device disconnect never claim delivery', async t => {
 
 test('Gen1 plug watt-minute counter converts to kWh and labels current as an estimate', t => {
   const f = fixture(t, [{ ...caravan, generation: 1, connection: 'shelly:shellies/invented-plug' }]);
+  seedVoltage(f.store, initial, [240, 240, 240]);
   f.capture.setConnected(true);
   f.capture.receive('shellies/invented-plug/relay/0', 'on');
   f.capture.receive('shellies/invented-plug/relay/0/power', '460');
   f.capture.receive('shellies/invented-plug/relay/0/energy', '60000');
   const current = f.observations.find(row => row.signal === 'caravan_current');
-  assert.equal(current.value, 2); assert(current.quality.includes('estimated'));
+  assert.equal(current.value, 460 / 240); assert(current.quality.includes('estimated'));
+  assert.equal(current.raw.voltageV, 240);
+  assert.equal(current.raw.phase, 'unknown');
   assert.equal(f.store.getState('shelly:caravan-energy:v2').previous.counterKwh, 1);
+});
+
+test('Gen1 power and availability remain usable before voltage history can estimate current', t => {
+  const f = fixture(t, [{ ...caravan, generation: 1, connection: 'shelly:shellies/invented-plug' }]);
+  f.capture.setConnected(true);
+  f.capture.receive('shellies/invented-plug/relay/0', 'on');
+  f.capture.receive('shellies/invented-plug/relay/0/power', '460');
+  const readings = f.capture.status(initial).devices[0];
+  assert.equal(readings.available, true);
+  assert.equal(readings.readings.caravan_power.value, .46);
+  assert.equal(readings.readings.caravan_current.value, null);
+  assert.deepEqual(readings.readings.caravan_current.quality, ['voltage-estimate-unavailable']);
 });
 
 test('Adaptive counter deltas survive restart and conserve measured energy across resets', t => {
