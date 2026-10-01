@@ -140,16 +140,18 @@ main { max-width: 1428px; margin: auto; padding: 0 24px 8px; }
 h2 { font-size: 20px; font-weight: 550; margin: 0 0 14px; letter-spacing: -.4px; }
 p { font-size: 14px; line-height: 1.65; margin: 10px 0; }
 .controller-panels { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; align-items: start; margin-bottom: 24px; }
+.controller-panels:has(.controller-column details[open]) { align-items: start; }
 .controller-column { display: flex; flex-direction: column; gap: 24px; min-width: 0; }
 .controller-column > .panel { margin-bottom: 0; container: dashboard-card / inline-size; }
-@media (min-width: 801px) {
-  /* Balance with breathing room between sections; disclosure headers stay fixed. */
-  .controller-column > .panel {
-    display: flex;
-    flex-direction: column;
-    gap: var(--dashboard-balance-space, 0px);
-  }
-  .controller-column > .panel > * { flex-shrink: 0; }
+@media (min-width: 1280px) {
+  /* Equal column bottoms come from CSS stretch, without measuring status text
+     or changing section gaps after every update. Narrower desktops stack the
+     chargers and keep natural column heights instead of creating empty space. */
+  .controller-panels { align-items: stretch; }
+  .controller-column > .panel { display: flex; flex-direction: column; }
+  #providers-controls, #garage-control { flex: 1; }
+  #providers-controls > #connections-details, #garage-control > #garage-equipment-details { margin-top: auto; }
+  #providers-controls > #provider-overview { margin-bottom: 20px; }
 }
 .panel { --panel-padding: 24px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: var(--panel-padding); margin-bottom: 24px; min-width: 0; }
 .detail { display: flex; justify-content: space-between; border-bottom: 1px solid var(--border); padding: 12px 0; font-size: 13px; gap: 16px; }
@@ -704,28 +706,35 @@ details details { margin-inline-start: 24px; }
 .provider-series li[data-state="pending"]::marker { color: var(--muted); }
 .dashboard-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .dashboard-heading h2 { margin: 0; }
+.zone-summary > .dashboard-heading h2, #providers-title { flex: none; }
+#provider-overview-state { min-width: 0; }
+#provider-overview-state .status-detail-trigger { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .dashboard-heading > .muted { font-size: 11px; text-align: right; }
 .card-kicker { font-size: 10px; letter-spacing: .8px; color: var(--muted); }
 .control-badge { display: flex; align-items: center; gap: 6px; font-size: 10px; padding: 6px 8px; border-radius: 5px; background: var(--surface-soft); white-space: nowrap; }
 .control-badge > span { color: var(--muted); }
 .control-badge strong { font-weight: 550; }
 .control-badge[data-state="paused"] { color: var(--stale); }
-.home-heading-actions { display: flex; align-items: center; gap: 10px; }
+.home-heading-actions { display: flex; align-items: center; justify-content: end; gap: 10px; min-width: 0; }
+.home-heading-actions .control-badge { min-width: 0; }
+.home-heading-actions .control-badge > span { flex: none; }
+.home-heading-actions .control-badge > strong { min-width: 0; }
+.home-heading-actions .control-badge .status-detail-trigger { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chart-shortcut.secondary-button, .fireplace-shortcut.secondary-button { display: grid; place-items: center; flex: none; width: 36px; height: 36px; min-height: 36px; margin: 0; padding: 8px; color: var(--muted); border-color: var(--border); border-radius: 6px; }
 .chart-shortcut svg, .fireplace-shortcut svg { display: block; width: 19px; height: 19px; }
 .chart-shortcut:hover, .fireplace-shortcut:hover { color: var(--accent); border-color: var(--accent); }
 .home-overview { margin-top: 20px; }
-.overview-zone { display: grid; grid-template-columns: minmax(6.5ch, 1fr) minmax(0, 1fr) minmax(0, 1.2fr); align-items: start; gap: 18px; min-width: 0; font-size: clamp(19px, 7cqw, 36px); font-weight: 450; font-variant-numeric: tabular-nums; }
+.overview-zone { --overview-temperature-size: clamp(19px, 7cqw, 36px); display: grid; grid-template-columns: minmax(6.5ch, 1fr) minmax(0, 1fr) minmax(0, 1.2fr); align-items: start; gap: 18px; min-width: 0; height: 100px; font-size: var(--overview-temperature-size); font-weight: 450; font-variant-numeric: tabular-nums; }
 /* Reserve the widest signed temperature plus space inside the house walls. */
-.overview-home { grid-template-columns: minmax(6.5ch, 1fr) minmax(calc(6.5ch + 16px), 1fr) minmax(0, 1.2fr); align-items: end; }
-/* Source notes can otherwise lift the taller roof into the header. */
-.overview-home:has(#indoor-age:not([hidden])) { padding-top: 12px; }
-.overview-home:has(#indoor.metric-unavailable) { padding-top: 40px; }
+.overview-home { grid-template-columns: minmax(6.5ch, 1fr) minmax(calc(6.5ch + 16px), 1fr) minmax(0, 1.2fr); align-items: end; height: max(100px, calc(var(--overview-temperature-size) * 3.6)); }
+/* Reading and note slots stay occupied through unavailable/stale transitions.
+   The house remains anchored to the same temperature baseline in every state. */
 .overview-zone > div { min-width: 0; }
 .overview-label { margin: 0 0 5px; color: var(--muted); font-size: 10px; font-weight: 400; line-height: 1.5; text-transform: lowercase; }
 .overview-label::first-letter { text-transform: uppercase; }
 .home-overview strong { display: block; font-weight: 450; font-variant-numeric: tabular-nums; }
-.overview-temperature { font-size: clamp(19px, 7cqw, 36px); line-height: 1.2; letter-spacing: -1.1px; }
+.home-overview .overview-temperature { display: flex; align-items: end; height: calc(var(--overview-temperature-size) * 1.2); font-size: var(--overview-temperature-size); line-height: 1.2; letter-spacing: -1.1px; }
+.home-facade .overview-temperature { justify-content: center; }
 .overview-indoor { width: 100%; max-width: calc(6.5ch + 16px); text-align: center; }
 .home-facade { position: relative; padding-inline: 8px; }
 .home-facade-building { position: absolute; bottom: 0; left: 0; width: 100%; height: auto; fill: none; stroke: var(--muted); stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
@@ -737,34 +746,39 @@ details details { margin-inline-start: 24px; }
 .home-facade .overview-temperature { position: relative; color: var(--accent); }
 .overview-temperature .status-detail-label { white-space: nowrap; }
 .overview-note { display: block; margin-top: 5px; color: var(--muted); font-size: 10px; line-height: 1.5; }
+.overview-reading > .overview-note { height: 15px; }
+.overview-reading > .overview-note[id] { height: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.overview-reading > .overview-note[id][hidden] { display: block !important; visibility: hidden; }
 .home-planned-change { display: flex; align-items: baseline; gap: 9px; margin-top: 16px; padding: 10px 14px; border-radius: 6px; background: var(--surface-soft); font-size: 11px; line-height: 1.6; }
 .home-plan-icon { flex: none; align-self: center; width: 15px; height: 15px; color: var(--muted); }
-.home-plan-copy { display: flex; flex-wrap: wrap; gap: 2px 6px; min-width: 0; }
+.home-plan-copy { display: grid; grid-template-rows: 18px 18px; gap: 2px; min-width: 0; }
+.home-plan-copy > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .home-plan-label { color: var(--muted); }
 .home-plan-value { font-weight: 500; font-variant-numeric: tabular-nums; }
-.overview-request > strong { font-size: 18px; line-height: 1.4; font-weight: 500; }
+.overview-request > strong { height: 1.4em; font-size: 18px; line-height: 1.4; font-weight: 500; }
+.overview-request .status-detail-trigger { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .overview-request > strong[data-state="confirmed"] { color: var(--chart-indoor); }
 .overview-request > strong[data-state="attention"] { color: var(--stale); }
 .overview-request > strong[data-state="muted"] { color: var(--muted); }
 .overview-request > strong[data-state] .status-detail-trigger:hover,
 .overview-request > strong[data-state] .status-detail-trigger[aria-expanded="true"] { color: inherit; }
 .overview-doors .status-detail-label { overflow-wrap: normal; }
-.overview-request > .overview-label { text-transform: uppercase; letter-spacing: .04em; }
-.overview-price { display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px 5px; margin-top: 5px; color: var(--muted); }
+.overview-request > .overview-label { height: 30px; text-transform: uppercase; letter-spacing: .04em; }
+.overview-price { display: flex; align-items: baseline; align-content: start; flex-wrap: wrap; gap: 2px 5px; height: 33px; margin-top: 5px; color: var(--muted); }
 .overview-price > .overview-label { margin: 0; }
 .overview-price-value { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0 5px; }
 .overview-price-value > strong { font-size: 11px; line-height: 1.5; font-weight: 500; color: var(--text); }
 .overview-price-value > small { color: var(--muted); font-size: 10px; line-height: 1.5; }
 .home-overview .metric-unavailable { font-size: 17px; letter-spacing: -.3px; }
 @media (min-width: 801px) and (max-width: 1100px), (max-width: 480px) {
-  .zone-summary > .dashboard-heading { flex-wrap: wrap; gap: 8px; }
+  .zone-summary > .dashboard-heading { gap: 8px; }
   .home-heading-actions { gap: 6px; margin-left: auto; }
   .home-heading-actions .control-badge { padding: 5px 6px; font-size: 9px; }
   .chart-shortcut.secondary-button, .fireplace-shortcut.secondary-button { width: 34px; height: 34px; min-height: 34px; padding: 7px; }
 }
 @container zone-overview (max-width: 420px) {
   .overview-zone { gap: 10px; }
-  .overview-temperature { letter-spacing: -.7px; }
+  .home-overview .overview-temperature { letter-spacing: -.7px; }
   .overview-request > strong { font-size: 16px; }
   .home-overview .metric-unavailable { font-size: 13px; letter-spacing: -.3px; }
 }
@@ -829,6 +843,7 @@ details details { margin-inline-start: 24px; }
 /* Keep the same hit area and title baseline when a footer disclosure opens.
    Its content owns the extra separation below the header. */
 :is(#home-equipment-details, #garage-equipment-details, #connections-details) > summary { min-height: 44px; padding: 14px 0 0; }
+:is(#home-equipment-details, #garage-equipment-details, #connections-details) > summary > :is(span, small) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #connections-details > summary + * { margin-top: 20px; }
 @container dashboard-card (max-width: 420px) {
   :is(#home-equipment-details, #garage-equipment-details, #connections-details) > summary { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 3px 12px; }
@@ -1382,8 +1397,9 @@ button.garage-door-action:disabled { opacity: 1; cursor: default; }
 #provider-overview .provider-heading { display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; flex: 1; min-width: 0; }
 #provider-overview .provider-category-title { grid-column: 1 / -1; color: var(--muted); font-size: 11px; font-weight: 400; line-height: 1.4; }
 #provider-overview .provider-category-state { display: inline-flex; align-items: center; gap: 7px; min-width: 0; color: var(--text); font-size: 13px; font-weight: 500; line-height: 1.5; text-align: left; }
+#provider-overview .provider-category-state .status-detail-trigger { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #provider-overview .provider-category-state::before { content: ''; flex: 0 0 6px; width: 6px; height: 6px; border-radius: 50%; background: var(--provider-tone, var(--muted)); }
-#provider-overview .provider-category-meta { min-width: 0; margin: 0 0 0 13px; color: var(--muted); font-size: 10px; line-height: 1.5; }
+#provider-overview .provider-category-meta { min-width: 0; height: 15px; margin: 0 0 0 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 10px; line-height: 1.5; }
 #provider-overview > .muted { margin: 0; font-size: 11px; line-height: 1.6; }
 #provider-overview .provider-body { margin-top: 12px; padding: 12px 14px; background: var(--surface-soft); border-radius: 6px; }
 #provider-overview .provider-health { margin: 0 0 9px; font-size: 11px; }
@@ -1531,7 +1547,11 @@ button.garage-door-action:disabled { opacity: 1; cursor: default; }
 .heating-zone > .zone-content { margin-top: 0; padding: 20px 0; border-top: 1px solid var(--border); }
 .zone-equipment-fold.dashboard-disclosure { margin-top: 0; border-top: 0; }
 .zone-equipment-fold > .zone-content { margin-top: 16px; padding-bottom: 0; }
-.garage-chargers.zone-content { margin-top: 0; padding: 0; gap: 0; container: charging-area / inline-size; }
+.garage-chargers.zone-content { position: relative; margin-top: 0; padding: 0; gap: 0; container: charging-area / inline-size; }
+/* The summary already ends with breathing room. A charging fault occupies that
+   space while its full explanation opens outside the card's document flow. */
+#charging-status { position: absolute; bottom: 100%; left: 0; right: 0; margin: 0; height: 18px; font-size: 11px; line-height: 18px; color: var(--stale); }
+#charging-status .status-detail-trigger { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .garage-control > .zone-equipment-fold { border-top: 1px solid var(--border); }
 .zone-section { min-width: 0; padding: 0; border: 0; container-type: inline-size; }
 .zone-section-heading { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 6px 14px; margin: 0 0 14px; }
@@ -1844,8 +1864,12 @@ button.garage-door-action:disabled { opacity: 1; cursor: default; }
 .charging-charge-now-state::after { content: ''; position: absolute; top: 2px; left: 2px; width: 10px; height: 10px; border-radius: 50%; background: currentColor; }
 .charging-charge-now[aria-pressed="true"] .charging-charge-now-state { padding-inline: 3px 15px; }
 .charging-charge-now[aria-pressed="true"] .charging-charge-now-state::after { transform: translateX(28px); }
-.charging-device > .equipment-device-summary:has(> .charging-control-message:not(:empty)) { height: auto; }
-.charging-control-message { margin: 8px 0 0; font-size: 11px; line-height: 1.5; }
+/* Receipts replace the secondary footer hint, keeping both the disclosure and
+   the independent session-report button available without adding another row. */
+.charging-device > .equipment-device-summary > .charging-disclosure { grid-area: 6 / 1; }
+.charging-device > .equipment-device-summary > .charging-control-message { grid-area: 6 / 1; align-self: start; justify-self: end; max-width: 50%; min-width: 0; margin: 0; height: 16px; font-size: 10px; line-height: 16px; text-align: right; }
+.charging-device > .equipment-device-summary:has(> .charging-control-message:not(:empty)) .charging-disclosure-hint { visibility: hidden; }
+.charging-control-message .status-detail-trigger { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .charging-detail-section > .equipment-device-status { display: inline-block; margin-bottom: 10px; }
 .charging-device .temporary-status:empty { display: none; }
 .charging-device .equipment-readings dd { overflow-wrap: anywhere; }

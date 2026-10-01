@@ -13,6 +13,7 @@ let app, socket, browser, id=0;
 const pending=new Map(),errors=[];
 const garageDoorsOnly=process.argv.includes('--garage-doors');
 const caravanOnly=process.argv.includes('--caravan-only');
+const dashboardHeightsOnly=process.argv.includes('--dashboard-heights-only');
 try {
   writeFileSync(join(directory,'options.json'),'{}');
   const config=loadConfig({STMQ_CONFIG:join(directory,'options.json'),STMQ_DATA_DIR:directory,STMQ_PORT:'0',STMQ_INPUT:'simulated'},directory);
@@ -21,7 +22,7 @@ try {
     market:{source:'entsoe',status:'ok',lastSuccessAt:Date.parse('2026-09-07T12:00:00Z')},
     weather:{source:'fmi',status:'ok',lastSuccessAt:Date.parse('2026-09-07T12:00:00Z')}
   });
-  let endpoint=process.argv.slice(2).find(arg=>!['--garage-doors','--caravan-only'].includes(arg));
+  let endpoint=process.argv.slice(2).find(arg=>!['--garage-doors','--caravan-only','--dashboard-heights-only'].includes(arg));
   if(!endpoint) {
     const profile=join(directory,'chrome');mkdirSync(profile);
     browser=spawn(process.env.STMQ_CHROME_BIN??'/opt/google/chrome/chrome',['--headless','--no-sandbox','--disable-gpu',
@@ -44,7 +45,7 @@ try {
   const until=async expression=>{for(let i=0;i<150;i++){if(await evaluate(expression))return;await new Promise(r=>setTimeout(r,100));}throw new Error(`Timed out: ${expression}`);};
   const command=async(method,params)=>{
     if(method==='browsingContext.setViewport')return send('Emulation.setDeviceMetricsOverride',{...params.viewport,deviceScaleFactor:1,mobile:false});
-    if(method==='browsingContext.captureScreenshot')return send('Page.captureScreenshot',{format:'png'});
+    if(method==='browsingContext.captureScreenshot')return send('Page.captureScreenshot',{format:'png',...(params.clip?{clip:params.clip,captureBeyondViewport:true}:{})});
     if(method==='input.performActions'){for(const group of params.actions)for(const action of group.actions){const key=({'\uE00C':'Escape','\uE004':'Tab'})[action.value]??'Enter';await send('Input.dispatchKeyEvent',{type:action.type==='keyDown'?'keyDown':'keyUp',key,code:key,windowsVirtualKeyCode:({Escape:27,Tab:9,Enter:13})[key],...(key==='Enter'&&action.type==='keyDown'?{text:'\r',unmodifiedText:'\r'}:{})});}return;}
     throw new Error(`Unsupported browser operation ${method}`);
   };
@@ -54,9 +55,9 @@ try {
   await until("document.getElementById('updated')?.textContent.startsWith('Updated')");
   mkdirSync('var',{recursive:true});
   const setReducedMotion=value=>send('Emulation.setEmulatedMedia',{features:[{name:'prefers-reduced-motion',value:value?'reduce':'no-preference'}]});
-  await checkEquipmentBrowser({evaluate,command,context:'cdp',until,garageDoorsOnly,caravanOnly,setReducedMotion});
+  await checkEquipmentBrowser({evaluate,command,context:'cdp',until,garageDoorsOnly,caravanOnly,dashboardHeightsOnly,setReducedMotion});
   assert.deepEqual(errors,[]);
-  console.log(caravanOnly ? 'Caravan browser checks passed: supported settings, automatic power drafts and saving, recording states, authority, and both themes at 320/390/1440px.' : garageDoorsOnly ? 'Garage door browser checks passed: modal navigation, focus, pending commands, live reports, authority, and both themes at desktop, mobile and landscape sizes.' : 'Equipment browser checks passed: charger phase availability, local OCPP setup placement and keyboard disclosure, flat vehicle feeds with MQTT diagnostics, mocked equipment controls, Caravan layout, DHWR feedback and five responsive viewports.');
+  console.log(dashboardHeightsOnly ? 'Dashboard height checks passed: normal, missing/stale readings, plans, provider contexts, charging receipts/errors, accessible details, and folded/open Garage at 320/390/1024/1440px.' : caravanOnly ? 'Caravan browser checks passed: supported settings, automatic power drafts and saving, recording states, authority, and both themes at 320/390/1440px.' : garageDoorsOnly ? 'Garage door browser checks passed: modal navigation, focus, pending commands, live reports, authority, and both themes at desktop, mobile and landscape sizes.' : 'Equipment browser checks passed: charger phase availability, local OCPP setup placement and keyboard disclosure, flat vehicle feeds with MQTT diagnostics, mocked equipment controls, Caravan layout, DHWR feedback and five responsive viewports.');
 } finally {
   socket?.close();for(const p of pending.values())clearTimeout(p.timer);await app?.close();
   if(browser&&browser.exitCode===null) {browser.kill();await new Promise(resolve=>browser.once('exit',resolve));}

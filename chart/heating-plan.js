@@ -72,5 +72,6 @@ export function renderHomePlannedChange(document, status) {
     const node = document.getElementById(`home-plan-${key}`);
     if (node.textContent !== display[key]) node.textContent = display[key];
   }
-  row.title = display.detail;
+  row.title = `${display.label}: ${display.value}. ${display.detail}`;
+  row.setAttribute('aria-label', `${display.label}: ${display.value}. Explore the heating plan and its limits`);
 }

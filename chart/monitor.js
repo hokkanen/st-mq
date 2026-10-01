@@ -40,7 +40,6 @@ import { createHeatingExplorerPanel } from './heating-explorer.js';
 import './heating-explorer.css';
 import { homeHeatingWarning } from './heating-warning.js';
 import { createOcppSetupAction, ocppSetupRevision } from './ocpp-setup.js';
-import { createDashboardLayout } from './dashboard-layout.js';
 import { createPageFullscreen } from './page-fullscreen.js';
 import { ACTION_RECEIPT_MS, actionReceiptRecent, createReceiptTracker } from './action-receipts.js';
 import { heatingRequestResult, heatingModeSelection, h66RequestResult, circulationStopPending } from './manual-control-status.js';
@@ -53,7 +52,6 @@ for (const input of document.querySelectorAll('[data-date-picker="datetime-local
 }
 createDashboardReset({ document, button: $('dashboard-reset') });
 createPageFullscreen({ document, button: $('fullscreen-toggle') });
-createDashboardLayout(document.querySelector('.controller-panels'));
 for (const summary of document.querySelectorAll('.zone-summary')) {
   summary.addEventListener('click', event => {
     if (event.target.closest('button, a, input, select, textarea')) {
@@ -500,10 +498,13 @@ function renderProviders(s) {
     row.querySelector('.provider-category-title').textContent = overviewTitle;
     const state = row.querySelector('.provider-category-state');
     state.dataset.state = row.dataset.state;
-    setStatusDetail(state, { key: `provider-overview-${key}`, label: display.state, title: overviewTitle, detail: display.detail });
+    const sources = sourceStates?.length ? sourceStates : [{ label: sourceLabel, tone: row.dataset.state, state: display.state }];
+    const sourceDetail = sources.map(source => `${source.label}: ${source.state}`).join('. ');
+    setStatusDetail(state, { key: `provider-overview-${key}`, label: display.state, title: overviewTitle,
+      detail: [display.detail, sourceDetail].filter(Boolean).join('\n\n') });
     const source = row.querySelector('.provider-category-meta');
     source.replaceChildren();
-    for (const [sourceIndex, sourceEntry] of (sourceStates?.length ? sourceStates : [{ label: sourceLabel, tone: row.dataset.state, state: display.state }]).entries()) {
+    for (const [sourceIndex, sourceEntry] of sources.entries()) {
       if (sourceIndex) source.append(document.createTextNode(', '));
       const name = document.createElement('span'); name.className = 'provider-name'; name.dataset.state = sourceEntry.tone;
       name.textContent = sourceEntry.label; name.title = `${sourceEntry.label}: ${sourceEntry.state}`;
@@ -563,14 +564,17 @@ function renderProviders(s) {
     readings.hidden = Boolean(entry.sections?.length);
     renderProviderSeries(readings, entry.sections?.length ? [] : entry.datasets ?? entry.series, { datasets: true });
   }
-  $('provider-overview-state').textContent = isReadOnlyReplica(s) ? 'Recorded data · view only' : attentionCount ? `${attentionCount} ${attentionCount === 1 ? 'needs' : 'need'} attention`
+  const replica = isReadOnlyReplica(s);
+  const overview = $('provider-overview-state');
+  const summary = replica ? 'View only' : attentionCount ? `${attentionCount} ${attentionCount === 1 ? 'needs' : 'need'} attention`
     : backupCount ? `${backupCount} using backup` : entries.length ? `${entries.length} data feeds`
       : s.input === 'simulated' ? 'Simulation' : 'No live sources';
-  $('provider-overview-state').classList.toggle('stale', attentionCount > 0 || backupCount > 0);
-  const note = $('provider-context');
-  note.textContent = isReadOnlyReplica(s) ? 'Recorded provider information. Live connections are not opened by this computer.' : s.input === 'simulated' ? 'Example prices and weather are in use. Live providers are not polled.'
+  const context = replica ? 'Recorded provider information. Live connections are not opened by this computer.' : s.input === 'simulated' ? 'Example prices and weather are in use. Live providers are not polled.'
     : s.input === 'offline' ? 'Recorded history is available. Live providers are not polled.' : entries.length ? '' : 'Waiting for provider status.';
-  note.hidden = !note.textContent;
+  const configuration = replica ? s.readView?.configurationMessage ?? 'Settings are shown for inspection. Changes are disabled until this computer becomes master.' : '';
+  setStatusDetail(overview, { key: 'provider-overview', label: summary, title: 'Data & settings',
+    detail: [context, configuration, entries.length ? 'Open a data feed for its sources, readings and connection details.' : ''].filter(Boolean).join('\n\n') });
+  overview.classList.toggle('stale', attentionCount > 0 || backupCount > 0);
 }
 function renderLearning(s) {
   const display = learningDisplay(s.learning, { settings: s.settings, preheatValves: s.preheatValves });
@@ -799,7 +803,8 @@ function render(s) {
   if ($('recording-details')?.open) renderRecording(s,$('recording-content'));
   const temporary = temporaryValues(s);
   const controlPrice = priceControlState(s, { paused: Boolean(temporary.pauseUntilLocal), away: Boolean(temporary.awayUntilLocal) });
-  $('control-price').textContent = controlPrice.label;
+  setStatusDetail($('control-price'), { key: 'home-control-mode', label: controlPrice.label,
+    title: 'Heat control', detail: controlMode });
   $('control-price').parentElement.dataset.state = controlPrice.state;
   const dhwr = dhwrReadingSummary(s);
   setStatusDetail($('dhwr'), { key: 'home-circulation', label: dhwr.summaryValue,
@@ -821,8 +826,6 @@ function render(s) {
   renderLearning(s);
   const scope = settingsReloadScope(s);
   $('settings-reload-help').textContent = replica ? 'Applying configuration is disabled in this read-only view.' : scope.message;
-  $('settings-read-only-source').hidden = !replica;
-  $('settings-read-only-source').textContent = s.readView?.configurationMessage ?? 'Settings are shown for inspection. Changes are disabled until this computer becomes master.';
   $('settings-location-title').textContent = scope.location.title;
   $('settings-location').replaceChildren();
   for (const { label, value } of scope.location.rows) {

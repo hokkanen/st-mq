@@ -81,10 +81,13 @@ test('missing and invalid plans and read-only history cannot advertise a future 
 });
 
 test('the Home info row replaces a previous live schedule on transition to replica mode', () => {
-  const nodes = new Map(['home-planned-change', 'home-plan-label', 'home-plan-value'].map(id => [id, { textContent: '' }]));
+  const nodes = new Map(['home-planned-change', 'home-plan-label', 'home-plan-value'].map(id => [id, {
+    textContent: '', setAttribute(name, value) { this[name] = value; },
+  }]));
   const document = { getElementById: id => nodes.get(id) };
   renderHomePlannedChange(document, scheduled());
   assert.equal(nodes.get('home-plan-value').textContent, 'Preheat at 16:00');
+  assert.match(nodes.get('home-planned-change')['aria-label'], /Preheat at 16:00/);
   renderHomePlannedChange(document, { ...scheduled(), role: 'slave' });
   assert.equal(nodes.get('home-plan-label').textContent, 'Recorded plan');
   assert.equal(nodes.get('home-plan-value').textContent, 'Normal heating');

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { checkGarageDoorBrowser } from './garage-door-browser-checks.js';
+import { checkDashboardHeights } from './dashboard-height-browser-checks.js';
 
 /** Commissioning navigation and admin downloads use the same offline fixture. */
 async function checkFloorPreheatingBrowser({ evaluate, command, context, refresh, settle }) {
@@ -91,7 +92,7 @@ async function checkFloorPreheatingBrowser({ evaluate, command, context, refresh
 }
 
 /** All device actions below terminate in a browser fixture, never at hardware. */
-export async function checkEquipmentBrowser({ evaluate, command, context, until, garageDoorsOnly = false, caravanOnly = false, setReducedMotion }) {
+export async function checkEquipmentBrowser({ evaluate, command, context, until, garageDoorsOnly = false, caravanOnly = false, dashboardHeightsOnly = false, setReducedMotion }) {
   const settle = () => evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve(true))))');
   const refresh = async () => {
     const count = await evaluate('window.equipmentUiFixture.responses');
@@ -165,6 +166,10 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until,
   })()`);
   try {
     await refresh();
+    if (dashboardHeightsOnly) {
+      await checkDashboardHeights({ evaluate, command, context, refresh, settle, until });
+      return;
+    }
     const caravan = '#garage-equipment-readings [data-device-id=caravan]';
     if (!caravanOnly) {
     await checkGarageDoorBrowser({ evaluate, command, context, refresh, settle, until, setReducedMotion });

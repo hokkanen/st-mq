@@ -738,8 +738,12 @@ test('a planning error stays visible and clears on recovery', () => {
   const document = documentFixture(), $ = id => document.getElementById(id);
   const panel = createChargingPanel({ document, request: async () => status() });
   const failed = status(); failed.charging.error = 'charging-planning-unavailable'; panel.update(failed);
-  assert(!$('charging-status').hidden); assert.match($('charging-status').textContent, /charging plan could not be updated/);
+  assert(!$('charging-status').hidden); assert.equal($('charging-status').textContent, 'Charging needs attention');
+  const popup = openDetail($('charging-status'));
+  assert.match(popup.textContent, /charging plan could not be updated/);
+  assert.match($('charging-status').querySelector('button').getAttribute('aria-label'), /last charger instructions remain in effect/);
   panel.update(status()); assert($('charging-status').hidden); assert.equal($('charging-status').textContent, '');
+  assert(popup.hidden, 'Recovery dismisses the resolved planning error');
   panel.close();
 });
 
@@ -1489,7 +1493,8 @@ test('Charge now serializes requests, leaves details closed, and reports failure
   reject(new Error('The charger could not confirm the instruction.')); await pending;
   assert.equal(button.disabled, false); assert.equal(button.getAttribute('aria-pressed'), 'false');
   assert.equal($('charger1-charge-now-state').textContent, 'OFF');
-  assert.match($('charger1-control-message').textContent, /could not confirm/);
+  assert.equal($('charger1-control-message').textContent, 'Action failed');
+  assert.match(openDetail($('charger1-control-message')).textContent, /could not confirm/);
   assert($('charger1-control-message').matches('.form-error')); panel.close();
 });
 
@@ -1527,10 +1532,38 @@ test('automatic charging is a persistent fenced control, separate from the four 
   await clickAction(toggle);
   assert.deepEqual(calls, [['/api/charging/chargers/charger1/control', { association: item.association, revision: 3, enabled: true }]]);
   assert.equal(toggle.getAttribute('aria-checked'), 'true');
-  assert.match($('charger1-control-message').textContent, /stays in effect until changed/);
+  assert.equal($('charger1-control-message').textContent, 'Preference saved');
+  assert.match(openDetail($('charger1-control-message')).textContent, /stays in effect until changed/);
   assert.match($('charger1-control-detail').textContent, /unplugging and restart/);
   panel.update({ ...status(item), role: 'slave' }); assert(toggle.disabled);
   await clickAction(toggle); assert.equal(calls.length, 1); panel.close();
+});
+
+test('compact charger receipts retain full accessible text for 24 hours independently of live warnings', async () => {
+  for (const fail of [false, true]) {
+    const document = documentFixture(), $ = id => document.getElementById(id); let finish;
+    const item = { ...active(), control: { phase: 'unavailable', reason: 'The last schedule is awaiting confirmation.' } };
+    const message = fail ? 'The preference could not be saved. Review the current charging instruction before retrying.'
+      : 'Automatic charging preference saved. It stays in effect until changed.';
+    const panel = createChargingPanel({ document, request: () => new Promise((resolve, reject) => {
+      finish = () => fail ? reject(new Error(message)) : resolve(status(item));
+    }) });
+    panel.update(status(item));
+    const receipt = $('charger1-control-message'), pending = clickAction($('charger1-enabled'));
+    assert.equal(receipt.getAttribute('role'), 'status'); assert.equal(receipt.textContent, 'Saving…');
+    finish(); await pending;
+    assert.equal(receipt.textContent, fail ? 'Action failed' : 'Preference saved');
+    const popup = openDetail(receipt), trigger = receipt.querySelector('button');
+    assert(popup.textContent.includes(message)); assert.equal(trigger.getAttribute('aria-label'), `${message} Show details`);
+    assert(!$('charger1-device').open, 'Opening the receipt leaves charger details folded');
+    panel.update({ ...status(item), now: now + 24 * 3600_000 - 1 });
+    assert.equal(receipt.querySelector('button'), trigger); assert(!popup.hidden);
+    assert.equal($('charger1-notice').textContent, 'Charger needs attention');
+    panel.update({ ...status(item), now: now + 24 * 3600_000 });
+    assert.equal(receipt.textContent, ''); assert(!receipt.matches('.form-error')); assert(popup.hidden);
+    assert.equal($('charger1-notice').textContent, 'Charger needs attention', 'Receipt expiry does not dismiss a live fault');
+    panel.close();
+  }
 });
 
 test('Charge now works with automatic OFF and toggling back enables automatic charging', async () => {
@@ -1598,7 +1631,7 @@ test('toggling Charge now off does not acknowledge a native instruction after a 
     } });
     panel.update(status(item)); await clickAction($('charger1-charge-now'));
     assert.equal(calls.length, 1, change); assert($('charger1-control-message').matches('.form-error'));
-    assert.doesNotMatch($('charger1-control-message').textContent, /enabled and requested/); panel.close();
+    assert.doesNotMatch(openDetail($('charger1-control-message')).textContent, /enabled and requested/); panel.close();
   }
 });
 
@@ -1613,8 +1646,10 @@ test('a failed handover keeps acknowledged Automatic ON and explains partial suc
   } });
   panel.update(status(item)); await clickAction($('charger1-charge-now'));
   assert.equal(calls.length, 2); assert.equal($('charger1-enabled').getAttribute('aria-checked'), 'true');
-  assert.match($('charger1-control-message').textContent, /Automatic charging is on, but handover could not be completed/);
-  assert.match($('charger1-control-message').textContent, /native confirmation/);
+  assert.equal($('charger1-control-message').textContent, 'Action failed');
+  const popup = openDetail($('charger1-control-message'));
+  assert.match(popup.textContent, /Automatic charging is on, but handover could not be completed/);
+  assert.match(popup.textContent, /native confirmation/);
   assert.equal($('charger1-charge-now').getAttribute('aria-pressed'), 'true');
   assert(!$('charger1-charge-now').disabled, 'A failed handover keeps the toggle available to retry');
   assert(!$('charger1-resume').disabled); panel.close();

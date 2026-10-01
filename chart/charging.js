@@ -467,7 +467,6 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
       associations: Object.fromEntries((status.charging.chargers ?? []).map(charger => [charger.id, charger.association])),
       revision: status.charging.controls.revision, priority,
     }, message, 'Priority saved. It stays in effect until changed.') });
-  const set = (id, text) => { if ($(id)) $(id).textContent = text; };
   const rowNodes = new WeakMap();
   const energyNodes = new WeakMap();
   function energyText(root, text) {
@@ -487,6 +486,15 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
       metricTriggers.add(trigger);
       bind(trigger, 'click', event => { event.preventDefault(); event.stopPropagation(); });
     }
+    return trigger;
+  }
+  function actionMessage(root, text, { error = false, pending = false } = {}) {
+    root.classList.toggle('form-error', error);
+    if (!root.matches('.charging-control-message')) { root.textContent = text; return; }
+    const trigger = metricDetail(root, { label: text ? error ? 'Action failed' : pending ? text : 'Preference saved' : '',
+      title: 'Charging action', detail: pending ? '' : text, key: root.id });
+    // Announce the complete receipt even though its visible label stays compact.
+    if (trigger) trigger.setAttribute('aria-label', `${text} Show details`);
   }
   function list(root, rows) {
     const nodes = rowNodes.get(root) ?? new Map(); rowNodes.set(root, nodes);
@@ -693,13 +701,13 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
   async function mutate(path, payload, message, success = '', saved = () => {}, followup) {
     if (busy || !writable()) return false;
     actionMessages.delete(message);
-    busy = true; message.textContent = success ? 'Saving…' : ''; message.classList.remove('form-error'); refreshControls();
+    busy = true; actionMessage(message, success ? 'Saving…' : '', { pending: true }); refreshControls();
     try {
       beforeRequest(); const result = await request(path, payload); saved(); update(result); onStatus(result);
       if (followup) { const next = await followup(); update(next); onStatus(next); }
-      message.textContent = typeof success === 'function' ? success() : success;
+      actionMessage(message, typeof success === 'function' ? success() : success);
       return true;
-    } catch (error) { message.textContent = error.message ?? 'Could not save charging settings.'; message.classList.add('form-error'); return false; }
+    } catch (error) { actionMessage(message, error.message ?? 'Could not save charging settings.', { error: true }); return false; }
     finally { actionMessages.set(message, status?.now ?? Date.now()); busy = false; refreshControls(); afterRequest(); }
   }
   function updateFields(group, settings, charger) {
@@ -766,7 +774,7 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
   }
   function update(next) {
     for (const [node, at] of actionMessages) if (!actionReceiptRecent(at, next?.now ?? Date.now())) {
-      node.textContent = ''; node.classList.remove('form-error'); actionMessages.delete(node);
+      actionMessage(node, ''); actionMessages.delete(node);
     }
     if (Number.isSafeInteger(next?.charging?.revision) && Number.isSafeInteger(status?.charging?.revision) && next.charging.revision < status.charging.revision
       && isReadOnlyReplica(next) === isReadOnlyReplica(status) && next.charging.readOnly === status.charging.readOnly
@@ -775,7 +783,11 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     const charging = next?.charging;
     const globalError = ({ 'charging-planning-unavailable': 'The charging plan could not be updated. The last charger instructions remain in effect.',
       'charging-reconciliation-unavailable': 'The current charging instructions could not be confirmed.' })[charging?.error] ?? (charging?.error ? human(charging.error) : '');
-    set('charging-status', globalError); if ($('charging-status')) $('charging-status').hidden = !globalError;
+    const globalStatus = $('charging-status');
+    const globalTrigger = setStatusDetail(globalStatus, { label: globalError ? 'Charging needs attention' : '',
+      title: 'Charging status', detail: globalError, key: 'charging-status' });
+    if (globalTrigger) globalTrigger.setAttribute('aria-label', `${globalError} Show details`);
+    if (globalStatus) globalStatus.hidden = !globalError;
     const views = chargingDisplay(charging, next?.now).chargers;
     const currentIds = new Set();
     for (const charger of charging?.chargers ?? []) {

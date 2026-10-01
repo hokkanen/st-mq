@@ -1,3 +1,27 @@
+Implemented 2026-10-01 — Stable folded dashboard and balanced normal view
+- Keep Home, Garage and Data & settings at stable heights for status changes at
+  the same viewport and device/provider inventory. Temperature slots and concise
+  summaries retain their geometry across current, stale and unavailable readings;
+  remove the unavailable-only Home padding. Keep complete plan text accessible.
+- Fit charging receipts into the existing secondary footer hint position and
+  charging faults into summary spacing, without covering Details & settings or
+  Session report. Preserve accessible full explanations, errors, current warnings
+  and the 24-hour receipt lifetime. Folded provider summaries retain source detail
+  in popovers; read-only context stays accessible from the visible View only state.
+- Replace the observer-driven column-spacing adjustment with CSS stretch on wide
+  folded desktops, aligning Garage with Home plus Data & settings. Keep narrower
+  desktops and explicitly opened folds at natural heights to avoid large empty
+  areas. Changing viewport, configured inventory or open sections can still resize.
+- F1/F4/F7/F8: remove the obsolete layout observer and its old balance checks;
+  retain missing-data meaning, current control authority and receipt semantics.
+  No backend, configuration, persistence or household equipment changes.
+- Validation: 234 focused Node tests passed; production build passed. Real Chrome
+  height/receipt/popup/temperature geometry checks passed at 320/390/1024/1440px,
+  including receipt/report non-overlap and equal wide desktop column bottoms.
+  Home and Garage browser suites passed in both themes; Firefox pairing/replica
+  browser suite passed in both themes at 320/390/1440px. Reviewed synthetic default
+  dashboard screenshots. No live providers, deployment or hardware commands.
+
 Implemented 2026-10-01 — Shared voltage inputs and recorded source provenance
 - Prefer Charger 1 OCPP, Charger 1 Easee Cloud and then
   Equalizer Easee Cloud independently per phase. Preserve one smoothed accumulator

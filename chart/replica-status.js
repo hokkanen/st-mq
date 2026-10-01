@@ -198,7 +198,7 @@ export function renderReplicaStatus(document, status, { formatTime = at => new D
     const recorded = at ? `Recorded ${formatTime(at)}.` : 'No recorded measurement time.';
     setStatusDetail($(key), { key: `metric-${key}`, title: key === 'indoor' ? 'Recorded indoor average' : 'Recorded outdoor temperature',
       label: readingStatus.usable ? `${observation.value.toFixed(1)} °C` : 'Unavailable',
-      detail: `${recorded} ${readingStatus.detail}${display.state !== 'ready' ? ` ${display.summary}` : ''}` });
+      detail: `${source ? `${source}. ` : ''}${recorded} ${readingStatus.detail}${display.state !== 'ready' ? ` ${display.summary}` : ''}` });
     $(key).classList.toggle('stale', !readingStatus.usable || readingStatus.attention || display.state !== 'ready');
     $(key).classList.toggle('metric-unavailable', !readingStatus.usable);
     $(`${key}-age`).textContent = [source, 'Recorded', readingStatus.usable && readingStatus.attention ? 'Needs attention' : null].filter(Boolean).join(' · ');

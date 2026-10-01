@@ -159,7 +159,7 @@ try {
   }
   await command('browsingContext.navigate', { context, url: `http://127.0.0.1:${proxy.address().port}`, wait: 'complete' });
   await until(`${$('instance-role')}.textContent === 'Pair · Master' && !${$('pairing-panel')}.hidden`);
-  assert.equal(await evaluate(`${$('connection')}.textContent`), 'LIVE OBSERVATION · MONITORING');
+  assert.equal(await evaluate(`${$('connection')}.textContent`), 'Live');
   assert.equal(await evaluate(`${$('pairing-details')}.open`), false, 'Pairing starts folded');
   assert.equal(await evaluate(`${$('error')}.hidden`), true);
   for (const width of [1440, 390, 320]) for (const theme of ['dark', 'light']) await checkLayout(width, theme);
@@ -276,10 +276,15 @@ try {
   }
   sectionUnavailable = true;
   await command('browsingContext.navigate', { context, url: `http://127.0.0.1:${proxy.address().port}`, wait: 'complete' });
-  await until(`${$('charging-status')}.textContent.includes('unavailable')`);
+  await until(`${$('charging-status')}.textContent.includes('Charging needs attention')`);
+  await evaluate(`${$('charging-status')}.querySelector('.status-detail-trigger').click(); true`);
+  assert.match(await evaluate("document.querySelector('#status-detail-popover .status-detail-body').textContent"), /Saved charging data unavailable/);
+  await evaluate("document.querySelector('#status-detail-popover .status-detail-close').click(); true");
   assert.equal(await evaluate(`${$('error')}.hidden`), true, 'Unavailable settings and charging do not break the dashboard');
   assert.equal(await evaluate(`${$('pairing-panel')}.checkVisibility()`), true);
-  assert.match(await evaluate(`${$('settings-read-only-source')}.textContent`), /Saved Home settings unavailable/);
+  await evaluate(`${$('provider-overview-state')}.querySelector('.status-detail-trigger').click(); true`);
+  assert.match(await evaluate("document.querySelector('#status-detail-popover .status-detail-body').textContent"), /Saved Home settings unavailable/);
+  await evaluate("document.querySelector('#status-detail-popover .status-detail-close').click(); true");
   assert.match(await evaluate(`${$('garage-controller-reason')}.textContent`), /Some saved Garage data is unavailable/);
   sectionUnavailable = false;
   await viewer.close();
@@ -293,7 +298,9 @@ try {
   for (const id of ['providers-controls', 'garage-control', 'home-control'])
     assert.equal(await evaluate(`${$(id)}.checkVisibility()`), true, `No first snapshot does not hide ${id}`);
   assert.equal(await evaluate(`${$('settings-reload')}.disabled`), true);
-  assert.match(await evaluate(`${$('settings-read-only-source')}.textContent`), /this computer/);
+  await evaluate(`${$('provider-overview-state')}.querySelector('.status-detail-trigger').click(); true`);
+  assert.match(await evaluate("document.querySelector('#status-detail-popover .status-detail-body').textContent"), /this computer/);
+  await evaluate("document.querySelector('#status-detail-popover .status-detail-close').click(); true");
   pair = master({ transition: { kind: 'handover', phase: 'quiescing' }, canControl: false });
   await until(`${$('instance-role')}.textContent === 'Pair · Role change'`);
   assert.equal(await evaluate(`${$('pairing-attention')}.checkVisibility()`), true, 'Role-change progress remains visible when folded');
