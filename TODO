@@ -1,3 +1,22 @@
+Implemented 2026-10-01 — Sharp Android installed-app launch icons
+- Add a Home Energy web app manifest with 192px/512px icons exported from the
+  existing Smart timing vector and an opaque 512px maskable icon. Keep the symbol
+  inside Android's circular safe area and use the forest green launch background.
+- Link the manifest with credentials and relative asset/start/scope URLs. Vite
+  copies the public assets into standalone and add-on builds; the app server
+  supplies the manifest MIME type and revalidation. Document artwork regeneration
+  and reinstalling the Android app after deployment to check the launch result.
+- F1/F7/F8: retain existing browser-tab/add-on branding, API authentication and
+  local operation. No compatibility layer, service worker, configuration/state
+  migration, household access or deployment. No obsolete paths needed removal.
+- Validation: 53 focused access/network tests, production build and isolated
+  access browser suite passed. Chrome parsed the built manifest without errors
+  and decoded all icons at the root and under a synthetic URL prefix; MIME/cache
+  headers, dimensions, scope and unauthenticated API rejection checked. Vite
+  serves all public assets. Pixel checks confirm maskable opacity/safe area.
+  Build retains its existing large-bundle warning. Actual Android launch remains
+  unverified until the new build is deployed and installed on a phone.
+
 Implemented 2026-10-01 — Compact overviews with shared desktop growth
 - Raise heating request/room target values to the temperature row and align their
   All-in price captions with Outdoor, Indoor average and Rear sensor captions.

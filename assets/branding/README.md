@@ -47,3 +47,42 @@ artwork export tool, not an application dependency. Keep the root copies in sync
 when changing the selected icon. Update the comparison image after changing the
 artwork; its small samples show 32 px and 64 px rendering on light and dark
 backgrounds.
+
+## Installed Android app icons
+
+The dashboard links [app.webmanifest](../../chart/public/app.webmanifest), using
+the name **Home Energy** and the forest green launch background. Its dedicated
+192 px and 512 px PNGs are exported from the Smart timing vector. The 512 px
+maskable variant has an opaque forest green background; the clock and bolt fit
+inside Android's central circular safe area (radius 40% of the image width).
+The browser tab and Home Assistant add-on keep their existing icons.
+
+Vite serves `chart/public/` during development and copies it into `dist/` during
+the production/container build. Manifest URLs are relative to preserve a hosting
+prefix. The application serves the manifest as `application/manifest+json` with
+revalidation. The manifest link includes credentials for cookie-authenticated
+hosting. Actual installation still depends on the browser and hosting context.
+
+To regenerate the installed-app PNGs, run from the repository root with CairoSVG
+installed (an artwork tool only, not an application dependency):
+
+```sh
+python3 - <<'PY'
+from pathlib import Path
+import cairosvg
+
+source = Path('assets/branding/smart-timing.svg').read_bytes()
+output = Path('chart/public/icons')
+output.mkdir(parents=True, exist_ok=True)
+for size in (192, 512):
+    cairosvg.svg2png(bytestring=source, output_width=size, output_height=size,
+                    write_to=str(output / f'home-energy-{size}.png'))
+cairosvg.svg2png(bytestring=source, output_width=512, output_height=512,
+                background_color='#101e19',
+                write_to=str(output / 'home-energy-maskable-512.png'))
+PY
+```
+
+After deploying the new build, remove the old installed app/shortcut and install
+it again from Chrome to test the new launch artwork. Verify the launch on an
+Android device; desktop manifest checks cannot confirm Android's animation.
