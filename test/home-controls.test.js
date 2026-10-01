@@ -34,6 +34,7 @@ test('Home and Garage automation badges are independent of each other and the en
   assert.equal(priceControlState(status, { enabled: false }).label, 'Unavailable');
   assert.equal(priceControlState({ ...status, input: 'offline' }).label, 'History viewer');
   assert.equal(priceControlState({}).label, 'Unavailable');
+  assert.equal(priceControlState({ automation: { home: { enabled: true, available: false } } }).label, 'Unavailable');
 });
 
 test('rate report selects the active dated snapshot instead of future or configured rates', () => {

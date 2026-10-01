@@ -1,3 +1,21 @@
+Implemented 2026-10-01 — Natural dashboard spacing and aligned overview rows
+- Remove desktop card stretching and automatic footer margins. Garage keeps its
+  original charger-to-equipment gap; Home plus Data & settings have approximately
+  the same natural height in the normal wide desktop view. Opening a fold changes
+  only its own card instead of redistributing space in neighboring cards.
+- Align Home outdoor/indoor and Garage temperature rows, allow the house roof to
+  rise toward the heading, and center Explore vertically in its plan button.
+  Center the house and Garage doors between their side groups using shared column
+  geometry. Use compact responsive roof clearance, independent of status text.
+- F1/F4/F7/F8: retain stable status geometry, accessible full explanations and
+  receipt lifetime. Receipts stay above Session report in the existing hint area;
+  reserve no message space beneath the report or between chargers and equipment.
+  No configuration, backend, persisted-state or physical control changes.
+- Validation: 14 focused Home tests, production build, Home/Garage browser suites
+  in both themes, and seven-width dashboard height checks passed. A separate
+  64-width roof audit passed normal/unavailable states from 320–1440px. The normal
+  1440px column bottoms differ by 1.22px naturally. Whitespace checks passed.
+
 Implemented 2026-10-01 — Unified phase energy and voltage source subtitles
 - Record property and both chargers using one three-phase interval format. Remove
   Charger 2's scalar total-energy series and separate phase-group identity; retain

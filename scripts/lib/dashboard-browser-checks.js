@@ -163,8 +163,8 @@ export async function checkDashboardLayout({ evaluate, width }) {
     const overview = document.querySelector('#home-control .overview-zone');
     const bounds = overview.getBoundingClientRect(), cells = [...overview.children].map(node => node.getBoundingClientRect());
     return cells.length === 3 && cells.every((cell, index) => cell.left >= bounds.left - 1 && cell.right <= bounds.right + 1
-      && Math.abs(cell.bottom - cells[0].bottom) <= 1 && (index === 0 || cell.left >= cells[index - 1].right));
-  })()`), true, `Home aligns the bottoms of its three overview columns at ${width}px`);
+      && Math.abs(cell.top - cells[0].top) <= 1 && (index === 0 || cell.left >= cells[index - 1].right));
+  })()`), true, `Home aligns the tops of its three overview columns at ${width}px`);
   assert.equal(await evaluate(`(() => {
     const overview = document.querySelector('#garage-control .overview-zone'), bounds = overview.getBoundingClientRect();
     const temperature = overview.querySelector('.overview-reading').getBoundingClientRect();
@@ -185,6 +185,7 @@ export async function checkDashboardLayout({ evaluate, width }) {
     });
   })`), true, `Overview values and explanation buttons stay inside their columns at ${width}px`);
   await checkOverviewTemperatureFit({ evaluate, width });
+  await checkDashboardCompactLayout({ evaluate, width });
   const support = await evaluate(`(() => {
     const root = document.querySelector('#home-control .home-support');
     const bounds = root.getBoundingClientRect();
@@ -325,10 +326,67 @@ export async function checkOverviewTemperatureFit({ evaluate, width }) {
       `Indoor preserves the original overview temperature typography at ${width}px`);
     assert.ok(Math.abs(sample.indoorNoteGap - 5) <= .5,
       `Indoor average follows the temperature with its natural 5px gap at ${width}px`);
-    assert.ok(sample.homeColumns.every(column => Math.abs(column.bottom - sample.homeColumns[0].bottom) <= 1),
-      `The three Home items align at the bottom for ${sample.text} at ${width}px`);
+    assert.ok(sample.homeColumns.every(column => Math.abs(column.top - sample.homeColumns[0].top) <= 1),
+      `The three Home items align at the top for ${sample.text} at ${width}px`);
     assert.equal(sample.viewportFits, true, `The ${sample.text} overview fits the ${width}px viewport`);
   }
+}
+
+export async function checkDashboardCompactLayout({ evaluate, width }) {
+  const layout = await evaluate(`(() => {
+    const box = selector => document.querySelector(selector).getBoundingClientRect();
+    const outdoor = box('#outdoor'), indoor = box('#indoor'), garage = box('#garage-temperature');
+    const homeHeading = box('#control-title'), garageHeading = box('#garage-title');
+    const plan = box('#home-planned-change'), explore = box('.home-plan-open');
+    const chargerBottom = Math.max(...[...document.querySelectorAll('#charging-devices > details')]
+      .map(node => node.getBoundingClientRect().bottom));
+    return { homeReadingsAligned: Math.abs(indoor.top - outdoor.top) <= 1,
+      temperatureRowDifference: Math.abs((outdoor.top - homeHeading.top) - (garage.top - garageHeading.top)),
+      absoluteTemperatureDifference: Math.abs(outdoor.top - garage.top),
+      exploreCenterDifference: Math.abs((explore.top + explore.bottom - plan.top - plan.bottom) / 2),
+      chargerFooterGap: box('#garage-equipment-details').top - chargerBottom,
+      middleItems: ['home', 'garage'].map(area => {
+        const overview = document.querySelector('#' + area + '-control .overview-zone');
+        const left = overview.querySelector('.overview-reading').getBoundingClientRect();
+        const right = overview.querySelector('.overview-request').getBoundingClientRect();
+        const visual = overview.querySelector(area === 'home' ? '.home-facade' : '.garage-facade').getBoundingClientRect();
+        const center = (visual.left + visual.right) / 2;
+        return { area, midpointDifference: Math.abs(center - (left.right + right.left) / 2),
+          relativeCenter: center - box('#' + area + '-control').left };
+      }) };
+  })()`);
+  assert.equal(layout.homeReadingsAligned, true, `${width}px: Home temperatures share a row`);
+  assert.ok(layout.temperatureRowDifference <= 1,
+    `${width}px: Home and Garage temperatures use the same offset below their headings (${layout.temperatureRowDifference}px)`);
+  if (width > 800) assert.ok(layout.absoluteTemperatureDifference <= 1,
+    `${width}px: Home outdoor and Garage temperature rows align (${layout.absoluteTemperatureDifference}px)`);
+  assert.ok(layout.exploreCenterDifference <= 1,
+    `${width}px: Explore is vertically centered in the heating plan (${layout.exploreCenterDifference}px)`);
+  assert.ok(Math.abs(layout.chargerFooterGap - 14) <= 1,
+    `${width}px: Garage keeps its natural 14px gap below the chargers (${layout.chargerFooterGap}px)`);
+  for (const item of layout.middleItems) assert.ok(item.midpointDifference <= 1,
+    `${width}px: ${item.area} facade sits midway between its outer reading groups (${item.midpointDifference}px)`);
+  assert.ok(Math.abs(layout.middleItems[0].relativeCenter - layout.middleItems[1].relativeCenter) <= 1,
+    `${width}px: Home and Garage facades share a horizontal position within their cards`);
+}
+
+export async function checkHomeRoofHeaderClearance({ evaluate, width, scenario = 'normal' }) {
+  const intersections = await evaluate(`(() => {
+    const controls = [...document.querySelectorAll('#control-title, #home-control .home-heading-actions > *')]
+      .map(node => ({ name: node.id || node.className, bounds: node.getBoundingClientRect() }));
+    return [...document.querySelectorAll('.home-facade-roof')].flatMap(path => {
+      const length = path.getTotalLength(), matrix = path.getScreenCTM();
+      const steps = Math.ceil(length * Math.max(Math.hypot(matrix.a, matrix.b), Math.hypot(matrix.c, matrix.d)) * 2);
+      for (let step = 0; step <= steps; step++) {
+        const point = path.getPointAtLength(length * step / Math.max(steps, 1)).matrixTransform(matrix);
+        const control = controls.find(({ bounds }) => point.x >= bounds.left - 1 && point.x <= bounds.right + 1
+          && point.y >= bounds.top - 1 && point.y <= bounds.bottom + 1);
+        if (control) return [{ control: control.name, x: point.x, y: point.y }];
+      }
+      return [];
+    });
+  })()`);
+  assert.deepEqual(intersections, [], `${width}px ${scenario}: the drawn Home roof clears the title and header controls`);
 }
 
 export async function checkProviderLayout({ evaluate, width }) {

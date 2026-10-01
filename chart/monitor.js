@@ -804,7 +804,7 @@ function render(s) {
   const temporary = temporaryValues(s);
   const controlPrice = priceControlState(s, { paused: Boolean(temporary.pauseUntilLocal), away: Boolean(temporary.awayUntilLocal) });
   setStatusDetail($('control-price'), { key: 'home-control-mode', label: controlPrice.label,
-    title: 'Heat control', detail: controlMode });
+    title: 'Heat control', detail: [controlPrice.label, controlMode].join('\n\n') });
   $('control-price').parentElement.dataset.state = controlPrice.state;
   const dhwr = dhwrReadingSummary(s);
   setStatusDetail($('dhwr'), { key: 'home-circulation', label: dhwr.summaryValue,

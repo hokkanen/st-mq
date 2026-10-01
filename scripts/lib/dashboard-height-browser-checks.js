@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { checkOverviewTemperatureFit } from './dashboard-browser-checks.js';
+import { checkOverviewTemperatureFit, checkDashboardCompactLayout, checkHomeRoofHeaderClearance } from './dashboard-browser-checks.js';
 
 /** Real renderers, synthetic status and intercepted commands only. */
 export async function checkDashboardHeights({ evaluate, command, context, refresh, settle, until }) {
@@ -108,7 +108,7 @@ export async function checkDashboardHeights({ evaluate, command, context, refres
   const geometry = () => evaluate(`(() => {
     const cards = ['home-control', 'garage-control', 'providers-controls'].map(id => {
       const box = document.getElementById(id).getBoundingClientRect();
-      return { id, height: box.height };
+      return { id, height: box.height, bottom: box.bottom };
     });
     const footers = ['home-equipment-details', 'garage-equipment-details', 'connections-details'].map(id => {
       const box = document.querySelector('#' + id + ' > summary').getBoundingClientRect();
@@ -117,7 +117,6 @@ export async function checkDashboardHeights({ evaluate, command, context, refres
     return { cards, footers, providers: [...document.querySelectorAll('#providers > li')].map(node => node.dataset.provider),
       chargers: [...document.querySelectorAll('#charging-devices > details')].map(node => node.id),
       headings: ['control-title', 'garage-title'].map(id => document.getElementById(id).getBoundingClientRect().top),
-      columns: [...document.querySelectorAll('.controller-column')].map(node => node.getBoundingClientRect().bottom),
       fits: document.documentElement.scrollWidth <= innerWidth };
   })()`);
   const stable = async (baseline, label) => {
@@ -137,15 +136,18 @@ export async function checkDashboardHeights({ evaluate, command, context, refres
       const trigger = receipt.querySelector('button') ?? receipt;
       const box = trigger.getBoundingClientRect();
       const summary = receipt.closest('summary').getBoundingClientRect();
+      const report = document.getElementById('charger1-session-report').getBoundingClientRect();
       const overlaps = [...receipt.closest('summary').querySelectorAll('.charging-disclosure > span, .charging-session-report')]
         .filter(node => node.checkVisibility({ visibilityProperty: true })).filter(node => {
           const other = node.getBoundingClientRect();
           return box.left < other.right && box.right > other.left && box.top < other.bottom && box.bottom > other.top;
         }).map(node => node.className);
-      return { overlaps, contained: box.left >= summary.left && box.right <= summary.right
+      return { overlaps, beforeReport: box.bottom <= report.top + 1,
+        contained: box.left >= summary.left && box.right <= summary.right
         && box.top >= summary.top && box.bottom <= summary.bottom };
     })()`);
     assert.equal(layout.contained, true, `${label}: the receipt stays inside its summary`);
+    assert.equal(layout.beforeReport, true, `${label}: feedback stays above Session report`);
     assert.deepEqual(layout.overlaps, [], `${label}: the receipt never covers charger details or Session report`);
   };
   const explain = async (selector, expected, label) => {
@@ -167,7 +169,7 @@ export async function checkDashboardHeights({ evaluate, command, context, refres
       `${label}: closing restores focus`);
   };
   try {
-    for (const width of [1440, 1024, 390, 320]) {
+    for (const width of [1440, 1280, 1180, 1024, 600, 390, 320]) {
       await command('browsingContext.setViewport', { context, viewport: { width, height: 1100 }, devicePixelRatio: 1 });
       await evaluate("dashboardHeightFixture.scenario = 'normal'; dashboardHeightFixture.enabled = true"); await refresh();
       if (await evaluate("Boolean(document.getElementById('charger1-control-message').textContent)")) {
@@ -177,6 +179,8 @@ export async function checkDashboardHeights({ evaluate, command, context, refres
       }
       const baseline = await geometry();
       await checkOverviewTemperatureFit({ evaluate, width });
+      await checkDashboardCompactLayout({ evaluate, width });
+      await checkHomeRoofHeaderClearance({ evaluate, width });
       if (artifacts) {
         await evaluate('window.scrollTo(0, 0)');
         const clip = await evaluate(`(() => {
@@ -185,18 +189,21 @@ export async function checkDashboardHeights({ evaluate, command, context, refres
         })()`);
         const screenshot = await command('browsingContext.captureScreenshot', { context, clip });
         writeFileSync(join(artifacts, `dashboard-${width}.png`), Buffer.from(screenshot.data, 'base64'));
+        writeFileSync(join(artifacts, `dashboard-${width}.json`), JSON.stringify(baseline, null, 2));
       }
       assert.ok(baseline.footers.every(footer => Math.abs(footer.height - baseline.footers[0].height) <= 1),
         `${width}px: Home equipment, Garage equipment and Connections share a footer heading height`);
       if (width > 800) {
         assert.ok(Math.abs(baseline.headings[0] - baseline.headings[1]) <= 1,
           'Desktop Home and Garage headings share a baseline');
-        if (width >= 1280) assert.ok(Math.abs(baseline.columns[0] - baseline.columns[1]) <= 1,
-          'Wide desktop Garage and the Home/Data column share a bottom edge');
+        if (width >= 1280) assert.ok(Math.abs(baseline.cards[1].bottom - baseline.cards[2].bottom) <= 16,
+          `Wide desktop Garage and Data card bottoms remain naturally close (${Math.abs(baseline.cards[1].bottom - baseline.cards[2].bottom)}px)`);
       }
       for (const scenario of ['unavailable', 'not-configured', 'stale', 'long-plan', 'paused', 'control-unavailable', 'missing-price', 'simulation', 'history', 'replica', 'charging-error', 'normal']) {
         await evaluate(`dashboardHeightFixture.scenario = '${scenario}'`); await refresh();
         await stable(baseline, `${width}px ${scenario}`);
+        if (['unavailable', 'stale', 'control-unavailable'].includes(scenario))
+          await checkHomeRoofHeaderClearance({ evaluate, width, scenario });
         if (scenario === 'unavailable') {
           assert.match(await evaluate("document.getElementById('indoor').textContent"), /Unavailable/);
           await explain('#indoor .status-detail-trigger', /unavailable.*reading/i, `${width}px missing indoor reading`);
@@ -232,10 +239,24 @@ export async function checkDashboardHeights({ evaluate, command, context, refres
       const garageOpen = await geometry();
       assert.ok(garageOpen.cards[1].height > baseline.cards[1].height,
         `${width}px: explicitly opening Garage heating can increase its height`);
+      for (const index of [0, 2]) assert.ok(Math.abs(garageOpen.cards[index].height - baseline.cards[index].height) <= 1,
+        `${width}px: opening Garage heating leaves ${baseline.cards[index].id} unchanged`);
       await evaluate("dashboardHeightFixture.scenario = 'charging-error'"); await refresh();
       await stable(garageOpen, `${width}px charging error with Garage heating open`);
       await evaluate("document.getElementById('garage-heating-details').open = false; dashboardHeightFixture.scenario = 'normal'");
       await refresh(); await stable(baseline, `${width}px closing Garage heating`);
+      for (const [id, cardIndex] of [['home-heat-pump-details', 0], ['connections-details', 2]]) {
+        await evaluate(`document.getElementById('${id}').open = true`); await settle();
+        const open = await geometry();
+        assert.ok(open.cards[cardIndex].height > baseline.cards[cardIndex].height,
+          `${width}px: opening ${id} grows its own card`);
+        for (const index of [0, 1, 2].filter(index => index !== cardIndex)) {
+          assert.ok(Math.abs(open.cards[index].height - baseline.cards[index].height) <= 1,
+            `${width}px: opening ${id} leaves ${baseline.cards[index].id} unchanged`);
+        }
+        await evaluate(`document.getElementById('${id}').open = false`);
+        await stable(baseline, `${width}px closing ${id}`);
+      }
     }
   } finally {
     await evaluate(`(() => {

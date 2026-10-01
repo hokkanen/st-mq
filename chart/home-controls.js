@@ -31,7 +31,7 @@ export function priceControlState(status = {}, { feature = 'home', enabled = tru
   const automation = status.automation?.[feature];
   if (!automation) return { label: 'Unavailable', state: 'muted' };
   if (!automation.enabled) return { label: 'Paused', state: 'paused' };
-  if (automation.available === false) return { label: 'Automatic · unavailable', state: 'muted' };
+  if (automation.available === false) return { label: 'Unavailable', state: 'muted' };
   return { label: away ? 'Away · Automatic' : 'Automatic', state: 'active' };
 }
 

@@ -140,19 +140,8 @@ main { max-width: 1428px; margin: auto; padding: 0 24px 8px; }
 h2 { font-size: 20px; font-weight: 550; margin: 0 0 14px; letter-spacing: -.4px; }
 p { font-size: 14px; line-height: 1.65; margin: 10px 0; }
 .controller-panels { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; align-items: start; margin-bottom: 24px; }
-.controller-panels:has(.controller-column details[open]) { align-items: start; }
 .controller-column { display: flex; flex-direction: column; gap: 24px; min-width: 0; }
 .controller-column > .panel { margin-bottom: 0; container: dashboard-card / inline-size; }
-@media (min-width: 1280px) {
-  /* Equal column bottoms come from CSS stretch, without measuring status text
-     or changing section gaps after every update. Narrower desktops stack the
-     chargers and keep natural column heights instead of creating empty space. */
-  .controller-panels { align-items: stretch; }
-  .controller-column > .panel { display: flex; flex-direction: column; }
-  #providers-controls, #garage-control { flex: 1; }
-  #providers-controls > #connections-details, #garage-control > #garage-equipment-details { margin-top: auto; }
-  #providers-controls > #provider-overview { margin-bottom: 20px; }
-}
 .panel { --panel-padding: 24px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: var(--panel-padding); margin-bottom: 24px; min-width: 0; }
 .detail { display: flex; justify-content: space-between; border-bottom: 1px solid var(--border); padding: 12px 0; font-size: 13px; gap: 16px; }
 .detail > span:last-child { text-align: right; }
@@ -716,7 +705,7 @@ details details { margin-inline-start: 24px; }
 .control-badge strong { font-weight: 550; }
 .control-badge[data-state="paused"] { color: var(--stale); }
 .home-heading-actions { display: flex; align-items: center; justify-content: end; gap: 10px; min-width: 0; }
-.home-heading-actions .control-badge { min-width: 0; }
+.home-heading-actions .control-badge { min-width: 0; max-width: 150px; }
 .home-heading-actions .control-badge > span { flex: none; }
 .home-heading-actions .control-badge > strong { min-width: 0; }
 .home-heading-actions .control-badge .status-detail-trigger { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -724,9 +713,9 @@ details details { margin-inline-start: 24px; }
 .chart-shortcut svg, .fireplace-shortcut svg { display: block; width: 19px; height: 19px; }
 .chart-shortcut:hover, .fireplace-shortcut:hover { color: var(--accent); border-color: var(--accent); }
 .home-overview { margin-top: 20px; }
-.overview-zone { --overview-temperature-size: clamp(19px, 7cqw, 36px); display: grid; grid-template-columns: minmax(6.5ch, 1fr) minmax(0, 1fr) minmax(0, 1.2fr); align-items: start; gap: 18px; min-width: 0; height: 100px; font-size: var(--overview-temperature-size); font-weight: 450; font-variant-numeric: tabular-nums; }
-/* Reserve the widest signed temperature plus space inside the house walls. */
-.overview-home { grid-template-columns: minmax(6.5ch, 1fr) minmax(calc(6.5ch + 16px), 1fr) minmax(0, 1.2fr); align-items: end; height: max(100px, calc(var(--overview-temperature-size) * 3.6)); }
+/* Shared tracks center both buildings between the reading and request groups.
+   Keep room for the widest signed temperature and the house walls. */
+.overview-zone { --overview-temperature-size: clamp(19px, 7cqw, 36px); display: grid; grid-template-columns: 6.5ch minmax(calc(6.5ch + 16px), 1fr) minmax(0, 1.2fr); align-items: start; gap: 18px; min-width: 0; height: 100px; font-size: var(--overview-temperature-size); font-weight: 450; font-variant-numeric: tabular-nums; }
 /* Reading and note slots stay occupied through unavailable/stale transitions.
    The house remains anchored to the same temperature baseline in every state. */
 .overview-zone > div { min-width: 0; }
@@ -735,7 +724,7 @@ details details { margin-inline-start: 24px; }
 .home-overview strong { display: block; font-weight: 450; font-variant-numeric: tabular-nums; }
 .home-overview .overview-temperature { display: flex; align-items: end; height: calc(var(--overview-temperature-size) * 1.2); font-size: var(--overview-temperature-size); line-height: 1.2; letter-spacing: -1.1px; }
 .home-facade .overview-temperature { justify-content: center; }
-.overview-indoor { width: 100%; max-width: calc(6.5ch + 16px); text-align: center; }
+.overview-indoor { justify-self: center; width: 100%; max-width: calc(6.5ch + 16px); text-align: center; }
 .home-facade { position: relative; padding-inline: 8px; }
 .home-facade-building { position: absolute; bottom: 0; left: 0; width: 100%; height: auto; fill: none; stroke: var(--muted); stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
 .home-facade-building path { vector-effect: non-scaling-stroke; stroke-width: .6px; }
@@ -749,7 +738,7 @@ details details { margin-inline-start: 24px; }
 .overview-reading > .overview-note { height: 15px; }
 .overview-reading > .overview-note[id] { height: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .overview-reading > .overview-note[id][hidden] { display: block !important; visibility: hidden; }
-.home-planned-change { display: flex; align-items: baseline; gap: 9px; margin-top: 16px; padding: 10px 14px; border-radius: 6px; background: var(--surface-soft); font-size: 11px; line-height: 1.6; }
+.home-planned-change { display: flex; align-items: center; gap: 9px; margin-top: 16px; padding: 10px 14px; border-radius: 6px; background: var(--surface-soft); font-size: 11px; line-height: 1.6; }
 .home-plan-icon { flex: none; align-self: center; width: 15px; height: 15px; color: var(--muted); }
 .home-plan-copy { display: grid; grid-template-rows: 18px 18px; gap: 2px; min-width: 0; }
 .home-plan-copy > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -770,6 +759,11 @@ details details { margin-inline-start: 24px; }
 .overview-price-value > strong { font-size: 11px; line-height: 1.5; font-weight: 500; color: var(--text); }
 .overview-price-value > small { color: var(--muted); font-size: 10px; line-height: 1.5; }
 .home-overview .metric-unavailable { font-size: 17px; letter-spacing: -.3px; }
+/* Where the roof shares horizontal space with the header, scale its clearance
+   with the card width, independently of status text. Both rows stay aligned. */
+@container zone-overview (max-width: 530px) {
+  .home-overview { margin-top: clamp(36px, 13cqw, 40px); }
+}
 @media (min-width: 801px) and (max-width: 1100px), (max-width: 480px) {
   .zone-summary > .dashboard-heading { gap: 8px; }
   .home-heading-actions { gap: 6px; margin-left: auto; }
@@ -783,8 +777,7 @@ details details { margin-inline-start: 24px; }
   .home-overview .metric-unavailable { font-size: 13px; letter-spacing: -.3px; }
 }
 @container zone-overview (max-width: 290px) {
-  .overview-zone { gap: 8px; }
-  .overview-home { gap: 6px; }
+  .overview-zone { gap: 6px; }
   .overview-request > strong { font-size: 14px; }
   .overview-request > .overview-label { font-size: 9px; letter-spacing: 0; }
 }
@@ -1161,7 +1154,7 @@ button.status-detail-close:hover { background: var(--surface-soft); color: var(-
 .overview-garage { --garage-target-size: 18px; }
 /* Match the target label/value/price stack, while the roof can rise above it. */
 .overview-garage > .overview-doors { position: relative; height: calc(40px + var(--garage-target-size) * 1.4); }
-button.garage-overview-trigger { position: absolute; bottom: 0; left: 0; display: block; width: 100%; max-width: 112px; min-height: 44px; padding: 0; border-radius: 4px; color: var(--text); text-align: center; text-decoration: none; transition: background-color .18s ease, box-shadow .18s ease; }
+button.garage-overview-trigger { position: absolute; bottom: 0; left: 50%; transform: translateX(-50%); display: block; width: 100%; max-width: 112px; min-height: 44px; padding: 0; border-radius: 4px; color: var(--text); text-align: center; text-decoration: none; transition: background-color .18s ease, box-shadow .18s ease; }
 button.garage-overview-trigger:hover, button.garage-overview-trigger[aria-expanded="true"] { color: var(--text); background: var(--surface-soft); box-shadow: 0 0 0 1px var(--border); }
 button.garage-overview-trigger::before { display: none; }
 .garage-overview-status { display: block; margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 10px; line-height: 15px; }
