@@ -1,3 +1,21 @@
+Implemented 2026-10-01 — Compact overviews with shared desktop growth
+- Raise heating request/room target values to the temperature row and align their
+  All-in price captions with Outdoor, Indoor average and Rear sensor captions.
+- Remove the fixed overview height, empty freshness-note rows and reserved price
+  wrapping space. Keep a compact natural gap above Explore and the chargers.
+  Tighten Data & settings spacing so the default desktop columns stay balanced.
+- Share only the actual overview height across two desktop columns, including a
+  visible charging fault. Extra evidence grows Home and Garage equally; returning
+  to normal removes that space. Mobile overviews and opened folds stay independent.
+- F1/F4/F7/F8: preserve unknown/stale evidence, full accessible explanations and
+  receipt lifetime. No messages or reserved space below Session report. No control,
+  configuration, persistence or backend changes; validation uses synthetic data.
+- Validation: production build, Home/Garage browser suites in both themes and
+  seven-width dashboard checks passed (320–1440px), including actual text baselines,
+  one-sided notes, price wrapping, faults, receipts, normal restoration and folds.
+  Normal desktop column bottoms differ by 2.78px. A stale note adds 19px to both
+  desktop cards; a charging fault adds 26px. Syntax and whitespace checks passed.
+
 Implemented 2026-10-01 — Concise voltage source subtitles
 - Show only the latest recorded contributing source for phase voltage estimates,
   removing the mixed-source list and trailing unit from the subtitle. Clicking,

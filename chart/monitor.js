@@ -3,6 +3,7 @@ import { createReadOnlyControls, assertDashboardWrite } from './dashboard-access
 import { createSelectPickers } from './select-picker.js';
 import { createDatePicker } from './date-picker.js';
 import { createDashboardReset } from './dashboard-reset.js';
+import { createDashboardOverviewLayout } from './dashboard-layout.js';
 import { confirmAction } from './confirmation.js';
 import { createConfigurationReview } from './configuration-review.js';
 import { renderLearningRows } from './learning-rows.js';
@@ -52,6 +53,7 @@ for (const input of document.querySelectorAll('[data-date-picker="datetime-local
 }
 createDashboardReset({ document, button: $('dashboard-reset') });
 createPageFullscreen({ document, button: $('fullscreen-toggle') });
+const dashboardOverviewLayout = createDashboardOverviewLayout({ document });
 for (const summary of document.querySelectorAll('.zone-summary')) {
   summary.addEventListener('click', event => {
     if (event.target.closest('button, a, input, select, textarea')) {
@@ -855,7 +857,9 @@ function render(s) {
   $('updated').textContent = `Updated ${time(s.now)}`;
   readOnlyControls.refresh();
   accessControls.refresh();
-  return renderReplicaStatus(document, s, { formatTime: time });
+  const replicaStatus = renderReplicaStatus(document, s, { formatTime: time });
+  dashboardOverviewLayout.refreshLayout();
+  return replicaStatus;
 }
 const eventStream = createEventStream({ request: (after,options) => api(`/api/events?after=${after}&limit=50`,undefined,options),
   reset: () => $('events').replaceChildren(), append: rows => {

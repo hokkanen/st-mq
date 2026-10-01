@@ -68,6 +68,17 @@ export async function checkDashboardHeights({ evaluate, command, context, refres
           provider.status = 'error'; provider.error = 'The synthetic source has not supplied current measurements. Check the connection and original measurement timestamps.';
         }
       }
+      if (state.scenario === 'indoor-stale') Object.assign(status.observations.indoor,
+        { observedAt: at - 3 * 3600000, needsAttention: true, attentionReasons: ['old-reading'] });
+      if (state.scenario === 'garage-stale') {
+        Object.assign(status.observations.garage, { stale: true, observedAt: at - 3 * 3600000 });
+        status.garage.observations.rear = { ...status.observations.garage };
+      }
+      if (state.scenario === 'provider-attention') {
+        for (const provider of Object.values(status.providers)) if (provider && typeof provider === 'object') {
+          provider.status = 'error'; provider.error = 'The synthetic data connection is unavailable.';
+        }
+      }
       if (state.scenario === 'long-plan') {
         status.decision.phase = 'preheat'; status.decision.action = 'preheat';
         status.decision.plan = { schedule: { preheatStart: at - 60000,
@@ -114,7 +125,18 @@ export async function checkDashboardHeights({ evaluate, command, context, refres
       const box = document.querySelector('#' + id + ' > summary').getBoundingClientRect();
       return { id, height: box.height };
     });
-    return { cards, footers, providers: [...document.querySelectorAll('#providers > li')].map(node => node.dataset.provider),
+    const overviews = ['home', 'garage'].map(area => {
+      const wrapper = document.querySelector('#' + area + '-control .overview-space');
+      const box = wrapper.getBoundingClientRect();
+      const naturalBottom = Math.max(...[...wrapper.children].filter(node => node.checkVisibility())
+        .map(node => node.getBoundingClientRect().bottom + (parseFloat(getComputedStyle(node).marginBottom) || 0)));
+      return { area, height: box.height, naturalHeight: naturalBottom - box.top };
+    });
+    const notes = Object.fromEntries(['indoor-age', 'garage-temperature-age', 'charging-status'].map(id => {
+      const node = document.getElementById(id);
+      return [id, { visible: node.checkVisibility({ visibilityProperty: true }), height: node.getBoundingClientRect().height }];
+    }));
+    return { cards, footers, overviews, notes, providers: [...document.querySelectorAll('#providers > li')].map(node => node.dataset.provider),
       chargers: [...document.querySelectorAll('#charging-devices > details')].map(node => node.id),
       headings: ['control-title', 'garage-title'].map(id => document.getElementById(id).getBoundingClientRect().top),
       fits: document.documentElement.scrollWidth <= innerWidth };
@@ -128,6 +150,43 @@ export async function checkDashboardHeights({ evaluate, command, context, refres
     for (const group of ['cards', 'footers']) for (const [index, box] of actual[group].entries()) {
       assert.ok(Math.abs(box.height - baseline[group][index].height) <= 1,
         `${label}: ${box.id} retains its height (${baseline[group][index].height}px -> ${box.height}px)`);
+    }
+  };
+  const naturalResize = async (baseline, width, scenario) => {
+    await settle();
+    const actual = await geometry(), label = `${width}px ${scenario}`;
+    assert.equal(actual.fits, true, `${label}: the dashboard fits the viewport`);
+    assert.deepEqual(actual.providers, baseline.providers, `${label}: provider inventory is unchanged`);
+    assert.deepEqual(actual.chargers, baseline.chargers, `${label}: charger inventory is unchanged`);
+    assert.ok(Math.abs(actual.cards[2].height - baseline.cards[2].height) <= 1,
+      `${label}: Data & settings keeps its own height`);
+    for (const [index, overview] of actual.overviews.entries()) {
+      const needed = width > 800 ? Math.max(...actual.overviews.map(row => row.naturalHeight)) : overview.naturalHeight;
+      assert.ok(Math.abs(overview.height - needed) <= 1,
+        `${label}: ${overview.area} grows only to fit current content (${overview.height}px, needed ${needed}px)`);
+      const delta = overview.height - baseline.overviews[index].height;
+      assert.ok(Math.abs(actual.cards[index].height - baseline.cards[index].height - delta) <= 1,
+        `${label}: ${overview.area} card changes only by its overview's required ${delta}px`);
+    }
+    for (const [index, footer] of actual.footers.entries()) assert.ok(Math.abs(footer.height - baseline.footers[index].height) <= 1,
+      `${label}: ${footer.id} keeps its heading height`);
+    if (width > 800) {
+      const [home, garage] = actual.overviews.map((overview, index) => overview.height - baseline.overviews[index].height);
+      assert.ok(Math.abs(home - garage) <= 1, `${label}: desktop Home and Garage receive the same height change`);
+    } else if (['indoor-stale', 'garage-stale', 'charging-error'].includes(scenario)) {
+      const unchangedIndex = scenario === 'indoor-stale' ? 1 : 0;
+      assert.ok(Math.abs(actual.cards[unchangedIndex].height - baseline.cards[unchangedIndex].height) <= 1,
+        `${label}: the other mobile card stays independent`);
+    }
+    if (['indoor-stale', 'garage-stale', 'charging-error'].includes(scenario)) {
+      const note = scenario === 'indoor-stale' ? 'indoor-age' : scenario === 'garage-stale' ? 'garage-temperature-age' : 'charging-status';
+      assert.equal(baseline.notes[note].visible, false, `${label}: the normal state has no spare visible note`);
+      assert.equal(baseline.notes[note].height, 0, `${label}: hidden notes take no space`);
+      assert.ok(actual.notes[note].visible && actual.notes[note].height > 0,
+        `${label}: the explanatory note becomes visible`);
+      const changedIndex = scenario === 'indoor-stale' ? 0 : 1;
+      if (width === 1440) assert.ok(actual.overviews[changedIndex].naturalHeight > baseline.overviews[changedIndex].naturalHeight + 1,
+        `${label}: the wide desktop adds space for the new content in both overviews`);
     }
   };
   const receiptFits = async label => {
@@ -151,6 +210,7 @@ export async function checkDashboardHeights({ evaluate, command, context, refres
     assert.deepEqual(layout.overlaps, [], `${label}: the receipt never covers charger details or Session report`);
   };
   const explain = async (selector, expected, label) => {
+    const baseline = await geometry();
     await evaluate(`(() => {
       const trigger = document.querySelector(${JSON.stringify(selector)});
       trigger.scrollIntoView({ block: 'center' }); trigger.focus(); trigger.click();
@@ -163,6 +223,7 @@ export async function checkDashboardHeights({ evaluate, command, context, refres
       return box.left >= 0 && box.right <= innerWidth && box.top >= 0 && box.bottom <= innerHeight
         && popup.scrollWidth <= popup.clientWidth;
     })()`), true, `${label}: the explanation fits the viewport`);
+    await stable(baseline, `${label}: opening the explanation`);
     await command('input.performActions', { context, actions: [{ type: 'key', id: 'height-keyboard',
       actions: [{ type: 'keyDown', value: '\uE00C' }, { type: 'keyUp', value: '\uE00C' }] }] });
     assert.equal(await evaluate(`document.activeElement === document.querySelector(${JSON.stringify(selector)})`), true,
@@ -178,9 +239,6 @@ export async function checkDashboardHeights({ evaluate, command, context, refres
         await until("!document.getElementById('charger1-charge-now').disabled");
       }
       const baseline = await geometry();
-      await checkOverviewTemperatureFit({ evaluate, width });
-      await checkDashboardCompactLayout({ evaluate, width });
-      await checkHomeRoofHeaderClearance({ evaluate, width });
       if (artifacts) {
         await evaluate('window.scrollTo(0, 0)');
         const clip = await evaluate(`(() => {
@@ -191,6 +249,9 @@ export async function checkDashboardHeights({ evaluate, command, context, refres
         writeFileSync(join(artifacts, `dashboard-${width}.png`), Buffer.from(screenshot.data, 'base64'));
         writeFileSync(join(artifacts, `dashboard-${width}.json`), JSON.stringify(baseline, null, 2));
       }
+      await checkOverviewTemperatureFit({ evaluate, width });
+      await checkDashboardCompactLayout({ evaluate, width });
+      await checkHomeRoofHeaderClearance({ evaluate, width });
       assert.ok(baseline.footers.every(footer => Math.abs(footer.height - baseline.footers[0].height) <= 1),
         `${width}px: Home equipment, Garage equipment and Connections share a footer heading height`);
       if (width > 800) {
@@ -199,10 +260,14 @@ export async function checkDashboardHeights({ evaluate, command, context, refres
         if (width >= 1280) assert.ok(Math.abs(baseline.cards[1].bottom - baseline.cards[2].bottom) <= 16,
           `Wide desktop Garage and Data card bottoms remain naturally close (${Math.abs(baseline.cards[1].bottom - baseline.cards[2].bottom)}px)`);
       }
-      for (const scenario of ['unavailable', 'not-configured', 'stale', 'long-plan', 'paused', 'control-unavailable', 'missing-price', 'simulation', 'history', 'replica', 'charging-error', 'normal']) {
+      for (const scenario of ['unavailable', 'not-configured', 'stale', 'indoor-stale', 'garage-stale', 'provider-attention', 'long-plan', 'paused', 'control-unavailable', 'missing-price', 'simulation', 'history', 'replica', 'charging-error', 'normal']) {
         await evaluate(`dashboardHeightFixture.scenario = '${scenario}'`); await refresh();
-        await stable(baseline, `${width}px ${scenario}`);
-        if (['unavailable', 'stale', 'control-unavailable'].includes(scenario))
+        if (['unavailable', 'not-configured', 'stale', 'indoor-stale', 'garage-stale', 'missing-price', 'simulation', 'history', 'replica', 'charging-error'].includes(scenario))
+          await naturalResize(baseline, width, scenario);
+        else await stable(baseline, `${width}px ${scenario}`);
+        await checkDashboardCompactLayout({ evaluate, width });
+        if (artifacts) writeFileSync(join(artifacts, `dashboard-${width}-${scenario}.json`), JSON.stringify(await geometry(), null, 2));
+        if (['unavailable', 'stale', 'indoor-stale', 'garage-stale', 'control-unavailable'].includes(scenario))
           await checkHomeRoofHeaderClearance({ evaluate, width, scenario });
         if (scenario === 'unavailable') {
           assert.match(await evaluate("document.getElementById('indoor').textContent"), /Unavailable/);
@@ -242,7 +307,7 @@ export async function checkDashboardHeights({ evaluate, command, context, refres
       for (const index of [0, 2]) assert.ok(Math.abs(garageOpen.cards[index].height - baseline.cards[index].height) <= 1,
         `${width}px: opening Garage heating leaves ${baseline.cards[index].id} unchanged`);
       await evaluate("dashboardHeightFixture.scenario = 'charging-error'"); await refresh();
-      await stable(garageOpen, `${width}px charging error with Garage heating open`);
+      await naturalResize(garageOpen, width, 'charging-error');
       await evaluate("document.getElementById('garage-heating-details').open = false; dashboardHeightFixture.scenario = 'normal'");
       await refresh(); await stable(baseline, `${width}px closing Garage heating`);
       for (const [id, cardIndex] of [['home-heat-pump-details', 0], ['connections-details', 2]]) {

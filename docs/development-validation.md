@@ -148,14 +148,17 @@ layouts in both themes, including narrow and short login viewports. To retain
 synthetic screenshots and the geometry report, set
 `STMQ_ACCESS_SCREENSHOT_DIR=/tmp/access-layout` when running the script.
 
-The equipment suite's `--dashboard-heights-only` option checks stable Home,
-Garage and Data & settings heights at 320, 390, 600, 1024, 1180, 1280 and 1440 px
-while their disclosure state and device/provider inventory stay fixed. Synthetic unavailable/stale
-temperatures, heating plans, provider contexts, missing prices, and intercepted
-charging saves/errors exercise the actual renderers. It checks complete popup
-details, focus restoration, temperature-row alignment, roof/header clearance,
-buildings centered between their side groups, centered Explore content, natural
-charger-to-equipment spacing and approximately balanced desktop columns.
+The equipment suite's `--dashboard-heights-only` option checks compact Home and
+Garage overviews and stable Data & settings geometry at 320, 390, 600, 1024, 1180,
+1280 and 1440 px. Extra evidence or wrapped prices may change the overview height;
+in two-column layouts, Home and Garage must change by the same amount. Mobile
+overviews fit independently. Synthetic unavailable/stale temperatures, including
+one-sided stale readings, heating plans, provider contexts, missing prices, and
+intercepted charging saves/errors exercise the actual renderers. It checks full
+popup details, focus restoration, aligned values and captions, roof/header
+clearance, buildings centered between their side groups, centered Explore content,
+compact section gaps and approximately balanced desktop columns. Receipts and
+popovers must not add space; returning to normal must restore the compact height.
 Opening a fold must not resize neighboring cards to compensate for its content.
 Set `STMQ_DASHBOARD_SCREENSHOT_DIR` to retain folded dashboard screenshots.
 

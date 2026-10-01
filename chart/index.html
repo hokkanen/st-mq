@@ -72,31 +72,33 @@
                 </button>
               </div>
             </div>
-            <div class="home-overview overview-zone overview-home" aria-label="Latest home conditions">
-              <div class="overview-reading overview-outdoor">
-                <strong id="outdoor" class="overview-temperature">—</strong>
-                <small class="overview-note">Outdoor</small>
-                <small id="outdoor-age" class="overview-note">Waiting for readings</small>
-              </div>
-              <div class="overview-reading overview-indoor">
-                <div class="home-facade">
-                  <svg class="home-facade-building" viewBox="0 -32 320 212" aria-hidden="true" focusable="false">
-                    <path class="home-facade-wall" d="M12 95v85M308 46v134"/>
-                    <path class="home-facade-roof" d="M4 93 136 39V-25l180 67M8 99l134-56V-17l170 65"/>
-                    <path class="home-facade-trim" d="M235 19v73"/>
-                    <path class="home-facade-window" d="M170 63h37v26h-37Zm23 0v26"/>
-                  </svg>
-                  <strong id="indoor" class="overview-temperature">—</strong>
+            <div class="overview-space">
+              <div class="home-overview overview-zone overview-home" aria-label="Latest home conditions">
+                <div class="overview-reading overview-outdoor">
+                  <strong id="outdoor" class="overview-temperature">—</strong>
+                  <small class="overview-note">Outdoor</small>
+                  <small id="outdoor-age" class="overview-note">Waiting for readings</small>
                 </div>
-                <small class="overview-note">Indoor average</small>
-                <small id="indoor-age" class="overview-note">Waiting for readings</small>
-              </div>
-              <div class="overview-request">
-                <p id="requested-label" class="overview-label">Heating request</p>
-                <strong id="requested" role="status">—</strong>
-                <div class="overview-price">
-                  <p id="price-label" class="overview-label">All-in price</p>
-                  <div class="overview-price-value"><strong id="price">—</strong><small id="price-unit"></small></div>
+                <div class="overview-reading overview-indoor">
+                  <div class="home-facade">
+                    <svg class="home-facade-building" viewBox="0 -32 320 212" aria-hidden="true" focusable="false">
+                      <path class="home-facade-wall" d="M12 95v85M308 46v134"/>
+                      <path class="home-facade-roof" d="M4 93 136 39V-25l180 67M8 99l134-56V-17l170 65"/>
+                      <path class="home-facade-trim" d="M235 19v73"/>
+                      <path class="home-facade-window" d="M170 63h37v26h-37Zm23 0v26"/>
+                    </svg>
+                    <strong id="indoor" class="overview-temperature">—</strong>
+                  </div>
+                  <small class="overview-note">Indoor average</small>
+                  <small id="indoor-age" class="overview-note">Waiting for readings</small>
+                </div>
+                <div class="overview-request">
+                  <p id="requested-label" class="overview-label">Heating request</p>
+                  <strong id="requested" role="status">—</strong>
+                  <div class="overview-price">
+                    <p id="price-label" class="overview-label">All-in price</p>
+                    <div class="overview-price-value"><strong id="price">—</strong><small id="price-unit"></small></div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -545,27 +547,30 @@
                 </button>
               </div>
             </div>
-            <div class="home-overview overview-zone overview-garage" aria-label="Latest garage conditions">
-              <div class="overview-reading">
-                <strong id="garage-temperature" class="overview-temperature">—</strong>
-                <small class="overview-note">Rear sensor</small>
-                <small id="garage-temperature-age" class="overview-note">Waiting for readings</small>
-              </div>
-              <div id="garage-door-summary" class="overview-doors">
-                <button id="garage-doors-shortcut" class="status-detail-trigger garage-overview-trigger" type="button" aria-label="Garage doors: Unknown. Show controls" aria-haspopup="dialog" aria-expanded="false" aria-controls="garage-doors-dialog">
-                  <span id="garage-facade-overview"></span>
-                  <span id="garage-doors-label" class="status-detail-label garage-overview-status">Unknown</span>
-                  <span id="garage-overview-estimate" hidden>Door travel position is estimated.</span>
-                </button>
-              </div>
-              <div class="overview-request">
-                <p id="garage-requested-label" class="overview-label">Room target</p>
-                <strong id="garage-requested" role="status">—</strong>
-                <div class="overview-price">
-                  <p id="garage-price-label" class="overview-label">All-in price</p>
-                  <div class="overview-price-value"><strong id="garage-price">—</strong><small id="garage-price-unit"></small></div>
+            <div class="overview-space">
+              <div class="home-overview overview-zone overview-garage" aria-label="Latest garage conditions">
+                <div class="overview-reading">
+                  <strong id="garage-temperature" class="overview-temperature">—</strong>
+                  <small class="overview-note">Rear sensor</small>
+                  <small id="garage-temperature-age" class="overview-note">Waiting for readings</small>
+                </div>
+                <div id="garage-door-summary" class="overview-doors">
+                  <button id="garage-doors-shortcut" class="status-detail-trigger garage-overview-trigger" type="button" aria-label="Garage doors: Unknown. Show controls" aria-haspopup="dialog" aria-expanded="false" aria-controls="garage-doors-dialog">
+                    <span id="garage-facade-overview"></span>
+                    <span id="garage-doors-label" class="status-detail-label garage-overview-status">Unknown</span>
+                    <span id="garage-overview-estimate" hidden>Door travel position is estimated.</span>
+                  </button>
+                </div>
+                <div class="overview-request">
+                  <p id="garage-requested-label" class="overview-label">Room target</p>
+                  <strong id="garage-requested" role="status">—</strong>
+                  <div class="overview-price">
+                    <p id="garage-price-label" class="overview-label">All-in price</p>
+                    <div class="overview-price-value"><strong id="garage-price">—</strong><small id="garage-price-unit"></small></div>
+                  </div>
                 </div>
               </div>
+              <p id="charging-status" class="charging-event" role="status" hidden></p>
             </div>
           </summary>
           <div class="zone-content equipment-area">
@@ -628,7 +633,6 @@
           </div>
         </details>
         <div class="garage-chargers zone-content equipment-area" aria-label="Chargers">
-          <p id="charging-status" class="charging-event" role="status" hidden></p>
           <div id="charging-devices" class="charging-device-list"></div>
         </div>
         <details id="garage-equipment-details" class="dashboard-disclosure zone-equipment-fold">

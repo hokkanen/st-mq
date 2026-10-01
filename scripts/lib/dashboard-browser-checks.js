@@ -330,21 +330,51 @@ export async function checkOverviewTemperatureFit({ evaluate, width }) {
       `The three Home items align at the top for ${sample.text} at ${width}px`);
     assert.equal(sample.viewportFits, true, `The ${sample.text} overview fits the ${width}px viewport`);
   }
+  // Restoring the real readings can schedule the overview observer after these
+  // temporary width probes. Let its shared height settle before other checks.
+  await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))');
 }
 
 export async function checkDashboardCompactLayout({ evaluate, width }) {
   const layout = await evaluate(`(() => {
     const box = selector => document.querySelector(selector).getBoundingClientRect();
+    const textBaseline = selector => {
+      const root = document.querySelector(selector);
+      const label = root.querySelector('.status-detail-label') ?? root;
+      const marker = document.createElement('span');
+      marker.style.cssText = 'display:inline-block;width:0;height:0;padding:0;margin:0;vertical-align:baseline';
+      label.append(marker);
+      try { return marker.getBoundingClientRect().top; } finally { marker.remove(); }
+    };
     const outdoor = box('#outdoor'), indoor = box('#indoor'), garage = box('#garage-temperature');
     const homeHeading = box('#control-title'), garageHeading = box('#garage-title');
     const plan = box('#home-planned-change'), explore = box('.home-plan-open');
+    const overviews = ['home', 'garage'].map(area => {
+      const root = document.querySelector('#' + area + '-control .overview-space');
+      const wrapper = root.getBoundingClientRect();
+      const overview = root.querySelector('.home-overview').getBoundingClientRect();
+      const temperature = box(area === 'home' ? '#outdoor' : '#garage-temperature');
+      const request = box(area === 'home' ? '#requested' : '#garage-requested');
+      const caption = root.querySelector('.overview-reading > .overview-note:not([id])').getBoundingClientRect();
+      const priceLabel = box(area === 'home' ? '#price-label' : '#garage-price-label');
+      const next = box(area === 'home' ? '#home-planned-change' : '#charging-devices > details');
+      const naturalBottom = Math.max(...[...root.children].filter(node => node.checkVisibility())
+        .map(node => node.getBoundingClientRect().bottom + (parseFloat(getComputedStyle(node).marginBottom) || 0)));
+      return { area, height: wrapper.height, naturalHeight: naturalBottom - wrapper.top,
+        nextBlockAdjacent: area === 'home' || !document.getElementById('garage-heating-details').open,
+        valueBottomDifference: Math.abs(temperature.bottom - request.bottom),
+        textBaselineDifference: Math.abs(textBaseline(area === 'home' ? '#outdoor' : '#garage-temperature')
+          - textBaseline(area === 'home' ? '#requested' : '#garage-requested')),
+        captionTopDifference: Math.abs(caption.top - priceLabel.top),
+        nextGap: next.top - wrapper.bottom, overviewTop: overview.top };
+    });
     const chargerBottom = Math.max(...[...document.querySelectorAll('#charging-devices > details')]
       .map(node => node.getBoundingClientRect().bottom));
     return { homeReadingsAligned: Math.abs(indoor.top - outdoor.top) <= 1,
       temperatureRowDifference: Math.abs((outdoor.top - homeHeading.top) - (garage.top - garageHeading.top)),
       absoluteTemperatureDifference: Math.abs(outdoor.top - garage.top),
       exploreCenterDifference: Math.abs((explore.top + explore.bottom - plan.top - plan.bottom) / 2),
-      chargerFooterGap: box('#garage-equipment-details').top - chargerBottom,
+      chargerFooterGap: box('#garage-equipment-details').top - chargerBottom, overviews,
       middleItems: ['home', 'garage'].map(area => {
         const overview = document.querySelector('#' + area + '-control .overview-zone');
         const left = overview.querySelector('.overview-reading').getBoundingClientRect();
@@ -364,6 +394,23 @@ export async function checkDashboardCompactLayout({ evaluate, width }) {
     `${width}px: Explore is vertically centered in the heating plan (${layout.exploreCenterDifference}px)`);
   assert.ok(Math.abs(layout.chargerFooterGap - 14) <= 1,
     `${width}px: Garage keeps its natural 14px gap below the chargers (${layout.chargerFooterGap}px)`);
+  for (const overview of layout.overviews) {
+    assert.ok(overview.valueBottomDifference <= 1,
+      `${width}px: ${overview.area} request and temperature values share a row (${overview.valueBottomDifference}px)`);
+    assert.ok(overview.textBaselineDifference <= 1,
+      `${width}px: ${overview.area} request and temperature text share a baseline (${overview.textBaselineDifference}px)`);
+    assert.ok(overview.captionTopDifference <= 1,
+      `${width}px: ${overview.area} All-in price aligns with the reading caption (${overview.captionTopDifference}px)`);
+    const needed = width > 800 ? Math.max(...layout.overviews.map(row => row.naturalHeight)) : overview.naturalHeight;
+    assert.ok(Math.abs(overview.height - needed) <= 1,
+      `${width}px: ${overview.area} overview reserves only the current content height (${overview.height}px, needed ${needed}px)`);
+    if (overview.nextBlockAdjacent) assert.ok(Math.abs(overview.nextGap - 16) <= 1,
+      `${width}px: ${overview.area} keeps a compact 16px gap before its next block (${overview.nextGap}px)`);
+  }
+  if (width > 800) {
+    assert.ok(Math.abs(layout.overviews[0].height - layout.overviews[1].height) <= 1,
+      `${width}px: desktop Home and Garage share the taller natural overview height`);
+  }
   for (const item of layout.middleItems) assert.ok(item.midpointDifference <= 1,
     `${width}px: ${item.area} facade sits midway between its outer reading groups (${item.midpointDifference}px)`);
   assert.ok(Math.abs(layout.middleItems[0].relativeCenter - layout.middleItems[1].relativeCenter) <= 1,
