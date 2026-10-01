@@ -10,7 +10,7 @@ export function chargingNotice(charger, view, summary) {
   if (view.identification?.recovery) return { label: view.identification.label, detail: view.identification.detail, state: 'attention' };
   if (view.problem || summary.roleState === 'uncertain') return { label: 'Charger needs attention',
     detail: [...new Set([view.problem, summary.roleDetail, view.priority, ...view.notes].filter(Boolean))].join('\n\n'), state: 'attention' };
-  if (charger.identification?.active && view.showMetrics) return { label: view.identification?.label ?? view.vehicle.label,
+  if ((charger.identification?.active || charger.identification?.phase === 'observing') && view.showMetrics) return { label: view.identification?.label ?? view.vehicle.label,
     detail: view.vehicle.detail, state: 'quiet' };
   if (charger.identification?.phase === 'inconclusive' && view.showMetrics) return { label: 'Identification inconclusive',
     detail: view.vehicle.detail, state: 'attention' };

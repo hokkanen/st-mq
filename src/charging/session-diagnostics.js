@@ -6,7 +6,12 @@ const COVERAGE = ['identification', 'initialRelease', 'pause', 'resume', 'lateRe
 const VEHICLES = new Set(['bmw', 'tesla']);
 const SOURCES = new Set(['bmw-cardata', 'teslamate', 'bmw-target-filter', 'manual-fallback', 'session-anchor', 'session-request', 'vehicle', 'mqtt', 'easee', 'easee-ocpp', 'shelly-evse']);
 const PHASES = new Set(['off', 'waiting', 'paused', 'active', 'released', 'provisional', 'identifying', 'unconfirmed', 'pause-unconfirmed', 'uncertain', 'ownership-uncertain', 'unavailable', 'yielded', 'manual', 'disconnected']);
-const ID_PHASES = new Set(['waiting', 'charging', 'pausing', 'identified', 'inconclusive', 'cancelled', 'complete']);
+const ID_PHASES = new Set(['waiting', 'charging', 'pausing', 'observing', 'completed', 'inconclusive']);
+const ID_REASONS = new Set(['identified', 'manual-stop', 'unsupported', 'telemetry-unavailable', 'charger-unavailable',
+  'another-identification-active', 'awaiting-evidence', 'probe-energy-limit', 'probe-time-limit', 'telemetry-lost',
+  'awaiting-stop-confirmation', 'observing-charge', 'waiting-for-charging',
+  'bmw-home-unknown', 'bmw-away', 'bmw-not-plugged', 'vehicle-feed-stale', 'economic-plan-pending',
+  'evidence-capacity', 'pause-timeout']);
 // Provider messages can contain URLs, identifiers or upstream payload text.
 // Persist only exact supported diagnostic codes, never an arbitrary reason.
 const CONTROL_ERRORS = new Set(['read-failed', 'command-failed', 'readback-failed', 'readback-mismatch',
@@ -247,6 +252,7 @@ function observation(view, now) {
     scheduleState: installed.length ? 'installed' : controlled && proposed.length ? 'proposed' : controlled ? 'unknown' : 'none',
     vehicleId, soc, target, nativeTarget, vehicleSoc, phase: PHASES.has(control.phase) ? control.phase : 'unknown',
     identification: ID_PHASES.has(view.identification?.phase) ? view.identification.phase : null,
+    identificationReason: ID_REASONS.has(view.identification?.reason) ? view.identification.reason : null,
     identificationActive: activeId, expectation, instructionBasis: installed.length ? 'installed-execution' : 'proposed-plan',
     pauseConfirmed, releaseConfirmed, pending, controlled, manual, error: errorCode !== null,
     nativeStartAt: values.vehicleNotBefore?.available === true ? at(values.vehicleNotBefore.value) : null,
@@ -334,7 +340,9 @@ function assess(record, current, now) {
   }
   if (!previous || previous.phase !== current.phase || !equal(controlContext(previous), controlContext(current)))
     event(record, now, 'control', current.phase, controlContext(current));
-  if (previous && previous.identification !== current.identification) event(record, now, 'identification', current.identification ?? 'unknown');
+  if (current.identification !== null && (!previous || previous.identification !== current.identification
+    || previous.identificationReason !== current.identificationReason))
+    event(record, now, 'identification', current.identification, { reasonCode: current.identificationReason });
   if (previous?.vehicleId !== current.vehicleId && current.vehicleId) event(record, now, 'vehicle', 'identified', { vehicleId: current.vehicleId });
   if (current.vehicleId) { record.vehicleId = current.vehicleId; verify(record, 'identification', now); }
   if (current.charging === true) {

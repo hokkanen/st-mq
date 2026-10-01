@@ -8,8 +8,8 @@
 | Connection lifecycle | Timestamped Easee state | Commissioned physical work-state mapping | Corroborating vehicle edges |
 | Economic control | Exclusive cloud delayed starts or native OCPP expiring 0 A transaction pauses | EVSE start/stop over MQTT RPC | No vehicle writes |
 | Active vehicle identification | One bounded attempt per physical connection; native expiring pause | Same attempt lifecycle; application-managed start-permission pause | Independent live vehicle evidence |
-| Identification pause recovery | Charger-side expiry after 90–91 seconds | Persisted restoration obligation; an application/MQTT outage can extend the stop until safe recovery | No charger control |
-| Current changes by ST-MQ | Native OCPP may impose an expiring 0 A pause; no positive-current setpoint | Verified common current | Read native limits only |
+| Identification pause recovery | Ordinary correlation pause expires after 90–91 seconds; an extra probe's final economic pause lasts until scheduled release | Persisted restoration obligation; an application/MQTT outage can extend the stop until safe recovery | No charger control |
+| Current changes by ST-MQ | Native OCPP imposes expiring 0 A pauses; released charging uses native current limits | Verified common current; identification retains the ordinary limiter | Read native limits only |
 | SoC/capacity/target | Assigned vehicle or explicit fallback | Assigned vehicle or explicit fallback | Applicable vehicle evidence |
 | Supply voltage | Physical installation evidence | Physical installation evidence | Never used for home supply |
 
@@ -61,12 +61,17 @@ Status distinguishes proposed, dispatched, accepted, read-back and physical-effe
 
 Vehicle identification uses the same one-attempt lifecycle as Easee, including
 when Automatic charging is OFF or Charge now is selected. Waiting for the
-vehicle to allow charging consumes no test budget. Once charging begins, the
-observation is limited to 60 seconds or 0.15 kWh; suitable BMW evidence permits
-an earlier pause. The stop and its restoration obligation are saved before
+vehicle to allow charging consumes no delivered-energy budget. Ordinary
+authorized charging has no short identification timeout. Extra charging during
+an economic delay uses normal charging current and a 0.15 kWh allowance,
+with a separate safety duration and metering-loss cutoff. These application guards
+depend on working communication and can be delayed by an outage. Suitable BMW evidence
+permits an earlier pause. The stop and its restoration obligation are saved before
 dispatch and remain scoped to the equipment, physical connection and attempt.
 Identification requires fresh physical noncharging evidence and the independent
-vehicle response, in addition to native start-permission readback.
+vehicle response, in addition to native start-permission readback. A physical
+stop returns control to the current charging choice without waiting for BMW;
+matching timestamped reports remain usable until unplugging.
 
 The Shelly identification pause has a 90–91 second application deadline and no
 charger-side expiry. If the application or broker connection is unavailable,

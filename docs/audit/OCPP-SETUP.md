@@ -26,7 +26,7 @@ an installed pause does not restore cloud authorization for a new transaction.
 | Shutdown and handover | Normal shutdown attempts owned `OcppOff` before closing the charging runtime; cloud failure preserves the obligation and reports an error. Paired role transfer keeps native OCPP active. A crash cannot perform cloud handback after the process is gone. |
 | Authorization | The default `rfid` mode requires permitted tags. Opt-in `plug-and-charge` uses a private virtual tag derived from installation credentials for remote startup; an empty physical tag list is allowed in that mode. |
 | Exclusive control | Native activation releases ST-MQ's owned cloud instruction first. A foreign active cloud schedule is preserved and holds the transition. Cloud telemetry fallback does not reactivate cloud scheduling. |
-| Native scheduling | Only absolute 0 A `TxProfile` restrictions for the confirmed current transaction are installed. Their expiry releases the restriction without another command. Effective composite readback checks the pause. Cleanup requires the exact owned profile ID and the current authorized connection; it remains possible when the old transaction is unconfirmed. Missing profile IDs are rejected. No positive-current profile is used. |
+| Native scheduling | Absolute `TxProfile` restrictions bind to the confirmed current transaction. Economic pauses use 0 A and expire at the planned release. Extra identification charging releases the owned pause under normal native current limits; controller energy/time guards reinstate the economic pause. No positive-current profile or autonomous probe cutoff is installed. Effective composite readback verifies zero-current restrictions. Cleanup requires the exact owned profile ID and current authorized connection; it remains possible when the old transaction is unconfirmed. Missing profile IDs are rejected. |
 | Paired address | The charger uses the pairing VIP and local port. Peer readiness verifies compatible endpoint, identity, credentials, authorization mode and tags, plus listener admission. Disabled local OCPP still requires these checks while restoration is owed. Final transaction/setup state travels with the verified database snapshot. |
 | Public status | Setup progress, activation/control-handover waiting and fresh local measurements are separate. Working cloud reading availability stays accurate. No endpoint, password or private tag is displayed. |
 | Current state | The native transaction ledger is strict version 4. Unsupported development ledgers are rejected before mutation; no migration, old decoder or automatic erasure is added. |
@@ -87,10 +87,24 @@ charger and vehicle:
   with corresponding `Charging`/`SuspendedEVSE` status changes. The offline Start
   result does not establish that all app controls are blocked while connected.
   A suspended existing session is not automatically restarted from that status.
-- A positive 6 A profile did not produce sufficiently clear behavior to support
-  a positive-current control contract. The implementation therefore restricts
-  native scheduling to expiring zero-current pauses and existing charger,
-  vehicle and Equalizer limits.
+- The original positive 6 A experiment did not validate positive-current control.
+  An October 6 A trial confirmed the requested schedule but measured no draw
+  during its bounded window. A later 6.1 A request started after vehicle context
+  arrived; effective composite readback still showed 6 A and fresh physical
+  measurements showed no draw. Positive-current limiting was dropped from this change;
+  identification uses ordinary charging current and the established zero-current
+  pause/release path. No physical minimum-current behavior is claimed.
+- The subsequent normal-current application check obtained three-phase draw
+  around 11 kW, observed a return to zero, and identified BMW from corresponding
+  vehicle reports. Final readback confirmed the scheduled native pause, with no
+  pending command or positive-current profile. The charging choice changed
+  during this run, so this checks start/stop and identification; it is not a
+  physical validation of an exact 0.15 kWh cutoff.
+- An earlier OCPP mode-disable/re-enable cycle left charging telemetry without a
+  transaction identifier until a physical unplug/replug. The controller retained
+  its transaction-confirmation fence. Preserving the native session during the
+  final application handover avoided another mode cycle; general orphaned
+  transaction recovery remains a separate operational issue.
 - After applying `OcppOff`, a follow-up about one minute later reported no active
   cloud schedule and external authorization disabled. This is delayed control
   readback, not evidence of immediate physical handback or a new charging start.

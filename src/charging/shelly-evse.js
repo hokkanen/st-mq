@@ -393,11 +393,15 @@ export function createShellyController({ adapter, initialState, saveState = () =
   async function refreshIdentification(snapshot) {
     const request = typeof getIdentification === 'function' ? await getIdentification(copy(snapshot)) : null, now = clock();
     if (request != null && (!request || typeof request !== 'object' || Array.isArray(request)
-      || Object.keys(request).some(key => !['id', 'connectedAt', 'phase', 'pauseUntil'].includes(key))
+      || Object.keys(request).some(key => !['id', 'connectedAt', 'phase', 'pauseUntil', 'mode', 'probeUntil', 'returnStartAt'].includes(key))
       || !token(request.id) || request.id.length > 128 || !time(request.connectedAt) || request.connectedAt > now
       || !['waiting', 'charging', 'pausing'].includes(request.phase)
       || request.phase === 'pausing' && (!time(request.pauseUntil) || request.pauseUntil - now > 5 * 60_000)
-      || request.phase !== 'pausing' && request.pauseUntil !== undefined)) throw fail('invalid-identification-request');
+      || request.phase !== 'pausing' && request.pauseUntil !== undefined
+      || request.mode !== undefined && !['normal', 'probe'].includes(request.mode)
+      || request.mode === 'probe' && (!time(request.probeUntil) || !time(request.returnStartAt) || request.probeUntil >= request.returnStartAt
+        || request.probeUntil - now > 5 * 60_000 || request.returnStartAt - now > 48 * 3600_000)
+      || request.mode !== 'probe' && ['probeUntil', 'returnStartAt'].some(key => request[key] !== undefined))) throw fail('invalid-identification-request');
     identification = request && request.connectedAt === snapshot.session?.connectedAt && snapshot.session?.connected === true
       && (request.phase !== 'pausing' || request.pauseUntil > now) ? copy(request) : null;
   }
@@ -486,9 +490,11 @@ export function createShellyController({ adapter, initialState, saveState = () =
         const inWindow = windows.some(period => period.startAt <= clock() && (period.endAt === null || period.endAt > clock()));
         const nativeBlocked = finite(context.notBefore) && context.notBefore > clock();
         const restrict = adapter.config.limiterEnabled || economic || identification !== null || state.owned?.sessionId === sessionId;
+        const probing = identification?.mode === 'probe';
         const cap = restrict ? limitation.currentA : current.value;
         const identificationPause = identification?.phase === 'pausing';
-        const pause = restrict && cap < adapter.config.minimumCurrentA || economic && !inWindow || identificationPause;
+        const probeExpired = () => probing && clock() >= identification.probeUntil;
+        const pause = restrict && cap < adapter.config.minimumCurrentA || economic && !inWindow || identificationPause || probeExpired();
         const recovery = state.owned?.sessionId === sessionId && !identificationPause;
         const allowStart = (economic && inWindow || identification && !identificationPause || state.ownedPause && !pause)
           && !nativeBlocked && state.manual?.kind !== 'stop';
@@ -510,18 +516,22 @@ export function createShellyController({ adapter, initialState, saveState = () =
             { mutation: true, guard: () => guard() && clock() < expiresAt
               && (role !== 'start_charging' || value === false && limitation.pause || !adapter.snapshot().nativeScheduleActive)
               && (role !== 'start_charging' || value === false
+                || !probeExpired())
+              && (role !== 'start_charging' || value === false
                 || adapter.snapshot().fields.start_charging?.measuredAt === start.measuredAt
                   && adapter.snapshot().fields.start_charging?.value === start.value)
               && (!owned || clock() < owned.startAt),
               beforePublish: async () => {
                 if (!owned) return;
                 const before = adapter.snapshot(), work = before.fields.work_state, physical = before.fields.phase_info;
+                const witnessedCharging = fresh(work) && physicalFresh(physical)
+                  && adapter.config.chargingStates.includes(work.value) && physical.value.total_power > 0;
                 if (!guard() || clock() >= owned.startAt || before.fields.start_charging.value !== true
-                  || before.nativeScheduleActive || !fresh(work) || !physicalFresh(physical)
-                  || !adapter.config.chargingStates.includes(work.value) || !(physical.value.total_power > 0)) {
+                  || before.nativeScheduleActive || !fresh(work) || !probing && !physicalFresh(physical)
+                  || !witnessedCharging && !probing) {
                   state.pending.stage = 'proposed'; await persist(); throw fail('evse-command-revoked');
                 }
-                const witnessed = { ...owned, requestedAt: clock(), witnessedCharging: true };
+                const witnessed = { ...owned, requestedAt: clock(), witnessedCharging };
                 const prior = copy(state.pending), priorCommandAt = state.commandAt;
                 state.pending.owned = witnessed; state.pending.stage = 'dispatched';
                 state.pending.dispatchedAt = state.commandAt = clock();
@@ -572,7 +582,13 @@ export function createShellyController({ adapter, initialState, saveState = () =
               if (await command('current_limit', target, limitation.reason)) state.lastCurrentAt = clock();
             }
           }
+          // Shelly has no verified native timer. Stop on the next available
+          // authorized reconcile, including when a setting RPC crossed the
+          // fixed probe deadline; never send a late probe start.
+          if (probeExpired() && adapter.snapshot().fields.start_charging.value && state.manual?.kind !== 'stop')
+            if (await command('start_charging', false, 'identification-probe-expired')) state.lastPauseAt = clock();
           if (shouldStart && !adapter.snapshot().fields.start_charging.value && !state.manual
+            && !probeExpired()
             && (identification || recovery || clock() - (state.lastPauseAt ?? 0) >= adapter.config.dwellMs)
             && adapter.snapshot().fields.current_limit?.value <= cap) {
             await command('start_charging', true, recovery ? 'identification-resume' : identification ? 'identification-charge' : 'economic-window');

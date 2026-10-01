@@ -37,6 +37,15 @@ function fixture() {
 }
 const descendants = node => node.children.flatMap(child => [child, ...descendants(child)]);
 const now = Date.parse('2026-09-28T18:00:00Z');
+
+test('report facts explain the exact identification blocker and pending historical evidence', () => {
+  const report = { current: { identification: 'waiting', identificationReason: 'bmw-home-unknown' } };
+  assert.match(chargingReportFacts(report).find(([label]) => label === 'Identification')[1], /no valid last known home/);
+  report.current = { identification: 'observing', identificationReason: 'probe-energy-limit' };
+  const facts = chargingReportFacts(report);
+  assert.match(facts.find(([label]) => label === 'Identification')[1], /awaiting matching reports.*energy limit.*remains pending/);
+  assert.match(facts.find(([label]) => label === 'Control at last assessment')[1], /awaiting matching reports/);
+});
 function status() {
   const report = { id: 'current', startedAt: now, endedAt: null, evaluatedAt: now, chargerId: 'charger1',
     behavior: 'expected', outcome: { state: 'in-progress' }, coverage: { initialRelease: { state: 'verified' } }, findings: [],

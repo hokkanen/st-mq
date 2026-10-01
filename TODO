@@ -1,3 +1,39 @@
+Implemented 2026-10-01 — Connection-scoped vehicle identification and bounded extra charging
+- Share one identification lifecycle across BMW and Tesla: normal charging has
+  no identification time/energy cutoff; an economic delay permits one bounded
+  charging probe, followed by normal scheduling while evidence remains
+  pending until physical disconnection. Manual controls and native limits win.
+- Remove the BMW home age limit and both vehicles' historical-start expiry.
+  Preserve source/receipt provenance, last-valid home context, feed/departure
+  boundaries, consumed evidence and simultaneous-charger ambiguity. BMW accepts
+  delayed/reordered start-stop pairs without rolling current state backward;
+  Tesla still needs healthy telemetry and fresh matching physical power.
+- Let a valid preconnection unplug report remain historical context for probe
+  readiness; use BMW source time or Tesla's original receipt time. Current-session
+  negative reports still block, and identity still needs positive vehicle facts.
+- Keep normal charging current during extra probes. OCPP retains its existing
+  zero-current pause/release commands; Shelly retains its electrical limiter.
+  Meter accounting and persisted application deadlines guard the 0.15 kWh
+  allowance; restart cannot renew it. These guards require working control and
+  communication. Positive-current OCPP control was dropped after a bounded
+  6 A test showed no draw; no working minimum-current behavior is claimed.
+- Preserve actual physical stop evidence separately from profile confirmation;
+  an observed stop need not fabricate a causal pause. Resume ordinary control
+  promptly after a witnessed pause and accept later corresponding BMW reports.
+  Reports retain exact blockers; UI separates pending identity from ended probes.
+- F1/F3/F4/F5/F7/F8: one current contract, no legacy interpreter or settings
+  aliases; absent new history is absent proof. Histories are bounded and fail
+  closed on overflow; persistence retains restoration and accounting obligations.
+  Private backups and live test records remain outside the checkout.
+- Live outcome: normal three-phase current, a physical stop and BMW identity
+  were confirmed; the charger was left under its confirmed native economic
+  pause. The exact energy cutoff is covered offline, not claimed as physically
+  validated. Track the separate mode-cycle/orphaned-transaction issue in
+  docs/audit/OCPP-SETUP.md; do not relax transaction confirmation to mask it.
+- Validation: full routine suite 3,868 passed, 1 skipped, 0 failures; production
+  build passed. Isolated charging browser checks covered light/dark views at
+  320/390/1440px; focused UI tests cover the final normal-current wording.
+
 Implemented 2026-09-30 — Matching disclosure triangles and MQTT equipment polish
 - Give Energy cost comparisons and Recording details the same fixed-size CSS
   triangle in both open and closed states, suppressing the native summary marker.

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { matchTeslaSession } from '../src/charging/vehicle.js';
 import { ChargingRuntime } from '../src/charging/runtime.js';
-import { createChargingTeslaCapture } from '../src/charging/teslamate.js';
+import { teslamateVehicleTelemetry, createChargingTeslaCapture } from '../src/charging/teslamate.js';
 
 const NOW = 1800000000000;
 const SOURCE = 'synthetic-tesla-source';
@@ -159,4 +159,68 @@ test('Tesla power consumption survives restart and fences a quick move to anothe
   f.setNow(NOW + 4000); source.send('charger_power', 7);
   f.physical.charger2.at = f.now;
   assert.equal(restarted.telemetry(f.now).charger2.vehicle.id, 'tesla');
+});
+
+
+test('Tesla start correlation survives a long same-session logger gap without renewing change-only clocks', () => {
+  const minute = 60_000, homeAt = NOW - 14 * 24 * 60 * minute;
+  let now = homeAt, saved;
+  let capture = createChargingTeslaCapture({ clock: () => now, saveState: state => { saved = structuredClone(state); } });
+  capture.setConnected(true);
+  const send = (field, value, packet = {}) => capture.receive(`teslamate/cars/1/${field}`, String(value), packet, now);
+  send('geofence', 'Home', { retain: true }); send('plugged_in', true, { retain: true });
+  now = NOW; send('healthy', false); send('charging_state', 'Charging'); send('charger_power', 7);
+  const options = { ...evidence().options, now };
+  assert.equal(matchTeslaSession(capture.snapshot(), options), false);
+  const original = capture.snapshot();
+  now = NOW + 78 * minute; send('healthy', true);
+  const resumed = capture.snapshot(), later = { ...options, now,
+    physical: { charging: { available: true, value: true, measuredAt: NOW },
+      powerKw: { available: true, value: 7, measuredAt: now } } };
+  assert.equal(resumed.atHome, true);
+  assert.equal(resumed.fields.geofence.receivedAt, homeAt);
+  assert.deepEqual(resumed.fields.charging_state, original.fields.charging_state);
+  assert.deepEqual(resumed.fields.charger_power, original.fields.charger_power);
+  assert.equal(matchTeslaSession(resumed, later), true);
+  assert.equal(matchTeslaSession(resumed, { ...later, consumedPowerAt: NOW }), false);
+  assert.equal(matchTeslaSession(resumed, { ...later, chargingAt: [] }), false);
+  assert.equal(matchTeslaSession(resumed, { ...later, chargingAt: NOW + 30_001 }), false);
+  assert.equal(matchTeslaSession({ ...resumed, healthy: false }, later), false);
+  assert.equal(matchTeslaSession(resumed, { ...later, physical: { ...later.physical,
+    powerKw: { ...later.physical.powerKw, measuredAt: now - minute - 1 } } }), false);
+  assert.equal(matchTeslaSession(resumed, { ...later, connectedAt: NOW + 2 * minute,
+    lastDisconnectedAt: NOW + minute }), false);
+  capture = createChargingTeslaCapture({ clock: () => now, initialState: saved });
+  capture.setConnected(true);
+  assert.equal(matchTeslaSession(capture.snapshot(), later), false, 'Saved health alone cannot grant live evidence');
+  now += 1000; send('healthy', true);
+  assert.equal(matchTeslaSession(capture.snapshot(), { ...later, now }), true);
+  assert.equal(capture.snapshot().fields.charger_power.receivedAt, NOW);
+});
+
+test('Tesla held home, battery and target are context rather than reusable charging proof', () => {
+  let now = NOW - 14 * 24 * 60 * 60_000;
+  const capture = createChargingTeslaCapture({ clock: () => now }); capture.setConnected(true);
+  const send = (field, value, packet = {}) => capture.receive(`teslamate/cars/1/${field}`, String(value), packet, now);
+  for (const [field, value] of Object.entries({ geofence: 'Home', plugged_in: true,
+    battery_level: 42, charge_limit_soc: 85, charging_state: 'Charging', charger_power: 7 })) send(field, value, { retain: true });
+  now = NOW; send('healthy', true);
+  const before = capture.snapshot();
+  assert.equal(before.atHome, true);
+  const telemetry = teslamateVehicleTelemetry(before, { now });
+  assert.equal(telemetry.soc.value, 42); assert.equal(telemetry.minimumSoc.value, 85);
+  assert.equal(telemetry.soc.receivedAt, NOW - 14 * 24 * 60 * 60_000);
+  assert.equal(matchTeslaSession(before, evidence().options), false,
+    'Healthy held target and home cannot promote a retained power or start into a live edge');
+  send('battery_level', 43); send('charge_limit_soc', 90);
+  assert.equal(matchTeslaSession(capture.snapshot(), evidence().options), false,
+    'Battery and target changes do not reset consumed or retained charging evidence');
+  send('plugged_in', false); now += 1000; send('plugged_in', true);
+  assert.equal(capture.snapshot().atHome, true, 'Unplug/replug does not invalidate held Home');
+  assert.equal(matchTeslaSession(capture.snapshot(), { ...evidence().options, now }), false);
+  send('geofence', 'Elsewhere');
+  assert.equal(capture.snapshot().atHome, false);
+  now += 1000; send('geofence', 'Home');
+  assert.equal(matchTeslaSession(capture.snapshot(), { ...evidence().options, now }), false,
+    'Returning home does not revive charging proof predating departure');
 });

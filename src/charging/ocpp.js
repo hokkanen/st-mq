@@ -17,12 +17,13 @@ const instant = value => typeof value === 'string' && /(?:Z|[+-]\d{2}:\d{2})$/.t
 const fresh = (at, now) => time(at) && at <= now && now - at <= MAX_AGE_MS;
 const scopeValid = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 function validIdentificationOwnership(value) {
-  if (!['purpose', 'identificationId', 'identificationConnectedAt'].some(key => Object.hasOwn(value, key))) return true;
+  if (!['purpose', 'identificationId', 'identificationConnectedAt', 'mode'].some(key => Object.hasOwn(value, key))) return true;
   return value.purpose === 'identification' && text(value.identificationId) && value.identificationId.length <= 128
     && time(value.identificationConnectedAt) && time(value.requestedAt)
     && value.requestedAt >= value.validFrom && value.requestedAt - value.validFrom < 1000
     && value.identificationConnectedAt <= value.requestedAt && value.startAt > value.requestedAt
-    && value.startAt - value.requestedAt <= MAX_IDENTIFICATION_PAUSE_MS;
+    && (value.mode === 'probe' ? value.startAt - value.requestedAt <= MAX_PAUSE_MS
+      : value.mode === undefined && value.startAt - value.requestedAt <= MAX_IDENTIFICATION_PAUSE_MS);
 }
 
 /** A restriction expires on the charger. No guessed positive current is written. */
@@ -155,7 +156,7 @@ export function initialOcppControllerState(scope) {
 }
 function validInstruction(value) {
   if (!fields(value, ['profileId', 'transactionId', 'startAt', 'validFrom', 'payload', 'fingerprint', 'confirmedAt', 'requestedAt', 'pauseRequestedAt',
-    'purpose', 'identificationId', 'identificationConnectedAt']) || !validIdentificationOwnership(value)) return false;
+    'purpose', 'identificationId', 'identificationConnectedAt', 'mode']) || !validIdentificationOwnership(value)) return false;
   try {
     const expected = ocppPauseInstruction({ ...value, now: value.validFrom });
     return value.fingerprint === expected.fingerprint && JSON.stringify(value.payload) === JSON.stringify(expected.payload)
@@ -255,13 +256,25 @@ export function createOcppChargingController({ adapter, initialState = null, sav
     pauseConfirmed = ownsInstruction && snapshot.connectorStatus === 'SuspendedEVSE'
       && fresh(snapshot.powerAt, clock()) && snapshot.powerAt >= state.owned.requestedAt && snapshot.powerKw === 0;
   }
+  function missingPauseEvidence() {
+    const missing = [];
+    if (snapshot.connectorStatus !== 'SuspendedEVSE') missing.push('charger status confirming that charging is withheld');
+    if (!fresh(snapshot.powerAt, clock()) || snapshot.powerAt < state.owned?.requestedAt)
+      missing.push('a new power reading after the pause');
+    else if (snapshot.powerKw !== 0) missing.push('a zero-power reading');
+    return `Charging pause scheduled; physical stop not yet confirmed. Waiting for ${missing.join(' and ') || 'charger confirmation'}.`;
+  }
   async function refreshIdentification() {
     const next = typeof getIdentification === 'function' ? await getIdentification(clone(snapshot)) : null, now = clock();
-    if (next != null && (!fields(next, ['id', 'connectedAt', 'phase', 'pauseUntil'])
+    if (next != null && (!fields(next, ['id', 'connectedAt', 'phase', 'pauseUntil', 'mode', 'probeUntil', 'returnStartAt'])
       || !text(next.id) || next.id.length > 128 || !time(next.connectedAt) || next.connectedAt > now
       || !['waiting', 'charging', 'pausing'].includes(next.phase)
       || next.phase === 'pausing' && (!time(next.pauseUntil) || next.pauseUntil - now > MAX_IDENTIFICATION_PAUSE_MS)
-      || next.phase !== 'pausing' && next.pauseUntil !== undefined)) throw fail('invalid-plan');
+      || next.phase !== 'pausing' && next.pauseUntil !== undefined
+      || next.mode !== undefined && !['normal', 'probe'].includes(next.mode)
+      || next.mode === 'probe' && (!time(next.probeUntil) || !time(next.returnStartAt) || next.probeUntil >= next.returnStartAt
+        || next.probeUntil - now > 5 * 60_000 || next.returnStartAt - now > MAX_PAUSE_MS)
+      || next.mode !== 'probe' && ['probeUntil', 'returnStartAt'].some(key => next[key] !== undefined))) throw fail('invalid-plan');
     identification = next && next.connectedAt === state.session?.connectedAt && snapshot.pluggedIn === true
       && !state.vehicleDisconnect?.awaitingConnection && (next.phase !== 'pausing' || next.pauseUntil > now)
       ? clone(next) : null;
@@ -280,7 +293,9 @@ export function createOcppChargingController({ adapter, initialState = null, sav
       const attempts = pending.attempts + 1;
       await commit({ pending: { ...pending, attempts, nextAttemptAt: clock() + (attempts === 1 ? 30_000 : 120_000) } });
       if (!canWrite(current)) throw fail('control-revoked');
-      const options = { signal, guard: () => canWrite(current) };
+      const options = { signal, guard: () => canWrite(current)
+        && (pending.action !== 'clear' || identification?.mode !== 'probe' || state.manual || snapshot.pluggedIn !== true
+          || identification.phase === 'pausing' || clock() < identification.probeUntil) };
       if (pending.action === 'install') await adapter.install(pending.instruction, snapshot, { ...options,
         beforeWrite: async before => {
           if (!canWrite(current)) throw fail('control-revoked');
@@ -390,7 +405,7 @@ export function createOcppChargingController({ adapter, initialState = null, sav
         return display('unavailable', 'Waiting for a current transaction confirmed on this connection.', 'transaction-unconfirmed');
       if (identification) {
         await commit({ execution: null, released: false, provisional: false });
-        if (identification.phase !== 'pausing') {
+        if (identification.phase !== 'pausing' && (identification.mode !== 'probe' || clock() < identification.probeUntil)) {
           const restriction = state.pending?.instruction ?? state.owned;
           if (restriction && !await clearInstruction(restriction, current, signal)) return display('unconfirmed', 'Vehicle identification is waiting for the native profile release.');
           return display('identifying', identification.phase === 'waiting' ? 'Vehicle identification is pending until charging starts.'
@@ -413,7 +428,7 @@ export function createOcppChargingController({ adapter, initialState = null, sav
         // remain restricted by somebody else's profile and is not ownership.
         if (!await clearInstruction(previousInstruction, current, signal)) return display('unconfirmed', 'Native expiry cleanup is waiting for its bounded retry.');
       }
-      let plan = identification ? { id: identification.id, startAt: identification.pauseUntil }
+      let plan = identification ? { id: identification.id, startAt: identification.mode === 'probe' ? identification.returnStartAt : identification.pauseUntil }
         : typeof getPlan === 'function' ? await getPlan(clone(snapshot)) : desired.plan;
       if (!canWrite(current)) throw fail('control-revoked');
       const priceRevision = revisedExecution(plan, state.execution, clock());
@@ -454,18 +469,19 @@ export function createOcppChargingController({ adapter, initialState = null, sav
       }
       if (!time(startAt)) return display('unavailable', 'Waiting for a charging plan.');
       startAt = Math.ceil(startAt / 1000) * 1000;
-      if (state.pending && (state.pending.action === 'clear' || state.pending.instruction.startAt === startAt))
+      const expiredProbeClear = identification?.mode === 'probe' && clock() >= identification.probeUntil && state.pending?.action === 'clear';
+      if (state.pending && !expiredProbeClear && (state.pending.action === 'clear' || state.pending.instruction.startAt === startAt))
         if (!await dispatch(current, signal)) return display('unconfirmed', 'The native command is waiting for its bounded retry.');
       if (state.pending || state.owned?.startAt !== startAt
         || identification && (state.owned?.purpose !== 'identification' || state.owned.identificationId !== identification.id)) {
         const now = Math.floor(clock() / 1000) * 1000;
         if (startAt - clock() < (identification ? 1000 : MIN_PAUSE_MS)
-          || startAt - clock() > (identification ? MAX_IDENTIFICATION_PAUSE_MS : MAX_PAUSE_MS)) throw fail('invalid-plan');
+          || startAt - clock() > (identification && identification.mode !== 'probe' ? MAX_IDENTIFICATION_PAUSE_MS : MAX_PAUSE_MS)) throw fail('invalid-plan');
         const profileId = state.pending?.instruction.profileId ?? state.owned?.profileId ?? state.nextProfileId;
         if (profileId >= 2147483646) throw fail('invalid-plan');
         const next = { ...ocppPauseInstruction({ profileId, transactionId: snapshot.transactionId, startAt, now }),
           requestedAt: clock(), ...(identification ? { purpose: 'identification', identificationId: identification.id,
-            identificationConnectedAt: identification.connectedAt } : {}) };
+            identificationConnectedAt: identification.connectedAt, ...(identification.mode === 'probe' ? { mode: 'probe' } : {}) } : {}) };
         await commit({ nextProfileId: state.owned || state.pending ? state.nextProfileId : profileId + 1,
           pending: { action: 'install', instruction: next, execution, attempts: 0, nextAttemptAt: 0, accepted: false } });
         if (!await dispatch(current, signal)) return display('unconfirmed', 'Native pause installation is pending.');
@@ -474,14 +490,18 @@ export function createOcppChargingController({ adapter, initialState = null, sav
         if (!coversZero(composite, Math.max(clock(), composite.startAt), startAt)) return display('unconfirmed', 'The native pause no longer matches the effective schedule.', 'readback-mismatch');
         if (JSON.stringify(execution) !== JSON.stringify(state.execution)) await commit({ execution });
         if (!identification && state.owned?.purpose === 'identification') {
-          const { purpose: _purpose, identificationId: _id, identificationConnectedAt: _connection, ...owned } = state.owned;
+          const { purpose: _purpose, identificationId: _id, identificationConnectedAt: _connection, mode: _mode, ...owned } = state.owned;
           await commit({ owned });
         }
         ownsInstruction = true;
       }
-      const verifiedConnectionId = snapshot.connectionId;
+      const verifiedConnectionId = snapshot.connectionId, verifiedTransactionId = snapshot.transactionId;
       snapshot = await adapter.read({ signal });
-      if (!canWrite(current)) throw fail('control-revoked');
+      if (!canWrite(current) || !snapshot.online || snapshot.connectionId !== verifiedConnectionId || !snapshot.transactionConfirmed
+        || snapshot.transactionId !== verifiedTransactionId) {
+        ownsInstruction = pauseConfirmed = false;
+        throw fail('control-revoked');
+      }
       ownsInstruction = ownsInstruction && snapshot.online && snapshot.connectionId === verifiedConnectionId && snapshot.transactionConfirmed
         && snapshot.transactionId === state.owned?.transactionId && clock() < state.owned.startAt;
       observePause();
@@ -490,7 +510,7 @@ export function createOcppChargingController({ adapter, initialState = null, sav
         : 'The identification pause is awaiting fresh confirmation from the charger.');
       return display(pauseConfirmed ? 'paused' : 'pause-unconfirmed', pauseConfirmed
         ? 'The native pause is confirmed and expires at the planned start.'
-        : 'The native pause envelope is confirmed; fresh physical pause evidence is still pending.');
+        : missingPauseEvidence());
     } catch (error) {
       if (closed || current !== generation) return status();
       handoverConfirmed = !controlRequested() ? false : null;

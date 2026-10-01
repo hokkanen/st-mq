@@ -1,6 +1,6 @@
 # Charging
 
-ST-MQ models two physical charging points: **Charger 1 is Easee**, using either the cloud delayed-start scheduler or the native OCPP controller’s expiring zero-current pauses; **Charger 2 is the commissioned Top AC / Shelly XT1 EVSE**, controlled through MQTT RPC. TeslaMate and BMW CarData supply vehicle evidence for either charging point. They never supply another home electricity contribution or receive vehicle commands.
+ST-MQ models two physical charging points: **Charger 1 is Easee**, using either the cloud delayed-start scheduler or the native OCPP controller’s expiring current profiles; **Charger 2 is the commissioned Top AC / Shelly XT1 EVSE**, controlled through MQTT RPC. TeslaMate and BMW CarData supply vehicle evidence for either charging point. They never supply another home electricity contribution or receive vehicle commands.
 
 Charger 1 uses one control backend at a time. Native OCPP activation releases
 ST-MQ's owned cloud instruction and waits when a foreign cloud schedule still
@@ -8,7 +8,9 @@ owns charging. Cloud telemetry remains a data fallback without silently
 reactivating cloud scheduling. Native `plug-and-charge` authorization can start
 a connected vehicle without an RFID tap; RFID mode instead requires permitted
 tags. Native economic pauses expire on the charger and release to its existing
-charger/vehicle/Equalizer limits without positive-current commands. See
+charger/vehicle/Equalizer limits. Extra identification charging during an economic
+delay uses normal charging current, with a controller-managed energy allowance
+and safety deadline. See
 [local setup and native control](charging-easee.md#direct-local-ocpp-telemetry-firmware-344-or-later).
 
 **Native OCPP needs ST-MQ for charging authorization.** Normal Ctrl+C or service
@@ -277,61 +279,130 @@ The observer evaluates both charging points together, including while automatic 
 
 Assignments carry the physical association, plug epoch and vehicle-feed identity. Changing the configured Tesla car, broker, topic namespace or home-zone configuration cannot lend a replacement source’s readings to a saved match. Genuine disconnect/reconnect events are retained even between planner ticks or MQTT subscription admission and invalidate the old scope. Pause/resume within a connected work state remains one session. Explicit conflicting evidence withdraws certainty. A remembered identity alone cannot authorize a new connection, and current vehicle fields are withdrawn when the upstream feed is unhealthy.
 
-TeslaMate has transport, subscription, live logger-health and per-field evidence checks. Sleeping while healthy is distinct from unhealthy. A reconnect requires a new live healthy pulse. TeslaMate publishes most values only when they change; its current-limit and next-start settings remain available while the logger is healthy, preserving their original receipt times and retained provenance. Fresh physical charging takes precedence over a reported future timer. Retained or last-known values alone cannot identify a car. A live charging-state start within 30 seconds of a physical charging start can corroborate matching power after the normal ramp delay, for up to fifteen minutes, while physical power remains fresh. Retained starts and power cannot supply that evidence. Repeated identical publications and same-value recovery after an unknown gap preserve their original provenance. Every Tesla match requires positive vehicle power and physical power measured within the current session and the last minute; a consumed power observation cannot identify another connection. BMW source timestamps, home scope and consumed plug/start events serve the same separation. Neither feed's remote voltage or power fills missing household electrical measurements.
+TeslaMate has transport, subscription, live logger-health and per-field evidence
+checks. Sleeping while healthy is distinct from unhealthy. A reconnect requires
+a new live healthy pulse. TeslaMate publishes most values only when they change;
+its held fields keep their original receipt times and retained provenance while
+logger health establishes whether they are currently usable. Fresh physical
+charging takes precedence over a reported future timer. Retained or last-known
+values alone cannot identify a car. A live charging-state start whose receipt
+matches the physical start within 30 seconds can corroborate matching reported
+power throughout that physical connection; elapsed time does not expire that
+historical correlation. Identification still requires current healthy, plugged,
+home and charging context plus fresh positive local power agreeing with the
+Tesla report. Retained starts and power cannot supply the match. Repeated
+identical publications and same-value recovery after an unknown gap preserve
+their original provenance; consumed power cannot identify another connection.
+TeslaMate's receipt clock cannot place a report delivered late at an earlier
+physical event. The saved correlation must already agree at the original
+receipt time. Held home and target fields remain context; identification does
+not require a new GPS observation simply because the car has stayed home.
+BMW source timestamps, home scope and consumed plug/start events serve the same
+connection separation. Neither feed's remote voltage or power fills missing
+household electrical measurements.
 
 Easee cloud scheduling, local OCPP and the commissioned Shelly EVSE use the same
 vehicle matcher, pending status, consumed-evidence checks and session boundaries.
 Their adapters normalize ownership and physical pause evidence before it reaches
 identification. A schedule, RPC reply or OCPP acknowledgement alone cannot identify
-BMW. Its unchanged-inlet fallback requires both live vehicle transitions to match the charger transitions
-around a verified pause request; fresh-plug matching can use a natural stop.
-Unknown charger state never counts as a stop.
+BMW. Independent BMW start and stop transitions must match the corresponding
+charger episode. A fresh plug event permits the bounded connection-observation
+tolerance; with an unchanged inlet report, both observed starts must be inside
+the known physical connection, with no preconnection tolerance. A natural stop
+or the end of a bounded charging probe can supply the second edge.
+An ongoing BMW baseline without its original start edge instead requires a
+verified controlled pause. Unknown charger state never counts as a stop.
 
-Identification is an explicit connection phase before economic scheduling.
+Identification remains pending for the physical connection independently of
+economic scheduling and any bounded charging test. BMW and Tesla use this same
+lifecycle, energy allowance, control permissions, restart behavior and return to
+the current charging choice. The matchers differ according to the available
+evidence: TeslaMate supplies live power and receipt-timed transitions, while BMW
+supplies source-timestamped charging events that can arrive later. BMW's need for
+a corresponding stop does not force an unnecessary pause after a conclusive
+Tesla power match; Tesla's live-field checks do not impose a short lifetime on
+BMW's historical events.
 Easee cloud, local OCPP and Shelly EVSE support one automatic active attempt per
 physical connection, including when Automatic charging is OFF or Charge now is selected.
 An already confirmed passive match skips the test. Otherwise, live charger
-readiness and plausible at-home vehicle context allow the controller to release
-its own economic delay and observe charging. Native electrical limits, faults,
+readiness and plausible at-home vehicle context allow one bounded charging
+test using the charger's normal current settings.
+Probe readiness can use a healthy, at-home vehicle whose last valid unplugged
+report predates the actual physical connection: BMW uses the report's source
+timestamp, TeslaMate its original receipt timestamp. That old negative report
+does not block gathering new evidence. A negative report from this connection,
+an unknown or malformed clock, an away location or an unhealthy feed still blocks
+the test. This changes readiness only; identification still requires the vehicle's
+own positive context and corresponding charging evidence.
+Native electrical limits, faults,
 authorization, vehicle timers and manual Stop retain priority. Pending
 identification has no ten-minute label expiry: a vehicle timer or full battery
 can leave it waiting until charging starts. Missing vehicle context leaves it
 pending without repeatedly starting a test.
 
 BMW location can become unknown when GPS is unavailable or its coordinate
-updates have different source times. A last confirmed home observation can
-support identification for up to two hours from its original measurement time,
-while the current location remains explicitly unknown. Repeats and restart do
-not extend this bound. Away reports and subsequent BMW unplug evidence invalidate
-that fallback; fresh vehicle and physical charger correlation is still required.
+updates have different source times. The latest valid home observation supports
+identification without an age limit, including across restart and unplug/replug.
+Unknown GPS preserves this context and its original timestamp. A valid away
+report or replacement of the configured vehicle feed invalidates it. The current
+location remains explicitly unknown during a GPS gap; a remembered home report
+does not identify a vehicle or carry a charger assignment to another connection.
+Vehicle and physical charger correlations are still required for each connection.
 The charger details show the remembered home observation separately. See
 [BMW location context](bmw-cardata.md#home-location). Missing context before a
 test leaves its budget unused; loss during an active test never renews its limits.
 
-Once charging starts, a fresh Tesla power match can finish immediately. A usable
-BMW charging baseline instead triggers a brief, confirmed pause as soon as it
-is available. Startup can use live ongoing BMW charging without inventing a
+When normal charging is permitted, it proceeds under native current limits;
+waiting for either vehicle has no short charging timeout or identification energy budget.
+A fresh Tesla power match can finish immediately. A usable BMW charging baseline
+can trigger one brief, confirmed pause while the same connection is charging.
+Startup can use live ongoing BMW charging without inventing a
 missing historical start edge. Matching charger and vehicle stop evidence is
 still required; an accepted pause command alone is insufficient. Active tests
 are serialized across charging points. Shelly requires commissioned control,
 fresh physical readings and available MQTT, and retains its electrical limiter
 and native restrictions throughout the test.
 
-The test observes charging for at most 60 seconds or 0.15 kWh, whichever is
-observed first, then ends inconclusively if no usable match or pause candidate
-arrived. These are controller decision limits; telemetry and actuator response
-delays can add physical charging. A requested identification pause has a deadline
+When the charging plan is delaying charge, the extra test temporarily permits
+charging under the existing charger, vehicle and local load-balancing limits.
+Identification does not select a lower positive current. OCPP continues to use
+its established zero-current pause and release commands; Shelly retains its
+ordinary electrical limiter. A conclusive vehicle match ends the extra test immediately and
+returns to the current charging choice. A usable BMW baseline triggers its
+correlation pause; absent a match, the shared 0.15 kWh extra-energy allowance
+ends probing for either vehicle.
+An independent five-minute maximum and loss of current power evidence also end
+probing. These limits do not expire the saved identification evidence. Metering
+and actuator delay require conservative stopping allowance; a software limit is
+not a guarantee of an exact physical energy cutoff. Native electrical limits and
+Equalizer authority remain in effect. The controller monitors energy and its
+persisted absolute deadline, then reinstates the economic pause. The practical
+deadline is usually much shorter than five minutes: it uses the reported hardware
+current ceiling, or the adapter's conservative maximum, across three phases at
+at least 253 V and reserves ten seconds for stopping. This calculation does not
+set charging current or claim that actual draw reaches the ceiling. These guards
+require the running controller and working charger communication; an outage can
+extend extra charging. No positive-current OCPP profile or autonomous probe cutoff
+is installed. Restart or telemetry loss cannot renew the recorded allowance.
+A brief identification pause during ordinary charging has a deadline
 90 seconds later, rounded up to the next whole second. Easee cloud and OCPP
 enforce that expiry at the charger. Shelly's pause uses its start permission and
 is released by the application; its outage behavior is described below. A
-confirmed identity ends the temporary test immediately and applies the current
-charging choice. An expired or interrupted
-test becomes **Identification inconclusive** and returns to normal charging
-control with session/default battery inputs. Passive matching continues; late
-BMW stop evidence can still confirm the same witnessed pause for up to fifteen
-minutes. Tests never repeat automatically for that connection.
+physically confirmed stop ends the temporary pause immediately and applies the
+current charging choice, without waiting for BMW delivery. During an economic
+delay, that choice is the scheduled pause. The zero-current OCPP restriction that
+ends an extra probe can therefore last until the planned economic release; it
+does not expire after the ordinary 90-second identification pause.
+Probe limits leave **Identification pending**
+while normal control uses session/default battery inputs. Source-timestamped BMW
+start/stop evidence can confirm the same connection until unplugging, including
+after a long charging run or delayed and reordered delivery. Matching still
+requires corresponding episodes and tightly correlated physical transitions;
+newer current state is never rolled backward by historical evidence. Tests never
+repeat automatically for that connection. Normal scheduled charging can supply
+additional evidence after the probe budget is exhausted.
 
-The attempt, absolute deadlines and physical evidence survive a current-version
+The attempt, consumed budget, absolute deadlines and physical evidence survive a current-version
 restart. A known connection resumes its pending attempt or completed outcome;
 restart does not renew its budget. An already connected charger with no saved
 connection starts one attempt when fresh readings permit it. Unplugging cancels
@@ -372,7 +443,7 @@ The planner first respects device/vehicle limits, manual permission, native star
 
 The implementation is a bounded search over a declared slot/current model, **not a globally exact continuous-time optimizer**. Results expose the search kind, relaxed cost lower bound, feasible candidate cost and upper bound on the cost gap where available. Search pruning can miss a better joint candidate; reported feasibility is conditional on the recorded assumptions. Synthetic exhaustive small-horizon comparisons validate representative cases. There is no one-cent pause penalty or mandatory one-cent saving hurdle. Practical minimum economic runs/gaps remain 15 minutes; equal-cost choices prefer stability.
 
-Easee's Equalizer, charger and vehicle determine positive charging current. ST-MQ does not write a positive-current setpoint, circuit protection or fuse setting; native OCPP economic pauses impose only an expiring 0 A restriction. Current already drawn by an automatic-OFF, manually running or post-target peer remains a load until physical evidence says otherwise. Forecast household load, gross configured capacity and current net allowance are distinct. A clipped zero Equalizer allowance does not establish an exact gross budget. Missing rates or capacity produce provisional decisions, not free electricity or invented assured readiness.
+Easee's Equalizer, charger and vehicle determine the available charging current. Native OCPP economic pauses impose an expiring 0 A restriction; identification probes briefly release the owned pause at normal current before returning to that economic pause or normal charging. This never raises native limits or changes circuit protection or fuse settings. Current already drawn by an automatic-OFF, manually running or post-target peer remains a load until physical evidence says otherwise. Forecast household load, gross configured capacity and current net allowance are distinct. A clipped zero Equalizer allowance does not establish an exact gross budget. Missing rates or capacity produce provisional decisions, not free electricity or invented assured readiness.
 
 The final period is an open release. Reaching the planning minimum or ready-by deadline does not issue a final stop. Extra actual energy remains metered and priced. Unknown future post-target consumption cannot have a guaranteed optimized bill. Later economic pauses require ST-MQ and the provider to be available; the UI distinguishes the proposed plan, dispatched request, readback and observed physical response.
 

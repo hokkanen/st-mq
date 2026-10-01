@@ -114,7 +114,7 @@ export function chargingSetupView(status = {}) {
         && charger.vehicle?.state === 'identified' && charger.vehicle.id === vehicle && charger.values?.connected?.value === true);
       const lastHome = feed?.setup?.homeContext;
       const homeNote = lastHome?.source === 'last-known' && time(lastHome.measuredAt)
-        ? ` Current location is unknown. Last confirmed home context (${time(lastHome.measuredAt)}) is usable for at most two hours from that observation; fresh charging evidence is still required.` : '';
+        ? ` Current location is unknown. Last confirmed home context (${time(lastHome.measuredAt)}) remains usable without a time limit, including across reconnects, until a valid away report replaces it. Matching charging evidence is still required for each connection.` : '';
       return [vehicle, { ...feedState(feed, vehicle),
         association: association ? `${labels[vehicle]} is identified at ${association.id === 'charger1' ? 'Charger 1' : 'Charger 2'} for this connection.${homeNote}`
           : `No current physical charger association is confirmed.${homeNote}`,

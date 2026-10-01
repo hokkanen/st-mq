@@ -114,22 +114,28 @@ clock go to MQTT, never coordinates or private zone/device identifiers.
 
 The controller tolerates temporary GPS gaps, including coordinate updates that
 arrive independently. When the current `atHome` fact is explicitly unknown, its
-last confirmed true observation may supply identification context for at most
-two hours from the original BMW measurement time. The current fact stays unknown;
+latest valid home observation supplies identification context indefinitely,
+including across restart and unplug/replug. The current fact stays unknown;
 the charger details show that distinction and the original home-observation time.
-Repeated publications and restart do not renew the observation. This needs no
+Repeated publications and restart do not renew the source timestamp. This needs no
 publisher change and does not claim to diagnose GPS reception.
 
-An explicit away report, a BMW unplug event at or after that home observation,
-expiry, or replacement of the configured vehicle feed prevents the fallback.
+An explicit valid away report or replacement of the configured vehicle feed
+prevents the fallback. A BMW unplug event does not erase the remembered location.
 A later live home-zone correction can supersede an away calculation while
 keeping the original GPS clock. A charger reconnect alone does not mean the
 vehicle left the property; its separate connection boundaries still fence all
 charging evidence. Unknown plug or charging facts have no last-known fallback.
-Fresh matching vehicle and physical charger responses remain mandatory. Missing
+Matching vehicle and physical charger responses for the current connection remain mandatory. Missing
 usable context leaves a new attempt waiting; once a test has begun, loss of
 context cannot reset its time or energy limits. An already inconclusive attempt
 still requires **Identify** or a new physical connection to start another test.
+With a healthy feed and valid home context, a valid BMW unplugged report whose
+source timestamp predates the physical connection does not block a new probe.
+Tesla follows the same rule using its original receipt clock. A negative report
+from the current connection, unknown clock, away report or unhealthy feed still
+blocks readiness. This permission to gather evidence does not supply identity:
+positive vehicle context and matching charging events remain required.
 
 ## Association with a charging point
 
@@ -150,20 +156,42 @@ to charge elsewhere at home is insufficient on its own. Without the
 matching stop, that charging point continues to use manual battery values. Matching live
 start evidence with valid home and plug context can show **BMW identification pending**
 while awaiting stop confirmation, even if the plug report is unchanged.
-Identification now has its own durable attempt: it remains pending while a
+Identification has its own durable connection scope: it remains pending while a
 vehicle timer or limit prevents charging, then obtains a usable live charging
 baseline and requests a short pause as soon as possible. The label does not
-silently expire after ten minutes. Missing evidence after the bounded active test
-produces **Identification inconclusive**; conflicting evidence cannot identify
+silently expire after ten minutes. Exhausting an extra charging test leaves
+**Identification pending** while awaiting timestamped evidence; conflicting evidence cannot identify
 the vehicle. Easee cloud, local OCPP and commissioned Shelly EVSE control use the
 same lifecycle, including with automatic economic charging OFF or Charge now selected. Manual Stop and native
 restrictions retain priority.
 
-The charging observation is limited to 60 seconds or 0.15 kWh. A usable baseline
-can trigger the pause earlier; a match can finish the test without a pause. The
-pause deadline is 90 seconds rounded up to the next second, at most 91 seconds,
-and successful identification ends the test earlier. Easee cloud and OCPP have
-native expiry. Shelly's application-managed start-permission pause can last
+The connection lifecycle and extra-energy allowance are shared with Tesla;
+only the evidence needed for a positive match differs. TeslaMate can corroborate
+current local draw with its healthy charging and power reports. BMW supplies
+source-timestamped start/stop events, so matching can finish after those events
+arrive later. A conclusive Tesla match needs no BMW-style pause, and waiting for
+either vehicle never imposes a short timeout on otherwise authorized charging.
+TeslaMate's receipt-only timestamps cannot re-date a late report into an earlier
+physical event; its original receipt and physical start must already correlate.
+BMW events retain their independent source timestamps even when delivery is late.
+Held home and target values supply context without requiring fresh GPS simply
+because the vehicle remains parked at home.
+
+Ordinary authorized charging has no short identification timeout or energy
+budget. During an economic delay, the extra charging test uses the charger's
+normal current settings and stops when a usable BMW baseline arrives or the 0.15 kWh
+probe allowance is consumed. A safety duration and loss of metering also stop
+probing. The persisted duration uses the reported hardware current ceiling and
+at least 253 V on three phases, with a ten-second stopping reserve; it is usually
+much shorter than the independent five-minute maximum. These controller-managed
+guards require working communication; an
+outage can extend extra charging. These limits end extra charging, not the evidence lifetime. A match can
+finish the test without a pause. A brief correlation pause during ordinary
+charging has a deadline 90 seconds later, rounded up to the next second,
+and a physically confirmed stop returns to the current charging choice earlier,
+without waiting for BMW delivery. Easee cloud and OCPP have
+native expiry. After an extra probe, the OCPP zero-current restriction instead
+continues through the scheduled economic delay. Shelly's application-managed start-permission pause can last
 longer if the application or MQTT is unavailable; its saved restoration
 obligation is resolved after fresh readback of the same connection. Manual Stop,
 native schedules and electrical limits retain priority during that recovery.
@@ -175,16 +203,23 @@ must match the current witnessed physical pause within 30 seconds. Retained
 charging reports cannot provide that baseline or stop proof.
 
 BMW can also keep reporting `CONNECTED` without a new vehicle plug transition.
-An alternative match uses reported home and plugged-in context no older than
-24 hours (or the two-hour last-confirmed-home context during a GPS gap),
-plus a planned pause already controlled by ST-MQ. Live BMW charging-start
-and stop events no older than fifteen minutes must each match the physical charger within
-30 seconds. Both starts must precede
-the pause boundary; both stops must follow it. The boundary is a durable request
+The latest valid home and plugged-in context with a healthy vehicle feed permits
+a match from two independently reported charging transitions. BMW start and stop
+must match the corresponding physical charger episode within 30 seconds, and
+both BMW and charger starts must be at or after the actual known connection
+boundary. This path has no preconnection tolerance and needs no new plug report
+or artificial pause. A natural stop or a probe's programmed zero-current deadline
+can supply the physical stop; missing original charging edges cannot be invented.
+
+When startup instead uses a live ongoing BMW baseline without an observed start,
+the controlled-pause path still requires its guarded causal witness. The BMW
+baseline and physical charging witness must precede the pause boundary; both
+stops must follow it. The boundary is a durable request
 witness saved after a guarded charging observation immediately before requesting
 the pause. Missing request evidence cannot be replaced by a later
 acknowledgement. The owned restriction must be confirmed for the same current
-connection and expire in the future.
+connection and have been valid when the physical stop was confirmed. Saved proof
+remains applicable after its expiry while that same connection continues.
 
 The charger boundary supplies one common pause proof to the BMW matcher. Cloud
 control verifies its exact delayed schedule and scheduling-stop reason (54), with
@@ -200,9 +235,10 @@ status, event consumption and conflict handling are shared between these backend
 Manual priority or conflicting Tesla evidence prevents this match. The active
 identification pause uses this same charger proof; its additional ongoing-charge
 baseline is separately bound to the saved attempt and vehicle feed. Charging
-evidence cannot be reused for another connection. A matching delayed BMW report
-can confirm the saved physical pause for up to fifteen minutes, even after the
-temporary pause has expired.
+evidence cannot be reused for another connection. Matching delayed or reordered
+BMW reports remain usable until unplugging, even after the temporary pause has
+expired or normal charging has resumed. Historical events retain source and
+receipt times separately; accepting an older event never rewinds current state.
 
 No BMW charging-power field or plug-event identifier is required. Cached/retained
 true values, or unchanged true values republished with newer timestamps, cannot

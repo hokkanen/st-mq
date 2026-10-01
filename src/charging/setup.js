@@ -27,9 +27,9 @@ export function bmwVehicleSetup(reading, { available = false, now = Date.now() }
     minimumSoc: field(reading?.chargeLimitSoc, reading?.fields?.chargeLimitSoc, { ...options, valid: percentage }),
     capacityKwh: field(reading?.usableCapacityKwh, reading?.fields?.usableCapacityKwh,
       { ...options, valid: value => finite(value) && value >= 1 && value <= 300 }),
-    pluggedIn: field(reading?.pluggedIn, reading?.fields?.pluggedIn, { ...options, valid: boolean, maxAge: 86_400_000 }),
+    pluggedIn: field(reading?.pluggedIn, reading?.fields?.pluggedIn, { ...options, valid: boolean }),
     charging: field(reading?.charging, reading?.fields?.charging, { ...options, valid: boolean, maxAge: 900_000 }),
-    atHome: field(reading?.atHome, reading?.fields?.atHome, { ...options, valid: boolean, maxAge: 86_400_000 }),
+    atHome: field(reading?.atHome, reading?.fields?.atHome, { ...options, valid: boolean }),
   }, homeContext: home ? { source: home.source, measuredAt: home.measuredAt, receivedAt: home.receivedAt } : null };
 }
 

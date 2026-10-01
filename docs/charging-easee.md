@@ -298,10 +298,10 @@ longer values. `local_ocpp.charge_point_id` is needed only for a custom identity
 Cloud credentials remain configured for setup, fallback readings and cloud
 control while native OCPP is inactive.
 
-### Native charging pauses
+### Native charging pauses and identification current
 
-The native controller installs an absolute, transaction-scoped `TxProfile` with
-only a **0 A restriction**. The profile identifies the current confirmed native
+For an economic pause, the native controller installs an absolute,
+transaction-scoped `TxProfile` with a **0 A restriction**. The profile identifies the current confirmed native
 transaction and expires at the planned release time using both `validTo` and
 schedule duration. ST-MQ verifies the effective zero-current interval with
 `GetCompositeSchedule`; an accepted write alone is not confirmation of the
@@ -312,19 +312,34 @@ ST-MQ never turns an incomplete cleanup instruction into a clear-all request.
 
 At expiry, the restriction disappears on the charger without a new resume
 command. Charging then follows the charger, vehicle and Equalizer's existing
-limits. ST-MQ does not repeatedly command a positive current, invent a 6 A
-release level or use a returned composite limit as the actual available current.
+limits. Normal release does not impose an artificial current setpoint or use a
+returned composite limit as the actual available current.
 Intermediate pauses still require a running controller to install the next
 restriction. A process or network outage can therefore miss a future pause and
 increase cost, while an already installed restriction retains its own expiry.
 This expiry does not authorize a new transaction or return the charger to cloud
 control after an abrupt controller loss.
 
+Extra identification charging during an economic delay briefly releases the
+owned pause at the charger's normal current, retaining all native charger,
+vehicle and Equalizer limits. The controller monitors the 0.15 kWh allowance and
+saved safety deadline, then reinstates the applicable economic pause. This uses
+the established zero-current pause and release commands; no positive-current
+profile is installed. The energy/time guards need the application and working
+communication, so an outage can extend extra charging. The software deadline
+uses the hardware current ceiling, at least 253 V across three phases and a
+ten-second stopping reserve, normally ending much earlier than the five-minute
+maximum. The resulting zero-current restriction can last until the scheduled
+economic release; the ordinary 90-second correlation-pause expiry does not end
+that economic hold. See the
+[identification lifecycle](charging.md#vehicle-assignment) and the
+[commissioning record](audit/OCPP-SETUP.md) for the physical validation scope.
+
 A bounded live experiment verified a private virtual-tag start, physical
 charging, a transaction-scoped zero-current pause, and resumed charging after
-the pause expired with the test controller suspended. Positive-current profile
-behavior was not sufficiently clear to support rate-setting control; the
-implementation uses only the verified zero-current restriction. This does not
+the pause expired with the test controller suspended. That original experiment
+did not establish positive-current limiting, which is outside the current
+implementation. These observations do not
 establish behavior for every firmware, vehicle, phase arrangement or paired
 hardware takeover. A separate user-assisted test suspended the server for about
 four minutes: after unplug/replug, Easee app Start waited for approval and did

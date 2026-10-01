@@ -1,19 +1,21 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { advanceIdentification, validateIdentificationState, prepareActiveBmwCandidate,
-  matchActiveBmwPause } from '../src/charging/identification.js';
+  matchActiveBmwPause, IDENTIFICATION_CHARGE_LIMIT_MS } from '../src/charging/identification.js';
 
 const START = Date.parse('2026-09-25T10:00:00Z'), MINUTE = 60_000;
 const input = overrides => ({ connectedAt: START, now: START, ...overrides });
+const probeInput = overrides => input({ normalCharging: false, probeAllowed: true,
+  probeReturnAt: START + 60 * MINUTE, ...overrides });
 const event = (readingId, measuredAt, overrides = {}) => ({ readingId, measuredAt,
   receivedAt: measuredAt + 1000, retained: false, ...overrides });
 function fixture() {
-  const start = event('charging-start', START + 1000);
+  const start = event('charging-start', START + 1000, { value: true });
   const reading = { provider: 'bmw-cardata', association: 'test-bmw-feed', atHome: true,
     pluggedIn: true, charging: true, fields: {
       atHome: event('home', START - MINUTE, { retained: true }),
       pluggedIn: event('plug', START - MINUTE, { retained: true }),
-      charging: { ...start, positiveEvent: start, negativeEvent: null },
+      charging: { ...start, positiveEvent: start, negativeEvent: null, history: [start], historyOverflowAt: null },
     } };
   const options = { connectedAt: START, lastDisconnectedAt: START - 2 * MINUTE,
     chargingAt: START + 1000, physicalAt: START + 2000, now: START + 3000 };
@@ -26,16 +28,17 @@ function pausedFixture() {
   const pause = { connectedAt: START, requestedAt: START + 4000, confirmedAt: START + 7000,
     stoppedAt: START + 6000, startAt: state.pauseUntil };
   state = advanceIdentification(state, input({ now: START + 8000, charging: false, powerKw: 0, pause }));
-  const stop = event('charging-stop', START + 6500);
+  const stop = event('charging-stop', START + 6500, { value: false });
   reading.charging = false;
-  reading.fields.charging = { ...stop, positiveEvent: reading.fields.charging.positiveEvent, negativeEvent: stop };
+  reading.fields.charging = { ...stop, positiveEvent: reading.fields.charging.positiveEvent, negativeEvent: stop,
+    history: [...reading.fields.charging.history, stop], historyOverflowAt: null };
   return { reading, state, pause, now: START + 9000 };
 }
 
 test('a scheduled vehicle remains pending indefinitely without spending its one attempt', () => {
-  let state = advanceIdentification(null, input());
-  assert.equal(state.phase, 'waiting'); assert.equal(state.action, 'allow');
-  state = advanceIdentification(JSON.parse(JSON.stringify(state)), input({ now: START + 24 * 60 * MINUTE }));
+  let state = advanceIdentification(null, input({ normalCharging: false }));
+  assert.equal(state.phase, 'waiting'); assert.equal(state.action, null);
+  state = advanceIdentification(JSON.parse(JSON.stringify(state)), input({ normalCharging: false, now: START + 24 * 60 * MINUTE }));
   assert.equal(state.phase, 'waiting'); assert.equal(state.attempt, 1);
   assert.equal(state.chargeDeadlineAt, null); assert.equal(state.completedAt, null);
   validateIdentificationState(state);
@@ -61,8 +64,8 @@ test('a fresh matched BMW start pauses immediately, with an absolute second-alig
 
 test('a vehicle source edge in the current millisecond waits until it strictly precedes the pause request', () => {
   const { reading, options } = fixture();
-  const start = event('same-millisecond-start', options.now, { receivedAt: options.now });
-  reading.fields.charging = { ...start, positiveEvent: start, negativeEvent: null };
+  const start = event('same-millisecond-start', options.now, { receivedAt: options.now, value: true });
+  reading.fields.charging = { ...start, positiveEvent: start, negativeEvent: null, history: [start], historyOverflowAt: null };
   const candidate = prepareActiveBmwCandidate(reading, options);
   let state = advanceIdentification(null, input({ now: options.now, charging: true, candidate }));
   assert.equal(state.phase, 'charging'); assert.equal(state.action, 'allow');
@@ -71,62 +74,110 @@ test('a vehicle source edge in the current millisecond waits until it strictly p
   assert.equal(state.phase, 'pausing'); assert.equal(state.action, 'pause');
 });
 
-test('time and delivered-energy limits end a test without another automatic attempt', () => {
-  for (const override of [{ now: START + MINUTE }, { now: START + 10_000, energyKwh: 2.151 }]) {
-    let state = advanceIdentification(null, input({ charging: true, energyKwh: 2 }));
-    state = advanceIdentification(state, input({ charging: true, ...override }));
-    assert.equal(state.phase, 'inconclusive'); assert.equal(state.action, null);
-    const restarted = advanceIdentification(JSON.parse(JSON.stringify(state)), input({ now: START + 3 * MINUTE, charging: true }));
-    assert.equal(restarted.phase, 'inconclusive'); assert.equal(restarted.attempt, 1);
-    assert.equal(restarted.completedAt, state.completedAt);
+test('normal authorized charging has no probe time or energy allowance', () => {
+  let state = advanceIdentification(null, input({ charging: true, energyKwh: 2, powerKw: 22 }));
+  state = advanceIdentification(JSON.parse(JSON.stringify(state)), input({ now: START + 78 * MINUTE,
+    charging: true, energyKwh: 20, powerKw: 22 }));
+  assert.equal(state.phase, 'charging'); assert.equal(state.action, 'allow');
+  assert.equal(state.probe, null); assert.equal(state.chargeDeadlineAt, null);
+  assert.equal(state.chargeUsedKwh, 0); assert.equal(state.completedAt, null);
+  validateIdentificationState(state);
+});
+
+test('probe time and delivered-energy limits request a stop even without BMW evidence and never reset on restart', () => {
+  for (const override of [{ now: START + IDENTIFICATION_CHARGE_LIMIT_MS, reason: 'probe-time-limit' },
+    { now: START + 10_000, energyKwh: 2.151, reason: 'probe-energy-limit' }]) {
+    let state = advanceIdentification(null, probeInput({ charging: true, energyKwh: 2 }));
+    state = advanceIdentification(state, probeInput({ charging: true, ...override }));
+    assert.equal(state.phase, 'pausing'); assert.equal(state.action, 'pause');
+    assert.equal(state.reason, override.reason); assert.equal(state.candidate, null);
+    const pause = { connectedAt: START, requestedAt: override.now + 1000,
+      stoppedAt: override.now + 2000, confirmedAt: override.now + 3000, startAt: state.probe.returnStartAt };
+    state = advanceIdentification(state, probeInput({ now: override.now + 4000, pause, charging: false, powerKw: 0 }));
+    assert.equal(state.phase, 'observing'); assert.equal(state.action, null);
+    assert.equal(state.completedAt, null); assert.ok(state.probe.endedAt);
+    const restarted = advanceIdentification(JSON.parse(JSON.stringify(state)),
+      probeInput({ now: START + 20 * MINUTE, charging: true }));
+    assert.equal(restarted.phase, 'observing'); assert.equal(restarted.attempt, 1);
+    assert.equal(restarted.probe.startedAt, START); assert.equal(restarted.probe.endedAt, state.probe.endedAt);
     validateIdentificationState(restarted);
   }
 });
 
-test('power integration enforces energy budget without a session-energy meter', () => {
-  let state = advanceIdentification(null, input({ charging: true, powerKw: 22 }));
-  state = advanceIdentification(state, input({ now: START + 26_000, charging: true, powerKw: 22 }));
-  assert.equal(state.phase, 'inconclusive'); assert.equal(state.reason, 'charge-energy-limit');
-  assert.ok(state.chargeUsedKwh >= .15);
+test('power integration reserves stopping time within the extra-charge budget without a session meter', () => {
+  let state = advanceIdentification(null, probeInput({ charging: true, powerKw: 4.14 }));
+  state = advanceIdentification(state, probeInput({ now: START + 122_000, charging: true, powerKw: 4.14 }));
+  assert.equal(state.phase, 'pausing'); assert.equal(state.reason, 'probe-energy-limit');
+  assert.ok(state.chargeUsedKwh > .13 && state.chargeUsedKwh < .15);
 });
 
-test('session meter resets and observation outages cannot reset a running deadline', () => {
-  let state = advanceIdentification(null, input({ charging: true, energyKwh: 10 }));
-  state = advanceIdentification(state, input({ now: START + 30_000, energyKwh: 0, available: false }));
-  assert.equal(state.action, null); assert.equal(state.chargeDeadlineAt, START + MINUTE);
-  state = advanceIdentification(state, input({ now: START + MINUTE, available: false }));
-  assert.equal(state.phase, 'inconclusive'); assert.equal(state.reason, 'charge-time-limit');
+test('meter resets cannot renew a probe and missing physical telemetry requests a stop', () => {
+  let state = advanceIdentification(null, probeInput({ charging: true, energyKwh: 10 }));
+  const originalDeadline = state.chargeDeadlineAt;
+  state = advanceIdentification(state, probeInput({ now: START + 30_000, energyKwh: 0,
+    available: false, physicalFresh: false }));
+  assert.equal(state.action, 'pause'); assert.equal(state.reason, 'telemetry-lost');
+  assert.equal(state.chargeDeadlineAt, originalDeadline);
+  validateIdentificationState(state);
 });
 
-test('backwards clock adjustments and restarting during a pause never extend its recovery deadline', () => {
+test('backwards clock adjustments and restart preserve confirmed pause evidence after immediate restoration', () => {
   const { state } = pausedFixture();
+  assert.equal(state.phase, 'observing'); assert.equal(state.action, null);
   let resumed = advanceIdentification(JSON.parse(JSON.stringify(state)), input({ now: START + 4000 }));
   assert.equal(resumed.lastAt, state.lastAt); assert.equal(resumed.pauseUntil, state.pauseUntil);
-  resumed = advanceIdentification(resumed, input({ now: state.pauseUntil }));
-  assert.equal(resumed.phase, 'inconclusive'); assert.equal(resumed.reason, 'pause-timeout');
+  resumed = advanceIdentification(resumed, input({ now: state.pauseUntil + 120 * MINUTE }));
+  assert.equal(resumed.phase, 'observing'); assert.equal(resumed.completedAt, null);
   assert.deepEqual(resumed.pause, state.pause);
+  validateIdentificationState(resumed);
 });
 
-test('a requested pause which does not physically stop cannot extend active charging beyond sixty seconds', () => {
+test('a requested pause has its own finite confirmation deadline while normal charging has no probe deadline', () => {
   const { reading, options } = fixture(), candidate = prepareActiveBmwCandidate(reading, options);
   let state = advanceIdentification(null, input({ now: options.now, charging: true, candidate }));
-  state = advanceIdentification(state, input({ now: state.chargeDeadlineAt, charging: true }));
-  assert.equal(state.phase, 'inconclusive'); assert.equal(state.reason, 'charge-time-limit');
-  assert.equal(state.pause, null);
+  assert.equal(state.chargeDeadlineAt, null);
+  state = advanceIdentification(state, input({ now: state.pauseUntil, charging: true }));
+  assert.equal(state.phase, 'observing'); assert.equal(state.reason, 'pause-timeout');
+  assert.equal(state.action, null); assert.equal(state.pause, null);
 });
 
-test('unknown charging telemetry cannot extend an unconfirmed pause beyond its charge budget', () => {
+test('missing charging telemetry does not renew an unconfirmed pause', () => {
   const { reading, options } = fixture(), candidate = prepareActiveBmwCandidate(reading, options);
   let state = advanceIdentification(null, input({ now: options.now, charging: true, candidate }));
-  state = advanceIdentification(state, input({ now: state.chargeDeadlineAt, available: false }));
-  assert.equal(state.phase, 'inconclusive'); assert.equal(state.reason, 'charge-time-limit');
+  state = advanceIdentification(state, input({ now: state.pauseUntil, available: false, physicalFresh: false }));
+  assert.equal(state.phase, 'observing'); assert.equal(state.reason, 'pause-timeout');
+  assert.equal(state.action, null);
 });
 
-test('proof of a physical stop bounds power integration at the real stop time', () => {
+test('confirmed physical stop releases the pause immediately without waiting for BMW', () => {
   const { state } = pausedFixture();
-  assert.ok(state.chargeUsedKwh < .01);
-  const later = advanceIdentification(state, input({ now: START + MINUTE, charging: false, powerKw: 0 }));
-  assert.equal(later.phase, 'pausing'); assert.equal(later.chargeUsedKwh, state.chargeUsedKwh);
+  assert.equal(state.phase, 'observing'); assert.equal(state.action, null);
+  const later = advanceIdentification(state, input({ now: START + MINUTE, charging: true, powerKw: 11 }));
+  assert.equal(later.phase, 'observing'); assert.equal(later.action, null);
+  assert.deepEqual(later.pause, state.pause);
+});
+
+test('a probe without physical draw still stops at its safety duration and retains the single allowance', () => {
+  let state = advanceIdentification(null, probeInput());
+  assert.equal(state.phase, 'waiting'); assert.equal(state.action, 'allow');
+  state = advanceIdentification(state, probeInput({ now: START + IDENTIFICATION_CHARGE_LIMIT_MS }));
+  assert.equal(state.phase, 'pausing'); assert.equal(state.reason, 'probe-time-limit');
+  state = advanceIdentification(state, probeInput({ now: state.pauseUntil }));
+  assert.equal(state.phase, 'observing'); assert.equal(state.action, null);
+  const restart = advanceIdentification(JSON.parse(JSON.stringify(state)), probeInput({ now: START + 20 * MINUTE }));
+  assert.equal(restart.probe.startedAt, START); assert.equal(restart.phase, 'observing');
+  validateIdentificationState(restart);
+});
+
+test('a normal charging period beginning during a probe takes over without a probe limit', () => {
+  let state = advanceIdentification(null, probeInput({ charging: true, energyKwh: 0 }));
+  state = advanceIdentification(state, input({ now: START + MINUTE, charging: true,
+    normalCharging: true, energyKwh: 1, powerKw: 11 }));
+  assert.equal(state.phase, 'charging'); assert.equal(state.action, 'allow');
+  assert.equal(state.probe.endedAt, START + MINUTE);
+  const later = advanceIdentification(state, input({ now: START + 78 * MINUTE, charging: true, energyKwh: 20 }));
+  assert.equal(later.phase, 'charging'); assert.equal(later.action, 'allow');
+  validateIdentificationState(later);
 });
 
 test('manual retry works for completed identification while disconnect creates a new automatic attempt', () => {
@@ -143,8 +194,8 @@ test('manual retry works for completed identification while disconnect creates a
 test('explicit manual stop interrupts an active attempt without spending another automatic attempt', () => {
   let state = advanceIdentification(null, input({ charging: true }));
   state = advanceIdentification(state, input({ now: START + 1000, manualStop: true }));
-  assert.equal(state.phase, 'inconclusive'); assert.equal(state.reason, 'manual-stop');
-  assert.equal(advanceIdentification(state, input({ now: START + 2000 })).phase, 'inconclusive');
+  assert.equal(state.phase, 'observing'); assert.equal(state.reason, 'manual-stop');
+  assert.equal(advanceIdentification(state, input({ now: START + 2000 })).phase, 'observing');
 });
 
 test('persisted identification rejects unknown shape, impossible deadlines and foreign proof', () => {
@@ -159,7 +210,9 @@ test('persisted identification rejects unknown shape, impossible deadlines and f
 test('ongoing charging at startup uses a live baseline without inventing an old start edge', () => {
   const { reading, options } = fixture();
   const ongoing = event('ongoing-live', START - 2 * MINUTE, { receivedAt: START + 2000 });
-  reading.fields.charging = { ...ongoing, positiveEvent: event('old-start', START - 60 * MINUTE, { retained: true }) };
+  const oldStart = event('old-start', START - 60 * MINUTE, { retained: true, value: true });
+  reading.fields.charging = { ...ongoing, positiveEvent: oldStart,
+    history: [oldStart, { ...ongoing, value: true }], historyOverflowAt: null };
   const candidate = prepareActiveBmwCandidate(reading, { ...options, chargingAt: [], lastDisconnectedAt: null });
   assert.equal(candidate.kind, 'ongoing'); assert.equal(candidate.readingId, 'ongoing-live');
   assert.equal(candidate.measuredAt, ongoing.measuredAt);
@@ -167,8 +220,8 @@ test('ongoing charging at startup uses a live baseline without inventing an old 
   const pause = { connectedAt: START, requestedAt: START + 4000, confirmedAt: START + 7000,
     stoppedAt: START + 6000, startAt: state.pauseUntil };
   state = advanceIdentification(state, input({ now: START + 8000, pause }));
-  const stop = event('new-stop', START + 6500); reading.charging = false;
-  reading.fields.charging.negativeEvent = stop;
+  const stop = event('new-stop', START + 6500, { value: false }); reading.charging = false;
+  reading.fields.charging.negativeEvent = stop; reading.fields.charging.history.push(stop);
   assert.equal(matchActiveBmwPause(reading, { state, now: START + 9000 }).chargingReadingId, 'ongoing-live');
 });
 
@@ -177,7 +230,7 @@ test('retained and stale true values never become live baselines through fresh d
     { receivedAt: START - MINUTE }, { measuredAt: START + MINUTE }, { receivedAt: START + MINUTE },
     { measuredAt: null }, { readingId: '' }]) {
     const { reading, options } = fixture();
-    reading.fields.charging = { ...reading.fields.charging, positiveEvent: null, ...override };
+    reading.fields.charging = { ...reading.fields.charging, positiveEvent: null, history: [], ...override };
     assert.equal(prepareActiveBmwCandidate(reading, options), null, JSON.stringify(override));
   }
 });
@@ -218,14 +271,17 @@ test('a guarded request may share the physical baseline millisecond but not its 
   assert.equal(matchActiveBmwPause(reading, { state, now }), null);
 });
 
-test('late reports identify after pause expiry only from the saved original stop window', () => {
+test('late reports identify hours after pause release and restart only from the saved original stop window', () => {
   let { reading, state } = pausedFixture();
-  const now = state.pauseUntil + 3 * MINUTE;
+  const now = state.pauseUntil + 120 * MINUTE;
   state = advanceIdentification(JSON.parse(JSON.stringify(state)), input({ now }));
-  assert.equal(state.phase, 'inconclusive');
+  assert.equal(state.phase, 'observing');
   reading.fields.charging.negativeEvent.receivedAt = now;
   assert.ok(matchActiveBmwPause(reading, { state, now }));
-  assert.equal(matchActiveBmwPause(reading, { state, now: now + 15 * MINUTE }), null);
+  assert.ok(matchActiveBmwPause(reading, { state, now: now + 15 * MINUTE }));
+  reading.charging = true;
+  reading.fields.charging.history.push(event('resumed-before-stop-delivery', now - MINUTE, { value: true }));
+  assert.ok(matchActiveBmwPause(reading, { state, now }));
   const completed = advanceIdentification(state, input({ now, identified: true }));
   assert.equal(completed.phase, 'completed'); assert.equal(completed.action, null);
 });
@@ -249,7 +305,103 @@ test('manual retry can reuse the same live ongoing baseline but can never reuse 
     confirmedAt: now + 3000, startAt: state.pauseUntil };
   state = advanceIdentification(state, input({ now: now + 4000, pause }));
   assert.equal(matchActiveBmwPause(oldReading, { state, now: now + 4000 }), null);
-  const stop = event('retry-stop', now + 2500); reading.charging = false;
-  reading.fields.charging.negativeEvent = stop;
+  const stop = event('retry-stop', now + 2500, { value: false }); reading.charging = false;
+  reading.fields.charging.negativeEvent = stop; reading.fields.charging.history.push(stop);
   assert.ok(matchActiveBmwPause(reading, { state, now: now + 4000 }));
+});
+
+
+test('manual Stop ends a waiting probe allowance before any physical charging starts', () => {
+  let state = advanceIdentification(null, probeInput());
+  assert.equal(state.phase, 'waiting'); assert.equal(state.probe.endedAt, null);
+  state = advanceIdentification(state, probeInput({ now: START + 1000, manualStop: true }));
+  assert.equal(state.phase, 'observing'); assert.equal(state.action, null);
+  assert.equal(state.reason, 'manual-stop'); assert.equal(state.probe.endedAt, START + 1000);
+  const restarted = advanceIdentification(JSON.parse(JSON.stringify(state)), probeInput({ now: START + MINUTE }));
+  assert.equal(restarted.phase, 'observing'); assert.equal(restarted.action, null);
+  assert.equal(restarted.probe.startedAt, START); assert.equal(restarted.probe.endedAt, START + 1000);
+  validateIdentificationState(restarted);
+});
+
+test('overflowed BMW history cannot fall back to a current baseline and request a useless pause', () => {
+  const { reading, options } = fixture();
+  reading.fields.charging.historyOverflowAt = options.now - 1;
+  const candidate = prepareActiveBmwCandidate(reading, options);
+  assert.equal(candidate, null);
+  const state = advanceIdentification(null, input({ now: options.now, charging: true, candidate }));
+  assert.equal(state.phase, 'charging'); assert.equal(state.pauseUntil, null);
+  assert.equal(state.action, 'allow');
+});
+
+test('fresh physical stop ends a drawing probe without inventing a causal identity pause', () => {
+  let state = advanceIdentification(null, probeInput({ charging: true, powerKw: 4.14, probeDurationMs: 100_000 }));
+  state = advanceIdentification(state, probeInput({ now: START + 100_000, charging: false, powerKw: 0,
+    physicalStopped: true }));
+  assert.equal(state.phase, 'pausing'); assert.equal(state.pause, null);
+  state = advanceIdentification(state, probeInput({ now: START + 101_000, charging: false, powerKw: 0,
+    physicalStopped: true }));
+  assert.equal(state.phase, 'observing'); assert.equal(state.action, null);
+  assert.equal(state.probe.endedAt, START + 101_000); assert.equal(state.pause, null);
+  assert.equal(state.candidate, null, 'Physical stop alone cannot identify a vehicle');
+  validateIdentificationState(state);
+  const resumed = advanceIdentification(JSON.parse(JSON.stringify(state)), probeInput({ now: START + 2 * MINUTE }));
+  assert.equal(resumed.phase, 'observing'); assert.equal(resumed.probe.deadlineAt, START + 100_000);
+});
+
+test('physical-stop shortcut requires fresh zero evidence and previous probe draw', () => {
+  for (const condition of ['stale', 'never-drew']) {
+    let state = advanceIdentification(null, probeInput({ charging: condition !== 'never-drew',
+      powerKw: condition === 'never-drew' ? 0 : 4.14, probeDurationMs: 100_000 }));
+    state = advanceIdentification(state, probeInput({ now: START + 100_000, charging: false, powerKw: 0 }));
+    state = advanceIdentification(state, probeInput({ now: START + 101_000, charging: false, powerKw: 0,
+      physicalStopped: true, physicalFresh: condition !== 'stale' }));
+    assert.equal(state.phase, 'pausing'); assert.equal(state.probe.endedAt, null); assert.equal(state.pause, null);
+  }
+});
+
+
+test('immediate Tesla identification records the final extra-charge meter increment once and releases control', () => {
+  let state = advanceIdentification(null, probeInput({ energyKwh: 2, powerKw: 0 }));
+  state = advanceIdentification(state, probeInput({ now: START + 6000, charging: true,
+    powerKw: 4.14, energyKwh: 2.01 }));
+  assert.equal(state.phase, 'charging');
+  const final = advanceIdentification(state, probeInput({ now: START + 10_000, charging: true,
+    powerKw: 4.14, energyKwh: 2.018, identified: true }));
+  assert.equal(final.phase, 'completed'); assert.equal(final.reason, 'identified');
+  assert.equal(final.action, null); assert.equal(final.pauseUntil, null);
+  assert.equal(final.probe.endedAt, START + 10_000);
+  assert.ok(Math.abs(final.chargeUsedKwh - .018) < 1e-10,
+    'The final meter increment belongs to the completed identification probe');
+  const later = advanceIdentification(JSON.parse(JSON.stringify(final)), input({ now: START + 20 * MINUTE,
+    charging: true, powerKw: 11, energyKwh: 5, identified: true }));
+  assert.equal(later.chargeUsedKwh, final.chargeUsedKwh);
+  assert.equal(later.probe.endedAt, final.probe.endedAt);
+  validateIdentificationState(later);
+});
+
+test('the normal-current probe deadline survives restart without renewing its budget', () => {
+  let state = advanceIdentification(null, probeInput({ probeDurationMs: 34_000 }));
+  assert.equal(Object.hasOwn(state.probe, 'currentA'), false);
+  validateIdentificationState(state);
+  state = advanceIdentification(JSON.parse(JSON.stringify(state)), probeInput({ now: START + 10_000,
+    probeDurationMs: 108_000 }));
+  assert.equal(state.probe.deadlineAt, START + 34_000);
+  state = advanceIdentification(state, probeInput({ now: START + 34_000 }));
+  assert.equal(state.phase, 'pausing');
+  state = advanceIdentification(state, probeInput({ now: state.pauseUntil }));
+  assert.equal(state.phase, 'observing');
+  validateIdentificationState(state);
+});
+
+test('saved probe state rejects retired current overrides', () => {
+  const valid = advanceIdentification(null, probeInput());
+  assert.throws(() => validateIdentificationState({ ...valid, probe: { ...valid.probe, currentA: 6 } }),
+    /fresh development database/);
+});
+
+test('an economic probe waits for fresh physical power before spending its allowance', () => {
+  let state = advanceIdentification(null, probeInput({ physicalFresh: false }));
+  assert.equal(state.probe, null); assert.equal(state.action, null);
+  state = advanceIdentification(state, probeInput({ now: START + 60_000, physicalFresh: true }));
+  assert.equal(state.probe.startedAt, START + 60_000); assert.equal(state.action, 'allow');
 });

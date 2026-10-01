@@ -110,7 +110,7 @@ for (const transport of ['cloud', 'ocpp']) {
     assert.equal(f.vehicle().state, 'identifying', 'The vehicle stop must arrive independently');
     f.publish({ charging: false }, STOP + 4000);
     assert.equal(f.vehicle().id, 'bmw');
-    assert.equal(f.vehicle().reason, 'matched-controlled-pause');
+    assert.equal(f.vehicle().reason, 'matched-physical-session');
     assert.equal(f.runtime.vehicleFeeds.bmw.reading.fields.pluggedIn.positiveEvent.retained, true);
   });
 
@@ -125,14 +125,29 @@ for (const transport of ['cloud', 'ocpp']) {
     assert.equal(f.runtime.vehicleFeeds.bmw.reading.fields.charging.negativeEvent.measuredAt, STOP + 4000);
   });
 
-  for (const failure of ['missing ownership', 'manual pause', 'retained start', 'missing stop']) {
+  for (const kind of ['unowned stop', 'manual pause']) {
+    test(`${transport}: independently paired ${kind} identifies BMW with unchanged inlet context`, t => {
+      const f = fixture(t, transport); f.startBmw();
+      f.pause({ owned: kind !== 'unowned stop', manual: kind === 'manual pause' });
+      f.publish({ charging: false }, STOP + 4000);
+      assert.equal(f.vehicle().id, 'bmw');
+      assert.equal(f.vehicle().reason, 'matched-physical-session');
+      if (kind === 'manual pause') assert.deepEqual(f.control.manual, { kind: 'stop' },
+        'Historical identity does not erase the independent manual stop');
+      else assert.equal(f.control.owned, null);
+    });
+  }
+
+  for (const failure of ['retained start', 'missing stop']) {
     test(`${transport}: ${failure} cannot identify BMW from unchanged inlet context`, t => {
       const f = fixture(t, transport); f.startBmw({ retainedStart: failure === 'retained start' });
-      f.pause({ owned: failure !== 'missing ownership', manual: failure === 'manual pause' });
+      f.pause();
       if (failure !== 'missing stop') f.publish({ charging: false }, STOP + 4000);
       assert.equal(f.vehicle().id, null);
       f.setNow(START + 16 * MINUTE);
-      assert.equal(f.vehicle().state, 'unidentified', 'A failed observation cannot remain pending forever');
+      f.publish({}, START + 16 * MINUTE); // healthy bridge without inventing new source evidence
+      assert.equal(f.vehicle().state, failure === 'missing stop' ? 'identifying' : 'unidentified');
+      assert.equal(f.vehicle().id, null);
     });
   }
 
@@ -220,8 +235,8 @@ for (const transport of ['cloud', 'ocpp']) {
     assert.equal(f.vehicle().id, null, 'Old source identity cannot transfer to the new source');
     assert.equal(restarted.chargers.charger1.vehicleMatch, null);
 
-    // Establish a current conflict, then let its physical matching evidence
-    // expire. Removing one changed source must not promote the remaining name.
+    // Establish a conflict, then lose fresh bridge reception. Removing one
+    // changed source must not promote an unavailable remaining vehicle feed.
     f.startTesla(); assert.equal(f.vehicle().id, 'tesla');
     f.startBmw({ freshPlug: true }); f.pause(); f.publish({ charging: false }, STOP + 4000);
     assert.equal(f.vehicle().state, 'conflict');
@@ -265,4 +280,30 @@ for (const transport of ['cloud', 'ocpp']) {
       assert.equal(f.vehicle().id, null, 'Earlier vehicle evidence cannot identify a new connection');
     });
   }
+}
+
+for (const transport of ['cloud', 'ocpp']) {
+  test(`${transport}: an overnight natural start remains matchable after a long run, restart and delayed stop`, t => {
+    const f = fixture(t, transport);
+    f.publish({ atHome: true }, START - 14 * 24 * 60 * MINUTE, { retain: true });
+    f.publish({ atHome: null }, null);
+    f.publish({ pluggedIn: false, charging: false }, START - 500);
+    f.publish({ pluggedIn: true, charging: true }, START);
+    assert.equal(f.vehicle().id, null);
+    const stopAt = START + 78 * MINUTE;
+    f.setNow(stopAt); f.physical(false, stopAt);
+    assert.equal(f.vehicle().id, null);
+    f.restart();
+    const resumed = stopAt + 5 * MINUTE;
+    f.setNow(resumed); f.physical(true, resumed);
+    f.publish({ charging: true }, resumed);
+    assert.equal(f.vehicle().id, null);
+    f.setNow(stopAt + 60 * MINUTE);
+    f.publish({ charging: false }, stopAt + 5000);
+    assert.equal(f.runtime.vehicleFeeds.bmw.reading.charging, true, 'Late stop does not roll back current charging');
+    assert.equal(f.vehicle().id, 'bmw');
+    assert.equal(f.runtime.vehicleFeeds.bmw.consumedChargingId, `synthetic-charging-true-${START}`,
+      'The matched historical start is consumed, not the newer resumed start');
+    assert.equal(f.runtime.vehicleFeeds.bmw.reading.atHome, null);
+  });
 }

@@ -1064,8 +1064,9 @@ test('a matched BMW quick unplug ends the old schedule even when every Easee pol
   fact('pluggedIn', true, replugAt); await runtime.reconcile();
   const replugged = chargerView(runtime);
   assert.equal(replugged.control.session.connectedAt, replugAt);
-  assert.equal(replugged.control.phase, 'identifying');
-  assert.equal(replugged.control.owned, null, 'The new connection waits for actual charging before identification');
+  assert.equal(replugged.control.phase, 'waiting');
+  assert.equal(replugged.identification.reason, 'waiting-for-charging');
+  assert.ok(replugged.control.owned, 'The probe waits for fresh physical power telemetry before releasing the economic delay');
   assert.equal(replugged.vehicle.id, null, 'A new connection must still identify its vehicle');
   assert.equal(runtime.chargers.charger1.targetState, null);
 
@@ -1086,7 +1087,8 @@ test('a matched BMW quick unplug ends the old schedule even when every Easee pol
   assert.equal(chargerView(runtime).control.phase, 'waiting');
   assert.equal(chargerView(runtime).values.minimumSoc.value, 85);
   assert.equal(chargerView(runtime).values.minimumSoc.source, 'bmw-cardata');
-  assert.equal(adapter.calls.filter(call => call.kind === 'clear').length, clearCount + 1);
+  assert.equal(adapter.calls.filter(call => call.kind === 'clear').length, clearCount + 2,
+    'The old session is cleared once, then the new economic delay is released for its bounded probe');
 });
 
 const requestScope = view => ({ association: view.association, sessionId: view.request.sessionId, revision: view.request.revision });

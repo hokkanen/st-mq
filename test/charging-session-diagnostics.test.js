@@ -13,7 +13,7 @@ function charger() {
       soc: reading(50, 'teslamate'), minimumSoc: reading(80, 'teslamate'), vehicleCeilingSoc: reading(90, 'teslamate'),
       capacityKwh: { ...reading(57, 'manual-fallback'), assumed: true }, availableCurrentA: reading(16) },
     telemetry: { providerConnected: true }, vehicle: { id: 'tesla', state: 'identified' },
-    identification: { phase: 'identified', active: false }, deadlineAt: now + 8 * 60 * MINUTE,
+    identification: { phase: 'completed', active: false }, deadlineAt: now + 8 * 60 * MINUTE,
     plan: { periods: [{ startAt: now, endAt: null }], finalStartAt: now, feasible: true },
     progress: { remainingGridKwh: 18, deliveredGridKwh: 0, connectionAt: now,
       basis: { energyCoverageIncomplete: false, lastMeasuredAt: now } } };

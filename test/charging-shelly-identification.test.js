@@ -38,7 +38,7 @@ function fixture(t) {
       if (!f.permitted || !options.guard()) throw Object.assign(Error('revoked'), { code: 'evse-command-revoked' });
       if (f.saved?.pending?.owned) {
         assert.equal(f.saved.pending.stage, 'dispatched');
-        assert.equal(f.saved.pending.owned.witnessedCharging, true);
+        assert.equal(typeof f.saved.pending.owned.witnessedCharging, 'boolean');
       }
       f.writes.push({ method, ...params }); f.now++;
       f.change(params.role, params.value);
@@ -215,4 +215,77 @@ test('Shelly identification dispatch and restoration remain fenced by controller
   f.permitted = true;
   view = await f.update();
   assert.equal(f.writes.length, 2); assert.equal(view.owned, null);
+});
+
+const probe = (phase = 'charging') => ({ id: 'synthetic-identification', connectedAt: NOW, phase, mode: 'probe',
+  probeUntil: NOW + 120_000, returnStartAt: NOW + 3600_000,
+  ...(phase === 'pausing' ? { pauseUntil: NOW + 90_000 } : {}) });
+
+test('Shelly economic probe uses the existing current limit and returns to economic waiting', async t => {
+  const f = fixture(t); f.request = null;
+  const economic = { enabled: true, plan: { periods: [{ startAt: NOW + 3600_000, endAt: null }] } };
+  await f.update(economic);
+  assert.equal(f.fields.start_charging.value, false);
+  f.writes.length = 0; f.request = probe();
+  let view = await f.update(economic);
+  assert.equal(view.phase, 'identifying'); assert.equal(view.nativeExpiry, false);
+  assert.equal(f.fields.current_limit.value, 12);
+  assert.deepEqual(f.writes.map(call => [call.role, call.value]), [['start_charging', true]]);
+  f.request = probe('pausing');
+  view = await f.update(economic);
+  assert.equal(view.pauseConfirmed, true); assert.equal(view.owned.witnessedCharging, true);
+  const starts = f.writes.filter(call => call.role === 'start_charging' && call.value === true).length;
+  f.request = null;
+  view = await f.update(economic);
+  assert.equal(view.phase, 'waiting'); assert.equal(view.owned, null);
+  assert.equal(f.fields.start_charging.value, false);
+  assert.equal(f.writes.filter(call => call.role === 'start_charging' && call.value === true).length, starts);
+});
+
+test('Shelly probe retains tighter fuse, native and vehicle restrictions', async t => {
+  for (const block of ['vehicle', 'native', 'manual']) {
+    const f = fixture(t); f.request = probe();
+    if (block === 'native') f.nativeScheduleActive = true;
+    if (block === 'manual') f.change('start_charging', false);
+    const view = await f.update(block === 'vehicle' ? { allocation: { vehicleCurrentA: 0 } } : {});
+    assert.equal(f.writes.some(call => call.role === 'start_charging' && call.value === true), false);
+    if (block === 'vehicle') assert.equal(f.fields.start_charging.value, false);
+    else assert.equal(view.identification, null);
+  }
+});
+
+test('Shelly budget stop revokes charging permission even without a physical charging baseline', async t => {
+  for (const situation of ['never-started', 'stale-power']) {
+    const f = fixture(t); f.request = probe('pausing');
+    if (situation === 'never-started') {
+      f.change('work_state', 'paused');
+      f.change('phase_info', { total_power: 0, phase_a: { current: 0 }, phase_b: { current: 0 }, phase_c: { current: 0 } });
+    } else f.beforePublish = () => { f.fields.phase_info.measuredAt = NOW - f.adapter.config.maxAgeMs - 1; };
+    const view = await f.update();
+    assert.equal(f.fields.start_charging.value, false);
+    assert.equal(view.owned.witnessedCharging, false); assert.equal(view.pauseConfirmed, false);
+    assert.equal(f.writes.filter(call => call.role === 'start_charging' && call.value === false).length, 1);
+  }
+});
+
+test('Shelly restored or queued probes never start after the fixed deadline', async t => {
+  const f = fixture(t); f.request = null;
+  await f.update({ enabled: true, plan: { periods: [{ startAt: NOW + 3600_000, endAt: null }] } });
+  f.request = probe();
+  f.beforePublish = (_method, params) => { if (params.role === 'start_charging') f.now = NOW + 120_000; };
+  let view = await f.update();
+  assert.equal(f.fields.start_charging.value, false);
+  assert.equal(f.writes.some(call => call.role === 'start_charging' && call.value === true), false);
+  f.beforePublish = null; f.restart();
+  view = await f.update();
+  assert.equal(view.nativeExpiry, false); assert.equal(f.fields.start_charging.value, false);
+  assert.equal(f.writes.some(call => call.role === 'start_charging' && call.value === true), false);
+});
+
+test('Shelly stops an already drawing probe when a current RPC crosses its deadline', async t => {
+  const f = fixture(t); f.request = probe(); f.change('current_limit', 32);
+  f.afterPublish = (_method, params) => { if (params.role === 'current_limit') f.now = NOW + 120_000; };
+  await f.update();
+  assert.deepEqual(f.writes.map(call => [call.role, call.value]), [['current_limit', f.fields.current_limit.value], ['start_charging', false]]);
+  assert.equal(f.fields.start_charging.value, false);
 });

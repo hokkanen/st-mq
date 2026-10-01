@@ -769,3 +769,85 @@ test('a completed native identification pause becomes the economic profile witho
   assert.equal(final.owned.profileId, initial.owned.profileId);
   assert.equal(writes(f).length, 2); assert.equal(writes(f).every(row => row.action === 'SetChargingProfile'), true);
 });
+
+const probeIdentification = (phase = 'charging', extra = {}) => ({ id: 'identify-probe', connectedAt: START - MINUTE,
+  phase, mode: 'probe', probeUntil: START + 45_000, returnStartAt: START + 30 * MINUTE,
+  ...(phase === 'pausing' ? { pauseUntil: START + 90_000 } : {}), ...extra });
+
+test('economic identification releases normal charging then installs only a zero profile until the economic return', async () => {
+  const f = fixture();
+  const economic = await f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+  f.identify(probeIdentification());
+  let view = await f.controller.update({ enabled: true });
+  assert.equal(view.phase, 'identifying'); assert.equal(view.owned, null);
+  assert.deepEqual(writes(f).at(-1), { action: 'ClearChargingProfile', payload: { id: economic.owned.profileId } });
+  f.advance(10_000); f.identify(probeIdentification('pausing'));
+  view = await f.controller.update({ enabled: true });
+  assert.equal(view.pauseConfirmed, true); assert.equal(view.owned.mode, 'probe');
+  assert.equal(view.owned.startAt, START + 30 * MINUTE); assert.equal(view.owned.pauseRequestedAt, START + 10_000);
+  assert.equal(Object.hasOwn(view.owned, 'currentA'), false);
+  assert.equal(Object.hasOwn(f.adapter.capabilities, 'identificationCurrentControl'), false);
+  for (const call of writes(f).filter(row => row.action === 'SetChargingProfile'))
+    assert.deepEqual(call.payload.csChargingProfiles.chargingSchedule.chargingSchedulePeriod, [{ startPeriod: 0, limit: 0 }]);
+  const count = writes(f).length;
+  f.identify(null); view = await f.controller.update({ enabled: true });
+  assert.equal(view.phase, 'paused'); assert.equal(view.owned.purpose, undefined); assert.equal(view.owned.mode, undefined);
+  assert.equal(writes(f).length, count, 'Economic waiting adopts the existing zero profile without releasing charging');
+});
+
+test('an expired or queued normal-current probe cannot release a native pause', async () => {
+  for (const queued of [false, true]) {
+    const f = fixture();
+    await f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+    f.identify(probeIdentification());
+    if (queued) f.intercept((action, payload, options, result) => {
+      if (action === 'ClearChargingProfile') {
+        f.advance(45_000); assert.equal(options.guard(), false);
+        throw Object.assign(Error('synthetic expired release'), { code: 'control-revoked' });
+      }
+      return result();
+    });
+    else f.advance(45_000);
+    let view = await f.controller.update({ enabled: true });
+    if (queued) {
+      assert.equal(view.errorCode, 'control-revoked'); f.intercept(null);
+      view = await f.controller.update({ enabled: true });
+    }
+    assert.equal(view.errorCode, null); assert.equal(view.pauseConfirmed, true);
+    assert.equal(view.owned.mode, 'probe'); assert.equal(view.owned.startAt, START + 30 * MINUTE);
+    assert.deepEqual(writes(f).at(-1).payload.csChargingProfiles.chargingSchedule.chargingSchedulePeriod, [{ startPeriod: 0, limit: 0 }]);
+    assert.equal(f.profiles.size, 1, 'The same owned restriction remains in place throughout expiry handling');
+  }
+});
+
+test('normal-current probe directives reject cap metadata and unsupported bounds before any write', async () => {
+  for (const extra of [{ currentA: 6 }, { probeUntil: START + 6 * MINUTE }, { returnStartAt: START + 49 * 3600_000 }, { unknown: true }]) {
+    const f = fixture({ identification: probeIdentification('charging', extra) });
+    const view = await f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+    assert.equal(view.errorCode, 'invalid-plan'); assert.equal(writes(f).length, 0);
+  }
+});
+
+test('native pause confirmation cannot cross a connection or transaction change after readback', async () => {
+  for (const change of ['connection', 'transaction', 'unconfirmed', 'offline']) {
+    const f = fixture(); let compositeReturned = false, replaced = false;
+    f.intercept((_action, _payload, _options, result) => {
+      const response = result(); if (_action === 'GetCompositeSchedule') compositeReturned = true; return response;
+    });
+    const read = f.adapter.read;
+    f.adapter.read = async options => {
+      if (compositeReturned && !replaced) {
+        replaced = true;
+        if (change === 'connection') { f.reconnect(); f.confirmed(true); }
+        else if (change === 'transaction') f.transaction(8);
+        else if (change === 'unconfirmed') f.confirmed(false);
+        else f.connected(false);
+      }
+      return read(options);
+    };
+    const view = await f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+    assert.ok(replaced); assert.equal(view.errorCode, 'control-revoked', change);
+    assert.equal(view.ownsInstruction, false); assert.equal(view.pauseConfirmed, false);
+    assert.equal(writes(f).length, 1, 'The earlier owned profile remains a scoped restoration obligation');
+  }
+});

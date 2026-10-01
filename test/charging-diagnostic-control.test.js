@@ -32,6 +32,39 @@ function fixture() {
 }
 const controls = report => report.timeline.filter(row => row.kind === 'control');
 
+test('waiting identification records its exact blocker initially and on change, without storing arbitrary provider text', () => {
+  const f = fixture(); f.view.vehicle = { state: 'identifying', id: null };
+  f.view.identification = { phase: 'waiting', active: true, reason: 'bmw-home-unknown' };
+  let report = f.observe();
+  assert.equal(report.current.identificationReason, 'bmw-home-unknown');
+  assert.deepEqual(report.timeline.filter(row => row.kind === 'identification').map(row => [row.code, row.reasonCode]),
+    [['waiting', 'bmw-home-unknown']]);
+  f.observe(START + 10_000);
+  f.view.identification.reason = 'bmw-away'; report = f.observe(START + 20_000);
+  assert.equal(report.timeline.filter(row => row.kind === 'identification').length, 2);
+  assert.equal(report.timeline.at(-1).reasonCode, 'bmw-away');
+  f.restart(); report = f.observe(START + 30_000);
+  assert.equal(report.current.identificationReason, 'bmw-away');
+  assert.equal(report.timeline.filter(row => row.kind === 'identification').length, 2);
+  f.view.identification.reason = 'private-vehicle-location-and-account'; report = f.observe(START + 40_000);
+  assert.equal(report.current.identificationReason, null);
+  assert.doesNotMatch(JSON.stringify([...f.states.values()]), /private-vehicle/);
+});
+
+test('probe completion leaves identification observable while ordinary scheduling determines expected behavior', () => {
+  const f = fixture(); f.view.vehicle = { state: 'identifying', id: null };
+  f.view.identification = { phase: 'observing', active: false, reason: 'probe-energy-limit' };
+  f.view.plan = { state: 'waiting', periods: [{ startAt: START + 60 * MINUTE, endAt: null }] };
+  f.view.control.phase = 'paused'; f.view.control.pauseConfirmed = true;
+  const report = f.observe();
+  assert.equal(report.current.expectation, 'hold');
+  assert.equal(report.current.identification, 'observing');
+  assert.equal(report.current.identificationReason, 'probe-energy-limit');
+  assert.equal(report.current.identificationActive, false);
+  assert.equal(report.findings.some(row => row.code === 'identification-inconclusive'), false);
+  assert.equal(report.timeline.find(row => row.kind === 'identification').reasonCode, 'probe-energy-limit');
+});
+
 test('off phase records Automatic permission separately from unavailable control and native handover error', () => {
   const f = fixture();
   f.view.control.errorCode = 'read-failed'; f.view.control.handoverConfirmed = false;

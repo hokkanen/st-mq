@@ -872,14 +872,14 @@ test('BMW target attention clears on unplug, another vehicle and an unfiltered c
   panel.close();
 });
 
-test('BMW unknown location distinguishes recent home context from a current location reading', () => {
-  const item = connected(), measuredAt = now - 35 * 60_000;
+test('BMW unknown location distinguishes indefinite remembered home context from a current location reading', () => {
+  const item = connected(), measuredAt = now - 14 * 24 * 60 * 60_000;
   item.vehicle = { state: 'identifying', id: null, homeContext: { source: 'last-known', measuredAt } };
   item.identification = { phase: 'pausing', active: true, available: true };
   const pending = view(item);
   assert.match(pending.vehicle.detail, /BMW location is currently unknown/);
   assert.ok(pending.vehicle.detail.includes(chargingTime(measuredAt, 'Europe/Helsinki', now)));
-  assert.match(pending.vehicle.detail, /two hours from that observation.*matching live charging/);
+  assert.match(pending.vehicle.detail, /without a time limit.*unplugging and reconnecting.*valid away report.*Matching charging evidence/);
   assert.match(pending.vehicle.label, /Identifying/);
   item.vehicle = { ...item.vehicle, state: 'identified', id: 'bmw', label: 'BMW' };
   item.identification = { phase: 'completed', active: false, available: true };
@@ -897,6 +897,32 @@ test('BMW awaiting-stop identification explains the pending evidence while leavi
   assert.match(popup.textContent, /matching charging-stop readings from BMW and the charger.*Configured vehicle defaults remain in use/s);
   assert.equal($('charger1-setting-minimumSoc').disabled, false);
   assert.equal($('charger1-target-controls'), null); panel.close();
+});
+
+test('active probing describes normal current and the controller energy allowance', () => {
+  const item = { ...active(), vehicle: { state: 'identifying', id: null },
+    identification: { phase: 'charging', active: true, available: true, probe: { endedAt: null } } };
+  assert.match(view(item).vehicle.detail, /normal current settings.*0\.15 kWh energy budget.*controller ends the test/);
+  assert.doesNotMatch(view(item).vehicle.detail, /minimum.current|6 A|three phases/);
+});
+
+test('finished probing keeps historical matching pending and the ordinary charging plan visible', () => {
+  const document = documentFixture(), $ = id => document.getElementById(id);
+  const panel = createChargingPanel({ document, request: async () => status() });
+  const item = { ...connected(), vehicle: { state: 'identifying', id: null },
+    identification: { phase: 'observing', active: false, available: true, reason: 'probe-energy-limit' } };
+  panel.update(status(item));
+  assert.equal($('charger1-identification-state').textContent, 'Pending');
+  assert.match($('charger1-identification-status').textContent, /energy budget.*current charging choice.*until unplugging.*arrive later/);
+  assert.equal($('charger1-notice').textContent, 'Identification pending');
+  assert.doesNotMatch($('charger1-state').textContent, /Identifying|inconclusive/);
+  assert(!$('charger1-identify').disabled, 'Only an explicit retry can request another test');
+  for (const [reason, expected] of [['bmw-home-unknown', /no valid last known home/], ['bmw-away', /latest valid BMW location is away/],
+    ['bmw-not-plugged', /plugged-in state/], ['vehicle-feed-stale', /feed is not current/]]) {
+    item.identification = { phase: 'waiting', active: true, available: false, reason };
+    panel.update(status(item)); assert.match($('charger1-identification-status').textContent, expected);
+  }
+  panel.close();
 });
 
 test('Tesla identified at Charger 1 leaves physical Charger 2 independent', () => {
@@ -1306,7 +1332,7 @@ test('Identify follows session settings, supports an identified vehicle with aut
   finish(status({ ...item, identification: { phase: 'pausing', available: true, active: true, attempted: true } })); await pending;
   assert(button.disabled); assert.equal($('charger1-vehicle').textContent, 'Easee · BMW identified');
   assert.equal($('charger1-identification-state').textContent, 'Confirming');
-  assert.match($('charger1-identification-status').textContent, /brief pause.*matching charger and vehicle readings/);
+  assert.match($('charger1-identification-status').textContent, /brief pause.*confirms the physical stop.*charging choice resumes.*vehicle evidence.*BMW event reports may arrive later/);
   assert.match($('charger1-state').textContent, /Identifying/);
   panel.close(); assert(!button.listeners.has('click'));
 });

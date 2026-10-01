@@ -29,7 +29,7 @@ const EVENTS = { connected: 'Connection observed', 'observation-started': 'Monit
   'charger-reports-charging': 'Charger status reports charging', 'charger-reports-not-charging': 'Charger status reports not charging',
   'charger-status-unknown': 'Charger status unavailable',
   identified: 'Vehicle identified', waiting: 'Waiting', charging: 'Identification observing charge', pausing: 'Identification pause requested',
-  inconclusive: 'Identification inconclusive', complete: 'Identification completed', cancelled: 'Identification cancelled',
+  observing: 'Identification awaiting matching reports', inconclusive: 'Identification inconclusive', completed: 'Identification completed',
   'initial-plan': 'Initial planning snapshot', 'target-changed': 'Requested target changed',
   ...OUTCOMES, ...COVERAGE };
 const validTime = value => Number.isFinite(value) && Math.abs(value) <= 8.64e15;
@@ -77,6 +77,22 @@ const CONTROL_CAUSES = {
   'economic-window': 'Within a planned charging period', 'no-headroom': 'No electrical headroom available',
   'supply-unavailable': 'Supply information unavailable', 'within-limit': 'Within the available current limit',
 };
+const IDENTIFICATION_CAUSES = {
+  identified: 'Vehicle identified', 'manual-stop': 'Manual Stop has priority', unsupported: 'Only passive matching is available',
+  'telemetry-unavailable': 'Vehicle evidence unavailable', 'vehicle-feed-stale': 'Vehicle feed is not current',
+  'charger-unavailable': 'Fresh charger readiness unavailable', 'another-identification-active': 'The other charger is testing a vehicle',
+  'bmw-home-unknown': 'BMW has no valid last known home location', 'bmw-away': 'BMW last valid location is away',
+  'bmw-not-plugged': 'BMW plug evidence unavailable', 'economic-plan-pending': 'Waiting for the current charging plan',
+  'evidence-capacity': 'Identification history reached its capacity; further automatic tests are stopped',
+  'awaiting-evidence': 'Waiting for matching vehicle evidence',
+  'awaiting-stop-confirmation': 'Waiting for physical stop confirmation',
+  'observing-charge': 'Observing charging for a usable BMW baseline',
+  'waiting-for-charging': 'Waiting for the vehicle to begin charging',
+  'probe-energy-limit': 'Extra charging ended at the probe energy limit; identification remains pending',
+  'probe-time-limit': 'Extra charging ended at the safety time limit; identification remains pending',
+  'telemetry-lost': 'Charging test ended after loss of current measurements; identification remains pending',
+  'pause-timeout': 'The physical pause reached its safety deadline',
+};
 
 function inputText(input, kind = 'soc') {
   if (!Number.isFinite(input?.value)) return 'Unavailable';
@@ -93,7 +109,8 @@ function controlText(value = {}, snapshot = false) {
   const extra = value.chargeNow === true ? ' · Charge now on' : '';
   const schedule = SCHEDULE_LABELS[value.scheduleState] ?? 'Schedule state unknown';
   const priority = value.manual === true ? ' · Manual charger instruction has priority' : '';
-  const identification = value.identificationActive === true ? ' · Identification check in progress' : '';
+  const identification = value.identificationActive === true ? ' · Identification check in progress'
+    : value.identification === 'observing' ? ' · Identification awaiting matching reports' : '';
   const uncertain = value.pending === true ? ' · Charger instruction unconfirmed'
     : value.error === true && value.controlAvailability !== 'unavailable' ? ' · Charger control error' : '';
   const availability = !snapshot && value.controlAvailability === 'unavailable' ? ' · Charger control unavailable'
@@ -122,6 +139,8 @@ export function chargingReportFacts(report, timezone = 'Europe/Helsinki') {
   return [
     ['Control at last assessment', controlText(current)],
     ['Vehicle', `${vehicleName(current.vehicleId)} · ${actual}`],
+    ...(current.identification ? [['Identification', [EVENTS[current.identification] ?? 'Identification state unknown',
+      IDENTIFICATION_CAUSES[current.identificationReason]].filter(Boolean).join(' · ')]] : []),
     ['Battery input', inputText(current.soc)],
     ['Measured draw / status', `${physical}${chargerStatus}`],
     ['Observation coverage', observation],
@@ -295,7 +314,8 @@ export function createChargingDiagnosticsPanel({ document, onOpenTest = () => {}
     if (typeof row.automaticEnabled === 'boolean') details.push(`Automatic charging ${row.automaticEnabled ? 'on' : 'off'}`);
     if (row.chargeNow === true) details.push('Charge now on');
     if (['available', 'unavailable', 'unknown'].includes(row.availability)) details.push(`Control evidence ${row.availability}`);
-    for (const code of new Set([row.errorCode, row.reasonCode].filter(Boolean))) details.push(CONTROL_CAUSES[code] ?? 'Detailed cause unavailable');
+    for (const code of new Set([row.errorCode, row.reasonCode].filter(Boolean)))
+      details.push((row.kind === 'identification' ? IDENTIFICATION_CAUSES : CONTROL_CAUSES)[code] ?? 'Detailed cause unavailable');
     if (row.handoverConfirmed === true) details.push('Control handover confirmed');
     if (row.handoverConfirmed === false) details.push('Control handover unconfirmed');
     if (row.confirmed === false && row.kind === 'control') details.push('No physical confirmation recorded');

@@ -62,7 +62,7 @@ test('same-clock home corrections reject retained rollback, duplicates and older
   assert.equal(accepted(home(true, 'home-corrected'), away.reading, true, now + MINUTE).accepted, false);
 });
 
-test('home recomputation cannot manufacture plug or charging events or refresh stale home measurements', () => {
+test('home recomputation cannot manufacture plug or charging events or refresh original home measurements', () => {
   const initial = accepted(facts(START, { atHome: false, pluggedIn: false, charging: false })).reading;
   const packet = facts();
   for (const field of Object.values(packet.fields)) field.readingId += '-revised';
@@ -81,15 +81,15 @@ test('home recomputation cannot manufacture plug or charging events or refresh s
   const stopped = accepted({ provider: 'bmw-cardata', charging: false,
     fields: { charging: { measuredAt: stoppedAt, readingId: 'stop' } } }, accepted(facts()).reading, false, stoppedAt).reading;
   assert.equal(matchBmwSession({ ...stopped, fields: { ...stopped.fields, atHome: staleCorrection.fields.atHome } },
-    { connectedAt: START, chargingAt: START, stoppedAt, now: START + MINUTE }), false);
+    { connectedAt: START, chargingAt: START, stoppedAt, now: START + MINUTE }), true);
 });
 
-test('BMW matching requires fresh live source events, home context and corresponding Easee charging', () => {
+test('BMW matching requires live current-session source events, home context and corresponding Easee charging', () => {
   const reading = accepted({ provider: 'bmw-cardata', charging: false, fields: { charging: { measuredAt: START + 30_000, readingId: 'stop' } } }, accepted(facts()).reading, false, START + MINUTE).reading;
   const options = { connectedAt: START, chargingAt: START, stoppedAt: START + 30_000, now: START + MINUTE };
   assert.equal(matchBmwSession(reading, options), true);
   for (const override of [{ chargingAt: null }, { stoppedAt: null }, { connectedAt: START + 5 * MINUTE },
-    { chargingAt: START + 8 * MINUTE }, { now: START + 16 * MINUTE }, { consumedPlugId: reading.fields.pluggedIn.readingId }])
+    { chargingAt: START + 8 * MINUTE }, { consumedPlugId: reading.fields.pluggedIn.readingId }])
     assert.equal(matchBmwSession(reading, { ...options, ...override }), false);
   assert.equal(matchBmwSession({ ...reading, atHome: false }, options), false);
   assert.equal(matchBmwSession({ ...reading, atHome: null }, options), false);
@@ -627,7 +627,7 @@ test('a retained target transition cannot activate the conflict filter through v
   assert.equal(view(runtime).values.minimumSoc.value, 100);
 });
 
-test('pending BMW stop confirmation remains identifying with manual values, then expires honestly', async t => {
+test('pending BMW stop confirmation remains identifying with manual values throughout its connection', async t => {
   const f = fixture(), runtime = f.create(); t.after(() => runtime.close());
   publish(runtime, facts());
   f.setNow(START + 4 * MINUTE); f.setCharging(false); runtime.tick();
@@ -635,8 +635,8 @@ test('pending BMW stop confirmation remains identifying with manual values, then
   assert.equal(view(runtime).vehicle.reason, 'awaiting-stop-confirmation');
   assert.equal(view(runtime).values.soc.source, 'manual-fallback');
   f.setNow(START + 10 * MINUTE); runtime.tick();
-  assert.equal(view(runtime).vehicle.state, 'unidentified');
-  assert.equal(view(runtime).vehicle.reason, 'assignment-unresolved');
+  assert.equal(view(runtime).vehicle.state, 'identifying');
+  assert.equal(view(runtime).vehicle.reason, 'awaiting-stop-confirmation');
 });
 
 test('confirmed target holds and choices survive a telemetry gap but clear on direct BMW unplug evidence', async t => {

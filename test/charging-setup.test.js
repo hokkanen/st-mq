@@ -37,18 +37,21 @@ test('BMW setup preserves zero, false and independent source clocks without expo
   assert.equal(reading.soc, before.soc, 'Projection never changes source readings');
 });
 
-test('feed loss, future clocks and expired identity context remain unavailable', () => {
+test('feed loss, future clocks and old charging state remain unavailable while context retains its source time', () => {
   const reading = bmw();
   for (const field of Object.values(bmwVehicleSetup(reading, { now: NOW }).fields)) {
     assert.equal(field.available, false);
     assert.equal(field.value, null);
   }
   reading.fields.pluggedIn = metadata(86_400_001);
+  reading.fields.atHome = metadata(14 * 86_400_000);
   reading.measuredAt = NOW + 1;
   reading.fields.charging = metadata(900_001);
   const setup = bmwVehicleSetup(reading, { available: true, now: NOW });
   assert.equal(setup.fields.soc.available, false);
-  assert.equal(setup.fields.pluggedIn.available, false);
+  assert.equal(setup.fields.pluggedIn.available, true);
+  assert.equal(setup.fields.atHome.available, true);
+  assert.equal(setup.fields.atHome.measuredAt, NOW - 14 * 86_400_000);
   assert.equal(setup.fields.charging.available, false);
   assert.equal(setup.fields.minimumSoc.available, true);
 });
@@ -61,7 +64,7 @@ test('last confirmed BMW home context stays distinct from a current unknown loca
   assert.equal(setup.fields.atHome.value, null);
   assert.equal(setup.homeContext.source, 'last-known');
   assert.equal(setup.homeContext.measuredAt, NOW - 3_600_000);
-  assert.equal(bmwVehicleSetup(reading, { available: true, now: NOW + 3_600_001 }).homeContext, null);
+  assert.equal(bmwVehicleSetup(reading, { available: true, now: NOW + 14 * 86_400_000 }).homeContext.measuredAt, NOW - 3_600_000);
 });
 
 test('Tesla setup distinguishes logger health from sleep and preserves receipt provenance and current limits', () => {

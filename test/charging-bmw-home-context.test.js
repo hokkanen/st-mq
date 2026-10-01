@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { acceptVehicleReading, bmwHomeContext, bmwIdentityContextValid, BMW_LAST_HOME_MAX_AGE_MS,
+import { acceptVehicleReading, bmwHomeContext, bmwIdentityContextValid,
   matchBmwSession, matchBmwControlledPause } from '../src/charging/vehicle.js';
 import { advanceIdentification, prepareActiveBmwCandidate, matchActiveBmwPause } from '../src/charging/identification.js';
 
@@ -31,7 +31,7 @@ test('unknown GPS uses the original home observation without changing current fa
   assert.deepEqual(reading, before);
 });
 
-test('repeated unknown reports and restart do not renew the two-hour source-age limit', () => {
+test('repeated unknown reports and restart preserve home indefinitely without renewing its source clock', () => {
   let { reading } = fixture();
   const original = structuredClone(reading.fields.atHome.lastKnown);
   for (let minute = 1; minute <= 80; minute++) {
@@ -39,14 +39,13 @@ test('repeated unknown reports and restart do not renew the two-hour source-age 
     reading = JSON.parse(JSON.stringify(reading));
     assert.deepEqual(reading.fields.atHome.lastKnown, original);
   }
-  assert.ok(bmwHomeContext(reading, HOME + BMW_LAST_HOME_MAX_AGE_MS));
-  assert.equal(bmwHomeContext(reading, HOME + BMW_LAST_HOME_MAX_AGE_MS + 1), null);
+  assert.equal(bmwHomeContext(reading, HOME + 14 * 24 * 60 * MINUTE).measuredAt, HOME);
 });
 
-test('observed true keeps its existing one-day bound; missing, false and malformed home context fail closed', () => {
+test('observed home has no age bound; missing, false and malformed home context fail closed', () => {
   const known = receive(null, { atHome: true, pluggedIn: true }, HOME);
   assert.equal(bmwHomeContext(known, HOME + 24 * 60 * MINUTE).source, 'observed');
-  assert.equal(bmwHomeContext(known, HOME + 24 * 60 * MINUTE + 1), null);
+  assert.equal(bmwHomeContext(known, HOME + 14 * 24 * 60 * MINUTE).measuredAt, HOME);
   const { reading, options } = fixture();
   for (const value of [undefined, false]) assert.equal(bmwHomeContext({ ...reading, atHome: value }, options.now), null);
   for (const patch of [{ value: false }, { measuredAt: null }, { measuredAt: options.now + 1 },
@@ -73,17 +72,17 @@ test('explicit away followed by unknown cannot recover an older home position th
   }
 });
 
-test('a later BMW unplug invalidates fallback even after replug until a new home observation', () => {
+test('BMW unplug and replug preserve remembered home without requiring a fresh GPS observation', () => {
   const { reading } = fixture();
   const unplugged = receive(reading, { pluggedIn: false }, START + MINUTE);
   const replugged = receive(unplugged, { pluggedIn: true }, START + 2 * MINUTE);
-  assert.equal(bmwHomeContext(replugged, START + 3 * MINUTE), null);
+  assert.equal(bmwHomeContext(replugged, START + 14 * 24 * 60 * MINUTE).measuredAt, HOME);
   const refreshed = receive(replugged, { atHome: true }, START + 3 * MINUTE);
   const gap = receive(refreshed, { atHome: null }, START + 4 * MINUTE);
   assert.equal(bmwHomeContext(gap, START + 5 * MINUTE).measuredAt, START + 3 * MINUTE);
   const equalClock = structuredClone(gap);
   equalClock.fields.pluggedIn.negativeEvent.measuredAt = equalClock.fields.atHome.lastKnown.measuredAt;
-  assert.equal(bmwHomeContext(equalClock, START + 5 * MINUTE), null);
+  assert.equal(bmwHomeContext(equalClock, START + 5 * MINUTE).measuredAt, START + 3 * MINUTE);
 });
 
 test('a later live home-zone correction remains usable with its original GPS clock', () => {
@@ -95,10 +94,10 @@ test('a later live home-zone correction remains usable with its original GPS clo
   const retainedReplay = receive(unknown, { atHome: false }, HOME, { retained: true, now: START + 4000 });
   assert.equal(retainedReplay.atHome, null);
   assert.equal(bmwHomeContext(retainedReplay, START + 4000).receivedAt, START + 1000);
-  assert.equal(bmwHomeContext(retainedReplay, HOME + BMW_LAST_HOME_MAX_AGE_MS + 1), null);
+  assert.equal(bmwHomeContext(retainedReplay, HOME + 14 * 24 * 60 * MINUTE).measuredAt, HOME);
 });
 
-test('recent home context supports all BMW matchers only with live matching charging responses', () => {
+test('remembered home context supports all BMW matchers only with live matching charging responses', () => {
   const { reading, options } = fixture();
   const candidate = prepareActiveBmwCandidate(reading, options);
   assert.ok(candidate);

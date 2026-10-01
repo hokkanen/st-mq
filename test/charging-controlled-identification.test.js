@@ -5,12 +5,13 @@ import { matchBmwControlledPause, matchBmwSession, pendingBmwControlledPause } f
 const START = Date.parse('2026-09-22T10:08:00Z'), MINUTE = 60_000;
 const event = (readingId, measuredAt, retained = false) => ({ readingId, measuredAt, receivedAt: measuredAt + 5000, retained });
 function fixture() {
-  const start = event('bmw-start', START + 4000), stop = event('bmw-stop', START + 3 * MINUTE + 32_000);
+  const start = { ...event('bmw-start', START + 4000), value: true },
+    stop = { ...event('bmw-stop', START + 3 * MINUTE + 32_000), value: false };
   const reading = { provider: 'bmw-cardata', atHome: true, pluggedIn: true, charging: false,
     fields: { atHome: event('home-context', START - MINUTE, true),
       pluggedIn: { ...event('plug-context', START - 60 * MINUTE, true),
         positiveEvent: event('plug-context', START - 60 * MINUTE, true) },
-      charging: { ...stop, positiveEvent: start, negativeEvent: stop } } };
+      charging: { ...stop, positiveEvent: start, negativeEvent: stop, history: [start, stop], historyOverflowAt: null } } };
   const options = { connectedAt: START, lastDisconnectedAt: START - 86_000, chargingAt: START - 4000,
     stoppedAt: START + 3 * MINUTE + 14_000, now: START + 4 * MINUTE,
     pause: { connectedAt: START, requestedAt: START + 3 * MINUTE, confirmedAt: START + 3 * MINUTE + 1000,
@@ -18,9 +19,9 @@ function fixture() {
   return { reading, options };
 }
 
-test('paired live charging edges identify an unchanged inlet context only around a verified owned pause', () => {
+test('pre-connection charging evidence with unchanged inlet context requires a verified owned pause', () => {
   const { reading, options } = fixture(), original = structuredClone(reading);
-  assert.equal(matchBmwSession(reading, options), false, 'The unchanged plug cannot satisfy the original matcher');
+  assert.equal(matchBmwSession(reading, options), false, 'Without a new plug edge, a start before the physical connection needs controlled-pause proof');
   assert.deepEqual(matchBmwControlledPause(reading, options), {
     chargingReadingId: 'bmw-start', stopReadingId: 'bmw-stop', confirmedAt: options.pause.confirmedAt,
   });
@@ -37,30 +38,30 @@ test('retained, stale, future, and unknown charging events cannot establish a co
     }
   }
   const { reading, options } = fixture();
-  assert.equal(matchBmwControlledPause(reading, { ...options, now: START + 16 * MINUTE }), null);
+  assert.ok(matchBmwControlledPause(reading, { ...options, now: START + 16 * MINUTE }));
 });
 
-test('home and inlet context may be retained but must be currently true with valid clocks no older than a day', () => {
+test('home and inlet context may be retained with original valid clocks; history is independent of current charging state', () => {
   for (const key of ['atHome', 'pluggedIn']) {
     for (const value of [false, null, undefined]) {
       const { reading, options } = fixture(); reading[key] = value;
       assert.equal(matchBmwControlledPause(reading, options), null);
     }
-    for (const measuredAt of [null, -1, START + 5 * MINUTE, START - 24 * 60 * MINUTE]) {
+    for (const measuredAt of [null, -1, START + 5 * MINUTE]) {
       const { reading, options } = fixture(); reading.fields[key].measuredAt = measuredAt;
       assert.equal(matchBmwControlledPause(reading, options), null);
     }
   }
-  for (const override of [{ provider: 'other' }, { provider: undefined }, { charging: true }, { charging: null }]) {
+  for (const override of [{ provider: 'other' }, { provider: undefined }]) {
     const { reading, options } = fixture();
     assert.equal(matchBmwControlledPause({ ...reading, ...override }, options), null);
   }
 });
 
-test('missing, unconfirmed, foreign-session, and already-released pause witnesses do not identify BMW', () => {
+test('missing, unconfirmed and foreign-session pause witnesses do not identify BMW', () => {
   for (const override of [{ connectedAt: null }, { connectedAt: START - 1 }, { requestedAt: null },
     { stoppedAt: null }, { stoppedAt: START + 5 * MINUTE }, { confirmedAt: null },
-    { startAt: START + 4 * MINUTE }, { startAt: null }]) {
+    { startAt: START + 3 * MINUTE }, { startAt: null }]) {
     const { reading, options } = fixture();
     assert.equal(matchBmwControlledPause(reading, { ...options, pause: { ...options.pause, ...override } }), null,
       JSON.stringify(override));
@@ -136,19 +137,21 @@ test('disconnect and consumed-start boundaries survive persisted replay without 
   assert.equal(matchBmwControlledPause(saved.reading, saved.options), null);
 });
 
-test('late stops remain attributable while their current-session source evidence is fresh', () => {
+test('late stops remain attributable throughout the same physical connection even after pause release', () => {
   const { reading, options } = fixture();
   assert.ok(matchBmwControlledPause(reading, { ...options, now: START + 11 * MINUTE }));
   const lateStop = START + 10 * MINUTE + 1;
-  reading.fields.charging.negativeEvent = event('late-stop', lateStop);
+  reading.fields.charging.negativeEvent = { ...event('late-stop', lateStop), value: false };
+  reading.fields.charging.history[1] = reading.fields.charging.negativeEvent;
   assert.ok(matchBmwControlledPause(reading, { ...options, stoppedAt: lateStop, now: START + 11 * MINUTE,
     pause: { ...options.pause, stoppedAt: lateStop } }));
-  assert.equal(matchBmwControlledPause(reading, { ...options, now: START + 17 * MINUTE }), null);
+  assert.ok(matchBmwControlledPause(reading, { ...options, stoppedAt: lateStop, now: START + 120 * MINUTE,
+    pause: { ...options.pause, stoppedAt: lateStop } }));
 });
 
 test('a fresh tightly matched start with unchanged inlet context remains pending without assigning identity', () => {
   const { reading, options } = fixture();
-  reading.charging = true; delete reading.fields.charging.negativeEvent;
+  reading.charging = true; delete reading.fields.charging.negativeEvent; reading.fields.charging.history.pop();
   const candidate = { ...options, stoppedAt: null, pause: null }, original = structuredClone(reading);
   assert.equal(pendingBmwControlledPause(reading, candidate), true);
   assert.equal(matchBmwControlledPause(reading, candidate), null);
@@ -160,37 +163,37 @@ test('pending remains until both vehicle stop and confirmed owned pause evidence
   assert.equal(pendingBmwControlledPause(reading, { ...options, pause: null }), true);
   assert.equal(pendingBmwControlledPause(reading, { ...options, stoppedAt: null }), true);
   assert.equal(pendingBmwControlledPause(reading, options), false);
-  const missingStop = structuredClone(reading); delete missingStop.fields.charging.negativeEvent;
+  const missingStop = structuredClone(reading); delete missingStop.fields.charging.negativeEvent; missingStop.fields.charging.history.pop();
   assert.equal(pendingBmwControlledPause(missingStop, options), true);
 });
 
-test('controlled-pause pending expires ten minutes after the charging start and cannot cross a disconnect or consumed start', () => {
+test('controlled-pause pending remains for the connection and cannot cross a disconnect or consumed start', () => {
   const { reading, options } = fixture();
   const candidate = { ...options, pause: null };
   assert.equal(pendingBmwControlledPause(reading, { ...candidate, now: reading.fields.charging.positiveEvent.measuredAt + 10 * MINUTE - 1 }), true);
-  for (const override of [{ now: reading.fields.charging.positiveEvent.measuredAt + 10 * MINUTE }, { now: START - 1 },
+  for (const override of [{ now: START - 1 },
     { connectedAt: START + 2 * MINUTE }, { lastDisconnectedAt: options.chargingAt }, { consumedChargingId: 'bmw-start' }])
     assert.equal(pendingBmwControlledPause(reading, { ...candidate, ...override }), false);
   const saved = JSON.parse(JSON.stringify({ reading, options: candidate }));
-  assert.equal(pendingBmwControlledPause(saved.reading, { ...saved.options, now: reading.fields.charging.positiveEvent.measuredAt + 10 * MINUTE }), false);
+  assert.equal(pendingBmwControlledPause(saved.reading, { ...saved.options, now: reading.fields.charging.positiveEvent.measuredAt + 120 * MINUTE }), true);
 });
 
 test('pending context must remain valid and does not bypass a missing or retained charging start', () => {
   for (const override of [{ provider: 'other' }, { atHome: false }, { atHome: null },
-    { pluggedIn: false }, { pluggedIn: null }, { charging: null }]) {
+    { pluggedIn: false }, { pluggedIn: null }]) {
     const { reading, options } = fixture();
     assert.equal(pendingBmwControlledPause({ ...reading, ...override }, { ...options, pause: null }), false);
   }
   for (const key of ['atHome', 'pluggedIn']) {
     const { reading, options } = fixture(); reading.fields[key].measuredAt = START - 24 * 60 * MINUTE;
-    assert.equal(pendingBmwControlledPause(reading, { ...options, pause: null }), false);
+    assert.equal(pendingBmwControlledPause(reading, { ...options, pause: null }), true);
   }
   for (const override of [{ retained: true }, { measuredAt: START + 5 * MINUTE },
     { receivedAt: START + 5 * MINUTE }, { measuredAt: START - 91_000 }, { receivedAt: null }]) {
     const { reading, options } = fixture(); Object.assign(reading.fields.charging.positiveEvent, override);
     assert.equal(pendingBmwControlledPause(reading, { ...options, pause: null }), false);
   }
-  const { reading, options } = fixture(); delete reading.fields.charging.positiveEvent;
+  const { reading, options } = fixture(); delete reading.fields.charging.positiveEvent; reading.fields.charging.history.shift();
   assert.equal(pendingBmwControlledPause(reading, { ...options, pause: null }), false);
 });
 
@@ -221,7 +224,9 @@ test('a vehicle departure fences both BMW paths even when charger polling misses
     reading.fields[key].negativeEvent = event('vehicle-departure', START + 1000);
     assert.equal(matchBmwSession(reading, options), false, key);
     assert.equal(matchBmwControlledPause(reading, options), null, key);
-    // Independently observed charging after the departure restores eligibility.
+    // Valid returned-home context and independent post-departure charging
+    // restore eligibility without reusing evidence from before departure.
+    if (key === 'atHome') Object.assign(reading.fields.atHome, event('returned-home', START + 2000));
     const fresh = { ...options, chargingAt: START + 3000 };
     assert.equal(matchBmwSession(reading, fresh), true, key);
     assert.ok(matchBmwControlledPause(reading, fresh), key);

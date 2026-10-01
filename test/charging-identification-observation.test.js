@@ -9,7 +9,8 @@ const START = Date.parse('2026-09-25T09:00:00Z'), MINUTE = 60_000, FUTURE = STAR
 // Real runtime planning callback, vehicle ingestion, normalization and native
 // controllers. Only device IO and the already-computed economic plan are fake;
 // all command counts include every request the real controllers dispatch.
-async function fixture(t, transport, vehicle = 'bmw', { retainedOnly = false, healthyTesla = true, charging = true, atHome = true } = {}) {
+async function fixture(t, transport, vehicle = 'bmw', { retainedOnly = false, healthyTesla = true, charging = true,
+  atHome = true, normalCharging = false, autoCharge = false, freshPlug = false } = {}) {
   let now = START, runtime, failPersistence = false;
   const states = new Map(), writes = [], profiles = new Map();
   const store = { getState: key => structuredClone(states.get(key)),
@@ -21,24 +22,40 @@ async function fixture(t, transport, vehicle = 'bmw', { retainedOnly = false, he
     easee: { charger_id: 'synthetic-observation-charger', equalizer_id: 'synthetic-observation-equalizer' },
     mqtt: { address: 'mqtt://synthetic.invalid', user: 'synthetic-observation' } },
   charging: { vehicles: { bmw: { mqttTopic: 'synthetic/observation/bmw' } }, chargers: { charger2: { enabled: false } } } };
-  const physical = { pluggedIn: true, enabled: true, charging, at: START,
+  const physical = { pluggedIn: true, enabled: true, charging, powerKw: 7, at: START,
     transactionId: 23, transactionStartedAt: START, manualEvent: null };
   let schedule = normalizeScheduleState({ enabled: 'none' });
   const tesla = { association: 'synthetic-observation-tesla', connected: vehicle === 'tesla', healthy: vehicle === 'tesla' && healthyTesla,
     pluggedIn: true, atHome: true, charging: true, actualPowerKw: 7, fields: {} };
   const scope = 'e'.repeat(64), connectionId = 'synthetic-observation-socket';
   const changePhysical = (charging, at = now) => { physical.charging = charging; physical.at = at; };
+  const effectiveLimit = at => Math.min(16, ...[...profiles.values()].filter(row => row.transactionId === physical.transactionId
+    && Date.parse(row.validFrom) <= at && Date.parse(row.validTo) > at).map(row => {
+    const schedule = row.chargingSchedule;
+    return schedule ? schedule.chargingSchedulePeriod.filter(period => Date.parse(schedule.startSchedule) + period.startPeriod * 1000 <= at).at(-1)?.limit ?? 16 : 0;
+  }));
+  let previousLimit = 16;
+  const syncNative = () => {
+    const limit = effectiveLimit(now);
+    if (limit !== previousLimit) {
+      if (limit === 0 && !physical.pauseBlocked) changePhysical(false);
+      else if (autoCharge || physical.charging) { physical.powerKw = Math.min(7, 3 * 230 * limit / 1000); changePhysical(true); }
+      previousLimit = limit;
+    }
+    if (autoCharge && limit > 0 && physical.pluggedIn && !physical.charging) changePhysical(true);
+  };
   const cloudSnapshot = () => {
+    if (autoCharge && physical.enabled && physical.pluggedIn && schedule.enabled === 'none' && !physical.charging) changePhysical(true);
     const mode = !physical.pluggedIn ? 1 : physical.charging ? 3 : 2;
     const reason = !physical.enabled ? 53 : schedule.enabled === 'none' ? 0 : 54;
     return { schedule: structuredClone(schedule), fingerprint: scheduleFingerprint(schedule), readAt: now,
       controlFingerprint: `synthetic-${physical.enabled}-${physical.pluggedIn}`, controlKnown: true,
       online: true, enabled: physical.enabled, pluggedIn: physical.pluggedIn, mode, modeAt: physical.at,
       reason, reasonAt: physical.at, manualStop: !physical.enabled, stopped: !physical.enabled,
-      faulted: false, authorizationBlocked: false, powerKw: physical.charging ? 7 : 0, powerAt: now,
+      faulted: false, authorizationBlocked: false, powerKw: physical.charging ? physical.powerKw : 0, powerAt: now,
       disconnectedAt: physical.pluggedIn ? null : physical.at,
       limits: { chargerA: 16, cableA: 16, circuitA: [16, 16, 16] },
-      observations: { 109: { value: mode, at: physical.at }, 120: { value: physical.charging ? 7 : 0, at: now } } };
+      observations: { 109: { value: mode, at: physical.at }, 120: { value: physical.charging ? physical.powerKw : 0, at: now } } };
   };
   const cloud = {
     normalize: easeeChargerTelemetry, read: async () => cloudSnapshot(),
@@ -47,12 +64,13 @@ async function fixture(t, transport, vehicle = 'bmw', { retainedOnly = false, he
       await input.beforeWrite(cloudSnapshot());
       writes.push({ action: 'install', startAt: input.startAt, requestedAt: now });
       schedule = normalizeScheduleState({ ...schedule, enabled: 'delayed', delayed: delayedScheduleFor(input, now) });
-      now += 1000; changePhysical(false);
+      now += 1000; if (!physical.pauseBlocked) changePhysical(false);
       return cloudSnapshot();
     },
     async clear(input) {
       assert.equal(input.canMutate(), true);
       writes.push({ action: 'clear' }); schedule = normalizeScheduleState({ ...schedule, enabled: 'none' });
+      if (autoCharge) changePhysical(true);
       return cloudSnapshot();
     },
   };
@@ -61,20 +79,22 @@ async function fixture(t, transport, vehicle = 'bmw', { retainedOnly = false, he
       && (!requireTransaction || snapshot.transactionId === physical.transactionId)
       && (!unchangedStatus || snapshot.statusAt === physical.at
         && snapshot.connectorStatus === (!physical.pluggedIn ? 'Available' : physical.charging ? 'Charging' : 'SuspendedEVSE')),
-    readSnapshot: async () => ({ transport: 'ocpp', scope, connectionId, online: true, readAt: now,
+    readSnapshot: async () => { syncNative(); return ({ transport: 'ocpp', scope, connectionId, online: true, readAt: now,
       pluggedIn: physical.pluggedIn, connectorStatus: !physical.pluggedIn ? 'Available'
         : physical.charging ? 'Charging' : 'SuspendedEVSE', statusAt: physical.at,
       transactionId: physical.pluggedIn ? physical.transactionId : null,
       transactionStartedAt: physical.pluggedIn ? physical.transactionStartedAt : null,
       transactionConfirmed: physical.pluggedIn,
-      powerKw: physical.charging ? 7 : 0, powerAt: now, manualEvent: physical.manualEvent }),
+      limits: { chargerA: 16, cableA: 16, circuitA: [16, 16, 16] },
+      powerKw: physical.charging ? physical.powerKw : 0, powerAt: now, manualEvent: physical.manualEvent }); },
     request: async (action, payload, options) => {
       assert.equal(options.guard(), true);
       if (action === 'SetChargingProfile') {
         assert.equal(options.beforeSend(), true);
         writes.push({ action, payload: structuredClone(payload), requestedAt: now });
         profiles.set(payload.csChargingProfiles.chargingProfileId, structuredClone(payload.csChargingProfiles));
-        now += 1000; changePhysical(false);
+        now += 1000; syncNative();
+        if (autoCharge && effectiveLimit(now) > 0) changePhysical(true);
         return { status: 'Accepted' };
       }
       if (action === 'ClearChargingProfile') {
@@ -82,18 +102,17 @@ async function fixture(t, transport, vehicle = 'bmw', { retainedOnly = false, he
         return { status: profiles.delete(payload.id) ? 'Accepted' : 'Unknown' };
       }
       assert.equal(action, 'GetCompositeSchedule');
-      const current = [...profiles.values()].filter(row => row.transactionId === physical.transactionId
-        && Date.parse(row.validFrom) <= now && Date.parse(row.validTo) > now);
-      const releaseAt = Math.max(...current.map(row => Date.parse(row.validTo)));
+      const boundaries = [...new Set([now, ...[...profiles.values()].flatMap(row => [Date.parse(row.validTo),
+        ...(row.chargingSchedule?.chargingSchedulePeriod ?? []).map(period => Date.parse(row.chargingSchedule.startSchedule) + period.startPeriod * 1000)])])]
+        .filter(at => at >= now && at < now + payload.duration * 1000).sort((a, b) => a - b);
       return { status: 'Accepted', connectorId: 1, scheduleStart: new Date(now).toISOString(),
         chargingSchedule: { chargingRateUnit: 'A', duration: payload.duration,
-          chargingSchedulePeriod: [{ startPeriod: 0, limit: current.length ? 0 : 16 },
-            ...(current.length && releaseAt < now + payload.duration * 1000
-              ? [{ startPeriod: (releaseAt - now) / 1000, limit: 16 }] : [])] } };
+          chargingSchedulePeriod: boundaries.map(at => ({ startPeriod: (at - now) / 1000, limit: effectiveLimit(at), numberPhases: 3 })) } };
     },
   });
   const publish = (values, at, retained = false) => {
     assert.equal(runtime.receiveSoc('synthetic/observation/bmw', JSON.stringify({ provider: 'bmw-cardata', ...values,
+      ...(Object.hasOwn(values, 'soc') ? { measuredAt: at, readingId: `synthetic-soc-${values.soc}-${at}` } : {}),
       fields: Object.fromEntries(Object.entries(values).map(([key, value]) => [key,
         { measuredAt: at, readingId: `synthetic-${key}-${value}-${at}` }])) }), { retain: retained }, now), true);
   };
@@ -104,17 +123,18 @@ async function fixture(t, transport, vehicle = 'bmw', { retainedOnly = false, he
     runtime.tick = () => {};
     runtime.chargers.charger1.controls.enabled = true; runtime.refreshSettings();
     runtime.pricesInitialized = true;
-    runtime.updatePlan = () => {
-      runtime.telemetry(now);
-      runtime.chargers.charger1.plan = { id: 'synthetic-economic-plan', feasible: true, startAt: FUTURE,
-        periods: [{ startAt: FUTURE, endAt: null }] };
-    };
+    const plan = () => ({ id: 'synthetic-economic-plan', feasible: true, startAt: normalCharging ? START : FUTURE,
+      periods: [{ startAt: normalCharging ? START : FUTURE, endAt: null }] });
+    runtime.chargers.charger1.plan = plan();
+    runtime.updatePlan = () => { runtime.telemetry(now); runtime.chargers.charger1.plan = plan(); };
     runtime.teslaCapture = { snapshot: () => structuredClone(tesla) };
     runtime.setMqttStatus({ connected: true, subscribed: true }, 'bmw');
     if (vehicle === 'bmw') {
       if (!runtime.vehicleFeeds.bmw.reading)
-        publish({ atHome, pluggedIn: true, charging: retainedOnly }, retainedOnly ? START : START - 60 * MINUTE, true);
+        publish({ atHome, pluggedIn: !freshPlug, charging: retainedOnly }, retainedOnly ? START : START - 60 * MINUTE, true);
+      if (freshPlug) publish({ pluggedIn: true }, START);
       if (!retainedOnly) publish({ charging }, START);
+      else publish({ soc: 45 }, now); // Live feed health does not turn retained charging into a transition.
     }
     await runtime.setAdapter('charger1', transport === 'cloud' ? cloud : native);
   };
@@ -144,6 +164,69 @@ async function fixture(t, transport, vehicle = 'bmw', { retainedOnly = false, he
   };
 }
 
+for (const vehicle of ['bmw', 'tesla']) for (const retained of [false, true])
+test(`${vehicle}: a ${retained ? 'retained' : 'live'} unplug from before this physical connection permits observation but cannot identify it`, async t => {
+  const f = await fixture(t, 'ocpp', vehicle, { normalCharging: true });
+  if (vehicle === 'bmw') f.publish({ pluggedIn: false }, START - 1000, retained);
+  else {
+    f.tesla.pluggedIn = false;
+    f.tesla.fields.plugged_in = { value: false, receivedAt: START - 1000, measuredAt: null,
+      retained, timeBasis: 'receipt-only', sequence: 1 };
+  }
+  const reading = () => vehicle === 'bmw' ? f.runtime.vehicleFeeds.bmw.reading.fields.pluggedIn : f.tesla.fields.plugged_in;
+  const original = structuredClone(reading());
+  f.setNow(START + 1000); await f.update();
+  const item = f.runtime.chargers.charger1;
+  assert.equal(item.identification.phase, 'charging'); assert.equal(item.identification.action, 'allow');
+  assert.equal(f.runtime.identificationFeedReady(item, f.now), true);
+  assert.equal(f.view().id, null); assert.equal(f.writes.length, 0);
+  assert.deepEqual(reading(), original, 'Permission to observe must not manufacture positive plug evidence or a fresh source clock');
+  assert.equal(vehicle === 'bmw' ? f.runtime.vehicleFeeds.bmw.reading.pluggedIn : f.tesla.pluggedIn, false);
+  const earlierSession = { controller: { status: () => ({ session: { connected: true, connectedAt: START - 2000 } }) } };
+  assert.equal(f.runtime.identificationFeedReady(earlierSession, f.now), false,
+    'The same false observation belongs to the older connection and must block its test');
+
+  f.setNow(START + 2000);
+  if (vehicle === 'bmw') f.publish({ pluggedIn: false }, f.now);
+  else f.tesla.fields.plugged_in = { ...original, receivedAt: f.now, retained: false, sequence: 2 };
+  await f.update();
+  assert.equal(f.runtime.identificationFeedReady(item, f.now), false);
+  assert.equal(item.identification.action, null, 'A current-session negative observation cannot authorize further testing');
+  assert.equal(f.view().id, null);
+});
+
+for (const vehicle of ['bmw', 'tesla']) test(`${vehicle}: prior-unplug readiness retains home, health and valid-clock requirements`, async t => {
+  const f = await fixture(t, 'ocpp', vehicle, { normalCharging: true });
+  if (vehicle === 'bmw') f.publish({ pluggedIn: false }, START - 1000);
+  else {
+    f.tesla.pluggedIn = false;
+    f.tesla.fields.plugged_in = { value: false, receivedAt: START - 1000, measuredAt: null,
+      retained: false, timeBasis: 'receipt-only', sequence: 1 };
+  }
+  await f.update();
+  const item = f.runtime.chargers.charger1;
+  const field = vehicle === 'bmw' ? f.runtime.vehicleFeeds.bmw.reading.fields.pluggedIn : f.tesla.fields.plugged_in;
+  const original = structuredClone(field), clockKey = vehicle === 'bmw' ? 'measuredAt' : 'receivedAt';
+  for (const patch of [{ [clockKey]: null }, { [clockKey]: START }, { [clockKey]: f.now + 1000 },
+    { receivedAt: f.now + 1000 }, { retained: undefined }, ...(vehicle === 'bmw' ? [{ readingId: '' }] : [{ timeBasis: undefined }])]) {
+    Object.assign(field, original, patch);
+    assert.equal(f.runtime.identificationFeedReady(item, f.now), false, JSON.stringify(patch));
+  }
+  Object.assign(field, original);
+  assert.equal(f.runtime.identificationFeedReady(item, f.now), true);
+  if (vehicle === 'bmw') {
+    f.runtime.vehicleFeeds.bmw.reading.atHome = false;
+    assert.equal(f.runtime.identificationFeedReady(item, f.now), false);
+    f.runtime.vehicleFeeds.bmw.reading.atHome = true;
+    f.runtime.vehicleFeeds.bmw.mqtt.connected = false;
+  } else {
+    f.tesla.atHome = false;
+    assert.equal(f.runtime.identificationFeedReady(item, f.now), false);
+    f.tesla.atHome = true; f.tesla.healthy = false;
+  }
+  assert.equal(f.runtime.identificationFeedReady(item, f.now), false);
+});
+
 for (const transport of ['cloud', 'ocpp']) {
   const attempt = f => f.runtime.chargers.charger1.identification;
   const card = f => f.runtime.status().chargers.find(row => row.id === 'charger1');
@@ -159,7 +242,9 @@ for (const transport of ['cloud', 'ocpp']) {
     assert.equal(control.phase, 'identifying');
     assert.equal(installs(f).length, 1);
     assert.equal(control.owned.purpose, 'identification');
-    assert.ok(control.owned.startAt <= START + 150_000);
+    assert.ok(attempt(f).pauseUntil <= START + 150_000);
+    if (transport === 'ocpp') assert.equal(control.owned.startAt, FUTURE,
+      'An economic-period test must retain its installed scheduled return');
     assert.equal(f.view().id, null, 'An acknowledged charger pause alone is not vehicle identity');
     const stopAt = f.physical.at;
     f.setNow(stopAt + 4000); f.publish({ charging: false }, stopAt + 2000);
@@ -190,46 +275,39 @@ for (const transport of ['cloud', 'ocpp']) {
       'Using home context must preserve the unavailable reading and its original observation clocks');
   });
 
-  for (const home of ['missing', 'expired']) {
-    test(`${transport}: ${home} home context waits without spending the identification budget`, async t => {
-      const f = await fixture(t, transport, 'bmw', { atHome: home === 'missing' ? null : true });
-      f.runtime.chargers.charger1.controls.enabled = false; f.runtime.refreshSettings();
-      if (home === 'expired') {
-        f.publish({ atHome: null }, null);
-        f.setNow(START + 61 * MINUTE);
-      }
-      Object.assign(f.physical, { charging: true, at: f.now });
-      f.setNow(f.now + 1000); f.publish({ charging: true }, f.now - 500);
-      await f.update({ enabled: false });
-      assert.equal(attempt(f).phase, 'waiting');
-      const initial = structuredClone(attempt(f));
-      f.setNow(f.now + 5 * MINUTE);
-      Object.assign(f.physical, { charging: true, at: f.now });
-      f.publish({ charging: true }, f.now - 500); await f.update({ enabled: false });
-      assert.equal(attempt(f).phase, 'waiting'); assert.equal(attempt(f).id, initial.id);
-      assert.equal(attempt(f).chargeDeadlineAt, null); assert.equal(attempt(f).chargingStartedAt, null);
-      assert.equal(attempt(f).chargeUsedKwh, 0); assert.equal(f.writes.length, 0);
-      const readyAt = f.now;
-      f.publish({ atHome: true }, f.now - 500); await f.update({ enabled: false });
-      assert.equal(attempt(f).id, initial.id); assert.equal(attempt(f).attempt, 1);
-      assert.equal(attempt(f).phase, 'pausing'); assert.equal(installs(f).length, 1);
-      assert.equal(attempt(f).chargeDeadlineAt, readyAt + MINUTE);
-    });
-  }
+  test(`${transport}: missing home context waits without spending the identification budget`, async t => {
+    const f = await fixture(t, transport, 'bmw', { atHome: null });
+    f.runtime.chargers.charger1.controls.enabled = false; f.runtime.refreshSettings();
+    Object.assign(f.physical, { charging: true, at: f.now });
+    f.setNow(f.now + 1000); f.publish({ charging: true }, f.now - 500);
+    await f.update({ enabled: false });
+    assert.equal(attempt(f).phase, 'waiting');
+    const initial = structuredClone(attempt(f));
+    f.setNow(f.now + 5 * MINUTE);
+    Object.assign(f.physical, { charging: true, at: f.now });
+    f.publish({ charging: true }, f.now - 500); await f.update({ enabled: false });
+    assert.equal(attempt(f).phase, 'waiting'); assert.equal(attempt(f).id, initial.id);
+    assert.equal(attempt(f).chargeDeadlineAt, null); assert.equal(attempt(f).chargingStartedAt, null);
+    assert.equal(attempt(f).chargeUsedKwh, 0); assert.equal(f.writes.length, 0);
+    f.publish({ atHome: true }, f.now - 500); await f.update({ enabled: false });
+    assert.equal(attempt(f).id, initial.id); assert.equal(attempt(f).attempt, 1);
+    assert.equal(attempt(f).phase, 'pausing'); assert.equal(installs(f).length, 1);
+    assert.equal(attempt(f).chargeDeadlineAt, null, 'Normal charging has no short identification deadline');
+  });
 
-  test(`${transport}: restart preserves unknown home context and cannot renew its source age`, async t => {
-    const f = await fixture(t, transport, 'bmw', { charging: false });
+  test(`${transport}: restart preserves two-week-old home context with its original source timestamp`, async t => {
+    const f = await fixture(t, transport, 'bmw', { charging: false, normalCharging: true });
     f.publish({ atHome: true }, START - 35 * MINUTE); f.publish({ atHome: null }, null);
     await f.update();
     const home = structuredClone(f.runtime.vehicleFeeds.bmw.reading.fields.atHome);
     const initial = structuredClone(attempt(f));
-    f.setNow(START + 86 * MINUTE); await f.restart();
+    f.setNow(START + 14 * 24 * 60 * MINUTE); await f.restart();
     assert.equal(f.runtime.vehicleFeeds.bmw.reading.atHome, null);
     assert.deepEqual(f.runtime.vehicleFeeds.bmw.reading.fields.atHome, home);
     Object.assign(f.physical, { charging: true, at: f.now });
     f.publish({ charging: true }, f.now - 500); await f.update();
-    assert.equal(attempt(f).id, initial.id); assert.equal(attempt(f).phase, 'waiting');
-    assert.equal(attempt(f).chargeDeadlineAt, null); assert.equal(f.writes.length, 0);
+    assert.equal(attempt(f).id, initial.id); assert.equal(attempt(f).phase, 'pausing');
+    assert.equal(attempt(f).chargeDeadlineAt, null); assert.equal(installs(f).length, 1);
     assert.equal(f.view().id, null);
   });
 
@@ -249,7 +327,7 @@ for (const transport of ['cloud', 'ocpp']) {
   });
 
   test(`${transport}: a vehicle timer waits beyond ten minutes and testing begins when charging starts`, async t => {
-    const f = await fixture(t, transport, 'bmw', { charging: false });
+    const f = await fixture(t, transport, 'bmw', { charging: false, normalCharging: true });
     await f.update(); assert.equal(attempt(f).phase, 'waiting');
     f.setNow(START + 30 * MINUTE); await f.update();
     assert.equal(attempt(f).phase, 'waiting'); assert.equal(attempt(f).attempt, 1);
@@ -275,7 +353,7 @@ for (const transport of ['cloud', 'ocpp']) {
   });
 
   test(`${transport}: a live BMW charging start immediately refreshes a waiting charger snapshot`, async t => {
-    const f = await fixture(t, transport, 'bmw', { charging: false });
+    const f = await fixture(t, transport, 'bmw', { charging: false, normalCharging: true });
     await f.update(); assert.equal(attempt(f).phase, 'waiting');
     const item = f.runtime.chargers.charger1;
     item.lastReconcileAt = f.now;
@@ -284,7 +362,8 @@ for (const transport of ['cloud', 'ocpp']) {
     f.publish({ charging: true }, f.now - 1000);
     assert.ok(item.reconcileFlight, 'The start report requests a fresh physical reading immediately');
     await item.reconcileFlight;
-    assert.equal(attempt(f).phase, 'pausing'); assert.equal(installs(f).length, 1);
+    assert.equal(attempt(f).phase, 'observing'); assert.equal(installs(f).length, 1);
+    assert.ok(attempt(f).pause, 'Fresh physical proof ends the pause without waiting for BMW');
   });
 
   test(`${transport}: automatic OFF and Charge now still perform identification, then release`, async t => {
@@ -304,21 +383,22 @@ for (const transport of ['cloud', 'ocpp']) {
   });
 
   test(`${transport}: manual stop before testing wins without consuming the waiting attempt`, async t => {
-    const f = await fixture(t, transport, 'bmw', { charging: false });
+    const f = await fixture(t, transport, 'bmw', { charging: false, normalCharging: true });
     await f.update(); const before = f.writes.length;
     const stopped = await f.manualStop();
     assert.equal(stopped.phase, 'yielded'); assert.equal(f.writes.length, before);
     assert.equal(attempt(f).phase, 'waiting'); assert.equal(card(f).identification.available, false);
   });
 
-  test(`${transport}: retained-only charging exhausts the short charge budget without inventing identity`, async t => {
-    const f = await fixture(t, transport, 'bmw', { retainedOnly: true });
+  test(`${transport}: normal charging with retained-only BMW state continues without spending an extra probe budget`, async t => {
+    const f = await fixture(t, transport, 'bmw', { retainedOnly: true, normalCharging: true });
     await f.update(); assert.equal(attempt(f).phase, 'charging'); assert.equal(installs(f).length, 0);
     f.setNow(START + MINUTE); await f.update();
-    assert.equal(attempt(f).phase, 'inconclusive'); assert.equal(f.view().id, null);
-    assert.equal(attempt(f).attempt, 1); assert.equal(installs(f).length, 1);
-    f.setNow(START + 5 * MINUTE); await f.update();
-    assert.equal(attempt(f).attempt, 1);
+    assert.equal(attempt(f).phase, 'charging'); assert.equal(f.view().id, null);
+    assert.equal(attempt(f).attempt, 1); assert.equal(installs(f).length, 0);
+    f.setNow(START + 78 * MINUTE); f.publish({ soc: 46 }, f.now); await f.update();
+    assert.equal(attempt(f).attempt, 1); assert.equal(attempt(f).phase, 'charging');
+    assert.equal(attempt(f).chargeDeadlineAt, null); assert.equal(attempt(f).chargeUsedKwh, 0);
   });
 
   test(`${transport}: restart preserves a pending pause and cannot start a second automatic attempt`, async t => {
@@ -326,9 +406,10 @@ for (const transport of ['cloud', 'ocpp']) {
     const initial = structuredClone(attempt(f)), written = installs(f).length;
     f.setNow(f.now + 5000); await f.restart(); await f.update();
     assert.equal(attempt(f).id, initial.id); assert.equal(attempt(f).pauseUntil, initial.pauseUntil);
-    assert.equal(installs(f).length, written);
+    assert.equal(installs(f).length, written + (transport === 'cloud' ? 1 : 0),
+      'Physical confirmation returns to the economic hold; OCPP already installed that return');
     f.setNow(initial.pauseUntil + 1000); await f.update();
-    assert.equal(attempt(f).phase, 'inconclusive');
+    assert.equal(attempt(f).phase, 'observing');
     await f.restart(); await f.update(); assert.equal(attempt(f).id, initial.id);
   });
 
@@ -358,14 +439,14 @@ for (const transport of ['cloud', 'ocpp']) {
   });
 
   test(`${transport}: fresh Tesla evidence avoids an unnecessary identification pause`, async t => {
-    const f = await fixture(t, transport, 'tesla'); await f.update();
+    const f = await fixture(t, transport, 'tesla', { normalCharging: true }); await f.update();
     f.setNow(START + 10_000);
     f.tesla.fields = { charger_power: { value: 7, receivedAt: f.now, retained: false },
       plugged_in: { value: true, receivedAt: START, retained: false },
       charging_state: { value: 'Charging', receivedAt: START, retained: false } };
     const control = await f.update();
     assert.equal(f.view().id, 'tesla'); assert.equal(attempt(f).phase, 'completed');
-    assert.equal(control.owned.startAt, FUTURE); assert.notEqual(control.owned.purpose, 'identification');
+    assert.equal(control.owned, null); assert.equal(installs(f).length, 0);
   });
 
   test(`${transport}: foreign native restrictions are preserved`, async t => {
@@ -376,7 +457,7 @@ for (const transport of ['cloud', 'ocpp']) {
   });
 
   test(`${transport}: an already charging vehicle with no saved start is identified from a live baseline and new pause`, async t => {
-    const f = await fixture(t, transport, 'bmw', { retainedOnly: true });
+    const f = await fixture(t, transport, 'bmw', { retainedOnly: true, normalCharging: true });
     f.physical.at = START - 5 * MINUTE;
     await f.update(); assert.equal(attempt(f).phase, 'charging');
     f.setNow(START + 1000); f.publish({ charging: true }, START + 500);
@@ -394,7 +475,7 @@ for (const transport of ['cloud', 'ocpp']) {
     f.setNow(stopAt + 1000); await f.update();
     assert.ok(attempt(f).pause);
     f.setNow(attempt(f).pauseUntil + 1000); await f.update();
-    assert.equal(attempt(f).phase, 'inconclusive'); assert.equal(f.view().id, null);
+    assert.equal(attempt(f).phase, 'observing'); assert.equal(f.view().id, null);
     f.publish({ charging: false }, stopAt + 2000); await f.update();
     assert.equal(f.view().id, 'bmw'); assert.equal(attempt(f).phase, 'completed');
   });
@@ -417,19 +498,19 @@ for (const transport of ['cloud', 'ocpp']) {
     assert.equal(card(f).request.revision, input.revision); assert.equal(f.writes.length, count);
   });
 
-  test(`${transport}: an inconclusive recheck cannot declare success from the previous confirmed identity`, async t => {
-    const f = await fixture(t, transport); f.setNow(START + 1000); await f.update();
+  test(`${transport}: a pending normal-charge recheck cannot declare success from the previous confirmed identity`, async t => {
+    const f = await fixture(t, transport, 'bmw', { normalCharging: true }); f.setNow(START + 1000); await f.update();
     const stopAt = f.physical.at;
     f.setNow(stopAt + 4000); f.publish({ charging: false }, stopAt + 2000); await f.update();
     await f.runtime.identifyVehicle('charger1', sessionInput(f));
     f.setNow(f.now + 1000); Object.assign(f.physical, { charging: true, at: f.now });
     await f.update();
-    f.setNow(attempt(f).chargeDeadlineAt + 1000); await f.update();
-    assert.equal(attempt(f).phase, 'inconclusive'); assert.equal(f.view().id, 'bmw');
-    await f.update(); assert.equal(attempt(f).phase, 'inconclusive');
-    assert.equal(card(f).identification.available, true);
+    f.setNow(f.now + 78 * MINUTE); f.publish({ soc: 46 }, f.now); await f.update();
+    assert.equal(attempt(f).phase, 'charging'); assert.equal(attempt(f).chargeDeadlineAt, null);
+    assert.equal(f.view().id, 'bmw'); assert.equal(attempt(f).attempt, 2);
+    await f.update(); assert.equal(attempt(f).phase, 'charging');
     await f.restart(); await f.update();
-    assert.equal(attempt(f).phase, 'inconclusive'); assert.equal(f.view().id, 'bmw');
+    assert.equal(attempt(f).phase, 'charging'); assert.equal(f.view().id, 'bmw');
   });
 }
 
@@ -445,6 +526,142 @@ test('two-second identification polls never cancel a slow in-flight reconciliati
   assert.equal(calls, 1);
   finish(); await flight;
   assert.equal(f.runtime.chargers.charger1.reconcileFlight, null);
+});
+
+for (const { freshPlug, retry } of [{ freshPlug: true }, { freshPlug: false }, { freshPlug: false, retry: true }])
+test(`an economic OCPP probe uses normal current, stops on its fixed deadline and identifies from late reordered reports with ${freshPlug ? 'fresh' : 'unchanged'} BMW plug state${retry ? ' during an explicit retry' : ''}`, async t => {
+  const f = await fixture(t, 'ocpp', 'bmw', { charging: false, autoCharge: true, freshPlug });
+  await f.update();
+  const item = f.runtime.chargers.charger1;
+  if (retry) {
+    const firstStart = f.physical.at;
+    f.setNow(firstStart + 30_000); f.publish({ charging: true }, firstStart + 1000); await f.update();
+    const firstStop = f.physical.at;
+    f.setNow(firstStop + 4000); f.publish({ charging: false }, firstStop + 2000); await f.update();
+    assert.equal(f.view().id, 'bmw'); assert.equal(item.identification.phase, 'completed');
+    const card = f.runtime.status().chargers.find(row => row.id === 'charger1');
+    f.setNow(f.now + 1000);
+    await f.runtime.identifyVehicle('charger1', { association: card.association,
+      sessionId: card.request.sessionId, revision: card.request.revision });
+    await f.update();
+    assert.equal(item.identification.attempt, 2);
+    assert.notEqual(item.identification.phase, 'completed', 'The prior matched episode cannot complete an explicit retry');
+  }
+  assert.equal(f.physical.charging, true); assert.equal(f.physical.powerKw, 7);
+  const startedAt = f.physical.at, probe = structuredClone(item.identification.probe);
+  assert.equal(probe.currentA, undefined, 'Identification does not add a positive current limit');
+  assert.ok(probe.deadlineAt - probe.startedAt <= 34_000, 'Native stop is bounded by the conservative energy allowance');
+  f.setNow(startedAt + 30_000); await f.update();
+  assert.equal(item.identification.phase, 'charging'); assert.equal(f.view().id, retry ? 'bmw' : null);
+  f.setNow(probe.deadlineAt); await f.update();
+  assert.equal(f.physical.charging, false, 'The bounded probe deadline requests the native zero-current stop');
+  const stopProfile = f.writes.findLast(row => row.action === 'SetChargingProfile');
+  assert.ok(stopProfile.payload.csChargingProfiles.chargingSchedule.chargingSchedulePeriod.every(row => row.limit === 0));
+  assert.equal(Date.parse(stopProfile.payload.csChargingProfiles.validTo), FUTURE);
+  const stoppedAt = f.physical.at;
+  f.setNow(f.now + 1000); await f.update();
+  assert.equal(item.identification.phase, 'observing'); assert.equal(item.identification.probe.deadlineAt, probe.deadlineAt);
+  assert.ok(item.identification.chargeUsedKwh <= .15);
+  const count = f.writes.filter(row => row.action === 'SetChargingProfile').length;
+  f.setNow(f.now + 5 * MINUTE); f.publish({ soc: 45 }, f.now); await f.update();
+  assert.equal(item.identification.attempt, retry ? 2 : 1);
+  assert.equal(f.writes.filter(row => row.action === 'SetChargingProfile').length, count, 'Waiting cannot replenish the probe allowance');
+  f.setNow(START + 78 * MINUTE);
+  f.publish({ charging: false }, stoppedAt + 1000);
+  assert.notEqual(item.identification.phase, 'completed', 'A late stop alone is insufficient to complete this attempt');
+  f.publish({ charging: true }, startedAt + 1000); await f.update();
+  assert.equal(f.runtime.vehicleFeeds.bmw.reading.charging, false, 'Historical start never rolls current state backward');
+  assert.equal(f.view().id, 'bmw'); assert.equal(item.identification.phase, 'completed');
+});
+
+test('cloud scheduling runs a bounded normal-current probe and returns to the economic plan', async t => {
+  const f = await fixture(t, 'cloud', 'bmw', { charging: false, autoCharge: true });
+  await f.update();
+  const initial = structuredClone(f.runtime.chargers.charger1.identification);
+  assert.ok(initial.probe); assert.equal(initial.probe.currentA, undefined);
+  assert.equal(f.physical.charging, true); assert.equal(f.physical.powerKw, 7);
+  assert.ok(initial.probe.deadlineAt - initial.probe.startedAt <= 34_000);
+  f.setNow(initial.probe.deadlineAt); await f.update();
+  f.setNow(f.now + 1000); await f.update();
+  const stopped = f.runtime.chargers.charger1.identification;
+  assert.equal(stopped.phase, 'observing'); assert.equal(f.physical.charging, false);
+  assert.ok(stopped.chargeUsedKwh > 0 && stopped.chargeUsedKwh <= .15);
+  const count = f.writes.length;
+  f.setNow(f.now + MINUTE); await f.restart(); await f.update();
+  assert.equal(f.runtime.chargers.charger1.identification.probe.startedAt, initial.probe.startedAt);
+  assert.equal(f.writes.length, count, 'Restart cannot grant another normal-current allowance');
+});
+
+test('normal-current economic probe retains its energy-bound deadline through restart', async t => {
+  const f = await fixture(t, 'ocpp', 'bmw', { charging: false, autoCharge: true });
+  await f.update();
+  const initial = structuredClone(f.runtime.chargers.charger1.identification);
+  const durationSeconds = (initial.probe.deadlineAt - initial.probe.startedAt) / 1000;
+  assert.equal(durationSeconds, 34);
+  assert.ok((durationSeconds + 10) * 12.144 / 3600 <= .15,
+    'Full three-phase draw at the native 16 A limit and 253 V, including ten seconds of stop latency, fits the energy allowance');
+  f.setNow(START + 10_000); f.physical.powerKw = 12.144;
+  await f.restart(); await f.update();
+  const resumed = f.runtime.chargers.charger1.identification;
+  assert.equal(resumed.id, initial.id); assert.deepEqual(resumed.probe, initial.probe);
+  assert.equal(resumed.phase, 'charging');
+  f.setNow(initial.probe.deadlineAt); await f.update();
+  assert.equal(f.physical.charging, false);
+  f.setNow(f.now + 1000); await f.update();
+  const ended = f.runtime.chargers.charger1.identification;
+  assert.equal(ended.phase, 'observing'); assert.ok(ended.chargeUsedKwh <= .15);
+  assert.ok(f.writes.filter(row => row.action === 'SetChargingProfile').every(row =>
+    row.payload.csChargingProfiles.chargingSchedule.chargingSchedulePeriod.every(period => period.limit === 0)),
+  'No positive current profile is installed');
+});
+
+for (const transport of ['cloud', 'ocpp']) test(`${transport}: unassigned Tesla uses the same unbounded normal-charging observation lifecycle`, async t => {
+  const f = await fixture(t, transport, 'tesla', { normalCharging: true });
+  await f.update();
+  const initial = structuredClone(f.runtime.chargers.charger1.identification);
+  assert.equal(initial.phase, 'charging'); assert.equal(f.view().id, null);
+  f.setNow(START + 78 * MINUTE); await f.update();
+  const pending = f.runtime.chargers.charger1.identification;
+  assert.equal(pending.id, initial.id); assert.equal(pending.phase, 'charging');
+  assert.equal(pending.probe, null); assert.equal(pending.chargeDeadlineAt, null); assert.equal(pending.chargeUsedKwh, 0);
+  assert.equal(f.physical.charging, true); assert.equal(f.writes.length, 0);
+  f.tesla.fields = { charger_power: { value: 7, receivedAt: f.now, retained: false },
+    plugged_in: { value: true, receivedAt: START, retained: false },
+    charging_state: { value: 'Charging', receivedAt: START, retained: false } };
+  await f.update();
+  assert.equal(f.view().id, 'tesla'); assert.equal(f.runtime.chargers.charger1.identification.phase, 'completed');
+  assert.equal(f.writes.length, 0, 'Fresh Tesla power identifies the current connection without an unnecessary pause');
+});
+
+test('unassigned Tesla receives the same economic OCPP probe allowance and restoration without matching power', async t => {
+  const f = await fixture(t, 'ocpp', 'tesla', { charging: false, autoCharge: true });
+  await f.update();
+  assert.equal(f.writes.length, 0, 'The ordinary native current is allowed without installing a positive profile');
+  const initial = structuredClone(f.runtime.chargers.charger1.identification), probe = initial.probe;
+  assert.ok(probe.deadlineAt - probe.startedAt <= 34_000);
+  f.setNow(f.now + 30_000); await f.update();
+  assert.equal(f.runtime.chargers.charger1.identification.phase, 'charging'); assert.equal(f.view().id, null);
+  assert.equal(f.physical.powerKw, 7);
+  f.setNow(probe.deadlineAt); await f.update();
+  f.setNow(f.now + 1000); await f.update();
+  const stopped = f.runtime.chargers.charger1.identification;
+  assert.equal(stopped.phase, 'observing'); assert.equal(stopped.candidate, null); assert.equal(f.physical.charging, false);
+  assert.ok(stopped.chargeUsedKwh > 0 && stopped.chargeUsedKwh <= .15);
+  const count = f.writes.filter(row => row.action === 'SetChargingProfile').length;
+  f.setNow(f.now + 5 * MINUTE); await f.restart(); await f.update();
+  assert.equal(f.runtime.chargers.charger1.identification.id, initial.id);
+  assert.deepEqual(f.runtime.chargers.charger1.identification.probe, stopped.probe);
+  assert.equal(f.physical.charging, false);
+  assert.equal(f.writes.filter(row => row.action === 'SetChargingProfile').length, count,
+    'Missing Tesla power and restart cannot grant another automatic energy allowance');
+  f.setNow(FUTURE + 1000); await f.update();
+  assert.equal(f.physical.charging, true, 'Ordinary scheduled charging proceeds after the exhausted probe');
+  f.tesla.actualPowerKw = f.physical.powerKw;
+  f.tesla.fields = { charger_power: { value: f.physical.powerKw, receivedAt: f.now, retained: false },
+    plugged_in: { value: true, receivedAt: START, retained: false },
+    charging_state: { value: 'Charging', receivedAt: f.now, retained: false } };
+  await f.update();
+  assert.equal(f.view().id, 'tesla'); assert.equal(f.runtime.chargers.charger1.identification.phase, 'completed');
 });
 
 test('a forced update during a slow reconciliation runs as soon as the request finishes', async t => {
@@ -478,12 +695,13 @@ test('repeated identification wakeups cannot starve an explicit queued resume', 
   assert.equal(f.runtime.chargers.charger1.reconcileFlight, null);
 });
 
-test('simultaneous supported charging points choose one active test without consuming the queued budget', async t => {
-  const f = await fixture(t, 'cloud'); f.setNow(START + 1000); await f.update();
+test('simultaneous supported charging points serialize physical pauses without consuming the queued budget', async t => {
+  const f = await fixture(t, 'cloud'); f.physical.pauseBlocked = true; f.setNow(START + 1000); await f.update();
   const first = f.runtime.chargers.charger1, second = f.runtime.chargers.charger2;
   const control = structuredClone(first.controller.status());
   Object.assign(control.snapshot, { mode: 3, modeAt: f.now, powerKw: 7, powerAt: f.now,
-    schedule: normalizeScheduleState({ enabled: 'none' }) });
+    schedule: normalizeScheduleState({ enabled: 'none' }),
+    observations: { 109: { value: 3, at: f.now }, 120: { value: 7, at: f.now } } });
   control.owned = null; control.identification = null;
   second.controller = { supportsIdentification: true, status: () => control, close() {} };
   second.adapter = { normalize: easeeChargerTelemetry };
@@ -495,8 +713,9 @@ test('simultaneous supported charging points choose one active test without cons
   assert.equal(f.runtime.identificationTurn(second), false);
   f.setNow(first.identification.pauseUntil + 1000);
   control.snapshot.readAt = f.now; control.snapshot.powerAt = f.now;
+  control.snapshot.observations[120].at = f.now;
   f.runtime.telemetry(f.now);
-  assert.equal(first.identification.phase, 'inconclusive');
-  assert.equal(second.identification.phase, 'charging');
-  assert.equal(second.identification.chargeDeadlineAt, f.now + MINUTE);
+  assert.equal(first.identification.phase, 'observing');
+  assert.equal(second.identification.phase, 'pausing');
+  assert.equal(second.identification.chargeDeadlineAt, null);
 });

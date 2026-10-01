@@ -57,10 +57,27 @@ function identificationPresentation(charger) {
     'manual-stop': ['Manual Stop active', 'Waiting for manual Stop to end. Identification will not override it.'],
     'unsupported': ['Live matching only', 'This charger cannot run an identification test. Waiting for live vehicle matching.'],
     'telemetry-unavailable': ['Waiting for vehicle data', 'Waiting for live vehicle readings before testing this connection.'],
+    'vehicle-feed-stale': ['Waiting for vehicle data', 'The vehicle feed is not current. Waiting for a live report before requesting a charging test.'],
+    'bmw-home-unknown': ['Waiting for home context', 'BMW has no valid last known home location. Unknown GPS does not erase an earlier home report.'],
+    'bmw-away': ['BMW last reported away', 'The latest valid BMW location is away. Waiting for a valid home report or another vehicle’s matching evidence.'],
+    'bmw-not-plugged': ['Waiting for BMW plug evidence', 'BMW has not reported a usable plugged-in state for this connection.'],
     'charger-unavailable': ['Waiting for charger', 'Waiting for a fresh charger connection before continuing identification.'],
     'another-identification-active': ['Waiting for other charger', 'Waiting for the other charger’s identification test to finish.'],
+    'economic-plan-pending': ['Waiting for charging plan', 'Waiting for the current charging plan before deciding whether a brief charging test is needed.'],
+    'evidence-capacity': ['Identification history full', 'This connection has reached the limit for stored identification events. Additional automatic tests are stopped; normal charging follows the current choice.'],
   }[identification.reason] ?? ['Waiting for charging', 'Waiting for the vehicle to start charging. Its own timer or charging limit stays in effect.'];
-  const blocked = ['manual-stop', 'unsupported', 'telemetry-unavailable', 'charger-unavailable', 'another-identification-active'].includes(identification.reason);
+  const blocked = ['manual-stop', 'unsupported', 'telemetry-unavailable', 'vehicle-feed-stale', 'bmw-home-unknown',
+    'bmw-away', 'bmw-not-plugged', 'charger-unavailable', 'another-identification-active',
+    'economic-plan-pending', 'evidence-capacity'].includes(identification.reason);
+  if (identification.phase === 'observing') return {
+    label: 'Identification pending', state: 'Pending', activity: 'Waiting for matching reports',
+    detail: `${({
+      'probe-energy-limit': 'The brief charging test reached its energy budget.',
+      'probe-time-limit': 'The brief charging test reached its safety time limit.',
+      'telemetry-lost': 'The brief charging test ended because current charger measurements became unavailable.',
+      'pause-timeout': 'The brief pause reached its safety deadline.',
+    })[identification.reason] ?? (blocked ? waiting[1] : 'The physical charging evidence has been saved.')} The current charging choice applies.${identification.reason === 'evidence-capacity' ? ' Identification remains unresolved for this connection.' : ' Identification remains pending until unplugging. Matching vehicle evidence is still accepted; BMW event reports may arrive later.'}`,
+  };
   if (identification.active) return {
     label: identification.phase === 'waiting' || blocked ? 'Identification pending' : 'Identifying vehicle',
     state: identification.phase === 'waiting' || blocked ? 'Pending' : identification.phase === 'pausing' ? 'Confirming' : 'Checking',
@@ -68,16 +85,16 @@ function identificationPresentation(charger) {
       : identification.phase === 'pausing' ? charger.values?.charging?.value === true ? 'Pause requested' : 'Confirming vehicle'
           : 'Checking vehicle',
     detail: identification.phase === 'waiting' || blocked ? waiting[1]
-      : identification.phase === 'pausing' ? 'A brief pause is checking which vehicle responds. Waiting for matching charger and vehicle readings before confirming identity.'
-        : 'Observing charging to identify the vehicle. Charging will pause briefly as soon as enough evidence is available, if a pause is needed.',
+      : identification.phase === 'pausing' ? 'A brief pause is checking the physical response. Once the charger confirms the physical stop, the current charging choice resumes. Matching vehicle evidence remains accepted; BMW event reports may arrive later.'
+        : identification.probe && identification.probe.endedAt === null
+          ? 'The extra charging test uses the charger’s normal current settings and has a 0.15 kWh energy budget, with a safety deadline. The controller ends the test when useful vehicle evidence arrives or a limit is reached; identification can still finish afterward.'
+          : 'Normal charging continues while identification waits, without a short charging timeout. Charging will pause briefly as soon as enough evidence is available, if a pause is needed.',
   };
   if (identification.phase === 'inconclusive') return { label: 'Identification inconclusive', state: 'Inconclusive', activity: 'Identification inconclusive',
     detail: `${({
       'manual-stop': 'Manual Stop interrupted the identification test and keeps priority.',
-      'charge-time-limit': 'The short charging test reached its time limit without enough matching evidence.',
-      'charge-energy-limit': 'The short charging test reached its energy limit without enough matching evidence.',
-      'pause-timeout': 'The identification check timed out before matching vehicle confirmation arrived.',
-    })[identification.reason] ?? 'The identification attempt ended without a conclusive match.'} The current charging choice now applies. Live readings can still confirm the vehicle, or choose Identify to try again when available.` };
+      'pause-timeout': 'The physical identification pause was not confirmed before its deadline.',
+    })[identification.reason] ?? 'The identification attempt ended without a conclusive match.'} The current charging choice now applies. Applicable vehicle evidence can still identify this connection until unplugging; choose Identify for an explicit retry when available.` };
   return null;
 }
 function vehiclePresentation(charger, { now, timezone } = {}) {
@@ -85,7 +102,7 @@ function vehiclePresentation(charger, { now, timezone } = {}) {
   const identification = identificationPresentation(charger);
   const home = vehicle?.homeContext;
   const homeDetail = home?.source === 'last-known'
-    ? ` BMW location is currently unknown. Its last confirmed home position (${chargingTime(home.measuredAt, timezone, now)}) can support identification for up to two hours from that observation, together with matching live charging readings.` : '';
+    ? ` BMW location is currently unknown. Its last confirmed home position (${chargingTime(home.measuredAt, timezone, now)}) remains usable without a time limit, including after unplugging and reconnecting. A valid away report replaces it. Matching charging evidence is still required for this connection.` : '';
   if (vehicle?.state === 'conflict') return { label: 'Vehicle evidence conflicts',
     detail: `Both connections remain separately metered. Use the charger fallback request until the evidence resolves.${identification ? ` ${identification.detail}` : ''}` };
   if (identification) return { label: vehicle?.state === 'identified'
