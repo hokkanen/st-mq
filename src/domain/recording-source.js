@@ -19,9 +19,7 @@ export function recordingSourceLabel(row = {}) {
     const provenance = row.voltage;
     if (!validVoltageProvenance(provenance)) return 'Source unknown';
     const labels = { 1: 'Easee · OCPP', 2: 'Easee · Cloud', 4: 'Equalizer · Easee Cloud', 8: 'Simulation' };
-    const contributors = Object.entries(labels).filter(([bit]) => provenance.inputs & Number(bit))
-      .map(([, label]) => label);
-    return contributors.length === 1 ? contributors[0] : `Mixed sources: ${contributors.join('; ')}`;
+    return labels[provenance.input];
   }
   if (row.source !== 'easee') return null;
   const transport = recordedTransport(row);

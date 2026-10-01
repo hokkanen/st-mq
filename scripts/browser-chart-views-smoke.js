@@ -22,11 +22,13 @@ function seedVoltageRecordingFixture(app, now) {
   ];
   for (; at <= now; at += minute) for (const [phase, duration, endOffset, source, transport] of phases) {
     const end = now - endOffset * minute;
-    if (at < end - duration * minute || at > end) continue;
+    // Seed an earlier cloud contributor; changing feeds leaves a one-minute coverage gap.
+    const start = end - (duration + (phase === 1 ? 1 : 0)) * minute;
+    if (at < start || at > end) continue;
     estimator.ingest({
       source, device: `invented-voltage-source-${phase}`, signal: `${phase === 3 ? 'property' : 'ev1'}_voltage_l${phase}`,
       value: 226 + 2 * phase, unit: 'V', sourceTime: at, receivedAt: at, quality: [],
-      raw: { voltageMapping: 'phase-neutral', transport },
+      raw: { voltageMapping: 'phase-neutral', transport: phase === 1 && at === start ? 'cloud' : transport },
     });
   }
   estimator.interrupt({ source: 'easee', devices: ['invented-voltage-source-3'], transport: 'cloud', now });
@@ -661,11 +663,20 @@ try {
       row.querySelector('details').open = true;
       return [phase, row.textContent];
     })))()`);
-    assert.match(recordingRows[1], /Voltage estimate L1.*Easee · OCPP · V.*Collecting voltage history.*30 of 60 minutes/);
+    assert.match(recordingRows[1], /Voltage estimate L1.*Easee · OCPP.*Collecting voltage history.*30 of 60 minutes/);
     assert.match(recordingRows[1], /Charger 1 · OCPP/);
     assert.match(recordingRows[2], /Established estimate.*Charger 1 · Easee Cloud/);
     assert.match(recordingRows[3], /Voltage collection paused.*25 of 60 minutes.*Equalizer · Easee Cloud/);
     for (const text of Object.values(recordingRows)) assert.doesNotMatch(text, /failed its source quality checks|No age cutoff applies/);
+    const voltageSource = 'tr[data-signal="voltage_estimate_l1"] th small .status-detail-trigger';
+    assert.equal(await evaluate(`document.querySelector(${JSON.stringify(voltageSource)}).textContent`), 'Easee · OCPP');
+    await evaluate(`document.querySelector(${JSON.stringify(voltageSource)}).click(); true`);
+    const sourcePopup = await evaluate("document.querySelector('#status-detail-popover:not([hidden])').textContent");
+    assert.match(sourcePopup, /latest contributing source.*Earlier sources can still contribute/s);
+    assert.match(sourcePopup, /Contributing sources: Charger 1 · OCPP; Charger 1 · Easee Cloud/);
+    assert.match(sourcePopup, /volts \(V\)/);
+    await pressKey('Escape');
+    assert(await evaluate("document.getElementById('status-detail-popover').hidden"));
     const energySourceLabels = await evaluate("[...document.querySelectorAll('tr[data-signal=\"ev1_energy_l1\"] th small')].map(node=>node.textContent)");
     assert(energySourceLabels.includes('Easee · OCPP · kWh'));
     assert(energySourceLabels.includes('Easee · Cloud · kWh'));

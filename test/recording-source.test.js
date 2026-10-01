@@ -18,15 +18,16 @@ test('recorded source labels require explicit transport evidence', () => {
   assert.equal(recordedTransport({raw:'invalid'}),null);
 });
 
-test('voltage source subtitles describe saved contributors, including mixed and unknown provenance', () => {
+test('voltage source subtitles show only the latest saved contributor or unknown provenance', () => {
   const label = voltage => recordingSourceLabel({source:'voltage-estimate',voltage});
   assert.equal(label({inputs:1,input:1}),'Easee · OCPP');
   assert.equal(label({inputs:2,input:2}),'Easee · Cloud');
   assert.equal(label({inputs:4,input:4}),'Equalizer · Easee Cloud');
   assert.equal(label({inputs:8,input:8}),'Simulation');
-  assert.equal(label({inputs:3,input:2}),'Mixed sources: Easee · OCPP; Easee · Cloud');
-  assert.equal(label({inputs:3,input:1}),label({inputs:3,input:2}),
-    'the latest input never hides earlier contributors to a smoothed estimate');
+  assert.equal(label({inputs:3,input:2}),'Easee · Cloud');
+  assert.equal(label({inputs:3,input:1}),'Easee · OCPP');
+  assert.equal(label({inputs:5,input:4}),'Equalizer · Easee Cloud');
+  assert.equal(label({inputs:5,input:1}),'Easee · OCPP');
   for(const voltage of [undefined,{}, {inputs:0,input:0},{inputs:1,input:2}]) assert.equal(label(voltage),'Source unknown');
   assert.equal(recordingSourceLabel({source:'voltage-estimate',transport:'ocpp'}),'Source unknown',
     'transport without saved voltage contributors cannot relabel the estimate');

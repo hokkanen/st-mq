@@ -237,10 +237,11 @@ remain attached to the saved record; today's selected feed never relabels histor
 Replacing contributing equipment or phase mapping resets affected accumulators
 rather than interpreting former equipment as the replacement.
 
-The recording table's voltage-estimate subtitle names the contributing source
-and unit, such as **Easee · OCPP · V** or **Easee · Cloud · V**. Mixed contributors
-are listed explicitly; missing provenance is **Source unknown**. The subtitle
-does not substitute today's connection for the estimate's recorded provenance.
+The recording table's voltage-estimate subtitle names only the latest contributing
+source, such as **Easee · OCPP** or **Easee · Cloud**; missing provenance is
+**Source unknown**. Its popup explains that earlier sources can still contribute
+to the smoothed estimate and retains the full contributor list and voltage unit.
+The subtitle uses recorded provenance, never today's connection.
 
 The current persisted estimator format is `voltage-ewma-v2`. Unsupported estimator
 state is rejected before engine initialization writes, with fresh-development-database

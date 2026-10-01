@@ -1,3 +1,16 @@
+Implemented 2026-10-01 — Concise voltage source subtitles
+- Show only the latest recorded contributing source for phase voltage estimates,
+  removing the mixed-source list and trailing unit from the subtitle. Clicking,
+  tapping or keyboard-activating the source opens the shared explanation popup:
+  earlier sources still contribute to smoothing; full provenance and units remain
+  available there and in existing recording details.
+- F1/F4: retain recorded contributor masks, unknown provenance, estimator behavior
+  and historical tooltips. No schema, compatibility or configuration changes.
+- Validation: 34 focused recording, provenance, voltage and popup tests passed;
+  production build and isolated voltage browser suite passed, including a real
+  cloud-to-OCPP mixed estimate, clean subtitle, popup content and Escape dismissal.
+  Chart checks cover both themes at 320/390/1280px. Whitespace checks passed.
+
 Implemented 2026-10-01 — Natural dashboard spacing and aligned overview rows
 - Remove desktop card stretching and automatic footer margins. Garage keeps its
   original charger-to-equipment gap; Home plus Data & settings have approximately

@@ -4,6 +4,7 @@ import { providerName } from './provider-status.js';
 import { recordingPolicy, recordedSignalInfo, RECORDING_POLICIES } from '../src/domain/recording-policy.js';
 import { recordingSourceLabel } from '../src/domain/recording-source.js';
 import { voltageProvenanceDetails } from '../src/domain/voltage-provenance.js';
+import { setStatusDetail } from './status-details.js';
 
 export function durationLabel(ms) {
   if (!Number.isFinite(ms) || ms < 0) return 'Collecting';
@@ -109,7 +110,12 @@ export function renderRecording(status, root) {
     const tr=document.createElement('tr'),title=document.createElement('th');title.scope='row';title.textContent=row.label;
     tr.dataset.signal=row.signal;tr.dataset.streamId=row.streamId??row.signal;
     if(row.source) {const source=document.createElement('small');const name=recordingSourceLabel(row)??({ 'garage-adapter':'Garage heat pump', 'mqtt-equipment':'MQTT equipment', 'shelly-mqtt':'Shelly', simulation:'Simulation' })[row.source]??providerName(row.source)??readable(row.source);
-      source.textContent=`${name} · ${({degC:'°C','degree-minutes':'°min'})[row.unit]??row.unit??''}`;title.append(source);}
+      if(row.source==='voltage-estimate') setStatusDetail(source, {
+        key:`recording-voltage-source-${row.streamId??row.signal}`, title:`${row.label} source`, label:name,
+        detail:`The label shows the latest contributing source. Earlier sources can still contribute to the smoothed estimate. Voltage is measured in volts (V).\n\n${availability.detail}`,
+      });
+      else source.textContent=`${name} · ${({degC:'°C','degree-minutes':'°min'})[row.unit]??row.unit??''}`;
+      title.append(source);}
     if(row.streamQualifier) {const qualifier=document.createElement('small');qualifier.className='recording-stream-qualifier';qualifier.textContent=row.streamQualifier;title.append(qualifier);}
     tr.append(title);
     const saved=document.createElement('td');saved.textContent=integerLabel(row.day?.records);saved.dataset.label='Saved · 24 h';
