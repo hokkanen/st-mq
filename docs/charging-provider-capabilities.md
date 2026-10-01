@@ -39,9 +39,13 @@ unavailable even when charger control is commissioned. Conversely, valid read-on
 measurements do not require permission to control charging.
 
 The manual documents accumulated energy only as a total. No native phase-energy
-counters are advertised or created, and current phase values do not become extra
-recorded history. Easee keeps its existing measured L1–L3 current/voltage readings,
-reported total active power and explicitly estimated phase-energy intervals.
+counters are advertised or created. Recording allocates each accepted native
+meter increment using endpoint phase powers into three estimated phase-energy
+intervals; their sum preserves the measured increment. There is no fourth
+total-energy series, and raw current phase values stay live-only. Unknown phase
+shares leave a gap and retain the measured increment as diagnostic evidence.
+Easee keeps its existing measured L1–L3 current/voltage readings, reported total
+active power and explicitly estimated phase-energy intervals.
 
 ## Commissioning contract
 

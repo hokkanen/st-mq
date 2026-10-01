@@ -661,7 +661,7 @@ try {
       row.querySelector('details').open = true;
       return [phase, row.textContent];
     })))()`);
-    assert.match(recordingRows[1], /Voltage estimate L1.*Smoothed voltage · V.*Collecting voltage history.*30 of 60 minutes/);
+    assert.match(recordingRows[1], /Voltage estimate L1.*Easee · OCPP · V.*Collecting voltage history.*30 of 60 minutes/);
     assert.match(recordingRows[1], /Charger 1 · OCPP/);
     assert.match(recordingRows[2], /Established estimate.*Charger 1 · Easee Cloud/);
     assert.match(recordingRows[3], /Voltage collection paused.*25 of 60 minutes.*Equalizer · Easee Cloud/);

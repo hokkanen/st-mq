@@ -70,11 +70,13 @@ contact providers or use private credentials.
 
 The electrical dataset contains `ev1_energy_l1` through `ev1_energy_l3` for the
 Easee charger, and `property_energy_l1` through `property_energy_l3` for property import.
-Shelly EVSE retains scalar `ev2_energy` from its native accumulated meter and
-`ev2_energy_l1` through `ev2_energy_l3` as estimated phase allocations. Its measured
-total increment is allocated using the actual mapped phase powers at the two
-source endpoints. Missing phase evidence leaves phase history unavailable while
-the independently valid measured total remains recorded. No equal split is invented.
+Shelly EVSE retains `ev2_energy_l1` through `ev2_energy_l3` as estimated phase
+allocations of its native accumulated-meter increments. Its measured increment
+is allocated using the actual mapped phase powers at the two source endpoints.
+All three sources use synchronized three-phase intervals; totals are calculated
+by summing a complete valid phase group, with no fourth total-energy series.
+Missing phase evidence leaves a gap. An otherwise valid unallocatable Charger 2
+meter increment is retained as a diagnostic event, never an invented equal split.
 Each value is a **kWh increment over an explicit interval**, not an instantaneous
 power reading or a cumulative phase meter. Property and Charger 1 are integrated
 estimates; Charger 2 and Caravan totals are measured counter differences. Charger 2
@@ -235,6 +237,11 @@ remain attached to the saved record; today's selected feed never relabels histor
 Replacing contributing equipment or phase mapping resets affected accumulators
 rather than interpreting former equipment as the replacement.
 
+The recording table's voltage-estimate subtitle names the contributing source
+and unit, such as **Easee · OCPP · V** or **Easee · Cloud · V**. Mixed contributors
+are listed explicitly; missing provenance is **Source unknown**. The subtitle
+does not substitute today's connection for the estimate's recorded provenance.
+
 The current persisted estimator format is `voltage-ewma-v2`. Unsupported estimator
 state is rejected before engine initialization writes, with fresh-development-database
 guidance; no migration, backfill or automatic reset is performed.
@@ -329,9 +336,20 @@ phase powers also allocate the measured total increments into adaptive phase
 energy. Historical equivalent phase currents are derived from interval energy,
 using the same presentation as Charger 1, and are labeled estimates.
 The accumulated total and native `energy_charge` session diagnostic are kept
-distinct from interval energy and finalized session checks. The integration has no native individual phase-energy counters; `ev2_energy`
-remains the authoritative measured total, separate from the three estimated
-phase-energy series. The phase sum and total must never both be counted as demand.
+distinct from interval energy and finalized session checks. The integration has
+no native individual phase-energy counters. Its three phase increments preserve
+the native measured increment in their sum; each individual phase remains an
+estimate. Charging progress, cost, charts and household calculations read the
+same complete phase group, including its durable pending tail.
+
+A positive valid counter increment with unusable endpoint phase shares creates
+an explicit three-phase gap and one `charging-energy-unallocated` diagnostic
+event. The event preserves the source, physical association, source interval,
+measured kWh increment and reason. It is not an energy series and supplies no
+charging progress, cost or household energy credit. Zero increments need no phase
+weights. Session checks retain their separate counter and power evidence even
+when phase allocation is unavailable. Missing or conflicting phase members must
+not become a partial total or be combined across physical sources.
 
 Charger standby remains measured even when automatic charging is disabled.
 Changes at or below the 10 W selection floor can share a durable open interval;
@@ -410,13 +428,13 @@ averages. Tooltips explain exclusions, identify the physical electricity meter
 and show the session period. No continuous power or
 lifetime-counter meaning is implied between session points.
 
-**Recording-interval energy** exposes original phase increments, Charger 2's
-authoritative total, Caravan intervals and qualified dedicated Garage intervals.
+**Recording-interval energy** exposes original phase increments for the property
+and both chargers, Caravan intervals and qualified dedicated Garage intervals.
 Each retains its original duration and source basis; these are not equal-length
 period totals. Garage intervals preserve their counter-delta or integrated-power
 basis and any provisional accuracy. Its native cumulative counter remains a
-separate diagnostic series. Charger 2 phase allocations are alternative views of
-its total, never additional electricity to add to that total.
+separate diagnostic series. Each charger total is the sum of its three phase
+increments, not an additional stored contribution.
 
 For Charger 1, Easee observation `129` supplies authoritative finalized session boundaries and
 energy; `223` supplies the current session start when available. A new finalized
@@ -631,7 +649,7 @@ byte and variation metrics remain labeled as such. Current open energy is shown
 separately from finalized observation counts. The annual target measures overall
 SQLite growth; mandatory exact/history records are never dropped to meet it.
 
-This recording contract uses database schema 16. An incompatible development
+This recording contract uses database schema 17. An incompatible development
 schema is rejected before mutation with fresh-database guidance; no migration,
 backfill or automatic reset is provided. Supported read-only v0.7.5 CSV import,
 current-version restart, backup/restore and deterministic journal replay remain.

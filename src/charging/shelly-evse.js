@@ -94,7 +94,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
             : [...config.connectedStates, ...config.chargingStates].includes(value) ? true : null;
           if (connectedValue !== null && state.connection?.connected !== connectedValue) {
             engine.recorder.flush?.(receivedAt, { force: true, source: 'shelly-evse', device: association,
-              prefix: ['ev2', 'ev2-phase'] });
+              prefix: 'ev2' });
             const ended = state.checkSession;
             if (connectedValue === false && ended && measuredAt > ended.start) {
               const quality = [...ended.quality];
@@ -125,21 +125,25 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
             const plausible = config.maximumCurrentA * 3 * 300 / 1000 * (measuredAt - before.at) / 3600000 * 1.2;
             if (energy <= plausible + .001) {
               acceptedEnergy = true;
-              engine.recorder.recordEnergy({ source: 'shelly-evse', device: association, prefix: 'ev2',
-                start: before.at, end: measuredAt, energies: [energy], powers: [value.total_power / 1000],
-                quality: ['native_counter'], receivedAt });
-              // The physical total meter remains authoritative. Native phase
-              // power estimates only its distribution; they add no consumption.
+              // The three phase allocations preserve the native meter delta.
+              // The measured total is their sum, not another history series.
               const weights = before.phasePowers?.map((power, index) => (power + phasePowers[index]) / 2);
               const sum = weights?.reduce((total, power) => total + power, 0);
-              if (weights?.length === 3 && weights.every(power => finite(power) && power >= 0) && (sum > 0 || energy === 0)) {
-                const energies = weights.map(power => sum > 0 ? energy * power / sum : 0);
-                energies[2] = Math.max(0, energy - energies[0] - energies[1]);
-                engine.recorder.recordEnergy({ source: 'shelly-evse', device: association, prefix: 'ev2-phase',
+              if (energy === 0 || weights?.length === 3 && weights.every(power => finite(power) && power >= 0) && sum > 0) {
+                // Bound fractions before multiplication so rounding cannot
+                // make a single-phase share exceed the whole meter increment.
+                const energies = energy === 0 ? [0, 0, 0] : weights.map(power => energy * (power / sum));
+                energies[1] = Math.min(energies[1], energy - energies[0]);
+                energies[2] = Math.max(0, energy - (energies[0] + energies[1]));
+                engine.recorder.recordEnergy({ source: 'shelly-evse', device: association, prefix: 'ev2',
                   start: before.at, end: measuredAt, energies, powers: phasePowers,
                   quality: ['native_counter', 'estimated', 'phase_allocation_estimated', 'reported_phase_power'], receivedAt });
-              } else engine.recorder.energyGap?.({ source: 'shelly-evse', device: association, prefix: 'ev2-phase',
-                start: before.at, end: measuredAt, receivedAt, quality: ['unknown-phase-share'] });
+              } else {
+                engine.recorder.energyGap?.({ source: 'shelly-evse', device: association, prefix: 'ev2',
+                  start: before.at, end: measuredAt, receivedAt, quality: ['unknown-phase-share'] });
+                store.event('charging-energy-unallocated', { source: 'shelly-evse', device: association,
+                  start: before.at, end: measuredAt, referenceKwh: energy, reason: 'unknown-phase-share' }, receivedAt);
+              }
               if (check && before.at >= check.start) {
                 check.referenceKwh += energy;
                 check.estimatedKwh += (before.powerW + value.total_power) / 2 * (measuredAt - before.at) / 3600000000;
@@ -147,8 +151,8 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
             } else { error = 'evse-counter-jump'; if (check) check.quality.push('incomplete-coverage'); }
           } else if (before && total < before.value) { error = 'evse-counter-reset'; if (check) check.quality.push('counter-reset'); }
           else if (before && check) check.quality.push('incomplete-coverage');
-          if (before && !acceptedEnergy) for (const prefix of ['ev2', 'ev2-phase']) engine.recorder.energyGap?.({
-            source: 'shelly-evse', device: association, prefix, start: before.at, end: measuredAt, receivedAt,
+          if (before && !acceptedEnergy) engine.recorder.energyGap?.({
+            source: 'shelly-evse', device: association, prefix: 'ev2', start: before.at, end: measuredAt, receivedAt,
             quality: [total < before.value ? 'meter-counter-reset' : measuredAt - before.at > config.maxAgeMs * 2 ? 'meter-report-gap' : 'invalid-meter-delta'] });
           if (check) check.lastAt = measuredAt;
           state.counter = { at: measuredAt, value: total, powerW: value.total_power, phasePowers };

@@ -61,7 +61,7 @@ maximum recording interval: unchanged values extend coverage instead of creating
 repeated rows. Room temperatures, settings and equipment states retain every
 change; missing reports leave chart and learning gaps. Electricity history stores
 three estimated phase-energy increments for property and both physical chargers.
-Charger 2 also retains its native measured total; vehicle feeds never supply home
+Charger 2's phase sum preserves its native measured increment; vehicle feeds never supply home
 electricity. The database UI separates adaptive measurements from exact history,
 full-report feedback, events, learning journals, imports and current state.
 Separate property meter checks and completed-session comparisons are diagnostic only. The house learner uses

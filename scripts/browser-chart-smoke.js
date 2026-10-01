@@ -61,8 +61,8 @@ function seedChargingFixture(store, energySource='simulation') {
   store.transaction(() => {
     for (let slot=0;slot<12;slot++) {
       const start=now-(120-slot*5)*60_000,end=start+5*60_000,power=slot<6?6:4;
-      store.observation({source:energySource,device:'synthetic-browser-shelly',signal:'ev2_energy',
-        sourceTime:end,receivedAt:end,value:power/12,unit:'kWh',quality:['estimated',...(energySource==='simulation'?['simulated']:[])],
+      for (const phase of [1,2,3]) store.observation({source:energySource,device:'synthetic-browser-shelly',signal:`ev2_energy_l${phase}`,
+        sourceTime:end,receivedAt:end,value:power/36,unit:'kWh',quality:['estimated',...(energySource==='simulation'?['simulated']:[])],
         raw:{intervalStart:start,intervalEnd:end,durationMs:end-start,basis:'synthetic-browser-fixture'}});
     }
     store.energyAudit({source:'easee',device:'synthetic-browser-property',signal:'property_import_energy_counter',
@@ -1000,9 +1000,9 @@ try {
     '[data-provider=electricity] .provider-series > li > strong')].map(row => row.textContent))`));
   assert.deepEqual(electricitySeries.filter(label => label.startsWith('Charger 2')), [
     'Charger 2 phase currents L1–L3', 'Charger 2 phase voltages L1–L3', 'Charger 2 phase active power L1–L3',
-    'Charger 2 active power', 'Charger 2 meter counter', 'Charger 2 total energy', 'Charger 2 session energy', 'Charger 2 session check',
-  ], 'Charger 2 exposes supported native phase readings separately from total and session energy');
-  assert.equal(electricitySeries.includes('Charger 2 phase energy L1–L3'), false, 'Native total energy is never represented as measured phase energy');
+    'Charger 2 active power', 'Charger 2 meter counter', 'Charger 2 phase energy L1–L3', 'Charger 2 session energy', 'Charger 2 session check',
+  ], 'Charger 2 exposes native readings, three allocated phase energies and separate session checks');
+  assert.equal(electricitySeries.includes('Charger 2 total energy'), false, 'Consumption totals are derived from three phase energies');
   for (const label of ['Property phase energy L1–L3', 'Charger 1 phase energy L1–L3'])
     assert.ok(electricitySeries.includes(label), `${label} remains in the combined catalogue`);
   const electricityOverview = () => evaluate(`JSON.stringify((() => {
@@ -1029,7 +1029,7 @@ try {
     assert.equal(easee.color === shelly.color, !needsAttention, 'Provider names follow their individual availability');
     for (const bullet of result.bullets) {
       const provider = bullet.label.startsWith('Charger 2') ? shelly : easee;
-      const nativeFresh = bullet.series.startsWith('ev2_') && bullet.series !== 'ev2_energy';
+      const nativeFresh = bullet.series.startsWith('ev2_') && !bullet.series.startsWith('ev2_energy_');
       assert.equal(bullet.color, nativeFresh ? easee.color : provider.color,
         `${bullet.label}: color follows fresh measurement availability or provider-dependent capture status`);
       assert.equal(bullet.state, nativeFresh ? 'available' : provider.state,

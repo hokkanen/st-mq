@@ -46,11 +46,11 @@ test('steady multi-day energy remains durable, visible without writes, and avail
   assert(project(store,from,to,now).series.charger_power.some(row=>row.y===3),'An interval longer than one day is still selected across a narrow viewport');
 });
 
-test('native C2 total alone supplies power and charging credit while phase energy supplies only phase history', t => {
+test('C2 phase energies supply power, phase history and charging credit exactly once', t => {
   const {store,recorder}=fixture(t),end=start+HOUR;
   seedVoltage(store, start);
-  record(recorder,'ev2',start,end,[6]);
-  record(recorder,'ev2-phase',start,end,[1,2,3]);
+  record(recorder,'ev2',start,end,[1,2,3]);
+  assert.deepEqual(store.observations().filter(row=>row.source==='shelly-evse').map(row=>row.signal),[1,2,3].map(n=>`ev2_energy_l${n}`));
   const chart=project(store,start,end,end);
   assert(chart.series.charger2_power.some(row=>row.y===6));
   [1,2,3].forEach(n=>near(chart.series[`ev2_current_l${n}`].find(row=>row.y!==null).y,n/.23));
@@ -60,16 +60,36 @@ test('native C2 total alone supplies power and charging credit while phase energ
 
 test('pending receipt cutoff and overlap conflicts cannot manufacture energy', t => {
   const {store,recorder}=fixture(t);
-  record(recorder,'ev2',start,start+HOUR,[2]);
-  record(recorder,'ev2',start+HOUR,start+2*HOUR,[2],start+3*HOUR);
+  record(recorder,'ev2',start,start+HOUR,[2,0,0]);
+  record(recorder,'ev2',start+HOUR,start+2*HOUR,[2,0,0],start+3*HOUR);
   assert.equal(pendingEnergyObservations(store,{now:start+2*HOUR}).length,0);
-  assert.equal(pendingEnergyObservations(store,{now:start+3*HOUR}).length,1);
-  store.observation({source:'shelly-evse',device:'other-synthetic-meter',signal:'ev2_energy',unit:'kWh',value:1,
+  assert.equal(pendingEnergyObservations(store,{now:start+3*HOUR}).length,3);
+  store.observation({source:'shelly-evse',device:'other-synthetic-meter',signal:'ev2_energy_l1',unit:'kWh',value:1,
     sourceTime:start+2*HOUR,receivedAt:start+2*HOUR,quality:[],raw:{intervalStart:start+HOUR,intervalEnd:start+2*HOUR}});
   const groups=[...recordedEnergyGroups(store,{from:start,to:start+3*HOUR,now:start+3*HOUR,input:'providers'})];
   assert(groups.some(group=>group.conflict));
   const credited=recordedChargingEnergy(store,{id:'charger2',start,end:start+3*HOUR});
   assert.equal(credited.gridKwh,2,'Overlapping committed/pending ownership receives no charging credit');
+});
+
+test('C2 charging credit requires complete valid phases from the requested physical source', t => {
+  const {store}=fixture(t),end=start+HOUR;
+  const save=(device,phase,value,{source='shelly-evse',quality=[]}={})=>store.observation({source,device,
+    signal:`ev2_energy_l${phase}`,unit:'kWh',value,sourceTime:end,receivedAt:end,quality,
+    raw:{intervalStart:start,intervalEnd:end}});
+  const read=device=>recordedChargingEnergy(store,{id:'charger2',start,end,device});
+  save('partial',1,2); save('partial',2,0);
+  assert.equal(read('partial').gridKwh,0); assert.equal(read('partial').incomplete,true);
+  save('partial',3,0);
+  assert.equal(read('partial').gridKwh,2); assert.equal(read('partial').incomplete,false);
+  for (let phase=1;phase<=3;phase++) {
+    save('invalid',phase,1,{quality:phase===2?['stale']:[]});
+    save('foreign-source',phase,1,{source:'simulation'});
+  }
+  assert.equal(read('invalid').gridKwh,0);
+  assert.equal(read('foreign-source').gridKwh,0);
+  save('partial',1,3);
+  assert.equal(read('partial').gridKwh,0,'Duplicated phases are conflicting evidence, not extra consumption');
 });
 
 test('shared energy history preserves phase lineage and rejects invalid acquisition evidence', t => {
@@ -78,32 +98,35 @@ test('shared energy history preserves phase lineage and rejects invalid acquisit
   const good=[...recordedEnergyGroups(store,{from:start,to:start+HOUR,now:start+HOUR,input:'providers'})][0];
   assert.equal(good.observationIds.length,3); assert.equal(good.receivedAt,start+HOUR);
   for (const quality of ['stale','retained','failed','mqtt-disconnected','out_of_order_source_time','future_source_time']) {
-    store.observation({source:'shelly-evse',device:`synthetic-${quality}`,signal:'ev2_energy',unit:'kWh',value:0,
+    store.observation({source:'shelly-evse',device:`synthetic-${quality}`,signal:'ev2_energy_l1',unit:'kWh',value:0,
       sourceTime:start+HOUR,receivedAt:start+HOUR,quality:[quality],raw:{intervalStart:start,intervalEnd:start+HOUR}});
     const groups=[...recordedEnergyGroups(store,{from:start,to:start+HOUR,now:start+HOUR,input:'providers',prefix:'ev2',device:`synthetic-${quality}`})];
     assert.equal(groups[0].values[0],null,quality);
   }
   for (const marker of ['auditOnly','acquisitionOnly']) {
-    store.observation({source:'shelly-evse',device:`synthetic-${marker}`,signal:'ev2_energy',unit:'kWh',value:0,
+    store.observation({source:'shelly-evse',device:`synthetic-${marker}`,signal:'ev2_energy_l1',unit:'kWh',value:0,
       sourceTime:start+HOUR,receivedAt:start+HOUR,quality:[],raw:{intervalStart:start,intervalEnd:start+HOUR,[marker]:true}});
     const groups=[...recordedEnergyGroups(store,{from:start,to:start+HOUR,now:start+HOUR,input:'providers',prefix:'ev2',device:`synthetic-${marker}`})];
     assert.equal(groups[0].values[0],null,marker);
   }
 });
 
-test('household phase subtraction uses native phase shares and retains an upper estimate when shares are unknown', () => {
+test('household subtraction requires complete C2 phase energy and labels wholly absent peer history', () => {
   const row=(signal,value)=>({signal,value,unit:'kWh',quality:[],raw:{intervalStart:start,intervalEnd:start+HOUR}});
   const base=[1,2,3].flatMap(n=>[row(`property_energy_l${n}`,4),row(`ev1_energy_l${n}`,0)]);
-  const total=row('ev2_energy',3);
-  const unknown=householdSpans([...base,total],{voltageV:230})[0];
+  const unknown=householdSpans(base,{voltageV:230})[0];
   assert(unknown.unknownCharger2); unknown.phaseCurrentA.forEach(value=>near(value,4/.23));
-  const known=householdSpans([...base,total,row('ev2_energy_l1',1),row('ev2_energy_l2',0),row('ev2_energy_l3',2)],{voltageV:230})[0];
+  const peer=[row('ev2_energy_l1',1),row('ev2_energy_l2',0),row('ev2_energy_l3',2)];
+  const known=householdSpans([...base,...peer],{voltageV:230})[0];
   assert(!known.unknownCharger2); [3,4,2].forEach((kw,index)=>near(known.phaseCurrentA[index],kw/.23));
+  assert.deepEqual(householdSpans([...base,...peer.slice(0,2)],{voltageV:230}),[], 'A missing phase cannot become zero energy');
+  assert.deepEqual(householdSpans([...base,...peer,row('ev2_energy_l1',2)],{voltageV:230}),[], 'Conflicting phase energy cannot create household headroom');
+  assert.deepEqual(householdSpans([...base,...peer.map((row,index)=>index===1?{...row,value:null}:row)],{voltageV:230}),[]);
 });
 
 test('household forecast cache refreshes durable energy tails without new observation rows', t => {
   const {store,recorder}=fixture(t);
-  const sample=(a,b)=>{record(recorder,'property',a,b,[1,2,3]);record(recorder,'ev1',a,b,[0,0,0]);record(recorder,'ev2',a,b,[0]);};
+  const sample=(a,b)=>{record(recorder,'property',a,b,[1,2,3]);record(recorder,'ev1',a,b,[0,0,0]);record(recorder,'ev2',a,b,[0,0,0]);};
   sample(start,start+HOUR);
   const first=householdReference(store,{now:start+HOUR,input:'live',voltageV:230,timezone:'UTC'});
   const initialHours=first.entries().length;
@@ -118,7 +141,7 @@ test('household forecast cache refreshes durable energy tails without new observ
 
 test('generic hourly equipment sharing an energy name cannot impersonate or conflict with a physical charger', t => {
   const {store,recorder}=fixture(t),end=start+HOUR;
-  const hourly={source:'mqtt-equipment',device:'ev2',signal:'ev2_energy',unit:'kWh',value:0,
+  const hourly={source:'mqtt-equipment',device:'ev2',signal:'ev2_energy_l1',unit:'kWh',value:0,
     sourceTime:end,receivedAt:end,quality:[],raw:{intervalStart:start,intervalEnd:end,timeBasis:'completed-hour',learningRole:'history-only'}};
   store.observation(hourly);
   assert.equal(recordedEnergyStart(store,'ev2','providers',end),Infinity);
@@ -129,15 +152,15 @@ test('generic hourly equipment sharing an energy name cannot impersonate or conf
     {signal:`ev1_energy_l${n}`,value:0,unit:'kWh',quality:[],raw:{intervalStart:start,intervalEnd:end}},
   ]);
   assert(householdSpans([...phases,hourly],{voltageV:230})[0].unknownCharger2,'An unrelated zero cannot prove an idle charger');
-  record(recorder,'ev2',start,end,[2]);
+  record(recorder,'ev2',start,end,[2,0,0]);
   const groups=[...recordedEnergyGroups(store,{from:start,to:end,now:end,input:'providers',prefix:'ev2'})];
-  assert.equal(groups.length,1); assert(!groups[0].conflict); assert.deepEqual(groups[0].values,[2]);
+  assert.equal(groups.length,1); assert(!groups[0].conflict); assert.deepEqual(groups[0].values,[2,0,0]);
   assert(project(store,start,end,end).series.charger2_power.some(row=>row.y===2));
 });
 
 test('live integration resumes after recovered energy without overlapping it or inventing the uncovered remainder', t => {
   for (const prefix of ['ev1','ev2']) {
-    const {store,recorder}=fixture(t),powers=prefix==='ev1'?[1,1,1]:[3],edge=start+60_000;
+    const {store,recorder}=fixture(t),powers=[1,1,1],edge=start+60_000;
     record(recorder,prefix,start,edge,powers);
     const donor=new Store(':memory:');
     try {

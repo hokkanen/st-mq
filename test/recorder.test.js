@@ -84,8 +84,8 @@ test('recording diagnostics distinguish H66 expiry, held temperatures, and compl
   const indoor=parameters(recorder,1001+2*HOUR).find(row=>row.signal==='indoor_temperature').freshness;
   assert.equal(indoor.status,'held-attention');assert.equal(indoor.maxAgeMs,null);
   assert.equal(indoor.attentionAfterMs,2*HOUR);
-  recorder.recordEnergy({source:'shelly-evse',device:'invented-car',prefix:'ev2',start:1000,end:2000,energies:[0.01],powers:[36]});
-  const energy=parameters(recorder,72*HOUR).find(row=>row.signal==='ev2_energy').freshness;
+  recorder.recordEnergy({source:'shelly-evse',device:'invented-car',prefix:'ev2',start:1000,end:2000,energies:[0.01,0,0],powers:[36,0,0]});
+  const energy=parameters(recorder,72*HOUR).find(row=>row.signal==='ev2_energy_l1').freshness;
   assert.equal(energy.status,'recorded-interval');assert.equal(energy.maxAgeMs,null);
 });
 
@@ -529,11 +529,13 @@ test('open energy survives long steady operation and restart, revises history, a
 
 test('Charger 2 phase group preserves measured-total allocation and commits all phases atomically', t => {
   const { store, recorder } = fixture(t);
-  const interval = { source: 'shelly-evse', device: 'invented-charger', prefix: 'ev2-phase', start: 1000, end: 61000,
+  const interval = { source: 'shelly-evse', device: 'invented-charger', prefix: 'ev2', start: 1000, end: 61000,
     receivedAt: 62000, energies: [0.01, 0.02, 0.03], powers: [0.6, 1.2, 1.8], quality: ['phase-allocation-estimated'] };
   recorder.recordEnergy(interval);
   assert.deepEqual(store.observations().map(row => row.signal), ['ev2_energy_l1', 'ev2_energy_l2', 'ev2_energy_l3']);
   assert(store.observations().every(row => row.raw.basis === 'native-meter-counter-phase-allocation'));
+  assert.throws(() => recorder.recordEnergy({ ...interval, energies: [0.06], powers: [3.6] }), /Invalid phase energy interval/);
+  assert.throws(() => recorder.recordEnergy({ ...interval, prefix: 'ev2-phase' }), /Invalid phase energy interval/);
   assert.equal(recorder.recordEnergy(interval).reason, 'duplicate-interval');
   assert.throws(() => recorder.recordEnergy({ ...interval, start: 61000, end: 121000, receivedAt: 120000 }), /Invalid/);
   assert.throws(() => store.transaction(() => {

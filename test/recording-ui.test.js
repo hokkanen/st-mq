@@ -112,7 +112,6 @@ test('adaptive inventory contains only observed adaptive streams, including cust
     ...['property', 'ev1', 'ev2'].flatMap(prefix => [1, 2, 3].map(phase => ({
       signal: `${prefix}_energy_l${phase}`, unit: 'kWh', grouped: true, policy: 'adaptive-energy',
     }))),
-    { signal: 'ev2_energy', unit: 'kWh', policy: 'adaptive-energy' },
     { signal: 'caravan_energy', unit: 'kWh', policy: 'adaptive-energy' },
   ];
   const rows = recordingRows({ parameters });

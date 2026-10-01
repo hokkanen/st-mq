@@ -68,10 +68,9 @@ test('recorded interval power aligns every load and phase while retaining origin
   const store = voltageStore(); t.after(() => store.close());
   for (let index = 0; index < property.length; index++) {
     const at = start + index * MINUTE, end = at + MINUTE;
-    for (const [prefix, value] of [['property', property[index]], ['ev1', charger[index]]])
+    for (const [prefix, value] of [['property', property[index]], ['ev1', charger[index]], ['ev2', second[index]]])
       for (let phase = 1; phase <= 3; phase++) put(store, `${prefix}_energy_l${phase}`, value / 60 / 3,
         end, 'kWh', { intervalStart: at, intervalEnd: end });
-    put(store, 'ev2_energy', second[index] / 60, end, 'kWh', { intervalStart: at, intervalEnd: end });
     put(store, 'auxiliary_power', auxiliary[index], at, 'kW');
   }
   store.db.exec('PRAGMA query_only=ON');

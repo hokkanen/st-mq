@@ -68,6 +68,8 @@ test('overview distinguishes saved/null values, imports, shared forecasts, journ
     store.event('heat-pump-power-config', { input: privateMarker, version: 1, heatPumpCompressorKw: 2, circulationKw: 0.1, auxRatedKw: 6 }, at);
     store.event('decision', { personal: privateMarker }, at);
     store.event('heating-scenario-approved', { binding: privateMarker }, at);
+    store.event('charging-energy-unallocated', { source: 'shelly-evse', device: privateMarker,
+      start: at - 1000, end: at, referenceKwh: 0.001, reason: 'unknown-phase-share' }, at);
     store.event(privateMarker, { personal: privateMarker }, at);
     for (const kind of ['sample', 'episode', 'context']) store.appendLearningJournal('providers', {
       kind, at, algorithmVersion: 'fixture-algorithm', configVersion: { private: privateMarker },
@@ -93,6 +95,8 @@ test('overview distinguishes saved/null values, imports, shared forecasts, journ
     store.counter({ device: privateMarker, signal: 'compressor_runtime', value: 100, observedDate: '2026-01-10', note: privateMarker, provenance: privateMarker });
     const overview = getDatabaseOverview({ store, now: at + 2000 });
     const rows = items(overview);
+    assert.equal(rows.get('events-charging-unallocated').count, 1);
+    assert.match(rows.get('events-charging-unallocated').description, /diagnostic evidence/);
     assert.equal(rows.get('state-heating-scenarios').count, 1);
     assert.equal(rows.get('events-heating-scenarios').count, 1);
     assert.equal(rows.get('controller_phase').count, 2);
@@ -147,14 +151,14 @@ test('recording inventory partitions every current observation writer without co
     'garage_compressor_frequency', 'caravan_temperature', 'caravan_humidity'];
   for (const signal of adaptive) recorder.record({ source: 'mqtt-equipment', device: 'private-example-device', signal,
     value: 10, unit: 'degC', sourceTime: at, receivedAt: at, quality: [], raw: { reportIntervalMs: 60_000 } });
-  for (const prefix of ['property', 'ev1', 'ev2', 'ev2-phase', 'caravan']) recorder.recordEnergy({ source: 'fixture-meter', device: 'private-meter',
-    prefix, start: at - 60_000, end: at, powers: ['caravan', 'ev2'].includes(prefix) ? [1] : [1, 2, 3],
-    energies: ['caravan', 'ev2'].includes(prefix) ? [1 / 60] : [1 / 60, 2 / 60, 3 / 60], receivedAt: at, quality: [] });
+  for (const prefix of ['property', 'ev1', 'ev2', 'caravan']) recorder.recordEnergy({ source: 'fixture-meter', device: 'private-meter',
+    prefix, start: at - 60_000, end: at, powers: prefix === 'caravan' ? [1] : [1, 2, 3],
+    energies: prefix === 'caravan' ? [1 / 60] : [1 / 60, 2 / 60, 3 / 60], receivedAt: at, quality: [] });
   for (const time of [at, at + 1000]) recorder.record({ source: 'mqtt-equipment', device: 'dhwr', signal: 'dhwr_active',
     value: 1, unit: 'state', sourceTime: time, receivedAt: time, quality: [], raw: { eventOnly: true, basis: 'measured-power' } });
   put(store, 'garage_energy', 0.1, at, { unit: 'kWh', raw: { intervalStart: at - 60_000, intervalEnd: at } });
   put(store, 'workshop_energy', 1, at, { unit: 'kWh', raw: { intervalStart: at - 3_600_000, intervalEnd: at, timeBasis: 'completed-hour' } });
-  put(store, 'ev2_energy', 1, at, { unit: 'kWh', raw: { intervalStart: at - 3_600_000, intervalEnd: at, timeBasis: 'completed-hour' } });
+  put(store, 'ev2_energy_l1', 1, at, { unit: 'kWh', raw: { intervalStart: at - 3_600_000, intervalEnd: at, timeBasis: 'completed-hour' } });
   for (const signal of ['controller_phase', 'dhwr_request', 'learning_profit', 'learning_aux_profit', 'learning_recovery_error', 'learning_indoor_temperature'])
     put(store, signal);
   const overview = getDatabaseOverview({ store, now: at + 2000 }), rows = items(overview);
@@ -169,7 +173,7 @@ test('recording inventory partitions every current observation writer without co
   assert.match(rows.get('dhwr_active').writeBehavior, /unchanged reports extend coverage/);
   assert.equal(rows.get('garage_energy').recordingPolicy, 'interval');
   assert.equal(rows.get('workshop_energy').recordingPolicy, 'hourly-energy');
-  assert.equal(rows.get('ev2_energy').recordingPolicy, 'hourly-energy', 'A supported custom equipment ID cannot override its actual hourly writer policy');
+  assert.equal(rows.get('ev2_energy_l1').recordingPolicy, 'hourly-energy', 'A supported custom equipment ID cannot override its actual hourly writer policy');
   for (const signal of adaptive) assert(!rows.has(signal), signal);
   const actualAdaptive = store.db.prepare("SELECT COUNT(*) count FROM observations WHERE json_extract(raw,'$.recorder.policy') LIKE 'adaptive-%'").get().count;
   assert.equal(rows.get('adaptive-observations').count, actualAdaptive);

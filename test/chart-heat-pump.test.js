@@ -228,7 +228,7 @@ test('worker caches renew unchanged source coverage and growing pending energy w
   assert.equal((await service.query(args)).meta.cacheHit,true);
 
   const recordEnergy=minute=>recorder.recordEnergy({source:'synthetic-charger',device:'synthetic-charger',prefix:'ev2',
-    start:start+minute*MINUTE,end:start+(minute+1)*MINUTE,energies:[0.1],powers:[6],quality:[]});
+    start:start+minute*MINUTE,end:start+(minute+1)*MINUTE,energies:[0.05,0.03,0.02],powers:[3,1.8,1.2],quality:[]});
   recordEnergy(0);recordEnergy(1);
   const energyBefore=await service.query(args),energyRevision=store.db.prepare('SELECT MAX(id) id FROM observations').get().id;
   await service.query(pastArgs);
@@ -248,7 +248,7 @@ test('worker caches renew unchanged source coverage and growing pending energy w
   assert.ok(asOfAfter.series.charger2_power.every(row=>!row.pending));
 
   const simulationEnergy=minute=>recorder.recordEnergy({source:'simulation',device:'synthetic-simulation',prefix:'ev2',
-    start:start+minute*MINUTE,end:start+(minute+1)*MINUTE,energies:[0.1],powers:[6],quality:['simulated']});
+    start:start+minute*MINUTE,end:start+(minute+1)*MINUTE,energies:[0.05,0.03,0.02],powers:[3,1.8,1.2],quality:['simulated']});
   simulationEnergy(0);simulationEnergy(1);
   await service.query(args);
   const simulatedArgs={...args,input:'simulated'};

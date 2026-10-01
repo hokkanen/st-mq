@@ -141,7 +141,7 @@ function weatherAt(store, from, to) {
 
 function electricalContext(store, from, to, input) {
   const result = {};
-  for (const [scope,prefix] of [['property','property'],['ev1','ev1'],['ev2','ev2-phase']]) {
+  for (const prefix of ['property','ev1','ev2']) {
     const phases = [0,1,2].map(()=>({kwh:null,coveredMs:0,observations:[],openIntervals:[]}));
     for (const group of recordedEnergyGroups(store,{from,to,now:to,input,prefix})) {
       if (group.conflict || group.values.length !== 3) continue;
@@ -158,7 +158,7 @@ function electricalContext(store, from, to, input) {
           receivedAt:group.receivedAt,kwh,basis:group.basis});
       }
     }
-    result[scope] = { phases, complete: phases.every(phase => phase.coveredMs === to - from) };
+    result[prefix] = { phases, complete: phases.every(phase => phase.coveredMs === to - from) };
   }
   return result;
 }

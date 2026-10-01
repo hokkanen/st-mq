@@ -65,9 +65,8 @@ test('receipt and current import completion precede price winner selection, incl
   assert.equal(historicalSpotIntervals(imported,range,start+HOUR)[0].spotCtPerKwh,7);
 });
 function energy(store,{device='synthetic-a',prefix='ev1',from=start,to=start+HOUR,kwh=3,receivedAt=to,source='easee'}={}){
-  const count=prefix==='ev2'?1:3;
   return new Recorder(store).recordEnergy({source,device,prefix,start:from,end:to,receivedAt,
-    energies:Array(count).fill(kwh/count),powers:Array(count).fill(kwh*HOUR/(to-from)/count),quality:['estimated']});
+    energies:Array(3).fill(kwh/3),powers:Array(3).fill(kwh*HOUR/(to-from)/3),quality:['estimated']});
 }
 function projection(store,now=start+2*HOUR){
   const day=chartRange({startDate:'2026-01-01',now}),timing=new DailyTimingBenchmark(range,now,[{start:day.from,end:day.to,totalCtPerKwh:20}]);

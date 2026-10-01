@@ -42,17 +42,14 @@ try {
       for(let minute=0;minute<60;minute++) {
         const t=at+minute*MINUTE;
         for(const signal of PHASE_ENERGY_SIGNALS) {
-          const group=signal.startsWith('ev1')?'ev1':signal.startsWith('ev2')?'ev2-phase':'property';
+          const group=signal.startsWith('ev1')?'ev1':signal.startsWith('ev2')?'ev2':'property';
           const isCar=group!=='property',power=isCar ? (hour>=12&&hour<14 ? 2.3 : 0) : 0.3+0.05*Number(signal.at(-1))+0.15*Math.sin(hour/24*2*Math.PI);
           const value=power/60;
-          insert({source:group==='ev2-phase'?'shelly-evse':'easee',device:`synthetic-${group}`,signal,value,unit:'kWh',sourceTime:t+MINUTE,
+          insert({source:group==='ev2'?'shelly-evse':'easee',device:`synthetic-${group}`,signal,value,unit:'kWh',sourceTime:t+MINUTE,
             quality:['estimated','phase_allocation_estimated'],raw:{intervalStart:t,intervalEnd:t+MINUTE,durationMs:MINUTE,
-              basis:group==='ev2-phase'?'native-meter-counter-phase-allocation':'integrated-power-phase-allocation',
+              basis:group==='ev2'?'native-meter-counter-phase-allocation':'integrated-power-phase-allocation',
               recorder:{version:'recording-contract-v2',policy:'adaptive-energy',reason:'synthetic-cadence',group}}});
         }
-        insert({source:'shelly-evse',device:'synthetic-ev2-phase',signal:'ev2_energy',value:(hour>=12&&hour<14?6.9:0)/60,
-          unit:'kWh',sourceTime:t+MINUTE,quality:[],raw:{intervalStart:t,intervalEnd:t+MINUTE,durationMs:MINUTE,
-            basis:'native-meter-counter',recorder:{version:'recording-contract-v2',policy:'adaptive-energy',reason:'synthetic-cadence',group:'ev2'}}});
         if(minute%h66Minutes) continue;
         for(const signal of recordedH66) {
           const info=SIGNAL_INFO[signal],state=info.unit==='state'||info.unit==='code';

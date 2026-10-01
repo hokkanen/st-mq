@@ -36,7 +36,7 @@ test('1/7/30/90-day sessions price only actual overlaps including idle periods',
 });
 test('90-day current-schema SQL energy and cost reconstruction keeps numeric output across restart',t=>{
  const store=new Store(':memory:');t.after(()=>store.close());const days=90;
- store.transaction(()=>{for(let i=0;i<days*24;i++)store.observation({source:'shelly-evse',device:'synthetic-physical-evse',signal:'ev2_energy',value:i%3?0:2,unit:'kWh',sourceTime:START+(i+1)*HOUR,receivedAt:START+(i+1)*HOUR,quality:[],raw:{intervalStart:START+i*HOUR,intervalEnd:START+(i+1)*HOUR}});});
+ store.transaction(()=>{for(let i=0;i<days*24;i++)for(let phase=1;phase<=3;phase++)store.observation({source:'shelly-evse',device:'synthetic-physical-evse',signal:`ev2_energy_l${phase}`,value:i%3||phase!==1?0:2,unit:'kWh',sourceTime:START+(i+1)*HOUR,receivedAt:START+(i+1)*HOUR,quality:[],raw:{intervalStart:START+i*HOUR,intervalEnd:START+(i+1)*HOUR}});});
  const prices=Array.from({length:days*96},(_,i)=>({start:START+i*HOUR/4,end:START+(i+1)*HOUR/4,price:(i%4)-2}));
  const charger={id:'charger2',values:{connected:{value:true},soc:{value:80},minimumSoc:{value:80},capacityKwh:{value:57}},configuration:{efficiency:.925},settings:{enabled:false},progress:{connectionAt:START,remainingGridKwh:0}};
  const read=query=>recordedChargingEnergy(store,{...query,device:'synthetic-physical-evse'});

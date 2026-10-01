@@ -36,7 +36,6 @@ function energy(store, signal, value, start, end, quality = []) {
     receivedAt: end, quality, raw: { intervalStart: start, intervalEnd: end } });
 }
 function peerEnergy(store, phaseKw, start, end) {
-  energy(store, 'ev2_energy', phaseKw.reduce((a,b)=>a+b,0) * (end-start)/HOUR, start, end);
   phaseKw.forEach((value,index)=>energy(store,`ev2_energy_l${index+1}`,value*(end-start)/HOUR,start,end));
 }
 function nativeHour(store, date, { current = [3, 4, 5], temperature = -20, peer = true, step = HOUR } = {}) {
@@ -47,7 +46,7 @@ function nativeHour(store, date, { current = [3, 4, 5], temperature = -20, peer 
       energy(store, `property_energy_l${phase}`, current[phase - 1] * 230 / 1000 * (end - at) / HOUR, at, end);
       energy(store, `ev1_energy_l${phase}`, 0, at, end);
     }
-    if (peer) energy(store, 'ev2_energy', 0, at, end);
+    if (peer) peerEnergy(store, [0, 0, 0], at, end);
   }
   store.observation({ source: 'mqtt', device: 'example-outdoor', signal: 'outdoor_temperature', value: temperature,
     unit: 'degC', sourceTime: start, receivedAt: start, quality: [] });
@@ -82,6 +81,20 @@ test('known Charger 2 intervals are subtracted from an imported reference, witho
   const [forecast] = forecastHousehold(store, options);
   forecast.phaseCurrentA.forEach((value, phase) => assert.ok(Math.abs(value - (6 + phase)) < 1e-10));
   assert.equal(forecast.reference.unknownCharger2, false);
+});
+
+test('imported household references reject incomplete or conflicting Charger 2 phase cohorts', async t => {
+  const { store, dir } = fixture(t), start = Date.parse('2026-02-14T01:00:00Z');
+  seedVoltage(store, now - HOUR);
+  await legacy(store, dir, ['2026-02-14'], { current: [10, 11, 12] });
+  energy(store, 'ev2_energy_l2', 1, start, start + HOUR);
+  assert.equal(forecastHousehold(store, options)[0].reference.noHistory, true,
+    'An L2-only cohort is an explicit recording gap even without an L1 row');
+  for (const phase of [1, 3]) store.observation({ source: 'shelly-evse', device: 'another-invented-meter',
+    signal: `ev2_energy_l${phase}`, value: 1, unit: 'kWh', sourceTime: start + HOUR, receivedAt: start + HOUR,
+    quality: [], raw: { intervalStart: start, intervalEnd: start + HOUR } });
+  assert.equal(forecastHousehold(store, options)[0].reference.noHistory, true,
+    'Phase rows from distinct meters cannot be combined into a complete charger interval');
 });
 
 test('summer observations do not erase last winter cold references; new comparable cold nights progressively replace them', () => {
@@ -138,7 +151,7 @@ test('a missing peer does not discard native idle history; explicit invalid ener
   let [forecast] = forecastHousehold(store, options);
   assert.deepEqual(forecast.phaseCurrentA, [3, 4, 5]);
   assert.equal(forecast.reference.unknownCharger2, true);
-  energy(store, 'ev2_energy', null, start, start + HOUR, ['integration_gap']);
+  for (let phase = 1; phase <= 3; phase++) energy(store, `ev2_energy_l${phase}`, null, start, start + HOUR, ['integration_gap']);
   [forecast] = forecastHousehold(store, options);
   assert.equal(forecast.reference.noHistory, true);
   assert.deepEqual(forecast.phaseCurrentA, [0, 0, 0]);

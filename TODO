@@ -1,3 +1,28 @@
+Implemented 2026-10-01 — Unified phase energy and voltage source subtitles
+- Record property and both chargers using one three-phase interval format. Remove
+  Charger 2's scalar total-energy series and separate phase-group identity; retain
+  its native counter-derived sum with an explicitly estimated phase distribution.
+  Derive progress, costs, chart power and household demand from complete phase
+  groups, including durable open intervals. Missing, invalid, conflicting or
+  mismatched phases cannot create a partial total or combine physical sources.
+- Keep source clocks, counter reset/jump/gap handling, compact standby recording,
+  session comparisons, atomic persistence, restart, frozen-tail recovery and the
+  supported v0.7.5 CSV import. Preserve valid unallocatable native meter increments
+  as exceptional diagnostic events plus phase gaps, with no invented split or
+  energy credit. Remove the duplicate series from chart/provider inventories.
+- Show voltage-estimate source and unit below its recording-table name, including
+  Easee OCPP, Easee Cloud, Equalizer, simulation, mixed contributors and unknown
+  provenance. Use recorded estimator evidence rather than today's connection.
+- F1/F2/F4/F7/F8: schema17 is the sole current format. Reject incompatible databases
+  before mutation, without migration, backfill, automatic reset or old decoders.
+  The thermal learning algorithm is unchanged; its phase input interpretation and
+  journal semantics remain intact. No installation configuration, equipment
+  command, live database mutation or deployment is part of this change.
+- Validation: focused writer, reader, recorder, recovery, accounting and chart
+  regressions passed. Production build and voltage browser checks passed in both
+  themes at 320/390/1280px. Final routine suite: 3,974 passed, one optional
+  upstream Tuya parser test skipped, zero failures. Whitespace checks passed.
+
 Implemented 2026-10-01 — Stable folded dashboard and balanced normal view
 - Keep Home, Garage and Data & settings at stable heights for status changes at
   the same viewport and device/provider inventory. Temperature slots and concise

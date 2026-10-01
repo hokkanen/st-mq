@@ -602,7 +602,7 @@ If the process, broker or charger is unavailable, ST-MQ cannot apply a new fallb
 
 Physical electricity sources are always Easee for C1 and Shelly EVSE for C2, regardless of vehicle identity. Progress uses accepted interval kWh plus the recorder's admissible pending tail. Wrong units, unusable quality, invalid geometry and overlapping conflicting contributions are excluded. Missing energy receives no invented credit. The modeling assumption is 92.5% grid-to-battery efficiency; it is not measured battery capacity or efficiency.
 
-A new SoC observation rebases modeled progress. Connection energy and cost retain their separate physical-session lifetime across those rebases, edited targets, pauses and restart. Native Shelly accumulated-energy deltas record C2 energy; counter resets, implausible jumps and excessive source-time gaps start a new baseline without bridging invented energy. Its native session-energy field remains diagnostic until reset semantics can be verified.
+A new SoC observation rebases modeled progress. Connection energy and cost retain their separate physical-session lifetime across those rebases, edited targets, pauses and restart. Native Shelly accumulated-energy deltas record C2 energy as three estimated phase allocations whose sum preserves the measured increment, using the same phase-only interval format as C1 and property. No separate total-energy series is stored. Unallocatable measured increments remain diagnostic events and explicit phase gaps; progress and cost require a complete valid phase group. Counter resets, implausible jumps and excessive source-time gaps start a new baseline without bridging invented energy. Its native session-energy field remains diagnostic until reset semantics can be verified.
 
 Price revisions are canonicalized by publication authority over their actual coverage. New quarter/hour slices replace the overlapped region only; negative prices, remaining older coverage and gaps remain explicit. Binary interval lookup prices physical contributions efficiently. Costs distinguish actual delivered, estimated remaining, missing/unpriced coverage and timing comparisons. The per-charger and combined timing benchmark is not proof of causal controller savings.
 
@@ -611,7 +611,7 @@ Price revisions are canonicalized by publication authority over their actual cov
 Current-format sessions, requests, assignments, costs and uncertain commands recover only within the same physical/source association. Device, MQTT broker/root, configured firmware/profile or phase association changes cannot borrow old ownership. A potentially dispatched command is reconciled with native readback before another intention; it is never blindly replayed.
 
 Pre-1.0 native state is not migrated. The current charging state remains version 6
-and database schema 14; the physical adapter uses its own explicitly scoped
+and database schema 17; the physical adapter uses its own explicitly scoped
 current state. New optional control choices default to OFF/Balanced when absent;
 recorded presentation never supplies control permission. Retired configuration switches for automatic charging and
 priority, dashboard overrides of permanent battery defaults, old pseudo-C2

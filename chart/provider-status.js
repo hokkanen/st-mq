@@ -96,13 +96,11 @@ export function providerSeries(job, health = {}) {
       seriesRow(phaseSignals('ev2_active_power'), 'Charger 2 phase active power L1–L3', 'kW',
         'Measured active power on each phase, converted from watts to kilowatts. These are live readings, separate from interval-average chart power.', 'Shelly EVSE'),
       seriesRow(['ev2_active_power'], 'Charger 2 active power', 'kW',
-        'Reported total active power, converted from watts to kilowatts. Historical chart power is calculated from recorded total energy.', 'Shelly EVSE'),
+        'Reported total active power, converted from watts to kilowatts. Historical chart power is calculated from the sum of recorded phase energies.', 'Shelly EVSE'),
       seriesRow(['ev2_import_energy_counter'], 'Charger 2 meter counter', 'kWh',
         'Native cumulative total energy. The charger reports a total counter, without separate phase energy counters.', 'Shelly EVSE'),
-      seriesRow(['ev2_energy'], 'Charger 2 total energy', 'kWh',
-        'Native physical charger meter differences. Resets, gaps and invalid source clocks are excluded.', 'Shelly EVSE'),
       seriesRow(phaseSignals('ev2_energy'), 'Charger 2 phase energy L1–L3', 'kWh',
-        'Native total meter increments allocated using measured phase-power shares. Estimated phase distribution; the native total remains the sole consumption total.', 'Calculated from Shelly EVSE'),
+        'Native total meter increments allocated using measured phase-power shares. Estimated phase distribution; the three phase energies sum to measured total consumption. Resets, gaps and invalid source clocks are excluded.', 'Calculated from Shelly EVSE'),
       seriesRow(['ev2_session_energy'], 'Charger 2 session energy', 'kWh',
         'Energy reported by the charger for its current charging session, with its own measurement time.', 'Shelly EVSE'),
       seriesRow(['shelly_session_energy_check'], 'Charger 2 session check', 'kWh',
@@ -224,7 +222,7 @@ function electricityDisplay(entries, options) {
       let display = current ? describeProvider(key, { ...health, currentReadings: { [scope]: current },
         error: current.error, status: current.error ? 'error' : health.status === 'error' ? 'ok' : health.status,
         qualityIssues: current.qualityIssues ?? [] }, options) : displays[index];
-      if (key === 'shelly-evse' && row.signals.every(signal => !/^ev2_energy(?:_l[123])?$/.test(signal) && signal !== 'shelly_session_energy_check')
+      if (key === 'shelly-evse' && row.signals.every(signal => !/^ev2_energy_l[123]$/.test(signal) && signal !== 'shelly_session_energy_check')
         && !inactiveStates.includes(display.state)) {
         const readings = row.signals.map(signal => health?.readings?.[signal]);
         const now = options?.now ?? Date.now();

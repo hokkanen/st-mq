@@ -34,7 +34,7 @@ const h66 = [
 
 export const H66_HISTORY_SIGNALS = Object.freeze(h66.map(([signal]) => signal));
 export const PHASE_ENERGY_SIGNALS = Object.freeze(['property', 'ev1', 'ev2'].flatMap(prefix => [1, 2, 3].map(phase => `${prefix}_energy_l${phase}`)));
-export const ENERGY_SIGNALS = Object.freeze([...PHASE_ENERGY_SIGNALS, 'ev2_energy', 'caravan_energy']);
+export const ENERGY_SIGNALS = Object.freeze([...PHASE_ENERGY_SIGNALS, 'caravan_energy']);
 export const AUDIT_SIGNALS = Object.freeze(['property_import_energy_counter']);
 export const COUNTER_SIGNALS = Object.freeze([...h66.filter(([, , unit]) => unit === 'h').map(([signal]) => signal),
   ...AUDIT_SIGNALS, 'garage_native_energy']);
@@ -83,8 +83,7 @@ export const SIGNAL_INFO = Object.freeze(Object.fromEntries([
     detail: 'Reported electrical override contact: 1 on, 0 off; missing readback remains unknown. This does not prove valve position or water flow',
   }])),
   ['auxiliary_power', { label: 'Auxiliary power estimate', unit: 'kW', group: 'Electricity', role: 'Equipment context', kind: 'Calculated', detail: 'Saved estimate from verified auxiliary output and rated capacity' }],
-  ...PHASE_ENERGY_SIGNALS.map(signal => [signal, { label: `${signal.startsWith('property') ? 'Property' : signal.startsWith('ev2') ? 'Charger 2' : 'Charger 1'} L${signal.at(-1)} energy`, unit: 'kWh', group: 'Electricity', role: 'Recorded energy', kind: 'Recorded', detail: signal.startsWith('ev2') ? 'Native total meter energy allocated using measured phase-power shares; estimated phase energy, never an additional contribution to total consumption' : 'Estimated energy over the recorded interval' }]),
-  ['ev2_energy', { label: 'Charger 2 total energy', unit: 'kWh', group: 'Electricity', role: 'Recorded energy', kind: 'Recorded', detail: 'Authoritative native Charger 2 electricity counter differences over the recorded interval' }],
+  ...PHASE_ENERGY_SIGNALS.map(signal => [signal, { label: `${signal.startsWith('property') ? 'Property' : signal.startsWith('ev2') ? 'Charger 2' : 'Charger 1'} L${signal.at(-1)} energy`, unit: 'kWh', group: 'Electricity', role: 'Recorded energy', kind: 'Recorded', detail: signal.startsWith('ev2') ? 'Native total meter energy allocated using measured phase-power shares; estimated phase distribution whose three-phase sum preserves measured total consumption' : 'Estimated energy over the recorded interval' }]),
   ...AUDIT_SIGNALS.map(signal=>[signal,{label:'Property meter counter',unit:'kWh',group:'Meter checks',role:'Audit only',kind:'Recorded',detail:'Reported cumulative meter value; never used to correct energy or train'}]),
 ]));
 
@@ -149,7 +148,7 @@ export const HISTORY_AXES = Object.freeze([
   ...[
     ['property_power', 'Property electrical power', 'kW', 'Interval-average electricity; current snapshots use historical phase-voltage estimates, with retrospective first-established estimates for earlier CSV history'],
     ['charger_power', 'Charger 1 electrical power', 'kW', 'Interval-average electricity; current snapshots use historical phase-voltage estimates, with retrospective first-established estimates for earlier CSV history'],
-    ['charger2_power', 'Charger 2 electrical power', 'kW', 'Authoritative native energy divided by its recording interval'],
+    ['charger2_power', 'Charger 2 electrical power', 'kW', 'Sum of recorded phase energies divided by their shared interval; native meter increments preserve measured total consumption'],
     ...['property', 'ev1', 'ev2'].flatMap(prefix => [1, 2, 3].map(phase => [`${prefix}_current_l${phase}`,
       `${prefix === 'property' ? 'Property' : prefix === 'ev1' ? 'Charger 1' : 'Charger 2'} L${phase} current`, 'A',
       'Equivalent interval-average current from phase energy and historical phase-voltage estimates, assuming unity power factor; supported older current snapshots retain their observed values'])),

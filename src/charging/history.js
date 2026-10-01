@@ -7,7 +7,7 @@ import { recordedEnergyGroups } from '../storage/energy-history.js';
 import { createVoltageReader, VOLTAGE_SIGNALS } from '../storage/voltage.js';
 
 const SIGNALS = ['property_energy_l1', 'property_energy_l2', 'property_energy_l3',
-  'ev1_energy_l1', 'ev1_energy_l2', 'ev1_energy_l3', 'ev2_energy', 'ev2_energy_l1', 'ev2_energy_l2', 'ev2_energy_l3'];
+  'ev1_energy_l1', 'ev1_energy_l2', 'ev1_energy_l3', 'ev2_energy_l1', 'ev2_energy_l2', 'ev2_energy_l3'];
 const BAD = new Set(['missing', 'invalid_numeric', 'invalid_unit', 'provider_error', 'integration_gap', 'unknown_phase_share',
   'negative_current', 'implausible_current', 'all_zero_property_current', 'ev_exceeds_property_current',
   'conflicting_duplicate', 'future_source_time', 'implausible_temperature', 'excluded_occupied_training']);
@@ -52,13 +52,11 @@ export function householdSpans(rows, { voltageV } = {}) {
   for (const event of events) {
     if (previous !== null && event.at > previous) {
       const values = active.map(selected);
-      if (values.slice(0, 6).every(finite) && values[6] !== null) {
-        // A total meter does not reveal which phase carried the load. Native
-        // zero proves all phases idle; otherwise use the recorded phase shares
-        // only when all three are known, conserving the authoritative total.
-        const phaseTotal = values.slice(7).every(finite) ? values.slice(7).reduce((sum, value) => sum + value, 0) : null;
-        const knownPeer = values[6] === 0 || finite(values[6]) && phaseTotal > 0;
-        const peer = values.slice(7).map(value => values[6] === 0 ? 0 : knownPeer ? values[6] * value / phaseTotal : 0);
+      const phases = values.slice(6), knownPeer = phases.every(finite);
+      // No peer history retains the labelled upper estimate. A partly recorded
+      // or explicitly invalid cohort is a gap, never evidence of zero energy.
+      if (values.slice(0, 6).every(finite) && (knownPeer || phases.every(value => value === undefined))) {
+        const peer = knownPeer ? phases : [0, 0, 0];
         const residual = values.slice(0, 3).map((power, phase) => power - values[phase + 3] - peer[phase]);
         if (residual.every(value => value >= -0.05)) spans.push({ start: previous, end: event.at,
           phaseCurrentA: residual.map((power, phase) => Math.max(0, power) * 1000 / voltage[phase]),
@@ -157,17 +155,16 @@ function buildLegacy(store, reference, now, voltageV, { from = 0, to = now, onSp
     ORDER BY r.source_time,i.id,r.row_number`);
   let previous = null, pendingTime = null, easee = null, outside = null, day = null, spans = [];
   const temperatures = [];
-  const firstPeer = store.db.prepare(`SELECT min(json_extract(raw,'$.intervalStart')) AS at FROM observations
-    WHERE signal='ev2_energy' AND import_id IS NULL AND ${nativeScope('live')}`).get().at;
-  const peerRows = store.db.prepare(`SELECT id,signal,value,unit,raw,quality FROM observations
-    WHERE signal IN ('ev2_energy','ev2_energy_l1','ev2_energy_l2','ev2_energy_l3') AND source_time>? AND source_time<=? AND received_at<=? AND import_id IS NULL
-      AND json_valid(raw) AND json_extract(raw,'$.intervalStart')<?
-      AND ${nativeScope('live')} ORDER BY source_time,id`);
+  const firstSavedPeer = store.db.prepare(`SELECT min(json_extract(raw,'$.intervalStart')) AS at FROM observations
+    WHERE signal IN ('ev2_energy_l1','ev2_energy_l2','ev2_energy_l3') AND import_id IS NULL
+      AND json_valid(raw) AND source_time<=? AND received_at<=? AND ${nativeScope('live')}`).get(now, now).at;
+  const firstPeer = Math.min(firstSavedPeer ?? Infinity,
+    ...pendingEnergyObservations(store, { now, input: 'providers', prefix: 'ev2' }).map(row => parse(row.raw, {}).intervalStart));
   const flushDay = () => {
     if (spans.length) {
       let resolved = importedVoltage(spans, store, input, now);
       if (finite(firstPeer) && spans.at(-1).end >= firstPeer) {
-        const peers = peerRows.all(spans[0].start, now, now, spans.at(-1).end);
+        const peers = modernRows(store, { from: spans[0].start, to: spans.at(-1).end, now, input: 'live', prefix: 'ev2' });
         if (peers.length) resolved = subtractKnownPeer(resolved, peers);
       }
       resolved = resolved.map(span => ({ ...span, start: Math.max(span.start, from), end: Math.min(span.end, to) })).filter(span => span.end > span.start);
@@ -225,13 +222,12 @@ function nextSourceAt(store, now, input) {
       AND max(source_time,received_at)>? AND import_id IS NULL AND ${nativeScope(input)}`)
     .get(...SIGNALS, ...VOLTAGE_SIGNALS, 'outdoor_temperature', now).at;
 }
-function modernRows(store, { from, to, now, input }) {
+function modernRows(store, { from, to, now, input, prefix }) {
   const rows = [];
-  for (const group of recordedEnergyGroups(store, { from, to, now, input: input === 'simulated' ? input : 'providers' })) {
-    if (!['property','ev1','ev2','ev2-phase'].includes(group.prefix)) continue;
-    const prefix = group.prefix === 'ev2-phase' ? 'ev2' : group.prefix;
+  for (const group of recordedEnergyGroups(store, { from, to, now, input: input === 'simulated' ? input : 'providers', prefix })) {
+    if (!['property','ev1','ev2'].includes(group.prefix)) continue;
     group.values.forEach((value,index) => rows.push({ id: group.observationIds[index] ?? 0,
-      signal: group.prefix === 'ev2' ? 'ev2_energy' : `${prefix}_energy_l${index+1}`,
+      signal: `${group.prefix}_energy_l${index+1}`,
       value: group.conflict ? null : value, unit: 'kWh', quality: [], source_time: group.end,
       raw: { intervalStart: group.start, intervalEnd: group.end } }));
   }
@@ -342,7 +338,7 @@ export function householdReference(store, { now, input = 'live', voltageV, timez
     // never decode the entire legacy archive a second time at startup.
     const importedDates = new Set([...cache.reference.legacyHours].map(key => key.slice(0, 10))), peerDates = new Set();
     if (input !== 'simulated' && importedDates.size) for (const row of store.db.prepare(`SELECT source_time,raw FROM observations
-      WHERE signal='ev2_energy' AND source_time<=? AND import_id IS NULL AND ${nativeScope(input)}`).iterate(now)) {
+      WHERE signal IN ('ev2_energy_l1','ev2_energy_l2','ev2_energy_l3') AND source_time<=? AND import_id IS NULL AND ${nativeScope(input)}`).iterate(now)) {
       const raw = parse(row.raw, {});
       if (!finite(raw.intervalStart) || !finite(raw.intervalEnd) || raw.intervalEnd <= raw.intervalStart) continue;
       for (let at = moment.tz(raw.intervalStart, timezone).startOf('day'); at.valueOf() < raw.intervalEnd; at.add(1, 'day'))

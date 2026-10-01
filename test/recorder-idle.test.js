@@ -87,24 +87,23 @@ test('native counter quantization uses its own power reference while preserving 
     const {store,recorder}=fixture(t);let total=0;
     for(let i=0;i<240;i++) {
       const delta=i%2===0?0:watts/1000*30_000/HOUR;total+=delta;
-      recorder.recordEnergy(interval(i,[watts/1000],{prefix:'ev2',energies:[delta],quality:['native_counter']}));
-      recorder.recordEnergy(interval(i,[watts/3000,watts/3000,watts/3000],{prefix:'ev2-phase',
+      recorder.recordEnergy(interval(i,[watts/3000,watts/3000,watts/3000],{prefix:'ev2',
         energies:[delta/3,delta/3,delta-delta/3-delta/3],quality:['native_counter','phase_allocation_estimated']}));
     }
-    assert.equal(store.observations().length,4);
+    assert.equal(store.observations().length,3);
     assert(recorder.status(START+HOUR).parameters.every(row=>row.hour.normalizedRmsChange===0),
       'Native counter quantization must not appear as instantaneous power variation');
     near(recordedChargingEnergy(store,{id:'charger2',start:START,end:START+HOUR}).gridKwh,total);
     const groups=[...recordedEnergyGroups(store,{from:START,to:START+HOUR,now:START+HOUR,input:'providers'})];
-    near(groups.filter(row=>row.prefix==='ev2-phase').reduce((sum,row)=>sum+row.values.reduce((a,b)=>a+b,0),0),total);
-    assert.equal(recorder.flush(START+HOUR,{force:true}).length,4);
-    assert.equal(store.observations().length,8);
+    near(groups.filter(row=>row.prefix==='ev2').reduce((sum,row)=>sum+row.values.reduce((a,b)=>a+b,0),0),total);
+    assert.equal(recorder.flush(START+HOUR,{force:true}).length,3);
+    assert.equal(store.observations().length,6);
   }
 });
 
 test('native instantaneous selection survives restart, rollback, gaps and real phase transitions',t=>{
   const {store,recorder:first}=fixture(t);let recorder=first;
-  const put=(i,powers)=>recorder.recordEnergy(interval(i,powers,{prefix:'ev2-phase',energies:powers.map(()=>0),quality:['native_counter']}));
+  const put=(i,powers)=>recorder.recordEnergy(interval(i,powers,{prefix:'ev2',energies:powers.map(()=>0),quality:['native_counter']}));
   put(0,[2,0,0]);put(1,[2,0,0]);recorder=new Recorder(store);
   assert.equal(put(2,[2,0,0]).saved,false);
   const checkpoint=store.db.prepare('SELECT key,value FROM state ORDER BY key').all();
@@ -117,7 +116,7 @@ test('native instantaneous selection survives restart, rollback, gaps and real p
   assert.equal(put(4,[0,2,0]).saved,false);
   assert.equal(put(5,[0,0,0]).saved,true);
   assert.equal(put(6,[0,0,0]).saved,false);
-  recorder.energyGap({source:'shelly-evse',device:'synthetic-charger',prefix:'ev2-phase',
+  recorder.energyGap({source:'shelly-evse',device:'synthetic-charger',prefix:'ev2',
     start:START+7*15_000,end:START+8*15_000,quality:['mqtt-disconnected']});
   assert.equal(put(8,[0,0,0]).saved,true);
   const groups=[...recordedEnergyGroups(store,{from:START,to:START+9*15_000,now:START+9*15_000,input:'providers'})];
@@ -169,16 +168,16 @@ async function shellyFixture(t) {
     method:'NotifyStatus',params:{[`object:${ids.phase_info}`]:{value:phase,last_update_ts:now/1000}}})),{});}};
 }
 
-test('real paused Shelly adapter holds flat native counters to four history rows at 5 s and 15 s cadence',async t=>{
+test('real paused Shelly adapter holds flat native counters to three history rows at 5 s and 15 s cadence',async t=>{
   for(const period of [5000,15000]) {
     const {store,recorder,notify}=await shellyFixture(t);
     for(let elapsed=period;elapsed<=HOUR;elapsed+=period)notify(START+elapsed);
-    assert.equal(store.observations().length,4,`${period} ms reports`);
+    assert.equal(store.observations().length,3,`${period} ms reports`);
     const recorded=recordedChargingEnergy(store,{id:'charger2',start:START,end:START+HOUR});
     assert.equal(recorded.gridKwh,0);assert.equal(recorded.coveredMs,HOUR);
-    assert.equal(pendingEnergyObservations(store,{now:START+HOUR}).length,4);
+    assert.equal(pendingEnergyObservations(store,{now:START+HOUR}).length,3);
     assert(plotted(store,'charger2_power',START,START+HOUR).some(row=>row.y===0));
-    assert.equal(recorder.flush(START+HOUR,{force:true}).length,4);
+    assert.equal(recorder.flush(START+HOUR,{force:true}).length,3);
     assert(store.observations().every(row=>row.value===0));
   }
 });

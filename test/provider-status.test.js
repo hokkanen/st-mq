@@ -10,7 +10,7 @@ const easeeReadings = () => ({ charger: { qualityIssues: [], error: null, lastSu
   property: { qualityIssues: [], error: null, lastSuccessAt: now } });
 const shellySignals = [
   ...['current', 'voltage', 'active_power'].flatMap(field => [1, 2, 3].map(phase => `ev2_${field}_l${phase}`)),
-  'ev2_active_power', 'ev2_import_energy_counter', 'ev2_energy', ...[1,2,3].map(phase=>`ev2_energy_l${phase}`), 'ev2_session_energy', 'shelly_session_energy_check',
+  'ev2_active_power', 'ev2_import_energy_counter', ...[1,2,3].map(phase=>`ev2_energy_l${phase}`), 'ev2_session_energy', 'shelly_session_energy_check',
 ];
 const shellyReadings = () => ({ maxAgeMs: 60_000, readings: Object.fromEntries(shellySignals
   .filter(signal => !signal.startsWith('ev2_energy') && signal !== 'shelly_session_energy_check')
@@ -329,6 +329,8 @@ test('Shelly catalogue distinguishes native readings and total counter from esti
   const phases=rows.find(row=>row.signals.includes('ev2_energy_l1'));
   assert.equal(phases.source,'Calculated from Shelly EVSE');
   assert.match(phases.detail,/Estimated phase distribution/);
+  assert.match(phases.detail,/sum to measured total consumption/);
+  assert(!rows.some(row=>row.signals.includes('ev2_energy')));
 });
 
 test('Shelly phase availability follows each native reading and keeps inactive chargers inactive', () => {
@@ -365,7 +367,7 @@ test('Shelly native freshness reaches the source summary while commissioning rem
   const uncommissioned = group();
   assert.equal(uncommissioned.display.state, 'Needs attention');
   assert.equal(uncommissioned.datasets.find(row => row.signals[0] === 'ev2_current_l1').state, 'Available');
-  assert.equal(uncommissioned.datasets.find(row => row.signals[0] === 'ev2_energy').state, 'Needs attention');
+  assert.equal(uncommissioned.datasets.find(row => row.signals[0] === 'ev2_energy_l1').state, 'Needs attention');
 });
 
 test('Easee provider catalogue includes acquired fields and one Charger 1 session check without a lifetime counter', () => {

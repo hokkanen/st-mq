@@ -5,6 +5,8 @@ import { chargingConfiguration } from '../src/charging/config.js';
 import { createShellyEvseAdapter, createShellyController } from '../src/charging/shelly-evse.js';
 import { shellyCurrentLimit } from '../src/charging/shelly-limit.js';
 import { Engine } from '../src/app/engine.js';
+import { Store } from '../src/storage/store.js';
+import { Recorder } from '../src/storage/recorder.js';
 const NOW = 1800000000000;
 const config = extra => chargingConfiguration({chargers:{charger2:{enabled:true, deviceId:'synthetic-evse',topicPrefix:'test/evse',model:'synthetic-model',firmware:'synthetic-firmware',verified:true,
   connectedStates:['connected','paused'],disconnectedStates:['free'],chargingStates:['charging'],additiveCurrentVerified:true,marginA:[0,0,0],...extra}}}).chargers.charger2;
@@ -29,7 +31,7 @@ test('skew, nonadditive residual and telemetry loss use accepted fallback with t
 function fixture(t, extra={}) {
   let now=NOW, authority=true, failSave=false;
   const service={id:0,auto_balance:{enable:false},auto_charge:true,global_charge_limit:0,global_time_limit:0},serviceStatus={state:'running'},schedules={rev:1,jobs:[]};
-  const client=new EventEmitter(), values=new Map(), writes=[], energy=[], gaps=[], voltages=[];
+  const client=new EventEmitter(), values=new Map(), writes=[], energy=[], gaps=[], voltages=[], events=[];
   const roleTypes={current_limit:'number',start_charging:'boolean',work_state:'enum',phase_info:'object',energy_charge:'number',time_charge:'number'};
   const roles=Object.keys(roleTypes), ids=Object.fromEntries(roles.map((role,i)=>[role,i+200]));
   const fields={current_limit:16,start_charging:true,work_state:'charging',phase_info:{total_power:8280,total_act_energy:0,phase_a:{voltage:230,current:12,power:2760},phase_b:{voltage:230,current:12,power:2760},phase_c:{voltage:230,current:12,power:2760}},energy_charge:0,time_charge:0};
@@ -45,11 +47,12 @@ function fixture(t, extra={}) {
     else result={value:structuredClone(fields[frame.params.role]),last_update_ts:now/1000};
     cb?.();queueMicrotask(()=>client.emit('message',`${frame.src}/rpc`,Buffer.from(JSON.stringify({id:frame.id,src:'synthetic-evse',dst:frame.src,result})),{}));
   };
-  const store={getState:key=>structuredClone(values.get(key)),setState:(key,value)=>{if(failSave)throw Error('disk');values.set(key,structuredClone(value));},transaction:fn=>fn(),event:()=>1};
+  const store={getState:key=>structuredClone(values.get(key)),setState:(key,value)=>{if(failSave)throw Error('disk');values.set(key,structuredClone(value));},transaction:fn=>fn(),
+    event:(type,payload,at)=>events.push({type,payload,at})};
   const engine={recorder:{recordEnergy:value=>energy.push(value),energyGap:value=>gaps.push(value)},voltage:{ingest:value=>voltages.push(value)}};
   const adapter=createShellyEvseAdapter({config:config(extra),broker:{address:'mqtt://synthetic'},client,store,engine,clock:()=>now,canControl:()=>authority});
   t.after(()=>adapter.close());
-  return {adapter,client,fields,writes,energy,gaps,voltages,values,service,serviceStatus,schedules,now:()=>now,setNow:value=>now=value,setAuthority:value=>authority=value,setFail:value=>failSave=value,
+  return {adapter,client,fields,writes,energy,gaps,voltages,events,values,service,serviceStatus,schedules,now:()=>now,setNow:value=>now=value,setAuthority:value=>authority=value,setFail:value=>failSave=value,
     async ready(){client.emit('connect');client.emit('message','test/evse/online',Buffer.from('true'),{retain:true});await adapter.refresh();},
     notify(role,value,packet={}){client.emit('message','test/evse/events/rpc',Buffer.from(JSON.stringify({src:'synthetic-evse',method:'NotifyStatus',params:{[`${roleTypes[role]}:${ids[role]}`]:{value,last_update_ts:now/1000}}})),packet);}};
 }
@@ -108,12 +111,14 @@ test('MQTT live receipt time excludes retained, duplicate, unrelated and disconn
 test('official-shaped role RPC discovers capabilities and canonical C2 energy never uses a vehicle feed', async t=>{
   const f=fixture(t);await f.ready();assert.equal(f.adapter.snapshot().controlReady,true);
   f.setNow(NOW+1000);f.fields.phase_info.total_act_energy=.002;await f.adapter.refresh();
-  assert.equal(f.energy.length,2);assert.equal(f.energy[0].source,'shelly-evse');assert.equal(f.energy[0].prefix,'ev2');assert.equal(f.energy[0].energies[0],.002);
-  assert.equal(f.energy[1].prefix,'ev2-phase');
-  assert.equal(f.energy[1].energies.reduce((sum,value)=>sum+value,0),.002);
-  await f.adapter.refresh();assert.equal(f.energy.length,2);
-  f.setNow(NOW+2000);f.fields.phase_info.total_act_energy=0;await f.adapter.refresh();assert.equal(f.energy.length,2);
+  assert.equal(f.energy.length,1);assert.equal(f.energy[0].source,'shelly-evse');assert.equal(f.energy[0].prefix,'ev2');
+  assert.equal(f.energy[0].energies.length,3);
+  assert.equal(f.energy[0].energies.reduce((sum,value)=>sum+value,0),.002);
+  await f.adapter.refresh();assert.equal(f.energy.length,1);
+  f.setNow(NOW+2000);f.fields.phase_info.total_act_energy=0;await f.adapter.refresh();assert.equal(f.energy.length,1);
   assert.equal(f.adapter.snapshot().error,'evse-counter-reset');
+  assert.equal(f.gaps.length,1);assert.equal(f.gaps[0].prefix,'ev2');
+  assert.deepEqual(f.gaps[0].quality,['meter-counter-reset']);
 });
 test('native Shelly phases expose current, voltage and active power in installed L1–L3 order', async t => {
   const f = fixture(t, { phaseMap: [2, 0, 1], verified: false });
@@ -154,27 +159,128 @@ test('C2 phase energy follows measured changing phase shares in installation ord
     phase_a: { voltage: 230, current: 4, power: 1000 }, phase_b: { voltage: 230, current: 9, power: 2000 },
     phase_c: { voltage: 230, current: 13, power: 3000 } });
   await f.adapter.refresh();
-  const [total, phases] = f.energy;
-  assert.equal(total.prefix, 'ev2'); assert.equal(phases.prefix, 'ev2-phase');
+  assert.equal(f.energy.length, 1);
+  const [phases] = f.energy;
+  assert.equal(phases.prefix, 'ev2');
   assert.deepEqual(phases.powers, [3, 1, 2]);
   const weights = [2760 + 3000, 2760 + 1000, 2760 + 2000];
   phases.energies.forEach((value, index) => assert(Math.abs(value - .002 * weights[index] / weights.reduce((a,b)=>a+b,0)) < 1e-12));
-  assert.equal(phases.energies.reduce((a,b)=>a+b,0), total.energies[0]);
+  assert.equal(phases.energies.reduce((a,b)=>a+b,0), .002);
   assert(phases.quality.includes('phase_allocation_estimated'));
+  assert(phases.quality.includes('native_counter'));
 });
 
-test('a positive C2 meter increment with no phase-power evidence preserves total and records a phase gap', async t => {
+test('C2 single-phase and skewed allocations remain nonnegative and conserve the native delta within machine precision', async t => {
+  for (const [delta, shares] of [[.000565, [14, 0, 0]], [.000565, [0, 14, 0]], [.000565, [0, 0, 14]],
+    [.000224, [6, 2, 16]], [.000333, [1e-12, 30, 1]], [.000999, [30, 1, 1e-12]]]) {
+    const f = fixture(t);
+    ['phase_a', 'phase_b', 'phase_c'].forEach((name, index) => f.fields.phase_info[name].power = shares[index] * 100);
+    f.fields.phase_info.total_power = shares.reduce((sum, value) => sum + value, 0) * 100;
+    await f.ready();
+    f.setNow(NOW + 1000); f.fields.phase_info.total_act_energy = delta; await f.adapter.refresh();
+    assert.equal(f.energy.length, 1);
+    const { energies } = f.energy[0];
+    assert(energies.every(value => Number.isFinite(value) && value >= 0));
+    assert(Math.abs(energies.reduce((sum, value) => sum + value, 0) - delta) <= delta * Number.EPSILON * 2);
+    if (shares.filter(value => value > 0).length === 1)
+      assert.deepEqual(energies, shares.map(value => value > 0 ? delta : 0));
+    assert.equal(f.gaps.length, 0);
+  }
+});
+
+test('a positive C2 meter increment with no phase-power evidence remains exceptional evidence and records a phase gap', async t => {
   const f = fixture(t); await f.ready();
   for (const name of ['phase_a','phase_b','phase_c']) f.fields.phase_info[name].power = 0;
   f.fields.phase_info.total_power = 0;
   f.setNow(NOW + 1000); await f.adapter.refresh();
   f.energy.length = 0;
   f.setNow(NOW + 2000); f.fields.phase_info.total_act_energy = .001; await f.adapter.refresh();
-  assert.equal(f.energy.length, 1);
-  assert.deepEqual(f.energy[0].energies, [.001]);
-  assert.equal(f.gaps.at(-1).prefix, 'ev2-phase');
+  assert.equal(f.energy.length, 0);
+  assert.equal(f.gaps.at(-1).prefix, 'ev2');
   assert.deepEqual(f.gaps.at(-1).quality, ['unknown-phase-share']);
+  assert.deepEqual(f.events, [{ type: 'charging-energy-unallocated', at: NOW + 2000,
+    payload: { source: 'shelly-evse', device: f.adapter.association, start: NOW + 1000, end: NOW + 2000,
+      referenceKwh: .001, reason: 'unknown-phase-share' } }]);
+  await f.adapter.refresh();
+  assert.equal(f.events.length, 1, 'Repeated source evidence cannot duplicate the exceptional increment');
+  f.setNow(NOW + 3000); f.notify('work_state', 'free');
+  assert.equal(f.events.at(-1).type, 'charging-session-check');
+  assert.equal(f.events.at(-1).payload.referenceKwh, .001, 'The meter-versus-power session diagnostic remains independent');
 });
+
+test('a valid zero C2 meter delta requires no positive phase-power weights', async t => {
+  const f = fixture(t);
+  for (const name of ['phase_a','phase_b','phase_c']) f.fields.phase_info[name].power = 0;
+  f.fields.phase_info.total_power = 0;
+  await f.ready();
+  f.setNow(NOW + 1000); await f.adapter.refresh();
+  assert.equal(f.energy.length, 1);
+  assert.equal(f.energy[0].prefix, 'ev2');
+  assert.deepEqual(f.energy[0].energies, [0, 0, 0]);
+  assert.deepEqual(f.energy[0].powers, [0, 0, 0]);
+  assert.equal(f.gaps.length, 0);
+  assert.equal(f.events.length, 0);
+});
+
+test('C2 phase records and unallocated diagnostics commit with their source cursor and survive adapter restart', t => {
+  const store = new Store(':memory:');
+  const engine = { recorder: new Recorder(store) };
+  const create = () => createShellyEvseAdapter({ config: config(), broker: { address: 'mqtt://synthetic' },
+    client: new EventEmitter(), store, engine, clock: () => NOW + 5000 });
+  let adapter = create();
+  t.after(() => { adapter.close(); store.close(); });
+  const sample = (at, total, powers) => ({ last_update_ts: at / 1000, value: {
+    total_act_energy: total, total_power: powers.reduce((sum, power) => sum + power, 0),
+    ...Object.fromEntries(['phase_a', 'phase_b', 'phase_c'].map((name, index) => [name,
+      { voltage: 230, current: powers[index] / 230, power: powers[index] }])) } });
+  adapter.accept('phase_info', sample(NOW, 0, [0, 0, 0]), NOW);
+  adapter.accept('work_state', { value: 'charging', last_update_ts: NOW / 1000 }, NOW);
+  const key = `charging:shelly:${adapter.association}`;
+  const sourceBefore = store.getState(key), setState = store.setState;
+  const unallocated = sample(NOW + 1000, .001, [0, 0, 0]);
+  const failCursorSave = (name, value) => {
+    if (name === key) throw new Error('Synthetic cursor persistence failure');
+    return setState.call(store, name, value);
+  };
+  store.setState = failCursorSave;
+  assert.throws(() => adapter.accept('phase_info', unallocated, NOW + 1250), /Synthetic cursor persistence failure/);
+  assert.deepEqual(store.getState(key), sourceBefore);
+  assert.equal(adapter.snapshot().fields.phase_info.measuredAt, NOW);
+  assert.equal(store.observations().length, 0, 'A failed cursor cannot leave committed gap rows');
+  assert.equal(store.events().length, 0, 'A failed cursor cannot leave an exceptional event');
+  store.setState = setState;
+  assert.equal(adapter.accept('phase_info', unallocated, NOW + 1250), true);
+  const gaps = store.observations();
+  assert.equal(gaps.length, 3);
+  assert.deepEqual(gaps.map(row => row.signal).sort(), ['ev2_energy_l1', 'ev2_energy_l2', 'ev2_energy_l3']);
+  assert(gaps.every(row => row.value === null && row.quality.includes('unknown-phase-share')));
+  assert.deepEqual(store.events().map(({ type, at, payload }) => ({ type, at, payload })), [{
+    type: 'charging-energy-unallocated', at: NOW + 1250,
+    payload: { source: 'shelly-evse', device: adapter.association, start: NOW, end: NOW + 1000,
+      referenceKwh: .001, reason: 'unknown-phase-share' },
+  }]);
+
+  adapter.close(); engine.recorder = new Recorder(store); adapter = create();
+  assert.equal(adapter.accept('phase_info', unallocated, NOW + 1500), false);
+  assert.equal(store.events().length, 1, 'Restart does not duplicate exceptional evidence');
+  const allocated = sample(NOW + 2000, .003, [1000, 2000, 3000]);
+  store.setState = failCursorSave;
+  assert.throws(() => adapter.accept('phase_info', allocated, NOW + 2250), /Synthetic cursor persistence failure/);
+  assert.equal(store.observations().length, 3, 'A failed cursor cannot leave any phase energy credited');
+  assert.equal(store.getState(key).counter.at, NOW + 1000);
+  store.setState = setState;
+  assert.equal(adapter.accept('phase_info', allocated, NOW + 2250), true);
+  const phases = store.observations().filter(row => row.value !== null);
+  assert.equal(phases.length, 3);
+  assert.equal(phases.reduce((sum, row) => sum + row.value, 0), .002, 'Unallocated consumption is never added to a later split');
+  assert(phases.every(row => row.sourceTime === NOW + 2000 && row.receivedAt === NOW + 2250
+    && row.raw.intervalStart === NOW + 1000 && row.raw.intervalEnd === NOW + 2000));
+  assert.equal(store.getState(key).checkSession.referenceKwh, .003, 'Session comparison retains both valid native deltas');
+  adapter.close(); engine.recorder = new Recorder(store); adapter = create();
+  assert.equal(adapter.accept('phase_info', allocated, NOW + 2500), false);
+  assert.equal(store.observations().length, 6);
+});
+
 test('public Shelly phase readings preserve source age and withdraw availability on retained, stale or offline evidence', async t => {
   const f = fixture(t);
   assert.equal(f.adapter.readings().ev2_current_l1.value, null);
@@ -215,8 +321,8 @@ test('invalid or future Shelly phase packets cannot replace supported electrical
   await f.adapter.refresh();
   assert.ok(Object.values(f.adapter.readings()).every(row => row.available));
   assert.equal(f.adapter.readings().ev2_active_power_l3.value, 0, 'Reported idle zero is a valid measurement');
-  assert.equal(f.energy.length, 2);
-  assert.equal(f.energy[0].energies.length, 1, 'Native total energy remains a single physical contribution');
+  assert.equal(f.energy.length, 1);
+  assert.deepEqual(f.energy[0].energies, [0, 0, 0], 'Only the three phase contributions are recorded');
 });
 test('each physical negative/positive notification closes its epoch even between polling ticks',async t=>{
   const f=fixture(t);await f.ready();const first=f.adapter.snapshot().session.sessionId;

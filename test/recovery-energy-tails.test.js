@@ -21,7 +21,7 @@ function memory(t) {
   } };
 }
 function pending(store, { source = 'easee', device = 'invented-meter', prefix = 'property', from = start,
-  to = END, receivedAt = to, energies = ['ev2', 'caravan'].includes(prefix) ? [49] : [49, 98, 147], quality = [] } = {}) {
+  to = END, receivedAt = to, energies = prefix === 'caravan' ? [49] : [49, 98, 147], quality = [] } = {}) {
   const key = energyKey(source, device, prefix);
   const state = { lastEnd: to, lastReceivedAt: receivedAt, pending: { start: from, end: to, receivedAt, energies, quality },
     lastPowers: energies.map(() => 1), lastQuality: quality, scales: energies.map(() => null) };
@@ -192,11 +192,11 @@ test('invalid, future, incomplete and conflicting donor tails are skipped withou
 test('completed-hour equipment energy does not conflict with physical charger tails using the same signal', async t => {
   const f = memory(t);
   pending(f.donor, { prefix: 'ev2', device: 'ev2', source: 'shelly-evse' });
-  f.target.observation({ source: 'mqtt-equipment', device: 'ev2', signal: 'ev2_energy', unit: 'kWh', value: 1,
+  f.target.observation({ source: 'mqtt-equipment', device: 'ev2', signal: 'ev2_energy_l1', unit: 'kWh', value: 1,
     sourceTime: start + HOUR, receivedAt: start + HOUR, quality: [],
     raw: { intervalStart: start, intervalEnd: start + HOUR, timeBasis: 'completed-hour' } });
-  assert.equal((await f.merge().run()).counts.missing, 1);
-  assert.equal(f.target.observations().length, 2);
+  assert.equal((await f.merge().run()).counts.missing, 3);
+  assert.equal(f.target.observations().length, 4);
 });
 
 test('malformed finalized phase members reject the whole cohort without aborting other recovery', async t => {
@@ -204,8 +204,8 @@ test('malformed finalized phase members reject the whole cohort without aborting
   f.donor.db.prepare("UPDATE observations SET quality='malformed' WHERE signal='property_energy_l2'").run();
   pending(f.donor, { prefix: 'ev2', device: 'invented-charger' });
   const report = await f.merge().run();
-  assert.equal(report.counts.skipped, 3); assert.equal(report.counts.missing, 1);
-  assert.deepEqual(f.target.observations().map(row => row.signal), ['ev2_energy']);
+  assert.equal(report.counts.skipped, 3); assert.equal(report.counts.missing, 3);
+  assert.deepEqual(f.target.observations().map(row => row.signal), ['ev2_energy_l1', 'ev2_energy_l2', 'ev2_energy_l3']);
 });
 
 test('recovered archival energy before metric pruning stays readable without recreating old metric buckets', async t => {

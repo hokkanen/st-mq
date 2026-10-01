@@ -30,8 +30,8 @@ const valueFloor = o => voltageEstimate(o) ? VOLTAGE_RECORDING_FLOOR_V : 0;
 // This is a history-selection floor, never a power/energy clamp. Every accepted
 // Wh remains in the durable interval, including a charger's real standby load.
 const CHARGER_POWER_FLOOR_KW = 0.010;
-const chargerEnergy = prefix => ['ev1','ev2','ev2-phase'].includes(prefix);
-const nativeChargerEnergy = prefix => ['ev2','ev2-phase'].includes(prefix);
+const chargerEnergy = prefix => ['ev1','ev2'].includes(prefix);
+const nativeChargerEnergy = prefix => prefix === 'ev2';
 // These flags describe ordinary source-clock bookkeeping within otherwise
 // usable integration. Keep a conservative union in the span, without making
 // each fresh/held poll a new historical cohort. All other quality changes,
@@ -73,7 +73,7 @@ const DIAGNOSTIC_QUALITY = new Set(['missing', 'invalid-value', 'invalid-numeric
 function recordingFreshness(state, coverage, now) {
   const eventOnly = state.source === 'mqtt-equipment' && state.unit === 'state' && state.eventOnly === true;
   const periodicAge = temperatureReportMaxAge({ raw: state.reportPolicy });
-  const interval = /_energy_l[123]$/.test(state.signal) || ['ev2_energy', 'caravan_energy'].includes(state.signal);
+  const interval = /_energy_l[123]$/.test(state.signal) || state.signal === 'caravan_energy';
   const held = !interval && periodicAge === null && HELD_TEMPERATURE_SIGNALS.includes(state.signal);
   const maximumAge = interval ? null : sourceAge({ ...state, raw: state.reportPolicy });
   const maxAgeMs = Number.isFinite(maximumAge) ? maximumAge : null;
@@ -516,8 +516,7 @@ export class Recorder {
       const o = {source,device,signal:signals[i],value,unit:'kWh',sourceTime:p.end,receivedAt,
         quality:p.quality,raw:{intervalStart:p.start,intervalEnd:p.end,durationMs:p.end-p.start,
           ...(p.transport ? {transport:p.transport} : {}),
-          basis:prefix==='caravan'?'meter-counter-delta':prefix==='ev2'?'native-meter-counter-delta'
-            :prefix==='ev2-phase'?'native-meter-counter-phase-allocation':'integrated-power-phase-allocation',
+          basis:prefix==='caravan'?'meter-counter-delta':prefix==='ev2'?'native-meter-counter-phase-allocation':'integrated-power-phase-allocation',
           ...(prefix==='caravan'?{learningRole:'history-only'}:{}),recorder:{version:VERSION,policy:'adaptive-energy',reason,group:prefix}}};
       o.id = this.store.observation(o);
       const s = this.signalState(o,receivedAt);
@@ -679,9 +678,9 @@ export class Recorder {
           normalizedRmsChange:errorTime ? Math.sqrt(buckets.reduce((n,b)=>n+b.error_squared_time,0)/errorTime) : null,
           estimatedBytes:buckets.reduce((n,b)=>n+b.bytes,0)};
       }
-      const grouped = /_energy_l[123]$/.test(s.signal), totalEnergy = ['ev2_energy','caravan_energy'].includes(s.signal);
+      const grouped = /_energy_l[123]$/.test(s.signal), totalEnergy = s.signal === 'caravan_energy';
       const policy = recordingPolicy(s), exact = !policy.adaptive;
-      const powerFloor = policy.id==='adaptive-energy' && /^ev[12]_energy(?:_l[123])?$/.test(s.signal) ? CHARGER_POWER_FLOOR_KW : 0;
+      const powerFloor = policy.id==='adaptive-energy' && /^ev[12]_energy_l[123]$/.test(s.signal) ? CHARGER_POWER_FLOOR_KW : 0;
       const voltage = voltageStatuses.get(s.device)?.[s.signal];
       return {signal:s.signal,source:s.source,unit:s.unit,status:s.status,lastSavedAt:s.last?.receivedAt ?? null,
         ...(s.source === 'easee' ? {transport:recordedTransport({raw:s.last?.semanticQuality,quality:s.last?.quality})} : {}),
@@ -702,8 +701,8 @@ export class Recorder {
 }
 
 function energySignals(prefix) {
-  return ['ev2','caravan'].includes(prefix) ? [`${prefix}_energy`] : ['ev1','property'].includes(prefix)
-    ? [1,2,3].map(phase=>`${prefix}_energy_l${phase}`) : prefix === 'ev2-phase' ? [1,2,3].map(phase=>`ev2_energy_l${phase}`) : null;
+  return prefix === 'caravan' ? ['caravan_energy'] : ['ev1','ev2','property'].includes(prefix)
+    ? [1,2,3].map(phase=>`${prefix}_energy_l${phase}`) : null;
 }
 
 function compactRaw(raw, observation) {

@@ -11,16 +11,15 @@ export function pendingEnergyObservations(store, { now, input, prefix, source, d
     const [s, d, p] = identity, pending = state?.pending;
     if (source !== undefined && s !== source || device != null && d !== device || prefix !== undefined && p !== prefix
       || input !== undefined && (input === 'simulated') !== (s === 'simulation')) continue;
-    const signalPrefix = p === 'ev2-phase' ? 'ev2' : p;
-    const signals = ['ev2', 'caravan'].includes(p) ? [`${p}_energy`]
-      : ['ev1', 'property', 'ev2-phase'].includes(p) ? [1, 2, 3].map(n => `${signalPrefix}_energy_l${n}`) : null;
+    const signals = p === 'caravan' ? ['caravan_energy']
+      : ['ev1', 'ev2', 'property'].includes(p) ? [1, 2, 3].map(n => `${p}_energy_l${n}`) : null;
     if (!signals || !pending || !Number.isSafeInteger(pending.start) || !Number.isSafeInteger(pending.end)
       || pending.end <= pending.start || pending.end > now || !Number.isSafeInteger(pending.receivedAt)
       || pending.receivedAt < pending.end || pending.receivedAt > now || !Array.isArray(pending.energies) || pending.energies.length !== signals.length
       || pending.energies.some(value => !Number.isFinite(value) || value < 0) || !Array.isArray(pending.quality)
       || pending.quality.some(value => typeof value !== 'string')) continue;
-    const basis = p === 'ev2' ? 'native-meter-counter-delta' : p === 'caravan' ? 'meter-counter-delta'
-      : p === 'ev2-phase' ? 'native-meter-counter-phase-allocation' : 'integrated-power-phase-allocation';
+    const basis = p === 'caravan' ? 'meter-counter-delta'
+      : p === 'ev2' ? 'native-meter-counter-phase-allocation' : 'integrated-power-phase-allocation';
     for (let i = 0; i < signals.length; i++) rows.push({ source: s, device: d, signal: signals[i],
       value: pending.energies[i], unit: 'kWh', source_time: pending.end, received_at: pending.receivedAt,
       quality: JSON.stringify(pending.quality), raw: JSON.stringify({ intervalStart: pending.start, intervalEnd: pending.end,

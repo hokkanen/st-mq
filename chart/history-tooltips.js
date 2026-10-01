@@ -96,6 +96,8 @@ export function historyTooltipLabel(item) {
   else if (key.endsWith('_energy') || /_energy_l[123]$/.test(key)) details.push('recorded interval energy');
   else if (key === 'solar_radiation') details.push('historical solar estimate from the forecast available at the time');
   else if (key.endsWith('_forecast')) details.push('forecast');
+  if (raw.basis === 'native-meter-counter-phase-allocation') details.push('estimated phase allocation; three-phase sum preserves measured meter energy');
+  if (raw.basis === 'native-meter-counter-delta') details.push('measured meter energy summed from three phases');
   if (raw.assumedPrice) details.push('assumed price');
   if (raw.voltageBasis) {
     const voltages = (Array.isArray(raw.voltageV) ? raw.voltageV : [raw.voltageV]).filter(Number.isFinite);

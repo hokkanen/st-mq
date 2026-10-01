@@ -18,6 +18,20 @@ test('recorded source labels require explicit transport evidence', () => {
   assert.equal(recordedTransport({raw:'invalid'}),null);
 });
 
+test('voltage source subtitles describe saved contributors, including mixed and unknown provenance', () => {
+  const label = voltage => recordingSourceLabel({source:'voltage-estimate',voltage});
+  assert.equal(label({inputs:1,input:1}),'Easee · OCPP');
+  assert.equal(label({inputs:2,input:2}),'Easee · Cloud');
+  assert.equal(label({inputs:4,input:4}),'Equalizer · Easee Cloud');
+  assert.equal(label({inputs:8,input:8}),'Simulation');
+  assert.equal(label({inputs:3,input:2}),'Mixed sources: Easee · OCPP; Easee · Cloud');
+  assert.equal(label({inputs:3,input:1}),label({inputs:3,input:2}),
+    'the latest input never hides earlier contributors to a smoothed estimate');
+  for(const voltage of [undefined,{}, {inputs:0,input:0},{inputs:1,input:2}]) assert.equal(label(voltage),'Source unknown');
+  assert.equal(recordingSourceLabel({source:'voltage-estimate',transport:'ocpp'}),'Source unknown',
+    'transport without saved voltage contributors cannot relabel the estimate');
+});
+
 test('voltage recorder shows live collection progress and held estimates without false quality failures', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   const start = Date.UTC(2026,0,1); let now = start;
@@ -28,6 +42,7 @@ test('voltage recorder shows live collection progress and held estimates without
     raw:{transport:'ocpp',voltageMapping:'phase-neutral'}});
   const row = () => recorder.status(now).parameters.find(row=>row.signal==='voltage_estimate_l1');
   ingest(); now += 17000;
+  assert.equal(recordingSourceLabel(row()),'Easee · OCPP');
   let display = recordingStatus(row(),{now});
   assert.equal(display.label,'Collecting voltage history');
   assert.match(display.detail,/0 of 60 minutes/);
@@ -42,6 +57,7 @@ test('voltage recorder shows live collection progress and held estimates without
   assert.doesNotMatch(JSON.stringify(row()),/invented-charger/,'status excludes private device identifiers');
   now+=6*60000;
   assert.equal(recordingStatus(row(),{now}).label,'Estimate held · input unavailable');
+  assert.equal(recordingSourceLabel(row()),'Easee · OCPP','unavailable inputs preserve established source provenance');
   assert.equal(store.observations().length,2,'progress reads and steady acquisitions add no historical rows');
 });
 

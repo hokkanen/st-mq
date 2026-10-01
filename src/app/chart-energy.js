@@ -4,7 +4,7 @@ import { voltageMetadata, voltageSegments } from './chart-voltage.js';
 export { recordedEnergyStart, recordedEnergyGroups } from '../storage/energy-history.js';
 
 const HOUR = 3_600_000;
-const totalOnly = prefix => ['ev2', 'caravan'].includes(prefix);
+const totalOnly = prefix => prefix === 'caravan';
 
 /** Original phase or total-energy intervals supply every history range. Drawing points
  * may be reduced in memory, but never determine energy or tariff comparisons. */
@@ -41,30 +41,26 @@ export function addRecordedEnergy({store,range,now,input,envelopes,timing,voltag
         caravanMetadata);
       return;
     }
-    if (prefix !== 'ev2-phase') project(prefix === 'ev1' ? 'charger_power' : prefix==='ev2'?'charger2_power':'property_power',start,end,total === null ? null : total*HOUR/duration,metadata);
-    if (prefix==='ev2') {
-      if (end>=range.from && end<=Math.min(range.to,now)) envelopes.ev2_energy?.add(end,total,metadata);
-      if (complete) timing.addEnergy('charger2',start,end,total,
-        { key: input === 'simulated' ? 'simulated' : 'recorded', energyBasis: 'recorded-intervals' });
-      return;
-    }
-    const phasePrefix = prefix === 'ev2-phase' ? 'ev2' : prefix;
-    const phaseMetadata = { ...metadata, ...(prefix === 'ev2-phase' ? { basis: group.basis } : {}) };
-    if ([1,2,3].some(phase => envelopes[`${phasePrefix}_current_l${phase}`]))
+    const phaseMetadata = { ...metadata, ...(group.basis ? { basis: group.basis } : {}) };
+    const totalMetadata = { ...metadata, ...(group.basis === 'native-meter-counter-phase-allocation'
+      ? { basis: 'native-meter-counter-delta' } : {}) };
+    project(prefix === 'ev1' ? 'charger_power' : prefix === 'ev2' ? 'charger2_power' : 'property_power',
+      start,end,total === null ? null : total*HOUR/duration,totalMetadata);
+    if ([1,2,3].some(phase => envelopes[`${prefix}_current_l${phase}`]))
       for (const segment of voltageSegments(voltageReader,Math.max(start,range.from),Math.min(end,range.to,now)))
         for (let phase=0;phase<3;phase++) {
           const value = values[phase] ?? null, power = value === null ? null : value*HOUR/duration;
           const voltage = segment.estimate.voltageV[phase];
-          project(`${phasePrefix}_current_l${phase+1}`,segment.start,segment.end,
+          project(`${prefix}_current_l${phase+1}`,segment.start,segment.end,
             power === null || !Number.isFinite(voltage) || voltage <= 0 ? null : power*1000/voltage,
             {...phaseMetadata,...voltageMetadata(segment.estimate,phase),equivalentCurrent:true});
         }
     for (let phase=0;phase<3;phase++) {
       const value = values[phase] ?? null;
-      const energyLine = envelopes[`${phasePrefix}_energy_l${phase+1}`];
+      const energyLine = envelopes[`${prefix}_energy_l${phase+1}`];
       if (energyLine && end >= range.from && end <= Math.min(range.to,now)) energyLine.add(end,value,phaseMetadata);
     }
-    if (prefix === 'ev1' && complete) timing.addEnergy('charger1',start,end,total,
+    if (['ev1','ev2'].includes(prefix) && complete) timing.addEnergy(prefix === 'ev1' ? 'charger1' : 'charger2',start,end,total,
       { key: input === 'simulated' ? 'simulated' : 'recorded', energyBasis: 'recorded-intervals' });
   };
   for (const group of recordedEnergyGroups(store,{from:range.from,to:range.to,now,input},stats)) accept(group);

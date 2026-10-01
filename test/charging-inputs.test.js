@@ -49,7 +49,6 @@ function energy(signal, value, from = start, to = start + HOUR) {
 }
 test('household forecast intersects clocks and subtracts both three-phase chargers on each phase', () => {
   const rows = [1, 2, 3].flatMap(p => [energy(`property_energy_l${p}`, 3), energy(`ev1_energy_l${p}`, 1)]);
-  rows.push(energy('ev2_energy', 2, start + HOUR / 2, start + HOUR));
   rows.push(...[1,2,3].map(phase=>energy(`ev2_energy_l${phase}`,2/3,start+HOUR/2,start+HOUR)));
   const profile = householdProfile(rows, { timezone: 'UTC', voltageV: 230 });
   assert.equal(profile[12].coverageMs, HOUR);
@@ -62,7 +61,6 @@ test('household forecast intersects clocks and subtracts both three-phase charge
 
 test('household forecast preserves phase imbalance and requires automatic voltage', () => {
   const rows = [1, 2, 3].flatMap(phase => [energy(`property_energy_l${phase}`, phase + 1), energy(`ev1_energy_l${phase}`, 1)]);
-  rows.push(energy('ev2_energy', 3));
   rows.push(...[1,2,3].map(phase=>energy(`ev2_energy_l${phase}`,1)));
   const profile = householdProfile(rows, { timezone: 'UTC', voltageV: [220, 230, 240] });
   assert.deepEqual(profile[12].phaseCurrentA, [0, 1000 / 230, 2000 / 240]);
@@ -71,10 +69,9 @@ test('household forecast preserves phase imbalance and requires automatic voltag
 
 test('overlapping source intervals and negative residuals cannot create headroom', () => {
   const rows = [1, 2, 3].flatMap(p => [energy(`property_energy_l${p}`, 1), energy(`ev1_energy_l${p}`, 1)]);
-  rows.push(energy('ev2_energy', 2));
   rows.push(...[1,2,3].map(phase=>energy(`ev2_energy_l${phase}`,2/3)));
   assert.equal(householdProfile(rows, { timezone: 'UTC', voltageV: 230 })[12], null);
-  rows.find(row=>row.signal==='ev2_energy').value = 0;
+  rows.filter(row=>row.signal.startsWith('ev2_energy_l')).forEach(row=>{row.value=0;});
   rows.push(energy('property_energy_l1', 2));
   assert.equal(householdProfile(rows, { timezone: 'UTC', voltageV: 230 })[12], null);
 });
@@ -86,7 +83,7 @@ test('household demand is a duration-weighted expectation without an implicit hi
     energy(`property_energy_l${phase}`, 0.75, start + quarter, start + HOUR),
     energy(`ev1_energy_l${phase}`, 0),
   ]);
-  rows.push(energy('ev2_energy', 0));
+  rows.push(...[1,2,3].map(phase=>energy(`ev2_energy_l${phase}`,0)));
   const profile = householdProfile(rows, { timezone: 'UTC', voltageV: 230 });
   assert.equal(profile[12].coverageMs, HOUR);
   assert.equal(profile[12].method, 'duration-weighted-mean');

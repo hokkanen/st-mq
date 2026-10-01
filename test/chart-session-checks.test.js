@@ -12,10 +12,10 @@ test('meter checks distinguish cumulative counters and finalized sessions from i
   const meterChecks = HISTORY_AXES.filter(axis => axis.group === 'Meter checks');
   assert.deepEqual(meterChecks.map(axis => axis.key), ['garage_native_energy', 'property_import_energy_counter', 'ev1_session_energy_check', 'shelly_session_energy_check']);
   assert(!HISTORY_AXES.some(axis => ['ev1_lifetime_energy_counter', 'ev1_session_energy_counter'].includes(axis.key)));
-  const authoritative = HISTORY_AXES.find(axis => axis.key === 'ev2_energy');
-  assert.deepEqual(authoritative.signals, ['ev2_energy']);
-  assert.equal(authoritative.group, 'Electricity');
-  assert.match(authoritative.detail, /Authoritative native Charger 2/);
+  assert(!HISTORY_AXES.some(axis => axis.key === 'ev2_energy'));
+  const phases = HISTORY_AXES.filter(axis => /^ev2_energy_l[123]$/.test(axis.key));
+  assert.equal(phases.length, 3);
+  assert(phases.every(axis => axis.group === 'Electricity' && /preserves measured total/.test(axis.detail)));
 });
 
 test('charger meter charts project each saved session reference once, distinguish excluded comparisons and never hold between sessions', t => {

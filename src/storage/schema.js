@@ -1,5 +1,5 @@
 // One current schema. Pre-production databases are never migrated.
-export const SCHEMA_VERSION = 16;
+export const SCHEMA_VERSION = 17;
 export const CURRENT_SCHEMA = `
 CREATE TABLE annotations (
   id INTEGER PRIMARY KEY, kind TEXT NOT NULL, start_at INTEGER NOT NULL, end_at INTEGER,
@@ -108,10 +108,10 @@ CREATE INDEX observations_signal_id ON observations(signal, id);
 CREATE INDEX observations_signal_time ON observations(signal, source_time, id);
 CREATE INDEX observations_energy_geometry ON observations(
   json_extract(CASE WHEN json_valid(raw) THEN raw ELSE '{}' END,'$.intervalStart'),
-  source_time,source,device,CASE WHEN signal LIKE 'ev1_%' THEN 'ev1' WHEN signal='ev2_energy' THEN 'ev2'
-    WHEN signal LIKE 'ev2_energy_l%' THEN 'ev2-phase'
+  source_time,source,device,CASE WHEN signal LIKE 'ev1_%' THEN 'ev1'
+    WHEN signal LIKE 'ev2_energy_l%' THEN 'ev2'
     WHEN signal='caravan_energy' THEN 'caravan' ELSE 'property' END,id)
-  WHERE signal IN ('property_energy_l1','property_energy_l2','property_energy_l3','ev1_energy_l1','ev1_energy_l2','ev1_energy_l3','ev2_energy_l1','ev2_energy_l2','ev2_energy_l3','ev2_energy','caravan_energy') AND import_id IS NULL;
+  WHERE signal IN ('property_energy_l1','property_energy_l2','property_energy_l3','ev1_energy_l1','ev1_energy_l2','ev1_energy_l3','ev2_energy_l1','ev2_energy_l2','ev2_energy_l3','caravan_energy') AND import_id IS NULL;
 CREATE INDEX observations_time ON observations(source_time, id);
 CREATE INDEX observations_receipt ON observations(received_at);
 CREATE INDEX observations_stream_receipt ON observations(source,device,signal,unit,

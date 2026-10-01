@@ -49,11 +49,11 @@ function trackedDatabase(db, accepts, failure, originalError, cleanupFailure = t
 
 for (const failure of ['prepare', 'prime', 'projection']) test(`energy cursors close after ${failure} failure without masking it`, t => {
   const store = new Store(':memory:'); t.after(() => store.close());
-  for (const prefix of ['ev1', 'property']) for (const phase of [1, 2, 3]) for (const minute of [1, 2])
+  for (const prefix of ['ev1', 'ev2', 'property']) for (const phase of [1, 2, 3]) for (const minute of [1, 2])
     store.observation({ source: 'easee', device: `invented-${prefix}`, signal: `${prefix}_energy_l${phase}`,
       value: 0.1, unit: 'kWh', sourceTime: day.from + minute * MINUTE, receivedAt: day.from + minute * MINUTE,
       quality: ['estimated'], raw: { intervalStart: day.from + (minute - 1) * MINUTE, intervalEnd: day.from + minute * MINUTE } });
-  for (const [source, signal] of [['shelly-evse', 'ev2_energy'], ['mqtt-equipment', 'caravan_energy']])
+  for (const [source, signal] of [['mqtt-equipment', 'caravan_energy']])
     for (const minute of [1, 2]) store.observation({ source, device: `invented-${signal}`, signal,
     value: 0.1, unit: 'kWh', sourceTime: day.from + minute * MINUTE, receivedAt: day.from + minute * MINUTE,
     quality: ['estimated'], raw: { intervalStart: day.from + (minute - 1) * MINUTE, intervalEnd: day.from + minute * MINUTE } });

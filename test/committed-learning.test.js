@@ -93,11 +93,15 @@ test('phase energy remains separate context and cannot turn property consumption
   knownContext(store);
   const at = start + LEARNING_WINDOW_MS;
   for (const point of [start, at]) for (const [signal, value] of [['indoor_temperature', 21], ['outdoor_temperature', 0]]) record(store, signal, value, point);
-  for (const prefix of ['property', 'ev1']) for (const phase of [1, 2, 3]) record(store, `${prefix}_energy_l${phase}`, prefix === 'property' ? 2 : 0.5, at,
-    { source: 'easee', unit: 'kWh', raw: { intervalStart: start, intervalEnd: at } });
+  for (const prefix of ['property', 'ev1', 'ev2']) for (const phase of [1, 2, 3]) record(store, `${prefix}_energy_l${phase}`, prefix === 'property' ? 2 : 0.5, at,
+    { source: prefix === 'ev2' ? 'shelly-evse' : 'easee', unit: 'kWh', raw: { intervalStart: start, intervalEnd: at } });
   const result = committedLearningSample({ store, input: 'mqtt', at, config });
   assert.equal(result.electricalContext.property.complete, true);
   assert.equal(result.electricalContext.property.phases.reduce((sum, phase) => sum + phase.kwh, 0), 6);
+  for (const prefix of ['ev1', 'ev2']) {
+    assert.equal(result.electricalContext[prefix].complete, true);
+    assert.deepEqual(result.electricalContext[prefix].phases.map(phase => phase.kwh), [0.5, 0.5, 0.5]);
+  }
   assert.equal(result.powerKw, null);
   assert.equal(result.compressorDuty, null);
 });

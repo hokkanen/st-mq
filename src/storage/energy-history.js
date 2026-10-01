@@ -14,9 +14,9 @@ const scope = input => input === 'simulated' ? "source='simulation'" : "source<>
 // Configurable equipment IDs can coincide with a physical energy signal. Their
 // direct hourly writer is a different dataset, not charger/property evidence.
 const physicalWriter = "COALESCE(json_extract(CASE WHEN json_valid(raw) THEN raw ELSE '{}' END,'$.timeBasis'),'')<>'completed-hour'";
-const prefixOf = signal => signal.startsWith('ev1_') ? 'ev1' : signal==='ev2_energy' ? 'ev2'
-  : signal.startsWith('ev2_energy_l') ? 'ev2-phase' : signal==='caravan_energy' ? 'caravan' : 'property';
-const totalOnly = prefix => ['ev2', 'caravan'].includes(prefix);
+const prefixOf = signal => signal.startsWith('ev1_') ? 'ev1'
+  : signal.startsWith('ev2_energy_l') ? 'ev2' : signal==='caravan_energy' ? 'caravan' : 'property';
+const totalOnly = prefix => prefix === 'caravan';
 
 export function recordedEnergyStart(store, prefix, input, now) {
   if (!Number.isFinite(now)) throw new TypeError('Energy selection requires an explicit receipt cutoff');
@@ -25,7 +25,7 @@ export function recordedEnergyStart(store, prefix, input, now) {
     AND json_valid(raw) AND json_type(raw,'$.intervalStart')='integer'
     AND json_extract(raw,'$.intervalEnd')=source_time
     AND source_time>json_extract(raw,'$.intervalStart') AND source_time<=received_at`)
-    .get(totalOnly(prefix)?`${prefix}_energy`:`${prefix === 'ev2-phase' ? 'ev2' : prefix}_energy_l1`, now, now);
+    .get(totalOnly(prefix)?`${prefix}_energy`:`${prefix}_energy_l1`, now, now);
   return Math.min(Number.isFinite(row?.at) ? row.at : Infinity,
     ...pendingEnergyObservations(store, { now, input: input ?? 'providers', prefix }).map(row => JSON.parse(row.raw).intervalStart));
 }
@@ -47,8 +47,8 @@ function* rawRows(store, { from, to, now, input, prefix, source, device }) {
     AND json_extract(raw,'$.intervalEnd')=source_time
     AND source_time>json_extract(raw,'$.intervalStart')
     ORDER BY ${geometry},source_time,source,device,
-      CASE WHEN signal LIKE 'ev1_%' THEN 'ev1' WHEN signal='ev2_energy' THEN 'ev2'
-      WHEN signal LIKE 'ev2_energy_l%' THEN 'ev2-phase' WHEN signal='caravan_energy' THEN 'caravan' ELSE 'property' END,id`)
+      CASE WHEN signal LIKE 'ev1_%' THEN 'ev1'
+      WHEN signal LIKE 'ev2_energy_l%' THEN 'ev2' WHEN signal='caravan_energy' THEN 'caravan' ELSE 'property' END,id`)
     .iterate(...signals, to, from, now, now, ...(source !== undefined ? [source] : []), ...(device != null ? [device] : []), to);
   const tail = pendingEnergyObservations(store, { now, input: input ?? 'providers', prefix, source, device })
     .filter(row => row.source_time > from && JSON.parse(row.raw).intervalStart < to);

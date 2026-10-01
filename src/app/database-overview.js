@@ -304,6 +304,7 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
 
   const eventCategories = [
     ['charging-checks', "type='charging-session-check'", 'Finalized charging comparisons', 'One immutable reference and estimated energy comparison per Charger 1 session or Charger 2 charging period; incomplete coverage is excluded from averages.'],
+    ['charging-unallocated', "type='charging-energy-unallocated'", 'Unallocated charger meter increments', 'Measured Charger 2 increments without usable phase shares. Retained as diagnostic evidence; phase energy, charging progress and cost remain unavailable for these intervals.'],
     ['heat-power-config', "type='heat-pump-power-config'", 'Historical heat-pump power assumptions', 'Versioned nominal power assumptions used to reconstruct heat-pump power and timing comparisons from recorded equipment states.'],
     ['decisions', "type='decision'", 'Controller decisions', 'Action, phase, reasons, commands and execution outcomes recorded for each decision.'],
     ['settings', "type IN ('settings-changed','configured-rates-applied','contract-period-added','occupancy-changed','occupancy-expired','override-changed','override-expired')", 'Settings and override changes', 'Changes to settings, contract rates and temporary operating instructions.'],
@@ -325,7 +326,8 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
   for (const row of eventTypes) addCount(events, row.category, row);
   const eventItems = eventCategories.map(([id, , label, description]) => item(`events-${id}`, label, description, events.get(id), {
     writeBehavior: id === 'decisions' ? 'On every recorded controller decision.' : 'When the event occurs.',
-    fields: id === 'charging-checks' ? fields(['Period and energy', 'Start/end, source, integrated kWh and final reference kWh.'], ['Coverage', 'Completeness and quality; Charger 2 energy added differs from electrical input.'])
+    fields: id === 'charging-checks' ? fields(['Period and energy', 'Start/end, source, integrated kWh and final reference kWh.'], ['Coverage', 'Completeness and quality; Charger 2 compares its separate power estimate with native meter increments.'])
+      : id === 'charging-unallocated' ? fields(['Interval and reference', 'Source, physical association, source interval and measured kWh increment.'], ['Unavailable allocation', 'Why the increment cannot be assigned to phases; not another energy series.'])
       : id === 'heat-power-config' ? fields(['Nominal powers', 'Compressor, circulation and rated auxiliary power in kW.'], ['Version and effective time', 'Algorithm/configuration version, input mode and effective timestamp.'])
       : fields(['Event type and time', 'What happened and when.'], ['Event context', 'Associated decision, configuration, command, assessment or failure details.']) }));
   if (events.get('other')?.count) eventItems.push(item('events-other', 'Unrecognized event types', 'Distinct event types without a current writer description.', events.get('other'), {

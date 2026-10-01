@@ -108,7 +108,7 @@ export function renderRecording(status, root) {
     if(row.group!==previousGroup) {const tr=document.createElement('tr'),cell=document.createElement('th');cell.colSpan=5;cell.scope='colgroup';cell.textContent=row.group;tr.className='recording-group';tr.append(cell);body.append(tr);previousGroup=row.group;}
     const tr=document.createElement('tr'),title=document.createElement('th');title.scope='row';title.textContent=row.label;
     tr.dataset.signal=row.signal;tr.dataset.streamId=row.streamId??row.signal;
-    if(row.source) {const source=document.createElement('small');const name=recordingSourceLabel(row)??({ 'voltage-estimate':'Smoothed voltage', 'garage-adapter':'Garage heat pump', 'mqtt-equipment':'MQTT equipment', 'shelly-mqtt':'Shelly', simulation:'Simulation' })[row.source]??providerName(row.source)??readable(row.source);
+    if(row.source) {const source=document.createElement('small');const name=recordingSourceLabel(row)??({ 'garage-adapter':'Garage heat pump', 'mqtt-equipment':'MQTT equipment', 'shelly-mqtt':'Shelly', simulation:'Simulation' })[row.source]??providerName(row.source)??readable(row.source);
       source.textContent=`${name} · ${({degC:'°C','degree-minutes':'°min'})[row.unit]??row.unit??''}`;title.append(source);}
     if(row.streamQualifier) {const qualifier=document.createElement('small');qualifier.className='recording-stream-qualifier';qualifier.textContent=row.streamQualifier;title.append(qualifier);}
     tr.append(title);

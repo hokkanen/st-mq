@@ -30,7 +30,7 @@ test('one MQTT subscription captures vehicle evidence without producing physical
   f.advance();f.engine.recorder.flush(f.now,{force:true});
   assert.equal(f.engine.teslamate.snapshot().batteryLevel,80);
   assert.equal(f.engine.teslamate.status().recording,false);
-  assert.equal(f.store.db.prepare("SELECT COUNT(*) n FROM observations WHERE source='teslamate' OR signal='ev2_energy'").get().n,0);
+  assert.equal(f.store.db.prepare("SELECT COUNT(*) n FROM observations WHERE source='teslamate' OR signal GLOB 'ev2_energy_l[123]'").get().n,0);
   assert.deepEqual(f.publications,[]);
   assert.equal(f.store.getState('charging:teslamate').version,1);
   f.client.emit('offline');assert.equal(f.engine.teslamate.status().healthy,false);

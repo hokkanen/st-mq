@@ -9,9 +9,8 @@ function source(store,signal,value,at,{unit='kW',raw,device='synthetic'}={}){
   store.observation({source:'fixture',device,signal,value,unit,sourceTime:at,receivedAt:at,raw});
 }
 function energy(store,prefix,kw,from,to){
-  const count=prefix==='ev2'?1:3;
-  for(let phase=1;phase<=count;phase++)source(store,count===1?'ev2_energy':`${prefix}_energy_l${phase}`,
-    kw*(to-from)/HOUR/count,to,{unit:'kWh',raw:{intervalStart:from,intervalEnd:to},device:prefix});
+  for(let phase=1;phase<=3;phase++)source(store,`${prefix}_energy_l${phase}`,
+    kw*(to-from)/HOUR/3,to,{unit:'kWh',raw:{intervalStart:from,intervalEnd:to},device:prefix});
 }
 function noCrossings(result,raw){
   for(let i=1;i<result.length;i++)if(Number.isFinite(result[i-1].y)&&Number.isFinite(result[i].y))
