@@ -58,6 +58,15 @@ export function chargingTestReadings(status, vehicleId) {
   return result;
 }
 
+export function chargingTestNumberError(name, value) {
+  const limits = { soc: [0, 100, 'battery charge', '%'], nativeTargetSoc: [1, 100, 'the vehicle charge target', '%'],
+    capacityKwh: [1, 300, 'usable battery capacity', ' kWh'] };
+  const [min, max, title, unit] = limits[name];
+  const number = value === null || value === undefined || String(value).trim() === '' ? NaN : Number(value);
+  return Number.isFinite(number) && number >= min && number <= max ? ''
+    : `Enter ${title} from ${min} to ${max}${unit}.${name === 'capacityKwh' ? ' Decimal values are allowed.' : ''}`;
+}
+
 /** The guide records assessment assumptions, independently of charging inputs. */
 export function createChargingTestsPanel({ document, request, onStatus = () => {},
   beforeRequest = () => {}, afterRequest = () => {}, openReport = () => {} }) {
@@ -73,9 +82,9 @@ export function createChargingTestsPanel({ document, request, onStatus = () => {
           <label>Vehicle<select name="vehicleId"><option value="bmw">BMW</option><option value="tesla">Tesla</option></select></label>
           <label>Physical charger<select name="chargerId" required><option value="">Choose a charger</option></select></label>
           <label class="charging-test-wide">Test program<select name="program"><option value="immediate">Normal charging</option><option value="vehicle-schedule">Vehicle waits for its schedule</option></select></label>
-          <label>Battery now (%)<input name="soc" type="number" min="0" max="100" step="0.1" required><small class="muted" data-test-source="soc"></small></label>
-          <label>Vehicle charge target (%)<input name="nativeTargetSoc" type="number" min="1" max="100" step="0.1" required><small class="muted" data-test-source="nativeTargetSoc"></small></label>
-          <label class="charging-test-wide">Usable battery capacity (kWh)<input name="capacityKwh" type="number" min="1" max="300" step="0.1" required><small class="muted" data-test-source="capacityKwh"></small></label>
+          <label>Battery now (%)<input name="soc" type="number" min="0" max="100" step="any" required><small class="muted" data-test-source="soc"></small></label>
+          <label>Vehicle charge target (%)<input name="nativeTargetSoc" type="number" min="1" max="100" step="any" required><small class="muted" data-test-source="nativeTargetSoc"></small></label>
+          <label class="charging-test-wide">Usable battery capacity (kWh)<input name="capacityKwh" type="number" min="1" max="300" step="any" required><small class="muted" data-test-source="capacityKwh"></small></label>
           <div class="charging-test-wide" data-test-start-label hidden>
             <label for="charging-test-initial-time">Before plugging in: start time set in the car</label>
             <input id="charging-test-initial-time" name="vehicleStartAt" aria-describedby="charging-test-initial-date">
@@ -84,7 +93,7 @@ export function createChargingTestsPanel({ document, request, onStatus = () => {
           </div>
         </div>
         <div class="charging-test-actions"><button type="button" class="secondary-button" data-test-load>Replace fields with latest readings</button></div>
-        <p class="muted">Verify the loaded values, or enter what you see in the car. The target is the charge target set in the car; entering it here does not change the car. Reloading replaces available readings and the capacity suggestion, including edits. It does not wake or query the vehicle.</p>
+        <p class="muted">Verify the loaded values against the car, or enter them yourself. Reload replaces available readings and the capacity suggestion, including edits. It uses the latest received data without waking the car.</p>
         <p data-test-instructions></p>
         <p class="muted">Leave the selected charger unplugged. Enable its Automatic charging switch and clear any manual Stop or conflicting charger schedule.</p>
         <p class="muted">These values guide the assessment’s estimates and comparisons. Actual charging continues to use the controller’s independently obtained readings and ordinary charging settings.</p>
@@ -97,13 +106,22 @@ export function createChargingTestsPanel({ document, request, onStatus = () => {
       <p class="charging-test-phase" data-test-phase role="status"></p>
       <p data-test-scope class="muted"></p><p data-test-guidance></p>
       <p data-test-headroom class="muted"></p>
-      <form id="charging-test-target-form" data-test-target-review hidden>
-        <p data-test-target-discrepancy></p>
-        <label>Verified target set in the car (%)<input data-test-target-value type="number" min="1" max="100" step="0.1" required></label>
-        <button type="submit" data-test-target-confirm data-write-control>Record verified vehicle target</button>
-        <p class="muted">Check the target in the car, then record it here for the assessment. Actual charging continues to use the controller’s own readings and settings.</p>
-      </form>
-      <p data-test-target-receipt role="status"></p>
+      <section data-test-target-summary aria-label="Vehicle target verification">
+        <p data-test-target-reported class="muted"></p>
+        <p data-test-target-verification-status></p>
+        <button type="button" class="secondary-button" data-test-target-edit>Review verified vehicle target</button>
+        <form id="charging-test-target-form" data-test-target-review hidden>
+          <p data-test-target-discrepancy></p>
+          <div data-test-target-stale hidden><p class="form-error">The saved assessment target changed while you were editing. Your entry is kept below. Load the latest saved target, then verify the car’s setting again.</p>
+            <button type="button" class="secondary-button" data-test-target-refresh>Load latest saved target</button></div>
+          <label>Target currently set in the car (%)<input data-test-target-value type="number" min="1" max="100" step="any" required></label>
+          <label class="charging-test-check" data-test-target-verification hidden><input data-test-target-verified type="checkbox"><span>I checked the car’s charge target. The value above is the actual setting, despite the different vehicle report.</span></label>
+          <p class="muted">Verify the setting in the car or its app before recording it. This records your verified target for this assessment; it does not command the car or change normal charging.</p>
+          <div class="charging-test-actions"><button type="submit" data-test-target-confirm data-write-control>Record verified vehicle target</button>
+            <button type="button" class="secondary-button" data-test-target-dismiss>Cancel edit</button></div>
+        </form>
+        <p data-test-target-receipt role="status"></p>
+      </section>
       <section data-test-timer hidden aria-label="Vehicle schedule adjustment">
         <p data-test-schedule-original class="muted"></p>
         <p data-test-schedule-current></p>
@@ -133,6 +151,7 @@ export function createChargingTestsPanel({ document, request, onStatus = () => {
   const timePicker = createChargingTime({ document, idPrefix: 'charging-test-time' });
   let status, busy = false, preview = null, checkedInput = null, selectedRun = null, opener = null, pickerKey = '', switchingDialog = false;
   let draftVehicle = null, draftSources = {}, initialAt = null, adjustmentAt = null;
+  let targetEditorRun = null, targetEditorOpen = false, targetConflictSeen = null, targetDraftRevision = null;
   const drafts = new Map(), names = ['soc', 'nativeTargetSoc', 'capacityKwh', 'vehicleStartAt'];
   const now = () => status?.now ?? Date.now();
   const timezone = () => status?.charging?.timezone ?? 'Europe/Helsinki';
@@ -150,6 +169,15 @@ export function createChargingTestsPanel({ document, request, onStatus = () => {
   function message(text = '', error = false) {
     q('[data-test-message]').textContent = text;
     q('[data-test-message]').classList.toggle('form-error', error);
+    delete q('[data-test-message]').dataset.numberError;
+  }
+  function validateNumber(input, show = false) {
+    const name = input.name || 'nativeTargetSoc', error = chargingTestNumberError(name, input.value);
+    input.setCustomValidity(error);
+    const node = q('[data-test-message]');
+    if (error && (show || node.dataset.numberError === name)) { message(error, true); node.dataset.numberError = name; }
+    else if (!error && node.dataset.numberError === name) message();
+    return !error;
   }
   function invalidate() {
     preview = null; checkedInput = null; q('[data-test-preview-result]').replaceChildren();
@@ -190,6 +218,7 @@ export function createChargingTestsPanel({ document, request, onStatus = () => {
       if (replace) message(Object.keys(values).length ? 'Available readings replaced the corresponding fields. Verify the values before continuing.'
         : 'No vehicle readings are available. Your entered values were kept; verify them in the car.');
     }
+    for (const name of ['soc', 'nativeTargetSoc', 'capacityKwh']) validateNumber(field(name));
     field('prepared').checked = false; invalidate(); renderSources(); instructions();
   }
   function timerValue(input, recordedAt) {
@@ -231,8 +260,13 @@ export function createChargingTestsPanel({ document, request, onStatus = () => {
     const editableSchedule = editable && run.recommendation?.state === 'available';
     q('[data-test-confirm]').disabled = !editableSchedule;
     q('[data-test-confirm-time]').disabled = !editableSchedule;
-    q('[data-test-target-confirm]').disabled = !editable;
+    const targetStale = Boolean(run) && targetDraftRevision !== run.target?.revision;
+    q('[data-test-target-confirm]').disabled = !editable || targetStale;
     q('[data-test-target-value]').disabled = !editable;
+    q('[data-test-target-edit]').disabled = !editable;
+    q('[data-test-target-dismiss]').disabled = busy;
+    q('[data-test-target-refresh]').disabled = !editable;
+    q('[data-test-target-verified]').disabled = !editable || targetStale;
     timePicker.update(field('vehicleStartAt'), draftVehicle);
     timePicker.update(q('[data-test-confirm-time]'), run?.id);
     if (!manageable() && !busy) message('Guided tests need the live controller with permission to save an assessment. Existing reports remain readable.');
@@ -247,6 +281,16 @@ export function createChargingTestsPanel({ document, request, onStatus = () => {
       const item = make('li', `${gate.state === 'ready' ? 'Ready' : 'Needed'} · ${gate.message}`); item.dataset.state = gate.state; list.append(item);
     }
     container.append(list, make('p', 'Headroom is an estimate. Use a naturally suitable session; there is no need to charge to 100% or discharge the battery for this test.'));
+  }
+  function targetVerification() {
+    const run = currentRun(); if (!run) return;
+    const input = q('[data-test-target-value]'), checkbox = q('[data-test-target-verified]');
+    const key = `${run.id}:${run.target?.source}:${run.target?.reportedSoc}`;
+    if (checkbox.dataset.report !== key) { checkbox.dataset.report = key; checkbox.checked = false; }
+    const differs = Number.isFinite(run.target?.reportedSoc) && input.value !== ''
+      && Number(input.value) !== run.target.reportedSoc;
+    q('[data-test-target-verification]').hidden = !differs; checkbox.required = differs;
+    if (!differs) checkbox.checked = false;
   }
   function renderRun() {
     const run = currentRun();
@@ -263,18 +307,39 @@ export function createChargingTestsPanel({ document, request, onStatus = () => {
       : terminal(run) ? `${endMessage} Review the findings and coverage below.`
         : 'Leave the car connected until charging completion is confirmed, then unplug to finish. No End action is required. The assessment continues when this window or browser is closed.';
     q('[data-test-headroom]').textContent = `Assessment expectations: starting charge ${run.expectations.soc}% · vehicle target ${run.expectations.nativeTargetSoc}% · usable capacity ${run.expectations.capacityKwh} kWh. These verified declarations remain separate from the controller’s charging inputs.`;
-    const reviewTarget = run.target?.requiresConfirmation === true && Boolean(run.sessionId) && !terminal(run);
-    q('[data-test-target-review]').hidden = !reviewTarget;
-    if (reviewTarget) {
-      const reported = Number.isFinite(run.target.reportedSoc)
-        ? `Last reported vehicle target: ${run.target.reportedSoc}% · ${Number.isFinite(run.target.reportedAt) ? fullTime(run.target.reportedAt) : 'source timestamp unavailable'}. ` : '';
-      q('[data-test-target-discrepancy]').textContent = `${reported}The assessment assumes a ${run.expectations.nativeTargetSoc}% vehicle target. Verify the target set in the car and update the assessment’s expectation if needed.`;
-      const target = q('[data-test-target-value]'), key = `${run.id}:${run.target.reportedSoc}:${run.target.reportedAt}`;
-      if (target.dataset.run !== run.id) { target.dataset.run = run.id; target.dataset.edited = 'false'; }
-      if (target.dataset.edited !== 'true' && target.dataset.reading !== key) {
-        target.dataset.reading = key; target.value = run.target.reportedSoc ?? run.expectations.nativeTargetSoc;
-      }
+    const target = q('[data-test-target-value]'), recordedTarget = run.expectations.nativeTargetSoc;
+    if (targetEditorRun !== run.id) {
+      targetEditorRun = run.id; targetEditorOpen = false; targetConflictSeen = null;
+      targetDraftRevision = run.target?.revision;
+      target.dataset.edited = 'false'; delete target.dataset.accepted; q('[data-test-target-verified]').checked = false;
     }
+    const conflictKey = `${run.id}:${recordedTarget}:${run.target?.reportedSoc}:${run.target?.source}`;
+    if (!targetEditorOpen) targetDraftRevision = run.target?.revision;
+    if (run.target?.requiresConfirmation && targetConflictSeen !== conflictKey) { targetEditorOpen = true; targetConflictSeen = conflictKey; }
+    const reportedTarget = run.target?.reportedSoc, hasReport = Number.isFinite(reportedTarget);
+    const source = ({ 'bmw-cardata': 'BMW CarData', teslamate: 'TeslaMate' })[run.target?.source] ?? 'Vehicle feed';
+    const clock = Number.isFinite(run.target?.reportedAt)
+      ? `reading timestamp ${fullTime(run.target.reportedAt)}` : 'reading timestamp unavailable';
+    q('[data-test-target-reported]').textContent = hasReport
+      ? `Last raw vehicle target report: ${reportedTarget}% · ${source} · ${clock}.`
+      : 'No vehicle target has been independently observed for this connection yet.';
+    const verifiedDifference = hasReport && reportedTarget !== recordedTarget && (run.target.verifications ?? []).some(verification =>
+      verification.targetSoc === recordedTarget && verification.reportedSoc === reportedTarget && verification.source === run.target.source);
+    q('[data-test-target-verification-status]').textContent = verifiedDifference
+      ? `You verified ${recordedTarget}% in the car after reviewing the different ${reportedTarget}% report. The original vehicle report is retained above.`
+      : `Recorded assessment target: ${recordedTarget}%. ${run.target?.requiresConfirmation ? 'The vehicle report differs. Verify the setting in the car.'
+        : hasReport && reportedTarget === recordedTarget ? 'The last vehicle report agrees.' : 'Verify this value in the car if needed.'}`;
+    const canReviewTarget = Boolean(run.sessionId) && !terminal(run);
+    q('[data-test-target-edit]').hidden = !canReviewTarget || targetEditorOpen;
+    q('[data-test-target-review]').hidden = !canReviewTarget || !targetEditorOpen;
+    q('[data-test-target-discrepancy]').textContent = `Check the car’s current charge target. The assessment currently records ${recordedTarget}%.`;
+    const targetStale = targetEditorOpen && targetDraftRevision !== run.target?.revision;
+    q('[data-test-target-stale]').hidden = !targetStale;
+    if (targetStale) q('[data-test-target-verified]').checked = false;
+    if (!targetStale && target.dataset.edited !== 'true' && target.dataset.accepted !== String(recordedTarget)) {
+      target.dataset.accepted = String(recordedTarget); target.value = recordedTarget; validateNumber(target);
+    }
+    targetVerification();
     const targetHistory = run.target?.history ?? [], lastTarget = targetHistory.at(-1);
     q('[data-test-target-receipt]').textContent = targetHistory.length > 1 && recent(lastTarget?.confirmedAt)
       ? `Saved assessment target: ${lastTarget.targetSoc}% · ${fullTime(lastTarget.confirmedAt)}. Recorded as your verified vehicle target.` : '';
@@ -319,7 +384,8 @@ export function createChargingTestsPanel({ document, request, onStatus = () => {
     for (const finding of run.findings ?? []) {
       const targetFinding = finding.code === 'vehicle-limit-differs-from-preparation';
       const text = targetFinding && run.target?.requiresConfirmation !== true
-        ? 'A different target was observed earlier. The current assessment target is shown above; this finding preserves the earlier discrepancy.'
+        ? verifiedDifference ? 'The vehicle reported a different target. You verified the actual setting in the car; the original discrepancy remains in this record.'
+          : 'A different target was observed earlier. The current assessment target is shown above; this finding preserves the earlier discrepancy.'
         : finding.message ?? findingLabels[finding.code] ?? label(finding.code ?? finding);
       findings.append(make('li', text));
     }
@@ -336,7 +402,11 @@ export function createChargingTestsPanel({ document, request, onStatus = () => {
       else {
         status = result;
         if (action === 'start') selectedRun = runs().find(run => run.chargerId === input.chargerId && !terminal(run))?.id ?? runs().find(run => run.chargerId === input.chargerId)?.id;
-        if (action === 'target') q('[data-test-target-value]').dataset.edited = 'false';
+        if (action === 'target') {
+          q('[data-test-target-value]').dataset.edited = 'false'; targetEditorOpen = false;
+          targetDraftRevision = currentRun()?.target?.revision;
+          q('[data-test-target-verified]').checked = false;
+        }
         onStatus(result); renderRun();
       }
       await afterRequest();
@@ -344,7 +414,9 @@ export function createChargingTestsPanel({ document, request, onStatus = () => {
     finally { busy = false; buttons(); }
   }
   form.addEventListener('submit', event => {
-    event.preventDefault(); if (!form.reportValidity()) return;
+    event.preventDefault();
+    for (const name of ['soc', 'nativeTargetSoc', 'capacityKwh']) validateNumber(field(name));
+    if (!form.reportValidity()) return;
     try { void send('preview', readInput()); } catch (error) { message(error.message, true); }
   });
   form.addEventListener('input', event => {
@@ -353,6 +425,7 @@ export function createChargingTestsPanel({ document, request, onStatus = () => {
     else if (names.includes(event.target.name)) {
       draftSources[event.target.name] = { manual: true };
       if (event.target.name === 'vehicleStartAt') initialAt = null;
+      else validateNumber(event.target);
       field('prepared').checked = false; renderSources();
     } else if (event.target !== field('prepared')) field('prepared').checked = false;
     instructions(); buttons();
@@ -370,11 +443,40 @@ export function createChargingTestsPanel({ document, request, onStatus = () => {
     catch (error) { message(error.message, true); }
   });
   q('#charging-test-target-form').addEventListener('submit', event => {
-    event.preventDefault(); const run = currentRun(); if (!run || !event.target.reportValidity()) return;
+    event.preventDefault(); const run = currentRun(); if (!run) return;
+    if (targetDraftRevision !== run.target.revision) {
+      message('The assessment target changed. Load the latest saved target before verifying your entry.', true);
+      renderRun(); buttons(); return;
+    }
+    validateNumber(q('[data-test-target-value]')); if (!event.target.reportValidity()) return;
+    const nativeTargetSoc = Number(q('[data-test-target-value]').value);
+    const verification = q('[data-test-target-verified]').checked && Number.isFinite(run.target.reportedSoc)
+      && nativeTargetSoc !== run.target.reportedSoc ? { reportedSoc: run.target.reportedSoc, source: run.target.source } : null;
     void send('target', { id: run.id, association: run.association, sessionId: run.sessionId,
-      targetRevision: run.target.revision, nativeTargetSoc: Number(q('[data-test-target-value]').value) });
+      targetRevision: targetDraftRevision, nativeTargetSoc, ...(verification ? { verification } : {}) });
   });
-  q('[data-test-target-value]').addEventListener('input', event => { event.target.dataset.edited = 'true'; });
+  q('[data-test-target-value]').addEventListener('input', event => {
+    event.target.dataset.edited = 'true'; validateNumber(event.target);
+    q('[data-test-target-verified]').checked = false; targetVerification();
+  });
+  for (const input of [field('soc'), field('nativeTargetSoc'), field('capacityKwh'), q('[data-test-target-value]')]) {
+    input.addEventListener('invalid', () => validateNumber(input, true));
+  }
+  q('[data-test-target-edit]').addEventListener('click', () => {
+    targetDraftRevision = currentRun()?.target?.revision;
+    targetEditorOpen = true; renderRun(); buttons(); q('[data-test-target-value]').focus();
+  });
+  q('[data-test-target-refresh]').addEventListener('click', () => {
+    targetDraftRevision = currentRun()?.target?.revision;
+    q('[data-test-target-value]').dataset.edited = 'false'; delete q('[data-test-target-value]').dataset.accepted;
+    q('[data-test-target-verified]').checked = false; message();
+    renderRun(); buttons(); q('[data-test-target-value]').focus();
+  });
+  q('[data-test-target-dismiss]').addEventListener('click', () => {
+    targetEditorOpen = false; q('[data-test-target-value]').dataset.edited = 'false';
+    delete q('[data-test-target-value]').dataset.accepted; q('[data-test-target-verified]').checked = false;
+    renderRun(); buttons(); q('[data-test-target-edit]').focus();
+  });
   q('[data-test-cancel]').addEventListener('click', () => { const run = currentRun(); if (run) void send('cancel', { id: run.id, association: run.association }); });
   q('[data-test-report]').addEventListener('click', () => {
     const run = currentRun(); if (run?.report?.id) { switchingDialog = true; dialog.close(); openReport(run.chargerId, run.report.id); }

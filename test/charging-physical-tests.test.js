@@ -94,6 +94,47 @@ test('accepted usable capacity drives preparation without rewriting configuratio
   assert.deepEqual(f.view.settings, original);
 });
 
+test('preparation errors name the invalid field and accept manually verified values including decimal capacity', () => {
+  const f = fixture(), tests = f.create();
+  const invalid = [
+    [{ chargerId: 'car' }, /Select a physical charger/],
+    [{ vehicleId: 'other' }, /Select BMW or Tesla/],
+    [{ program: 'scheduled' }, /Choose Normal charging or Vehicle waits for its schedule/],
+    [{ association: null }, /current physical charger/],
+    [{ soc: null }, /Enter the current battery percentage/],
+    [{ soc: '40' }, /Current battery percentage must be a number from 0 to 100/],
+    [{ soc: -1 }, /Current battery percentage/],
+    [{ nativeTargetSoc: null }, /Enter the charge target currently set in the vehicle/],
+    [{ nativeTargetSoc: 0 }, /Vehicle charge target must be a number from 1 to 100/],
+    [{ nativeTargetSoc: 101 }, /Vehicle charge target/],
+    [{ capacityKwh: null }, /Enter the usable battery capacity/],
+    [{ capacityKwh: '74.58' }, /Usable battery capacity must be a number from 1 to 300/],
+    [{ capacityKwh: Infinity }, /Usable battery capacity/],
+    [{ prepared: false }, /Confirm that you checked the vehicle settings/],
+    [{ prepared: 'true' }, /Preparation confirmation must be true or false/],
+    [{ vehicleStartAt: START }, /Remove the vehicle start time for the Normal charging test/],
+    [{ program: 'vehicle-schedule', vehicleStartAt: null }, /Record the initial start time/],
+    [{ program: 'vehicle-schedule', vehicleStartAt: '03:00' }, /valid date and time/],
+    [{ manualSoc: 40 }, /Unsupported guided test preparation field: manualSoc/],
+    [{ '': 40 }, /Unsupported guided test preparation field: \(empty\)/],
+  ];
+  for (const [changes, message] of invalid) assert.throws(() => tests.start(f.input(changes), f.view), message);
+  assert.throws(() => tests.preview(null, f.view), /preparation must be an object/);
+  assert.equal(f.writes.length, 0);
+  f.view.vehicleFeeds[0].setup = { available: true, fields: { soc: value(60), chargeLimitSoc: value(100), usableCapacityKwh: value(74.58) } };
+  const before = structuredClone(f.view);
+  for (const capacityKwh of [72.56, 72.5678]) {
+    const input = f.input({ soc: 37.5, nativeTargetSoc: 87, capacityKwh });
+    assert.equal(tests.preview(input, f.view).eligible, true);
+    const run = tests.start(input, f.view);
+    assert.equal(run.expectations.capacityKwh, capacityKwh);
+    assert.equal(run.expectations.soc, 37.5);
+    assert.equal(run.expectations.nativeTargetSoc, 87);
+    tests.cancel({ id: run.id, association: run.association }, f.view);
+  }
+  assert.deepEqual(f.view, before, 'manual differences remain independent assessment assumptions');
+});
+
 test('real Easee normalization supplies unplugged headroom from fixed limits, independent of zero idle draw', () => {
   const f = fixture(), tests = f.create(), original = f.view.chargers[0];
   const snapshot = { readAt: START, online: true, mode: 1, modeAt: START, pluggedIn: false, enabled: true,
@@ -296,6 +337,142 @@ test('actual reported target conflicts remain explicit while ordinary planner se
   assert.equal(tests.status().runs[0].target.requiresConfirmation, false);
   assert.equal(tests.status().runs[0].phase, 'completed');
   assert.equal(charger.values.minimumSoc.value, 95, 'assessment observation leaves ordinary settings alone');
+});
+
+test('explicit verification of a differing target survives repeated feed values and restart without rewriting raw reports', () => {
+  for (const vehicleId of ['bmw', 'tesla']) {
+    const f = fixture(); let tests = f.create();
+    const run = tests.start(f.input({ vehicleId, nativeTargetSoc: 85 }), f.view), charger = f.plug();
+    const source = vehicleId === 'bmw' ? 'bmw-cardata' : 'teslamate';
+    const report = reportedSoc => {
+      charger.values.vehicleCeilingSoc = value(reportedSoc, { source, measuredAt: f.clock(), receivedAt: f.clock() });
+      charger.values.powerKw = value(7, { measuredAt: f.clock() });
+      f.identify(charger, vehicleId, 60); tests.update(f.view);
+    };
+    report(100);
+    const action = extra => ({ id: run.id, association: run.association, sessionId: charger.request.sessionId,
+      targetRevision: tests.status().runs[0].target.revision, nativeTargetSoc: 85, ...extra });
+    tests.confirmTarget(action(), f.view);
+    assert.equal(tests.status().runs[0].target.requiresConfirmation, true, 'a simple target edit does not acknowledge contrary evidence');
+    assert.equal(tests.status().runs[0].target.verifications, undefined);
+    const before = structuredClone(f.view), verifiedAt = f.clock();
+    tests.confirmTarget(action({ verification: { reportedSoc: 100, source } }), f.view);
+    assert.deepEqual(f.view, before);
+    const verification = { targetSoc: 85, reportedSoc: 100, source, reportedAt: verifiedAt, confirmedAt: verifiedAt };
+    assert.deepEqual(tests.status().runs[0].target.verifications, [verification]);
+    assert.equal(tests.status().runs[0].target.requiresConfirmation, false);
+    tests = f.create();
+    for (const reportedSoc of [100, 85, 100, 85, 100]) {
+      f.advance(); report(reportedSoc);
+      const current = tests.status().runs[0];
+      assert.equal(current.target.reportedSoc, reportedSoc);
+      assert.equal(current.target.reportedAt, f.clock());
+      assert.equal(current.target.source, source);
+      assert.equal(current.target.requiresConfirmation, false);
+      assert.deepEqual(current.target.verifications, [verification], 'report refreshes do not rewrite the explicit verification receipt');
+      assert.equal(current.phase, 'observing', 'verification is not charging or completion evidence');
+    }
+    f.advance(); report(90);
+    assert.equal(tests.status().runs[0].target.requiresConfirmation, true, 'a new unreviewed report is a new conflict');
+    f.identify(charger, vehicleId, 85); charger.values.powerKw = value(0, { measuredAt: f.clock() }); tests.update(f.view);
+    assert.equal(tests.status().runs[0].phase, 'observing');
+    const actual = structuredClone(f.view);
+    tests.confirmTarget(action({ verification: { reportedSoc: 90, source } }), f.view); tests.update(f.view);
+    assert.deepEqual(f.view, actual);
+    assert.equal(tests.status().runs[0].target.reportedSoc, 90);
+    assert.equal(tests.status().runs[0].phase, 'completed', 'fresh vehicle charge and physical stop still establish completion at the verified actual setting');
+  }
+});
+
+test('verification rejects an unseen changed report and changing target invalidates previous verifications', () => {
+  const f = fixture(), tests = f.create();
+  const run = tests.start(f.input({ nativeTargetSoc: 85 }), f.view), charger = f.plug(); f.identify(charger);
+  charger.values.vehicleCeilingSoc = value(100, { source: 'bmw-cardata', measuredAt: f.clock() }); tests.update(f.view);
+  const action = extra => ({ id: run.id, association: run.association, sessionId: charger.request.sessionId,
+    targetRevision: tests.status().runs[0].target.revision, nativeTargetSoc: 85,
+    verification: { reportedSoc: 100, source: 'bmw-cardata' }, ...extra });
+  const before = tests.status(), writes = f.writes.length;
+  for (const change of [{ value: 90, source: 'bmw-cardata' }, { value: 100, source: 'teslamate' }]) {
+    charger.values.vehicleCeilingSoc = value(change.value, { source: change.source, measuredAt: f.clock() });
+    assert.throws(() => tests.confirmTarget(action(), f.view), /reported vehicle target changed/);
+    assert.deepEqual(tests.status(), before);
+    assert.equal(f.writes.length, writes);
+  }
+  charger.values.vehicleCeilingSoc = value(100, { source: 'bmw-cardata', measuredAt: f.clock() });
+  tests.confirmTarget(action(), f.view);
+  assert.equal(tests.status().runs[0].target.requiresConfirmation, false);
+  tests.confirmTarget(action({ nativeTargetSoc: 80, verification: undefined }), f.view);
+  assert.equal(tests.status().runs[0].target.verifications, undefined);
+  assert.equal(tests.status().runs[0].target.requiresConfirmation, true);
+  tests.confirmTarget(action({ verification: undefined }), f.view);
+  assert.equal(tests.status().runs[0].expectations.nativeTargetSoc, 85);
+  assert.equal(tests.status().runs[0].target.requiresConfirmation, true, 'changing away and back cannot restore a previous verification');
+});
+
+test('new optional verification state defaults to none and malformed saved verification fails before mutation', () => {
+  const f = fixture(); let tests = f.create();
+  const run = tests.start(f.input({ nativeTargetSoc: 85 }), f.view), charger = f.plug(); f.identify(charger);
+  charger.values.vehicleCeilingSoc = value(100, { source: 'bmw-cardata', measuredAt: f.clock() }); tests.update(f.view);
+  assert.equal(tests.status().version, 2);
+  const unverified = tests.status(), writes = f.writes.length;
+  tests = f.create();
+  assert.deepEqual(tests.status(), unverified, 'absence of genuinely new verification state grants no acknowledgement');
+  assert.equal(f.writes.length, writes);
+  const action = { id: run.id, association: run.association, sessionId: charger.request.sessionId,
+    targetRevision: run.target.revision, nativeTargetSoc: 85, verification: { reportedSoc: 100, source: 'bmw-cardata' } };
+  for (const verification of [null, true, {}, { reportedSoc: 100, source: 'session-request' },
+    { reportedSoc: 100, source: 'bmw-cardata', acceptAll: true }])
+    assert.throws(() => tests.confirmTarget({ ...action, verification }, f.view), /verification must identify/);
+  tests.confirmTarget(action, f.view);
+  const saved = structuredClone(f.saved.get('physical-tests'));
+  for (const corrupt of [
+    state => { state.runs[0].target.verifications = null; },
+    state => { state.runs[0].target.verifications[0].targetSoc = 80; },
+    state => { state.runs[0].target.verifications[0].reportedSoc = 85; },
+    state => { state.runs[0].target.verifications[0].reportedAt = 'yesterday'; },
+    state => { state.runs[0].target.verifications[0].source = 'session-request'; },
+    state => { state.runs[0].target.verifications[0].confirmedAt = null; },
+    state => { state.runs[0].target.verifications[0].confirmedAt = state.runs[0].createdAt - 1; },
+    state => { state.runs[0].target.verifications[0].confirmedAt = state.runs[0].updatedAt + 1; },
+    state => { state.runs[0].target.verifications[0].reportedAt = state.runs[0].target.verifications[0].confirmedAt + 1; },
+    state => { state.runs[0].target.verifications[0].acceptAll = true; },
+  ]) {
+    const invalid = structuredClone(saved); corrupt(invalid); f.saved.set('physical-tests', invalid);
+    const count = f.writes.length;
+    assert.throws(() => f.create(), /Unsupported physical charging test state/);
+    assert.equal(f.writes.length, count);
+  }
+});
+
+test('active target verification storage is bounded and never grants blanket acknowledgement to unretained reports', () => {
+  const f = fixture(); let tests = f.create();
+  const run = tests.start(f.input({ nativeTargetSoc: 85 }), f.view), charger = f.plug(); f.identify(charger);
+  for (let index = 0; index < 66; index++) {
+    f.advance(1000);
+    const reportedSoc = 100 - index / 10;
+    charger.values.vehicleCeilingSoc = value(reportedSoc, { source: 'bmw-cardata', measuredAt: f.clock() }); tests.update(f.view);
+    tests.confirmTarget({ id: run.id, association: run.association, sessionId: charger.request.sessionId,
+      targetRevision: tests.status().runs[0].target.revision, nativeTargetSoc: 85,
+      verification: { reportedSoc, source: 'bmw-cardata' } }, f.view);
+  }
+  tests = f.create();
+  assert.equal(tests.status().runs[0].target.verifications.length, 64);
+  assert.equal(tests.status().runs[0].target.requiresConfirmation, false);
+  charger.values.vehicleCeilingSoc = value(100, { source: 'bmw-cardata', measuredAt: f.clock() }); tests.update(f.view);
+  assert.equal(tests.status().runs[0].target.requiresConfirmation, true, 'pruned reports require explicit review again');
+});
+
+test('a failed verification write rolls back acknowledgement, target revision and assumption history', () => {
+  const f = fixture(), tests = f.create();
+  const run = tests.start(f.input({ nativeTargetSoc: 85 }), f.view), charger = f.plug(); f.identify(charger);
+  charger.values.vehicleCeilingSoc = value(100, { source: 'bmw-cardata', measuredAt: f.clock() }); tests.update(f.view);
+  const before = tests.status(), view = structuredClone(f.view);
+  f.store.setState = () => { throw new Error('verification disk failure'); };
+  assert.throws(() => tests.confirmTarget({ id: run.id, association: run.association, sessionId: charger.request.sessionId,
+    targetRevision: run.target.revision, nativeTargetSoc: 85, verification: { reportedSoc: 100, source: 'bmw-cardata' } }, f.view), /verification disk failure/);
+  assert.deepEqual(tests.status(), before);
+  assert.deepEqual(f.saved.get('physical-tests'), before);
+  assert.deepEqual(f.view, view);
 });
 
 test('delayed test obtains a suggestion only from the real plan and retains early identification as uncovered timing', () => {
@@ -661,6 +838,10 @@ test('unsupported saved state and retired action fields fail before storage muta
     state => { state.runs[0].schedule.startAt = START; }, state => { state.runs[0].target.history[0].targetSoc = 90; },
     state => { state.runs[0].expiresAt = START; }, state => { state.runs[0].target.planningSoc = 90; },
     state => { state.runs[0].target.revision = 0; },
+    state => { state.runs[0].expectations.nativeTargetSoc = 0; state.runs[0].target.history[0].targetSoc = 0; },
+    state => { state.runs[0].target.history.unshift({ targetSoc: 0, confirmedAt: START }); },
+    state => { state.runs[0].milestones.vehicleTarget = { at: START, source: 'bmw-cardata', targetSoc: 0 }; },
+    state => { state.runs[0].milestones.deadline = { at: START, state: 'target-observed-by-deadline', targetSoc: 0 }; },
     state => { state.runs.push(structuredClone(state.runs[0])); }]) {
     const next = structuredClone(saved); corrupt(next); f.saved.set('physical-tests', next); const writes = f.writes.length;
     assert.throws(() => f.create(), /Unsupported physical charging test state/); assert.equal(f.writes.length, writes);
@@ -668,6 +849,17 @@ test('unsupported saved state and retired action fields fail before storage muta
   f.saved.set('physical-tests', saved);
   assert.throws(() => f.create().start(f.input({ setManualSoc: true }), f.view));
   assert.throws(() => f.create().preview(f.input({ vehicleStartAt: START + HOUR }), f.view));
+});
+
+test('a raw reported zero target stays recorded evidence without becoming an accepted zero target', () => {
+  const f = fixture(), tests = f.create(); tests.start(f.input(), f.view);
+  const saved = structuredClone(f.saved.get('physical-tests'));
+  Object.assign(saved.runs[0].target, { reportedSoc: 0, reportedAt: START, source: 'bmw-cardata', requiresConfirmation: true });
+  f.saved.set('physical-tests', saved);
+  const writes = f.writes.length, restored = f.create().status();
+  assert.equal(restored.runs[0].target.reportedSoc, 0);
+  assert.equal(restored.runs[0].expectations.nativeTargetSoc, 80);
+  assert.equal(f.writes.length, writes);
 });
 
 test('a failed durable write rolls back the in-memory test action', () => {

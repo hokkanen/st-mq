@@ -1,3 +1,34 @@
+Implemented 2026-10-01 — Usable guided preparation and verified vehicle targets
+- Accept decimal battery inputs, including reported capacity such as 72.43 kWh,
+  without rounding. Explain invalid fields individually; valid manual battery
+  and capacity declarations need not equal vehicle telemetry.
+- Allow explicit verification of the actual car target despite a conflicting
+  report. Retain the original source/value/clock, and acknowledge only the exact
+  reported value/source the user reviewed. Remember repeated readings and BMW
+  100%/actual-target fluctuation across restart; a new conflicting report needs
+  review, and changing the accepted target clears prior acknowledgements.
+- Keep target changes and discrepancy verification available in the guide with
+  clear status and save receipts. Completion still needs independent physical
+  charging, fresh battery evidence at the verified target and a physical stop.
+  Preserve an open draft when another window saves a newer target and require
+  explicit refresh before saving, so stale edits cannot overwrite it.
+- Integrate the time picker into the time field for ordinary ready-by and both
+  guided schedule controls, retaining typing, keyboard access, local-day context,
+  saved adjustments and narrow-screen layouts. Correct inherited checkbox layout
+  and excessive field spacing found during real-browser screenshot review.
+- F1/F3/F4/F5/F7/F8: all guided data and verification remain assessment-only;
+  production settings, targets, telemetry, identity and commands are unchanged.
+  The current v2 assessment gains optional bounded verification records; absence
+  means no contrary-report verification, with no migration or history rewrite.
+- Validation: final routine suite 3,924 passed, 1 skipped, 0 failed; production
+  build and isolated browser checks passed. The optional upstream Tuya parser
+  test needs its external source checkout. Browser coverage includes both
+  vehicles, typed/picked times, decimal preparation, verified target fluctuations,
+  reload/poll persistence, stale edits, checkbox geometry and 320/390/1440 px
+  screenshots in both themes. Real BMW/Tesla acquisition tests prove guide actions
+  leave production inputs, identity, plans, raw readings and device calls unchanged.
+  All checks used synthetic data; no vehicle or charger was contacted.
+
 Implemented 2026-10-01 — Stable recorded phase voltage and charging schedules
 - Derive independent L1–L3 voltage estimates from verified local phase-neutral
   acquisitions with a six-hour EWMA half-life and one hour of valid elapsed

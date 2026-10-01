@@ -71,12 +71,30 @@ try {
     throw new Error(`UI did not settle: ${expression}; browser errors: ${errors.join(', ')}; synthetic fixture: ${JSON.stringify(fixture)}`);
   };
   const keyPress = async key => {
-    const windowsVirtualKeyCode = { Enter: 13, Escape: 27, Tab: 9, ArrowDown: 40, ArrowUp: 38 }[key];
+    const windowsVirtualKeyCode = { Enter: 13, Escape: 27, Tab: 9, ArrowDown: 40, ArrowUp: 38, Backspace: 8, a: 65 }[key];
     await send('Input.dispatchKeyEvent', { type: 'keyDown', key, code: key, windowsVirtualKeyCode,
       ...(key === 'Enter' ? { text: '\r', unmodifiedText: '\r' } : {}) });
     await send('Input.dispatchKeyEvent', { type: 'keyUp', key, code: key, windowsVirtualKeyCode });
   };
   const click = selector => evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
+  const pointerClick = async selector => {
+    const point = await evaluate(`(() => {const node=document.querySelector(${JSON.stringify(selector)});
+      node.scrollIntoView({block:'center'});const rect=node.getBoundingClientRect();return {x:rect.x+rect.width/2,y:rect.y+rect.height/2};})()`);
+    await send('Input.dispatchMouseEvent', {type:'mousePressed',button:'left',clickCount:1,...point});
+    await send('Input.dispatchMouseEvent', {type:'mouseReleased',button:'left',clickCount:1,...point});
+  };
+  const typeField = async (selector, value) => {
+    await evaluate(`document.querySelector(${JSON.stringify(selector)}).focus();document.querySelector(${JSON.stringify(selector)}).select()`);
+    await send('Input.insertText', {text:value});
+  };
+  const integratedTime = async selector => assert.equal(await evaluate(`(() => {
+    const input=document.querySelector(${JSON.stringify(selector)}), group=input.closest('.charging-time-input');
+    const button=group?.querySelector('.charging-time-choose');
+    if(!button || !button.getAttribute('aria-label') || button.textContent.trim()) return false;
+    const a=input.getBoundingClientRect(), b=button.getBoundingClientRect();
+    return b.left >= a.left && b.right <= a.right && b.top >= a.top && b.bottom <= a.bottom
+      && b.width >= 32 && b.height >= 32;
+  })()`), true, `${selector} has an accessible clock button inside the field without a separate Choose time row`);
   const poll = () => evaluate('chargingFixture.poll()');
   const setFields = values => evaluate(`(() => {
     const form = document.getElementById('charging-test-form');
@@ -147,6 +165,10 @@ try {
         };
         if (path === '/api/charging/tests/preview') {
           await globalThis.fetch('/api/status');
+          if (chargingFixture.previewError) {
+            const error = chargingFixture.previewError; chargingFixture.previewError = null;
+            return checkedResponse(new Response(JSON.stringify({error}), {status:400,headers:{'Content-Type':'application/json'}}));
+          }
           return checkedResponse(new Response(JSON.stringify({ eligible: true,
           headroom: { minutes: 180, capacityKwh: body.capacityKwh, powerKw: 11,
             minimumMinutes: body.program === 'immediate' ? 30 : 60 },
@@ -173,9 +195,19 @@ try {
           const run = chargingFixture.runs.find(item => item.id === body.id);
           if (body.targetRevision !== run.target.revision || Object.hasOwn(body, 'revision'))
             throw new Error('Assessment target confirmation must use its own revision, never the charger request revision');
+          if (body.nativeTargetSoc !== run.expectations.nativeTargetSoc) delete run.target.verifications;
+          if (body.verification) {
+            if (body.verification.reportedSoc !== run.target.reportedSoc || body.verification.source !== run.target.source)
+              throw new Error('The displayed vehicle target changed; review the current reading before confirming');
+            run.target.verifications ??= [];
+            run.target.verifications.push({targetSoc:body.nativeTargetSoc,reportedSoc:run.target.reportedSoc,
+              source:run.target.source,reportedAt:run.target.reportedAt,confirmedAt:N});
+          }
           run.expectations.nativeTargetSoc = body.nativeTargetSoc;
           run.target.revision++;
-          run.target.requiresConfirmation = false;
+          run.target.requiresConfirmation = run.target.reportedSoc !== body.nativeTargetSoc
+            && !run.target.verifications?.some(row => row.targetSoc === body.nativeTargetSoc
+              && row.reportedSoc === run.target.reportedSoc && row.source === run.target.source);
           run.target.history.push({ targetSoc: body.nativeTargetSoc, confirmedAt: N });
         } else if (path === '/api/charging/tests/cancel') {
           const run = chargingFixture.runs.find(item => item.id === body.id); run.phase = 'cancelled';
@@ -194,14 +226,18 @@ try {
         charger.settings.enabled = true;
         charger.values.connected = field(chargingFixture.connected && charger.id === 'charger1');
         charger.values.charging = field(false); charger.control = { phase: 'off' };
+        if (chargingFixture.readyBySession && charger.id === 'charger1') {
+          charger.request = {sessionId:'ready-by-browser-session',revision:1,chargeNow:false};
+          charger.capabilities.scheduling = true;
+        }
       }
       if (chargingFixture.noChargers) status.charging.chargers = [];
       status.charging.vehicleFeeds = ['bmw', 'tesla'].map(id => ({ id, label: id === 'bmw' ? 'BMW' : 'Tesla',
         provider: id === 'bmw' ? 'bmw-cardata' : 'teslamate', usedByChargerId: null,
         reception: { brokerConnected: true, subscribed: true, ...(id === 'bmw' ? { available: true } : {}) },
         setup: { available: true, healthy: true, state: id === 'tesla' ? 'asleep' : null,
-          fields: { soc: field(id === 'bmw' ? 35 : 40, id === 'tesla'), minimumSoc: field(80, id === 'tesla'),
-            ...(id === 'bmw' ? { capacityKwh: field(74) } : { vehicleNotBefore: field(N + 10 * 3600000, true) }),
+          fields: { soc: field(id === 'bmw' ? 35 : 40, id === 'tesla'), minimumSoc: field(id === 'bmw' ? 100 : 80, id === 'tesla'),
+            ...(id === 'bmw' ? { capacityKwh: field(72.43) } : { vehicleNotBefore: field(N + 10 * 3600000, true) }),
             atHome: field(true, id === 'tesla'), pluggedIn: field(false, id === 'tesla'), charging: field(false, id === 'tesla'),
             powerKw: field(0, true), requestedCurrentA: field(16, true), maxCurrentA: field(16, true),
             ...chargingFixture.vehicleReadings[id] } } }));
@@ -224,6 +260,17 @@ try {
       Object.assign(chargingFixture, JSON.parse(restoredFixture));
       sessionStorage.removeItem('charging-browser-fixture');
     }
+    chargingFixture.observeTarget = (id, reportedSoc, source, reportedAt) => {
+      const run = chargingFixture.runs.find(item => item.id === id), target = run.target;
+      Object.assign(target, {reportedSoc,source,reportedAt});
+      target.requiresConfirmation = reportedSoc !== run.expectations.nativeTargetSoc
+        && !target.verifications?.some(row => row.targetSoc === run.expectations.nativeTargetSoc
+          && row.reportedSoc === reportedSoc && row.source === source);
+      chargingFixture.vehicleReadings[run.vehicleId] ??= {};
+      chargingFixture.vehicleReadings[run.vehicleId].minimumSoc = {
+        value:reportedSoc,available:true,measuredAt:reportedAt,receivedAt:reportedAt,
+      };
+    };
   ` });
   await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
   await send('Page.navigate', { url: `http://127.0.0.1:${app.server.address().port}/` });
@@ -245,8 +292,10 @@ try {
   await evaluate('chargingFixture.noChargers = true'); await poll();
   await click('#charging-setup-bmw-test');
   assert.deepEqual(await evaluate(`['soc','nativeTargetSoc','capacityKwh'].map(name =>
-    document.querySelector('#charging-test-form [name=' + name + ']').value)`), ['35', '80', '74'],
+    document.querySelector('#charging-test-form [name=' + name + ']').value)`), ['35', '100', '72.43'],
   'BMW battery, one assumed vehicle target and usable capacity load without a configured charger');
+  assert.equal(await evaluate("document.querySelector('[name=capacityKwh]').validity.valid && !document.querySelector('[name=capacityKwh]').validity.stepMismatch"), true,
+    'The exact 72.43 kWh vehicle reading is valid without rounding or a browser step error');
   assert.equal(await evaluate("document.querySelector('[name=chargerId]').value"), '', 'Preparation does not silently select a physical charger');
   assert.match(await evaluate("document.querySelector('[data-test-source=soc]').textContent"), /vehicle|BMW|reported/i);
   assert.equal(await evaluate("document.querySelectorAll('#charging-test-form select.app-select-source').length"), 3,
@@ -271,7 +320,7 @@ try {
   'Background vehicle readings never replace edits to the battery, target or capacity');
   await click('[data-test-load]');
   assert.deepEqual(await evaluate(`['soc','nativeTargetSoc','capacityKwh'].map(name =>
-    document.querySelector('#charging-test-form [name=' + name + ']').value)`), ['37', '85', '74'],
+    document.querySelector('#charging-test-form [name=' + name + ']').value)`), ['37', '85', '72.43'],
   'The explicit load action replaces fields with the latest available readings');
   await evaluate(`chargingFixture.vehicleReadings.bmw = {
     soc:{value:null,available:false},minimumSoc:{value:null,available:false},capacityKwh:{value:null,available:false} }`);
@@ -287,21 +336,37 @@ try {
   assert.equal(await evaluate('chargingFixture.mutations.length'), 0,
     'Loading or replacing preparation values does not arm a session or change car settings');
   await evaluate('chargingFixture.noChargers = false; chargingFixture.vehicleReadings = {}'); await poll();
-  await setFields({ vehicleId: 'bmw', chargerId: 'charger1', program: 'immediate', soc: '35', nativeTargetSoc: '80', capacityKwh: '73', prepared: true });
+  await setFields({ vehicleId: 'bmw', chargerId: 'charger1', program: 'immediate', soc: '35.2', nativeTargetSoc: '82.1', capacityKwh: '0', prepared: true });
+  const beforeInvalidPreparation = await evaluate('chargingFixture.mutations.length');
+  await click('[data-test-preview]');
+  assert.match(await evaluate("document.querySelector('[data-test-message]').textContent"), /capacity.*1.*300/i,
+    'Invalid capacity gives a field-specific range error before any request');
+  assert.equal(await evaluate('chargingFixture.mutations.length'), beforeInvalidPreparation);
+  await setFields({ capacityKwh: '71.987', prepared: true });
+  assert.equal(await evaluate("document.querySelector('[data-test-message]').textContent"), '',
+    'Correcting the invalid field clears its obsolete validation message');
   await evaluate("document.querySelector('[name=soc]').focus(); globalThis.savedSocInput = document.querySelector('[name=soc]')");
   await poll();
-  assert.equal(await evaluate("document.querySelector('[name=soc]').value === '35' && document.activeElement === savedSocInput && savedSocInput === document.querySelector('[name=soc]')"), true,
+  assert.equal(await evaluate("document.querySelector('[name=soc]').value === '35.2' && document.activeElement === savedSocInput && savedSocInput === document.querySelector('[name=soc]')"), true,
     'Normal test drafts and field focus survive a status poll');
+  assert.equal(await evaluate("document.querySelector('[name=capacityKwh]').validity.valid && !document.querySelector('[name=capacityKwh]').validity.stepMismatch"), true,
+    'A manually verified capacity with three decimal places remains valid');
   for (const width of [320, 390, 1440]) for (const theme of ['light', 'dark']) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: 1000, deviceScaleFactor: 1, mobile: false });
     await evaluate(`document.documentElement.dataset.theme = '${theme}'`);
     await fits('#charging-test-dialog'); await screenshot(`preparation-${width}-${theme}`, '#charging-test-dialog');
   }
   await until("!document.querySelector('[data-test-preview]').disabled");
+  await evaluate("chargingFixture.previewError = 'Enter usable battery capacity from 1 to 300 kWh.'");
+  await click('[data-test-preview]');
+  await until("document.querySelector('[data-test-message]').textContent.includes('Enter usable battery capacity from 1 to 300 kWh.')");
+  assert.deepEqual(await evaluate(`['soc','nativeTargetSoc','capacityKwh'].map(name => document.querySelector('[name=' + name + ']').value)`),
+    ['35.2','82.1','71.987'], 'A precise server preparation error keeps all manually verified values for correction');
+  await until("!document.querySelector('[data-test-preview]').disabled");
   await click('[data-test-preview]');
   await until("!document.querySelector('[data-test-arm]').disabled");
   const immediate = { chargerId: 'charger1', vehicleId: 'bmw', program: 'immediate', association: 'charger1-fixture-association',
-    soc: 35, nativeTargetSoc: 80, capacityKwh: 73, prepared: true };
+    soc: 35.2, nativeTargetSoc: 82.1, capacityKwh: 71.987, prepared: true };
   assert.match(await evaluate("document.querySelector('[data-test-preparation]').textContent"), /assessment/i);
   assert.doesNotMatch(await evaluate("document.querySelector('[data-test-preparation]').textContent"), /Apply these inputs|Use these values for this charging session/i,
     'Preparation explains that the entered values belong only to the assessment');
@@ -315,6 +380,149 @@ try {
   assert.equal(await evaluate("document.querySelector('[data-test-phase]').textContent"), 'Ready to plug in', 'An armed test survives closing the window');
   await evaluate("chargingFixture.runs[0].sessionId='session-fixture-1'; chargingFixture.runs[0].report={id:'report-fixture'}; chargingFixture.runs[0].phase='observing'; chargingFixture.connected=true");
   await poll(); await until("!document.querySelector('[data-test-report]').disabled");
+
+  // BMW's raw target may alternate independently of the setting the user has
+  // verified in the car. Each distinct disagreement is acknowledged explicitly.
+  await evaluate(`chargingFixture.observeTarget('run-1',100,'bmw-cardata',${now - 300000})`); await poll();
+  await until("!document.querySelector('[data-test-target-value]').disabled");
+  await typeField('[data-test-target-value]', '82.1');
+  const unverifiedMutations = await evaluate('chargingFixture.mutations.length');
+  await keyPress('Enter');
+  assert.equal(await evaluate('chargingFixture.mutations.length'), unverifiedMutations,
+    'A differing manual target requires the explicit actual-car verification checkbox');
+  assert.equal(await evaluate("document.querySelector('[data-test-target-verified]').required"), true);
+  const verificationLayout = await evaluate(`(() => {
+    const label=document.querySelector('[data-test-target-verification]'),input=label.querySelector('input'),text=label.querySelector('span');
+    return {label:{display:getComputedStyle(label).display,flexDirection:getComputedStyle(label).flexDirection},
+      input:{height:getComputedStyle(input).height,minHeight:getComputedStyle(input).minHeight,width:getComputedStyle(input).width},
+      rectangles:{input:input.getBoundingClientRect().toJSON(),text:text.getBoundingClientRect().toJSON()}};
+  })()`);
+  writeFileSync(join(artifacts,'target-verification-layout.json'),JSON.stringify(verificationLayout,null,2));
+  assert.equal(verificationLayout.label.flexDirection, 'row', 'Verification checkbox and explanatory text share a row');
+  assert.ok(verificationLayout.rectangles.input.height <= 24,
+    'The verification checkbox remains a compact native square instead of inheriting text-field height');
+  assert.match(await evaluate("document.querySelector('[data-test-target-reported]').textContent"), /100%.*BMW|BMW.*100%/i);
+  assert.match(await evaluate("document.querySelector('[data-test-target-reported]').textContent"), /14:55|2:55/,
+    'The conflicting raw report retains its original source clock');
+  for (const width of [320, 390, 1440]) for (const theme of ['light', 'dark']) {
+    await send('Emulation.setDeviceMetricsOverride', {width,height:1000,deviceScaleFactor:1,mobile:false});
+    await evaluate(`document.documentElement.dataset.theme='${theme}';document.querySelector('[data-test-target-review]').scrollIntoView({block:'center'})`);
+    assert.equal(await evaluate(`(() => {const label=document.querySelector('[data-test-target-verification]'),
+      checkbox=label.querySelector('input').getBoundingClientRect(),text=label.querySelector('span').getBoundingClientRect();
+      return getComputedStyle(label).flexDirection==='row' && checkbox.height<=24 && text.left>=checkbox.right && text.top<checkbox.bottom;})()`), true,
+    'Verification stays beside its wrapping text in every viewport and theme');
+    await fits('#charging-test-dialog'); await screenshot(`target-discrepancy-${width}-${theme}`, '#charging-test-dialog', {preserveScroll:true});
+  }
+  const beforeBmwVerification = await evaluate('chargingFixture.ordinaryCharging');
+  await click('[data-test-target-verified]');
+  await evaluate("document.querySelector('[data-test-target-value]').focus()"); await keyPress('Enter');
+  await until("chargingFixture.runs[0].target.revision === 2 && document.querySelector('[data-test-target-review]').hidden");
+  assert.deepEqual(await evaluate('chargingFixture.mutations.at(-1).body'), {
+    id:'run-1',association:'charger1-fixture-association',sessionId:'session-fixture-1',targetRevision:1,nativeTargetSoc:82.1,
+    verification:{reportedSoc:100,source:'bmw-cardata'},
+  });
+  assert.deepEqual(await evaluate('chargingFixture.ordinaryCharging'), beforeBmwVerification,
+    'Explicitly verifying a manual target never rewrites any actual charging input or vehicle report');
+  await evaluate(`chargingFixture.observeTarget('run-1',100,'bmw-cardata',${now - 240000})`); await poll();
+  assert.equal(await evaluate("document.querySelector('[data-test-target-review]').hidden"), true,
+    'A later clock for the same acknowledged raw target does not demand another confirmation');
+  assert.match(await evaluate("document.querySelector('[data-test-target-reported]').textContent"), /100%/);
+  assert.match(await evaluate("document.querySelector('[data-test-target-verification-status]').textContent"), /verified|reviewed/i);
+  await evaluate(`chargingFixture.observeTarget('run-1',85,'bmw-cardata',${now - 180000})`); await poll();
+  await until("!document.querySelector('[data-test-target-review]').hidden && !document.querySelector('[data-test-target-value]').disabled");
+  await typeField('[data-test-target-value]', '82.1'); await click('[data-test-target-verified]');
+  await evaluate("document.querySelector('[data-test-target-value]').focus()"); await keyPress('Enter');
+  await until("chargingFixture.runs[0].target.revision === 3 && document.querySelector('[data-test-target-review]').hidden");
+  assert.deepEqual(await evaluate('chargingFixture.runs[0].target.verifications.map(row => row.reportedSoc)'), [100,85],
+    'Both independently reviewed raw target values are retained');
+  await until("!document.querySelector('[data-test-target-edit]').disabled");
+  await click('[data-test-target-edit]');
+  await typeField('[data-test-target-value]', '83.5'); await click('[data-test-target-verified]');
+  const beforeStaleEdit = await evaluate('chargingFixture.mutations.length');
+  await evaluate(`(() => {const run=chargingFixture.runs[0];run.expectations.nativeTargetSoc=84.2;
+    run.target.revision=4;run.target.history.push({targetSoc:84.2,confirmedAt:${now}});
+    delete run.target.verifications;run.target.requiresConfirmation=true;})()`);
+  await poll();
+  assert.equal(await evaluate("document.querySelector('[data-test-target-value]').value"), '83.5',
+    'A target saved by another tab preserves this tab’s draft for review');
+  assert.equal(await evaluate("document.querySelector('[data-test-target-stale]').hidden"), false);
+  assert.match(await evaluate("document.querySelector('[data-test-target-discrepancy]').textContent"), /84\.2/);
+  assert.equal(await evaluate("document.querySelector('[data-test-target-confirm]').disabled && document.querySelector('[data-test-target-verified]').disabled && !document.querySelector('[data-test-target-verified]').checked"), true,
+    'A changed assessment revision clears verification and disables stale submission');
+  for (const width of [320,390,1440]) for (const theme of ['light','dark']) {
+    await send('Emulation.setDeviceMetricsOverride', {width,height:1000,deviceScaleFactor:1,mobile:false});
+    await evaluate(`document.documentElement.dataset.theme='${theme}';document.querySelector('[data-test-target-stale]').scrollIntoView({block:'center'})`);
+    await fits('#charging-test-dialog'); await screenshot(`target-stale-edit-${width}-${theme}`, '#charging-test-dialog', {preserveScroll:true});
+  }
+  await evaluate("document.querySelector('[data-test-target-value]').focus()"); await keyPress('Enter');
+  assert.equal(await evaluate('chargingFixture.mutations.length'), beforeStaleEdit,
+    'A stale draft cannot silently submit against the newer revision');
+  await click('[data-test-target-refresh]');
+  assert.equal(await evaluate("document.querySelector('[data-test-target-value]').value"), '84.2',
+    'Explicit review loads the target saved by the other tab');
+  await typeField('[data-test-target-value]', '82.1'); await click('[data-test-target-verified]');
+  await evaluate("document.querySelector('[data-test-target-value]').focus()"); await keyPress('Enter');
+  await until("chargingFixture.runs[0].target.revision === 5 && document.querySelector('[data-test-target-review]').hidden");
+  assert.equal(await evaluate('chargingFixture.mutations.at(-1).body.targetRevision'), 4,
+    'Only explicit refresh and renewed verification permit saving against the latest revision');
+  assert.deepEqual(await evaluate('chargingFixture.runs[0].target.verifications.map(row => row.reportedSoc)'), [85],
+    'Changing the saved target invalidates acknowledgements associated with the old target');
+  await evaluate(`chargingFixture.observeTarget('run-1',100,'bmw-cardata',${now - 150000})`); await poll();
+  await until("!document.querySelector('[data-test-target-value]').disabled");
+  await click('[data-test-target-verified]');
+  await evaluate("document.querySelector('[data-test-target-value]').focus()"); await keyPress('Enter');
+  await until("chargingFixture.runs[0].target.revision === 6 && document.querySelector('[data-test-target-review]').hidden");
+  await evaluate("sessionStorage.setItem('charging-browser-fixture',JSON.stringify(chargingFixture))");
+  await send('Page.reload');
+  await until("chargingFixture.poll && document.getElementById('charging-setup-tesla-state')?.textContent === 'Healthy · Sleeping'");
+  await click('#charging-setup-bmw-test');
+  for (const [index, reported] of [100,85,100,85].entries()) {
+    await evaluate(`chargingFixture.observeTarget('run-1',${reported},'bmw-cardata',${now - 120000} + ${index} * 30000)`); await poll();
+    assert.equal(await evaluate("document.querySelector('[data-test-target-review]').hidden"), true,
+      'Reviewed 100/85 reports remain accepted after browser reload and repeated fluctuations');
+    assert.equal(await evaluate('chargingFixture.runs[0].expectations.nativeTargetSoc'), 82.1);
+    assert.match(await evaluate("document.querySelector('[data-test-target-reported]').textContent"), new RegExp(`${reported}%`));
+  }
+  for (const width of [320, 390, 1440]) for (const theme of ['light', 'dark']) {
+    await send('Emulation.setDeviceMetricsOverride', {width,height:1000,deviceScaleFactor:1,mobile:false});
+    await evaluate(`document.documentElement.dataset.theme='${theme}';document.querySelector('[data-test-target-reported]').scrollIntoView({block:'center'})`);
+    await fits('#charging-test-dialog'); await screenshot(`target-verified-${width}-${theme}`, '#charging-test-dialog', {preserveScroll:true});
+  }
+  await evaluate(`chargingFixture.observeTarget('run-1',90,'bmw-cardata',${now})`); await poll();
+  assert.equal(await evaluate("document.querySelector('[data-test-target-review]').hidden"), false,
+    'A genuinely new raw target is not covered by a previous verification');
+  await evaluate(`chargingFixture.observeTarget('run-1',100,'bmw-cardata',${now})`); await poll();
+  assert.equal(await evaluate('chargingFixture.runs[0].target.requiresConfirmation'), false,
+    'Returning to an acknowledged raw report clears the new-conflict requirement');
+  await click('[data-test-target-dismiss]'); await poll();
+  assert.equal(await evaluate("document.querySelector('[data-test-target-review]').hidden"), true,
+    'A previously acknowledged report stays closed after dismissing the unused edit');
+
+  // The same integrated field serves ordinary ready-by editing; editing a draft
+  // and opening its chooser must never send a settings request.
+  await keyPress('Escape');
+  await evaluate('chargingFixture.readyBySession=true'); await poll();
+  await evaluate(`for(let node=document.getElementById('charger1-device');node;node=node.parentElement)
+    if(node.tagName==='DETAILS') node.open=true`);
+  await until("!document.getElementById('charger1-setting-readyBy').disabled");
+  const beforeReadyByEdit = await evaluate('chargingFixture.mutations.length');
+  await typeField('#charger1-setting-readyBy', '07:43'); await poll();
+  assert.equal(await evaluate("document.getElementById('charger1-setting-readyBy').value"), '07:43');
+  await pointerClick('#charger1-setting-readyBy-choose');
+  await until("document.getElementById('charging-time-dialog')?.open");
+  assert.equal(await evaluate("document.getElementById('charging-time-minute').value"), '43');
+  await typeField('#charging-time-minute', '47'); await click('#charging-time-set');
+  assert.equal(await evaluate("document.getElementById('charger1-setting-readyBy').value"), '07:47');
+  for (const width of [320,390,1440]) for (const theme of ['light','dark']) {
+    await send('Emulation.setDeviceMetricsOverride', {width,height:1000,deviceScaleFactor:1,mobile:false});
+    await evaluate(`document.documentElement.dataset.theme='${theme}'`);
+    await integratedTime('#charger1-setting-readyBy');
+    await screenshot(`ready-by-${width}-${theme}`, '.charging-field:has(#charger1-setting-readyBy)');
+  }
+  assert.equal(await evaluate('chargingFixture.mutations.length'), beforeReadyByEdit,
+    'Typing and choosing an ordinary ready-by draft never silently saves it');
+  await evaluate('chargingFixture.readyBySession=false'); await poll();
+  await click('#charging-setup-bmw-test');
   const mutationCount = await evaluate('chargingFixture.mutations.length');
   await click('[data-test-report]');
   await until("document.getElementById('charging-report-dialog').open");
@@ -372,7 +580,23 @@ try {
   assert.match(await evaluate("document.querySelector('[data-test-initial-date]').textContent"), /Europe\/Helsinki/,
     'A time-only vehicle schedule explains its resolved date and installation timezone');
   await until("!document.getElementById('charging-test-initial-time-choose').disabled");
-  await click('#charging-test-initial-time-choose');
+  await typeField('[name=vehicleStartAt]', '01:00');
+  for (const width of [320,390,1440]) for (const theme of ['light','dark']) {
+    await send('Emulation.setDeviceMetricsOverride', {width,height:1000,deviceScaleFactor:1,mobile:false});
+    await evaluate(`document.documentElement.dataset.theme='${theme}';document.querySelector('[data-test-start-label]').scrollIntoView({block:'center'})`);
+    await integratedTime('[name=vehicleStartAt]'); await fits('#charging-test-dialog');
+    await screenshot(`initial-schedule-${width}-${theme}`, '#charging-test-dialog', {preserveScroll:true});
+    await pointerClick('#charging-test-initial-time-choose');
+    await until("document.getElementById('charging-test-time-dialog')?.open");
+    await fits('#charging-test-time-dialog'); await screenshot(`initial-time-picker-${width}-${theme}`, '#charging-test-time-dialog');
+    await evaluate("globalThis.timePickerClosed = new Promise(resolve => document.getElementById('charging-test-time-dialog').addEventListener('close', () => resolve(true), {once:true})); true");
+    await keyPress('Escape');
+    await evaluate('timePickerClosed');
+    await until("!document.getElementById('charging-test-time-dialog').open && document.activeElement.id === 'charging-test-initial-time-choose'");
+  }
+  await evaluate("document.querySelector('[name=vehicleStartAt]').focus()");
+  await send('Input.dispatchKeyEvent', {type:'keyDown',key:'ArrowDown',code:'ArrowDown',windowsVirtualKeyCode:40,modifiers:1});
+  await send('Input.dispatchKeyEvent', {type:'keyUp',key:'ArrowDown',code:'ArrowDown',windowsVirtualKeyCode:40,modifiers:1});
   await until("document.getElementById('charging-test-time-dialog')?.open");
   assert.equal(await evaluate("document.getElementById('charging-test-time-hour').value"), '01');
   await evaluate("document.getElementById('charging-test-time-minute').value='05'");
@@ -399,7 +623,7 @@ try {
   assert.match(await evaluate("document.querySelector('[data-test-schedule-original]').textContent"), /01:00/);
   assert.match(await evaluate("document.querySelector('[data-test-schedule-current]').textContent"), /01:00/);
   assert.match(await evaluate("document.querySelector('[data-test-recommendation]').textContent"), /01:30/);
-  await click('#charging-test-adjustment-time-choose');
+  await pointerClick('#charging-test-adjustment-time-choose');
   await until("document.getElementById('charging-test-time-dialog')?.open");
   await evaluate("document.getElementById('charging-test-time-minute').value='45'");
   await click('#charging-test-time-set');
@@ -438,6 +662,7 @@ try {
   await evaluate("document.querySelector('[data-test-confirm-time]').value='02:15'; document.querySelector('[data-test-confirm-time]').dispatchEvent(new Event('input',{bubbles:true})); document.querySelector('[data-test-confirm-time]').focus()");
   await keyPress('Enter');
   await until("document.querySelector('[data-test-schedule-receipt]').textContent.includes('02:15')");
+  await until("!document.querySelector('[data-test-cancel]').disabled");
   assert.equal(await evaluate('chargingFixture.runs[0].schedule.history.length'), 2,
     'Further schedule adjustments retain both confirmations');
   await evaluate("chargingFixture.runs[0].recommendation.state='unavailable'"); await poll();
@@ -496,6 +721,9 @@ try {
     await send('Emulation.setDeviceMetricsOverride', { width, height: 1000, deviceScaleFactor: 1, mobile: false });
     await evaluate(`document.documentElement.dataset.theme = '${theme}'`);
     await fits('#charging-test-dialog'); await screenshot(`test-${width}-${theme}`, '#charging-test-dialog');
+    await evaluate("document.querySelector('[data-test-adjustment-field]').scrollIntoView({block:'center'})");
+    await integratedTime('[data-test-confirm-time]');
+    await screenshot(`adjusted-schedule-${width}-${theme}`, '#charging-test-dialog', {preserveScroll:true});
     await keyPress('Escape');
     await evaluate("document.getElementById('charging-setup-details').open=true; document.getElementById('charging-setup-bmw-details').open=true; document.getElementById('charging-setup-tesla-details').open=true");
     await fits('#charging-setup-content'); await screenshot(`setup-${width}-${theme}`, '#charging-setup-details');
@@ -710,11 +938,29 @@ try {
   // even when a newer assessment of the same vehicle is already active.
   await evaluate(`(() => {
     const f = chargingFixture, completed = structuredClone(f.runs.find(run => run.id === 'run-1'));
+    const connectedAt=${now - 86_400_000}, endedAt=${now - 79_200_000};
     f.recent = [{...structuredClone(f.report), id:'report-bmw-old', startedAt:${now - 86_400_000}, endedAt:${now - 79_200_000},
       outcome:{state:'target-confirmed'}}];
     Object.assign(completed, {id:'completed-bmw-test', phase:'completed', endReason:'vehicle-target-and-stop-observed',
-      report:{id:'report-bmw-old'}, sessionId:'previous-bmw-session'});
-    const latest = {...structuredClone(completed), id:'newer-bmw-test', phase:'armed', report:null, sessionId:null};
+      report:{id:'report-bmw-old'}, sessionId:'previous-bmw-session',createdAt:connectedAt-300000,
+      expiresAt:connectedAt+86100000,connectedAt,endedAt,lastSeenAt:endedAt});
+    completed.target.history = completed.target.history.map((row,index) => ({...row,
+      confirmedAt:index===0 ? completed.createdAt : connectedAt+90000+index*1000}));
+    completed.target.verifications = completed.target.verifications.map((row,index) => ({...row,
+      reportedAt:connectedAt+90000+index*1000,confirmedAt:connectedAt+95000+index*1000}));
+    completed.target.reportedAt = completed.target.verifications.find(row=>row.reportedSoc===completed.target.reportedSoc)?.reportedAt
+      ?? connectedAt+90000;
+    completed.milestones = {
+      connection:{at:${now - 86_400_000},connectedAt:${now - 86_400_000}},
+      identification:{at:${now - 86_340_000},source:'bmw-cardata'},
+      initialPlan:{at:${now - 86_280_000}},
+      identifiedPlanningInputs:{at:${now - 86_280_000}},
+      chargingStarted:{at:${now - 86_220_000},source:'easee-ocpp'},
+      vehicleTarget:{at:${now - 79_260_000},targetSoc:completed.expectations.nativeTargetSoc,source:'bmw-cardata'},
+      completion:{at:${now - 79_200_000},source:'vehicle-target-and-charger-stop',state:'observed'},
+    };
+    const latest = {...structuredClone(completed), id:'newer-bmw-test', phase:'armed', report:null, sessionId:null,milestones:{},
+      createdAt:${now},expiresAt:${now + 86400000},connectedAt:null,endedAt:null,lastSeenAt:${now}};
     f.runs.unshift(latest, completed);
   })()`);
   await poll();
@@ -725,10 +971,19 @@ try {
   assert.equal(await evaluate("document.getElementById('charging-test-dialog').contains(document.activeElement)"), true);
   assert.equal(await evaluate("document.querySelector('[data-test-phase]').textContent"), 'Charging completion confirmed',
     'An old report opens its completed guided assessment, not a newer active test of the same vehicle');
+  assert.equal(await evaluate(`['New physical connection','Expected vehicle identified','Physical charging started','Vehicle target reached','Vehicle completion observed']
+    .every(title => {const term=[...document.querySelectorAll('[data-test-milestones] dt')].find(node=>node.textContent===title);
+      return term && !/Not exercised|Not yet observed|unconfirmed/i.test(term.nextElementSibling.textContent);})`), true,
+  'A completed fixture presents its independently observed connection, identification, charging, target and completion milestones');
   assert.match(await evaluate("document.querySelector('[data-test-guidance]').textContent"), /completed charging occasion/i,
     'A historical completed assessment describes its recorded outcome');
   assert.doesNotMatch(await evaluate("document.querySelector('[data-test-guidance]').textContent"), /unplug the car/i,
     'A historical completed assessment never tells the user to unplug a different current session');
+  for (const width of [320,390,1440]) for (const theme of ['light','dark']) {
+    await send('Emulation.setDeviceMetricsOverride', {width,height:1000,deviceScaleFactor:1,mobile:false});
+    await evaluate(`document.documentElement.dataset.theme='${theme}'`);
+    await fits('#charging-test-dialog'); await screenshot(`completed-assessment-${width}-${theme}`, '#charging-test-dialog');
+  }
   await click('[data-test-report]');
   await until("document.getElementById('charging-report-dialog').open && !document.getElementById('charging-test-dialog').open");
   assert.equal(await evaluate("document.getElementById('charging-report-dialog').contains(document.activeElement)"), true);
@@ -748,9 +1003,13 @@ try {
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ result: 'charging-browser-smoke-passed', artifacts, checks: [
     'keyboard-disclosures-and-Escape-focus', 'vehicle-stats-without-charger', 'missing-stats-and-capacity-defaults',
+    'precise-preparation-errors-and-full-decimal-capacity', 'manual-values-independent-of-vehicle-readings',
+    'explicit-different-target-verification-persists-through-reload-and-100-85-flaps', 'raw-target-and-source-clock-remain-visible',
+    'stale-target-draft-needs-explicit-reload-and-new-verification', 'compact-verification-checkbox-alignment',
     'single-assessment-target-reconciliation', 'lower-assumption-never-shows-real-target-success',
     'assessment-declarations-preserve-ordinary-charging', 'target-draft-preserved-through-source-refresh',
-    'app-dropdowns-and-shared-time-picker', 'draft-preservation-through-status-polls', 'normal-and-delayed-action-payloads',
+    'app-dropdowns-and-integrated-time-picker', 'keyboard-typing-and-inset-picker-for-ready-by-initial-and-adjusted-times',
+    'draft-preservation-through-status-polls', 'normal-and-delayed-action-payloads',
     'time-only-schedules-in-installation-timezone', 'original-current-and-recommended-schedules', 'Enter-schedule-receipt',
     'confirmed-schedule-survives-reopen-page-reload-and-new-recommendation', 'unavailable-recommendation-gating', 'unplug-finish-and-incomplete-coverage',
     'passive-report-no-mutations', 'read-only-controls', 'retained-report-and-recovered-issue',

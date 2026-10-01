@@ -32,7 +32,7 @@ function fixture(t, vehicleId = 'tesla') {
   Object.assign(runtime.vehicleFeeds.bmw.mqtt, { connected: true, subscribed: true, lastValidLiveAt: now });
   t.after(async () => { await runtime.close(); await engine.closeFireplace(); store.close(); rmSync(directory, { recursive: true, force: true }); });
   return { engine, runtime, store, config, clock: () => now, input: { chargerId: 'charger1', vehicleId, program: 'immediate',
-    association: item.association, soc: 30, nativeTargetSoc: 85, capacityKwh: 62, prepared: true },
+    association: item.association, soc: 30.25, nativeTargetSoc: 85, capacityKwh: 72.43, prepared: true },
   primary: () => primary, demote: () => { primary = false; }, plug: () => { now += 1000; connected = true; connectedAt = now; },
     unplug: () => { now += 1000; connected = false; connectedAt = null; } };
 }
@@ -58,6 +58,21 @@ test('guided-test API uses real normalized charger readiness and keeps declarati
   });
   const before = structuredClone(f.runtime.settings);
   assert.equal((await post('start', f.input, false)).status, 401);
+  for (const [changes, expected] of [
+    [{ capacityKwh: 0 }, /capacity.*1.*300/i],
+    [{ capacityKwh: '72.43' }, /capacity/i],
+    [{ soc: -1 }, /battery.*0.*100/i],
+    [{ nativeTargetSoc: 101 }, /target.*100/i],
+    [{ prepared: false }, /verif|confirm/i],
+    [{ chargerId: '' }, /charger/i],
+    [{ arbitraryTarget: 67 }, /unsupported|unknown/i],
+  ]) {
+    const rejected = await post('start', { ...f.input, ...changes });
+    assert.equal(rejected.status, 400);
+    assert.match((await rejected.json()).error, expected);
+    assert.equal(f.runtime.physicalTests.status().runs.length, 0);
+    assert.deepEqual(f.runtime.settings, before);
+  }
   const preview = await post('preview', f.input);
   assert.equal(preview.status, 200);
   const preparation = await preview.json();
@@ -67,6 +82,8 @@ test('guided-test API uses real normalized charger readiness and keeps declarati
   const response = await post('start', f.input); assert.equal(response.status, 200);
   const armed = (await response.json()).charging.physicalTests.runs[0];
   assert.equal(armed.phase, 'armed');
+  assert.equal(armed.expectations.capacityKwh, 72.43);
+  assert.equal(armed.expectations.soc, 30.25);
   assert.deepEqual(f.runtime.settings, before);
   assert.equal(f.runtime.chargers.charger1.request, null);
   f.plug(); f.runtime.persist();
@@ -84,6 +101,11 @@ test('guided-test API uses real normalized charger readiness and keeps declarati
   const actual = production(f.runtime);
   const targetInput = { id: run.id, association: run.association, sessionId: run.sessionId,
     targetRevision: run.target.revision, nativeTargetSoc: 90 };
+  const unseenReport = await post('target', { ...targetInput,
+    verification: { reportedSoc: 100, source: 'teslamate' } });
+  assert.equal(unseenReport.status, 400, 'A client cannot invent telemetry to acknowledge');
+  assert.deepEqual(production(f.runtime), actual);
+  assert.equal(f.runtime.physicalTests.status().runs[0].target.revision, run.target.revision);
   const targetResponse = await post('target', targetInput);
   assert.equal(targetResponse.status, 200);
   const assessed = (await targetResponse.json()).charging.physicalTests.runs[0];

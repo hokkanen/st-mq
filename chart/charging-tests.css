@@ -4,15 +4,16 @@
 .charging-test-dialog p { line-height:1.55; }
 .charging-test-fields { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:.8rem; }
 .charging-test-dialog label { display:grid; gap:.4rem; font-size:.85rem; }
+.charging-test-fields label { margin:0; }
 .charging-test-fields input,.charging-test-fields select,[data-test-confirm-time] { width:100%; min-width:0; box-sizing:border-box; }
 .charging-test-fields small { line-height:1.5; overflow-wrap:anywhere; }
 .charging-test-dialog .charging-time-field { gap:.4rem; }
-.charging-test-dialog .charging-time-field > label { font-size:.85rem; }
+.charging-test-dialog .charging-time-field > label { font-size:.85rem; margin:0; }
 .charging-test-dialog .charging-time-field > small { font-size:.8rem; }
 .charging-test-dialog [hidden] { display:none; }
 .charging-test-wide { grid-column:1 / -1; }
-.charging-test-dialog .charging-test-check { display:flex; align-items:flex-start; gap:.65rem; margin:1rem 0; }
-.charging-test-check input { flex:0 0 auto; width:auto; margin-top:.2rem; }
+.charging-test-dialog .charging-test-check { display:flex; flex-direction:row; align-items:flex-start; gap:.65rem; margin:1rem 0; }
+.charging-test-check input { flex:0 0 1rem; width:1rem; height:1rem; min-height:0; padding:0; margin:.2rem 0 0; }
 .charging-test-actions { display:flex; flex-wrap:wrap; gap:.6rem; margin:1rem 0; }
 .charging-test-phase { font-weight:600; }
 .charging-test-gates { padding-left:1.2rem; }
@@ -20,7 +21,11 @@
 .charging-test-gates [data-state="blocked"] { color:var(--stale); }
 .charging-test-milestones { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:.5rem 1rem; }
 .charging-test-milestones dd { margin:0; overflow-wrap:anywhere; }
-[data-test-timer],[data-test-target-review] { padding:1rem; border:1px solid var(--border); border-radius:8px; }
+[data-test-timer],[data-test-target-summary] { padding:1rem; border:1px solid var(--border); border-radius:8px; margin:1rem 0; }
+[data-test-target-summary] > p:first-child { margin-top:0; }
+[data-test-target-review] { margin-top:1rem; padding-top:.5rem; border-top:1px solid var(--border); }
+[data-test-target-review] > label:not(.charging-test-check) { max-width:18rem; }
+[data-test-target-edit] { margin:0; }
 [data-test-schedule-current],[data-test-schedule-receipt],[data-test-target-receipt] { font-weight:600; }
 [data-test-schedule-receipt]:empty,[data-test-target-receipt]:empty { display:none; }
 @media(max-width:420px) { .charging-test-fields { grid-template-columns:1fr; } .charging-test-dialog { padding:1rem; } }

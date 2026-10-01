@@ -1620,7 +1620,7 @@ test('a failed handover keeps acknowledged Automatic ON and explains partial suc
   assert(!$('charger1-resume').disabled); panel.close();
 });
 
-test('ready-by chooser uses one page dialog, cancels cleanly and submits through the session save', async () => {
+test('ready-by picker is inset in the editable input, uses one dialog and submits through the session save', async () => {
   const document = documentFixture(), $ = id => document.getElementById(id), calls = [];
   const item = connected(), second = connected('charger2');
   const panel = createChargingPanel({ document, request: async (...args) => {
@@ -1629,6 +1629,11 @@ test('ready-by chooser uses one page dialog, cancels cleanly and submits through
   panel.update(status(item, second));
   const input = $('charger1-setting-readyBy'), choose = $('charger1-setting-readyBy-choose');
   assert.equal(input.type, 'text', 'The field does not open the browser-owned time dialog');
+  assert.equal(input.parentElement, choose.parentElement);
+  assert.equal(input.parentElement.className, 'charging-time-input');
+  assert.equal(choose.textContent, '', 'The integrated icon does not add a separate Choose time label');
+  assert.equal(choose.getAttribute('aria-label'), 'Choose ready-by time');
+  assert.equal(input.getAttribute('aria-keyshortcuts'), 'Alt+ArrowDown');
   assert(new RegExp(`^${input.pattern}$`).test('23:59')); assert(!new RegExp(`^${input.pattern}$`).test('24:00'));
   assert.equal($('charging-time-dialog'), null);
   choose.focus(); choose.dispatch('click');
@@ -1655,6 +1660,9 @@ test('ready-by chooser uses one page dialog, cancels cleanly and submits through
   const other = $('charger2-setting-readyBy-choose'); other.dispatch('click');
   assert.equal($('charging-time-dialog'), dialog); assert.equal($('charging-time-hour').value, second.settings.readyBy.slice(0, 2));
   dialog.close(); assert.equal(document.activeElement, other);
+  input.focus(); const openKey = input.dispatch('keydown', { key: 'ArrowDown', altKey: true });
+  assert.equal(openKey.defaultPrevented, true); assert.equal(dialog.open, true);
+  $('charging-time-cancel').dispatch('click'); assert.equal(document.activeElement, input);
   panel.close(); assert.equal($('charging-time-dialog'), null); assert(!choose.listeners.has('click'));
 });
 

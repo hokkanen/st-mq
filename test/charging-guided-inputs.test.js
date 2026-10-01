@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chargingTestReadings } from '../chart/charging-tests.js';
+import { chargingTestReadings, chargingTestNumberError } from '../chart/charging-tests.js';
 import { chargingTestClock, nextChargingTestTime } from '../chart/charging-test-time.js';
 
 const now = Date.parse('2026-09-30T20:15:00Z');
@@ -21,6 +21,17 @@ test('preparation loads BMW readings without a charger and retains their origina
   assert.equal(values.vehicleStartAt, undefined);
   assert.equal(chargingTestReadings(status({ soc: reading(100) }), 'bmw').soc.value, 100,
     'A full battery remains visible so preparation can explain insufficient headroom');
+});
+
+test('vehicle and manually entered battery values preserve decimal precision without a telemetry equality requirement', () => {
+  const values = chargingTestReadings(status({ soc: reading(35.2), minimumSoc: reading(82.1), capacityKwh: reading(72.43) }), 'bmw');
+  assert.equal(values.soc.value, 35.2); assert.equal(values.nativeTargetSoc.value, 82.1); assert.equal(values.capacityKwh.value, 72.43);
+  for (const value of [72.43, 71.987, 57.637184, '72.43', '71.987', 1, 300]) assert.equal(chargingTestNumberError('capacityKwh', value), '');
+  for (const value of [0, 300.01, '', null, 'abc', Infinity]) assert.match(chargingTestNumberError('capacityKwh', value), /capacity.*1 to 300/);
+  for (const value of [0, 35.217, 100]) assert.equal(chargingTestNumberError('soc', value), '');
+  for (const value of [-1, 100.1, '']) assert.match(chargingTestNumberError('soc', value), /battery charge.*0 to 100/);
+  for (const value of [1, 82.123, 100]) assert.equal(chargingTestNumberError('nativeTargetSoc', value), '');
+  for (const value of [0, 100.1, '']) assert.match(chargingTestNumberError('nativeTargetSoc', value), /vehicle charge target.*1 to 100/);
 });
 
 test('Tesla uses receipt provenance, configured capacity and only a future reported schedule', () => {

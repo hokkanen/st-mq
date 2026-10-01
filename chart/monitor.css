@@ -1778,10 +1778,15 @@ button.garage-door-action:disabled { opacity: 1; cursor: default; }
 .charging-field > input { width: 100%; }
 .charging-field-help { display: block; margin-top: 6px; color: var(--muted); font-size: 10px; line-height: 1.5; }
 .charging-field-disabled > label, .charging-field-disabled > input { opacity: .65; }
-.charging-time-field { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 6px; align-content: start; }
-.charging-time-field > label, .charging-time-field > small { grid-column: 1 / -1; }
-.charging-time-field > input { font-variant-numeric: tabular-nums; }
-.charging-time-choose { margin: 0; padding-inline: 10px; font-size: 11px; }
+.charging-time-field { display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; }
+.charging-time-input { position: relative; width: 100%; min-width: 0; }
+.charging-time-input > input { box-sizing: border-box; width: 100%; padding-inline-end: 44px; font-variant-numeric: tabular-nums; }
+.charging-time-input > .charging-time-choose { position: absolute; inset-block: 2px; inset-inline-end: 2px; display: grid; place-items: center; width: 38px; min-height: 0; margin: 0; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--muted); }
+.charging-time-input > .charging-time-choose:hover:not(:disabled) { background: var(--surface-soft); color: var(--text); }
+.charging-time-input > .charging-time-choose:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.charging-time-icon { position: relative; display: block; box-sizing: border-box; width: 17px; height: 17px; border: 1.5px solid currentColor; border-radius: 50%; }
+.charging-time-icon::before { content: ''; position: absolute; left: 6px; top: 3px; width: 4px; height: 5px; border-left: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; }
+.charging-field-disabled .charging-time-input { opacity: .65; }
 .charging-time-dialog { width: min(360px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow: hidden; }
 .charging-time-dialog[open], .charging-time-dialog form { display: flex; flex-direction: column; }
 .charging-time-dialog form { min-height: 0; }

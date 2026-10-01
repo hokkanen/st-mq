@@ -36,8 +36,8 @@ export function createChargingTime({ document, idPrefix = 'charging-time' }) {
     actions.append(cancel, apply); form.append(content, actions); dialog.append(form); document.body.append(dialog);
     bind(cancel, 'click', () => dialog.close());
     bind(dialog, 'close', () => {
-      const button = active?.button; active = null;
-      if (button?.isConnected && !button.disabled) button.focus({ preventScroll: true });
+      const opener = active?.opener; active = null;
+      if (opener?.isConnected && !opener.disabled) opener.focus({ preventScroll: true });
     });
     bind(form, 'submit', event => {
       event.preventDefault();
@@ -56,21 +56,30 @@ export function createChargingTime({ document, idPrefix = 'charging-time' }) {
     attach(input, container, options = {}) {
       input.type = 'text'; input.pattern = clockPattern; input.placeholder = 'HH:mm'; input.maxLength = 5;
       input.title = '24-hour time, HH:mm'; input.autocomplete = 'off'; input.spellcheck = false;
+      input.setAttribute('aria-keyshortcuts', 'Alt+ArrowDown');
       container.classList.add('charging-time-field');
-      const button = make('button', 'Choose time', `${input.id}-choose`); button.type = 'button';
-      button.className = 'secondary-button charging-time-choose'; button.disabled = input.disabled;
+      const control = make('div'); control.className = 'charging-time-input';
+      container.insertBefore(control, input);
+      const button = make('button', '', `${input.id}-choose`); button.type = 'button';
+      button.className = 'charging-time-choose'; button.disabled = input.disabled;
+      button.title = options.label ?? 'Choose ready-by time';
+      const icon = make('span'); icon.className = 'charging-time-icon'; icon.setAttribute('aria-hidden', 'true'); button.append(icon);
       button.setAttribute('aria-label', options.label ?? 'Choose ready-by time'); button.setAttribute('aria-haspopup', 'dialog');
-      button.setAttribute('aria-controls', `${idPrefix}-dialog`); container.append(button);
+      button.setAttribute('aria-controls', `${idPrefix}-dialog`); control.append(input, button);
       const entry = { input, button, scope: null }; entries.set(input, entry);
-      bind(button, 'click', () => {
+      const open = opener => {
         if (input.disabled || button.disabled) return;
         if (!dialog) createDialog();
         if (dialog.open) return;
         title.textContent = typeof options.title === 'function' ? options.title() : options.title ?? 'Ready-by time · local';
         description.textContent = options.description ?? 'Choose a time, then save the session settings.';
         const value = validClock(input.value) ? input.value : '00:00';
-        [hour.value, minute.value] = value.split(':'); active = entry;
+        [hour.value, minute.value] = value.split(':'); entry.opener = opener; active = entry;
         dialog.showModal(); hour.focus();
+      };
+      bind(button, 'click', () => open(button));
+      bind(input, 'keydown', event => {
+        if (event.altKey && event.key === 'ArrowDown' && !input.disabled) { event.preventDefault(); open(input); }
       });
     },
     update(input, scope) {

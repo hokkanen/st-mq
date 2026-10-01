@@ -149,7 +149,11 @@ Each vehicle has a **Guided test** button. Selecting a vehicle loads its
 available battery percentage and charge target independently of charger selection.
 Usable battery capacity comes from a reported vehicle value when available,
 otherwise that vehicle's configured default. All three values remain editable;
-the user verifies them before arming. Source clocks and unavailable fields stay
+the user verifies them before arming. Numeric values retain source precision,
+including decimal usable capacity such as 72.43 kWh. Manual values need valid
+ranges and sufficient charging headroom; they need not equal the vehicle feed.
+Invalid preparation identifies the field or prerequisite that needs attention.
+Source clocks and unavailable fields stay
 visible. Reloading explicitly offers new readings without silently replacing
 manual edits. This reads the existing feed; it does not wake or query the car.
 BMW may report usable capacity; the current Tesla feed uses configured capacity.
@@ -170,11 +174,25 @@ user; confirming a copied reading does not grant it new production authority.
 Preparation expires after 24 hours if no connection starts. Assessment assumptions
 survive a current-version restart and remain associated with the exact test and
 physical connection. If the independently reported vehicle target disagrees with
-the assumed target, the guide shows the source time and discrepancy. The user can
-check the car and update the assessment's assumed target. This changes only the
-assessment, never the normal session target or the car. A conflicting report
-remains visible until it agrees and cannot establish successful completion at a
-different target. Historical findings remain separate from the current discrepancy.
+the assumed target, the guide shows the source, time and discrepancy. The user can
+check the actual setting in the car and record that verified target, including
+a value that differs from unreliable telemetry. This changes only the assessment,
+never the normal session target or the car. Verification acknowledges the exact
+reported value and source shown to the user. Repeated reports of that same value,
+including BMW alternating between 100% and the verified target, do not repeatedly
+require confirmation. A new conflicting value or source needs review; changing
+the accepted target clears earlier discrepancy verifications. Verification stays
+with this assessment and survives a current-version restart.
+If another window saves a newer target while an edit is open, the guide keeps
+the draft visible and requires loading the latest saved target before confirming.
+It cannot silently overwrite the newer verification.
+
+The conflicting report and its original clock remain visible after verification;
+manual confirmation never becomes telemetry or proof of charging. Until a conflict
+has been reviewed, it blocks target/completion success. After explicit verification,
+completion still requires independently observed charging, a fresh vehicle battery
+reading at the verified target, and a fresh physical stop. Historical findings
+remain separate from current discrepancy and verification status.
 The guide does not ask the user to enter a second controller target or silently
 force the production plan to agree with its assumptions.
 
@@ -192,7 +210,8 @@ deliberately discharging for a test.
   planning, charger execution and physical completion.
 - **Delayed vehicle schedule:** first set a future start in the car that prevents
   immediate charging and record it before arming. Use the ordinary application
-  time picker; the resolved day and installation timezone are shown beside it.
+  time field with its integrated picker; typing is also supported. The resolved
+  day and installation timezone are shown beside it.
   After plug-in, the guide evaluates candidate vehicle timer settings against the
   actual production periods. If the real plan cannot accommodate the assumed
   target, the guide reports that limitation without modifying the plan. It prefers

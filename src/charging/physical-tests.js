@@ -10,6 +10,7 @@ const finite = Number.isFinite;
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const time = value => Number.isSafeInteger(value) && value >= 0;
 const percent = value => finite(value) && value >= 0 && value <= 100;
+const targetPercent = value => percent(value) && value >= 1;
 const capacity = value => finite(value) && value >= 1 && value <= 300;
 const copy = value => structuredClone(value);
 const allowed = (value, keys) => object(value) && Object.keys(value).every(key => keys.includes(key));
@@ -37,17 +38,26 @@ const planSummary = (charger, now) => ({ at: now, reason: charger.plan.reason ??
   feasible: typeof charger.plan.feasible === 'boolean' ? charger.plan.feasible : null });
 
 function validateInput(input, arming = false) {
-  if (!allowed(input, ['chargerId', 'vehicleId', 'program', 'association', 'soc', 'nativeTargetSoc', 'capacityKwh', 'prepared', 'vehicleStartAt'])
-    || !['charger1', 'charger2'].includes(input.chargerId) || !['bmw', 'tesla'].includes(input.vehicleId)
-    || !PROGRAMS.includes(input.program)
-    || input.soc != null && !percent(input.soc) || input.nativeTargetSoc != null && !percent(input.nativeTargetSoc)
-    || input.capacityKwh != null && !capacity(input.capacityKwh)
-    || input.prepared !== undefined && typeof input.prepared !== 'boolean'
-    || input.association !== undefined && (typeof input.association !== 'string' || !input.association.length)
-    || input.vehicleStartAt != null && !time(input.vehicleStartAt)
-    || input.program === 'immediate' && input.vehicleStartAt != null
-    || arming && (!percent(input.soc) || !percent(input.nativeTargetSoc) || !capacity(input.capacityKwh) || input.prepared !== true || !input.association))
-    throw new Error('Select a vehicle, charger and program, and confirm the current battery percentage, vehicle charge target and usable battery capacity.');
+  if (!object(input)) throw new Error('Guided test preparation must be an object.');
+  const keys = ['chargerId', 'vehicleId', 'program', 'association', 'soc', 'nativeTargetSoc', 'capacityKwh', 'prepared', 'vehicleStartAt'];
+  const unknown = Object.keys(input).find(key => !keys.includes(key));
+  if (unknown !== undefined) throw new Error(`Unsupported guided test preparation field: ${unknown || '(empty)'}.`);
+  if (!['charger1', 'charger2'].includes(input.chargerId)) throw new Error('Select a physical charger for this assessment.');
+  if (!['bmw', 'tesla'].includes(input.vehicleId)) throw new Error('Select BMW or Tesla for this assessment.');
+  if (!PROGRAMS.includes(input.program)) throw new Error('Choose Normal charging or Vehicle waits for its schedule.');
+  if (input.association !== undefined && (typeof input.association !== 'string' || !input.association.length)
+    || arming && !input.association) throw new Error('Select the current physical charger again before arming the assessment.');
+  if (input.soc != null && !percent(input.soc)) throw new Error('Current battery percentage must be a number from 0 to 100%.');
+  if (arming && input.soc == null) throw new Error('Enter the current battery percentage.');
+  if (input.nativeTargetSoc != null && !targetPercent(input.nativeTargetSoc)) throw new Error('Vehicle charge target must be a number from 1 to 100%.');
+  if (arming && input.nativeTargetSoc == null) throw new Error('Enter the charge target currently set in the vehicle.');
+  if (input.capacityKwh != null && !capacity(input.capacityKwh)) throw new Error('Usable battery capacity must be a number from 1 to 300 kWh; decimal values are accepted.');
+  if (arming && input.capacityKwh == null) throw new Error('Enter the usable battery capacity in kWh.');
+  if (input.prepared !== undefined && typeof input.prepared !== 'boolean') throw new Error('Preparation confirmation must be true or false.');
+  if (arming && input.prepared !== true) throw new Error('Confirm that you checked the vehicle settings and preparation values before arming.');
+  if (input.vehicleStartAt != null && !time(input.vehicleStartAt)) throw new Error('The start time recorded from the vehicle must be a valid date and time.');
+  if (input.program === 'immediate' && input.vehicleStartAt != null) throw new Error('Remove the vehicle start time for the Normal charging test, or choose Vehicle waits for its schedule.');
+  if (arming && input.program === 'vehicle-schedule' && input.vehicleStartAt == null) throw new Error('Record the initial start time set in the vehicle before arming the delayed test.');
 }
 
 function headroom(input, charger) {
@@ -186,7 +196,7 @@ function validateSaved(saved) {
       || run.endedAt !== null && !time(run.endedAt) || run.sessionId !== null && typeof run.sessionId !== 'string'
       || run.connectedAt !== null && !time(run.connectedAt)
       || !allowed(run.expectations, ['soc', 'nativeTargetSoc', 'capacityKwh', 'vehicleStartAt'])
-      || !percent(run.expectations.soc) || !percent(run.expectations.nativeTargetSoc) || !capacity(run.expectations.capacityKwh)
+      || !percent(run.expectations.soc) || !targetPercent(run.expectations.nativeTargetSoc) || !capacity(run.expectations.capacityKwh)
       || run.expectations.vehicleStartAt !== null && !time(run.expectations.vehicleStartAt)
       || !allowed(run.schedule, ['startAt', 'confirmedAt', 'history'])
       || run.schedule.startAt !== null && !time(run.schedule.startAt)
@@ -200,15 +210,24 @@ function validateSaved(saved) {
         || run.schedule.startAt !== run.expectations.vehicleStartAt)
       || run.program === 'immediate' && (run.expectations.vehicleStartAt !== null || run.schedule.history.length > 0)
       || run.program === 'vehicle-schedule' && !time(run.expectations.vehicleStartAt)
-      || !allowed(run.target, ['reportedSoc', 'reportedAt', 'source', 'revision', 'requiresConfirmation', 'history'])
+      || !allowed(run.target, ['reportedSoc', 'reportedAt', 'source', 'revision', 'requiresConfirmation', 'history', 'verifications'])
       || run.target.reportedSoc !== null && !percent(run.target.reportedSoc)
       || run.target.reportedAt !== null && !time(run.target.reportedAt)
       || !Number.isSafeInteger(run.target.revision) || run.target.revision < 1
       || ![null, 'bmw-cardata', 'teslamate'].includes(run.target.source)
       || typeof run.target.requiresConfirmation !== 'boolean'
       || !Array.isArray(run.target.history) || !run.target.history.length || run.target.history.length > 64
-      || run.target.history.some(row => !allowed(row, ['targetSoc', 'confirmedAt']) || !percent(row.targetSoc) || !time(row.confirmedAt))
+      || run.target.history.some(row => !allowed(row, ['targetSoc', 'confirmedAt']) || !targetPercent(row.targetSoc) || !time(row.confirmedAt))
       || run.target.history.at(-1).targetSoc !== run.expectations.nativeTargetSoc
+      || run.target.verifications !== undefined && (!Array.isArray(run.target.verifications) || run.target.verifications.length > 64
+        || run.target.verifications.some(row => !allowed(row, ['targetSoc', 'reportedSoc', 'source', 'reportedAt', 'confirmedAt'])
+          || !targetPercent(row.targetSoc) || row.targetSoc !== run.expectations.nativeTargetSoc
+          || !percent(row.reportedSoc) || row.reportedSoc === row.targetSoc
+          || !['bmw-cardata', 'teslamate'].includes(row.source)
+          || row.reportedAt !== null && (!time(row.reportedAt) || row.reportedAt > row.confirmedAt)
+          || !time(row.confirmedAt) || !run.sessionId || !time(run.connectedAt)
+          || row.confirmedAt < run.connectedAt || row.confirmedAt > run.updatedAt
+          || run.endedAt !== null && row.confirmedAt > run.endedAt))
       || !object(run.milestones) || !Array.isArray(run.findings) || run.findings.length > 32
       || !allowed(run.headroom, ['capacityKwh', 'powerKw', 'gridKwh', 'minutes', 'minimumMinutes', 'adequate', 'declaredSoc', 'basis'])
       || ![30, 60].includes(run.headroom.minimumMinutes)
@@ -221,7 +240,7 @@ function validateSaved(saved) {
       || !allowed(run.milestones, ['connection', 'identification', 'initialPlan', 'identifiedPlanningInputs', 'chargingStarted',
         'chargingAfterDelay', 'vehicleTarget', 'deadline', 'completion', 'vehicleSchedule'])
       || Object.values(run.milestones).some(row => !allowed(row, ['at', 'connectedAt', 'source', 'state', 'startAt', 'targetSoc']) || !time(row.at)
-        || row.targetSoc !== undefined && !percent(row.targetSoc))
+        || row.targetSoc !== undefined && !targetPercent(row.targetSoc))
       || run.findings.some(row => !allowed(row, ['code', 'at']) || typeof row.code !== 'string' || !time(row.at)))
       throw new Error('Unsupported physical charging test state; start a fresh development database.');
   }
@@ -357,16 +376,32 @@ export class ChargingPhysicalTests {
   }
 
   confirmTarget(input, view) {
-    const { run, charger } = this.scoped(input, view, ['id', 'association', 'sessionId', 'targetRevision', 'nativeTargetSoc']);
+    const { run, charger } = this.scoped(input, view, ['id', 'association', 'sessionId', 'targetRevision', 'nativeTargetSoc', 'verification']);
     const now = this.clock();
     if (!run.sessionId || input.sessionId !== run.sessionId || physicalSession(charger) !== run.sessionId
       || connected(charger) !== true || !fresh(charger.control?.snapshot, now)
       || !Number.isSafeInteger(input.targetRevision) || input.targetRevision !== run.target.revision)
       throw new Error('The assessment target or charging session changed; refresh before confirming the assessment assumption.');
-    if (!percent(input.nativeTargetSoc)) throw new Error('Enter the charge target set in the vehicle, from 0 to 100%.');
+    if (!targetPercent(input.nativeTargetSoc)) throw new Error('Vehicle charge target must be a number from 1 to 100%.');
+    if (input.verification !== undefined && (!allowed(input.verification, ['reportedSoc', 'source'])
+      || !percent(input.verification.reportedSoc) || !['bmw-cardata', 'teslamate'].includes(input.verification.source)))
+      throw new Error('Explicit vehicle-target verification must identify the reported percentage and its vehicle source.');
     return this.transaction(() => {
+      this.observeTarget(run, charger, view, now);
+      if (input.verification && (input.verification.reportedSoc !== run.target.reportedSoc || input.verification.source !== run.target.source))
+        throw new Error('The reported vehicle target changed. Review the new reading before verifying the setting in the car.');
+      // These are explicit user verifications for the current target, not
+      // device observations. Changing the target ends their scope, including
+      // when a user later changes it back to a previously verified value.
+      if (input.nativeTargetSoc !== run.expectations.nativeTargetSoc) delete run.target.verifications;
       run.expectations.nativeTargetSoc = input.nativeTargetSoc; run.target.revision++;
       run.target.history = [...run.target.history, { targetSoc: input.nativeTargetSoc, confirmedAt: now }].slice(-64);
+      if (input.verification && input.nativeTargetSoc !== run.target.reportedSoc) {
+        const verification = { targetSoc: input.nativeTargetSoc, reportedSoc: run.target.reportedSoc,
+          source: run.target.source, reportedAt: run.target.reportedAt, confirmedAt: now };
+        run.target.verifications = [...(run.target.verifications ?? []).filter(row => row.reportedSoc !== verification.reportedSoc
+          || row.source !== verification.source), verification].slice(-64);
+      }
       this.observeTarget(run, charger, view, now);
       if (run.program === 'vehicle-schedule') run.recommendation = recommendation(charger, remainingEstimate(run, charger, now), now);
       run.updatedAt = now;
@@ -410,7 +445,12 @@ export class ChargingPhysicalTests {
       run.target.source = reading.source;
     }
     const reportedConflict = percent(run.target.reportedSoc) && run.target.reportedSoc !== run.expectations.nativeTargetSoc;
-    run.target.requiresConfirmation = reportedConflict;
+    // A known repeated report may remain contrary to the user's explicit check
+    // in the car. Keep that raw report and clock visible without requesting the
+    // same check again solely because the feed republishes it with a new clock.
+    const verified = run.target.verifications?.some(row => row.targetSoc === run.expectations.nativeTargetSoc
+      && row.reportedSoc === run.target.reportedSoc && row.source === run.target.source) === true;
+    run.target.requiresConfirmation = reportedConflict && !verified;
     if (reportedConflict) this.finding(run, 'vehicle-limit-differs-from-preparation', now);
   }
 
