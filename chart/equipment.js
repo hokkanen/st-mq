@@ -627,7 +627,8 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
   }
   const openSetupHash = () => {
     const id = document.defaultView?.location?.hash?.slice(1);
-    if (['floor-preheat-details', 'garage-protection-details', 'garage-protection-configuration-details'].includes(id)) openSetup(id);
+    if (['floor-preheat-details', 'garage-protection-details', 'garage-protection-settings-details',
+      'garage-protection-configuration-details'].includes(id)) openSetup(id);
   };
   document.defaultView?.addEventListener('hashchange', openSetupHash);
   openSetupHash();

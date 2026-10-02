@@ -471,27 +471,10 @@
                     </div>
                   </details>
                   <details id="garage-protection-configuration-details" class="section-fold controller-fold garage-protection">
-                    <summary><span>Garage freeze protection</span><small>Pipe details &amp; setup</small></summary>
+                    <summary><span>Garage freeze protection</span><small>Installation &amp; setup</small></summary>
                     <div class="section-fold-body">
-                      <p class="muted">Two air probes feed a local pipe-protection model. When protection is needed, it requests heating and a temporary minimum target in either Normal or Away. Your saved selection stays unchanged.</p>
-                      <p class="garage-protection-link"><a href="#garage-protection-details" data-open-garage-protection>View live protection &amp; temperatures in Garage →</a></p>
-                      <details id="garage-protection-settings-details" class="equipment-fold">
-                        <summary>Protection settings</summary>
-                        <p id="garage-protection-settings-status" class="muted" role="status">Waiting for reported protection settings.</p>
-                        <table id="garage-protection-parameters" class="garage-protection-parameters" aria-label="Configured and reported protection parameters" aria-describedby="garage-protection-settings-status garage-protection-settings-help">
-                          <thead><tr><th scope="col">Parameter</th><th id="garage-protection-configured-label" scope="col">Configured</th><th id="garage-protection-reported-label" scope="col">Reported</th></tr></thead>
-                          <tbody>
-                            <tr><th scope="row">Installation approval</th><td id="garage-protection-configured-approved">Unavailable</td><td id="garage-protection-reported-approved">Unavailable</td></tr>
-                            <tr><th scope="row">Protection margin · °C</th><td id="garage-protection-configured-marginC">Unavailable</td><td id="garage-protection-reported-marginC">Unavailable</td></tr>
-                            <tr><th scope="row">Pipe outside diameter · mm</th><td id="garage-protection-configured-pipeOutsideDiameterMm">Unavailable</td><td id="garage-protection-reported-pipeOutsideDiameterMm">Unavailable</td></tr>
-                            <tr><th scope="row">Pipe wall thickness · mm</th><td id="garage-protection-configured-pipeWallMm">Unavailable</td><td id="garage-protection-reported-pipeWallMm">Unavailable</td></tr>
-                            <tr><th scope="row">Heat transfer · W/(m²·K)</th><td id="garage-protection-configured-heatTransferWPerM2K">Unavailable</td><td id="garage-protection-reported-heatTransferWPerM2K">Unavailable</td></tr>
-                          </tbody>
-                        </table>
-                        <p id="garage-protection-settings-help" class="muted">Change <code>garage.protection</code> in configuration, then use <a href="#controls-details" data-open-configuration>Apply reviewed configuration</a>. Reported values come from the protection sender; matching settings do not by themselves establish that protection is available.</p>
-                      </details>
-                      <details id="garage-protection-setup-details" class="equipment-fold">
-                        <summary><span>Installation &amp; setup</span><small>Hardware &amp; guides</small></summary>
+                      <p class="garage-protection-link"><a href="#garage-protection-details" data-open-garage-protection>View protection &amp; pipe model in Garage →</a></p>
+                      <div id="garage-protection-setup-details">
                         <p class="muted">The supplied scripts have been tested with the following setup:</p>
                         <dl class="garage-protection-hardware">
                           <div><dt>Protection sender</dt><dd><strong>Shelly 1 Gen 3</strong><span>Plus Add-on · two DS18B20 probes</span><small>Tested firmware 2.0.1</small></dd></div>
@@ -503,10 +486,10 @@
                           <li><h4>Place and identify the probes</h4><p>Locate the rear and front probes near the protected pipework so their air readings reflect the conditions that cool the pipe. Match each physical probe to its reported component ID, and verify regular fresh readings even when the temperature is unchanged.</p></li>
                           <li><h4>Install the sender</h4><p>Use the <a href="https://github.com/hokkanen/shelly-cn105-mqtt/blob/main/docs/sender.md" target="_blank" rel="noopener noreferrer">sender guide</a> for firmware preparation, probe mapping and script installation. Enable startup execution and Bluetooth, connect to this application’s MQTT broker, and match the topics in <code>garage.sender</code>.</p></li>
                           <li><h4>Connect the heat pump</h4><p>Follow the <a href="https://github.com/hokkanen/shelly-cn105-mqtt/blob/main/docs/installation.md" target="_blank" rel="noopener noreferrer">controller installation guide</a> for wiring and the control script. Pair the sender over BTHome and map all four inputs: rear room temperature, temporary minimum, rescue demand and validity. The controller is the only device that commands the heat pump.</p></li>
-                          <li><h4>Apply the pipe settings</h4><p>Review the margin, pipe dimensions and heat-transfer assumptions in <code>garage.protection</code>. Apply the reviewed configuration and compare Configured with Reported values above. Complete the guides’ installation checks, including restart and connection loss, before relying on protection; matching settings alone do not confirm that the pipes are protected.</p></li>
+                          <li><h4>Apply the pipe settings</h4><p>Review the margin, pipe dimensions and heat-transfer assumptions in <code>garage.protection</code>. Apply the reviewed configuration and compare Configured with Reported values in <a href="#garage-protection-settings-details" data-open-garage-protection>Garage protection settings</a>. Complete the guides’ installation checks, including restart and connection loss, before relying on protection; matching settings alone do not confirm that the pipes are protected.</p></li>
                         </ol>
                         <p class="garage-protection-link">Scripts and full instructions: <a href="https://github.com/hokkanen/shelly-cn105-mqtt" target="_blank" rel="noopener noreferrer">shelly-cn105-mqtt</a></p>
-                      </details>
+                      </div>
                     </div>
                   </details>
                   <details id="electricity-details" class="section-fold controller-fold electricity-panel">
@@ -672,7 +655,59 @@
                     <p><strong>Missing protection input.</strong> Once protection inputs are configured on the heat-pump controller, a missing, stale or invalid feed triggers a separate fallback: Heat, power On and a native 16 °C thermostat. Normal room regulation resumes when valid input returns; your saved selection is preserved.</p>
                     <p><strong>Room-sensor fault.</strong> A missing, stale or out-of-range regulation input also selects the native 16 °C thermostat. It preserves the power setting unless protection requests Heat/On rescue.</p>
                   </details>
-                  <p class="garage-protection-link"><a href="#garage-protection-configuration-details" data-open-garage-protection>Pipe details &amp; sender setup in settings →</a></p>
+                  <details id="garage-protection-settings-details" class="equipment-fold">
+                    <summary>Protection settings</summary>
+                    <p class="muted">Each location models a water-filled copper pipe using the adjacent air readings and the assumptions below. Pipe temperature and reserve are estimates; air temperature is measured.</p>
+                    <p id="garage-protection-settings-status" class="muted" role="status">Waiting for reported protection settings.</p>
+                    <table id="garage-protection-parameters" class="garage-protection-parameters" aria-label="Configured and reported protection parameters" aria-describedby="garage-protection-settings-status garage-protection-settings-help">
+                      <thead><tr><th scope="col">Parameter</th><th id="garage-protection-configured-label" scope="col">Configured</th><th id="garage-protection-reported-label" scope="col">Reported</th></tr></thead>
+                      <tbody>
+                        <tr><th scope="row">Installation approval</th><td id="garage-protection-configured-approved">Unavailable</td><td id="garage-protection-reported-approved">Unavailable</td></tr>
+                        <tr><th scope="row">Protection margin · °C</th><td id="garage-protection-configured-marginC">Unavailable</td><td id="garage-protection-reported-marginC">Unavailable</td></tr>
+                        <tr><th scope="row">Pipe outside diameter · mm</th><td id="garage-protection-configured-pipeOutsideDiameterMm">Unavailable</td><td id="garage-protection-reported-pipeOutsideDiameterMm">Unavailable</td></tr>
+                        <tr><th scope="row">Pipe wall thickness · mm</th><td id="garage-protection-configured-pipeWallMm">Unavailable</td><td id="garage-protection-reported-pipeWallMm">Unavailable</td></tr>
+                        <tr><th scope="row">Heat transfer · W/(m²·K)</th><td id="garage-protection-configured-heatTransferWPerM2K">Unavailable</td><td id="garage-protection-reported-heatTransferWPerM2K">Unavailable</td></tr>
+                        <tr><th scope="row">Safety factor</th><td id="garage-protection-safety-factor" colspan="2">2 · Fixed in the model</td></tr>
+                      </tbody>
+                    </table>
+                    <p id="garage-protection-settings-help" class="muted">Change <code>garage.protection</code> in configuration, then use <a href="#controls-details" data-open-configuration>Apply reviewed configuration</a>. Reported values come from the protection sender; matching settings do not by themselves establish that protection is available.</p>
+                    <p class="muted">The fixed safety factor doubles cooling heat transfer and halves warming heat transfer. It is applied once in the thermal calculation; the resulting reserve is not divided by it again.</p>
+                    <details id="garage-pipe-calculation-details" class="learning-calculation">
+                      <summary>Calculation &amp; assumptions</summary>
+                      <div class="learning-calculation-body">
+                        <p class="learning-note">The model tracks heat stored in the water and copper per metre of pipe, separately for the rear and front locations. Pipe dimensions determine their masses and the surface exposed to air. These are engineering assumptions, not learned coefficients.</p>
+                        <div class="learning-equation">
+                          <p class="learning-equation-label">Heat capacity</p>
+                          <code class="learning-equation-expression">C = m_water × 4180 + m_copper × 385</code>
+                          <p class="learning-equation-legend">C is heat capacity in J/(m·K); masses are in kg/m. The fixed specific heats are 4,180 J/(kg·K) for water and 385 for copper. Masses use the configured outer diameter and wall thickness, with densities of 1,000 kg/m³ for water and 8,960 for copper.</p>
+                        </div>
+                        <div class="learning-equation">
+                          <p class="learning-equation-label">Heat exchange with the surrounding air</p>
+                          <code class="learning-equation-expression">G = h × π × D
+G_cooling = 2 × G
+G_warming = G / 2</code>
+                          <p class="learning-equation-legend">h is the configured heat-transfer coefficient in W/(m²·K); D is the outside diameter in metres. G is conductance per metre in W/(m·K). The fixed factor makes the estimate lose heat faster and regain it more slowly.</p>
+                        </div>
+                        <div class="learning-equation">
+                          <p class="learning-equation-label">Pipe temperature response</p>
+                          <code class="learning-equation-expression">dT_pipe/dt = (G_effective / C) × (T_air − T_pipe)</code>
+                          <p class="learning-equation-legend">For liquid water, the estimated pipe temperature follows the air temperature with a response time C/G_effective, in seconds. The calculation uses elapsed time between fresh readings; a warm reading or a heat-pump command cannot reset the estimate.</p>
+                        </div>
+                        <div class="learning-equation">
+                          <p class="learning-equation-label">Reserve above the protection margin</p>
+                          <code class="learning-equation-expression">reserve = C × max(T_pipe − margin, 0) / 1000</code>
+                          <p class="learning-equation-legend">Reserve is thermal energy in kJ/m above the configured margin. It is zero at or below the margin and unavailable while the temperature history is uncertain. The two locations keep separate reserves.</p>
+                        </div>
+                        <div class="learning-calculation-notes">
+                          <p><strong>Unknown history and possible ice.</strong> Without usable history, the model starts from a conservative −40 °C pipe state with possible ice. Long gaps are counted as exposure to −40 °C air. These are assumptions, not measurements. Thawing must repay the ice’s energy debt before positive reserve returns; latent heat never extends permission to remain below the margin.</p>
+                          <p><strong>Look-ahead and recovery.</strong> Protection uses a conservative ten-minute pipe-temperature forecast, extended by the age of the latest reading. Release requires both air readings and both forecasts to stay more than 1 °C above the margin for ten minutes.</p>
+                          <p><strong>Model limits.</strong> The calculation represents a uniform temperature in a water-filled copper pipe. Insulation, airflow, fittings and other stored liquids can respond differently. The estimates do not establish the temperature of every protected part.</p>
+                        </div>
+                        <a class="learning-calculation-reference" href="https://github.com/hokkanen/shelly-cn105-mqtt/blob/main/src/sender-model.js" target="_blank" rel="noopener noreferrer">Pipe model calculation reference →</a>
+                      </div>
+                    </details>
+                  </details>
+                  <p class="garage-protection-link"><a href="#garage-protection-configuration-details" data-open-garage-protection>Installation &amp; setup →</a></p>
                 </div>
               </details>
               <details class="equipment-fold garage-temperature-help">

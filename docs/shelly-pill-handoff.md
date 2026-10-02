@@ -20,9 +20,11 @@ uses fresh local sensing, preserves ordinary OFF, and explicitly selects HEAT/ON
 for local frost rescue. Absent protection fields mean unavailable, not safe.
 
 See **Connections & configuration → Garage freeze protection**, below
-**Floor preheating**, for sender setup and pipe parameters. The linked
-**Garage → Freeze protection** fold below **Normal temperature** shows live readings and explains the minimum
-target, Heat/On rescue, uncertain history, recovery and fault fallback. The driver
+**Floor preheating**, for installation and setup. The linked
+**Garage → Freeze protection** fold below **Normal temperature** shows live readings,
+compares configured and reported protection settings, and explains the pipe model
+and its fixed safety factor. It also explains the minimum target, Heat/On rescue,
+uncertain history, recovery and fault fallback. The driver
 repository owns [controller installation](https://github.com/hokkanen/shelly-cn105-mqtt/blob/main/docs/installation.md),
 [sender installation and component mapping](https://github.com/hokkanen/shelly-cn105-mqtt/blob/main/docs/sender.md),
 and [qualification evidence](https://github.com/hokkanen/shelly-cn105-mqtt/blob/main/docs/status.md).

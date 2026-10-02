@@ -18,13 +18,15 @@ Room-input loss or an out-of-range input/calculated external temperature can als
 select native 16°C in HEAT, preserving power unless protection requests rescue.
 Show actual controller readback independently from the sender's requested minimum.
 
-A link opens **Connections & configuration → Garage freeze protection**, below
-**Floor preheating**, for setup, pipe assumptions and configured-versus-reported
-parameters from `garage.protection`. That fold links back to the live readings.
-Its settings are read-only; ST-MQ applies only loaded configuration and requires
-matching fresh readback for confirmation. Offline or missing protection is unavailable. With
-the BLU H&T test source, temperature control works while pipe protection is
-absent.
+The live fold includes **Protection settings**, comparing configured and reported
+parameters from `garage.protection`. Its model details explain the pipe estimate,
+reserve and fixed safety factor of 2, separately from the sender's parameter
+readback. A link opens **Connections & configuration → Garage freeze protection**,
+below **Floor preheating**, for installation and setup; that section links back
+to Garage. Settings are read-only; ST-MQ applies only loaded configuration and
+requires matching fresh readback for confirmation. Offline or missing protection
+is unavailable. With the BLU H&T test source, temperature control works while
+pipe protection is absent.
 
 Charts retain original temperatures, doors, compressor activity, supported native
 pump observations and qualified electrical history. Requests are not measurements.

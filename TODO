@@ -26,6 +26,27 @@ Implemented 2026-10-02 — Align native charger app priority and simplify Shelly
   checks pass. Independent reviews cover command races, source provenance,
   physical session scope, runtime planning and configuration/UI consistency.
 
+Implemented 2026-10-02 — Keep pipe settings and model explanation in Garage
+- Move Protection settings into Garage's Freeze protection fold beside its live
+  readings. Keep Connections & configuration focused on Installation & setup,
+  removing the redundant nested setup disclosure. Add direct keyboard/deep-link
+  navigation from installation instructions to the Garage parameters.
+- Show safety factor 2 as a fixed model constant, separate from configured and
+  reported values. Explain doubled cooling/halved warming and add Calculation &
+  assumptions using the Home model's disclosure, equation and unit styles.
+  Cover heat capacity, conductance, temperature response, reserve, unknown
+  history, thawing debt, prediction/recovery and model limitations.
+- F3/F4/F5/F7: preserve read-only source-owned settings, independent freshness,
+  unavailable/recorded evidence and local control authority. No model, protocol,
+  configuration or device changes. Update current location/ownership guidance
+  in both repositories. Fixed factor is not represented as device readback.
+- Validation: all 21 focused Garage UI tests pass; production build and expanded
+  Garage browser checks pass at 320/390/768/1440px in both themes. Keyboard links,
+  direct parameter hashes, fixed-factor provenance, equations and read-only states
+  are covered. Mobile/desktop screenshots reviewed. Equations and recovery rules
+  checked against sender source; documentation links and diff checks pass.
+  Existing Vite bundle-size warning remains.
+
 Implemented 2026-10-02 — Polish protection guidance
 - Replace the conversational target examples with a concise description of the
   temporary minimum, selected target and recovery. Describe probe placement in

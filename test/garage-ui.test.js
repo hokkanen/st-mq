@@ -320,20 +320,25 @@ test('Garage markup has durable controls and independent protection without reti
   assert.match(garage, /href="#garage-protection-configuration-details" data-open-garage-protection/);
   assert(garage.indexOf('id="garage-protection-details"') > garage.indexOf('id="garage-target-details"'));
   for (const id of ['garage-protection-rear', 'garage-protection-front', 'garage-pipe-rear', 'garage-pipe-front',
-    'garage-protection-selected-target', 'garage-protection-minimum-target', 'garage-protection-effective-target'])
+    'garage-protection-selected-target', 'garage-protection-minimum-target', 'garage-protection-effective-target',
+    'garage-protection-settings-details', 'garage-pipe-calculation-details'])
     assert(garage.includes(`id="${id}"`));
   assert.doesNotMatch(garage, /garage-(automation|pause|learning|release)|Automatic savings|Savings strategy|Temporary heating override/);
   assert.match(garage, /roughly 24 hours.*longer if contents are still cold/);
   assert.match(garage, /including across restarts/);
   const connectionSetup = html.slice(html.indexOf('id="connections-details"'), html.indexOf('id="electricity-details"'));
   assert(connectionSetup.indexOf('id="garage-protection-configuration-details"') > connectionSetup.indexOf('id="floor-preheat-details"'));
-  assert.doesNotMatch(connectionSetup, /id="garage-protection-details"|id="garage-protection-rear"|id="garage-pipe-front"/);
+  assert.doesNotMatch(connectionSetup, /id="garage-protection-details"|id="garage-protection-rear"|id="garage-pipe-front"|id="garage-protection-settings-details"|id="garage-protection-parameters"/);
   assert.match(connectionSetup, /href="#garage-protection-details" data-open-garage-protection/);
   assert.match(connectionSetup, /<summary><span>Garage freeze protection<\/span>/);
-  const start = connectionSetup.indexOf('id="garage-protection-settings-details"');
-  const parameters = connectionSetup.slice(start, connectionSetup.indexOf('</details>', start));
+  const start = garage.indexOf('id="garage-protection-settings-details"');
+  const parameters = garage.slice(start, garage.indexOf('</details>', start));
   assert.doesNotMatch(parameters, /<input|<select|<form|garage-protection-submit|api\/garage\/protection/);
   assert.match(parameters, /garage\.protection.*Apply reviewed configuration/);
+  assert.match(parameters, /id="garage-protection-safety-factor" colspan="2">2 · Fixed in the model/);
+  assert.match(parameters, /class="learning-calculation"/);
+  assert.match(parameters, /doubles cooling heat transfer and halves warming heat transfer/);
+  assert.match(parameters, /reserve is not divided by it again/);
   assert.match(connectionSetup, /id="garage-protection-setup-details"/);
   const setupStart = connectionSetup.indexOf('id="garage-protection-setup-details"');
   const setup = connectionSetup.slice(setupStart, connectionSetup.indexOf('</details>', setupStart));

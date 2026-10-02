@@ -58,9 +58,11 @@ source reports unavailable. A BLU H&T supplies temperature only.
 ## Sender installation
 
 Use **Connections & configuration → Garage freeze protection**, directly below
-**Floor preheating**, for setup guidance, pipe assumptions and configured-versus-reported settings.
+**Floor preheating**, for installation and setup guidance.
 The linked **Garage → Freeze protection** fold, below **Normal temperature**,
-contains live air/pipe/reserve readings and explains active protection. Build and
+contains live air/pipe/reserve readings and explains active protection. Its
+**Protection settings** compares configured and reported parameters and explains
+the pipe calculation and fixed model safety factor. Build and
 install `dist/sender.js` from the
 [heat-pump controller and sender repository](https://github.com/hokkanen/shelly-cn105-mqtt), following its
 [sender guide](https://github.com/hokkanen/shelly-cn105-mqtt/blob/main/docs/sender.md).

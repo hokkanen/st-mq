@@ -12,7 +12,7 @@ Using this reference does not establish that every container or fitting cools
 more slowly, or that the pipe wall cannot begin freezing before the estimated
 bulk temperature reaches zero.
 
-## Parameters shown in Garage freeze protection
+## Protection settings and model assumptions
 
 | Parameter | Initial value | Meaning |
 | --- | ---: | --- |
@@ -20,12 +20,19 @@ bulk temperature reaches zero.
 | Reference pipe outside diameter | 21 mm | Sets the exposed surface and quantity of copper and water. |
 | Reference pipe wall thickness | 1 mm | Assumed copper thickness; the water bore is calculated from it. |
 | Heat transfer | 20 W/m²·K | Initial estimate of heat exchange with the adjacent air. |
-| Safety factor | 2, fixed | Counts heat loss twice as fast and credits heat gain half as fast. |
 
-These parameters appear in **Connections & configuration → Garage freeze
-protection**, below **Floor preheating**. Its link opens **Garage → Freeze
-protection**, below **Normal temperature**, for live rear/front air readings,
-pipe estimates and reserves; the live fold links back to these settings.
+These configuration-owned parameters and installation approval appear in
+**Garage → Freeze protection → Protection settings**, beside the live rear/front
+air readings, pipe estimates and reserves. The same section identifies the
+**fixed safety factor of 2**: the model counts cooling at twice the nominal
+heat-transfer rate and warming at half the nominal rate. This is a built-in
+model assumption, not a configurable or independently reported sender parameter.
+Its **Calculation & assumptions** fold explains how these inputs produce the
+estimates.
+
+The live fold links to **Connections & configuration → Garage freeze protection**,
+below **Floor preheating**, for installation and setup. That section links back
+to Garage for live protection, settings and model details.
 
 The geometry and heat-transfer values are explicit engineering assumptions,
 not fitted building-model coefficients. They and installation approval are owned

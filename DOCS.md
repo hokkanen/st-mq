@@ -278,10 +278,13 @@ without replacing the saved target. Unusable room input or an out-of-range
 calculated external temperature also uses native 16°C in HEAT, preserving power
 unless protection requests rescue.
 
-The live fold links to **Connections & configuration → Garage freeze protection**,
-below **Floor preheating**, for sender setup and pipe assumptions; the settings
-fold links back. Its read-only settings compare `garage.protection` in
-configuration with actual sender readback. Edit
+The live fold contains **Protection settings**, comparing `garage.protection` in
+configuration with actual sender readback. It also explains pipe estimates,
+reserve and the fixed model safety factor of 2: cooling counts at twice the
+nominal heat-transfer rate and warming at half. The factor is a model assumption,
+not a configurable or independently reported parameter. A link opens
+**Connections & configuration → Garage freeze protection**, below **Floor
+preheating**, for installation and setup; that section links back to Garage. Edit
 configuration and use **Apply reviewed configuration** to change them; there is no
 dashboard parameter editor. Pipe estimates require fresh, established model
 evidence from the protection sender. A target increase shows moisture guidance

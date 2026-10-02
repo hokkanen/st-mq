@@ -133,16 +133,24 @@ temperature, minimum target, rescue demand and validity to the heat-pump
 controller over Bluetooth. Healthy local protection does not need ST-MQ, MQTT
 or Wi-Fi.
 
-The live fold links to **Connections & configuration → Garage freeze protection**,
-directly below **Floor preheating**, for sender setup and pipe assumptions. That
-settings fold links back to the live readings. **Protection settings** compares
-configured and reported values without an editor. Installation approval, margin,
-pipe geometry and heat transfer come from `garage.protection` in configuration.
+Within **Garage → Freeze protection**, **Protection settings** compares configured
+and reported values without an editor. It also identifies the fixed safety factor
+of 2 and explains the pipe calculation: geometry sets heat capacity and exposed
+surface, air temperature drives heat exchange, cooling is counted at twice the
+nominal rate and warming at half. Reserve is estimated energy above the protection
+margin, not time until freezing. Pipe temperatures are estimates rather than
+measurements. Installation approval, margin, pipe geometry and heat transfer
+come from `garage.protection` in configuration; the fixed factor is a model
+assumption, not a configurable or reported parameter.
 After editing that source, use **Apply reviewed configuration** in **Data &
 settings** or restart. ST-MQ applies loaded parameters over MQTT when Garage is
 enabled and fresh sender status and local write authority permit it. The sender
 validates and persists them; matching fresh readback confirms the configuration.
 A command acknowledgement alone does not establish that protection is ready.
+
+The live fold links to **Connections & configuration → Garage freeze protection**,
+directly below **Floor preheating**, for installation and setup. That section
+links back to Garage for live readings, settings and model details.
 
 Use the [heat-pump controller and sender repository](https://github.com/hokkanen/shelly-cn105-mqtt)
 for [sender setup](https://github.com/hokkanen/shelly-cn105-mqtt/blob/main/docs/sender.md)

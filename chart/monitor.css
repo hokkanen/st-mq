@@ -2019,6 +2019,11 @@ body[data-access-role="family"] .family-access-note { display: block; margin: 12
 .garage-protection-parameters th { color: var(--muted); }
 .garage-protection-parameters th:first-child { width: 42%; padding-left: 0; text-align: left; }
 .garage-protection-parameters td { font-variant-numeric: tabular-nums; }
+.garage-protection-parameters td[colspan] { color: var(--muted); font-size: 10px; }
+.garage-protection #garage-protection-settings-details { scroll-margin-top: 20px; }
+.garage-protection #garage-protection-settings-details > .learning-calculation { min-width: 0; margin: 12px 0; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-soft); }
+.garage-protection .learning-equation + .learning-equation { margin-top: 16px; }
+.garage-protection .learning-calculation-notes { margin-top: 16px; }
 .garage-protection-parameters th:last-child, .garage-protection-parameters td:last-child { padding-right: 0; }
 @media(max-width:420px) { .garage-protection-grid, .garage-protection-hardware { grid-template-columns:1fr; } }
 
