@@ -1981,8 +1981,9 @@ body[data-access-role="family"] .family-access-note { display: block; margin: 12
 .garage-protection { scroll-margin-top: 20px; }
 .garage-protection > summary { flex-wrap: wrap; }
 .garage-protection .section-fold-body, .garage-protection-body { font-size: 12px; line-height: 1.65; overflow-wrap: anywhere; }
+.garage-protection-body { --garage-protection-indent: 24px; }
 .garage-protection-body > p { margin: 4px 0 14px; }
-.garage-protection-body > .equipment-fold { margin-top: 10px; border-bottom: 1px solid var(--border); }
+.garage-protection-body > .equipment-fold { margin-top: 10px; margin-inline-start: var(--garage-protection-indent); border-bottom: 1px solid var(--border); }
 .garage-protection-body > .equipment-fold > p { margin: 6px 0 14px; color: var(--muted); }
 .garage-protection-body > .equipment-fold strong { color: var(--text); font-weight: 550; }
 .garage-protection-targets { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 14px 0; padding: 12px 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
@@ -1992,7 +1993,7 @@ body[data-access-role="family"] .family-access-note { display: block; margin: 12
 .garage-protection-targets > div:last-child dd { color: var(--accent); }
 .garage-protection a, .garage-protection-link a { color: var(--accent); text-underline-offset: 3px; }
 .garage-protection-link { margin: 12px 0; font-size: 11px; line-height: 1.6; }
-.garage-protection-body > .garage-protection-link { margin: 12px 0 0; padding-inline-start: 16px; }
+.garage-protection-body > .garage-protection-link { margin: 12px 0 0; padding-inline-start: var(--garage-protection-indent); }
 .garage-protection-steps { margin: 16px 0 0; padding-left: 22px; }
 .garage-protection-steps > li { padding-left: 4px; margin-bottom: 20px; }
 .garage-protection-steps h4 { margin: 0 0 6px; font-size: 12px; font-weight: 600; }

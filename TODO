@@ -1,3 +1,13 @@
+Implemented 2026-10-02 — Align protection navigation and clarify probe locations
+- Share the nested folds' 24px indent with the Installation & setup link instead
+  of its incorrect 16px offset. Verify actual text alignment in the browser at
+  320/390/768/1440px in both themes.
+- Identify rear near the window and front near the door, with both probes beside
+  the same pipe running through the garage. Update the live explanation and guide.
+- F4/F7: presentation only. Confirm the sender's hard-coded 5°C initial minimum
+  lower bound without changing protection logic. All 21 focused UI tests, build
+  and Garage browser checks pass; the existing bundle-size warning remains.
+
 Implemented 2026-10-02 — Refine Garage pipe model navigation
 - Rename the combined parameter/calculation fold Pipe model & settings and align
   its installation link and current documentation titles. Indent the Installation

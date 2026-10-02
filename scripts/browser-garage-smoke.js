@@ -371,6 +371,16 @@ try {
     await send('Emulation.setDeviceMetricsOverride', { width, height: 1200, deviceScaleFactor: 1, mobile: false });
     await evaluate(`window.homeEnergyTheme.setTheme('${theme}')`); await pause(100);
     await checkDashboardLayout({ evaluate, width });
+    assert.equal(await evaluate(`(() => {
+      const textStart = selector => {
+        const node = document.querySelector(selector), range = document.createRange();
+        range.setStart(node.firstChild, 0); range.setEnd(node.firstChild, 1);
+        return range.getBoundingClientRect().left;
+      };
+      const link = textStart('.garage-protection-body > .garage-protection-link > a');
+      return ['#garage-protection-operation-details > summary', '#garage-protection-settings-details > summary']
+        .every(selector => Math.abs(textStart(selector) - link) <= 1);
+    })()`), true, `${width}px ${theme} aligns the installation link with both fold headings`);
     const overflow = await evaluate(`(() => {
       const garage = document.getElementById('garage-control'), box = garage.getBoundingClientRect();
       return [...garage.querySelectorAll('button,input,label,p,dl,table,th,td,.heating-summary-reading')].filter(node => {

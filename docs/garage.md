@@ -92,8 +92,9 @@ saved target or interrupt a healthy local Bluetooth feed.
 ## Independent freeze protection
 
 Open **Garage → Freeze protection**, directly below **Normal temperature**, for
-live protection status and the **Rear · near pipe** and **Front · near door**
-readings. Each location shows measured air temperature, estimated pipe temperature
+live protection status and the **Rear · near window** and **Front · near door**
+readings. Both probes monitor air beside the same pipe, running from the rear to
+the front of the garage. Each location shows measured air temperature, estimated pipe temperature
 and reserve above the configured margin. The pipe temperature and reserve are
 model estimates, not direct pipe measurements. Unknown or stale evidence is
 unavailable, never proof that the pipes are safe.
